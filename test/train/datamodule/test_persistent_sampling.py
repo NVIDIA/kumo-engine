@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 
 import diskgraph
 import pytest
+from kumo_core.diskgraph.runtime_owner import RuntimeOwner
 
 
 @pytest.fixture
@@ -19,8 +20,10 @@ def auto_setup_kumo_backend() -> bool:
     return False
 
 
+@pytest.mark.parametrize("endpoints", [None, ["grpc://a:1"]])
 def test_module_owns_stream_lifetime_across_stage_loaders(
     monkeypatch: pytest.MonkeyPatch,
+    endpoints: list[str] | None,
 ) -> None:
     """Epoch iteration keeps shared streams open; job shutdown releases them."""
     from kumo_core.diskgraph.lightning_data import (
@@ -30,11 +33,14 @@ def test_module_owns_stream_lifetime_across_stage_loaders(
     )
 
     source = MagicMock()
-    factory = MagicMock(return_value=source)
+    reopened = MagicMock()
+    source.iter.side_effect = lambda **_: (({"task": {}} for _ in range(1)), 1)
+    factory = MagicMock(side_effect=[source, reopened])
     monkeypatch.setattr(diskgraph, "RuntimeIndex", factory)
     module = object.__new__(DiskgraphLightningDataModule)
-    module.runtime_options = {"remote_sampling_endpoint": ["grpc://a:1"]}
-    module.base_seed = 42
+    module._runtime_owner = RuntimeOwner(
+        "manifest.json", 42, sampling_endpoints=endpoints
+    )
     module._worker_pool_registry = MagicMock()
     for stage in ("train", "val"):
         dataset = DiskgraphTaskBatchIterable(
@@ -47,22 +53,21 @@ def test_module_owns_stream_lifetime_across_stage_loaders(
             base_seed=42,
             shuffle_state=_ShuffleStreamState(),
             num_seeds=1,
-            runtime_options=module.runtime_options,
+            runtime_owner=module._runtime_owner,
         )
-        module._bind_remote_runtime(dataset)
-        monkeypatch.setattr(dataset, "_iter_batches", lambda: iter([{"task": {}}]))
         assert list(dataset) == [{"task": {}}]
         assert dataset._runtime_index() is source
-        assert "_runtime_index_managed" not in dataset.__getstate__()
+        dataset.close()
     factory.assert_called_once()
     source.close.assert_not_called()
     module.shutdown_dataloader_workers("train")
     source.close.assert_not_called()
     module.shutdown_dataloader_workers()
     source.close.assert_called_once()
-    assert "_remote_runtime_index" not in module.__dict__
-    module._bind_remote_runtime(dataset)
+    assert dataset._runtime_index() is reopened
     assert factory.call_count == 2
+    module.shutdown_dataloader_workers()
+    reopened.close.assert_called_once()
 
 
 def test_failed_worker_shutdown_still_closes_sampling_streams() -> None:
@@ -73,7 +78,7 @@ def test_failed_worker_shutdown_still_closes_sampling_streams() -> None:
     module._worker_pool_registry = MagicMock()
     module._worker_pool_registry.shutdown.side_effect = OSError("worker cleanup failed")
     source = MagicMock()
-    module.__dict__["_remote_runtime_index"] = source
+    module._runtime_owner = source
     with pytest.raises(OSError, match="cleanup failed"):
         module.shutdown_dataloader_workers()
     source.close.assert_called_once()
@@ -106,6 +111,8 @@ def test_epoch_cleanup_discards_prefetch_without_closing_shared_streams(
             "kumo_core.diskgraph.lightning_data._stage_bucket_counts",
             lambda *_: [(1, 3)],
         )
+    owner = RuntimeOwner("manifest.json", 42)
+    monkeypatch.setattr(diskgraph, "RuntimeIndex", MagicMock(return_value=source))
     dataset = DiskgraphTaskBatchIterable(
         manifest_path="manifest.json",
         stage="train",
@@ -116,15 +123,15 @@ def test_epoch_cleanup_discards_prefetch_without_closing_shared_streams(
         base_seed=42,
         shuffle_state=_ShuffleStreamState(),
         num_seeds=3,
-        runtime_options={"remote_sampling_endpoint": "grpc://sampler:1"},
+        runtime_owner=owner,
         **options,
     )
-    monkeypatch.setattr(dataset, "_runtime_index", lambda: source)
-    dataset.__dict__["_runtime_index_handle"] = source
-    dataset.__dict__["_runtime_index_managed"] = True
     iterator = iter(dataset)
     assert isinstance(iterator, Generator)
     next(iterator)
     iterator.close()
     batch_iterator.close.assert_called_once()
+    dataset.close()
     source.close.assert_not_called()
+    owner.close()
+    source.close.assert_called_once()

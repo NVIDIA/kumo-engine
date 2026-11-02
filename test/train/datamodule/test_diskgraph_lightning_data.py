@@ -497,6 +497,9 @@ def _install_fake_diskgraph(
                 kwargs.setdefault("num_threads", self._num_threads)
             return make_runtime_batch_iterator(self._ref, **kwargs)
 
+        def close(self) -> None:
+            """Release the fake runtime without native resources."""
+
     stub.RuntimeIndex = _StubRuntimeIndex  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "diskgraph", stub)
     return calls
@@ -2874,8 +2877,8 @@ def test_rhs_test_and_predict_dataloader_seed_times(
     list(dm.rhs_test_dataloader())
     assert calls["kwargs"]["rhs_seed_time"] == 7
 
-    calls = _install_fake_diskgraph(monkeypatch)
     list(dm.rhs_predict_dataloader())
+    assert len(calls["history"]) == 2
     # predict falls back to test_time when no dedicated predict range exists.
     assert calls["kwargs"]["rhs_seed_time"] == 7
 
@@ -3158,6 +3161,9 @@ def _install_grouped_fake_diskgraph(
                 kwargs.setdefault("num_threads", self._num_threads)
             return make_runtime_batch_iterator(self._ref, **kwargs)
 
+        def close(self) -> None:
+            """Release the fake runtime without native resources."""
+
     stub.RuntimeIndex = _StubRuntimeIndex  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "diskgraph", stub)
     # Grouping is gated on a TEMPORAL RHS (see ``_rhs_is_temporal``). These
@@ -3222,6 +3228,9 @@ def _install_grouped_fake_diskgraph_per_stage(
             if self._num_threads is not None:
                 kwargs.setdefault("num_threads", self._num_threads)
             return make_runtime_batch_iterator(self._ref, **kwargs)
+
+        def close(self) -> None:
+            """Release the fake runtime without native resources."""
 
     stub.RuntimeIndex = _StubRuntimeIndex  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "diskgraph", stub)
@@ -3382,6 +3391,9 @@ def _install_plain_fake_diskgraph(
             if self._num_threads is not None:
                 kwargs.setdefault("num_threads", self._num_threads)
             return make_runtime_batch_iterator(self._ref, **kwargs)
+
+        def close(self) -> None:
+            """Release the fake runtime without native resources."""
 
     stub.RuntimeIndex = _StubRuntimeIndex  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "diskgraph", stub)

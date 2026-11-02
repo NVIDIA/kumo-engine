@@ -164,10 +164,13 @@ def test_iterable_cancels_remote_streams_on_early_exit(
     assert isinstance(iterator, Generator)
     assert next(iterator) == {"task": {}}
     iterator.close()
-    source.close.assert_called_once()
+    source.close.assert_not_called()
     batch_iterator.close.assert_called()
     assert "remote_sampling_endpoint" not in source.iter.call_args.kwargs
-    assert "_runtime_index_handle" not in dataset.__getstate__()
+    assert dataset._runtime_index() is source
+    dataset.close()
+    dataset.close()
+    source.close.assert_called_once()
 
 
 def test_sampler_knob_defaults_to_local() -> None:

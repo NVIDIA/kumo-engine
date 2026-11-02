@@ -156,8 +156,12 @@ same manifest and option normalization. Rust owns remote connections, replica
 sharding, weighted-sidecar path translation and iterator lifetime. Close an epoch
 to cancel its prefetch while retaining shared connections; close the index at
 job teardown to cancel all epochs and release those connections. A closed index
-cannot be reopened. The data module creates a fresh shared handle when needed
-after job teardown.
+cannot be reopened. A process-local `RuntimeOwner` lazily creates one index for
+all stage datasets, for both backends. The data module passes that owner explicitly
+to its datasets and closes it at job teardown. Later use creates a fresh index.
+Forked or pickled workers open their own index. Epoch cleanup closes only epoch
+iterators. A standalone dataset owns its runtime and releases it with
+`dataset.close()`; borrowed dataset owners remain open until module teardown.
 
 
 Runtime iterators always provide `close()`. Loader scopes register that method
