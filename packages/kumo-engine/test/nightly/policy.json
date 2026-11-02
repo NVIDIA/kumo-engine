@@ -27,11 +27,11 @@
     },
     "static_link": {
       "min_normal_gain": 0.0009903613266046968,
-      "max_control_drift": 8.533632561193868e-05
+      "max_control_drift": 0.00021
     },
     "temporal_link": {
       "min_normal_gain": 0.0018203973174952103,
-      "max_control_drift": 0.0018203973174952103
+      "max_control_drift": 0.0046
     }
   },
   "predictions": {

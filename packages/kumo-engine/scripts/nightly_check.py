@@ -21,8 +21,9 @@ import sys
 import time
 import traceback
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import replace
+from functools import wraps
 from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 
@@ -724,7 +725,25 @@ def observe_cuda(state):
     from numbers import Integral
 
     import pytorch_lightning as pl
+    import torch
+    from kumo_core.train.trainer import Trainer
     from pytorch_lightning.callbacks import EarlyStopping
+
+    recoveries = state.setdefault('oom_recoveries', [])
+
+    def observe_recovery(method, original):
+        @wraps(original)
+        def observed(*args, **kwargs):
+            before = torch.cuda.memory_stats().get('num_ooms')
+            result = original(*args, **kwargs)
+            after = torch.cuda.memory_stats().get('num_ooms')
+            if before is not None and after is not None and after > before:
+                recoveries.append(
+                    dict(stage=state['stage'], method=method,
+                         allocator_ooms=after - before))
+            return result
+
+        return observed
 
     class Proof(pl.Callback):
         def on_fit_start(self, trainer, module):
@@ -785,7 +804,13 @@ def observe_cuda(state):
                 ]
                 super().__init__(*args, **kwargs)
 
-        with patch.object(pl, 'Trainer', ObservedTrainer):
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(pl, 'Trainer', ObservedTrainer))
+            for method in ('predict_v2', 'test'):
+                stack.enter_context(
+                    patch.object(
+                        Trainer, method,
+                        observe_recovery(method, getattr(Trainer, method))))
             yield
 
 
@@ -903,8 +928,12 @@ def summarize(rows, reference, policy):
         raise ValueError(
             'Reference and candidate must cover the same sixteen cases')
     scores = [
-        dict(task=row['task'], arm=row['arm'], score=row['score'],
-             baseline=previous[(row['task'], row['arm'])]['baseline'])
+        dict(
+            task=row['task'], arm=row['arm'], score=row['score'],
+            baseline=previous[(row['task'], row['arm'])]['baseline'],
+            historical_baseline=previous[(row['task'], row['arm'])].get(
+                'historical_baseline',
+                previous[(row['task'], row['arm'])]['baseline']))
         for row in rows
     ]
     learning = check_learning(scores, policy['learning'])
@@ -1180,21 +1209,207 @@ def run_case(root, manifest, case, graph, snapshot, output, scratch, tolerance):
     return report
 
 
-def check_results(rows):
-    wanted = {(task, arm, 0)
-              for task in smoke.TASKS
-              for arm in ('normal', 'control')}
-    if (len(rows) != 16 or {(r['task'], r['arm'], r['seed'])
-                            for r in rows} != wanted
+def check_results(rows, cases=None):
+    wanted = ({(task, arm, 0)
+               for task in smoke.TASKS
+               for arm in ('normal', 'control')}
+              if cases is None else {(case['task'], case['arm'], case['seed'])
+                                     for case in cases})
+    if (len(rows) != len(wanted) or {(r['task'], r['arm'], r['seed'])
+                                     for r in rows} != wanted
             or len({r['fit_id']
-                    for r in rows}) != 16
+                    for r in rows}) != len(wanted)
             or any(r['status'] != 'MEASURED' or type(r['seed']) is not int
                    or type(r['physical_fits']) is not int or r['physical_fits']
                    != 1 or len(r['checkpoint_sha256']) != 64 or not all(
                        r['prediction_batches'].get(s, 0) > 0
                        for s in PREDICTIONS) for r in rows)):
+        raise ValueError('Comparison needs complete unique one-fit workflows')
+
+
+def case_learning(row, reference, bounds):
+    task, score, baseline = row['task'], row['score'], reference['baseline']
+    validate_quality_measurement(task, score)
+    validate_quality_measurement(task, baseline)
+    if row['arm'] == 'normal':
+        gain = (-1 if task in ('regression',
+                               'forecasting') else 1) * (score - baseline)
+        passed = gain >= bounds['min_normal_gain']
+    else:
+        passed = abs(score - baseline) <= bounds['max_control_drift']
+    return dict(
+        status='PASS' if passed else 'FAIL', score=score, baseline=baseline,
+        historical_baseline=reference.get('historical_baseline',
+                                          baseline), **bounds)
+
+
+def resource_requirements(measurement, headroom=1.25):
+    """Propose admission minima from one complete case's measured peaks."""
+    peaks = measurement.get('peaks', {})
+    if (measurement.get('format') != 'kumo-engine-nightly-resources-v1'
+            or measurement.get('status') != 'MEASURED'
+            or type(headroom) not in (int, float) or not math.isfinite(headroom)
+            or headroom <= 1
+            or not isinstance(measurement.get('gpu_class'), str)
+            or not measurement['gpu_class']
+            or type(measurement.get('gpus')) is not int
+            or measurement['gpus'] < 1
+            or any(not re.fullmatch('[0-9a-f]{64}', measurement.get(name, ''))
+                   for name in ('wheel_sha256', 'harness_sha256',
+                                'input_manifest_sha256')) or set(peaks)
+            != {'cpu_cores', 'ram_bytes', 'scratch_bytes', 'gpu_memory_bytes'}
+            or any(
+                type(value) not in
+                (int, float) or not math.isfinite(value) or value <= 0
+                for value in (*peaks.values(), measurement.get('seconds')))):
         raise ValueError(
-            'Comparison needs sixteen complete unique one-fit workflows')
+            'Resource requirements need complete measured evidence')
+    minimum = dict(
+        cpus=math.ceil(peaks['cpu_cores'] * headroom),
+        ram_bytes=math.ceil(peaks['ram_bytes'] * headroom),
+        scratch_bytes=math.ceil(peaks['scratch_bytes'] * headroom),
+        gpu_memory_bytes=math.ceil(peaks['gpu_memory_bytes'] * headroom),
+        gpu_class=measurement['gpu_class'], gpus=measurement['gpus'],
+        time_seconds=math.ceil(measurement['seconds'] * headroom))
+    return dict(minimum=minimum, measurement=measurement, headroom=headroom)
+
+
+def admit_resources(profile, capacity):
+    if not isinstance(profile, dict) or set(profile) != {
+            'minimum', 'measurement', 'headroom'
+    }:
+        raise ValueError(
+            'The case needs reviewed measured resource requirements')
+    if profile != resource_requirements(profile['measurement'],
+                                        profile['headroom']):
+        raise ValueError('Resource minima differ from their measured evidence')
+    for name, required in profile['minimum'].items():
+        actual = capacity.get(name)
+        if ((actual != required)
+                if name == 'gpu_class' else type(actual) not in (int, float) or
+            (not math.isfinite(actual)
+             and not (name == 'time_seconds' and actual == math.inf))
+                or actual < required):
+            raise ValueError(
+                f'Insufficient {name}: {actual!r}, requires {required!r}')
+    return profile['minimum']
+
+
+def available_capacity(scratch, runtime, time_seconds):
+    import psutil
+    import torch
+
+    cpus = len(os.sched_getaffinity(0))
+    memory = psutil.virtual_memory().available
+    try:
+        relative = next(
+            line.split('::', 1)[1]
+            for line in Path('/proc/self/cgroup').read_text().splitlines()
+            if line.startswith('0::'))
+        group = Path('/sys/fs/cgroup') / relative.lstrip('/')
+        quota, period = (group / 'cpu.max').read_text().split()
+        if quota != 'max':
+            cpus = min(cpus, int(quota) / int(period))
+        limit = (group / 'memory.max').read_text().strip()
+        if limit != 'max':
+            memory = min(
+                memory,
+                int(limit) - int((group / 'memory.current').read_text()))
+    except (OSError, ValueError, StopIteration):
+        pass
+    return dict(cpus=cpus, ram_bytes=memory,
+                scratch_bytes=shutil.disk_usage(scratch).free,
+                gpu_class=runtime['gpu'], gpus=runtime['gpu_count'],
+                gpu_memory_bytes=torch.cuda.mem_get_info()[0],
+                time_seconds=time_seconds)
+
+
+@contextmanager
+def track_resources(output, scratch, runtime):
+    """Sample one process tree and its owned files, once per second."""
+    import threading
+
+    import psutil
+    import torch
+
+    process = psutil.Process()
+    peaks = dict(cpu_cores=0., ram_bytes=0, scratch_bytes=0, gpu_memory_bytes=0)
+    result = dict(format='kumo-engine-nightly-resources-v1',
+                  status='INCOMPLETE', peaks=peaks, errors=[],
+                  sample_interval_seconds=1, gpu_class=runtime['gpu'],
+                  gpus=runtime['gpu_count'])
+    done = threading.Event()
+    started = previous_time = time.monotonic()
+    previous_cpu = {}
+
+    def sample():
+        nonlocal previous_cpu, previous_time
+        now = time.monotonic()
+        cpu, rss, current = 0., 0, {}
+        for child in [process, *process.children(recursive=True)]:
+            try:
+                times = child.cpu_times()
+                current[child.pid] = times.user + times.system
+                cpu += max(
+                    0., current[child.pid] -
+                    previous_cpu.get(child.pid, current[child.pid]))
+                rss += child.memory_info().rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        peaks['cpu_cores'] = max(peaks['cpu_cores'],
+                                 cpu / max(now - previous_time, 1e-6))
+        peaks['ram_bytes'] = max(peaks['ram_bytes'], rss)
+        previous_cpu, previous_time = current, now
+        size = 0
+        for directory in (output, scratch):
+            for path in directory.rglob('*'):
+                try:
+                    if path.is_file():
+                        size += path.stat().st_blocks * 512
+                except FileNotFoundError:
+                    pass
+        peaks['scratch_bytes'] = max(peaks['scratch_bytes'], size)
+        free, total = torch.cuda.mem_get_info()
+        peaks['gpu_memory_bytes'] = max(peaks['gpu_memory_bytes'], total - free)
+
+    def sample_safely():
+        try:
+            sample()
+        except Exception as error:
+            message = f'{type(error).__name__}: {error}'
+            if message not in result['errors']:
+                result['errors'].append(message)
+
+    def observe():
+        while not done.wait(1):
+            sample_safely()
+
+    sample_safely()
+    worker = threading.Thread(target=observe, daemon=True)
+    worker.start()
+    try:
+        yield result
+    finally:
+        done.set()
+        worker.join()
+        sample_safely()
+        result['seconds'] = time.monotonic() - started
+
+
+@contextmanager
+def case_deadline(seconds):
+    import signal
+
+    def expired(signum, frame):
+        raise TimeoutError(f'Case exceeded its {seconds}-second time budget')
+
+    previous = signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def run(args):
@@ -1211,6 +1426,21 @@ def run(args):
     reference = load_reference(args)
     reference_cases(reference, manifest)
     policy = load_policy(args.policy, args.policy_sha256)
+    selected = [
+        case for case in manifest['cases']
+        if getattr(args, 'case', None) in (None,
+                                           case['task'] + '-' + case['arm'])
+    ]
+    if not selected:
+        raise ValueError('Select a frozen task and answer arm')
+    requirements = getattr(args, 'requirements', None)
+    if requirements is not None:
+        expected = getattr(args, 'requirements_sha256', '')
+        if (len(selected) != 1 or requirements.is_symlink()
+                or not re.fullmatch('[0-9a-f]{64}', expected)
+                or digest(requirements) != expected):
+            raise ValueError('Case requirements checksum or selection differs')
+        selected = [dict(selected[0], requirements=read(requirements))]
     output.mkdir(parents=True, exist_ok=True)
     scratch.mkdir(parents=True, exist_ok=False)
     runtime = verify_runtime(
@@ -1221,40 +1451,131 @@ def run(args):
         args.wheel, importlib.metadata.distribution('kumo-engine'))
     if digest(args.wheel) != runtime['wheel_sha256']:
         raise ValueError('Installed archive and selected wheel differ')
-    check_install(output, runtime, reference_only=args.reference_only)
-    report = dict(format='kumo-engine-nightly-result-v1', status='RUNNING',
-                  input_manifest_sha256=args.input_sha256, runtime=runtime,
-                  reference_sha256=args.reference_sha256,
-                  policy_sha256=args.policy_sha256,
-                  reference_only=args.reference_only, expected_runs=16, runs=[],
-                  helper_sha256=digest(HELPER), runner_sha256=digest(__file__))
-    graphs = {}
+    check_install(output, runtime, reference_only=args.reference_only,
+                  build_receipt=getattr(args, 'build_receipt', None))
+    report = dict(
+        format='kumo-engine-nightly-result-v1', status='RUNNING',
+        input_manifest_sha256=args.input_sha256, runtime=runtime,
+        reference_sha256=args.reference_sha256,
+        policy_sha256=args.policy_sha256, reference_only=args.reference_only,
+        measurement_only=getattr(args, 'measure_resources', False),
+        requirements_sha256=getattr(args, 'requirements_sha256',
+                                    None), expected_runs=len(selected), runs=[],
+        helper_sha256=digest(HELPER), runner_sha256=digest(__file__))
     try:
-        for case in manifest['cases']:
-            key = case['graph']
-            if key not in graphs:
-                import kumo.engine as kumo
-                spec = manifest['graphs'][key]
-                with measure_operation(report, 'graph.' + key):
-                    kumo.configure(scratch_dir=scratch / 'graphs' / key)
-                    graphs[key] = build_graph(
-                        read(root / spec['schema'])[spec['profile']], root,
-                        static=spec['static'], sources=spec['sources'])
-                    report.setdefault('graphs', {})[key] = check_snapshot(
-                        graphs[key][1], dict(spec, input_root=str(root)))
+        for case in selected:
             directory = output / (case['task'] + '-' + case['arm'])
+            graph = snapshot = None
+            resources = None
+            graph_timing = {}
+            row = dict(task=case['task'], arm=case['arm'], seed=case['seed'],
+                       status='RUNNING')
             try:
-                row = run_case(root, manifest, case, *graphs[key], directory,
-                               scratch, policy['predictions'][case['task']])
-            except Exception:
-                row = read(directory / 'result.json')
+                import kumo.engine as kumo
+                capacity = available_capacity(
+                    scratch, runtime,
+                    getattr(args, 'time_budget_seconds', None) or math.inf)
+                profile = case.get('requirements')
+                if report['measurement_only']:
+                    budget = getattr(args, 'time_budget_seconds', None)
+                    if type(budget) is not int or budget <= 0:
+                        raise ValueError(
+                            'Resource measurement needs an explicit time budget'
+                        )
+                    minimum = dict(time_seconds=budget)
+                else:
+                    minimum = admit_resources(profile, capacity)
+                    measured = profile['measurement']
+                    if ((measured.get('task'),
+                         measured.get('arm')) != (case['task'], case['arm'])
+                            or measured.get('input_manifest_sha256')
+                            != args.input_sha256
+                            or measured.get('input_signature')
+                            != input_signature(manifest, case)):
+                        raise ValueError(
+                            'Resource evidence belongs to another case or input'
+                        )
+                key = case['graph']
+                spec = manifest['graphs'][key]
+                with track_resources(directory, scratch / directory.name,
+                                     runtime) as resources:
+                    with case_deadline(minimum['time_seconds']):
+                        with measure_operation(graph_timing, 'graph'):
+                            kumo.configure(scratch_dir=scratch /
+                                           directory.name / 'graph')
+                            graph, snapshot = build_graph(
+                                read(root / spec['schema'])[spec['profile']],
+                                root, static=spec['static'],
+                                sources=spec['sources'])
+                            check_snapshot(snapshot,
+                                           dict(spec, input_root=str(root)))
+                        row = run_case(root, manifest, case, graph, snapshot,
+                                       directory, scratch,
+                                       policy['predictions'][case['task']])
+                        check_results([row], [case])
+                if resources.get('errors'):
+                    raise ValueError('Resource observation failed')
+                previous = next(value for value in reference['cases']
+                                if (value['task'],
+                                    value['arm']) == (case['task'],
+                                                      case['arm']))
+                row['learning'] = case_learning(
+                    row, previous, policy['learning'][case['task']])
+                row['admission'] = dict(capacity=capacity, requirements=profile)
+            except Exception as error:
+                try:
+                    row = read(directory / 'result.json')
+                except (OSError, ValueError):
+                    pass
+                row.update(status='FAIL',
+                           error=f'{type(error).__name__}: {error}',
+                           traceback=traceback.format_exc())
+            finally:
+                del graph, snapshot
+                gc.collect()
+            row.setdefault('timings',
+                           {}).update(graph_timing.get('timings', {}))
+            if resources is not None:
+                resources.update(
+                    status='MEASURED' if row['status'] == 'MEASURED' else
+                    'INCOMPLETE', task=case['task'], arm=case['arm'],
+                    input_signature=input_signature(manifest, case),
+                    input_manifest_sha256=args.input_sha256,
+                    wheel_sha256=runtime['wheel_sha256'],
+                    harness_sha256=digest(__file__))
+                row['resources'] = resources
+                proposal = None
+                if resources['status'] == 'MEASURED':
+                    try:
+                        proposal = resource_requirements(resources)
+                    except (KeyError, TypeError, ValueError) as error:
+                        resources['status'] = 'INCOMPLETE'
+                        row.update(status='FAIL',
+                                   error=f'{type(error).__name__}: {error}',
+                                   traceback=traceback.format_exc())
+                save(directory / 'resources.json', resources)
+                if report['measurement_only'] and proposal is not None:
+                    save(directory / 'requirements-proposal.json', proposal)
+            save(directory / 'result.json', row)
             report['runs'].append(row)
             save(output / 'nightly-result.json', report)
-        check_results(report['runs'])
-        summary = summarize(report['runs'], reference, policy)
+        if any(row['status'] != 'MEASURED' for row in report['runs']):
+            summary = dict(status='FAIL', cases=report['runs'])
+        elif len(selected) == 16:
+            summary = summarize(report['runs'], reference, policy)
+        else:
+            summary = dict(
+                status='PASS' if all(row['learning']['status'] == 'PASS'
+                                     for row in report['runs']) else 'FAIL',
+                cases=report['runs'])
         save(output / 'comparison.json', summary)
         load_inputs(root, args.input_sha256)
-        report['status'] = 'PASS' if summary['status'] == 'PASS' else 'FAIL'
+        if report['measurement_only'] and all(row['status'] == 'MEASURED'
+                                              for row in report['runs']):
+            report['status'] = summary['status'] = 'MEASURED'
+            save(output / 'comparison.json', summary)
+        else:
+            report['status'] = 'PASS' if summary['status'] == 'PASS' else 'FAIL'
     except BaseException as error:
         report.update(status='FAIL', error=f'{type(error).__name__}: {error}',
                       traceback=traceback.format_exc())
@@ -1263,18 +1584,15 @@ def run(args):
         report.update(seconds=time.monotonic() - started,
                       completed_runs=len(report['runs']))
         save(output / 'nightly-result.json', report)
-    return report['status'] == 'PASS'
+    return report['status'] in ('PASS', 'MEASURED')
 
 
-def check_install(root, runtime, *, reference_only=False):
-    wheel, build = read(root / 'setup/wheel.json'), read(root /
-                                                         'setup/build.json')
+def check_install(root, runtime, *, reference_only=False, build_receipt=None):
+    build = read(build_receipt or root / 'setup/build.json')
     if (type(runtime.get('installed_files')) is not int
             or runtime['installed_files'] <= 0
-            or wheel['sha256'] != build['wheel_sha256']
-            or wheel['sha256'] != runtime['wheel_sha256']
-            or wheel['version'] != build['version']
-            or wheel['version'] != runtime['version']):
+            or build['wheel_sha256'] != runtime['wheel_sha256']
+            or build['version'] != runtime['version']):
         raise ValueError(
             'Selected source, installed wheel or archive identity differs')
     if reference_only and (runtime['version'] != '1.0.0'
@@ -1304,9 +1622,29 @@ def main(argv=None):
     parser.add_argument('--policy', type=Path, required=True)
     parser.add_argument('--policy-sha256', required=True)
     parser.add_argument('--wheel', type=Path, required=True)
+    parser.add_argument('--build-receipt', type=Path, required=True)
+    parser.add_argument(
+        '--case', required=True, choices=[
+            task + '-' + arm for task in smoke.TASKS
+            for arm in ('normal', 'control')
+        ])
     parser.add_argument('--expected-version', required=True)
+    parser.add_argument('--time-budget-seconds', type=int)
+    parser.add_argument('--measure-resources', action='store_true')
+    parser.add_argument('--requirements', type=Path)
+    parser.add_argument('--requirements-sha256')
     parser.add_argument('--reference-only', action='store_true')
-    return 0 if run(parser.parse_args(argv)) else 1
+    args = parser.parse_args(argv)
+    if args.time_budget_seconds is not None and args.time_budget_seconds <= 0:
+        parser.error('--time-budget-seconds must be positive')
+    if args.measure_resources and args.time_budget_seconds is None:
+        parser.error('--measure-resources requires --time-budget-seconds')
+    if bool(args.requirements) != bool(args.requirements_sha256):
+        parser.error('Provide both --requirements and --requirements-sha256')
+    if not args.measure_resources and args.requirements is None:
+        parser.error(
+            'Provide reviewed requirements or select --measure-resources')
+    return 0 if run(args) else 1
 
 
 if __name__ == '__main__':

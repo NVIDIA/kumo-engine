@@ -9,15 +9,11 @@
     "sha256": "559020b1ba1fd0d94cfabc6ad9594f9c391f4c0674bf55db1f96975a4f2082d3"
   },
   "reference": {
-    "bucket": "kumo-unit-test",
-    "region": "us-west-2",
-    "key": "diskgraph-profiles/engine-nightly/100m/v1/references/5beae83c091359e588a8dcdf830b525554f04958f937dc1d8252906244a3f66f/reference.json",
-    "sha256": "5beae83c091359e588a8dcdf830b525554f04958f937dc1d8252906244a3f66f"
+    "path": "reference.json",
+    "sha256": "c0ff7a2087646de4ba0fccc3fc031e9e2152ff616e5bdb77a879399bc3bf1aef"
   },
   "policy": {
-    "bucket": "kumo-unit-test",
-    "region": "us-west-2",
-    "key": "diskgraph-profiles/engine-nightly/100m/v1/policies/450a1bc6d38f40010db2bc239e97af234661fbd391a310e486c6c05d6c754259/policy.json",
-    "sha256": "450a1bc6d38f40010db2bc239e97af234661fbd391a310e486c6c05d6c754259"
+    "path": "policy.json",
+    "sha256": "66d04da9186312fe4d00bb42840333babc41fdcc13b2da3d075ee59d2c46a7cd"
   }
 }

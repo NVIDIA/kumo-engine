@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Exercise nightly artifact, capacity, and cleanup boundaries."""
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -43,10 +44,35 @@ def test_configuration_rejects_missing_and_unsafe_object_bindings():
         job.configuration(json.dumps(value))
 
 
-def test_capacity_uses_free_bytes_even_when_total_disk_is_large(tmp_path):
-    free = shutil.disk_usage(tmp_path).free
+def test_local_reference_and_policy_are_checked_before_staging(tmp_path):
+    source = tmp_path / 'repository'
+    source.mkdir()
+    reference = source / 'reference.json'
+    reference.write_text('{"format":"historical-proposal"}')
+    item = dict(path='reference.json',
+                sha256=hashlib.sha256(reference.read_bytes()).hexdigest())
+    value = config()
+    value['reference'] = item
+    assert job.configuration(json.dumps(value)) == value
+    output = tmp_path / 'staged-reference.json'
+    job.stage_object(item, output, source)
+    assert output.read_bytes() == reference.read_bytes()
+    reference.write_text('changed after review')
+    with pytest.raises(ValueError, match='checksum'):
+        job.stage_object(item, tmp_path / 'rejected.json', source)
+    assert not (tmp_path / 'rejected.json').exists()
+    for path in ('../reference.json', '/reference.json'):
+        value['reference'] = dict(item, path=path)
+        with pytest.raises(ValueError):
+            job.configuration(json.dumps(value))
+
+
+def test_capacity_uses_free_bytes_even_when_total_disk_is_large(
+        tmp_path, monkeypatch):
+    usage = shutil.disk_usage(tmp_path)._replace(total=1 << 50, free=1)
+    monkeypatch.setattr(job.shutil, 'disk_usage', lambda path: usage)
     with pytest.raises(ValueError, match='free'):
-        job.create_work(tmp_path, free + 1)
+        job.create_work(tmp_path, 2)
     assert list(tmp_path.iterdir()) == []
 
 
@@ -130,3 +156,48 @@ def test_cli_removes_job_artifacts_and_keeps_evidence_until_upload(
         assert (evidence /
                 'predictions/output.parquet').read_text() == 'retained result'
     assert (previous / 'keep').read_text() == 'earlier evidence'
+
+
+def test_build_command_produces_the_receipt_consumed_by_the_case_runner(
+        tmp_path):
+    import shlex
+
+    product = tmp_path / 'product'
+    product.mkdir()
+
+    def git(*args):
+        return subprocess.check_output(
+            ['git', '-C', str(product), *args], text=True).strip()
+
+    git('init', '-b', 'main')
+    git('config', 'user.name', 'Test')
+    git('config', 'user.email', 'test@example.com')
+    (product / 'VERSION').write_text('1.2.3\n')
+    script = product / 'packages/kumo-engine/scripts/build_wheel.sh'
+    script.parent.mkdir(parents=True)
+    script.write_text('#!/bin/sh\nexec ' + shlex.quote(sys.executable) +
+                      ''' - "$2" <<'BUILD'
+import pathlib, subprocess, sys, zipfile
+output = pathlib.Path(sys.argv[1])
+version = '1.2.3+' + subprocess.check_output(
+    ['git', 'rev-parse', '--short', 'HEAD'], text=True).strip()
+with zipfile.ZipFile(output / 'candidate.whl', 'w') as archive:
+    archive.writestr('kumo_engine.dist-info/METADATA',
+                     'Name: kumo-engine\\nVersion: ' + version + '\\n')
+BUILD
+''')
+    script.chmod(0o755)
+    git('add', '.')
+    git('commit', '-m', 'fixture')
+    output = tmp_path / 'build'
+    result = subprocess.run([
+        sys.executable,
+        str(SOURCE), 'build', '--source',
+        str(product), '--output',
+        str(output)
+    ], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads((output / 'build.json').read_text())
+    assert receipt['revision'] == git('rev-parse', 'HEAD')
+    assert receipt['wheel_sha256'] == hashlib.sha256(
+        (output / 'candidate.whl').read_bytes()).hexdigest()

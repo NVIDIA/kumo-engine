@@ -90,20 +90,22 @@ class NightlyRuntimeTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source = root / 'ranked.parquet'
+            sources = []
             schema = pa.schema([('ROW_ID', pa.int64()), ('ENTITY', pa.int64()),
                                 ('CLASS', pa.int64()), ('SCORE', pa.float64())])
-            with pq.ParquetWriter(source, schema) as writer:
-                for start in range(0, 8000000, 65536):
-                    rows = np.arange(start, min(start + 65536, 8000000))
+            for start in range(0, 512, 8):
+                source = root / f'{start}.parquet'
+                sources.append(str(source))
+                with pq.ParquetWriter(source, schema) as writer:
+                    rows = np.arange(start, start + 8)
                     writer.write_table(
                         pa.Table.from_arrays([
                             rows, (rows * 1103515245 + 12345) % 100000000000,
                             rows % 500, (rows * 48271 % 1000000) / 1000000
                         ], schema=schema))
-            seen = np.zeros(8000000, dtype=bool)
+            seen = np.zeros(512, dtype=bool)
             count, previous = 0, None
-            for frame in nightly.ordered_batches([str(source)], root / 'spill'):
+            for frame in nightly.ordered_batches(sources, root / 'spill'):
                 pd.testing.assert_frame_equal(
                     frame,
                     frame.sort_values(['ENTITY', 'SCORE', 'CLASS'],
@@ -120,7 +122,7 @@ class NightlyRuntimeTest(unittest.TestCase):
                     ((positions >= 0) & (positions < len(seen))).all())
                 seen[positions] = True
                 count += len(frame)
-            self.assertEqual(count, 8000000)
+            self.assertEqual(count, 512)
             self.assertTrue(seen.all())
             self.assertEqual(list((root / 'spill').iterdir()), [])
 

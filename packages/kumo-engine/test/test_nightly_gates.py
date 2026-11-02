@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Exercise learning and prediction failures without fitting a model."""
 
+import copy
 import importlib.util
 import json
 import tempfile
@@ -16,6 +17,39 @@ SPEC.loader.exec_module(nightly)
 
 
 class LearningAndPredictions(unittest.TestCase):
+    def test_reference_calibration_keeps_the_unresolved_static_normal_failure(
+            self):
+        root = SOURCE.parents[1] / 'test/nightly'
+        reference = nightly.read(root / 'reference.json')
+        policy = nightly.read(root / 'policy.json')['learning']
+        measured = nightly.check_learning(reference['cases'], policy)
+        self.assertEqual(
+            {
+                task
+                for task, row in measured['tasks'].items()
+                if row['status'] == 'FAIL'
+            }, {'static_link'})
+        self.assertLess(measured['tasks']['static_link']['normal_gain'], 0)
+        for task in policy:
+            for fault in ('nonlearning', 'leaked_control'):
+                rows = copy.deepcopy(reference['cases'])
+                normal = next(r for r in rows
+                              if r['task'] == task and r['arm'] == 'normal')
+                control = next(r for r in rows
+                               if r['task'] == task and r['arm'] == 'control')
+                control['score'] = control['baseline']
+                if fault == 'nonlearning':
+                    normal['score'] = normal['baseline']
+                else:
+                    if task == 'static_link':
+                        normal['score'] = .02
+                    control['score'] = normal['score']
+                with self.subTest(task=task, fault=fault):
+                    self.assertEqual(
+                        nightly.check_learning(rows,
+                                               policy)['tasks'][task]['status'],
+                        'FAIL')
+
     def test_policy_requires_all_tasks_and_an_exact_reviewed_checksum(self):
         value = dict(
             format='kumo-engine-nightly-policy-v1', learning={
@@ -42,8 +76,7 @@ class LearningAndPredictions(unittest.TestCase):
             with self.assertRaises(ValueError):
                 nightly.load_policy(path, nightly.digest(path))
 
-    def test_complete_summary_propagates_learning_failures_and_allows_recovery(
-            self):
+    def test_complete_summary_propagates_learning_failures(self):
         rows, reference = [], {'cases': []}
         for task in nightly.smoke.TASKS:
             lower = task in ('regression', 'forecasting')
@@ -57,8 +90,8 @@ class LearningAndPredictions(unittest.TestCase):
                         prediction_batches={
                             stage: 1
                             for stage in nightly.PREDICTIONS
-                        }, score=baseline if arm == 'control' else
-                        .7 if lower else .8, work={'recovered_oom': True}))
+                        }, score=baseline
+                        if arm == 'control' else .7 if lower else .8))
                 reference['cases'].append(
                     dict(task=task, arm=arm, baseline=baseline, score=baseline))
         policy = dict(
@@ -160,8 +193,6 @@ class LearningAndPredictions(unittest.TestCase):
                 root / 'setup/build.json',
                 dict(revision='a' * 40, tree='b' * 40, version='1.2.0+abc',
                      wheel_sha256='c' * 64))
-            nightly.save(root / 'setup/wheel.json',
-                         dict(version='1.2.0+abc', sha256='c' * 64))
             runtime = dict(version='1.2.0+abc', wheel_sha256='c' * 64,
                            installed_files=10)
             nightly.check_install(root, runtime)

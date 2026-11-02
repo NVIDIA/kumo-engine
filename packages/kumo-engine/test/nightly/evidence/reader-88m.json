@@ -1,0 +1,14 @@
+{
+  "rows": 88000000,
+  "reader_seconds": 586.0262469025329,
+  "microseconds_per_row": 6.659389169346964,
+  "generation_seconds": 13.531720915809274,
+  "peak_process_rss_bytes": 3184672768,
+  "peak_owned_disk_bytes": 5031972864,
+  "input_bytes": 1426441567,
+  "source_sha256": "4b72d98c15fadb761ee605968d7b8b5f8bd4ca5f73f5cf492ebc6562a57bf901",
+  "pyarrow": "26.0.0",
+  "evidence": "Synthetic Parquet; CPU only; no model qualification",
+  "order_count_checksum_and_cleanup": "PASS",
+  "scope": "Historical synthetic reader benchmark only. This update did not rerun it. The reader function is unchanged. Not a GPU or complete-case capacity measurement."
+}
