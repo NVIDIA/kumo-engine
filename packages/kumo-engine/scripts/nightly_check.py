@@ -579,7 +579,7 @@ def ordered_batches(files, directory, *, ranked=True):
                         if not pa.types.is_integer(
                                 values.type) or values.null_count:
                             raise ValueError(
-                                'Prediction keys must retain their integer type'
+                                f'Prediction changed the integer {column.lower()} key type'
                             )
                     if ranked:
                         scores = batch.column(
