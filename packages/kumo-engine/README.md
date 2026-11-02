@@ -156,7 +156,8 @@ parents.
 ```python
 snapshot = snapshot.update()
 population = pquery.generate_prediction_table(snapshot)
-result = trainer.predict(population, snapshot=snapshot)
+result = trainer.predict(population, snapshot=snapshot,
+                         binary_classification_threshold=0.5)
 ```
 
 The updated snapshot reuses unchanged graph data. New prediction queries use

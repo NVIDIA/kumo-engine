@@ -271,8 +271,9 @@ def test_temporal_edges_match_full_build(graph):
 
 
 def test_native_rejects_parent_overlap_before_writing(graph, tmp_path):
-    import os
     import subprocess
+
+    from kumo_core.diskgraph.runner import _resolve_ingest_bin
 
     graph, _ = graph
     snapshot = graph.snapshot(enable_updates=True)
@@ -281,7 +282,7 @@ def test_native_rejects_parent_overlap_before_writing(graph, tmp_path):
     config.write_text(json.dumps({'parent': str(snapshot.index_path)}))
     for output in [snapshot.index_path, snapshot.index_path / 'missing/deeper']:
         result = subprocess.run([
-            os.environ['DISKGRAPH_INGEST_BIN'], '--source',
+            _resolve_ingest_bin(), '--source',
             str(snapshot.index_path / 'diskgraph_config.json'), '--output',
             str(output), '--incremental-config',
             str(config), '--worker'
@@ -597,10 +598,13 @@ def test_updated_graph_serves_new_queries_without_changing_old_results(
     assert len(appended) == len(rebuilt) == (21 if update_kind == 'append' else 20)
     if update_kind == 'append':
         assert 200 in appended['ENTITY'].to_list()
-    pd.testing.assert_frame_equal(
-        appended.sort_values(list(appended.columns)).reset_index(drop=True),
-        rebuilt.sort_values(list(rebuilt.columns)).reset_index(drop=True),
-        check_exact=True)
+    appended = appended.sort_values('ENTITY').reset_index(drop=True)
+    rebuilt = rebuilt.sort_values('ENTITY').reset_index(drop=True)
+    pd.testing.assert_frame_equal(appended.drop(columns='TARGET_PRED'),
+                                  rebuilt.drop(columns='TARGET_PRED'), check_exact=True)
+    # Equivalent node orders can round float32 reductions differently on CPU.
+    pd.testing.assert_series_equal(appended['TARGET_PRED'], rebuilt['TARGET_PRED'],
+                                   check_exact=False, rtol=1e-6, atol=1e-7)
     assert updated.validate() == full.validate()
     assert hashes(first.index_path) == old_graph
     assert [

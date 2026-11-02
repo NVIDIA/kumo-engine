@@ -572,7 +572,7 @@ fn clone_snapshot(parent: &Path, output: &Path) -> Result<()> {
     // immutable. The original cache versions remain unchanged: a later full
     // table rebuild must not mistake that cache for the appended history.
     fs::create_dir_all(output)?;
-    for entry in fs::read_dir(&parent)? {
+    for entry in fs::read_dir(parent)? {
         let entry = entry?;
         let name = entry.file_name();
         if name == "index_metadata.json" || name == "_SUCCESS" || name == "_incremental" {
