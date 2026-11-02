@@ -16,6 +16,13 @@
 
 **An open accelerator for context generation over structured data.**
 
+<picture>
+  <source media="(max-width: 600px)" srcset="assets/model-context-mobile.svg">
+  <img src="assets/model-context.svg" alt="Connected tables become model context: customer and order tables define relationships, matching keys connect individual records, and selected historical records form model inputs. Future outcomes stay outside the inputs.">
+</picture>
+
+Foreign keys connect customer and order records. Kumo Engine samples eligible history as model context for each customer and prediction time. The illustration is schematic; the model plan determines sampling.
+
 NVIDIA Kumo Engine prepares connected records and their history for predictive modeling at scale. Its Rust-based DiskGraph engine indexes data on local SSDs and retrieves time-correct neighborhoods for training and batch prediction, so teams can run structured data models over enterprise-scale datasets at lower cost by feeding the GPU from NVMe instead of RAM.
 
 Define your tables, relationships, and prediction task in Python. Kumo Engine handles ingestion from the data lake, graph construction, context sampling, training, evaluation, and prediction for a wide range of predictive use cases. Examples include recommendations, fraud detection, churn prediction, propensity modeling, and risk scoring, among many others.
@@ -61,98 +68,9 @@ Refer to [prerequisites](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/get-star
 
 ## Quick Tour
 
-Predict which customers will order in the next 30 days. This example creates two small synthetic CSV tables, builds their graph, trains a classifier, and prints predictions. It uses the installed `kumo.engine` API without a Kumo account or warehouse credentials.
+Predict which customers will order in the next 30 days using their connected order history. Try the [Python quickstart](packages/kumo-engine/README.md#quickstart) with the bundled sample dataset.
 
-First, create the sample data in a new working directory:
-
-<details>
-<summary>Create 1,000 customers and 12,000 synthetic orders</summary>
-
-```python
-import csv
-from datetime import datetime, timedelta
-from pathlib import Path
-from random import Random
-
-data = Path("kumo-readme-data")
-data.mkdir(exist_ok=False)
-rng = Random(42)
-
-with (data / "customers.csv").open("w", newline="") as f:
-    writer = csv.writer(f)
-    writer.writerow(["customer_id", "segment"])
-    writer.writerows(
-        (i, rng.choice(["consumer", "business"])) for i in range(1000)
-    )
-
-with (data / "orders.csv").open("w", newline="") as f:
-    writer = csv.writer(f)
-    writer.writerow(["order_id", "customer_id", "order_time"])
-    for i in range(12000):
-        customer_id = rng.randrange(1000)
-        time = datetime(2025, 1, 1) + timedelta(
-            seconds=rng.randrange(365 * 24 * 60 * 60)
-        )
-        writer.writerow([i, customer_id, time.strftime("%Y-%m-%d %H:%M:%S")])
-```
-
-</details>
-
-Run the following in the same working directory after completing setup. Replace the scratch path with a writable directory on your **local SSD**, separate from the sample-data directory.
-
-```python
-from pathlib import Path
-
-from kumo.engine import (
-    Edge, FileConnector, Graph, PredictiveQuery, Table, Trainer, configure,
-)
-from kumoapi.model_plan import RunMode
-from kumoapi.typing import Dtype
-
-configure(scratch_dir="/path/to/local-ssd/kumo-scratch")
-files = FileConnector(root_dir=str(Path("kumo-readme-data").resolve()))
-customers = Table.from_source_table(
-    files["customers"], primary_key="customer_id"
-)
-orders = Table.from_source_table(
-    files["orders"], primary_key="order_id", time_column="order_time"
-).with_column(
-    "order_time", dtype=Dtype.time, timestamp_format="%Y-%m-%d %H:%M:%S"
-)
-
-graph = Graph(
-    tables={"customers": customers, "orders": orders},
-    edges=[Edge(
-        src_table="orders", fkey="customer_id", dst_table="customers"
-    )],
-)
-snapshot = graph.snapshot()
-
-query = PredictiveQuery(
-    graph,
-    "PREDICT COUNT(orders.*, 0, 30, days) > 0 "
-    "FOR EACH customers.customer_id",
-)
-training_table = query.generate_training_table(snapshot)
-plan = query.suggest_model_plan(snapshot, run_mode=RunMode.FAST)
-plan.training_job.num_experiments = 1
-plan.training_job.refit_trainval = False
-plan.training_job.refit_full = False
-plan.optimization.max_epochs = 3
-
-trainer = Trainer(plan)
-trained = trainer.fit(training_table, snapshot=snapshot)
-predictions = trainer.predict(
-    query.generate_prediction_table(snapshot), snapshot=snapshot,
-    binary_classification_threshold=0.5,
-)
-print(predictions.frame.head())
-print("Saved model bundle:", trained.bundle_dir)
-```
-
-The prediction frame contains entity identifiers and model outputs. These scores cover a future 30-day window from the snapshot's latest event time. Keep the saved bundle and any results you need on durable storage.
-
-For a complete walkthrough with data preparation, diagnostics, and retained outputs, follow the [Google Colab](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/user-code-guide/code-examples/google-colab-notebook), [Snowflake](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/user-code-guide/code-examples/snowflake-notebook), or [Databricks](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/user-code-guide/code-examples/databricks-notebook) notebook. Explore more tasks in [Predictive Query Examples](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/get-started-with-kumo-engine/workflows-and-solutions/predictive-query-examples).
+For complete walkthroughs, follow the [Google Colab](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/user-code-guide/code-examples/google-colab-notebook), [Snowflake](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/user-code-guide/code-examples/snowflake-notebook), or [Databricks](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/user-code-guide/code-examples/databricks-notebook) notebook. Explore more tasks in [Predictive Query Examples](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/get-started-with-kumo-engine/workflows-and-solutions/predictive-query-examples).
 
 ## Benchmarks
 
