@@ -75,6 +75,8 @@ class GeneratedPredictionTable:
     row_count: int
     tt_id: str
     row_failures: Mapping[str, Any] | None = None
+    #: Parquet parts listing every skipped caller-supplied row, if any.
+    skipped_rows_dir: str | None = None
 
 
 @dataclass(frozen=True)
@@ -267,6 +269,7 @@ def generate_custom_prediction_table(
         row_count=row_count,
         tt_id=request.tt_id,
         row_failures=failures,
+        skipped_rows_dir=result.get("skipped_rows_dir"),
     )
 
 

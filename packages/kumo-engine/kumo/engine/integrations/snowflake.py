@@ -196,6 +196,7 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
                                   for k, v in record.tags.items()
                                   if k not in self._start_tags}, _MAX_PARAMS)
                 self._log_artifacts(record.artifacts)
+                self._log_files(record.files)
                 self._log_summaries(record.summaries)
                 finished = record.finished or _now()
                 self._log_metrics({'duration_seconds': (
@@ -276,6 +277,11 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
                 self._tracking.log_artifact(
                     str(path), posixpath.dirname(name) or None)
                 self._artifacts.add(name)
+
+    def _log_files(self, files: Mapping[str, str]) -> None:
+        for name, directory in files.items():
+            for path in sorted(Path(directory).iterdir()):
+                self._tracking.log_artifact(str(path), name)
 
     def _log_dropped(self) -> None:
         dropped = {

@@ -440,6 +440,8 @@ class PredictionTableRecord(Record):
     skipped_rows: Optional[int] = None
     skipped_sample: Optional[List[Any]] = None
     skip_reason: Optional[str] = omit_none()
+    #: The directory of Parquet parts listing every skipped row.
+    skipped_location: Optional[str] = omit_none()
 
 
 @dataclass(frozen=True, kw_only=True)

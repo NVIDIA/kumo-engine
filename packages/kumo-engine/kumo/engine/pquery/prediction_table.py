@@ -76,6 +76,8 @@ class PredictionTable:
     skipped_rows: int = 0
     skipped_sample: Tuple[Any, ...] = ()
     skip_reason: Optional[str] = None
+    #: Parquet parts listing every skipped row, if any were skipped.
+    skipped_dir: Optional[Path] = None
 
     @property
     def requested_rows(self) -> int:
@@ -149,6 +151,8 @@ class PredictionTable:
             compiler_options=request.compiler_options,
             forecast_timeframe_step=request.forecast_timeframe_step,
             source='custom',
+            skipped_dir=(Path(generated.skipped_rows_dir)
+                         if skipped and generated.skipped_rows_dir else None),
             **skipped,
         )
 
