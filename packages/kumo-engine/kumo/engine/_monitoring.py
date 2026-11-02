@@ -62,6 +62,7 @@ class EvaluationResult:
     matured: Optional[bool]
     bundle_matches: Optional[bool]
     reasons: Mapping[str, str] = field(default_factory=dict)
+    by_horizon: Mapping[str, List[Any]] = field(default_factory=dict)
     actuals: Optional[str] = None
     tracking: Optional[TrackingRef] = None
 
@@ -158,7 +159,7 @@ def evaluate(trainer: Any, run: Any, snapshot: Any) -> EvaluationResult:
     reasons: Dict[str, str] = {}
     out: Dict[str, Any] = dict(task_type=None, anchors=(), metrics={},
                                rows=0, labelled=0, matured=None,
-                               reasons=reasons, actuals=None,
+                               reasons=reasons, by_horizon={}, actuals=None,
                                step='importing')
     try:
         _evaluate(out, trainer, run, snapshot, query)
@@ -223,10 +224,13 @@ def holdout_evaluation(result: Any,
 _TASKS = {
     'binary_classification': 'binary',
     'regression': 'regression',
+    'forecasting': 'forecasting',
     'multiclass_classification': 'multiclass',
-    'link_prediction': 'link',
-    'temporal_link_prediction': 'link',
-    'static_link_prediction': 'link',
+    'multilabel_classification': 'multilabel',
+    'multilabel_ranking': 'ranking',
+    'link_prediction': 'ranking',
+    'temporal_link_prediction': 'ranking',
+    'static_link_prediction': 'ranking',
 }
 
 
@@ -254,10 +258,7 @@ def _evaluate(out: Dict[str, Any], trainer: Any, run: Any, snapshot: Any,
         pd.Timestamp(anchor, tz='UTC').isoformat() for anchor in anchors)
     if anchors:
         _check_maturity(out, parsed, snapshot, anchors)
-    task = _TASKS.get(parsed.task_type)
-    if task is None:
-        reasons['metrics'] = f'{parsed.task_type} metrics are not supported'
-        return
+    task = _TASKS[parsed.task_type]
     unsupported = _unsupported(static, anchors, keys, columns)
     if unsupported is not None:
         reasons['metrics'] = unsupported
@@ -271,6 +272,11 @@ def _evaluate(out: Dict[str, Any], trainer: Any, run: Any, snapshot: Any,
         reasons['metrics'] = 'no entity has a label at these anchors'
         return
     _record_metrics(out, joined, actuals)
+    if 'by_horizon' in joined:
+        from kumo.engine.trainer.trainer import _target_window
+
+        out['by_horizon'] = _by_horizon(joined['by_horizon'], _target_window(
+            parsed, trainer.training_table_generation_plan))
 
 
 def _unfiltered_query(snapshot: Any, query: str) -> Any:
@@ -341,6 +347,8 @@ def _join_labels(out: Dict[str, Any], trainer: Any, pquery: Any,
             spec = _join_spec(task, keys, labels, label_columns, columns,
                               pquery._parsed.query_type == 'static',
                               manifest, actuals, spill)
+            if task == 'ranking':
+                spec['ks'] = _ks(trainer, pquery._parsed.task_type)
             return json.loads(
                 diskgraph.evaluate_prediction_parquet(files, parts,
                                                       json.dumps(spec)))
@@ -357,7 +365,11 @@ def _join_spec(task: str, keys: List[str], labels: Tuple[str, str, str],
                label_columns: List[str], columns: List[str], static: bool,
                manifest: Optional[PredictionManifest], actuals: Path,
                spill: Path) -> Dict[str, Any]:
+    from kumo_core.train.autoregression import FUTURE_LABELS_COL
+
     entity, timestamp, target = labels
+    if task == 'forecasting':
+        target = FUTURE_LABELS_COL
     emitted = [name for name in _EMITTED[task] if name in columns]
     return {
         'task': task,
@@ -397,9 +409,33 @@ def _record_metrics(out: Dict[str, Any], joined: Mapping[str, Any],
 _EMITTED = {
     'binary': ('True_PROB', 'TARGET_PRED'),
     'regression': ('TARGET_PRED', ),
+    'forecasting': ('TIMESTAMP', 'TARGET_PRED'),
     'multiclass': ('CLASS', 'SCORE'),
-    'link': (),
+    'multilabel': ('PREDICTED', 'CLASS', 'SCORE'),
+    'ranking': (),
 }
+
+
+def _ks(trainer: Any, task_type: str) -> List[int]:
+    r"""The fit's ranking cutoffs, else the default plan's."""
+    from kumo_core.resolved_task import default_metrics
+    from kumo_core.types import TaskType
+
+    names = (getattr(getattr(trainer, 'result', None), 'metrics', None)
+             or default_metrics(TaskType(task_type)))
+    return sorted({int(name.rpartition('@')[2]) for name in names
+                   if '@' in name})
+
+
+def _by_horizon(sums: Mapping[str, List[float]],
+                timeframe: Any) -> Dict[str, List[Any]]:
+    r"""Realized error by forecast step, in the holdout's columns."""
+    from kumo_core.evaluation_counts import horizon_table
+
+    table = horizon_table('realized/by_horizon', {
+        name: np.asarray(values) for name, values in sums.items()}, timeframe)
+    return {column: [row[i] for row in table.rows]
+            for i, column in enumerate(table.columns)}
 
 
 def _prediction_time(manifest: PredictionManifest) -> int:
@@ -567,10 +603,8 @@ def _record(report: Any, run: Any, tracking: Any, trainer: Any,
     record = run_record(RunSpec(
         kind='monitoring',
         parents={'monitor': 'evaluate' if evaluating else 'drift'},
-        summaries=(_evaluation_summaries(
-            report, labels, model,
-            getattr(getattr(manifest, 'prediction_table', None), 'rows', None))
-            if evaluating else _drift_summaries(report, (
+        summaries=(_evaluation_summaries(report, labels, model)
+                   if evaluating else _drift_summaries(report, (
                        earlier.run_name if earlier is not None
                        and earlier.platform == platform else None),
                        shift=holdout_shift(identity.get('kumo.task_type'))))))
@@ -628,8 +662,7 @@ def _drift_summaries(report: 'DriftReport', previous_name: Optional[str],
 
 
 def _evaluation_summaries(result: EvaluationResult, labels: Any,
-                          model: Any = None,
-                          scored: Optional[int] = None) -> List[Summary]:
+                          model: Any = None) -> List[Summary]:
     from kumo.engine._manifest import artifact_summaries
 
     manifest = getattr(labels, 'manifest', None)
@@ -649,15 +682,7 @@ def _evaluation_summaries(result: EvaluationResult, labels: Any,
         *(Scalar(f'realized/{metric}', value)
           for metric, value in metrics.items()),
     ]
-    reasons = dict(result.reasons)
-    if result.task_type is not None and result.task_type not in _TASKS:
-        reasons.pop('metrics', None)
-        summaries.append(Note('notes', (
-            "Realized quality isn't computed for "
-            f"{result.task_type.replace('_', ' ')} yet"
-            + (f' ({scored:,} rows scored)' if scored is not None else '')
-            + '.')))
-    elif result.labelled_fraction is not None:
+    if result.labelled_fraction is not None:
         summaries.append(Scalar('realized/labelled_share',
                                 result.labelled_fraction))
         if metrics:
@@ -665,6 +690,10 @@ def _evaluation_summaries(result: EvaluationResult, labels: Any,
                 'realized/metrics', ('metric', 'realized', 'holdout'),
                 tuple((metric, value, holdout.get(metric))
                       for metric, value in metrics.items()), brief=True))
+        if result.by_horizon:
+            summaries.append(Table(
+                'realized/by_horizon', tuple(result.by_horizon),
+                tuple(zip(*result.by_horizon.values()))))
         summaries.append(Note('notes', (
             f'{number(result.labelled_fraction * 100)} % labelled '
             f'({result.labelled:,} of {result.rows:,} scored rows)'
@@ -672,7 +701,7 @@ def _evaluation_summaries(result: EvaluationResult, labels: Any,
     if result.matured is False:
         summaries.append(Note('notes', 'Labels are not mature yet: the '
                               'label window ends after the snapshot data.'))
-    return summaries + _reason_notes(reasons)
+    return summaries + _reason_notes(result.reasons)
 
 
 def _tune_metric(model: Any) -> Optional[str]:
