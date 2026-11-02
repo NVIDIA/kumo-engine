@@ -33,8 +33,9 @@ restored weights with the saved checkpoint. Checkpoint-format failures, missing
 rows, changed weights, and excess score drift fail the case. A candidate also reloads its own saved model.
 
 P1 means five CPU sampling operations on commerce/100M. B9 means prediction with
-the retained P2 model on one GPU and then two matching GPUs. They are separate
-changes and do not run in this workflow.
+the retained P2 model on one GPU and then two matching GPUs. The separate
+[P1 job](engine-weekly-p1.md) follows the eleven cases during a manual candidate run.
+B9 remains a separate change.
 
 ## Inputs and reference approval
 

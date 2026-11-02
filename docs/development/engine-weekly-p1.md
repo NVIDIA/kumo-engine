@@ -15,7 +15,7 @@ The seed map contains `customer_id`, `anchor_s`, and `gid`. The population conta
 `customer_id` and `anchor`. Workers make sure that business IDs and timestamps
 match. They also make sure that the native global IDs resolve to those business
 IDs. `work` fixes `n=300000`, `offset`, `batch`, `procs`, `threads`, and `hops`.
-The reference and candidate use the same manifest checksum.
+The approved reference and candidate use the same manifest checksum.
 
 Each operation retains every worker's completion count, sampled-node and edge counts,
 feature-row count, elapsed time, and membership checksum. Membership includes the
@@ -30,20 +30,46 @@ The candidate median must stay at or below
 the check. Reference review must approve the timing budget for its workload and
 CPU capacity. Cache state remains uncontrolled, so the budget must account for
 its variation. This code change does not establish a calibrated timing budget.
-Memory remains a report.
+This check does not gate memory use.
 
 Run the script with the selected wheel's isolated Python environment. Supply
 `--input-root`, `--manifest-sha256`, `--output`, `--host-lock`, `--wheel`, and
 `--wheel-sha256`. Reference preparation requires `--mode reference`. Candidate
 work defaults to `--mode candidate` and also requires `--reference` and
-`--reference-sha256`. The reference argument selects the reviewed `p1-result.json`.
-Reference approval is a separate review, not an automatic consequence of a pass.
+`--reference-sha256`. The reference argument selects a separate reviewed
+`reference.json` with format `kumo-engine-weekly-p1-reference-v1` and status
+`CALIBRATED`. A raw `p1-result.json` cannot serve as an approved reference.
+
+Preserve each raw result before choosing a timing budget. The reference copies
+one complete block's `operations` and records `physical_fits=0`, the final
+`manifest_sha256`, and `measurement_results_sha256` for the raw calibration blocks.
+Its `workload_sha256` covers the input manifest except `time_tolerance` and
+`calibration_only`. Thus a reviewer can approve a timing budget after measurement
+without changing the measured data or work. Keep the original measurement manifest
+and its checksum in the calibration evidence. Never rewrite a raw result to apply
+a new budget. Review the counts, membership, CPU allocation, runtime, and observed
+timing range before approving the reference checksum. A pass does not approve it.
 
 The host lock covers input hashing, all five operations, and the final input audit.
-Keep the evidence directory outside the immutable input tree. A failed worker causes the runner to
-stop the other workers and retain the failure. This check has no scheduled job.
-The native workload and input conversion still need validation on an admitted
-host before reference approval or workflow activation.
+Keep the evidence directory outside the immutable input tree. A failed worker causes
+the runner to stop the other workers and retain the failure.
+
+The weekly workflow adds a separate `p1` job for manual candidate runs. It waits
+for the eleven-case GPU jobs to finish. It downloads their shared candidate wheel,
+makes sure that the build receipt matches, and installs it in a fresh environment.
+CUDA is hidden and the job sets eight threads per CPU worker. Its timeout is
+120 minutes. Reference-preparation mode skips this job. There is no cron trigger.
+
+Add `p1` to `KUMO_ENGINE_WEEKLY_CONFIG` after reference review. It requires
+`runner` with the existing `group` and `labels`, absolute `input_root`, `reference`,
+`host_lock`, and `work_root`, plus `manifest_sha256` and `reference_sha256`.
+Use the host's shared lock and the CPU allocation used for calibration. The job
+does not change these repository variables or approve a reference automatically.
+Missing bindings stop configuration before native work starts.
+
+The job uploads raw results and worker logs as a separate `weekly-p1` artifact.
+It then removes its fresh environment and work directory. Immutable inputs and
+the reviewed reference remain on the runner. A failed P1 job fails the workflow.
 
 The focused CPU guards run with:
 
