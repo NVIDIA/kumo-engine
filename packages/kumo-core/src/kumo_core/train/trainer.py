@@ -2117,10 +2117,12 @@ class Trainer(PortableConfigMixin):
                                      pred=outputs.get('pred'),
                                      target=outputs['target'],
                                      threshold=threshold)
+        if len(edges) < 2:
+            logger.warning('No holdout counts: the split statistics give no '
+                           'target bins.')
+            return None
         column = self.encoders.target.col_name
         target = df[column].to_numpy(dtype=float)
-        if len(edges) < 2:
-            edges = sorted(set(np.quantile(target, np.linspace(0, 1, 51))))
         horizon = (df.groupby(level=0).cumcount()
                    if task_type == TaskType.FORECASTING else None)
         return evaluation_counts(task_type, pred=df[f'{column}_PRED'],

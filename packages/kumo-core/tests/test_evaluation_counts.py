@@ -385,3 +385,12 @@ def test_top_score_counts_copy_the_scores_once():
     peak = tracemalloc.get_traced_memory()[1]
     tracemalloc.stop()
     assert peak < 1.5 * scores.nbytes
+
+
+def test_numerical_holdout_counts_are_skipped_without_target_bins():
+    from types import SimpleNamespace
+
+    from kumo_core.train.trainer import Trainer
+    for task_type in (TaskType.REGRESSION, TaskType.FORECASTING):
+        trainer = SimpleNamespace(task=SimpleNamespace(task_type=task_type))
+        assert Trainer._test_counts(trainer, {}, None, None, ()) is None
