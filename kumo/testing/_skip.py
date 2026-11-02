@@ -42,3 +42,18 @@ def skip_if(condition: bool, reason: str, func: Callable) -> Callable:
         return func(*args, **kwargs)
 
     return _sync_wrapper
+
+
+def requires_resource(provider: str, func: Callable | None = None, *,
+                      profile: str | None = None) -> Callable:
+    """Describe live test/fixture dependencies without accessing credentials."""
+    if func is None:
+        return functools.partial(requires_resource, provider, profile=profile)
+    resources = set(getattr(func, '__kumo_test_resources__', ()))
+    resources.add(provider)
+    setattr(func, '__kumo_test_resources__', tuple(sorted(resources)))
+    if profile:
+        profiles = set(getattr(func, '__kumo_ci_profiles__', ()))
+        profiles.add(profile)
+        func.__kumo_ci_profiles__ = tuple(sorted(profiles))
+    return func

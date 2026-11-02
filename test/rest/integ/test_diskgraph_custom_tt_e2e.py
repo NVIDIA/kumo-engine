@@ -71,13 +71,6 @@ from rest.routers.fixture_utils import fixture_to_pquery_resources_v2
 
 log = logging.getLogger(__name__)
 
-# Set DEPLOY_ENV_CONFIG_FILE at module import time so the deploy_env_config
-# fixture picks up the diskgraph-test config before any fixture imports it
-# (autouse fires too late).
-if 'DEPLOY_ENV_CONFIG_FILE' not in os.environ:
-    _default_deploy_config = (Path(__file__).resolve().parents[3] / 'rest' /
-                              'devserver' / 'configs' / 'diskgraph-test.json')
-    os.environ['DEPLOY_ENV_CONFIG_FILE'] = str(_default_deploy_config)
 
 FIXTURE_PATH = Path(__file__).parent / "test_cases" / "test_e2e_fixtures.json"
 

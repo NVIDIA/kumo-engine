@@ -9,10 +9,8 @@ and writes predictions and embeddings back to Databricks.
 """
 import asyncio
 import dataclasses
-import os
 import time
 import uuid
-from pathlib import Path
 from test.rest.integ.seed_helpers import seed_and_train
 
 import kumoapi.data_source as data_source_api
@@ -62,11 +60,6 @@ from statedb.config.common import (
     ProjectID,
     TrainingJobID,
 )
-
-if 'DEPLOY_ENV_CONFIG_FILE' not in os.environ:
-    os.environ['DEPLOY_ENV_CONFIG_FILE'] = str(
-        Path(__file__).resolve().parents[3] / 'rest' / 'devserver' / 'configs' /
-        'diskgraph-test.json')
 
 pytestmark = pytest.mark.usefixtures("_pool_subprocesses")
 

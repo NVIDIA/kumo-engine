@@ -22,6 +22,6 @@ jobs:
         with:
           persist-credentials: false
       - name: Test workflow security policy
-        run: node --test .github/scripts/workflow-security.test.cjs
+        run: node --test .github/scripts/workflow-security.test.cjs .github/scripts/approved-pr.test.cjs
       - name: Reject new workflow security findings
         run: node .github/scripts/workflow-security.cjs . --baseline .github/workflow-security-baseline.json

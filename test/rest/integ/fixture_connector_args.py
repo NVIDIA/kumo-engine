@@ -18,6 +18,8 @@ from typing import Any
 from kumoapi.source_table import S3RelativeSource
 
 from io_utils import fsutil
+from io_utils.json import load_json
+from kumo.testing.rest import randomize_fixture_ids_v2
 from rest.config.api_command import FixtureDefinition
 from rest.config.connector import FileConnectorResourceConfig
 from rest.config.connector_db import InternalConnectorDBEntry
@@ -29,6 +31,22 @@ from statedb.config.timestamp import get_current_timestamps
 _INTEG_DIR = Path(__file__).resolve().parent
 _CONNECTOR_ARGS_PATH = (_INTEG_DIR /
                         'connector_args/test_e2e_connector_args.json')
+
+
+def load_selected_fixture(path: str | Path,
+                          pquery_name: str) -> FixtureDefinition:
+    fixture = load_json(str(path), FixtureDefinition)
+    fixture.queries = [
+        q for q in fixture.queries if q.pquery_name == pquery_name
+    ]
+    assert len(fixture.queries) == 1
+    graph_ids = {query.graph_fpid for query in fixture.queries}
+    fixture.graphs = [
+        graph for graph in fixture.graphs if graph.fpid in graph_ids
+    ]
+    assert len(fixture.graphs) == 1
+    fixture.tables = list(fixture.graphs[0].tables.values())
+    return randomize_fixture_ids_v2(fixture)
 
 
 def load_fixture_connectors(
@@ -247,6 +265,7 @@ async def provision_fixture_connectors(
     *,
     api_prefix: str = '/v0',
     fixture_root: Path | None = None,
+    selected_sources_only: bool = False,
 ) -> tuple[ProjectID, list[InternalConnectorDBEntry]]:
     """Upload checked-in local fixture data into the owning project.
 
@@ -267,18 +286,38 @@ async def provision_fixture_connectors(
     }
     for old_connector_id, source_root in roots_by_connector.items():
         if not Path(source_root).is_dir():
-            raise ValueError(
-                f'Local fixture source directory does not exist: '
-                f'{source_root}')
+            raise ValueError(f'Local fixture source directory does not exist: '
+                             f'{source_root}')
         namespace = posixpath.join('fixture-data', str(old_connector_id))
         destination = posixpath.join(connector.config.root_dir.rstrip('/'),
                                      namespace)
-        await fsutil.copy.coroutine(
-            source_root,
-            destination,
-            overwrite=True,
-            raise_on_exists=False,
-        )
+        if selected_sources_only:
+            source_connector = next(source for source in source_connectors
+                                    if source.id == old_connector_id)
+            resolver = dataclasses.replace(
+                source_connector.config,
+                name='fixture_source_resolver').as_connector()
+            sources = {
+                str(table.get_source_table_name()): table.source_table
+                for graph in fixture.graphs
+                for table in graph.tables.values()
+                if table.get_connector_id() == old_connector_id
+            }
+            for logical_path, source_table in sources.items():
+                physical_path, suffix = await _physical_fixture_source(
+                    resolver, source_table)
+                physical_destination = posixpath.join(destination, logical_path) + suffix
+                fsutil.makedirs(posixpath.dirname(physical_destination), exist_ok=True)
+                await fsutil.copy.coroutine(
+                    physical_path, physical_destination,
+                    overwrite=True, raise_on_exists=False)
+        else:
+            await fsutil.copy.coroutine(
+                source_root,
+                destination,
+                overwrite=True,
+                raise_on_exists=False,
+            )
 
     remapped = _project_upload_fixture(fixture, connector.id,
                                        roots_by_connector)

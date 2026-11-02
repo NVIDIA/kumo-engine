@@ -127,6 +127,8 @@ def withGCSCredentials(func: Callable):
     # A collection-time mark prevents live GCS fixtures from being resolved
     # when credentials are absent. A runtime wrapper skips too late: pytest
     # sets up fixtures before invoking the wrapped test.
+    from kumo.testing._skip import requires_resource
+    func = requires_resource('gcp', func)
     credentials_missing = not _check_gcs_credentials()
     reason = "No GCS credentials found"
     if inspect.isgeneratorfunction(func):

@@ -66,6 +66,8 @@ from temporalio_commons import TemporalClient
 # This suite covers GCS-connector e2e, not storage-backend coverage —
 # only test_diskgraph_e2e.py needs the [s3] parametrize.
 pytestmark = [
+    pytest.mark.ci_profile('gcp'),
+    pytest.mark.ci_gate('gcp-e2e'),
     pytest.mark.usefixtures("_pool_subprocesses"),
     pytest.mark.parametrize("storage_backend", ["local"], indirect=True),
 ]

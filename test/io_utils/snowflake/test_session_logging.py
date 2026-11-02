@@ -4,10 +4,14 @@
 
 from __future__ import annotations
 
+from threading import local
+from types import SimpleNamespace
 from typing import cast
+from unittest import mock
 
 import pytest
 from snowflake.snowpark import Session
+from snowflake.snowpark._internal.server_connection import ServerConnection
 
 from io_utils import logging
 from io_utils.snowflake import session_logging
@@ -20,6 +24,7 @@ from io_utils.snowflake.session_logging import (
 from kumo.testing.snowflake import setup_full_snowflake_session
 
 
+@pytest.mark.private_resource('snowflake')
 def test_logged_connector_cursor_execute_logs_and_query_id(tempdir, caplog):
     session = setup_full_snowflake_session(tempdir)
     wrapped = ensure_logged_snowpark_session(session)
@@ -36,6 +41,7 @@ def test_logged_connector_cursor_execute_logs_and_query_id(tempdir, caplog):
     assert "query_id=" in caplog.text
 
 
+@pytest.mark.private_resource('snowflake')
 def test_logged_connector_cursor_execute_logs_error(tempdir, caplog):
     session = setup_full_snowflake_session(tempdir)
     wrapped = ensure_logged_snowpark_session(session)
@@ -47,10 +53,13 @@ def test_logged_connector_cursor_execute_logs_error(tempdir, caplog):
         with pytest.raises(Exception):
             cur.execute("SELECT * FROM definitely_missing_table")
 
-    assert "operation=cursor.execute status=error" in caplog.text
-    assert "SELECT * FROM definitely_missing_table" not in caplog.text
+    messages = '\n'.join(record.getMessage() for record in caplog.records
+                         if record.name == session_logging.__name__)
+    assert "operation=cursor.execute status=error" in messages
+    assert "SELECT * FROM definitely_missing_table" not in messages
 
 
+@pytest.mark.private_resource('snowflake')
 def test_long_running_query_operator_stats_report_uses_threshold_override(
         tempdir, caplog, monkeypatch):
     session = setup_full_snowflake_session(tempdir)
@@ -72,6 +81,7 @@ def test_long_running_query_operator_stats_report_uses_threshold_override(
     assert any("operator_count=" in rec.message for rec in caplog.records)
 
 
+@pytest.mark.private_resource('snowflake')
 def test_logged_connector_connection_wraps_commit_rollback_close(
         tempdir, caplog):
     session = setup_full_snowflake_session(tempdir)
@@ -90,6 +100,7 @@ def test_logged_connector_connection_wraps_commit_rollback_close(
     assert "operation=connection.close status=success" in caplog.text
 
 
+@pytest.mark.private_resource('snowflake')
 def test_ensure_logged_connector_connection_idempotent(tempdir):
     session = setup_full_snowflake_session(tempdir)
     wrapped_session = ensure_logged_snowpark_session(session)
@@ -99,6 +110,7 @@ def test_ensure_logged_connector_connection_idempotent(tempdir):
     assert wrapped is wrapped_again
 
 
+@pytest.mark.private_resource('snowflake')
 def test_logged_snowpark_session_connection_is_wrapped(tempdir):
     session = setup_full_snowflake_session(tempdir)
     wrapped = ensure_logged_snowpark_session(session)
@@ -110,6 +122,7 @@ def test_logged_snowpark_session_connection_is_wrapped(tempdir):
     assert isinstance(conn_2, _LoggedSnowflakeConnection)
 
 
+@pytest.mark.private_resource('snowflake')
 def test_wrapped_session_compatible_with_snowpark_dataframe(tempdir):
     session = setup_full_snowflake_session(tempdir)
     wrapped = ensure_logged_snowpark_session(session)
@@ -122,6 +135,7 @@ def test_wrapped_session_compatible_with_snowpark_dataframe(tempdir):
     assert isinstance(df.session, Session)
 
 
+@pytest.mark.private_resource('snowflake')
 def test_wrapped_session_logs_query_id_for_dataframe_collect(tempdir, caplog):
     session = setup_full_snowflake_session(tempdir)
     wrapped = ensure_logged_snowpark_session(session)
@@ -133,6 +147,7 @@ def test_wrapped_session_logs_query_id_for_dataframe_collect(tempdir, caplog):
     assert any("query_id=" in rec.message for rec in caplog.records)
 
 
+@pytest.mark.private_resource('snowflake')
 def test_wrapped_session_file_put_logs_cursor_execute(tempdir, tmp_path,
                                                       caplog):
     session = setup_full_snowflake_session(tempdir)
@@ -190,6 +205,34 @@ class _RetryCursor:
 
     def close(self):
         self.closed = True
+
+
+@pytest.mark.parametrize('cursor_storage', ['cold', 'cached', 'legacy'])
+def test_server_connection_wraps_cached_cursor(cursor_storage, caplog):
+    connection = _RetryConnection()
+    connection.session_id = 123
+    connection.is_closed = lambda: False
+    if cursor_storage == 'legacy':
+        server = SimpleNamespace(_conn=connection, _cursor=connection.cursor())
+    else:
+        server = object.__new__(ServerConnection)
+        server._conn = connection
+        server._thread_store = local()
+        server._telemetry_client = mock.Mock()
+        if cursor_storage == 'cached':
+            _ = server._cursor
+
+    wrapped = session_logging.ensure_logged_server_connection(server)
+    caplog.set_level(logging.INFO, logger=session_logging.__name__)
+    cursor = wrapped._cursor
+
+    assert cursor.execute('SELECT 1') == 'ok'
+    assert wrapped._cursor is cursor
+    assert any('operation=cursor.execute status=success' in record.getMessage()
+               and 'query_id=01234567-89ab-cdef-0123-456789abcdef'
+               in record.getMessage()
+               for record in caplog.records
+               if record.name == session_logging.__name__)
 
 
 def test_logged_cursor_retries_retryable_select(monkeypatch):
@@ -328,6 +371,7 @@ def test_operator_stats_log_omits_provider_rows(caplog):
     assert 'stats-secret-canary' not in caplog.text
 
 
+@pytest.mark.private_resource('snowflake')
 def test_logged_cursor_ineligible_for_retry_after_multi_statement(
         tempdir, monkeypatch, caplog):
     monkeypatch.setattr(session_logging, "_QUERY_RETRY_TRIES", 3)

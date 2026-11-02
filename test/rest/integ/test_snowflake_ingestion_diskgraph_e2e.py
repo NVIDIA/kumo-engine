@@ -58,7 +58,7 @@ Tests:
 Prerequisites:
   - Temporal dev server: ``make up-local-temporal``
   - ``diskgraph`` Python package installed (CI uses
-    ``install-diskgraph: 'true'`` in ``testing_snowflake.yml``)
+    ``install-diskgraph: 'true'`` in ``testing_private.yml``)
   - ``DEPLOY_ENV_CONFIG_FILE`` pointing at a diskgraph deploy config
   - Snowflake credentials available via ``withSnowflakeCredentials``
     (AWS Secrets Manager ``xva19026.snowflakecomputing.com`` or
@@ -77,7 +77,6 @@ import logging
 import os
 import time
 from decimal import Decimal
-from pathlib import Path
 from test.rest.integ.test_diskgraph_e2e import (
     MAX_POLL_SECONDS,
     POLL_INTERVAL_SECONDS,
@@ -130,13 +129,6 @@ from statedb.config.common import JobStatus, ProjectID
 
 log = logging.getLogger(__name__)
 
-# Default DEPLOY_ENV_CONFIG_FILE so _diskgraph_deploy_config picks
-# up the diskgraph config even when the env var isn't set by CI.
-# Mirrors test_snowflake_diskgraph_e2e.py.
-if 'DEPLOY_ENV_CONFIG_FILE' not in os.environ:
-    _default_deploy_config = (Path(__file__).resolve().parents[3] / 'rest' /
-                              'devserver' / 'configs' / 'diskgraph-test.json')
-    os.environ['DEPLOY_ENV_CONFIG_FILE'] = str(_default_deploy_config)
 
 _CONNECTOR_NAME = "financial_snowflake_diskgraph"
 
@@ -162,8 +154,11 @@ _WIDE_INTEGER = 123_456_789_012_345_678_901_234_567_890
 # parametrization hits a kumo-side stats persistence issue
 # unrelated to the Snowflake connector path.
 pytestmark = [
+    pytest.mark.ci_gate('snowflake-e2e'),
     pytest.mark.usefixtures("_pool_subprocesses"),
-    pytest.mark.parametrize("storage_backend", ["s3"], indirect=True),
+    pytest.mark.parametrize("storage_backend", [
+        pytest.param("s3", marks=pytest.mark.private_resource('aws')),
+    ], indirect=True),
 ]
 
 

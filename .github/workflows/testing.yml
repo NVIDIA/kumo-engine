@@ -41,10 +41,8 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write
 
 env:
-  AWS_TEST_ROLE_ARN: arn:aws:iam::926922431314:role/gha-kumo-preprod-test-s3
   GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
   GITHUB_REF: ${{secrets.GITHUB_REF}}
   GITHUB_API_URL: ${{secrets.GITHUB_API_URL}}
@@ -79,24 +77,8 @@ jobs:
     needs: [diskgraph-wheel]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
-    continue-on-error: true
-    environment:
-      name: azure-adls-tests
-      # This job uses environment-scoped credentials for tests; it does not
-      # deploy an application. Avoid one deployment record per matrix shard.
-      deployment: false
     permissions:
       contents: read
-      id-token: write
-    env:
-      KUMO_RUN_ADLS_TESTS: ${{ github.repository == 'kumo-ai/kumo' && contains(matrix.test_dir, 'test/io_utils/') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
-      KUMO_RUN_GCP_TESTS: ${{ github.repository == 'kumo-ai/kumo' && (contains(matrix.test_dir, 'test/io_utils/') || contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/rest/test_*.py')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
-      AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
-      AZURE_CONTAINER_NAME: ${{ vars.AZURE_CONTAINER_NAME }}
-      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-      GCP_TEST_SERVICE_ACCOUNT: ${{ vars.GCP_TEST_SERVICE_ACCOUNT }}
-      GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT: ${{ vars.GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT }}
-      GCP_BIGQUERY_NO_JOB_SERVICE_ACCOUNT: ${{ vars.GCP_BIGQUERY_NO_JOB_SERVICE_ACCOUNT }}
 
     strategy:
       fail-fast: false
@@ -118,7 +100,7 @@ jobs:
           # connection (devapp AWS SM creds or TEMPORAL_SERVER=cloud); it
           # has no local-dev-server fallback, so it can't run in this matrix.
           "test/pool --ignore=test/pool/test_provision_terminal_nonretry.py",
-          "test/api_contract test/release_tests/test_build_kumo_images.py test/release_tests/test_check_updated_release_branches.py test/release_tests/test_make_kumo3_hotfix_release.py test/release_tests/test_release_v3_guards.py test/release_tests/test_start_kumo3_release.py",
+          "test/api_contract test/scripts/test_ci_resources.py test/release_tests/test_build_kumo_images.py test/release_tests/test_check_updated_release_branches.py test/release_tests/test_make_kumo3_hotfix_release.py test/release_tests/test_release_v3_guards.py test/release_tests/test_start_kumo3_release.py",
 
           # Public API tests
           "-k graph-saas_static_multiclassclassification_base test/rest/integ/test_e2e_public_api.py",
@@ -136,23 +118,18 @@ jobs:
           # Other REST tests (public and integ should always be separated)
           "test/rest/integ/test_graph_validation.py",
           "test/rest/auth/ test/rest/public/",
-          "test/rest/integ/black_box/test_public_api_key_auth_flow.py test/rest/integ/test_ml_backend.py test/rest/integ/test_schema.py test/rest/integ/test_job_tags.py",
+          "test/rest/integ/black_box/test_public_api_key_auth_flow.py test/rest/integ/test_ml_backend.py test/rest/integ/test_schema.py test/rest/integ/test_job_tags.py test/rest/integ/test_fixture_connector_args.py",
           "test/rest/integ/test_warm_start_training_e2e.py",
           "test/rest/integ/test_ui_to_sdk_e2e.py",
           "test/rest/backends test/rest/config test/rest/driver test/rest/routers test/rest/utils test/rest/uxrt",
           "test/temporalio_commons",
           "test/docker",
           "test/deploy/test_cloud_storage_preflight.py",
-          "test/rest/integ/test_data_variety/test_table_lifecycle.py",
-          # GCS e2e tests moved to testing_gcs.yml (requires IS_GCP_DEPLOY=1)
           "--splits 2 --group 1 test/rest/test_*.py",
           "--splits 2 --group 2 test/rest/test_*.py",
           "-k '[local]' test/rest/integ/test_diskgraph_e2e.py",
-          "-k '[s3]' test/rest/integ/test_diskgraph_e2e.py",  # needs S3 dataplane
           "-k '[local]' test/rest/integ/test_diskgraph_public_api_e2e.py",
-          "-k '[s3]' test/rest/integ/test_diskgraph_public_api_e2e.py",  # needs S3 dataplane
           "-k '[local]' test/rest/integ/test_diskgraph_custom_tt_e2e.py",
-          "-k '[s3]' test/rest/integ/test_diskgraph_custom_tt_e2e.py",  # needs S3 dataplane
           "test/rest/integ/test_weighted_table_e2e.py",  # custom-TT REST flow (unparked from test/legacy/)
           "test/statedb",
         ]
@@ -194,36 +171,13 @@ jobs:
             tools/**
             benchmark/**
 
-      - name: Configure AWS credentials
-        if: env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true'
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
-        with:
-          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
-          aws-region: us-west-2
-
       - name: Set up packages
         if: env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true'
         uses: ./.github/actions/setup
         with:
-          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+          github_token: ${{ github.token }}
           diskgraph-wheel-artifact: diskgraph-wheel
           install-graphviz: ${{ matrix.test_dir == 'test/graph/' }}
-
-      - name: Log in to Azure with GitHub OIDC
-        if: (env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true') && env.KUMO_RUN_ADLS_TESTS == '1'
-        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43  # v3.0.0
-        with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Authenticate to Google Cloud with GitHub OIDC
-        if: (env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true') && env.KUMO_RUN_GCP_TESTS == '1'
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3
-        with:
-          project_id: ${{ vars.GCP_PROJECT_ID }}
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_TEST_SERVICE_ACCOUNT }}
 
       - name: Set up coverage artifact name
         run: |
@@ -258,17 +212,13 @@ jobs:
           # exceeds the per-group duration target (e.g.
           # test_db_file_storage::test_compression at ~511s in
           # test/rest/test_*.py). No-op when --splits is not in matrix.test_dir.
-          GLOG_logtostdout=1 python -X faulthandler -m coverage run -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=50 --timeout=1800 --timeout-method=signal --splitting-algorithm least_duration ${{ env.STORE_DURATIONS == 'true' && '--store-durations --durations-path=.test_durations' || '' }} ${{ matrix.test_dir }}
+          GLOG_logtostdout=1 python -X faulthandler -m coverage run -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --resource-group public --durations=50 --timeout=1800 --timeout-method=signal --splitting-algorithm least_duration ${{ env.STORE_DURATIONS == 'true' && '--store-durations --durations-path=.test_durations' || '' }} ${{ matrix.test_dir }}
           move_coverage_artifact
         # Mirror local-test-relevant additions in setup.cfg [tool:pytest] env.
         env:
           # Set to "1" in a PR branch to re-enable io_utils.fsutil DEBUG logs
           # while debugging filesystem behavior.
           KUMO_PYTEST_ENABLE_FSUTIL_DEBUG_LOGS: "0"
-          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
-          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-          GCS_TEST_BUCKET: 'kumo-test-bucket'
-          KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: ${{ env.KUMO_RUN_GCP_TESTS == '1' && 'true' || 'false' }}
           AWS_DEFAULT_REGION: "us-west-2"
           DEPLOY_STAGE: "test"
           TEMPORAL_SERVER: "localhost"
@@ -278,7 +228,6 @@ jobs:
           KUMO_ENABLE_GLOVE: "False"
           SPARK_VERSION: "3.5"
           KUMO_TESTING: "True"
-          DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'test/rest/integ/test_diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
 
       - name: Run full test suite
         if: env.RUN_FULL_TEST == 'true' && steps.non-pytest-changes.outputs.only_changed != 'true'
@@ -291,16 +240,12 @@ jobs:
           # --timeout=4500 fires below the 90-min step cap so pytest-timeout
           # gets a chance to run; --timeout-method=signal so the on-failure
           # flake-diagnostics hook runs before the process exits.
-          FULL_TEST=1 GLOG_logtostdout=1 python -X faulthandler -m coverage run -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=50 --timeout=4500 --timeout-method=signal --splitting-algorithm least_duration ${{ matrix.test_dir }}
+          FULL_TEST=1 GLOG_logtostdout=1 python -X faulthandler -m coverage run -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --resource-group public --durations=50 --timeout=4500 --timeout-method=signal --splitting-algorithm least_duration ${{ matrix.test_dir }}
           move_coverage_artifact
         env:
           # Set to "1" in a PR branch to re-enable io_utils.fsutil DEBUG logs
           # while debugging filesystem behavior.
           KUMO_PYTEST_ENABLE_FSUTIL_DEBUG_LOGS: "0"
-          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
-          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-          GCS_TEST_BUCKET: 'kumo-test-bucket'
-          KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: ${{ env.KUMO_RUN_GCP_TESTS == '1' && 'true' || 'false' }}
           AWS_DEFAULT_REGION: "us-west-2"
           DEPLOY_STAGE: "test"
           TEMPORAL_SERVER: "localhost"
@@ -309,10 +254,9 @@ jobs:
           CUDA: "cpu"
           SPARK_VERSION: "3.5"
           KUMO_TESTING: "True"
-          DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'test/rest/integ/test_diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
 
       - name: Upload coverage artifact
-        if: always()
+        if: always() && env.ARTIFACT_NAME_SAFE != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ env.ARTIFACT_NAME_SAFE }}
@@ -594,7 +538,7 @@ jobs:
       - name: Set up packages
         uses: ./.github/actions/setup
         with:
-          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+          github_token: ${{ github.token }}
           diskgraph-wheel-artifact: diskgraph-wheel
 
       - name: Build and import Kumo-core wheel

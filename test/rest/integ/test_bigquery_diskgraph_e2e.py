@@ -23,7 +23,6 @@ Usage:
         --timeout=1800 -m bigquery
 """
 import logging
-import os
 from pathlib import Path
 from test.rest.integ.test_diskgraph_e2e import (
     _check_diskgraph_train_table,
@@ -51,12 +50,6 @@ from statedb.config.common import JobStatus
 
 log = logging.getLogger(__name__)
 
-# Default DEPLOY_ENV_CONFIG_FILE so _diskgraph_deploy_config picks up the
-# diskgraph config even when the env var isn't set by CI.
-if 'DEPLOY_ENV_CONFIG_FILE' not in os.environ:
-    _default_deploy_config = (Path(__file__).resolve().parents[3] / 'rest' /
-                              'devserver' / 'configs' / 'diskgraph-test.json')
-    os.environ['DEPLOY_ENV_CONFIG_FILE'] = str(_default_deploy_config)
 
 FIXTURE_PATH = Path(
     __file__).parent / "test_cases" / "test_bigquery_e2e_fixtures.json"
@@ -67,8 +60,13 @@ PQL_TEST_CASE = "bigquery_regression_base"
 # storage_backend is pinned to s3: BigQuery exports to GCS then downloads to
 # the dataplane, so local storage is not a meaningful test target here.
 pytestmark = [
+    pytest.mark.ci_group('gcp-e2e'),
+    pytest.mark.ci_profile('gcp'),
+    pytest.mark.ci_gate('gcp-e2e'),
     pytest.mark.usefixtures("_pool_subprocesses"),
-    pytest.mark.parametrize("storage_backend", ["s3"], indirect=True),
+    pytest.mark.parametrize("storage_backend", [
+        pytest.param("s3", marks=pytest.mark.private_resource('aws')),
+    ], indirect=True),
 ]
 
 

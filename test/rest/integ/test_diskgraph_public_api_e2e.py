@@ -44,7 +44,10 @@ import math
 import os
 import time
 from pathlib import Path
-from test.rest.integ.fixture_connector_args import provision_fixture_connectors
+from test.rest.integ.fixture_connector_args import (
+    load_selected_fixture,
+    provision_fixture_connectors,
+)
 from test.rest.integ.public_response_reader import (
     flatten_public_parquet_refs,
     read_public_response_bytes,
@@ -70,11 +73,7 @@ from kumoapi.data_snapshot import (
 from kumoapi.model_plan import RunMode
 
 from io_utils.json import load_json
-from kumo.testing.rest import (
-    get_and_expect_success,
-    post_and_expect_success,
-    randomize_fixture_ids_v2,
-)
+from kumo.testing.rest import get_and_expect_success, post_and_expect_success
 from rest.config.api_command import FixtureDefinition
 from rest.config.graph_v2 import GraphDefinition
 from rest.config.status import EmptyResponse, IDResponse
@@ -88,16 +87,6 @@ log = logging.getLogger(__name__)
 # Constants — same dataset / expectations as test_diskgraph_e2e.py
 # ---------------------------------------------------------------------------
 
-# Default DEPLOY_ENV_CONFIG_FILE at module import time so the
-# ``deploy_env_config`` fixture (created by test/rest/conftest.py via
-# ``DeployEnvConfig.for_test``) reads the diskgraph-test config rather
-# than the default in-memory test config. Same pattern as
-# test_diskgraph_e2e.py — must happen before any fixture imports
-# deploy_env_config (autouse is too late; the cache fires first).
-if 'DEPLOY_ENV_CONFIG_FILE' not in os.environ:
-    _default_deploy_config = (Path(__file__).resolve().parents[3] / 'rest' /
-                              'devserver' / 'configs' / 'diskgraph-test.json')
-    os.environ['DEPLOY_ENV_CONFIG_FILE'] = str(_default_deploy_config)
 
 FIXTURE_PATH = Path(__file__).parent / "test_cases" / "test_e2e_fixtures.json"
 
@@ -107,7 +96,10 @@ FIXTURE_PATH = Path(__file__).parent / "test_cases" / "test_e2e_fixtures.json"
 # even though this file exercises the public API surface — workflow dispatch
 # routes through ``SnapshotActivities`` on the pool task queues, so the
 # subprocesses must be running for ingest/train/predict to make progress.
-pytestmark = pytest.mark.usefixtures("_pool_subprocesses")
+pytestmark = [
+    pytest.mark.ci_group('aws-public-api'),
+    pytest.mark.usefixtures("_pool_subprocesses"),
+]
 
 PQL_TEST_CASE = "saas_temporal_regression_base"
 
@@ -213,8 +205,8 @@ async def _create_connectors_v1(
     fixture: FixtureDefinition,
 ) -> str:
     """Provision project-owned integration connectors."""
-    project_id, _ = await provision_fixture_connectors(client, fixture,
-                                                       api_prefix='/v1')
+    project_id, _ = await provision_fixture_connectors(
+        client, fixture, api_prefix='/v1', selected_sources_only=True)
     return str(project_id)
 
 
@@ -663,17 +655,24 @@ async def test_diskgraph_decoupled_training_and_prediction(
     client = public_api_client
 
     # Load and randomize fixture
-    fixture = load_json(str(FIXTURE_PATH), FixtureDefinition)
-    fixture.queries = [
-        q for q in fixture.queries if q.pquery_name == PQL_TEST_CASE
-    ]
-    assert len(fixture.queries) == 1
-    fixture = randomize_fixture_ids_v2(fixture)
+    fixture = load_selected_fixture(FIXTURE_PATH, PQL_TEST_CASE)
+
+    phase_started = time.monotonic()
+    previous_phase = 'setup'
+
+    def _record_phase(next_phase: str) -> None:
+        nonlocal phase_started, previous_phase
+        now = time.monotonic()
+        print(
+            f"CI_PHASE public-api {previous_phase} elapsed_seconds={now - phase_started:.3f}",
+            flush=True)
+        previous_phase, phase_started = next_phase, now
 
     # ==== Phase 1: Setup ====
     # SDK: connector = kumo.S3Connector(...); graph = kumo.Graph(...);
     #      graph.save(); pquery = kumo.PredictiveQuery(graph, query);
     #      pquery.save()
+    _record_phase("provision")
     log.info("Phase 1: Creating connectors, PQuery, Graph via V1")
     await _create_connectors_v1(client, fixture)
     pquery_id, graph_id, args = await _setup_pquery_and_graph(client, fixture)
@@ -683,6 +682,7 @@ async def test_diskgraph_decoupled_training_and_prediction(
     # SDK: graph.snapshot(force_refresh=True) — called explicitly or
     # implicitly by trainer.fit(). We create it here for stats validation
     # and reuse it in trainer.fit() / trainer.predict() below.
+    _record_phase("snapshot")
     log.info("Phase 2: Creating graph snapshot via V1")
     snapshot_id = GraphSnapshotID(
         post_and_expect_success(
@@ -706,6 +706,7 @@ async def test_diskgraph_decoupled_training_and_prediction(
     # SDK: pquery.generate_training_table(plan=plan)
     # Note: SDK passes graph_snapshot_id=None — server triggers its own
     # graph refresh internally.
+    _record_phase("training_table")
     log.info("Phase 3: Generating training table via V1")
 
     plan_payload = plan_api.SuggestModelPlanRequest(
@@ -765,6 +766,7 @@ async def test_diskgraph_decoupled_training_and_prediction(
     #      trainer.fit(graph=graph, train_table=train_table)
     # Internally, fit() calls graph.snapshot() and passes the snapshot_id
     # along with train_table.job_id to TrainingJobRequest.
+    _record_phase("training_A")
     log.info("Phase 4a: Training with seed=42 via V1")
 
     model_plan_info = post_and_expect_success(
@@ -838,6 +840,7 @@ async def test_diskgraph_decoupled_training_and_prediction(
     # ==== Phase 4b: Training Job B (seed=123, reuse train table) ====
     # SDK: Same trainer.fit() with different model_plan seed but same
     #      train_table.job_id — both jobs share the same train table.
+    _record_phase("training_B")
     log.info("Phase 4b: Training with seed=123, reusing train table via V1")
 
     model_plan_b = copy.deepcopy(model_plan)
@@ -882,6 +885,7 @@ async def test_diskgraph_decoupled_training_and_prediction(
     # ==== Phase 5: Prediction Table Generation ====
     # SDK: pquery.generate_prediction_table()
     # Note: SDK passes graph_snapshot_id=None — server handles graph refresh.
+    _record_phase("prediction_table")
     log.info("Phase 5: Generating prediction table via V1")
 
     pred_table_job_id = post_and_expect_success(
@@ -922,6 +926,7 @@ async def test_diskgraph_decoupled_training_and_prediction(
     #                      output_config=OutputConfig(...))
     # Internally, predict() calls graph.snapshot() and passes snapshot_id +
     # pred_table_job_id to BatchPredictionRequest.
+    _record_phase("prediction_and_artifacts")
     log.info("Phase 6: Running batch prediction via V1")
 
     from kumo.validation import ValidationResponse
@@ -966,6 +971,7 @@ async def test_diskgraph_decoupled_training_and_prediction(
     # Verify prediction config has diskgraph backend (supplementary)
     _check_prediction_config_diskgraph(bp_job_id)
 
+    _record_phase("complete")
     log.info("Test 1 PASSED: full diskgraph decoupled flow via V1.")
 
 
@@ -980,12 +986,7 @@ async def test_diskgraph_snapshot_reuse(public_api_client: TestClient, ):
     """Single graph snapshot reused for two train-table-gen jobs."""
     client = public_api_client
 
-    fixture = load_json(str(FIXTURE_PATH), FixtureDefinition)
-    fixture.queries = [
-        q for q in fixture.queries if q.pquery_name == PQL_TEST_CASE
-    ]
-    assert len(fixture.queries) == 1
-    fixture = randomize_fixture_ids_v2(fixture)
+    fixture = load_selected_fixture(FIXTURE_PATH, PQL_TEST_CASE)
 
     await _create_connectors_v1(client, fixture)
     pquery_id, graph_id, args = await _setup_pquery_and_graph(client, fixture)
@@ -1055,12 +1056,7 @@ async def test_diskgraph_graph_refresh_idempotency(
     """Re-creating a graph snapshot produces consistent stats."""
     client = public_api_client
 
-    fixture = load_json(str(FIXTURE_PATH), FixtureDefinition)
-    fixture.queries = [
-        q for q in fixture.queries if q.pquery_name == PQL_TEST_CASE
-    ]
-    assert len(fixture.queries) == 1
-    fixture = randomize_fixture_ids_v2(fixture)
+    fixture = load_selected_fixture(FIXTURE_PATH, PQL_TEST_CASE)
 
     await _create_connectors_v1(client, fixture)
     _, graph_id, _ = await _setup_pquery_and_graph(client, fixture)

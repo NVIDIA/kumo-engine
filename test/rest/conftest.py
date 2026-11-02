@@ -263,7 +263,8 @@ def fixture_export_path(
 
 
 @pytest.fixture(scope="session")
-def deploy_env_config(temporal_workflow_env) -> DeployEnvConfig:
+def deploy_env_config(temporal_workflow_env,
+                      test_execution_environment) -> DeployEnvConfig:
     os.environ['DEPLOY_STAGE'] = 'test'
     # The shared REST app is explicitly authentication-disabled.  Worker-side
     # capability redemption reads this deployment setting independently of the

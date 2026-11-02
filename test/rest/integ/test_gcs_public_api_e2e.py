@@ -50,6 +50,8 @@ from statedb.config.common import GraphSnapshotID, JobStatus, TableName
 # (routed via ``DiskgraphIngestWorkflow`` -> ``pool.wf_coordinator``) hangs on a
 # no-worker AutoRPC queue and the workflow times out.
 pytestmark = [
+    pytest.mark.ci_profile('gcp'),
+    pytest.mark.ci_gate('gcp-e2e'),
     pytest.mark.usefixtures("_pool_subprocesses"),
     pytest.mark.parametrize("storage_backend", ["local"], indirect=True),
 ]

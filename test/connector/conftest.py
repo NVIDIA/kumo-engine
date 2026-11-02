@@ -11,6 +11,7 @@ from botocore.exceptions import ClientError, NoCredentialsError
 
 from kumo.connector.databricks_connector import DatabricksConnector
 from kumo.connector.snowflake_connector import SnowflakeConnector
+from kumo.testing._skip import requires_resource
 from kumo.testing.databricks import DatabricksTableConnector
 from kumo.testing.rest import (
     financial_snowflake_config,
@@ -22,6 +23,7 @@ from service_framework.deploy_env import DATABRICKS_HOST
 
 
 @pytest.fixture(scope='session')
+@requires_resource('aws')
 def require_kumo_public_datasets_s3() -> None:
     """Skip remote dataset tests when this environment lacks S3 access."""
     import boto3

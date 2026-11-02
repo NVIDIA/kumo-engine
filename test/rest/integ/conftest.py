@@ -8,6 +8,7 @@ import socket
 import sys
 import uuid
 from pathlib import Path
+from test.ci_resources import execution_profile
 from typing import Dict, Generator, List
 
 import pytest
@@ -226,7 +227,9 @@ def pquery_db_dump(request) -> FixtureDefinition:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="session", params=["local", "s3"])
+@pytest.fixture(scope="session", params=[
+    "local", pytest.param("s3", marks=pytest.mark.private_resource('aws')),
+])
 def storage_backend(request):
     """Parametrize diskgraph tests over local and S3 storage backends."""
     return request.param
@@ -234,30 +237,13 @@ def storage_backend(request):
 
 @pytest.fixture(scope="session")
 def _diskgraph_deploy_config(tmp_path_factory, storage_backend, request,
-                             temporal_workflow_env):
-    """Load diskgraph JSON config, override storage root, and set
-    DEPLOY_ENV_CONFIG_JSON so deploy_env() picks it up.
-
-    DEPLOY_ENV_CONFIG_FILE must be set by the calling test module
-    (typically defaulted at module import time to
-    ``rest/devserver/configs/diskgraph-test.json``); CI sets it
-    explicitly via .github/workflows/testing.yml.
-    """
+                             temporal_workflow_env, test_execution_environment):
+    """Configure storage and workers for the selected DiskGraph backend."""
     import json
 
-    # The fixture is parametrized over ``storage_backend`` (``local`` /
-    # ``s3``), so it runs once per parametrization. The first run pops
-    # ``DEPLOY_ENV_CONFIG_FILE`` after copying its contents into
-    # ``DEPLOY_ENV_CONFIG_JSON`` (see bottom of this fixture); the
-    # second invocation would otherwise hit the assertion below.
-    # Default it back to the diskgraph-test config if absent — same
-    # path the e2e test modules set at import time.
-    config_file = os.environ.get('DEPLOY_ENV_CONFIG_FILE')
-    if not config_file:
-        config_file = str(
-            Path(__file__).resolve().parents[3] / 'rest' / 'devserver' /
-            'configs' / 'diskgraph-test.json')
-        os.environ['DEPLOY_ENV_CONFIG_FILE'] = config_file
+    config_file = os.environ.get('DEPLOY_ENV_CONFIG_FILE') or str(
+        Path(__file__).resolve().parents[3] / 'rest' / 'devserver' /
+        'configs' / 'diskgraph-test.json')
     with open(config_file) as f:
         config = json.load(f)
 
@@ -431,6 +417,7 @@ def _kill_pool_subprocesses(procs: List, log) -> None:
 
 
 @pytest.fixture(scope="session")
+@execution_profile('diskgraph')
 def _pool_subprocesses(_diskgraph_deploy_config, request):
     """Spawn the pool controller AutoRPC server and a singlehost pool
     worker as long-running subprocesses for the duration of the session.

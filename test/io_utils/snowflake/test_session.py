@@ -2,11 +2,14 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import pytest
+
 import io_utils.snowflake.session
 from io_utils.snowflake.session import snowpark_session_in_app_schema
 from kumo.testing.snowflake import setup_full_snowflake_session
 
 
+@pytest.mark.private_resource('snowflake')
 def test_schema_no_change(monkeypatch, tempdir):
     session = setup_full_snowflake_session(tempdir)
     original_database = session.get_current_database()
@@ -32,6 +35,7 @@ def test_schema_no_change(monkeypatch, tempdir):
     assert session.get_current_schema() == original_schema
 
 
+@pytest.mark.private_resource('snowflake')
 def test_schema_change(monkeypatch, tempdir):
     session = setup_full_snowflake_session(tempdir)
     original_database = session.get_current_database()

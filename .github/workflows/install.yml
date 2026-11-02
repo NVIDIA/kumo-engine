@@ -19,15 +19,10 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   import:
-    environment: gha-kumo-workflow-tests
     runs-on: ubuntu-24.04
-    env:
-      AWS_TEST_ROLE_ARN: arn:aws:iam::926922431314:role/gha-kumo-preprod-test-s3
-
     steps:
       - name: Checkout repository and submodules
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -42,25 +37,18 @@ jobs:
           files: |
             ui/**
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python
         if: steps.ui-changes.outputs.only_changed != 'true'
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
           python-version: '3.14'
           activate-environment: true
 
-      - name: Configure AWS credentials
-        if: steps.ui-changes.outputs.only_changed != 'true'
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
-        with:
-          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
-          aws-region: us-west-2
-
       - name: Install Kumo package
         if: steps.ui-changes.outputs.only_changed != 'true'
         uses: ./.github/actions/setup
         with:
-          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+          github_token: ${{ github.token }}
 
       - name: Test imports
         if: steps.ui-changes.outputs.only_changed != 'true'

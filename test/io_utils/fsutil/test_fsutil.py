@@ -8,17 +8,14 @@ import pathlib
 import pytest
 
 from io_utils import fsutil
+from kumo.testing.s3 import withS3Credentials
 
 
 @pytest.fixture
+@withS3Credentials
 def s3_scratch_prefix():
-    """Unique S3 prefix per test, deleted after yield. Skips if no
-    AWS creds — hand-rolled to keep this fixture independent of REST app
-    initialization.
-    """
+    """Unique S3 prefix per test, deleted after yield."""
     import uuid
-    if not fsutil.exists('s3://kumo-public-datasets/financial/csv/'):
-        pytest.skip('No AWS credentials found for S3')
     prefix = ('s3://kumo-test-dataplane-bucket/fsutil-test/'
               f'copy_tree_threaded_{uuid.uuid4().hex[:12]}')
     yield prefix

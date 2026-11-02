@@ -104,6 +104,8 @@ def withADLSCredentials(
     }
     """
     def decorator(test_func: Callable):
+        from kumo.testing._skip import requires_resource
+        test_func = requires_resource('azure', test_func)
         credentials_missing = not _adls_credentials_configured(config_path)
         if inspect.isgeneratorfunction(test_func):
             # A decorator below @pytest.fixture receives the raw generator.

@@ -256,6 +256,7 @@ def test_json_safe_float():
     assert json_safe_float_array([4, float('inf')]) == [4.0, None]
 
 
+@pytest.mark.private_resource('aws')
 def test_json_load_no_such_key():
     path = "s3://kumo-public-datasets/something_not_exist"
     assert load_json(path, str, default="not_exists",
@@ -283,6 +284,7 @@ def test_json_load_missing_local_file_returns_default_without_read(
     assert read_called is False
 
 
+@pytest.mark.private_resource('aws')
 def test_json_load_zipfile():
     path = "s3://kumo-public-datasets/test_zip_file/" \
            "materialization_task_info.json.gz"

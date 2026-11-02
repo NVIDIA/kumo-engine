@@ -337,17 +337,15 @@ class _LoggedServerConnection(wrapt.ObjectProxy):
         super().__init__(wrapped)
         self.__wrapped__._conn = ensure_logged_connector_connection(
             self.__wrapped__._conn)
-        # Newer snowflake-connector versions expose ``_cursor`` as a read-only
-        # thread-local property derived lazily from ``self._conn.cursor()``.
-        # Because ``_conn`` is now a logged connection (whose ``cursor()``
-        # returns a logged cursor), ``_cursor`` already yields a logged cursor
-        # and the property cannot be assigned. Only seed it directly on older
-        # versions where ``_cursor`` is a writable instance attribute.
-        if not isinstance(
+        # Snowpark can cache a cursor before the connection is wrapped.
+        # Read-only cursor properties store it in the current thread's cache.
+        cursor = ensure_logged_connector_cursor(self.__wrapped__._cursor)
+        if isinstance(
                 inspect.getattr_static(type(self.__wrapped__), '_cursor',
                                        None), property):
-            self.__wrapped__._cursor = ensure_logged_connector_cursor(
-                self.__wrapped__._cursor)
+            self.__wrapped__._thread_store.cursor = cursor
+        else:
+            self.__wrapped__._cursor = cursor
 
 
 class _LoggedSnowparkSession(wrapt.ObjectProxy):

@@ -352,3 +352,39 @@ async def test_project_upload_fixture_is_hidden_on_private_and_public_routes(
             SourceTableListResponse,
         )
         assert 'events' in source_tables.table_names
+
+
+@pytest.mark.asyncio
+async def test_public_api_fixture_uploads_only_its_resolved_input_bytes(
+        tmp_path, monkeypatch):
+    from test.rest.integ import fixture_connector_args as uploads
+    from test.rest.integ.fixture_connector_args import load_selected_fixture
+
+    fixture = load_selected_fixture(
+        'test/rest/integ/test_cases/test_e2e_fixtures.json',
+        'saas_temporal_regression_base')
+    assert len(fixture.queries) == len(fixture.graphs) == 1
+    assert set(fixture.graphs[0].tables) == {'ACCOUNT', 'LOAN', 'TRANS'}
+    assert len(fixture.tables) == 3
+    connector = SimpleNamespace(
+        id=ConnectorID(f'connector_{"b" * 32}'),
+        config=SimpleNamespace(root_dir=str(tmp_path / 'uploads')))
+    monkeypatch.setattr(uploads, 'ensure_test_project',
+                        AsyncMock(return_value=ProjectID('default')))
+    monkeypatch.setattr(uploads, '_canonical_project_upload_connector',
+                        AsyncMock(return_value=connector))
+    monkeypatch.setattr(uploads, 'bind_test_client_project', lambda *_: None)
+    await uploads.provision_fixture_connectors(None, fixture,
+                                               selected_sources_only=True)
+    copied = sorted(path for path in (tmp_path / 'uploads').rglob('*')
+                    if path.is_file())
+    assert sorted(path.name for path in copied) == [
+        'ACCOUNT.parquet', 'LOAN.parquet', 'TRANS.parquet'
+    ]
+    expected = {
+        'ACCOUNT.parquet': Path('test/csv_data/FINANCIAL/ACCOUNT.parquet'),
+        'TRANS.parquet': Path('test/csv_data/FINANCIAL/TRANS.parquet'),
+        'LOAN.parquet': Path('test/csv_data/FINANCIAL_E2E/LOAN.parquet'),
+    }
+    for path in copied:
+        assert path.read_bytes() == expected[path.name].read_bytes()

@@ -48,10 +48,9 @@ Tests (names match the Databricks suite for parity):
 Prerequisites:
   - Temporal dev server: ``make up-local-temporal``
   - ``diskgraph`` Python package installed (CI uses
-    ``install-diskgraph: 'true'`` in ``testing_gcs.yml``)
+    ``install-diskgraph: 'true'`` in ``testing_private.yml``)
   - ``DEPLOY_ENV_CONFIG_FILE`` pointing at a diskgraph deploy
-    config (CI sets it for the ``bigquery_*_diskgraph`` matrix
-    entries; this module also defaults it at import time)
+    config (the shared execution fixture supplies a default)
   - BigQuery credentials available via the
     ``withBigQueryCredentials`` decorator (from AWS Secrets
     Manager in CI, ``GOOGLE_CREDENTIALS_STR_JSON`` fallback
@@ -65,7 +64,6 @@ Usage:
         -xvs --timeout=900
 """
 import logging
-import os
 import shutil
 import time
 from pathlib import Path
@@ -107,16 +105,6 @@ from statedb.config.common import JobStatus, ProjectID
 
 log = logging.getLogger(__name__)
 
-# Default DEPLOY_ENV_CONFIG_FILE so _diskgraph_deploy_config picks
-# up the diskgraph config even when the env var isn't set by CI.
-# Doing this at module import (not in an autouse fixture) because
-# ``deploy_env_config`` caches its DeployEnvConfig the first time
-# any test in the session imports the conftest — see notes in
-# ``test_diskgraph_e2e.py``.
-if 'DEPLOY_ENV_CONFIG_FILE' not in os.environ:
-    _default_deploy_config = (Path(__file__).resolve().parents[3] / 'rest' /
-                              'devserver' / 'configs' / 'diskgraph-test.json')
-    os.environ['DEPLOY_ENV_CONFIG_FILE'] = str(_default_deploy_config)
 
 _CONNECTOR_NAME = "financial_bigquery_diskgraph"
 _PROJECT_ID = "kumo-engineering"
@@ -138,6 +126,9 @@ _TABLE_DOES_NOT_EXIST = "does_not_exist"
 # assertions are scoped to local storage; pinning avoids a second skipped S3
 # parametrization and keeps the CI job from spawning an unused pool.
 pytestmark = [
+    pytest.mark.ci_group('gcp-e2e'),
+    pytest.mark.ci_profile('gcp'),
+    pytest.mark.ci_gate('gcp-e2e'),
     pytest.mark.usefixtures("_pool_subprocesses"),
     pytest.mark.parametrize("storage_backend", ["local"], indirect=True),
 ]
