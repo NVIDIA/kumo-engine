@@ -199,6 +199,7 @@ def test_mlops_stores_and_tracks_every_skipped_row(fitted, tmp_path):
                        (None, 'null_entity'), (None, 'null_entity')], key=str)
     [record] = tracker.records
     assert pq.read_table(record.files['skipped']).num_rows == 6
+    assert (result.requested_rows, result.skipped_rows) == (16, 6)
 
 
 def test_a_run_that_scores_nothing_publishes_nothing(fitted, tmp_path):

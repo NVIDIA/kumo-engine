@@ -177,7 +177,7 @@ def _local_skipped(result: Any) -> Optional[Path]:
     return path if path.is_dir() else None
 
 
-def _keep_skipped(prediction_table: Any, run_dir: Path) -> Optional[str]:
+def _keep_skipped(prediction_table: Any, run_dir: Path) -> Optional[Path]:
     r"""Copies the skipped rows beside the run's manifest."""
     source = prediction_table.skipped_dir
     if source is None or not source.is_dir():
@@ -185,7 +185,15 @@ def _keep_skipped(prediction_table: Any, run_dir: Path) -> Optional[str]:
     target = run_dir / SKIPPED_DIR
     shutil.copytree(source, target, dirs_exist_ok=True)
     (target / '_SUCCESS').touch()
-    return str(target)
+    return target
+
+
+def _rows(directory: Path) -> int:
+    r"""Rows in a directory of Parquet parts, from their footers."""
+    from pyarrow import parquet
+
+    return sum(parquet.ParquetFile(part).metadata.num_rows
+               for part in directory.glob('*.parquet'))
 
 
 def _store_skipped(result: Any, manifest: PredictionManifest, settings: Any,
@@ -227,6 +235,9 @@ def _manifest(result: Any, trainer: Any, snapshot: Any,
     counts = Path(result.selection.pointer_path).parent / COUNTS_FILE
     model: Optional[ModelManifest] = trainer.result.manifest
     scoring_snapshot = snapshot.manifest
+    skipped = _keep_skipped(prediction_table, result._manifest_path.parent)
+    skipped_rows = (prediction_table.skipped_rows
+                    if skipped is None else _rows(skipped))
     return _record_predictions(
         result.id, {
             item.artifact_type.value.lower():
@@ -246,13 +257,12 @@ def _manifest(result: Any, trainer: Any, snapshot: Any,
                     timespec='seconds') for ts in prediction_table.timestamps
             ],
             rows=prediction_table.row_count,
-            requested_rows=prediction_table.requested_rows,
+            requested_rows=prediction_table.row_count + skipped_rows,
             scored_rows=prediction_table.row_count,
-            skipped_rows=prediction_table.skipped_rows,
+            skipped_rows=skipped_rows,
             skipped_sample=list(prediction_table.skipped_sample),
             skip_reason=prediction_table.skip_reason,
-            skipped_location=_keep_skipped(prediction_table,
-                                           result._manifest_path.parent),
+            skipped_location=None if skipped is None else str(skipped),
         ), scoring=scoring, started_at=started_at,
         counts=json.loads(counts.read_text()) if counts.is_file() else None)
 
