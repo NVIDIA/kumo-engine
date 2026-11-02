@@ -42,7 +42,8 @@ def legacy_fixture(api, root):
             specs.append(spec)
             cases.append(name)
             directory = root / 'cases' / name
-            model = directory / 'worker/saved-model'
+            model = directory / ('resume-worker/saved-model'
+                                 if task == 'P2' else 'worker/saved-model')
             model.mkdir(parents=True)
             (model / 'model').mkdir()
             (model / 'model/checkpoint').write_bytes(
@@ -110,6 +111,8 @@ class ReferenceImport(unittest.TestCase):
                 'd' * 64)
             self.assertEqual(loaded['cases']['Q17-normal']['fit_id'],
                              'fit-Q17-normal')
+            self.assertEqual(loaded['cases']['P2-fixed']['source_model_path'],
+                             'resume-worker/saved-model')
             self.assertEqual(
                 api.weekly.read(root /
                                 'converted/cases/Q15-normal/predictions.json'),

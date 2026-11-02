@@ -119,7 +119,15 @@ def import_reference(legacy_root, legacy_sha256, manifest, manifest_sha256,
                 type(cuda.get(k)) is not int or cuda[k] <= 0
                 for k in ('training', 'prediction')):
             raise ValueError('Legacy reference has no completed CUDA work')
-        saved = source / 'worker/saved-model'
+        bundles = [
+            path.parent
+            for path in source.glob('*/saved-model/training-spec.json')
+            if path.is_file()
+        ]
+        if len(bundles) != 1:
+            raise ValueError(
+                'Legacy case needs exactly one saved public model bundle')
+        [saved] = bundles
         checkpoint = saved / 'model/checkpoint'
         checkpoint_sha256 = weekly.digest(checkpoint)
         if checkpoint_sha256 != row.get('expected_reload_checkpoint_sha256'):
@@ -138,6 +146,7 @@ def import_reference(legacy_root, legacy_sha256, manifest, manifest_sha256,
         record = dict(
             status='PASS', physical_fits=1, fit_id=row['fit_id'],
             score=row['score'], checkpoint_sha256=checkpoint_sha256,
+            source_model_path=str(saved.relative_to(source)),
             legacy_identity=spec['identity'],
             source_case_sha256=weekly.digest(source / 'weekly-case.json'))
         record['files'] = weekly.inventory(destination)
