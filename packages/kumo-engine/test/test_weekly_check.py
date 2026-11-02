@@ -68,6 +68,24 @@ def input_fixture(root):
 
 
 class WeeklyChecks(unittest.TestCase):
+    def test_b9_input_scope_cannot_replace_the_eleven_case_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            value = input_fixture(root)
+            value.update(format='kumo-engine-weekly-p2-input-v1',
+                         cases=[value['cases'][-1]])
+            weekly.save(root / 'manifest.json', value)
+            checksum = weekly.digest(root / 'manifest.json')
+            self.assertEqual(
+                len(
+                    weekly.load_manifest(root, checksum,
+                                         retained_p2=True)['cases']), 1)
+            with self.assertRaises(ValueError):
+                weekly.load_manifest(root, checksum)
+            (root / 'data.json').write_text('changed P2 bytes')
+            with self.assertRaises(ValueError):
+                weekly.load_manifest(root, checksum, retained_p2=True)
+
     def test_shared_helper_checks_installed_wheel_bytes(self):
         worker = importlib.util.module_from_spec(WORKER_SPEC)
         WORKER_SPEC.loader.exec_module(worker)

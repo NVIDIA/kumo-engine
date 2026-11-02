@@ -139,10 +139,11 @@ def run_locked(args):
     import kumo.engine as kumo
 
     manifest = weekly.load_manifest(args.input_root, args.manifest_sha256,
-                                    profile='scale')
+                                    profile='scale', retained_p2=True)
     reference = weekly.load_reference(args.reference_root,
                                       args.reference_sha256, manifest,
-                                      args.manifest_sha256, profile='scale')
+                                      args.manifest_sha256, profile='scale',
+                                      retained_p2=True)
     [case] = [c for c in manifest['cases'] if c['id'] == 'P2-fixed']
     files = {key: manifest['files'][key] for key in case['files']}
     retained = reference['cases']['P2-fixed']
@@ -158,7 +159,9 @@ def run_locked(args):
             'Keep scratch and evidence outside immutable inputs and models')
     args.output.mkdir(parents=True)
     report = dict(format='kumo-engine-weekly-b9-result-v1', status='RUNNING',
-                  physical_fits=0, retained_fit_id=retained['fit_id'],
+                  manifest_sha256=args.manifest_sha256,
+                  reference_sha256=args.reference_sha256, physical_fits=0,
+                  retained_fit_id=retained['fit_id'],
                   checkpoint_sha256=retained['checkpoint_sha256'], calls=[])
     started = time.monotonic()
     try:
@@ -245,9 +248,10 @@ def run_locked(args):
         report.update(status='PASS', manifest_sha256=args.manifest_sha256,
                       reference_sha256=args.reference_sha256)
         weekly.load_reference(args.reference_root, args.reference_sha256,
-                              manifest, args.manifest_sha256, profile='scale')
+                              manifest, args.manifest_sha256, profile='scale',
+                              retained_p2=True)
         weekly.load_manifest(args.input_root, args.manifest_sha256,
-                             profile='scale')
+                             profile='scale', retained_p2=True)
     except Exception as error:
         report.update(status='FAIL', error=f'{type(error).__name__}: {error}',
                       traceback=traceback.format_exc())

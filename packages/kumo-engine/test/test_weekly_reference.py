@@ -91,6 +91,35 @@ def legacy_fixture(api, root):
 
 
 class ReferenceImport(unittest.TestCase):
+    def test_b9_import_keeps_the_original_p2_fit_without_requiring_other_models(
+            self):
+        api = module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            legacy = root / 'legacy'
+            legacy.mkdir()
+            manifest, checksum = legacy_fixture(api, legacy)
+            manifest['cases'] = [
+                c for c in manifest['cases'] if c['id'] == 'P2-fixed'
+            ]
+            target = root / 'retained-p2'
+            report = api.import_reference(legacy, checksum, manifest, 'd' * 64,
+                                          target, retained_p2=True)
+            self.assertEqual(set(report['cases']), {'P2-fixed'})
+            self.assertEqual(report['new_physical_fits'], 0)
+            self.assertEqual(report['cases']['P2-fixed']['fit_id'],
+                             'fit-P2-fixed')
+            expected = api.weekly.digest(target / 'reference.json')
+            api.weekly.load_reference(target, expected, manifest, 'd' * 64,
+                                      retained_p2=True)
+            with self.assertRaises(ValueError):
+                api.weekly.load_reference(target, expected, manifest, 'd' * 64)
+            (target /
+             'cases/P2-fixed/model/model/checkpoint').write_bytes(b'changed')
+            with self.assertRaises(ValueError):
+                api.weekly.load_reference(target, expected, manifest, 'd' * 64,
+                                          retained_p2=True)
+
     def test_import_preserves_all_saved_models_without_retraining(self):
         self.assertTrue(SOURCE.is_file())
         api = module()

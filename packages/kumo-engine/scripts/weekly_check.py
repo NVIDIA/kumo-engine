@@ -219,20 +219,24 @@ def check_case_result(row, case_id, wheel, *, candidate):
         )
 
 
-def load_manifest(root, expected, *, verify_files=True, profile=None):
+def load_manifest(root, expected, *, verify_files=True, profile=None,
+                  retained_p2=False):
     path = root / 'manifest.json'
     if digest(path) != expected:
         raise ValueError('Input manifest checksum differs')
     value = read(path)
     cases = value.get('cases', [])
-    if (value.get('format') != 'kumo-engine-weekly-input-v2' or len(cases) != 11
+    roster = {'P2-fixed'} if retained_p2 else ROSTER
+    artifact_format = ('kumo-engine-weekly-p2-input-v1'
+                       if retained_p2 else 'kumo-engine-weekly-input-v2')
+    if (value.get('format') != artifact_format or len(cases) != len(roster)
             or {c['id']
-                for c in cases} != ROSTER
+                for c in cases} != roster
             or not value.get('reference', {}).get('version')
             or not re.fullmatch('[0-9a-f]{64}', value['reference'].get(
                 'wheel_sha256', ''))):
         raise ValueError(
-            'Use the complete eleven-case manifest and an approved wheel')
+            'Use the complete manifest for this check and an approved wheel')
     selected = {c['id'] for c in select_cases(value, profile)}
     for case in cases:
         task = case['id'].split('-')[0]
@@ -294,15 +298,18 @@ def inventory(root):
     return files
 
 
-def reference_header(path, expected, manifest, manifest_sha256):
+def reference_header(path, expected, manifest, manifest_sha256, *,
+                     retained_p2=False):
     value = read(data_file(path.parent, path.name, {path.name: expected}))
-    if (value.get('format') != 'kumo-engine-weekly-reference-v2'
-            or value.get('status') != 'PASS'
+    roster = {'P2-fixed'} if retained_p2 else ROSTER
+    artifact_format = ('kumo-engine-weekly-p2-reference-v1'
+                       if retained_p2 else 'kumo-engine-weekly-reference-v2')
+    if (value.get('format') != artifact_format or value.get('status') != 'PASS'
             or value.get('manifest_sha256') != manifest_sha256
             or value.get('wheel') != manifest['reference']
-            or set(value.get('cases', {})) != ROSTER
+            or set(value.get('cases', {})) != roster
             or len({v.get('fit_id')
-                    for v in value.get('cases', {}).values()}) != 11):
+                    for v in value.get('cases', {}).values()}) != len(roster)):
         raise ValueError(
             'Reference approval, wheel, inputs, roster, or fit identities differ'
         )
@@ -312,15 +319,16 @@ def reference_header(path, expected, manifest, manifest_sha256):
                 'physical_fits'] != 1 or not record.get('fit_id'):
             raise ValueError('Reference case did not complete exactly one fit')
         scores[name] = record['score']
-    if check_learning(scores, scores)['status'] != 'PASS':
+    if not retained_p2 and check_learning(scores, scores)['status'] != 'PASS':
         raise ValueError(
             'Reference does not establish the required learning separation')
     return value
 
 
-def load_reference(root, expected, manifest, manifest_sha256, *, profile=None):
+def load_reference(root, expected, manifest, manifest_sha256, *, profile=None,
+                   retained_p2=False):
     value = reference_header(root / 'reference.json', expected, manifest,
-                             manifest_sha256)
+                             manifest_sha256, retained_p2=retained_p2)
     for case in select_cases(manifest, profile):
         record = value['cases'][case['id']]
         directory = root / 'cases' / case['id']

@@ -62,25 +62,29 @@ def coordinates(case, row):
 
 
 def import_reference(legacy_root, legacy_sha256, manifest, manifest_sha256,
-                     output):
+                     output, *, retained_p2=False):
     legacy = original_bundle(legacy_root, legacy_sha256)
     if dict(version=legacy['version'],
             wheel_sha256=legacy['wheel_sha256']) != manifest['reference']:
         raise ValueError(
             'Legacy reference wheel differs from the approved manifest')
-    if len(manifest['cases']) != 11 or {c['id']
-                                        for c in manifest['cases']
-                                        } != weekly.ROSTER:
-        raise ValueError('Import cannot shrink or duplicate the weekly roster')
+    roster = {'P2-fixed'} if retained_p2 else weekly.ROSTER
+    if len(manifest['cases']) != len(roster) or {
+            c['id']
+            for c in manifest['cases']
+    } != roster:
+        raise ValueError(
+            'Import cannot shrink or duplicate the selected roster')
     if output.exists():
         raise ValueError('Use a fresh imported-reference directory')
     specs = {r['id']: r for r in legacy['case_specs']}
     if len(legacy['case_specs']) != 11 or set(specs) != weekly.ROSTER:
         raise ValueError('Legacy reference has mismatched case specifications')
-    report = dict(format='kumo-engine-weekly-reference-v2', status='PASS',
-                  wheel=manifest['reference'], manifest_sha256=manifest_sha256,
-                  legacy_reference_sha256=legacy_sha256, new_physical_fits=0,
-                  cases={})
+    report = dict(
+        format='kumo-engine-weekly-p2-reference-v1'
+        if retained_p2 else 'kumo-engine-weekly-reference-v2', status='PASS',
+        wheel=manifest['reference'], manifest_sha256=manifest_sha256,
+        legacy_reference_sha256=legacy_sha256, new_physical_fits=0, cases={})
     fit_ids = set()
     for case in manifest['cases']:
         name = case['id']
@@ -152,8 +156,11 @@ def import_reference(legacy_root, legacy_sha256, manifest, manifest_sha256,
         record['files'] = weekly.inventory(destination)
         report['cases'][name] = record
     scores = {name: row['score'] for name, row in report['cases'].items()}
-    report['learning'] = weekly.check_learning(scores, scores)
-    if report['learning']['status'] != 'PASS':
+    report['learning'] = (dict(status='NOT_APPLICABLE',
+                               reason='Retained P2 has no quality answers')
+                          if retained_p2 else weekly.check_learning(
+                              scores, scores))
+    if not retained_p2 and report['learning']['status'] != 'PASS':
         raise ValueError(
             'Legacy reference does not establish the required learning separation'
         )
@@ -169,10 +176,14 @@ def main():
         parser.add_argument('--' + name, type=Path, required=True)
     for name in ('legacy-sha256', 'manifest-sha256'):
         parser.add_argument('--' + name, required=True)
+    parser.add_argument('--retained-p2', action='store_true',
+                        help='Import only the retained P2 model for B9')
     args = parser.parse_args()
-    manifest = weekly.load_manifest(args.input_root, args.manifest_sha256)
+    manifest = weekly.load_manifest(args.input_root, args.manifest_sha256,
+                                    retained_p2=args.retained_p2)
     import_reference(args.legacy_root, args.legacy_sha256, manifest,
-                     args.manifest_sha256, args.output)
+                     args.manifest_sha256, args.output,
+                     retained_p2=args.retained_p2)
 
 
 if __name__ == '__main__':
