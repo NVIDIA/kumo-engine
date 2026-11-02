@@ -41,7 +41,8 @@ jobs:
         run: python packages/kumo-engine/scripts/nightly_job.py admit
   wheel:
     needs: admit
-    if: ${{ startsWith(github.ref, 'refs/heads/pull-request/') || vars.KUMO_ENGINE_NIGHTLY_ENABLED == 'true' }}
+    # Keep qualification inactive until a separate activation change is reviewed.
+    if: ${{ !always() }}
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     env:
@@ -84,7 +85,7 @@ jobs:
   gpu:
     name: Sixteen nightly learning cases
     needs: [admit, wheel]
-    if: ${{ !cancelled() && needs.wheel.result == 'success' && (startsWith(github.ref, 'refs/heads/pull-request/') || vars.KUMO_ENGINE_NIGHTLY_ENABLED == 'true') }}
+    if: ${{ !always() }}
     runs-on:
       group: nv-gpu-amd64-rtxpro6000-1gpu
       labels: linux-amd64-gpu-rtxpro6000-latest-1

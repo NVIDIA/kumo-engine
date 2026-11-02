@@ -9,12 +9,13 @@ predictions. The suite requires real CUDA work and useful learning.
 
 The workflow accepts pushes to `main` and NVIDIA's approved
 `pull-request/<N>` branches. The copied commit must still match the PR head.
-It has no cron or arbitrary-branch manual trigger. Main GPU execution requires
-`KUMO_ENGINE_NIGHTLY_ENABLED=true`; leave that variable unset until qualification.
-The copied-PR path supplies the full qualification run after approval.
+It has no cron or arbitrary-branch manual trigger. Wheel building and GPU
+execution are deliberately disabled, including approved copied-PR pushes.
+Enabling qualification requires a separate reviewed activation change.
+Public source checks remain available while execution is on hold.
 
-Public GitHub-hosted jobs select the commit and build its wheel without cloud
-credentials. The GPU job uses NVIDIA's `nv-gpu-amd64-rtxpro6000-1gpu` group and
+The draft separates public source checks and wheel builds from private GPU work.
+The disabled GPU job targets NVIDIA's `nv-gpu-amd64-rtxpro6000-1gpu` group and
 `gha-kumo-workflow-tests` environment, as in the Engine PR check. Only the data
 download step receives AWS credentials. It reads the finished wheel from the
 build artifact and the immutable data objects from shared S3 storage.
@@ -96,9 +97,9 @@ also records CPU count and system memory. If the workload does not fit the
 managed runner, raise its measured capacity requirements on PR42. Do not add a
 separate VM transport.
 
-The CPU build has a 60-minute limit. The GPU job has a 180-minute limit and
-reserves time for artifact upload and cleanup. Setup, graph preparation, all
-sixteen cases, and evidence handling need one complete measured run before the
+The disabled CPU build has a 60-minute limit. The disabled GPU job has a
+180-minute limit and reserves time for artifact upload and cleanup. Setup, graph
+preparation, all sixteen cases, and evidence handling need one complete measured run before the
 suite can be scheduled. Per-case samples cannot prove that deadline.
 
 The result artifact contains logs, model bundles, canonical predictions, and
