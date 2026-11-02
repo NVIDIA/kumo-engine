@@ -30,7 +30,7 @@ from typing import (
 )
 
 from kumo_core.io.filesystem import atomic_write_bytes
-from kumo_core.summaries import Dataset, Summary, Table, Tag
+from kumo_core.summaries import Dataset, Note, Summary, Table, Tag
 
 SCHEMA_VERSION = 1
 _OMIT_NONE = 'omit_none'
@@ -186,6 +186,9 @@ class Manifest(Record):
                         self.URI_TAG, version=self.id, version_kind='exact',
                         label=self.title)
 
+    def lineage(self) -> List[Note]:
+        return []
+
 
 def artifacts(manifest: Manifest) -> List[Artifact]:
     """``manifest`` and the artifacts it names, once each."""
@@ -250,7 +253,7 @@ def artifact_summaries(manifest: Manifest, roles: Mapping[str, str],
         summaries.append(Dataset(
             item.label or item.id, source, schema, profile, item.context
             or roles.get(item.kind, item.kind.replace('_', ' '))))
-    return summaries
+    return [*summaries, *manifest.lineage()]
 
 
 _DATASET_ORDER = {'snapshot': 0, 'training_table': 1, 'source_table': 2}
@@ -435,6 +438,43 @@ class ModelManifest(Manifest):
 
     EMBED_OMITS = ('tracking', 'holdout')
 
+    def lineage(self) -> List[Note]:
+        table, graph = _fit_data(self)
+        if table is None or graph is None:
+            return []
+        return [Note('lineage/model', ' → '.join(filter(None, [
+            ', '.join(_tables(graph, located=True)), graph.title,
+            table.title])))]
+
+
+def _fit_data(model: ModelManifest) -> Tuple[
+        Optional[TrainingTableManifest], Optional[SnapshotManifest]]:
+    table = model.parents and model.parents.training_table
+    return table, table and table.parents and table.parents.snapshot
+
+
+def _sources(graph: SnapshotManifest) -> Dict[str, SourceTableEntry]:
+    return graph.parents.source_tables if graph.parents else {}
+
+
+def _tables(graph: SnapshotManifest, located: bool) -> List[str]:
+    return [
+        f'`{name}`' + (f' v{entry.version}' if entry.version else '') +
+        (f' (`{entry.location}`)' if located and entry.location else '')
+        for name, entry in _sources(graph).items()]
+
+
+def _changed(trained: SnapshotManifest, scored: SnapshotManifest) -> str:
+    before = {name: entry.version
+              for name, entry in _sources(trained).items()}
+    newer = [f'`{name}` (v{before[name]} → v{entry.version})'
+             if before.get(name) else f'`{name}`'
+             for name, entry in _sources(scored).items()
+             if entry.version != before.get(name)]
+    return ('Scored on a different snapshot than the model was trained on'
+            + (f"; newer: {', '.join(newer)}." if newer
+               else ', with the same table versions.'))
+
 
 @dataclass(frozen=True, kw_only=True)
 class PredictionParents(Record):
@@ -511,6 +551,19 @@ class PredictionManifest(Manifest):
     stats: Optional[Dict[str, ArtifactStats]]
 
     EMBED_OMITS = ('outputs', 'stats', 'status', 'timings')
+
+    def lineage(self) -> List[Note]:
+        table, trained = _fit_data(self.parents.model)
+        scored = self.parents.snapshot
+        notes = [] if table is None or trained is None else [Note(
+            'lineage/model', ' ← '.join(filter(None, [
+                table.title, trained.title,
+                ', '.join(_tables(trained, located=False))])))]
+        notes.append(Note('lineage', 'Scored: ' + ' ← '.join(filter(None, [
+            scored.title, ', '.join(_tables(scored, located=True))]))))
+        if trained is not None and trained.id != scored.id:
+            notes.append(Note('lineage', _changed(trained, scored)))
+        return notes
 
 
 @dataclass(frozen=True, kw_only=True)

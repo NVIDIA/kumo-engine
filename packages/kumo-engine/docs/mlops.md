@@ -220,8 +220,12 @@ Every value comes from exact counts over all rows, with no sampling. Numbers you
 - Problems, when there are any, come right after the sentence.
 - Then tables: holdout metrics (fit; `test/ap` is average precision, `test/auprc` the trapezoidal area under the
   precision-recall curve, `test/loss` the training objective, `test/logloss` the cross-entropy of the scores); the 2x2
-  matrix at the binary threshold; the training data; data preparation; notes; "Where things are", with
+  matrix at the binary threshold; the training data; data preparation; notes; "Lineage"; "Where things are", with
   each artifact's full location, linked to the S3 or GCS console.
+- "Lineage" is how the run's data depend on each other. A fit: its source tables with their versions and locations →
+  graph snapshot → training table → model. A prediction: the model ← its training table ← its snapshot ← its source
+  tables, then the snapshot it scored ← that snapshot's tables, and, when the two snapshots differ, which tables are
+  newer.
 - Add your own notes below the line "Add notes below this line"; the card ends with a rule. Editing above it stops
   kumo-engine updating that card; the run is then tagged `kumo.card_frozen`.
 - Every comparison names its reference: "vs holdout" (the model's holdout scores at training), "vs previous" (the previous run) or "vs training data" (input columns).

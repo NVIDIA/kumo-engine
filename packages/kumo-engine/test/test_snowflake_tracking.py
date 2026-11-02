@@ -302,8 +302,11 @@ def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
     tracking = _tracking()
     tracking.start(start)
     tracking.finish(replace(start, metrics={'test/mae': 0.32}, tags={
-        **tags, 'kumo.data_warnings': '1'}, summaries=(
+        **tags, 'kumo.data_warnings': '1', 'kumo.bundle_id': 'b' * 64},
+        summaries=(
             Note('problems', 'link `ents.ID → users`: 14 % of rows match'),
+            Note('lineage/model', '`ents` v1 → graph snapshot g → training '
+                 'table t'),
             Table('locations', ('kind', 'id', 'location'),
                   (('model', 'b' * 64, 's3://b/models/b'),), brief=True),
             Table('data/splits', ('split', 'rows'),
@@ -329,7 +332,8 @@ def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
         '| --- | ---: |', '| train | 8 |', '| val | 1 |', '| test | 1 |', '',
         '**Data preparation**', '', '| step | time (s) | disk |',
         '| --- | ---: | --- |', '| Training table | 12.5 | 4.2 KiB |', '',
-        '**Where things are**', '', '| Artifact | Location |', '| --- | --- |',
+        '**Lineage**', '', '- `ents` v1 → graph snapshot g → training table '
+        't → model `bbbbbbbb`', '', '**Where things are**', '', '| Artifact | Location |', '| --- | --- |',
         '| model bundle `bbbbbbbb` | [`s3://b/models/b`](https://s3.console.'
         'aws.amazon.com/s3/buckets/b?prefix=models/b/) |', '',
         'Full lineage: `_provenance.json`. Tables: `holdout/by_k.json`, '

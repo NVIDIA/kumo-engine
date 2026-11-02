@@ -61,7 +61,8 @@ def run_card(tags: Mapping[str, str], params: Mapping[str, str],
     kind = tags.get('kumo.kind', '')
     return Card(heading(kind, metrics, tags),
                 intro(kind, tags, params, query, fit_run, link),
-                [*holdout(kind, model_metrics, tags), *summaries], blocks)
+                [*holdout(kind, model_metrics, tags),
+                 *lineage(kind, tags, summaries)], blocks)
 
 
 def refreshed(card: str, metrics: Mapping[str, float],
@@ -168,6 +169,18 @@ def holdout(kind: str, metrics: Mapping[str, float],
           if others else [])]
 
 
+def lineage(kind: str, tags: Mapping[str, str],
+            summaries: Sequence[Summary]) -> List[Summary]:
+    r"""``summaries`` with the model's data chain ending at the model."""
+    name = _model(tags)
+    model = (f"`{tags.get('kumo.bundle_id', '')[:8]}`"
+             + (f' ({name})' if name else ''))
+    return [Note('lineage', f'{s.text} → model {model}' if kind == 'fit'
+                 else f'Model: {model} ← {s.text}')
+            if isinstance(s, Note) and s.section == 'lineage/model' else s
+            for s in summaries]
+
+
 def version_headline(metrics: Mapping[str, float],
                      tune: Optional[str]) -> str:
     metrics = {metric_key(name): value for name, value in metrics.items()}
@@ -211,6 +224,9 @@ def body(intro: Optional[str], summaries: Sequence[Summary],
     notes = _notes(summaries, 'notes')
     if notes:
         lines += ['', '**Notes**', '', *notes]
+    lineage = _notes(summaries, 'lineage')
+    if lineage:
+        lines += ['', '**Lineage**', '', *lineage]
     for summary in summaries:
         if isinstance(summary, Table) and summary.name == 'locations':
             lines += ['', _where(summary)]
