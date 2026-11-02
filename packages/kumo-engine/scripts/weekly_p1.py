@@ -208,7 +208,7 @@ def run_locked(args):
         distribution = importlib.metadata.distribution('kumo-engine')
         if weekly.digest(args.wheel) != args.wheel_sha256:
             raise ValueError('Selected P1 wheel checksum differs')
-        helper = Path(__file__).resolve().parents[1] / 'test/wheel_gpu_smoke.py'
+        helper = Path(__file__).with_name('nightly_check.py')
         helper_spec = importlib.util.spec_from_file_location(
             'p1_install', helper)
         module = importlib.util.module_from_spec(helper_spec)

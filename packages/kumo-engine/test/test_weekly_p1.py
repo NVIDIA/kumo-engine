@@ -9,11 +9,69 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+from zipfile import ZipFile
 
 SOURCE = Path(__file__).parents[1] / 'scripts/weekly_p1.py'
 
 
 class SamplingChecks(unittest.TestCase):
+    def test_installed_wheel_is_checked_before_sampling(self):
+        spec = importlib.util.spec_from_file_location('p1', SOURCE)
+        p1 = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(p1)
+        original_flags = sys.flags
+
+        class IsolatedFlags:
+            isolated = 1
+
+            def __getattr__(self, name):
+                return getattr(original_flags, name)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs = root / 'inputs'
+            metadata = inputs / 'index/ingest_stats.json'
+            p1.weekly.save(
+                metadata,
+                dict(stats=dict(node_counts=dict(customers=100000000))))
+            manifest = dict(
+                format='kumo-engine-weekly-p1-v1', dataset='commerce/100M',
+                index='index', row_counts=dict(customers=100000000),
+                files={'index/ingest_stats.json': p1.weekly.digest(metadata)},
+                work=dict(n=300000, offset=0, batch=256, procs=1, threads=1,
+                          hops=2), time_tolerance=dict(atol_seconds=1.,
+                                                       rtol=.1))
+            p1.weekly.save(inputs / 'p1.json', manifest)
+            installed = root / 'installed'
+            installed.mkdir()
+            payload = installed / 'module.py'
+            payload.write_bytes(b'approved wheel bytes')
+            wheel = root / 'reference.whl'
+            with ZipFile(wheel, 'w') as archive:
+                archive.writestr('module.py', b'approved wheel bytes')
+            distribution = SimpleNamespace(
+                version='1.0.0', locate_file=lambda name: installed / name)
+            args = SimpleNamespace(
+                input_root=inputs,
+                manifest_sha256=p1.weekly.digest(inputs / 'p1.json'),
+                output=root / 'valid', wheel=wheel,
+                wheel_sha256=p1.weekly.digest(wheel), reference=None,
+                mode='reference', timeout_seconds=1)
+            with patch.object(p1.sys, 'flags', IsolatedFlags()), patch.object(
+                    p1.importlib.metadata, 'distribution',
+                    return_value=distribution), patch.object(
+                        p1.subprocess, 'Popen', side_effect=RuntimeError(
+                            'Native sampling intentionally stopped')):
+                result = p1.run_locked(args)
+                self.assertIn('Native sampling intentionally stopped',
+                              result['error'])
+                payload.write_bytes(b'changed installed bytes')
+                args.output = root / 'changed'
+                result = p1.run_locked(args)
+                self.assertIn('Installed wheel member differs', result['error'])
+
     def test_failed_worker_stops_other_workers(self):
         self.assertTrue(SOURCE.is_file())
         spec = importlib.util.spec_from_file_location('p1', SOURCE)
