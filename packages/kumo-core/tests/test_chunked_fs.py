@@ -379,3 +379,58 @@ def test_reads_spanning_parts_fill_the_callers_buffer(store):
         assert reader.readinto(buffer) == 2 * PART
         assert bytes(buffer) == data[PART - 3:3 * PART - 3]
         assert reader.read_at(4, 2) == data[2:6]
+
+
+@pytest.mark.parametrize('size', [1, 3 * PART])
+def test_a_writer_that_fails_to_open_keeps_the_old_file(
+        monkeypatch, tmp_path, size):
+    import gc
+
+    handler = StreamingHandler()
+    handler.spool_dir = str(tmp_path)
+    fs = PyFileSystem(handler)
+    _write(fs, 'root/a.bin', b'preserve-me')
+
+    def fail(path):
+        raise OSError('cannot open')
+
+    monkeypatch.setattr(handler, '_stream', fail)
+    with pytest.raises(OSError, match='cannot open'):
+        chunked_fs._Writer(handler, 'root/a.bin', size=size)
+    gc.collect()
+    assert _read(fs, 'root/a.bin') == b'preserve-me'
+    assert os.listdir(tmp_path) == []
+
+
+@pytest.mark.parametrize('newer_commits_first', [True, False])
+def test_overlapping_writers_on_one_path_never_break_each_other(
+        store, newer_commits_first):
+    handler, fs = store
+    older = fs.open_output_stream('root/a.bin')
+    older.write(b'o' * 19)
+    newer = fs.open_output_stream('root/a.bin')
+    newer.write(b'n' * 21)
+    first, second = (newer, older) if newer_commits_first else (older, newer)
+    first.close()
+    older_rest = b'o' * 18 if newer_commits_first else b''
+    if older_rest:
+        older.write(older_rest)
+    second.close()
+    handler._forget('root/a.bin')
+    assert _read(fs, 'root/a.bin') == b'n' * 21
+    assert fs.get_file_info('root/a.bin').size == 21
+
+
+def test_a_committed_generation_with_missing_parts_is_skipped(store):
+    handler, fs = store
+    _write(fs, 'root/a.bin', b'1' * (2 * PART))
+    (good, _), = _generations(handler).items()
+    newer = good.rsplit('/', 1)[0] + '/99999999999999999999-ffffffff'
+    handler.objects[f'{newer}/00001'] = b'2' * PART
+    handler.objects[f'{newer}/_SUCCESS'] = b''
+    handler._forget('root/a.bin')
+    assert _read(fs, 'root/a.bin') == b'1' * (2 * PART)
+    for name in [n for n in handler.objects if n.startswith(good + '/')]:
+        del handler.objects[name]
+    handler._forget('root/a.bin')
+    assert fs.get_file_info('root/a.bin').type is FileType.NotFound
