@@ -146,6 +146,18 @@ pq.validate()
 snapshot = graph.snapshot()
 population = pq.generate_prediction_table(
     snapshot, plan=loaded.training_table_generation_plan)   # add prediction_time= if the user gave one
+
+def count_output():
+    # 0 before the first APPEND, which creates the table.
+    database = '"' + OUTPUT_DATABASE.replace('"', '""') + '"'
+    found = session.sql(
+        f'SELECT COUNT(*) FROM {database}.INFORMATION_SCHEMA.TABLES '
+        'WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?', params=[OUTPUT_SCHEMA, OUTPUT_TABLE]).collect()
+    if not found[0][0]:
+        return 0
+    return session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA, OUTPUT_TABLE]).count()
+
+before = count_output() if WRITE_MODE == WriteMode.APPEND else 0
 result = loaded.predict(
     population, snapshot=snapshot, binary_classification_threshold=THRESHOLD,
     output_config=kumo.PredictionOutputConfig(
@@ -154,8 +166,8 @@ result = loaded.predict(
         extra_fields=([MetadataField.JOB_TIMESTAMP, MetadataField.ANCHOR_TIMESTAMP]   # JOB_TIMESTAMP alone
                       if WRITE_MODE == WriteMode.APPEND else [])),   # for a query with no time window (§8)
 )
-written = session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA, OUTPUT_TABLE]).count()
-print('predicted rows:', result.num_rows, 'table rows:', written)
+written = count_output() - before   # OVERWRITE: the table total; APPEND: the rows this run added
+print('predicted rows:', result.num_rows, 'rows written:', written)
 assert written == result.num_rows, 'write-back row count does not match'
 ```
 
