@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Execute workflow configuration and GPU-class admission with local inputs."""
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -11,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
@@ -38,8 +40,14 @@ class WorkflowChecks(unittest.TestCase):
                            reference_root=str(root / 'reference'),
                            host_lock=str(root / 'host.lock'),
                            work_root=str(root / 'work'))
-            config = dict(manifest_sha256='a' * 64, reference_sha256='b' * 64,
-                          profiles=dict(rtx=profile, scale=profile))
+            config = dict(
+                manifest_sha256='a' * 64, reference_sha256='b' * 64,
+                profiles=dict(rtx=profile, scale=profile),
+                p1=dict(runner=profile['runner'], input_root=str(root),
+                        reference=str(root / 'p1-reference.json'),
+                        host_lock=str(root / 'host.lock'),
+                        work_root=str(root / 'p1-work'),
+                        manifest_sha256='c' * 64, reference_sha256='d' * 64))
             environment = dict(os.environ, MODE='candidate',
                                GITHUB_OUTPUT=str(root / 'outputs'))
             environment['WEEKLY_CONFIG'] = json.dumps(config)
@@ -54,6 +62,7 @@ class WorkflowChecks(unittest.TestCase):
             self.assertEqual(
                 [v['profile'] for v in json.loads(output['matrix'])['include']],
                 ['rtx', 'scale'])
+            self.assertEqual(json.loads(output.get('p1', '{}')), config['p1'])
             del config['profiles']['scale']
             environment['WEEKLY_CONFIG'] = json.dumps(config)
             rejected = subprocess.run(
@@ -61,6 +70,52 @@ class WorkflowChecks(unittest.TestCase):
                  program('configure')], cwd=ROOT, env=environment,
                 capture_output=True)
             self.assertNotEqual(rejected.returncode, 0)
+
+    def test_p1_job_binds_candidate_wheel_and_approved_reference(self):
+        workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
+        job = workflow['jobs'].get('p1')
+        self.assertIsNotNone(job, 'The manual weekly workflow must execute P1')
+        [step] = [
+            s for s in job['steps']
+            if s.get('name') == 'Run P1 against its approved reference'
+        ]
+        source = '\n'.join(step['run'].splitlines()[1:-1])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wheels = root / 'weekly-p1-wheel'
+            wheels.mkdir()
+            wheel = wheels / 'candidate.whl'
+            wheel.write_bytes(b'candidate wheel')
+            checksum = hashlib.sha256(wheel.read_bytes()).hexdigest()
+            fixtures.weekly.save(
+                wheels / 'build.json',
+                dict(revision='a' * 40, tree='b' * 40, version='2.0.0',
+                     wheel_sha256=checksum))
+            config = dict(input_root=str(root / 'inputs'),
+                          reference=str(root / 'approved-reference.json'),
+                          host_lock=str(root / 'shared.lock'),
+                          manifest_sha256='c' * 64, reference_sha256='d' * 64)
+            environment = dict(RUNNER_TEMP=str(root),
+                               WEEKLY_P1_ROOT=str(root / 'job'),
+                               P1_CONFIG=json.dumps(config))
+            commands = []
+            with patch.dict(os.environ, environment), patch.object(
+                    subprocess, 'run', side_effect=lambda command, **kwargs:
+                    commands.append(command)):
+                exec(compile(source, 'p1-workflow', 'exec'), {})
+                [command] = commands
+                arguments = dict(zip(command[3::2], command[4::2]))
+                self.assertEqual(arguments['--mode'], 'candidate')
+                self.assertEqual(arguments['--reference'], config['reference'])
+                self.assertEqual(arguments['--reference-sha256'], 'd' * 64)
+                self.assertEqual(arguments['--manifest-sha256'], 'c' * 64)
+                self.assertEqual(arguments['--host-lock'], config['host_lock'])
+                self.assertEqual(arguments['--wheel'], str(wheel))
+                self.assertEqual(arguments['--wheel-sha256'], checksum)
+                wheel.write_bytes(b'changed wheel')
+                with self.assertRaises(ValueError):
+                    exec(compile(source, 'p1-workflow', 'exec'), {})
+                self.assertEqual(len(commands), 1)
 
     def test_admission_rejects_a_different_gpu_class_before_fitting(self):
         with tempfile.TemporaryDirectory() as directory:

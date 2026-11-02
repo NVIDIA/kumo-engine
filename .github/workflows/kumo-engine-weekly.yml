@@ -36,6 +36,7 @@ jobs:
       matrix: ${{ steps.config.outputs.matrix }}
       manifest_sha256: ${{ steps.config.outputs.manifest_sha256 }}
       reference_sha256: ${{ steps.config.outputs.reference_sha256 }}
+      p1: ${{ steps.config.outputs.p1 }}
     steps:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
@@ -70,8 +71,22 @@ jobs:
                   if not isinstance(path, str) or not PurePosixPath(path).is_absolute() or any(c in path for c in '\r\n'):
                       raise SystemExit('Bind absolute data paths and the shared host lock')
               profiles.append(profile)
+          p1 = value.get('p1', {})
+          if os.environ['MODE'] == 'candidate':
+              runner = p1['runner']
+              if (not isinstance(runner, dict) or set(runner) != {'group', 'labels'}
+                      or any(not isinstance(v, str) or not v for v in runner.values())):
+                  raise SystemExit('Bind the existing P1 runner group and label')
+              for key in ('input_root', 'reference', 'host_lock', 'work_root'):
+                  path = p1[key]
+                  if not isinstance(path, str) or not PurePosixPath(path).is_absolute() or any(c in path for c in '\r\n'):
+                      raise SystemExit('Bind absolute P1 input, reference, lock, and work paths')
+              for key in ('manifest_sha256', 'reference_sha256'):
+                  if not re.fullmatch('[0-9a-f]{64}', p1.get(key, '')):
+                      raise SystemExit('Bind the reviewed P1 manifest and reference checksums')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write('matrix=' + json.dumps(dict(include=profiles)) + '\n')
+              output.write('p1=' + json.dumps(p1) + '\n')
               for key in ('manifest_sha256', 'reference_sha256'):
                   output.write(key + '=' + str(value.get(key, '')) + '\n')
           PYCODE
@@ -316,6 +331,92 @@ jobs:
               raise SystemExit('Unexpected cleanup directory')
           shutil.rmtree(root)
           shutil.rmtree(temporary / 'weekly-wheel', ignore_errors=True)
+          PY
+
+  p1:
+    name: P1 CPU sampling
+    needs: [cpu, configure, gpu, wheel]
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.mode == 'candidate' && needs.cpu.result == 'success' && needs.configure.result == 'success' && needs.wheel.result == 'success' }}
+    runs-on: ${{ fromJSON(needs.configure.outputs.p1).runner }}
+    timeout-minutes: 120
+    env:
+      P1_CONFIG: ${{ needs.configure.outputs.p1 }}
+      CUDA_VISIBLE_DEVICES: ''
+      KUMO_ACCELERATOR: cpu
+      OMP_NUM_THREADS: '8'
+      MKL_NUM_THREADS: '8'
+      OPENBLAS_NUM_THREADS: '8'
+      PYTHONDONTWRITEBYTECODE: '1'
+      PIP_CONFIG_FILE: /dev/null
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: weekly-wheel-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/weekly-p1-wheel
+      - name: Prepare an isolated P1 environment
+        run: |
+          python - <<'PY'
+          import json, os, runpy, subprocess
+          from pathlib import Path
+          api = runpy.run_path('packages/kumo-engine/scripts/weekly_check.py')
+          config = json.loads(os.environ['P1_CONFIG'])
+          wheels = Path(os.environ['RUNNER_TEMP']) / 'weekly-p1-wheel'
+          [wheel] = wheels.glob('*.whl')
+          build = api['read'](wheels / 'build.json')
+          api['check_build'](build, build['version'], api['digest'](wheel))
+          root = Path(config['work_root']) / ('weekly-p1-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
+          root.mkdir(exist_ok=False)
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f'WEEKLY_P1_ROOT={root}\n')
+          subprocess.run(['python', '-m', 'venv', str(root / 'venv')], check=True)
+          python = str(root / 'venv/bin/python')
+          subprocess.run([python, '-I', '-m', 'pip', '--isolated', 'install', '--index-url', 'https://pypi.org/simple', str(wheel)], check=True)
+          subprocess.run([python, '-I', '-m', 'pip', '--isolated', 'check'], check=True)
+          PY
+      - name: Run P1 against its approved reference
+        run: |
+          python - <<'PY'
+          import json, os, runpy, subprocess
+          from pathlib import Path
+          api = runpy.run_path('packages/kumo-engine/scripts/weekly_check.py')
+          config = json.loads(os.environ['P1_CONFIG'])
+          root = Path(os.environ['WEEKLY_P1_ROOT'])
+          wheels = Path(os.environ['RUNNER_TEMP']) / 'weekly-p1-wheel'
+          [wheel] = wheels.glob('*.whl')
+          build = api['read'](wheels / 'build.json')
+          api['check_build'](build, build['version'], api['digest'](wheel))
+          subprocess.run([str(root / 'venv/bin/python'), '-I', 'packages/kumo-engine/scripts/weekly_p1.py',
+              '--mode', 'candidate', '--input-root', config['input_root'], '--manifest-sha256', config['manifest_sha256'],
+              '--reference', config['reference'], '--reference-sha256', config['reference_sha256'],
+              '--host-lock', config['host_lock'], '--output', str(root / 'evidence'),
+              '--wheel', str(wheel), '--wheel-sha256', build['wheel_sha256']], check=True)
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always() && env.WEEKLY_P1_ROOT != ''
+        with:
+          name: weekly-p1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.WEEKLY_P1_ROOT }}/evidence
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove this P1 job's temporary files
+        if: always() && env.WEEKLY_P1_ROOT != ''
+        run: |
+          python - <<'PY'
+          import json, os, shutil
+          from pathlib import Path
+          config = json.loads(os.environ['P1_CONFIG'])
+          root = Path(os.environ['WEEKLY_P1_ROOT']).resolve()
+          expected = 'weekly-p1-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT']
+          if root.parent != Path(config['work_root']).resolve() or root.name != expected:
+              raise SystemExit('Unexpected P1 cleanup directory')
+          shutil.rmtree(root)
+          shutil.rmtree(Path(os.environ['RUNNER_TEMP']) / 'weekly-p1-wheel', ignore_errors=True)
           PY
 
   collect:
