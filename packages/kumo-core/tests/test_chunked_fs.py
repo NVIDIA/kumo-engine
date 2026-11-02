@@ -379,3 +379,24 @@ def test_reads_spanning_parts_fill_the_callers_buffer(store):
         assert reader.readinto(buffer) == 2 * PART
         assert bytes(buffer) == data[PART - 3:3 * PART - 3]
         assert reader.read_at(4, 2) == data[2:6]
+
+
+@pytest.mark.parametrize('size', [1, 3 * PART])
+def test_a_writer_that_fails_to_open_keeps_the_old_file(
+        monkeypatch, tmp_path, size):
+    import gc
+
+    handler = StreamingHandler()
+    handler.spool_dir = str(tmp_path)
+    fs = PyFileSystem(handler)
+    _write(fs, 'root/a.bin', b'preserve-me')
+
+    def fail(path):
+        raise OSError('cannot open')
+
+    monkeypatch.setattr(handler, '_stream', fail)
+    with pytest.raises(OSError, match='cannot open'):
+        chunked_fs._Writer(handler, 'root/a.bin', size=size)
+    gc.collect()
+    assert _read(fs, 'root/a.bin') == b'preserve-me'
+    assert os.listdir(tmp_path) == []

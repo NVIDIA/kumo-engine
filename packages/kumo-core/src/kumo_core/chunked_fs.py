@@ -313,27 +313,35 @@ def _abandon(stream: Optional[BinaryIO], close: bool = False) -> None:
 class _Writer(io.RawIOBase):
     def __init__(self, handler: ChunkedFileHandler, path: str,
                  size: Optional[int] = None) -> None:
+        self._failed = True
         self._handler = handler
         self._path = path
         self._chunks = (f'{path}{CHUNKS}/{time.time_ns():020d}-'
                         f'{uuid.uuid4().hex[:8]}')
-        self._dir = tempfile.mkdtemp(prefix='kumo-chunked-',
-                                     dir=spool_root(handler))
-        self._spool = open(os.path.join(self._dir, 'spool'), 'wb')
-        self._filled = 0
-        self._parts = 0
-        self._written = 0
-        self._part: Optional[BinaryIO] = None
-        self._streams = type(handler)._stream is not ChunkedFileHandler._stream
-        self._limit = (min(handler.plain_bytes, handler.part_bytes)
-                       if self._streams else handler.part_bytes)
         self._plain: Optional[BinaryIO] = None
+        self._part: Optional[BinaryIO] = None
+        self._spool: Optional[BinaryIO] = None
+        self._dir: Optional[str] = None
+        try:
+            self._dir = tempfile.mkdtemp(prefix='kumo-chunked-',
+                                         dir=spool_root(handler))
+            self._spool = open(os.path.join(self._dir, 'spool'), 'wb')
+            self._filled = 0
+            self._parts = 0
+            self._written = 0
+            self._streams = (type(handler)._stream
+                             is not ChunkedFileHandler._stream)
+            self._limit = (min(handler.plain_bytes, handler.part_bytes)
+                           if self._streams else handler.part_bytes)
+            if self._streams and size is not None:
+                if size <= handler.part_bytes:
+                    self._plain = handler._stream(path)
+                else:
+                    self._part = self._open_part()
+        except BaseException:
+            self.close()
+            raise
         self._failed = False
-        if self._streams and size is not None:
-            if size <= handler.part_bytes:
-                self._plain = handler._stream(path)
-            else:
-                self._part = self._open_part()
 
     def writable(self):
         return True
@@ -442,6 +450,8 @@ class _Writer(io.RawIOBase):
                     self._handler._remove(self._path + CHUNKS, tree=True)
         finally:
             self._handler._forget(self._path)
-            self._spool.close()
-            shutil.rmtree(self._dir, ignore_errors=True)
+            if self._spool is not None:
+                self._spool.close()
+            if self._dir is not None:
+                shutil.rmtree(self._dir, ignore_errors=True)
             super().close()
