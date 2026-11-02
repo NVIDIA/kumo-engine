@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import Any, Protocol
 
 import psutil
 from diskgraph import SamplerEngine
@@ -18,10 +18,8 @@ from kumo_core.diskgraph.stores import (
     diskgraph_auto_config,
     diskgraph_index_size_bytes,
 )
-
-if TYPE_CHECKING:
-    from kumo_core.embedding_models import EmbeddingModelStore
-    from kumo_core.training.config import SamplerKwargs
+from kumo_core.embedding_models import EmbeddingModelStore
+from kumo_core.training.config import SamplerKwargs
 
 
 class TrainingDataRuntime(Protocol):

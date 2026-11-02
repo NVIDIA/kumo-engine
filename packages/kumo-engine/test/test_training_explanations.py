@@ -13,6 +13,7 @@ from kumo_core.types import ExplainMethod
 from kumoapi.model_plan import ModelPlan
 
 from kumo.engine import Trainer, TrainingTable
+from kumo.engine.trainer._runtime import local_training_bindings
 
 
 @pytest.mark.parametrize('disabled,explain_fails,aggregate_fails', [
@@ -21,22 +22,18 @@ from kumo.engine import Trainer, TrainingTable
     (False, True, False),
     (False, False, True),
 ])
-@pytest.mark.parametrize('remote', [False, True])
 @pytest.mark.parametrize('accelerator', ['cpu', 'gpu', 'mps', 'auto'])
 def test_fit_runs_shared_explanations_after_training(tmp_path, snapshot,
                                                      monkeypatch, caplog,
                                                      staged_seed_dir, disabled,
                                                      explain_fails,
                                                      aggregate_fails,
-                                                     accelerator, remote):
+                                                     accelerator):
     plan = ModelPlan()
     plan.training_job.disable_explain = disabled
-    endpoints = ['grpc://worker-a:8815', 'grpc://worker-b:8815']
-    trainer = Trainer(
-        plan, accelerator=accelerator,
-        remote_sampling_endpoint=endpoints if remote else None,
-        remote_sampling_num_threads=2,
-    )
+    trainer = Trainer(plan, accelerator=accelerator)
+    bind = Mock(wraps=local_training_bindings)
+    monkeypatch.setattr('kumo.engine.trainer._runtime.local_training_bindings', bind)
     monkeypatch.setattr(type(trainer), 'scratch_dir',
                         property(lambda _: tmp_path))
     table = TrainingTable(
@@ -72,9 +69,7 @@ def test_fit_runs_shared_explanations_after_training(tmp_path, snapshot,
     def train(training_input, **kwargs):
         assert kwargs['bindings'].runtime.trainer_runtime_kwargs()[
             'accelerator'] == accelerator
-        assert kwargs['bindings'].runtime.diskgraph_runtime.sampling_options == (
-            {'remote_sampling_endpoint': endpoints, 'num_threads': 2}
-            if remote else {})
+        assert kwargs['bindings'].runtime.diskgraph_runtime.sampling_options == {}
         events.append('train')
         return SimpleNamespace(
             metrics={'test_accuracy': 0.8},
@@ -101,6 +96,7 @@ def test_fit_runs_shared_explanations_after_training(tmp_path, snapshot,
 
     result = trainer.fit(table, snapshot=snapshot)
 
+    assert bind.call_args.kwargs['sampling'] is None
     assert result.metrics == {'test_accuracy': 0.8}
     assert result.artifact_paths == {
         'selected_checkpoint': '/model/selected.ckpt'

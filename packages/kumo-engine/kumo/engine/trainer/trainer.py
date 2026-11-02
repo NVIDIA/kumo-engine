@@ -244,9 +244,6 @@ class Trainer:
             between hosted and local training.
         embedding_models: the word-embedding models for text columns, by
             name. Defaults to the installed ones (``kumo-engine[text]``).
-        remote_sampling_endpoint: Optional Flight URI or list of graph replica URIs.
-            Workers receive a prebuilt task and stream disjoint epoch shards.
-        remote_sampling_num_threads: Positive native sampling threads per worker.
         accelerator: Lightning device selection: ``auto`` (default), ``cpu``,
             ``gpu``, or ``mps``. Applies to training and prediction.
     """
@@ -256,18 +253,10 @@ class Trainer:
         embedding_models: Optional[EmbeddingModelStore] = None,
         *,
         accelerator: Literal['cpu', 'gpu', 'mps', 'auto'] = 'auto',
-        remote_sampling_endpoint: str | list[str] | None = None,
-        remote_sampling_num_threads: int = 1,
     ) -> None:
         if accelerator not in ('cpu', 'gpu', 'mps', 'auto'):
             raise ValueError(
                 "accelerator must be one of 'cpu', 'gpu', 'mps', or 'auto'")
-        from kumo_core.training.config import SamplerKwargs
-
-        self._sampling = SamplerKwargs(
-            remote_sampling_endpoint=remote_sampling_endpoint,
-            remote_sampling_num_threads=remote_sampling_num_threads,
-        )
         self._accelerator = accelerator
         self._model_plan = model_plan
         self._embedding_models = (embedding_models if embedding_models
@@ -480,7 +469,7 @@ class Trainer:
                 training_input, run_name=run_id,
                 embedding_models=self._embedding_models,
                 accelerator=self._accelerator,
-                sampling=self._sampling),
+                sampling=None),
             options=CallableTrainingOptions(),
         )
 
