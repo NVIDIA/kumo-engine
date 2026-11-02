@@ -11,6 +11,7 @@ from collections import deque
 from collections.abc import Iterator
 from contextlib import ExitStack
 from pathlib import Path
+from test.train.datamodule import test_remote_sampling_integration as parity
 from typing import Any
 
 import diskgraph
@@ -26,8 +27,6 @@ from kumo_core.diskgraph.sampling_service import (
     SamplingServiceConfig,
 )
 from pyarrow import flight
-
-from test.train.datamodule import test_remote_sampling_integration as parity
 
 prepared_task = parity.prepared_task
 

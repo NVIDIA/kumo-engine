@@ -12,7 +12,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from kumo_core.diskgraph.sampling_service import SamplingService, SamplingServiceConfig
+from kumo_core.diskgraph.sampling_service import (
+    SamplingService,
+    SamplingServiceConfig,
+)
 
 
 @pytest.fixture
