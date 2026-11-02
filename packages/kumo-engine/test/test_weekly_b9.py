@@ -16,6 +16,34 @@ SOURCE = Path(__file__).parents[1] / 'scripts/weekly_b9.py'
 
 
 class RetainedChecks(unittest.TestCase):
+    def test_drift_aligns_scores_by_class_and_reports_boundary_changes(self):
+        spec = importlib.util.spec_from_file_location('b9', SOURCE)
+        b9 = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(b9)
+        reference = dict(entity_ids=[101, 102], ranked_ids=[[1, 2], [3, 4]],
+                         values=[[.9, .8], [.5, .3]])
+        observed = dict(entity_ids=[101, 102], ranked_ids=[[2, 1], [3, 5]],
+                        values=[[.80001, .89999], [.5001, .29999]])
+        result = b9.prediction_drift(reference, observed)
+        self.assertEqual(result['rank_changed_entities'], 2)
+        self.assertEqual(result['membership_changed_entities'], 1)
+        self.assertEqual(result['removed_recommendations'], 1)
+        self.assertEqual(result['added_recommendations'], 1)
+        self.assertEqual(result['common_score_coordinates'], 3)
+        self.assertAlmostEqual(result['max_abs_common_score_difference'], .0001)
+        self.assertEqual(result['membership_examples'][0]['entity_id'], 102)
+        self.assertEqual(result['membership_examples'][0]['removed'], [[4, .3]])
+        self.assertEqual(result['membership_examples'][0]['added'],
+                         [[5, .29999]])
+        self.assertEqual(
+            b9.prediction_drift(reference,
+                                reference)['max_abs_common_score_difference'],
+            0.)
+        for changed in (dict(observed, entity_ids=[101]),
+                        dict(observed, values=[[float('nan'), .8], [.5, .3]])):
+            with self.assertRaises(ValueError):
+                b9.prediction_drift(reference, changed)
+
     def test_active_gpu_work_stops_before_model_imports(self):
         spec = importlib.util.spec_from_file_location('b9', SOURCE)
         b9 = importlib.util.module_from_spec(spec)

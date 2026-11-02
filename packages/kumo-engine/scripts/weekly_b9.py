@@ -27,6 +27,56 @@ _SPEC.loader.exec_module(worker)
 weekly = worker.weekly
 
 
+def prediction_drift(reference, observed):
+    """Measure score drift by class ID without approving changed rankings."""
+    ids = reference['entity_ids']
+    if not ids or len(set(ids)) != len(ids) or ids != observed['entity_ids']:
+        raise ValueError('Cannot measure drift for different populations')
+    report = dict(entities=len(ids), rank_changed_entities=0,
+                  membership_changed_entities=0, removed_recommendations=0,
+                  added_recommendations=0, common_score_coordinates=0,
+                  max_abs_common_score_difference=0., membership_examples=[],
+                  rank_examples=[])
+    for entity, left, right, left_scores, right_scores in zip(
+            ids, reference['ranked_ids'], observed['ranked_ids'],
+            reference['values'], observed['values'], strict=True):
+        if (not left or len(left) != len(right) or len(left) != len(left_scores)
+                or len(right) != len(right_scores)
+                or len(set(left)) != len(left) or len(set(right)) != len(right)
+                or not all(
+                    weekly.finite(v) for v in (*left_scores, *right_scores))):
+            raise ValueError('Cannot measure incomplete or nonfinite rankings')
+        before, after = dict(zip(left,
+                                 left_scores)), dict(zip(right, right_scores))
+        if left != right:
+            report['rank_changed_entities'] += 1
+            if len(report['rank_examples']) < 5:
+                report['rank_examples'].append(
+                    dict(entity_id=entity, reference_ids=left,
+                         observed_ids=right, reference_scores=left_scores,
+                         observed_scores=right_scores))
+        removed, added = before.keys() - after.keys(), after.keys(
+        ) - before.keys()
+        if removed or added:
+            report['membership_changed_entities'] += 1
+            report['removed_recommendations'] += len(removed)
+            report['added_recommendations'] += len(added)
+            if len(report['membership_examples']) < 5:
+                report['membership_examples'].append(
+                    dict(
+                        entity_id=entity, removed=[[key, before[key]]
+                                                   for key in sorted(removed)],
+                        added=[[key, after[key]] for key in sorted(added)],
+                        reference_boundary_score=min(left_scores),
+                        observed_boundary_score=min(right_scores)))
+        common = before.keys() & after.keys()
+        report['common_score_coordinates'] += len(common)
+        report['max_abs_common_score_difference'] = max(
+            report['max_abs_common_score_difference'],
+            max((abs(before[key] - after[key]) for key in common), default=0.))
+    return report
+
+
 def check_predictions(reference, one_gpu, two_gpu, *, atol, rtol):
     return dict(
         one_gpu=weekly.compare_predictions(reference, one_gpu, atol=atol,
@@ -250,6 +300,10 @@ def run_locked(args):
             weekly.save(args.output / 'b9-result.json', report)
         stored = weekly.read(args.reference_root /
                              'cases/P2-fixed/predictions.json')
+        report['drift'] = dict(one_gpu=prediction_drift(stored, predictions[0]),
+                               two_gpu=prediction_drift(stored, predictions[1]),
+                               worker_counts=prediction_drift(*predictions))
+        weekly.save(args.output / 'b9-result.json', report)
         report['comparison'] = check_predictions(stored, *predictions,
                                                  **case['tolerance'])
         report.update(status='PASS', manifest_sha256=args.manifest_sha256,

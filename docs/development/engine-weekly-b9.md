@@ -24,6 +24,11 @@ ranks must match, and scores must stay within P2's approved `atol` and `rtol` va
 missing receipt, CPU fallback, changed checkpoint, partial population, or excess
 prediction difference fails the run. Time remains a report.
 
+Before applying the gate, the runner records common-class score differences,
+changed rankings, added or removed recommendations, and up to five examples.
+These measurements remain in the result when a comparison fails. They do not
+approve a numerical difference or change the exact-rank requirement.
+
 Invoke `weekly_b9.py` directly with the selected wheel's isolated Python
 interpreter. Supply `--input-root`, `--manifest-sha256`, `--reference-root`,
 `--reference-sha256`, `--output`, `--scratch`, `--host-lock`, `--wheel`,
