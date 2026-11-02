@@ -42,5 +42,26 @@ rules; this is why they exist.
 | Predict in notebook | one submission call, no execution | the predict call is part of the artifact (router Step 2) | user decision 2026-09-23 |
 | Snowflake ML Jobs | no scheduling | the artifact may run as an ML Job on request; a recurring run is proposed and created only on explicit confirmation (`hosts/snowflake-coco/ml_job.md`) | spec feature 7 (2026-10-13). How Kumo reaches the job container is pending; the skill names it only as host values (`adapter.md` §10) |
 
+| Preflight source | read-only SQL against the user's source | on the generic host, whatever read tool the agent has; with none, the structure the user pastes (`preflight.md` §0) | added 2026-10-20 with the generic host. A coding agent beside the user often has no warehouse session; asking for access or details keeps the gate instead of guessing |
+
 Accommodation, not deviation: the spec has the user select the table mode. Nobody does, so it
 defaults to `all-connected` and is confirmed at Node 1c.
+
+## Hosts and the access check
+
+The core says *what* intake and code generation need; a host says *how* in its `adapter.md`
+(intake) and `runtime.md` (Step 2). A package ships one host, so the agent never weighs another
+host's rules, and the core names it only as `hosts/<host>/` (`tests/test_package_skill.py`).
+
+Preflight §0 asks the agent to prove it can read the source before inferring anything from it.
+CoCo always can — its SQL is the read tool — so §0 only adds the grant-or-details ask-back for an
+unreadable scope. A coding agent may have an authenticated CLI, a tool server, Python with Kumo,
+or nothing. Without the check it falls back on its priors, the failure seen when CoCo read an
+empty skill tree. The agent's access is never the artifact's: the generated code authenticates
+where it runs, so §0 changes no gate and no generated line. Credentials stay with the user —
+the agent may ask them to authenticate a tool, never for a value.
+
+Genie Code is the Databricks counterpart of CoCo: its own SQL, run as the signed-in user, is the
+read tool, and the notebook it generates runs as whoever runs it, through `DatabricksIdentity()`'s
+ambient credentials. So the Genie host names no service principal and no secret scope unless the
+user asks for one; the legacy Databricks host required both, before the SDK had an ambient form.

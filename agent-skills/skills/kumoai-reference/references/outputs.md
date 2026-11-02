@@ -74,12 +74,12 @@ vectors; inspect TYPE and identifiers before calling them customer/product embed
 
 ## Serialization boundaries
 
-The public prediction path exports selected Parquet through Snowflake's file sink, with schema
-inference and COPY. This differs from the separate in-memory DataFrame writer, which rejects
+On Snowflake, the public prediction path exports selected Parquet through Snowflake's file sink,
+with schema inference and COPY. This differs from the separate in-memory DataFrame writer, which rejects
 list/dict columns. Do not apply that rejection indiscriminately to prediction export, and do
 not send nested cohort JSON through the scalar DataFrame path unchanged.
 
-For vectors or other nested fields, inspect the destination's actual Snowflake type and a
+For vectors or other nested fields, inspect the destination's actual column type and a
 bounded read-back value; inference is not a guarantee of the consumer's expected representation.
 Use [stage retention](../../kumo-model-persistence/references/retention.md) to preserve the original
 Parquet or JSON when a destination cannot represent the required shape. Conversion/flattening

@@ -45,9 +45,9 @@ after a rename. If a user's code contains `set_backend`, `LocalBackend`, `create
 `OutputConfig`, `kumo.Stype`, or edges written as dicts, it targets a **superseded**
 build: say so and rewrite it rather than copying its shape. See `kumoai-reference/references/kumo_finetuning_sdk.md` §11.1.
 
-Connection, in this order: `SnowflakeConnector.from_spcs_env()` when `SPCS_TOKEN_PATH` exists, else
-`.from_connection_toml()`, else a `SnowflakeIdentity` from Snowflake secrets attached to the
-notebook (`kumoai-reference/references/kumo_finetuning_sdk.md` §3). None needs a key in code.
+Connection is one step, written as the host's `runtime.md` says, from the connector facts in
+`kumoai-reference/references/kumo_finetuning_sdk.md` §3 (Snowflake) and §3.4 (every other
+connector). No credential literal belongs in code.
 
 ## Execution flow
 

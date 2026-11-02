@@ -1,6 +1,6 @@
 ---
 name: kumo-model-explanations
-description: Inspect and interpret gradient attribution (including requests called radiant attribution), column analysis and sampled explanation subgraphs from a Kumo model trained in a Snowflake Python notebook. Locate the correct run's explanation artifacts, explain feature scores and cohorts, and identify missing or unsupported explanations without automatically retraining.
+description: Inspect and interpret gradient attribution (including requests called radiant attribution), column analysis and sampled explanation subgraphs from a Kumo model trained in a Python notebook. Locate the correct run's explanation artifacts, explain feature scores and cohorts, and identify missing or unsupported explanations without automatically retraining.
 ---
 
 # Kumo model explanations

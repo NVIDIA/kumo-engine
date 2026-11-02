@@ -1,10 +1,15 @@
 # Read-only Preflight — inferring structure before the graph gate
 
 Once the required fields are present, the agent resolves **structure** itself. It does not ask
-the user for column names, keys, or joins, and it does not call Kumo at this point — preflight is
-catalog SQL against `INFORMATION_SCHEMA` plus explicitly targeted, read-only probes against
+the user for column names, keys, or joins, and it builds no Kumo table or graph at this point —
+preflight is a catalog read of the source plus explicitly targeted, read-only probes against
 source data, and it is read-only throughout. A probe exists only to produce evidence for the
 proposal; it is never written anywhere and never becomes a model input.
+
+**What** preflight establishes is portable and written here. **How** it reads the source — which
+tool, which catalog query — belongs to the active host, in the *Access* and *Preflight* sections
+of `hosts/<host>/adapter.md`. The examples below are SQL; a host whose source has no SQL answers
+the same questions with its own reader.
 
 Preflight produces the **graph proposal** the user confirms at Node 1c. Every value carries a tag:
 
@@ -21,6 +26,37 @@ If the harness or host has already run preflight and handed you a result (for ex
 
 ---
 
+## 0. Access — can you read the source?
+
+Before §1, establish whether **you**, in this session, can read `source_scope` with a read-only
+tool you already have. The host adapter's *Access* section says which tools count and the check
+that proves each one reaches the data.
+
+- **You can read it** → run §1-§6 through that tool, and name the tool in the proposal's
+  `Source scope` line.
+- **You cannot** — no suitable tool, or the tool reaches the system but not this scope (an
+  authorization error, an unknown schema or bucket) → stop before §1. In one message, tell the
+  user exactly what you checked and what happened, quoting any error, and offer both ways forward:
+  1. **Access** — they make a read tool available, as the adapter describes, and tell you; you
+     then repeat the check.
+  2. **Details** — they paste the structure: tables, columns with types, and any declared keys,
+     in whatever form they have (the adapter lists useful ones). You build the proposal from it.
+
+  This is one ask-back. Do not also ask for anything §1-§8 would infer.
+- **Never** ask for a credential's value or invite one into the chat, sign in, change a tool's
+  configuration, or set up a tool on the user's behalf. Never broaden the search beyond
+  `source_scope` because the scope itself was unreadable.
+
+A proposal built from the user's details follows §1-§8 unchanged, except that nothing that needs
+row data can run: the §3 rule 5 probe is skipped, so its candidates stay `[inferred, unverified]`.
+Say in the `Source scope` line that the structure came from the user, not from a read.
+
+This check concerns your session only. The generated artifact authenticates at run time through
+its own connect step (the host's `runtime.md`), so your access — or its absence — changes
+neither the generated code nor any gate.
+
+---
+
 ## 1. Resolve `source_scope`
 
 If `source_scope` is a semantic view (`DB.SCHEMA.VIEW`), read `accept/semantic_view.md` and
@@ -32,7 +68,7 @@ SELECT TABLE_NAME, ROW_COUNT FROM <DB>.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCH
 ```
 
 - Not found, or zero tables → **ASK BACK**: the source cannot be resolved; ask for a valid
-  database and schema (or connector). Do not guess a similarly named schema.
+  location. Do not guess a similarly named schema, dataset, bucket or directory.
 - Found → enumerate tables **only inside this scope**. Never search other schemas, and never
   rank or curate tables by business relevance.
 
@@ -47,7 +83,8 @@ ORDER BY TABLE_NAME, ORDINAL_POSITION;
 ## 3. Primary key per table
 
 In order of preference, first match wins:
-1. A declared primary key (`SHOW PRIMARY KEYS IN SCHEMA <DB>.<schema>`).
+1. A declared primary key, where the source declares any (the adapter's preflight shows how to
+   read them; files and object stores declare none).
 2. `<TABLE_STEM>_ID`, where the stem is the table name without a `_DIM` / `_PROFILE` / `_EVENTS`
    suffix, singular or plural (`CUSTOMER_ID` in `CUSTOMERS`, `PAGE_VIEW_ID` in `PAGE_VIEW_EVENTS`).
 3. A column named `ROW_ID`, `ID`, or `EVENT_ID`.
@@ -122,7 +159,7 @@ exclusion the user can overturn at the gate, rather than asking the user for col
 
 A link is proposed when a column in table A has the **same name** as the primary key of table B
 (`FRAUD_EVENTS.CUSTOMER_ID → CUSTOMERS.CUSTOMER_ID`). Foreign-key constraints, if declared, are
-taken as well (`SHOW IMPORTED KEYS IN SCHEMA ...`). Nothing else is inferred — no fuzzy matching,
+taken as well, where the source declares any. Nothing else is inferred — no fuzzy matching,
 no value overlap checks, no joins executed.
 
 ## 7. Seeds and table mode
@@ -146,7 +183,7 @@ no value overlap checks, no joins executed.
 Present exactly this shape, then **stop and wait** for confirmation:
 
 ```
-Source scope: USER_DATA.E_COMMERCE [supplied] — 7 tables found
+Source scope: USER_DATA.E_COMMERCE [supplied] — 7 tables found, read via SQL
 Table mode: all-connected [default] — 7 of 7 tables reachable from the seeds
 
 Metadata
@@ -183,6 +220,6 @@ format.
   result is reported and then discarded; it is never written anywhere and never reaches training.
 - Rank tables by relevance or drop tables the user did not ask to drop.
 - Proceed to PQL before the proposal is confirmed.
-- Ask the user for columns, types, keys or joins. If preflight cannot run (no SQL access), say
-  that plainly and ask the user to confirm the proposal you can build from what they said —
-  still tagged, still confirmed, still no invented values.
+- Ask the user for columns, types, keys or joins — with one exception: when §0 finds you cannot
+  read the source, offering to take its structure from the user is the §0 ask-back. Whatever the
+  proposal is built from, it is still tagged, still confirmed, and contains no invented values.
