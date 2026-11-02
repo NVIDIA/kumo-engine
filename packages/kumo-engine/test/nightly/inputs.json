@@ -1,10 +1,23 @@
 {
-  "version": "nightly-t4-v1",
-  "bucket": "kumo-test-dataplane-bucket",
-  "region": "us-west-2",
-  "key": "engine-testing/anle/20261029/nightly-t4/559020b1ba1fd0d94cfabc6ad9594f9c391f4c0674bf55db1f96975a4f2082d3/inputs.tar",
-  "sha256": "559020b1ba1fd0d94cfabc6ad9594f9c391f4c0674bf55db1f96975a4f2082d3",
+  "format": "kumo-engine-nightly-job-v1",
+  "min_free_bytes": 274877906944,
   "input_manifest_sha256": "caba00478af611669d79b9998a6c2139cd689254fc5d642043c1fdde6d1a7cae",
-  "reference_key": "engine-testing/anle/20261029/nightly-t4/predecessors/5beae83c091359e588a8dcdf830b525554f04958f937dc1d8252906244a3f66f/reference.json",
-  "reference_sha256": "5beae83c091359e588a8dcdf830b525554f04958f937dc1d8252906244a3f66f"
+  "inputs": {
+    "bucket": "kumo-unit-test",
+    "region": "us-west-2",
+    "key": "diskgraph-profiles/engine-nightly/100m/v1/inputs/559020b1ba1fd0d94cfabc6ad9594f9c391f4c0674bf55db1f96975a4f2082d3/inputs.tar",
+    "sha256": "559020b1ba1fd0d94cfabc6ad9594f9c391f4c0674bf55db1f96975a4f2082d3"
+  },
+  "reference": {
+    "bucket": "kumo-unit-test",
+    "region": "us-west-2",
+    "key": "diskgraph-profiles/engine-nightly/100m/v1/references/5beae83c091359e588a8dcdf830b525554f04958f937dc1d8252906244a3f66f/reference.json",
+    "sha256": "5beae83c091359e588a8dcdf830b525554f04958f937dc1d8252906244a3f66f"
+  },
+  "policy": {
+    "bucket": "kumo-unit-test",
+    "region": "us-west-2",
+    "key": "diskgraph-profiles/engine-nightly/100m/v1/policies/450a1bc6d38f40010db2bc239e97af234661fbd391a310e486c6c05d6c754259/policy.json",
+    "sha256": "450a1bc6d38f40010db2bc239e97af234661fbd391a310e486c6c05d6c754259"
+  }
 }

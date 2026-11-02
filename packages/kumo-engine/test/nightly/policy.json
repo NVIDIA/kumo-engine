@@ -1,0 +1,63 @@
+{
+  "format": "kumo-engine-nightly-policy-v1",
+  "learning": {
+    "binary": {
+      "min_normal_gain": 0.05,
+      "max_control_drift": 0.05
+    },
+    "forecasting": {
+      "min_normal_gain": 0.041079268586867376,
+      "max_control_drift": 0.06590988979178297
+    },
+    "multiclass": {
+      "min_normal_gain": 0.03791898993783247,
+      "max_control_drift": 0.03791898993783247
+    },
+    "multilabel": {
+      "min_normal_gain": 0.011063935687244536,
+      "max_control_drift": 0.011063935687244536
+    },
+    "multilabel_ranking": {
+      "min_normal_gain": 0.0051149351620414785,
+      "max_control_drift": 0.0051149351620414785
+    },
+    "regression": {
+      "min_normal_gain": 0.2225932810027804,
+      "max_control_drift": 0.2225932810027804
+    },
+    "static_link": {
+      "min_normal_gain": 0.0009903613266046968,
+      "max_control_drift": 8.533632561193868e-05
+    },
+    "temporal_link": {
+      "min_normal_gain": 0.0018203973174952103,
+      "max_control_drift": 0.0018203973174952103
+    }
+  },
+  "predictions": {
+    "binary": {
+      "atol": 0.0001
+    },
+    "forecasting": {
+      "atol": 0.0001
+    },
+    "multiclass": {
+      "atol": 0.0001
+    },
+    "multilabel": {
+      "atol": 0.0001
+    },
+    "multilabel_ranking": {
+      "atol": 0.0001
+    },
+    "regression": {
+      "atol": 0.0001
+    },
+    "static_link": {
+      "atol": 0.0004
+    },
+    "temporal_link": {
+      "atol": 0.0001
+    }
+  }
+}

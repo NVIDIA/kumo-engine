@@ -4,7 +4,6 @@
 """Small CPU checks for failures that would invalidate a nightly result."""
 
 import importlib.util
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,57 +19,19 @@ APPROVED = '1bc15ecb7696bce216b05aa883d6897d2b8ce4342c6c2f9d62b7cc28b314539e'
 
 
 class NightlyRuntimeTest(unittest.TestCase):
-    def test_reproducibility_uses_strict_public_torch_algorithms(self):
+    def test_observer_keeps_default_kernels_after_cuda_initialization(self):
+        import pytorch_lightning as pl
         import torch
 
         previous = torch.are_deterministic_algorithms_enabled()
-        warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
-        self.addCleanup(torch.use_deterministic_algorithms, previous,
-                        warn_only=warn_only)
+        self.addCleanup(torch.use_deterministic_algorithms, previous)
         torch.use_deterministic_algorithms(False)
-        with patch.dict(os.environ, {'CUBLAS_WORKSPACE_CONFIG': ':16:8'}):
-            profile = nightly.configure_reproducibility()
-            self.assertTrue(torch.are_deterministic_algorithms_enabled())
-            self.assertFalse(
-                torch.is_deterministic_algorithms_warn_only_enabled())
-            self.assertEqual(profile, {
-                'torch_deterministic_algorithms': True,
-                'cublas_workspace_config': ':4096:8'
-            })
-            self.assertEqual(os.environ['CUBLAS_WORKSPACE_CONFIG'], ':4096:8')
-        with patch.dict(os.environ, {'CUBLAS_WORKSPACE_CONFIG': ':16:8'}), \
-                patch.object(torch.cuda, 'is_initialized', return_value=True):
-            with self.assertRaisesRegex(ValueError, 'before initializing'):
-                nightly.configure_reproducibility()
-
-    def test_resource_capture_keeps_cpu_tree_and_gpu_measures_separate(self):
-        import torch
-
-        with patch.object(torch.cuda, 'mem_get_info', return_value=(1000, 9000)), \
-                patch.object(torch.cuda, 'memory_allocated', return_value=2000), \
-                patch.object(torch.cuda, 'memory_reserved', return_value=3000):
-            values, finish = nightly.start_measurement('training')
-            finish()
-        nightly.validate_measurement(values)
-        self.assertGreaterEqual(values['samples'], 2)
-        self.assertGreater(values['cpu_tree_pss_sampled_peak_bytes'], 0)
-        self.assertGreaterEqual(values['cpu_tree_rss_sampled_peak_bytes'],
-                                values['cpu_tree_pss_sampled_peak_bytes'])
-        self.assertEqual(values['cuda_device_used_sampled_peak_bytes'], 8000)
-        self.assertEqual(values['torch_allocated_sampled_peak_bytes'], 2000)
-        self.assertEqual(values['torch_reserved_sampled_peak_bytes'], 3000)
-        self.assertGreater(values['elapsed_seconds'], 0)
-
-    def test_missing_gpu_measurement_invalidates_the_measurement(self):
-        import torch
-
-        with patch.object(torch.cuda, 'mem_get_info',
-                          side_effect=RuntimeError('GPU query failed')):
-            values, finish = nightly.start_measurement('training')
-            finish()
-        self.assertIsNone(values['cuda_device_used_sampled_peak_bytes'])
-        with self.assertRaisesRegex(ValueError, 'measurement'):
-            nightly.validate_measurement(values)
+        state = dict(stage='predict')
+        with patch.object(torch.cuda, 'is_initialized', return_value=True), \
+                nightly.observe_cuda(state):
+            pl.Trainer(accelerator='cpu', devices=1, logger=False,
+                       enable_checkpointing=False)
+        self.assertFalse(torch.are_deterministic_algorithms_enabled())
 
     def rows(self):
         return [
@@ -80,44 +41,6 @@ class NightlyRuntimeTest(unittest.TestCase):
                                      for stage in nightly.PREDICTIONS})
             for task in nightly.smoke.TASKS for arm in ('normal', 'control')
         ]
-
-    def test_one_report_requires_all_sixteen_cases_and_rejects_two_reports(
-            self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            report = dict(format='kumo-engine-nightly-result-v1',
-                          status='MEASURED', input_manifest_sha256='f' * 64,
-                          expected_runs=16, completed_runs=16, runs=self.rows())
-            path = root / 'nightly-result.json'
-            nightly.save(path, report)
-            self.assertEqual(nightly.load_report(root, 'f' * 64),
-                             (path, report))
-            for bad in [
-                    dict(report, completed_runs=15),
-                    dict(report, runs=report['runs'][:-1]),
-                    dict(report, shard='node'),
-                    dict(report, status='FAIL'),
-                    dict(
-                        report, runs=[
-                            dict(row, fit_id='reused') for row in report['runs']
-                        ]),
-                    dict(
-                        report, runs=[
-                            dict(row, status='FAIL') if i == 3 else row
-                            for i, row in enumerate(report['runs'])
-                        ])
-            ]:
-                nightly.save(path, bad)
-                with self.assertRaises(ValueError):
-                    nightly.load_report(root, 'f' * 64)
-            nightly.save(path, report)
-            nightly.save(root / 'old/nightly-result.json', report)
-            with self.assertRaises(ValueError):
-                nightly.load_report(root, 'f' * 64)
-            path.unlink()
-            (root / 'old/nightly-result.json').unlink()
-            with self.assertRaises(ValueError):
-                nightly.load_report(root, 'f' * 64)
 
     def test_frozen_files_reject_escape_symlink_and_modified_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -178,14 +101,18 @@ class NightlyRuntimeTest(unittest.TestCase):
             seen = np.zeros(8000000, dtype=bool)
             count, previous = 0, None
             # Reproduce the worker's 48-core default with a real DuckDB query.
-            with patch.object(duckdb, 'connect', side_effect=lambda *, config:
-                              connect(config={'threads': 48, **config})):
+            with patch.object(
+                    duckdb, 'connect',
+                    side_effect=lambda *, config: connect(config={
+                        'threads': 48,
+                        **config
+                    })):
                 for frame in nightly.ordered_batches([str(source)],
                                                      root / 'spill'):
                     pd.testing.assert_frame_equal(
-                        frame, frame.sort_values(
-                            ['ENTITY', 'SCORE', 'CLASS'],
-                            ascending=[True, False, True]))
+                        frame,
+                        frame.sort_values(['ENTITY', 'SCORE', 'CLASS'],
+                                          ascending=[True, False, True]))
                     first = (int(frame.ENTITY.iloc[0]),
                              -float(frame.SCORE.iloc[0]),
                              int(frame.CLASS.iloc[0]))
@@ -195,8 +122,8 @@ class NightlyRuntimeTest(unittest.TestCase):
                                 -float(frame.SCORE.iloc[-1]),
                                 int(frame.CLASS.iloc[-1]))
                     positions = frame.ROW_ID.to_numpy()
-                    self.assertTrue(((positions >= 0) &
-                                     (positions < len(seen))).all())
+                    self.assertTrue(
+                        ((positions >= 0) & (positions < len(seen))).all())
                     seen[positions] = True
                     count += len(frame)
             self.assertEqual(count, 8000000)
@@ -226,32 +153,20 @@ class NightlyRuntimeTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             nightly.check_inputs(inputs[['ENTITY1']], truth)
 
-    def test_missing_or_changed_retained_artifact_fails(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / 'raw.parquet').write_bytes(b'raw')
-            artifacts = {'raw.parquet': nightly.digest(root / 'raw.parquet')}
-            nightly.verify_artifacts(root, artifacts)
-            with self.assertRaises(ValueError):
-                nightly.verify_artifacts(root, artifacts,
-                                         required=['missing-output.parquet'])
-            (root / 'raw.parquet').unlink()
-            with self.assertRaises(ValueError):
-                nightly.verify_artifacts(root, artifacts)
-
     def test_static_inputs_accept_frozen_timestamps_and_reject_changes(self):
-        truth = pd.DataFrame(dict(
-            ENTITY1=[2, 1], TIMESTAMP=pd.to_datetime(['1970-01-01'] * 2),
-            TARGET1=[[10], [11]]))
+        truth = pd.DataFrame(
+            dict(ENTITY1=[2, 1], TIMESTAMP=pd.to_datetime(['1970-01-01'] * 2),
+                 TARGET1=[[10], [11]]))
         inputs = truth[['ENTITY1', 'TIMESTAMP']]
         self.assertEqual(nightly.check_inputs(inputs, truth, static=True),
                          [2, 1])
-        self.assertEqual(nightly.check_inputs(
-            inputs.iloc[1:], truth, static=True, partial=True), [1])
-        self.assertEqual(nightly.check_inputs(
-            inputs[['ENTITY1']], truth, static=True), [2, 1])
-        for bad in (inputs.assign(TIMESTAMP=pd.Timestamp('1970-01-02')),
-                    truth):
+        self.assertEqual(
+            nightly.check_inputs(inputs.iloc[1:], truth, static=True,
+                                 partial=True), [1])
+        self.assertEqual(
+            nightly.check_inputs(inputs[['ENTITY1']], truth, static=True),
+            [2, 1])
+        for bad in (inputs.assign(TIMESTAMP=pd.Timestamp('1970-01-02')), truth):
             with self.subTest(columns=list(bad)), self.assertRaises(ValueError):
                 nightly.check_inputs(bad, truth, static=True)
 
@@ -271,27 +186,14 @@ class NightlyRuntimeTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 nightly.check_results(bad)
 
-    def test_nightly_numeric_reporting_keeps_the_default_pr_bound_strict(self):
-        with self.assertRaises(ValueError):
-            nightly.smoke.compare_predictions([[.5]], [[.501]], atol=1e-4)
-        compare = nightly.compare_predictions
-        result = compare([[.5]], [[.501]], atol=0,
-                         before_decisions=[True], after_decisions=[True])
-        self.assertFalse(result['within_tolerance'])
-        self.assertAlmostEqual(result['max_abs_difference'], .001)
-        for after, decisions in (([[.501]], [False]),
-                                 ([[float('nan')]], [True])):
-            with self.assertRaises(ValueError):
-                compare([[.5]], after,
-                        before_decisions=[True], after_decisions=decisions)
-
     def test_nightly_public_callback_keeps_exact_restored_state_proof(self):
         import pytorch_lightning as pl
         import torch
 
-        self.addCleanup(torch.use_deterministic_algorithms,
-                        torch.are_deterministic_algorithms_enabled(),
-                        warn_only=torch.is_deterministic_algorithms_warn_only_enabled())
+        self.addCleanup(
+            torch.use_deterministic_algorithms,
+            torch.are_deterministic_algorithms_enabled(),
+            warn_only=torch.is_deterministic_algorithms_warn_only_enabled())
         model = pl.LightningModule()
         model.layer = torch.nn.Linear(2, 1)
         with tempfile.TemporaryDirectory() as directory:
@@ -300,12 +202,14 @@ class NightlyRuntimeTest(unittest.TestCase):
             state = dict(stage='reload', reload_checks=0, restored_tensors=0,
                          checkpoint_sha256=nightly.digest(checkpoint))
             with nightly.observe_cuda(state):
-                trainer = pl.Trainer(accelerator='cpu', devices=1,
-                                     logger=False, enable_checkpointing=False,
+                trainer = pl.Trainer(accelerator='cpu', devices=1, logger=False,
+                                     enable_checkpointing=False,
                                      enable_model_summary=False)
                 trainer.ckpt_path = str(checkpoint)
-                [proof] = [cb for cb in trainer.callbacks
-                           if type(cb).__module__ == nightly.__name__]
+                [proof] = [
+                    cb for cb in trainer.callbacks
+                    if type(cb).__module__ == nightly.__name__
+                ]
                 proof.on_predict_start(trainer, model)
                 self.assertEqual(state['reload_checks'], 1)
                 self.assertEqual(state['restored_tensors'], 2)

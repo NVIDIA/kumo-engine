@@ -1,136 +1,113 @@
-# Engine nightly on the fixed AWS VM
+# Engine nightly learning checks
 
-The manual workflow builds the selected wheel on a CPU GitHub runner.
-A separate CPU job stages it in S3 and controls the fixed AWS VM through
-Systems Manager Run Command (SSM). Scheduling remains disabled.
-The workflow publishes no release, wheel, or reference.
+The nightly suite checks eight tasks on the frozen synthetic 100M inputs.
+Each task has one normal fit and one fit with scrambled answers, for sixteen
+fits total. The same models supply full, repeated, partial, and reloaded
+predictions. The suite requires real CUDA work and useful learning.
 
-## Execution and cancellation
+## Execution and permissions
 
-The build job has no AWS role or OIDC permission. It uses the existing builder
-and records the selected revision, tree, version, and wheel checksum.
-The controller uses the protected test environment and renews expired temporary
-AWS credentials through [GitHub OIDC](https://docs.github.com/en/actions/reference/security/oidc).
-It does not change IAM or forward its credentials to the VM.
+The workflow accepts pushes to `main` and NVIDIA's approved
+`pull-request/<N>` branches. The copied commit must still match the PR head.
+It has no cron or arbitrary-branch manual trigger. Main GPU execution requires
+`KUMO_ENGINE_NIGHTLY_ENABLED=true`; leave that variable unset until qualification.
+The copied-PR path supplies the full qualification run after approval.
 
-The request binds the run ID, attempt, nonce, source, wheel, code, and inputs.
-The VM checks their hashes and creates a fresh environment and result directory.
-Immutable input files can be reused after their checksums pass.
-Models and indexes stay remote. Reports and logs return through S3 and GitHub
-artifacts on success or failure.
+Public GitHub-hosted jobs select the commit and build its wheel without cloud
+credentials. The GPU job uses NVIDIA's `nv-gpu-amd64-rtxpro6000-1gpu` group and
+`gha-kumo-workflow-tests` environment, as in the Engine PR check. Only the data
+download step receives AWS credentials. It reads the finished wheel from the
+build artifact and the immutable data objects from shared S3 storage.
 
-The selected VM is `i-06dd0e3c558780731` in `us-east-2`.
-Its `g7e.12xlarge` configuration has 48 CPUs, 512 GiB nominal RAM, local NVMe,
-and two RTX PRO 6000 GPUs. Model execution uses GPU0 only.
-The VM has no GitHub runner. The workflow does not stop, resize, or provision it.
+The job installs the candidate wheel with its own requirements in a fresh
+environment. It runs `pip check` and compares installed wheel files with the
+finished archive once before fitting. The frozen dependency profile applies
+only to reference execution. Candidate dependency additions and upgrades do not
+require a new input archive.
 
-GitHub concurrency is scoped per ref. A separate exclusive host lock protects
-the shared GPU machine. A busy host fails admission without stopping its job.
-The unprivileged model process receives an isolated home and no personal AWS
-configuration. Its subprocesses inherit the lock until their whole process
-group stops. A systemd deadline bounds execution independently of GitHub.
+## Inputs, reference, and policy
 
-The CI role lacks `CancelCommand`. Cancellation uploads a marker bound to the
-exact request. The host polls it during installation and execution.
-A separate cleanup job repeats cancellation after controller failure and
-confirms termination. Unconfirmed termination remains an error.
+The [input descriptor](../../packages/kumo-engine/test/nightly/inputs.json)
+selects shared objects under `diskgraph-profiles/engine-nightly/100m/v1/` in
+`kumo-unit-test`, in `us-west-2`. Each object has a SHA-256 checksum. The descriptor
+also binds the input manifest and required free disk space.
+`KUMO_ENGINE_NIGHTLY_CONFIG` can override the descriptor with the same schema.
 
-The build allows 60 minutes. The host allows 180 minutes, the service 185,
-the controller 195, and cleanup eight. These are provisional bounds, not a
-measured full runtime. Keep the schedule off until a full run is measured.
+The input archive contains data and metadata, not executable workers. It covers
+all eight tasks, both answer arms, their full prediction populations, and the
+three source graph schemas. Static-link uses its separate static commerce view.
+The runner rejects changed files, missing rows, invalid keys, and incomplete
+forecast coordinates.
 
-## Sixteen cases and measurements
+The reference records baseline scores for every task and answer arm. The
+[policy proposal](../../packages/kumo-engine/test/nightly/policy.json) supplies
+separate learning and prediction bounds for every task. Review those bounds,
+the complete run, and the reference before changing the pinned checksums.
+A run does not approve or publish a new reference.
 
-Run eight tasks with seed zero, each with normal labels and scrambled controls.
-Each case has one primary fit. Use the full frozen approximately 100M-row
-adtech, delivery, and commerce inputs. Do not add the eight small PR fits.
-The shared PR action and helper remain unchanged from PR135.
+The learning proposal uses ten percent of each baseline's distance to the nearer
+score boundary. For an error metric, it uses ten percent of the baseline error.
+The normal margin and control allowance use their respective baselines.
+These are explicit proposed margins, not measured confidence intervals.
+Prediction bounds retain the PR check's `0.0001` absolute tolerance except for
+static-link. Its proposed `0.0004` bound covers the retained partial-prediction
+difference of `0.000322878360748291` with about 24 percent headroom.
 
-Require actual CUDA execution, finite complete predictions, valid IDs,
-unchanged labels and ranks, and restored checkpoint state after reload.
-Keep product OOM recovery. Record batch counts and actual early stopping.
-A recovered reduced-batch operation cannot supply a valid timed case.
-Missing work or resource measurements invalidate the result.
+The current historical reference does not satisfy all proposed learning bounds.
+Its static-link normal score is below its baseline. Its forecasting control
+also differs substantially from its baseline. The temporal-link control also
+exceeds the proposed drift bound. These remain failures. The
+proposal does not weaken the bounds to accept them, and no full run on NVIDIA
+runners qualifies the proposal yet.
 
-Use PyTorch's strict deterministic algorithms and set
-`CUBLAS_WORKSPACE_CONFIG=:4096:8` before CUDA initialization. Each Lightning
-trainer also requests deterministic execution. Unsupported operations fail
-instead of silently using a nondeterministic kernel. Record these runtime
-settings; different or missing settings exclude performance percentages.
-The wheel, model recipe, inputs, seed and batch setting remain unchanged.
+## Required behavior
 
-The same sixteen fits supply preparation, training, prediction, repeat,
-partial-prediction, reload, and complete-case times. Synchronize CUDA at
-operation boundaries. Record process-tree PSS/RSS, device memory used,
-and Torch allocated/reserved memory with the sampling interval and errors.
-PSS apportions shared pages; RSS counts them in each process.
-Sampled peaks do not guarantee the instantaneous maximum.
+For each task, normal gain must meet `min_normal_gain`. Gain means score minus
+baseline for higher-is-better metrics. For regression and forecasting, it means
+baseline error minus model error. The scrambled control's absolute difference
+from its own baseline must stay within `max_control_drift`. Missing or invalid
+scores fail. A model with no gain or a control that learns too much fails.
 
-Record total controller time separately, including staging, waiting, collection,
-and validation. Host time covers setup through process cleanup and excludes
-final packaging and upload. GitHub records build and workflow duration.
+Every prediction call must complete the expected entities and finite coordinates.
+Numeric differences must meet the task's absolute `atol` bound by class ID.
+Relative tolerance is zero. Non-link tasks use the shared Engine PR comparison.
+Binary and multilabel decisions can change only near their threshold.
+Multiclass decisions and reversed ranking pairs must meet `atol` in
+both outputs. A top-K membership change also requires retained K+1 cutoff
+coordinates on both sides. Missing cutoff evidence or a wider change fails.
+These checks apply to repeated, partial, and reloaded predictions.
 
-Nightly uses the frozen training recipe, including its existing early stopping.
-It does not require Group 5's twenty warmup and two hundred measured batches.
-Whole-fit times are not steady-state training windows. Group 5 calibration and
-repeated same-wheel pairs are separate work. They add no routine nightly fits.
+The runner uses public training results, artifact paths, saved bundles, and
+Lightning callbacks. It verifies that the reloaded weights match the selected
+checkpoint. It does not search private fit directories or replace Engine fit
+methods. Training uses seed zero and the frozen model recipe. Prediction uses
+the product's default kernels and recovery behavior.
 
-## Reporting and references
+Successful out-of-memory recovery does not fail the suite. Normal product logs
+retain recovery warnings. The harness does not parse those strings to decide
+success. Complete CUDA work, valid outputs, and the learning gates remain
+required. Later cases retain their results when an earlier case fails.
 
-Normal-model quality reports a 5% relative degradation margin.
-Time, CPU memory, and GPU memory report 20% margins. Crossing these margins
-does not fail CI or publication. Normal gain, scrambled controls, and numerical
-score drift remain diagnostic. Labels and ranks remain strict.
+## Capacity, evidence, and cleanup
 
-A successful nightly requires sixteen completed cases and valid current
-measurements. Historical metadata or score replay cannot replace that proof.
-Comparison also checks the installed wheel, source, input hashes, and artifacts.
+Before installation or extraction, the job checks free disk space. The proposed
+256-GiB allowance is operational headroom, not a measured requirement. The job
+also records CPU count and system memory. If the workload does not fit the
+managed runner, raise its measured capacity requirements on PR42. Do not add a
+separate VM transport.
 
-Performance percentages require matching inputs, configuration, dependencies,
-hardware, driver, cache conditions, measurement scope, and actual work.
-Missing or incompatible references leave percentages unavailable. Reports keep
-raw values and explain the differences. A routine driver change alone does not
-fail the functional nightly. This does not qualify incompatible performance
-comparisons. Both actual dependency fingerprints remain visible.
+The CPU build has a 60-minute limit. The GPU job has a 180-minute limit and
+reserves time for artifact upload and cleanup. Setup, graph preparation, all
+sixteen cases, and evidence handling need one complete measured run before the
+suite can be scheduled. Per-case samples cannot prove that deadline.
 
-The [descriptor](../../packages/kumo-engine/test/nightly/inputs.json) pins the
-unchanged archive, manifest, and predecessor reference. Its historical T4 label
-does not select hardware. The approved wheel is `kumo-engine==1.0.0` at its
-recorded checksum. Install the checksum-bound dependency profile for each role,
-then the exact wheel without dependency resolution. Run `pip check` and verify
-installed files before fitting. Candidate pins include its Lightning requirement.
-Do not add optional test packages to model environments.
+The result artifact contains logs, model bundles, canonical predictions, and
+raw outputs. It is retained for fourteen days. Each job creates its own marked
+temporary directory. After upload, cleanup removes that job's environments,
+installer cache, generated indexes, scratch, and local evidence. An upload
+failure preserves the evidence directory while temporary execution work is
+removed. Shared inputs, original references, and earlier evidence stay intact.
 
-The reference declares the Lightning 2.6.5 to 2.6.6 pair. Other dependency
-changes remain incompatible for percentages. Manual `reference_only: true`
-can prepare a proposed reference from a complete valid run. It never publishes
-that reference. Admission requires review and preservation of its predecessor.
-
-## Reuse and current gaps
-
-Audit each retained case before another fit. Reuse compatible predictions for
-scores and saved models for missing inference checks. Keep exact checkpoint
-identities and known configuration differences. Do not default to another full
-reference and candidate training run. This audit does not change the routine
-sixteen-case nightly roster.
-
-Twelve retained cases support score replay. The saved static-link normal model
-passed repeat and partial checks, but reload reordered two positions for one
-of 176,856 entities. The strict order assertion remains FAIL.
-An isolated GPU replay reproduced the same swap without reloading the model.
-With public deterministic PyTorch algorithms, the saved model then passed
-full repeat, partial and reload rank checks on the original inputs, with zero
-new fits. Reload verified 303 restored tensors. The three checks took 345.30
-seconds and processed 88,428,000, 44,214,000 and 88,428,000 output rows.
-Repeat and reload scores matched exactly. Partial scores differed by at most
-`0.000322878360748291`, above the compact PR check's `1e-4` bound.
-Keep that difference visible under nightly's existing reporting policy.
-These checks compare the same new runtime protocol. They preserve the earlier
-historical-protocol FAIL and do not establish a full sixteen-case workflow PASS.
-Static-link control and both temporal-link cases lack located and verified
-historical models and raw predictions. Preserve these gaps and every failure.
-
-The separate [wheel-delivery run](https://github.com/NVIDIA/kumo-engine/actions/runs/41146970366)
-passed build, transfer, installation, and import with zero fits.
-It does not prove this full model-suite route. Keep the PR draft and scheduling
-disabled until the remaining GPU checks and review are complete.
+Elapsed times remain observations. The suite has no slowdown gate, nested
+process-memory samplers, or historical performance percentages. It keeps
+functional and learning failures separate from unmeasured performance claims.
