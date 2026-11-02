@@ -82,6 +82,8 @@ class BaseNodeLightningModule(BaseLightningModule, ABC):
     ) -> TrainModuleOutput:
 
         outputs = super().evaluation_epoch_end(stage, step_outputs)
+        if self.is_fitting:
+            return outputs
 
         assert outputs is not None
         logits = outputs.get('logits')

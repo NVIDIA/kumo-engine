@@ -15,6 +15,7 @@ from kumo_core.train.base_node_module import BaseNodeLightningModule
 from kumo_core.train.loss import loss_resolver
 from kumo_core.types import TaskType
 from kumoapi.train import TrainingStage
+from pytorch_lightning.trainer.states import TrainerFn
 
 
 @pytest.mark.parametrize('task_type', [
@@ -120,3 +121,29 @@ def test_calibration_uses_registered_filesystem_for_adls_checkpoint(
     assert calibrator.reliability_diagram.call_args.args[-1] == (
         'abfss://data@account.dfs.core.windows.net/jobs/version_0/'
         'calibration/reliability_diagram_test.png')
+
+
+@pytest.mark.parametrize('fn, kept', [
+    (TrainerFn.FITTING, 0),
+    (TrainerFn.VALIDATING, 1),
+])
+def test_validation_keeps_step_outputs_only_outside_fit(
+        monkeypatch, fn, kept):
+    monkeypatch.setattr(BaseNodeLightningModule, '__abstractmethods__', set())
+    module = BaseNodeLightningModule(TaskType.BINARY_CLASSIFICATION)
+    module._trainer = SimpleNamespace(
+        ckpt_path=None,
+        sanity_checking=False,
+        state=SimpleNamespace(fn=fn),
+    )
+    module.evaluation_step = Mock(return_value={
+        'logits': torch.tensor([[1.0]]),
+        'target': torch.tensor([[1.0]]),
+    })
+
+    module.validation_step(SimpleNamespace(), 0)
+    assert len(module._validation_step_outputs) == kept
+
+    with patch.object(BaseLightningModule, 'compute_metrics'):
+        module.on_validation_epoch_end()
+    assert ('prob' in module.outputs) == bool(kept)
