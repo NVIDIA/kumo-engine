@@ -3,6 +3,7 @@
 P1 runs five sampling operations on the full commerce/100M graph. Each operation
 consumes the frozen 300000 seed evaluations. It fetches features for every sampled
 node. It does not construct, fit, or load a model.
+The seed map has 100000 customers. Each operation repeats it three times.
 
 The sampler and feature reader come from
 `packages/diskgraph/scripts/benchmarks/commerce/dg_bench.py` in this repository.
@@ -29,8 +30,16 @@ The candidate median must stay at or below
 `reference_median * (1 + rtol) + atol_seconds`. Missing or invalid timing fails
 the check. Reference review must approve the timing budget for its workload and
 CPU capacity. Cache state remains uncontrolled, so the budget must account for
-its variation. This code change does not establish a calibrated timing budget.
+its variation.
 This check does not gate memory use.
+
+The [calibration record](engine-weekly-p1-calibration.json) contains three native
+blocks with the published 1.0.0 wheel. All fifteen operations completed with the
+same counts and membership. The three block medians range from 89.67 to 89.97
+seconds. The proposed budget is ten percent plus five seconds above the middle
+block's median, or 103.67 seconds. That allowance is operational headroom, not a
+measured confidence interval. It still needs reference review. These direct
+runs do not qualify the full GitHub workflow or a different candidate wheel.
 
 Run the script with the selected wheel's isolated Python environment. Supply
 `--input-root`, `--manifest-sha256`, `--output`, `--host-lock`, `--wheel`, and
