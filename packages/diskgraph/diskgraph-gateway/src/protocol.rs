@@ -9,7 +9,7 @@ use arrow_schema::Schema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const VERSION: u32 = 8;
+pub const VERSION: u32 = 9;
 pub(crate) const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize, PartialEq, Eq)]

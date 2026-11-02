@@ -18,7 +18,7 @@ verification belong to the preparation layer. This gateway reads those files;
 it does not upload or register them. Missing extension metadata returns
 `FailedPrecondition` so the caller can finish materialization before retrying.
 
-Protocol version 8 streams native Arrow component record batches. A `DoGet`
+Protocol version 9 streams native Arrow component record batches. A `DoGet`
 ticket contains one normalized epoch/shard request. Protocol metadata always
 lives in Flight `app_metadata`:
 
@@ -48,6 +48,31 @@ Metadata-only minibatch 1 start + layout
   ...
 Successful EOF
 ```
+
+Aligned columns share component record batches: seed IDs/positions, optional
+timestamps/weights, per-seed LP counts and appended target columns; sampled node
+IDs with their seed assignments per channel/type; edge source/destination
+indices per channel/relation; and ragged LP positive IDs/masks/optional weights
+and local indices. Negative masks, exclusion IDs and per-hop counts retain their
+own row domains. Feature batches retain their original columns and chunks.
+The empty negative mask remains an explicit component.
+
+Layout references select columns by position:
+
+```json
+{
+  "seed_node_ids": {"component": 0, "column": 2},
+  "target": {"component": 0, "columns": [5, 7]}
+}
+```
+
+`column` always returns an Arrow array. A half-open `columns` range always
+returns a record batch; no `array` or `as` marker is used. Whole feature batches
+use `[0, number_of_columns]`. Targets are appended as ordinary columns, without
+a struct wrapper. Original target field names, order, types, field metadata and
+schema metadata survive grouping and projection. Positional references support
+duplicate names. Invalid component IDs, column indices, ranges or row alignment
+fail rather than silently changing the trainer's data.
 
 `diskgraph.SamplingClient` uses Rust's low-level `FlightDataDecoder`, which
 supports schema changes and resets dictionaries between schemas. The ordinary

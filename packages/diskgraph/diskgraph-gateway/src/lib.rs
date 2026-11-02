@@ -30,12 +30,14 @@ use tonic::{Request, Response, Status};
 
 mod client;
 mod encoding;
+mod layout;
 mod paths;
 mod protocol;
 mod runtime;
 mod server;
 pub use client::{DecodedBatch, SamplingClient, SamplingStream};
 use encoding::BatchEncoder;
+pub use layout::{resolve_reference, ArrowValue};
 use paths::task_path;
 pub use protocol::VERSION as SAMPLING_PROTOCOL_VERSION;
 use protocol::{BatchMetadata, ComponentMetadata, ControlKind, MAX_BATCH_BYTES, VERSION};

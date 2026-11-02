@@ -203,7 +203,8 @@ starting the server to receive native lifecycle and progress events.
 `diskgraph.SamplingClient(endpoint).open(ticket_bytes)` opens an epoch shard and
 returns a `SamplingStream` with `num_samples`, `num_batches`, iteration and
 `close()`. The Rust client accepts component schema changes and exports complete
-native batches through the Arrow C Data Interface. Closing a client cancels its
+native batches through the Arrow C Data Interface. Column references return
+arrays; column-range references return record batches, including grouped targets. Closing a client cancels its
 streams; closing a stream interrupts blocked reads. Network reads release the
 GIL. The standard PyArrow Flight reader assumes one schema and cannot consume
 this component protocol. See the [gateway contract](../diskgraph-gateway/README.md).

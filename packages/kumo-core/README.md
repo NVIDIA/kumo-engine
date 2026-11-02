@@ -130,6 +130,11 @@ feature components can have different schemas and row counts. Component
 application metadata carries only the minibatch and component IDs. `diskgraph.SamplingClient`
 handles schema changes in Rust and exposes assembled Arrow objects to Python
 through the C Data Interface, without nested IPC streams or Python decoding.
+Seed fields and target columns share one record batch; node IDs/seed assignments
+and edge endpoints are grouped by channel and type. The layout selects an array
+with `column` or a record batch with a half-open `columns` range, preserving the
+existing trainer batch structure without target struct columns or `as` markers.
+Feature tables and payloads with different row alignment remain separate.
 Each logical minibatch is limited to 64 MiB across all component messages.
 The native client validates sequence numbers, the received count at Flight EOF, and the
 final RPC status; failures propagate without replaying an incomplete epoch. Closing an iterator cancels its

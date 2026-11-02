@@ -4,8 +4,8 @@
 
 //! Schema-aware native Flight client handles and Arrow C Data Interface export.
 use arrow::pyarrow::ToPyArrow;
-use arrow_array::{Array, RecordBatch};
-use diskgraph_gateway::{SamplingClient, SamplingStream};
+use arrow_array::RecordBatch;
+use diskgraph_gateway::{resolve_reference, ArrowValue, SamplingClient, SamplingStream};
 use pyo3::{
     exceptions::PyValueError,
     prelude::*,
@@ -41,30 +41,15 @@ fn export_layout<'py>(
     value: &Value,
     components: &[RecordBatch],
 ) -> PyResult<Bound<'py, PyAny>> {
+    if let Some(value) = resolve_reference(value, components)
+        .map_err(|error| PyValueError::new_err(format!("{error:#}")))?
+    {
+        return match value {
+            ArrowValue::Array(array) => array.to_data().to_pyarrow(py),
+            ArrowValue::RecordBatch(batch) => batch.to_pyarrow(py),
+        };
+    }
     match value {
-        Value::Object(values)
-            if values.len() == 2
-                && values.contains_key("__arrow__")
-                && values.get("array").is_some_and(Value::is_boolean) =>
-        {
-            let slot = values["__arrow__"]
-                .as_u64()
-                .and_then(|slot| usize::try_from(slot).ok())
-                .ok_or_else(|| PyValueError::new_err("Invalid Arrow component reference"))?;
-            let batch = components
-                .get(slot)
-                .ok_or_else(|| PyValueError::new_err("Invalid Arrow component reference"))?;
-            if values["array"] == true {
-                if batch.num_columns() != 1 {
-                    return Err(PyValueError::new_err(
-                        "Array component must contain one column",
-                    ));
-                }
-                batch.column(0).to_data().to_pyarrow(py)
-            } else {
-                batch.to_pyarrow(py)
-            }
-        }
         Value::Object(values) => {
             let result = PyDict::new(py);
             for (key, value) in values {

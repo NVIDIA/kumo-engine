@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Reusable native Flight client with schema-aware component assembly.
+use crate::layout::validate_layout;
 use crate::protocol::{
     BatchMetadata, ComponentMetadata, ControlKind, StreamMetadata, MAX_BATCH_BYTES, VERSION,
 };
@@ -309,40 +310,6 @@ impl Drop for SamplingStream {
     }
 }
 
-fn validate_layout(value: &Value, components: &[RecordBatch]) -> anyhow::Result<()> {
-    match value {
-        Value::Object(values)
-            if values.len() == 2
-                && values.contains_key("__arrow__")
-                && values.get("array").is_some_and(Value::is_boolean) =>
-        {
-            let slot = values["__arrow__"]
-                .as_u64()
-                .and_then(|slot| usize::try_from(slot).ok())
-                .context("Invalid Arrow component reference")?;
-            let batch = components
-                .get(slot)
-                .context("Invalid Arrow component reference")?;
-            ensure!(
-                values["array"] != true || batch.num_columns() == 1,
-                "Array component must contain one column"
-            );
-        }
-        Value::Object(values) => {
-            for value in values.values() {
-                validate_layout(value, components)?;
-            }
-        }
-        Value::Array(values) => {
-            for value in values {
-                validate_layout(value, components)?;
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,7 +322,7 @@ mod tests {
     use serde_json::json;
 
     fn layout() -> Value {
-        json!({"task": {"target": {"__arrow__": 0, "array": false}}, "graphs": {}, "raw_features": {}})
+        json!({"task": {"target": {"component": 0, "columns": [0,1]}}, "graphs": {}, "raw_features": {}})
     }
     pub(super) fn batch() -> RecordBatch {
         RecordBatch::try_from_iter([("target", Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef)])
@@ -483,9 +450,7 @@ mod tests {
                     0,
                     1,
                     &batch(),
-                    Some(
-                        json!({"task":{"__arrow__":9,"array":true},"graphs":{},"raw_features":{}}),
-                    ),
+                    Some(json!({"task":{"component":9,"column":0},"graphs":{},"raw_features":{}})),
                 ),
                 1,
                 "component reference",
@@ -602,11 +567,6 @@ mod tests {
                 tonic::Code::Cancelled
             );
         }
-    }
-    #[test]
-    fn layout_reference_names_can_be_node_type_names() {
-        let marker = json!({"__arrow__":0,"array":true});
-        validate_layout(&json!({"__arrow__": marker, "array": marker}), &[batch()]).unwrap();
     }
 }
 
