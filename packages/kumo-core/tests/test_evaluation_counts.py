@@ -308,3 +308,80 @@ def test_at_k_columns_without_a_holdout_loss_say_so():
         Series('holdout/by_k/map', ((1, 0.5),), 'k'),
         Note('notes', 'Link prediction reports no holdout loss.')]
     assert at_k_summaries({'test_acc': 0.9}) == []
+
+
+def _counts_cases(rng):
+    prob = rng.dirichlet(np.ones(7), 500).round(1)
+    prob[:3] = np.nan
+    pred, target = rng.normal(size=(2, 500))
+    return [
+        (TaskType.BINARY_CLASSIFICATION,
+         dict(prob=prob[:, :2], target=rng.integers(0, 2, 500),
+              threshold=0.3)),
+        (TaskType.MULTICLASS_CLASSIFICATION,
+         dict(prob=prob, target=rng.integers(0, 7, 500))),
+        (TaskType.REGRESSION,
+         dict(pred=pred, target=target, target_edges=(-1.0, 0.0, 2.0))),
+    ]
+
+
+def test_counts_do_not_depend_on_the_chunk_size(monkeypatch):
+    for task_type, columns in _counts_cases(np.random.default_rng(6)):
+        whole = evaluation_counts(task_type, **columns)
+        monkeypatch.setattr('kumo_core.evaluation_counts._CHUNK', 7)
+        chunked = evaluation_counts(task_type, **columns)
+        monkeypatch.undo()
+        assert chunked.edges == whole.edges
+        assert chunked.extents == whole.extents
+        assert chunked.arrays.keys() == whole.arrays.keys()
+        for name, array in whole.arrays.items():
+            if array.dtype.kind == 'f':
+                np.testing.assert_allclose(chunked.arrays[name], array,
+                                           rtol=1e-12)
+            else:
+                np.testing.assert_array_equal(chunked.arrays[name], array)
+
+
+def test_multiclass_top_k_breaks_ties_and_nans_like_a_stable_sort():
+    columns = _counts_cases(np.random.default_rng(7))[1][1]
+    prob, target = columns['prob'], columns['target']
+
+    counts = evaluation_counts(TaskType.MULTICLASS_CLASSIFICATION, **columns)
+
+    ranked = np.argsort(-prob, axis=1, kind='stable')
+    assert [counts.arrays[f'top_{k}'] for k in range(1, 6)] == [
+        (ranked[:, :k] == target[:, None]).any(1).sum() for k in range(1, 6)]
+
+
+@pytest.mark.parametrize('task_type, columns', [
+    (TaskType.MULTICLASS_CLASSIFICATION,
+     dict(prob=np.ones((200_000, 50), np.float32),
+          target=np.zeros(200_000, np.int64))),
+    (TaskType.BINARY_CLASSIFICATION,
+     dict(prob=np.ones(4_000_000), target=np.ones(4_000_000),
+          threshold=0.5)),
+    (TaskType.REGRESSION,
+     dict(pred=np.ones(4_000_000), target=np.ones(4_000_000),
+          target_edges=(0.0, 1.0))),
+])
+def test_counts_allocate_far_less_than_their_input(task_type, columns):
+    import tracemalloc
+
+    tracemalloc.start()
+    evaluation_counts(task_type, **columns)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert peak < columns.get('prob', columns.get('pred')).nbytes / 2
+
+
+def test_top_score_counts_copy_the_scores_once():
+    import tracemalloc
+
+    from kumo_core.evaluation_counts import top_score_counts
+    scores = np.random.default_rng(8).normal(size=4_000_000)
+
+    tracemalloc.start()
+    top_score_counts(scores)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert peak < 1.5 * scores.nbytes

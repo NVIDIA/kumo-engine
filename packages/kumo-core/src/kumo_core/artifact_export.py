@@ -307,8 +307,7 @@ def prepared_artifact_file(path, extra_columns=None, *, parquet_options=None,
                 # Pandas turns all-null bool columns into Arrow nulls.
                 table = pa.Table.from_batches([batch])
                 for name, value in (extra_columns or {}).items():
-                    column = pa.array([value] * table.num_rows,
-                                      type=pa.scalar(value).type)
+                    column = pa.repeat(pa.scalar(value), table.num_rows)
                     table = (table.set_column(
                         table.column_names.index(name), name, column)
                              if name in table.column_names else

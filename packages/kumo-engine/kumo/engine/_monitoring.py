@@ -21,6 +21,7 @@ from typing import (
     Mapping,
     NamedTuple,
     Optional,
+    Sequence,
     Tuple,
 )
 from uuid import uuid4
@@ -64,13 +65,6 @@ class EvaluationResult:
     reasons: Mapping[str, str] = field(default_factory=dict)
     actuals: Optional[str] = None
     tracking: Optional[TrackingRef] = None
-
-    @property
-    def frame(self) -> pd.DataFrame:
-        r"""The evaluated rows as a DataFrame."""
-        if self.actuals is None:
-            raise ValueError(f'No evaluated rows: {dict(self.reasons)}')
-        return pd.read_parquet(self.actuals)
 
     def export(self, output_config: Any) -> None:
         r"""Copy the evaluated rows to a predictions destination."""
@@ -151,7 +145,9 @@ class DriftReport:
     tracking: Optional[TrackingRef] = None
 
 
-def evaluate(trainer: Any, run: Any, snapshot: Any) -> EvaluationResult:
+def evaluate(trainer: Any, run: Any,
+             snapshot: Any) -> Tuple[EvaluationResult, Tuple[Table, ...]]:
+    r"""The run's evaluation, and its tables for the tracker."""
     query = trainer._training_query
     if query is None:
         raise RuntimeError('Fit or load the Trainer before evaluate()')
@@ -159,12 +155,13 @@ def evaluate(trainer: Any, run: Any, snapshot: Any) -> EvaluationResult:
     out: Dict[str, Any] = dict(task_type=None, anchors=(), metrics={},
                                rows=0, labelled=0, matured=None,
                                reasons=reasons, actuals=None,
-                               step='importing')
+                               tables=(), step='importing')
     try:
         _evaluate(out, trainer, run, snapshot, query)
     except Exception as error:
         reasons['metrics'] = f"{out['step']} failed: {error}"
     out.pop('step')
+    tables = out.pop('tables')
     if out['matured'] is False:
         warnings.warn(
             f'Prediction run {run.id}: labels are not mature yet, so the '
@@ -178,7 +175,7 @@ def evaluate(trainer: Any, run: Any, snapshot: Any) -> EvaluationResult:
                            out['rows'] if out['rows'] else None),
         bundle_matches=_same(run.bundle_id, _bundle_id(trainer)),
         **out,
-    )
+    ), tables
 
 
 def holdout_evaluation(result: Any,
@@ -223,10 +220,13 @@ def holdout_evaluation(result: Any,
 _TASKS = {
     'binary_classification': 'binary',
     'regression': 'regression',
+    'forecasting': 'forecasting',
     'multiclass_classification': 'multiclass',
-    'link_prediction': 'link',
-    'temporal_link_prediction': 'link',
-    'static_link_prediction': 'link',
+    'multilabel_classification': 'multilabel',
+    'multilabel_ranking': 'ranking',
+    'link_prediction': 'ranking',
+    'temporal_link_prediction': 'ranking',
+    'static_link_prediction': 'ranking',
 }
 
 
@@ -254,10 +254,7 @@ def _evaluate(out: Dict[str, Any], trainer: Any, run: Any, snapshot: Any,
         pd.Timestamp(anchor, tz='UTC').isoformat() for anchor in anchors)
     if anchors:
         _check_maturity(out, parsed, snapshot, anchors)
-    task = _TASKS.get(parsed.task_type)
-    if task is None:
-        reasons['metrics'] = f'{parsed.task_type} metrics are not supported'
-        return
+    task = _TASKS[parsed.task_type]
     unsupported = _unsupported(static, anchors, keys, columns)
     if unsupported is not None:
         reasons['metrics'] = unsupported
@@ -271,6 +268,11 @@ def _evaluate(out: Dict[str, Any], trainer: Any, run: Any, snapshot: Any,
         reasons['metrics'] = 'no entity has a label at these anchors'
         return
     _record_metrics(out, joined, actuals)
+    if 'by_horizon' in joined:
+        from kumo.engine.trainer.trainer import _target_window
+
+        out['tables'] = (_by_horizon(joined['by_horizon'], _target_window(
+            parsed, trainer.training_table_generation_plan)), )
 
 
 def _unfiltered_query(snapshot: Any, query: str) -> Any:
@@ -341,6 +343,8 @@ def _join_labels(out: Dict[str, Any], trainer: Any, pquery: Any,
             spec = _join_spec(task, keys, labels, label_columns, columns,
                               pquery._parsed.query_type == 'static',
                               manifest, actuals, spill)
+            if task == 'ranking':
+                spec['ks'] = _ks(trainer, pquery._parsed.task_type)
             return json.loads(
                 diskgraph.evaluate_prediction_parquet(files, parts,
                                                       json.dumps(spec)))
@@ -357,7 +361,11 @@ def _join_spec(task: str, keys: List[str], labels: Tuple[str, str, str],
                label_columns: List[str], columns: List[str], static: bool,
                manifest: Optional[PredictionManifest], actuals: Path,
                spill: Path) -> Dict[str, Any]:
+    from kumo_core.train.autoregression import FUTURE_LABELS_COL
+
     entity, timestamp, target = labels
+    if task == 'forecasting':
+        target = FUTURE_LABELS_COL
     emitted = [name for name in _EMITTED[task] if name in columns]
     return {
         'task': task,
@@ -397,9 +405,30 @@ def _record_metrics(out: Dict[str, Any], joined: Mapping[str, Any],
 _EMITTED = {
     'binary': ('True_PROB', 'TARGET_PRED'),
     'regression': ('TARGET_PRED', ),
+    'forecasting': ('TIMESTAMP', 'TARGET_PRED'),
     'multiclass': ('CLASS', 'SCORE'),
-    'link': (),
+    'multilabel': ('PREDICTED', 'CLASS', 'SCORE'),
+    'ranking': (),
 }
+
+
+def _ks(trainer: Any, task_type: str) -> List[int]:
+    r"""The fit's ranking cutoffs, else the default plan's."""
+    from kumo_core.resolved_task import default_metrics
+    from kumo_core.types import TaskType
+
+    names = (getattr(getattr(trainer, 'result', None), 'metrics', None)
+             or default_metrics(TaskType(task_type)))
+    return sorted({int(name.rpartition('@')[2]) for name in names
+                   if '@' in name})
+
+
+def _by_horizon(sums: Mapping[str, List[float]], timeframe: Any) -> Table:
+    r"""Realized error by forecast step, as the holdout's table."""
+    from kumo_core.evaluation_counts import horizon_table
+
+    return horizon_table('realized/by_horizon', {
+        name: np.asarray(values) for name, values in sums.items()}, timeframe)
 
 
 def _prediction_time(manifest: PredictionManifest) -> int:
@@ -513,7 +542,8 @@ def _comparisons(report: 'DriftReport'
 
 
 def track(report: Any, run: Any, settings: Any, trainer: Any,
-          started: datetime, labels: Any = None, previous: Any = None) -> Any:
+          started: datetime, labels: Any = None, previous: Any = None,
+          tables: Sequence[Table] = ()) -> Any:
     r"""Tracks a monitoring call, following on_error on failure."""
     tracker = as_tracking(None if settings is None else settings.tracking)
     if tracker is None:
@@ -523,7 +553,7 @@ def track(report: Any, run: Any, settings: Any, trainer: Any,
 
     try:
         record = _record(report, run, tracker, trainer, started, labels,
-                         previous)
+                         previous, tables)
     except Exception as error:
         if settings.on_error == 'warn':
             warn_failure(
@@ -546,7 +576,8 @@ _IDENTITY = ('kumo.prediction_id', 'kumo.bundle_id', 'kumo.as_of',
 
 
 def _record(report: Any, run: Any, tracking: Any, trainer: Any,
-            started: datetime, labels: Any, previous: Any) -> Any:
+            started: datetime, labels: Any, previous: Any,
+            tables: Sequence[Table]) -> Any:
     from kumo.engine._tracking import RunSpec, prediction_record, run_record
 
     evaluating = isinstance(report, EvaluationResult)
@@ -567,10 +598,8 @@ def _record(report: Any, run: Any, tracking: Any, trainer: Any,
     record = run_record(RunSpec(
         kind='monitoring',
         parents={'monitor': 'evaluate' if evaluating else 'drift'},
-        summaries=(_evaluation_summaries(
-            report, labels, model,
-            getattr(getattr(manifest, 'prediction_table', None), 'rows', None))
-            if evaluating else _drift_summaries(report, (
+        summaries=(_evaluation_summaries(report, labels, model, tables)
+                   if evaluating else _drift_summaries(report, (
                        earlier.run_name if earlier is not None
                        and earlier.platform == platform else None),
                        shift=holdout_shift(identity.get('kumo.task_type'))))))
@@ -629,7 +658,7 @@ def _drift_summaries(report: 'DriftReport', previous_name: Optional[str],
 
 def _evaluation_summaries(result: EvaluationResult, labels: Any,
                           model: Any = None,
-                          scored: Optional[int] = None) -> List[Summary]:
+                          tables: Sequence[Table] = ()) -> List[Summary]:
     from kumo.engine._manifest import artifact_summaries
 
     manifest = getattr(labels, 'manifest', None)
@@ -649,15 +678,7 @@ def _evaluation_summaries(result: EvaluationResult, labels: Any,
         *(Scalar(f'realized/{metric}', value)
           for metric, value in metrics.items()),
     ]
-    reasons = dict(result.reasons)
-    if result.task_type is not None and result.task_type not in _TASKS:
-        reasons.pop('metrics', None)
-        summaries.append(Note('notes', (
-            "Realized quality isn't computed for "
-            f"{result.task_type.replace('_', ' ')} yet"
-            + (f' ({scored:,} rows scored)' if scored is not None else '')
-            + '.')))
-    elif result.labelled_fraction is not None:
+    if result.labelled_fraction is not None:
         summaries.append(Scalar('realized/labelled_share',
                                 result.labelled_fraction))
         if metrics:
@@ -665,6 +686,7 @@ def _evaluation_summaries(result: EvaluationResult, labels: Any,
                 'realized/metrics', ('metric', 'realized', 'holdout'),
                 tuple((metric, value, holdout.get(metric))
                       for metric, value in metrics.items()), brief=True))
+        summaries += tables
         summaries.append(Note('notes', (
             f'{number(result.labelled_fraction * 100)} % labelled '
             f'({result.labelled:,} of {result.rows:,} scored rows)'
@@ -672,7 +694,7 @@ def _evaluation_summaries(result: EvaluationResult, labels: Any,
     if result.matured is False:
         summaries.append(Note('notes', 'Labels are not mature yet: the '
                               'label window ends after the snapshot data.'))
-    return summaries + _reason_notes(reasons)
+    return summaries + _reason_notes(result.reasons)
 
 
 def _tune_metric(model: Any) -> Optional[str]:

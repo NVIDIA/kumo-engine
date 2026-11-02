@@ -81,10 +81,6 @@ def predict_frame(trainer: Any, snapshot: Any, rows: pd.DataFrame,
     trainer.scratch_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=trainer.scratch_dir) as tmp, \
             scoped_scratch_dir(Path(tmp) / 'scratch'):
-        if len(rows) == 0:
-            return trainer.predict(
-                snapshot, prediction_time=None
-                if time is None else time.to_pydatetime(), **options).frame
         rows = rows.rename(columns={'ENTITY': 'ENTITY1'})
         if time is not None and 'TIMESTAMP' not in rows:
             rows = rows.assign(TIMESTAMP=time)
