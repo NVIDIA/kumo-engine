@@ -775,6 +775,8 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                 for step, values in by_step(routed.charts)])
         if routed.tags:
             self._log_tags(run_id, routed.tags)
+        for name, text in routed.files.items():
+            self._write_text(run_id, name, text)
         self._write_tables(run_id, routed.tables)
 
     def _log_inputs(self, run_id: str, summaries: Sequence[Dataset]) -> None:

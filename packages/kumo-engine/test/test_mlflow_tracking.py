@@ -684,7 +684,7 @@ def test_series_and_histograms_become_one_table_per_name_prefix(
 
 
 def test_charted_series_become_metrics_over_their_steps(tracking_uri):
-    from kumo_core.summaries import Series
+    from kumo_core.summaries import BarChart, Series
 
     from kumo.engine._tracking import RunRecord
     from kumo.engine.integrations.mlflow import MlflowTracking
@@ -694,13 +694,18 @@ def test_charted_series_become_metrics_over_their_steps(tracking_uri):
     tracker.start(RunRecord(name='r', tags=tags))
     tracker.finish(RunRecord(name='r', tags=tags, summaries=(
         Series('pred/score_histogram/c@d', ((0, 3.0), (1, 0.0)),
-               'score_pct', chart=True),)), None)
+               'score_pct', chart=True),
+        BarChart('pred/score_histogram/c', 't', ('score', 'ents'),
+                 (0.0, 0.5, 1.0), (3.0, 0.0)))), None)
 
     run = mlflow.get_run(tracker.run_id)
     history = mlflow.MlflowClient().get_metric_history(
         tracker.run_id, 'pred/score_histogram/c_at_d')
     assert [(m.step, m.value) for m in history] == [(0, 3.0), (1, 0.0)]
     assert 'mlflow.loggedArtifacts' not in run.data.tags
+    assert mlflow.artifacts.load_text(
+        f'{run.info.artifact_uri}/charts/pred/score_histogram/c.svg'
+    ).startswith('<svg')
 
 
 NOTES = "*kumo rewrites everything above this line; editing it stops kumo's updates.*"

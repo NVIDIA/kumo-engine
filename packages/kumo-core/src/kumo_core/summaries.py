@@ -43,6 +43,19 @@ class Histogram:
 
 
 @dataclass(frozen=True)
+class BarChart:
+    r"""Bars of ``counts`` on ``edges``, and an optional ``line`` over them."""
+
+    name: str
+    title: str
+    axes: Tuple[str, str]
+    edges: Tuple[float, ...]
+    counts: Tuple[float, ...]
+    line: Tuple[float, ...] = ()
+    legend: Tuple[str, str] = ('', '')
+
+
+@dataclass(frozen=True)
 class Table:
     r"""A table; a ``brief`` one (at most 12 x 5) goes on the run card."""
 
@@ -80,5 +93,5 @@ class Dataset:
     context: str
 
 
-Summary = Union[Scalar, Tag, Series, Histogram, Table, Confusion, Note,
-                Dataset]
+Summary = Union[Scalar, Tag, Series, Histogram, BarChart, Table, Confusion,
+                Note, Dataset]
