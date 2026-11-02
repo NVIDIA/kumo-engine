@@ -51,7 +51,7 @@ def _translated(path: str) -> Iterator[None]:
 
 class VolumeHandler(ChunkedFileHandler):
     part_bytes = 4 << 30  # under the Files API's 5 GiB upload cap
-    plain_bytes = 256 << 20
+    plain_bytes = part_bytes
 
     def __init__(self, client: WorkspaceClient) -> None:
         self._client = client

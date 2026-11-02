@@ -62,6 +62,15 @@ def test_sized_writes_stay_plain_up_to_a_part():
                and path.endswith('/_SUCCESS') for path in volume.objects)
 
 
+def test_unsized_writes_stay_plain_through_a_part():
+    assert VolumeHandler.plain_bytes == VolumeHandler.part_bytes == 4 << 30
+    fs, volume = filesystem(part_bytes=1000)
+    write(fs, f'{ROOT}/export.csv', BODY[:1000])
+    assert volume.objects[f'{ROOT}/export.csv'] == BODY[:1000]
+    write(fs, f'{ROOT}/over.csv', BODY[:1001])
+    assert f'{ROOT}/over.csv' not in volume.objects
+
+
 def test_a_failed_upload_raises_without_the_signed_url():
     from kumo_core.object_store_sink import open_sized
 
