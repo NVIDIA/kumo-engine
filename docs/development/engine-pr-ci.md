@@ -65,6 +65,11 @@ restore compatible entries from `main`.
 The build pins `ziglang`, `cargo-zigbuild` and pip to exact versions. A pip build
 constraint also pins Zig inside isolated Python builds.
 
+Stable Zig compiler wrappers give both Rust paths the same linker identity and
+glibc 2.17 target. Without them, the command-line builder and maturin select
+different wrapper paths, including paths from temporary isolated environments.
+Cargo then invalidates dependencies despite a successful cache restore.
+
 A CPU-only job on `main` seeds the same uv installer cache used on the GPU
 runner. It installs the candidate wheel without importing models or training.
 PR jobs restore this cache without saving branch-specific copies. Before saving,
