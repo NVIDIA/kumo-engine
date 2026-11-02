@@ -25,6 +25,7 @@ are sub-skills and references it loads:
 | `kumo-data-science/` | Router: intake, validation, preflight, notebook generation |
 | `kumoai-reference/` | SDK reference the generated code is checked against |
 | `hosts/` | Host-specific behavior: access, source and destination forms, preflight, connect step |
+| `kumo-graph-visualization/` | Inspect declared graphs through Markdown; display and export relationships |
 | `kumo-model-explanations/` | Explaining predictions |
 | `kumo-training-diagnostics/` | Diagnosing training runs |
 | `kumo-model-persistence/` | Saving and reloading trained models |

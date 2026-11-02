@@ -1,6 +1,6 @@
 # KumoAI Graph Construction
 
-Reference for translating a validated relational schema into Kumo Predict SDK objects.
+Reference for translating a confirmed relational schema into Kumo Predict SDK objects.
 
 Grounded **only** in the shipped Kumo package source. The published Kumo documentation is
 stale for this version of the local SDK — do not cite it, fetch it, or reconcile against it.
@@ -219,10 +219,14 @@ optional bookkeeping: the snapshot object is the argument passed to
 `pquery.generate_prediction_table(snapshot, prediction_time=...)`. Training and prediction
 themselves belong to `kumoai-reference/references/kumo_finetuning_sdk.md`.
 
-**`Graph` has no editing surface.** Its complete API is `.tables`, `.edges`, `.id`,
-`.native_graph`, `.validate()`, `.snapshot()`. There is no `add_table`, `remove_table`, `link`,
-`unlink`, `infer_links`, `get_edge_stats`, `get_table_stats`, `visualize`, or `save`/`load`. To
-change a graph, rebuild it.
+**`Graph` has no editing surface.** Its API includes `.tables`, `.edges`, `.id`, `.native_graph`, `.validate()`, `.visualize()`, and `.snapshot()`.
+There is no `add_table`, `remove_table`, `link`, `unlink`, `infer_links`, `get_edge_stats`, `get_table_stats`, or `save`/`load`.
+To change a graph, rebuild it.
+
+For inspection and iteration, use the Markdown export workflow in `kumo-graph-visualization/SKILL.md` after constructing the graph; it needs no snapshot.
+In generated notebooks, including training and batch-inference notebooks, include its guarded optional-preview cell immediately after graph construction and validation for the human reader; visualization limits must not block modeling or alter the graph.
+That skill also covers standalone display requests, exports, and runtime availability.
+Inspect the Markdown declaration when reasoning about the graph; do not open the interactive view yourself.
 
 ---
 

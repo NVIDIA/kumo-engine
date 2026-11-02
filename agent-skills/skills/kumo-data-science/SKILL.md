@@ -1,6 +1,6 @@
 ---
 name: kumo-data-science
-description: "Use for any work with KumoAI predictive models on relational data in a warehouse, an object store or local files: train a model, score data with a trained one, or answer questions about an existing model or run — explain its predictions, diagnose its training, publish, reload or retain it, train or score on custom labels or rows, or tune it. Covers churn, propensity, fraud, recommendation, forecasting and link prediction. For a new model it checks that the request names the data (a schema, dataset, folder of files, connector, semantic view or metric view), the outcome and the time window, confirms the inferred tables and the task, then generates one notebook or script; it runs it only when asked, in the notebook or as a host job (a Snowflake ML Job, a Databricks job)."
+description: "Use for KumoAI graphs and predictive models on relational data in a warehouse, an object store or local files: inspect, visualize or export a graph's schema and relationships; train a model, score data with a trained one, explain its predictions, diagnose its training, publish, reload or retain it, train or score on custom labels or rows, or tune it. Covers churn, propensity, fraud, recommendation, forecasting and link prediction. For a new model it checks that the request names the data, outcome and time window, confirms the inferred tables and task, then generates one notebook or script; it runs it only when asked, in the notebook or as a host job."
 ---
 
 # Data Science Agent — Router Skill
@@ -21,7 +21,8 @@ Requests that mention any of: kumo, predict, churn, recommend, forecast, fraud, 
 inference, explain a prediction, feature importance, feature attribution, column cohorts, model
 metrics, trials, learning curves, publish or load a model, registry publishing, artifact retention,
 caller-supplied labels, weights or splits, encoders, run mode, experiments, tune a model, semantic
-view, metric view, ML Job, compute pool, Databricks job.
+view, metric view, ML Job, compute pool, Databricks job, graph diagram, visualize a graph,
+inspect graph schema, export graph relationships.
 
 ## Routing
 
@@ -30,6 +31,7 @@ build and artifact checks:
 
 | Request | Skill |
 |---|---|
+| Inspect or iterate a declared graph; display or export its schema and relationships | `kumo-graph-visualization/SKILL.md` |
 | Attribution or column cohorts for an existing run | `kumo-model-explanations/SKILL.md` |
 | Metrics, trial comparisons, learning curves, recorded progress | `kumo-training-diagnostics/SKILL.md` |
 | Publish, reload, retain or retrieve a model or its artifacts | `kumo-model-persistence/SKILL.md` |
@@ -268,6 +270,8 @@ After ACCEPT, load `kumoai-reference/SKILL.md` and hand off the confirmed payloa
 
 1. Connector from environment credentials; confirmed tables, metadata, links; graph and PQL
    validation; SDK-default training table and model plan, no tuning.
+   After graph construction and validation, include the guarded optional-preview notebook cell for the human reader, with samples off; a visualization `ValueError` must not block modeling or change the graph.
+   Use `kumo-graph-visualization/SKILL.md` for this cell and for the agent's Markdown inspection of the graph definition; do not open or analyze its interactive view yourself.
 2. **Exactly one** training call — `trainer.fit(...)`. It blocks until training finishes and
    returns a `TrainingResult`; print its `metrics`.
 3. **Predict in the same notebook** — same `Trainer`, same process, immediately after

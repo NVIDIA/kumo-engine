@@ -197,3 +197,15 @@ Two further facts: the target destination must be writable by the identity's pri
 6. Write results to a durable Snowflake destination before the session ends (§3.1, §7).
 
 ---
+
+## Graph visualization
+
+Reuse the graph in its existing Kumo runtime for Markdown inspection or requested display; graph inspection alone does not require a GPU or an ML Job.
+Detected Snowflake Workspace notebooks automatically display through the widget protocol, using the runtime's `anywidget>=0.9,<1` and `ipywidgets` support.
+Missing or incompatible widget support yields a static graph and diagnostic; SVG, PDF, and Markdown exports remain available.
+Other notebook environments use HTML, regardless of which connector the graph uses.
+The optional `graph.visualize().as_widget()` explicitly selects the widget view on a compatible runtime; redisplay after a kernel restart because restoration depends on the host.
+Exports write to the notebook filesystem and require a writable parent directory; retrieve the file through the Workspace file browser.
+A file export does not create a Snowflake stage object or start a browser download.
+
+Source: shipped package (`kumo.engine.graph.Graph.visualize`, `kumo.engine._visualization.SVG`, `kumo.engine._widget`)

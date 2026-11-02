@@ -276,3 +276,14 @@ Run only on explicit request (router Step 3), in this session's own Python, and 
 `import kumo.engine` works here and the connect step resolves credentials. If either fails, report
 it and stop: making this session able to run Kumo is not your job. `fit` blocks for as long as
 training takes — tell the user before starting.
+
+## Graph visualization
+
+An available `Graph` can be inspected through the temporary Markdown export in `kumo-graph-visualization/SKILL.md` without running the modeling artifact.
+For user-requested display, ordinary notebooks use HTML; interactivity requires trusted output and fullscreen requires host permission.
+Saved HTML includes a sample-free static fallback; rerun the visualization cell to restore interactivity after a kernel restart, subject to the host's output restrictions.
+`graph.visualize().as_widget()` explicitly requests a widget on compatible hosts, using their existing `anywidget>=0.9,<1` and `ipywidgets` support; report missing support and offer a static export.
+Export paths are local to the Python process, which may be remote; use that environment's existing file access to retrieve them.
+Graph inspection alone does not require GPU compute or a training run.
+
+Source: shipped package (`kumo.engine._visualization.SVG`, `kumo.engine._widget`)

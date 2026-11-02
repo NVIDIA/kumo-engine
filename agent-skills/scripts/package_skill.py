@@ -53,6 +53,7 @@ DIST = ROOT / 'dist'
 ROUTER = 'kumo-data-science'
 
 CAPABILITY = [
+    'kumo-graph-visualization',
     'kumo-model-explanations',
     'kumo-training-diagnostics',
     'kumo-model-persistence',
