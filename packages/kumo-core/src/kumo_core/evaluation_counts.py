@@ -24,7 +24,6 @@ _TOP_K = 5
 TOP_CLASSES = 20
 _RESIDUAL_BINS = 40
 _HORIZONS = 12
-_TOP_SCORE_BINS = 100
 _CHUNK = 1 << 18
 BASELINE = ('True_PROB', 'confidence', 'top_score', 'classes', 'TARGET_PRED')
 Timeframe = Tuple[int, int, int, str]
@@ -35,7 +34,7 @@ def evaluation_counts(task_type: TaskType, *, target: Any,
                       threshold: Optional[float] = None,
                       target_edges: Sequence[float] = (),
                       horizon: Any = None) -> Optional[Counts]:
-    r"""Counts of one test split; None for task types without them."""
+    r"""Counts of one test split; ``horizon``: steps per row or per entity."""
     if task_type is TaskType.BINARY_CLASSIFICATION:
         prob = np.asarray(prob)
         return _in_chunks(lambda p, y: _binary(
@@ -47,20 +46,40 @@ def evaluation_counts(task_type: TaskType, *, target: Any,
             np.asarray(y, dtype=np.int64).reshape(-1)),
             np.asarray(prob), np.asarray(target))
     if task_type is TaskType.MULTILABEL_CLASSIFICATION:
-        return _multilabel(np.asarray(prob, dtype=np.float64),
-                           np.asarray(pred).astype(bool),
-                           np.asarray(target).astype(bool))
-    if task_type is TaskType.MULTILABEL_RANKING:
-        return top_score_counts(np.asarray(prob, dtype=np.float64).max(axis=1))
+        return _in_chunks(lambda p, y, t: _multilabel(
+            np.asarray(p, dtype=np.float64), y.astype(bool), t.astype(bool)),
+            np.asarray(prob), np.asarray(pred), np.asarray(target))
     if task_type in (TaskType.REGRESSION, TaskType.FORECASTING):
-        values = (np.asarray(pred, dtype=np.float64).reshape(-1),
-                  np.asarray(target, dtype=np.float64).reshape(-1))
+        values = (np.asarray(pred).reshape(-1), np.asarray(target).reshape(-1))
+        edges = tuple(target_edges)
         if horizon is None:
             return _in_chunks(lambda p, y: _regression(
-                p, y, tuple(target_edges)), *values)
-        return _forecasting(*values, tuple(target_edges),
-                            np.asarray(horizon, dtype=np.int64))
+                *_floats(p, y), edges), *values)
+        rows = len(values[0])
+        if isinstance(horizon, int):
+            horizon, size = _Steps(rows, horizon), min(horizon, rows)
+        else:
+            horizon = np.asarray(horizon)
+            size = int(horizon.max(initial=-1)) + 1
+        size = size or 1
+        return _in_chunks(lambda p, y, h: _forecasting(
+            *_floats(p, y), edges, np.asarray(h, dtype=np.int64), size),
+            *values, horizon)
     return None
+
+
+def _floats(*columns: np.ndarray) -> Tuple[np.ndarray, ...]:
+    return tuple(np.asarray(column, dtype=np.float64) for column in columns)
+
+
+class _Steps:
+    r"""Each row's forecast step, entity by entity in row order."""
+
+    def __init__(self, rows: int, steps: int) -> None:
+        self.rows, self.steps = rows, steps
+
+    def __getitem__(self, rows: slice) -> np.ndarray:
+        return np.arange(rows.start or 0, min(rows.stop, self.rows)) % self.steps
 
 
 def _in_chunks(count: Any, *columns: np.ndarray) -> Counts:
@@ -70,21 +89,6 @@ def _in_chunks(count: Any, *columns: np.ndarray) -> Counts:
     return reduce(Counts.merge, (
         count(*(column[start:start + step] for column in columns))
         for start in range(0, max(rows, 1), step)))
-
-
-def top_score_counts(scores: Any) -> Counts:
-    r"""Top scores on bins cut at their own exact percentiles."""
-    scores = np.asarray(scores, dtype=np.float64)
-    scores = scores[np.isfinite(scores)]
-    edges = () if not scores.size else tuple(np.unique(np.quantile(
-        scores, np.linspace(0, 1, _TOP_SCORE_BINS + 1),
-        overwrite_input=True)).tolist())
-    scores.sort()
-    counts = Counts({'top_score': edges}, {'top_score': np.diff(
-        np.searchsorted(scores, edges), prepend=0, append=scores.size)})
-    if scores.size:
-        counts.extents['top_score'] = (float(scores[0]), float(scores[-1]))
-    return counts
 
 
 def baseline(counts: Counts) -> Counts:
@@ -351,9 +355,9 @@ def _multilabel_summaries(counts: Counts,
 
 
 def _forecasting(pred: np.ndarray, target: np.ndarray,
-                 edges: Tuple[float, ...], horizon: np.ndarray) -> Counts:
+                 edges: Tuple[float, ...], horizon: np.ndarray,
+                 size: int) -> Counts:
     counts = _regression(pred, target, edges)
-    size = int(horizon.max()) + 1 if horizon.size else 1
     counts.edges['horizon'] = tuple(float(h) for h in range(1, size))
     error = pred - target
     counts.histogram('horizon_rows', 'horizon', horizon)

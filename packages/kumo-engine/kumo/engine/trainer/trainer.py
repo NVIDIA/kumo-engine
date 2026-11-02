@@ -758,6 +758,8 @@ def _unlogged(summaries: Sequence[Summary], metrics: Mapping[str, float],
 _REFIT_FULL = ('The model was refit on all the data, the test split included, '
                'so no holdout metric describes it; `before_refit/*` describe '
                'the model before that refit.')
+_UNBINNED = ('No holdout histograms: the training split statistics have no '
+             'target bins.')
 
 
 def _with_metrics(model: Optional[PublishedModel],
@@ -1458,6 +1460,9 @@ class Trainer:
             task_dataset_bundle_dir=materialized.bundle_dir,
             warm_start_artifacts=warm_start_artifacts,
         )
+        edges = target_edges(train_table.staging_dir)
+        unbinned = (TaskType(workflow.query.task_type).has_numerical_target
+                    and len(edges) < 2)
         result = run_callable_training(
             training_input,
             bindings=local_training_bindings(
@@ -1466,7 +1471,7 @@ class Trainer:
                 accelerator=self._accelerator, instrumentation=events),
             options=CallableTrainingOptions(
                 binary_classification_threshold=threshold,
-                target_edges=target_edges(train_table.staging_dir)),
+                target_edges=edges),
         )
         if not result.explain_disabled:
             _explain(result.best_trainer, run_id)
@@ -1489,7 +1494,9 @@ class Trainer:
                       _target_window(
                           workflow.query,
                           workflow.training_table_generation_plan))),
-                *at_k_summaries(result.metrics)), result.metrics,
+                *at_k_summaries(result.metrics),
+                *([Note('notes', _UNBINNED)] if unbinned else [])),
+                result.metrics,
                 refit_full=fit_mode == 'refit_full'),
         )
         holdout_counts = None if result.published_counts is None else (

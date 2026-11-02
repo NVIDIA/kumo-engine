@@ -2112,20 +2112,35 @@ class Trainer(PortableConfigMixin):
         from kumo_core.evaluation_counts import evaluation_counts
 
         task_type = self.task.task_type
+        if task_type == TaskType.MULTILABEL_RANKING:
+            return self._top_score_counts(outputs['prob'])
         if task_type not in (TaskType.REGRESSION, TaskType.FORECASTING):
             return evaluation_counts(task_type, prob=outputs.get('prob'),
                                      pred=outputs.get('pred'),
                                      target=outputs['target'],
                                      threshold=threshold)
-        column = self.encoders.target.col_name
-        target = df[column].to_numpy(dtype=float)
         if len(edges) < 2:
-            edges = sorted(set(np.quantile(target, np.linspace(0, 1, 51))))
-        horizon = (df.groupby(level=0).cumcount()
+            logger.warning('No holdout counts: the split statistics give no '
+                           'target bins.')
+            return None
+        column = self.encoders.target.col_name
+        horizon = (len(df) // len(outputs['target'])
                    if task_type == TaskType.FORECASTING else None)
         return evaluation_counts(task_type, pred=df[f'{column}_PRED'],
-                                 target=target, target_edges=edges,
+                                 target=df[column], target_edges=edges,
                                  horizon=horizon)
+
+    def _top_score_counts(self, prob: Any) -> Any:
+        from kumo_core.top_scores import TopScoreSpill
+
+        prob = np.asarray(prob)
+        spill = TopScoreSpill(osp.join(
+            self.log_dir,
+            f'test_top_scores-{self.pl_trainer.global_rank}.parquet'))
+        for start in range(0, len(prob), 1 << 16):
+            rows = prob[start:start + (1 << 16)]
+            spill.write(np.arange(start, start + len(rows)), rows.max(axis=1))
+        return spill.counts()
 
     @trace()
     def validate(

@@ -181,7 +181,7 @@ def test_approximate_counts_never_exceed_the_exact_ones(tmp_path):
         ('BIO', 2000), ('AGE', 61)]
 
 
-def test_target_edges_are_even_bins_without_a_histogram(tmp_path):
+def test_target_edges_need_the_split_statistics_histogram(tmp_path):
     target = {'target_min': 0, 'target_percentile_25': 0, 'target_median': 0,
               'target_percentile_75': 25, 'target_max': 200,
               'target_mean': 30.5}
@@ -191,13 +191,11 @@ def test_target_edges_are_even_bins_without_a_histogram(tmp_path):
         'test_table_stats': {'num_train_rows': 10, 'target_distribution': {
             'target_mean': 1.5, 'target_min': -1, 'target_max': 9}}}))
 
-    edges = tuple(sorted({*(4.0 * i for i in range(51)), 25.0}))
-    assert target_edges(tmp_path) == edges
+    assert target_edges(tmp_path) == ()
     assert split_summaries(tmp_path) == [
         Table('data/splits', ('split', 'rows', 'distinct entities (approx.)',
                               'target mean'),
               (('train', 80, 20, 30.5), ('test', 10, None, 1.5)), brief=True),
-        Note('notes', 'Target histograms: 50 equal bins + 1 quartile edge.'),
     ]
     assert _bins_note({'histogram': {'bins': [0, 10, 20, 30]},
                        'target_min': 0, 'target_percentile_25': 5,

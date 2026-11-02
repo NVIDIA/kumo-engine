@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import multiprocessing as mp
 import os
@@ -28,6 +29,7 @@ from typing import (
 from uuid import uuid4
 
 import diskgraph
+import numpy as np
 from pandas import Timestamp
 
 from .pquery import (
@@ -733,10 +735,11 @@ def score_prediction(
 def _merge_counts(prediction_dir: Path, attempt_id: str,
                   worker_count: int) -> None:
     from kumo_core.prediction_counts import (
+        ENTITIES,
         ITEMS,
         item_counts,
-        load_counts,
         save_counts,
+        tally_dtype,
     )
     from kumo_core.score_counts import Counts
 
@@ -744,8 +747,16 @@ def _merge_counts(prediction_dir: Path, attempt_id: str,
         prediction_dir / COUNTS_DIR / f'{attempt_id}-{worker_id}.json'
         for worker_id in range(worker_count)
     ]
-    total = reduce(Counts.merge, (load_counts(part) for part in parts))
-    if ITEMS in total.arrays:
+    total = reduce(Counts.merge, (Counts.from_dict(json.loads(
+        part.read_text())) for part in parts))
+    items = [part.with_suffix('.npy') for part in parts
+             if part.with_suffix('.npy').exists()]
+    if items:
+        tally = np.zeros(np.load(items[0], mmap_mode='r').shape,
+                         tally_dtype(float(total.arrays[ENTITIES])))
+        for part in items:
+            np.add(tally, np.load(part, mmap_mode='r'), out=tally)
+        total.arrays[ITEMS] = tally
         total = item_counts(total)
     save_counts(total, prediction_dir / COUNTS_FILE)
 
