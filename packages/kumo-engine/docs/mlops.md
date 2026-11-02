@@ -40,6 +40,7 @@ trainer.fit(table, snapshot=snapshot, mlops=cfg)
 - **`on_error`**: `"warn"` (default) warns about a failed store and returns; `"raise"`, for scheduled jobs, raises once the call has finished, with the failure as the `__cause__`. After `fit`, `trainer.result` still holds the model.
 - **Precedence:** a call's `mlops=` replaces the enclosing block, and an inner block replaces an outer one. A block covers the calling thread or asyncio task.
 - **Off by default.** Without a block or `mlops=`, every call behaves as it always has; plain exports (`export(config)`, `export_config=`) never write to the artifact root.
+- **Per call, not per model.** MLOps applies only to a call given `mlops=` or run inside `with kumo.mlops(...)`. A later call outside the block, even on a model trained inside one, runs without MLOps, and `on_error="raise"` does not detect this: it covers only MLOps work that ran. There is no per-call off switch; to run one call without MLOps, call it outside the block. For scheduled jobs, wrap the whole job in one block.
 
 ### Reading artifacts back
 
