@@ -8,7 +8,9 @@ import logging
 import math
 import os
 import os.path as osp
+import tempfile
 import zipfile
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from typing import Any, Final, Mapping, Protocol, cast
 
@@ -16,6 +18,7 @@ import kumo_core.io.filesystem as filesystem
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pyarrow.parquet as pq
 from kumo_core.train.artifact_stats import FrameWriterStats
 from kumo_core.train.io import (
     StreamingFrameWriter,
@@ -72,6 +75,7 @@ def _save_json(value: Any, path: str) -> None:
 _ONE_GB: Final[int] = 1024 * 1024 * 1024
 _HOLDOUT_MAX_BYTES: int = _ONE_GB
 _STREAMING_BUFFER_SIZE: Final[int] = 128 * 1024 * 1024
+_ROW_GROUP_ROWS: Final[int] = 1024 * 1024
 _MAX_NUM_SAMPLES: Final[int] = 10_000
 _HISTOGRAM_BIN_PRECISION: Final[int] = 8
 _EVAL_OUTPUT_FORMAT_VERSION: Final[int] = 1
@@ -166,22 +170,205 @@ class TargetPredictionHeatMap:
                 f')')
 
 
-@dataclass
+@dataclass(frozen=True)
+class _Chunk:
+    source: pd.DataFrame | str
+    num_rows: int
+    schema: pa.Schema
+    class_dtype: str | None
+    range_index: bool
+
+    @classmethod
+    def of(cls, frame: pd.DataFrame, source: pd.DataFrame | str) -> Self:
+        class_dtype = None
+        if 'CLASS' in frame and frame['CLASS'].dtype == object:
+            class_dtype = pd.api.types.infer_dtype(frame['CLASS'], skipna=True)
+        return cls(
+            source=source,
+            num_rows=len(frame),
+            schema=pa.Schema.from_pandas(
+                _normalize_mixed_type_class_column(frame), preserve_index=True),
+            class_dtype=class_dtype,
+            range_index=isinstance(frame.index, pd.RangeIndex),
+        )
+
+    def load(self) -> pd.DataFrame:
+        if isinstance(self.source, str):
+            return pd.read_pickle(self.source)
+        return self.source
+
+
+def _has_mixed_class(chunks: list[_Chunk]) -> bool:
+    dtypes = {c.class_dtype for c in chunks} - {None, 'empty'}
+    return len(dtypes) > 1 or any(d.startswith('mixed') for d in dtypes)
+
+
+def _class_to_str(frame: pd.DataFrame) -> pd.DataFrame:
+    frame = frame.copy(deep=False)
+    frame['CLASS'] = frame['CLASS'].map(lambda value: None
+                                        if pd.isna(value) else str(value))
+    return frame
+
+
+def _with_string_class(schema: pa.Schema) -> pa.Schema:
+    return schema.set(schema.get_field_index('CLASS'),
+                      pa.field('CLASS', pa.string()))
+
+
+def _write_row_groups(
+    writer: pq.ParquetWriter,
+    tables: list[pa.Table],
+) -> list[pa.Table]:
+    r"""Writes full row groups of ``_ROW_GROUP_ROWS`` rows, the size
+    ``DataFrame.to_parquet`` uses, and returns the remainder."""
+    table = pa.concat_tables(tables)
+    full = len(table) - len(table) % _ROW_GROUP_ROWS
+    if full:
+        writer.write_table(table.slice(0, full),
+                           row_group_size=_ROW_GROUP_ROWS)
+    return [table.slice(full)]
+
+
+class EvalFrames:
+    r"""Formatted evaluation rows kept as an ordered list of chunks. Chunks
+    appended by the trainer are spooled to local disk, so that writers stream
+    them instead of holding the whole frame in memory."""
+    def __init__(self, spool: bool = True) -> None:
+        self._dir = (tempfile.TemporaryDirectory(prefix='kumo-eval-frames-')
+                     if spool else None)
+        self._chunks: list[_Chunk] = []
+
+    @classmethod
+    def of(cls, frame: pd.DataFrame) -> Self:
+        frames = cls(spool=False)
+        frames.append(frame)
+        return frames
+
+    @property
+    def num_rows(self) -> int:
+        return sum(chunk.num_rows for chunk in self._chunks)
+
+    def append(self, frame: pd.DataFrame) -> None:
+        source: pd.DataFrame | str = frame
+        if self._dir is not None:
+            source = osp.join(self._dir.name, f'{len(self._chunks):06d}.pkl')
+            frame.to_pickle(source)
+        self._chunks.append(_Chunk.of(frame, source))
+
+    def __iter__(self) -> Iterator[pd.DataFrame]:
+        return (chunk.load() for chunk in self._chunks)
+
+    def to_frame(self) -> pd.DataFrame:
+        frames = list(self)
+        return frames[0] if len(frames) == 1 else pd.concat(frames)
+
+    def column(self, name: str) -> pd.DataFrame:
+        return pd.concat([frame[[name]] for frame in self])
+
+    def sample(self, size: int) -> pd.DataFrame:
+        r"""Same rows as :meth:`pandas.DataFrame.sample` on the whole frame."""
+        locs = np.random.choice(self.num_rows, size=size, replace=False)
+        order = np.argsort(locs, kind='stable')
+        sorted_locs = locs[order]
+        parts, start = [], 0
+        for chunk in self._chunks:
+            lo, hi = np.searchsorted(sorted_locs,
+                                     [start, start + chunk.num_rows])
+            if hi > lo:
+                parts.append(chunk.load().take(sorted_locs[lo:hi] - start))
+            start += chunk.num_rows
+        taken = parts[0] if len(parts) == 1 else pd.concat(parts)
+        return taken.take(np.argsort(order))
+
+    def head_chunks(self, max_bytes: int) -> list[_Chunk]:
+        r"""The leading chunks whose rows fit in ``max_bytes`` of memory; the
+        chunk crossing the cap keeps its share of rows."""
+        chunks, used = [], 0
+        for chunk in self._chunks:
+            frame = chunk.load()
+            size = int(frame.memory_usage(deep=True, index=False).sum())
+            if used + size > max_bytes:
+                rows = int(len(frame) * (max_bytes - used) / size)
+                if rows > 0:
+                    head = frame.head(rows)
+                    chunks.append(_Chunk.of(head, head))
+                break
+            chunks.append(chunk)
+            used += size
+        return chunks
+
+    def write_parquet(
+        self,
+        sink: Any,
+        *,
+        index: bool | None,
+        chunks: list[_Chunk] | None = None,
+    ) -> int:
+        r"""Writes the chunks as one Parquet file whose frame equals
+        ``to_frame().to_parquet(sink, index=index)``. Returns the row count."""
+        chunks = self._chunks if chunks is None else chunks
+        if (index is None and len(chunks) > 1
+                and all(chunk.range_index for chunk in chunks)):
+            index = False
+        mixed_class = _has_mixed_class(chunks)
+        schemas = [chunk.schema for chunk in chunks]
+        if mixed_class:
+            schemas = [_with_string_class(schema) for schema in schemas]
+        schema = pa.unify_schemas(schemas, promote_options='permissive')
+        writer: pq.ParquetWriter | None = None
+        pending: list[pa.Table] = []
+        for chunk in chunks:
+            frame = chunk.load()
+            if mixed_class:
+                frame = _class_to_str(frame)
+            table = pa.Table.from_pandas(frame, preserve_index=index)
+            if writer is None:
+                schema = pa.schema(
+                    [schema.field(name) for name in table.schema.names],
+                    metadata=table.schema.metadata,
+                )
+                writer = pq.ParquetWriter(sink, schema)
+            pending.append(table.cast(schema))
+            pending = _write_row_groups(writer, pending)
+        if writer is not None:
+            if len(rest := pa.concat_tables(pending)) > 0:
+                writer.write_table(rest)
+            writer.close()
+        return sum(chunk.num_rows for chunk in chunks)
+
+
 class EvalOutput:
-    r"""A dataclass that contains information produced from performing
-    validation or testing on a trained model."""
+    r"""Information produced from performing validation or testing on a
+    trained model.
 
-    # Dictionary mapping metric name to metric value:
-    metrics: dict[str, float]
+    Args:
+        metrics: Dictionary mapping metric name to metric value.
+        df: Prediction output dataframe, containing target column, time column
+            (if exists), prediction outputs, and prediction probabilities. See
+            formatting.py/format_prediction for more details.
+        embedding: Embedding dataframe containing embedding meta-information
+            and embedding outputs. See formatting.py/format_embeddings for
+            more details.
+        frames: The prediction output as spooled chunks, in place of ``df``.
+    """
+    def __init__(
+        self,
+        metrics: dict[str, float],
+        df: pd.DataFrame | None = None,
+        embedding: pd.DataFrame | None = None,
+        *,
+        frames: EvalFrames | None = None,
+    ) -> None:
+        self.metrics = metrics
+        self.embedding = embedding
+        self.frames = EvalFrames.of(df) if df is not None else frames
+        self._df = df
 
-    # Prediction output dataframe, containing target column, time column (if
-    # exists), prediction outputs, and prediction probabilities. See
-    # formatting.py/format_prediction for more details:
-    df: pd.DataFrame | None = None
-
-    # Embedding dataframe containing embedding meta-information and embedding
-    # outputs. See formatting.py/format_embeddings for more details:
-    embedding: pd.DataFrame | None = None
+    @property
+    def df(self) -> pd.DataFrame | None:
+        if self._df is None and self.frames is not None:
+            self._df = self.frames.to_frame()
+        return self._df
 
     def save_all(
         self,
@@ -230,34 +417,22 @@ class EvalOutput:
         metadata = {
             'format_version': _EVAL_OUTPUT_FORMAT_VERSION,
             'metrics': self.metrics,
-            'has_df': self.df is not None,
+            'has_df': self.frames is not None,
             'has_embedding': self.embedding is not None,
         }
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr(
-                _EVAL_OUTPUT_METADATA_FILE,
-                json.dumps(metadata),
-            )
-            self._write_frame(archive, _EVAL_OUTPUT_DF_FILE, self.df)
-            self._write_frame(
-                archive,
-                _EVAL_OUTPUT_EMBEDDING_FILE,
-                self.embedding,
-            )
-        write_binary(path, buffer.getvalue())
-
-    @staticmethod
-    def _write_frame(
-        archive: zipfile.ZipFile,
-        name: str,
-        frame: pd.DataFrame | None,
-    ) -> None:
-        if frame is None:
-            return
-        buffer = io.BytesIO()
-        _normalize_mixed_type_class_column(frame).to_parquet(buffer)
-        archive.writestr(name, buffer.getvalue())
+        makedirs(osp.dirname(path), exist_ok=True)
+        with (filesystem.open_file(path, 'wb') as handle,
+              zipfile.ZipFile(handle, 'w', zipfile.ZIP_DEFLATED) as archive):
+            archive.writestr(_EVAL_OUTPUT_METADATA_FILE, json.dumps(metadata))
+            if self.frames is not None:
+                with archive.open(_EVAL_OUTPUT_DF_FILE, 'w',
+                                  force_zip64=True) as entry:
+                    self.frames.write_parquet(entry, index=None)
+            if self.embedding is not None:
+                with archive.open(_EVAL_OUTPUT_EMBEDDING_FILE, 'w',
+                                  force_zip64=True) as entry:
+                    _normalize_mixed_type_class_column(
+                        self.embedding).to_parquet(entry)
 
     def save_df(
         self,
@@ -265,25 +440,25 @@ class EvalOutput:
         stage: TrainingStage,
         max_size: int | None = None,
     ) -> None:
-        if self.df is None:
+        if self.frames is None:
             return
 
         max_size = _HOLDOUT_MAX_BYTES if max_size is None else max_size
         path = self.get_df_path(root_dir, stage)
-        total_size = self.df.memory_usage(deep=True).sum()
-        lines = len(self.df)
-        if total_size > max_size:
-            # Down sample the holdout output to fit in memory.
-            ratio = float(max_size) / total_size
-            lines = int(lines * ratio)
-        df = _normalize_mixed_type_class_column(self.df.head(lines))
-        write_frame(df, path)
+        makedirs(osp.dirname(path), exist_ok=True)
+        with filesystem.open_file(path, 'wb') as handle:
+            saved_rows = self.frames.write_parquet(
+                handle,
+                index=True,
+                chunks=self.frames.head_chunks(max_size),
+            )
+        total_rows = self.frames.num_rows
         write_binary(
             self.get_df_meta_path(root_dir, stage),
             json.dumps({
-                'total_rows': len(self.df),
-                'saved_rows': len(df),
-                'truncated': len(df) < len(self.df),
+                'total_rows': total_rows,
+                'saved_rows': saved_rows,
+                'truncated': saved_rows < total_rows,
             }).encode(),
         )
 
@@ -434,7 +609,7 @@ class EvalOutput:
             histogram_and_stats_pair = (
                 self._generate_prediction_histogram_and_stats(
                     label_distribution,
-                    prediction_df=self.df,
+                    prediction_df=self.frames.column('TARGET_PRED'),
                     prediction_col='TARGET_PRED',
                 ))
             path = self.get_prediction_histogram_path(root_dir, stage)
@@ -532,7 +707,8 @@ class EvalOutput:
                     f"for regression heatmap to be unavailable.")
                 return
 
-            sampled_df = self.df.sample(min(self.df.shape[0], _MAX_NUM_SAMPLES))
+            sampled_df = self.frames.sample(
+                min(self.frames.num_rows, _MAX_NUM_SAMPLES))
             heatmap_dir = self.get_heatmap_dir_path(root_dir, stage)
             makedirs(heatmap_dir, exist_ok=True)
             sampled_df_path = osp.join(heatmap_dir, 'sampled_df.parquet')
