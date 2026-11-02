@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "diskgraph-runtime"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+diskgraph-core = { path = "../diskgraph-core" }
+diskgraph-engine = { path = "../diskgraph-engine" }
+diskgraph-index = { path = "../diskgraph-index" }
+diskgraph-train-table = { path = "../diskgraph-train-table" }
+rand = "0.8"
+memmap2 = "0.9"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
