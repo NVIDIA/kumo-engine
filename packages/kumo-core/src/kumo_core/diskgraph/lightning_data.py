@@ -1863,7 +1863,11 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         if not 0 <= self.runtime_worker_id < self.runtime_num_workers:
             raise ValueError(
                 'runtime_worker_id must be in [0, runtime_num_workers)')
-        self.num_workers = num_workers
+        self.num_workers = (
+            0
+            if self.runtime_options.get("remote_sampling_endpoint") is not None
+            else num_workers
+        )
         self.pin_memory = pin_memory
         self.persistent_workers = persistent_workers
         self.prefetch_factor = (int(prefetch_factor)
@@ -2325,12 +2329,21 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         # Val/test/predict are single-timestamp by contract (E1) so the flat
         # path already yields single-ts batches; RHS/NodeRange loaders never
         # group (they build their own loaders directly, not via this method).
-        group_by_timestamp = (is_train and self._is_link_pred
-                              and self._use_lhs_node_loader
-                              and self._rhs_is_temporal)
+        group_by_timestamp = (
+            is_train
+            and self._is_link_pred
+            and self._use_lhs_node_loader
+            and self._rhs_is_temporal
+        )
         if is_train:
             batch_size = self.train_batch_size
-            max_batches = self._max_train_batches(num_seeds)
+            max_batches = None
+            if (
+                not group_by_timestamp
+                and len(stages) == 1
+                and self._weighted_seed_sampling is None
+            ):
+                max_batches = self._max_train_batches(num_seeds)
         else:
             batch_size = int(self.eval_loader_kwargs['batch_size'])
             max_batches = self._max_eval_batches(num_seeds, batch_size,
@@ -2597,6 +2610,17 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             self.train_batch_size,
             drop_last=self.drop_last_train,
         )
+        if (
+            natural == 0
+            and getattr(self, "runtime_options", {}).get("remote_sampling_endpoint")
+            is not None
+        ):
+            raise ValueError(
+                "Remote training produces no native batches with "
+                f"num_seeds={num_seeds}, batch_size={self.train_batch_size}, "
+                f"drop_last={self.drop_last_train}. Reduce the batch size or "
+                "sampling replica count, or disable drop_last."
+            )
         target = max(natural, self.min_steps_per_epoch)
         if self.max_steps_per_epoch is not None:
             target = min(target, self.max_steps_per_epoch)

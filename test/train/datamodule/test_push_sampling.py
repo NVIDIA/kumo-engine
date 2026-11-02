@@ -17,6 +17,10 @@ import diskgraph
 import orjson
 import pyarrow as pa
 import pytest
+from kumo_core.diskgraph.lightning_data import (
+    DiskgraphLightningDataModule,
+    DiskgraphTaskManifest,
+)
 from kumo_core.diskgraph.sampling_service import (
     SamplingService,
     SamplingServiceConfig,
@@ -467,6 +471,72 @@ def test_refit_stream_budget_allows_paused_stage_streams(
             assert next(stream)["task"]["input_ids"].to_pylist() == [0]
         runtime.close()
         _wait_for_idle(service)
+
+
+@pytest.mark.parametrize(
+    ("batch_size", "drop_last", "expected_batches"),
+    [(3, True, 2), (4, True, 0), (4, False, 2)],
+)
+def test_remote_training_ignores_requested_loader_processes(
+    prepared_task: str,
+    monkeypatch: pytest.MonkeyPatch,
+    batch_size: int,
+    drop_last: bool,
+    expected_batches: int,
+) -> None:
+    """Native replica batches match loader length without extra worker sharding."""
+    graph = Path(prepared_task).parent / "graph"
+    monkeypatch.setattr(
+        DiskgraphTaskManifest, "stage_counts", property(lambda self: {"train": 6})
+    )
+    manifest = DiskgraphTaskManifest(
+        manifest_path=prepared_task,
+        runtime_manifest_path=prepared_task,
+        manifest={},
+        metadata={"train_table_name": "train_seeds", "seed_node_type": "users"},
+        feature_schema={},
+        graph_runtime_metadata={},
+    )
+    with ExitStack() as cleanup:
+        services = [SamplingService(SamplingServiceConfig(graph)) for _ in range(2)]
+        for service in services:
+            cleanup.callback(service.close)
+        dm = DiskgraphLightningDataModule(
+            manifest,
+            {},
+            sampling_plan={"layers": []},
+            train_batch_size=batch_size,
+            eval_batch_size=batch_size,
+            num_workers=2,
+            persistent_workers=True,
+            prefetch_factor=4,
+            drop_last_train=drop_last,
+            resolve_entity_node_type="users",
+            runtime_options={
+                "remote_sampling_endpoint": [
+                    service.endpoint() for service in services
+                ],
+                "fused": False,
+            },
+        )
+        cleanup.callback(dm._runtime_owner.close)
+        monkeypatch.setattr(dm, "_to_hetero_train", lambda batch: batch)
+        if not expected_batches:
+            with pytest.raises(ValueError, match="no native batches"):
+                dm.train_dataloader()
+            assert all(service.health()["task_requests"] == 0 for service in services)
+            return
+
+        loader = dm.train_dataloader()
+        assert loader.num_workers == 0
+        batches = list(loader)
+        assert len(loader) == len(batches) == expected_batches
+        assert sorted(
+            value
+            for batch in batches
+            for value in batch["task"]["tt_stage_node_ids"].to_pylist()
+        ) == list(range(6))
+        assert dm.active_dataloader_worker_pids == ()
 
 
 def test_shared_native_backend_closes_all_active_epochs(prepared_task: str) -> None:

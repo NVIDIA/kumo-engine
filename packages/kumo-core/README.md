@@ -105,15 +105,24 @@ endpoint = service.endpoint("10.0.0.5")
 # Retain service for the actor's lifetime; call service.close() during teardown.
 ```
 
+Remote sampling always uses `DataLoader(num_workers=0)` for training, refit,
+evaluation, prediction, and explanation. Configured DataLoader workers apply
+only to local sampling; there is no remote override. Rust reader threads prefetch
+one complete batch per replica, while batch conversion runs in the training
+process without a subprocess result queue.
+
 `max_streams` defaults to three, covering overlapping train/validation/test
-streams for one loader worker. Paused streams retain their permits while
-backpressure blocks their producers. For multiple workers, set `max_streams`
-to at least the number of overlapping stages times the total concurrent loader
-workers using that server, across all trainers. For example, two workers need
-four streams for train/validation refit or six for train/validation/test refit.
-Count a loader with `num_workers=0` as one worker. Each additional stream can
+streams for one training process. Paused streams retain their permits while
+backpressure blocks their producers. For multiple training processes sharing a
+server, budget overlapping stages times concurrent training processes: two
+processes need four streams for train/validation refit or six for full refit.
+Each additional stream can
 retain a native producer and its buffers; `max_threads` remains a per-index
 thread budget.
+
+Remote training rejects flat epochs with no native batches before exposing a
+positive loader length. If replica sharding and `drop_last=True` leave no full
+batches, reduce the batch size or replica count, or disable `drop_last`.
 
 The wrapper starts the native listener during construction. Its `health()`
 returns native readiness and request/batch counters; its process ID matches the

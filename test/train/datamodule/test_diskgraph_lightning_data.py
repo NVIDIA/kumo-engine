@@ -490,7 +490,8 @@ def _install_fake_diskgraph(
         Delegates to the fake factory above so each test's expectations about
         Remembers what moved to open-time and puts it back.
         """
-        def __init__(self, dataset_ref, rnd_seed=None, num_threads=None):
+        def __init__(self, dataset_ref, rnd_seed=None, num_threads=None,
+                     sampling_endpoints=None):
             self._ref = dataset_ref
             self._rnd_seed = rnd_seed
             self._num_threads = num_threads
@@ -1709,8 +1710,114 @@ def test_dataloader_passes_through_loader_kwargs(
     assert loader.persistent_workers is True
 
 
+@pytest.mark.parametrize("endpoints", ["grpc://a:1", ["grpc://a:1", "grpc://b:1"]])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "train",
+        "refit_trainval",
+        "refit_full",
+        "val",
+        "test",
+        "predict",
+        "explain",
+        "grouped",
+    ],
+)
+def test_remote_dataloaders_always_run_in_training_process(
+    monkeypatch: pytest.MonkeyPatch,
+    endpoints: str | list[str],
+    mode: str,
+) -> None:
+    """Ignore requested subprocesses and their queue settings for remote sampling."""
+    calls = _install_fake_diskgraph(monkeypatch, batches_per_iterator=2)
+    count = 2 if mode == "grouped" else 8
+    monkeypatch.setattr(
+        DiskgraphTaskManifest,
+        "stage_counts",
+        property(
+            lambda self: dict.fromkeys(("train", "val", "test", "predict"), count)
+        ),
+    )
+    if mode == "grouped":
+        monkeypatch.setattr(
+            DiskgraphLightningDataModule, "_is_link_pred", property(lambda self: True)
+        )
+        monkeypatch.setattr(
+            DiskgraphLightningDataModule,
+            "_rhs_is_temporal",
+            property(lambda self: True),
+        )
+        monkeypatch.setattr(dldm, "_stage_bucket_counts", lambda *_: [(0, 1), (1, 1)])
+    dm = DiskgraphLightningDataModule(
+        _manifest(),
+        _mapper_bank(),
+        sampling_plan={"layers": []},
+        train_batch_size=4,
+        eval_batch_size=4,
+        num_workers=4,
+        persistent_workers=True,
+        prefetch_factor=4,
+        drop_last_train=True,
+        use_lhs_node_loader=mode == "grouped",
+        runtime_options={"remote_sampling_endpoint": endpoints},
+    )
+    if mode == "explain":
+        loader = dm.explain_dataloader("test", torch.tensor([10, 12]))
+    else:
+        stages_by_mode: dict[str, str | tuple[str, ...]] = {
+            "refit_trainval": ("train", "val"),
+            "refit_full": ("train", "val", "test"),
+            "grouped": "train",
+        }
+        stage = stages_by_mode.get(mode, mode)
+        loader = dm._make_dataloader(
+            stage, is_train=mode in {"train", "refit_trainval", "refit_full", "grouped"}
+        )
+
+    assert dm.num_workers == loader.num_workers == 0
+    assert not isinstance(loader, dldm._WorkerPoolDataLoader)
+    assert isinstance(loader.dataset, DiskgraphTaskBatchIterable)
+    assert loader.dataset.dataloader_num_workers == 1
+    assert loader.persistent_workers is False
+    assert loader.prefetch_factor is None
+    assert dm.active_dataloader_worker_pids == ()
+    list(loader)
+    assert calls["history"]
+    assert all(call["kwargs"]["num_workers"] == 1 for call in calls["history"])
+
+
+@pytest.mark.parametrize("num_seeds,drop_last", [(0, False), (2, True)])
+def test_remote_training_rejects_empty_native_epochs(
+    monkeypatch: pytest.MonkeyPatch,
+    num_seeds: int,
+    drop_last: bool,
+) -> None:
+    """A minimum epoch target cannot make empty replica shards yield batches."""
+    monkeypatch.setattr(
+        DiskgraphTaskManifest,
+        "stage_counts",
+        property(lambda self: {"train": num_seeds}),
+    )
+    dm = DiskgraphLightningDataModule(
+        _manifest(),
+        _mapper_bank(),
+        sampling_plan={"layers": []},
+        train_batch_size=2,
+        eval_batch_size=2,
+        num_workers=2,
+        drop_last_train=drop_last,
+        min_steps_per_epoch=10,
+        runtime_options={"remote_sampling_endpoint": ["grpc://a:1", "grpc://b:1"]},
+    )
+
+    with pytest.raises(ValueError, match="Remote training produces no native batches"):
+        dm.train_dataloader()
+
+
 def test_dataloader_passes_through_prefetch_factor(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _install_fake_diskgraph(monkeypatch)
     dm = DiskgraphLightningDataModule(
         _manifest(),
@@ -1737,7 +1844,7 @@ def _worker_pool_loader(
         registry=registry,
         batch_size=None,
         num_workers=2,
-        multiprocessing_context='fork',
+        multiprocessing_context="fork",
         persistent_workers=persistent_workers,
         prefetch_factor=1,
     )
