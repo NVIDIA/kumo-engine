@@ -85,8 +85,8 @@ its arrays and record batches through the Arrow C Data Interface to Python.
 
 A one-slot native output queue reserves capacity before sampling each batch.
 Each logical minibatch has a cumulative 64 MiB wire-payload limit, including
-component schemas, dictionaries and application metadata. Each client prefetches at most
-one decoded batch per server. When the trainer pauses, client prefetch and gRPC
+component schemas, dictionaries and application metadata. The Rust remote backend prefetches at most
+one native decoded batch per server through the remote backend. When the trainer pauses, client prefetch and gRPC
 buffers fill, Flight stops draining the output queue, and the native producer
 waits for capacity. There are no application credit messages. These queue limits
 exclude additional transport buffers and native sampling/encoding working memory.
@@ -124,3 +124,18 @@ cargo clippy -p diskgraph-gateway --all-targets -- -D warnings
 Python integration tests exercise the embedded listener and compare complete
 batches with the local iterator. The standalone executable remains available
 through Cargo; Python workers use the extension directly.
+
+
+The shared Python `diskgraph.RuntimeIndex` wrapper selects local sampling by
+default or the native `RemoteRuntimeIndex` backend with `sampling_endpoints`.
+Manifest resolution and option normalization are shared. Rust owns cached replica
+connections across extensions/stages, shard assignment, weighted-sidecar path
+relativization and deterministic round-robin merging. Ordered RHS catalog scans
+use only the first replica. Each native reader receives demand for one batch;
+a one-slot result channel retains it until consumed. No Python executor or
+per-replica Python batch export participates in prefetch.
+
+Closing an epoch cancels all its readers, joins their threads and discards queued
+batches. Closing an index cancels every epoch and releases connections; it is
+terminal. Dropping native handles signals cancellation without joining under the
+GIL. Explicit `close()` releases the GIL and performs deterministic shutdown.

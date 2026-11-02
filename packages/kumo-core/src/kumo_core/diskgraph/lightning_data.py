@@ -1519,27 +1519,19 @@ class DiskgraphTaskBatchIterable(IterableDataset):
         return local_targets, stage_worker_counts
 
     def _runtime_index(self) -> Any:
-        """One opened index per worker process, reused for every epoch."""
+        """Cache a native-backed runtime handle for this worker process."""
         cached = self.__dict__.get("_runtime_index_handle")
         if cached is None or self.__dict__.get("_runtime_index_pid") != os.getpid():
             from diskgraph import RuntimeIndex
 
+            index_options: dict[str, Any] = {
+                "rnd_seed": self.base_seed,
+                "num_threads": self.runtime_options.get("num_threads"),
+            }
             endpoint = self.runtime_options.get("remote_sampling_endpoint")
             if endpoint is not None:
-                from kumo_core.diskgraph.remote_sampling import RemoteRuntimeIndex
-
-                cached = RemoteRuntimeIndex(
-                    self.manifest_path,
-                    endpoint=endpoint,
-                    rnd_seed=self.base_seed,
-                    num_threads=self.runtime_options.get("num_threads"),
-                )
-            else:
-                cached = RuntimeIndex(
-                    self.manifest_path,
-                    rnd_seed=self.base_seed,
-                    num_threads=self.runtime_options.get("num_threads"),
-                )
+                index_options["sampling_endpoints"] = endpoint
+            cached = RuntimeIndex(self.manifest_path, **index_options)
             self.__dict__["_runtime_index_handle"] = cached
             self.__dict__["_runtime_index_pid"] = os.getpid()
         return cached
@@ -1559,7 +1551,8 @@ class DiskgraphTaskBatchIterable(IterableDataset):
         finally:
             if (self.runtime_options.get("remote_sampling_endpoint") is not None
                     and not self.__dict__.get("_runtime_index_managed", False)):
-                index = self.__dict__.get("_runtime_index_handle")
+                index = self.__dict__.pop("_runtime_index_handle", None)
+                self.__dict__.pop("_runtime_index_pid", None)
                 if index is not None:
                     index.close()
 
@@ -2027,7 +2020,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             self._worker_pool_registry.shutdown(phase)
         finally:
             if phase is None:
-                remote = self.__dict__.get("_remote_runtime_index")
+                remote = self.__dict__.pop("_remote_runtime_index", None)
                 if remote is not None:
                     remote.close()
 
@@ -2049,12 +2042,12 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         endpoint = self.runtime_options.get("remote_sampling_endpoint")
         if endpoint is None:
             return
-        from kumo_core.diskgraph.remote_sampling import RemoteRuntimeIndex
+        from diskgraph import RuntimeIndex
 
         remote = self.__dict__.get("_remote_runtime_index")
         if remote is None:
-            remote = RemoteRuntimeIndex(
-                iterable.manifest_path, endpoint=endpoint,
+            remote = RuntimeIndex(
+                iterable.manifest_path, sampling_endpoints=endpoint,
                 rnd_seed=self.base_seed,
                 num_threads=self.runtime_options.get("num_threads"),
             )

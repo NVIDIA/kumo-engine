@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use std::{collections::HashMap, path::Path, sync::Arc};
 use tonic::Status;
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskRequest {
     pub kind: String,
@@ -18,7 +18,7 @@ pub struct TaskRequest {
     pub num_threads: Option<usize>,
     pub options: TaskOptions,
 }
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskOptions {
     pub stage_table: String,

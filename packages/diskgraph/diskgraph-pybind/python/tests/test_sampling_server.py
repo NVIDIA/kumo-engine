@@ -192,3 +192,18 @@ def test_native_request_is_immutable_and_owns_wire_fields() -> None:
             client.open(b"{}")
     finally:
         client.close()
+
+
+def test_closed_native_remote_backend_cannot_reopen() -> None:
+    """Closing a backend prohibits future requests before any network operation."""
+    backend = diskgraph.RemoteRuntimeIndex(["grpc://127.0.0.1:1"])
+    backend.close()
+    backend.close()
+    request = diskgraph.SamplingRequest(
+        "train_tables/task",
+        stage_table="train_seeds",
+        sampling_plan_json='{"layers":[]}',
+        batch_size=2,
+    )
+    with pytest.raises(flight.FlightCancelledError, match="closed"):
+        backend.iter(request, "/unused")

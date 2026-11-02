@@ -15,7 +15,6 @@ import orjson
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from kumo_core.diskgraph.remote_sampling import RemoteRuntimeIndex
 
 
 @pytest.fixture
@@ -194,7 +193,9 @@ def test_local_remote_parity(
     """Compare complete batches for natural, sharded, selected and partial input."""
     manifest, endpoint = remote_task
     local = diskgraph.RuntimeIndex(manifest, rnd_seed=42, num_threads=1)
-    remote = RemoteRuntimeIndex(manifest, endpoint, rnd_seed=42, num_threads=1)
+    remote = diskgraph.RuntimeIndex(
+        manifest, rnd_seed=42, num_threads=1, sampling_endpoints=endpoint
+    )
     kwargs = {
         "stage": "train",
         "sampling_plan": {
@@ -238,21 +239,23 @@ def test_local_remote_parity(
 def test_cancellation_releases_gateway_streams(remote_task: tuple[str, str]) -> None:
     """Repeated early exits must release connections and server stream permits."""
     manifest, endpoint = remote_task
-    source = RemoteRuntimeIndex(manifest, endpoint, rnd_seed=42, num_threads=1)
     for _ in range(8):
-        iterator, _ = source.iter(
-            stage="train",
-            sampling_plan={"layers": []},
-            num_workers=1,
-            worker_id=0,
-            shuffle=False,
-            epoch=0,
-            batch_size=1,
-            entity_node_type="users",
-            fused=False,
+        source = diskgraph.RuntimeIndex(
+            manifest, rnd_seed=42, num_threads=1, sampling_endpoints=endpoint
         )
         try:
+            iterator, _ = source.iter(
+                stage="train",
+                sampling_plan={"layers": []},
+                num_workers=1,
+                worker_id=0,
+                shuffle=False,
+                epoch=0,
+                batch_size=1,
+                entity_node_type="users",
+                fused=False,
+            )
             next(iterator)
         finally:
             source.close()
-        assert not source._streams
+        assert source._closed

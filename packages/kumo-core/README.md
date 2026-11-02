@@ -89,7 +89,8 @@ Kumo is not yet a uv workspace. These commands operate on `packages/kumo-core` e
 `diskgraph.SamplingServer` embeds the Rust Flight gateway inside its owning
 Python process. Rust calls `diskgraph-runtime` directly and owns
 sampling, Arrow encoding, flow control, and cancellation. Python manages the
-server handle and consumes Arrow batches through `RemoteRuntimeIndex`.
+server handle and consumes Arrow batches through the shared `RuntimeIndex`
+wrapper with `sampling_endpoints` selecting its Rust remote backend.
 
 A sampling actor starts the listener over its completed local graph replica:
 
@@ -120,8 +121,9 @@ Epoch requests carry sampling, projection, seed, and shard settings in a `DoGet`
 ticket. Python constructs a native `diskgraph.SamplingRequest` and passes it to
 `SamplingClient.open()`; Rust sets the wire identity and serializes the ticket.
 Sampling-plan JSON retains the existing native iterator interface. The server reserves a
-slot in its bounded output queue before sampling a batch, and the client
-prefetches one decoded batch per server. gRPC flow control propagates a paused
+slot in its bounded output queue before sampling a batch. The Rust remote
+backend prefetches one native decoded batch per server and merges them in
+round-robin order, with no Python thread pool. gRPC flow control propagates a paused
 trainer back to the producer; additional transport buffers and native working
 memory are separate from these queue limits. No application credits are sent.
 The initial empty Flight schema carries the protocol version and sample/batch
@@ -146,3 +148,13 @@ RHS catalog scans use one replica to preserve MIPS embedding order.
 The standalone `diskgraph-gateway` CLI uses the same Rust server implementation.
 Graph preparation belongs to the caller. Use the transport between trusted peers
 on a restricted network.
+
+
+Use `diskgraph.RuntimeIndex(manifest, sampling_endpoints=endpoints)` for remote
+sampling or omit the endpoint argument for local sampling. Both modes reuse the
+same manifest and option normalization. Rust owns remote connections, replica
+sharding, weighted-sidecar path translation and iterator lifetime. Close an epoch
+to cancel its prefetch while retaining shared connections; close the index at
+job teardown to cancel all epochs and release those connections. A closed index
+cannot be reopened. The data module creates a fresh shared handle when needed
+after job teardown.

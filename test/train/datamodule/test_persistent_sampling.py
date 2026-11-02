@@ -9,8 +9,8 @@ from collections.abc import Generator
 from typing import Any
 from unittest.mock import MagicMock
 
+import diskgraph
 import pytest
-from kumo_core.diskgraph import remote_sampling as remote
 
 
 @pytest.fixture
@@ -31,7 +31,7 @@ def test_module_owns_stream_lifetime_across_stage_loaders(
 
     source = MagicMock()
     factory = MagicMock(return_value=source)
-    monkeypatch.setattr(remote, "RemoteRuntimeIndex", factory)
+    monkeypatch.setattr(diskgraph, "RuntimeIndex", factory)
     module = object.__new__(DiskgraphLightningDataModule)
     module.runtime_options = {"remote_sampling_endpoint": ["grpc://a:1"]}
     module.base_seed = 42
@@ -60,6 +60,9 @@ def test_module_owns_stream_lifetime_across_stage_loaders(
     source.close.assert_not_called()
     module.shutdown_dataloader_workers()
     source.close.assert_called_once()
+    assert "_remote_runtime_index" not in module.__dict__
+    module._bind_remote_runtime(dataset)
+    assert factory.call_count == 2
 
 
 def test_failed_worker_shutdown_still_closes_sampling_streams() -> None:

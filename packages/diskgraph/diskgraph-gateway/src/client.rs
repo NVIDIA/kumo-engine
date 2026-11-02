@@ -313,7 +313,7 @@ impl Drop for SamplingStream {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use arrow_array::{types::Int32Type, ArrayRef, DictionaryArray, Int64Array, StringArray};
     use arrow_flight::FlightData;
@@ -323,14 +323,14 @@ mod tests {
     use futures::{stream, Stream};
     use serde_json::json;
 
-    fn layout() -> Value {
+    pub(crate) fn layout() -> Value {
         json!({"task": {"target": {"component": 0, "columns": [0,1]}}, "graphs": {}, "raw_features": {}})
     }
-    pub(super) fn batch() -> RecordBatch {
+    pub(crate) fn batch() -> RecordBatch {
         RecordBatch::try_from_iter([("target", Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef)])
             .unwrap()
     }
-    fn frames(
+    pub(crate) fn frames(
         batch_id: u64,
         component_id: usize,
         count: usize,
@@ -377,7 +377,7 @@ mod tests {
         result.push(Ok(frame));
         result
     }
-    fn reader(
+    pub(crate) fn reader(
         stream: impl Stream<Item = Result<FlightData, FlightError>> + Send + 'static,
         num_batches: u64,
     ) -> SamplingStream {

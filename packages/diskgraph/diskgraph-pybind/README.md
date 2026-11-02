@@ -234,3 +234,39 @@ budgets and shard bounds, and owns the request kind and protocol version.
 dictionary or serialize ticket bytes. Sampling-plan and weighted-sampling JSON
 strings retain the existing native iterator interface. Requests can be reused
 without cloning their native seed-selection arrays during serialization.
+
+
+### Shared local and remote runtime interface
+
+The public manifest wrapper uses composition to select its native backend:
+
+```python
+index = diskgraph.RuntimeIndex(
+    "runtime_manifest.json",
+    rnd_seed=42,
+    num_threads=1,
+    sampling_endpoints=["grpc://worker-a:8815", "grpc://worker-b:8815"],
+)
+try:
+    batches, count = index.iter(
+        stage="train", sampling_plan={"layers": []},
+        num_workers=1, worker_id=0, shuffle=False, epoch=0, batch_size=512,
+    )
+    try:
+        for batch in batches:
+            consume(batch)
+    finally:
+        batches.close()
+finally:
+    index.close()
+```
+
+Omitting `sampling_endpoints` uses the existing local native index. Both paths
+share manifest resolution and argument normalization. The remote backend owns
+connections, epoch sharding, one-batch native prefetch, round-robin merging and
+cancellation; Python only exports the selected complete batch. Closing the remote
+epoch leaves its index available for later stages/epochs. Closing the index is
+terminal. The lower-level `diskgraph.RemoteRuntimeIndex(endpoints)` class accepts
+`iter(SamplingRequest, graph_root)` directly and returns `RemoteBatchIterator`.
+Both handles expose `close()`; garbage collection signals asynchronous cleanup
+without joining while holding the GIL.

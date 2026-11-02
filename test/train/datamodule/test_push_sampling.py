@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import shutil
-import threading
 import time
 from collections import deque
 from collections.abc import Iterator
@@ -14,13 +13,11 @@ from contextlib import ExitStack
 from pathlib import Path
 from test.train.datamodule import test_remote_sampling_integration as parity
 from typing import Any
-from unittest.mock import MagicMock
 
 import diskgraph
 import orjson
 import pyarrow as pa
 import pytest
-from kumo_core.diskgraph.remote_sampling import RemoteRuntimeIndex
 from kumo_core.diskgraph.sampling_service import (
     SamplingService,
     SamplingServiceConfig,
@@ -82,8 +79,11 @@ def test_push_matches_native_shards(
             service = SamplingService(SamplingServiceConfig(root))
             services.append(service)
             cleanup.callback(service.close)
-        runtime = RemoteRuntimeIndex(
-            prepared_task, [service.endpoint() for service in services], 42, 1
+        runtime = diskgraph.RuntimeIndex(
+            prepared_task,
+            sampling_endpoints=[service.endpoint() for service in services],
+            rnd_seed=42,
+            num_threads=1,
         )
         cleanup.callback(runtime.close)
         local = diskgraph.RuntimeIndex(prepared_task, rnd_seed=42, num_threads=1)
@@ -139,7 +139,9 @@ def test_transport_backpressure_stops_and_resumes_native_production(
     service = SamplingService(
         SamplingServiceConfig(Path(prepared_task).parent / "graph")
     )
-    runtime = RemoteRuntimeIndex(prepared_task, service.endpoint(), 42, 1)
+    runtime = diskgraph.RuntimeIndex(
+        prepared_task, sampling_endpoints=service.endpoint(), rnd_seed=42, num_threads=1
+    )
     total = 100_000
     try:
         iterator, count = runtime.iter(
@@ -176,7 +178,7 @@ def test_transport_backpressure_stops_and_resumes_native_production(
 
 
 def test_prepared_task_is_reused_without_artifact_rpcs(
-    prepared_task: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    prepared_task: str, tmp_path: Path
 ) -> None:
     """Prepared artifacts serve repeated epochs without registration or uploads."""
     root = tmp_path / "replica"
@@ -190,15 +192,16 @@ def test_prepared_task_is_reused_without_artifact_rpcs(
     portable_manifest = tmp_path / "portable.json"
     portable_manifest.write_bytes(orjson.dumps(manifest))
     service = SamplingService(SamplingServiceConfig(root))
-    runtime = RemoteRuntimeIndex(str(portable_manifest), service.endpoint(), 42, 1)
-    client = runtime._client_for(service.endpoint())
-    observed = MagicMock(wraps=client)
-    monkeypatch.setattr(runtime, "_client_for", lambda _: observed)
+    runtime = diskgraph.RuntimeIndex(
+        str(portable_manifest),
+        sampling_endpoints=service.endpoint(),
+        rnd_seed=42,
+        num_threads=1,
+    )
     try:
         for epoch in range(3):
             iterator, _ = runtime.iter(**{**_options(), "epoch": epoch})
             assert len(list(iterator)) == 3
-        assert observed.open.call_count == 3
         assert service.health()["get_streams"] == 3
         assert not trainer_root.exists()
     finally:
@@ -218,7 +221,9 @@ def test_missing_task_artifact_fails_until_materialized(
     if incomplete:
         extension.mkdir(parents=True)
     service = SamplingService(SamplingServiceConfig(root))
-    runtime = RemoteRuntimeIndex(prepared_task, service.endpoint(), 42, 1)
+    runtime = diskgraph.RuntimeIndex(
+        prepared_task, sampling_endpoints=service.endpoint(), rnd_seed=42, num_threads=1
+    )
     try:
         with pytest.raises(
             (flight.FlightServerError, pa.ArrowInvalid), match="materialize.*worker"
@@ -234,44 +239,6 @@ def test_missing_task_artifact_fails_until_materialized(
     finally:
         runtime.close()
         service.close()
-
-
-def test_close_interrupts_a_blocked_push_reader(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Cancellation wakes and joins a reader waiting for a remote batch."""
-    from kumo_core.diskgraph import remote_sampling
-
-    waiting, cancelled = threading.Event(), threading.Event()
-    stream = MagicMock()
-    stream.num_samples.return_value = 1
-
-    def read() -> dict[str, Any]:
-        waiting.set()
-        assert cancelled.wait(5), "Push reader was not cancelled"
-        raise flight.FlightCancelledError("cancelled")
-
-    stream.__next__.side_effect = read
-    stream.close.side_effect = cancelled.set
-    monkeypatch.setattr(
-        remote_sampling, "RemoteTaskIterator", MagicMock(return_value=stream)
-    )
-    monkeypatch.setattr(remote_sampling, "SamplingRequest", MagicMock())
-    owner = MagicMock()
-    owner.endpoints = ("grpc://unused:1",)
-    owner._epoch_only = set()
-    owner._streams = set()
-    iterator = remote_sampling.RemotePushIterator(
-        owner, "train_tables/task", {"num_workers": 1, "worker_id": 0}
-    )
-    try:
-        assert waiting.wait(5)
-        pending = iterator._pending[0][1]
-    finally:
-        iterator.close()
-    with pytest.raises(flight.FlightCancelledError):
-        pending.result()
-    assert not owner._streams
 
 
 @pytest.mark.parametrize("replicas", [1, 2, 3, 8])
@@ -314,6 +281,7 @@ def test_remote_loader_length_matches_replica_batch_tails(
         )
         expected = len(dataset)
         assert len(list(dataset)) == expected
+        assert len(list(dataset)) == expected
         module = object.__new__(DiskgraphLightningDataModule)
         module.runtime_options = options
         assert module._natural_batches(6, 2, drop_last=drop_last) == expected
@@ -326,8 +294,11 @@ def test_ordered_rhs_catalog_scan_uses_one_replica(prepared_task: str) -> None:
         services = [SamplingService(SamplingServiceConfig(graph)) for _ in range(3)]
         for service in services:
             cleanup.callback(service.close)
-        remote = RemoteRuntimeIndex(
-            prepared_task, [s.endpoint() for s in services], 42, 1
+        remote = diskgraph.RuntimeIndex(
+            prepared_task,
+            sampling_endpoints=[s.endpoint() for s in services],
+            rnd_seed=42,
+            num_threads=1,
         )
         cleanup.callback(remote.close)
         options = {**_options(), "rhs_seed_node_type": "users", "rhs_seed_time": 0}
@@ -361,7 +332,12 @@ def test_replicas_produce_concurrently(prepared_task: str) -> None:
         reader = client.open(request)
         assert (reader.num_samples, reader.num_batches) == (6, 3)
         assert set(next(reader)) == {"task", "graphs", "raw_features"}
-        runtime = RemoteRuntimeIndex(prepared_task, second.endpoint(), 42, 1)
+        runtime = diskgraph.RuntimeIndex(
+            prepared_task,
+            sampling_endpoints=second.endpoint(),
+            rnd_seed=42,
+            num_threads=1,
+        )
         cleanup.callback(runtime.close)
         try:
             iterator, _ = runtime.iter(**_options())
@@ -401,3 +377,68 @@ def test_native_request_supports_numpy_seed_selection(prepared_task: str) -> Non
             for batch in batches
             for value in batch["task"]["tt_stage_node_ids"].to_pylist()
         ] == [1, 3, 5]
+
+
+def test_remote_backend_drop_cancels_a_live_epoch(prepared_task: str) -> None:
+    """Dropping the native owner cancels paused readers without joining under the GIL."""
+    import gc
+
+    graph = Path(prepared_task).parent / "graph"
+    with ExitStack() as cleanup:
+        service = SamplingService(SamplingServiceConfig(graph))
+        cleanup.callback(service.close)
+        backend = diskgraph.RemoteRuntimeIndex([service.endpoint()])
+        request = diskgraph.SamplingRequest(
+            "train_tables/remote_test",
+            stage_table="train_seeds",
+            sampling_plan_json='{"layers":[]}',
+            batch_size=1,
+            entity_node_type="users",
+            fused=False,
+            selected_stage_node_ids=[0] * 10000,
+        )
+        iterator = backend.iter(request, str(graph))
+        cleanup.callback(iterator.close)
+        next(iterator)
+        del backend
+        gc.collect()
+        _wait_for_idle(service)
+        assert list(iterator) == []
+
+
+def test_shared_native_backend_closes_all_active_epochs(prepared_task: str) -> None:
+    """One manifest wrapper owns multiple native epoch streams and cancels them together."""
+    graph = Path(prepared_task).parent / "graph"
+    with ExitStack() as cleanup:
+        service = SamplingService(SamplingServiceConfig(graph, max_streams=2))
+        cleanup.callback(service.close)
+        runtime = diskgraph.RuntimeIndex(
+            prepared_task,
+            sampling_endpoints=service.endpoint(),
+            rnd_seed=42,
+            num_threads=1,
+        )
+        cleanup.callback(runtime.close)
+        streams = [
+            runtime.iter(
+                **{
+                    **_options(),
+                    "batch_size": 1,
+                    "selected_stage_node_ids": [0] * 10000,
+                }
+            )[0]
+            for _ in range(2)
+        ]
+        for stream in streams:
+            next(stream)
+        streams[0].close()
+        assert next(streams[1])["task"]["input_ids"].to_pylist() == [0]
+        replacement, _ = runtime.iter(
+            **{**_options(), "batch_size": 1, "selected_stage_node_ids": [0] * 10000}
+        )
+        streams.append(replacement)
+        next(replacement)
+        runtime.close()
+        _wait_for_idle(service)
+        for stream in streams:
+            assert list(stream) == []

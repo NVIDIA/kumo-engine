@@ -188,6 +188,7 @@ use diskgraph_engine::state::{SamplingState, StatePool};
 mod artifact_helpers;
 mod sampling_server;
 mod sampling_client;
+mod remote_runtime;
 mod bp_col_stats;
 mod col_stats_export;
 mod custom_tt_entry;
@@ -1576,6 +1577,8 @@ fn validated_index_resume_progress(output_dir: &str) -> PyResult<Option<Vec<Stri
 #[pyo3(name = "_c")]
 fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<sampling_server::PySamplingServer>()?;
+    m.add_class::<remote_runtime::PyRemoteRuntimeIndex>()?;
+    m.add_class::<remote_runtime::PyRemoteBatchIterator>()?;
     m.add_class::<sampling_client::PySamplingRequest>()?;
     m.add_class::<sampling_client::PySamplingClient>()?;
     m.add_class::<sampling_client::PySamplingStream>()?;

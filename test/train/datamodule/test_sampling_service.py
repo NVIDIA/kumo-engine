@@ -16,7 +16,6 @@ import diskgraph
 import orjson
 import pyarrow as pa
 import pytest
-from kumo_core.diskgraph.remote_sampling import RemoteTaskIterator
 from kumo_core.diskgraph.sampling_service import (
     SamplingService,
     SamplingServiceConfig,
@@ -70,7 +69,11 @@ def test_service_rejects_unsafe_paths(prepared_task: str, relative: str) -> None
             batch_size=2,
         )
         with pytest.raises((flight.FlightServerError, pa.ArrowInvalid)):
-            RemoteTaskIterator(service.endpoint(), request)
+            client = diskgraph.SamplingClient(service.endpoint())
+            try:
+                client.open(request)
+            finally:
+                client.close()
         assert service.health()["active_streams"] == 0
     finally:
         service.close()
@@ -94,7 +97,6 @@ def test_epoch_shards_use_all_replicas(
     from contextlib import ExitStack
 
     import diskgraph
-    from kumo_core.diskgraph.remote_sampling import RemoteRuntimeIndex
 
     graph = tmp_path / "graph"
     shutil.copytree(
@@ -107,11 +109,11 @@ def test_epoch_shards_use_all_replicas(
             service = SamplingService(SamplingServiceConfig(graph))
             cleanup.callback(service.close)
             services.append(service)
-        remote = RemoteRuntimeIndex(
+        remote = diskgraph.RuntimeIndex(
             prepared_task,
-            [service.endpoint() for service in services],
             rnd_seed=42,
             num_threads=1,
+            sampling_endpoints=[service.endpoint() for service in services],
         )
         cleanup.callback(remote.close)
         local = diskgraph.RuntimeIndex(prepared_task, rnd_seed=42, num_threads=1)
@@ -146,10 +148,8 @@ def test_epoch_shards_use_all_replicas(
         ] * replica_count
         assert all(service.health()["task_requests"] == 1 for service in services)
         assert (graph / "train_tables" / "remote_test").is_dir()
-        clients = list(remote._clients.values())
-        assert len(clients) == replica_count
         remote.close()
-        assert not remote._clients
+        assert remote._closed
 
 
 @pytest.mark.parametrize("seed", [-1, 2**64, True])
@@ -176,13 +176,14 @@ def test_native_progress_logs_reach_python(
     prepared_task: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Native lifecycle and progress events reach the actor's Python logger."""
-    from kumo_core.diskgraph.remote_sampling import RemoteRuntimeIndex
 
     caplog.set_level("INFO")
     service = SamplingService(
         SamplingServiceConfig(Path(prepared_task).parent / "graph")
     )
-    runtime = RemoteRuntimeIndex(prepared_task, service.endpoint(), 42, 1)
+    runtime = diskgraph.RuntimeIndex(
+        prepared_task, sampling_endpoints=service.endpoint(), rnd_seed=42, num_threads=1
+    )
     try:
         iterator, _ = runtime.iter(
             stage="train",

@@ -16,7 +16,7 @@ use pyo3::{
 use serde_json::Value;
 use std::collections::HashMap;
 
-fn client_error(py: Python<'_>, error: anyhow::Error) -> PyErr {
+pub(crate) fn client_error(py: Python<'_>, error: anyhow::Error) -> PyErr {
     if let Some(status) = error.downcast_ref::<tonic::Status>() {
         let (module, name) = match status.code() {
             tonic::Code::Cancelled => ("pyarrow.flight", "FlightCancelledError"),
@@ -39,7 +39,7 @@ fn client_error(py: Python<'_>, error: anyhow::Error) -> PyErr {
     PyValueError::new_err(format!("{error:#}"))
 }
 
-fn export_layout<'py>(
+pub(crate) fn export_layout<'py>(
     py: Python<'py>,
     value: &Value,
     components: &[RecordBatch],
@@ -122,7 +122,7 @@ fn export_layout<'py>(
 ///     ValueError: If batch, thread or shard settings are invalid.
 #[pyclass(name = "SamplingRequest", module = "diskgraph._c", frozen)]
 pub(crate) struct PySamplingRequest {
-    request: TaskRequest,
+    pub(crate) request: TaskRequest,
 }
 #[pymethods]
 impl PySamplingRequest {
