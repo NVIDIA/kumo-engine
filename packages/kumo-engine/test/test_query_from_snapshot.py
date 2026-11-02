@@ -158,6 +158,53 @@ def test_entities_missing_from_the_snapshot_are_recorded_as_skipped(
     assert full.manifest.prediction_table.skipped_sample == []
 
 
+@pytest.mark.parametrize('ids, times, message', [
+    (range(1000, 1014), None, 'not in snapshot (sample: 1000, 1001, 1002, …)'),
+    ([None] * 14, None, 'null entity id'),
+    (range(14), pd.NaT, 'null anchor time'),
+    ([1000, 1001, *[None] * 12], None,
+     'null entity id (12); not in snapshot (2) (sample: 1000, 1001)'),
+])
+def test_predict_refuses_rows_that_none_can_be_scored(fitted, tmp_path, ids,
+                                                      times, message):
+    trainer, graph_table, snapshot = fitted
+    anchor = pd.Timestamp(graph_table.timestamps[0]) if times is None else times
+    pd.DataFrame({
+        'ENTITY1': pd.array(list(ids), dtype='Int64'),
+        'TIMESTAMP': pd.Series([anchor] * 14, dtype='datetime64[ns]'),
+    }).to_parquet(tmp_path / 'rows.parquet')
+    rows = kumo.FileConnector(root_dir=str(tmp_path))['rows.parquet']
+
+    with pytest.raises(ValueError) as raised:
+        trainer.predict(snapshot, entities=rows,
+                        binary_classification_threshold=0.5)
+    assert str(raised.value) == (
+        f'None of the 14 requested entities can be scored: {message}')
+
+
+def test_training_rows_that_none_can_be_kept_keep_their_error(
+        fitted, tmp_path):
+    from diskgraph import DiskgraphDataError
+    from kumoapi.train import TrainingTableSpec
+
+    from kumo.engine.pquery import PredictiveQuery, TrainingTable
+
+    trainer, graph_table, snapshot = fitted
+    pd.DataFrame({
+        'ENTITY1': range(1000, 1014),
+        'TIMESTAMP': [pd.Timestamp(graph_table.timestamps[0])] * 14,
+        'TARGET1': [True] * 14,
+    }).to_parquet(tmp_path / 'rows.parquet')
+    rows = kumo.FileConnector(root_dir=str(tmp_path))['rows.parquet']
+    query = PredictiveQuery._from_snapshot(snapshot, trainer._training_query)
+    with pytest.raises(DiskgraphDataError) as raised:
+        TrainingTable.from_source_table(rows, TrainingTableSpec(), pq=query,
+                                        snapshot=snapshot)
+    assert str(raised.value) == (
+        'custom-TT source kept no rows (14 read, 14 skipped), so the run '
+        'would train on nothing')
+
+
 def test_skipped_samples_count_rows_from_the_chunks_first_row_group(tmp_path):
     import pyarrow as pa
     import pyarrow.parquet as pq

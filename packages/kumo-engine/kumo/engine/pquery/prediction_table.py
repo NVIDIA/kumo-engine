@@ -136,7 +136,8 @@ class PredictionTable:
             request,
             PreparedCustomPredictionTable(str(rows_path)),
         )
-        skipped = skipped_entities(generated.row_failures, rows_path)
+        skipped = skipped_entities(generated.row_failures, rows_path,
+                                   scored=generated.row_count)
         return cls(
             query=pq.query,
             table_path=Path(generated.table_path),
@@ -260,9 +261,10 @@ _SKIP_REASONS = {
 }
 
 
-def skipped_entities(report: Optional[Mapping[str, Any]],
-                     rows_path: Path) -> Dict[str, Any]:
-    r"""Skipped-row fields from DiskGraph's row_failures; warns once."""
+def skipped_entities(report: Optional[Mapping[str, Any]], rows_path: Path,
+                     scored: int) -> Dict[str, Any]:
+    r"""Skipped-row fields from DiskGraph's row_failures; warns once, or
+    raises when no row can be scored."""
     skipped = int((report or {}).get('skipped_rows') or 0)
     if not skipped:
         return {}
@@ -274,13 +276,20 @@ def skipped_entities(report: Optional[Mapping[str, Any]],
     reason = (reasons[0][0] if len(reasons) == 1 else '; '.join(
         f'{name} ({count:,})' for name, count in reasons)) or None
     requested = int(report.get('rows_read') or 0)
+    sample = _sample_ids(conditions, rows_path)
+    if not scored:
+        ids = [str(value) for value in sample if value is not None]
+        shown = ', '.join(ids[:3]) + (', …' if len(ids) > 3 else '')
+        raise ValueError(
+            f'None of the {requested:,} requested entities can be scored: '
+            f'{reason}' + (f' (sample: {shown})' if ids else ''))
     warnings.warn(
         f'Prediction skipped {skipped:,} of {requested:,} requested entities '
         f'({skipped / requested if requested else 1:.1%}): {reason}',
         UserWarning, stacklevel=3)
     return {
         'skipped_rows': skipped,
-        'skipped_sample': _sample_ids(conditions, rows_path),
+        'skipped_sample': sample,
         'skip_reason': reason,
     }
 
