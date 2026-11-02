@@ -18,7 +18,11 @@ from kumo.engine.feature_updates import retain_sources
 def try_expansion(graph, parent, fingerprints):
     from diskgraph import DiskgraphConfigConverter, append_snapshot
     from kumo_core.diskgraph.ingest import prepare_diskgraph_converter_config
-    from kumo_core.diskgraph.snapshot import DiskgraphIngestResult, write_diskgraph_success_marker
+    from kumo_core.diskgraph.snapshot import (
+        DiskgraphIngestResult,
+        write_diskgraph_success_marker,
+    )
+
     from kumo.engine.graph import GraphSnapshot, _warn_ingest_data_loss
 
     started = time.perf_counter()
@@ -62,6 +66,7 @@ def try_expansion(graph, parent, fingerprints):
                 # Source locations and versions may differ; declarations,
                 # key semantics, and existing links may not.
                 ignored = {'source', 'source_size', 'data_version', 'fkeys'}
+
                 def schema(table):
                     return {k: v for k, v in table.items() if k not in ignored}
                 if schema(old) != schema(current):
@@ -111,13 +116,15 @@ def try_expansion(graph, parent, fingerprints):
                       update_chain_length=old_record['update_chain_length'] + 1,
                       added_tables=sorted(new_names), rebuilt_tables=[], reused_tables=sorted(old_names),
                       reused_edges=sorted(old_record['edges']), duration_seconds=time.perf_counter() - started)
-        record['tables'] = {name: {'status': 'added' if name in new_names else 'reused', 'rows': rows,
-                                  'encoder_state': 'fitted' if name in new_names else 'inherited'}
-                            for name, rows in stats['node_counts'].items()}
-        record['edges'] = {name: {'status': 'reused' if name in old_record['edges'] else 'added',
-                                 'delta_entries': counts.get(name, 0),
-                                 'fragmentation': counts.get(name, 0) / value if value else None}
-                           for name, value in base.items()}
+        record['tables'] = {
+            name: {'status': 'added' if name in new_names else 'reused', 'rows': rows,
+                   'encoder_state': 'fitted' if name in new_names else 'inherited'}
+            for name, rows in stats['node_counts'].items()}
+        record['edges'] = {
+            name: {'status': 'reused' if name in old_record['edges'] else 'added',
+                   'delta_entries': counts.get(name, 0),
+                   'fragmentation': counts.get(name, 0) / value if value else None}
+            for name, value in base.items()}
         record['total_fragmentation'] = sum(counts.values()) / max(1, sum(base.values()))
         (output / '_incremental/update.json').write_text(json.dumps(record))
         (output / '_incremental/source_fingerprints.json').write_text(json.dumps({

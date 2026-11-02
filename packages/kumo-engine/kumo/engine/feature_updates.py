@@ -74,8 +74,10 @@ def _changed_rows(before, after, structural, target):
 def try_feature_update(graph, parent, fingerprints):
     from diskgraph import append_snapshot
     from kumo_core.diskgraph.snapshot import (
-        DiskgraphIngestResult, write_diskgraph_success_marker,
+        DiskgraphIngestResult,
+        write_diskgraph_success_marker,
     )
+
     from kumo.engine.graph import GraphSnapshot
 
     started = time.perf_counter()

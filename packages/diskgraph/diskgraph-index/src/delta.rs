@@ -106,7 +106,7 @@ impl PrimaryKeyLog {
                 let (key, id) = log.entry(i)?;
                 ensure!(valid_id(id), "delta primary key out of range");
                 ensure!(
-                    previous.is_none_or(|prior: &[u8]| prior < key),
+                    previous.map_or(true, |prior: &[u8]| prior < key),
                     "unsorted or duplicate delta primary key"
                 );
                 previous = Some(key);

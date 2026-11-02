@@ -8,10 +8,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from kumoapi.graph import Edge
+from test_feature_updates import fixture  # noqa: F401 (pytest fixture)
+from test_feature_updates import features
+from test_incremental_snapshot import hashes, sample_edges, update_info
 
 from kumo.engine import Graph, Table
-from test_feature_updates import features, fixture
-from test_incremental_snapshot import hashes, sample_edges, update_info
 
 
 @pytest.mark.parametrize('links', ['isolated', 'incoming', 'outgoing', 'both', 'missing'])
@@ -34,6 +35,7 @@ def test_expansion_matches_full_and_preserves_parent(fixture, links, monkeypatch
     from kumo.engine.connector.file import _FileSourceBackend
     prepare = _FileSourceBackend.prepare_ingest
     staged = []
+
     def track(self, connector, table, *args, **kwargs):
         staged.append(table)
         return prepare(self, connector, table, *args, **kwargs)
@@ -162,6 +164,7 @@ def test_expansion_rejects_source_changes_during_build(fixture, monkeypatch):
     connector = graph._named_tables['users'].connector
     expanded = Graph(tables={**graph._named_tables, 'devices': Table.from_source_table(connector['devices'], primary_key='id')}, edges=graph.edges)
     append = diskgraph.append_snapshot
+
     def mutate(request):
         append(request)
         write('users', users.set_column(1, 'score', pa.array([9., 2., 3.])))

@@ -541,11 +541,11 @@ class Graph:
         would skip the lock that makes it safe to stage into.
         """
         started = time.perf_counter()
+        from kumo_core.diskgraph.incremental import fingerprint_files
         from kumo_core.diskgraph.ingest import (
             DiskgraphIngestSpec,
             execute_diskgraph_ingest,
         )
-        from kumo_core.diskgraph.incremental import fingerprint_files
         from kumo_core.diskgraph.runner import IngestExecutionConfig
         from kumo_core.diskgraph.snapshot import (
             DiskgraphIngestResult,

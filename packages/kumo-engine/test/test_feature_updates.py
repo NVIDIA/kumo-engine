@@ -9,9 +9,9 @@ import pyarrow.parquet as pq
 import pytest
 from diskgraph import SamplerEngine
 from kumoapi.graph import Edge
+from test_incremental_snapshot import hashes, sample_edges, update_info
 
 from kumo.engine import FileConnector, Graph, Table, configure
-from test_incremental_snapshot import hashes, sample_edges, update_info
 
 
 def features(snapshot, name):

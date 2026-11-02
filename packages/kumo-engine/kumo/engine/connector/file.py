@@ -15,7 +15,10 @@ from kumo_core.artifact_export import ArtifactDestinationConflict
 from kumo_core.diskgraph.incremental import fingerprint_files
 from kumo_core.object_store_sink import ObjectStoreSinkBackend
 from kumo_core.sources import layout
-from kumo_core.sources.object_store import ObjectStoreSourceReader, require_no_sql
+from kumo_core.sources.object_store import (
+    ObjectStoreSourceReader,
+    require_no_sql,
+)
 from kumo_core.sources.object_store_backend import ObjectStoreSourceBackend
 from kumo_core.sources.transfer import discard_destination
 from kumo_core.types.enums import ConnectorType

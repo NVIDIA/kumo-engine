@@ -638,6 +638,7 @@ def test_staging_uses_content_version_and_rejects_stale_version(
 
 def test_staging_rejects_concurrent_content_edit(local, tmp_path, monkeypatch):
     from kumo_core.sources.object_store import ObjectStoreSourceReader
+
     from kumo.engine.connector.file import _FileReader
 
     connector, root = local

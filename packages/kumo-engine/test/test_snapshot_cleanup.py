@@ -53,11 +53,11 @@ def test_snapshot_warns_when_invalid_primary_keys_drop_rows(tmp_path):
 
 @pytest.mark.parametrize('failure', [None, 'stage', 'ingest', 'cached'])
 def test_snapshot_discards_only_owned_staging(tmp_path, monkeypatch, failure):
-    import pyarrow as pa
-    import pyarrow.parquet as pq
     import kumo_core.diskgraph.ingest as ingest
     import kumo_core.diskgraph.snapshot as snapshots
     import kumo_core.sources.transfer as transfer
+    import pyarrow as pa
+    import pyarrow.parquet as pq
     from filelock import FileLock, Timeout
 
     import kumo.engine._scratch as scratch
