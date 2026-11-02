@@ -16,16 +16,16 @@
 
 **An open accelerator for context generation over structured data.**
 
+NVIDIA Kumo Engine prepares connected records and their history for predictive modeling at scale. Its Rust-based DiskGraph engine indexes data on local SSDs and retrieves time-correct neighborhoods for training and batch prediction, without keeping the full graph index in RAM.
+
+Define your tables, relationships, and prediction task in Python. Kumo Engine handles ingestion, graph construction, context sampling, training, evaluation, and prediction. To predict whether a customer will order in the next 30 days, for example, it connects the customer to their order history and samples eligible records as model inputs.
+
 <picture>
   <source media="(max-width: 600px)" srcset="assets/model-context-mobile.svg">
   <img src="assets/model-context.svg" alt="Connected tables become model context: customer and order tables define relationships, matching keys connect individual records, and selected historical records form model inputs. Future outcomes stay outside the inputs.">
 </picture>
 
-Foreign keys connect customer and order records. Kumo Engine samples eligible history as model context for each customer and prediction time. The illustration is schematic; the model plan determines sampling.
-
-NVIDIA Kumo Engine prepares connected records and their history for predictive modeling at scale. Its Rust-based DiskGraph engine indexes data on local SSDs and retrieves time-correct neighborhoods for training and batch prediction, so teams can run structured data models over enterprise-scale datasets at lower cost by feeding the GPU from NVMe instead of RAM.
-
-Define your tables, relationships, and prediction task in Python. Kumo Engine handles ingestion from the data lake, graph construction, context sampling, training, evaluation, and prediction for a wide range of predictive use cases. Examples include recommendations, fraud detection, churn prediction, propensity modeling, and risk scoring, among many others.
+*Schematic example: the model plan determines sampling, and future outcomes remain outside the model inputs.*
 
 **Benchmark highlight:** [One million three-hop neighborhoods in 19 seconds](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/resources/benchmarks).
 
