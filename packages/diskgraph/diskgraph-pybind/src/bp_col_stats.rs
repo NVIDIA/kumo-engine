@@ -31,6 +31,8 @@ use diskgraph_ingest::graph_config::{ColumnSpec, IngestedType, SemanticType, Tim
 use diskgraph_ingest::PublicIngestError;
 use diskgraph_rowpack::{ColumnValueObserver, RowAccess, RowAccessHints, RowAccessStats};
 
+use crate::exact_quantiles::{exact_quantiles, Column, GATHER};
+
 /// CATEGORY_COUNTS truncation limit for the "min" variant (matches ingest).
 const MIN_COL_STATS_CATEGORY_LIMIT: usize = 20;
 const NUMERICAL_HISTOGRAM_BINS: usize = 20;
@@ -95,6 +97,9 @@ pub struct ColStatsOptions {
     /// Count these numerical columns' finite values exactly on the given
     /// edges, in the first pass, as `FIXED_HISTOGRAM`.
     pub fixed_edges: HashMap<String, Vec<f64>>,
+    /// Exact quantiles of these numerical columns' finite values, as
+    /// NumPy's default `np.quantile`, as `QUANTILES`.
+    pub quantiles: HashMap<String, Vec<f64>>,
 }
 
 impl Default for ColStatsOptions {
@@ -104,6 +109,7 @@ impl Default for ColStatsOptions {
             histograms: true,
             max_per: Vec::new(),
             fixed_edges: HashMap::new(),
+            quantiles: HashMap::new(),
         }
     }
 }
@@ -1435,6 +1441,31 @@ pub fn compute_parquet_col_stats_with_options(
         full.insert(
             kumo_key(&columns[*idx].name, "kumo.numerical", "FIXED_HISTOGRAM", false),
             kumo_entry(histogram.to_json(edges), false, data_version, count),
+        );
+    }
+    for (name, quantiles) in &options.quantiles {
+        let Some(idx) = columns.iter().position(|col| &col.name == name) else {
+            bail!("quantiles names column '{name}', which is not among the columns");
+        };
+        if columns[idx].semantic_type != Some(SemanticType::Numerical)
+            || quantiles.iter().any(|q| !(0.0..=1.0).contains(q))
+        {
+            bail!("quantiles need a numerical column and quantiles in [0, 1], not '{name}'");
+        }
+        let column = Column {
+            paths: run.parquet_paths,
+            work: &run.work,
+            indices: run.parquet_indices.iter().map(|indices| indices[idx]).collect(),
+        };
+        let (count, values) = exact_quantiles(&column, quantiles, GATHER)?;
+        full.insert(
+            kumo_key(name, "kumo.numerical", "QUANTILES", false),
+            kumo_entry(
+                json!({"quantiles": quantiles, "values": values}),
+                false,
+                data_version,
+                count,
+            ),
         );
     }
     Ok((
@@ -3140,6 +3171,73 @@ mod tests {
         assert_eq!(histogram["max"], json!(7.0));
         let sum: f64 = finite.iter().sum();
         assert!((histogram["sum"].as_f64().unwrap() - sum).abs() < 1e-9);
+    }
+
+    #[test]
+    fn quantiles_are_numpys_linear_quantiles_of_the_finite_values() {
+        let dir = tempdir().unwrap();
+        let paths = [dir.path().join("a.parquet"), dir.path().join("b.parquet")];
+        let mut first: Vec<f64> = (0..997)
+            .map(|i| ((i * 7919) % 1009) as f64 / 13.0 - 30.0)
+            .collect();
+        first.extend([f64::NAN, f64::INFINITY, -0.0, 0.0, 1e300, -1e-300, 2.5, 2.5]);
+        let second: Vec<f64> = (0..300).map(|i| (i % 17) as f64 * 0.25).collect();
+        write_scores(&paths[0], first.clone(), 64);
+        write_scores(&paths[1], second.clone(), 7);
+        let paths: Vec<&Path> = paths.iter().map(|path| path.as_path()).collect();
+        let quantiles: Vec<f64> = (0..=100).map(|i| i as f64 / 100.0).collect();
+
+        let mut sorted: Vec<f64> = first
+            .into_iter()
+            .chain(second)
+            .filter(|v| v.is_finite())
+            .collect();
+        sorted.sort_by(f64::total_cmp);
+        let last = (sorted.len() - 1) as f64;
+        let expected: Vec<f64> = quantiles
+            .iter()
+            .map(|q| {
+                let at = last * q;
+                let lo = at.floor().min(last) as usize;
+                let (a, b) = (sorted[lo], sorted[(lo + 1).min(sorted.len() - 1)]);
+                let t = at - lo as f64;
+                if t >= 0.5 {
+                    b - (b - a) * (1.0 - t)
+                } else {
+                    a + (b - a) * t
+                }
+            })
+            .collect();
+        let mut work = Vec::new();
+        for (pi, path) in paths.iter().enumerate() {
+            let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path).unwrap());
+            let groups = builder.unwrap().metadata().num_row_groups();
+            work.extend((0..groups).map(|rg| (pi, rg)));
+        }
+        let column = Column {
+            paths: &paths,
+            work: &work,
+            indices: vec![0, 0],
+        };
+        for gather in [0, 1, 40, GATHER] {
+            let (count, values) = exact_quantiles(&column, &quantiles, gather).unwrap();
+            assert_eq!(count, sorted.len() as u64);
+            assert_eq!(values, expected, "gather {gather}");
+        }
+        let columns = vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)];
+        let options = ColStatsOptions {
+            histograms: false,
+            quantiles: HashMap::from([("SCORE".to_string(), quantiles.clone())]),
+            ..Default::default()
+        };
+        let full = with_options(&paths, &columns, options);
+        let values = val(&full, "SCORE__kumo.numerical__QUANTILES__False")["values"].clone();
+        let values = values.as_array().unwrap();
+        assert_eq!(values.len(), expected.len());
+        // serde_json parses floats to within an ulp; NumPy-side tests compare exactly.
+        for (value, expected) in values.iter().zip(&expected) {
+            assert!((value.as_f64().unwrap() - expected).abs() <= 1e-12 * expected.abs());
+        }
     }
 
     #[test]
