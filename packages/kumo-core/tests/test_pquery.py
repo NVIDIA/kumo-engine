@@ -1012,6 +1012,7 @@ def test_generation_plan_forecast_horizon(tmp_path, monkeypatch, pql_horizon,
         scratch_dir=request.scratch_dir, artifact_dir=request.artifact_dir,
         timestamps=request.timestamps)
     assert plan.train_table.forecast_length == expected
+    assert plan.train_table.split_config["flexible_boundaries"] is False
     assert plan.train_table.compiler_options["future_offsets_secs"] == tuple(
         index * 86_400 for index in range(expected))
     assert plan.task_dataset.task_type == "forecasting"
