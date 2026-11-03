@@ -12,6 +12,7 @@ import time
 import warnings
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from fractions import Fraction
 from pathlib import Path
 from typing import (
     Any,
@@ -819,6 +820,9 @@ _NUMERIC_STATS = ('mean', 'std', 'min', 'max', 'q25', 'q50', 'q75',
                   'skewness', 'kurtosis', 'null_rate', 'num_unique')
 _CATEGORY_STATS = ('null_rate', 'num_unique')
 _TIME_STATS = ('min_secs', 'max_secs')
+_SECONDS_PER_TICK = {'ns': Fraction(1, 10**9), 'us': Fraction(1, 10**6),
+                     'ms': Fraction(1, 1000), 'secs': 1, 'hours': 3600,
+                     'days': 86400}
 _TEXT_STATS = ('null_rate', 'num_unique', 'avg_tokens', 'max_tokens',
                'glove_overlap')
 _SMOOTHING = 1e-6
@@ -1008,12 +1012,22 @@ def _column_change(old: Mapping[str, Any],
             old.get('category_counts_capped')
             or new.get('category_counts_capped'))
     elif kind == 'timestamp':
-        change = _deltas(old, new, _TIME_STATS)
+        change = _deltas(_in_seconds(old), _in_seconds(new), _TIME_STATS)
     elif kind == 'text':
         change = _deltas(old, new, _TEXT_STATS)
     else:
         return None
     return {'type': kind, **change}
+
+
+def _in_seconds(stats: Mapping[str, Any]) -> Dict[str, Any]:
+    out = dict(stats)
+    for bound in ('min', 'max'):
+        for unit, seconds in _SECONDS_PER_TICK.items():
+            ticks = stats.get(f'{bound}_{unit}')
+            if isinstance(ticks, int):
+                out[f'{bound}_secs'] = float(ticks * seconds)
+    return out
 
 
 def _binned_psi(training: Optional[List[List[float]]],
