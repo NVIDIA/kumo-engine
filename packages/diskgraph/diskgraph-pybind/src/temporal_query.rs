@@ -862,7 +862,7 @@ type TimeWindow = (Option<i64>, Option<i64>);
 /// The wire plan uses seconds; every comparison within a frame uses index ticks.
 fn frame_windows<U: UnitSystem>(
     plan: &FramePlan,
-    cutoffs: &[i64],
+    cutoffs: &[Abs<U>],
 ) -> Result<Vec<TimeWindow>, String> {
     let duration = |seconds| {
         let ticks = Dur::<U>::from_secs(seconds).raw();
@@ -878,8 +878,8 @@ fn frame_windows<U: UnitSystem>(
     let upper = plan.stop_seconds.map(duration).transpose()?;
     Ok(cutoffs
         .iter()
-        .map(|&cutoff| {
-            let cutoff = Abs::<U>::from_secs(cutoff).raw();
+        .map(|cutoff| {
+            let cutoff = cutoff.raw();
             (
                 lower.map(|offset| cutoff.saturating_add(offset)),
                 upper.map(|offset| cutoff.saturating_add(offset)),
@@ -893,7 +893,7 @@ fn materialize_frame<U: UnitSystem>(
     plan: &FramePlan,
     root_type: &str,
     roots: &[u64],
-    cutoffs: &[i64],
+    cutoffs: &[Abs<U>],
     sequence: Option<&SequencePlan>,
     full_columns: Option<(&HashSet<&str>, usize)>,
     timings: &mut QueryTimings,
@@ -1440,7 +1440,7 @@ fn group_rows(rows: RowsView<'_>, plan: &GroupPlan, cutoff: i64) -> Result<Vec<O
     Ok(output)
 }
 
-fn aggregate_result<U: UnitSystem>(
+fn aggregate_result(
     frame: &MaterializedFrame,
     plan: &AggregatePlan,
     cutoffs: &[i64],
@@ -1448,7 +1448,6 @@ fn aggregate_result<U: UnitSystem>(
     validate_reduction(&plan.operation, plan.column.as_deref())?;
     let mut values = Vec::with_capacity(cutoffs.len());
     for (anchor, cutoff) in cutoffs.iter().copied().enumerate() {
-        let cutoff = Abs::<U>::from_secs(cutoff).to_secs();
         let frame_view = RowsView::Frame {
             frame,
             start: frame.offsets[anchor],
@@ -1520,7 +1519,7 @@ fn count_frame<U: UnitSystem>(
     plan: &FramePlan,
     root_type: &str,
     roots: &[u64],
-    cutoffs: &[i64],
+    cutoffs: &[Abs<U>],
     timings: &mut LengthTimings,
     stats: &mut LengthStats,
 ) -> Result<Vec<usize>, String> {
@@ -1650,6 +1649,20 @@ pub(crate) fn execute_lengths(
     }
     let plan: QueryPlan = serde_json::from_str(plan_json)
         .map_err(|error| format!("invalid temporal query JSON: {error}"))?;
+    with_index_clock!(reader.metadata().timestamp_unit, U => {
+        let cutoffs = cutoffs.iter().copied().map(Abs::<U>::from_secs).collect::<Vec<_>>();
+        execute_lengths_in_clock(reader, root_type, roots, &cutoffs, plan, total_started)
+    })
+}
+
+fn execute_lengths_in_clock<U: UnitSystem>(
+    reader: &GraphIndexReader,
+    root_type: &str,
+    roots: &[u64],
+    cutoffs: &[Abs<U>],
+    plan: QueryPlan,
+    total_started: Instant,
+) -> Result<LengthResult, String> {
     let mut frame_plans = HashMap::new();
     for frame in &plan.frames {
         if frame_plans.insert(frame.name.as_str(), frame).is_some() {
@@ -1669,7 +1682,7 @@ pub(crate) fn execute_lengths(
                     sequence.name, sequence.frame
                 )
             })?;
-            let lengths = with_index_clock!(reader.metadata().timestamp_unit, U => count_frame::<U>(
+            let lengths = count_frame(
                 reader,
                 frame,
                 root_type,
@@ -1677,7 +1690,7 @@ pub(crate) fn execute_lengths(
                 cutoffs,
                 &mut timings,
                 &mut stats,
-            ))?;
+            )?;
             counted_frames.insert(sequence.frame.as_str(), lengths);
         }
     }
@@ -1717,6 +1730,20 @@ pub(crate) fn execute(
     }
     let plan: QueryPlan = serde_json::from_str(plan_json)
         .map_err(|error| format!("invalid temporal query JSON: {error}"))?;
+    with_index_clock!(reader.metadata().timestamp_unit, U => {
+        let cutoffs = cutoffs.iter().copied().map(Abs::<U>::from_secs).collect::<Vec<_>>();
+        execute_in_clock(reader, root_type, roots, &cutoffs, plan, total_started)
+    })
+}
+
+fn execute_in_clock<U: UnitSystem>(
+    reader: &GraphIndexReader,
+    root_type: &str,
+    roots: &[u64],
+    cutoffs: &[Abs<U>],
+    plan: QueryPlan,
+    total_started: Instant,
+) -> Result<QueryResult, String> {
     for sequence in &plan.sequences {
         validate_sequence_plan(sequence)?;
     }
@@ -1764,7 +1791,7 @@ pub(crate) fn execute(
             }
             columns
         });
-        let frame = with_index_clock!(reader.metadata().timestamp_unit, U => materialize_frame::<U>(
+        let frame = materialize_frame(
             reader,
             frame_plan,
             root_type,
@@ -1776,7 +1803,7 @@ pub(crate) fn execute(
                 .zip(consumers.first().and_then(|sequence| sequence.limit)),
             &mut timings,
             &mut stats,
-        ))?;
+        )?;
         frames.insert(frame_plan.name.clone(), frame);
     }
 
@@ -1797,6 +1824,11 @@ pub(crate) fn execute(
     timings.sequence_assembly = elapsed_ns(sequence_started);
 
     let aggregate_started = Instant::now();
+    let aggregate_cutoffs = if plan.aggregates.is_empty() {
+        Vec::new()
+    } else {
+        cutoffs.iter().map(|cutoff| cutoff.to_secs()).collect::<Vec<_>>()
+    };
     let aggregates = plan
         .aggregates
         .iter()
@@ -1807,7 +1839,7 @@ pub(crate) fn execute(
                     aggregate.name, aggregate.frame
                 )
             })?;
-            with_index_clock!(reader.metadata().timestamp_unit, U => aggregate_result::<U>(frame, aggregate, cutoffs))
+            aggregate_result(frame, aggregate, &aggregate_cutoffs)
         })
         .collect::<Result<Vec<_>, String>>()?;
     timings.aggregation = elapsed_ns(aggregate_started);

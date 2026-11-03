@@ -163,6 +163,37 @@ def test_clock_support_preserves_selective_feature_decoding(day_graph, shared):
     assert result["stats"]["values_decoded"] == (16 if shared else 4)
 
 
+@pytest.mark.parametrize("output_format", ["inspectable", "model"])
+def test_multiple_windows_share_normalized_anchors(day_graph, output_format):
+    engine, relation, clock = day_graph
+    plan = plan_for(relation, limit=2, shared=True)
+    plan["frames"].append({**plan["frames"][0], "name": "future",
+                           "start_seconds": 0, "stop_seconds": 6 * DAY})
+    plan["sequences"].append({**plan["sequences"][0], "name": "future", "frame": "future"})
+    plan["aggregates"] += [
+        {**aggregate, "name": "future_" + aggregate["name"], "frame": "future"}
+        for aggregate in plan["aggregates"]
+    ]
+    anchors = [(EPOCH_DAY + 6) * DAY + 4000, (EPOCH_DAY + 6) * DAY, (EPOCH_DAY + 3) * DAY]
+    roots = {"users": engine.lookup_node_ids("users", pa.array([1, 2, 1]))}
+    cutoffs = {"users": anchors}
+    result = engine.query_temporal(roots, cutoffs, json.dumps(plan), output_format=output_format)
+    lengths = engine.query_temporal_lengths(roots, cutoffs, json.dumps(plan))
+    for sequence, counts, ids, expected in zip(
+        result["sequences"], lengths["sequences"],
+        [[50, 2, 2, 10], [60, 60, 50]], [[2, 0, 2], [1, 0, 2]],
+    ):
+        assert sequence["batch"].column("id").to_pylist() == ids
+        assert counts["lengths"].to_pylist() == expected
+    rounded = anchors[0] * 10**9 // TICK_NS[clock] * TICK_NS[clock] // 10**9
+    age = rounded - (EPOCH_DAY + 6) * DAY
+    assert {a["name"]: values(a["values"]) for a in result["aggregates"]} == {
+        "n": [4, 0, 4], "total": [14.0, 0.0, 10.0], "age": [age, None, 0],
+        "future_n": [1, 0, 2], "future_total": [6.0, 0.0, 11.0],
+        "future_age": [age - 3 * DAY, None, -6 * DAY],
+    }
+
+
 @pytest.fixture(scope="module", params=CLOCKS[:3])
 def fine_graph(tmp_path_factory, request):
     base = 1_700_000_000 * 10**9
