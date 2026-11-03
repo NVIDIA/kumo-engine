@@ -13,7 +13,12 @@ packages as ``kumo-data-science-<host>.zip``, for installs without the wheel.)::
     kumo.install_skills('claude')            # ~/.claude/skills/
     kumo.install_skills('codex', scope='project')   # ./.agents/skills/
 
-or from a shell, ``python -m kumo.engine.skills [agent] [--scope ...]``.
+or from a shell, ``python -m kumo.engine.skills [agent] [--scope ...]``. A
+shell has no Snowpark session, so the ``coco`` account scopes there sign in
+with a ``connections.toml`` entry, as the ``snow`` CLI does::
+
+    python -m kumo.engine.skills coco --scope workspace --workspace MY_WS \
+        --connection my_conn
 
 One host package per agent, built from ``agent-skills/`` in the repository
 (``agent-skills/scripts/package_skill.py``):
@@ -455,19 +460,54 @@ def _install_coco_extension(pkg: Path, session: Any, extension: str,
     return extension
 
 
+def _connect(connection: str) -> Any:
+    r"""A Snowpark session for a ``connections.toml`` entry, as the ``snow``
+    CLI uses.
+    """
+    from snowflake.snowpark import Session
+    return Session.builder.config('connection_name', connection).create()
+
+
 def main(argv: Optional[list[str]] = None) -> None:
     ap = argparse.ArgumentParser(
         prog='python -m kumo.engine.skills',
-        description='Install the kumo-data-science agent skill.')
+        description='Install the kumo-data-science agent skill. The coco '
+        'account scopes, workspace and extension, sign in with --connection.')
     ap.add_argument('agent', nargs='?', choices=sorted(AGENTS))
     ap.add_argument('--scope', default='user',
                     choices=['user', 'project', *COCO_ACCOUNT_SCOPES])
     ap.add_argument('--path', type=Path,
                     help='install into this skills directory instead')
-    ap.add_argument('--workspace', help="coco --scope workspace: its name")
+    ap.add_argument(
+        '--connection', metavar='NAME',
+        help='coco --scope workspace|extension: the Snowflake connection '
+        '(a connections.toml entry, as the snow CLI uses) to install with')
+    ap.add_argument('--workspace', help='coco --scope workspace: its name')
+    ap.add_argument('--extension', default='KUMO_DATA_SCIENCE',
+                    help='coco --scope extension: the Cortex Extension')
+    ap.add_argument('--stage', default='KUMO_SKILL_PKG',
+                    help='coco --scope extension: the stage it is added from')
     args = ap.parse_args(argv)
-    for target in install_skills(args.agent, scope=args.scope, path=args.path,
-                                 workspace=args.workspace):
+    account = (args.path is None and args.agent in (None, 'coco')
+               and args.scope in COCO_ACCOUNT_SCOPES)
+    # Checked before connecting, so a missing argument is the error reported.
+    if account and not args.connection:
+        ap.error(f'--scope {args.scope} needs --connection NAME: a shell has '
+                 'no active Snowflake session')
+    if args.connection and not account:
+        ap.error('--connection is only for coco --scope workspace or '
+                 'extension')
+    if account and args.scope == 'workspace' and not args.workspace:
+        ap.error('--scope workspace needs --workspace')
+    session = _connect(args.connection) if account else None
+    try:
+        targets = install_skills(args.agent, scope=args.scope, path=args.path,
+                                 session=session, workspace=args.workspace,
+                                 extension=args.extension, stage=args.stage)
+    finally:
+        if session is not None:
+            session.close()
+    for target in targets:
         print(f'{SKILL} -> {target}')
 
 

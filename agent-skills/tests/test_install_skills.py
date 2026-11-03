@@ -581,3 +581,65 @@ def test_packaging_without_git_ships_what_git_tracks(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(package_skill.subprocess, 'run', no_git)
     assert package_skill.git_tracked(package_skill.SKILLS) == sorted(tracked)
+
+
+class Connected(FakeSession):
+    closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+@pytest.fixture
+def connect(monkeypatch: pytest.MonkeyPatch) -> list:
+    """Records each session the CLI opens, by connection name, in place of Snowpark."""
+    opened: list = []
+
+    def _connect(name: str) -> Connected:
+        opened.append((name, Connected()))
+        return opened[-1][1]
+
+    monkeypatch.setattr(skills, '_connect', _connect)
+    return opened
+
+
+def test_cli_account_scopes_sign_in_with_a_connection(
+        home: Path, connect: list, capsys: pytest.CaptureFixture) -> None:
+    skills.main(['coco', '--scope', 'workspace', '--workspace', 'WS', '--connection', 'mine'])
+    [(name, session)] = connect
+    assert name == 'mine' and session.closed
+    assert any(s.startswith('PUT') and '"USER$ME".PUBLIC."WS"' in s for s in session.sql_log)
+    assert 'kumo-data-science -> snow://workspace/"USER$ME".PUBLIC."WS"/' in capsys.readouterr().out
+    skills.main(['--scope', 'extension', '--extension', 'EXT', '--stage', 'STG',
+                 '--connection', 'other'])
+    name, session = connect[1]
+    assert name == 'other' and session.closed
+    assert session.sql_log[-2].startswith('ALTER CORTEX EXTENSION EXT ADD VERSION FROM @STG/')
+
+
+def test_cli_closes_the_session_when_the_install_fails(home: Path, connect: list,
+                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(*args, **kwargs):
+        raise RuntimeError('install failed')
+
+    monkeypatch.setattr(skills, 'install_skills', fail)
+    with pytest.raises(RuntimeError, match='install failed'):
+        skills.main(['coco', '--scope', 'extension', '--connection', 'mine'])
+    assert connect[0][1].closed
+
+
+@pytest.mark.parametrize('argv, message', [
+    (['coco', '--scope', 'workspace', '--workspace', 'WS'], 'needs --connection'),
+    (['--scope', 'extension'], 'needs --connection'),
+    (['coco', '--scope', 'workspace', '--connection', 'mine'], 'needs --workspace'),
+    (['claude', '--connection', 'mine'], '--connection is only for coco'),
+    (['coco', '--scope', 'project', '--connection', 'mine'], '--connection is only for coco'),
+    (['coco', '--scope', 'extension', '--path', 'x', '--connection', 'mine'],
+     '--connection is only for coco'),
+])
+def test_cli_connection_errors(home: Path, connect: list, capsys: pytest.CaptureFixture,
+                               argv: list, message: str) -> None:
+    with pytest.raises(SystemExit):
+        skills.main(argv)
+    assert message in capsys.readouterr().err
+    assert connect == []   # rejected before connecting

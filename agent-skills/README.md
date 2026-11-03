@@ -70,8 +70,10 @@ kumo.install_skills('genie')           # /Users/<you>/.assistant/skills/
 kumo.install_skills(path='...')        # any other agent's skills directory (generic package)
 ```
 
-`python -m kumo.engine.skills [agent] [--scope ...]` does the same from a shell. Claude Code and
-Codex get the `generic` package, CoCo `coco`, Genie `genie`.
+`python -m kumo.engine.skills [agent] [--scope ...]` does the same from a shell. A shell has no
+Snowpark session, so `--scope workspace` and `--scope extension` need `--connection NAME`, a
+`connections.toml` entry as the `snow` CLI uses. Claude Code and Codex get the `generic` package,
+CoCo `coco`, Genie `genie`.
 
 `packages/kumo-engine/setup.py` calls `package_skill.bundle()` on every build from a checkout,
 writing all three packages to `kumo/engine/_skills/` (gitignored), which the wheel ships as package
