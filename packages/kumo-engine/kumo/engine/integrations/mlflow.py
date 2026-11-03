@@ -803,8 +803,8 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
             source_type=source._get_source_type(),
             source=source.to_json(),
             schema=json.dumps({'mlflow_colspec': [
-                {'name': name, 'type': _COLUMN_TYPES.get(column['dtype'],
-                                                         'string')}
+                {'name': name, 'type': column.get('type') or
+                 _COLUMN_TYPES.get(column.get('dtype'), 'string')}
                 for name, column in summary.schema.items()]}),
             profile=json.dumps({
                 key: value for key, value in summary.profile.items()

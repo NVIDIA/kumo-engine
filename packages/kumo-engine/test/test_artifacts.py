@@ -159,9 +159,9 @@ def test_a_fits_datasets_are_named_and_labelled_by_role():
     assert [(s.name, s.context, s.source['version'])
             for s in artifact_summaries(model, FIT_ROLES)
             if isinstance(s, Dataset)] == [
-        ('graph snapshot 2026-11-01-5ac245', 'graph context', 'g@5ac245'),
         ('training table 2026-11-01-fadf04', 'training examples',
          'tt-fadf04'),
+        ('graph snapshot 2026-11-01-5ac245', 'graph context', 'g@5ac245'),
         ('users', 'source table', '3'),
     ]
 
@@ -206,12 +206,12 @@ def test_a_prediction_run_reads_its_snapshot_and_writes_its_outputs():
         Dataset('orders', {'connector': 'S3', 'location': 's3://data/orders',
                            'version': '7', 'version_kind': 'exact'}, {}, {},
                 'scoring source table'),
-        Dataset('predictions', {'connector': 'S3', 'location': 's3://out/p',
-                                'version': None, 'version_kind': None},
-                {}, {}, 'output'),
         Dataset('embeddings', {'connector': 'SNOWFLAKE',
                                'location': '"DB"."S"."EMB"', 'version': None,
                                'version_kind': None}, {}, {}, 'output'),
+        Dataset('predictions', {'connector': 'S3', 'location': 's3://out/p',
+                                'version': None, 'version_kind': None},
+                {}, {}, 'output'),
         Note('lineage', 'Scored: graph snapshot g@d ← `orders` v7 '
              '(`s3://data/orders`)'),
     ]
