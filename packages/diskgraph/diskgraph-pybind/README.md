@@ -226,7 +226,11 @@ and nanosecond counters for traversal, decode/selection, sequence assembly,
 aggregation, and the full native call. `stats.rows_decoded` counts rows sent to
 the rowpack decoder. When the final relation has a matching lossless timestamp
 sort key, bounded frames discard out-of-window edges before decoding their row
-attributes; other relations retain the rowpack timestamp path. This API does
+attributes. A matching coarse clock also filters conservatively: its upward-rounded
+bucket represents `(bucket_end - step, bucket_end]`. Only buckets that cannot
+overlap the requested window are discarded, and retained rows still undergo
+exact rowpack-clock filtering. Clipped floor/ceiling codes remain candidates;
+mismatched clocks and unsafe encoding ranges retain the full rowpack path. This API does
 not build training tables, fit encoders, tokenize values, or choose model layouts.
 
 For a one-hop, time-windowed frame with one bounded sequence and no aggregate
@@ -270,6 +274,28 @@ filtering decodes the timestamp already packed beside each edge. Otherwise it
 decodes only the destination rowpack's timestamp column. `timings_ns` separates
 traversal and filtering;
 `stats` reports which timestamp path ran.
+
+For matching coarse clocks, the length query also discards non-overlapping
+buckets before decoding the retained row clocks. `rows_considered` remains the
+reached candidate count, while `rowpack_timestamps` records the reduced refinement
+work. Coarse clocks do not enable early sequence-limit selection. Both APIs
+still scan the reached adjacency; this filtering reduces decoding, not edge scanning.
+
+Both APIs use `diskgraph_core::time_filter::IndexedTimeFilter` for compatible
+clock admission. Rejection proves that the bucket cannot intersect `(lower, upper]`;
+admission only produces candidates for the existing exact row-clock checks.
+Ordering, duplicate handling, and complete aggregate inputs remain downstream.
+Missing/mismatched clocks and unsafe arithmetic use the exact row-clock fallback.
+Query bounds use seconds: index-wide millisecond/microsecond/nanosecond/hour/day
+clocks and full-width keys also use row decoding. A bucket step of one alone
+does not establish compatible units.
+
+The admission predicate is not a binary-search predicate: retained clipped codes
+at both extremes can make candidates noncontiguous. A shared range-seeking
+implementation must handle those regions separately or fall back to scanning.
+Range seeking and projection consolidation are separate from this component.
+See the [benchmark protocol and limitations](../scripts/benchmarks/temporal_fm_windows.md),
+including the measured overhead when coarse filtering cannot eliminate rows.
 
 ### Flat token packing for RDL
 
