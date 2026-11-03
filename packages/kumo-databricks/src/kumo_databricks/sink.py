@@ -155,12 +155,10 @@ class DatabricksSinkBackend(FileStoreRouting, _DatabricksTables):
                      'DatabricksSinkBackend(identity=identity)})')
 
     def holds_files(self, connector: SourceConnector, path: str) -> bool:
-        """Volume paths hold files; anything else is a table."""
         return is_volume_path(path)
 
     def filesystem(self, connector: SourceConnector,
                    path: str) -> tuple[FileSystem, str]:
-        """A volume path's filesystem, as the connector's identity."""
         if not self.holds_files(connector, path):
             raise ValueError(
                 f"{path!r} is not a Unity Catalog volume path; Databricks "
