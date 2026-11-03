@@ -194,6 +194,9 @@ const historyValue=(values,metric)=>{const entry=Object.entries(obj(values)).fin
 const metrics=[...new Set(histories.flatMap(row=>[...Object.keys(obj(row.train_metrics)),...Object.keys(obj(row.validation_metrics))]).map(metricName))];
 const historyView=el('div'),historyValues=el('div',undefined,'kt-history-values');historyValues.tabIndex=0;
 historyValues.setAttribute('role','region');historyValues.setAttribute('aria-label','Exact learning history epoch values');historyDetails.append(historyValues);
+let historySeries='both';
+const showHistorySeries=()=>historyView.querySelectorAll('[data-history-series]').forEach(node=>
+node.toggleAttribute('hidden',historySeries!=='both'&&node.dataset.historySeries!==historySeries));
 const chart=(parent,rows,metric)=>{const ordered=rows.filter(row=>Number.isFinite(Number(row.epoch)))
 .slice().sort((a,b)=>Number(a.epoch)-Number(b.epoch));
 const values=ordered.flatMap(row=>[historyValue(row.train_metrics,metric),historyValue(row.validation_metrics,metric)]).filter(finite);
@@ -201,17 +204,23 @@ if(!values.length||!ordered.length)return;
 const low=Math.min(...values),high=Math.max(...values),first=Number(ordered[0].epoch),last=Number(ordered.at(-1).epoch);
 const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg');
 svg.setAttribute('viewBox','0 0 600 160');svg.setAttribute('role','img');svg.classList.add('kt-history-chart');
-svg.setAttribute('aria-label','Learning history for '+metric+'. Train: circles, validation: squares. Expand Explore exact epoch values for recorded values.');
+svg.setAttribute('aria-label','Learning history for '+metric+'. History series selects visible curves on a fixed scale. Train: circles, validation: squares. Expand Explore exact epoch values for recorded values.');
 const x=epoch=>20+(Number(epoch)-first)/(last-first||1)*560,y=value=>140-(value-low)/(high-low||1)*120;
+parent.append(svg);
 for(const [key,color,shape]of [['train_metrics','var(--kumo-accent)','circle'],['validation_metrics','var(--kumo-foreground)','rect']]){
-let previous=null;for(const row of ordered){const value=historyValue(row[key],metric),epoch=Number(row.epoch);
+const group=document.createElementNS(ns,'g'),line=document.createElementNS(ns,'path');group.dataset.historySeries=key;svg.append(group);group.append(line);
+let previous=null,path='';for(const [index,row]of ordered.entries()){const value=historyValue(row[key],metric),epoch=Number(row.epoch);
 if(!finite(value)){previous=null;continue;}
-if(previous&&epoch-previous.epoch===1){const line=document.createElementNS(ns,'line');
-for(const [name,attribute]of Object.entries({x1:x(previous.epoch),y1:y(previous.value),x2:x(epoch),y2:y(value),stroke:color,'stroke-width':2}))line.setAttribute(name,attribute);
-if(shape==='rect')line.setAttribute('stroke-dasharray','5 4');svg.append(line)}
-const point=document.createElementNS(ns,shape);for(const [name,attribute]of Object.entries(shape==='circle'?{cx:x(epoch),cy:y(value),r:4}:{x:x(epoch)-4,y:y(value)-4,width:8,height:8}))point.setAttribute(name,attribute);
-point.setAttribute('fill',color);svg.append(point);previous={epoch,value};}}
-parent.append(svg);note(parent,'Train: circles and solid lines. Validation: squares and dashed lines. Epoch '+first+' to '+last+
+const adjacent=previous&&epoch-previous.epoch===1,next=ordered[index+1],offset=shape==='rect'?16:0;
+path+=(adjacent?'L':'M')+x(epoch)+' '+y(value)+' ';
+if(!adjacent||!next||Number(next.epoch)-epoch!==1||!finite(historyValue(next[key],metric))||
+Math.floor((x(epoch)-20+offset)/32)!==Math.floor((x(previous.epoch)-20+offset)/32)){
+const point=document.createElementNS(ns,shape);for(const [name,attribute]of Object.entries(shape==='circle'?{cx:x(epoch),cy:y(value),r:3}:{x:x(epoch)-4,y:y(value)-4,width:8,height:8}))point.setAttribute(name,attribute);
+point.setAttribute('fill',shape==='circle'?color:'none');point.setAttribute('stroke',color);point.setAttribute('stroke-width','1.5');group.append(point);}previous={epoch};}
+for(const [name,attribute]of Object.entries({d:path,fill:'none',stroke:color,'stroke-width':2}))line.setAttribute(name,attribute);
+if(shape==='rect')line.setAttribute('stroke-dasharray','5 4');
+if(!path){const missing=el('p',(shape==='circle'?'Train':'Validation')+': no recorded values for this metric.','kt-note');missing.dataset.historySeries=key;parent.append(missing);}}
+note(parent,'Train: circles and solid lines. Validation: hollow squares and dashed lines. Markers are spaced; choose History series to inspect overlaps on the same scale. Epoch '+first+' to '+last+
 '; metric range '+number(low)+' to '+number(high)+'. Missing values and unrecorded epochs break the lines.');};
 const drawHistory=metric=>{historyView.replaceChildren();historyValues.replaceChildren();
 for(const identity of [...new Set(histories.map(row=>text(row.trial)+' / '+text(row.fit)))]){
@@ -219,7 +228,9 @@ const rows=histories.filter(row=>text(row.trial)+' / '+text(row.fit)===identity)
 historyView.append(el('h4',identity));chart(historyView,rows,metric);
 historyValues.append(el('h4',identity));table(historyValues,['Trial / fit','Epoch','Train '+metric,'Validation '+metric],rows.map(row=>[
 text(row.trial)+' / '+text(row.fit),text(row.epoch),historyValue(row.train_metrics,metric),historyValue(row.validation_metrics,metric)]),[1,2,3],true);}};
-if(metrics.length){control(results,'History metric',metrics.map(name=>[name,name]),drawHistory);drawHistory(metrics[0]);results.append(historyView,historyDetails)}
+if(metrics.length){control(results,'History metric',metrics.map(name=>[name,name]),metric=>{drawHistory(metric);showHistorySeries()});
+control(results,'History series',[['both','Both'],['train_metrics','Train'],['validation_metrics','Validation']],series=>{historySeries=series;showHistorySeries()});
+drawHistory(metrics[0]);results.append(historyView,historyDetails)}
 else note(results,'No recorded epoch metric values.');}
 const trials=list(obj(data.trials).rows);state(results,data.trials,'Trial comparison');
 if(trials.length){results.append(el('h3','Recorded trials'));
