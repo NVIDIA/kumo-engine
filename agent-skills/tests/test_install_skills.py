@@ -115,6 +115,30 @@ def test_bad_arguments(home: Path) -> None:
         skills.install_skills('cursor')
     with pytest.raises(ValueError, match='scope must be one of'):
         skills.install_skills('claude', scope='workspace')
+    with pytest.raises(ValueError, match='takes no scope'):
+        skills.install_skills('genie', scope='project')
+
+
+def test_an_install_leaves_no_lock_file(home: Path) -> None:
+    skills.install_skills('claude', scope='project')
+    assert [p.name for p in Path('.claude/skills').iterdir()] == ['kumo-data-science']
+
+
+def test_coco_beside_claude_code_warns(home: Path) -> None:
+    # Cortex Code reads ~/.claude/skills too, and that copy wins.
+    skills.install_skills('claude')
+    with pytest.warns(UserWarning, match='Cortex Code reads'):
+        skills.install_skills('coco')
+    with pytest.warns(UserWarning, match='Cortex Code reads'):
+        skills.install_skills('claude')
+
+
+def test_cli_reports_errors_without_a_traceback(
+        home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        skills.main(['genie', '--scope', 'project'])
+    assert exc.value.code == 1
+    assert 'error: genie installs' in capsys.readouterr().err
 
 
 def test_a_missing_workspace_is_reported_before_the_session(
@@ -144,7 +168,7 @@ def test_an_install_waits_for_the_lock(home: Path, tmp_path: Path) -> None:
     root = tmp_path / 'locked'
     root.mkdir()
     done = threading.Event()
-    with FileLock(root / '.kumo-data-science.lock'):
+    with FileLock(skills._lock_path(root.resolve())):
         thread = threading.Thread(
             target=lambda: (skills.install_skills(path=root), done.set()))
         thread.start()
@@ -620,8 +644,7 @@ def test_a_failed_copy_keeps_the_previous_install(home: Path,
         skills.install_skills('claude')
     assert (Path(target) / 'SKILL.md').read_text() == before
     root = Path(target).parent
-    # Some filelock versions delete the lock file on release.
-    names = sorted(p.name for p in root.iterdir() if p.name != '.kumo-data-science.lock')
+    names = sorted(p.name for p in root.iterdir())
     assert names == ['kumo-data-science']
 
 
@@ -694,8 +717,9 @@ def test_cli_closes_the_session_when_the_install_fails(home: Path, connect: list
         raise RuntimeError('install failed')
 
     monkeypatch.setattr(skills, 'install_skills', fail)
-    with pytest.raises(RuntimeError, match='install failed'):
+    with pytest.raises(SystemExit) as exc:
         skills.main(['coco', '--scope', 'extension', '--connection', 'mine'])
+    assert exc.value.code == 1
     assert connect[0][1].closed
 
 

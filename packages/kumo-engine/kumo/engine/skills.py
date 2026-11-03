@@ -46,12 +46,14 @@ scopes.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import os
 import re
 import shutil
 import tempfile
 import uuid
+import warnings
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -140,7 +142,7 @@ def _copy(pkg: Path, skills_dir: Path) -> Path:
     root = skills_dir.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     target = root / SKILL
-    with FileLock(root / f'.{SKILL}.lock'):
+    with FileLock(_lock_path(root)):
         staging = Path(tempfile.mkdtemp(prefix=f'.{SKILL}.', dir=root))
         try:
             new, old = staging / SKILL, staging / 'previous'
@@ -157,6 +159,16 @@ def _copy(pkg: Path, skills_dir: Path) -> Path:
         finally:
             shutil.rmtree(staging, ignore_errors=True)
     return target
+
+
+def _lock_path(root: Path) -> Path:
+    r"""The lock file for installs into ``root``.
+
+    It is kept in the temporary directory, so none is left among the skills
+    (or in a project's version control).
+    """
+    key = hashlib.sha256(str(root).encode()).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f'{SKILL}-{key}.lock'
 
 
 def _detect() -> list[str]:
@@ -248,6 +260,9 @@ def install_skills(
         )
     if account and scope == 'workspace' and not workspace:
         raise ValueError("scope='workspace' needs workspace=")
+    if agent == 'genie' and scope != 'user':
+        raise ValueError('genie installs to your workspace skills folder and '
+                         f'takes no scope (got scope={scope!r}).')
     with skill_package(host) as pkg:
         if agent == 'genie':
             return [_install_genie(pkg, client)]
@@ -256,7 +271,27 @@ def install_skills(
             if scope == 'workspace':
                 return [_install_coco_workspace(pkg, session, workspace)]
             return [_install_coco_extension(pkg, session, extension, stage)]
-        return [str(_copy(pkg, Path(scopes[scope])))]
+        target = str(_copy(pkg, Path(scopes[scope])))
+        if scope == 'user' and agent in ('claude', 'coco'):
+            _warn_coco_shadowed()
+        return [target]
+
+
+def _warn_coco_shadowed() -> None:
+    r"""Warns when CoCo would load the Claude Code copy.
+
+    Cortex Code also reads ``~/.claude/skills``, and a skill there shadows the
+    same name in ``~/.snowflake/cortex/skills``, so CoCo would run the
+    ``generic`` package instead of its own.
+    """
+    claude = Path(AGENTS['claude'][1]['user']).expanduser() / SKILL
+    coco = Path(AGENTS['coco'][1]['user']).expanduser() / SKILL
+    if claude.is_dir() and coco.is_dir():
+        warnings.warn(
+            f'Cortex Code reads {claude.parent} as well as {coco.parent}, '
+            f'and loads the Claude Code copy of {SKILL}, which lacks the '
+            'Snowflake host guidance. For CoCo, install with '
+            "scope='project' or scope='extension' instead.", stacklevel=3)
 
 
 def _install_genie(pkg: Path, client: Any = None) -> str:
@@ -475,7 +510,10 @@ def _install_coco_extension(pkg: Path, session: Any, extension: str,
 
     The version root holds only ``skills/kumo-data-science/``, as a Cortex
     Extension requires. Installing it for a user still happens in Cortex Code
-    (Shared skills); that copy does not follow later versions.
+    (``cortex skill add <extension> --catalog``), and only once Snowflake has
+    scanned the version; until then the install fails with "No files shared
+    with this skill". ``cortex skill check`` then reports later versions, and
+    ``cortex skill update`` installs them.
     """
     session.sql(f'CREATE STAGE IF NOT EXISTS {stage} '
                 "ENCRYPTION=(TYPE='SNOWFLAKE_SSE') "
@@ -522,6 +560,9 @@ def main(argv: Optional[list[str]] = None) -> None:
                     help='coco --scope extension: the Cortex Extension')
     ap.add_argument('--stage', default='KUMO_SKILL_PKG',
                     help='coco --scope extension: the stage it is added from')
+    ap.add_argument(
+        '--profile', help='genie: the Databricks CLI profile to authenticate '
+        'with (default: default authentication)')
     args = ap.parse_args(argv)
     account = (args.path is None and args.agent in (None, 'coco')
                and args.scope in COCO_ACCOUNT_SCOPES)
@@ -534,11 +575,18 @@ def main(argv: Optional[list[str]] = None) -> None:
                  'extension')
     if account and args.scope == 'workspace' and not args.workspace:
         ap.error('--scope workspace needs --workspace')
+    client = None
+    if args.profile:
+        from databricks.sdk import WorkspaceClient
+        client = WorkspaceClient(profile=args.profile)
     session = _connect(args.connection) if account else None
     try:
         targets = install_skills(args.agent, scope=args.scope, path=args.path,
                                  session=session, workspace=args.workspace,
-                                 extension=args.extension, stage=args.stage)
+                                 extension=args.extension, stage=args.stage,
+                                 client=client)
+    except (ValueError, FileNotFoundError, RuntimeError) as e:
+        ap.exit(1, f'{ap.prog}: error: {e}\n')
     finally:
         if session is not None:
             session.close()
