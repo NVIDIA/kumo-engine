@@ -36,8 +36,7 @@ class TrainingVisualization:
                 raise ImportError(
                     'Interactive training diagnostics require anywidget>=0.9,<1 '
                     'and ipywidgets. Restore compatible notebook runtime '
-                    'packages, then rerun the display cell. The summary '
-                    'remains available below.') from error
+                    'packages, then rerun the display cell.') from error
         return self._widget
 
     def _ipython_display_(self):
