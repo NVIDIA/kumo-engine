@@ -122,27 +122,35 @@ def _require_writable(root: _Root) -> None:
     filesystem, probe = store
     try:
         if filesystem.type_name == 'local':
-            existing = posixpath.dirname(probe)
-            while not os.path.exists(existing):
-                existing = posixpath.dirname(existing)
-            if not os.access(existing, os.W_OK | os.X_OK):
-                raise PermissionError(f'{existing} is not writable')
-            return
-        try:
-            filesystem.open_output_stream(probe).close()
-        except FileNotFoundError:
-            filesystem.create_dir(posixpath.dirname(probe), recursive=True)
-            filesystem.open_output_stream(probe).close()
-        delete = getattr(root.connector.sink_backend, 'delete_file', None)
-        if delete is None:
-            filesystem.delete_file(probe)
+            _require_local_writable(probe)
         else:
-            delete(root.connector, probe)
+            _write_and_delete(filesystem, root.connector, probe)
     except Exception as error:
         raise PermissionError(
             f'kumo.MLOps cannot write under artifact_root {root.uri("")!r} '
             f'({type(error).__name__}: {error}); grant write and delete '
             f'rights or pick another root.') from error
+
+
+def _require_local_writable(probe: str) -> None:
+    existing = posixpath.dirname(probe)
+    while not os.path.exists(existing):
+        existing = posixpath.dirname(existing)
+    if not os.access(existing, os.W_OK | os.X_OK):
+        raise PermissionError(f'{existing} is not writable')
+
+
+def _write_and_delete(filesystem: Any, connector: Any, probe: str) -> None:
+    try:
+        filesystem.open_output_stream(probe).close()
+    except FileNotFoundError:
+        filesystem.create_dir(posixpath.dirname(probe), recursive=True)
+        filesystem.open_output_stream(probe).close()
+    delete = getattr(connector.sink_backend, 'delete_file', None)
+    if delete is None:
+        filesystem.delete_file(probe)
+    else:
+        delete(connector, probe)
 
 
 _CURRENT: contextvars.ContextVar[Optional[MLOps]] = contextvars.ContextVar(
