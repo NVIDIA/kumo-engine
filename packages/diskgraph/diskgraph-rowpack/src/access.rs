@@ -12,6 +12,8 @@ use crate::{
 use anyhow::{anyhow, Result};
 use arrow_array::{Array, ArrayRef};
 use arrow_schema::DataType;
+use diskgraph_core::time::{ceil_to_clock, floor_parts, Seconds, TimeUnit, UnitSystem};
+use diskgraph_core::with_index_clock;
 use num_traits::ToPrimitive;
 use std::sync::Arc;
 
@@ -63,7 +65,13 @@ pub struct RowAccess<'p> {
     /// Indexed by column index; `None` for columns that don't need it.
     /// kumo-ai/kumo#28478.
     tokenized_lists: Vec<Option<ArrayRef>>,
+    /// The index clock that `get_timestamp` returns ticks of.
+    clock: TimeUnit,
+    /// `timestamp_in` for `clock`, chosen once rather than per value.
+    read_timestamp: ReadTimestamp<'p>,
 }
+
+type ReadTimestamp<'p> = fn(&RowAccess<'p>, usize) -> Result<Option<i64>>;
 
 pub enum FloatListValues {
     F16(ArrayRef),
@@ -778,7 +786,20 @@ impl<'p> RowAccess<'p> {
             hints,
             fast_parsers,
             tokenized_lists: vec![None; n],
+            clock: TimeUnit::Seconds,
+            read_timestamp: Self::timestamp_in::<Seconds>,
         }
+    }
+
+    pub fn with_clock(mut self, clock: TimeUnit) -> Self {
+        self.clock = clock;
+        self.read_timestamp =
+            with_index_clock!(clock, U => Self::timestamp_in::<U> as ReadTimestamp<'p>);
+        self
+    }
+
+    pub fn clock(&self) -> TimeUnit {
+        self.clock
     }
 
     pub fn set_cols(&mut self, cols: &[ArrayRef]) {
@@ -2067,7 +2088,7 @@ impl<'p> RowAccess<'p> {
                 return Ok(Some(with_stack_str(value, trimmed, f)?));
             }
             DataType::Timestamp(_, _) => {
-                let secs = timestamp_secs_from_array(array, self.row)?;
+                let secs = timestamp_from_array::<Seconds>(array, self.row)?;
                 return Ok(Some(with_stack_str(secs, trimmed, f)?));
             }
             DataType::Decimal128(_, scale) => {
@@ -2392,7 +2413,7 @@ impl<'p> RowAccess<'p> {
                     return Ok(Some(days));
                 }
                 if let Some(value) = parse_i64(text) {
-                    let secs = timestamp_from_int(value, unit);
+                    let secs = in_clock(timestamp_from_int::<Seconds>(value, unit))?;
                     return Ok(Some(days_from_secs(secs)));
                 }
                 Err(anyhow!("date parse failed"))
@@ -2483,11 +2504,11 @@ impl<'p> RowAccess<'p> {
                     }
                     _ => return Err(anyhow!("date type mismatch")),
                 };
-                let secs = timestamp_from_int(value, unit);
+                let secs = in_clock(timestamp_from_int::<Seconds>(value, unit))?;
                 Ok(Some(days_from_secs(secs)))
             }
             DataType::Timestamp(_, _) => {
-                let secs = timestamp_secs_from_array(array, self.row)?;
+                let secs = timestamp_from_array::<Seconds>(array, self.row)?;
                 Ok(Some(days_from_secs(secs)))
             }
             _ => Err(anyhow!("date type mismatch")),
@@ -2495,6 +2516,10 @@ impl<'p> RowAccess<'p> {
     }
 
     pub fn get_timestamp(&self, idx: usize) -> Result<Option<i64>> {
+        (self.read_timestamp)(self, idx)
+    }
+
+    pub fn timestamp_in<U: UnitSystem>(&self, idx: usize) -> Result<Option<i64>> {
         let array = self.array(idx)?;
         if array.is_null(self.row) {
             return Ok(None);
@@ -2504,13 +2529,9 @@ impl<'p> RowAccess<'p> {
         let unit = hint.timestamp_unit;
         let fast = self.fast_parsers.get(idx).and_then(|v| v.as_ref());
         match array.data_type() {
-            DataType::Timestamp(_, _) => {
-                let secs = timestamp_secs_from_array(array, self.row)?;
-                Ok(Some(secs))
-            }
+            DataType::Timestamp(_, _) => Ok(Some(timestamp_from_array::<U>(array, self.row)?)),
             DataType::Time32(_) | DataType::Time64(_) => {
-                let secs = time_secs_from_array(array, self.row)?;
-                Ok(Some(secs))
+                Ok(Some(time_from_array::<U>(array, self.row)?))
             }
             DataType::Utf8
             | DataType::LargeUtf8
@@ -2552,17 +2573,42 @@ impl<'p> RowAccess<'p> {
                     _ => return Err(anyhow!("timestamp type mismatch")),
                 };
                 if let Some(parser) = fast {
-                    if let Some(secs) = parser.parse_timestamp(text) {
-                        return Ok(Some(secs));
+                    if let Some((secs, fraction)) = parser.parse_timestamp_parts(text) {
+                        let ticks = floor_parts::<U>(secs, || fraction_nanos(fraction));
+                        return Ok(Some(in_clock(ticks)?));
                     }
                 }
-                if let Some(secs) = parse_timestamp_text(text, format) {
-                    return Ok(Some(secs));
+                if let Some((secs, nanos)) = parse_timestamp_text_parts(text, format) {
+                    return Ok(Some(in_clock(floor_parts::<U>(secs, || nanos))?));
                 }
                 if let Some(value) = parse_i64(text) {
-                    return Ok(Some(timestamp_from_int(value, unit)));
+                    return Ok(Some(in_clock(timestamp_from_int::<U>(value, unit))?));
                 }
                 Err(anyhow!("timestamp parse failed"))
+            }
+            DataType::Decimal128(_, scale) if format.is_none() => {
+                let value = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal128Array>()
+                    .ok_or_else(|| anyhow!("decimal128 cast"))?
+                    .value(self.row);
+                Ok(Some(in_clock(timestamp_from_decimal::<U>(
+                    *scale,
+                    unit,
+                    |scale| apply_decimal_scale_i128(value, scale).to_i64(),
+                ))?))
+            }
+            DataType::Decimal256(_, scale) if format.is_none() => {
+                let value = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal256Array>()
+                    .ok_or_else(|| anyhow!("decimal256 cast"))?
+                    .value(self.row);
+                Ok(Some(in_clock(timestamp_from_decimal::<U>(
+                    *scale,
+                    unit,
+                    |scale| apply_decimal_scale_i256(value, scale).to_i64(),
+                ))?))
             }
             DataType::Int8
             | DataType::Int16
@@ -2655,11 +2701,11 @@ impl<'p> RowAccess<'p> {
                 // integers like YYYYMMDD (20240301) that are NOT epoch values.
                 if let Some(fmt) = format {
                     let text = value.to_string();
-                    if let Some(secs) = parse_timestamp_text(&text, Some(fmt)) {
-                        return Ok(Some(secs));
+                    if let Some((secs, nanos)) = parse_timestamp_text_parts(&text, Some(fmt)) {
+                        return Ok(Some(in_clock(floor_parts::<U>(secs, || nanos))?));
                     }
                 }
-                Ok(Some(timestamp_from_int(value, unit)))
+                Ok(Some(in_clock(timestamp_from_int::<U>(value, unit))?))
             }
             DataType::Date32 => {
                 let arr = array
@@ -2675,9 +2721,8 @@ impl<'p> RowAccess<'p> {
                 if !(-106752..=24855).contains(&days) {
                     return Err(anyhow!("date out of range: day {days}"));
                 }
-                // Convert days since epoch to seconds since epoch
-                let secs = days as i64 * 86400;
-                Ok(Some(secs))
+                let ticks = ceil_to_clock::<U>(i64::from(days), TimeUnit::Days);
+                Ok(Some(in_clock(ticks)?))
             }
             _ => Err(anyhow!("timestamp type mismatch")),
         }
@@ -3690,6 +3735,60 @@ mod tests {
             timestamp_unit: Some(unit),
             ..RowAccessHints::default()
         }
+    }
+
+    #[test]
+    fn timestamps_round_like_main_in_every_index_clock() -> Result<()> {
+        use diskgraph_core::time::TimeUnit as Clock;
+        let fractional_text = row_access_for(
+            Arc::new(StringArray::from(vec!["2024-01-15 10:00:00.750"])),
+            RowAccessHints {
+                timestamp_format: Some("%Y-%m-%d %H:%M:%S%.f".into()),
+                ..RowAccessHints::default()
+            },
+        );
+        let epoch_millis = row_access_for(
+            Arc::new(Int64Array::from(vec![1_705_312_800_750])),
+            ts_hint(TimeUnit::Millisecond),
+        );
+        let fractional_decimal = row_access_for(
+            Arc::new(
+                Decimal128Array::from(vec![170_531_280_075])
+                    .with_precision_and_scale(20, 2)
+                    .unwrap(),
+            ),
+            RowAccessHints::default(),
+        );
+        let expected = [
+            (
+                Clock::Nanoseconds,
+                1_705_312_800_750_000_000,
+                1_705_312_800_750_000_000,
+                1_705_312_800_750_000_000,
+            ),
+            (
+                Clock::Microseconds,
+                1_705_312_800_750_000,
+                1_705_312_800_750_000,
+                1_705_312_800_750_000,
+            ),
+            (
+                Clock::Milliseconds,
+                1_705_312_800_750,
+                1_705_312_800_750,
+                1_705_312_800_750,
+            ),
+            (Clock::Seconds, 1_705_312_800, 1_705_312_801, 1_705_312_800),
+            (Clock::Hours, 473_698, 473_699, 473_698),
+            (Clock::Days, 19_737, 19_738, 19_738),
+        ];
+        for (clock, text, millis, decimal) in expected {
+            let read = |access: &RowAccess<'static>| with_index_clock!(clock, U => access.timestamp_in::<U>(0));
+            assert_eq!(read(&fractional_text)?, Some(text), "{clock:?}");
+            assert_eq!(read(&epoch_millis)?, Some(millis), "{clock:?}");
+            assert_eq!(read(&fractional_decimal)?, Some(decimal), "{clock:?}");
+        }
+        Ok(())
     }
 
     #[test]

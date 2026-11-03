@@ -1788,6 +1788,7 @@ fn format_sort_key_summary(rel: &EdgeRelationMetadata) -> String {
             EdgeSortKeyTimestampKind::Int8 => "int8",
             EdgeSortKeyTimestampKind::Int16 => "int16",
             EdgeSortKeyTimestampKind::Int32 => "int32",
+            EdgeSortKeyTimestampKind::Int64 => "int64",
         };
         parts.push(format!("ts({kind})"));
     }
@@ -1869,6 +1870,7 @@ fn timestamp_bits_for_meta(meta: &diskgraph_core::metadata::EdgeSortKeyTimestamp
         EdgeSortKeyTimestampKind::Int8 => 8,
         EdgeSortKeyTimestampKind::Int16 => 16,
         EdgeSortKeyTimestampKind::Int32 => 32,
+        EdgeSortKeyTimestampKind::Int64 => 64,
     }
 }
 

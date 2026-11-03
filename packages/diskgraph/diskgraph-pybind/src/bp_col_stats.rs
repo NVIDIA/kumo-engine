@@ -27,6 +27,7 @@ use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use diskgraph_core::accumulators::{
     kumo_entry, kumo_key, CategoryCountStrategy, WelfordAccumulator,
 };
+use diskgraph_core::time::{convert_ceil, TimeUnit};
 use diskgraph_ingest::col_stats::{FileColStats, TableCategoryCounts};
 use diskgraph_ingest::graph_config::{ColumnSpec, IngestedType, SemanticType, TimestampUnit};
 use diskgraph_ingest::PublicIngestError;
@@ -92,6 +93,7 @@ pub struct ColStatsOptions {
     pub max_per: Vec<String>,
     pub fixed_edges: HashMap<String, Vec<f64>>,
     pub quantiles: HashMap<String, Vec<f64>>,
+    pub clock: TimeUnit,
 }
 
 impl Default for ColStatsOptions {
@@ -102,6 +104,7 @@ impl Default for ColStatsOptions {
             max_per: Vec::new(),
             fixed_edges: HashMap::new(),
             quantiles: HashMap::new(),
+            clock: TimeUnit::Seconds,
         }
     }
 }
@@ -557,9 +560,13 @@ fn integer_timestamp(
     }))
 }
 
-fn timestamp_seconds(access: &RowAccess<'_>, col: &ColumnSpec) -> Result<Option<i64>> {
+fn timestamp_ticks(access: &RowAccess<'_>, col: &ColumnSpec) -> Result<Option<i64>> {
     if let Some((unit, raw)) = integer_timestamp(access, col)? {
-        return Ok(Some(unit.scale_to_secs(raw)));
+        return Ok(Some(convert_ceil(
+            raw,
+            unit.to_arrow().into(),
+            access.clock(),
+        )));
     }
     access.get_timestamp(0)
 }
@@ -569,7 +576,7 @@ fn histogram_timestamp_seconds(
     access: &RowAccess<'_>,
     raw_timestamp: Option<(TimestampUnit, i64)>,
 ) -> Result<Option<i64>> {
-    let Some(seconds) = timestamp_seconds(access, col)? else {
+    let Some(seconds) = timestamp_ticks(access, col)? else {
         return Ok(None);
     };
     let raw_unit = raw_timestamp.or(integer_timestamp(access, col)?);
@@ -596,7 +603,8 @@ fn for_each_timestamp_second(
         _ => None,
     };
     let arrays = [array.clone()];
-    let mut access = RowAccess::new(vec![row_access_hints(col)], RowAccessStats::new(None));
+    let mut access = RowAccess::new(vec![row_access_hints(col)], RowAccessStats::new(None))
+        .with_clock(TimeUnit::Seconds);
     access.set_cols(&arrays);
     for row in 0..array.len() {
         access.set_row(row);
@@ -935,14 +943,16 @@ fn drive_from_arrow_column<O: ColumnValueObserver>(
     col: &ColumnSpec,
     observer: &mut O,
     mut integer_range: Option<&mut IntegerRange>,
+    clock: TimeUnit,
 ) -> Result<()> {
     let arrays = [array.clone()];
-    let mut access = RowAccess::new(vec![row_access_hints(col)], RowAccessStats::new(None));
+    let mut access =
+        RowAccess::new(vec![row_access_hints(col)], RowAccessStats::new(None)).with_clock(clock);
     access.set_cols(&arrays);
     for row in 0..array.len() {
         access.set_row(row);
         let present = if col.semantic_type == Some(SemanticType::Timestamp) {
-            access_or_parse_failure(timestamp_seconds(&access, col), col_idx, observer)
+            access_or_parse_failure(timestamp_ticks(&access, col), col_idx, observer)
                 .map(|value| observer.observe_timestamp(col_idx, value))
                 .is_some()
         } else {
@@ -993,7 +1003,7 @@ fn drive_from_arrow_column<O: ColumnValueObserver>(
                     access_or_parse_failure(value, col_idx, observer).is_some()
                 }
                 IngestedType::Timestamp => {
-                    access_or_parse_failure(timestamp_seconds(&access, col), col_idx, observer)
+                    access_or_parse_failure(timestamp_ticks(&access, col), col_idx, observer)
                         .map(|value| observer.observe_timestamp(col_idx, value))
                         .is_some()
                 }
@@ -1124,6 +1134,7 @@ struct StatsSink<'a> {
     columns: &'a [ColumnSpec],
     integer_spec_indices: &'a [usize],
     score_class: Option<(usize, usize)>,
+    clock: TimeUnit,
     stats: RowGroupStats,
 }
 
@@ -1143,6 +1154,7 @@ impl StatsSink<'_> {
                 col,
                 fcs,
                 range,
+                self.clock,
             );
             if let Err(error) = result {
                 if error.is::<PublicIngestError>() {
@@ -1278,6 +1290,7 @@ fn accumulate_parquet_col_stats<'a>(
         columns,
         integer_spec_indices: &integer_spec_indices,
         score_class,
+        clock: options.clock,
         stats: (
             FileColStats::new_with_categories(columns, Arc::clone(&table_cat)),
             ByClassStats::new(),
@@ -1347,7 +1360,7 @@ fn accumulate_parquet_col_stats<'a>(
         acc.flush_categories();
     }
     Ok((
-        acc,
+        acc.with_clock(options.clock),
         table_cat,
         Accumulated {
             parquet_paths,

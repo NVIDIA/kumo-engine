@@ -81,6 +81,7 @@ from typing import (
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.pquery import NativeGraph, normalize_graph
 from kumoapi.graph import Edge
+from kumoapi.typing import TimestampPrecision, validate_timestamp_precision
 
 from kumo.engine._events import Event, EventEmitter
 from kumo.engine._manifest import (
@@ -571,6 +572,15 @@ def _write_snapshot_manifest(result: Any, snapshot_id: str,
             )
 
 
+def index_timestamp_precision(index_path: Path) -> TimestampPrecision:
+    r"""The clock an index stores timestamps in (seconds when it records
+    none)."""
+    path = Path(index_path) / 'index_metadata.json'
+    if not path.is_file():
+        return 'seconds'
+    return json.loads(path.read_text()).get('timestamp_unit', 'seconds')
+
+
 @dataclass(frozen=True)
 class Graph:
     r"""An immutable, metadata-only description of a graph: a set of `Table`
@@ -757,7 +767,9 @@ class Graph:
                 destination.write_text(svg, encoding='utf-8')
         return svg
 
-    def snapshot(self, *, record_sources: bool = True,
+    def snapshot(self,
+                 timestamp_precision: TimestampPrecision = 'seconds', *,
+                 record_sources: bool = True,
                  mlops: Optional[Any] = None,
                  callbacks: Sequence[Callable[[Event], None]] = ()
                  ) -> GraphSnapshot:
@@ -770,12 +782,19 @@ class Graph:
         valid build already exists for that exact key, ingest is skipped and
         it's reused as is.
 
+        `timestamp_precision` is the clock the index stores timestamps in:
+        `"nanoseconds"`, `"microseconds"`, `"milliseconds"`, `"seconds"` (the
+        default), `"hours"` or `"days"`. Window lengths truncate to the clock,
+        and a window shorter than one tick is a configuration error. Each
+        clock is cached as a separate snapshot.
+
         Args:
             mlops: also export the snapshot under this `kumo.MLOps` root.
             record_sources: if False, record sources without locations or
                 SQL text.
             callbacks: called with each progress `Event`.
         """
+        validate_timestamp_precision(timestamp_precision)
         self.validate()
         for table in self._named_tables.values():
             table.connector.validate_scratch_dir(get_scratch_dir())
@@ -808,6 +827,7 @@ class Graph:
             'graph': graph_key, 'tables': list(self._named_tables)})
         with _lock(graph_key):
             snapshot = self._snapshot_no_lock(graph_key, persist_dir,
+                                              timestamp_precision,
                                               record_sources, events,
                                               timed=settings is not None)
         if settings is not None and settings.wants('snapshot'):
@@ -820,10 +840,12 @@ class Graph:
                 raise_on_error(settings, error, 'Graph.snapshot')
         return snapshot
 
-    def _snapshot_no_lock(self, graph_key: str, persist_dir: Path,
-                          record_sources: bool = True,
-                          events: Optional['_SnapshotEvents'] = None,
-                          *, timed: bool = False) -> GraphSnapshot:
+    def _snapshot_no_lock(
+            self, graph_key: str, persist_dir: Path,
+            timestamp_precision: TimestampPrecision = 'seconds',
+            record_sources: bool = True,
+            events: Optional['_SnapshotEvents'] = None,
+            *, timed: bool = False) -> GraphSnapshot:
         r"""`snapshot()`'s body, run under its `FileLock`. Not meant to be
         called on its own -- `persist_dir`, unlike everything else here,
         isn't a pure function of `self` alone (it's `snapshot()`'s lock key,
@@ -907,8 +929,12 @@ class Graph:
                     source_paths[alias] = str(
                         prepared.source.get('path') or dest_dir)
 
-            data_version = fingerprint(
-                json.dumps(table_data_versions, sort_keys=True).encode())
+            version_parts = [
+                json.dumps(table_data_versions, sort_keys=True).encode()
+            ]
+            if timestamp_precision != 'seconds':
+                version_parts.append(timestamp_precision.encode())
+            data_version = fingerprint(*version_parts)
             handle = DiskgraphSnapshotHandle(graph_key=graph_key,
                                              graph_data_version=data_version)
             output_dir = Path(store.path(handle))
@@ -935,6 +961,7 @@ class Graph:
                         table_data_versions=table_data_versions,
                         output_dir=str(output_dir),
                         source_paths=source_paths,
+                        timestamp_precision=timestamp_precision,
                         execution=IngestExecutionConfig(
                             success_marker_content=predicted.to_json()),
                     ),

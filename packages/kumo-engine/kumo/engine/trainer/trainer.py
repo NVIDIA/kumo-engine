@@ -65,6 +65,7 @@ from kumoapi.plugin import (
     SourceConnector,
 )
 from kumoapi.train import TrainingStage
+from kumoapi.typing import check_prediction_precision
 from typing_extensions import Self
 
 from kumo.engine import _deps as dependency
@@ -107,7 +108,11 @@ from kumo.engine._tracking import (
 )
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.source_table import SourceTable
-from kumo.engine.graph import GraphSnapshot, report_other_graph
+from kumo.engine.graph import (
+    GraphSnapshot,
+    index_timestamp_precision,
+    report_other_graph,
+)
 from kumo.engine.pquery.prediction_table import PredictionTable
 from kumo.engine.pquery.training_table import TrainingTable
 from kumo.engine.trainer import _run_manifest
@@ -1077,6 +1082,7 @@ class Trainer:
         self._training_result: Optional[TrainingResult] = None
         self._snapshot_id: Optional[str] = None
         self._graph_config: Optional[Dict[str, Any]] = None
+        self._timestamp_precision = 'seconds'
         self._training_query: Optional[str] = None
         self._training_table_generation_plan: Optional[
             TrainingTableGenerationPlan] = None
@@ -1300,6 +1306,7 @@ class Trainer:
             training_result,
             predictive_query=train_table.query,
             snapshot_id=snapshot.id,
+            timestamp_precision=index_timestamp_precision(snapshot.index_path),
             graph_config=snapshot.graph_config,
             training_table_generation=train_table.generation_plan,
             export_config=export_config,
@@ -1437,6 +1444,7 @@ class Trainer:
         *,
         predictive_query: str,
         snapshot_id: str,
+        timestamp_precision: str = 'seconds',
         training_table_generation: TrainingTableGenerationPlan,
         export_config: Optional[ModelOutputConfig],
         graph_config: Optional[Dict[str, Any]] = None,
@@ -1456,6 +1464,7 @@ class Trainer:
             snapshot_id=snapshot_id,
             training_table_generation=training_table_generation,
             graph_config=graph_config,
+            timestamp_precision=timestamp_precision,
         )
         if scoring_defaults is not None:
             write_scoring_defaults(training_result.bundle_dir,
@@ -1489,6 +1498,7 @@ class Trainer:
         self._training_result = training_result
         self._snapshot_id = snapshot_id
         self._graph_config = graph_config
+        self._timestamp_precision = timestamp_precision
         self._training_query = predictive_query
         self._training_table_generation_plan = training_table_generation
 
@@ -1573,6 +1583,10 @@ class Trainer:
             raise ValueError('A prediction table already holds its entities '
                              'and times; pass it or entities=/'
                              'prediction_time=, not both.')
+        self._fitted('predict')
+        check_prediction_precision(
+            self._timestamp_precision,
+            index_timestamp_precision(snapshot.index_path))
         table = (prediction_table if prediction_table is not None else
                  self._prediction_table(
                      snapshot, entities, prediction_time, strict=(
@@ -1899,6 +1913,7 @@ class Trainer:
         trainer = cls(plan, embedding_models, accelerator=accelerator)
         trainer._snapshot_id = spec.snapshot_id
         trainer._graph_config = spec.graph_config
+        trainer._timestamp_precision = spec.timestamp_precision
         trainer._training_query = spec.predictive_query
         trainer._training_table_generation_plan = from_json_dict(
             spec.training_table_generation, TrainingTableGenerationPlan)
