@@ -201,6 +201,16 @@
       ],
       "notice_file": "packages/kumo-ui-catalog/THIRD-PARTY.txt",
       "provenance": "https://github.com/shadcn-ui/ui"
+    },
+    {
+      "name": "rustup-pypi bootstrap adaptation",
+      "paths": [
+        "packages/kumo-engine/scripts/build/kumo_engine_build_backend.py"
+      ],
+      "license_identifier": "Apache-2.0",
+      "required_copyright_lines": [],
+      "notice_file": "3rdparty/notices/rustup-pypi-LICENSE",
+      "provenance": "https://github.com/konstin/rustup-pypi/blob/a41b40da1edf5b01575c0f5bd4ff1bb5f336fbb2/src/rustup/_build_wheel.py"
     }
   ],
   "exclusions": [

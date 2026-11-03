@@ -7,15 +7,18 @@ Editable installs retain setuptools' component behavior for the uv workspace.
 The assembler requests component mode when building its engine input wheel.
 """
 
+import hashlib
 import logging
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import sysconfig
 import venv
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from urllib.request import urlopen
 
 from setuptools import build_meta
 from setuptools.build_meta import (
@@ -34,6 +37,112 @@ __all__ = [
 
 ConfigSettings = dict[str, str | list[str]]
 logger = logging.getLogger(__name__)
+
+
+# Download/bootstrap approach adapted from rustup-pypi; checksums are from
+# the official Rustup 1.29.0 archive release files. Upstream source:
+# commit a41b40da1edf5b01575c0f5bd4ff1bb5f336fbb2 (Apache-2.0 election).
+# See 3rdparty/notices/rustup-pypi-LICENSE for attribution and modifications.
+_RUSTUP_VERSION = "1.29.0"
+_RUSTUP_SHA256 = {
+    "x86_64-unknown-linux-gnu": (
+        "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+    ),
+    "aarch64-unknown-linux-gnu": (
+        "9732d6c5e2a098d3521fca8145d826ae0aaa067ef2385ead08e6feac88fa5792"
+    ),
+    "x86_64-apple-darwin": (
+        "33cf85df9142bc6d29cbc62fa5ca1d4c29622cddb55213a4c1a43c457fb9b2d7"
+    ),
+    "aarch64-apple-darwin": (
+        "aeb4105778ca1bd3c6b0e75768f581c656633cd51368fa61289b6a71696ac7e1"
+    ),
+}
+
+
+def _download_rustup(cache: Path) -> Path:
+    """Download and verify a pinned Rustup installer, reusing verified cache files."""
+    machine = platform.machine().lower()
+    machine = {"arm64": "aarch64", "amd64": "x86_64"}.get(machine, machine)
+    suffix = "apple-darwin" if sys.platform == "darwin" else "unknown-linux-gnu"
+    target = f"{machine}-{suffix}"
+    expected = _RUSTUP_SHA256.get(target)
+    if expected is None:
+        raise RuntimeError(f"Automatic Rust installation is unsupported on {target}")
+    binary = cache / target / "rustup"
+    if binary.is_file():
+        with binary.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() == expected:
+                binary.chmod(0o755)
+                return binary
+        logger.warning("Cached Rustup checksum failed; downloading a verified copy")
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    url = (
+        f"https://static.rust-lang.org/rustup/archive/{_RUSTUP_VERSION}/"
+        f"{target}/rustup-init"
+    )
+    with TemporaryDirectory(prefix="rustup-download-", dir=binary.parent) as directory:
+        downloaded = Path(directory) / "rustup"
+        with urlopen(url, timeout=60) as response, downloaded.open("wb") as output:
+            shutil.copyfileobj(response, output)
+        with downloaded.open("rb") as stream:
+            actual = hashlib.file_digest(stream, "sha256").hexdigest()
+        if actual != expected:
+            raise RuntimeError(f"Rustup checksum mismatch for {target}")
+        downloaded.chmod(0o755)
+        downloaded.replace(binary)
+    return binary
+
+
+def _configure_rust(environment: dict[str, str]) -> None:
+    """Reuse existing Rust or bootstrap a minimal toolchain in a private cache."""
+    path = environment.get("PATH", "")
+    if shutil.which("cargo", path=path) and shutil.which("rustc", path=path):
+        return
+    cache = (
+        Path(environment.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+        / "kumo/rust"
+    )
+    rustup = _download_rustup(cache)
+    environment.setdefault("RUSTUP_HOME", str(rustup.parent / "rustup-home"))
+    environment.setdefault("CARGO_HOME", str(rustup.parent / "cargo"))
+    toolchain = environment.get("RUSTUP_TOOLCHAIN") or "stable"
+    command = [str(rustup), "which", "--toolchain", toolchain, "cargo"]
+    result = subprocess.run(
+        command,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode:
+        logger.info("Installing Rust %s in %s", toolchain, environment["RUSTUP_HOME"])
+        subprocess.run(
+            [
+                str(rustup),
+                "toolchain",
+                "install",
+                toolchain,
+                "--profile",
+                "minimal",
+                "--no-self-update",
+            ],
+            env=environment,
+            stdout=sys.stderr,
+            check=True,
+        )
+        result = subprocess.run(
+            command,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    cargo = Path(result.stdout.strip())
+    if not cargo.is_file():
+        raise RuntimeError(f"Rust bootstrap did not produce Cargo: {cargo}")
+    # Use the installed binaries without modifying the user's shell profile.
+    environment["PATH"] = os.pathsep.join((str(cargo.parent), path))
 
 
 def get_requires_for_build_wheel(
@@ -68,8 +177,9 @@ def build_wheel(
         The generated wheel's filename, relative to ``wheel_directory``.
 
     Raises:
-        RuntimeError: If the host is unsupported or the assembler returns no path.
-        subprocess.CalledProcessError: If component or bundle assembly fails.
+        RuntimeError: If the host or installer is invalid, or assembly returns no path.
+        subprocess.CalledProcessError: If Rust provisioning or wheel assembly fails.
+        OSError: If downloading or caching the installer fails.
     """
     if config_settings and config_settings.get("kumo-component") == "true":
         return build_meta.build_wheel(
@@ -98,6 +208,7 @@ def build_wheel(
         raise RuntimeError("Source builds require Linux with glibc or macOS")
 
     try:
+        _configure_rust(environment)
         with TemporaryDirectory(prefix="kumo-source-build-") as directory:
             venv.EnvBuilder(with_pip=False).create(directory)
             python = str(Path(directory) / "bin/python")

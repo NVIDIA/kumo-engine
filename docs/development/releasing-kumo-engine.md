@@ -195,8 +195,19 @@ To select a Git branch or commit directly:
 python -m pip install "git+https://github.com/NVIDIA/kumo-engine.git@<branch-or-commit>#subdirectory=packages/kumo-engine"
 ```
 
-These builds require CPython 3.11+, Bash, a Rust toolchain including Cargo, and
-a C/C++ build toolchain. Some native build configurations also require CMake.
+These builds require CPython 3.11+, Git, Bash, and a C/C++ build toolchain.
+Some native build configurations also require CMake. Existing Cargo and rustc
+installations are reused. If either is missing, the backend downloads a pinned,
+checksum-verified Rustup installer and provisions a minimal stable Rust toolchain.
+The adapted download helper comes from
+[rustup-pypi](https://github.com/konstin/rustup-pypi); it adds no Python dependency.
+
+Automatic Rust installations are cached under `$XDG_CACHE_HOME/kumo/rust`
+(default `~/.cache/kumo/rust`), separated by host target. `RUSTUP_HOME` and
+`CARGO_HOME` overrides are respected; `RUSTUP_TOOLCHAIN` selects the toolchain.
+Shell profiles are unchanged. Fresh installations need network access to the
+Rust distribution server in addition to GitHub and the Python package index.
+
 They compile DiskGraph from the selected checkout; installing a released engine wheel first is unnecessary. Provider
 extras work with source installs too, for example
 `python -m pip install './packages/kumo-engine[databricks]'`.
@@ -217,8 +228,7 @@ its engine input wheel to avoid recursively assembling another bundle.
 Source installs build natively for the host: Linux wheels use a `linux_*`
 platform tag and check their glibc requirement against the build host. macOS
 uses DiskGraph's native wheel tag and deployment target. Release builds retain
-the existing Zig and manylinux checks. Source builds do not install Rust or
-other system tools automatically.
+the existing Zig and manylinux checks. The bootstrap installs Rust only; other system build tools must already be available.
 
 The complete checkout is required; copying only `packages/kumo-engine` or
 building a standalone engine source distribution is not supported. Editable
@@ -227,7 +237,8 @@ do not install the complete bundle.
 
 On Databricks, run the install with `%pip` and restart Python with
 `dbutils.library.restartPython()` afterward. The driver needs the native build
-prerequisites above. Source-install packaging tests do not establish a tested
+prerequisites above; manual Rust installation is unnecessary. Source-install
+packaging tests do not establish a tested
 Databricks runtime or GPU profile.
 
 Build-tool tests live in `packages/kumo-engine/test/build/`. Run them without
@@ -236,6 +247,16 @@ loading the engine runtime fixtures:
 ```bash
 python -m pytest --confcutdir=packages/kumo-engine/test/build \
     packages/kumo-engine/test/build
+```
+
+To exercise the real Rust download and pip bootstrap locally, use a compiler-equipped
+host and enable the network tests:
+
+```bash
+KUMO_TEST_RUST_BOOTSTRAP=1 python -m pytest \
+    --confcutdir=packages/kumo-engine/test/build \
+    packages/kumo-engine/test/build/test_engine_source_build.py \
+    -k 'downloaded_rust or frontend'
 ```
 
 ### Build a distributable wheel
