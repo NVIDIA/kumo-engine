@@ -390,48 +390,83 @@ def _install_coco_workspace(pkg: Path, session: Any, workspace: str) -> str:
     A workspace created with SQL has no live version and takes no files until
     one is added, so it is added here. The package is written over the
     previous install, and only then are the files it no longer ships removed.
+
+    There is no lock, so the folder is listed again after the prune: the
+    install that changes it last checks the final state against its own
+    build. Workspace files cannot be read back, so each is checked by path
+    and size, a file of ``s`` bytes listing as ``(s // 16 + 1) * 16``. A
+    concurrent build whose files all list at the same sizes as this one's
+    cannot be told apart; the last install then wins, file by file.
     """
     ws = _workspace_name(session, workspace)
     versions = _rows(session, f'SHOW VERSIONS IN WORKSPACE {ws}')
     if not any(str(v.get('is_live')).lower() == 'true' for v in versions):
         session.sql(
             f'ALTER WORKSPACE {ws} ADD LIVE VERSION FROM LAST').collect()
-    live = f'snow://workspace/{ws}/versions/live/'
-    rel_root = f'.snowflake/cortex/skills/{SKILL}'
-    root = live + rel_root
+    root = f'snow://workspace/{ws}/versions/live/.snowflake/cortex/skills/{SKILL}'
     _put(session, pkg, root)
 
-    # LIST names each file from /versions/live/ on; empty `.folder` files
-    # mark folders made in Snowsight. Remove, for each file not shipped, the
-    # highest folder under the root that holds nothing shipped.
-    shipped_files = {p.relative_to(pkg).as_posix() for p in _files(pkg)}
+    # Empty `.folder` files mark folders made in Snowsight. Remove, for each
+    # file not shipped, the highest folder under the root that holds nothing
+    # shipped.
+    sizes = {
+        p.relative_to(pkg).as_posix(): (p.stat().st_size // 16 + 1) * 16
+        for p in _files(pkg)
+    }
     shipped = {''}
-    for path in shipped_files:
+    for path in sizes:
         while (path := path.rpartition('/')[0]) not in shipped:
             shipped.add(path)
     removed: list[str] = []
-    for row in _rows(session, f"LIST '{_lit(root)}/'"):
-        rel = row['name'].split('/versions/live/', 1)[1]
-        if not rel.startswith(rel_root + '/'):
-            continue
-        rel = rel[len(rel_root) + 1:]
+    kept: set[str] = set()
+    for rel in _workspace_files(session, root):
         folder = rel.rpartition('/')[0]
-        if rel in shipped_files or (rel.endswith('/.folder')
-                                    or rel == '.folder') and folder in shipped:
+        if rel in sizes or _is_marker(rel) and folder in shipped:
             continue
         top = rel
         while (parent := top.rpartition('/')[0]) not in shipped:
             top = parent
         # REMOVE matches by prefix: a folder is named with its slash, and a
-        # file is skipped if it is a prefix of a shipped one.
+        # file is kept if it is a prefix of a shipped one.
         target = top + '/' if top != rel else top
-        if any(target.startswith(r)
-               for r in removed) or any(f != target and f.startswith(target)
-                                        for f in shipped_files):
+        if any(target.startswith(r) for r in removed):
+            continue
+        if any(f != target and f.startswith(target) for f in sizes):
+            kept.add(rel)
             continue
         session.sql(f"REMOVE '{_lit(root)}/{_lit(target)}'").collect()
         removed.append(target)
+
+    found = {
+        rel: size
+        for rel, size in _workspace_files(session, root).items()
+        if not _is_marker(rel) and rel not in kept
+    }
+    changed = sorted(rel for rel in sizes.keys() | found.keys()
+                     if found.get(rel) != sizes.get(rel))
+    if changed:
+        raise RuntimeError(f'Another install changed {root} while this one '
+                           f'ran (e.g. {changed[0]}); run install_skills '
+                           'again.')
     return root
+
+
+def _workspace_files(session: Any, root: str) -> dict[str, int]:
+    r"""The files under ``root``, a workspace path, by their path below it,
+    with the size LIST gives each.
+    """
+    rel_root = root.partition('/versions/live/')[2]
+    files = {}
+    for row in _rows(session, f"LIST '{_lit(root)}/'"):
+        # LIST names each file from /versions/live/ on.
+        rel = row['name'].split('/versions/live/', 1)[1]
+        if rel.startswith(rel_root + '/'):
+            files[rel[len(rel_root) + 1:]] = int(row['size'])
+    return files
+
+
+def _is_marker(rel: str) -> bool:
+    return rel == '.folder' or rel.endswith('/.folder')
 
 
 def _install_coco_extension(pkg: Path, session: Any, extension: str,

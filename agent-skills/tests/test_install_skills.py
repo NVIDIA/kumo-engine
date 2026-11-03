@@ -375,24 +375,46 @@ class FakeRow(tuple):
         return self.fields
 
 
+def unquote(literal: str) -> str:
+    return re.sub(r'\\(.)', r'\1', literal)
+
+
 class FakeSession:
-    r"""Answers CURRENT_USER (``user``), SHOW VERSIONS (live unless ``live=False``) and
-    LIST (``listed``, names relative to the workspace's live version)."""
+    r"""Answers CURRENT_USER (``user``) and SHOW VERSIONS (live unless ``live=False``), and
+    holds the files PUT, REMOVE and LIST act on, by path from the workspace's live version
+    (``listed`` are there to begin with). Like Snowflake, LIST gives a file of ``s`` bytes
+    the AES-padded size ``(s // 16 + 1) * 16``, and REMOVE matches by prefix."""
 
     def __init__(self, live: bool = True, listed: tuple[str, ...] = (),
                  user: str = 'ME') -> None:
         self.user = user
         self.sql_log: list[str] = []
         self.live = live
-        self.listed = listed
+        self.files = {n: 16 for n in listed}
+
+    @staticmethod
+    def key(path: str) -> str:
+        return path.split('/versions/live/', 1)[-1]
 
     def sql(self, text: str):
         self.sql_log.append(text)
+        literals = [unquote(m) for m in re.findall(r"'((?:[^'\\]|\\.)*)'", text)]
         if text.startswith('SHOW VERSIONS'):
             rows = [FakeRow(name='VERSION$1', is_live='false')]
             rows += [FakeRow(name=None, is_live='true')] if self.live else []
+        elif text.startswith('PUT'):
+            local = Path(literals[0].removeprefix('file://'))
+            size = local.stat().st_size
+            self.files[self.key(literals[1]) + local.name] = (size // 16 + 1) * 16
+            rows = []
+        elif text.startswith('REMOVE'):
+            prefix = self.key(literals[0] if literals else text.split()[1])
+            self.files = {k: v for k, v in self.files.items() if not k.startswith(prefix)}
+            rows = []
         elif text.startswith('LIST'):
-            rows = [FakeRow(name=f'/versions/live/{n}') for n in self.listed]
+            prefix = self.key(literals[0])
+            rows = [FakeRow(name=f'/versions/live/{k}', size=v)
+                    for k, v in sorted(self.files.items()) if k.startswith(prefix)]
         else:
             rows = [FakeRow(user=self.user)]
         return types.SimpleNamespace(collect=lambda: rows)
@@ -523,6 +545,55 @@ def test_coco_workspace_removes_what_the_build_no_longer_ships(home: Path) -> No
     [root] = skills.install_skills('coco', scope='workspace', session=session, workspace='WS')
     removes = [s for s in session.sql_log if s.startswith('REMOVE')]
     assert removes == [f"REMOVE '{root}/hosts/obsolete/'", f"REMOVE '{root}/old-notes.md'"]
+
+
+WS_ROOT = '.snowflake/cortex/skills/kumo-data-science'
+
+
+def test_coco_workspace_lists_again_and_finds_its_build(home: Path) -> None:
+    session = FakeSession(listed=(f'{WS_ROOT}/old-notes.md', f'{WS_ROOT}/hosts/.folder'))
+    skills.install_skills('coco', scope='workspace', session=session, workspace='WS')
+    lists = [i for i, s in enumerate(session.sql_log) if s.startswith('LIST')]
+    assert len(lists) == 2 and lists[1] == len(session.sql_log) - 1
+    assert any(s.startswith('REMOVE') for s in session.sql_log[lists[0]:lists[1]])
+    with skills.skill_package('coco') as pkg:
+        assert {k.removeprefix(WS_ROOT + '/'): v for k, v in session.files.items()} == {
+            p.relative_to(pkg).as_posix(): (p.stat().st_size // 16 + 1) * 16
+            for p in skills._files(pkg)} | {'hosts/.folder': 16}
+
+
+class ConcurrentSession(FakeSession):
+    """Calls ``change(files)`` as the install lists the workspace again after its prune."""
+
+    def __init__(self, change) -> None:
+        super().__init__()
+        self.change = change
+
+    def sql(self, text: str):
+        if text.startswith('LIST') and sum(s.startswith('LIST') for s in self.sql_log) == 1:
+            self.change(self.files)
+        return super().sql(text)
+
+
+@pytest.mark.parametrize('change, path', [
+    (lambda files: files.update({f'{WS_ROOT}/SKILL.md': files[f'{WS_ROOT}/SKILL.md'] + 16}),
+     'SKILL.md'),
+    (lambda files: files.update({f'{WS_ROOT}/hosts/other/x.md': 32}), 'hosts/other/x.md'),
+    (lambda files: files.pop(f'{WS_ROOT}/hosts/snowflake-coco/adapter.md'),
+     'hosts/snowflake-coco/adapter.md'),
+])
+def test_a_concurrent_coco_workspace_install_of_another_build_fails(
+        home: Path, change, path: str) -> None:
+    # Another build's file of another size, a file this build does not ship, a file gone.
+    session = ConcurrentSession(change)
+    with pytest.raises(RuntimeError, match=f'Another install changed .*kumo-data-science while '
+                                           rf'this one ran \(e\.g\. {re.escape(path)}\)'):
+        skills.install_skills('coco', scope='workspace', session=session, workspace='WS')
+
+
+def test_a_coco_workspace_folder_marker_is_not_a_change(home: Path) -> None:
+    session = ConcurrentSession(lambda files: files.update({f'{WS_ROOT}/hosts/.folder': 16}))
+    skills.install_skills('coco', scope='workspace', session=session, workspace='WS')
 
 
 def test_snowflake_notebook_asks_for_a_destination(
