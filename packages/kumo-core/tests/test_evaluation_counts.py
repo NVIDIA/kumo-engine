@@ -156,11 +156,11 @@ def test_multiclass_summaries_match_brute_force(size):
     assert len(confusion.labels) == min(size, 20) + (size > 20)
     confidence = prob.max(1)
     bins = np.array([brute_bin(v, PROBABILITY_EDGES) for v in confidence])
-    assert [(row['rows'], row['accuracy'])
-            for row in _rows(summaries['holdout/calibration'])] == \
-        pytest.approx([((bins == b).sum(),
-                        np.mean(predicted[bins == b] == target[bins == b]))
-                       for b in sorted(set(bins))])
+    calibration = _rows(summaries['holdout/calibration'])
+    groups = sorted(set(bins))
+    assert [row['rows'] for row in calibration] == [(bins == b).sum() for b in groups]
+    assert [row['accuracy'] for row in calibration] == pytest.approx(
+        [np.mean(predicted[bins == b] == target[bins == b]) for b in groups])
 
 
 def test_regression_summaries_match_brute_force():
