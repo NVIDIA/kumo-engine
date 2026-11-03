@@ -15,8 +15,10 @@ The distributions are chosen scenarios, not fitted production data.
 The 55 cases per clock cover recent/historical cutoffs, upper-only and
 7/30/90/365-day windows, latest-24/latest-64 and uncapped sequences, narrow/wide
 projections, shared sums, lengths, degree/activity cohorts, and unbounded and
-mismatched-clock controls. Clock units are second, minute, hour, and day; all
-use 32-bit encodings. Correctness tests separately exercise clipping and nulls.
+mismatched-clock controls. Sort-key bucket steps are second, minute, hour, and day on seconds-based
+indexes; all use 32-bit encodings. These bucket steps are distinct from the
+index-wide storage unit. Correctness tests separately exercise clipping, nulls,
+and exact row-decoding fallback for differently scaled index clocks.
 The worker checks selected source IDs and sequence lengths independently of the
 native implementation. Complete result hashes must match across builds.
 
