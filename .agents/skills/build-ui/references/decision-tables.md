@@ -9,7 +9,7 @@ Use this file for stop/skip decisions, dependency handling, catalog gaps, browse
 | 0     | Working git repo, readable worktree                                                    | Stop                                 | Cannot plan safely                      |
 | 0     | `gh` available/authenticated for issue or PR work                                      | Stop or continue local-only planning | No GitHub-backed issue/PR work          |
 | 0b    | User approved implementation                                                           | Stop                                 | No mutations before approval            |
-| 0b    | Base branch exists on origin                                                           | Stop                                 | Branch setup blocked                    |
+| 0b    | Base branch exists on upstream (`main` by default)                                      | Stop                                 | Branch setup blocked                    |
 | P     | PR exists and is readable                                                              | Stop                                 | Cannot inspect existing work            |
 | 1     | Issue exists and is readable                                                           | Stop                                 | Cannot derive requirements              |
 | 1     | Enough issue detail to synthesize AC                                                   | Ask user to clarify                  | No implementation without usable AC     |
