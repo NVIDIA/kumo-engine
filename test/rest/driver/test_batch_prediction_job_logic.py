@@ -1309,6 +1309,7 @@ async def test_existing_model_can_score_new_generator_graph(monkeypatch):
     )
     ml_backend = SimpleNamespace(
         get_training_job=AsyncMock(return_value=training_job),
+        get_job_home_dir=AsyncMock(return_value='/missing-training-home'),
         start_batch_prediction=AsyncMock(),
     )
     logic = _logic(ml_backend)  # type: ignore
@@ -1316,7 +1317,7 @@ async def test_existing_model_can_score_new_generator_graph(monkeypatch):
     logic._resolve_bp_graph_id = AsyncMock(return_value=(GraphIDv2.compose(
         fpid=FPID('a' * 32)), None))
     logic._gen_pred_table_graph_context = AsyncMock()
-    generated_input = object()
+    generated_input = SimpleNamespace(graph_data_compute_input=SimpleNamespace())
     logic.make_batch_prediction_job_input_v2 = AsyncMock(
         return_value=generated_input)
     logic._apply_bp_job_tags = AsyncMock()
@@ -1351,3 +1352,70 @@ async def test_existing_model_can_score_new_generator_graph(monkeypatch):
         user=None,
         batch_prediction_workflow_id=None,
     )
+
+
+async def _create_bp_for_a_model_trained_in(monkeypatch, trained, **kwargs):
+    monkeypatch.setattr(
+        batch_prediction_job_logic, 'load_json_async',
+        AsyncMock(return_value=SimpleNamespace(graph_version_info=SimpleNamespace(
+            timestamp_precision=trained))))
+    training_job = SimpleNamespace(
+        id=TrainingJobID('model'),
+        execution=SimpleNamespace(status=JobStatus.DONE),
+        project_id=_PROJECT_ID,
+        graph_data_version='v1',
+        generate_train_table_job_id=None,
+        advanced_options=None,
+    )
+    logic = _logic(SimpleNamespace(  # type: ignore
+        get_training_job=AsyncMock(return_value=training_job),
+        get_job_home_dir=AsyncMock(return_value='/training-home'),
+        start_batch_prediction=AsyncMock(),
+    ))
+    logic._compute_bp_train_options = AsyncMock(return_value=(None, None))
+    logic._resolve_bp_graph_id = AsyncMock(return_value=(GraphIDv2.compose(
+        fpid=FPID('a' * 32)), None))
+    job_input = SimpleNamespace(graph_data_compute_input=SimpleNamespace(
+        timestamp_precision='seconds'))
+    logic.make_batch_prediction_job_input_v2 = AsyncMock(return_value=job_input)
+    logic._apply_bp_job_tags = AsyncMock()
+    monkeypatch.setattr(batch_prediction_job_logic.DELETE_OLD_BP_JOBS,
+                        'parse_value', lambda: False)
+    request = SimpleNamespace(
+        predict_options=SimpleNamespace(binary_classification_threshold=None,
+                                        num_classes_to_return=None),
+        only_embeddings=False,
+        batch_prediction_workflow_id=None,
+        to_config=MagicMock(return_value=SimpleNamespace(
+            graph_data_version=None, generate_pred_table_job_id=None,
+            custom_pred_table_source=None)),
+    )
+    await logic.create_batch_prediction_job_v2(
+        SimpleNamespace(is_customer=False), request,
+        SimpleNamespace(graph=SimpleNamespace(fpid=FPID('a' * 32))),
+        FPID('b' * 32), TaskType.BINARY_CLASSIFICATION, MagicMock(),
+        training_job.id, predictive_query_id=PredictiveQueryID('pquery'),
+        project_id=_PROJECT_ID, **kwargs)
+    return job_input
+
+
+@pytest.mark.asyncio
+async def test_batch_prediction_refuses_a_snapshot_in_another_clock(
+        monkeypatch):
+    monkeypatch.setattr(
+        batch_prediction_job_logic.BatchPredictionJobLogic,
+        '_get_graph_snapshot_info',
+        AsyncMock(return_value=(None, SimpleNamespace(
+            timestamp_precision='seconds'))))
+    with pytest.raises(ValueError, match='trained on a milliseconds snapshot'):
+        await _create_bp_for_a_model_trained_in(monkeypatch, 'milliseconds',
+                                                graph_snapshot_id='graph@v2')
+
+
+@pytest.mark.asyncio
+async def test_unpinned_batch_prediction_refreshes_in_the_model_clock(
+        monkeypatch):
+    job_input = await _create_bp_for_a_model_trained_in(
+        monkeypatch, 'milliseconds')
+    assert job_input.graph_data_compute_input.timestamp_precision == (
+        'milliseconds')

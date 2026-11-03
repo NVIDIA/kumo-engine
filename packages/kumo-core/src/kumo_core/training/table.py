@@ -485,7 +485,7 @@ def generate_train_table(
     )
     if split is None:
         raise RuntimeError("split_config has no resolvable split family")
-    compiler = runtime.DiskGraphPlanCompiler()
+    compiler = runtime.DiskGraphPlanCompiler(index_path=request.index_path)
     compile_options = dict(request.compiler_options or {})
     plan_json = compiler.compile(
         query=request.query,

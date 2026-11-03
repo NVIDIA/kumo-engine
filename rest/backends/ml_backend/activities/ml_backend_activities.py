@@ -13,6 +13,7 @@ from kumo_core.training.explain_aggregation import aggregate_subgraph_features
 from kumo_core.version import get_kumo_version
 from kumoapi.explain import LinkPredRFM, NodePredRFM
 from kumoapi.train import TrainingStage
+from kumoapi.typing import check_prediction_precision
 from temporalio import activity
 from temporalio.exceptions import CancelledError
 
@@ -470,8 +471,14 @@ class MLBackendActivities:
         bp_job_input: BatchPredictionJobInput,
         gen_pred_table_job_id: GeneratePredictionTableJobID,
     ) -> Optional[BatchPredictionJobInput]:
-        return await self._load_project_bound_gen_pred_table_input(
+        gen_input = await self._load_project_bound_gen_pred_table_input(
             bp_job_input, gen_pred_table_job_id)
+        if gen_input is not None and gen_input.graph_version_info is not None:
+            # The batch prediction's compute input carries the model's clock.
+            check_prediction_precision(
+                bp_job_input.graph_data_compute_input.timestamp_precision,
+                gen_input.graph_version_info.timestamp_precision)
+        return gen_input
 
     @activity.defn
     async def upsert_job_registry_metadata(

@@ -31,6 +31,7 @@ import kumoapi.graph as api
 from kumoapi.common import JobStatus
 from kumoapi.data_snapshot import GraphSnapshotID
 from kumoapi.source_table import CustomSQLSourceTable
+from kumoapi.typing import TimestampPrecision
 from typing_extensions import Self
 
 from kumoai_studio.backend import cloud_backend
@@ -261,6 +262,7 @@ class Graph:
 
         # Cached from backend:
         self._graph_snapshot_id: Optional[GraphSnapshotID] = None
+        self._graph_snapshot_precision: TimestampPrecision = 'seconds'
 
     @property
     def kumo_project_id(self) -> str:
@@ -532,6 +534,7 @@ class Graph:
         *,
         force_refresh: bool = False,
         non_blocking: bool = False,
+        timestamp_precision: Optional[TimestampPrecision] = None,
     ) -> snapshot_api.GraphSnapshotID:
         r"""Takes a *snapshot* of this graph's underlying data, and returns a
         unique identifier for this snapshot.
@@ -553,12 +556,20 @@ class Graph:
                 after creating the snapshot, or await completion of the
                 snapshot. If :obj:`True`, the snapshot will proceed in the
                 background, and will be used for any downstream job.
+            timestamp_precision: The clock the snapshot index stores timestamps
+                in: ``"nanoseconds"``, ``"microseconds"``,
+                ``"milliseconds"``, ``"seconds"``, ``"hours"`` or ``"days"``.
+                Each clock is a separate snapshot. Defaults to the clock of
+                this graph's current snapshot, or seconds if it has none.
 
         Raises:
             RuntimeError: if ``non_blocking`` is set to :obj:`False` and the
                 graph snapshot fails.
         """
-        if self._graph_snapshot_id is None or force_refresh:
+        if timestamp_precision is None:
+            timestamp_precision = self._graph_snapshot_precision
+        if (self._graph_snapshot_id is None or force_refresh
+                or timestamp_precision != self._graph_snapshot_precision):
             self.save()
             if not force_refresh:
                 snapshotted_table_names: List[str] = []
@@ -576,7 +587,9 @@ class Graph:
                 graph_id=self.id,
                 refresh_source=True,
                 project_id=self.kumo_project_id,
+                timestamp_precision=timestamp_precision,
             ))
+            self._graph_snapshot_precision = timestamp_precision
             logger.info("Graph snapshot with identifier %s created.",
                         self._graph_snapshot_id)
 

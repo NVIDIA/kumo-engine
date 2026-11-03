@@ -46,6 +46,7 @@ from kumoapi.plugin import (
     SourceConnector,
 )
 from kumoapi.train import TrainingStage
+from kumoapi.typing import check_prediction_precision
 from typing_extensions import Self
 
 from kumo.engine._embeddings import (
@@ -55,7 +56,7 @@ from kumo.engine._embeddings import (
 )
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
 from kumo.engine.connector.base import Connector
-from kumo.engine.graph import GraphSnapshot
+from kumo.engine.graph import GraphSnapshot, index_timestamp_precision
 from kumo.engine.pquery.prediction_table import PredictionTable
 from kumo.engine.pquery.training_table import TrainingTable
 from kumo.engine.trainer._spec import (
@@ -275,6 +276,7 @@ class Trainer:
         self._id = new_run_id()
         self._training_result: Optional[TrainingResult] = None
         self._snapshot_id: Optional[str] = None
+        self._timestamp_precision = 'seconds'
         self._training_query: Optional[str] = None
         self._training_table_generation_plan: Optional[
             TrainingTableGenerationPlan] = None
@@ -520,6 +522,7 @@ class Trainer:
             training_result,
             predictive_query=train_table.query,
             snapshot_id=snapshot.id,
+            timestamp_precision=index_timestamp_precision(snapshot.index_path),
             training_table_generation=train_table.generation_plan,
             export_config=export_config,
             model_plan=effective_plan,
@@ -531,6 +534,7 @@ class Trainer:
         *,
         predictive_query: str,
         snapshot_id: str,
+        timestamp_precision: str = 'seconds',
         training_table_generation: TrainingTableGenerationPlan,
         export_config: Optional[ModelOutputConfig],
         model_plan: Optional[ModelPlan] = None,
@@ -543,6 +547,7 @@ class Trainer:
             model_plan=effective_plan,
             snapshot_id=snapshot_id,
             training_table_generation=training_table_generation,
+            timestamp_precision=timestamp_precision,
         )
         if export_config is not None:
             spec = read_training_spec(training_result.bundle_dir)
@@ -563,6 +568,7 @@ class Trainer:
 
         self._training_result = training_result
         self._snapshot_id = snapshot_id
+        self._timestamp_precision = timestamp_precision
         self._training_query = predictive_query
         self._training_table_generation_plan = training_table_generation
 
@@ -618,6 +624,9 @@ class Trainer:
         )
         from kumo_core.types import TaskType
 
+        check_prediction_precision(
+            self._timestamp_precision,
+            index_timestamp_precision(snapshot.index_path))
         graph_config = snapshot.graph_config
         contract = prediction_query_contract(prediction_table.query,
                                              graph_config)
@@ -845,6 +854,7 @@ class Trainer:
             encoding='utf-8')) if metrics_path.is_file() else {})
         trainer = cls(plan, embedding_models, accelerator=accelerator)
         trainer._snapshot_id = spec.snapshot_id
+        trainer._timestamp_precision = spec.timestamp_precision
         trainer._training_query = spec.predictive_query
         trainer._training_table_generation_plan = from_json_dict(
             spec.training_table_generation, TrainingTableGenerationPlan)

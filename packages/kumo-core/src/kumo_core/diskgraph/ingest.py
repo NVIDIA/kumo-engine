@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from kumoapi.typing import TimestampPrecision
+
 from ..types.schema import TS_FORMAT_METADATA
 from ._progress import log_progress
 from .runner import (
@@ -223,6 +225,12 @@ def validate_diskgraph_ingest_config(ingest_config: dict[str, Any]) -> None:
                     "delimiter, or use a native stringlist/intlist dtype.")
 
 
+def set_timestamp_precision(ingest_config: dict[str, Any],
+                            timestamp_precision: str) -> None:
+    if timestamp_precision != "seconds":
+        ingest_config["timestamp_unit"] = timestamp_precision
+
+
 @dataclass(frozen=True)
 class DiskgraphIngestSpec:
     """Fully resolved inputs for one DiskGraph snapshot ingest."""
@@ -233,6 +241,7 @@ class DiskgraphIngestSpec:
     source_paths: Mapping[str, str]
     execution: IngestExecutionConfig = field(
         default_factory=IngestExecutionConfig)
+    timestamp_precision: TimestampPrecision = "seconds"
 
 
 IngestRunner = Callable[
@@ -262,6 +271,7 @@ def execute_diskgraph_ingest(
         dict(spec.table_data_versions),
         source_paths=dict(spec.source_paths),
     ).convert()
+    set_timestamp_precision(ingest_config, spec.timestamp_precision)
     validate_diskgraph_ingest_config(ingest_config)
 
     run_result = runner(ingest_config, output_path, spec.execution)
