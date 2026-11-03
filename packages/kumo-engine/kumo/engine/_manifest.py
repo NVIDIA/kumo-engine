@@ -227,8 +227,8 @@ def artifact_summaries(manifest: Manifest, roles: Mapping[str, str],
             (item.kind, item.id, str(item.location)) for item in located),
                  brief=True)] if located else []),
     ]
-    for item in sorted(located, key=lambda item: _DATASET_ORDER.get(
-            item.kind, len(_DATASET_ORDER))):
+    for item in sorted(located, key=lambda item: (_DATASET_ORDER.get(
+            item.kind, len(_DATASET_ORDER)), item.label or item.id)):
         if not item.is_dataset:
             continue
         location = str(item.location)
@@ -242,7 +242,7 @@ def artifact_summaries(manifest: Manifest, roles: Mapping[str, str],
     return summaries
 
 
-_DATASET_ORDER = {'snapshot': 0, 'training_table': 1, 'source_table': 2}
+_DATASET_ORDER = {'training_table': 0, 'snapshot': 1, 'source_table': 2}
 
 
 def _connector(location: str) -> Optional[str]:
