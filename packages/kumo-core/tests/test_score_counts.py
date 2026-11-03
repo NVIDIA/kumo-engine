@@ -9,14 +9,7 @@ import pytest
 from kumo_core.score_counts import PROBABILITY_EDGES, Counts
 from kumo_core.summaries import Histogram
 
-
-def _brute_histogram(values, edges, weights=None):
-    counts = [0.0] * (len(edges) + 1)
-    for i, value in enumerate(values):
-        if np.isfinite(value):
-            index = sum(edge <= value for edge in edges)
-            counts[index] += 1 if weights is None else weights[i]
-    return counts
+from tests.support.counts import brute_histogram
 
 
 def test_batches_and_workers_add_up_to_the_brute_force_counts():
@@ -35,16 +28,16 @@ def test_batches_and_workers_add_up_to_the_brute_force_counts():
             counts.to_dict()))))
 
     total = reduce(Counts.merge, batches)
-    assert total.arrays['score'].tolist() == _brute_histogram(
+    assert tuple(total.arrays['score'].tolist()) == brute_histogram(
         values, PROBABILITY_EDGES)
-    assert total.arrays['sum'] == pytest.approx(_brute_histogram(
+    assert total.arrays['sum'] == pytest.approx(brute_histogram(
         values, PROBABILITY_EDGES, values))
     assert total.arrays['label'].tolist() == np.bincount(labels).tolist()
     assert float(total.arrays['rows']) == values.size
     assert total.extents['score'] == (np.nanmin(values), np.nanmax(values))
     assert total.summary('score', 'score', 'pred/True_PROB/hist') == Histogram(
         'pred/True_PROB/hist', PROBABILITY_EDGES,
-        tuple(_brute_histogram(values, PROBABILITY_EDGES)),
+        brute_histogram(values, PROBABILITY_EDGES),
         (np.nanmin(values), np.nanmax(values)))
 
 

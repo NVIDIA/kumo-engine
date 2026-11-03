@@ -31,12 +31,7 @@ from kumo_core.summaries import (
 from kumo_core.top_scores import TopScoreSpill, top_score_counts
 from kumo_core.types import TaskType
 
-
-def _brute_histogram(values, edges):
-    counts = [0] * (len(edges) + 1)
-    for value in values:
-        counts[sum(edge <= value for edge in edges)] += 1
-    return tuple(counts)
+from tests.support.counts import brute_histogram
 
 
 def _batches(task_type, edges, columns, prob=None, pred=None, values=None):
@@ -94,7 +89,7 @@ def test_binary_counts_match_brute_force():
             ('this run', 'holdout, scaled to the same total'))}
     assert logged['pred/histogram/True_PROB'] == Histogram(
         'pred/histogram/True_PROB', PROBABILITY_EDGES,
-        _brute_histogram(true, PROBABILITY_EDGES), (true.min(), true.max()))
+        brute_histogram(true, PROBABILITY_EDGES), (true.min(), true.max()))
     summary = logged['pred/summary']
     assert summary.brief and summary.columns == ('column', 'mean', 'min', 'max')
     assert summary.rows == (_summary_row('True_PROB', true),)
@@ -132,7 +127,7 @@ def test_multiclass_summarizes_each_class_and_the_most_predicted():
     assert confidence.title == 'Scores of 400 entities (confidence) vs holdout'
     assert sum(confidence.line) == pytest.approx(400)
     assert charts[f'pred/score_histogram/c{order[0]}'].line == ()
-    assert logged['pred/histogram/confidence'].counts == _brute_histogram(
+    assert logged['pred/histogram/confidence'].counts == brute_histogram(
         prob.max(axis=1), PROBABILITY_EDGES)
     assert logged['pred/by_class'].columns == (
         'class', 'share now', 'holdout share', 'mean prob', 'min prob',
@@ -175,16 +170,16 @@ def test_regression_counts_on_the_target_bins_and_drift():
     summaries = prediction_summaries(counts, threshold=None,
                                      baseline=reference)
     logged = _by_name(summaries)
-    assert logged['pred/histogram/predicted'].counts == _brute_histogram(
+    assert logged['pred/histogram/predicted'].counts == brute_histogram(
         values, edges)
     assert not any(isinstance(summary, Series) for summary in summaries)
-    bins = _brute_histogram(values, edges)
+    bins = brute_histogram(values, edges)
     assert _charts(summaries) == {'pred/prediction_histogram': BarChart(
         'pred/prediction_histogram', 'Predictions for 500 entities vs holdout',
         ("predicted value, on the training target's bins", 'entities'),
         (min(values.min(), holdout.min()), *edges,
          max(values.max(), holdout.max())), bins,
-        tuple(np.array(_brute_histogram(holdout, edges)) * 500 / 300),
+        tuple(np.array(brute_histogram(holdout, edges)) * 500 / 300),
         ('this run', 'holdout, scaled to the same total'))}
     assert logged['pred/summary'].rows == (_summary_row('predicted', values),)
     assert {name: logged[f'drift/{name}'].value
@@ -249,7 +244,7 @@ def test_forecasts_count_each_kept_horizon_and_drift_from_the_holdout(steps):
         *(f'pred/histogram/predicted, horizon {h + 1}' for h in kept)]
     for h in kept:
         assert logged[f'pred/histogram/predicted, horizon {h + 1}'].counts == \
-            _brute_histogram(values[horizon == h], edges)
+            brute_histogram(values[horizon == h], edges)
     assert logged['drift/psi'].value == pytest.approx(0.0)
 
 
@@ -274,7 +269,7 @@ def test_multilabel_counts_each_labels_predicted_rows_and_top_score():
             if name.startswith('pred/score_histogram')] == [
         'pred/score_histogram/top_score',
         *(f'pred/score_histogram/l{index}' for index in order[:20])]
-    assert logged['pred/histogram/top score'].counts == _brute_histogram(
+    assert logged['pred/histogram/top score'].counts == brute_histogram(
         prob.max(axis=1), PROBABILITY_EDGES)
     assert logged['pred/summary'].rows == (
         _summary_row('top score', prob.max(axis=1)),)
@@ -329,7 +324,7 @@ def test_recommendations_count_items_and_top_scores_across_workers(
     assert logged['pred/item_coverage'].value == np.unique(valid).size / 1000
     assert logged['pred/top_1pct_items_share'].value == pytest.approx(
         np.sort(per_item)[-10:].sum() / valid.size)
-    assert logged['pred/histogram/top score'].counts == _brute_histogram(
+    assert logged['pred/histogram/top score'].counts == brute_histogram(
         scores, holdout.edges['top_score'])
     assert [name for name in logged
             if name.startswith('pred/score_histogram')] == []
