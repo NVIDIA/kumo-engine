@@ -17,6 +17,7 @@ use diskgraph_core::metadata::{
     DatasetMetadata, EdgeRelationMetadata, NodeDataCompression, NodeShardMetadata,
     NodeTypeMetadata, PrimaryKeyMap,
 };
+use diskgraph_core::time::{convert_trunc, TimeUnit};
 use diskgraph_core::tt_builder::Value;
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -1055,7 +1056,8 @@ impl GraphIndexReader {
                     let bytes = fs::read(&ctx_path)
                         .with_context(|| format!("read node data ctx {}", ctx_path.display()))?;
                     let ctx = diskgraph_rowpack::RowPackContext::from_bytes(&bytes)?;
-                    let decoder = diskgraph_rowpack::RowPackDecoder::new(ctx)?;
+                    let decoder = diskgraph_rowpack::RowPackDecoder::new(ctx)?
+                        .with_clock(metadata.timestamp_unit);
                     (Some(cfg.clone()), Some(decoder))
                 }
                 None => (None, None),
@@ -1746,7 +1748,7 @@ impl TableReader {
     }
 
     /// Check whether the entity identified by `node_id` is temporally valid at
-    /// `observation_ts` (epoch seconds). Returns `true` if the entity's
+    /// `observation_ts` (index-clock ticks). Returns `true` if the entity's
     /// `create_time_col <= observation_ts` and `(end_time_col IS NULL OR
     /// end_time_col > observation_ts)`.
     ///
@@ -1793,12 +1795,13 @@ impl TableReader {
             None => return Ok(true),
         };
 
+        let clock = decoder.clock();
         // Check create_time_col <= create_ref_ts
         if let Some(col_idx) = create_col_idx {
             let val = decoder.decode_column_value(raw, col_idx, scratch)?;
-            let ts_secs = temporal_value_to_epoch_secs(&val);
-            if let Some(secs) = ts_secs {
-                if secs > create_ref_ts {
+            let ticks = temporal_value_in_clock(&val, clock);
+            if let Some(ticks) = ticks {
+                if ticks > create_ref_ts {
                     return Ok(false);
                 }
             }
@@ -1808,9 +1811,9 @@ impl TableReader {
         // Check end_time_col IS NULL OR end_time_col > end_ref_ts
         if let Some(col_idx) = end_col_idx {
             let val = decoder.decode_column_value(raw, col_idx, scratch)?;
-            let ts_secs = temporal_value_to_epoch_secs(&val);
-            if let Some(secs) = ts_secs {
-                if secs <= end_ref_ts {
+            let ticks = temporal_value_in_clock(&val, clock);
+            if let Some(ticks) = ticks {
+                if ticks <= end_ref_ts {
                     return Ok(false);
                 }
             }
@@ -1878,12 +1881,16 @@ impl TableReader {
     }
 }
 
-/// Convert a rowpack `ValueRef` representing a temporal column to epoch seconds.
-fn temporal_value_to_epoch_secs(val: &diskgraph_rowpack::ValueRef<'_>) -> Option<i64> {
+/// Convert a rowpack `ValueRef` representing a temporal column to the index clock.
+fn temporal_value_in_clock(val: &diskgraph_rowpack::ValueRef<'_>, clock: TimeUnit) -> Option<i64> {
     match val {
-        diskgraph_rowpack::ValueRef::Timestamp(secs) => Some(*secs),
-        diskgraph_rowpack::ValueRef::Int64(ns) => Some(*ns / 1_000_000_000),
-        diskgraph_rowpack::ValueRef::Date(days) => Some(*days as i64 * 86400),
+        diskgraph_rowpack::ValueRef::Timestamp(ticks) => Some(*ticks),
+        diskgraph_rowpack::ValueRef::Int64(ns) => {
+            Some(convert_trunc(*ns, TimeUnit::Nanoseconds, clock))
+        }
+        diskgraph_rowpack::ValueRef::Date(days) => {
+            Some(convert_trunc(i64::from(*days), TimeUnit::Days, clock))
+        }
         diskgraph_rowpack::ValueRef::Null => None,
         _ => None,
     }

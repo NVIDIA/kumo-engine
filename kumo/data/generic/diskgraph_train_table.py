@@ -757,7 +757,7 @@ def generate_train_table_via_diskgraph(
     if not fsutil.exists(index_path):
         raise RuntimeError(f'diskgraph index path does not exist: {index_path}')
 
-    compiler = DiskGraphPlanCompiler()
+    compiler = DiskGraphPlanCompiler(index_path=index_path)
     split_spec = _build_split_spec(split_config, split_family, SplitSpec)
     if split_spec is None:
         raise RuntimeError(

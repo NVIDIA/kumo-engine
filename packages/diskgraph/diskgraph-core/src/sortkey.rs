@@ -37,6 +37,7 @@ impl SortKeyDecoder {
                 EdgeSortKeyTimestampKind::Int8 => 8,
                 EdgeSortKeyTimestampKind::Int16 => 16,
                 EdgeSortKeyTimestampKind::Int32 => 32,
+                EdgeSortKeyTimestampKind::Int64 => 64,
             })
             .unwrap_or(0);
 
@@ -231,6 +232,7 @@ impl SortKeyEncoder {
                 EdgeSortKeyTimestampKind::Int8 => 8,
                 EdgeSortKeyTimestampKind::Int16 => 16,
                 EdgeSortKeyTimestampKind::Int32 => 32,
+                EdgeSortKeyTimestampKind::Int64 => 64,
             })
             .unwrap_or(0);
 
@@ -852,5 +854,37 @@ mod tests {
             3,
             "encode_upper(30) incorrectly includes ts=30"
         );
+    }
+
+    #[test]
+    fn int64_timestamp_keys_round_trip_in_order() {
+        let meta = EdgeSortKeyMetadata {
+            width_bits: 64,
+            timestamp: Some(EdgeSortKeyTimestampMetadata {
+                table: "t".into(),
+                column: "c".into(),
+                encoding: EdgeSortKeyTimestampEncoding {
+                    kind: EdgeSortKeyTimestampKind::Int64,
+                    anchor: 0,
+                    step: 1,
+                },
+            }),
+            weight: None,
+        };
+        let encoder = SortKeyEncoder::new(&meta);
+        let decoder = SortKeyDecoder::new(&meta);
+        let times = [
+            -1_000_000_001,
+            -1,
+            0,
+            1,
+            1_700_000_000_123_456_789,
+            i64::MAX,
+        ];
+        let keys: Vec<u64> = times.iter().map(|&t| encoder.encode_lower(t)).collect();
+        assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
+        for (time, key) in times.iter().zip(keys) {
+            assert_eq!(decoder.decode(key).0, Some(*time));
+        }
     }
 }
