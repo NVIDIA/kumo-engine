@@ -161,6 +161,18 @@ align-items:start;gap:8px 16px;padding:10px 0;border-bottom:1px solid $surface_b
 .kumo-training .kt-result-value{font-size:32px;font-weight:600;font-variant-numeric:tabular-nums}
 .kumo-training .kt-ranking{margin:20px 0 24px}
 .kumo-training .kt-ranking h3{margin-top:0}
+.kumo-training .kt-scalar-values{display:grid;gap:6px;margin:12px 0 0;max-width:600px}
+.kumo-training .kt-scalar-values>div{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:baseline}
+.kumo-training .kt-scalar-chart{display:block;width:100%;height:auto;max-width:600px;margin:0}
+.kumo-training .kt-scalar-baseline{stroke:$muted;stroke-width:1}
+.kumo-training .kt-scalar-gap{stroke:$accent;stroke-width:3;vector-effect:non-scaling-stroke}
+.kumo-training .kt-scalar-key{color:$accent}
+.kumo-training .kt-scalar-prediction{fill:$accent;stroke:$background;stroke-width:2}
+.kumo-training .kt-scalar-observed{fill:$foreground;stroke:$background;stroke-width:2}
+.kumo-training .kt-scalar-axis{display:flex;justify-content:space-between;gap:12px;max-width:600px;color:$muted;font-size:12px;font-variant-numeric:tabular-nums}
+.kumo-training .kt-scalar-axis>span:last-child{text-align:right}
+.kumo-training .kt-scalar-error{font-weight:600;font-variant-numeric:tabular-nums;margin-bottom:0}
+
 .kumo-training .kt-ranked-list{list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(94px,1fr));
 gap:8px;padding:0;margin:8px 0 16px}
 .kumo-training .kt-ranked-list>li{padding:10px;background:$surface;border:1px solid $surface_border;border-radius:6px}
@@ -246,6 +258,7 @@ values.setAttribute('role','region');values.setAttribute('aria-label',title);
 note(values,value);details.append(values);parent.append(details);};
 const provenance=obj(data.provenance),context=obj(data.context);
 const linkTask=['static_link_prediction','temporal_link_prediction'].includes(context.task_type||provenance.task_type);
+const regressionTask=(context.task_type||provenance.task_type)==='regression',resultTask=linkTask||regressionTask;
 const baseMetric=row=>text(row.name).replace(/^(test_refit_|train_|val_|test_)/,'');
 const results=section('Training results');
 const queryNode=el('div');
@@ -261,18 +274,25 @@ const metricRows=list(obj(data.metrics).rows);state(results,data.metrics,'Metric
 let rankingEntry;
 if(linkTask)results.append(el('p',context.query?'This task ranks linked IDs for each entity in the predictive query above.':
 'This task ranks linked IDs for each entity. The predictive query was not recorded.'));
-const metricDetail=linkTask?el('details'):results;
-if(linkTask){
+if(regressionTask)note(results,'This task predicts a numeric target for each entity in the predictive query.');
+const metricDetail=resultTask?el('details'):results;
+if(resultTask){
 const selectedName=typeof provenance.selection_metric==='string'?provenance.selection_metric.replace(/^val_/,''):null;
 const fit=provenance.refitted_trainval===true?'refit_trainval':provenance.refitted_trainval===false?'original':null;
 const selected=provenance.selection_verified===true&&fit&&selectedName?metricRows.find(row=>
-row.name===selectedName&&row.split==='test'&&row.fit===fit&&finite(row.value)&&row.origin==='Selected-checkpoint evaluation'):null;
+row.name===selectedName&&row.split==='test'&&row.fit===fit&&finite(row.value)&&
+(!regressionTask||!['mae','rmse','mse'].includes(row.name)||row.value>=0)&&row.origin==='Selected-checkpoint evaluation'):null;
 const headline=el('div',undefined,'kt-result');results.append(headline);
 if(selected){
-const map=/^map@([1-9][0-9]*)$/.exec(selected.name);
-headline.append(el('h3',map?'TEST MAP@'+map[1]:'TEST '+text(selected.name)),el('div',number(selected.value),'kt-result-value'));
+const map=linkTask&&/^map@([1-9][0-9]*)$/.exec(selected.name);
+const definitions={mae:'Mean absolute error: the average absolute distance between predictions and observed targets, on the target’s numeric scale.',
+rmse:'Root mean squared error: the square root of the average squared prediction error, on the target’s numeric scale. Larger errors receive more weight.',
+mse:'Mean squared error: the average squared distance between predictions and observed targets, on the squared target scale.'};
+const definition=regressionTask&&Object.hasOwn(definitions,selected.name)&&definitions[selected.name];
+headline.append(el('h3',map?'TEST MAP@'+map[1]:'TEST '+(definition?selected.name.toUpperCase():text(selected.name))),el('div',number(selected.value),'kt-result-value'));
 identityNote(headline,'Result scope',(fit==='original'?'Original fit':'Refit on train + validation')+' · TEST · '+selected.origin);
 if(map)note(headline,'Mean average precision over the first '+map[1]+' ranked IDs: observed IDs placed earlier raise the score. Higher is better. This is not a probability or an accuracy percentage.');
+else if(definition)note(headline,definition+' Lower is better. Target units are not recorded here.');
 else note(headline,'Recorded selection metric on TEST'+(provenance.selection_direction==='min'?'; lower is better.':provenance.selection_direction==='max'?'; higher is better.':'. Metric direction is not recorded.'));
 note(headline,'No baseline or quality target is recorded here. This score alone does not establish model quality.');
 const exact=el('details');exact.append(el('summary','Exact result and provenance'));
@@ -478,6 +498,37 @@ if(parent===featureContext){note(parent,matches.length+' of '+loaded.length+' lo
 const cohortMatches=cohorts.map((c,i)=>c.table_name===selectedFeature.table&&c.col_name===selectedFeature.column?i:-1).filter(i=>i>=0);
 for(const index of cohortMatches)parent.append(action('Inspect cohorts · hop '+text(cohorts[index].hop),()=>{inspectCohort(index);const heading=cohortView.querySelector('h3');heading.tabIndex=-1;heading.focus();}));
 if(!cohortMatches.length)note(parent,'No matching cohort record.');}};
+const scalarOutput=(parent,output)=>{
+state(parent,output,'Output context');
+if(!['available','partial'].includes(output.status))return;
+if(output.task_type!=='regression'){note(parent,'Numeric regression output unavailable: recorded task does not match.');return;}
+const prediction=output.prediction,observed=output.target;
+const values=el('div',undefined,'kt-scalar-values');
+for(const [label,value]of [['Prediction',prediction],['Observed',observed]]){
+const row=el('div'),caption=el('span');caption.append(el('span',label==='Prediction'?'● ':'◆ ',label==='Prediction'?'kt-scalar-key':''),document.createTextNode(label));
+row.append(caption,el('strong',finite(value)?number(value):value==null?'Not recorded':'Invalid numeric value','kt-value'));values.append(row);}
+parent.append(values);
+if(scalarMin!==null){
+const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 600 64');svg.classList.add('kt-scalar-chart');
+svg.setAttribute('role','img');svg.setAttribute('aria-label','Prediction '+(finite(prediction)?String(prediction):'unavailable')+'; observed '+(finite(observed)?String(observed):'unavailable')+'. Shared loaded range '+scalarMin+' to '+scalarMax+'.');
+const mark=(tag,attrs)=>{const node=document.createElementNS(svg.namespaceURI,tag);for(const [key,value]of Object.entries(attrs))node.setAttribute(key,String(value));svg.append(node);return node;};
+const position=value=>scalarMin===scalarMax?300:20+560*((value/scalarScale-scalarMin/scalarScale)/(scalarMax/scalarScale-scalarMin/scalarScale));
+mark('line',{x1:20,x2:580,y1:32,y2:32,class:'kt-scalar-baseline'});
+if(finite(prediction)&&finite(observed))mark('line',{x1:position(prediction),x2:position(observed),y1:32,y2:32,class:'kt-scalar-gap'});
+if(finite(prediction))mark('circle',{cx:position(prediction),cy:20,r:10,class:'kt-scalar-prediction'});
+if(finite(observed)){const x=position(observed);mark('path',{d:'M '+x+' 32 l 10 10 -10 10 -10 -10 Z',class:'kt-scalar-observed'});}
+parent.append(svg);
+const axis=el('div',undefined,'kt-scalar-axis');axis.append(el('span',number(scalarMin)),el('span',number(scalarMax)));parent.append(axis);
+note(parent,'Same axis across loaded examples · '+scalarValues.length+' recorded numeric prediction/observation values. Target units are not recorded here.');
+}else note(parent,'No valid numeric outputs are loaded for a comparison axis.');
+const gap=finite(prediction)&&finite(observed)?prediction-observed:null;
+if(finite(gap)){parent.append(el('p','Prediction − observed: '+(gap>0?'+':'')+number(gap),'kt-scalar-error'));
+note(parent,gap>0?'Prediction is above the observed value.':gap<0?'Prediction is below the observed value.':'Prediction equals the observed value.');}
+else note(parent,finite(prediction)&&finite(observed)?'Prediction − observed unavailable: the arithmetic difference exceeds the finite numeric range.':'Prediction − observed unavailable: both values must be recorded finite numbers.');
+note(parent,'The signed gap describes numeric error direction, not a feature contribution or a causal effect.');
+const exact=el('details');exact.append(el('summary','Exact prediction, observation and arithmetic gap'));
+table(exact,['Prediction','Observed','Prediction − observed'],[[finite(prediction)?prediction:prediction==null?'Not recorded':'Invalid numeric value',finite(observed)?observed:observed==null?'Not recorded':'Invalid numeric value',finite(gap)?gap:'Unavailable']],[0,1,2],true);parent.append(exact);
+};
 const rankedOutput=(parent,output,artifact)=>{
 state(parent,output,'Output context');
 if(!['available','partial'].includes(output.status))return;
@@ -633,7 +684,7 @@ identityNote(sampleView,'Recorded original IDs','Recorded original IDs: '+text(O
 +' · Strategies: '+(list(ref.categories).join(', ')||'Unavailable'));
 const output=obj(obj(samples.outputs)[ref.artifact_id]);
 sampleView.append(el('h4','Prediction and observed target'));
-if(!['static_link_prediction','temporal_link_prediction'].includes(output.task_type)||!['available','partial'].includes(output.status))state(sampleView,output,'Output context');
+if(!['static_link_prediction','temporal_link_prediction','regression'].includes(output.task_type)||!['available','partial'].includes(output.status))state(sampleView,output,'Output context');
 if(output.status==='available'||output.status==='partial'){
 const classes=output.task_type==='multiclass_classification'||output.task_type==='multilabel_classification';
 if(output.task_type==='static_link_prediction'||output.task_type==='temporal_link_prediction'){
@@ -653,6 +704,7 @@ note(sampleView,'Showing '+rows.length+' of '+labels.length+' retained labels. T
 const headers=['Recorded label','Class probability (0 to 1)','Observed membership (0 or 1)'];
 sampleTable('Recorded class outputs',headers,rows,labels.length,[1,2]);
 if(labels.length>100)note(sampleView,'Inspect complete retained output in Python from the matching TEST fit’s subgraph_collector/test/output/'+text(ref.artifact_id)+'.json.');
+}else if(output.task_type==='regression'){scalarOutput(sampleView,output);
 }else{
 const binary=output.task_type==='binary_classification';
 note(sampleView,binary?'Probability of the positive class; observed target: 0 = negative class, 1 = positive class.':'Values use recorded target units.');
@@ -697,13 +749,18 @@ return[identity,list(ref.categories).join(', ')||'Unavailable',detail];}));
 
 const loaded=catalogRows.filter(({ref})=>Object.hasOwn(bodies,ref.artifact_id));
 const remaining=catalogRows.filter(({ref})=>!Object.hasOwn(bodies,ref.artifact_id));
+const scalarValues=loaded.flatMap(({ref})=>{const output=obj(obj(samples.outputs)[ref.artifact_id]);
+return output.task_type==='regression'&&['available','partial'].includes(output.status)?[output.prediction,output.target].filter(finite):[];});
+const scalarMin=scalarValues.length?Math.min(...scalarValues):null,scalarMax=scalarValues.length?Math.max(...scalarValues):null;
+const scalarScale=Math.max(Math.abs(scalarMin),Math.abs(scalarMax))||1;
 if(loaded.length){examples.append(el('h3','Loaded examples'));referenceTable(examples,loaded)}
 if(remaining.length){const details=el('details');details.append(el('summary','Other recorded references ('+remaining.length+')'));
 referenceTable(details,remaining);examples.append(details)}
 if(references.length>100)note(examples,'Showing the first 100 catalog references.');
 if(rankingEntry){
-rankingEntry.append(el('h3','Where did observed IDs appear?'));
-note(rankingEntry,'Compare a retained TEST ranking with its observed IDs, then inspect the same example’s recorded context. '
+rankingEntry.append(el('h3',regressionTask?'How far was the prediction from the observed value?':'Where did observed IDs appear?'));
+if(regressionTask)note(rankingEntry,'Compare a loaded TEST prediction with its observed value, then inspect the same entity’s recorded context. These selected examples do not represent all TEST entities or reconstruct the aggregate error.');
+else note(rankingEntry,'Compare a retained TEST ranking with its observed IDs, then inspect the same example’s recorded context. '
 +'These selected examples do not decompose the aggregate metric or represent all evaluation entities. The query’s TOP K and each retained list width are separate.');
 const rankingView=el('div');
 if(loaded.length){
@@ -712,7 +769,8 @@ const drawRanking=()=>{rankingView.replaceChildren();const identity=sampleIdenti
 rankingView.append(el('h4',identity.length>100?identity.slice(0,100)+'…':identity));
 identityNote(rankingView,'Selected entity identity',identity+' · Collector '+text(selected.ref.artifact_id));
 identityNote(rankingView,'Recorded selection strategies','Retained strategies: '+(list(selected.ref.categories).join(', ')||'Unavailable'));
-rankedOutput(rankingView,obj(obj(samples.outputs)[selected.ref.artifact_id]),selected.ref.artifact_id);
+const output=obj(obj(samples.outputs)[selected.ref.artifact_id]);
+if(regressionTask)scalarOutput(rankingView,output);else rankedOutput(rankingView,output,selected.ref.artifact_id);
 rankingView.append(action('Inspect this example’s context',()=>{inspectSample(selected.ref,selected.index);showPanel(2);
 const heading=sampleView.querySelector('h3');heading.tabIndex=-1;heading.focus();}));enable();};
 control(rankingEntry,'Loaded original entity',loaded.map(({ref,index})=>{
@@ -720,7 +778,7 @@ const identity=sampleIdentity(ref);return[String(index),(identity.length>100?ide
 selected=loaded.find(entry=>String(entry.index)===value);drawRanking();});
 rankingEntry.append(rankingView);drawRanking();
 note(rankingEntry,'Loaded '+loaded.length+' of '+text(coverage.references_total??references.length)+' recorded references; selection strategies may overlap.');
-}else note(rankingEntry,'No loaded examples are available for ranked-output comparison. Inspect recorded reference availability in Examples.');
+}else note(rankingEntry,'No loaded examples are available for '+(regressionTask?'numeric-output':'ranked-output')+' comparison. Inspect recorded reference availability in Examples.');
 }
 sampleView.hidden=true;
 const panels=[results,patterns,examples],navigation=el('nav',undefined,'kt-navigation');
