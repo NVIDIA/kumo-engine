@@ -14,7 +14,7 @@ pip install 'kumo-engine[snowflake]'  # adds snowflake-connector-python, ...
 
 The extras are the ones declared in
 [`packages/kumo-engine/pyproject.toml`](../../packages/kumo-engine/pyproject.toml);
-`scripts/merge_wheels.py` turns each into the dependencies of the provider it
+`scripts/build/merge_wheels.py` turns each into the dependencies of the provider it
 names and fails if a bundled package is not reachable from any of them.
 Provider code must be imported at the point of use, never at module top level,
 so a bare install can still `import kumo.engine`
@@ -163,17 +163,21 @@ To select a Git branch or commit directly:
 python -m pip install "git+https://github.com/NVIDIA/kumo-engine.git@<branch-or-commit>#subdirectory=packages/kumo-engine"
 ```
 
-These builds require CPython 3.11+, Bash, a Rust toolchain including Cargo,
-a C/C++ build toolchain and CMake. They compile DiskGraph from the selected
+These builds require CPython 3.11+, a Rust toolchain including Cargo, and
+a C/C++ build toolchain. Some native build configurations also require CMake. They compile DiskGraph from the selected
 checkout; installing a released engine wheel first is unnecessary. Provider
 extras work with source installs too, for example
 `python -m pip install './packages/kumo-engine[databricks]'`.
 
-The package's PEP 517 backend calls the same `build_wheel.sh` assembler used
-for releases in a temporary Python environment, excluding managed notebook
-paths that can override isolated build dependencies. It builds every bundled
-component from the checkout and merges
-their external requirements, entry points and legal notices into one wheel.
+The package's PEP 517 backend calls the Python assembler at
+`scripts/build/build_wheel.py`, which also builds release wheels. Source installs
+run the assembler in a temporary Python environment, excluding managed notebook
+paths that can override isolated build dependencies. The assembler builds every
+bundled component from the checkout and merges their external requirements,
+entry points and legal notices into one wheel.
+The backend hook stays in `packages/kumo-engine/` so pip can load it from
+within the package source directory. All build scripts live in `scripts/build/`.
+
 The assembler selects the backend's internal `kumo-component=true` mode for
 its engine input wheel to avoid recursively assembling another bundle.
 
@@ -196,8 +200,8 @@ Databricks runtime or GPU profile.
 ### Build a distributable wheel
 
 ```bash
-packages/kumo-engine/scripts/build_wheel.sh --help
-packages/kumo-engine/scripts/build_wheel.sh --offline-report   # <version>+<sha>
+python3 scripts/build/build_wheel.py --help
+python3 scripts/build/build_wheel.py --offline-report   # <version>+<sha>
 ```
 
 Needs `cargo` (and `cargo-zigbuild`, installed on demand), a current committed

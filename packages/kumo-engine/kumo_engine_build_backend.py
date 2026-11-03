@@ -76,10 +76,10 @@ def build_wheel(
             wheel_directory, config_settings, metadata_directory
         )
 
-    script = Path(__file__).with_name("build_wheel.sh").resolve()
+    script = Path(__file__).resolve().parents[2] / "scripts/build/build_wheel.py"
     environment = dict(
         os.environ,
-        KUMO_REPO=str(script.parents[3]),
+        KUMO_REPO=str(script.parents[2]),
         USE_ZIG="0",
         VERIFY_IMAGE="",
         PLATFORM_TAG="",
@@ -122,7 +122,7 @@ def build_wheel(
             environment.pop("PYTHONHOME", None)
             environment.update(PYTHON=python, VIRTUAL_ENV=directory)
             result = subprocess.run(
-                ["bash", str(script), "--no-zig", "--output-dir", wheel_directory],
+                [python, str(script), "--no-zig", "--output-dir", wheel_directory],
                 env=environment,
                 stdout=subprocess.PIPE,
                 text=True,

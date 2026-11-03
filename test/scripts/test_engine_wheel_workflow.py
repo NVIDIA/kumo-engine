@@ -36,7 +36,7 @@ def _capture_command(path, capture):
 def test_build_step_selects_native_platform_and_release_mode(
         tmp_path, build, release):
     capture = tmp_path / 'command.json'
-    _capture_command(tmp_path / 'packages/kumo-engine/scripts/build_wheel.sh',
+    _capture_command(tmp_path / 'scripts/build/build_wheel.py',
                      capture)
     uname = tmp_path / 'uname'
     uname.write_text(f'#!/bin/sh\necho {build["arch"]}\n')

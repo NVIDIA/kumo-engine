@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parents[3]
-SCRIPT = REPO_ROOT / 'packages/kumo-engine/scripts/build_wheel.sh'
+SCRIPT = REPO_ROOT / 'scripts/build/build_wheel.py'
 ENGINE_PYPROJECT = REPO_ROOT / 'packages/kumo-engine/pyproject.toml'
 
 

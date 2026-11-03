@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Merge the component wheels collected by build_wheel.sh into one wheel.
+"""Merge the component wheels collected by build_wheel.py into one wheel.
 
 The merged wheel is named after the `kumo-engine` component and its metadata
 is derived from that component's own requirements:
@@ -520,9 +520,8 @@ def main():
             archive.writestr(info, data)
         record_name = (dist_info.relative_to(staging) / 'RECORD').as_posix()
         rows.append([record_name, '', ''])
-        buffer = tempfile.NamedTemporaryFile('w', newline='', suffix='.csv',
-                                             delete=False)
-        with buffer:
+        with tempfile.NamedTemporaryFile(
+                'w', newline='', suffix='.csv', delete=False) as buffer:
             csv.writer(buffer).writerows(rows)
         archive.write(buffer.name, record_name)
         os.unlink(buffer.name)
