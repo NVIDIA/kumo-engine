@@ -92,7 +92,7 @@ border-radius:7px;padding:6px 10px;max-width:100%}
 .kumo-training .kt-action{cursor:pointer;white-space:normal;text-align:left}
 .kumo-training .kt-action:hover{background:$chrome_hover}
 .kumo-training summary{cursor:pointer;color:$muted;font-size:13px;padding:6px 0}
-.kumo-training :is(button,select,summary,h2,.kt-history-values):focus-visible{outline:2px solid $focus;outline-offset:2px}
+.kumo-training :is(button,select,summary,h2,.kt-history-values,.kt-sample-values):focus-visible{outline:2px solid $focus;outline-offset:2px}
 .kumo-training .kt-action[aria-pressed="true"]{background:$row_highlight;
 border-color:$focus}
 .kumo-training .kt-detail{padding:12px;border:1px solid $surface_border;
@@ -107,7 +107,7 @@ align-items:center;gap:8px}
 .kumo-training .kt-bar{height:100%;background:$accent;border-radius:4px}
 .kumo-training .kt-value{text-align:right;font-variant-numeric:tabular-nums}
 .kumo-training .kt-history-chart{display:block;width:100%;height:auto;max-width:600px;margin:12px 0}
-.kumo-training .kt-history-values{max-height:400px;overflow:auto;padding:4px}
+.kumo-training :is(.kt-history-values,.kt-sample-values){max-height:400px;overflow:auto;padding:4px}
 .kumo-training .kt-list{padding-left:20px;margin:8px 0 12px}
 @container kumo-training (max-width:520px){
 .kumo-training .kt-table,.kumo-training .kt-table tbody,
@@ -292,6 +292,11 @@ note(examples,'Preloaded example identities and values may be saved in notebook 
 const sampleView=el('div',undefined,'kt-detail'),sampleButtons=[];
 const sampleDetailRow=el('tr'),sampleDetailCell=el('td');sampleDetailCell.colSpan=3;
 sampleDetailCell.append(sampleView);sampleDetailRow.append(sampleDetailCell);
+const sampleTable=(title,headers,rows,total,numeric=[])=>{if(rows.length<=10)return table(sampleView,headers,rows,numeric);
+const details=el('details');details.append(el('summary','Explore '+title.toLowerCase()+' · '+rows.length+' of '+total+' shown'));
+const values=el('div',undefined,'kt-sample-values');values.tabIndex=0;
+values.setAttribute('role','region');values.setAttribute('aria-label',title);
+table(values,headers,rows,numeric);details.append(values);sampleView.append(details);};
 const inspectSample=(ref,index)=>{sampleView.replaceChildren();sampleView.hidden=false;
 sampleButtons.find(item=>item.rowIndex===index)?.button.closest('tr').after(sampleDetailRow);
 sampleView.append(el('h3','Collector '+text(ref.artifact_id)));
@@ -310,13 +315,13 @@ note(sampleView,'Root node: '+text(store.root_id)+' · Original entity: '+text(r
 +' · Seed time: '+text(store.seed_time));
 if(!body.subgraph_store)note(sampleView,'Relational structure unavailable.');
 const nodeRows=Object.entries(nodes);if(nodeRows.length){sampleView.append(el('h4','Recorded nodes'));
-table(sampleView,['Node','Identity / aggregate','Table membership'],nodeRows.slice(0,80).map(([id,node])=>[
+sampleTable('Recorded nodes',['Node','Identity / aggregate','Table membership'],nodeRows.slice(0,80).map(([id,node])=>[
 id,node.count!==undefined?'Aggregate: '+text(node.count)+' nodes':text(node.pkey_name)+': '+text(node.pkey),
-Object.entries(obj(store.tables)).filter(([,ids])=>list(ids).some(value=>String(value)===id)).map(([name])=>name).join(', ')||'Unavailable']));
+Object.entries(obj(store.tables)).filter(([,ids])=>list(ids).some(value=>String(value)===id)).map(([name])=>name).join(', ')||'Unavailable']),nodeRows.length);
 if(nodeRows.length>80)note(sampleView,'Showing 80 of '+nodeRows.length+' recorded nodes; complete loaded body is retained.');}
 const relations=[];for(const [from,kinds]of Object.entries(obj(store.edges)))for(const [kind,tos]of Object.entries(obj(kinds)))
 for(const to of list(tos))relations.push([from,kind,text(to)]);
-if(relations.length){sampleView.append(el('h4','Recorded relations'));table(sampleView,['From node','Relation','To node'],relations.slice(0,80));
+if(relations.length){sampleView.append(el('h4','Recorded relations'));sampleTable('Recorded relations',['From node','Relation','To node'],relations.slice(0,80),relations.length);
 if(relations.length>80)note(sampleView,'Showing 80 of '+relations.length+' recorded relations.');}
 else note(sampleView,'No recorded relations in this loaded example.');
 sampleView.append(el('h4','Node features'));
@@ -324,8 +329,9 @@ note(sampleView,'Local scores are per-example normalized sensitivity. Aggregate 
 +'unavailable scores differ from zero and are separate from global scores.');
 const cells=[];for(const [id,columns]of Object.entries(features))for(const [name,feature]of Object.entries(obj(columns)))
 cells.push([id,text(feature.table_name)+'.'+text(feature.name??name),text(feature.value),feature.score]);
-if(cells.length)table(sampleView,['Node','Feature','Recorded value','Local score'],cells.slice(0,200),[3]);
-else note(sampleView,'No recorded feature values.');if(cells.length>200)note(sampleView,'Showing 200 of '+cells.length+' recorded feature cells.');
+if(cells.length)sampleTable('Node features',['Node','Feature','Recorded value','Local score'],cells.slice(0,200),cells.length,[3]);
+else note(sampleView,'No recorded feature values.');
+if(cells.length>200)note(sampleView,'Showing 200 of '+cells.length+' recorded feature cells.');
 sampleButtons.forEach(({button,rowIndex})=>{button.setAttribute('aria-pressed',String(rowIndex===index));
 button.closest('tr').setAttribute('aria-selected',String(rowIndex===index));});};
 const catalogRows=references.slice(0,100).map((ref,index)=>({ref,index}));
