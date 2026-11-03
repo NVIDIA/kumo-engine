@@ -1,0 +1,257 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo Engine PR
+
+# NVIDIA admits GPU work through the existing trusted copied-PR branches.
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches: ["main", "pull-request/[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request whose current head is tested
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engine-pr-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+jobs:
+  changes:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      gpu: ${{ steps.match.outputs.gpu }}
+    steps:
+      - name: Check whether the pull request changes code
+        id: match
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_NAME" == main ]]; then
+            echo gpu=false >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          pr="${GITHUB_REF_NAME#pull-request/}"
+          [[ "$pr" =~ ^[1-9][0-9]*$ ]]
+          # Compare the full PR with its base, including renamed source paths.
+          pr_url="repos/$GITHUB_REPOSITORY/pulls/$pr"
+          files="$(gh api --paginate "$pr_url/files" --jq '.[] | .filename, (.previous_filename // empty)')"
+          metadata="$(gh api "$pr_url" --jq '[.head.sha, .changed_files] | @tsv')"
+          read -r pr_head changed_files <<< "$metadata"
+          if [[ "$pr_head" != "$GITHUB_SHA" ]] || (( changed_files > 3000 )) ||
+            grep -q -v -E '^(ui/|docs/|helm/|tools/|benchmark/)|\.md$' <<< "$files"; then
+            echo gpu=true >> "$GITHUB_OUTPUT"
+          else
+            echo gpu=false >> "$GITHUB_OUTPUT"
+          fi
+
+  # Compile on CPU, then test that finished wheel on the GPU runner.
+  wheel:
+    needs: changes
+    if: >-
+      !cancelled() &&
+      (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.gpu == 'true')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      CARGO_BUILD_JOBS: '4'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/packages/diskgraph/target
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: ${{ github.workspace }}/.engine-build-tools/zigcc
+      CC_x86_64_unknown_linux_gnu: ${{ github.workspace }}/.engine-build-tools/zigcc
+      CXX_x86_64_unknown_linux_gnu: ${{ github.workspace }}/.engine-build-tools/zigc++
+      RANLIB_x86_64_unknown_linux_gnu: ${{ github.workspace }}/.engine-build-tools/zigranlib
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require the current candidate
+        if: github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_PR: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          pr="${INPUT_PR:-${GITHUB_REF_NAME#pull-request/}}"
+          [[ "$pr" =~ ^[1-9][0-9]*$ ]]
+          test "$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq .head.sha)" = "$GITHUB_SHA"
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: packages/diskgraph -> target
+          shared-key: engine-pr-py312-glibc217-zig017-czb024-linker1
+          cache-workspace-crates: false
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build the candidate wheel
+        run: |
+          set -euo pipefail
+          export PIP_BUILD_CONSTRAINT="$RUNNER_TEMP/engine-build-constraints.txt"
+          printf '%s\n' 'ziglang==0.17.0' > "$PIP_BUILD_CONSTRAINT"
+          python -m pip --isolated install 'pip==25.3' 'ziglang==0.17.0' 'cargo-zigbuild==0.24.0'
+          python -m pip show ziglang cargo-zigbuild
+          python -m ziglang version
+          # Keep the linker path and target identical across cargo-zigbuild and
+          # maturin's isolated executable, so Cargo can reuse their dependencies.
+          compiler_dir="$GITHUB_WORKSPACE/.engine-build-tools"
+          mkdir -p "$compiler_dir"
+          for compiler in cc c++; do
+            printf '#!/bin/sh\nexec cargo-zigbuild zig %s -- -g -fno-sanitize=all -target x86_64-linux-gnu.2.17 -mcpu=x86_64+aes+sse2 "$@"\n' \
+              "$compiler" > "$compiler_dir/zig$compiler"
+          done
+          printf '#!/bin/sh\nexec cargo-zigbuild zig ranlib -- "$@"\n' > "$compiler_dir/zigranlib"
+          chmod +x "$compiler_dir"/*
+          packages/kumo-engine/scripts/build/build_wheel.sh --output-dir "$RUNNER_TEMP/pr-wheel"
+      - name: Retain the candidate wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: engine-pr-wheel-${{ github.sha }}
+          path: ${{ runner.temp }}/pr-wheel/*.whl
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+
+  installer-cache:
+    name: Seed the wheel installer cache on main
+    needs: wheel
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: '0.11.28'
+          enable-cache: true
+          cache-suffix: engine-smoke-py312
+          cache-dependency-glob: 'packages/**/pyproject.toml'
+          prune-cache: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: engine-pr-wheel-${{ github.sha }}
+          path: ${{ runner.temp }}/pr-wheel
+      - name: Cache installation without model execution
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/engine-cache-env"
+          uv --no-config pip install --python "$RUNNER_TEMP/engine-cache-env/bin/python" \
+            --default-index https://pypi.org/simple "$RUNNER_TEMP"/pr-wheel/*.whl 'boto3>=1.34,<2'
+          uv --no-config pip check --python "$RUNNER_TEMP/engine-cache-env/bin/python"
+
+  gpu:
+    name: kumo-engine-pr-gpu
+    needs: wheel
+    if: ${{ !cancelled() && needs.wheel.result == 'success' && (github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch') }}
+    runs-on:
+      group: nv-gpu-amd64-rtxpro6000-1gpu
+      labels: linux-amd64-gpu-rtxpro6000-latest-1
+    environment:
+      name: gha-kumo-workflow-tests
+      deployment: false
+    timeout-minutes: 22
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require the current candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_PR: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          pr="${INPUT_PR:-${GITHUB_REF_NAME#pull-request/}}"
+          [[ "$pr" =~ ^[1-9][0-9]*$ ]]
+          test "$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq .head.sha)" = "$GITHUB_SHA"
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Download the candidate wheel
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: engine-pr-wheel-${{ github.sha }}
+          path: ${{ runner.temp }}/pr-wheel
+      - uses: ./.github/actions/engine-gpu-smoke
+        with:
+          wheel-path: ${{ runner.temp }}/pr-wheel/*.whl
+          reload-atol: '0.005'
+      - name: Retain the task results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: engine-pr-gpu-${{ github.sha }}
+          path: ${{ runner.temp }}/engine-gpu-smoke/summary.json
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+
+  required:
+    name: kumo-engine-pr-ci
+    needs: [changes, wheel, gpu]
+    if: ${{ always() && (github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require an exemption or successful GPU tests
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          GPU_REQUIRED: ${{ needs.changes.outputs.gpu }}
+          WHEEL_RESULT: ${{ needs.wheel.result }}
+          GPU_RESULT: ${{ needs.gpu.result }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == push ]]; then
+            if [[ "$CHANGES_RESULT" != success ]]; then
+              echo '::error::Changed-file detection did not succeed.'
+              exit 1
+            fi
+            case "$GPU_REQUIRED" in
+              false)
+                echo 'All changed files are exempt from GPU tests.'
+                exit 0
+                ;;
+              true) ;;
+              *)
+                echo '::error::Changed-file detection did not report whether GPU tests are required.'
+                exit 1
+                ;;
+            esac
+          elif [[ "$EVENT_NAME" != workflow_dispatch ]]; then
+            echo '::error::Unexpected workflow event.'
+            exit 1
+          fi
+          if [[ "$WHEEL_RESULT" != success || "$GPU_RESULT" != success ]]; then
+            echo "::error::GPU tests must pass (wheel=$WHEEL_RESULT, gpu=$GPU_RESULT)."
+            exit 1
+          fi
+          echo 'GPU tests passed.'

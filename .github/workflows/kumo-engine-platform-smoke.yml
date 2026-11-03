@@ -1,0 +1,105 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo Engine - Platform wheel CPU qualification
+
+on:  # yamllint disable-line rule:truthy
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: CPU wheel (${{ matrix.target.platform }}, Python ${{ matrix.python }})
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14']
+        target:
+          - platform: windows-native
+            runner: windows-2022
+            artifact: windows-x86_64
+          - platform: windows-wsl
+            runner: wsl-amd64-gpu-t4-latest-1
+            artifact: x86_64
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            artifact: aarch64
+    runs-on: ${{ matrix.target.runner }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONUNBUFFERED: '1'
+      PYTHONPATH: ''
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+      CUDA_VISIBLE_DEVICES: ''
+      UV_LINK_MODE: copy
+      UV_NO_CONFIG: 'true'
+      SMOKE_PLATFORM: ${{ matrix.target.platform }}
+      SMOKE_PYTHON: ${{ matrix.python }}
+      CANDIDATE_SHA: ${{ github.sha }}
+    steps:
+      - name: Checkout the candidate test harness
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download the candidate wheel from this run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          name: kumo-engine-wheel-${{ matrix.target.artifact }}-${{ github.sha }}
+          path: ${{ runner.temp }}/platform-wheel/artifacts
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: false
+
+      - name: Clean install and qualify the finished wheel
+        run: |
+          set -euo pipefail
+          unset PYTHONPATH
+          stage="$RUNNER_TEMP/platform-wheel"
+          if [ "$RUNNER_OS" = Windows ]; then
+            stage="$(cygpath -u "$stage")"
+          fi
+          mkdir -p "$stage/results" "$stage/test"
+          cp packages/kumo-engine/test/smoke_platform.py "$stage/test/"
+          cp packages/kumo-engine/scripts/verify_installed_wheel.py "$stage/test/"
+          cd "$stage"
+          wheels=(artifacts/kumo_engine-*.whl)
+          if [ "${#wheels[@]}" -ne 1 ] || [ ! -f "${wheels[0]}" ]; then
+            echo 'Expected exactly one candidate engine wheel.' >&2
+            exit 1
+          fi
+          uv venv --python "$SMOKE_PYTHON" --seed venv
+          if [ "$RUNNER_OS" = Windows ]; then
+            python="$stage/venv/Scripts/python.exe"
+          else
+            python="$stage/venv/bin/python"
+          fi
+          uv pip install --python "$python" --torch-backend=cpu \
+            "${wheels[0]}" pytest 2>&1 | tee results/install.log
+          uv pip check --python "$python" 2>&1 | tee results/dependencies.log
+          "$python" test/verify_installed_wheel.py \
+            --wheel "${wheels[0]}" --platform "$SMOKE_PLATFORM" \
+            --python-version "$SMOKE_PYTHON" --commit "$CANDIDATE_SHA" \
+            --output results/environment.json
+          cd test
+          "$python" -m pytest -q -s --confcutdir=. \
+            --junitxml=../results/junit.xml smoke_platform.py \
+            2>&1 | tee ../results/smoke.log
+
+      - name: Save platform qualification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: engine-wheel-cpu-${{ matrix.target.platform }}-py${{ matrix.python }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/platform-wheel/results
+          if-no-files-found: warn
+          retention-days: 14

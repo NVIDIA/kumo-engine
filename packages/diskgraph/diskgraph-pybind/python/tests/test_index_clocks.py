@@ -353,7 +353,24 @@ def test_an_unreadable_datetime_is_a_config_error():
         RowFilter.compare("ordered_at", ">", NoTimestamp(2024, 1, 1), "milliseconds")
 
 
+@pytest.mark.parametrize("clock", ["seconds", "nanoseconds"])
+@pytest.mark.parametrize("operation", ["aggregate", "has_edges"])
+def test_unbounded_lower_window_is_preserved(clock, operation):
+    builder = DiskGraphTTBuilder(clock)
+    builder.for_each("users", "user_id")
+    path = EdgeRef("users", "user_id", "orders", "user_id")
+    if operation == "aggregate":
+        builder.aggregate("orders", path, "count", time_col="ordered_at",
+                          window=(-2**60, 0), window_unit="days")
+    else:
+        builder.has_edges("orders", path, time_col="ordered_at",
+                          window=(-2**60, 0), window_unit="days")
+    plan = json.loads(builder.build())
+    assert plan["stages"][0]["ops"][0][operation]["window"] == [-2**60, 0]
+
+
 @pytest.mark.parametrize("window, unit", [((0, 30), "minutes"), ((-1, 0), "minutes"),
+                                          ((-2**60, 30), "minutes"),
                                           ((0, 500), "milliseconds")])
 def test_windows_shorter_than_a_tick_are_rejected(window, unit):
     builder = DiskGraphTTBuilder("hours")
