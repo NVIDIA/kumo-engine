@@ -141,11 +141,11 @@ def test_write_then_read_training_spec_round_trips(tmp_path: Path) -> None:
 
 def test_training_spec_manifest_update_is_atomic_and_retryable(
         tmp_path: Path, monkeypatch) -> None:
-    import kumo.engine.trainer._spec as spec_module
+    import kumo_core.io.filesystem as fs_module
 
     bundle = _fake_published_bundle(tmp_path)
     original_manifest = (bundle / MANIFEST_FILE).read_bytes()
-    real_replace = spec_module.os.replace
+    real_replace = fs_module.os.replace
     failed = False
 
     def fail_first_manifest_replace(source, destination):
@@ -155,7 +155,7 @@ def test_training_spec_manifest_update_is_atomic_and_retryable(
             raise OSError('simulated interrupted manifest commit')
         return real_replace(source, destination)
 
-    monkeypatch.setattr(spec_module.os, 'replace', fail_first_manifest_replace)
+    monkeypatch.setattr(fs_module.os, 'replace', fail_first_manifest_replace)
     with pytest.raises(OSError, match='interrupted manifest commit'):
         write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
                             model_plan=ModelPlan(), snapshot_id='snap-123',
@@ -210,13 +210,13 @@ def test_finish_fit_persists_spec_without_export_before_exposing_state(
     trainer = Trainer(ModelPlan())
     result = TrainingResult({'auc': .9}, {}, bundle)
 
-    assert trainer._finish_fit(result, predictive_query='PREDICT COUNT(*)',
-                               snapshot_id='snap-123',
-                               training_table_generation=_generation_plan(),
-                               export_config=None) is result
+    finished = trainer._finish_fit(
+        result, predictive_query='PREDICT COUNT(*)', snapshot_id='snap-123',
+        training_table_generation=_generation_plan(), export_config=None)
 
     assert (bundle / SPEC_FILE).is_file()
-    assert trainer._training_result is result
+    assert finished.bundle_id == Trainer.load(bundle).result.id
+    assert trainer._training_result is finished
     assert trainer._snapshot_id == 'snap-123'
     assert trainer._training_query == 'PREDICT COUNT(*)'
     assert result.published_model is None

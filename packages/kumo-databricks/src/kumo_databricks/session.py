@@ -194,6 +194,10 @@ class _DatabricksSessions:
                       f'accepted, as {self._default_hint}.'),
         )
 
+    def table_location(self, connector: SourceConnector,
+                       table_name: str) -> str:
+        return self._qualified(connector, self._bare(connector, table_name))
+
     @staticmethod
     def _qualified(connector: SourceConnector,
                    table_name: Optional[str] = None) -> str:

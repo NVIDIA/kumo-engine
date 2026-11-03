@@ -278,6 +278,10 @@ class _BigQuerySessions:
         _require_credentials(credentials)
         return credentials
 
+    def table_location(self, connector: SourceConnector,
+                       table_name: str) -> str:
+        return _name(connector, table_name)
+
     def _client(self, connector: SourceConnector) -> Any:
         return _clients.query_client(
             self._principal(connector), project=_billing_project(connector),

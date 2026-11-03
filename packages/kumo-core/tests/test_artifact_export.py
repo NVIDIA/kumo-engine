@@ -222,3 +222,35 @@ def test_csv_retry_replaces_partially_uploaded_part(tmp_path, monkeypatch):
     pd.testing.assert_frame_equal(pd.read_csv(target / 'part-00000.csv'),
                                   expected)
     assert (target / '_SUCCESS').exists()
+
+
+
+def test_sidecars_are_best_effort_and_precede_success(tmp_path):
+    import pyarrow.parquet as pq
+    from kumo_core.artifact_export import export_selected_files
+    from kumo_core.object_store_sink import _ArrowExportFiles
+    from pyarrow.fs import LocalFileSystem
+
+    source = tmp_path / 'part-0.parquet'
+    pq.write_table(pa.table({'id': [1]}), source)
+    target = tmp_path / 'output'
+    fs = _ArrowExportFiles(LocalFileSystem(), None)
+    write_bytes, touch = fs.write_bytes, fs.touch
+
+    def denied(path, value):
+        if path.endswith('bad.json'):
+            raise PermissionError('denied')
+        write_bytes(path, value)
+
+    def checked_touch(path):
+        assert (target / 'meta.json').read_bytes() == b'{}'
+        touch(path)
+
+    fs.write_bytes, fs.touch = denied, checked_touch
+    with pytest.warns(UserWarning, match='denied'):
+        export_selected_files([str(source)], f'{target}/', fs=fs,
+                              identity='job-1', sidecars={
+                                  'meta.json': b'{}',
+                                  'bad.json': b'{}'
+                              })
+    assert (target / '_SUCCESS').exists()

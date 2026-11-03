@@ -104,7 +104,8 @@ class PredictionTable:
         pq._require_matching_snapshot(snapshot)
         run_id = new_run_id()
         run_dir = prediction_table_scratch_dir(run_id)
-        rows_path = stage_source_table(source_table, run_dir / "source-table")
+        rows_path, _ = stage_source_table(source_table,
+                                          run_dir / "source-table")
         request, _ = _build_prediction_table_request(
             snapshot,
             pq._parsed,

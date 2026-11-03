@@ -5,9 +5,14 @@
 from kumo.engine.trainer.output_config import (
     ModelOutputConfig,
     PredictionOutputConfig,
+    SnapshotOutputConfig,
     TrainingTableOutputConfig,
 )
-from kumo.engine.trainer.trainer import PredictionResult, Trainer, TrainingResult
+from kumo.engine.trainer.trainer import (
+    PredictionResult,
+    Trainer,
+    TrainingResult,
+)
 
 __all__ = [
     "Trainer",
@@ -15,5 +20,6 @@ __all__ = [
     "PredictionResult",
     "ModelOutputConfig",
     "PredictionOutputConfig",
+    "SnapshotOutputConfig",
     "TrainingTableOutputConfig",
 ]

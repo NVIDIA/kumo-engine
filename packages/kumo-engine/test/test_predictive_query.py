@@ -293,7 +293,8 @@ def test_generated_weight_rejected_before_artifacts(connector_kind, tmp_path,
     assert not run_dir.exists()
 
     native_plan = SimpleNamespace(
-        train_table=SimpleNamespace(lag_timesteps=None, compiler_options=None),
+        train_table=SimpleNamespace(lag_timesteps=None, compiler_options=None,
+                                    split_family=None),
         task_dataset=SimpleNamespace(required_stages=('train', 'val')),
     )
     generated = SimpleNamespace(
@@ -370,6 +371,7 @@ def test_forecast_generation_retains_effective_plan(graph_snapshot, tmp_path,
     )
     native_plan = SimpleNamespace(
         train_table=SimpleNamespace(
+            split_family=None,
             lag_timesteps=3,
             compiler_options={
                 'lag_offsets_secs': (-1, -2, -3),
@@ -460,12 +462,13 @@ def test_custom_training_table_materializes_weight_and_manual_split(
         train_table=SimpleNamespace(
             lag_timesteps=None,
             compiler_options=None,
+            split_family=None,
         ),
         task_dataset=SimpleNamespace(required_stages=('train', 'val', 'test')),
     )
 
     monkeypatch.setattr('kumo.engine.pquery._custom_source.stage_source_table',
-                        lambda source_table, destination: rows)
+                        lambda source_table, destination: (rows, None))
     monkeypatch.setattr(
         'kumo.engine.pquery._custom_source.validate_training_source',
         lambda *args: None)
@@ -512,7 +515,7 @@ def test_custom_training_table_uses_the_normal_inferred_split(
     staging = tmp_path / 'staging'
     captured = {}
     monkeypatch.setattr('kumo.engine.pquery._custom_source.stage_source_table',
-                        lambda source_table, destination: rows)
+                        lambda source_table, destination: (rows, None))
     monkeypatch.setattr(
         'kumo.engine.pquery._custom_source.validate_training_source',
         lambda *args: None)
@@ -521,7 +524,8 @@ def test_custom_training_table_uses_the_normal_inferred_split(
         captured.update(kwargs)
         return SimpleNamespace(
             train_table=SimpleNamespace(lag_timesteps=None,
-                                        compiler_options=None),
+                                        compiler_options=None,
+                                        split_family=None),
             task_dataset=SimpleNamespace(required_stages=('train', 'val')),
         )
 
@@ -637,7 +641,7 @@ def test_custom_prediction_table_materializes_exact_source_rows(
     )
     captured = {}
     monkeypatch.setattr('kumo.engine.pquery._custom_source.stage_source_table',
-                        lambda source_table, destination: rows)
+                        lambda source_table, destination: (rows, None))
     monkeypatch.setattr(
         'kumo.engine.pquery._custom_source.validate_prediction_source',
         lambda *args: None,

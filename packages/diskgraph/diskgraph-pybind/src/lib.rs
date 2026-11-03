@@ -1710,6 +1710,20 @@ fn verify_snapshot_integrity(py: Python<'_>, output_dir: &str) -> PyResult<()> {
         .map_err(|e| DiskgraphCorruptionError::new_err(e.to_string()))
 }
 
+/// CRC-32 per `range_bytes` span of each listed file and the manifest.
+#[pyfunction]
+fn snapshot_range_checksums(
+    py: Python<'_>,
+    output_dir: &str,
+    range_bytes: u64,
+) -> PyResult<std::collections::BTreeMap<String, Vec<u32>>> {
+    let output_dir = std::path::PathBuf::from(output_dir);
+    py.detach(|| {
+        diskgraph_ingest::snapshot_mirror::snapshot_range_checksums(&output_dir, range_bytes)
+    })
+    .map_err(|e| DiskgraphCorruptionError::new_err(e.to_string()))
+}
+
 #[pyfunction]
 fn has_resumable_ingest(output_dir: &str) -> PyResult<bool> {
     diskgraph_ingest::initial_resume_phase(std::path::Path::new(output_dir))
@@ -1751,6 +1765,8 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "DiskgraphCorruptionError",
         m.py().get_type::<DiskgraphCorruptionError>(),
     )?;
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    m.add("BUILD_COMMIT", env!("DISKGRAPH_BUILD_COMMIT"))?;
     m.add_function(wrap_pyfunction!(export_tt_artifacts, m)?)?;
     m.add_function(wrap_pyfunction!(convert_kumo_config, m)?)?;
     m.add_function(wrap_pyfunction!(ingest, m)?)?;
@@ -1764,6 +1780,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(success_marker::write_success_marker, m)?)?;
     m.add_function(wrap_pyfunction!(success_marker::touch_success_marker, m)?)?;
     m.add_function(wrap_pyfunction!(verify_snapshot_integrity, m)?)?;
+    m.add_function(wrap_pyfunction!(snapshot_range_checksums, m)?)?;
     m.add_function(wrap_pyfunction!(has_resumable_ingest, m)?)?;
     m.add_function(wrap_pyfunction!(validated_index_resume_progress, m)?)?;
     m.add_function(wrap_pyfunction!(compute_col_stats_for_parquet, m)?)?;

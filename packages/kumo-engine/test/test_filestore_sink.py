@@ -174,6 +174,31 @@ def test_parquet_writes_stay_plain_up_to_one_part(connector):
         filesystem=PyFileSystem(store)).shape == (100, 1)
 
 
+def test_publishing_an_identical_bundle_again_reuses_the_copy(
+        tmp_path, connector, monkeypatch, caplog):
+    import kumo_core.object_store_sink as sink
+
+    bundle = tmp_path / 'bundle'
+    bundle.mkdir()
+    (bundle / '_provenance.json').write_text('{"id": 1}')
+    (bundle / 'weights.bin').write_bytes(os.urandom(10000))
+    files = connector.sink_backend
+    files.publish_model(connector, str(bundle), path='@stage/models/m')
+    upload = sink.upload_bundle
+    monkeypatch.setattr(sink, 'upload_bundle',
+                        lambda *a: pytest.fail('uploaded again'))
+    with caplog.at_level('INFO', logger=sink.__name__):
+        files.publish_model(connector, str(bundle), path='@stage/models/m')
+    assert 'reused it' in caplog.text
+
+    (bundle / '_provenance.json').write_text('{"id": 2}')
+    uploads = []
+    monkeypatch.setattr(sink, 'upload_bundle',
+                        lambda *a: uploads.append(a) or upload(*a))
+    files.publish_model(connector, str(bundle), path='@stage/models/m')
+    assert len(uploads) == 1
+
+
 def test_an_occupied_directory_is_refused_by_its_full_location(
         tmp_path, connector):
     sink = connector.sink_backend
@@ -191,3 +216,13 @@ def test_a_file_only_sink_refuses_a_table(connector, tmp_path):
     with pytest.raises(NotImplementedError, match='outside its files'):
         connector.sink_backend.publish_model(connector, str(tmp_path),
                                              path='DB.SCHEMA.T')
+
+
+def test_a_file_store_export_keeps_its_sidecars(tmp_path, connector):
+    part = tmp_path / 'part-0.parquet'
+    pd.DataFrame({'x': range(3)}).to_parquet(part)
+    connector.sink_backend.write_files(
+        connector, '@stage/tt/', [str(part)],
+        sidecars={'_provenance.json': b'{}'})
+    assert connector.sink_backend.store.objects[
+        '@stage/tt/_provenance.json'] == b'{}'

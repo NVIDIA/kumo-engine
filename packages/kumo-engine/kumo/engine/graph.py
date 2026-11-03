@@ -60,16 +60,28 @@ remote/durable cache, e.g. a Snowflake stage) -- out of scope for now.
 """
 
 import json
+import threading
 import warnings
-from dataclasses import dataclass, field
-from functools import cached_property
+from dataclasses import dataclass, field, replace
+from functools import cached_property, partial
 from pathlib import Path
-from typing import Any, Dict, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence
 
+from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.pquery import NativeGraph, normalize_graph
 from kumoapi.graph import Edge
 from kumoapi.typing import TimestampPrecision, validate_timestamp_precision
 
+from kumo.engine._manifest import (
+    RECONSTRUCTED,
+    SnapshotManifest,
+    SnapshotParents,
+    SourceTableEntry,
+    read_manifest,
+    stamp,
+    write_manifest,
+)
+from kumo.engine._provenance import source_table
 from kumo.engine._scratch import (
     fingerprint,
     get_scratch_dir,
@@ -77,9 +89,14 @@ from kumo.engine._scratch import (
 )
 from kumo.engine._storage import network_storage
 from kumo.engine._visualization import SVG
+from kumo.engine.connector.base import Connector
 from kumo.engine.table import Table
 
+if TYPE_CHECKING:
+    from kumo.engine.trainer.output_config import SnapshotOutputConfig
+
 _warned_scratch: set[Path] = set()
+_warned_backfill: set[Path] = set()
 
 
 def _warn_if_network_scratch(root: Path) -> None:
@@ -148,9 +165,10 @@ def _warn_ingest_data_loss(result: Any, graph_config: Dict[str, Any]) -> None:
                               UserWarning, stacklevel=3)
 
     try:
-        report = json.loads(Path(result.ingest_stats_path).read_text())
-        stats = report['stats']
+        stats = json.loads(Path(result.ingest_stats_path).read_text())['stats']
     except (AttributeError, OSError, ValueError, KeyError, TypeError):
+        return
+    if not isinstance(stats, dict):
         return
     tables = {table['table_name']: table for table in graph_config['tables']}
     duplicates: Dict[str, int] = {}
@@ -185,6 +203,177 @@ def _warn_ingest_data_loss(result: Any, graph_config: Dict[str, Any]) -> None:
             )
 
 
+_LOCATION_KEYS = frozenset({'table_name', 'source_table_name', 'connector_id'})
+_SCHEMA_PARTS = {
+    'cols': 'columns',
+    'fkeys': 'edges',
+    'pkey': 'primary key',
+    'time_col': 'time column',
+    'end_time_col': 'end time column',
+}
+
+
+def _schema_tables(config: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
+    return {
+        table['table_name']: {
+            key: (sorted(json.dumps(item, sort_keys=True, default=str)
+                         for item in value) if isinstance(value, list) else
+                  value)
+            for key, value in table.items() if key not in _LOCATION_KEYS
+        }
+        for table in config.get('tables', [])
+    }
+
+
+def schema_changes(before: Mapping[str, Any],
+                   after: Mapping[str, Any]) -> List[str]:
+    old, new = _schema_tables(before), _schema_tables(after)
+    changes = [
+        f"table {name} {'removed' if name in old else 'added'}"
+        for name in sorted(old.keys() ^ new.keys())
+    ]
+    for name in sorted(old.keys() & new.keys()):
+        parts = sorted(
+            _SCHEMA_PARTS.get(key, key) + (_changed_columns(
+                old[name][key], new[name][key]) if key == 'cols' else '')
+            for key in old[name].keys() | new[name].keys()
+            if old[name].get(key) != new[name].get(key))
+        if parts:
+            changes.append(f"{name} {', '.join(parts)}")
+    return changes
+
+
+def _changed_columns(before: List[str], after: List[str]) -> str:
+    old, new = ({
+        column['name']: column
+        for column in map(json.loads, side or [])
+    } for side in (before, after))
+    names = sorted(name for name in old.keys() | new.keys()
+                   if old.get(name) != new.get(name))
+    return f" ({', '.join(names)})" if names else ''
+
+
+def report_other_graph(message: str, before: Optional[Mapping[str, Any]],
+                       after: Mapping[str, Any], stacklevel: int) -> None:
+    changes = None if before is None else schema_changes(before, after)
+    if changes is None:
+        detail = ("The model does not record its training graph, so what "
+                  "differs is unknown; a different connector or table "
+                  "location alone also changes the graph id.")
+    elif changes:
+        detail = f"Schema changes: {'; '.join(changes)}."
+    else:
+        detail = ("The schema is the same; only table connectors or "
+                  "locations differ.")
+    warnings.warn(f"{message} {detail}", UserWarning,
+                  stacklevel=stacklevel + 1)
+
+
+def _store() -> Any:
+    from kumo_core.diskgraph.snapshot import (
+        DiskgraphLocalConfig,
+        LocalSnapshotStore,
+    )
+
+    return LocalSnapshotStore(
+        DiskgraphLocalConfig(data_root=str(get_scratch_dir() / 'snapshots')))
+
+
+def _lock(graph_key: str) -> Any:
+    from filelock import FileLock
+
+    persist_dir = snapshot_scratch_dir(graph_key) / 'source_tables'
+    persist_dir.parent.mkdir(parents=True, exist_ok=True)
+    return FileLock(f'{persist_dir}.lock')
+
+
+def _loaded(store: Any, handle: Any) -> Optional[Any]:
+    from diskgraph import DiskgraphCorruptionError, read_success_marker
+    from kumo_core.diskgraph.snapshot import rebased
+
+    path = store.path(handle)
+    if read_success_marker(path) is None:
+        return None
+    try:
+        store.verify(handle)
+        return rebased(store, handle)
+    except (DiskgraphCorruptionError, ValueError) as error:
+        warnings.warn(f"Reloading the damaged graph index at {path}: {error}",
+                      UserWarning, stacklevel=3)
+        return None
+
+
+def _load_local(connector: Any, path: str, root: str,
+                manifest: Dict[str, Any]) -> Any:
+    from kumo_core.diskgraph.snapshot import DiskgraphSnapshotHandle
+
+    from kumo.engine._snapshot_io import holds_export, load_into, read
+
+    store = _store()
+    handle = DiskgraphSnapshotHandle(
+        graph_key=manifest['graph_key'],
+        graph_data_version=manifest['data_version'])
+    target = Path(store.path(handle))
+    with _lock(manifest['graph_key']):
+        result = _loaded(store, handle)
+        if result is not None and holds_export(Path(result.index_path),
+                                               manifest):
+            return result
+        try:
+            load_into(connector, path, root, manifest, target)
+        except FileNotFoundError:
+            newer_root, newer = read(connector, path)
+            if (newer_root == root
+                    or newer['snapshot_id'] != manifest['snapshot_id']):
+                raise
+            load_into(connector, path, newer_root, newer, target)
+        result = _loaded(store, handle)
+    if result is None:
+        raise RuntimeError(f'The snapshot loaded from {path} did not pass '
+                           'its integrity check.')
+    return result
+
+
+def _snapshot_id(graph_key: str, data_version: str) -> str:
+    return f'{graph_key}@{data_version[:16]}'
+
+
+_COMPARABLE = frozenset({'exact', 'timestamp', 'listing'})
+
+
+def _current_source(table: Table,
+                    record_sources: bool) -> Optional[SourceTableEntry]:
+    from kumoapi.source_table import CustomSQLSourceTable
+
+    if isinstance(table.definition.source_table, CustomSQLSourceTable):
+        return None
+    connector = table.connector
+    try:
+        version = connector.source_backend.get_data_version(
+            connector, table.table_name)
+    except Exception:
+        return None
+    return source_table(connector, table.table_name, None, version,
+                        record_sources=record_sources)
+
+
+def _source_change(table: Table, recorded: Optional[SourceTableEntry],
+                   record_sources: bool) -> Dict[str, Any]:
+    now = _current_source(table, record_sources)
+    before = None if recorded is None else recorded.version
+    current = None if now is None else now.version
+    known = (None not in (recorded, now, before, current)
+             and {recorded.version_kind, now.version_kind} <= _COMPARABLE
+             and _place(recorded) == _place(now))
+    status = ('unknown' if not known else
+              'unchanged' if before == current else 'changed')
+    return {'status': status, 'recorded': before, 'current': current}
+
+
+def _place(entry: SourceTableEntry) -> tuple:
+    return entry.connector, entry.location, entry.location_fingerprint
+
+
 @dataclass(frozen=True)
 class GraphSnapshot:
     r"""The materialized artifact produced by `Graph.snapshot()`: an on-disk
@@ -211,11 +400,140 @@ class GraphSnapshot:
             `TrainingWorkflowRequest.from_spec`/`materialize(...)`). Computed
             once here, at snapshot time, rather than being rebuilt on every
             `Trainer.fit`/`predict` call.
+        record_sources: the `record_sources` choice this snapshot was taken
+            with; `None` when unknown (built elsewhere or loaded).
     """
 
     id: str
     index_path: Path
     graph_config: Dict[str, Any]
+    record_sources: bool | None = field(default=None, compare=False)
+
+    @property
+    def _graph_key(self) -> str:
+        return self.id.partition('@')[0]
+
+    @property
+    def _data_version(self) -> str:
+        return Path(self.index_path).name
+
+    @cached_property
+    def _native_graph(self) -> NativeGraph:
+        return normalize_graph(self.graph_config)
+
+    def export(self, output_config: 'SnapshotOutputConfig') -> str:
+        r"""Export the snapshot via ``output_config``; returns its location."""
+        from kumo.engine._snapshot_io import export
+
+        return export(self, output_config.connector, output_config.path)
+
+    @classmethod
+    def load_from_connector(cls, connector: Connector, *,
+                            path: Optional[str] = None,
+                            id: Optional[str] = None,
+                            graph: Optional['Graph'] = None) -> 'GraphSnapshot':
+        r"""Load a snapshot exported at `path`.
+
+        Args:
+            connector: a connector, or a `kumo.MLOps` for its artifact root.
+            path: the location `export` returned.
+            id: a snapshot id under the `kumo.MLOps` root, instead of `path`.
+            graph: warn if its sources changed since the snapshot.
+        """
+        from kumo.engine._mlops import MLOps, on_root, snapshot_path
+        from kumo.engine._snapshot_io import read
+
+        if (path is None) == (id is None):
+            raise ValueError('Pass exactly one of path or id.')
+        if id is not None:
+            if not isinstance(connector, MLOps):
+                raise TypeError('id= loads from a kumo.MLOps artifact root; '
+                                'pass path= with a connector.')
+            path = snapshot_path(id)
+        connector, path = on_root(connector, path)
+        root, manifest = read(connector, path)
+        if graph is not None and graph.id != manifest['graph_key']:
+            report_other_graph(
+                f"Snapshot at {path} was taken of another graph.",
+                graph._graph_config, manifest['graph_config'], stacklevel=2)
+        result = _load_local(connector, path, root, manifest)
+        snapshot = cls(id=manifest['snapshot_id'],
+                       index_path=Path(result.index_path),
+                       graph_config=manifest['graph_config'])
+        if graph is not None:
+            snapshot._warn_changed_sources(graph, path)
+        return snapshot
+
+    def _warn_changed_sources(self, graph: 'Graph', path: str) -> None:
+        changed = [
+            alias for alias, change in self.source_changes(graph).items()
+            if change['status'] == 'changed'
+        ]
+        if changed:
+            warnings.warn(
+                f"Snapshot at {path} predates source table(s) "
+                f"{', '.join(changed)}; see `snapshot.source_changes`.",
+                UserWarning, stacklevel=3)
+
+    def source_changes(self, graph: 'Graph') -> Dict[str, Dict[str, Any]]:
+        r"""Each of `graph`'s tables as `unchanged`, `changed` or `unknown`."""
+        from kumo_core.sources.parallel import run_in_parallel
+
+        try:
+            manifest = self.manifest
+            recorded = ({} if manifest is None or manifest.reconstructed else
+                        dict(manifest.parents.source_tables))
+            record_sources = (manifest is None
+                              or manifest.record_sources is not False)
+        except Exception:
+            recorded, record_sources = {}, True
+        tables = graph._named_tables
+        changes = run_in_parallel(
+            [
+                partial(_source_change, table, recorded.get(alias),
+                        record_sources)
+                for alias, table in tables.items()
+            ], workers=max(1, min(len(tables), 16)), stop=threading.Event())
+        return dict(zip(tables, changes))
+
+    @property
+    def manifest(self) -> SnapshotManifest | None:
+        """The stored snapshot manifest, if any."""
+        return read_manifest(Path(self.index_path) / PROVENANCE_FILE,
+                             SnapshotManifest)
+
+
+def _write_snapshot_manifest(result: Any, snapshot_id: str,
+                             source_tables: Dict[str, SourceTableEntry],
+                             record_sources: bool, *, fresh: bool) -> None:
+    path = Path(result.index_path) / PROVENANCE_FILE
+    try:
+        if not fresh and path.exists():
+            existing = read_manifest(path, SnapshotManifest)
+            if existing is None or (existing.record_sources
+                                    is not False) == record_sources:
+                return
+            parents = (SnapshotParents(source_tables=source_tables)
+                       if existing.parents is None else replace(
+                           existing.parents, source_tables=source_tables))
+            manifest = replace(existing, record_sources=record_sources,
+                               parents=parents)
+        else:
+            manifest = SnapshotManifest(
+                id=snapshot_id,
+                parents=SnapshotParents(source_tables=source_tables),
+                record_sources=record_sources,
+                **(stamp() if fresh else RECONSTRUCTED))
+        write_manifest(path, manifest)
+    except Exception as error:
+        if fresh or path not in _warned_backfill:
+            if not fresh:
+                _warned_backfill.add(path)
+            warnings.warn(
+                f"Could not write the snapshot manifest at {path}: {error}",
+                UserWarning,
+                stacklevel=4,
+            )
 
 
 def index_timestamp_precision(index_path: Path) -> TimestampPrecision:
@@ -413,10 +731,10 @@ class Graph:
                 destination.write_text(svg, encoding='utf-8')
         return svg
 
-    def snapshot(
-        self,
-        timestamp_precision: TimestampPrecision = 'seconds',
-    ) -> GraphSnapshot:
+    def snapshot(self,
+                 timestamp_precision: TimestampPrecision = 'seconds', *,
+                 record_sources: bool = True,
+                 mlops: Optional[Any] = None) -> GraphSnapshot:
         r"""Materialize this graph: read each table's connector, run the
         result through `kumo-core` to build column stats and the on-disk
         index. The index is stored under a directory keyed by both `self.id`
@@ -431,9 +749,12 @@ class Graph:
         default), `"hours"` or `"days"`. Window lengths truncate to the clock,
         and a window shorter than one tick is a configuration error. Each
         clock is cached as a separate snapshot.
-        """
-        from filelock import FileLock
 
+        Args:
+            mlops: also export the snapshot under this `kumo.MLOps` root.
+            record_sources: if False, record sources without locations or
+                SQL text.
+        """
         validate_timestamp_precision(timestamp_precision)
         self.validate()
         for table in self._named_tables.values():
@@ -442,7 +763,6 @@ class Graph:
 
         graph_key = self.id
         persist_dir = snapshot_scratch_dir(graph_key) / 'source_tables'
-        persist_dir.parent.mkdir(parents=True, exist_ok=True)
 
         # Guards two things, both shared across every `snapshot()` call for
         # this `graph_key` -- different processes, or different threads in
@@ -460,13 +780,27 @@ class Graph:
         # mid-build -- a plain in-memory lock wouldn't coordinate across
         # processes, and a lock-file-existence mutex would leave a stale
         # lock behind after a crash.
-        with FileLock(f'{persist_dir}.lock'):
-            return self._snapshot_no_lock(graph_key, persist_dir,
-                                          timestamp_precision)
+        from kumo.engine._mlops import resolve
 
-    def _snapshot_no_lock(self, graph_key: str, persist_dir: Path,
-                          timestamp_precision: TimestampPrecision = 'seconds') \
-            -> GraphSnapshot:
+        settings = resolve(mlops)
+        with _lock(graph_key):
+            snapshot = self._snapshot_no_lock(graph_key, persist_dir,
+                                              timestamp_precision,
+                                              record_sources)
+        if settings is not None and settings.wants('snapshot'):
+            from kumo.engine._mlops import raise_on_error
+            from kumo.engine._snapshot_io import store
+
+            try:
+                store(snapshot, settings)
+            except Exception as error:
+                raise_on_error(settings, error, 'Graph.snapshot')
+        return snapshot
+
+    def _snapshot_no_lock(
+            self, graph_key: str, persist_dir: Path,
+            timestamp_precision: TimestampPrecision = 'seconds',
+            record_sources: bool = True) -> GraphSnapshot:
         r"""`snapshot()`'s body, run under its `FileLock`. Not meant to be
         called on its own -- `persist_dir`, unlike everything else here,
         isn't a pure function of `self` alone (it's `snapshot()`'s lock key,
@@ -480,9 +814,7 @@ class Graph:
         from kumo_core.diskgraph.runner import IngestExecutionConfig
         from kumo_core.diskgraph.snapshot import (
             DiskgraphIngestResult,
-            DiskgraphLocalConfig,
             DiskgraphSnapshotHandle,
-            LocalSnapshotStore,
             check_diskgraph_output,
         )
         from kumo_core.sources.layout import staging_dir
@@ -492,12 +824,11 @@ class Graph:
         from kumo.engine.connector.source_table import checked_sql
 
         graph_config = self._graph_config
-        store = LocalSnapshotStore(
-            DiskgraphLocalConfig(data_root=str(get_scratch_dir() /
-                                               'snapshots')))
+        store = _store()
 
         table_data_versions: Dict[str, str] = {}
         source_paths: Dict[str, str] = {}
+        source_tables: Dict[str, SourceTableEntry] = {}
 
         try:
             for alias, table in self._named_tables.items():
@@ -531,6 +862,9 @@ class Graph:
                         "limitation in kumoai/backend/local/graph.py's "
                         "_stage_sources, which raises the same way.")
                 table_data_versions[alias] = prepared.version
+                source_tables[alias] = source_table(
+                    connector, name, sql, prepared.version,
+                    record_sources=record_sources)
 
                 paths = prepared.source.get('paths') or []
                 if paths:
@@ -584,11 +918,16 @@ class Graph:
                     ),
                 )
 
+            snapshot_id = _snapshot_id(graph_key, data_version)
+            _write_snapshot_manifest(result, snapshot_id, source_tables,
+                                     record_sources, fresh=existing is None)
+
             _warn_ingest_data_loss(result, graph_config)
             return GraphSnapshot(
-                id=f'{graph_key}@{data_version[:16]}',
+                id=snapshot_id,
                 index_path=Path(result.index_path),
                 graph_config=graph_config,
+                record_sources=record_sources,
             )
         finally:
             discard_destination(str(persist_dir))
