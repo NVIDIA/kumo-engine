@@ -115,6 +115,7 @@ class FakeStage:
         self.ciphertext = False
         self.ignores_range = False
         self.remove_pattern_ignored = False
+        self.relative_patterns = False
         self.gets: list[str] = []
 
     def _relative(self, location: str) -> str:
@@ -145,9 +146,11 @@ class FakeStage:
             location, _, pattern = rest.partition(' PATTERN = ')
             prefix = self._relative(location)
             for name in [n for n in self.objects if n.startswith(prefix)]:
+                target = (name[len(prefix):].lstrip('/')
+                          if self.relative_patterns else self._matched(name))
                 if not pattern or (not self.remove_pattern_ignored
                                    and re.fullmatch(pattern.strip("'"),
-                                                    self._matched(name))):
+                                                    target)):
                     del self.objects[name]
             return []
         raise AssertionError(f'unexpected statement {sql!r}')

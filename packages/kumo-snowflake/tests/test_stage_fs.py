@@ -223,6 +223,18 @@ def test_a_role_that_cannot_write_reads_by_get_without_blaming_encryption(
     assert not any('SNOWFLAKE_SSE' in m for m in messages)
 
 
+@pytest.mark.parametrize('relative', [False, True])
+def test_a_remove_deletes_only_its_file_whatever_the_pattern_base(
+        filesystem, stage, relative):
+    fs, root = filesystem
+    stage.relative_patterns = relative
+    for name in ('a.bin', 'xa.bin', 'a.bin.old', 'sub/a.bin'):
+        _write(fs, f'{root}/{name}', b'x')
+    fs.delete_file(f'{root}/a.bin')
+    assert sorted(stage.objects) == [
+        'runs/a.bin.old', 'runs/sub/a.bin', 'runs/xa.bin']
+
+
 def test_a_remove_that_matches_nothing_raises(filesystem, stage):
     fs, root = filesystem
     _write(fs, f'{root}/a.bin', b'old')

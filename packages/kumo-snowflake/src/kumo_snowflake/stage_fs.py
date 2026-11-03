@@ -36,9 +36,16 @@ _read_modes: Dict[Tuple[Optional[str], str], str] = {}
 _read_modes_lock = threading.Lock()
 
 
+def _escaped(text: str) -> str:
+    return ''.join(f'[{c}]' if c in '.$+' else c for c in text)
+
+
 def _pattern(relative: str) -> str:
-    escaped = ''.join(f'[{c}]' if c in '.$+' else c for c in relative)
-    return f'.*/{escaped}'
+    return f'.*/{_escaped(relative)}'
+
+
+def _remove_pattern(relative: str) -> str:
+    return f'({_pattern(relative)}|{_escaped(posixpath.basename(relative))})'
 
 
 class StageFileSystemHandler(ChunkedFileHandler):
@@ -81,7 +88,7 @@ class StageFileSystemHandler(ChunkedFileHandler):
         parent = posixpath.dirname(path)
         _rows(
             self._session, f'REMOVE {_stage_join(parent, directory=True)} '
-            f"PATTERN = '{_pattern(self._relative(path))}'")
+            f"PATTERN = '{_remove_pattern(self._relative(path))}'")
         if self._size(path) is not None:
             raise OSError(f'REMOVE left {path} in place.')
 
