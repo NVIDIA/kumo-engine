@@ -217,6 +217,7 @@ def _read_training(guard: _Guard, trial: Path,
             raise ValueError('Metric fit identity cannot be verified')
         values = guard.json(guard.root / 'published-model/metrics.json')
         rows = []
+        sources = {}
         for name, value in values.items():
             if value is not None and (type(value) not in (int, float)):
                 raise ValueError('Metrics must be numeric or null')
@@ -226,9 +227,37 @@ def _read_training(guard: _Guard, trial: Path,
                    'original' if split != 'unknown' else 'unknown')
             prefix = 'test_refit_' if fit == 'refit_trainval' else f'{split}_'
             display_name = name.removeprefix(prefix)
+            path = (
+                (trial if fit == 'refit_trainval' else original) /
+                ('test_result.csv' if split == 'test' else 'train_result.json'))
+            if path not in sources:
+                try:
+                    if split == 'test':
+                        records = list(
+                            csv.reader(
+                                io.StringIO(guard.read(path).decode('utf-8'))))
+                        if (len(records) != 2
+                                or len(records[0]) != len(records[1])
+                                or len(set(records[0])) != len(records[0])):
+                            raise ValueError('Invalid evaluation metrics CSV')
+                        sources[path] = dict(zip(*records))
+                    else:
+                        sources[path] = guard.json(path)
+                except (OSError, ValueError, TypeError, csv.Error):
+                    sources[path] = {}
+            recorded = sources[path].get('test_' + display_name if split ==
+                                         'test' else name)
+            origin = 'Unknown metric origin'
+            if type(value) in (int, float):
+                if split in ('train', 'val') and type(recorded) in (
+                        int, float) and recorded == value:
+                    origin = 'Last recorded training metrics (epoch unverified)'
+                elif split == 'test' and recorded == f'{value:.6f}' and (
+                        fit == 'original' or trial != original):
+                    origin = 'Selected-checkpoint evaluation'
             rows.append(
                 dict(name=display_name, recorded_name=name, value=value,
-                     split=split, fit=fit))
+                     split=split, fit=fit, origin=origin))
         section.update(status='available', reason=None, rows=rows,
                        source='published-model/metrics.json')
     except (OSError, ValueError, TypeError) as error:

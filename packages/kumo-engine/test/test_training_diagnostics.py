@@ -20,19 +20,54 @@ from test_explanation_artifacts import (
 )
 
 from kumo.engine.explain._diagnostics import LIMITS, build_training_payload
+from kumo.engine.explain._viewer import static_summary
 from kumo.engine.explain.results import TrainingExplanations
 
 
-def test_snapshot_preserves_refit_metrics_epochs_and_missing_values(tmp_path):
+@pytest.mark.parametrize('source', ['training', 'test', 'test_refit'])
+@pytest.mark.parametrize(
+    'state', ['available', 'missing', 'mismatch', 'invalid', 'boolean'])
+def test_snapshot_preserves_refit_metrics_epochs_and_missing_values(
+        tmp_path, source, state):
     run, trial = _run(tmp_path, refit=True)
     selected = Path(trial.removesuffix('_refit_trainval'))
     _gradient(trial)
     _save_cohorts(trial, [_cohort(classification=True)], classification=True)
-    save_json({
-        'val_mae': None,
-        'test_mae': 0,
-        'test_refit_mae': 2
-    }, str(run / 'published-model/metrics.json'))
+    save_json(
+        {
+            'train_mae': 1,
+            'val_loss': 0.2,
+            'val_mae': None,
+            'test_mae': 0,
+            'test_refit_mae': 2
+        }, str(run / 'published-model/metrics.json'))
+    artifacts = {
+        'training': selected / 'train_result.json',
+        'test': selected / 'test_result.csv',
+        'test_refit': Path(trial) / 'test_result.csv'
+    }
+    save_json({'train_mae': 1, 'val_loss': 0.2}, str(artifacts['training']))
+    _text(artifacts['test'], 'test_mae\n0.000000\n')
+    _text(artifacts['test_refit'], 'test_mae\n2.000000\n')
+    if state == 'missing':
+        artifacts[source].unlink()
+    elif state == 'mismatch':
+        _text(
+            artifacts[source], '{"train_mae": 2, "val_loss": 0.3}'
+            if source == 'training' else 'test_mae\n9.000000\n')
+    elif state == 'invalid':
+        _text(artifacts[source],
+              '{' if source == 'training' else 'test_mae\n0\n2\n')
+    elif state == 'boolean':
+        _text(
+            artifacts[source], '{"train_mae": true, "val_loss": false}'
+            if source == 'training' else 'test_mae\ntrue\n')
+    origins = {
+        key: ('Unknown metric origin' if key == source and state != 'available'
+              else 'Last recorded training metrics (epoch unverified)'
+              if key == 'training' else 'Selected-checkpoint evaluation')
+        for key in artifacts
+    }
     save_json({'predictive_query': 'PREDICT users.label FOR EACH users.id'},
               str(run / 'published-model/training-spec.json'))
     progress = dict(
@@ -63,13 +98,21 @@ def test_snapshot_preserves_refit_metrics_epochs_and_missing_values(tmp_path):
     }
     assert result['history']['rows'][2]['fit'] == 'refit_trainval'
     assert result['metrics']['rows'] == [
+        dict(name='mae', recorded_name='train_mae', value=1, split='train',
+             fit='original', origin=origins['training']),
+        dict(name='loss', recorded_name='val_loss', value=0.2, split='val',
+             fit='original', origin=origins['training']),
         dict(name='mae', recorded_name='val_mae', value=None, split='val',
-             fit='original'),
+             fit='original', origin='Unknown metric origin'),
         dict(name='mae', recorded_name='test_mae', value=0, split='test',
-             fit='original'),
+             fit='original', origin=origins['test']),
         dict(name='mae', recorded_name='test_refit_mae', value=2, split='test',
-             fit='refit_trainval')
+             fit='refit_trainval', origin=origins['test_refit'])
     ]
+    summary = static_summary(result)
+    for origin in origins.values():
+        assert origin in summary
+    assert 'epoch 7' not in summary
     assert result['trials']['completed'] == 0
     assert result['trials']['rows'][0]['selected']
     assert result['trials']['rows'][0][
@@ -78,6 +121,17 @@ def test_snapshot_preserves_refit_metrics_epochs_and_missing_values(tmp_path):
     assert result['trials']['rows'][0]['comparison_metrics'] == {
         'val_mae': None
     }
+    progress['final_validation_metrics'] = {'val_loss': 0.3}
+    save_json(
+        dict(total_trials=1, completed_trials=1, trial_progress={'2':
+                                                                 progress}),
+        str(selected.parent / 'auto_train_progress.json'))
+    final = build_training_payload(TrainingExplanations.load(run))
+    assert final['trials']['rows'][0][
+        'comparison_source'] == 'final_validation_metrics'
+    assert final['trials']['rows'][0]['comparison_metrics'] == {'val_loss': 0.3}
+    assert final['trials']['rows'][0]['comparison_epoch'] is None
+    assert final['metrics'] == result['metrics']
     assert result['cohorts']['rows'][0]['predictions'] == {
         'no': [0.8, 0.4],
         'yes': [0.2, 0.6]

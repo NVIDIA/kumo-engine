@@ -30,6 +30,7 @@ def static_summary(payload: dict) -> str:
                   else 'Unavailable')
         label = ' / '.join(str(row.get(key) or 'Unavailable')
                            for key in ('fit', 'split', 'name'))
+        label += ' / ' + str(row.get('origin') or 'Unknown metric origin')
         parts.append('<li>' + escape(label) + ': ' + escape(number) + '</li>')
     parts.append('</ul><h2>Recorded patterns</h2><ul>')
     for key in ('gradient', 'cohorts', 'samples', 'history', 'trials'):
@@ -147,6 +148,10 @@ for(const fit of fits){results.append(el('h3','Measured results · '+fit));
 const rows=metricRows.filter(row=>text(row.fit)===fit),names=[...new Set(rows.map(baseMetric))];
 const splits=['train','val','test'].filter(split=>rows.some(row=>row.split===split));
 for(const split of rows.map(row=>text(row.split)))if(!splits.includes(split))splits.push(split);
+for(const split of splits){const group=rows.filter(row=>row.split===split);
+const origins=[...new Set(group.map(row=>row.origin||'Unknown metric origin'))];
+for(const origin of origins)note(results,split+': '+origin+(origins.length>1?' · '+group
+.filter(row=>(row.origin||'Unknown metric origin')===origin).map(baseMetric).join(', '):''));}
 table(results,['Metric',...splits],names.map(name=>[name,...splits.map(split=>{
 const row=rows.find(item=>baseMetric(item)===name&&text(item.split)===split);return row?row.value:'Unavailable'})]),splits.map((_,i)=>i+1));}
 if(provenance.selection_metric||obj(data.metrics).selection_metric)
@@ -192,7 +197,7 @@ if(obj(data.trials).total!==undefined)note(results,'Recorded completed trials: '
 table(results,['Trial / fit','Selection / progress',...names],trials.map(row=>[
 text(row.trial)+' / '+text(row.fit),(provenance.selection_verified!==true?'Selection unverified':row.selected?'Selected by recorded winner':'Not selected')+' · '+
 (row.status||row.reason||('Epochs: '+text(row.num_epochs_completed)+' · Device: '+text(row.accelerator)))+
-(row.comparison_source==='last_recorded_epoch'?' · Validation from last recorded epoch '+text(row.comparison_epoch):row.comparison_source==='final_validation_metrics'?' · Final validation metrics':''),
+(row.comparison_source==='last_recorded_epoch'?' · Validation from last recorded epoch '+text(row.comparison_epoch):row.comparison_source==='final_validation_metrics'?' · Selected-checkpoint validation':' · Validation origin unverified'),
 ...names.map(name=>obj(row.comparison_metrics??row.final_validation_metrics)[name])]),names.map((_,i)=>i+2));
 note(results,'Missing progress is not evidence that a trial failed.');}
 const patterns=section('Recorded patterns');patterns.append(el('h3','Global input sensitivity'));
