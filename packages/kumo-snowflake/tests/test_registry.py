@@ -81,6 +81,13 @@ def test_invalid_metrics_preserve_previous_destination(fetch, payload):
     assert (destination / 'previous').read_bytes() == b'previous bundle'
 
 
+def _bundle(tmp_path):
+    bundle = tmp_path / 'bundle'
+    bundle.mkdir()
+    (bundle / 'training-spec.json').write_text('{}')
+    return bundle
+
+
 @pytest.mark.parametrize('metadata', [{}, {
     'predictive_query': 'x' * 300,
     'kumo_bundle_id': 'b1',
@@ -88,9 +95,7 @@ def test_invalid_metrics_preserve_previous_destination(fetch, payload):
 }])
 def test_publish_records_pointers_and_holdout_metrics_in_catalog(
         tmp_path, monkeypatch, metadata):
-    bundle = tmp_path / 'bundle'
-    bundle.mkdir()
-    (bundle / 'training-spec.json').write_text('{}')
+    bundle = _bundle(tmp_path)
     calls = []
     version = SimpleNamespace(model_name='CHURN', version_name='V1',
                               fully_qualified_model_name='DB.SCHEMA.CHURN')
@@ -127,9 +132,7 @@ def test_publish_records_pointers_and_holdout_metrics_in_catalog(
 
 def test_publish_names_the_next_version_and_retries_a_taken_one(
         tmp_path, monkeypatch):
-    bundle = tmp_path / 'bundle'
-    bundle.mkdir()
-    (bundle / 'training-spec.json').write_text('{}')
+    bundle = _bundle(tmp_path)
     names = ['V1', 'SLIMY_DONKEY_1', 'V3']
     tried = []
 
@@ -143,13 +146,7 @@ def test_publish_names_the_next_version_and_retries_a_taken_one(
 
     model = SimpleNamespace(versions=lambda: [
         SimpleNamespace(version_name=name) for name in names])
-
-    @contextmanager
-    def registry(_):
-        yield SimpleNamespace(log_model=log_model, get_model=lambda _: model)
-
-    sink = SnowflakeModelRegistryMixin()
-    monkeypatch.setattr(sink, '_registry', registry)
+    sink = _sink(monkeypatch, log_model=log_model, get_model=lambda _: model)
     monkeypatch.setattr(registry_module, '_bundle_model', lambda _: object())
     monkeypatch.setattr(registry_module, '_carrier_signature', lambda: {})
     published = sink.publish_model(SimpleNamespace(), str(bundle),
@@ -166,13 +163,9 @@ def test_publish_names_the_next_version_and_retries_a_taken_one(
         names.append(version_name)
         raise RuntimeError('upload failed')
 
-    @contextmanager
-    def failing(_):
-        yield SimpleNamespace(log_model=fail_after_creating,
-                              get_model=lambda _: model)
-
     tried.clear()
-    monkeypatch.setattr(sink, '_registry', failing)
+    sink = _sink(monkeypatch, log_model=fail_after_creating,
+                 get_model=lambda _: model)
     with pytest.raises(RuntimeError, match='upload failed'):
         sink.publish_model(SimpleNamespace(), str(bundle),
                            location=ModelRegistryLocation('CHURN'))
@@ -244,10 +237,10 @@ class _Model:
             })
 
 
-def _aliasing_sink(monkeypatch, model):
+def _sink(monkeypatch, **registry_methods):
     @contextmanager
     def registry(_):
-        yield SimpleNamespace(get_model=lambda _: model)
+        yield SimpleNamespace(**registry_methods)
 
     sink = SnowflakeModelRegistryMixin()
     monkeypatch.setattr(sink, '_registry', registry)
@@ -260,7 +253,7 @@ def test_set_alias_moves_it_and_refuses_what_snowflake_cannot(monkeypatch):
 
     assert isinstance(SnowflakeSinkBackend(), ModelAliasingSink)
     model = _Model({'V1': ['FIRST'], 'V2': ['LAST', 'DEFAULT'], 'V3': []})
-    sink = _aliasing_sink(monkeypatch, model)
+    sink = _sink(monkeypatch, get_model=lambda _: model)
 
     def set_alias(version, alias):
         sink.set_model_alias(SimpleNamespace(),
@@ -284,10 +277,8 @@ def test_set_alias_moves_it_and_refuses_what_snowflake_cannot(monkeypatch):
 
 
 def test_fetch_by_alias_reads_the_aliased_version(monkeypatch, tmp_path):
-    sink = _aliasing_sink(monkeypatch, _Model({
-        'V1': ['DEFAULT'],
-        'V2': ['PROD']
-    }))
+    model = _Model({'V1': ['DEFAULT'], 'V2': ['PROD']})
+    sink = _sink(monkeypatch, get_model=lambda _: model)
     published = sink.fetch_model(
         SimpleNamespace(), str(tmp_path / 'out'),
         location=ModelRegistryLocation('CHURN', alias='prod'))
@@ -312,7 +303,7 @@ def test_failed_alias_move_puts_it_back(monkeypatch):
         return version
 
     model.version = failing_version
-    sink = _aliasing_sink(monkeypatch, model)
+    sink = _sink(monkeypatch, get_model=lambda _: model)
     with pytest.raises(RuntimeError, match='lost connection'):
         sink.set_model_alias(SimpleNamespace(),
                              ModelRegistryLocation('CHURN', version='V2'),
@@ -328,9 +319,7 @@ def test_publish_records_the_task_type_monitors_need(tmp_path, monkeypatch,
                                                      task, expected):
     import sys
 
-    bundle = tmp_path / 'bundle'
-    bundle.mkdir()
-    (bundle / 'training-spec.json').write_text('{}')
+    bundle = _bundle(tmp_path)
     (bundle / 'prediction-schema.json').write_text(
         json.dumps({'task_type': task}))
     tasks = SimpleNamespace(
