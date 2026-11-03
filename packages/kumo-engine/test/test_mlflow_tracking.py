@@ -433,7 +433,7 @@ def test_system_metrics_sample_every_second_unless_the_environment_says(
     batches = []
     with integration._SystemMetrics(batches.append) as metrics:
         pass
-    assert batches == []  # fewer than 2 readings
+    assert batches == []
     assert metrics._interval == 1.0
     monkeypatch.setenv('MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL', '2')
     assert integration._SystemMetrics(batches.append)._interval == 2.0
