@@ -806,6 +806,18 @@ def test_cli_closes_the_session_when_the_install_fails(home: Path, connect: list
     assert connect[0][1].closed
 
 
+def test_cli_reports_a_failed_connection_without_a_traceback(
+        home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    def refuse(name: str):
+        raise RuntimeError(f"Invalid connection_name {name!r}")
+
+    monkeypatch.setattr(skills, '_connect', refuse)
+    with pytest.raises(SystemExit) as exc:
+        skills.main(['coco', '--scope', 'extension', '--connection', 'nope'])
+    assert exc.value.code == 1
+    assert "error: --connection nope: Invalid connection_name 'nope'" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize('argv, message', [
     (['coco', '--scope', 'workspace', '--workspace', 'WS'], 'needs --connection'),
     (['--scope', 'extension'], 'needs --connection'),

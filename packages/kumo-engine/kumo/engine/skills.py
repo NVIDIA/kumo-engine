@@ -775,7 +775,10 @@ def main(argv: Optional[list[str]] = None) -> None:
     if args.profile:
         from databricks.sdk import WorkspaceClient
         client = WorkspaceClient(profile=args.profile)
-    session = _connect(args.connection) if account else None
+    try:
+        session = _connect(args.connection) if account else None
+    except Exception as e:  # e.g. an unknown connection name or bad login
+        ap.exit(1, f'{ap.prog}: error: --connection {args.connection}: {e}\n')
     try:
         install_skills(args.agent, scope=args.scope, path=args.path,
                        session=session, workspace=args.workspace,
