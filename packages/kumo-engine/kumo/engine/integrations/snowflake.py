@@ -21,6 +21,7 @@ from kumo.engine._events import Event
 from kumo.engine._mlops import full_error
 from kumo.engine._run_names import record_name
 from kumo.engine._summary_tables import route, table_json
+from kumo.engine._text import metric_key
 from kumo.engine._tracking import (
     DROPPED_METRICS,
     DROPPED_PARAMS,
@@ -312,6 +313,7 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
                      step: int = 0) -> None:
         kept = {}
         for name, value in metrics.items():
+            name = metric_key(name)
             if '$$' in name:
                 self._dropped_metrics.add(name)
                 continue

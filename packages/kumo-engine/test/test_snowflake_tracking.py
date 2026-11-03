@@ -212,6 +212,16 @@ def test_metric_and_param_limits(fake, monkeypatch):
     assert run['params']['level'] == '2'
 
 
+def test_metric_names_are_the_ones_mlflow_logs(fake):
+    record = RunRecord(name='fit', tags={'kumo.kind': 'fit'})
+    tracking = _tracking()
+    tracking.start(record)
+    tracking.finish(replace(record, metrics={'test/map@10': 0.5}), None)
+
+    run, = fake._instance.runs.values()
+    assert ('test/map_at_10', 0.5, 0) in run['metrics']
+
+
 def test_the_users_session_is_not_altered(fake):
     session = FakeSession()
 
