@@ -8,6 +8,7 @@ import importlib.util
 import json
 import math
 import resource
+import sys
 import threading
 import time
 from pathlib import Path
@@ -63,33 +64,45 @@ def run(output, rows):
     count = checksum = 0
     previous = None
     try:
+        seen = np.zeros(rows, dtype=bool)
         for frame in nightly.ordered_batches([str(inputs)], output / 'sort'):
             entity, score, item = (frame[column].to_numpy()
                                    for column in ('ENTITY', 'SCORE', 'CLASS'))
-            assert np.all((entity[1:] > entity[:-1]) | (
+            if not np.all((entity[1:] > entity[:-1]) | (
                 (entity[1:] == entity[:-1]) & ((score[1:] < score[:-1]) | (
-                    (score[1:] == score[:-1]) & (item[1:] >= item[:-1])))))
+                    (score[1:] == score[:-1]) & (item[1:] >= item[:-1]))))):
+                raise ValueError('Reader rows are out of order')
             first = (int(entity[0]), -float(score[0]), int(item[0]))
-            assert previous is None or previous <= first
+            if previous is not None and previous > first:
+                raise ValueError('Reader batches are out of order')
             previous = (int(entity[-1]), -float(score[-1]), int(item[-1]))
+            ids = frame.ROW_ID.to_numpy()
+            if not np.all((ids >= 0) & (ids < rows)):
+                raise ValueError('Reader row IDs are outside the input range')
+            seen[ids] = True
             count += len(frame)
             checksum += int(frame.ROW_ID.sum())
     finally:
         seconds = time.monotonic() - started
         done.set()
         worker.join()
-    assert count == rows and checksum == rows * (rows - 1) // 2
-    assert not list((output / 'sort').iterdir())
+    if (count != rows or checksum != rows * (rows - 1) // 2
+            or not seen.all()):
+        raise ValueError('Reader duplicated, omitted, or changed row IDs')
+    if any((output / 'sort').iterdir()):
+        raise ValueError('Reader left sort files behind')
     result = dict(
         rows=count, reader_seconds=seconds,
         microseconds_per_row=seconds * 1000000 / rows,
         generation_seconds=generation_seconds,
         peak_process_rss_bytes=resource.getrusage(
-            resource.RUSAGE_SELF).ru_maxrss * 1024,
+            resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == 'darwin'
+                                             else 1024),
         peak_owned_disk_bytes=peak_disk_bytes,
         input_bytes=inputs.stat().st_size, source_sha256=source_sha256,
         pyarrow=pa.__version__,
         evidence='Synthetic Parquet; CPU only; no model qualification',
+        row_ids_exactly_once='PASS',
         order_count_checksum_and_cleanup='PASS')
     nightly.save(output / 'measurement.json', result)
     return result

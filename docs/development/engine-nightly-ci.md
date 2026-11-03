@@ -130,7 +130,10 @@ cores, RAM bytes, scratch bytes, GPU class and count, GPU memory bytes, and seco
 The harness derives minima from measured peaks with 25 percent headroom. It
 rejects incomplete evidence, changed minima, and evidence from another case or
 input manifest. Startup compares available capacity with each minimum before
-building the snapshot. A timer enforces the case time budget.
+building the snapshot. A Python timer checks the case time budget. It cannot
+interrupt a hung native operation, such as a GPU call. External scheduling
+remains separate work. When added, the scheduler must enforce a hard deadline
+outside the case process and terminate its process group if it hangs.
 
 Use the installed candidate environment for the following command. Set
 `INPUT_ROOT` to the extracted frozen archive. Set `CASE_NAME` to a task and answer

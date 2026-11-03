@@ -3,10 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Small CPU checks for failures that would invalidate a nightly result."""
 
+import importlib.machinery
 import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pandas as pd
@@ -16,6 +18,78 @@ SPEC = importlib.util.spec_from_file_location('nightly_check', SOURCE)
 nightly = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(nightly)
 APPROVED = '1bc15ecb7696bce216b05aa883d6897d2b8ce4342c6c2f9d62b7cc28b314539e'
+
+
+class ReaderBenchmarkTest(unittest.TestCase):
+    def benchmark(self, optimize=0):
+        source = SOURCE.parents[1] / 'benchmarks/nightly_reader.py'
+        spec = importlib.util.spec_from_file_location('reader_benchmark', source)
+        benchmark = importlib.util.module_from_spec(spec)
+        exec(compile(source.read_text(), str(source), 'exec', optimize=optimize),
+             benchmark.__dict__)
+        return benchmark
+
+    def run_batches(self, benchmark, frames, output, *, leftover=False):
+        # Inject reader faults after loading the real nightly module.
+        execute = importlib.machinery.SourceFileLoader.exec_module
+
+        def load(loader, module):
+            execute(loader, module)
+            if module.__name__ == 'nightly_reader':
+                def batches(files, directory):
+                    directory.mkdir()
+                    if leftover:
+                        (directory / 'leftover').touch()
+                    yield from frames
+
+                module.ordered_batches = batches
+
+        with patch.object(importlib.machinery.SourceFileLoader, 'exec_module',
+                          new=load):
+            return benchmark.run(output, 4)
+
+    def frame(self):
+        return pd.DataFrame(dict(ROW_ID=[0, 1, 2, 3], ENTITY=[0, 0, 0, 0],
+                                 CLASS=[0, 1, 2, 3], SCORE=[.9, .8, .7, .6]))
+
+    def test_reader_benchmark_rejects_duplicates_with_matching_count_and_sum(self):
+        frame = self.frame().assign(ROW_ID=[1, 1, 2, 2])
+        for frames in ([frame], [frame.iloc[:2], frame.iloc[2:]]):
+            with self.subTest(batches=len(frames)), \
+                    tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / 'benchmark'
+                with self.assertRaises(ValueError):
+                    self.run_batches(self.benchmark(), frames, output)
+                self.assertFalse((output / 'measurement.json').exists())
+
+    def test_reader_benchmark_rejects_bad_results_under_optimization(self):
+        frame = self.frame()
+        for frames, leftover in (
+                ([frame.iloc[[1, 0, 2, 3]]], False),
+                ([frame.iloc[2:], frame.iloc[:2]], False),
+                ([frame.iloc[:3]], False),
+                ([frame], True)):
+            with self.subTest(rows=sum(map(len, frames)), leftover=leftover), \
+                    tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / 'benchmark'
+                with self.assertRaises(ValueError):
+                    self.run_batches(self.benchmark(optimize=1), frames,
+                                     output, leftover=leftover)
+                self.assertFalse((output / 'measurement.json').exists())
+
+    def test_reader_benchmark_reports_memory_in_bytes_on_linux_and_macos(self):
+        for platform, peak in (('linux', 7), ('darwin', 7168)):
+            with self.subTest(platform=platform), \
+                    tempfile.TemporaryDirectory() as directory:
+                benchmark = self.benchmark()
+                with patch.object(benchmark, 'sys',
+                                  SimpleNamespace(platform=platform),
+                                  create=True), \
+                        patch.object(benchmark.resource, 'getrusage',
+                                     return_value=SimpleNamespace(ru_maxrss=peak)):
+                    result = benchmark.run(Path(directory) / 'benchmark', 4)
+                self.assertEqual(result['peak_process_rss_bytes'], 7168)
+                self.assertEqual(result['rows'], 4)
 
 
 class NightlyRuntimeTest(unittest.TestCase):
