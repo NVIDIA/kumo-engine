@@ -69,7 +69,9 @@ Add these lines to the restatement:
 ```
 
 Submitting is execution: it happens only when the user asks for it (router Step 3), after this
-confirmation. Writing the job notebook and the submission cell is Step 2.
+confirmation. Writing the job notebook and the submission cell is Step 2, also after this
+confirmation (`adapter.md` §0). A request that already says "write a job" or names the cluster to
+run on is not that confirmation: reply with the restatement and stop.
 
 ## 4. Cluster
 

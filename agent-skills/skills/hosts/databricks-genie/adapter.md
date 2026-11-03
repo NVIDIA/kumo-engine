@@ -14,6 +14,29 @@ schedules and cost — is in `job.md`; read it only when the user asks for a job
 
 ---
 
+## 0. Nothing is written before the gate
+
+Genie Code can act on the workspace, and a request that names a deliverable — "make the notebook",
+"write a job", "score every account", "fit on this table" — reads like permission to act. It is
+not: it starts intake. Until the user has confirmed the Node 1d restatement, in a later turn:
+
+- do not create, import, upload or edit a notebook or any file, in the workspace or on local disk;
+- do not submit a run, create a job, or create a table, volume or model;
+- do not put the code in your reply.
+
+Preflight reads — the SQL in §2 and §3, reading clusters, registered models and runs — are not
+writes and need no confirmation. A reply that reaches a gate ends with the proposal or the
+restatement and its confirmation question.
+
+This holds for a follow-up in a session that already has a notebook. A change to its population,
+labels, task or destination goes back through the gates: answer with the restatement, or the
+ask-back, never with edited code.
+
+After confirmation, Step 2 creates the one notebook (`runtime.md` §0). Running it, or submitting
+it as a job, is Step 3 and waits for its own explicit request (`job.md` §3).
+
+---
+
 ## 1. Source scope
 
 `source_scope` is a Unity Catalog **catalog and schema**: `catalog.schema`, or a schema with the

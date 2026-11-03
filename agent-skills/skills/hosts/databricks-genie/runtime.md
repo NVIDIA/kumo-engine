@@ -12,8 +12,9 @@ A Databricks notebook in the user's workspace, attached to a **classic GPU clust
 Catalog through the confirmed SQL warehouse; it does not use Spark. Genie Code's own serverless
 execution has neither a GPU nor Kumo: it serves intake, never the notebook.
 
-Create **one new notebook**, named after the task (`kumo_churn_30d`), next to the notebook the user
-is in, else in their home folder. Never overwrite or append to an existing notebook. Each step is
+Only after the user has confirmed the Node 1d restatement (`adapter.md` §0), create **one new
+notebook**, named after the task (`kumo_churn_30d`), next to the notebook the user is in, else in
+their home folder. Never overwrite or append to an existing notebook. Each step is
 its own code cell. Show the user where the notebook is. Creating it is not running it: Step 3
 still waits for an explicit request.
 
