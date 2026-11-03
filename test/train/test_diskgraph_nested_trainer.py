@@ -849,6 +849,17 @@ def test_init_passes_eval_limits_and_runtime_options(
     }
 
 
+def test_init_passes_uncapped_eval_limits(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    stub = _StubTrainer(max_val_steps=None, max_test_steps=None)
+
+    _run_init(stub, monkeypatch=monkeypatch)
+
+    dm_kwargs = stub.datamodule_kwargs  # type: ignore[attr-defined]
+    assert dm_kwargs["max_val_steps"] is None
+    assert dm_kwargs["max_test_steps"] is None
+
+
 def test_init_applies_diskgraph_auto_config_to_ttng_runtime(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """TT-NG must forward the legacy policy to the wheel, not bypass it."""
