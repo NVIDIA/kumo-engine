@@ -6,6 +6,8 @@ import copy
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Dict, Mapping, Optional, Union
 
+from kumoapi.typing import TimestampPrecision
+
 from io_utils import kumo_dataclass
 from kumo.config.predictive_query import PredictiveQueryV2Config
 from kumo.data.cache.graph_cache import GraphVersion
@@ -148,3 +150,4 @@ class GraphDataVersionInfo:
     # Name/alias of the graph at the time the snapshot was taken.
     # None if the graph had no alias set.
     graph_name: Optional[str] = None
+    timestamp_precision: TimestampPrecision = 'seconds'

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import builtins
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, get_args
 
 import pydantic
 from pandas import DateOffset
@@ -30,6 +30,25 @@ _FORBID_EXTRA_CONFIG = _forbid_extra_config()
 
 SUPPORTED_MULTICATEGORICAL_DELIMITERS = frozenset({',', '|', ';', '\t'})
 MulticategoricalDelimiter = Literal[',', '|', ';', '\t']
+
+TimestampPrecision = Literal['nanoseconds', 'microseconds', 'milliseconds',
+                             'seconds', 'hours', 'days']
+
+
+def validate_timestamp_precision(timestamp_precision: str) -> None:
+    if timestamp_precision not in get_args(TimestampPrecision):
+        raise ValueError(f"timestamp_precision must be one of "
+                         f"{get_args(TimestampPrecision)}, got "
+                         f"{timestamp_precision!r}")
+
+
+def check_prediction_precision(trained: str, predicted: str) -> None:
+    r"""Rejects predicting on a snapshot in another clock than training's."""
+    if predicted != trained:
+        raise ValueError(
+            f"The model was trained on a {trained} snapshot, but the "
+            f"prediction snapshot is {predicted}. Predict on a {trained} "
+            f"snapshot (timestamp_precision='{trained}').")
 
 
 class Stype(StrEnum):

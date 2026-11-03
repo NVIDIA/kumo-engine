@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 from typing import Any, Dict, List, Optional, Tuple
 
 from kumoapi.pquery.AST import (Aggregation, ASTNode, Column, Condition,
@@ -11,7 +12,7 @@ from kumoapi.typing import BoolOp
 
 from ._c import (DiskgraphConfigError, DiskgraphDataError,
                  DiskgraphSystemError, DiskGraphTTBuilder, EdgeRef, RowFilter,
-                 StageFilter, TimeUnit)
+                 StageFilter, TimeUnit, read_index_metadata)
 from .split_contract import SplitSpec
 
 VALID_TASK_TYPES = {
@@ -74,14 +75,22 @@ def _validate_lp_layout(name: str, value: Optional[str], allowed: set[str]) -> N
 def _requires_non_empty_target_list(task_type: str) -> bool:
     return task_type in TASK_TYPES_REQUIRING_NON_EMPTY_TARGET_LIST
 
+def index_timestamp_unit(index_path: Optional[str]) -> str:
+    """The clock the index at ``index_path`` stores timestamps in (seconds when omitted)."""
+    if index_path is None:
+        return "seconds"
+    return json.loads(read_index_metadata(index_path)).get("timestamp_unit", "seconds")
+
 
 class DiskGraphPlanCompiler:
     """
     Translates a ValidatedPredictiveQuery (AST) into a DiskGraphTTPlan (JSON).
+    Plans are written in the clock of the index at ``index_path`` (seconds when omitted).
     """
 
-    def __init__(self, builder: Optional[DiskGraphTTBuilder] = None):
-        self.builder = builder or DiskGraphTTBuilder()
+    def __init__(self, index_path: Optional[str] = None):
+        self._timestamp_unit = index_timestamp_unit(index_path)
+        self.builder = DiskGraphTTBuilder(self._timestamp_unit)
         self._alias_counter = 0
         self._is_link_pred: bool = False
         self._lp_rhs_entity_table: Optional[str] = None
@@ -401,7 +410,7 @@ class DiskGraphPlanCompiler:
                         return RowFilter.compare_to_entity(col_name, op, ent_col)
                     else:
                         val = node.get_typed_value()
-                        return RowFilter.compare(col_name, op, val)
+                        return RowFilter.compare(col_name, op, val, self._timestamp_unit)
 
             path, leaf = self._extract_path(node.target, query, root_table=root_table)
             col_name = leaf.fqn.split('.')[1]
@@ -420,9 +429,10 @@ class DiskGraphPlanCompiler:
                     op = "is_null" if op in ("==", "eq") else "is_not_null"
                     val = 0
                 if not path:
-                    return RowFilter.compare(col_name, op, val)
+                    return RowFilter.compare(col_name, op, val, self._timestamp_unit)
                 else:
-                    return RowFilter.compare_remote_lhs(path, col_name, op, val)
+                    return RowFilter.compare_remote_lhs(path, col_name, op, val,
+                                                        self._timestamp_unit)
 
         elif isinstance(node, LogicalOperation):
             left = self._compile_row_filter(node.left, query, context_table=context_table)
@@ -453,7 +463,7 @@ class DiskGraphPlanCompiler:
                     if val is None:
                         op = "is_null" if op in ("==", "eq") else "is_not_null"
                         val = 0
-                    return StageFilter.compare(alias, op, val)
+                    return StageFilter.compare(alias, op, val, self._timestamp_unit)
 
             # LHS is a Join wrapping an aggregation (edge traversal in stage filter)
             elif isinstance(node.target, Join):
@@ -468,7 +478,7 @@ class DiskGraphPlanCompiler:
                     if val is None:
                         op = "is_null" if op in ("==", "eq") else "is_not_null"
                         val = 0
-                    return StageFilter.compare(alias, op, val)
+                    return StageFilter.compare(alias, op, val, self._timestamp_unit)
 
             # Simple Column LHS in StageFilter — must emit a column-fetch
             # op so the Rust engine can resolve the alias at execution time.
@@ -481,7 +491,7 @@ class DiskGraphPlanCompiler:
                     if val is None:
                         op = "is_null" if op in ("==", "eq") else "is_not_null"
                         val = 0
-                    return StageFilter.compare(alias, op, val)
+                    return StageFilter.compare(alias, op, val, self._timestamp_unit)
 
         elif isinstance(node, LogicalOperation):
             left = self._compile_stage_filter(node.left, query)

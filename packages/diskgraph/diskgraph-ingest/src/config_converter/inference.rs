@@ -533,13 +533,14 @@ pub struct ResolvedTemporal {
 }
 
 /// Detect (unless declared) and apply the temporal hint for one column,
-/// yielding epoch seconds, or epoch days when `as_days`. Best-effort: a null or
-/// unparseable value yields `None`, never an epoch.
+/// yielding epochs in `clock` ticks, or epoch days when `as_days`. Best-effort:
+/// a null or unparseable value yields `None`, never an epoch.
 pub fn resolve_temporal(
     array: &arrow_array::ArrayRef,
     declared_format: Option<&str>,
     declared_unit: Option<TimestampUnit>,
     as_days: bool,
+    clock: diskgraph_core::time::TimeUnit,
 ) -> ResolvedTemporal {
     let normalized = normalize_epoch_column(array.as_ref());
     let array = normalized.as_ref().unwrap_or(array);
@@ -559,7 +560,8 @@ pub fn resolve_temporal(
     let mut access = diskgraph_rowpack::RowAccess::new(
         vec![hints],
         diskgraph_rowpack::RowAccessStats::default(),
-    );
+    )
+    .with_clock(clock);
     access.set_cols(std::slice::from_ref(array));
     let epochs = (0..array.len())
         .map(|row| {
@@ -1690,6 +1692,7 @@ mod tests {
 mod tests_resolve {
     use super::*;
     use arrow_array::ArrayRef;
+    use diskgraph_core::time::TimeUnit;
     use std::sync::Arc;
 
     const JUL_4_2019: i64 = 1_562_198_400;
@@ -1744,7 +1747,7 @@ mod tests_resolve {
         fmt: Option<&str>,
         unit: Option<TimestampUnit>,
     ) -> ResolvedTemporal {
-        resolve_temporal(array, fmt, unit, false)
+        resolve_temporal(array, fmt, unit, false, TimeUnit::Seconds)
     }
 
     #[test]
@@ -1913,7 +1916,7 @@ mod tests_resolve {
     #[test]
     fn resolve_string_epoch_column_is_a_unit_not_a_date_format() {
         let array = strings(&[Some("1562198400"), Some("1562284800")]);
-        let r = resolve_temporal(&array, None, None, false);
+        let r = resolve_temporal(&array, None, None, false, TimeUnit::Seconds);
         assert_eq!(r.format, None);
         assert_eq!(r.unit, Some(TimestampUnit::Seconds));
         assert_eq!(r.epochs, vec![Some(JUL_4_2019), Some(JUL_4_2019 + 86_400)]);
@@ -1927,7 +1930,7 @@ mod tests_resolve {
             Some("2019-07-04 12:00:00"),
             None,
         ]);
-        let r = resolve_temporal(&array, None, None, true);
+        let r = resolve_temporal(&array, None, None, true, TimeUnit::Seconds);
         let day = JUL_4_2019 / 86_400;
         assert_eq!(r.epochs, vec![Some(day), Some(day + 1), None]);
         assert_eq!(r.format.as_deref(), Some("%Y-%m-%d %H:%M:%S"));

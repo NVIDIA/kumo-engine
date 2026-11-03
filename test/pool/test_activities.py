@@ -3576,6 +3576,7 @@ async def test_ensure_snapshot_local_fresh_ingest_reports_snapshot_size(
     table.fingerprint.return_value = mock.sentinel.fingerprint
     ingest_args = SimpleNamespace(
         graph_config=mock.sentinel.graph_config,
+        timestamp_precision='seconds',
         data_persist_dir=str(tmp_path / 'data-persist-dir'),
         table_data_versions={'transactions': 'v1'},
         connector_specs={},
@@ -3671,6 +3672,7 @@ async def test_ensure_snapshot_local_mixes_direct_object_and_staged_sources(
         return fake_result
 
     ingest_args = SimpleNamespace(
+        timestamp_precision='seconds',
         data_persist_dir=str(tmp_path / 'persist'),
         table_data_versions={
             'direct': 'v1',
@@ -3798,6 +3800,7 @@ async def test_cancelled_ingest_holds_snapshot_lock_until_native_terminal(
         return fake_result
 
     ingest_args = SimpleNamespace(
+        timestamp_precision='seconds',
         data_persist_dir=str(tmp_path / 'persist'),
         table_data_versions={},
         connector_specs={},
@@ -3868,6 +3871,7 @@ async def test_ensure_snapshot_local_no_space_removes_partial_attempt(tmp_path):
         raise DiskgraphNoSpaceError('local SSD full')
 
     ingest_args = SimpleNamespace(
+        timestamp_precision='seconds',
         data_persist_dir=str(tmp_path / 'persist'),
         table_data_versions={'orders': 'v1'},
         connector_specs={'dbx': mock.sentinel.connector_ref},
@@ -3922,6 +3926,7 @@ async def test_ensure_snapshot_local_resumes_after_encode_without_credentials(
         kumo_stats_dir=str(local_dir / 'kumo_col_stats'),
     )
     ingest_args = SimpleNamespace(
+        timestamp_precision='seconds',
         data_persist_dir=str(tmp_path / 'persist'),
         table_data_versions={'orders': 'v1'},
         connector_specs={'dbx': mock.sentinel.connector_ref},
@@ -3983,6 +3988,7 @@ async def test_ensure_snapshot_local_early_retry_reuses_persisted_sources(
         kumo_stats_dir=str(local_dir / 'kumo_col_stats'),
     )
     ingest_args = SimpleNamespace(
+        timestamp_precision='seconds',
         data_persist_dir=str(tmp_path / 'persist'),
         table_data_versions={'events': 'v1'},
         connector_specs={'files': mock.sentinel.connector_ref},
