@@ -459,9 +459,18 @@ def test_unverified_selection_does_not_identify_a_winner(tmp_path):
     assert 'Selection unverified:' in view._repr_html_()
 
 
-@pytest.mark.parametrize(
-    'task',
-    ['static_link_prediction', 'temporal_link_prediction', 'forecasting'])
+@pytest.mark.parametrize(('task', 'architecture', 'module'), [
+    ('static_link_prediction', 'two_tower', 'two_tower'),
+    ('static_link_prediction', 'shallow_rhs', 'shallow_rhs'),
+    ('static_link_prediction', 'context', 'hybrid'),
+    ('temporal_link_prediction', 'two_tower', 'two_tower'),
+    ('temporal_link_prediction', 'shallow_rhs', 'shallow_rhs'),
+    ('temporal_link_prediction', 'context', 'hybrid'),
+    ('temporal_link_prediction', 'pairwise', 'id'),
+    ('regression', 'two_tower', 'two_tower'),
+    ('binary_classification', 'shallow_rhs', 'shallow_rhs'),
+    ('forecasting', '???', None),
+])
 @pytest.mark.parametrize('refit', [False, True])
 @pytest.mark.parametrize('state', [
     'missing', 'retained', 'invalid', 'disabled', 'failed', 'unknown_module',
@@ -469,10 +478,12 @@ def test_unverified_selection_does_not_identify_a_winner(tmp_path):
     'malformed_config', 'oversized_plan', 'escaping_plan', 'unknown_task',
     'unverified_selection', 'cohort_conflict', 'sample_conflict',
     'missing_module_key', 'head_conflict', 'malformed_head',
-    'malformed_architecture'
+    'malformed_architecture', 'plan_module_conflict', 'missing_plan_module',
+    'null_module', 'list_module', 'dict_module', 'null_plan_module',
+    'list_plan_module', 'dict_plan_module'
 ])
 def test_producer_guidance_preserves_observation_and_abstains(
-        tmp_path, task, refit, state):
+        tmp_path, task, architecture, module, refit, state):
     run, trial = _run(tmp_path, refit=refit)
     trial = Path(trial)
     original = trial.with_name('version_2')
@@ -481,14 +492,12 @@ def test_producer_guidance_preserves_observation_and_abstains(
             dict(
                 refit_cfg=dict(refitted_trainval=refit),
                 module_kwargs=None if task == 'forecasting' else dict(
-                    module='two_tower'), head={
+                    module=module), head={
                         '_target_':
                         'kumo_core.modeling.heads.forecasting.ForecastingHead'
                     }), str(path / 'config.json'))
-        save_json(
-            dict(model_architecture=dict(
-                module='???' if task == 'forecasting' else 'two_tower')),
-            str(path / 'model_plan.json'))
+        save_json(dict(model_architecture=dict(module=architecture)),
+                  str(path / 'model_plan.json'))
     save_json(dict(task_type=task),
               str(run / 'published-model/manifests/task.json'))
     if state in ('retained', 'disabled', 'failed', 'cohort_conflict',
@@ -510,9 +519,18 @@ def test_producer_guidance_preserves_observation_and_abstains(
         config = json.loads((path / 'config.json').read_text())
         config['module_kwargs'] = ([] if state == 'malformed_config' else {
             'module':
-            'unknown' if state == 'unknown_module' else 'shallow_rhs'
+            'unknown' if state == 'unknown_module' else
+            'shallow_rhs' if module == 'two_tower' else 'two_tower'
         })
         save_json(config, str(path / 'config.json'))
+    elif state in ('null_module', 'list_module', 'dict_module'):
+        config = json.loads((trial / 'config.json').read_text())
+        config['module_kwargs'] = dict(module={
+            'null_module': None,
+            'list_module': [],
+            'dict_module': {}
+        }[state])
+        save_json(config, str(trial / 'config.json'))
     elif state in ('missing_module_key', 'head_conflict', 'malformed_head'):
         config = json.loads((trial / 'config.json').read_text())
         if state == 'missing_module_key':
@@ -524,6 +542,16 @@ def test_producer_guidance_preserves_observation_and_abstains(
         save_json(config, str(trial / 'config.json'))
     elif state == 'malformed_architecture':
         save_json(dict(model_architecture=None), str(trial / 'model_plan.json'))
+    elif state in ('plan_module_conflict', 'missing_plan_module',
+                   'null_plan_module', 'list_plan_module', 'dict_plan_module'):
+        values = dict(
+            plan_module_conflict='shallow_rhs'
+            if architecture == 'two_tower' else 'two_tower',
+            null_plan_module=None, list_plan_module=[], dict_plan_module={})
+        save_json(
+            dict(model_architecture={} if state ==
+                 'missing_plan_module' else dict(module=values[state])),
+            str(trial / 'model_plan.json'))
     elif state in ('missing_config', 'missing_plan'):
         (trial /
          ('config.json' if state == 'missing_config' else 'model_plan.json')
@@ -551,12 +579,24 @@ def test_producer_guidance_preserves_observation_and_abstains(
     expected = state in ('missing', 'retained', 'invalid', 'disabled', 'failed')
     expected |= task != 'forecasting' and state in ('head_conflict',
                                                     'malformed_head')
+    expected |= task == 'forecasting' and state in (
+        'plan_module_conflict', 'missing_plan_module', 'null_plan_module',
+        'list_plan_module', 'dict_plan_module')
+    is_link = task in ('static_link_prediction', 'temporal_link_prediction')
+    expected &= task == 'forecasting' or (
+        is_link and
+        not (task == 'static_link_prediction' and module in ('hybrid', 'id')))
     for name in ('gradient', 'cohorts', 'samples'):
         note = result[name].pop('producer_note', None)
-        assert bool(note) == expected
+        assert bool(note) == (expected
+                              and (task == 'forecasting' or name == 'cohorts'
+                                   or module == 'two_tower'))
         if note:
             assert ('Recorded forecasting.' if task == 'forecasting' else
-                    'two-tower link prediction') in note
+                    'Recorded two-tower link prediction.' if module
+                    == 'two_tower' else 'Recorded link prediction.') in note
+            if is_link and name == 'cohorts':
+                assert 'Column cohorts require a node-prediction module.' in note
             if task == 'forecasting' and name == 'gradient':
                 assert 'normalized over produced columns' in note
                 assert 'summed encoded model outputs across all forecast horizons' in note

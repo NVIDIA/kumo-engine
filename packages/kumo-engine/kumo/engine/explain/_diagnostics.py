@@ -224,21 +224,33 @@ def _read_training(guard: _Guard, trial: Path,
         if provenance['selection_verified'] and payload['context'].get(
                 'task_type') in ('static_link_prediction',
                                  'temporal_link_prediction'):
+            modules = dict(two_tower='two_tower', shallow_rhs='shallow_rhs',
+                           context='hybrid', pairwise='id')
+            module = config['module_kwargs']['module']
+            if (module not in modules.values() or
+                (payload['context']['task_type'] == 'static_link_prediction'
+                 and module in ('hybrid', 'id'))):
+                raise ValueError('Unverified link-prediction module')
             for path in dict.fromkeys((original, trial)):
                 recorded = config if path == original else guard.json(
                     path / 'config.json')
                 plan = guard.json(path / 'model_plan.json')
-                if (recorded['module_kwargs']['module'] != 'two_tower'
-                        or plan['model_architecture']['module'] != 'two_tower'):
-                    raise ValueError('Unverified two_tower module')
+                if (recorded['module_kwargs']['module'] != module
+                        or modules.get(
+                            plan['model_architecture']['module']) != module):
+                    raise ValueError('Unverified link-prediction module')
             for name, rule in (
                 ('gradient', 'Gradient explanations exclude this module.'),
                 ('cohorts', 'Column cohorts require a node-prediction module.'),
                 ('samples',
                  'Selected-example collection excludes this module.')):
-                producer_notes[name] = (
-                    'Recorded two-tower link prediction. ' + rule +
-                    ' Eligibility alone does not explain missing artifacts.')
+                if name == 'cohorts' or module == 'two_tower':
+                    producer_notes[name] = (
+                        ('Recorded two-tower link prediction. ' if module
+                         == 'two_tower' else 'Recorded link prediction. ') +
+                        rule +
+                        ' Eligibility alone does not explain missing artifacts.'
+                    )
         elif provenance['selection_verified'] and payload['context'].get(
                 'task_type') == 'forecasting':
             for path in dict.fromkeys((original, trial)):
