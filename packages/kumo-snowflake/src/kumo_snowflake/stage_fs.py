@@ -11,7 +11,7 @@ import threading
 import uuid
 import weakref
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 from kumo_core.chunked_fs import ChunkedFileHandler, spool_root
 from kumo_core.sources.diagnostics import safe_summary
@@ -46,7 +46,6 @@ class StageFileSystemHandler(ChunkedFileHandler):
 
     def __init__(self, session: SnowflakeSession, root: str) -> None:
         self._stage = _split_stage_location(root)[0]
-        self._root = root
         self._session = session
         self._files = _StageFiles(session, parallel=1)
         self._urls: Dict[str, str] = {}
@@ -101,8 +100,9 @@ class StageFileSystemHandler(ChunkedFileHandler):
                 f'Snowflake stage {self._stage} is client-side encrypted; '
                 "use ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE').")
         if mode == _RANGED:
-            return _RangedPart(self, path)
-        return _DownloadedPart(self, path, size)
+            return _Part(lambda offset, length: self._get(path, offset, length))
+        return _Part(lambda offset, length: _read(
+            self._downloaded(path, size), offset, length))
 
     def _read_mode(self) -> str:
         key = (getattr(self._session.connection, 'account', None), self._stage)
@@ -205,33 +205,18 @@ class StageFileSystemHandler(ChunkedFileHandler):
             return local[0]
 
 
-class _RangedPart:
-    def __init__(self, handler: StageFileSystemHandler, path: str) -> None:
-        self._handler = handler
-        self._path = path
-
-    def read_at(self, offset: int, length: int) -> bytes:
-        return self._handler._get(self._path, offset, length)
+class _Part:
+    def __init__(self, read_at: Callable[[int, int], bytes]) -> None:
+        self.read_at = read_at
 
     def close(self) -> None:
         pass
 
 
-class _DownloadedPart:
-    def __init__(self, handler: StageFileSystemHandler, path: str,
-                 size: int) -> None:
-        self._handler = handler
-        self._path = path
-        self._size = size
-
-    def read_at(self, offset: int, length: int) -> bytes:
-        with open(self._handler._downloaded(self._path, self._size),
-                  'rb') as reader:
-            reader.seek(offset)
-            return reader.read(length)
-
-    def close(self) -> None:
-        pass
+def _read(path: Path, offset: int, length: int) -> bytes:
+    with open(path, 'rb') as reader:
+        reader.seek(offset)
+        return reader.read(length)
 
 
 def stage_filesystem(session: SnowflakeSession,
