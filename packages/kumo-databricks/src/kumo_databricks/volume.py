@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import inspect
 import io
 import posixpath
 import queue
@@ -22,12 +23,20 @@ from pyarrow.fs import FileSystem, PyFileSystem
 
 _FILES = '/api/2.0/fs/files'
 _BUFFER = 8 << 20
+_UPLOAD_BOUNDS = {'part_size': 16 << 20, 'parallelism': 4}
 
 
 def is_volume_path(path: str) -> bool:
     parts = path.rstrip('/').split('/')
     return (path.startswith('/Volumes/') and len(parts) >= 5
             and all(parts[1:]) and posixpath.normpath(path) == path.rstrip('/'))
+
+
+def _upload(client: WorkspaceClient, path: str, source: BinaryIO) -> None:
+    upload = client.files.upload
+    bounds = (_UPLOAD_BOUNDS if 'parallelism' in inspect.signature(
+        upload).parameters else {})
+    upload(path, source, overwrite=True, **bounds)
 
 
 def volume_filesystem(client: WorkspaceClient) -> FileSystem:
@@ -83,7 +92,7 @@ class VolumeHandler(ChunkedFileHandler):
 
     def _put(self, local: str, path: str) -> None:
         with _translated(path), open(local, 'rb') as contents:
-            self._client.files.upload(path, contents, overwrite=True)
+            _upload(self._client, path, contents)
 
     def _stream(self, path: str) -> BinaryIO:
         return _Upload(self._client, path)
@@ -189,7 +198,7 @@ class _Upload(io.RawIOBase):
         def upload() -> None:
             try:
                 with _translated(path):
-                    client.files.upload(path, source, overwrite=True)
+                    _upload(client, path, source)
             except BaseException as error:
                 self._error = error
 
