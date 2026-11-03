@@ -1417,6 +1417,8 @@ class SnapshotActivities:
                                 data_persist_dir=ingest_args.data_persist_dir,
                                 table_data_versions=(
                                     ingest_args.table_data_versions),
+                                timestamp_precision=(
+                                    ingest_args.timestamp_precision),
                                 source_paths=(source_paths or None),
                                 source_specs=(source_specs or None),
                                 subprocess_environment=(subprocess_environment

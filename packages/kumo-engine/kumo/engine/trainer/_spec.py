@@ -44,6 +44,7 @@ class TrainingSpec:
     snapshot_id: str
     training_table_generation: Dict[str, Any]
     graph_config: Optional[Dict[str, Any]] = None
+    timestamp_precision: str = 'seconds'
 
 
 def write_training_spec(
@@ -54,6 +55,7 @@ def write_training_spec(
     snapshot_id: str,
     training_table_generation: TrainingTableGenerationPlan,
     graph_config: Optional[Dict[str, Any]] = None,
+    timestamp_precision: str = 'seconds',
 ) -> None:
     r"""Write an integrity-covered training spec into a completed bundle."""
     from kumo_core.artifacts import add_bundle_file
@@ -66,6 +68,7 @@ def write_training_spec(
         snapshot_id=snapshot_id,
         training_table_generation=to_json_dict(training_table_generation),
         graph_config=graph_config,
+        timestamp_precision=timestamp_precision,
     )
     spec_path = bundle_dir / SPEC_FILE
     atomic_write_bytes(
@@ -105,6 +108,7 @@ def read_training_spec(bundle_dir: Path) -> TrainingSpec:
         snapshot_id=data['snapshot_id'],
         training_table_generation=data['training_table_generation'],
         graph_config=data.get('graph_config'),
+        timestamp_precision=data.get('timestamp_precision', 'seconds'),
     )
 
 

@@ -708,6 +708,7 @@
             unit: "s".to_string(),
         };
         let config = GraphConfig {
+            timestamp_unit: Default::default(),
             dataset_name: "predict_unify_test".to_string(),
             tables: vec![
                 TableSpec {

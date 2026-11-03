@@ -293,6 +293,7 @@ fn test_ingest_skips_reverse_when_bidirectional_false_in_config_dst() {
         bidirectional: false,
     }];
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "fwd_only".to_string(),
         tables: vec![users, orders],
         rowpack: None,
@@ -459,6 +460,7 @@ fn ingest_tiny_parent_index_impl(
     };
 
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "tiny_parent".to_string(),
         tables: vec![table],
         rowpack: None,
@@ -826,6 +828,7 @@ fn ingest_users_orders_parent_index(parent_root: &Path, n_users: i64) -> Result<
     }];
 
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "users_orders_parent".to_string(),
         tables: vec![users, orders],
         rowpack: None,
@@ -877,6 +880,7 @@ fn ingest_one_extension(
 
     let seed_table = seed_table_spec(seed_parquet.to_str().unwrap());
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: format!("seed_{tt_id}"),
         tables: vec![seed_table],
         rowpack: None,
@@ -1637,6 +1641,7 @@ fn test_sample_runtime_batch_seed_topology_excluded_features_preserved() {
         },
     );
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: format!("seed_{tt_id}"),
         tables: vec![seed_table],
         rowpack: None,
@@ -2647,6 +2652,7 @@ fn ingest_one_extension_with_weight(
         },
     );
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: format!("seed_{tt_id}"),
         tables: vec![seed_table],
         rowpack: None,
