@@ -742,20 +742,27 @@ if(ranked.length>100)note(patterns,'Showing the first 100 cohort records by reco
 cohortView=el('div',undefined,'kt-detail');patterns.append(cohortView);cohortResize.observe(cohortView);
 if(ranked.length)inspectCohort(ranked[0].index);else{cohortView.hidden=true;}
 const examples=section('Selected examples');
-note(examples,'Selected TEST examples with sampled relational context. Recorded selection strategies can overlap and do not define thresholded prediction outcomes. '
-+'Collector IDs identify artifacts, not original entities.');state(examples,data.samples,'Examples');
+note(examples,'Compare retained TEST predictions and observed targets. Selection strategies may overlap and are not prediction outcomes; selected entities do not represent the full TEST population.');
+state(examples,data.samples,'Examples');
 const samples=obj(data.samples),coverage=obj(samples.coverage),references=list(samples.references),bodies=obj(samples.bodies);
-note(examples,'Coverage: '+text(coverage.references_listed??references.length)+' listed of '+text(coverage.references_total)+' recorded references; '
+note(examples,text(coverage.loaded??Object.keys(bodies).length)+(coverage.references_total==null?' loaded; recorded total unavailable':' of '+text(coverage.references_total)+' recorded references loaded')
++(coverage.missing?'; '+text(coverage.missing)+' missing':'')+(coverage.malformed?'; '+text(coverage.malformed)+' malformed':'')
++(coverage.excluded?'; '+text(coverage.excluded)+' excluded by load limits':'')+(coverage.catalog_excluded?'; '+text(coverage.catalog_excluded)+' catalog references excluded':'')+'.');
+const loadingDetails=el('details');loadingDetails.append(el('summary','Selection and loading details'));
+note(loadingDetails,'Coverage: '+text(coverage.references_listed??references.length)+' listed of '+text(coverage.references_total)+' recorded references; '
 +text(coverage.available)+' available graph files; '+text(coverage.loaded??Object.keys(bodies).length)+' loaded; '
 +text(coverage.missing)+' missing; '+text(coverage.malformed)+' malformed; '+text(coverage.excluded)+' excluded by load limits.');
-if(references.length)note(examples,'Preloaded example identities and values may be saved in notebook HTML or widget state. '
+note(loadingDetails,'Recorded selection strategies can overlap and do not define thresholded prediction outcomes. Collector IDs identify artifacts, not original entities.');
+if(references.length)note(loadingDetails,'Preloaded example identities and values may be saved in notebook HTML or widget state. '
 +'Inspect other retained graphs in Python with explanations.sample(collector_id).');
 const sampleView=el('div',undefined,'kt-detail'),sampleButtons=[];
 const nodeIdentity=(store,id)=>{const node=obj(obj(store.nodes)[id]);
 const tables=Object.entries(obj(store.tables)).filter(([,ids])=>list(ids).some(value=>String(value)===String(id))).map(([name])=>name);
 return node.count!==undefined?'Aggregate of '+text(node.count)+' recorded nodes'+(tables.length?' · '+tables.join(', '):''):
 Object.hasOwn(node,'pkey')&&node.pkey!==null?(tables.length?tables.join(', ')+'.':'')+text(node.pkey_name)+': '+JSON.stringify(node.pkey):'Original entity unavailable';};
-const sampleIdentity=ref=>{const store=obj(obj(bodies[ref.artifact_id]).subgraph_store);return nodeIdentity(store,store.root_id);};
+const sampleIdentity=ref=>{const store=obj(obj(bodies[ref.artifact_id]).subgraph_store),identity=nodeIdentity(store,store.root_id);
+const original=[...new Set(Object.values(obj(ref.original_ids)).map(value=>JSON.stringify(value)??'Unavailable'))];
+return identity!=='Original entity unavailable'?identity:original.length?'Recorded original ID: '+original.join(', '):identity;};
 const featureCells=body=>Object.entries(obj(obj(body.feature_store).features)).flatMap(([id,columns])=>
 Object.entries(obj(columns)).map(([name,value])=>({id,name,feature:obj(value)})));
 const localAxis=body=>featureCells(body).reduce((max,{feature})=>
@@ -1020,9 +1027,9 @@ const inspectSample=(ref,index)=>{selectedExample={ref,index};sampleView.replace
 if(selectedFeature)drawFeatureContext(featureContext);
 sampleButtons.find(item=>item.rowIndex===index)?.button.closest('tr').after(sampleDetailRow);
 sampleView.append(el('h3',sampleIdentity(ref).length>100?sampleIdentity(ref).slice(0,100)+'…':sampleIdentity(ref)));
-identityNote(sampleView,'Example identity',sampleIdentity(ref)+' · Collector '+text(ref.artifact_id));
-identityNote(sampleView,'Recorded original IDs','Recorded original IDs: '+text(Object.keys(obj(ref.original_ids)).length?ref.original_ids:'Unavailable')
-+' · Strategies: '+(list(ref.categories).join(', ')||'Unavailable'));
+if(sampleIdentity(ref).length>100)identityNote(sampleView,'Example identity',sampleIdentity(ref));
+const body=obj(bodies[ref.artifact_id]),store=obj(body.subgraph_store),nodes=obj(store.nodes);
+note(sampleView,'TEST · Seed time: '+text(store.seed_time));
 const output=obj(obj(samples.outputs)[ref.artifact_id]);
 sampleView.append(el('h4','Prediction and observed target'));
 if(classificationTask){classificationOutput(sampleView,output,ref.artifact_id);
@@ -1035,10 +1042,11 @@ if(['available','partial'].includes(output.status)){
 const binary=output.task_type==='binary_classification';
 note(sampleView,binary?'Probability of the positive class; observed target: 0 = negative class, 1 = positive class.':'Values use recorded target units.');
 table(sampleView,[binary?'Positive-class probability (0 to 1)':'Prediction','Observed target'],[[output.prediction,output.target]],[0,1]);}}
-const body=obj(bodies[ref.artifact_id]),store=obj(body.subgraph_store),nodes=obj(store.nodes);
-const rootNode=obj(nodes[store.root_id]);
-identityNote(sampleView,'Root identity','Root node: '+text(store.root_id)+' · Original entity: '+text(rootNode.pkey)
-+' · Seed time: '+text(store.seed_time));
+note(sampleView,'Retained selection: '+(list(ref.categories).map(value=>text(value).replaceAll('_',' ')).join(', ')||'Unavailable')+'. Strategies may overlap; they are not prediction outcomes.');
+const identityDetails=el('details');identityDetails.append(el('summary','Recorded example identifiers'));
+identityNote(identityDetails,'Example identity',sampleIdentity(ref)+' · Collector '+text(ref.artifact_id));
+identityNote(identityDetails,'Recorded original IDs','Recorded original IDs: '+text(Object.keys(obj(ref.original_ids)).length?ref.original_ids:'Unavailable')
++' · Strategies: '+(list(ref.categories).join(', ')||'Unavailable')+' · Root node: '+text(store.root_id));sampleView.append(identityDetails);
 if(!body.subgraph_store)note(sampleView,'Relational structure unavailable.');
 if(store.task_type==='static_link_prediction'||store.task_type==='temporal_link_prediction')
 note(sampleView,'Link-prediction records can include retrieved items outside the sampled graph, with feature values but no local gradient scores. '
@@ -1065,13 +1073,13 @@ if(cells.length>200)note(sampleView,'Showing 200 of '+cells.length+' recorded fe
 sampleButtons.forEach(({button,rowIndex})=>{button.setAttribute('aria-pressed',String(rowIndex===index));
 button.closest('tr').setAttribute('aria-selected',String(rowIndex===index));});};
 const catalogRows=references.slice(0,100).map((ref,index)=>({ref,index}));
-const referenceTable=(parent,entries)=>table(parent,['Collector / original IDs','Recorded strategies','Availability / detail'],entries.map(({ref,index})=>{
-const identity=el('div'),original=[...new Set(Object.values(obj(ref.original_ids)).map(text))];
-identity.append(el('div','Collector '+text(ref.artifact_id)));
-identityNote(identity,'Original IDs',original.length?'Original ID: '+original.join(', '):'Original IDs unavailable','div');
+const referenceTable=(parent,entries)=>table(parent,['Entity','Retained selection','Availability / detail'],entries.map(({ref,index})=>{
+const identity=el('div'),original=[...new Set(Object.values(obj(ref.original_ids)).map(value=>JSON.stringify(value)??'Unavailable'))];
+identityNote(identity,'Entity',Object.hasOwn(bodies,ref.artifact_id)?sampleIdentity(ref):original.length?'Original ID: '+original.join(', '):'Original entity unavailable','div');
+const identifiers=el('details');identifiers.append(el('summary','Recorded IDs'));note(identifiers,'Collector '+text(ref.artifact_id)+' · Original IDs: '+text(ref.original_ids));identity.append(identifiers);
 let detail;if(Object.hasOwn(bodies,ref.artifact_id)){detail=action('Inspect example',()=>inspectSample(ref,index));sampleButtons.push({button:detail,rowIndex:index});}
 else detail=el('span',ref.reason||ref.status||(ref.available?'Not loaded':'Graph file missing'));
-return[identity,list(ref.categories).join(', ')||'Unavailable',detail];}));
+return[identity,list(ref.categories).map(value=>text(value).replaceAll('_',' ')).join(', ')||'Unavailable',detail];}));
 
 const loaded=catalogRows.filter(({ref})=>Object.hasOwn(bodies,ref.artifact_id));
 const remaining=catalogRows.filter(({ref})=>!Object.hasOwn(bodies,ref.artifact_id));
@@ -1083,6 +1091,7 @@ if(loaded.length){examples.append(el('h3','Loaded examples'));referenceTable(exa
 if(remaining.length){const details=el('details');details.append(el('summary','Other recorded references ('+remaining.length+')'));
 referenceTable(details,remaining);examples.append(details)}
 if(references.length>100)note(examples,'Showing the first 100 catalog references.');
+examples.append(loadingDetails);
 if(rankingEntry){
 rankingEntry.append(el('h3',classificationTask?'How do class probabilities compare with observed membership?':regressionTask?'How far was the prediction from the observed value?':'Where did observed IDs appear?'));
 if(classificationTask)note(rankingEntry,'Compare a loaded TEST example’s class probabilities with its observed membership, then inspect the same entity’s recorded context. These selected examples do not represent all TEST entities or reconstruct the aggregate metric.');
