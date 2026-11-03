@@ -172,6 +172,13 @@ align-items:start;gap:8px 16px;padding:10px 0;border-bottom:1px solid $surface_b
 .kumo-training .kt-scalar-axis{display:flex;justify-content:space-between;gap:12px;max-width:600px;color:$muted;font-size:12px;font-variant-numeric:tabular-nums}
 .kumo-training .kt-scalar-axis>span:last-child{text-align:right}
 .kumo-training .kt-scalar-error{font-weight:600;font-variant-numeric:tabular-nums;margin-bottom:0}
+.kumo-training .kt-class-list{list-style:none;padding:0;margin:8px 0 16px;max-width:600px}
+.kumo-training .kt-class-list>li{display:grid;grid-template-columns:minmax(0,140px) minmax(0,1fr);gap:8px 16px;align-items:center;padding:10px 0;border-bottom:1px solid $surface_border}
+.kumo-training .kt-class-comparison .kt-scalar-axis{margin:0 7px}
+.kumo-training .kt-class-values{display:flex;justify-content:space-between;gap:12px;font-size:13px;font-variant-numeric:tabular-nums}
+.kumo-training .kt-class-values>span:last-child{text-align:right}
+@container kumo-training (max-width:520px){
+.kumo-training .kt-class-list>li{grid-template-columns:minmax(0,1fr);gap:3px}}
 .kumo-training .kt-cohort-list{list-style:none;padding:2px;margin:8px 0;max-height:600px;overflow:auto;overflow-anchor:none}
 .kumo-training .kt-cohort-row,.kumo-training .kt-cohort-heading{display:grid;grid-template-columns:minmax(100px,24%) minmax(0,1fr) 86px;gap:10px;align-items:center}
 .kumo-training .kt-cohort-row.kt-action{width:100%;margin-bottom:3px;padding:8px;border-color:transparent}
@@ -281,7 +288,9 @@ values.setAttribute('role','region');values.setAttribute('aria-label',title);
 note(values,value);details.append(values);parent.append(details);};
 const provenance=obj(data.provenance),context=obj(data.context);
 const linkTask=['static_link_prediction','temporal_link_prediction'].includes(context.task_type||provenance.task_type);
-const regressionTask=(context.task_type||provenance.task_type)==='regression',resultTask=linkTask||regressionTask;
+const regressionTask=(context.task_type||provenance.task_type)==='regression';
+const classificationTasks=['binary_classification','multiclass_classification','multilabel_classification'];
+const classificationTask=classificationTasks.includes(context.task_type||provenance.task_type),resultTask=linkTask||regressionTask||classificationTask;
 const baseMetric=row=>text(row.name).replace(/^(test_refit_|train_|val_|test_)/,'');
 const results=section('Training results');
 const queryNode=el('div');
@@ -298,6 +307,7 @@ let rankingEntry;
 if(linkTask)results.append(el('p',context.query?'This task ranks linked IDs for each entity in the predictive query above.':
 'This task ranks linked IDs for each entity. The predictive query was not recorded.'));
 if(regressionTask)note(results,'This task predicts a numeric target for each entity in the predictive query.');
+if(classificationTask)note(results,'This task records class-membership probabilities for each entity in the predictive query.');
 const metricDetail=resultTask?el('details'):results;
 if(resultTask){
 const selectedName=typeof provenance.selection_metric==='string'?provenance.selection_metric.replace(/^val_/,''):null;
@@ -311,11 +321,16 @@ const map=linkTask&&/^map@([1-9][0-9]*)$/.exec(selected.name);
 const definitions={mae:'Mean absolute error: the average absolute distance between predictions and observed targets, on the target’s numeric scale.',
 rmse:'Root mean squared error: the square root of the average squared prediction error, on the target’s numeric scale. Larger errors receive more weight.',
 mse:'Mean squared error: the average squared distance between predictions and observed targets, on the squared target scale.'};
+const classDefinitions={auroc:'Area under the ROC curve: how well positive examples rank above negative examples across decision thresholds. This is not accuracy or a measure of probability calibration.',
+acc:'Accuracy: the fraction of evaluated examples whose highest-scoring class matches the observed class.',
+ap_macro:'Macro average precision: summarizes how well examples with a label rank ahead of examples without it, calculated per label and averaged equally across evaluated labels. Labels with constant observed membership are excluded. This is not accuracy or probability calibration.'};
+const classDefinition=classificationTask&&((context.task_type||provenance.task_type)==='binary_classification'&&selected.name==='auroc'||(context.task_type||provenance.task_type)==='multiclass_classification'&&selected.name==='acc'||(context.task_type||provenance.task_type)==='multilabel_classification'&&selected.name==='ap_macro')&&classDefinitions[selected.name];
 const definition=regressionTask&&Object.hasOwn(definitions,selected.name)&&definitions[selected.name];
-headline.append(el('h3',map?'TEST MAP@'+map[1]:'TEST '+(definition?selected.name.toUpperCase():text(selected.name))),el('div',number(selected.value),'kt-result-value'));
+headline.append(el('h3',map?'TEST MAP@'+map[1]:'TEST '+(definition||classDefinition?selected.name.toUpperCase():text(selected.name))),el('div',number(selected.value),'kt-result-value'));
 identityNote(headline,'Result scope',(fit==='original'?'Original fit':'Refit on train + validation')+' · TEST · '+selected.origin);
 if(map)note(headline,'Mean average precision over the first '+map[1]+' ranked IDs: observed IDs placed earlier raise the score. Higher is better. This is not a probability or an accuracy percentage.');
 else if(definition)note(headline,definition+' Lower is better. Target units are not recorded here.');
+else if(classDefinition)note(headline,classDefinition+' Higher is better.');
 else note(headline,'Recorded selection metric on TEST'+(provenance.selection_direction==='min'?'; lower is better.':provenance.selection_direction==='max'?'; higher is better.':'. Metric direction is not recorded.'));
 note(headline,'No baseline or quality target is recorded here. This score alone does not establish model quality.');
 const exact=el('details');exact.append(el('summary','Exact result and provenance'));
@@ -621,6 +636,42 @@ note(parent,'The signed gap describes numeric error direction, not a feature con
 const exact=el('details');exact.append(el('summary','Exact prediction, observation and arithmetic gap'));
 table(exact,['Prediction','Observed','Prediction − observed'],[[finite(prediction)?prediction:prediction==null?'Not recorded':'Invalid numeric value',finite(observed)?observed:observed==null?'Not recorded':'Invalid numeric value',finite(gap)?gap:'Unavailable']],[0,1,2],true);parent.append(exact);
 };
+const classificationOutput=(parent,output,artifact)=>{
+state(parent,output,'Output context');
+if(!['available','partial'].includes(output.status))return;
+if(!classificationTasks.includes(output.task_type)||output.task_type!==(context.task_type||provenance.task_type)){
+note(parent,'Classification output unavailable: recorded task does not match.');return;}
+const binary=output.task_type==='binary_classification',multi=output.task_type==='multilabel_classification';
+const predictions=binary?{'Positive class':output.prediction}:obj(output.prediction),targets=binary?{'Positive class':output.target}:obj(output.target);
+const labels=[...new Set([...Object.keys(predictions),...Object.keys(targets)])];
+const probability=v=>finite(v)&&v>=0&&v<=1,membership=v=>finite(v)&&(v===0||v===1);
+const shown=(value,valid)=>value==null?'Not recorded':valid(value)?number(value):'Invalid recorded value';
+note(parent,binary?'Probability of the positive class; observed membership: 0 = negative class, 1 = positive class. The positive-class name is not recorded.':multi?
+'Independent label probabilities; multiple labels may be present. Probabilities need not sum to one.':
+'Mutually exclusive class probabilities. Recorded values are not renormalized.');
+if(!binary)note(parent,'Showing '+Math.min(100,labels.length)+' of '+labels.length+' retained labels. Total class coverage is not recorded.');
+note(parent,'● Class probability · ◆ Observed membership: 0 = absent, 1 = present. The same 0 to 1 scale is used for every row.');
+const rows=el('ul',undefined,'kt-class-list');rows.setAttribute('aria-label','Recorded class probabilities and observed membership');
+const exactRows=[];
+for(const label of labels.slice(0,100)){
+const row=el('li'),name=el('div',undefined,'kt-class-label'),comparison=el('div',undefined,'kt-class-comparison');
+if(label.length>120||/[\r\n]/.test(label)){name.append(el('strong',label.replace(/\s+/g,' ').slice(0,80)+'…'));identityNote(name,'Full recorded label',label,'div');}
+else name.append(el('strong',label));
+const prediction=Object.hasOwn(predictions,label)?predictions[label]:null,observed=Object.hasOwn(targets,label)?targets[label]:null,plot=el('div',undefined,'kt-cohort-plot');plot.setAttribute('aria-hidden','true');
+for(const [value,valid,kind]of [[prediction,probability,'prediction'],[observed,membership,'observed']])if(valid(value)){
+const marker=el('span',undefined,'kt-cohort-marker kt-scalar-'+kind);marker.style.left=(value*100)+'%';plot.append(marker);}
+const axis=el('div',undefined,'kt-scalar-axis');axis.append(el('span','0'),el('span','1'));
+const values=el('div',undefined,'kt-class-values');values.append(el('span','● Probability: '+shown(prediction,probability)),
+el('span','◆ Observed: '+(membership(observed)?observed===1?'Present (1)':'Absent (0)':shown(observed,membership))));
+comparison.append(axis,plot,values);row.append(name,comparison);rows.append(row);
+exactRows.push([name,prediction==null?'Not recorded':prediction,observed==null?'Not recorded':observed]);}
+parent.append(rows);
+if(!labels.length)note(parent,'No recorded class labels are available for comparison.');
+note(parent,'These outputs do not record a decision threshold or establish probability calibration.');
+if(labels.length){const exact=el('details');exact.append(el('summary','Exact recorded class outputs'));
+table(exact,['Recorded label','Class probability (0 to 1)','Observed membership (0 or 1)'],exactRows,[1,2],true);parent.append(exact);}
+if(labels.length>100)identityNote(parent,'Complete output location','Inspect complete retained output in Python from the matching TEST fit’s subgraph_collector/test/output/'+text(artifact)+'.json.');
+};
 const rankedOutput=(parent,output,artifact)=>{
 state(parent,output,'Output context');
 if(!['available','partial'].includes(output.status))return;
@@ -776,28 +827,13 @@ identityNote(sampleView,'Recorded original IDs','Recorded original IDs: '+text(O
 +' · Strategies: '+(list(ref.categories).join(', ')||'Unavailable'));
 const output=obj(obj(samples.outputs)[ref.artifact_id]);
 sampleView.append(el('h4','Prediction and observed target'));
-if(!['static_link_prediction','temporal_link_prediction','regression'].includes(output.task_type)||!['available','partial'].includes(output.status))state(sampleView,output,'Output context');
-if(output.status==='available'||output.status==='partial'){
-const classes=output.task_type==='multiclass_classification'||output.task_type==='multilabel_classification';
-if(output.task_type==='static_link_prediction'||output.task_type==='temporal_link_prediction'){
+if(classificationTask){classificationOutput(sampleView,output,ref.artifact_id);
+}else if(output.task_type==='regression'){scalarOutput(sampleView,output);
+}else if(['static_link_prediction','temporal_link_prediction'].includes(output.task_type)){
 rankedOutput(sampleView,output,ref.artifact_id);
 note(sampleView,'The retained retrieval list can differ from query TOP K. Selected examples do not decompose the aggregate TEST metric.');
-}else if(classes){
-const labels=Object.keys(obj(output.prediction??output.target)),rows=labels.slice(0,100).map(label=>{
-let name=label;
-if(label.length>120||/[\r\n]/.test(label)){
-name=el('div',undefined,'kt-class-label');name.append(el('div',label.replace(/\s+/g,' ').slice(0,80)+'…'));
-identityNote(name,'Full recorded label',label,'div');}
-return[name,output.prediction?.[label],output.target?.[label]];});
-note(sampleView,output.task_type==='multilabel_classification'?
-'Independent label probabilities; observed membership: 0 = absent, 1 = present. Multiple labels may be present; values need not sum to one.':
-'Mutually exclusive class probabilities; observed membership: 0 = absent, 1 = present. Recorded values are not renormalized.');
-note(sampleView,'Showing '+rows.length+' of '+labels.length+' retained labels. Total class coverage is not recorded.');
-const headers=['Recorded label','Class probability (0 to 1)','Observed membership (0 or 1)'];
-sampleTable('Recorded class outputs',headers,rows,labels.length,[1,2]);
-if(labels.length>100)note(sampleView,'Inspect complete retained output in Python from the matching TEST fit’s subgraph_collector/test/output/'+text(ref.artifact_id)+'.json.');
-}else if(output.task_type==='regression'){scalarOutput(sampleView,output);
-}else{
+}else{state(sampleView,output,'Output context');
+if(['available','partial'].includes(output.status)){
 const binary=output.task_type==='binary_classification';
 note(sampleView,binary?'Probability of the positive class; observed target: 0 = negative class, 1 = positive class.':'Values use recorded target units.');
 table(sampleView,[binary?'Positive-class probability (0 to 1)':'Prediction','Observed target'],[[output.prediction,output.target]],[0,1]);}}
@@ -850,8 +886,9 @@ if(remaining.length){const details=el('details');details.append(el('summary','Ot
 referenceTable(details,remaining);examples.append(details)}
 if(references.length>100)note(examples,'Showing the first 100 catalog references.');
 if(rankingEntry){
-rankingEntry.append(el('h3',regressionTask?'How far was the prediction from the observed value?':'Where did observed IDs appear?'));
-if(regressionTask)note(rankingEntry,'Compare a loaded TEST prediction with its observed value, then inspect the same entity’s recorded context. These selected examples do not represent all TEST entities or reconstruct the aggregate error.');
+rankingEntry.append(el('h3',classificationTask?'How do class probabilities compare with observed membership?':regressionTask?'How far was the prediction from the observed value?':'Where did observed IDs appear?'));
+if(classificationTask)note(rankingEntry,'Compare a loaded TEST example’s class probabilities with its observed membership, then inspect the same entity’s recorded context. These selected examples do not represent all TEST entities or reconstruct the aggregate metric.');
+else if(regressionTask)note(rankingEntry,'Compare a loaded TEST prediction with its observed value, then inspect the same entity’s recorded context. These selected examples do not represent all TEST entities or reconstruct the aggregate error.');
 else note(rankingEntry,'Compare a retained TEST ranking with its observed IDs, then inspect the same example’s recorded context. '
 +'These selected examples do not decompose the aggregate metric or represent all evaluation entities. The query’s TOP K and each retained list width are separate.');
 const rankingView=el('div');
@@ -862,7 +899,7 @@ rankingView.append(el('h4',identity.length>100?identity.slice(0,100)+'…':ident
 identityNote(rankingView,'Selected entity identity',identity+' · Collector '+text(selected.ref.artifact_id));
 identityNote(rankingView,'Recorded selection strategies','Retained strategies: '+(list(selected.ref.categories).join(', ')||'Unavailable'));
 const output=obj(obj(samples.outputs)[selected.ref.artifact_id]);
-if(regressionTask)scalarOutput(rankingView,output);else rankedOutput(rankingView,output,selected.ref.artifact_id);
+if(classificationTask)classificationOutput(rankingView,output,selected.ref.artifact_id);else if(regressionTask)scalarOutput(rankingView,output);else rankedOutput(rankingView,output,selected.ref.artifact_id);
 rankingView.append(action('Inspect this example’s context',()=>{inspectSample(selected.ref,selected.index);showPanel(2);
 const heading=sampleView.querySelector('h3');heading.tabIndex=-1;heading.focus();}));enable();};
 control(rankingEntry,'Loaded original entity',loaded.map(({ref,index})=>{
@@ -870,7 +907,7 @@ const identity=sampleIdentity(ref);return[String(index),(identity.length>100?ide
 selected=loaded.find(entry=>String(entry.index)===value);drawRanking();});
 rankingEntry.append(rankingView);drawRanking();
 note(rankingEntry,'Loaded '+loaded.length+' of '+text(coverage.references_total??references.length)+' recorded references; selection strategies may overlap.');
-}else note(rankingEntry,'No loaded examples are available for '+(regressionTask?'numeric-output':'ranked-output')+' comparison. Inspect recorded reference availability in Examples.');
+}else note(rankingEntry,'No loaded examples are available for '+(classificationTask?'class-output':regressionTask?'numeric-output':'ranked-output')+' comparison. Inspect recorded reference availability in Examples.');
 }
 sampleView.hidden=true;
 const panels=[results,patterns,examples],navigation=el('nav',undefined,'kt-navigation');
