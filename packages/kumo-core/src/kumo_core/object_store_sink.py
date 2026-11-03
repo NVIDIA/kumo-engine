@@ -33,7 +33,6 @@ def _chunked(filesystem: FileSystem) -> bool:
 
 
 def open_sized(filesystem: FileSystem, path: str, size: int) -> Any:
-    """``open_output_stream`` that tells a chunked filesystem the size."""
     if _chunked(filesystem):
         from kumo_core.chunked_fs import SIZE_KEY
 
@@ -51,7 +50,6 @@ def upload_file(filesystem: FileSystem, source: str,
 
 def upload_bundle(filesystem: FileSystem, destination: str,
                   bundle_dir: str) -> None:
-    """Copy ``bundle_dir`` under ``destination``, provenance last."""
     from kumo_core.artifacts import PROVENANCE_FILE
 
     root = Path(bundle_dir)
@@ -140,7 +138,6 @@ class ObjectStoreSinkBackend(ABC):
         return self._uri(output)
 
     def preflight_write_files(self, connector, table_name, write_mode=None):
-        """Refuse an occupied output directory before scoring."""
         del write_mode
         from pyarrow.fs import FileSelector
 
@@ -416,7 +413,6 @@ class _ArrowExportFiles:
 
 
 class FilesystemSink(ObjectStoreSinkBackend):
-    """The object-store file writers over any sink's ``filesystem()``."""
     def __init__(self, sink: FileStoreSink) -> None:
         self._sink = sink
         self.provider = type(sink).__name__

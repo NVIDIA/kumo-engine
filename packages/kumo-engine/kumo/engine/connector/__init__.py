@@ -51,7 +51,6 @@ def _file_sink(connector: Connector, path: str) -> Optional[FileStoreSink]:
 
 
 def is_file_destination(connector: Connector, path: str) -> bool:
-    r"""Whether ``path`` is a file location rather than a table."""
     return _file_sink(connector, path) is not None
 
 
