@@ -14,7 +14,8 @@
 //!   - xxh3 for Uuid256 (32-byte) keys and VarBytes keys longer than 16
 //!     bytes.
 //! - The type and alignment hashes epserde writes into every index header.
-//!   epserde refuses to load a file whose hashes differ.
+//!   epserde refuses to load a file whose hashes differ. These values describe
+//!   the remap-free layout with epserde 0.12.6; older indexes must be rebuilt.
 //!
 //! Shard routing, which places each key on a shard with gxhash, is pinned
 //! next to the functions that compute it, in diskgraph-ingest's
@@ -200,7 +201,8 @@ fn epserde_header_hashes_match_golden_values() {
     /// The `TYPE_HASH` and `REPR_HASH` header fields epserde writes for `T`.
     fn header_hashes<T: Serialize>(value: &T) -> [u64; 2] {
         let mut buf = Vec::new();
-        let schema = value.serialize_with_schema(&mut buf).unwrap();
+        // SAFETY: all callers pass valid, initialized PtrHash values.
+        let schema = unsafe { value.serialize_with_schema(&mut buf) }.unwrap();
         ["TYPE_HASH", "REPR_HASH"].map(|field| {
             let row = schema.0.iter().find(|row| row.field == field).unwrap();
             u64::from_ne_bytes(buf[row.offset..][..8].try_into().unwrap())
@@ -212,22 +214,22 @@ fn epserde_header_hashes_match_golden_values() {
         (
             "u64",
             header_hashes(&DefaultPtrHash::<PkHash, u64>::default()),
-            [0x4c5d_2730_c662_a438, 0x9bd4_9f93_9a3a_4229],
+            [0x96be_a94f_23d4_9fcd, 0x23cc_9039_4ea0_7eeb],
         ),
         (
             "Vec<u8>",
             header_hashes(&DefaultPtrHash::<PkHash, Vec<u8>>::default()),
-            [0x92f3_8094_abf4_f9ec, 0x9bd4_9f93_9a3a_4229],
+            [0x4a6d_9c93_deb5_ae70, 0x23cc_9039_4ea0_7eeb],
         ),
         (
             "[u8; 16]",
             header_hashes(&DefaultPtrHash::<PkHash, [u8; 16]>::default()),
-            [0x3f25_4c72_b1c5_a213, 0x9bd4_9f93_9a3a_4229],
+            [0xe36d_58de_e86c_52b5, 0x23cc_9039_4ea0_7eeb],
         ),
         (
             "[u8; 32]",
             header_hashes(&DefaultPtrHash::<PkHash, [u8; 32]>::default()),
-            [0xc71c_d03e_a8ca_12ef, 0x9bd4_9f93_9a3a_4229],
+            [0xb28b_5015_6a83_476b, 0x23cc_9039_4ea0_7eeb],
         ),
     ];
     for (key, got, want) in cases {

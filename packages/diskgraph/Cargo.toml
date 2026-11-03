@@ -71,7 +71,7 @@ half = "2.3"
 # and 0.2.1 and the advisory with them.
 fast-float2 = "0.2.4"
 ptr_hash = { package = "diskgraph-ptrhash", path = "diskgraph-ptrhash", features = ["epserde"] }
-epserde = { version = "0.8", features = ["std", "derive"] }
+epserde = { version = "0.12.6", features = ["std", "derive"] }
 
 # Release profile uses panic = "abort" so any allocation failure or
 # explicit panic exits with SIGABRT (rc=134) instead of unwinding and

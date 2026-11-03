@@ -75,9 +75,9 @@ fn construct_unique() {
             &mut scratch,
         )
         .expect("ptrhash construction failed");
-        let mut done = bitvec![0; n];
+        let mut done = bitvec![0; ptr_hash.max_index()];
         for key in keys.iter() {
-            let idx = ptr_hash.index(key);
+            let idx = ptr_hash.index_no_remap(key);
             assert!(!done[idx]);
             done.set(idx, true);
         }
@@ -104,10 +104,10 @@ fn unique_mapping_small_n() {
     for n in [1, 2, 10, 100, 1000, 10_000] {
         let keys = make_keys(n);
         let ptr_hash = build_u64(&keys);
-        let mut done = bitvec![0; n];
+        let mut done = bitvec![0; ptr_hash.max_index()];
         for key in keys.iter() {
-            let idx = ptr_hash.index(key);
-            assert!(idx < n);
+            let idx = ptr_hash.index_no_remap(key);
+            assert!(idx < ptr_hash.max_index());
             assert!(!done[idx]);
             done.set(idx, true);
         }
@@ -122,7 +122,6 @@ fn index_bounds_small_n() {
         for key in keys.iter() {
             let idx = ptr_hash.index_no_remap(key);
             assert!(idx < ptr_hash.max_index());
-            assert!(ptr_hash.index(key) < n);
         }
     }
 }
@@ -132,8 +131,8 @@ fn low_entropy_keys_build() {
     let keys = make_low_entropy_keys(10_000);
     let ptr_hash = build_u64(&keys);
     for key in keys.iter() {
-        let idx = ptr_hash.index(key);
-        assert!(idx < keys.len());
+        let idx = ptr_hash.index_no_remap(key);
+        assert!(idx < ptr_hash.max_index());
     }
 }
 
@@ -143,8 +142,8 @@ fn low_entropy_10k_smoke() {
     let keys = make_low_entropy_keys(10_000);
     let ptr_hash = build_u64(&keys);
     for key in keys.iter().take(5_000) {
-        let idx = ptr_hash.index(key);
-        assert!(idx < keys.len());
+        let idx = ptr_hash.index_no_remap(key);
+        assert!(idx < ptr_hash.max_index());
     }
 }
 
@@ -154,8 +153,8 @@ fn low_entropy_200k_smoke() {
     let keys = make_low_entropy_keys(200_000);
     let ptr_hash = build_u64(&keys);
     for key in keys.iter().take(10_000) {
-        let idx = ptr_hash.index(key);
-        assert!(idx < keys.len());
+        let idx = ptr_hash.index_no_remap(key);
+        assert!(idx < ptr_hash.max_index());
     }
 }
 
@@ -172,8 +171,8 @@ fn single_part_build() {
     )
     .expect("ptrhash construction failed");
     for key in keys.iter() {
-        let idx = ptr_hash.index(key);
-        assert!(idx < keys.len());
+        let idx = ptr_hash.index_no_remap(key);
+        assert!(idx < ptr_hash.max_index());
     }
 }
 
@@ -206,8 +205,8 @@ fn scratch_reuse_multiple_builds() {
         )
         .expect("ptrhash construction failed");
         for key in keys.iter() {
-            let idx = ptr_hash.index(key);
-            assert!(idx < keys.len());
+            let idx = ptr_hash.index_no_remap(key);
+            assert!(idx < ptr_hash.max_index());
         }
     }
 }
@@ -218,8 +217,8 @@ fn large_n_smoke() {
     let keys = make_keys(1_000_000);
     let ptr_hash = build_u64(&keys);
     for key in keys.iter().take(10_000) {
-        let idx = ptr_hash.index(key);
-        assert!(idx < keys.len());
+        let idx = ptr_hash.index_no_remap(key);
+        assert!(idx < ptr_hash.max_index());
     }
 }
 
@@ -229,8 +228,8 @@ fn near_small_n_threshold_smoke() {
     let keys = make_low_entropy_keys(900_000);
     let ptr_hash = build_u64(&keys);
     for key in keys.iter().take(10_000) {
-        let idx = ptr_hash.index(key);
-        assert!(idx < keys.len());
+        let idx = ptr_hash.index_no_remap(key);
+        assert!(idx < ptr_hash.max_index());
     }
 }
 
@@ -249,8 +248,8 @@ fn retry_stress_tight_params() {
     )
     .expect("ptrhash construction failed");
     for key in keys.iter().take(10_000) {
-        let idx = ptr_hash.index(key);
-        assert!(idx < keys.len());
+        let idx = ptr_hash.index_no_remap(key);
+        assert!(idx < ptr_hash.max_index());
     }
 }
 
@@ -275,7 +274,6 @@ fn fallback_hash_builds_what_gxhash_cannot() {
         k.resize(33, b'.');
         k
     }));
-    let n = keys.len();
     let mut scratch = PtrHashScratch::<u64>::new();
 
     assert!(
@@ -298,11 +296,103 @@ fn fallback_hash_builds_what_gxhash_cannot() {
     )
     .expect("the fallback must build it");
 
-    let mut seen = vec![false; n];
+    let mut seen = vec![false; mphf.max_index()];
     for k in &keys {
-        let idx = mphf.index(k);
-        assert!(idx < n && !seen[idx], "not a bijection onto 0..n");
+        let idx = mphf.index_no_remap(k);
+        assert!(idx < mphf.max_index() && !seen[idx], "slot collision");
         seen[idx] = true;
     }
-    assert_ne!(mphf.index(&base), mphf.index(&twin));
+    assert_ne!(mphf.index_no_remap(&base), mphf.index_no_remap(&twin));
+}
+
+#[cfg(feature = "epserde")]
+#[test]
+fn serialized_slots_round_trip_all_key_types() {
+    use epserde::prelude::{AlignedCursor, Deserialize, Serialize};
+
+    macro_rules! check {
+        ($name:literal, $keys:expr, $fallback:expr) => {{
+            let source: std::collections::HashMap<_, ()> =
+                $keys.into_iter().map(|key| (key, ())).collect();
+            let mut scratch = PtrHashScratch::<u64>::new();
+            let hash = DefaultPtrHash::<hash::PkHash, _>::try_new_from_source_with_scratch(
+                &source,
+                PtrHashParams {
+                    prefer_fallback_hash: $fallback,
+                    ..PtrHashParams::default()
+                },
+                &mut scratch,
+            ).unwrap();
+            let mut buffer = <AlignedCursor>::new();
+            // SAFETY: the constructed hash has valid fields, and the aligned
+            // buffer stays immutable and alive while the borrowed view is used.
+            let restored = unsafe {
+                hash.serialize(&mut buffer).unwrap();
+                DefaultPtrHash::<hash::PkHash, _>::deserialize_eps(buffer.as_bytes()).unwrap()
+            };
+            let output_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../target/test-artifacts/remap-free");
+            std::fs::create_dir_all(&output_dir).unwrap();
+            let path = output_dir.join(concat!($name, ".bin"));
+            std::fs::write(&path, buffer.as_bytes()).unwrap();
+            // SAFETY: this test writes the typed hash and keeps the file
+            // unchanged for the lifetime of the mapping.
+            let mapped = unsafe {
+                DefaultPtrHash::<hash::PkHash, _>::load_mmap(
+                    &path, epserde::prelude::Flags::empty(),
+                ).unwrap()
+            };
+            assert_eq!(restored.n(), hash.n());
+            assert_eq!(restored.max_index(), hash.max_index());
+            let mut seen = bitvec![0; hash.max_index()];
+            for key in source.keys() {
+                let slot = restored.index_no_remap(key);
+                assert_eq!(slot, hash.index_no_remap(key));
+                assert_eq!(slot, mapped.uncase().index_no_remap(key));
+                assert!(!seen[slot], "slot collision after deserialization");
+                seen.set(slot, true);
+            }
+        }};
+    }
+
+    check!("int", (0..1_000_u64), false);
+    check!(
+        "bytes",
+        (0..1_000_u64).map(|key| key.to_le_bytes().to_vec()),
+        false
+    );
+    check!("uuid-ip", (0..1_000_u128).map(u128::to_le_bytes), false);
+    check!(
+        "uuid256",
+        (0..1_000_u64).map(|key| {
+            let mut bytes = [0; 32];
+            bytes[..8].copy_from_slice(&key.to_le_bytes());
+            bytes
+        }),
+        true
+    );
+}
+
+#[cfg(feature = "epserde")]
+#[test]
+fn rejects_previous_remapped_type_hash() {
+    use epserde::prelude::{AlignedCursor, Deserialize, Serialize};
+
+    let hash = build_u64(&make_keys(100));
+    let mut buffer = <AlignedCursor>::new();
+    // SAFETY: the hash was constructed from valid keys.
+    let schema = unsafe { hash.serialize_with_schema(&mut buffer) }.unwrap();
+    let row = schema
+        .0
+        .iter()
+        .find(|row| row.field == "TYPE_HASH")
+        .unwrap();
+    buffer.as_bytes_mut()[row.offset..row.offset + 8]
+        .copy_from_slice(&0x4c5d_2730_c662_a438_u64.to_ne_bytes());
+    // SAFETY: only the header hash changed; the serialized payload is valid.
+    let result = unsafe { DefaultPtrHash::<hash::PkHash, u64>::deserialize_eps(buffer.as_bytes()) };
+    assert!(matches!(
+        result,
+        Err(epserde::deser::Error::WrongTypeHash { .. })
+    ));
 }

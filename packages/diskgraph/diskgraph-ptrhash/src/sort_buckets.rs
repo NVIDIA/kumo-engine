@@ -2,7 +2,7 @@ use super::*;
 use crate::bucket_idx::BucketIdx;
 use crate::radix::radix_sort_hashes;
 
-impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx, Vec<u8>> {
+impl<Key: KeyT, BF: BucketFn, Hx: Hasher<Key>> PtrHash<Key, BF, Hx, Vec<u8>> {
     /// Returns:
     /// 1. Hashes
     /// 2. Start indices of each bucket.
