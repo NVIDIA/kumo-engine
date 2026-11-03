@@ -539,9 +539,7 @@ impl ReservoirSamplerL {
 pub use diskgraph_core::accumulators::TDigestEstimator;
 pub use diskgraph_core::accumulators::WelfordAccumulator;
 
-/// Counts of finite values on fixed bins, the same in every snapshot: eight
-/// per power of two, by the sign, exponent and top three mantissa bits. An
-/// open-addressing table keyed by bin, so a count is a hash and a probe.
+/// Exact counts on fixed bins, eight per power of two, in an open-addressing table.
 #[derive(Clone, Default)]
 pub struct ValueBins {
     bins: Vec<i32>,
@@ -600,8 +598,7 @@ impl ValueBins {
         }
     }
 
-    /// `[start, count]` pairs in value order, where a bin's start is its
-    /// lowest value, or for a negative bin the bound just below its values.
+    /// `[start, count]` pairs in value order; a negative bin starts below its values.
     fn to_json(&self) -> JsonValue {
         let mut bins: Vec<_> = self.iter().collect();
         bins.sort_unstable();

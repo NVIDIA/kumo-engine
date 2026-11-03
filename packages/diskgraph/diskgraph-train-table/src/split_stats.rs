@@ -502,8 +502,7 @@ fn for_each_label(arr: &dyn Array, f: &mut impl FnMut(f64)) -> TTGenResult<()> {
     Ok(())
 }
 
-/// Forecast labels binned over every stage's range, as pass B bins a node
-/// target over pass A's; forecasting has no range before pass B.
+/// Bins over all stages' range, known only after pass B.
 fn forecast_histograms(
     output_dir: &Path,
     stage_parts: &[StagePartsOut; 3],
