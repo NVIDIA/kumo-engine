@@ -12,7 +12,7 @@ Each block assumes a `graph` and a `pquery` (see the README). It trains, stores 
 
 ```python
 import kumo.engine as kumo
-from kumo.engine.integrations.mlflow import MlflowTracking   # MLflow's own tracking URI, else ./mlruns
+from kumo.engine.integrations.mlflow import MlflowTracking   # where MLflow's own setting points; by default sqlite:///mlflow.db
 
 cfg = kumo.MLOps("artifacts", tracking=MlflowTracking("churn"),
                  registry=kumo.ModelRegistryLocation("users-churn", alias="candidate"))
@@ -148,8 +148,8 @@ table = kumo.TrainingTable.load_from_connector(cfg, path=f"training_tables/{tabl
 - `result.registered_model` is the version `MLOps(registry=)` registered; `result.published_model` the one `fit(export_config=...)` published.
 - `result.tracking` is the tracker's run: `TrackingRef(platform="databricks", run_id="...", url="https://.../ml/experiments/.../runs/...")`. The model's `_provenance.json` records the same.
 - `fit(scoring_defaults=kumo.ScoringDefaults(...))` stores prediction defaults in the bundle before it is stored and registered: `binary_classification_threshold` (binary and multilabel classification) and `num_classes_to_return` (multiclass, multilabel, link prediction). `predict`, the MLflow pyfunc and the scoring jobs apply them when a call omits them; explicit arguments and a query's `TOP k` win. A binary model always returns `True_PROB`; with no threshold passed or stored, its `TARGET_PRED` is null. `result.with_scoring_defaults(...)` retunes a fitted model as a new bundle whose manifest names the original in `parents.derived_from`.
-- `result.export(cfg)` (or `trainer.export(cfg)` for a loaded model) registers a model at `cfg.registry` through its tracker. On MLflow and Unity Catalog, registering a bundle the registry already holds under that name returns its version instead of adding one (found by its bundle id tag); the Snowflake Model Registry adds a new version each time.
-- If registration fails, `fit` warns with the full error and returns with `registered_model=None` (with `on_error="raise"`, it raises), and the fit run ends failed with `kumo.error`. On MLflow and Unity Catalog, a bundle the registry already holds under the name returns that version (logged at info) and the alias moves to it.
+- `result.export(cfg)` (or `trainer.export(cfg)` for a loaded model) registers a model at `cfg.registry` through its tracker. On MLflow and Unity Catalog, registering a bundle the registry already holds under that name returns its version instead of adding one (found by its bundle id tag, logged at info) and moves the alias to it; the Snowflake Model Registry adds a new version each time.
+- If registration fails, `fit` warns with the full error and returns with `registered_model=None` (with `on_error="raise"`, it raises), and the fit run ends failed with `kumo.error`.
 
 **Model names** follow the registry's rules, checked when `kumo.MLOps` is built:
 
@@ -187,7 +187,7 @@ Jobs that load `alias="champion"` pick up the new version on their next run.
 ### Trackers
 
 `MlflowTracking(experiment_name=None, run_name=None, log_system_metrics=True, tags=None, log_model=False, *, target=None)`:
-- With no `target`, it records where MLflow's own configuration points (`MLFLOW_TRACKING_URI`, `mlflow.set_tracking_uri`; automatic on Databricks). `target` names another server with its credentials: a `DatabricksConnector`, a `SageMakerMLflow(arn)`, or a tracking URI. With a `target`, `experiment_name` is required to record runs.
+- With no `target`, it records where MLflow's own setting points (`MLFLOW_TRACKING_URI`, `mlflow.set_tracking_uri`; automatic on Databricks); MLflow's default is a local `sqlite:///mlflow.db`. `target` names another server with its credentials: a `DatabricksConnector`, a `SageMakerMLflow(arn)`, or a tracking URI. With a `target`, `experiment_name` is required to record runs.
 - `log_model=True` logs the model on the fit run without registering it; `MLOps(registry=)` implies it.
 - Building `kumo.MLOps` creates a missing experiment; if MLflow refuses (on Databricks, the experiment's folder must exist), it raises and says so.
 

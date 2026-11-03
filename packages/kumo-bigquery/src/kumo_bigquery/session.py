@@ -280,7 +280,6 @@ class _BigQuerySessions:
 
     def table_location(self, connector: SourceConnector,
                        table_name: str) -> str:
-        """Fully qualified name of ``table_name`` in the connector's target."""
         return _name(connector, table_name)
 
     def _client(self, connector: SourceConnector) -> Any:

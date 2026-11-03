@@ -563,7 +563,6 @@ HOLDOUT_META_FILE = 'holdout-meta.json'
 
 
 def _bundle_holdout(result: TrainingResult) -> None:
-    r"""Copy the holdout into the bundle."""
     from kumo_core.artifacts import add_bundle_file
 
     if result.holdout_path is None:
@@ -648,7 +647,6 @@ def _fit_identity(snapshot: GraphSnapshot,
 
 def _store_model(bundle_dir: Path, manifest: Optional[ModelManifest],
                  settings: Any) -> None:
-    r"""Copies the bundle under the root unless it is there."""
     from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
     from kumo_core.object_store_sink import holds_bundle, upload_bundle
     from pyarrow.fs import FileSelector
@@ -803,7 +801,7 @@ def _publish(bundle_dir: Path, bundle_id: Optional[str],
     metadata.update(registry_pointers(bundle_id))
     location = export_config.location
     alias = location.alias if location else None
-    if location and alias:
+    if alias:
         location = replace(location, alias=None)
     published = export_config.connector.sink_backend.publish_model(
         export_config.connector,
@@ -813,30 +811,30 @@ def _publish(bundle_dir: Path, bundle_id: Optional[str],
         metadata=metadata,
         metrics=metrics,
     )
-    if location and alias:
-        try:
-            aliasing = export_config.connector.sink_backend
-            if not isinstance(aliasing, ModelAliasingSink):
-                raise NotImplementedError(
-                    f'{type(export_config.connector).__name__} cannot set '
-                    f'model aliases')
-            aliasing.set_model_alias(
-                cast(SourceConnector, export_config.connector),
-                replace(location, version=published.version), alias)
-        except Exception as error:
-            if warn:
-                warn_failure(
-                    f"Published {published.name} version "
-                    f"{published.version} without alias {alias}: "
-                    f"{full_error(error)}", error, 4)
-            return published, error
+    if not alias:
+        return published, None
+    try:
+        aliasing = export_config.connector.sink_backend
+        if not isinstance(aliasing, ModelAliasingSink):
+            raise NotImplementedError(
+                f'{type(export_config.connector).__name__} cannot set '
+                f'model aliases')
+        aliasing.set_model_alias(
+            cast(SourceConnector, export_config.connector),
+            replace(location, version=published.version), alias)
+    except Exception as error:
+        if warn:
+            warn_failure(
+                f"Published {published.name} version "
+                f"{published.version} without alias {alias}: "
+                f"{full_error(error)}", error, 4)
+        return published, error
     return published, None
 
 
 def _warm_start_plan(
     public_plan: ModelPlan, warm_start: Optional['Trainer']
 ) -> Tuple[CoreModelPlan, ModelPlan, Optional[Dict[str, str]], Optional[str]]:
-    r"""The model plan with the warm start's inherited, and its artifacts."""
     from kumo_core.automl.runtime import inherit_warm_start_model_plan
     from kumo_core.io.json import load_json
 
@@ -1175,16 +1173,16 @@ class Trainer:
             })
             session.finish(None, error)
             raise
-        seconds = time.monotonic() - fit_start
         events.emit('fit_ended', metrics={
-            **result.metrics, 'seconds': seconds
+            **result.metrics, 'seconds': time.monotonic() - fit_start
         }, params={'status': 'succeeded'})
         alias = None if settings is None or settings.registry is None else (
             settings.registry.alias)
         registered, error = _store_and_register(
             result.bundle_dir,
             bundle_manifest(result.bundle_dir, result.bundle_id), settings,
-            session=session, snapshot=snapshot, metrics=registry_metrics(result), warn=warn,
+            session=session, snapshot=snapshot,
+            metrics=registry_metrics(result), warn=warn,
             stored=(deps.errors or [None])[0])
         if registered is not None:
             result = replace(result, registered_model=registered,
@@ -1351,7 +1349,6 @@ class Trainer:
         warm_start_artifacts: Optional[Mapping[str, str]],
         threshold: Optional[float], events: EventEmitter
     ) -> Tuple[TrainingResult, Optional[str], Optional[Dict[str, Any]]]:
-        r"""The trained model, its fit mode and its holdout score counts."""
         from kumo_core.training.orchestration import (
             CallableTrainingOptions,
             ResolvedTrainingInput,

@@ -42,8 +42,7 @@ from kumo.engine.connector.source_table import SourceTable, SQLSourceTable
 
 
 def connector_for_root(uri: str) -> Connector:
-    r"""A connector rooted at ``uri``: ``s3://``, ``gs://``, ``file://`` or a
-    local path."""
+    r"""A connector rooted at ``uri``."""
     from urllib.parse import urlparse
     from urllib.request import url2pathname
 
@@ -69,7 +68,6 @@ def _file_sink(connector: Connector, path: str) -> Optional[FileStoreSink]:
 
 
 def is_file_destination(connector: Connector, path: str) -> bool:
-    r"""Whether ``path`` is a file location rather than a table."""
     return _file_sink(connector, path) is not None
 
 

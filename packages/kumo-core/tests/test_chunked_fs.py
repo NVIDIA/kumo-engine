@@ -2,12 +2,15 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import gc
 import io
 import os
+import threading
 
 import pytest
 from kumo_core import chunked_fs
 from kumo_core.chunked_fs import ChunkedFileHandler
+from kumo_core.object_store_sink import open_sized
 from pyarrow.fs import FileSelector, FileType, PyFileSystem
 
 PART = 16
@@ -60,9 +63,37 @@ class MemoryHandler(ChunkedFileHandler):
                 del self.objects[name]
 
 
+class _Upload(io.BytesIO):
+    def __init__(self, handler, path):
+        super().__init__()
+        self.handler, self.path = handler, path
+
+    def close(self):
+        self.handler.objects[self.path] = self.getvalue()
+        self.handler.streamed.append(self.path)
+        super().close()
+
+
+class StreamingHandler(MemoryHandler):
+    plain_bytes = 6
+
+    def __init__(self):
+        super().__init__()
+        self.streamed = []
+
+    def _stream(self, path):
+        return _Upload(self, path)
+
+
 @pytest.fixture
 def store():
     handler = MemoryHandler()
+    return handler, PyFileSystem(handler)
+
+
+@pytest.fixture
+def streaming():
+    handler = StreamingHandler()
     return handler, PyFileSystem(handler)
 
 
@@ -75,6 +106,12 @@ def _write(fs, path, data):
 def _read(fs, path):
     with fs.open_input_stream(path) as reader:
         return reader.readall()
+
+
+def _is_plain(handler):
+    plain = 'root/a.bin' in handler.objects
+    assert any('.chunks/' in name for name in handler.objects) != plain
+    return plain
 
 
 def _generations(handler):
@@ -129,9 +166,7 @@ def test_a_write_removes_the_other_form(store, first, second):
     _write(fs, 'root/a.bin', b'1' * first)
     _write(fs, 'root/a.bin', b'2' * second)
     assert _read(fs, 'root/a.bin') == b'2' * second
-    plain = 'root/a.bin' in handler.objects
-    assert plain == (second <= PART)
-    assert any('.chunks/' in name for name in handler.objects) != plain
+    assert _is_plain(handler) == (second <= PART)
 
 
 @pytest.mark.parametrize('sized', [False, True])
@@ -139,8 +174,6 @@ def test_a_write_removes_the_other_form(store, first, second):
 @pytest.mark.parametrize('old', [3, 2 * PART])
 def test_a_failed_chunked_write_leaves_the_old_file(
         monkeypatch, streams, sized, old):
-    from kumo_core.object_store_sink import open_sized
-
     handler = StreamingHandler() if streams else MemoryHandler()
     fs = PyFileSystem(handler)
     _write(fs, 'root/a.bin', b'o' * old)
@@ -157,18 +190,19 @@ def test_a_failed_chunked_write_leaves_the_old_file(
         with (open_sized(fs, 'root/a.bin', 3 * PART)
               if sized else fs.open_output_stream('root/a.bin')) as writer:
             writer.write(b'n' * (3 * PART))
-    assert _read(PyFileSystem(handler), 'root/a.bin') == b'o' * old
+    assert _read(fs, 'root/a.bin') == b'o' * old
 
     monkeypatch.setattr(handler, upload, original)
     _write(fs, 'root/a.bin', b'n' * (3 * PART))
-    assert _read(PyFileSystem(handler), 'root/a.bin') == b'n' * (3 * PART)
+    assert _read(fs, 'root/a.bin') == b'n' * (3 * PART)
     assert list(_generations(handler).values()) == [
         ['00000', '00001', '00002', '_SUCCESS']
     ]
 
 
-def test_a_failed_plain_stream_is_aborted_not_committed(monkeypatch):
-    from kumo_core.object_store_sink import open_sized
+def test_a_failed_plain_stream_is_aborted_not_committed(
+        monkeypatch, streaming):
+    handler, fs = streaming
 
     def fail(self, data):
         raise OSError('upload failed')
@@ -177,12 +211,11 @@ def test_a_failed_plain_stream_is_aborted_not_committed(monkeypatch):
         aborted.append(self.path)
         io.BytesIO.close(self)
 
-    handler = StreamingHandler()
     aborted = []
     monkeypatch.setattr(_Upload, 'write', fail)
     monkeypatch.setattr(_Upload, 'abort', abort, raising=False)
     with pytest.raises(OSError, match='upload failed'):
-        with open_sized(PyFileSystem(handler), 'root/a.bin', 3) as writer:
+        with open_sized(fs, 'root/a.bin', 3) as writer:
             writer.write(b'abc')
     assert aborted == ['root/a.bin']
     assert handler.objects == {}
@@ -264,32 +297,10 @@ def test_parts_spool_under_the_spool_dir_and_are_removed(
     assert not os.listdir(tmp_path / 'own')
 
 
-class _Upload(io.BytesIO):
-    def __init__(self, handler, path):
-        super().__init__()
-        self.handler, self.path = handler, path
-
-    def close(self):
-        self.handler.objects[self.path] = self.getvalue()
-        self.handler.streamed.append(self.path)
-        super().close()
-
-
-class StreamingHandler(MemoryHandler):
-    plain_bytes = 6
-
-    def __init__(self):
-        super().__init__()
-        self.streamed = []
-
-    def _stream(self, path):
-        return _Upload(self, path)
-
-
 @pytest.mark.parametrize('size', [0, 6, 7, PART, 2 * PART + 5, 3 * PART])
-def test_a_streaming_handler_streams_parts_and_spools_only_small_files(size):
-    handler = StreamingHandler()
-    fs = PyFileSystem(handler)
+def test_a_streaming_handler_streams_parts_and_spools_only_small_files(
+        streaming, size):
+    handler, fs = streaming
     _write(fs, 'root/a.bin', b'x' * (2 * PART))
     data = os.urandom(size)
     _write(fs, 'root/a.bin', data)
@@ -326,9 +337,7 @@ def test_opening_a_file_again_reuses_its_layout(store):
 
 
 def test_layout_cache_survives_concurrent_opens_and_writes(store):
-    import threading
-
-    handler, fs = store
+    _, fs = store
     for i in range(20):
         _write(fs, f'root/{i}.bin', b'x' * (PART + 1))
     errors = []
@@ -350,11 +359,8 @@ def test_layout_cache_survives_concurrent_opens_and_writes(store):
 
 
 @pytest.mark.parametrize('size', [7, PART, PART + 1, 3 * PART])
-def test_a_known_size_streams_without_spooling(size):
-    from kumo_core.object_store_sink import open_sized
-
-    handler = StreamingHandler()
-    fs = PyFileSystem(handler)
+def test_a_known_size_streams_without_spooling(streaming, size):
+    handler, fs = streaming
     _write(fs, 'root/a.bin', b'x' * (2 * PART))
     handler.spooled.clear()
     data = os.urandom(size)
@@ -362,9 +368,8 @@ def test_a_known_size_streams_without_spooling(size):
         for start in range(0, size, 5):
             writer.write(data[start:start + 5])
     assert _read(fs, 'root/a.bin') == data
-    plain = 'root/a.bin' in handler.objects
+    plain = _is_plain(handler)
     assert plain == (size <= PART)
-    assert any('.chunks/' in name for name in handler.objects) != plain
     # Only the empty _SUCCESS marker of a chunked file is put from disk.
     assert len(handler.spooled) == (0 if plain else 1)
 
@@ -383,12 +388,9 @@ def test_reads_spanning_parts_fill_the_callers_buffer(store):
 
 @pytest.mark.parametrize('size', [1, 3 * PART])
 def test_a_writer_that_fails_to_open_keeps_the_old_file(
-        monkeypatch, tmp_path, size):
-    import gc
-
-    handler = StreamingHandler()
+        monkeypatch, tmp_path, streaming, size):
+    handler, fs = streaming
     handler.spool_dir = str(tmp_path)
-    fs = PyFileSystem(handler)
     _write(fs, 'root/a.bin', b'preserve-me')
 
     def fail(path):

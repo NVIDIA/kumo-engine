@@ -12,12 +12,15 @@ import warnings
 import zlib
 from contextlib import contextmanager
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pandas as pd
 import pytest
+from kumoapi.graph import Edge
+from kumoapi.typing import Stype
 from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
 
 import kumo.engine as kumo
@@ -52,8 +55,12 @@ def _index_files(path):
     }
 
 
+def _put(snapshot, connector, path='one'):
+    return snapshot.export(SnapshotOutputConfig(connector, path))
+
+
 def _export(snapshot, exports, tmp_path):
-    location = snapshot.export(SnapshotOutputConfig(exports, 'one'))
+    location = _put(snapshot, exports)
     return location, tmp_path / 'exports' / location
 
 
@@ -88,10 +95,10 @@ def test_export_load_round_trip_relocates_and_is_reused(
     monkeypatch.setattr(snapshot_io, '_CHUNK', 1024)
     monkeypatch.setattr(snapshot_io, '_RANGE_BYTES', 4096)
     snapshot = graph.snapshot()
-    location = snapshot.export(SnapshotOutputConfig(exports, 'one/'))
+    location = _put(snapshot, exports, 'one/')
     graph_id, data_version = snapshot.id.split('@')
     assert location == f'one/{graph_id}/{data_version}'
-    assert snapshot.export(SnapshotOutputConfig(exports, 'one')) == location
+    assert _put(snapshot, exports) == location
     exported = tmp_path / 'exports' / location
     recorded = (snapshot.index_path / '_provenance.json').read_bytes()
     assert (_generation(exported) / '_provenance.json').read_bytes() == recorded
@@ -106,8 +113,7 @@ def test_export_load_round_trip_relocates_and_is_reused(
         _generation(exported) / 'index')
     assert (loaded.index_path /
             '_provenance.json').read_bytes() == recorded
-    reexported = tmp_path / 'exports' / loaded.export(
-        SnapshotOutputConfig(exports, 'two'))
+    reexported = tmp_path / 'exports' / _put(loaded, exports, 'two')
     assert (_generation(reexported) /
             '_provenance.json').read_bytes() == recorded
 
@@ -161,13 +167,13 @@ def test_an_interrupted_reexport_leaves_the_last_export_loadable(
         patch.setattr(snapshot_io, '_open_output', interrupted)
         patch.setattr(snapshot_io, '_ATTEMPTS', 1)
         with pytest.raises(OSError, match='connection reset'):
-            rebuilt.export(SnapshotOutputConfig(exports, 'one'))
+            _put(rebuilt, exports)
     assert _generation(exported) == first
     scratch('gpu')
     assert _index_files(_load(exports, location).index_path) == _index_files(
         snapshot.index_path)
 
-    assert rebuilt.export(SnapshotOutputConfig(exports, 'one')) == location
+    assert _put(rebuilt, exports) == location
     assert _generation(exported) != first and not first.exists()
 
 
@@ -179,12 +185,12 @@ def test_reexporting_an_identical_snapshot_reuses_the_export(
     monkeypatch.setattr(snapshot_io, '_transfer',
                         Mock(side_effect=AssertionError('uploaded again')))
     with caplog.at_level('INFO', logger=snapshot_io.__name__):
-        assert snapshot.export(SnapshotOutputConfig(exports, 'one')) == location
+        assert _put(snapshot, exports) == location
     assert _generation(exported) == first and 'reused it' in caplog.text
 
     (first / '_DONE').unlink()
     with pytest.raises(AssertionError, match='uploaded again'):
-        snapshot.export(SnapshotOutputConfig(exports, 'one'))
+        _put(snapshot, exports)
 
 
 def test_concurrent_exports_of_one_snapshot_both_succeed(
@@ -195,16 +201,16 @@ def test_concurrent_exports_of_one_snapshot_both_succeed(
     def racing(*args):
         if not raced:
             raced.append(None)
-            raced[0] = snapshot.export(SnapshotOutputConfig(exports, 'one'))
+            raced[0] = _put(snapshot, exports)
         return transfer(*args)
 
     monkeypatch.setattr(snapshot_io, '_transfer', racing)
-    assert raced == [snapshot.export(SnapshotOutputConfig(exports, 'one'))]
+    assert raced == [_put(snapshot, exports)]
     assert _load(exports, raced[0]).id == snapshot.id
 
 
 def _rebuilt(snapshot, tmp_path, name):
-    r"""Same id and sizes, one digit changed in ``col_stats.json``."""
+    r"""Same id and sizes, other bytes."""
     index = (tmp_path / name / snapshot.index_path.parent.name /
              snapshot.index_path.name)
     shutil.copytree(snapshot.index_path, index)
@@ -235,14 +241,14 @@ def test_interleaved_exports_of_different_builds_stay_consistent(
 
     def export_first():
         try:
-            first.export(SnapshotOutputConfig(exports, 'one'))
+            _put(first, exports)
         except Exception as error:
             errors.append(error)
 
     worker = threading.Thread(target=export_first)
     worker.start()
     assert paused.wait(30)
-    location = second.export(SnapshotOutputConfig(exports, 'one'))
+    location = _put(second, exports)
     resumed.set()
     worker.join(30)
     assert not errors
@@ -259,13 +265,13 @@ def test_a_load_follows_an_export_that_commits_while_it_downloads(
         tmp_path, scratch, graph, exports, monkeypatch):
     first = graph.snapshot()
     second = _rebuilt(first, tmp_path, 'second')
-    location = first.export(SnapshotOutputConfig(exports, 'one'))
+    location = _put(first, exports)
     load_into, calls = snapshot_io.load_into, []
 
     def overtaken(*args):
         calls.append(args[2])
         if len(calls) == 1:
-            second.export(SnapshotOutputConfig(exports, 'one'))
+            _put(second, exports)
         return load_into(*args)
 
     monkeypatch.setattr(snapshot_io, 'load_into', overtaken)
@@ -279,8 +285,8 @@ def test_a_cached_load_is_reused_only_for_the_same_export(
         tmp_path, scratch, graph, exports):
     first = graph.snapshot()
     second = _rebuilt(first, tmp_path, 'second')
-    one = first.export(SnapshotOutputConfig(exports, 'one'))
-    two = second.export(SnapshotOutputConfig(exports, 'two'))
+    one = _put(first, exports)
+    two = _put(second, exports, 'two')
     assert _index_files(first.index_path) != _index_files(second.index_path)
 
     scratch('gpu')
@@ -362,7 +368,7 @@ def test_failed_upload_is_retried_with_a_fresh_client(
         return open_output(client, path, size)
 
     monkeypatch.setattr(snapshot_io, '_open_output', expiring)
-    graph.snapshot().export(SnapshotOutputConfig(exports, 'one'))
+    _put(graph.snapshot(), exports)
     assert len(clients) == 2 and clients[0] is not clients[1]
 
 
@@ -373,7 +379,7 @@ def test_reexport_after_redaction_publishes_the_redacted_manifest(
     first = _generation(exported)
     redacted = graph.snapshot(record_sources=False)
     assert redacted.id == full.id
-    assert redacted.export(SnapshotOutputConfig(exports, 'one')) == location
+    assert _put(redacted, exports) == location
     committed = _generation(exported)
     assert committed != first
     assert (committed / '_provenance.json').read_bytes() == (
@@ -395,7 +401,7 @@ def test_reexport_replaces_an_export_that_is_not_an_intact_copy(
         stats.write_bytes(stats.read_bytes()[:3])
         (first / 'index/index_metadata.json').unlink()
         _edit_manifest(exported, lambda m: m.update(snapshot_id='other'))
-    assert snapshot.export(SnapshotOutputConfig(exports, 'one')) == location
+    assert _put(snapshot, exports) == location
     assert not first.exists()
     scratch('empty')
     assert _index_files(_load(exports, location).index_path) == _index_files(
@@ -519,7 +525,7 @@ def test_snapshot_manifest_travels_unchanged_or_is_reconstructed(
 def test_warehouse_connectors_are_not_supported(scratch, graph):
     connector = SimpleNamespace(sink_backend=object())
     with pytest.raises(NotImplementedError, match='file connector'):
-        graph.snapshot().export(SnapshotOutputConfig(connector, 'x'))
+        _put(graph.snapshot(), connector, 'x')
     with pytest.raises(NotImplementedError, match='file connector'):
         _load(connector, 'x')
 
@@ -555,8 +561,7 @@ def test_object_store_round_trip(tmp_path, scratch, graph, monkeypatch,
     monkeypatch.setattr('kumo_gcs.backend.fs.GcsFileSystem', Bucket)
     snapshot = graph.snapshot()
     connector = kumo.S3Connector() if scheme == 's3' else kumo.GCSConnector()
-    location = snapshot.export(
-        SnapshotOutputConfig(connector, f'{scheme}://bucket/snapshots/'))
+    location = _put(snapshot, connector, f'{scheme}://bucket/snapshots/')
     graph_id, data_version = snapshot.id.split('@')
     assert location == f'{scheme}://bucket/snapshots/{graph_id}/{data_version}'
     scratch('gpu')
@@ -629,11 +634,6 @@ def test_source_changes_compares_directory_listings(tmp_path, scratch):
 @pytest.mark.parametrize('record_sources', [True, False])
 def test_source_changes_notices_a_rebound_source(tmp_path, scratch, graph,
                                                  dated, record_sources):
-    import shutil
-
-    from kumoapi.graph import Edge
-    from kumoapi.typing import Stype
-
     snapshot = graph.snapshot(record_sources=record_sources)
     shutil.copytree(dated, tmp_path / 'other')
     connector = kumo.FileConnector(root_dir=str(tmp_path / 'other'))
@@ -737,7 +737,7 @@ def test_a_sink_with_only_a_filesystem_holds_exports(tmp_path, scratch,
                                             path.rstrip('/')))
     connector = SimpleNamespace(sink_backend=sink)
     snapshot = graph.snapshot()
-    location = snapshot.export(SnapshotOutputConfig(connector, '@stage/s'))
+    location = _put(snapshot, connector, '@stage/s')
     assert any('.chunks/' in name for name in store.objects)
     scratch('gpu')
     loaded = _load(connector, location)
@@ -753,7 +753,7 @@ def test_a_sink_with_only_a_filesystem_holds_exports(tmp_path, scratch,
                 assert (loaded.index_path / info.path[len(root) + 1:]
                         ).read_bytes() == reader.read()
     with pytest.raises(NotImplementedError, match='S3, GCS or file connector'):
-        snapshot.export(SnapshotOutputConfig(connector, 'DB.SCHEMA'))
+        _put(snapshot, connector, 'DB.SCHEMA')
 
 
 def test_a_mlops_block_stores_each_snapshot_once(tmp_path, scratch, graph,
@@ -787,15 +787,15 @@ def test_loading_a_missing_export_names_its_full_path(tmp_path, exports):
         _load(exports, 'snapshots/graph/version')
 
 
-@pytest.mark.parametrize('on_error', ['warn', 'raise'])
+@pytest.mark.parametrize('on_error, outcome', [
+    ('warn', partial(pytest.warns, UserWarning, match='ACCESS_DENIED')),
+    ('raise',
+     partial(pytest.raises, RuntimeError, match='Could not store snapshot')),
+])
 def test_a_failed_store_follows_on_error(tmp_path, scratch, graph,
-                                         monkeypatch, on_error):
+                                         monkeypatch, on_error, outcome):
     monkeypatch.setattr(snapshot_io, 'export',
                         Mock(side_effect=OSError('ACCESS_DENIED')))
-    cfg = kumo.MLOps(str(tmp_path / 'root'), on_error=on_error)
-    if on_error == 'raise':
-        with pytest.raises(RuntimeError, match='Could not store snapshot'):
-            graph.snapshot(mlops=cfg)
-    else:
-        with pytest.warns(UserWarning, match='ACCESS_DENIED'):
-            graph.snapshot(mlops=cfg)
+    with outcome():
+        graph.snapshot(mlops=kumo.MLOps(str(tmp_path / 'root'),
+                                        on_error=on_error))

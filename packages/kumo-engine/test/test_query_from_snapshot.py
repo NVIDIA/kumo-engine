@@ -8,50 +8,46 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from kumoapi.model_plan import ModelPlan
 
 import kumo.engine as kumo
 from kumo.engine._scratch import get_scratch_dir
+from kumo.engine.pquery.predictive_query import PredictiveQuery
 
 
-def _scores(trainer, table, snapshot):
-    frame = trainer.predict(table, snapshot=snapshot,
-                            binary_classification_threshold=0.5).frame
+def _scores(model, *args, **kwargs):
+    frame = model.predict(*args, binary_classification_threshold=0.5,
+                          **kwargs).frame
     return frame.sort_values('ENTITY').reset_index(drop=True)
 
 
 def test_predict_scores_a_snapshot_with_the_saved_query(fitted, tmp_path):
     trainer, graph_table, snapshot = fitted
-    expected = _scores(trainer, graph_table, snapshot)
-
-    def scores(**options):
-        return trainer.predict(
-            snapshot, binary_classification_threshold=0.5,
-            **options).frame.sort_values('ENTITY').reset_index(drop=True)
-
-    pd.testing.assert_frame_equal(scores(), expected)
+    expected = _scores(trainer, graph_table, snapshot=snapshot)
     pd.DataFrame({
         'ENTITY1': range(50),
         'TIMESTAMP': [pd.Timestamp(graph_table.timestamps[0])] * 50,
     }).to_parquet(tmp_path / 'rows.parquet')
     rows = kumo.FileConnector(root_dir=str(tmp_path))['rows.parquet']
-    pd.testing.assert_frame_equal(scores(entities=rows), expected)
-    pd.testing.assert_frame_equal(scores(prediction_table=graph_table), expected)
-    legacy = trainer.predict(prediction_table=graph_table, snapshot=snapshot,
-                             binary_classification_threshold=0.5).frame
-    pd.testing.assert_frame_equal(
-        legacy.sort_values('ENTITY').reset_index(drop=True), expected)
-    with pytest.raises(ValueError, match='not both'):
-        scores(entities=rows, prediction_time=graph_table.timestamps[0])
     other = replace(snapshot, id='other@' + snapshot.id.split('@')[1])
-    scored = trainer.predict(other, binary_classification_threshold=0.5).frame
-    pd.testing.assert_frame_equal(
-        scored.sort_values('ENTITY').reset_index(drop=True), expected)
+    for args, options in [
+        ((snapshot, ), {}),
+        ((snapshot, ), {'entities': rows}),
+        ((snapshot, ), {'prediction_table': graph_table}),
+        ((), {'prediction_table': graph_table, 'snapshot': snapshot}),
+        ((other, ), {}),
+    ]:
+        pd.testing.assert_frame_equal(_scores(trainer, *args, **options),
+                                      expected)
+    with pytest.raises(ValueError, match='not both'):
+        _scores(trainer, snapshot, entities=rows,
+                prediction_time=graph_table.timestamps[0])
 
 
 def test_exported_snapshot_scores_in_a_fresh_scratch_without_a_graph(
         fitted, tmp_path):
     trainer, graph_table, snapshot = fitted
-    expected = _scores(trainer, graph_table, snapshot)
+    expected = _scores(trainer, graph_table, snapshot=snapshot)
     exports = kumo.FileConnector(root_dir=str(tmp_path / 'exports'))
     location = snapshot.export(kumo.SnapshotOutputConfig(exports, 'snapshots'))
     bundle = trainer._training_result.bundle_dir
@@ -62,11 +58,8 @@ def test_exported_snapshot_scores_in_a_fresh_scratch_without_a_graph(
         assert loaded.id == snapshot.id
         assert loaded.index_path.is_relative_to(tmp_path / 'fresh')
         model = kumo.Trainer.load(bundle)
-        scored = model.result.predict(
-            loaded, binary_classification_threshold=0.5).frame
-        pd.testing.assert_frame_equal(
-            scored.sort_values('ENTITY').reset_index(drop=True), expected,
-            atol=1e-5)
+        pd.testing.assert_frame_equal(_scores(model.result, loaded), expected,
+                                      atol=1e-5)
     finally:
         kumo.configure(scratch_dir=previous)
 
@@ -77,8 +70,6 @@ def test_exported_snapshot_scores_in_a_fresh_scratch_without_a_graph(
     'prediction_time': '2024-01-01'
 }])
 def test_a_prediction_table_takes_no_entities_or_time(scope):
-    from kumoapi.model_plan import ModelPlan
-
     with pytest.raises(ValueError, match='not both'):
         kumo.Trainer(ModelPlan()).predict(snapshot=object(),
                                           prediction_table=object(), **scope)
@@ -96,10 +87,6 @@ def test_an_argument_given_twice_is_refused(fitted, call):
 
 
 def test_each_fit_result_scores_with_its_own_model(fitted):
-    from kumoapi.model_plan import ModelPlan
-
-    from kumo.engine.pquery.predictive_query import PredictiveQuery
-
     fixture_trainer, prediction_table, snapshot = fitted
     table = PredictiveQuery._from_snapshot(
         snapshot,
@@ -114,14 +101,14 @@ def test_each_fit_result_scores_with_its_own_model(fitted):
     assert first.bundle_id != second.bundle_id
 
     scores = [
-        _scores(result, prediction_table, snapshot)
+        _scores(result, prediction_table, snapshot=snapshot)
         for result in (first, second)
     ]
     assert not scores[0].equals(scores[1])
     for result, score in zip((first, second), scores):
         own = kumo.Trainer.load(result.bundle_dir)
         pd.testing.assert_frame_equal(
-            score, _scores(own, prediction_table, snapshot))
+            score, _scores(own, prediction_table, snapshot=snapshot))
 
 
 def test_entities_missing_from_the_snapshot_are_recorded_as_skipped(
@@ -251,7 +238,7 @@ def test_training_rows_that_none_can_be_kept_keep_their_error(
     from diskgraph import DiskgraphDataError
     from kumoapi.train import TrainingTableSpec
 
-    from kumo.engine.pquery import PredictiveQuery, TrainingTable
+    from kumo.engine.pquery import TrainingTable
 
     trainer, graph_table, snapshot = fitted
     pd.DataFrame({

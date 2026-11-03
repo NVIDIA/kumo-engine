@@ -18,6 +18,7 @@ from kumo_core.summaries import Summary
 
 from kumo.engine import _card
 from kumo.engine._events import Event
+from kumo.engine._mlops import full_error
 from kumo.engine._run_names import record_name
 from kumo.engine._summary_tables import route, table_json
 from kumo.engine._tracking import (
@@ -126,7 +127,7 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
         except Exception as error:
             raise RuntimeError(
                 f'Snowflake Experiment Tracking cannot use {database}: '
-                f'{type(error).__name__}: {error}') from error
+                f'{full_error(error)}') from error
         if not rows:
             raise ValueError(
                 f'Snowflake schema {database}.{schema} does not exist or this '
@@ -134,7 +135,7 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
 
     def start(self, record: RunRecord) -> None:
         self._reset()
-        self.run_id = self.logged_run_name = None
+        self.run_id = self.logged_run_name = self.experiment = None
         cls = self._module.ExperimentTracking
         tracking = getattr(cls, '_instance', None)
         if tracking is None:
@@ -150,6 +151,7 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
         experiment = tracking.set_experiment(self.experiment_name,
                                              database_name=database,
                                              schema_name=schema)
+        self.experiment = str(experiment.name)
         existing = [
             str(row['name'])
             for row in tracking._sql_client.show_runs_in_experiment(

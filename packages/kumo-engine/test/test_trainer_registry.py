@@ -263,7 +263,8 @@ def test_finish_fit_forwards_publication_details_and_returns_assigned_version(
     assert calls[0][2]['path'] == path
     assert calls[0][2]['location'] == location
     assert calls[0][2]['metrics'] == {'test/auroc': .8}
-    assert calls[0][2]['metadata']['kumo_bundle_id'] == result.bundle_id
+    assert {key: value for key, value in calls[0][2]['metadata'].items()
+            if key.startswith('kumo_')} == {'kumo_bundle_id': result.bundle_id}
     assert result.published_model is published
     assert result.metrics == original.metrics
     assert result.bundle_dir == bundle
@@ -583,27 +584,21 @@ def test_predict_works_after_load_without_refitting(snapshot: GraphSnapshot,
     assert result.frame['TARGET_PRED'].tolist() == [True]
 
 
-def _export(sink, bundle, location=None, artifact_paths=None):
+def _export(sink, bundle, location):
     return Trainer(ModelPlan())._finish_fit(
-        TrainingResult({}, artifact_paths or {},
-                       bundle), predictive_query='PREDICT COUNT(*)',
+        TrainingResult({}, {}, bundle), predictive_query='PREDICT COUNT(*)',
         snapshot_id='snap-123', training_table_generation=_generation_plan(),
         export_config=SimpleNamespace(
-            connector=SimpleNamespace(sink_backend=sink),
-            path=None if location else 'm', location=location))
+            connector=SimpleNamespace(sink_backend=sink), path=None,
+            location=location))
 
 
-def _recording_sink(calls):
-    return SimpleNamespace(publish_model=lambda *a, **k: calls.append(k) or
-                           PublishedModel(name='m', version='1', uri='u'))
-
-
-def test_publish_records_only_the_bundle_id_pointer(tmp_path: Path) -> None:
-    calls = []
-    result = _export(_recording_sink(calls), _fake_published_bundle(tmp_path))
-    assert {k: v
-            for k, v in calls[0]['metadata'].items()
-            if k.startswith('kumo_')} == {'kumo_bundle_id': result.bundle_id}
+def _specced_bundle(tmp_path: Path) -> Path:
+    bundle = _fake_published_bundle(tmp_path)
+    write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
+                        model_plan=ModelPlan(), snapshot_id='snap-123',
+                        training_table_generation=_generation_plan())
+    return bundle
 
 
 class _AliasingSink(_FakeSink):
@@ -650,10 +645,7 @@ def test_export_with_alias_publishes_then_sets_it_best_effort(
 
 def test_load_by_alias_warns_on_recorded_bundle_mismatch(
         tmp_path: Path) -> None:
-    bundle = _fake_published_bundle(tmp_path)
-    write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
-                        model_plan=ModelPlan(), snapshot_id='snap-123',
-                        training_table_generation=_generation_plan())
+    bundle = _specced_bundle(tmp_path)
     sink = _AliasingSink('other')
     sink.publish_model(None, str(bundle),
                        location=ModelRegistryLocation('CHURN_GNN'))
@@ -665,10 +657,7 @@ def test_load_by_alias_warns_on_recorded_bundle_mismatch(
 
 
 def test_training_result_exports_like_its_trainer(tmp_path: Path) -> None:
-    bundle = _fake_published_bundle(tmp_path)
-    write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
-                        model_plan=ModelPlan(), snapshot_id='snap-123',
-                        training_table_generation=_generation_plan())
+    bundle = _specced_bundle(tmp_path)
     sink = _AliasingSink()
     published = TrainingResult({}, {}, bundle).export(
         ModelOutputConfig(_FakeConnector(sink),
@@ -727,10 +716,7 @@ def test_mlops_registry_registers_after_the_fit(tmp_path: Path, monkeypatch,
 
     import kumo.engine as kumo
 
-    bundle = _fake_published_bundle(tmp_path)
-    write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
-                        model_plan=ModelPlan(), snapshot_id='snap-123',
-                        training_table_generation=_generation_plan())
+    bundle = _specced_bundle(tmp_path)
     monkeypatch.setattr(
         Trainer, '_fit', lambda self, *a, **k: TrainingResult(
             {}, {}, bundle, bundle_id='b1'))

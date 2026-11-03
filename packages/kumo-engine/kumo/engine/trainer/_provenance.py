@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""A model bundle's ``_provenance.json``; excluded from the bundle id."""
-
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,7 +76,6 @@ class FitRecord:
 
 
 def embedded_model(manifest: ModelManifest) -> ModelManifest:
-    r"""``manifest`` for embedding, its own model parents cut to stubs."""
     copy = embedded(manifest)
     parents = copy.parents
     if parents is None:
@@ -94,7 +91,6 @@ def embedded_model(manifest: ModelManifest) -> ModelManifest:
 
 def bundle_manifest(bundle_dir: Path,
                     bundle_id: Optional[str]) -> Optional[ModelManifest]:
-    r"""The manifest of the bundle at ``bundle_dir``, or a stub."""
     manifest = read_provenance(bundle_dir)
     if manifest is not None:
         return manifest

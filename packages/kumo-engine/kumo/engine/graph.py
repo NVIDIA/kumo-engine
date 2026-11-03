@@ -241,7 +241,6 @@ def _schema_tables(config: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 def schema_changes(before: Mapping[str, Any],
                    after: Mapping[str, Any]) -> List[str]:
-    r"""Schema differences between two graph configs."""
     old, new = _schema_tables(before), _schema_tables(after)
     changes = [
         f"table {name} {'removed' if name in old else 'added'}"
@@ -373,39 +372,40 @@ def _snapshot_id(graph_key: str, data_version: str) -> str:
     return f'{graph_key}@{data_version[:16]}'
 
 
-_COMPARABLE = ('exact', 'timestamp', 'listing')
+_COMPARABLE = frozenset({'exact', 'timestamp', 'listing'})
+
+
+def _current_source(table: Table,
+                    record_sources: bool) -> Optional[SourceTableEntry]:
+    from kumoapi.source_table import CustomSQLSourceTable
+
+    if isinstance(table.definition.source_table, CustomSQLSourceTable):
+        return None
+    connector = table.connector
+    try:
+        version = connector.source_backend.get_data_version(
+            connector, table.table_name)
+    except Exception:
+        return None
+    return source_table(connector, table.table_name, None, version,
+                        record_sources=record_sources)
 
 
 def _source_change(table: Table, recorded: Optional[SourceTableEntry],
                    record_sources: bool) -> Dict[str, Any]:
-    from kumoapi.source_table import CustomSQLSourceTable
-
+    now = _current_source(table, record_sources)
     before = None if recorded is None else recorded.version
-    current, same_source = None, False
-    comparable = (recorded is not None
-                  and recorded.version_kind in _COMPARABLE)
-    try:
-        source = table.definition.source_table
-        if not isinstance(source, CustomSQLSourceTable):
-            connector = table.connector
-            version = connector.source_backend.get_data_version(
-                connector, table.table_name)
-            now = source_table(connector, table.table_name, None, version,
-                               record_sources=record_sources)
-            current = now.version
-            comparable = comparable and now.version_kind in _COMPARABLE
-            same_source = recorded is not None and (
-                recorded.connector, recorded.location,
-                recorded.location_fingerprint) == (now.connector, now.location,
-                                                   now.location_fingerprint)
-    except Exception:
-        current = None
-    if not (same_source and comparable and before is not None
-            and current is not None):
-        status = 'unknown'
-    else:
-        status = 'unchanged' if before == current else 'changed'
+    current = None if now is None else now.version
+    known = (None not in (recorded, now, before, current)
+             and {recorded.version_kind, now.version_kind} <= _COMPARABLE
+             and _place(recorded) == _place(now))
+    status = ('unknown' if not known else
+              'unchanged' if before == current else 'changed')
     return {'status': status, 'recorded': before, 'current': current}
+
+
+def _place(entry: SourceTableEntry) -> tuple:
+    return entry.connector, entry.location, entry.location_fingerprint
 
 
 @dataclass(frozen=True)

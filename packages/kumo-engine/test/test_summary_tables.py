@@ -6,7 +6,7 @@ import json
 
 from kumo_core.summaries import Histogram, Table
 
-from kumo.engine._summary_tables import route, table_json
+from kumo.engine._summary_tables import Routed, route, table_json
 
 
 def test_a_histogram_table_closes_its_end_bins_at_the_values_extent():
@@ -32,6 +32,10 @@ def test_tables_round_measurements_and_keep_definitions_and_counts():
 
     assert json.loads(table_json(table))['data'] == [
         [0.07, 12, 0.487744], [0.3333333333, 7, 27.6108]]
+
+
+def test_a_summary_type_no_tracker_knows_is_skipped():
+    assert route([object()], True) == Routed()
 
 
 def test_a_histogram_table_leaves_out_empty_bins():

@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""The MLOps switch: :class:`MLOps` settings and the :func:`mlops` block."""
-
 import contextlib
 import contextvars
 import os
@@ -177,27 +175,35 @@ def _require_writable(root: _Root) -> None:
     filesystem, probe = store
     try:
         if filesystem.type_name == 'local':
-            existing = posixpath.dirname(probe)
-            while not os.path.exists(existing):
-                existing = posixpath.dirname(existing)
-            if not os.access(existing, os.W_OK | os.X_OK):
-                raise PermissionError(f'{existing} is not writable')
-            return
-        try:
-            filesystem.open_output_stream(probe).close()
-        except FileNotFoundError:
-            filesystem.create_dir(posixpath.dirname(probe), recursive=True)
-            filesystem.open_output_stream(probe).close()
-        delete = getattr(root.connector.sink_backend, 'delete_file', None)
-        if delete is None:
-            filesystem.delete_file(probe)
+            _require_local_writable(probe)
         else:
-            delete(root.connector, probe)
+            _write_and_delete(filesystem, root.connector, probe)
     except Exception as error:
         raise PermissionError(
             f'kumo.MLOps cannot write under artifact_root {root.uri("")!r} '
             f'({type(error).__name__}: {error}); grant write and delete '
             f'rights or pick another root.') from error
+
+
+def _require_local_writable(probe: str) -> None:
+    existing = posixpath.dirname(probe)
+    while not os.path.exists(existing):
+        existing = posixpath.dirname(existing)
+    if not os.access(existing, os.W_OK | os.X_OK):
+        raise PermissionError(f'{existing} is not writable')
+
+
+def _write_and_delete(filesystem: Any, connector: Any, probe: str) -> None:
+    try:
+        filesystem.open_output_stream(probe).close()
+    except FileNotFoundError:
+        filesystem.create_dir(posixpath.dirname(probe), recursive=True)
+        filesystem.open_output_stream(probe).close()
+    delete = getattr(connector.sink_backend, 'delete_file', None)
+    if delete is None:
+        filesystem.delete_file(probe)
+    else:
+        delete(connector, probe)
 
 
 _CURRENT: contextvars.ContextVar[Optional[MLOps]] = contextvars.ContextVar(
@@ -217,13 +223,11 @@ def mlops(settings: MLOps) -> Iterator[MLOps]:
 
 
 def resolve(settings: Optional[MLOps] = None) -> Optional[MLOps]:
-    r"""The ``mlops=`` argument, else the enclosing block's."""
     return settings if settings is not None else _CURRENT.get()
 
 
 def raise_on_error(settings: Optional[MLOps], error: Optional[BaseException],
                    call: str, stacklevel: int = 2) -> None:
-    r"""Raises or warns about ``error``, as ``settings.on_error`` says."""
     if error is None or settings is None:
         return
     message = f'{call} finished, but MLOps failed: {full_error(error)}'
@@ -233,7 +237,6 @@ def raise_on_error(settings: Optional[MLOps], error: Optional[BaseException],
 
 
 def full_error(error: BaseException) -> str:
-    r"""``Type: message``, not shortened."""
     return f'{type(error).__name__}: {error}'
 
 
@@ -251,7 +254,6 @@ def warn_failure(message: str, error: BaseException, stacklevel: int = 2,
 
 
 def on_root(source: Any, path: str) -> Tuple[Any, str]:
-    r"""``path`` under an `MLOps` root, else ``source`` as given."""
     if isinstance(source, MLOps):
         return source.root.connector, source.root.location(path.lstrip('/'))
     return source, path
