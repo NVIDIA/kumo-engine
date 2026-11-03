@@ -14,24 +14,31 @@ import pyarrow.parquet as pq
 import pytest
 
 
-def build_graph(root, *, unit="minute", bits=16, anchor=0, null=False, weighted=False):
+def build_graph(root, *, unit="minute", bits=16, anchor=0, null=False, weighted=False,
+                adversarial=False):
     step = {"minute": 60, "hour": 3600, "day": 86400}[unit]
     # Interior bucket boundaries and timestamps beyond both encoded endpoints.
     floor, ceiling = -(1 << (bits - 1)), (1 << (bits - 1)) - 1
     offsets = [bucket * step + delta for bucket in range(-8, 9) for delta in (-1, 0, 1)]
     offsets += [(floor - 2) * step, (ceiling + 2) * step]
     times = [anchor + offset for offset in offsets]
+    if adversarial:
+        times += [anchor + delta for delta in [1, 2, step // 2, step // 2, step - 1, step]]
     if null:
         times.append(None)
     n = len(times)
     root.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.table({"id": [1, 2]}), root / "users.parquet")
-    pq.write_table(pa.table({
-        "id": list(range(n)), "owner": [1] * n,
+    ids = np.random.default_rng(158).permutation(n).tolist() if adversarial else list(range(n))
+    events = pa.table({
+        "id": ids, "owner": [1] * n,
         "time": pa.array(times, type=pa.timestamp("s")),
         "reference_time": pa.array(times, type=pa.timestamp("s")),
         "amount": [float(i) for i in range(n)],
-    }), root / "events.parquet")
+    })
+    if adversarial:
+        events = events.take(pa.array(np.random.default_rng(82).permutation(n)))
+    pq.write_table(events, root / "events.parquet")
     config = {
         "dataset_name": "coarse_filter", "num_shards": 1,
         "tables": [
@@ -162,3 +169,57 @@ def test_coarse_null_clock_still_raises(tmp_path):
             run(engine, roots, [0], plan)
         with pytest.raises(diskgraph.DiskgraphConfigError, match="null timestamp"):
             engine.query_temporal_lengths({"users": roots}, {"users": [0]}, json.dumps(plan))
+
+
+@pytest.mark.parametrize("unit,bits,weighted", [("minute", 8, False), ("hour", 16, True),
+                                              ("day", 32, False)])
+def test_coarse_refinement_ties_and_complete_aggregates(tmp_path, unit, bits, weighted):
+    anchor = -1_700_000_003
+    engine, reverse, forward, _, step = build_graph(
+        tmp_path, unit=unit, bits=bits, anchor=anchor, weighted=weighted, adversarial=True)
+    table = pq.read_table(tmp_path / "events.parquet", columns=["id", "owner", "time", "amount"])
+    table = table.set_column(table.schema.get_field_index("time"), "time",
+                             table["time"].cast(pa.timestamp("s")).cast(pa.int64()))
+    source = table.to_pylist()
+    root_keys = [1, 2, 1, 1]
+    cutoffs = [anchor, anchor, anchor + step // 2, anchor + step - 1]
+    roots = engine.lookup_node_ids("users", pa.array(root_keys))
+    windows = [(None, 0), (-step, 0), (-1, 0), (0, 1), (-step, step), (None, None)]
+    windows += [(row["time"] - anchor - 1, row["time"] - anchor)
+                for row in source if abs(row["time"] - anchor) > 100 * step]
+    for duplicates in (False, True):
+        for lower, upper in windows:
+            for order in ("ascending", "descending"):
+                plan = make_plan(reverse, lower=lower, upper=upper, limit=2)
+                plan["sequences"][0]["order"] = order
+                plan["aggregates"] = [{"name": "all_amount", "frame": "f",
+                                       "operation": "sum", "column": "amount"}]
+                if duplicates:
+                    plan["frames"][0]["path"] += [
+                        {"relation": forward, "destination_type": "users"},
+                        {"relation": reverse, "destination_type": "events"}]
+                    plan["frames"][0]["distinct"] = False
+                actual = run(engine, roots, cutoffs, plan)
+                reference = copy.deepcopy(plan)
+                reference["frames"][0]["time_column"] = "reference_time"
+                assert_same(actual, run(engine, roots, cutoffs, reference))
+                seq = actual["sequences"][0]
+                returned = seq["batch"].column("id").to_pylist()
+                expected_lengths = []
+                for i, (owner, cutoff) in enumerate(zip(root_keys, cutoffs, strict=True)):
+                    eligible = [row for row in source if row["owner"] == owner
+                                and (lower is None or row["time"] > cutoff + lower)
+                                and (upper is None or row["time"] <= cutoff + upper)]
+                    if duplicates:
+                        eligible *= sum(row["owner"] == owner for row in source)
+                    # Public RDL tie order uses (type name, repr(primary key)).
+                    eligible.sort(key=lambda row: (row["time"], repr(row["id"])),
+                                  reverse=order == "descending")
+                    selected = [row["id"] for row in eligible[:2]]
+                    assert returned[seq["offsets"][i]:seq["offsets"][i + 1]] == selected
+                    expected_lengths.append(len(selected))
+                    expected_sum = sum(row["amount"] for row in eligible)
+                    assert actual["aggregates"][0]["values"][i] == expected_sum
+                lengths = engine.query_temporal_lengths({"users": roots}, {"users": cutoffs},
+                                                        json.dumps(plan))
+                assert lengths["sequences"][0]["lengths"].to_pylist() == expected_lengths

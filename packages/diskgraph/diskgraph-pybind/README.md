@@ -192,6 +192,19 @@ reached candidate count, while `rowpack_timestamps` records the reduced refineme
 work. Coarse clocks do not enable early sequence-limit selection. Both APIs
 still scan the reached adjacency; this filtering reduces decoding, not edge scanning.
 
+Both APIs use `diskgraph_core::time_filter::IndexedTimeFilter` for compatible
+clock admission. Rejection proves that the bucket cannot intersect `(lower, upper]`;
+admission only produces candidates for the existing exact row-clock checks.
+Ordering, duplicate handling, and complete aggregate inputs remain downstream.
+Missing/mismatched clocks and unsafe arithmetic use the exact row-clock fallback.
+
+The admission predicate is not a binary-search predicate: retained clipped codes
+at both extremes can make candidates noncontiguous. A shared range-seeking
+implementation must handle those regions separately or fall back to scanning.
+Range seeking and projection consolidation are separate from this component.
+See the [benchmark protocol and limitations](../scripts/benchmarks/temporal_fm_windows.md),
+including the measured overhead when coarse filtering cannot eliminate rows.
+
 ### Flat token packing for RDL
 
 `diskgraph.pack_token_stream(event_offsets, parts, max_tokens, keep_last,
