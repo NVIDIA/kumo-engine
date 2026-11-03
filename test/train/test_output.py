@@ -138,3 +138,46 @@ def test_regression_stats_match_whole_frame(tmp_path: pathlib.Path):
     ]:
         assert ((saved['whole'] / path).read_bytes() == (saved['chunked'] /
                                                          path).read_bytes())
+
+
+def test_zero_row_holdout_keeps_readable_schema(tmp_path: pathlib.Path):
+    frame = pd.DataFrame({'ENTITY': ['large row'], 'SCORE': [1.]})
+    EvalOutput({}, frame).save_df(str(tmp_path), TrainingStage.TEST,
+                                  max_size=1)
+
+    saved = pd.read_parquet(tmp_path / 'test_df.parquet')
+    assert saved.empty
+    assert list(saved.dtypes) == [object, np.float64]
+    meta = json.loads((tmp_path / 'test_df_meta.json').read_text())
+    assert meta['saved_rows'] == 0
+    assert meta['truncated']
+
+
+def test_empty_frames_sample_and_heatmap_keep_schema(tmp_path: pathlib.Path):
+    frame = pd.DataFrame({
+        'TARGET': pd.Series([], dtype=float),
+        'TARGET_PRED': pd.Series([], dtype=float),
+    })
+    assert EvalFrames.of(frame).sample(0).dtypes.equals(frame.dtypes)
+
+    stage_stats = SimpleNamespace(target_distribution={
+        'target_mean': 0.0,
+        'histogram': {
+            'bins': [0.0, 1.0],
+            'counts': [1],
+            'bin_width': 1.0,
+            'num_bins': 1,
+        },
+    })
+    task = SimpleNamespace(
+        task_type=TaskType.REGRESSION,
+        get_train_table_stats=lambda after_split: SimpleNamespace(
+            get_stage_table_stats=lambda stage: stage_stats),
+    )
+    EvalOutput({}, frame).save_prediction_heatmap(str(tmp_path),
+                                                  TrainingStage.TEST, task)
+
+    sampled = pd.read_parquet(tmp_path / 'test_target_prediction_heatmap' /
+                              'sampled_df.parquet')
+    assert sampled.empty
+    assert list(sampled.columns) == ['TARGET', 'TARGET_PRED']

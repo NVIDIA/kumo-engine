@@ -267,6 +267,8 @@ class EvalFrames:
 
     def sample(self, size: int) -> pd.DataFrame:
         r"""Same rows as :meth:`pandas.DataFrame.sample` on the whole frame."""
+        if size == 0:
+            return self._chunks[0].load().iloc[:0]
         locs = np.random.choice(self.num_rows, size=size, replace=False)
         order = np.argsort(locs, kind='stable')
         sorted_locs = locs[order]
@@ -289,9 +291,8 @@ class EvalFrames:
             size = int(frame.memory_usage(deep=True, index=False).sum())
             if used + size > max_bytes:
                 rows = int(len(frame) * (max_bytes - used) / size)
-                if rows > 0:
-                    head = frame.head(rows)
-                    chunks.append(_Chunk.of(head, head))
+                head = frame.head(rows)
+                chunks.append(_Chunk.of(head, head))
                 break
             chunks.append(chunk)
             used += size
@@ -716,6 +717,8 @@ class EvalOutput:
             # Log the sampled data used for generating the heatmap of
             # label vs predictions
             write_frame(sampled_df, sampled_df_path)
+            if sampled_df.empty:
+                return
 
             heatmap = self._generate_prediction_heatmap(
                 df=sampled_df,
