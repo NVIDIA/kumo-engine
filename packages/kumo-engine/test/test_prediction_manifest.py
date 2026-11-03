@@ -11,10 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from kumo_core.score_counts import PROBABILITY_EDGES, Counts
-from kumoapi.graph import Edge
 from kumoapi.jobs import PredictionArtifactType
-from kumoapi.model_plan import ModelPlan
-from kumoapi.typing import Stype
 
 import kumo.engine as kumo
 from kumo.engine._manifest import (
@@ -29,59 +26,20 @@ from kumo.engine._manifest import (
     stub,
     write_manifest,
 )
-from kumo.engine._scratch import get_scratch_dir
 from kumo.engine.trainer._provenance import embedded_model
 from kumo.engine.trainer.output_config import PredictionOutputConfig
 
 
 @pytest.fixture(scope='module')
-def graph(tmp_path_factory):
-    root = tmp_path_factory.mktemp('graph')
-    previous = get_scratch_dir()
-    kumo.configure(scratch_dir=root / 'scratch')
-    rng = np.random.default_rng(0)
-    data = root / 'data'
-    data.mkdir()
-    pd.DataFrame({'ID': np.arange(50)}).to_parquet(data / 'users.parquet')
-    pd.DataFrame({
-        'EID': np.arange(2000),
-        'USER_ID': rng.integers(0, 50, 2000),
-        'TS': pd.Timestamp('2024-01-01') +
-        pd.to_timedelta(rng.integers(0, 120, 2000), unit='D'),
-    }).to_parquet(data / 'orders.parquet')
-    connector = kumo.FileConnector(root_dir=str(data))
-    users = kumo.Table.from_source_table(connector['users.parquet'],
-                                         primary_key='ID').infer_metadata()
-    orders = kumo.Table.from_source_table(
-        connector['orders.parquet'],
-        primary_key='EID', time_column='TS').infer_metadata().with_column(
-            'USER_ID', stype=Stype.ID)
-    graph = kumo.Graph(
-        tables={'users': users, 'orders': orders},
-        edges=[Edge(src_table='orders', fkey='USER_ID', dst_table='users')])
-    yield graph, graph.snapshot()
-    kumo.configure(scratch_dir=previous)
+def predicted(fitted):
+    trainer, table, snapshot = fitted
+    return trainer.predict(table, snapshot=snapshot,
+                           binary_classification_threshold=0.4)
 
 
-@pytest.fixture(scope='module')
-def classifier(graph):
-    graph, snapshot = graph
-    pquery = kumo.PredictiveQuery(
-        graph=graph, query='PREDICT COUNT(orders.*, 0, 7, days) > 0 '
-        'FOR EACH users.ID')
-    plan = ModelPlan()
-    plan.training_job.disable_explain = True
-    plan.optimization.max_epochs = 1
-    plan.optimization.max_steps_per_epoch = 2
-    trainer = kumo.Trainer(model_plan=plan)
-    trainer.fit(pquery.generate_training_table(snapshot), snapshot=snapshot)
-    return trainer, pquery.generate_prediction_table(snapshot)
-
-
-def test_manifest_records_run_and_directory_export(graph, classifier,
-                                                   tmp_path, recwarn):
-    _, snapshot = graph
-    trainer, table = classifier
+def test_manifest_records_run_and_directory_export(fitted, tmp_path,
+                                                   recwarn):
+    trainer, table, snapshot = fitted
     output = PredictionOutputConfig(
         connector=kumo.FileConnector(root_dir=str(tmp_path)),
         output_paths={'predictions': 'preds/', 'embeddings': 'embs/'})
@@ -133,10 +91,8 @@ def test_manifest_records_run_and_directory_export(graph, classifier,
         assert sidecar['outputs'] == manifest.to_dict()['outputs']
 
 
-def test_a_model_without_a_manifest_is_a_stub_parent(graph, classifier,
-                                                     monkeypatch):
-    _, snapshot = graph
-    trainer, table = classifier
+def test_a_model_without_a_manifest_is_a_stub_parent(fitted, monkeypatch):
+    trainer, table, snapshot = fitted
     monkeypatch.setattr(type(trainer.result), 'manifest',
                         property(lambda _: None))
     result = trainer.predict(table, snapshot=snapshot,
@@ -145,9 +101,8 @@ def test_a_model_without_a_manifest_is_a_stub_parent(graph, classifier,
     assert result.bundle_id == trainer.result.id
 
 
-def test_mlops_stores_the_run_after_its_export(graph, classifier, tmp_path):
-    _, snapshot = graph
-    trainer, table = classifier
+def test_mlops_stores_the_run_after_its_export(fitted, tmp_path):
+    trainer, table, snapshot = fitted
     output = PredictionOutputConfig(
         connector=kumo.FileConnector(root_dir=str(tmp_path / 'out')),
         output_paths={'predictions': 'preds/'})
@@ -172,22 +127,20 @@ def test_mlops_stores_the_run_after_its_export(graph, classifier, tmp_path):
     assert not (tmp_path / 'off' / 'predictions').exists()
 
 
-def test_mlops_runs_record_their_exact_score_counts(graph, classifier,
+def test_mlops_runs_record_their_exact_score_counts(fitted, predicted,
                                                     tmp_path, monkeypatch):
     from kumo_core.score_drift import psi
     from kumo_core.summaries import Dataset, Histogram, Scalar, Tag
 
-    _, snapshot = graph
-    trainer, table = classifier
+    trainer, table, snapshot = fitted
 
     def histogram(values):
         return np.bincount(np.searchsorted(PROBABILITY_EDGES, values, 'right'),
                            minlength=102)
 
-    plain = trainer.predict(table, snapshot=snapshot,
-                            binary_classification_threshold=0.4)
-    assert Counts.from_dict(plain.manifest.stats['predictions'].counts).arrays[
-        'True_PROB'].tolist() == histogram(plain.frame['True_PROB']).tolist()
+    assert Counts.from_dict(predicted.manifest.stats['predictions'].counts
+                            ).arrays['True_PROB'].tolist() == histogram(
+        predicted.frame['True_PROB']).tolist()
 
     holdout = trainer.result.holdout_df()['True_PROB'].to_numpy()
     baseline = Counts({'score': PROBABILITY_EDGES})
@@ -227,11 +180,9 @@ def test_mlops_runs_record_their_exact_score_counts(graph, classifier,
 
 
 @pytest.mark.parametrize('on_error', ['warn', 'raise'])
-def test_a_failed_store_of_a_run_follows_on_error(graph, classifier,
-                                                  tmp_path, monkeypatch,
-                                                  on_error):
-    _, snapshot = graph
-    trainer, table = classifier
+def test_a_failed_store_of_a_run_follows_on_error(fitted, tmp_path,
+                                                  monkeypatch, on_error):
+    trainer, table, snapshot = fitted
     monkeypatch.setattr(
         kumo.PredictionResult, '_export',
         lambda self, *args: (_ for _ in ()).throw(OSError('ACCESS_DENIED')))
@@ -251,13 +202,8 @@ def test_a_failed_store_of_a_run_follows_on_error(graph, classifier,
     assert 'ACCESS_DENIED' in record.tags['kumo.error']
 
 
-def test_prediction_manifest_round_trips_unchanged(graph, classifier,
-                                                   tmp_path):
-    _, snapshot = graph
-    trainer, table = classifier
-    result = trainer.predict(table, snapshot=snapshot,
-                             binary_classification_threshold=0.4)
-    newer = json.loads(result._manifest_path.read_text())
+def test_prediction_manifest_round_trips_unchanged(predicted, tmp_path):
+    newer = json.loads(predicted._manifest_path.read_text())
     newer['future'] = {'a': 1}
     newer['scoring']['calibration'] = 'none'
     newer['prediction_table']['skip_reason'] = None
@@ -276,9 +222,8 @@ def test_prediction_manifest_round_trips_unchanged(graph, classifier,
 @pytest.mark.parametrize('argument, source', [(None, 'bundle'),
                                               (0.4, 'argument')])
 def test_manifest_records_bundle_scoring_defaults_as_bundle(
-        graph, classifier, argument, source):
-    _, snapshot = graph
-    trainer, table = classifier
+        fitted, argument, source):
+    trainer, table, snapshot = fitted
     child = trainer.result.with_scoring_defaults(
         kumo.ScoringDefaults(binary_classification_threshold=0.3))
     scoring = child.predict(
@@ -289,12 +234,8 @@ def test_manifest_records_bundle_scoring_defaults_as_bundle(
 
 
 def test_plain_export_records_nothing_and_skips_non_parquet_sidecars(
-        graph, classifier, tmp_path):
-    _, snapshot = graph
-    trainer, table = classifier
-    result = trainer.predict(table, snapshot=snapshot,
-                             binary_classification_threshold=0.5)
-    before = result.manifest
+        predicted, tmp_path):
+    before = predicted.manifest
     calls = []
     connector = SimpleNamespace(
         source_type='SNOWFLAKE', config=SimpleNamespace(),
@@ -302,31 +243,29 @@ def test_plain_export_records_nothing_and_skips_non_parquet_sidecars(
             table_location=lambda _, name: f'DB.SCHEMA.{name}'),
         sink_backend=SimpleNamespace(
             write_files=lambda *args, **kwargs: calls.append(kwargs)))
-    result.export(PredictionOutputConfig(connector,
-                                         PredictionArtifactType.PREDICTIONS,
-                                         'PREDS'))
+    predicted.export(PredictionOutputConfig(
+        connector, PredictionArtifactType.PREDICTIONS, 'PREDS'))
     assert len(calls) == 1
     assert not calls[0].keys() & {'sidecars', 'extra_columns'}
 
     files = kumo.FileConnector(root_dir=str(tmp_path))
-    result.export(PredictionOutputConfig(
+    predicted.export(PredictionOutputConfig(
         connector=files, output_paths={'predictions': 'preds/'}))
-    result.export(PredictionOutputConfig(
+    predicted.export(PredictionOutputConfig(
         connector=files, output_paths={'predictions': 'preds.csv/'}))
     sidecar = json.loads(
         (tmp_path / 'preds' / '_provenance.json').read_text())
     assert sidecar == before.to_dict() and sidecar['outputs'] == []
     assert list((tmp_path / 'preds.csv').glob('*.csv'))
     assert not (tmp_path / 'preds.csv' / '_provenance.json').exists()
-    assert result.manifest == before
+    assert predicted.manifest == before
 
 
-def test_manifest_failures_warn_and_keep_outputs(graph, classifier, tmp_path,
+def test_manifest_failures_warn_and_keep_outputs(fitted, tmp_path,
                                                  monkeypatch):
     from kumo.engine.trainer import _run_manifest
 
-    _, snapshot = graph
-    trainer, table = classifier
+    trainer, table, snapshot = fitted
 
     def run(name):
         output = PredictionOutputConfig(
@@ -391,10 +330,9 @@ class _Recorder:
         self.records.append(record)
 
 
-def test_failed_export_still_writes_and_tracks_the_run(graph, classifier,
-                                                       tmp_path, monkeypatch):
-    _, snapshot = graph
-    trainer, table = classifier
+def test_failed_export_still_writes_and_tracks_the_run(fitted, tmp_path,
+                                                       monkeypatch):
+    trainer, table, snapshot = fitted
     connector = kumo.FileConnector(root_dir=str(tmp_path))
     sink = type(connector.sink_backend)
     write_files = sink.write_files
@@ -431,13 +369,12 @@ def test_failed_export_still_writes_and_tracks_the_run(graph, classifier,
     assert record.tags['kumo.prediction_id'] == manifest['id']
 
 
-def test_tracking_records_the_run_and_never_changes_it(graph, classifier,
+def test_tracking_records_the_run_and_never_changes_it(fitted, predicted,
                                                        tmp_path, caplog):
     from kumo.engine._tracking import prediction_record
     from kumo.engine.trainer._run_manifest import _scoring_summaries
 
-    _, snapshot = graph
-    trainer, table = classifier
+    trainer, table, snapshot = fitted
     recorder = _Recorder()
 
     def predict(tracking):
@@ -446,13 +383,11 @@ def test_tracking_records_the_run_and_never_changes_it(graph, classifier,
         return trainer.predict(table, snapshot=snapshot, mlops=cfg,
                                binary_classification_threshold=0.4)
 
-    untracked = trainer.predict(table, snapshot=snapshot,
-                                binary_classification_threshold=0.4)
     tracked = predict(recorder)
     failed = predict(_Recorder(raises=True))
 
     for result in (tracked, failed):
-        pd.testing.assert_frame_equal(result.frame, untracked.frame,
+        pd.testing.assert_frame_equal(result.frame, predicted.frame,
                                       check_exact=False, rtol=1e-4)
     assert recorder.records == [prediction_record(
         tracked.manifest, model=trainer.result,

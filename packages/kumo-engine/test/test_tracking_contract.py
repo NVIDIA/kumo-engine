@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Every tracking adapter records the same runs."""
-
 import hashlib
 import json
 import threading
@@ -27,6 +25,7 @@ from kumo_core.summaries import (
     Scalar,
     Series,
     Table,
+    Tag,
 )
 from kumo_core.types import TaskType
 from kumoapi.plugin import PublishedModel
@@ -777,18 +776,6 @@ def test_a_summary_type_no_tracker_knows_is_skipped():
 
 
 def test_every_summary_type_is_routed():
-    from kumo_core.summaries import (
-        BarChart,
-        Confusion,
-        Dataset,
-        Histogram,
-        Note,
-        Scalar,
-        Series,
-        Table,
-        Tag,
-    )
-
     from kumo.engine._summary_tables import route
     from kumo.engine._svg import bar_chart
 
@@ -835,8 +822,6 @@ def test_holdout_metrics_are_named_after_the_shipped_model(
 
 
 def test_holdout_summaries_are_named_after_the_shipped_model():
-    from kumo_core.summaries import Note
-
     from kumo.engine.trainer.trainer import _REFIT_FULL, _unlogged
 
     summaries = (Scalar('auroc', 0.7, role='model'),
@@ -890,13 +875,19 @@ def _session(events, trials):
     return recorder.calls
 
 
-def test_a_one_epoch_fit_writes_its_epoch_in_a_note_not_a_series():
+@pytest.mark.parametrize('trials,metrics', [(1, None),
+                                            (2, {'val_mae': 0.4})],
+                         ids=['fit', 'search'])
+def test_a_one_epoch_run_writes_its_epoch_in_a_note_not_a_series(
+        trials, metrics):
     calls = _session([
         _event('trial_started', 1, attempt=1), *_epochs(1, (0.5, 0.4)),
-        _event('trial_ended', 1, status='succeeded', attempt=1),
-        _event('fit_ended', status='succeeded')], trials=1)
+        _event('trial_ended', 1, metrics=metrics, status='succeeded',
+               attempt=1),
+        _event('fit_ended', status='succeeded')], trials)
 
-    assert [hook for hook, _ in calls] == ['start', 'finish']
+    if trials == 1:
+        assert [hook for hook, _ in calls] == ['start', 'finish']
     record = calls[-1][1]
     assert record.steps == {}
     assert Note('notes', 'Training (1 epoch): train loss 0.5 · val mae 0.4') \
@@ -929,16 +920,3 @@ def test_a_series_starts_once_it_has_two_points():
         {'val/mae': 0.4}]
     assert calls[-1][1].steps == {'train/loss': ((1, 0.6), (2, 0.4)),
                                   'val/mae': ((1, 0.5), (2, 0.3))}
-
-
-def test_a_search_whose_selected_trial_ran_one_epoch_notes_it():
-    calls = _session([
-        _event('trial_started', 1, attempt=1), *_epochs(1, (0.5, 0.4)),
-        _event('trial_ended', 1, metrics={'val_mae': 0.4}, status='succeeded',
-               attempt=1),
-        _event('fit_ended', status='succeeded')], trials=2)
-
-    record = calls[-1][1]
-    assert record.steps == {}
-    assert Note('notes', 'Training (1 epoch): train loss 0.5 · val mae 0.4') \
-        in record.summaries
