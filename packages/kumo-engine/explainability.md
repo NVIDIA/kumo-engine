@@ -76,6 +76,8 @@ Coverage and unavailable states identify data excluded by limits or missing from
 Verified static or temporal link-prediction TEST configurations using `shallow_rhs` or `two_tower` show the cohort producer's node-prediction requirement.
 Verified temporal `context` and `pairwise` configurations show the same requirement.
 Configurations using the `two_tower` module also show its gradient and selected-example exclusions.
+Verified `shallow_rhs` configurations identify global and local feature sensitivity as using summed retrieved dot-product scores through sampled graph feature encoders.
+No per-item sensitivity breakdown is retained, and these scores are neither probabilities nor complete attributions to learned entity/item embeddings; query TOP K does not establish the explanation retrieval count.
 This guidance requires matching selected-trial and TEST-fit configuration and model-plan records; missing, malformed, or conflicting metadata leaves it unknown.
 Producer eligibility stays separate from retained artifact status and does not establish why an artifact is absent.
 Integer values outside the browser's exact numeric range (`±(2**53 - 1)`) make the containing artifact unavailable; recorded string identifiers preserve their text.

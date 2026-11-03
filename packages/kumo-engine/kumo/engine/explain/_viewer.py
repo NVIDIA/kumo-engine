@@ -73,9 +73,8 @@ def static_summary(payload: dict) -> str:
         if section.get('reason'):
             label += '. ' + str(section['reason'])
         if section.get('producer_note'):
-            scope = key == 'gradient' and context.get(
-                'task_type') == 'forecasting'
-            prefix = 'Producer scope' if scope else 'Producer eligibility'
+            prefix = ('Producer scope'
+                      if key == 'gradient' else 'Producer eligibility')
             label += f'. {prefix}: ' + str(section['producer_note'])
         parts.append('<li>' + escape(label) + '</li>')
     parts.append('</ul><h2>Selected examples</h2><p>Example values are excluded '
@@ -274,7 +273,7 @@ note(results,'Missing progress is not evidence that a trial failed.');}
 const patterns=section('Recorded patterns');patterns.append(el('h3','Global input sensitivity'));
 note(patterns,'Unsigned recorded gradient magnitude, normalized across all columns when the total is positive. '
 +'These scores describe sensitivity, not causal effects or prediction probabilities.');
-state(patterns,data.gradient,'Global sensitivity',context.task_type==='forecasting'?'Producer scope':'Producer eligibility');
+state(patterns,data.gradient,'Global sensitivity','Producer scope');
 const gradients=list(obj(data.gradient).rows), valid=gradients.filter(row=>finite(row.score)&&row.score>=0)
 .sort((a,b)=>b.score-a.score||text(a.table).localeCompare(text(b.table))||text(a.column).localeCompare(text(b.column)));
 if(valid.length!==gradients.length)note(patterns,'Invalid or negative gradient scores are excluded from the unsigned ranking.');

@@ -251,6 +251,16 @@ def _read_training(guard: _Guard, trial: Path,
                         rule +
                         ' Eligibility alone does not explain missing artifacts.'
                     )
+            if module == 'shallow_rhs':
+                producer_notes['gradient'] = (
+                    'Recorded shallow-RHS link prediction. Global and local '
+                    'feature sensitivities use summed retrieved dot-product '
+                    'scores through sampled graph feature encoders. No '
+                    'per-item breakdown is retained. These are not '
+                    'probabilities or complete attributions to learned '
+                    'entity/item embeddings. '
+                    'Query TOP K does not establish the explanation retrieval '
+                    'count.')
         elif provenance['selection_verified'] and payload['context'].get(
                 'task_type') == 'forecasting':
             for path in dict.fromkeys((original, trial)):

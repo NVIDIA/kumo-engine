@@ -480,7 +480,7 @@ def test_unverified_selection_does_not_identify_a_winner(tmp_path):
     'missing_module_key', 'head_conflict', 'malformed_head',
     'malformed_architecture', 'plan_module_conflict', 'missing_plan_module',
     'null_module', 'list_module', 'dict_module', 'null_plan_module',
-    'list_plan_module', 'dict_plan_module'
+    'list_plan_module', 'dict_plan_module', 'metric_conflict', 'unknown_metric'
 ])
 def test_producer_guidance_preserves_observation_and_abstains(
         tmp_path, task, architecture, module, refit, state):
@@ -490,7 +490,7 @@ def test_producer_guidance_preserves_observation_and_abstains(
     for path in dict.fromkeys((original, trial)):
         save_json(
             dict(
-                refit_cfg=dict(refitted_trainval=refit),
+                refit_cfg=dict(refitted_trainval=refit), tune_metric='map@10',
                 module_kwargs=None if task == 'forecasting' else dict(
                     module=module), head={
                         '_target_':
@@ -500,6 +500,10 @@ def test_producer_guidance_preserves_observation_and_abstains(
                   str(path / 'model_plan.json'))
     save_json(dict(task_type=task),
               str(run / 'published-model/manifests/task.json'))
+    save_json(
+        dict(predictive_query='PREDICT LIST_DISTINCT(orders.item_id) '
+             'RANK TOP 3 FOR EACH users.id'),
+        str(run / 'published-model/training-spec.json'))
     if state in ('retained', 'disabled', 'failed', 'cohort_conflict',
                  'sample_conflict'):
         _gradient(str(trial))
@@ -571,12 +575,18 @@ def test_producer_guidance_preserves_observation_and_abstains(
     elif state == 'unverified_selection':
         save_json(dict(best_trainer=str(original.with_name('version_9'))),
                   str(original.parent / 'best_trainer.json'))
+    elif state in ('metric_conflict', 'unknown_metric'):
+        config = json.loads((trial / 'config.json').read_text())
+        config['tune_metric'] = ('map@3'
+                                 if state == 'metric_conflict' else 'unknown')
+        save_json(config, str(trial / 'config.json'))
     explanations = TrainingExplanations.from_trial(
         run, trial, disabled=state == 'disabled',
         failure='private/path' if state == 'failed' else None)
     availability = explanations.availability
     result = build_training_payload(explanations)
-    expected = state in ('missing', 'retained', 'invalid', 'disabled', 'failed')
+    expected = state in ('missing', 'retained', 'invalid', 'disabled', 'failed',
+                         'metric_conflict', 'unknown_metric')
     expected |= task != 'forecasting' and state in ('head_conflict',
                                                     'malformed_head')
     expected |= task == 'forecasting' and state in (
@@ -588,13 +598,15 @@ def test_producer_guidance_preserves_observation_and_abstains(
         not (task == 'static_link_prediction' and module in ('hybrid', 'id')))
     for name in ('gradient', 'cohorts', 'samples'):
         note = result[name].pop('producer_note', None)
-        assert bool(note) == (expected
-                              and (task == 'forecasting' or name == 'cohorts'
-                                   or module == 'two_tower'))
+        assert bool(note) == (
+            expected and
+            (task == 'forecasting' or name == 'cohorts' or module == 'two_tower'
+             or name == 'gradient' and module == 'shallow_rhs'))
         if note:
             assert ('Recorded forecasting.' if task == 'forecasting' else
-                    'Recorded two-tower link prediction.' if module
-                    == 'two_tower' else 'Recorded link prediction.') in note
+                    'Recorded two-tower link prediction.' if module ==
+                    'two_tower' else 'Recorded shallow-RHS link prediction.' if
+                    name == 'gradient' else 'Recorded link prediction.') in note
             if is_link and name == 'cohorts':
                 assert 'Column cohorts require a node-prediction module.' in note
             if task == 'forecasting' and name == 'gradient':
@@ -603,11 +615,20 @@ def test_producer_guidance_preserves_observation_and_abstains(
                 assert 'Dedicated lag/year-over-year encoders' in note
                 assert 'separate forecast-head inputs, when used' in note
                 assert 'No per-horizon scores are retained.' in note
+            elif is_link and name == 'gradient' and module == 'shallow_rhs':
+                assert 'Global and local feature sensitivities' in note
+                assert 'summed retrieved dot-product scores' in note
+                assert 'sampled graph feature encoders' in note
+                assert 'No per-item breakdown is retained.' in note
+                assert 'not probabilities or complete attributions' in note
+                assert 'learned entity/item embeddings' in note
+                assert 'Query TOP K does not establish' in note
+                assert '3' not in note and '10' not in note
             else:
                 assert 'Eligibility alone does not explain missing artifacts.' in note
             result[name]['producer_note'] = note
             assert note in static_summary(result)
-            if task == 'forecasting' and name == 'gradient':
+            if name == 'gradient':
                 assert 'Producer scope: ' + note in static_summary(result)
             del result[name]['producer_note']
     assert explanations.availability == availability
