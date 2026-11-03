@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 from kumo_core.explain.schemas import EntityOutput
+from kumo_core.io import filesystem
 from kumo_core.io.json import save_json
 from kumoapi.explain.common import EntityMappings
 from kumoapi.task import TaskType
@@ -21,6 +22,7 @@ from test_explanation_artifacts import (
     _text,
 )
 
+from kumo.engine.explain import _artifacts
 from kumo.engine.explain._diagnostics import LIMITS, build_training_payload
 from kumo.engine.explain._viewer import static_summary
 from kumo.engine.explain.results import TrainingExplanations
@@ -150,8 +152,10 @@ def test_snapshot_preserves_refit_metrics_epochs_and_missing_values(
     'unknown', 'oversized', 'escape', 'range', 'fractional_target'
 ])
 def test_sample_coverage_deduplication_and_complete_graph_budget(
-        tmp_path, task, output_state):
+        tmp_path, monkeypatch, task, output_state):
     run, trial = _run(tmp_path, refit=True)
+    _gradient(trial)
+    _save_cohorts(trial, [_cohort()])
     root = f'{trial}/subgraph_collector/test'
     for artifact in ('0', '2', '3'):
         graph = _graph()
@@ -215,8 +219,16 @@ def test_sample_coverage_deduplication_and_complete_graph_budget(
                 'random': ['user-7', 'missing'],
                 'large_error': ['user-7']
             }), f'{root}/strategy_mappings.json')
-    result = build_training_payload(TrainingExplanations.load(run),
-                                    max_samples=1)
+    facade = TrainingExplanations.load(run)
+    with monkeypatch.context() as snapshot:
+        forbidden = Mock(side_effect=AssertionError('Artifact was reopened'))
+        snapshot.setattr(_artifacts, 'load_json', forbidden)
+        snapshot.setattr(filesystem, 'open_file', forbidden)
+        snapshot.setattr(filesystem, 'listdir', forbidden)
+        result = build_training_payload(facade, max_samples=1)
+        forbidden.assert_not_called()
+    assert result['gradient']['status'] == 'available'
+    assert result['cohorts']['status'] == 'available'
     section = result['samples']
     assert section['coverage'] == dict(references_total=4, references_listed=4,
                                        available=3, loaded=1, missing=1,

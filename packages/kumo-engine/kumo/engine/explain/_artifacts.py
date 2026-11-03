@@ -4,6 +4,7 @@
 """Read existing training artifacts without initializing training machinery."""
 
 import csv
+import io
 import math
 import posixpath
 from dataclasses import dataclass
@@ -59,11 +60,12 @@ def artifact_root(path: str | Path) -> str:
     return value.rstrip('/')
 
 
-def read_typed(path: str, cls: type[T]) -> T:
-    if not filesystem.exists(path):
+def read_typed(path: str, cls: type[T], *, raw: dict | None = None) -> T:
+    if raw is None and not filesystem.exists(path):
         raise ExplanationUnavailableError(f'Explanation artifact missing: {path}')
     try:
-        value = load_json(path, cls)
+        value = load_json(path, cls) if raw is None else from_json_dict(
+            raw, cls)
         if value is None:
             raise InvalidExplanationError(f'Null explanation artifact: {path}')
         return value
@@ -139,14 +141,15 @@ def resolve_run(run_root: str | Path) -> tuple[str, str]:
         raise InvalidRunError(f'Invalid run selection: {error}') from error
 
 
-def read_gradient(path: str) -> GraphGradientScore:
+def read_gradient(path: str, *, text: str | None = None) -> GraphGradientScore:
     """Reconstruct shared score types from the producer's six-decimal CSV."""
-    if not filesystem.exists(path):
+    if text is None and not filesystem.exists(path):
         raise ExplanationUnavailableError(f'Gradient scores missing: {path}')
     scores = GraphGradientScore()
     seen: set[tuple[str, str]] = set()
     try:
-        with filesystem.open_file(path, 'rt', encoding='utf-8', newline='') as src:
+        with (filesystem.open_file(path, 'rt', encoding='utf-8', newline='')
+              if text is None else io.StringIO(text, newline='')) as src:
             reader = csv.DictReader(src)
             if reader.fieldnames != ['table', 'column', 'score']:
                 raise ValueError('expected CSV header table,column,score')
@@ -217,8 +220,8 @@ def validate_cohort(cohort: ColumnCohorts) -> None:
             _vector(targets, length, 'targets')
 
 
-def read_cohorts(path: str) -> ColumnAnalysisOutput:
-    result = read_typed(path, ColumnAnalysisOutput)
+def read_cohorts(path: str, *, raw: dict | None = None) -> ColumnAnalysisOutput:
+    result = read_typed(path, ColumnAnalysisOutput, raw=raw)
     seen: set[CohortKey] = set()
     try:
         for cohort in result.cohorts:
@@ -245,22 +248,25 @@ def _artifact_id(value: str) -> str:
     return value
 
 
-def sample_paths(root: str) -> dict[str, str]:
-    if not filesystem.exists(root):
+def sample_paths(root: str, *,
+                 entries: list[str] | None = None) -> dict[str, str]:
+    if entries is None and not filesystem.exists(root):
         return {}
     paths = {}
-    for path in filesystem.listdir(root):
+    for path in filesystem.listdir(root) if entries is None else entries:
         name = posixpath.basename(path)
         if name.endswith('.json') and name[:-5].isascii() and name[:-5].isdigit():
             paths[name[:-5]] = posixpath.join(root, name)
     return paths
 
 
-def list_samples(root: str) -> tuple[SampleReference, ...]:
-    paths = sample_paths(posixpath.join(root, 'subgraph_json'))
+def list_samples(root: str, *, entries: list[str] | None = None,
+                 raw: dict | None = None) -> tuple[SampleReference, ...]:
+    paths = sample_paths(posixpath.join(root, 'subgraph_json'), entries=entries)
     mapping_path = posixpath.join(root, 'strategy_mappings.json')
-    mappings = (read_typed(mapping_path, EntityMappings)
-                if filesystem.exists(mapping_path) else EntityMappings())
+    mappings = (read_typed(mapping_path, EntityMappings, raw=raw)
+                if raw is not None or filesystem.exists(mapping_path) else
+                EntityMappings())
     categories: dict[str, list[str]] = {}
     originals: dict[str, dict[str, str | int]] = {}
     try:
@@ -288,10 +294,11 @@ def list_samples(root: str) -> tuple[SampleReference, ...]:
             f'Invalid selection metadata {mapping_path}: {error}') from error
 
 
-def read_sample(root: str, artifact_id: str) -> Subgraph:
+def read_sample(root: str, artifact_id: str, *,
+                raw: dict | None = None) -> Subgraph:
     _artifact_id(artifact_id)
     path = posixpath.join(root, 'subgraph_json', f'{artifact_id}.json')
-    graph = read_typed(path, Subgraph)
+    graph = read_typed(path, Subgraph, raw=raw)
     try:
         store = graph.subgraph_store
         if store is not None:

@@ -17,6 +17,12 @@ from kumo_core.io.json import from_json_dict, to_json_dict
 from kumoapi.jobs import AutoTrainerProgress, TrainerProgress
 from kumoapi.task import TaskType
 
+from kumo.engine.explain._artifacts import (
+    list_samples,
+    read_cohorts,
+    read_gradient,
+    read_sample,
+)
 from kumo.engine.explain.results import TrainingExplanations
 
 LIMITS = {
@@ -390,8 +396,7 @@ def _read_sample_output(guard: _Guard, root: Path, artifact_id: str,
     return result
 
 
-def _read_samples(guard: _Guard, trial: Path,
-                  explanations: TrainingExplanations, section: dict,
+def _read_samples(guard: _Guard, trial: Path, section: dict,
                   max_samples: int) -> None:
     root = trial / 'subgraph_collector/test'
     mapping = root / 'strategy_mappings.json'
@@ -405,6 +410,7 @@ def _read_samples(guard: _Guard, trial: Path,
             if len(path.stem) > 32:
                 raise _Limited('Collector ID length limit')
             guard.path(path)
+    raw = {}
     if guard.path(mapping).exists():
         raw = guard.json(mapping)
         for ids in raw.get('mappings', {}).values():
@@ -414,7 +420,8 @@ def _read_samples(guard: _Guard, trial: Path,
                 raise _Limited('Selection reference count limit')
             if any(not isinstance(key, str) or len(key) > 32 for key in ids):
                 raise ValueError('Invalid collector ID')
-    references = explanations.samples()
+    references = list_samples(str(root), entries=[str(path) for path in paths],
+                              raw=raw)
     listed = references[:LIMITS['catalog']]
     coverage = section['coverage']
     coverage.update(references_total=len(references),
@@ -440,8 +447,9 @@ def _read_samples(guard: _Guard, trial: Path,
             path = guard.path(reference.path)
             if path.stat().st_size > min(remaining, LIMITS['artifact_bytes']):
                 raise _Limited('Sample byte limit')
-            guard.json(path)
-            body = to_json_dict(explanations.sample(reference.artifact_id))
+            body = to_json_dict(
+                read_sample(str(root), reference.artifact_id,
+                            raw=guard.json(path)))
             _check_tree(body)
             size = len(_encoded(body))
             if size > remaining:
@@ -517,7 +525,8 @@ def build_training_payload(explanations: TrainingExplanations, *,
             if index > LIMITS['gradient_rows']:
                 raise _Limited('Gradient row count limit')
             _check_tree(row)
-        scores = explanations.gradient_scores()
+        scores = read_gradient(str(trial / 'explain_test/scores.csv'),
+                               text=text)
         rows = [
             dict(table=table.name, column=column, score=score)
             for table in scores.tables.values()
@@ -535,7 +544,10 @@ def build_training_payload(explanations: TrainingExplanations, *,
         raw = guard.json(trial / 'column_analysis/test/column_analysis.json')
         if len(raw.get('cohorts', [])) > LIMITS['cohorts']:
             raise _Limited('Cohort count limit')
-        result = to_json_dict(explanations.column_analysis())
+        result = to_json_dict(
+            read_cohorts(
+                str(trial / 'column_analysis/test/column_analysis.json'),
+                raw=raw))
         section.update(status='available', reason=None,
                        task_type=result['task_type'], rows=result['cohorts'])
         payload['provenance']['task_type'] = result['task_type']
@@ -544,8 +556,7 @@ def build_training_payload(explanations: TrainingExplanations, *,
         _failure(section, error)
 
     try:
-        _read_samples(guard, trial, explanations, payload['samples'],
-                      max_samples)
+        _read_samples(guard, trial, payload['samples'], max_samples)
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
         _failure(payload['samples'], error)
     recorded_tasks = [payload['context'].get('task_type')
