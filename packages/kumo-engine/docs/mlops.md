@@ -129,7 +129,7 @@ trainer.fit(table, snapshot=snapshot, mlops=cfg)
 - **Per call, not per model.** MLOps applies only to a call given `mlops=` or run inside `with kumo.mlops(...)`. A later call outside the block, even on a model trained inside one, runs without MLOps, and `on_error="raise"` does not detect this: it covers only MLOps work that ran. There is no per-call off switch; to run one call without MLOps, call it outside the block. For scheduled jobs, wrap the whole job in one block.
 - `kumo.MLOps(...)` checks the tracker and registry when it is built (one experiment lookup, one registry listing, the model name's rules), so wrong credentials or a bad name fail before any work.
 
-ADLS roots use the secure `abfss://<filesystem>@<account>.<dfs-endpoint>/<prefix>` form. The full connector root is a valid artifact directory; table sources and prediction destinations still require a child path. Pass `(ADLSConnector(...), root_uri)` to retain an explicit identity, and use `model_config={"assets_from": connector}` when loading a model with ADLS snapshots or assets. The connector's existing workload-identity and sovereign-cloud write requirements still apply.
+ADLS roots use the secure `abfss://<filesystem>@<account>.<dfs-endpoint>/<prefix>` form. The full connector root is a valid artifact directory; relative root spellings (`''`, `'.'`, `'/'`) require the full URI instead. Table sources and prediction destinations still require a child path. Pass `(ADLSConnector(...), root_uri)` to retain an explicit identity, and use `model_config={"assets_from": connector}` when loading a model with ADLS snapshots or assets. The connector's existing workload-identity and sovereign-cloud write requirements still apply.
 
 ### Reading artifacts back
 

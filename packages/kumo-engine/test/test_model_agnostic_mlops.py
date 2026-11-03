@@ -616,3 +616,28 @@ def test_a_stage_root_registers_versions_that_serve_its_snapshot(tmp_path):
     with pytest.raises(ValueError, match=r"Unknown serving_options \['cuda'\]"):
         kumo.ModelOutputConfig(stage, location=location,
                                serving_options={'cuda': '12.6'})
+
+
+@pytest.mark.parametrize('root', [
+    'abfss://artifacts@otherlake.dfs.core.windows.net/root',
+    'abfss://otherfs@companylake.dfs.core.windows.net/root',
+    'abfss://artifacts@companylake.dfs.core.windows.net/root-other',
+])
+def test_pyfunc_falls_back_for_an_unrelated_adls_reader(monkeypatch, root):
+    pytest.importorskip('mlflow')
+    from kumo.engine.integrations import _mlflow_model
+
+    uri = 'ABFSS://artifacts@companylake.dfs.core.windows.net/root/snapshots/g/v'
+    unrelated = kumo.ADLSConnector(root_dir=root)
+    fallback = kumo.ADLSConnector(root_dir=uri.rsplit('/', 1)[0])
+    monkeypatch.setattr(_mlflow_model, 'snapshot_location',
+                        lambda location: (fallback, 'v'))
+    loads = []
+    monkeypatch.setattr(
+        kumo.GraphSnapshot, 'load_from_connector',
+        lambda connector, *, path: loads.append((connector, path)))
+    model = _mlflow_model.KumoModel()
+    model._snapshots, model._reader = {}, unrelated
+    model._snapshot(uri)
+    assert loads == [(fallback, 'v')]
+    assert _mlflow_model._remote_reader(uri) == 'ADLSConnector'

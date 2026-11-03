@@ -79,7 +79,7 @@ def _assets_from(reader: str) -> str:
 
 
 def _remote_reader(uri: str) -> Optional[str]:
-    if uri.startswith('abfss://'):
+    if uri.lower().startswith('abfss://'):
         return 'ADLSConnector'
     if uri.startswith('@'):
         return 'SnowflakeConnector'

@@ -413,6 +413,7 @@ def test_a_model_with_text_columns_requires_the_text_extra():
     ('gs', ''),
     ('file', ''),
     ('abfss', ',adls'),
+    ('ABFSS', ',adls'),
 ])
 @pytest.mark.parametrize('where', ['model', 'asset', 'snapshot'])
 def test_serving_dependencies_only_add_adls_for_adls_locations(

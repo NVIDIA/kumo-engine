@@ -40,7 +40,8 @@ def test_supported_preflight_constructs_no_clients(monkeypatch, connector,
         target = f'abfss://curated@companylake.{suffix}/orders/{target}'
     before = dict(os.environ)
 
-    backend.preflight_write_files(connector(suffix=suffix), target)
+    backend.preflight_write_files(connector(suffix=suffix), target,
+                                  write_mode=WriteMode.OVERWRITE)
 
     forbidden.assert_not_called()
     assert dict(os.environ) == before
@@ -52,11 +53,11 @@ def test_default_write_policy_checks_occupancy_but_overwrite_preserves_behavior(
 
     backend = ADLSSinkBackend()
     target = connector()
-    backend.preflight_write_files(target, 'out/', write_mode=None)
+    backend.preflight_write_files(target, 'out/')
     service.files['curated/orders/out/part.parquet'] = b'data'
     service.directories.add('curated/orders/out')
     with pytest.raises(ArtifactDestinationConflict, match='already contains'):
-        backend.preflight_write_files(target, 'out/', write_mode=None)
+        backend.preflight_write_files(target, 'out/')
     backend.preflight_write_files(target, 'out/',
                                   write_mode=WriteMode.OVERWRITE)
     with pytest.raises(NotImplementedError, match='OVERWRITE'):

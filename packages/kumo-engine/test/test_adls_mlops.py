@@ -88,6 +88,14 @@ def test_adls_files_models_and_assets_roundtrip(adls_store, tmp_path):
     models.sink_backend.fetch_model(models, str(restored), path=published.uri)
     assert (restored / 'nested' / 'weights.bin').read_bytes() == b'weights'
 
+    from kumo_core.artifact_export import ArtifactDestinationConflict
+
+    connector.sink_backend.preflight_write_files(connector, 'predictions/')
+    connector.sink_backend.write_table(
+        connector, 'predictions/', pd.DataFrame({'id': [1]}))
+    with pytest.raises(ArtifactDestinationConflict):
+        connector.sink_backend.preflight_write_files(connector, 'predictions/')
+
 
 def test_adls_artifact_lifecycle(adls_store, tmp_path):
     pytest.importorskip('mlflow')
@@ -203,3 +211,18 @@ def test_adls_artifact_lifecycle(adls_store, tmp_path):
     assert model._snapshots[settings.snapshot_uri(snapshot)].id == snapshot.id
     assert model._snapshots[settings.snapshot_uri(
         snapshot)].index_path.is_relative_to(tmp_path / 'serving')
+
+    # An unrelated supplied root must fall back to the snapshot's own location.
+    kumo.configure(scratch_dir=tmp_path / 'fallback-serving')
+    fallback = KumoModel()
+    snapshot_uri = settings.snapshot_uri(snapshot).replace('abfss:', 'ABFSS:')
+    fallback.load_context(
+        SimpleNamespace(
+            artifacts={'bundle': str(fitted.bundle_dir)}, model_config={
+                'columns': [],
+                'assets_from': sources,
+                'snapshot': snapshot_uri
+            }))
+    assert fallback._snapshots[snapshot_uri].id == snapshot.id
+    assert fallback._snapshots[snapshot_uri].index_path.is_relative_to(
+        tmp_path / 'fallback-serving')

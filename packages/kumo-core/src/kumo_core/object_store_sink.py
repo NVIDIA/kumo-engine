@@ -112,7 +112,11 @@ class ObjectStoreSinkBackend(ABC):
     def _model_destination(self, connector: SourceConnector,
                            coordinate: str) -> Tuple[FileSystem, str]:
         """Resolve a model directory, which may have provider-specific roots."""
-        return self._destination(connector, coordinate)
+        resolve = getattr(self, '_resolved_directory', None)
+        if resolve is None:
+            return self._destination(connector, coordinate)
+        bucket, path, region = resolve(connector, coordinate)
+        return self._filesystem(connector, bucket, region), path
 
     def _uri(self, path: str) -> str:
         return f'{self.scheme}://{path}'

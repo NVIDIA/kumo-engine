@@ -22,13 +22,8 @@ from .sdk_filesystem import ADLSFileSystem
 class ADLSSinkBackend(ADLSSessions, ObjectStoreSinkBackend):
     source_type = DataSourceType.ADLS
 
-    def _model_destination(self, connector, coordinate):
-        """Model bundles may name the root directory; tables must name a child."""
-        bucket, path, region = self._resolved_directory(connector, coordinate)
-        return self._filesystem(connector, bucket, region), path
-
     def preflight_write_files(self, connector, table_name,
-                              write_mode=WriteMode.OVERWRITE):
+                              write_mode=None):
         """Validate configuration locally, then check destination occupancy.
 
         Path and identity validation precede Azure access. The default file

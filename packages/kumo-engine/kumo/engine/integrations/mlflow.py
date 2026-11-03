@@ -42,6 +42,7 @@ from kumoapi.plugin import BUNDLE_ID_KEY, ModelRegistryLocation, PublishedModel
 
 from kumo.engine import _card
 from kumo.engine._events import Event
+from kumo.engine._manifest import PATH_CONNECTORS
 from kumo.engine._mlops import full_error
 from kumo.engine._run_names import (
     is_dated_fit,
@@ -91,7 +92,6 @@ _HTTP_LIMITS = {
     'MLFLOW_HTTP_REQUEST_TIMEOUT': '30',
 }
 _UPLOAD_HTTP = {'MLFLOW_HTTP_REQUEST_TIMEOUT': '600'}
-_PATH_CONNECTORS = ('LOCAL_FILE', 'S3', 'GCS')
 _SAGEMAKER_MODEL = re.compile(r'[a-zA-Z0-9](-*[a-zA-Z0-9]){0,56}')
 _UC_FORBIDDEN = re.compile(r'[ /\x00-\x1f\x7f]')
 _HINTED: set = set()
@@ -1309,7 +1309,7 @@ def _requirement(config: Any, *, manifest: Optional['ModelManifest'] = None,
     if manifest is not None:
         locations.append(manifest.location)
         locations.extend(item.location for item in manifest.dependencies or ())
-    if any(location and location.startswith('abfss://')
+    if any(location and urlparse(location).scheme == 'abfss'
            for location in locations):
         extras.append('adls')
     if config is not None and any(
@@ -1454,7 +1454,7 @@ def _dataset_source(entry: Mapping[str, Optional[str]]) -> Any:
                                       for part in parts) or location,
             delta_table_version=int(head) if entry.get('version_kind')
             == 'exact' and head.isdigit() else None)
-    if connector in _PATH_CONNECTORS:
+    if connector in PATH_CONNECTORS:
         registry = import_provider('mlflow.data.dataset_source_registry',
                                    'mlflow')
         with warnings.catch_warnings():

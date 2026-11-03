@@ -293,3 +293,40 @@ def test_source_lineage_preserves_rootless_and_encoded_adls_names(
     assert source_location(connector, uri) == uri
     if rooted:
         assert source_location(connector, relative) == uri
+
+
+@pytest.mark.parametrize('location, expected', [
+    (ROOT + 'snapshots/g/v', True),
+    (ROOT.replace('abfss:', 'ABFSS:') + 'snapshots/g/v', True),
+    (ROOT.replace('orders/', 'orders-sibling/') + 'snapshots/g/v', False),
+    (ROOT.replace('companylake', 'otherlake') + 'snapshots/g/v', False),
+    (ROOT.replace('curated@', 'otherfs@') + 'snapshots/g/v', False),
+    (ROOT + '../outside/snapshots/g/v', False),
+    (ROOT + 'snapshots/g/v?sig=secret', False),
+    ('s3://bucket/snapshots/g/v', False),
+])
+def test_adls_serving_reader_requires_containment(monkeypatch, location,
+                                                  expected):
+    from kumo.engine._deps import reads
+
+    access = Mock(side_effect=AssertionError('storage accessed'))
+    monkeypatch.setattr('kumo_adls.backend.session_for', access)
+    assert reads(ADLSConnector(root_dir=ROOT), location) is expected
+    access.assert_not_called()
+
+
+def test_mlflow_adls_dataset_source_is_resolvable():
+    pytest.importorskip('mlflow')
+    from kumo.engine.integrations.mlflow import _dataset_source
+
+    uri = ROOT + 'events.parquet'
+    source = _dataset_source({'connector': 'ADLS', 'location': uri})
+    assert source is not None
+    assert uri in source.to_json()
+
+
+@pytest.mark.parametrize('coordinate', ['', '.', '/'])
+def test_adls_root_aliases_require_a_full_directory_uri(coordinate):
+    connector = ADLSConnector(root_dir=ROOT)
+    with pytest.raises(ValueError, match='full root URI'):
+        connector.sink_backend._resolved_directory(connector, coordinate)

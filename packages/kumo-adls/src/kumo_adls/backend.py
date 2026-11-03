@@ -64,8 +64,10 @@ class ADLSSessions(ObjectStoreSessions):
         return ObjectStoreRoot(authority, target.prefix)
 
     @staticmethod
-    def _contained_key(root, uri, *, purpose):
-        parsed = urlsplit(normalize_adls_source_uri(uri))
+    def _contained_key(root, uri, *, purpose, directory=False):
+        normalize = (normalize_adls_root_uri if directory else
+                     normalize_adls_source_uri)
+        parsed = urlsplit(normalize(uri))
         key = unquote(parsed.path).lstrip('/')
         prefix = root.prefix.rstrip('/')
         outside_prefix = (bool(prefix) and key != prefix
@@ -108,10 +110,16 @@ class ADLSSessions(ObjectStoreSessions):
 
     def _resolved_directory(self, connector, coordinate):
         root = self._root_for(connector)
-        if root is not None and '://' in coordinate:
-            parsed = urlsplit(normalize_adls_root_uri(coordinate))
-            key = unquote(parsed.path).strip('/')
-            if parsed.netloc == root.bucket and key == root.prefix:
+        if root is None:
+            return self._resolved(connector, coordinate)
+        if coordinate in ('', '.', '/'):
+            raise ValueError(
+                'ADLS artifact directories require the full root URI or a '
+                'nonempty child path')
+        if '://' in coordinate:
+            key = self._contained_key(root, coordinate,
+                                      purpose='destination', directory=True)
+            if key.rstrip('/') == root.prefix:
                 return root.bucket, root.path, root.region
         return self._resolved(connector, coordinate)
 
