@@ -478,10 +478,14 @@ def build_training_payload(explanations: TrainingExplanations, *,
     payload: TrainingPayload = dict(
         schema_version=1, limits=dict(LIMITS),
         context=dict(run=Path(explanations.run_root).name[:512] if explanations.
-                     run_root else None), provenance=dict(
-                         stage='test',
-                         generation_failure='Explanation generation failed'
-                         if explanations._failure else None),
+                     run_root else None),
+        provenance=dict(
+            stage='test',
+            generation_status=explanations._reason if explanations._reason
+            in ('disabled',
+                'failed') else 'failed' if explanations._failure else 'unknown',
+            generation_failure='Explanation generation failed'
+            if explanations._failure else None),
         **{
             name: dict(status='missing', reason=explanations._reason, rows=[])
             for name in ('metrics', 'history', 'trials', 'gradient', 'cohorts')

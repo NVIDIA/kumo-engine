@@ -476,23 +476,60 @@ def test_unavailable_reason_is_explicit(reason):
     assert result['samples']['status'] == 'unavailable'
     assert result['samples']['reason'] == reason
     assert result['samples']['coverage']['available'] is None
+    assert result['provenance']['generation_status'] == (reason if reason in (
+        'disabled', 'failed') else 'unknown')
+    assert (f'Explanation generation: {reason}'
+            in static_summary(result)) == (reason in ('disabled', 'failed'))
 
 
-def test_negative_gradient_and_failed_generation_are_explicit(tmp_path):
+@pytest.mark.parametrize('generation',
+                         ['unknown', 'disabled', 'failed', 'both'])
+@pytest.mark.parametrize(
+    'state',
+    ['missing', 'retained', 'invalid', 'negative', 'limited', 'invalid_root'])
+def test_negative_gradient_and_failed_generation_are_explicit(
+        tmp_path, generation, state):
     run, trial = _run(tmp_path)
-    _text(
-        Path(trial) / 'explain_test/scores.csv',
-        'table,column,score\nusers,age,-0.2\n')
-    result = build_training_payload(
-        TrainingExplanations.from_trial(run, trial, failure='private/path'))
-    assert result['gradient']['status'] == 'invalid'
-    (Path(trial) / 'explain_test/scores.csv').unlink()
-    _gradient(trial)
-    result = build_training_payload(
-        TrainingExplanations.from_trial(run, trial, failure='private/path'))
-    assert result['gradient']['status'] == 'partial'
-    assert result['gradient']['rows']
+    if state not in ('missing', 'invalid_root'):
+        _gradient(trial)
+        _save_cohorts(trial, [_cohort()])
+        save_json(_graph(),
+                  f'{trial}/subgraph_collector/test/subgraph_json/0.json')
+    if state in ('invalid', 'negative', 'limited'):
+        _text(
+            Path(trial) / 'explain_test/scores.csv',
+            '{' if state == 'invalid' else ' ' * (LIMITS['artifact_bytes'] + 1)
+            if state == 'limited' else 'table,column,score\nusers,age,-0.2\n')
+    failed = generation in ('failed', 'both')
+    disabled = generation in ('disabled', 'both')
+    expected = 'disabled' if disabled else 'failed' if failed else 'unknown'
+    explanations = TrainingExplanations.from_trial(
+        run, tmp_path / 'outside' if state == 'invalid_root' else trial,
+        disabled=disabled, failure='private/path' if failed else None)
+    result = build_training_payload(explanations)
+    assert result['provenance']['generation_status'] == expected
+    assert result['provenance']['generation_failure'] == (
+        'Explanation generation failed' if failed else None)
+    summary = static_summary(result)
+    assert (f'Explanation generation: {expected}' in summary) == (expected
+                                                                  != 'unknown')
+    assert ('<li>Explanation generation failed</li>'
+            in summary) == (generation == 'both')
     assert 'private/path' not in json.dumps(result)
+    reopened = build_training_payload(TrainingExplanations.load(run))
+    assert reopened['provenance']['generation_status'] == 'unknown'
+    assert reopened['provenance']['generation_failure'] is None
+    if state != 'invalid_root':
+        for name in ('gradient', 'cohorts', 'samples'):
+            original = reopened[name]
+            assert result[name]['status'] == (
+                'partial' if failed and original['status'] == 'available' else
+                original['status'])
+            for key in ('rows', 'bodies', 'outputs', 'coverage'):
+                assert result[name].get(key) == original.get(key)
+        if state == 'retained':
+            assert any(row['score'] == 0 for row in result['gradient']['rows'])
+            assert result['samples']['bodies']['0']
 
 
 def test_payload_limit_discards_whole_graphs(tmp_path, monkeypatch):

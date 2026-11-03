@@ -57,6 +57,8 @@ display(explanations.visualize(max_samples=12))
 ```
 
 The view combines split-qualified metrics, learning history, recorded trials, input sensitivity, cohorts, and retained examples.
+Known disabled or failed generation is shown separately from artifact retention and producer eligibility; retained artifacts remain inspectable.
+Generation status remains unknown on reopening because this API does not archive it.
 Select a column's cohort action to inspect its recorded predictions and targets, or select an available example to inspect its sampled nodes, relations, and feature scores.
 Selected regression and binary examples also show predictions and observed targets from the matching collector output, when retained and valid.
 Regression values use recorded target units; binary predictions are positive-class probabilities with observed targets encoded as 0 or 1.

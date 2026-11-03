@@ -19,6 +19,13 @@ def static_summary(payload: dict) -> str:
              '. Explanation fit: ' +
              escape(str(provenance.get('explanation_trial') or 'Unavailable')) +
              '.</p><ul>']
+    if provenance.get('generation_status') in ('disabled', 'failed'):
+        parts.append('<li>Explanation generation: ' +
+                     escape(str(provenance['generation_status'])) + '</li>')
+    if (provenance.get('generation_failure')
+            and provenance.get('generation_status') != 'failed'):
+        parts.append('<li>' + escape(str(provenance['generation_failure'])) +
+                     '</li>')
     if provenance.get('selection_verified') is False:
         parts.append('<li>Selection unverified: ' + escape(str(
             provenance.get('selection_reason') or
@@ -148,6 +155,8 @@ context.run&&('Run: '+context.run),'Selected trial: '+text(provenance.selected_t
 'Explanation fit: '+text(provenance.explanation_trial),'Explanation split: TEST',
 'Refit on train + validation: '+(provenance.refitted_trainval===true?'yes':provenance.refitted_trainval===false?'no':'unknown')].filter(Boolean).join(' · '));
 if(provenance.selection_verified===false)note(results,'Selection unverified: '+text(provenance.selection_reason));
+if(['disabled','failed'].includes(provenance.generation_status))note(results,'Explanation generation: '+text(provenance.generation_status));
+if(provenance.generation_failure&&provenance.generation_status!=='failed')note(results,text(provenance.generation_failure));
 const metricRows=list(obj(data.metrics).rows);state(results,data.metrics,'Metrics');
 const fits=[...new Set(metricRows.map(row=>text(row.fit)))];
 for(const fit of fits){results.append(el('h3','Measured results · '+fit));
