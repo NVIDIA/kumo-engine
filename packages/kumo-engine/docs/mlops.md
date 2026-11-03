@@ -218,8 +218,7 @@ Every value comes from exact counts over all rows, with no sampling. Numbers you
   metrics come from (the epoch with the best validation tune metric, tag `kumo.best_epoch`). A prediction names its
   model and the fit run that trained it.
 - Problems, when there are any, come right after the sentence.
-- Then tables: holdout metrics (fit; `test/ap` is average precision, `test/auprc` the trapezoidal area under the
-  precision-recall curve, `test/loss` the training objective, `test/logloss` the cross-entropy of the scores); the 2x2
+- Then tables: holdout metrics (fit; `ap`, `auprc`, `loss` and `logloss` with their meanings, as under Metrics); the 2x2
   matrix at the binary threshold; the training data; data preparation; notes; "Lineage"; "Where things are", with
   each artifact's full location, linked to the S3 or GCS console.
 - "Lineage" is how the run's data depend on each other. A fit: its source tables with their versions and locations →
@@ -390,9 +389,9 @@ w.data_quality.create_refresh(object_type="table", object_id=table_id,
                               refresh=Refresh(object_type="table", object_id=table_id))                # after each export
 ```
 
-Without `APPEND` the refresh fails with `MISSING_REQUIRED_METADATA`. The monitor writes `<table>_profile_metrics` and `<table>_drift_metrics`: one window per day, per `BUNDLE_ID` and over all models (`'*'`), with drift against the day before. It has no probability column, so no ROC AUC or log loss (`evaluate` reports AUROC). Later labels are picked up by the next refresh. Untested until re-run without a baseline (the version with one was verified for binary classification).
+Without `APPEND` the refresh fails with `MISSING_REQUIRED_METADATA`. The monitor writes `<table>_profile_metrics` and `<table>_drift_metrics`: one window per day, per `BUNDLE_ID` and over all models (`'*'`), with drift against the day before. It has no probability column, so no ROC AUC or log loss (`evaluate` reports AUROC). Later labels are picked up by the next refresh. The version with a baseline was verified for binary classification.
 
-**Snowflake (Model Monitor)**, on a version `MLOps(registry=)` registered. `evaluation.export` writes `TARGET` as a number and timestamps as `TIMESTAMP_NTZ`, as the monitor needs; give table paths in upper case to refer to them unquoted. Untested until re-run without a baseline:
+**Snowflake (Model Monitor)**, on a version `MLOps(registry=)` registered. `evaluation.export` writes `TARGET` as a number and timestamps as `TIMESTAMP_NTZ`, as the monitor needs; give table paths in upper case to refer to them unquoted:
 
 ```python
 evaluation.export(kumo.PredictionOutputConfig(sf, path="CHURN_EVALUATED", write_mode=WriteMode.APPEND))   # each day
