@@ -247,3 +247,56 @@ needs:
 - the variable `KITMAKER_PIC`, that owner's email address.
 
 Review the license metadata: the wheel carries the `License-Expression` derived by `scripts/gen_third_party.py` and ships `LICENSE` and `THIRD-PARTY.txt`.
+
+## Charon connectivity and validation
+
+The engine and GloVe release jobs call
+[Kitmaker Portal via Charon](../../.github/workflows/kitmaker-portal.yml).
+It runs on GitHub-hosted Ubuntu, opens a Teleport application tunnel to Charon
+Ferry, and authenticates each Portal request with a fresh GitHub OIDC token
+plus the Kitmaker bearer token. Portal credentials stay in the
+`kumo-engine-release` environment. Charon/Teleport must authorize this repository,
+workflow, and ref; authorization for cuOpt does not grant access to Kumo.
+The tunnel uses `ext-nv-prd-apps.teleport.sh:443`. The original cuOpt PR
+used an older staging proxy; its replacement is documented in
+[cuOpt PR #2161](https://github.com/NVIDIA/cuopt/pull/2161).
+
+After this workflow is merged, run the connectivity check from `main`:
+
+```bash
+gh workflow run kitmaker-portal.yml --repo NVIDIA/kumo-engine --ref main
+```
+
+The check reads project 6903 and verifies its name and owner. It does not build
+wheels, create a Kitmaker release, or publish packages. Success confirms
+connectivity and project-read access; release submission and wheel fetching
+still require a release dry run.
+
+The Charon grant allows `refs/heads/main`, `refs/tags/kumo-engine-v*`, and
+`refs/tags/kumo-glove-6b-50d-v*`. Feature branches are not authorized. The grant
+must be synced to production before checking access through the production
+proxy; merging the grant alone does not confirm that sync has completed.
+
+The reusable workflow defaults `upload` to false. Release callers explicitly
+set it to true after the release environment permits the job. For a standalone
+Kitmaker validation without publication, run the script with `--dry-run` and
+its usual release arguments. Add `--ferry` and the local tunnel Portal URL when
+using Charon; this needs GitHub Actions OIDC variables and `id-token: write`.
+The script requires `orjson`, already declared through the root project's
+dynamic dependencies in `setup.py`; the workflow installs it in an isolated
+`uv run` environment.
+
+### Connectivity failures
+
+`token expired or not found` from the original `nv-stg-ps` proxy can indicate
+an outdated proxy, rather than an expired Kitmaker API token. Use the current
+Teleport proxy before investigating Portal credentials.
+
+A successful Teleport tunnel does not establish Charon backend authorization.
+For HTTP 403, ask the Charon owner to check this repository's tenant grant
+against the run's actual ref and requested routes. The connectivity check needs
+`refs/heads/main` and `GET /api/v0/projects/6903`. Release jobs also need
+project reads for 6903 and 6904, POST access to each project's `/releases`, and
+the corresponding release tag refs. Preserve the error response's request ID
+for tracing. A denied read alone does not establish whether Portal credentials
+are valid.
