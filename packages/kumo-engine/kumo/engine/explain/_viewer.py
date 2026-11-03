@@ -292,7 +292,7 @@ note(examples,'Preloaded example identities and values may be saved in notebook 
 const sampleView=el('div',undefined,'kt-detail'),sampleButtons=[];
 const sampleDetailRow=el('tr'),sampleDetailCell=el('td');sampleDetailCell.colSpan=3;
 sampleDetailCell.append(sampleView);sampleDetailRow.append(sampleDetailCell);
-const sampleTable=(title,headers,rows,total,numeric=[])=>{if(rows.length<=10)return table(sampleView,headers,rows,numeric);
+const sampleTable=(title,headers,rows,total,numeric=[])=>{
 const details=el('details');details.append(el('summary','Explore '+title.toLowerCase()+' · '+rows.length+' of '+total+' shown'));
 const values=el('div',undefined,'kt-sample-values');values.tabIndex=0;
 values.setAttribute('role','region');values.setAttribute('aria-label',title);
