@@ -147,6 +147,22 @@ align-items:center;gap:8px}
 .kumo-training .kt-history-chart{display:block;width:100%;height:auto;max-width:600px;margin:12px 0}
 .kumo-training :is(.kt-history-values,.kt-sample-values){max-height:400px;overflow:auto;padding:4px}
 .kumo-training .kt-list{padding-left:20px;margin:8px 0 12px}
+.kumo-training .kt-result{border-left:3px solid $accent;padding-left:16px;margin:16px 0 24px}
+.kumo-training .kt-result h3{margin:0 0 4px}
+.kumo-training .kt-result-value{font-size:32px;font-weight:600;font-variant-numeric:tabular-nums}
+.kumo-training .kt-ranking{margin:20px 0 24px}
+.kumo-training .kt-ranking h3{margin-top:0}
+.kumo-training .kt-ranked-list{list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(94px,1fr));
+gap:8px;padding:0;margin:8px 0 16px}
+.kumo-training .kt-ranked-list>li{padding:10px;background:$surface;border:1px solid $surface_border;border-radius:6px}
+.kumo-training .kt-ranked-list>li.kt-match{border-color:$accent;background:$row_highlight}
+.kumo-training .kt-ranked-list strong{display:block;font-size:17px;margin:4px 0;overflow-wrap:anywhere}
+.kumo-training .kt-ranked-list .kt-note{font-size:12px;margin:4px 0}
+.kumo-training .kt-observed-list{list-style:none;padding:0;margin:8px 0 16px}
+.kumo-training .kt-observed-list>li{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 16px;
+padding:8px 0;border-bottom:1px solid $surface_border}
+.kumo-training .kt-observed-list .kt-note{margin:0}
+.kumo-training .kt-observed-list details{flex-basis:100%}
 @container kumo-training (max-width:520px){
 .kumo-training .kt-table,.kumo-training .kt-table tbody,
 .kumo-training .kt-table tr,.kumo-training .kt-table td{display:block;width:100%}
@@ -194,10 +210,18 @@ for(const [value,name]of values){const option=el('option',name);option.value=val
 select.addEventListener('change',()=>callback(select.value),{signal});wrap.append(caption,select);parent.append(wrap);return select};
 const enable=()=>root.querySelectorAll('button,select').forEach(node=>node.disabled=false);
 let controlId=0;
+const identityNote=(parent,title,value,tag='p',limit=120)=>{
+if(value.length<=limit&&!/[\r\n]/.test(value)){parent.append(el(tag,value,'kt-note'));return;}
+const details=el('details');details.append(el('summary','Explore '+title.toLowerCase()));
+const values=el('div',undefined,'kt-sample-values');values.tabIndex=0;
+values.setAttribute('role','region');values.setAttribute('aria-label',title);
+note(values,value);details.append(values);parent.append(details);};
 const provenance=obj(data.provenance),context=obj(data.context);
+const linkTask=['static_link_prediction','temporal_link_prediction'].includes(context.task_type||provenance.task_type);
 const baseMetric=row=>text(row.name).replace(/^(test_refit_|train_|val_|test_)/,'');
 const results=section('Training results');
-if(context.query)results.append(el('p',context.query));
+const queryNode=el('div');
+if(context.query){identityNote(queryNode,'Predictive query',text(context.query));results.append(queryNode);}
 note(results,[(context.task_type||provenance.task_type)&&('Task: '+text(context.task_type||provenance.task_type)),context.target&&('Target: '+text(context.target)),
 context.run&&('Run: '+context.run),'Selected trial: '+text(provenance.selected_trial),
 'Explanation fit: '+text(provenance.explanation_trial),'Explanation split: TEST',
@@ -206,20 +230,45 @@ if(provenance.selection_verified===false)note(results,'Selection unverified: '+t
 if(['disabled','failed'].includes(provenance.generation_status))note(results,'Explanation generation: '+text(provenance.generation_status));
 if(provenance.generation_failure&&provenance.generation_status!=='failed')note(results,text(provenance.generation_failure));
 const metricRows=list(obj(data.metrics).rows);state(results,data.metrics,'Metrics');
+let rankingEntry;
+if(linkTask)results.append(el('p',context.query?'This task ranks linked IDs for each entity in the predictive query above.':
+'This task ranks linked IDs for each entity. The predictive query was not recorded.'));
+const metricDetail=linkTask?el('details'):results;
+if(linkTask){
+const selectedName=typeof provenance.selection_metric==='string'?provenance.selection_metric.replace(/^val_/,''):null;
+const fit=provenance.refitted_trainval===true?'refit_trainval':provenance.refitted_trainval===false?'original':null;
+const selected=provenance.selection_verified===true&&fit&&selectedName?metricRows.find(row=>
+row.name===selectedName&&row.split==='test'&&row.fit===fit&&finite(row.value)&&row.origin==='Selected-checkpoint evaluation'):null;
+const headline=el('div',undefined,'kt-result');results.append(headline);
+if(selected){
+const map=/^map@([1-9][0-9]*)$/.exec(selected.name);
+headline.append(el('h3',map?'TEST MAP@'+map[1]:'TEST '+text(selected.name)),el('div',number(selected.value),'kt-result-value'));
+identityNote(headline,'Result scope',(fit==='original'?'Original fit':'Refit on train + validation')+' · TEST · '+selected.origin);
+if(map)note(headline,'Mean average precision over the first '+map[1]+' ranked IDs: observed IDs placed earlier raise the score. Higher is better. This is not a probability or an accuracy percentage.');
+else note(headline,'Recorded selection metric on TEST'+(provenance.selection_direction==='min'?'; lower is better.':provenance.selection_direction==='max'?'; higher is better.':'. Metric direction is not recorded.'));
+note(headline,'No baseline or quality target is recorded here. This score alone does not establish model quality.');
+const exact=el('details');exact.append(el('summary','Exact result and provenance'));
+table(exact,['Recorded metric','Exact value','Fit / split / origin'],[[selected.recorded_name,selected.value,
+text(selected.fit)+' / TEST / '+selected.origin]],[1],true);headline.append(exact);
+}else{headline.append(el('h3','Selected TEST result unavailable'));
+note(headline,'A verified selection, matching TEST fit, selected-checkpoint origin and numeric selection metric are required. Inspect the recorded metrics below.');}
+rankingEntry=el('div',undefined,'kt-ranking');results.append(rankingEntry);
+metricDetail.append(el('summary','Explore all recorded metrics'));results.append(metricDetail);
+}
 const fits=[...new Set(metricRows.map(row=>text(row.fit)))];
-for(const fit of fits){results.append(el('h3','Measured results · '+fit));
+for(const fit of fits){metricDetail.append(el('h3','Measured results · '+fit));
 const rows=metricRows.filter(row=>text(row.fit)===fit),names=[...new Set(rows.map(baseMetric))];
 const splits=['train','val','test'].filter(split=>rows.some(row=>row.split===split));
 for(const split of rows.map(row=>text(row.split)))if(!splits.includes(split))splits.push(split);
-const originNotes=el('div',undefined,'kt-provenance');results.append(originNotes);
+const originNotes=el('div',undefined,'kt-provenance');metricDetail.append(originNotes);
 for(const split of splits){const group=rows.filter(row=>row.split===split);
 const origins=[...new Set(group.map(row=>row.origin||'Unknown metric origin'))];
 for(const origin of origins)note(originNotes,split+': '+origin+(origins.length>1?' · '+group
 .filter(row=>(row.origin||'Unknown metric origin')===origin).map(baseMetric).join(', '):''));}
-table(results,['Metric',...splits],names.map(name=>[name,...splits.map(split=>{
+table(metricDetail,['Metric',...splits],names.map(name=>[name,...splits.map(split=>{
 const row=rows.find(item=>baseMetric(item)===name&&text(item.split)===split);return row?row.value:'Unavailable'})]),splits.map((_,i)=>i+1));}
 if(provenance.selection_metric||obj(data.metrics).selection_metric)
-note(results,'Selection metric: '+text(provenance.selection_metric||data.metrics.selection_metric)+
+note(metricDetail,'Selection metric: '+text(provenance.selection_metric||data.metrics.selection_metric)+
 (provenance.selection_direction==='min'?' · Recorded optimization: minimize':provenance.selection_direction==='max'?' · Recorded optimization: maximize':''));
 const histories=list(obj(data.history).rows);state(results,data.history,'Learning history');
 if(histories.length){results.append(el('h3','Learning history'));
@@ -341,12 +390,54 @@ note(examples,'Coverage: '+text(coverage.references_listed??references.length)+'
 if(references.length)note(examples,'Preloaded example identities and values may be saved in notebook HTML or widget state. '
 +'Inspect other retained graphs in Python with explanations.sample(collector_id).');
 const sampleView=el('div',undefined,'kt-detail'),sampleButtons=[];
-const identityNote=(parent,title,value,tag='p')=>{
-if(value.length<=120&&!/[\r\n]/.test(value)){parent.append(el(tag,value,'kt-note'));return;}
-const details=el('details');details.append(el('summary','Explore '+title.toLowerCase()));
-const values=el('div',undefined,'kt-sample-values');values.tabIndex=0;
-values.setAttribute('role','region');values.setAttribute('aria-label',title);
-note(values,value);details.append(values);parent.append(details);};
+const sampleIdentity=ref=>{
+const store=obj(obj(bodies[ref.artifact_id]).subgraph_store),node=obj(obj(store.nodes)[store.root_id]);
+const tables=Object.entries(obj(store.tables)).filter(([,ids])=>list(ids).some(id=>String(id)===String(store.root_id))).map(([name])=>name);
+return Object.hasOwn(node,'pkey')&&node.pkey!==null?
+(tables.length?tables.join(', ')+'.':'')+text(node.pkey_name)+': '+JSON.stringify(node.pkey):'Original entity unavailable';};
+const rankedOutput=(parent,output,artifact)=>{
+state(parent,output,'Output context');
+if(!['available','partial'].includes(output.status))return;
+const predictions=output.prediction,targets=output.target;
+// Only complete typed identities support matches; unknown namespaces cannot prove absence.
+const key=node=>{node=obj(node);return (typeof node.id==='string'||finite(node.id))&&typeof node.id_name==='string'&&node.id_name.length?
+JSON.stringify([typeof node.id,node.id_name,node.id]):null;};
+const first=new Map(),observed=new Set();
+list(predictions).forEach((node,index)=>{const identity=key(node);if(identity!==null&&!first.has(identity))first.set(identity,index)});
+list(targets).forEach(node=>{const identity=key(node);if(identity!==null)observed.add(identity)});
+const appendID=(parent,node)=>{node=obj(node);const value=JSON.stringify(node.id)??'Unavailable',name=text(node.id_name);
+parent.append(el('strong',value.length>48||/[\r\n]/.test(value)?value.replace(/\s+/g,' ').slice(0,48)+'…':value));
+if(value.length>48||/[\r\n]/.test(value))identityNote(parent,'Full recorded ID',value,'div',0);
+if(name.length>48||/[\r\n]/.test(name)){note(parent,'ID column: '+name.replace(/\s+/g,' ').slice(0,48)+'…');identityNote(parent,'Full ID column',name,'div',0);}
+else note(parent,'ID column: '+(node.id_name==null||name===''?'not recorded':name));};
+parent.append(el('h4','Predicted IDs · '+(Array.isArray(predictions)?'recorded top '+predictions.length:'ranking unavailable')));
+if(predictions==null)note(parent,'Prediction list not recorded.');
+else if(!Array.isArray(predictions))note(parent,'Prediction list is invalid.');
+else if(!predictions.length)note(parent,'Prediction list recorded empty (0 IDs).');
+else{const ranks=el('ol',undefined,'kt-ranked-list');ranks.setAttribute('aria-label','Predicted IDs in recorded rank order');
+for(const [index,node]of predictions.slice(0,100).entries()){
+const identity=key(node),duplicate=identity!==null&&first.get(identity)!==index;
+const match=identity!==null&&observed.has(identity)&&!duplicate;
+const item=el('li',undefined,match?'kt-match':'');item.append(el('span','Rank '+(index+1),'kt-note'));appendID(item,node);
+if(match)note(item,'Observed ID');else if(duplicate)note(item,'Repeated ID');ranks.append(item);}parent.append(ranks);}
+parent.append(el('h4','Observed TEST IDs'));
+if(targets==null)note(parent,'Observed target list not recorded; matches cannot be assessed.');
+else if(!Array.isArray(targets))note(parent,'Observed target list is invalid; matches cannot be assessed.');
+else if(!targets.length)note(parent,'Observed target list recorded empty (0 IDs).');
+else{const values=el('ul',undefined,'kt-observed-list'),seen=new Set();values.setAttribute('aria-label','Observed TEST IDs and their predicted ranks');
+for(const node of targets.slice(0,100)){
+const identity=key(node),rank=identity===null?undefined:first.get(identity),item=el('li');appendID(item,node);
+let comparison=predictions==null?'Ranking not recorded':!Array.isArray(predictions)?'Ranking invalid':
+rank!==undefined?'Rank '+(rank+1)+' of '+predictions.length:
+identity===null||predictions.some(pred=>key(pred)===null||obj(pred).id_name!==obj(node).id_name)?
+'Comparison unavailable: ID columns differ or are missing':'Absent from '+predictions.length+' retained predictions';
+if(identity!==null&&seen.has(identity))comparison='Repeated observed ID · '+comparison;
+if(identity!==null)seen.add(identity);note(item,comparison);values.append(item);}parent.append(values);}
+if(list(predictions).length>100||list(targets).length>100)note(parent,'Showing the first 100 IDs of each list; matched ranks and absence compare the complete retained prediction list. '
++'Inspect complete output in Python from the matching TEST fit’s subgraph_collector/test/output/'+text(artifact)+'.json.');
+note(parent,'Observed IDs are TEST targets, not a complete link history. ID values and recorded ID columns must agree for comparison. '
++'No retrieval scores, probabilities or output-ID links to sampled graph nodes are retained.');
+};
 const sampleDetailRow=el('tr'),sampleDetailCell=el('td');sampleDetailCell.colSpan=3;
 sampleDetailCell.append(sampleView);sampleDetailRow.append(sampleDetailCell);
 const sampleTable=(title,headers,rows,total,numeric=[])=>{
@@ -356,25 +447,18 @@ values.setAttribute('role','region');values.setAttribute('aria-label',title);
 table(values,headers,rows,numeric);details.append(values);sampleView.append(details);};
 const inspectSample=(ref,index)=>{sampleView.replaceChildren();sampleView.hidden=false;
 sampleButtons.find(item=>item.rowIndex===index)?.button.closest('tr').after(sampleDetailRow);
-sampleView.append(el('h3','Collector '+text(ref.artifact_id)));
+sampleView.append(el('h3',sampleIdentity(ref).length>100?sampleIdentity(ref).slice(0,100)+'…':sampleIdentity(ref)));
+identityNote(sampleView,'Example identity',sampleIdentity(ref)+' · Collector '+text(ref.artifact_id));
 identityNote(sampleView,'Recorded original IDs','Recorded original IDs: '+text(Object.keys(obj(ref.original_ids)).length?ref.original_ids:'Unavailable')
 +' · Strategies: '+(list(ref.categories).join(', ')||'Unavailable'));
 const output=obj(obj(samples.outputs)[ref.artifact_id]);
 sampleView.append(el('h4','Prediction and observed target'));
-state(sampleView,output,'Output context');
+if(!['static_link_prediction','temporal_link_prediction'].includes(output.task_type)||!['available','partial'].includes(output.status))state(sampleView,output,'Output context');
 if(output.status==='available'||output.status==='partial'){
 const classes=output.task_type==='multiclass_classification'||output.task_type==='multilabel_classification';
 if(output.task_type==='static_link_prediction'||output.task_type==='temporal_link_prediction'){
-note(sampleView,'Original item IDs in recorded order. Observed links are recorded TEST targets, not a history of all links. No retrieval scores or probabilities are retained. '
-+'The explanation retrieval list can differ from query TOP K; no per-item sensitivity breakdown is retained.');
-for(const [key,title]of [['prediction','Predicted item IDs'],['target','Observed TEST item IDs']]){
-const recorded=output[key];
-note(sampleView,title+': '+(recorded==null?'Not recorded':list(recorded).length+' recorded'));
-if(recorded!=null){const rows=list(recorded).slice(0,100).map((node,i)=>{
-const value=el('div');identityNote(value,'Full recorded ID',text(node.id),'div');
-const name=el('div');identityNote(name,'Full ID column',text(node.id_name),'div');return[i+1,value,name];});
-sampleTable(title,['Recorded position','Original item ID','ID column'],rows,list(recorded).length,[0]);
-if(list(recorded).length>100)note(sampleView,'Inspect complete retained output in Python from the matching TEST fit’s subgraph_collector/test/output/'+text(ref.artifact_id)+'.json.');}}
+rankedOutput(sampleView,output,ref.artifact_id);
+note(sampleView,'The retained retrieval list can differ from query TOP K. Selected examples do not decompose the aggregate TEST metric.');
 }else if(classes){
 const labels=Object.keys(obj(output.prediction??output.target)),rows=labels.slice(0,100).map(label=>{
 let name=label;
@@ -436,6 +520,27 @@ if(loaded.length){examples.append(el('h3','Loaded examples'));referenceTable(exa
 if(remaining.length){const details=el('details');details.append(el('summary','Other recorded references ('+remaining.length+')'));
 referenceTable(details,remaining);examples.append(details)}
 if(references.length>100)note(examples,'Showing the first 100 catalog references.');
+if(rankingEntry){
+rankingEntry.append(el('h3','Where did observed IDs appear?'));
+note(rankingEntry,'Compare a retained TEST ranking with its observed IDs, then inspect the same example’s recorded context. '
++'These selected examples do not decompose the aggregate metric or represent all evaluation entities. The query’s TOP K and each retained list width are separate.');
+const rankingView=el('div');
+if(loaded.length){
+let selected=loaded[0];
+const drawRanking=()=>{rankingView.replaceChildren();const identity=sampleIdentity(selected.ref);
+rankingView.append(el('h4',identity.length>100?identity.slice(0,100)+'…':identity));
+identityNote(rankingView,'Selected entity identity',identity+' · Collector '+text(selected.ref.artifact_id));
+identityNote(rankingView,'Recorded selection strategies','Retained strategies: '+(list(selected.ref.categories).join(', ')||'Unavailable'));
+rankedOutput(rankingView,obj(obj(samples.outputs)[selected.ref.artifact_id]),selected.ref.artifact_id);
+rankingView.append(action('Inspect this example’s context',()=>{inspectSample(selected.ref,selected.index);showPanel(2);
+const heading=sampleView.querySelector('h3');heading.tabIndex=-1;heading.focus();}));enable();};
+control(rankingEntry,'Loaded original entity',loaded.map(({ref,index})=>{
+const identity=sampleIdentity(ref);return[String(index),(identity.length>100?identity.slice(0,100)+'…':identity)+' · collector '+text(ref.artifact_id)];}),value=>{
+selected=loaded.find(entry=>String(entry.index)===value);drawRanking();});
+rankingEntry.append(rankingView);drawRanking();
+note(rankingEntry,'Loaded '+loaded.length+' of '+text(coverage.references_total??references.length)+' recorded references; selection strategies may overlap.');
+}else note(rankingEntry,'No loaded examples are available for ranked-output comparison. Inspect recorded reference availability in Examples.');
+}
 sampleView.hidden=true;
 const panels=[results,patterns,examples],navigation=el('nav',undefined,'kt-navigation');
 navigation.setAttribute('aria-label','Training explanation sections');
@@ -449,7 +554,7 @@ const theme=control(navigation,'Theme',[['auto','Automatic'],['light','Light'],[
 if(value==='auto')delete host.dataset.kumoTheme;else host.dataset.kumoTheme=value;});
 theme.value=host.dataset.kumoTheme||'auto';
 const header=el('header',undefined,'kt-header');header.append(el('h2','Training explainability'));
-if(context.query)header.append(results.querySelector(':scope>p'));
+if(context.query)header.append(queryNode);
 const metadata=results.querySelector(':scope>.kt-note'),details=el('details');
 details.append(el('summary','Run details'));if(metadata)details.append(metadata);
 note(header,'Task: '+text(context.task_type||provenance.task_type)+' · Explanation split: TEST');
