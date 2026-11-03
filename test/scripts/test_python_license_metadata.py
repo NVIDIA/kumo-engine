@@ -3,14 +3,64 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import copy
+import os
+import subprocess
 from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
+import yaml
 
 from scripts import check_python_license_metadata
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_licensing_workflow_builds_engine_component(tmp_path: Path) -> None:
+    """Build manifest-level wheels without invoking native bundle assembly.
+
+    Args:
+        tmp_path: Directory for the mocked build tool's captured arguments.
+    """
+    workflow = yaml.safe_load(
+        (REPOSITORY_ROOT / ".github/workflows/linting.yml").read_text()
+    )
+    build_step = next(
+        step["run"]
+        for step in workflow["jobs"]["licensing"]["steps"]
+        if step.get("name") == "Build Python wheels"
+    )
+    build_log = tmp_path / "build-arguments.txt"
+    mock_uv = (
+        'uv() { printf "%s\\t" "$@" >> "$BUILD_LOG"; printf "\\n" >> "$BUILD_LOG"; }\n'
+    )
+
+    subprocess.run(
+        ["bash", "-eu", "-c", mock_uv + build_step],
+        env=dict(os.environ, BUILD_LOG=str(build_log), RUNNER_TEMP=str(tmp_path)),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    commands = [
+        line.rstrip("\t").split("\t") for line in build_log.read_text().splitlines()
+    ]
+    assert {command[-1] for command in commands} == {
+        str(Path(spec.manifest).parent)
+        for spec in check_python_license_metadata.DISTRIBUTIONS
+    }
+    for command in commands:
+        expected = [
+            "build",
+            "--wheel",
+            "--no-build-logs",
+            "--out-dir",
+            str(tmp_path / "license-wheels"),
+        ]
+        if command[-1] == "packages/kumo-engine":
+            expected.extend(["--config-setting", "kumo-component=true"])
+        assert command == [*expected, command[-1]]
 
 
 def write_wheel(
