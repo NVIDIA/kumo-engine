@@ -24,6 +24,10 @@ use arrow::pyarrow::ToPyArrow;
 use arrow_array::RecordBatch;
 use diskgraph_core::metadata::{EdgeRelationMetadata, EdgeSortKeyMetadata};
 use diskgraph_core::sortkey::SortKeyDecoder;
+use diskgraph_core::time::{
+    convert_floor, convert_trunc, split_parts, Abs, Dur, TimeUnit, UnitSystem,
+};
+use diskgraph_core::with_index_clock;
 use diskgraph_engine::edge_unpacker::EdgeUnpacker;
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use pyo3::prelude::*;
@@ -149,6 +153,7 @@ enum ScalarValue {
     U64(u64),
     F64(f64),
     String(String),
+    Timestamp(i64, TimeUnit),
 }
 
 /// Python `repr(float)`: Rust's shortest round-trip digits and exponent cutoffs, Python spelling.
@@ -221,6 +226,10 @@ impl ScalarValue {
             Self::I64(value) => Ok(Some(*value as f64)),
             Self::U64(value) => Ok(Some(*value as f64)),
             Self::F64(value) => Ok(Some(*value)),
+            Self::Timestamp(value, unit) => {
+                let (seconds, nanos) = split_parts(*value, *unit);
+                Ok(Some(seconds as f64 + f64::from(nanos) / 1e9))
+            }
             Self::Bool(_) | Self::String(_) => Err("reduction requires a numeric field".into()),
         }
     }
@@ -232,7 +241,31 @@ impl ScalarValue {
             Self::U64(value) => i64::try_from(*value)
                 .map(Some)
                 .map_err(|_| "timestamp exceeds int64 range".to_string()),
+            Self::Timestamp(value, unit) => {
+                Ok(Some(convert_floor(*value, *unit, TimeUnit::Seconds)))
+            }
             _ => Err("time field must be an integer or timestamp".to_string()),
+        }
+    }
+
+    fn index_time<U: UnitSystem>(&self) -> Result<Option<i64>, String> {
+        match self {
+            Self::Timestamp(value, unit) => Ok(Some(convert_trunc(*value, *unit, U::UNIT))),
+            _ => self
+                .epoch_seconds()
+                .map(|value| value.map(|value| Abs::<U>::from_secs(value).raw())),
+        }
+    }
+
+    // A wide integer preserves timestamp precision across units without overflowing.
+    fn epoch_nanos(&self) -> Result<Option<i128>, String> {
+        match self {
+            Self::Timestamp(value, unit) => {
+                Ok(Some(i128::from(*value) * i128::from(unit.tick_nanos())))
+            }
+            _ => self
+                .epoch_seconds()
+                .map(|value| value.map(|value| i128::from(value) * 1_000_000_000)),
         }
     }
 
@@ -244,6 +277,10 @@ impl ScalarValue {
             Self::U64(value) => format!("int:{value}"),
             Self::F64(value) => format!("float:{:016x}", value.to_bits()),
             Self::String(value) => format!("str:{value}"),
+            Self::Timestamp(value, unit) => format!(
+                "timestamp:{}",
+                i128::from(*value) * i128::from(unit.tick_nanos())
+            ),
         }
     }
 
@@ -256,6 +293,10 @@ impl ScalarValue {
             Self::U64(value) => ("int".into(), value.to_string()),
             Self::F64(value) => ("float".into(), python_float_repr(*value)),
             Self::String(value) => ("str".into(), python_str_repr(value)),
+            Self::Timestamp(value, unit) => (
+                "int".into(),
+                (i128::from(*value) * i128::from(unit.tick_nanos())).to_string(),
+            ),
         }
     }
 
@@ -270,6 +311,9 @@ impl ScalarValue {
             (Self::U64(left), Self::I64(right)) => Ok(i128::from(*left).cmp(&i128::from(*right))),
             (Self::String(left), Self::String(right)) => Ok(left.cmp(right)),
             (Self::Bool(left), Self::Bool(right)) => Ok(left.cmp(right)),
+            (Self::Timestamp(..), Self::Timestamp(..)) => {
+                Ok(self.epoch_nanos()?.cmp(&other.epoch_nanos()?))
+            }
             _ => Err("min/max values have incompatible types".to_string()),
         }
     }
@@ -282,6 +326,10 @@ impl ScalarValue {
             Self::U64(value) => list.append(*value),
             Self::F64(value) => list.append(*value),
             Self::String(value) => list.append(value),
+            Self::Timestamp(..) => list.append(
+                self.epoch_seconds()
+                    .map_err(DiskgraphConfigError::new_err)?,
+            ),
         }
     }
 }
@@ -308,12 +356,13 @@ fn scalar_values_to_array(
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         ))),
-        Some(ScalarValue::I64(_)) => Ok(Arc::new(Int64Array::from(
+        Some(ScalarValue::I64(_) | ScalarValue::Timestamp(..)) => Ok(Arc::new(Int64Array::from(
             values
                 .iter()
                 .map(|value| match value {
                     ScalarValue::Null => Ok(None),
                     ScalarValue::I64(value) => Ok(Some(*value)),
+                    ScalarValue::Timestamp(..) => value.epoch_seconds(),
                     _ => Err("aggregate values have inconsistent physical types".to_string()),
                 })
                 .collect::<Result<Vec<_>, _>>()?,
@@ -516,24 +565,37 @@ fn scalar_at(array: &dyn Array, row: usize) -> Result<ScalarValue, String> {
         return Ok(ScalarValue::String(values.value(row).to_string()));
     }
     if let Some(values) = array.as_any().downcast_ref::<TimestampSecondArray>() {
-        return Ok(ScalarValue::I64(values.value(row)));
+        return Ok(ScalarValue::Timestamp(values.value(row), TimeUnit::Seconds));
     }
     if let Some(values) = array.as_any().downcast_ref::<TimestampMillisecondArray>() {
-        return Ok(ScalarValue::I64(values.value(row).div_euclid(1_000)));
+        return Ok(ScalarValue::Timestamp(
+            values.value(row),
+            TimeUnit::Milliseconds,
+        ));
     }
     if let Some(values) = array.as_any().downcast_ref::<TimestampMicrosecondArray>() {
-        return Ok(ScalarValue::I64(values.value(row).div_euclid(1_000_000)));
+        return Ok(ScalarValue::Timestamp(
+            values.value(row),
+            TimeUnit::Microseconds,
+        ));
     }
     if let Some(values) = array.as_any().downcast_ref::<TimestampNanosecondArray>() {
-        return Ok(ScalarValue::I64(
-            values.value(row).div_euclid(1_000_000_000),
+        return Ok(ScalarValue::Timestamp(
+            values.value(row),
+            TimeUnit::Nanoseconds,
         ));
     }
     if let Some(values) = array.as_any().downcast_ref::<Date32Array>() {
-        return Ok(ScalarValue::I64(i64::from(values.value(row)) * 86_400));
+        return Ok(ScalarValue::Timestamp(
+            i64::from(values.value(row)),
+            TimeUnit::Days,
+        ));
     }
     if let Some(values) = array.as_any().downcast_ref::<Date64Array>() {
-        return Ok(ScalarValue::I64(values.value(row).div_euclid(1_000)));
+        return Ok(ScalarValue::Timestamp(
+            values.value(row),
+            TimeUnit::Milliseconds,
+        ));
     }
     Err(format!(
         "unsupported scalar Arrow type {}",
@@ -795,7 +857,38 @@ fn sort_frame_rows(rows: &mut [(usize, Option<i64>, ScalarValue)]) {
     }
 }
 
-fn materialize_frame(
+type TimeWindow = (Option<i64>, Option<i64>);
+
+/// The wire plan uses seconds; every comparison within a frame uses index ticks.
+fn frame_windows<U: UnitSystem>(
+    plan: &FramePlan,
+    cutoffs: &[i64],
+) -> Result<Vec<TimeWindow>, String> {
+    let duration = |seconds| {
+        let ticks = Dur::<U>::from_secs(seconds).raw();
+        if seconds != 0 && ticks == 0 {
+            return Err(format!(
+                "a window bound of {seconds} seconds is shorter than one tick of the {:?} index clock",
+                U::UNIT
+            ));
+        }
+        Ok(ticks)
+    };
+    let lower = plan.start_seconds.map(duration).transpose()?;
+    let upper = plan.stop_seconds.map(duration).transpose()?;
+    Ok(cutoffs
+        .iter()
+        .map(|&cutoff| {
+            let cutoff = Abs::<U>::from_secs(cutoff).raw();
+            (
+                lower.map(|offset| cutoff.saturating_add(offset)),
+                upper.map(|offset| cutoff.saturating_add(offset)),
+            )
+        })
+        .collect())
+}
+
+fn materialize_frame<U: UnitSystem>(
     reader: &GraphIndexReader,
     plan: &FramePlan,
     root_type: &str,
@@ -807,6 +900,7 @@ fn materialize_frame(
     stats: &mut QueryStats,
 ) -> Result<MaterializedFrame, String> {
     validate_frame_plan(plan, root_type)?;
+    let windows = frame_windows::<U>(plan, cutoffs)?;
     let (hops, destination) = frame_path(reader, plan, root_type)?;
 
     let traversal_started = Instant::now();
@@ -830,10 +924,8 @@ fn materialize_frame(
             let window = decoder.as_ref().map(|decoder| {
                 (
                     decoder,
-                    plan.start_seconds
-                        .map(|seconds| cutoffs[anchor].saturating_add(seconds)),
-                    plan.stop_seconds
-                        .map(|seconds| cutoffs[anchor].saturating_add(seconds)),
+                    windows[anchor].0,
+                    windows[anchor].1,
                     plan.name.as_str(),
                 )
             });
@@ -932,18 +1024,13 @@ fn materialize_frame(
     let mut offsets = Vec::with_capacity(roots.len() + 1);
     offsets.push(0);
     for anchor in 0..roots.len() {
-        let lower = plan
-            .start_seconds
-            .map(|value| cutoffs[anchor].saturating_add(value));
-        let upper = plan
-            .stop_seconds
-            .map(|value| cutoffs[anchor].saturating_add(value));
+        let (lower, upper) = windows[anchor];
         let mut anchor_rows = Vec::<(usize, Option<i64>, ScalarValue)>::new();
         for row in input_offsets[anchor]..input_offsets[anchor + 1] {
             let timestamp = match time_position {
                 Some(position) => Some(
                     scalar_at(decoded.column(position).as_ref(), row)?
-                        .epoch_seconds()?
+                        .index_time::<U>()?
                         .ok_or_else(|| {
                             format!("frame {:?} contains a null timestamp", plan.name)
                         })?,
@@ -963,7 +1050,8 @@ fn materialize_frame(
         for (row, timestamp, _) in anchor_rows {
             selected_rows.push(row as u64);
             node_ids.push(flat_nodes[row]);
-            timestamps.push(timestamp);
+            timestamps
+                .push(timestamp.map(|value| convert_floor(value, U::UNIT, TimeUnit::Seconds)));
         }
         offsets.push(selected_rows.len());
     }
@@ -1181,6 +1269,9 @@ fn reduce(
             let total = values.iter().try_fold(0i128, |total, value| {
                 let value = match (sum_type, value) {
                     (SumType::Int64, ScalarValue::I64(value)) => i128::from(*value),
+                    (SumType::Int64, ScalarValue::Timestamp(value, unit)) => {
+                        i128::from(convert_floor(*value, *unit, TimeUnit::Seconds))
+                    }
                     (SumType::Uint64, ScalarValue::U64(value)) => i128::from(*value),
                     _ => return Err("integer sum requires matching integer operands".into()),
                 };
@@ -1201,13 +1292,17 @@ fn reduce(
     if operation == "recency" {
         let latest = values
             .iter()
-            .map(ScalarValue::epoch_seconds)
+            .map(ScalarValue::epoch_nanos)
             .collect::<Result<Vec<_>, _>>()?
             .into_iter()
             .flatten()
             .max()
             .expect("non-null timestamp values");
-        return Ok(ScalarValue::F64(cutoff.saturating_sub(latest) as f64));
+        let elapsed = (i128::from(cutoff) * 1_000_000_000 - latest).clamp(
+            i128::from(i64::MIN) * 1_000_000_000,
+            i128::from(i64::MAX) * 1_000_000_000,
+        );
+        return Ok(ScalarValue::F64(elapsed as f64 / 1e9));
     }
     if operation == "mode" {
         let mut counts = HashMap::<String, (usize, ScalarValue)>::new();
@@ -1345,7 +1440,7 @@ fn group_rows(rows: RowsView<'_>, plan: &GroupPlan, cutoff: i64) -> Result<Vec<O
     Ok(output)
 }
 
-fn aggregate_result(
+fn aggregate_result<U: UnitSystem>(
     frame: &MaterializedFrame,
     plan: &AggregatePlan,
     cutoffs: &[i64],
@@ -1353,6 +1448,7 @@ fn aggregate_result(
     validate_reduction(&plan.operation, plan.column.as_deref())?;
     let mut values = Vec::with_capacity(cutoffs.len());
     for (anchor, cutoff) in cutoffs.iter().copied().enumerate() {
+        let cutoff = Abs::<U>::from_secs(cutoff).to_secs();
         let frame_view = RowsView::Frame {
             frame,
             start: frame.offsets[anchor],
@@ -1419,7 +1515,7 @@ fn aggregate_kind(frame: &MaterializedFrame, plan: &AggregatePlan) -> Option<Sca
     }
 }
 
-fn count_frame(
+fn count_frame<U: UnitSystem>(
     reader: &GraphIndexReader,
     plan: &FramePlan,
     root_type: &str,
@@ -1429,6 +1525,7 @@ fn count_frame(
     stats: &mut LengthStats,
 ) -> Result<Vec<usize>, String> {
     validate_frame_plan(plan, root_type)?;
+    let windows = frame_windows::<U>(plan, cutoffs)?;
     let (hops, destination) = frame_path(reader, plan, root_type)?;
     let final_sort_key = hops
         .last()
@@ -1482,12 +1579,7 @@ fn count_frame(
                 });
         if let Some(decoder) = sort_decoder {
             for (anchor, rows) in rows_by_anchor.iter().enumerate() {
-                let lower = plan
-                    .start_seconds
-                    .map(|value| cutoffs[anchor].saturating_add(value));
-                let upper = plan
-                    .stop_seconds
-                    .map(|value| cutoffs[anchor].saturating_add(value));
+                let (lower, upper) = windows[anchor];
                 let mut selected = 0;
                 for &(_, raw_sort_key) in rows {
                     let timestamp = exact_key_time(&decoder, raw_sort_key)
@@ -1514,16 +1606,11 @@ fn count_frame(
             let decoded = table_rows(table.as_ref(), &flat_nodes, &projection_indices)?;
             let mut row = 0;
             for (anchor, rows) in rows_by_anchor.iter().enumerate() {
-                let lower = plan
-                    .start_seconds
-                    .map(|value| cutoffs[anchor].saturating_add(value));
-                let upper = plan
-                    .stop_seconds
-                    .map(|value| cutoffs[anchor].saturating_add(value));
+                let (lower, upper) = windows[anchor];
                 let mut selected = 0;
                 for _ in rows {
                     let timestamp = scalar_at(decoded.column(0).as_ref(), row)?
-                        .epoch_seconds()?
+                        .index_time::<U>()?
                         .ok_or_else(|| {
                             format!("frame {:?} contains a null timestamp", plan.name)
                         })?;
@@ -1582,7 +1669,7 @@ pub(crate) fn execute_lengths(
                     sequence.name, sequence.frame
                 )
             })?;
-            let lengths = count_frame(
+            let lengths = with_index_clock!(reader.metadata().timestamp_unit, U => count_frame::<U>(
                 reader,
                 frame,
                 root_type,
@@ -1590,7 +1677,7 @@ pub(crate) fn execute_lengths(
                 cutoffs,
                 &mut timings,
                 &mut stats,
-            )?;
+            ))?;
             counted_frames.insert(sequence.frame.as_str(), lengths);
         }
     }
@@ -1677,7 +1764,7 @@ pub(crate) fn execute(
             }
             columns
         });
-        let frame = materialize_frame(
+        let frame = with_index_clock!(reader.metadata().timestamp_unit, U => materialize_frame::<U>(
             reader,
             frame_plan,
             root_type,
@@ -1689,7 +1776,7 @@ pub(crate) fn execute(
                 .zip(consumers.first().and_then(|sequence| sequence.limit)),
             &mut timings,
             &mut stats,
-        )?;
+        ))?;
         frames.insert(frame_plan.name.clone(), frame);
     }
 
@@ -1720,7 +1807,7 @@ pub(crate) fn execute(
                     aggregate.name, aggregate.frame
                 )
             })?;
-            aggregate_result(frame, aggregate, cutoffs)
+            with_index_clock!(reader.metadata().timestamp_unit, U => aggregate_result::<U>(frame, aggregate, cutoffs))
         })
         .collect::<Result<Vec<_>, String>>()?;
     timings.aggregation = elapsed_ns(aggregate_started);
