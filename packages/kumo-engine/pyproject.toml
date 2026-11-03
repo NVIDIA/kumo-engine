@@ -34,6 +34,7 @@ classifiers=[
 ]
 
 [project.optional-dependencies]
+plots=["matplotlib>=3.10.0"]
 # Keep the required backend on Linux x86_64/macOS; both distributions own
 # the same import namespace. This extra does not select Torch or its device.
 cpu=["faiss-cpu==1.14.3; sys_platform != 'linux' or platform_machine != 'x86_64'"]

@@ -10,7 +10,7 @@ import json
 import logging
 import time
 import warnings
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
@@ -54,6 +54,8 @@ from kumo.engine._embeddings import (
 )
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
 from kumo.engine.connector.base import Connector
+from kumo.engine.explain._artifacts import explanation_trial
+from kumo.engine.explain.results import TrainingExplanations
 from kumo.engine.graph import GraphSnapshot
 from kumo.engine.pquery.prediction_table import PredictionTable
 from kumo.engine.pquery.training_table import TrainingTable
@@ -82,6 +84,9 @@ class TrainingResult:
     not part of the published model bundle. The file is capped at 1 GiB in
     memory; `holdout_truncated` is true when rows were dropped to fit, and
     `None` when the size record could not be read.
+
+    `explanations` lazily reads retained training diagnostics. Restoring a model
+    bundle alone leaves these diagnostics unavailable.
     """
 
     metrics: Dict[str, float]
@@ -90,6 +95,8 @@ class TrainingResult:
     published_model: Optional[PublishedModel] = None
     holdout_path: Optional[Path] = None
     holdout_truncated: Optional[bool] = False
+    explanations: TrainingExplanations = field(
+        default_factory=TrainingExplanations.unavailable)
 
     def holdout_df(self) -> pd.DataFrame:
         r"""Read the holdout predictions as a pandas DataFrame.
@@ -472,6 +479,11 @@ class Trainer:
             options=CallableTrainingOptions(),
         )
 
+        explanation_root = explanation_trial(
+            result.best_trainer.original_log_dir,
+            refitted_trainval=result.best_trainer.refit_cfg.refitted_trainval,
+        )
+        explanation_failure = None
         if not result.explain_disabled:
             try:
                 # The shared trainer owns task support, checkpoint selection
@@ -488,7 +500,8 @@ class Trainer:
                     str(
                         Path(result.best_trainer.subgraph_collector_dir()) /
                         'test'), TrainingStage.TEST)
-            except Exception:
+            except Exception as error:
+                explanation_failure = f'{type(error).__name__}: {error}'
                 logger.exception(
                     'Training succeeded, but post-training explanations '
                     'failed for run %s. The trained model remains available.',
@@ -502,6 +515,9 @@ class Trainer:
             bundle_dir=run_dir / 'published-model',
             holdout_path=holdout_path,
             holdout_truncated=holdout_truncated,
+            explanations=TrainingExplanations.from_trial(
+                run_dir, explanation_root, disabled=result.explain_disabled,
+                failure=explanation_failure),
         )
         del result
         _collect_garbage('fit')

@@ -46,6 +46,12 @@ from kumo.engine.connector import (
     SourceTable,
     SQLSourceTable,
 )
+from kumo.engine.explain.errors import (
+    ExplanationUnavailableError,
+    InvalidExplanationError,
+    InvalidRunError,
+)
+from kumo.engine.explain.results import TrainingExplanations
 from kumo.engine.graph import Graph, GraphSnapshot
 from kumo.engine.pquery import PredictionTable, PredictiveQuery, TrainingTable
 from kumo.engine.table import Table
@@ -92,6 +98,10 @@ __all__ = [
     "PredictionTable",
     "Trainer",
     "TrainingResult",
+    "TrainingExplanations",
+    "ExplanationUnavailableError",
+    "InvalidExplanationError",
+    "InvalidRunError",
     "PredictionResult",
     "ModelOutputConfig",
     "PredictionOutputConfig",
