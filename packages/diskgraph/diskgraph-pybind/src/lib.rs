@@ -1553,8 +1553,7 @@ fn verify_snapshot_integrity(py: Python<'_>, output_dir: &str) -> PyResult<()> {
         .map_err(|e| DiskgraphCorruptionError::new_err(e.to_string()))
 }
 
-/// CRC-32 of every `range_bytes` span of each file in the snapshot's
-/// `_MANIFEST.json` and of the manifest itself, keyed by relative path.
+/// CRC-32 per `range_bytes` span of each listed file and the manifest.
 #[pyfunction]
 fn snapshot_range_checksums(
     py: Python<'_>,
