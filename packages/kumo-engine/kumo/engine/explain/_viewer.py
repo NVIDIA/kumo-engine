@@ -146,8 +146,8 @@ align-items:center;gap:8px}
 .kumo-training .kt-value{text-align:right;font-variant-numeric:tabular-nums}
 .kumo-training .kt-feature-list,.kumo-training .kt-feature-cells{list-style:none;padding:0;margin:8px 0 16px}
 .kumo-training .kt-feature-list>li+li{margin-top:6px}
-.kumo-training .kt-feature-choice{display:grid;grid-template-columns:minmax(0,1fr) minmax(120px,38%);
-align-items:center;gap:12px;width:100%;padding:10px}
+.kumo-training .kt-feature-choice{display:grid;grid-template-columns:minmax(0,160px) minmax(120px,1fr);
+align-items:center;gap:12px;width:100%;max-width:600px;padding:10px}
 .kumo-training .kt-feature-choice .kt-note{display:block;margin:2px 0 0;font-size:12px}
 .kumo-training .kt-feature-cells>li{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 180px;
 align-items:start;gap:8px 16px;padding:10px 0;border-bottom:1px solid $surface_border}
@@ -161,7 +161,7 @@ align-items:start;gap:8px 16px;padding:10px 0;border-bottom:1px solid $surface_b
 .kumo-training .kt-result-value{font-size:32px;font-weight:600;font-variant-numeric:tabular-nums}
 .kumo-training .kt-ranking{margin:20px 0 24px}
 .kumo-training .kt-ranking h3{margin-top:0}
-.kumo-training .kt-scalar-values{display:grid;gap:6px;margin:12px 0 0;max-width:600px}
+.kumo-training .kt-scalar-values{display:grid;gap:6px;margin:12px 0 0;width:fit-content;max-width:100%}
 .kumo-training .kt-scalar-values>div{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:baseline}
 .kumo-training .kt-scalar-chart{display:block;width:100%;height:auto;max-width:600px;margin:0}
 .kumo-training .kt-scalar-baseline{stroke:$muted;stroke-width:1}
