@@ -52,8 +52,8 @@ use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use diskgraph_index::pkmap::{self, Key, KeyType};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ProjectionMask;
-use pprof::protos::Message;
-use pprof::ProfilerGuard;
+#[cfg(unix)]
+use pprof::{protos::Message, ProfilerGuard};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
@@ -856,6 +856,7 @@ impl std::ops::Sub for CpuStats {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn read_cpu_stats() -> CpuStats {
     let Ok(stat) = std::fs::read_to_string("/proc/self/stat") else {
         return CpuStats::default();
@@ -881,6 +882,11 @@ fn read_cpu_stats() -> CpuStats {
             .unwrap_or(0) as f64
             / ticks,
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_cpu_stats() -> CpuStats {
+    CpuStats::default()
 }
 
 impl std::ops::Sub for FaultStats {
@@ -1619,6 +1625,10 @@ fn main() -> Result<()> {
     if profile_frequency <= 0 {
         return Err(anyhow!("--profile-frequency must be positive"));
     }
+    #[cfg(not(unix))]
+    if !cpu_profile.is_empty() {
+        return Err(anyhow!("--cpu-profile is unavailable on this platform"));
+    }
     if !matches!(backend.as_str(), "mmap" | "buffered" | "direct") {
         return Err(anyhow!("--backend must be mmap|buffered|direct"));
     }
@@ -1924,6 +1934,7 @@ fn main() -> Result<()> {
     }
     // Deliberately start profiling after warmup: initialization, prefaulting,
     // and cache ramp are different workloads from the steady sampling path.
+    #[cfg(unix)]
     let profile_guard = if cpu_profile.is_empty() {
         None
     } else {
@@ -1955,6 +1966,7 @@ fn main() -> Result<()> {
     }
     ALLOC_TRACKING.store(false, Ordering::Relaxed);
 
+    #[cfg(unix)]
     if let Some(guard) = profile_guard {
         let report = guard
             .report()

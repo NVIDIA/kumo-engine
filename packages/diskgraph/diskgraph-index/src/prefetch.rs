@@ -217,6 +217,7 @@ pub fn observe(map: &[u8], ranges: &[(usize, usize)]) {
 
 /// Is the page containing byte `offset` of `map` in the page cache?
 /// `None` when `mincore` is unavailable.
+#[cfg(unix)]
 fn page_resident(map: &[u8], offset: usize) -> Option<bool> {
     if offset >= map.len() {
         return None;
@@ -233,6 +234,11 @@ fn page_resident(map: &[u8], offset: usize) -> Option<bool> {
         return None;
     }
     Some(vec[0] & 1 == 1)
+}
+
+#[cfg(not(unix))]
+fn page_resident(_map: &[u8], _offset: usize) -> Option<bool> {
+    None
 }
 
 /// Ask the kernel to begin reading every page covered by `ranges` (byte offsets
@@ -324,11 +330,15 @@ fn advise_batch(base: *const u8, ranges: &[(usize, usize)]) {
     advise_each(base, ranges);
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn advise_batch(base: *const u8, ranges: &[(usize, usize)]) {
     advise_each(base, ranges);
 }
 
+#[cfg(not(unix))]
+fn advise_batch(_base: *const u8, _ranges: &[(usize, usize)]) {}
+
+#[cfg(unix)]
 fn advise_each(base: *const u8, ranges: &[(usize, usize)]) {
     for &(s, e) in ranges {
         unsafe {
@@ -356,6 +366,7 @@ fn self_pidfd() -> Option<libc::c_int> {
     })
 }
 
+#[cfg(unix)]
 fn page_size() -> usize {
     static PAGE: OnceLock<usize> = OnceLock::new();
     *PAGE.get_or_init(|| {
@@ -366,6 +377,12 @@ fn page_size() -> usize {
             4096
         }
     })
+}
+
+#[cfg(not(unix))]
+fn page_size() -> usize {
+    // Non-Unix prefetch hints are unavailable; retain logical range planning.
+    4096
 }
 
 #[cfg(test)]

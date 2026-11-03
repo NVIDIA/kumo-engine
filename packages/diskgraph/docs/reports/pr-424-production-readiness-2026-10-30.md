@@ -1,20 +1,28 @@
 # PR #424 production readiness — October 30, 2026
 
-The candidate is **not ready for production enablement**. Native page reads and
-backend parity have useful coverage, but error recovery, process lifecycle,
-automatic dispatch and the supported macOS build have reproduced failures.
-Keep the default `DG_EDGE_BACKEND=mmap` while those issues are resolved.
+Production enablement remains gated on validation of the latest merged
+candidate. The October 30 investigation reproduced cache recovery, process
+lifecycle, automatic dispatch and macOS build failures. The November 3 follow-up
+records their fixes and completed checks. The default remains
+`DG_EDGE_BACKEND=mmap`.
 
 ## November 3 follow-up
 
-The candidate now incorporates Engine `main` through `567f6cab`, including the
-extracted native runtime and timestamp clock changes. The October 30 findings
-below remain the historical reproduction record; this follow-up tracks fixes.
+The candidate now incorporates Engine `main` through `f8ba7e17`, including the
+extracted native runtime, timestamp clock and platform-ingestion changes.
+The latest main merge passes 930 native tests and 158 related Core tests.
+The October 30 findings below remain the historical reproduction record;
+this follow-up tracks fixes.
 
 At correctness head `d6057381`, the [hosted Linux CI run](https://github.com/NVIDIA/kumo-engine/actions/runs/41696146582)
 passes ordinary Rust, strict native I/O (ten checks without skips), Clippy,
-candidate-wheel build and DiskGraph Python checks. The macOS wheel, explicit
-GPU backend tasks and subsequent coverage-head CI gates are still pending.
+candidate-wheel build and DiskGraph Python checks. The same head's
+[macOS job](https://github.com/NVIDIA/kumo-engine/actions/runs/41696146582/job/126127793077)
+builds and installs the actual `cp311-abi3-macosx_14_0_arm64` wheel on macOS
+15.8.2 ARM64, Rust 1.98.1 and Python 3.12.10: all 11 checks pass, including mmap
+ingestion/fused feature sampling and explicit-backend rejection. No wheel hash
+was printed. These results precede the latest main merge and Windows changes;
+their final-head platform, explicit GPU and CPU task gates remain pending.
 
 - Cache cleanup now relinquishes reservation ownership once. Native runtime and
   cache state are process-owned, including fork during initialization, locked
@@ -22,8 +30,13 @@ GPU backend tasks and subsequent coverage-head CI gates are still pending.
   engine suites pass 138 tests with 11 opt-in tests ignored; all selected native
   error/lifecycle diagnostics pass when run explicitly. All-target Clippy passes.
 - Linux-only dependencies and I/O primitives are gated, and mmap remains the
-  non-Linux implementation. A real macOS ARM64 wheel build/import remains a
-  required CI gate; a Linux cross-check alone does not complete that gate.
+  non-Linux implementation. Latest main adds experimental native Windows builds.
+  The proposal's page-I/O/prefetch code and benchmark profiler now preserve that
+  build boundary: Unix profiling stays Unix-only and unsupported explicit I/O
+  returns checked errors. Windows GNU compile checks cover the actual source
+  and unit-test code; a full local cross-build lacks a C cross-compiler, and the actual MSVC wheel
+  build/import remains a CI gate. The WSL-only Windows release boundary stays
+  unchanged.
 - Native automatic fused dispatch is capability-aware. Actual CPU training also
   exposed Core's automatic caller forcing `fused=True`. Backend-aware Core
   configuration fixes that gap while preserving mmap's worker/thread policy;
@@ -54,7 +67,8 @@ The final wheel adds strict rejection of invalid UTF-8 backend configuration;
 normal backend strings are unchanged. Its SHA-256 is
 `36632960b79540e46e3a0602c0c8fa7ec74d9b5b5e57c4ccba7874c5a9293670`,
 and its focused native/Core suite passes 22 tests with two non-Linux skips.
-GPU training and the real macOS wheel gate remain pending.
+These artifact results also precede the latest main merge and Windows changes.
+Fresh candidate-wheel qualification and GPU task checks remain pending.
 
 Run the CPU matrix from the repository root, with this checkout's source
 packages and CPU dependencies installed plus the candidate native wheel:

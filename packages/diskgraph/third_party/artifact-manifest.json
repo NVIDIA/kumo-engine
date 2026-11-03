@@ -5607,13 +5607,6 @@
         },
         {
           "license": "MIT OR Apache-2.0",
-          "name": "backtrace",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "source_kind": "registry-or-git",
-          "version": "0.3.76"
-        },
-        {
-          "license": "MIT OR Apache-2.0",
           "name": "base64",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "source_kind": "registry-or-git",
@@ -5817,13 +5810,6 @@
         },
         {
           "license": "MIT OR Apache-2.0",
-          "name": "cpp_demangle",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "source_kind": "registry-or-git",
-          "version": "0.4.5"
-        },
-        {
-          "license": "MIT OR Apache-2.0",
           "name": "cpufeatures",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "source_kind": "registry-or-git",
@@ -5933,13 +5919,6 @@
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "source_kind": "registry-or-git",
           "version": "6.2.1"
-        },
-        {
-          "license": "Apache-2.0",
-          "name": "debugid",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "source_kind": "registry-or-git",
-          "version": "0.8.0"
         },
         {
           "license": "MIT OR Apache-2.0",
@@ -6129,13 +6108,6 @@
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "source_kind": "registry-or-git",
           "version": "0.2.29"
-        },
-        {
-          "license": "MIT OR Apache-2.0",
-          "name": "findshlibs",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "source_kind": "registry-or-git",
-          "version": "0.10.2"
         },
         {
           "license": "Apache-2.0",
@@ -6541,13 +6513,6 @@
           "name": "itertools",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "source_kind": "registry-or-git",
-          "version": "0.12.1"
-        },
-        {
-          "license": "MIT OR Apache-2.0",
-          "name": "itertools",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "source_kind": "registry-or-git",
           "version": "0.14.0"
         },
         {
@@ -6741,13 +6706,6 @@
         },
         {
           "license": "MIT",
-          "name": "nix",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "source_kind": "registry-or-git",
-          "version": "0.26.4"
-        },
-        {
-          "license": "MIT",
           "name": "nom",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "source_kind": "registry-or-git",
@@ -6915,13 +6873,6 @@
           "version": "0.2.0"
         },
         {
-          "license": "Apache-2.0",
-          "name": "pprof",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "source_kind": "registry-or-git",
-          "version": "0.13.0"
-        },
-        {
           "license": "MIT OR Apache-2.0",
           "name": "ppv-lite86",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
@@ -6948,20 +6899,6 @@
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "source_kind": "registry-or-git",
           "version": "1.0.106"
-        },
-        {
-          "license": "Apache-2.0",
-          "name": "prost",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "source_kind": "registry-or-git",
-          "version": "0.12.6"
-        },
-        {
-          "license": "Apache-2.0",
-          "name": "prost-derive",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "source_kind": "registry-or-git",
-          "version": "0.12.6"
         },
         {
           "license": "MIT OR Apache-2.0",
@@ -7130,13 +7067,6 @@
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "source_kind": "registry-or-git",
           "version": "0.8.15"
-        },
-        {
-          "license": "MIT/Apache-2.0",
-          "name": "rustc-demangle",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "source_kind": "registry-or-git",
-          "version": "0.1.27"
         },
         {
           "license": "Apache-2.0 OR ISC OR MIT",
@@ -7368,20 +7298,6 @@
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "source_kind": "registry-or-git",
           "version": "2.6.1"
-        },
-        {
-          "license": "MIT",
-          "name": "symbolic-common",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "source_kind": "registry-or-git",
-          "version": "12.18.3"
-        },
-        {
-          "license": "MIT",
-          "name": "symbolic-demangle",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "source_kind": "registry-or-git",
-          "version": "12.18.3"
         },
         {
           "license": "MIT OR Apache-2.0",

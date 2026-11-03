@@ -16,7 +16,8 @@ use std::cell::RefCell;
 use std::fs::File;
 use std::io;
 use std::mem::ManuallyDrop;
-use std::os::fd::{AsRawFd, RawFd};
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
@@ -24,6 +25,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, AtomicU16, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
 
 fn other_error(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
@@ -1338,6 +1340,7 @@ impl PageRuntime {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn page_owner_loop(
     receiver: Receiver<ReadJob>,
     qd: usize,
@@ -1446,6 +1449,18 @@ fn page_owner_loop(
     }
 }
 
+#[cfg(not(target_os = "linux"))]
+fn page_owner_loop(
+    receiver: Receiver<ReadJob>,
+    _qd: usize,
+    _batch_page_target: usize,
+    _batch_micros: u64,
+) {
+    for job in receiver {
+        let _ = job.response.send(Err(unsupported_backend().to_string()));
+    }
+}
+
 fn page_runtime() -> &'static PageRuntime {
     process_state().runtime.get_or_init(PageRuntime::new)
 }
@@ -1505,10 +1520,11 @@ fn read_pages_local(
     read_specs_local(&specs, qd)
 }
 
+#[cfg(any(target_os = "linux", test))]
 struct PageReadSpec {
     // The owning ReadJob (or the test helper's Arc<File>) remains live until
     // every CQE has arrived, so page-sized specs need only carry the stable fd.
-    fd: RawFd,
+    fd: std::os::raw::c_int,
     file_len: u64,
     page_number: u64,
 }
@@ -1564,15 +1580,6 @@ fn read_specs_local_with_buffers(
             read_pages_on_ring(&mut slot.as_mut().unwrap().1, specs, entries, buffers)
         }
     })
-}
-
-#[cfg(not(target_os = "linux"))]
-fn read_specs_local_with_buffers(
-    _specs: &[PageReadSpec],
-    _qd: usize,
-    _buffers: Vec<PageData>,
-) -> io::Result<Vec<PageData>> {
-    Err(unsupported_backend())
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -1872,7 +1879,10 @@ static CACHE_ENTRIES: AtomicU64 = AtomicU64::new(0);
 
 struct CacheArena {
     ptr: NonNull<u8>,
+    #[cfg(unix)]
     len: usize,
+    #[cfg(not(unix))]
+    _mapping: memmap2::MmapMut,
 }
 
 unsafe impl Send for CacheArena {}
@@ -1883,6 +1893,7 @@ impl CacheArena {
         let len = page_count
             .checked_mul(PAGE_SIZE)
             .ok_or_else(|| other_error("direct-cache arena size overflow"))?;
+        #[cfg(unix)]
         let ptr = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
@@ -1893,17 +1904,29 @@ impl CacheArena {
                 0,
             )
         };
+        #[cfg(unix)]
         if ptr == libc::MAP_FAILED {
             return Err(io::Error::last_os_error());
         }
+        #[cfg(unix)]
         let ptr: NonNull<u8> = NonNull::new(ptr.cast()).unwrap();
+        #[cfg(not(unix))]
+        let mut mapping = memmap2::MmapMut::map_anon(len)?;
+        #[cfg(not(unix))]
+        let ptr = NonNull::new(mapping.as_mut_ptr()).unwrap();
         #[cfg(target_os = "linux")]
         unsafe {
             libc::madvise(ptr.as_ptr().cast(), len, libc::MADV_DONTDUMP);
             libc::madvise(ptr.as_ptr().cast(), len, libc::MADV_DONTFORK);
             libc::madvise(ptr.as_ptr().cast(), len, libc::MADV_NOHUGEPAGE);
         }
-        Ok(Self { ptr, len })
+        Ok(Self {
+            ptr,
+            #[cfg(unix)]
+            len,
+            #[cfg(not(unix))]
+            _mapping: mapping,
+        })
     }
 
     fn page_ptr(&self, slot: usize) -> *mut u8 {
@@ -1923,6 +1946,7 @@ impl CacheArena {
     }
 }
 
+#[cfg(unix)]
 impl Drop for CacheArena {
     fn drop(&mut self) {
         unsafe {

@@ -905,7 +905,6 @@
         "rust:aws-smithy-types@1.4.9",
         "rust:aws-smithy-xml@0.60.15",
         "rust:aws-types@1.3.16",
-        "rust:backtrace@0.3.76",
         "rust:base64-simd@0.8.0",
         "rust:base64@0.21.7",
         "rust:base64@0.22.1",
@@ -935,7 +934,6 @@
         "rust:common-traits@0.11.4",
         "rust:console@0.15.11",
         "rust:const-oid@0.10.2",
-        "rust:cpp-demangle@0.4.5",
         "rust:cpufeatures@0.2.17",
         "rust:cpufeatures@0.3.0",
         "rust:crc32fast@1.5.0",
@@ -952,7 +950,6 @@
         "rust:darling-macro@0.23.0",
         "rust:darling@0.23.0",
         "rust:dashmap@6.2.1",
-        "rust:debugid@0.8.0",
         "rust:deranged@0.5.8",
         "rust:digest@0.10.7",
         "rust:digest@0.11.3",
@@ -970,7 +967,6 @@
         "rust:fastrand@2.4.1",
         "rust:fd-lock@3.0.13",
         "rust:filetime@0.2.29",
-        "rust:findshlibs@0.10.2",
         "rust:flatbuffers@25.12.19",
         "rust:flate2@1.1.9",
         "rust:fnv@1.0.7",
@@ -1028,7 +1024,6 @@
         "rust:integer-encoding@3.0.4",
         "rust:ipnet@2.12.0",
         "rust:is-terminal-polyfill@1.70.2",
-        "rust:itertools@0.12.1",
         "rust:itertools@0.14.0",
         "rust:itoa@1.0.18",
         "rust:lazy-static@1.5.0",
@@ -1057,7 +1052,6 @@
         "rust:mio@1.2.1",
         "rust:mmap-rs@0.6.1",
         "rust:nibble-vec@0.1.0",
-        "rust:nix@0.26.4",
         "rust:nom@7.1.3",
         "rust:ntapi@0.4.3",
         "rust:nu-ansi-term@0.50.3",
@@ -1082,13 +1076,10 @@
         "rust:portable-atomic@1.13.1",
         "rust:potential-utf@0.1.5",
         "rust:powerfmt@0.2.0",
-        "rust:pprof@0.13.0",
         "rust:ppv-lite86@0.2.21",
         "rust:proc-macro-error-attr2@2.0.0",
         "rust:proc-macro-error2@2.0.1",
         "rust:proc-macro2@1.0.106",
-        "rust:prost-derive@0.12.6",
-        "rust:prost@0.12.6",
         "rust:pyo3-build-config@0.28.3",
         "rust:pyo3-ffi@0.28.3",
         "rust:pyo3-log@0.13.3",
@@ -1113,7 +1104,6 @@
         "rust:reqwest@0.12.28",
         "rust:ring@0.17.14",
         "rust:rmp@0.8.15",
-        "rust:rustc-demangle@0.1.27",
         "rust:rustls-native-certs@0.8.4",
         "rust:rustls-pki-types@1.14.1",
         "rust:rustls-webpki@0.103.15",
@@ -1147,8 +1137,6 @@
         "rust:str-buf@1.0.6",
         "rust:strsim@0.11.1",
         "rust:subtle@2.6.1",
-        "rust:symbolic-common@12.18.3",
-        "rust:symbolic-demangle@12.18.3",
         "rust:syn@2.0.117",
         "rust:sync-wrapper@1.0.2",
         "rust:synstructure@0.13.2",
@@ -3519,7 +3507,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-extension-windows",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4510,7 +4497,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-extension-windows",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5089,7 +5075,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-extension-windows",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -5799,7 +5784,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-extension-windows",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7811,7 +7795,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-extension-windows",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8930,7 +8913,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-extension-windows",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -9811,8 +9793,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-extension",
-        "diskgraph-extension-windows"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright 2019 TiKV Project Authors"
@@ -10005,7 +9986,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-extension-windows",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -10030,7 +10010,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-extension-windows",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -10873,7 +10852,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-extension-windows",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12135,7 +12113,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-extension-windows",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -12165,7 +12142,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-extension-windows",
         "diskgraph-ingest"
       ],
       "copyright": [],

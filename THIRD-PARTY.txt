@@ -3304,7 +3304,7 @@ aws-types 1.3.16
 backtrace 0.3.76
 ------------------------------------------------------------------------------
   License       : MIT OR Apache-2.0
-  Distributed in: diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
+  Distributed in: diskgraph._c.abi3.so, diskgraph/bin/ingest
   Copyright     : Copyright (c) 2014 Alex Crichton
 
   Legal text a60eea817514: LICENSE-APACHE
@@ -5096,7 +5096,7 @@ const-oid 0.10.2
 cpp_demangle 0.4.5
 ------------------------------------------------------------------------------
   License       : MIT OR Apache-2.0
-  Distributed in: diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
+  Distributed in: diskgraph._c.abi3.so, diskgraph/bin/ingest
   Copyright     : Copyright (c) 2015 The Rust Project Developers
 
   Legal text a60eea817514: LICENSE-APACHE
@@ -6078,7 +6078,7 @@ dashmap 6.2.1
 debugid 0.8.0
 ------------------------------------------------------------------------------
   License       : Apache-2.0
-  Distributed in: diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
+  Distributed in: diskgraph._c.abi3.so, diskgraph/bin/ingest
 
   Legal text a60eea817514: LICENSE
 ------------------------------------------------------------------------------
@@ -7182,7 +7182,7 @@ filetime 0.2.29
 findshlibs 0.10.2
 ------------------------------------------------------------------------------
   License       : MIT OR Apache-2.0
-  Distributed in: diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
+  Distributed in: diskgraph._c.abi3.so, diskgraph/bin/ingest
   Copyright     : Copyright (c) 2015 The Rust Project Developers
 
   Legal text a60eea817514: LICENSE-APACHE
@@ -9954,7 +9954,7 @@ is_terminal_polyfill 1.70.2
 itertools 0.12.1
 ------------------------------------------------------------------------------
   License       : MIT OR Apache-2.0
-  Distributed in: diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
+  Distributed in: diskgraph._c.abi3.so, diskgraph/bin/ingest
   Copyright     : Copyright (c) 2015
 
   Legal text a60eea817514: LICENSE-APACHE
@@ -12019,7 +12019,7 @@ nibble_vec 0.1.0
 nix 0.26.4
 ------------------------------------------------------------------------------
   License       : MIT
-  Distributed in: diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
+  Distributed in: diskgraph._c.abi3.so, diskgraph/bin/ingest
   Copyright     : Copyright (c) 2015 Carl Lerche + nix-rust Authors
 
   Legal text 66e3ee1fa7f9: LICENSE
@@ -13311,7 +13311,7 @@ powerfmt 0.2.0
 pprof 0.13.0
 ------------------------------------------------------------------------------
   License       : Apache-2.0
-  Distributed in: diskgraph._c.abi3.so, diskgraph._c.pyd
+  Distributed in: diskgraph._c.abi3.so
   Copyright     : Copyright 2019 TiKV Project Authors
 
   Legal text aef4aa957b44: LICENSE
@@ -14024,14 +14024,14 @@ proc-macro2 1.0.106
 prost 0.12.6
 ------------------------------------------------------------------------------
   License       : Apache-2.0
-  Distributed in: diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
+  Distributed in: diskgraph._c.abi3.so, diskgraph/bin/ingest
 
   Legal text 074e6e32c86a: SPDX-Apache-2.0.txt
 ------------------------------------------------------------------------------
 prost-derive 0.12.6
 ------------------------------------------------------------------------------
   License       : Apache-2.0
-  Distributed in: diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
+  Distributed in: diskgraph._c.abi3.so, diskgraph/bin/ingest
 
   Legal text a60eea817514: LICENSE
 ------------------------------------------------------------------------------
@@ -15486,7 +15486,7 @@ rmp 0.8.15
 rustc-demangle 0.1.27
 ------------------------------------------------------------------------------
   License       : MIT OR Apache-2.0
-  Distributed in: diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
+  Distributed in: diskgraph._c.abi3.so, diskgraph/bin/ingest
   Copyright     : Copyright (c) 2014 Alex Crichton
 
   Legal text a60eea817514: LICENSE-APACHE
@@ -16938,14 +16938,14 @@ subtle 2.6.1
 symbolic-common 12.18.3
 ------------------------------------------------------------------------------
   License       : MIT
-  Distributed in: diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
+  Distributed in: diskgraph._c.abi3.so, diskgraph/bin/ingest
 
   Legal text b05785f9f18e: SPDX-MIT.txt
 ------------------------------------------------------------------------------
 symbolic-demangle 12.18.3
 ------------------------------------------------------------------------------
   License       : MIT
-  Distributed in: diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
+  Distributed in: diskgraph._c.abi3.so, diskgraph/bin/ingest
 
   Legal text b05785f9f18e: SPDX-MIT.txt
 ------------------------------------------------------------------------------
