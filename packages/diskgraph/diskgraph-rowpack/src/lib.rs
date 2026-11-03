@@ -5540,6 +5540,7 @@ impl RowPackDecoder {
         self.decode_row_to_builders_with_offsets::<i32>(row, builders, requested_mask, scratch)
     }
 
+    #[inline(always)]
     fn decode_row_to_builders_with_offsets<O: OffsetSizeTrait>(
         &self,
         row: &[u8],

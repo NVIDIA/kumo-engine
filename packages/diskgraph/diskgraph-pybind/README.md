@@ -175,6 +175,8 @@ columns, including large string children inside lists. Their 64-bit offsets
 allow a query's combined values to exceed the 2 GiB limit of ordinary Arrow
 string and binary arrays without changing row values or order. This removes an
 offset limit; the complete query still needs enough memory for its output.
+See the [performance assessment](../docs/arrow-offset-performance.md) for
+measured costs and standalone reproduction commands.
 
 `SamplerEngine.query_temporal_lengths(seed_nodes, seed_timestamps, plan_json)`
 is the exact scheduling companion. It visits only frames named by sequences,
