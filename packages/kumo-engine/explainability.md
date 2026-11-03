@@ -67,6 +67,9 @@ The [CPU demo notebook](../../example_notebooks/training_explainability.ipynb) t
 Visualization requires a local retained run.
 Both notebook transports receive the same bounded snapshot, including at most 12 sample bodies; `max_samples=0` omits bodies.
 Coverage and unavailable states identify data excluded by limits or missing from the run.
+For a verified static or temporal link-prediction TEST configuration using the `two_tower` module, each explanation section also shows the producer's exclusion rule.
+This guidance requires matching selected-trial and TEST-fit configuration and model-plan records; missing, malformed, or conflicting metadata leaves it unknown.
+Producer eligibility stays separate from retained artifact status and does not establish why an artifact is absent.
 Integer values outside the browser's exact numeric range (`±(2**53 - 1)`) make the containing artifact unavailable; recorded string identifiers preserve their text.
 Selecting a loaded example makes no Python callback.
 Use `explanations.sample(collector_id)` to read a retained graph outside the widget's preload; the widget does not fetch additional graphs in place.

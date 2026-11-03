@@ -360,6 +360,94 @@ def test_unverified_selection_does_not_identify_a_winner(tmp_path):
     assert 'Selection unverified:' in view._repr_html_()
 
 
+@pytest.mark.parametrize('task',
+                         ['static_link_prediction', 'temporal_link_prediction'])
+@pytest.mark.parametrize('refit', [False, True])
+@pytest.mark.parametrize('state', [
+    'missing', 'retained', 'invalid', 'disabled', 'failed', 'unknown_module',
+    'original_conflict', 'plan_conflict', 'missing_config', 'missing_plan',
+    'malformed_config', 'oversized_plan', 'escaping_plan', 'unknown_task',
+    'unverified_selection', 'cohort_conflict', 'sample_conflict'
+])
+def test_two_tower_guidance_preserves_observation_and_abstains(
+        tmp_path, task, refit, state):
+    run, trial = _run(tmp_path, refit=refit)
+    trial = Path(trial)
+    original = trial.with_name('version_2')
+    for path in dict.fromkeys((original, trial)):
+        save_json(
+            dict(refit_cfg=dict(refitted_trainval=refit),
+                 module_kwargs=dict(module='two_tower')),
+            str(path / 'config.json'))
+        save_json(dict(model_architecture=dict(module='two_tower')),
+                  str(path / 'model_plan.json'))
+    save_json(dict(task_type=task),
+              str(run / 'published-model/manifests/task.json'))
+    if state in ('retained', 'disabled', 'failed', 'cohort_conflict',
+                 'sample_conflict'):
+        _gradient(str(trial))
+        save_json(
+            dict(task_type='regression' if state == 'cohort_conflict' else task,
+                 cohorts=[_cohort()]),
+            str(trial / 'column_analysis/test/column_analysis.json'))
+        graph = _graph()
+        graph.subgraph_store.task_type = TaskType('regression' if state ==
+                                                  'sample_conflict' else task)
+        save_json(graph,
+                  str(trial / 'subgraph_collector/test/subgraph_json/0.json'))
+    if state == 'invalid':
+        _text(trial / 'explain_test/scores.csv', '{')
+    elif state in ('unknown_module', 'original_conflict', 'malformed_config'):
+        path = original if state == 'original_conflict' else trial
+        config = json.loads((path / 'config.json').read_text())
+        config['module_kwargs'] = (None if state == 'malformed_config' else {
+            'module':
+            'unknown' if state == 'unknown_module' else 'shallow_rhs'
+        })
+        save_json(config, str(path / 'config.json'))
+    elif state in ('missing_config', 'missing_plan'):
+        (trial /
+         ('config.json' if state == 'missing_config' else 'model_plan.json')
+         ).unlink()
+    elif state in ('plan_conflict', 'oversized_plan', 'escaping_plan'):
+        path = trial / 'model_plan.json'
+        _text(
+            path, '{' if state == 'plan_conflict' else ' ' *
+            (LIMITS['artifact_bytes'] + 1))
+        if state == 'escaping_plan':
+            path.unlink()
+            path.symlink_to(tmp_path / 'outside.json')
+            _text(tmp_path / 'outside.json', '{}')
+    elif state == 'unknown_task':
+        save_json(dict(task_type='unknown'),
+                  str(run / 'published-model/manifests/task.json'))
+    elif state == 'unverified_selection':
+        save_json(dict(best_trainer=str(original.with_name('version_9'))),
+                  str(original.parent / 'best_trainer.json'))
+    explanations = TrainingExplanations.from_trial(
+        run, trial, disabled=state == 'disabled',
+        failure='private/path' if state == 'failed' else None)
+    availability = explanations.availability
+    result = build_training_payload(explanations)
+    expected = state in ('missing', 'retained', 'invalid', 'disabled', 'failed')
+    for name in ('gradient', 'cohorts', 'samples'):
+        note = result[name].pop('producer_note', None)
+        assert bool(note) == expected
+        if note:
+            assert 'two-tower link prediction' in note
+            assert 'Eligibility alone does not explain missing artifacts.' in note
+            result[name]['producer_note'] = note
+            assert note in static_summary(result)
+            del result[name]['producer_note']
+    assert explanations.availability == availability
+    assert 'private/path' not in json.dumps(result)
+    # With eligibility evidence absent, all observations remain identical.
+    for path in dict.fromkeys((original, trial)):
+        plan = path / 'model_plan.json'
+        plan.unlink(missing_ok=True)
+    assert result == build_training_payload(explanations)
+
+
 def test_nonfinite_or_empty_sample_never_reaches_interactive_body(tmp_path):
     run, trial = _run(tmp_path)
     root = Path(trial) / 'subgraph_collector/test/subgraph_json'

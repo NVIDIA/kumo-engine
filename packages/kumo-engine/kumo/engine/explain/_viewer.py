@@ -38,6 +38,8 @@ def static_summary(payload: dict) -> str:
         label = key + ': ' + str(section.get('status', 'unavailable'))
         if section.get('reason'):
             label += '. ' + str(section['reason'])
+        if section.get('producer_note'):
+            label += '. Producer eligibility: ' + str(section['producer_note'])
         parts.append('<li>' + escape(label) + '</li>')
     parts.append('</ul><h2>Selected examples</h2><p>Example values are excluded '
                  'from this summary. Rerun this cell in a trusted notebook '
@@ -116,7 +118,8 @@ if(cls)node.className=cls;return node};
 const note=(parent,value)=>parent.append(el('p',value,'kt-note'));
 const section=title=>{const node=el('section');node.append(el('h2',title));root.append(node);return node};
 const state=(parent,source,label)=>{source=obj(source);if(source.status!=='available')
-note(parent,label+': '+text(source.status||'unavailable')+(source.reason?'. '+text(source.reason):''));};
+note(parent,label+': '+text(source.status||'unavailable')+(source.reason?'. '+text(source.reason):''));
+if(source.producer_note)note(parent,'Producer eligibility: '+text(source.producer_note));};
 const table=(parent,headers,rows,numeric=[],exact=false)=>{const node=el('table',undefined,'kt-table');
 const head=el('thead'),tr=el('tr');for(const [i,h]of headers.entries()){
 const th=el('th',h,numeric.includes(i)?'kt-number':'');th.scope='col';tr.append(th)}head.append(tr);node.append(head);

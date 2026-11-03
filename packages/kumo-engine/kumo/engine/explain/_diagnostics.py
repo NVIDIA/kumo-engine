@@ -164,7 +164,7 @@ def _progress_rows(raw: dict, trial: str, fit: str) -> list[dict]:
 
 
 def _read_training(guard: _Guard, trial: Path,
-                   payload: TrainingPayload) -> None:
+                   payload: TrainingPayload) -> tuple[str | None, dict]:
     original_name = trial.name.removesuffix('_refit_trainval')
     if not re.fullmatch(r'version_[0-9]{1,9}', original_name):
         raise ValueError('Invalid selected trial name')
@@ -212,6 +212,29 @@ def _read_training(guard: _Guard, trial: Path,
                     payload['context'][destination] = raw[source]
         except (OSError, ValueError, TypeError):
             pass
+
+    producer_notes = {}
+    try:
+        if provenance['selection_verified'] and payload['context'].get(
+                'task_type') in ('static_link_prediction',
+                                 'temporal_link_prediction'):
+            for path in dict.fromkeys((original, trial)):
+                recorded = config if path == original else guard.json(
+                    path / 'config.json')
+                plan = guard.json(path / 'model_plan.json')
+                if (recorded['module_kwargs']['module'] != 'two_tower'
+                        or plan['model_architecture']['module'] != 'two_tower'):
+                    raise ValueError('Unverified two_tower module')
+            for name, rule in (
+                ('gradient', 'Gradient explanations exclude this module.'),
+                ('cohorts', 'Column cohorts require a node-prediction module.'),
+                ('samples',
+                 'Selected-example collection excludes this module.')):
+                producer_notes[name] = (
+                    'Recorded two-tower link prediction. ' + rule +
+                    ' Eligibility alone does not explain missing artifacts.')
+    except (OSError, ValueError, TypeError, KeyError):
+        pass
 
     section = payload['metrics']
     try:
@@ -324,6 +347,7 @@ def _read_training(guard: _Guard, trial: Path,
                        comparison_epoch=epoch)
     except (OSError, ValueError, TypeError) as error:
         _failure(section, error)
+    return payload['context'].get('task_type'), producer_notes
 
 
 def _read_sample_output(guard: _Guard, root: Path, artifact_id: str,
@@ -475,7 +499,7 @@ def build_training_payload(explanations: TrainingExplanations, *,
     try:
         guard = _Guard(explanations.run_root)
         trial = guard.path(explanations.trial_root)
-        _read_training(guard, trial, payload)
+        producer_task, producer_notes = _read_training(guard, trial, payload)
     except (OSError, ValueError, TypeError, KeyError) as error:
         for name in ('metrics', 'history', 'trials', 'gradient', 'cohorts',
                      'samples'):
@@ -520,6 +544,12 @@ def build_training_payload(explanations: TrainingExplanations, *,
                       max_samples)
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
         _failure(payload['samples'], error)
+    recorded_tasks = [payload['context'].get('task_type')
+                      ] + [(body.get('subgraph_store') or {}).get('task_type')
+                           for body in payload['samples']['bodies'].values()]
+    if all(task in (None, producer_task) for task in recorded_tasks):
+        for name, note in producer_notes.items():
+            payload[name]['producer_note'] = note
     for name in ('gradient', 'cohorts', 'samples'):
         section = payload[name]
         if explanations._failure and section['status'] == 'available':
