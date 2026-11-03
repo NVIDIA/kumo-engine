@@ -1003,8 +1003,7 @@ def _column_change(old: Mapping[str, Any],
                                     new.get('value_bins'))
     elif kind in ('categorical', 'multicategorical'):
         change = _deltas(old, new, _CATEGORY_STATS)
-        p, q = _distribution(old), _distribution(new)
-        change['psi'] = _category_psi(p, q)
+        change['psi'] = _category_psi(_distribution(old), _distribution(new))
         change['category_counts_capped'] = bool(
             old.get('category_counts_capped')
             or new.get('category_counts_capped'))
@@ -1066,17 +1065,12 @@ def _distribution(stats: Mapping[str, Any]) -> Dict[str, float]:
         else {}
 
 
-def _smoothed(p: Mapping[str, float], q: Mapping[str, float]
-              ) -> Tuple[np.ndarray, np.ndarray]:
-    keys = sorted(set(p) | set(q))
-    a = np.array([p.get(k, 0.0) for k in keys]) + _SMOOTHING
-    b = np.array([q.get(k, 0.0) for k in keys]) + _SMOOTHING
-    return a / a.sum(), b / b.sum()
-
-
 def _category_psi(p: Mapping[str, float],
                   q: Mapping[str, float]) -> Optional[float]:
     if not p or not q:
         return None
-    a, b = _smoothed(p, q)
+    keys = sorted(set(p) | set(q))
+    a = np.array([p.get(k, 0.0) for k in keys]) + _SMOOTHING
+    b = np.array([q.get(k, 0.0) for k in keys]) + _SMOOTHING
+    a, b = a / a.sum(), b / b.sum()
     return float(np.sum((b - a) * np.log(b / a)))
