@@ -17,7 +17,7 @@ from zipfile import ZipFile
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 SCRIPTS = REPO_ROOT / 'packages/kumo-engine/scripts/build'
 SCRIPT = SCRIPTS / 'build_wheel.py'
 MERGE = SCRIPTS / 'merge_wheels.py'

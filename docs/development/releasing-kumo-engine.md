@@ -198,6 +198,14 @@ On Databricks, run the install with `%pip` and restart Python with
 prerequisites above. Source-install packaging tests do not establish a tested
 Databricks runtime or GPU profile.
 
+Build-tool tests live in `packages/kumo-engine/test/build/`. Run them without
+loading the engine runtime fixtures:
+
+```bash
+python -m pytest --confcutdir=packages/kumo-engine/test/build \
+    packages/kumo-engine/test/build
+```
+
 ### Build a distributable wheel
 
 ```bash

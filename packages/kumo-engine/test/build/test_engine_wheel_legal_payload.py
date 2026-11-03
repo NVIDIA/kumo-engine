@@ -12,7 +12,7 @@ import zipfile
 from email.parser import Parser
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 MERGE = REPO_ROOT / 'packages/kumo-engine/scripts/build/merge_wheels.py'
 
 

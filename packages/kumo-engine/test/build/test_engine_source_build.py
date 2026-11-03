@@ -20,7 +20,7 @@ import pytest
 from wheel.wheelfile import WheelFile  # type: ignore[import-untyped]
 
 BACKEND = (
-    Path(__file__).resolve().parents[2]
+    Path(__file__).resolve().parents[4]
     / "packages/kumo-engine/scripts/build/kumo_engine_build_backend.py"
 )
 

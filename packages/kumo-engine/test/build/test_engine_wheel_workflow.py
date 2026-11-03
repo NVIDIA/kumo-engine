@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-WORKFLOW = Path(__file__).resolve().parents[2] / (
+WORKFLOW = Path(__file__).resolve().parents[4] / (
     '.github/workflows/kumo-engine-wheel.yml')
 JOBS = yaml.safe_load(WORKFLOW.read_text())['jobs']
 BUILDS = JOBS['build']['strategy']['matrix']['include']

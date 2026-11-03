@@ -14,7 +14,7 @@ from zipfile import ZipFile
 import pytest
 
 BUILDER = (
-    Path(__file__).resolve().parents[2]
+    Path(__file__).resolve().parents[4]
     / "packages/kumo-engine/scripts/build/build_wheel.py"
 )
 
