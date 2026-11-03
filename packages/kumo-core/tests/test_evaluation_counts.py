@@ -21,6 +21,8 @@ from kumo_core.summaries import (
 )
 from kumo_core.types import TaskType
 
+from tests.support.counts import brute_bin
+
 
 def _summaries(task_type, threshold=None, classes=(), timeframe=None,
                **columns):
@@ -34,10 +36,6 @@ def _summaries(task_type, threshold=None, classes=(), timeframe=None,
     summaries = evaluation_summaries(task_type, counts, threshold, classes,
                                      timeframe)
     return {summary.name: summary for summary in summaries}
-
-
-def _bin(value, edges):
-    return sum(edge <= value for edge in edges)
 
 
 def _rows(table):
@@ -77,7 +75,7 @@ def test_binary_summaries_match_brute_force():
             'tn': (~hit & ~y).sum(),
             'precision': tp / (tp + fp) if tp + fp else None,
             'recall': tp / y.sum(), 'fpr': fp / (~y).sum()})
-    bins = np.array([_bin(v, PROBABILITY_EDGES) for v in p])
+    bins = np.array([brute_bin(v, PROBABILITY_EDGES) for v in p])
     bounds = [0.0, *PROBABILITY_EDGES, 1.0]
     _approx_rows(summaries['holdout/calibration'], [
         {'from': bounds[b], 'to': bounds[b + 1], 'rows': (bins == b).sum(),
@@ -157,7 +155,7 @@ def test_multiclass_summaries_match_brute_force(size):
     assert sum(map(sum, confusion.counts)) == target.size
     assert len(confusion.labels) == min(size, 20) + (size > 20)
     confidence = prob.max(1)
-    bins = np.array([_bin(v, PROBABILITY_EDGES) for v in confidence])
+    bins = np.array([brute_bin(v, PROBABILITY_EDGES) for v in confidence])
     assert [(row['rows'], row['accuracy'])
             for row in _rows(summaries['holdout/calibration'])] == \
         pytest.approx([((bins == b).sum(),
@@ -187,14 +185,14 @@ def test_regression_summaries_match_brute_force():
     })
     residual = summaries['holdout/residuals/rows']
     assert list(residual.counts) == np.bincount(
-        [_bin(v, residual.edges) for v in error],
+        [brute_bin(v, residual.edges) for v in error],
         minlength=len(residual.edges) + 1).tolist()
     for name, values in (('actual', target), ('predicted', pred)):
         assert summaries[f'holdout/histogram/{name}'] == Histogram(
             f'holdout/histogram/{name}', edges, tuple(np.bincount(
-                [_bin(v, edges) for v in values], minlength=14).tolist()),
+                [brute_bin(v, edges) for v in values], minlength=14).tolist()),
             (values.min(), values.max()))
-    bins = np.array([_bin(v, edges) for v in pred])
+    bins = np.array([brute_bin(v, edges) for v in pred])
     bounds = [pred.min(), *edges, pred.max()]
     _approx_rows(summaries['holdout/calibration'], [
         {'from': bounds[b], 'to': bounds[b + 1], 'rows': (bins == b).sum(),
@@ -274,24 +272,20 @@ def test_forecasting_summaries_are_per_horizon(timeframe, windows):
         np.abs(pred - target).mean())
 
 
-def test_ranking_metrics_become_at_k_columns():
-    assert at_k_summaries({'test_map@10': 0.2, 'test_map@1': 0.5,
-                           'test_loss': 1.0, 'val_map@10': 0.3}) == [
-        Series('holdout/by_k/map', ((1, 0.5), (10, 0.2)), 'k')]
-
-
-def test_at_k_columns_describe_the_refit_model_when_there_is_one():
-    assert at_k_summaries({'test_map@10': 0.2, 'test_refit_map@10': 0.25,
-                           'test_refit_map@1': 0.6,
-                           'test_refit_loss': 1.0}) == [
-        Series('holdout/by_k/map', ((1, 0.6), (10, 0.25)), 'k')]
-
-
-def test_at_k_columns_without_a_holdout_loss_say_so():
-    assert at_k_summaries({'test_map@1': 0.5, 'test_acc': 0.9}) == [
-        Series('holdout/by_k/map', ((1, 0.5),), 'k'),
-        Note('notes', 'Link prediction reports no holdout loss.')]
-    assert at_k_summaries({'test_acc': 0.9}) == []
+@pytest.mark.parametrize('metrics, expected', [
+    ({'test_map@10': 0.2, 'test_map@1': 0.5, 'test_loss': 1.0,
+      'val_map@10': 0.3},
+     [Series('holdout/by_k/map', ((1, 0.5), (10, 0.2)), 'k')]),
+    ({'test_map@10': 0.2, 'test_refit_map@10': 0.25, 'test_refit_map@1': 0.6,
+      'test_refit_loss': 1.0},
+     [Series('holdout/by_k/map', ((1, 0.6), (10, 0.25)), 'k')]),
+    ({'test_map@1': 0.5, 'test_acc': 0.9},
+     [Series('holdout/by_k/map', ((1, 0.5),), 'k'),
+      Note('notes', 'Link prediction reports no holdout loss.')]),
+    ({'test_acc': 0.9}, []),
+], ids=['test', 'refit', 'no-loss', 'no-ranking'])
+def test_ranking_metrics_become_at_k_columns(metrics, expected):
+    assert at_k_summaries(metrics) == expected
 
 
 def _counts_cases(rng):
