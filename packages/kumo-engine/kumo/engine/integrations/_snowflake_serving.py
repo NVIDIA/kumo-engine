@@ -22,8 +22,6 @@ _snapshots: Dict[str, GraphSnapshot] = {}
 def score_registered(bundle: str, serving: str, rows: pd.DataFrame,
                      params: Mapping[str, Any]) -> pd.DataFrame:
     r"""Scores ``rows`` against ``params``' or ``serving``'s snapshot."""
-    from kumo.engine._predictor import load_predictor
-
     record = json.loads(Path(serving).read_text())
     columns = record['columns']
     if rows.empty:
@@ -33,8 +31,7 @@ def score_registered(bundle: str, serving: str, rows: pd.DataFrame,
         raise ValueError(
             "No snapshot to score against: fit with a stage artifact root "
             "or pass InputSpec(params={'snapshot': '@DB.SCHEMA.STAGE/...'})")
-    predictor = _cached(_predictors, bundle,
-                        lambda: _staged(bundle, record, load_predictor))
+    predictor = _cached(_predictors, bundle, lambda: _staged(bundle, record))
     snapshot = _cached(_snapshots, uri, lambda: load_snapshot(uri, record))
     trainer = getattr(predictor, 'trainer', None)
     if trainer is not None:
@@ -50,19 +47,19 @@ def score_registered(bundle: str, serving: str, rows: pd.DataFrame,
     return frame
 
 
-def _staged(bundle: str, target: Mapping[str, Any],
-            load: Callable[[str], Any]) -> Any:
-    r"""``load(bundle)``, reading its staged assets as the container."""
+def _staged(bundle: str, target: Mapping[str, Any]) -> Any:
+    r"""The bundle's predictor, reading its staged assets as the container."""
     from kumo.engine._deps import asset_locations, stored_roots
+    from kumo.engine._predictor import load_predictor
     from kumo.engine.trainer._provenance import read_provenance
 
     roots = stored_roots(read_provenance(Path(bundle)),
                          lambda location: location.startswith('@'))
     if not roots:
-        return load(bundle)
+        return load_predictor(bundle)
     connector = _container_connector(target)
     with asset_locations([(connector, root) for root in roots]):
-        return load(bundle)
+        return load_predictor(bundle)
 
 
 def load_snapshot(uri: str, target: Mapping[str, Any]) -> GraphSnapshot:
@@ -94,7 +91,7 @@ def _entities(values: pd.Series, trainer: Any,
     entity = snapshot._native_graph.table(
         parsed_query(trainer, snapshot).entity_table)
     dtype = str(entity.column(entity.primary_key).dtype)
-    if dtype.startswith('int') or dtype.startswith('uint'):
+    if dtype.startswith(('int', 'uint')):
         return pd.to_numeric(values).astype('int64')
     if dtype.startswith('float'):
         return pd.to_numeric(values).astype('float64')

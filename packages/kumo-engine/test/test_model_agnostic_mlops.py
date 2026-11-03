@@ -393,11 +393,14 @@ def test_the_snowflake_model_scores_with_the_bundles_predictor(
     write_manifest(bundle / PROVENANCE_FILE, staged)
     monkeypatch.setattr(SnowflakeConnector, 'from_spcs_env',
                         classmethod(lambda cls, **kw: 'sf'))
-    assert scoring._staged(str(bundle), {}, lambda b: [
-        location for location in Dependencies().candidates(staged.
-                                                           dependencies[-1])
-        if location[0] == 'sf'
-    ]) == [('sf', f"@DB.ML.KUMO/assets/toy/{'a' * 64}")]
+    monkeypatch.setattr(
+        'kumo.engine._predictor.load_predictor', lambda bundle: [
+            location
+            for location in Dependencies().candidates(staged.dependencies[-1])
+            if location[0] == 'sf'
+        ])
+    assert scoring._staged(str(bundle), {}) == [
+        ('sf', f"@DB.ML.KUMO/assets/toy/{'a' * 64}")]
 
 
 def _stage(tmp_path):
