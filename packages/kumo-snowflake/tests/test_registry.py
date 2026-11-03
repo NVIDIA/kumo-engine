@@ -5,9 +5,10 @@
 
 import json
 import re
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import ANY
 
 import pandas as pd
 import pytest
@@ -55,18 +56,11 @@ def _version_files(**files):
     } | {'model/code/kumo/__init__.py': b''}
 
 
-def _sink(monkeypatch, model, files):
-    @contextmanager
-    def registry(_):
-        yield SimpleNamespace(get_model=lambda _: model)
-
-    @contextmanager
-    def session(_):
-        yield files
-
+def _sink(monkeypatch, registry, files=None):
     sink = SnowflakeModelRegistryMixin()
-    monkeypatch.setattr(sink, '_registry', registry)
-    monkeypatch.setattr(sink, '_session', session, raising=False)
+    monkeypatch.setattr(sink, '_registry', lambda _: nullcontext(registry))
+    monkeypatch.setattr(sink, '_session', lambda _: nullcontext(files),
+                        raising=False)
     return sink
 
 
@@ -82,7 +76,8 @@ def fetch(tmp_path, monkeypatch):
             'auc': 0.5
         })
     model = SimpleNamespace(default=version, version=lambda _: version)
-    sink = _sink(monkeypatch, model, files)
+    sink = _sink(monkeypatch, SimpleNamespace(get_model=lambda _: model),
+                 files)
     destination = tmp_path / 'restored'
     destination.mkdir()
     (destination / 'previous').write_bytes(b'previous bundle')
@@ -285,7 +280,8 @@ def _aliasing_sink(monkeypatch, model):
         name: _version_files(**{'training-spec.json': name.encode()})
         for name in model.aliases
     })
-    return _sink(monkeypatch, model, files)
+    return _sink(monkeypatch, SimpleNamespace(get_model=lambda _: model),
+                 files)
 
 
 def test_set_alias_moves_it_and_refuses_what_snowflake_cannot(monkeypatch):
@@ -461,26 +457,27 @@ def test_a_refused_backfill_warns_naming_ownership(caplog):
 
 
 def _publishing_sink(monkeypatch, versions, calls):
-    @contextmanager
-    def registry(_):
-        def log_model(**kwargs):
-            calls.append(kwargs)
-            return SimpleNamespace(model_name='CHURN', version_name='V9',
-                                   fully_qualified_model_name='DB.S.CHURN')
+    def log_model(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(model_name='CHURN', version_name='V9',
+                               fully_qualified_model_name='DB.S.CHURN')
 
-        def get_model(_):
-            if versions is None:
-                raise ValueError('no such model')
-            return SimpleNamespace(
-                versions=lambda: versions,
-                version=lambda name: next(v for v in versions
-                                          if v.version_name == name))
+    def get_model(_):
+        if versions is None:
+            raise ValueError('no such model')
+        return SimpleNamespace(
+            versions=lambda: versions,
+            version=lambda name: next(v for v in versions
+                                      if v.version_name == name))
 
-        yield SimpleNamespace(log_model=log_model, get_model=get_model)
+    return _sink(monkeypatch,
+                 SimpleNamespace(log_model=log_model, get_model=get_model))
 
-    sink = SnowflakeModelRegistryMixin()
-    monkeypatch.setattr(sink, '_registry', registry)
-    return sink
+
+def _registered(name, **recorded):
+    return SimpleNamespace(version_name=name, model_name='CHURN',
+                           fully_qualified_model_name='DB.S.CHURN',
+                           show_metrics=lambda: recorded)
 
 
 def _bundle(tmp_path):
@@ -490,53 +487,35 @@ def _bundle(tmp_path):
     return bundle
 
 
-@pytest.mark.parametrize('versions, reused', [
-    (None, None),
-    ([SimpleNamespace(version_name='V1', show_metrics=lambda: {
-        'kumo_engine': '1', 'kumo_bundle_id': 'other'})], None),
-    ([SimpleNamespace(version_name='V2', show_metrics=lambda: {
-        'kumo_bundle_id': 'b1'})], None),
-    ([SimpleNamespace(version_name='V3', model_name='CHURN',
-                      fully_qualified_model_name='DB.S.CHURN',
-                      show_metrics=lambda: {
-                          'kumo_engine': '1', 'kumo_bundle_id': 'b1'})], 'V3'),
+_CONNECTOR = SimpleNamespace(config=SnowflakeConnectorResourceConfig(
+    warehouse='WH', database='DB', schema_name='ML'))
+_HOLDS_B1 = {'kumo_engine': '1', 'kumo_bundle_id': 'b1'}
+
+
+@pytest.mark.parametrize('versions, requested, reused', [
+    (None, None, None),
+    ([_registered('V1', kumo_engine='1', kumo_bundle_id='other')], None, None),
+    ([_registered('V2', kumo_bundle_id='b1')], None, None),
+    ([_registered('V3', **_HOLDS_B1)], None, 'V3'),
+    ([_registered('V1', **_HOLDS_B1)], 'V1', 'V1'),
+    ([_registered('V1', **_HOLDS_B1)], 'V2', None),
 ])
 def test_a_registered_bundle_is_returned_rather_than_logged_again(
-        tmp_path, monkeypatch, caplog, versions, reused):
+        tmp_path, monkeypatch, caplog, versions, requested, reused):
     calls = []
     sink = _publishing_sink(monkeypatch, versions, calls)
     monkeypatch.setattr(registry_module, '_model_args', lambda *_: {})
     with caplog.at_level('INFO', logger=registry_module.__name__):
         published = sink.publish_model(
             SimpleNamespace(), str(_bundle(tmp_path)),
-            location=ModelRegistryLocation('CHURN'),
+            location=ModelRegistryLocation('CHURN', version=requested),
             metadata={'kumo_bundle_id': 'b1'})
     assert published.version == (reused or 'V9')
     assert published.metadata == {'kumo_bundle_id': 'b1'}
-    assert len(calls) == (0 if reused else 1)
+    assert [call['version_name'] for call in calls] == (
+        [] if reused else [requested or ANY])
     assert ('already holds bundle b1; reused it' in caplog.text) == bool(
         reused)
-
-
-@pytest.mark.parametrize('requested, reused', [('V1', 'V1'), ('V2', None)])
-def test_a_named_version_is_reused_only_if_it_holds_the_bundle(
-        tmp_path, monkeypatch, requested, reused):
-    versions = [
-        SimpleNamespace(version_name='V1', model_name='CHURN',
-                        fully_qualified_model_name='DB.S.CHURN',
-                        show_metrics=lambda: {
-                            'kumo_engine': '1', 'kumo_bundle_id': 'b1'})
-    ]
-    calls = []
-    sink = _publishing_sink(monkeypatch, versions, calls)
-    monkeypatch.setattr(registry_module, '_model_args', lambda *_: {})
-    published = sink.publish_model(
-        SimpleNamespace(), str(_bundle(tmp_path)),
-        location=ModelRegistryLocation('CHURN', version=requested),
-        metadata={'kumo_bundle_id': 'b1'})
-    assert published.version == (reused or 'V9')
-    logged = [call['version_name'] for call in calls]
-    assert logged == ([] if reused else [requested])
 
 
 def test_engine_model_arguments_reach_log_model(tmp_path, monkeypatch):
@@ -550,9 +529,7 @@ def test_engine_model_arguments_reach_log_model(tmp_path, monkeypatch):
                         lambda: log_model_args)
     calls = []
     sink = _publishing_sink(monkeypatch, [], calls)
-    connector = SimpleNamespace(config=SnowflakeConnectorResourceConfig(
-        warehouse='WH', database='DB', schema_name='ML'))
-    sink.publish_model(connector, str(_bundle(tmp_path)),
+    sink.publish_model(_CONNECTOR, str(_bundle(tmp_path)),
                        location=ModelRegistryLocation('CHURN'),
                        metadata={'kumo.serving_snapshot': '@DB.ML.ST/s'})
     assert calls[0]['model'] == 'runnable'
@@ -569,10 +546,8 @@ def test_a_serving_environment_that_cannot_work_fails_registration(
     monkeypatch.setattr(registry_module, '_model_builder', lambda: refuse)
     calls = []
     sink = _publishing_sink(monkeypatch, [], calls)
-    connector = SimpleNamespace(config=SnowflakeConnectorResourceConfig(
-        warehouse='WH', database='DB', schema_name='ML'))
     with pytest.raises(ValueError, match='torch has no cu126'):
-        sink.publish_model(connector, str(_bundle(tmp_path)),
+        sink.publish_model(_CONNECTOR, str(_bundle(tmp_path)),
                            location=ModelRegistryLocation('CHURN'))
     assert calls == []
 
@@ -586,20 +561,16 @@ def test_a_bundle_registered_to_serve_otherwise_gets_a_new_version(
     versions, calls = [], []
     sink = _publishing_sink(monkeypatch, versions, calls)
     bundle = str(_bundle(tmp_path))
-    connector = SimpleNamespace(config=SnowflakeConnectorResourceConfig(
-        warehouse='WH', database='DB', schema_name='ML'))
 
     def publish(pin, snapshot):
         torch['pin'], logged = pin, len(calls)
-        sink.publish_model(connector, bundle,
+        sink.publish_model(_CONNECTOR, bundle,
                            location=ModelRegistryLocation('CHURN'),
                            metadata={'kumo_bundle_id': 'b1',
                                      'kumo.serving_snapshot': snapshot})
         if len(calls) > logged:
-            versions.append(SimpleNamespace(
-                version_name=f'V{len(versions) + 1}', model_name='CHURN',
-                fully_qualified_model_name='DB.S.CHURN',
-                show_metrics=lambda metrics=calls[-1]['metrics']: metrics))
+            versions.append(
+                _registered(f'V{len(versions) + 1}', **calls[-1]['metrics']))
         return len(calls) > logged
 
     with caplog.at_level('WARNING', logger=registry_module.__name__):
