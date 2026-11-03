@@ -163,25 +163,21 @@ To select a Git branch or commit directly:
 python -m pip install "git+https://github.com/NVIDIA/kumo-engine.git@<branch-or-commit>#subdirectory=packages/kumo-engine"
 ```
 
-These builds require CPython 3.11+, a Rust toolchain including Cargo, and
-a C/C++ build toolchain. Some native build configurations also require CMake. They compile DiskGraph from the selected
-checkout; installing a released engine wheel first is unnecessary. Provider
+These builds require CPython 3.11+, Bash, a Rust toolchain including Cargo, and
+a C/C++ build toolchain. Some native build configurations also require CMake.
+They compile DiskGraph from the selected checkout; installing a released engine wheel first is unnecessary. Provider
 extras work with source installs too, for example
 `python -m pip install './packages/kumo-engine[databricks]'`.
 
-The package's PEP 517 backend calls the Python assembler at
-`packages/kumo-engine/scripts/build/build_wheel.py`, which also builds release wheels. Source installs
-run the assembler in a temporary Python environment, excluding managed notebook
+The package's PEP 517 backend calls the shell assembler at
+`packages/kumo-engine/scripts/build/build_wheel.sh`, which also builds release
+wheels. Source installs run the assembler in a temporary Python environment, excluding managed notebook
 paths that can override isolated build dependencies. The assembler builds every
 bundled component from the checkout and merges their external requirements,
 entry points and legal notices into one wheel.
 All build tooling, including `kumo_engine_build_backend.py`, lives in
 `packages/kumo-engine/scripts/build/`. The package declares
 `backend-path = ["scripts/build"]` so pip loads the backend within its source tree.
-
-Within the assembler, merging and notice generation use direct Python function
-calls. Pip component builds retain subprocess isolation; Cargo, Git, binary
-inspection, and Docker run as external tools.
 
 The assembler selects the backend's internal `kumo-component=true` mode for
 its engine input wheel to avoid recursively assembling another bundle.
@@ -213,8 +209,8 @@ python -m pytest --confcutdir=packages/kumo-engine/test/build \
 ### Build a distributable wheel
 
 ```bash
-python3 packages/kumo-engine/scripts/build/build_wheel.py --help
-python3 packages/kumo-engine/scripts/build/build_wheel.py --offline-report   # <version>+<sha>
+packages/kumo-engine/scripts/build/build_wheel.sh --help
+packages/kumo-engine/scripts/build/build_wheel.sh --offline-report   # <version>+<sha>
 ```
 
 Needs `cargo` (and `cargo-zigbuild`, installed on demand), a current committed

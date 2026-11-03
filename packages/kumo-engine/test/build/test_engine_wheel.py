@@ -19,18 +19,8 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 SCRIPTS = REPO_ROOT / 'packages/kumo-engine/scripts/build'
-SCRIPT = SCRIPTS / 'build_wheel.py'
+SCRIPT = SCRIPTS / 'build_wheel.sh'
 MERGE = SCRIPTS / 'merge_wheels.py'
-
-
-def _builder_command(host: str, machine: str) -> list[str]:
-    """Run the builder with an emulated build host."""
-    return [sys.executable, '-c',
-            ('import platform, runpy, sys; '
-            f'platform.system = lambda: {host!r}; '
-            f'platform.machine = lambda: {machine!r}; '
-            f'sys.argv = [{str(SCRIPT)!r}, *sys.argv[1:]]; '
-            f'runpy.run_path({str(SCRIPT)!r}, run_name="__main__")')]
 
 
 @pytest.mark.parametrize('legacy_selection', ['', 'kumo-databricks'])
@@ -72,7 +62,7 @@ wheel_dir = Path(args[args.index('-w') + 1])
 ''')
     python.chmod(0o755)
     result = subprocess.run(
-        [sys.executable, str(SCRIPT), '--no-zig', '--version', '1'],
+        ['bash', str(SCRIPT), '--no-zig', '--version', '1'],
         env=dict(os.environ, KUMO_REPO=str(repo), PYTHON=str(python),
                  EXTRA_COMPONENTS=legacy_selection, BUILD_CALLS=str(calls),
                  THIRD_PARTY_NOTICE=str(repo / 'THIRD-PARTY.txt'),
@@ -98,17 +88,20 @@ wheel_dir = Path(args[args.index('-w') + 1])
 
 def test_removed_component_selection_flag_is_rejected(tmp_path):
     result = subprocess.run(
-        [sys.executable, str(SCRIPT), '--extra-components', 'kumo-databricks'],
+        ['bash', str(SCRIPT), '--extra-components', 'kumo-databricks'],
         env=dict(os.environ, KUMO_REPO=str(tmp_path)),
         check=False, capture_output=True, text=True)
     assert result.returncode == 2
-    assert "unrecognized arguments: --extra-components" in result.stderr
+    assert "unknown argument '--extra-components'" in result.stderr
 
 
 @pytest.mark.parametrize('target', [
     '10.15', '11', '12.7', '13', '13.9', 'invalid', '14.invalid',
 ])
 def test_macos_deployment_target_rejected_before_build(tmp_path, target):
+    uname = tmp_path / 'uname'
+    uname.write_text('#!/bin/sh\necho Darwin\n')
+    uname.chmod(0o755)
     marker = tmp_path / 'python-invoked'
     python = tmp_path / 'python'
     python.write_text(
@@ -117,7 +110,7 @@ def test_macos_deployment_target_rejected_before_build(tmp_path, target):
     python.chmod(0o755)
 
     result = subprocess.run(
-        _builder_command('Darwin', 'arm64'),
+        ['bash', str(SCRIPT)],
         env=dict(os.environ, MACOSX_DEPLOYMENT_TARGET=target, USE_ZIG='0',
                  PYTHON=str(python), PATH=f'{tmp_path}:{os.environ["PATH"]}'),
         check=False, capture_output=True, text=True)
@@ -560,7 +553,8 @@ def test_bundled_package_without_an_extra_is_refused(tmp_path):
 
 def test_wheel_verify_script_checks_base_install(tmp_path):
     smoke = tmp_path / 'verify.py'
-    smoke.write_text(runpy.run_path(str(SCRIPT))["VERIFY_SOURCE"])
+    smoke.write_text(SCRIPT.read_text().split(
+        "cat > \"${WORK}/verify.py\" <<'PYEOF'\n", 1)[1].split('\nPYEOF', 1)[0])
     modules = {
         'diskgraph/__init__.py':
         '',
@@ -646,12 +640,7 @@ def test_wheel_uses_torch_fallbacks_without_native_extensions(
     (repo / 'THIRD-PARTY.txt').touch()
     generator = repo / 'scripts/gen_third_party.py'
     generator.parent.mkdir()
-    generator.write_text(
-        "DEFAULT_INVENTORY = DEFAULT_POLICY = None\n"
-        "def load_json(path): return {}\n"
-        "def selected_license_expression(*args, **kwargs): "
-        "return 'Apache-2.0 AND MIT'\n"
-    )
+    generator.write_text("print('Apache-2.0 AND MIT')\n")
     calls = tmp_path / 'calls.jsonl'
     python = tmp_path / 'python'
     python.write_text(f'''#!{sys.executable}
@@ -691,14 +680,19 @@ for source in (args[-1:] if args[2] == 'wheel' else args[-2:]):
         archive.writestr(name + '/__init__.py', '')
 ''')
     python.chmod(0o755)
+    uname = tmp_path / 'uname'
+    arch = 'arm64' if host_os == 'Darwin' else 'x86_64'
+    uname.write_text(f'#!/bin/sh\ncase "$1" in\n'
+                     f'-s) echo {host_os} ;;\n-m) echo {arch} ;;\nesac\n')
+    uname.chmod(0o755)
     for command in ['cargo', 'curl']:
         executable = tmp_path / command
         executable.write_text('#!/bin/bash\nexit 97\n')
         executable.chmod(0o755)
     output = tmp_path / 'dist'
     result = subprocess.run(
-        [*_builder_command(host_os, 'arm64' if host_os == 'Darwin' else 'x86_64'),
-         *(['--no-zig'] if host_os == 'Linux' else []),
+        ['bash',
+         str(SCRIPT), *(['--no-zig'] if host_os == 'Linux' else []),
          *args, '--output-dir',
          str(output)],
         env=dict(os.environ, KUMO_REPO=str(repo), PYTHON=str(python),

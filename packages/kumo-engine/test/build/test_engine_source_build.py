@@ -6,6 +6,7 @@
 import importlib.metadata
 import importlib.util
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -76,8 +77,8 @@ def test_source_build_reuses_assembler_with_native_tags(
     assert result == wheel
     command = run.call_args.args[0]
     assert command == [
-        "/isolated-build/bin/python",
-        str(BACKEND.with_name("build_wheel.py")),
+        "bash",
+        str(BACKEND.with_name("build_wheel.sh")),
         "--no-zig",
         "--output-dir",
         "/wheels",
@@ -252,22 +253,25 @@ def test_pip_frontend_installs_the_assembled_wheel(tmp_path: Path) -> None:
         '[project]\nname = "component"\nversion = "1.0"\n'
         "[tool.setuptools]\npy-modules = []\n"
     )
-    (scripts / "build_wheel.py").write_text(
-        "import os, shutil, subprocess, sys, sysconfig\n"
-        "from pathlib import Path\n"
-        "assert sys.argv[1:3] == ['--no-zig', '--output-dir']\n"
-        "repository = Path(os.environ['KUMO_REPO'])\n"
-        "subprocess.run([sys.executable, '-m', 'pip', '--version'], check=True)\n"
-        "Path(sysconfig.get_path('purelib'), 'test-build-tools.pth').write_text("
-        f"{sysconfig.get_path('purelib')!r})\n"
-        "for package, settings in [('component', []), "
-        "('packages/kumo-engine', ['--config-settings=kumo-component=true'])]:\n"
-        "    subprocess.run([sys.executable, '-m', 'pip', 'wheel', '--no-deps', "
-        "'--no-index', '--no-build-isolation', *settings, str(repository / package), "
-        "'-w', str(repository / 'component-wheels')], check=True)\n"
-        f"shutil.copyfile(repository / {wheel_name!r}, "
-        f"Path(sys.argv[3]) / {wheel_name!r})\n"
-        f"print(Path(sys.argv[3]) / {wheel_name!r})\n"
+    (scripts / "build_wheel.sh").write_text(
+        "set -eu\n"
+        'test "$1" = --no-zig\n'
+        'test "$2" = --output-dir\n'
+        '"$PYTHON" -m pip --version\n'
+        '"$PYTHON" -c '
+        + shlex.quote(
+            "from pathlib import Path; import sysconfig; "
+            "Path(sysconfig.get_path('purelib'), 'test-build-tools.pth').write_text("
+            f"{sysconfig.get_path('purelib')!r})"
+        )
+        + "\n"
+        '"$PYTHON" -m pip wheel --no-deps --no-index --no-build-isolation '
+        '"$KUMO_REPO/component" -w "$KUMO_REPO/component-wheels"\n'
+        '"$PYTHON" -m pip wheel --no-deps --no-index --no-build-isolation '
+        '--config-settings=kumo-component=true "$KUMO_REPO/packages/kumo-engine" '
+        '-w "$KUMO_REPO/component-wheels"\n'
+        f'cp "$KUMO_REPO/{wheel_name}" "$3/{wheel_name}"\n'
+        f'echo "$3/{wheel_name}"\n'
     )
     destination = tmp_path / "wheels"
 
@@ -306,13 +310,15 @@ def test_missing_cargo_fails_before_component_builds(tmp_path: Path) -> None:
     Args:
         tmp_path: Directory containing the restricted executable search path.
     """
+    for name in ("dirname", "uname"):
+        executable = shutil.which(name)
+        assert executable is not None
+        (tmp_path / name).symlink_to(executable)
+
     result = subprocess.run(
-        [
-            sys.executable,
-            str(BACKEND.with_name("build_wheel.py")),
-            "--no-zig",
-        ],
+        ["bash", str(BACKEND.with_name("build_wheel.sh")), "--no-zig"],
         env=dict(os.environ, PATH=str(tmp_path), PYTHON=sys.executable),
+        executable=shutil.which("bash"),
         capture_output=True,
         text=True,
         check=False,

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Builds Linux x86_64 and macOS ARM64 `kumo-engine` wheels with
-# packages/kumo-engine/scripts/build/build_wheel.py.
+# packages/kumo-engine/scripts/build/build_wheel.sh.
 #
 # Release flow:
 #   1. Change the root VERSION file and run scripts/stamp_version.py, merge it.
@@ -118,7 +118,7 @@ jobs:
           if [ "${IS_RELEASE}" = "true" ]; then
             args+=(--release)
           fi
-          python3 packages/kumo-engine/scripts/build/build_wheel.py "${args[@]}"
+          ./packages/kumo-engine/scripts/build/build_wheel.sh "${args[@]}"
 
       # GitHub-hosted artifact storage, not S3: no AWS role to provision.
       - name: Upload wheel

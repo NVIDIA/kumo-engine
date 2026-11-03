@@ -64,7 +64,7 @@ python -m pip install "$FAISS_WHEELS"/faiss_gpu-1.14.3-*.whl
 cd "$KUMO_CHECKOUT"
 python -m pip install ziglang
 KUMO_WHEEL="$(PYTHON="$SPARK_WORK/venv/bin/python" \
-  python3 packages/kumo-engine/scripts/build/build_wheel.py \
+  ./packages/kumo-engine/scripts/build/build_wheel.sh \
     --platform-tag manylinux_2_34_aarch64 \
     --output-dir "$SPARK_WORK/kumo-wheel")"
 python -m pip install "$KUMO_WHEEL"
