@@ -15,8 +15,6 @@ from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
-import numpy as np
-import pandas as pd
 import pytest
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.summaries import (
@@ -42,7 +40,6 @@ from test_tracking_contract import (
 
 import kumo.engine as kumo
 from kumo.engine._manifest import TrackingRef
-from kumo.engine._scratch import get_scratch_dir
 from kumo.engine._tracking import (
     RunRecord,
     log_run,
@@ -56,46 +53,7 @@ from kumo.engine.trainer._run_spec import fit_spec
 
 mlflow = pytest.importorskip('mlflow')
 autologging_utils = pytest.importorskip('mlflow.utils.autologging_utils')
-
-QUERY = 'PREDICT ents.Y FOR EACH ents.ID'
-
-
-@pytest.fixture
-def tracking_uri(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    previous = mlflow.get_tracking_uri()
-    uri = f'sqlite:///{tmp_path / "mlflow.db"}'
-    mlflow.set_tracking_uri(uri)
-    try:
-        yield uri
-    finally:
-        while mlflow.active_run() is not None:
-            mlflow.end_run()
-        mlflow.set_tracking_uri(previous)
-
-
-@pytest.fixture
-def table_and_snapshot(tmp_path, tracking_uri):
-    previous_scratch = get_scratch_dir()
-    kumo.configure(scratch_dir=tmp_path / 'scratch')
-    try:
-        rng = np.random.default_rng(0)
-        (tmp_path / 'data').mkdir()
-        pd.DataFrame({
-            'ID': np.arange(400),
-            'Y': rng.random(400),
-            'F1': rng.normal(size=400),
-            'amount ($)': rng.normal(size=400),
-        }).to_parquet(tmp_path / 'data' / 'ents.parquet')
-        connector = kumo.FileConnector(root_dir=str(tmp_path / 'data'))
-        ents = kumo.Table.from_source_table(connector['ents.parquet'],
-                                            primary_key='ID').infer_metadata()
-        graph = kumo.Graph(tables={'ents': ents}, edges=[])
-        snapshot = graph.snapshot()
-        query = kumo.PredictiveQuery(graph=graph, query=QUERY)
-        yield query.generate_training_table(snapshot), snapshot
-    finally:
-        kumo.configure(scratch_dir=previous_scratch)
+pytestmark = pytest.mark.usefixtures('tracking_uri')
 
 
 def _runs(client):
@@ -103,17 +61,20 @@ def _runs(client):
         [e.experiment_id for e in client.search_experiments()])
 
 
-def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
-                                              caplog):
+def _fit_run():
+    run, = [run for run in _runs(mlflow.MlflowClient())
+            if 'mlflow.parentRunId' not in run.data.tags]
+    return run
+
+
+def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, quick_plan,
+                                              tmp_path, caplog):
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     table, snapshot = table_and_snapshot
     client = mlflow.MlflowClient()
-    plan = ModelPlan()
+    plan = quick_plan
     plan.training_job.num_experiments = 2
-    plan.training_job.disable_explain = True
-    plan.optimization.max_epochs = 2
-    plan.optimization.max_steps_per_epoch = 2
     plan.optimization.base_lr = [0.01, 0.001]
     plan.column_processing.encoder_overrides = {
         'ents.amount ($)': Numerical('standard')
@@ -232,8 +193,7 @@ def test_failed_fit_marks_the_run_failed(table_and_snapshot, tmp_path,
     assert mlflow.active_run() is None
 
 
-def test_mlflow_error_ends_runs_failed_and_is_not_raised(
-        tracking_uri, monkeypatch, caplog):
+def test_mlflow_error_ends_runs_failed_and_is_not_raised(monkeypatch, caplog):
     from mlflow.tracking import MlflowClient
 
     from kumo.engine.integrations.mlflow import MlflowTracking
@@ -254,7 +214,7 @@ def test_mlflow_error_ends_runs_failed_and_is_not_raised(
     assert statuses == {'FAILED'}
 
 
-def test_a_user_run_name_names_every_run(tracking_uri):
+def test_a_user_run_name_names_every_run():
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     tracking = MlflowTracking(run_name='nightly', log_system_metrics=False)
@@ -324,7 +284,7 @@ def test_building_mlops_creates_the_experiment_or_says_why_it_cannot(
     ('sqlite:///mlflow.db', None),
 ])
 def test_a_tracked_fit_on_sagemaker_says_how_to_open_the_ui(
-        tracking_uri, uri, command, monkeypatch):
+        uri, command, monkeypatch):
     from kumo.engine.integrations import mlflow as integration
     from kumo.engine.integrations.mlflow import MlflowTracking
 
@@ -347,7 +307,7 @@ def test_a_tracked_fit_on_sagemaker_says_how_to_open_the_ui(
     assert not [w for w in again if 'Studio' in str(w.message)]
 
 
-def test_user_disabled_autologging_stays_disabled(tracking_uri):
+def test_user_disabled_autologging_stays_disabled():
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     tracker = MlflowTracking(log_system_metrics=False)
@@ -402,8 +362,7 @@ def test_a_hung_server_does_not_stall_the_fit(hung_server, monkeypatch):
                       'MLFLOW_HTTP_REQUEST_TIMEOUT': '30'}
 
 
-def test_source_tables_are_logged_as_native_inputs(
-        tracking_uri, monkeypatch):
+def test_source_tables_are_logged_as_native_inputs(monkeypatch):
     from mlflow.data.delta_dataset_source import DeltaDatasetSource
 
     from kumo.engine.integrations.mlflow import MlflowTracking
@@ -414,8 +373,7 @@ def test_source_tables_are_logged_as_native_inputs(
         Dataset(name, source, {}, {}, 'source table')
         for name, source in INPUTS.items()])
 
-    run, = [run for run in _runs(mlflow.MlflowClient())
-            if run.data.tags['kumo.kind'] == 'fit']
+    run = _fit_run()
     inputs = {
         item.dataset.name: (item.dataset.source_type,
                             json.loads(item.dataset.source))
@@ -435,7 +393,7 @@ def test_source_tables_are_logged_as_native_inputs(
     assert mlflow.data.get_source(orders).delta_table_id == 'table-id'
 
 
-def test_monitoring_folds_into_its_prediction_run(tracking_uri):
+def test_monitoring_folds_into_its_prediction_run():
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     MlflowTracking('scores', log_system_metrics=False).log_prediction_run(
@@ -462,7 +420,8 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
                   (('orders', 100, 104, 4.0),), brief=True),
             Table('drift/inputs/orders', ('column', 'psi'),
                   (('AMOUNT', 0.12),))))) is None
-    assert (later.run_id, later.run_url) == (tracker.run_id, tracker.run_url)
+    assert (later.run_id, later.run_url, later.logged_run_name) == (
+        tracker.run_id, tracker.run_url, tracker.logged_run_name)
     assert log_run(later, later.log_monitoring, RunRecord(
         tags={**monitoring, 'kumo.monitor': 'evaluate'},
         prediction_run=predicted.info.run_id, summaries=(
@@ -511,7 +470,7 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
         'pred-2'
 
 
-def test_prediction_run_nests_under_the_active_run(tracking_uri):
+def test_prediction_run_nests_under_the_active_run():
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     client = mlflow.MlflowClient()
@@ -535,7 +494,7 @@ def test_prediction_run_nests_under_the_active_run(tracking_uri):
         'FINISHED')
 
 
-def test_a_prediction_run_logs_its_skipped_rows(tracking_uri, tmp_path):
+def test_a_prediction_run_logs_its_skipped_rows(tmp_path):
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     skipped = tmp_path / 'skipped'
@@ -554,7 +513,7 @@ def test_a_prediction_run_logs_its_skipped_rows(tracking_uri, tmp_path):
                                          'skipped/part-0.parquet']
 
 
-def test_link_prediction_metric_names_are_logged(tracking_uri):
+def test_link_prediction_metric_names_are_logged():
     from kumo.engine._tracking import RunRecord
     from kumo.engine.integrations.mlflow import MlflowTracking
 
@@ -622,7 +581,7 @@ def test_system_metrics_sample_every_second_unless_the_environment_says(
     batches = []
     with integration._SystemMetrics(batches.append) as metrics:
         pass
-    assert batches == []  # fewer than 2 readings
+    assert batches == []
     assert metrics._interval == 1.0
     monkeypatch.setenv('MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL', '2')
     assert integration._SystemMetrics(batches.append)._interval == 2.0
@@ -631,7 +590,7 @@ def test_system_metrics_sample_every_second_unless_the_environment_says(
 @pytest.mark.parametrize('enabled,environment', [
     (True, None), (False, None), (True, 'false')])
 def test_prediction_run_logs_the_system_metrics_sampled_while_it_scored(
-        tracking_uri, monkeypatch, enabled, environment):
+        monkeypatch, enabled, environment):
     from kumo.engine.integrations import mlflow as integration
 
     class Monitor:
@@ -671,8 +630,7 @@ def test_prediction_run_logs_the_system_metrics_sampled_while_it_scored(
     assert monitor.samples >= (10 if values else 0)
 
 
-def test_series_and_histograms_become_one_table_per_name_prefix(
-        tracking_uri):
+def test_series_and_histograms_become_one_table_per_name_prefix():
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     tracker = MlflowTracking(experiment_name='e', log_system_metrics=False)
@@ -705,7 +663,7 @@ def test_series_and_histograms_become_one_table_per_name_prefix(
         'data': [[None, 5.0, 2, 0.5], [5.0, None, 2, 1.0]]}
 
 
-def test_charted_series_become_metrics_over_their_steps(tracking_uri):
+def test_charted_series_become_metrics_over_their_steps():
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     tracker = MlflowTracking(experiment_name='e', log_system_metrics=False)
@@ -727,6 +685,7 @@ def test_charted_series_become_metrics_over_their_steps(tracking_uri):
     ).startswith('<svg')
 
 
+QUERY = 'PREDICT ents.Y FOR EACH ents.ID'
 NOTES = "*kumo rewrites everything above this line; editing it stops kumo's updates.*"
 TAIL = ['', NOTES, '', '---']
 LOCATIONS = Table('locations', ('kind', 'id', 'location'),
@@ -759,7 +718,7 @@ def _fit_with_a_card(tracker, summaries=(), note=None):
     return mlflow.get_run(tracker.run_id)
 
 
-def test_a_fit_run_gets_a_card_before_the_users_notes(tracking_uri):
+def test_a_fit_run_gets_a_card_before_the_users_notes():
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     run = _fit_with_a_card(MlflowTracking('e', log_system_metrics=False), (
@@ -777,7 +736,7 @@ def test_a_fit_run_gets_a_card_before_the_users_notes(tracking_uri):
         *TAIL])) + '\n\nMine.'
 
 
-def test_an_edited_card_is_frozen_with_one_warning(tracking_uri):
+def test_an_edited_card_is_frozen_with_one_warning():
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     tracker = MlflowTracking('e', log_system_metrics=False)
@@ -796,7 +755,7 @@ def test_an_edited_card_is_frozen_with_one_warning(tracking_uri):
         edited, 'true')
 
 
-def test_monitoring_fills_its_part_of_a_prediction_card(tracking_uri):
+def test_monitoring_fills_its_part_of_a_prediction_card():
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     tracker = MlflowTracking('e', log_system_metrics=False)
@@ -826,8 +785,7 @@ def test_monitoring_fills_its_part_of_a_prediction_card(tracking_uri):
         + '\n\nMine.')
 
 
-def test_a_card_over_its_budget_moves_tables_to_files_then_shrinks(
-        tracking_uri):
+def test_a_card_over_its_budget_moves_tables_to_files_then_shrinks():
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     summaries = (Table('data/splits', ('split', 'rows'), tuple(
@@ -849,7 +807,7 @@ def test_a_card_over_its_budget_moves_tables_to_files_then_shrinks(
         '`holdout/metrics.json`.', *TAIL])) + '\n\n' + 'n' * 4800
 
 
-def test_a_fit_that_registers_is_renamed_with_its_trials(tracking_uri):
+def test_a_fit_that_registers_is_renamed_with_its_trials():
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     replay(MlflowTracking(log_system_metrics=False), result=SimpleNamespace(
@@ -861,7 +819,7 @@ def test_a_fit_that_registers_is_renamed_with_its_trials(tracking_uri):
                         'trial-2-fit-ents-v3', 'trial-2-fit-ents-v3-attempt-2']
 
 
-def test_a_prediction_run_spans_its_work_and_links_its_model(tracking_uri):
+def test_a_prediction_run_spans_its_work_and_links_its_model():
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     client = mlflow.MlflowClient()
@@ -906,8 +864,7 @@ def test_a_run_reference_shows_as_a_link_in_a_notebook():
         'sagemaker run <code>r1</code>')
 
 
-def test_kumo_describes_an_unused_experiment_and_refreshes_its_own_text(
-        tracking_uri):
+def test_kumo_describes_an_unused_experiment_and_refreshes_its_own_text():
     from kumo.engine.integrations.mlflow import (
         _EXPERIMENT_NOTE,
         MlflowTracking,

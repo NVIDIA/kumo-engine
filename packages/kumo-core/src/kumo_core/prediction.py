@@ -77,7 +77,6 @@ class GeneratedPredictionTable:
     row_count: int
     tt_id: str
     row_failures: Mapping[str, Any] | None = None
-    #: Parquet parts listing every skipped caller-supplied row, if any.
     skipped_rows_dir: str | None = None
 
 

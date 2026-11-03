@@ -2131,16 +2131,19 @@ class Trainer(PortableConfigMixin):
                                  horizon=horizon)
 
     def _top_score_counts(self, prob: Any) -> Any:
-        from kumo_core.top_scores import TopScoreSpill
-
         prob = np.asarray(prob)
-        spill = TopScoreSpill(osp.join(
-            self.log_dir,
-            f'test_top_scores-{self.pl_trainer.global_rank}.parquet'))
+        spill = self._top_score_spill()
         for start in range(0, len(prob), 1 << 16):
             rows = prob[start:start + (1 << 16)]
             spill.write(np.arange(start, start + len(rows)), rows.max(axis=1))
         return spill.counts()
+
+    def _top_score_spill(self) -> Any:
+        from kumo_core.top_scores import TopScoreSpill
+
+        return TopScoreSpill(osp.join(
+            self.log_dir,
+            f'test_top_scores-{self.pl_trainer.global_rank}.parquet'))
 
     @trace()
     def validate(

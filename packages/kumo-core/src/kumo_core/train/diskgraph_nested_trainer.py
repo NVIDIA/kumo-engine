@@ -1184,7 +1184,6 @@ class DiskgraphNestedTrainer(Trainer):
         """Run PL validate/test, then build the formatted EvalOutput
         (``_build_eval_df`` reconstructs the per-row df from ``pl_model.outputs``).
         """
-        from kumo_core.top_scores import TopScoreSpill
         from kumo_core.train.output import EvalOutput
         from kumoapi.train import TrainingStage
         assert stage in {
@@ -1213,9 +1212,7 @@ class DiskgraphNestedTrainer(Trainer):
                     ckpt_path=fsspec_mangle(self.best_ckpt),
                 )
             else:
-                spill = TopScoreSpill(osp.join(
-                    self.log_dir, f'test_top_scores-{self.pl_trainer.global_rank}'
-                    '.parquet'))
+                spill = self._top_score_spill()
                 self.pl_model.top_score_spill = spill
                 try:
                     metric_results = self.pl_trainer.test(

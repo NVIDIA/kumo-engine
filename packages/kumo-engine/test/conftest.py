@@ -164,3 +164,53 @@ def fitted(tmp_path_factory):
         yield trainer, pquery.generate_prediction_table(snapshot), snapshot
     finally:
         kumo.configure(scratch_dir=previous)
+
+
+@pytest.fixture
+def tracking_uri(tmp_path, monkeypatch):
+    mlflow = pytest.importorskip('mlflow')
+    monkeypatch.chdir(tmp_path)
+    previous = mlflow.get_tracking_uri()
+    uri = f'sqlite:///{tmp_path / "mlflow.db"}'
+    mlflow.set_tracking_uri(uri)
+    try:
+        yield uri
+    finally:
+        while mlflow.active_run() is not None:
+            mlflow.end_run()
+        mlflow.set_tracking_uri(previous)
+
+
+@pytest.fixture
+def table_and_snapshot(tmp_path):
+    previous_scratch = get_scratch_dir()
+    kumo.configure(scratch_dir=tmp_path / 'scratch')
+    try:
+        rng = np.random.default_rng(0)
+        (tmp_path / 'data').mkdir()
+        pd.DataFrame({
+            'ID': np.arange(400),
+            'Y': rng.random(400),
+            'F1': rng.normal(size=400),
+            'amount ($)': rng.normal(size=400),
+        }).to_parquet(tmp_path / 'data' / 'ents.parquet')
+        connector = kumo.FileConnector(root_dir=str(tmp_path / 'data'))
+        ents = kumo.Table.from_source_table(connector['ents.parquet'],
+                                            primary_key='ID').infer_metadata()
+        graph = kumo.Graph(tables={'ents': ents}, edges=[])
+        snapshot = graph.snapshot()
+        query = kumo.PredictiveQuery(graph=graph,
+                                     query='PREDICT ents.Y FOR EACH ents.ID')
+        yield query.generate_training_table(snapshot), snapshot
+    finally:
+        kumo.configure(scratch_dir=previous_scratch)
+
+
+@pytest.fixture
+def quick_plan():
+    plan = ModelPlan()
+    plan.training_job.num_experiments = 1
+    plan.training_job.disable_explain = True
+    plan.optimization.max_epochs = 2
+    plan.optimization.max_steps_per_epoch = 2
+    return plan

@@ -6,8 +6,6 @@ import json
 import logging
 import threading
 
-import numpy as np
-import pandas as pd
 import pytest
 from kumoapi.model_plan import ModelPlan
 
@@ -16,32 +14,8 @@ from kumo.engine._scratch import get_scratch_dir
 from kumo.engine.tracking import Event
 
 
-@pytest.fixture
-def table_and_snapshot(tmp_path):
-    previous_scratch = get_scratch_dir()
-    kumo.configure(scratch_dir=tmp_path / 'scratch')
-    try:
-        rng = np.random.default_rng(0)
-        (tmp_path / 'data').mkdir()
-        pd.DataFrame({
-            'ID': np.arange(400),
-            'Y': rng.random(400),
-            'F1': rng.normal(size=400),
-        }).to_parquet(tmp_path / 'data' / 'ents.parquet')
-        connector = kumo.FileConnector(root_dir=str(tmp_path / 'data'))
-        ents = kumo.Table.from_source_table(connector['ents.parquet'],
-                                            primary_key='ID').infer_metadata()
-        graph = kumo.Graph(tables={'ents': ents}, edges=[])
-        snapshot = graph.snapshot()
-        query = kumo.PredictiveQuery(graph=graph,
-                                     query='PREDICT ents.Y FOR EACH ents.ID')
-        yield query.generate_training_table(snapshot), snapshot
-    finally:
-        kumo.configure(scratch_dir=previous_scratch)
-
-
-def test_fit_reports_progress_events(table_and_snapshot, monkeypatch,
-                                     caplog):
+def test_fit_reports_progress_events(table_and_snapshot, quick_plan,
+                                     monkeypatch, caplog):
     from kumo_core.automl.optuna_searcher import TPESearcher
 
     update = TPESearcher.update
@@ -55,11 +29,8 @@ def test_fit_reports_progress_events(table_and_snapshot, monkeypatch,
     monkeypatch.setattr(TPESearcher, '_num_updates', 0, raising=False)
     monkeypatch.setattr(TPESearcher, 'update', fail_second_trial)
     table, snapshot = table_and_snapshot
-    plan = ModelPlan()
+    plan = quick_plan
     plan.training_job.num_experiments = 2
-    plan.training_job.disable_explain = True
-    plan.optimization.max_epochs = 2
-    plan.optimization.max_steps_per_epoch = 2
     events = []
     broken_calls = []
 
@@ -124,7 +95,7 @@ def test_failed_fit_reports_fit_ended(table_and_snapshot, monkeypatch):
 
 @pytest.mark.parametrize('on_error', ['warn', 'raise'])
 def test_an_unfinished_tracker_is_reported_by_the_error_policy(
-        table_and_snapshot, tmp_path, monkeypatch, on_error):
+        table_and_snapshot, quick_plan, tmp_path, monkeypatch, on_error):
     import kumo.engine._tracking as tracking
 
     monkeypatch.setattr(tracking, 'FINISH_SECONDS', 0.5)
@@ -141,12 +112,7 @@ def test_an_unfinished_tracker_is_reported_by_the_error_policy(
             release.wait(30)
 
     table, snapshot = table_and_snapshot
-    plan = ModelPlan()
-    plan.training_job.num_experiments = 1
-    plan.training_job.disable_explain = True
-    plan.optimization.max_epochs = 2
-    plan.optimization.max_steps_per_epoch = 2
-    trainer = kumo.Trainer(plan)
+    trainer = kumo.Trainer(quick_plan)
     cfg = kumo.MLOps(str(tmp_path / 'root'), tracking=Blocked(), store=False,
                      on_error=on_error)
     try:

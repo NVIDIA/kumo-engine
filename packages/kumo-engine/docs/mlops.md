@@ -12,7 +12,7 @@ Each block assumes a `graph` and a `pquery` (see the README). It trains, stores 
 
 ```python
 import kumo.engine as kumo
-from kumo.engine.integrations.mlflow import MlflowTracking   # MLflow's own tracking URI, else ./mlruns
+from kumo.engine.integrations.mlflow import MlflowTracking   # where MLflow's own setting points; by default sqlite:///mlflow.db
 
 cfg = kumo.MLOps("artifacts", tracking=MlflowTracking("churn"),
                  registry=kumo.ModelRegistryLocation("users-churn", alias="candidate"))
@@ -151,8 +151,8 @@ table = kumo.TrainingTable.load_from_connector(cfg, path=f"training_tables/{tabl
 - `result.tracking` is the tracker's run: `TrackingRef(platform="databricks", run_id="...", url="https://.../ml/experiments/.../runs/...")`. The model's `_provenance.json` records the same.
 - `fit(scoring_defaults=kumo.ScoringDefaults(...))` stores prediction defaults in the bundle before it is stored and registered: `binary_classification_threshold` (binary and multilabel classification) and `num_classes_to_return` (multiclass, multilabel, link prediction). `predict`, the MLflow pyfunc and the scoring jobs apply them when a call omits them; explicit arguments and a query's `TOP k` win. A binary model always returns `True_PROB`; with no threshold passed or stored, its `TARGET_PRED` is null. `result.with_scoring_defaults(...)` retunes a fitted model as a new bundle whose manifest names the original in `parents.derived_from`.
   Snowflake `run_batch` applies them too.
-- `result.export(cfg)` (or `trainer.export(cfg)` for a loaded model) registers a model at `cfg.registry` through its tracker. On every platform, registering a bundle the registry already holds under that name returns its version instead of adding one.
-- If registration fails, `fit` warns with the full error and returns with `registered_model=None` (with `on_error="raise"`, it raises), and the fit run ends failed with `kumo.error`. Registering a bundle the registry already holds under the name returns that version (logged at info) and moves the alias to it.
+- `result.export(cfg)` (or `trainer.export(cfg)` for a loaded model) registers a model at `cfg.registry` through its tracker. On every platform, registering a bundle the registry already holds under that name returns its version instead of adding one (found by its bundle id, logged at info) and moves the alias to it.
+- If registration fails, `fit` warns with the full error and returns with `registered_model=None` (with `on_error="raise"`, it raises), and the fit run ends failed with `kumo.error`.
 
 **Model names** follow the registry's rules, checked when `kumo.MLOps` is built:
 
@@ -190,7 +190,7 @@ Jobs that load `alias="champion"` pick up the new version on their next run.
 ### Trackers
 
 `MlflowTracking(experiment_name=None, run_name=None, log_system_metrics=True, tags=None, log_model=False, *, target=None)`:
-- With no `target`, it records where MLflow's own configuration points (`MLFLOW_TRACKING_URI`, `mlflow.set_tracking_uri`; automatic on Databricks). `target` names another server with its credentials: a `DatabricksConnector`, a `SageMakerMLflow(arn)`, or a tracking URI. With a `target`, `experiment_name` is required to record runs.
+- With no `target`, it records where MLflow's own setting points (`MLFLOW_TRACKING_URI`, `mlflow.set_tracking_uri`; automatic on Databricks); MLflow's default is a local `sqlite:///mlflow.db`. `target` names another server with its credentials: a `DatabricksConnector`, a `SageMakerMLflow(arn)`, or a tracking URI. With a `target`, `experiment_name` is required to record runs.
 - `log_model=True` logs the model on the fit run without registering it; `MLOps(registry=)` implies it.
 - Building `kumo.MLOps` creates a missing experiment; if MLflow refuses (on Databricks, the experiment's folder must exist), it raises and says so.
 
@@ -222,8 +222,7 @@ Every value comes from exact counts over all rows, with no sampling. Numbers you
   metrics come from (the epoch with the best validation tune metric, tag `kumo.best_epoch`). A prediction names its
   model and the fit run that trained it.
 - Problems, when there are any, come right after the sentence.
-- Then tables: holdout metrics (fit; `test/ap` is average precision, `test/auprc` the trapezoidal area under the
-  precision-recall curve, `test/loss` the training objective, `test/logloss` the cross-entropy of the scores); the 2x2
+- Then tables: holdout metrics (fit; `ap`, `auprc`, `loss` and `logloss` with their meanings, as under Metrics); the 2x2
   matrix at the binary threshold; the training data; data preparation; notes; "Lineage"; "Where things are", with
   each artifact's full location, linked to the S3 or GCS console.
 - "Lineage" is how the run's data depend on each other. A fit: its source tables with their versions and locations →
@@ -415,9 +414,9 @@ w.data_quality.create_refresh(object_type="table", object_id=table_id,
                               refresh=Refresh(object_type="table", object_id=table_id))                # after each export
 ```
 
-Without `APPEND` the refresh fails with `MISSING_REQUIRED_METADATA`. The monitor writes `<table>_profile_metrics` and `<table>_drift_metrics`: one window per day, per `BUNDLE_ID` and over all models (`'*'`), with drift against the day before. It has no probability column, so no ROC AUC or log loss (`evaluate` reports AUROC). Later labels are picked up by the next refresh. Untested until re-run without a baseline (the version with one was verified for binary classification).
+Without `APPEND` the refresh fails with `MISSING_REQUIRED_METADATA`. The monitor writes `<table>_profile_metrics` and `<table>_drift_metrics`: one window per day, per `BUNDLE_ID` and over all models (`'*'`), with drift against the day before. It has no probability column, so no ROC AUC or log loss (`evaluate` reports AUROC). Later labels are picked up by the next refresh. The version with a baseline was verified for binary classification.
 
-**Snowflake (Model Monitor)**, on a version `MLOps(registry=)` registered. `evaluation.export` writes `TARGET` as a number and timestamps as `TIMESTAMP_NTZ`, as the monitor needs; give table paths in upper case to refer to them unquoted. Untested until re-run without a baseline:
+**Snowflake (Model Monitor)**, on a version `MLOps(registry=)` registered. `evaluation.export` writes `TARGET` as a number and timestamps as `TIMESTAMP_NTZ`, as the monitor needs; give table paths in upper case to refer to them unquoted:
 
 ```python
 evaluation.export(kumo.PredictionOutputConfig(sf, path="CHURN_EVALUATED", write_mode=WriteMode.APPEND))   # each day

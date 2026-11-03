@@ -250,7 +250,6 @@ def reads(connector: Any, location: str) -> bool:
 
 def stored_roots(manifest: Optional[ModelManifest],
                  accepts: Callable[[str], bool]) -> List[str]:
-    r"""The asset roots of ``manifest``'s stored locations ``accepts``."""
     return sorted({
         record.location.rsplit('/', 2)[0]
         for record in Dependencies.of(manifest).records
@@ -276,11 +275,6 @@ def assets_through(connector: Any, bundle: Union[str, Path],
     with asset_locations(
             connector_roots(read_provenance(Path(bundle)), connector), hint):
         yield
-
-
-def asset_cache() -> Path:
-    base = os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache'
-    return Path(base) / 'kumo' / 'assets'
 
 
 def _store(asset: Asset, sha256: str, settings: Any) -> Optional[str]:
@@ -335,7 +329,8 @@ def _fetch(connector: Any, path: str, sha256: str) -> Optional[Path]:
         return None
     if isinstance(filesystem, LocalFileSystem):
         return Path(root)
-    target = asset_cache() / sha256
+    cache = os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache'
+    target = Path(cache) / 'kumo' / 'assets' / sha256
     if (target / PROVENANCE_FILE).is_file():
         return target
     target.parent.mkdir(parents=True, exist_ok=True)

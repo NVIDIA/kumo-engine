@@ -46,7 +46,6 @@ def fit_name(model: str, started: datetime) -> str:
 
 
 def is_dated_fit(name: str) -> bool:
-    r"""Whether a fit run is still named by its start, not a version."""
     return re.search(r'-\d{8}-\d{6}$', name) is not None
 
 

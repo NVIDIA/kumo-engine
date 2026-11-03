@@ -25,6 +25,7 @@ from kumo_core.types import TaskType
 from kumoapi.jobs import WriteMode
 
 from kumo.engine._manifest import (
+    PATH_CONNECTORS,
     ArtifactStats,
     ModelManifest,
     OutputDestination,
@@ -43,7 +44,6 @@ from kumo.engine._manifest import (
 from kumo.engine._score_stats import output_counts
 from kumo.engine.trainer._provenance import count_edges, embedded_model
 
-_OBJECT_STORES = frozenset({'LOCAL_FILE', 'S3', 'GCS'})
 SKIPPED_DIR = 'skipped'
 
 
@@ -178,7 +178,6 @@ def _local_skipped(result: Any) -> Optional[Path]:
 
 
 def _keep_skipped(prediction_table: Any, run_dir: Path) -> Optional[Path]:
-    r"""Copies the skipped rows beside the run's manifest."""
     source = prediction_table.skipped_dir
     if source is None or not source.is_dir():
         return None
@@ -189,7 +188,6 @@ def _keep_skipped(prediction_table: Any, run_dir: Path) -> Optional[Path]:
 
 
 def _rows(directory: Path) -> int:
-    r"""Rows in a directory of Parquet parts, from their footers."""
     from pyarrow import parquet
 
     return sum(parquet.ParquetFile(part).metadata.num_rows
@@ -335,7 +333,7 @@ def destination_record(connector: Any, destination: str) -> OutputDestination:
     elif root is not None:
         location = (f"{root.rstrip('/')}/{destination}" if '://' in root
                     else str(Path(root, destination)))
-    elif (kind not in _OBJECT_STORES
+    elif (kind not in PATH_CONNECTORS
           and is_file_destination(connector, destination)):
         location = destination.rstrip('/')
     else:

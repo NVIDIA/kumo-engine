@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Shared JSON manifest format for engine artifacts."""
-
 import html
 import json
 import re
@@ -40,14 +38,11 @@ M = TypeVar('M', bound='Manifest')
 
 
 def omit_none() -> Any:
-    """A field left out of the JSON while it is None."""
     return field(default=None, metadata={_OMIT_NONE: True})
 
 
 @dataclass(frozen=True)
 class Artifact:
-    """An artifact a manifest names."""
-
     kind: str
     id: str
     location: Optional[str]
@@ -160,8 +155,6 @@ KINDS = ('snapshot', 'training_table', 'model', 'prediction')
 
 @dataclass(frozen=True, kw_only=True)
 class Manifest(Record):
-    """An artifact's record."""
-
     kind: str = ''
     schema_version: int = SCHEMA_VERSION
     id: str
@@ -191,7 +184,6 @@ class Manifest(Record):
 
 
 def artifacts(manifest: Manifest) -> List[Artifact]:
-    """``manifest`` and the artifacts it names, once each."""
     found: Dict[Any, Artifact] = {}
     for artifact in _walk(manifest, manifest.kind, manifest):
         found.setdefault((artifact.kind, artifact.id), artifact)
@@ -267,7 +259,6 @@ def _connector(location: str) -> Optional[str]:
 
 
 def stamp() -> Dict[str, Any]:
-    """Envelope fields for a manifest written now."""
     from kumo.engine._provenance import environment
 
     return dict(
@@ -291,12 +282,10 @@ def _kinds() -> Dict[str, Type['Manifest']]:
 
 
 def stub(kind: str, id: str) -> 'Manifest':
-    """A manifest knowing only ``kind`` and ``id``."""
     return _kinds()[kind](id=id, reconstructed=True)
 
 
 def embedded(manifest: M) -> M:
-    """``manifest`` minus the fields a child's copy omits."""
     return replace(manifest, **{
         name: None
         for name in manifest.EMBED_OMITS
@@ -493,7 +482,6 @@ class PredictionTableRecord(Record):
     skipped_rows: Optional[int] = None
     skipped_sample: Optional[List[Any]] = None
     skip_reason: Optional[str] = omit_none()
-    #: The directory of Parquet parts listing every skipped row.
     skipped_location: Optional[str] = omit_none()
 
 
@@ -512,6 +500,9 @@ class OutputDestination(Record):
     location: Optional[str]
 
 
+PATH_CONNECTORS = ('LOCAL_FILE', 'S3', 'GCS')
+
+
 @dataclass(frozen=True, kw_only=True)
 class PredictionOutput(Record):
     artifact: str
@@ -520,7 +511,7 @@ class PredictionOutput(Record):
     def as_artifact(self, key: str) -> Artifact:
         connector, location = (self.destination.connector,
                                self.destination.location)
-        file = connector in ('LOCAL_FILE', 'S3', 'GCS') or (
+        file = connector in PATH_CONNECTORS or (
             location or '').startswith(('/', '@'))
         return Artifact('prediction_output', self.artifact, location, True,
                         'kumo.output_uri' if file else 'kumo.output_table',
@@ -592,25 +583,20 @@ def write_manifest(path: Path, manifest: Manifest) -> None:
 def read_manifest(path: Path, kind: Type[M]) -> Optional[M]:
     try:
         manifest = json.loads(path.read_text(encoding='utf-8'))
+        version = (manifest.get('schema_version')
+                   if isinstance(manifest, dict) else None)
+        if type(version) is not int or not 1 <= version <= SCHEMA_VERSION:
+            warnings.warn(
+                f"Ignoring {path}: manifest schema_version {version!r} is not "
+                f"supported by this kumo-engine (up to {SCHEMA_VERSION}).",
+                UserWarning,
+                stacklevel=3,
+            )
+            return None
+        return kind.from_dict(manifest)
     except FileNotFoundError:
         return None
-    except (OSError, ValueError) as error:
-        warnings.warn(f"Ignoring unreadable manifest {path}: {error}",
-                      UserWarning, stacklevel=3)
-        return None
-    version = (manifest.get('schema_version')
-               if isinstance(manifest, dict) else None)
-    if type(version) is not int or not 1 <= version <= SCHEMA_VERSION:
-        warnings.warn(
-            f"Ignoring {path}: manifest schema_version {version!r} is not "
-            f"supported by this kumo-engine (up to {SCHEMA_VERSION}).",
-            UserWarning,
-            stacklevel=3,
-        )
-        return None
-    try:
-        return kind.from_dict(manifest)
-    except (AttributeError, TypeError, ValueError) as error:
+    except (OSError, ValueError, AttributeError, TypeError) as error:
         warnings.warn(f"Ignoring unreadable manifest {path}: {error}",
                       UserWarning, stacklevel=3)
         return None

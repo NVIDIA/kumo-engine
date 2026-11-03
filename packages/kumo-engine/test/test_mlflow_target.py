@@ -8,6 +8,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from packaging.version import Version
 
 import kumo.engine as kumo
 from kumo.engine.connector import (
@@ -21,15 +22,6 @@ from kumo.engine.integrations._mlflow_target import SageMakerMLflow, resolve
 mlflow = pytest.importorskip('mlflow')
 
 ARN = 'arn:aws:sagemaker:us-west-2:account:mlflow-tracking-server/demo'
-
-
-@pytest.fixture
-def tracking_uri(tmp_path):
-    previous = mlflow.get_tracking_uri()
-    uri = f'sqlite:///{tmp_path / "mlflow.db"}'
-    mlflow.set_tracking_uri(uri)
-    yield uri
-    mlflow.set_tracking_uri(previous)
 
 
 def _connector(identity):
@@ -233,6 +225,24 @@ def test_pin_mlflow_reads_its_run_link_switch_per_call():
     assert MLFLOW_SUPPRESS_PRINTING_URL_TO_STDOUT.name == NO_LINKS
 
 
+@pytest.mark.skipif(Version(mlflow.__version__) < Version('3.17'),
+                    reason='this MLflow still accepts folder stores')
+@pytest.mark.parametrize('store', ['file', 'path'])
+def test_a_refused_folder_store_says_to_use_sqlite(tmp_path, monkeypatch,
+                                                   store):
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    monkeypatch.delenv('MLFLOW_ALLOW_FILE_STORE', raising=False)
+    uri = (tmp_path / 'mlruns').as_uri() if store == 'file' else str(
+        tmp_path / 'mlruns')
+    tracking = MlflowTracking(target=uri, experiment_name='e')
+    with pytest.raises(RuntimeError) as raised:
+        kumo.MLOps(str(tmp_path / 'root'), tracking=tracking)
+    assert str(raised.value) == (
+        f'MLflow refused the local folder store at {uri}: use its default '
+        f'sqlite:///mlflow.db or another tracking backend.')
+
+
 def test_an_unreachable_server_fails_when_mlops_is_built(
         tmp_path, monkeypatch):
     from kumo.engine.integrations.mlflow import MlflowTracking
@@ -240,8 +250,8 @@ def test_an_unreachable_server_fails_when_mlops_is_built(
     monkeypatch.setenv('MLFLOW_HTTP_REQUEST_MAX_RETRIES', '0')
     tracking = MlflowTracking(target='http://127.0.0.1:9',
                               experiment_name='e')
-    with pytest.raises(RuntimeError, match='MLflow at http://127.0.0.1:9 '
-                       'is not usable with these credentials'):
+    with pytest.raises(RuntimeError,
+                       match='MLflow at http://127.0.0.1:9 is not usable: '):
         kumo.MLOps(str(tmp_path), tracking=tracking)
     with pytest.raises(ValueError, match='needs experiment_name'):
         kumo.MLOps(str(tmp_path),

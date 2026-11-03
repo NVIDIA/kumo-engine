@@ -2,13 +2,8 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Join batch-prediction outputs with generated labels and compute realized
-//! metrics. Both sides are hash-partitioned on their key into Arrow IPC
-//! spill files of about `partition_rows` rows each, and at most
-//! `MAX_CONCURRENT_JOINS` partitions are joined at once. Metrics follow the
-//! fit-time definitions: exact AUROC, AP and AUPRC as in torchmetrics (per
-//! label and pooled for multilabel), MAE/RMSE overall and per forecast step,
-//! top-1 accuracy, and MAP, precision, recall and F1 at k as in PyG.
+//! Realized metrics of batch predictions against their labels, joined through
+//! hash-partitioned spill files; metrics follow torchmetrics and PyG.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
@@ -18,7 +13,7 @@ use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use arrow::array::{
     Array, AsArray, BooleanArray, FixedSizeBinaryArray, Float64Array, ListBuilder, StringBuilder,
     TimestampNanosecondArray, UInt32Array,
@@ -27,7 +22,6 @@ use arrow::compute::{cast, interleave, take, take_record_batch};
 use arrow::datatypes::{Float64Type, TimestampNanosecondType};
 use arrow::ipc::reader::FileReader;
 use arrow::ipc::writer::FileWriter;
-use arrow::row::{RowConverter, SortField};
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -36,7 +30,7 @@ use rayon::prelude::*;
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 
-use crate::bp_col_stats::row_group_batches;
+use crate::bp_col_stats::{column, float64s, row_group_batches, rows};
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -54,12 +48,11 @@ impl EvaluateTask {
         !matches!(self, Self::Binary | Self::Regression)
     }
 
-    /// Labels are sets of classes.
     fn sets(self) -> bool {
         matches!(self, Self::Multilabel | Self::Ranking)
     }
 
-    /// One evaluated row per matched prediction row, not per label.
+    /// One actuals row per matched prediction row.
     fn exploded(self) -> bool {
         matches!(self, Self::Forecasting | Self::Multilabel)
     }
@@ -81,17 +74,14 @@ pub struct EvaluateSpec {
     pub label_target: String,
     #[serde(default)]
     pub actuals_dir: Option<PathBuf>,
-    /// (label column, output column) pairs written to `actuals_dir`.
+    /// (input, output) column names.
     #[serde(default)]
     pub actual_columns: Vec<(String, String)>,
-    /// (prediction column, output column) pairs written next to them, from
-    /// the matched prediction (the top-scored row of a grouped task).
     #[serde(default)]
     pub prediction_columns: Vec<(String, String)>,
-    /// (output column, UTC nanoseconds) pairs written as constant timestamps.
+    /// (output column, UTC nanoseconds).
     #[serde(default)]
     pub constant_timestamps: Vec<(String, i64)>,
-    /// Ranking cutoffs; those above the returned count are skipped.
     #[serde(default)]
     pub ks: Vec<usize>,
     pub spill_dir: PathBuf,
@@ -109,7 +99,6 @@ const LABEL_SEPARATOR: char = '|';
 
 type Batches = Box<dyn Iterator<Item = Result<RecordBatch>> + Send>;
 
-/// The type a pair of columns is compared as.
 fn common_type(a: &DataType, b: &DataType) -> DataType {
     let int = |t: &DataType| t.is_integer() || *t == DataType::Boolean;
     if a.is_temporal() || b.is_temporal() {
@@ -135,11 +124,7 @@ fn hashes(arrays: &[&ArrayRef], types: &[DataType]) -> Result<Vec<Option<u128>>>
             _ => cast(array, to),
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let fields = arrays
-        .iter()
-        .map(|a| SortField::new(a.data_type().clone()))
-        .collect();
-    let rows = RowConverter::new(fields)?.convert_columns(&arrays)?;
+    let rows = rows(&arrays)?;
     Ok((0..rows.num_rows())
         .map(|row| {
             arrays.iter().all(|array| array.is_valid(row)).then(|| {
@@ -160,17 +145,8 @@ fn classes(array: &ArrayRef, class: &DataType) -> Result<Vec<Option<u64>>> {
     Ok(hashes.into_iter().map(|h| h.map(|h| h as u64)).collect())
 }
 
-fn column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a ArrayRef> {
-    batch
-        .column_by_name(name)
-        .with_context(|| format!("missing column '{name}'"))
-}
-
 fn floats(array: &ArrayRef) -> Result<Vec<Option<f64>>> {
-    Ok(cast(array, &DataType::Float64)?
-        .as_primitive::<Float64Type>()
-        .iter()
-        .collect())
+    Ok(float64s(array)?.iter().collect())
 }
 
 fn keys(batch: &RecordBatch) -> Result<impl Iterator<Item = u128> + '_> {
@@ -178,8 +154,7 @@ fn keys(batch: &RecordBatch) -> Result<impl Iterator<Item = u128> + '_> {
     Ok((0..keys.len()).map(|row| u128::from_le_bytes(keys.value(row).try_into().unwrap())))
 }
 
-/// Sorted, distinct class hashes of each label: its class, or its set of
-/// classes as a list or a `|`-separated string.
+/// Sorted, distinct class hashes per label; a set is a list or `|`-separated.
 fn label_classes(target: &ArrayRef, sets: bool, class: &DataType) -> Result<Vec<Option<Vec<u64>>>> {
     if !sets {
         let classes = classes(target, class)?;
@@ -221,7 +196,6 @@ fn split(strings: &ArrayRef) -> Result<ArrayRef> {
     Ok(Arc::new(lists.finish()))
 }
 
-/// Each label's value per forecast step.
 fn label_steps(target: &ArrayRef) -> Result<Vec<Option<Vec<Option<f64>>>>> {
     let item = Field::new_list_field(DataType::Float64, true);
     let list = cast(target, &DataType::List(Arc::new(item)))?;
@@ -272,11 +246,12 @@ fn row_groups(paths: &[&Path]) -> Result<(RowGroups, usize, SchemaRef)> {
     Ok((groups, rows, schema))
 }
 
-/// Read `keep` columns, hash `keys`, and route rows with a key to `sinks`.
+/// Routes each row with a non-null key to its partition's sink.
 fn scatter(
     paths: &[&Path],
     groups: &RowGroups,
-    (keys, types): (&[String], &[DataType]),
+    keys: &[String],
+    types: &[DataType],
     keep: &[String],
     sinks: &[Sink],
 ) -> Result<()> {
@@ -313,7 +288,6 @@ fn scatter(
     })
 }
 
-/// A forecast step's sums, named as the holdout's horizon counts.
 type Step = [f64; 6];
 const STEP_NAMES: [&str; 6] = [
     "rows",
@@ -334,10 +308,9 @@ struct Accumulator {
     sum: f64,
     squares: f64,
     steps: Vec<Step>,
-    /// Multilabel, per class: `pairs`, and true positive, false positive and
-    /// false negative counts at the predicted labels.
+    /// Per class: pairs and true positive, false positive, false negative.
     classes: BTreeMap<u64, (Vec<u64>, [u64; 3])>,
-    /// Ranking, per `ks`: MAP, precision, recall and F1 sums.
+    /// Per k: MAP, precision, recall and F1 sums.
     at_k: Vec<[f64; 4]>,
     k: usize,
 }
@@ -395,7 +368,6 @@ impl Accumulator {
         }
     }
 
-    /// PyG's metrics at each of `ks` over `ranked` against `items`.
     fn rank(&mut self, ranked: &[Entry], items: &[u64], ks: &[usize]) {
         let labels = items.len() as f64;
         let (mut hits, mut numerator, mut at) = (0.0, 0.0, Vec::with_capacity(ranked.len()));
@@ -442,11 +414,9 @@ fn order_key(score: f64) -> u64 {
     })
 }
 
-/// A grouped prediction row.
 struct Entry {
     score: Option<f64>,
     class: Option<u64>,
-    /// Forecasting: the step's timestamp.
     time: i64,
     predicted: bool,
     at: (usize, usize),
@@ -491,8 +461,7 @@ fn grouped_entries(
         .collect())
 }
 
-/// Score each label row against the predictions with its key; the first
-/// label of a key counts.
+/// The first label of a key counts.
 fn join(
     predictions: Batches,
     labels: Batches,
@@ -613,29 +582,7 @@ fn join(
         let Some(path) = actuals.as_ref().filter(|_| !rows.is_empty()) else {
             continue;
         };
-        let rows = UInt32Array::from(rows);
-        let mut out = spec
-            .actual_columns
-            .iter()
-            .map(|(name, out)| {
-                let array = if task.exploded() && *name == spec.label_target {
-                    exploded_target(task, &values)
-                } else {
-                    take(column(&batch, name)?, &rows, None)?
-                };
-                Ok((out.as_str(), array, true))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        for (name, ns) in &spec.constant_timestamps {
-            let values = vec![*ns; picked.len()];
-            let array = TimestampNanosecondArray::from(values).with_timezone("UTC");
-            out.push((name.as_str(), Arc::new(array), true));
-        }
-        for (column, (_, name)) in spec.prediction_columns.iter().enumerate() {
-            let arrays: Vec<&dyn Array> = kept.iter().map(|batch| batch[column].as_ref()).collect();
-            out.push((name.as_str(), interleave(&arrays, &picked)?, true));
-        }
-        let out = RecordBatch::try_from_iter_with_nullable(out)?;
+        let out = actuals_batch(spec, &batch, rows, &values, &kept, &picked)?;
         if writer.is_none() {
             writer = Some(ArrowWriter::try_new(
                 File::create(path)?,
@@ -651,7 +598,40 @@ fn join(
     Ok(acc)
 }
 
-/// A forecast step's actual value, or whether a multilabel class is a label.
+/// The matched label rows with their predictions' columns.
+fn actuals_batch(
+    spec: &EvaluateSpec,
+    labels: &RecordBatch,
+    rows: Vec<u32>,
+    values: &[Option<f64>],
+    kept: &[Vec<ArrayRef>],
+    picked: &[(usize, usize)],
+) -> Result<RecordBatch> {
+    let rows = UInt32Array::from(rows);
+    let mut out = spec
+        .actual_columns
+        .iter()
+        .map(|(name, out)| {
+            let array = if spec.task.exploded() && *name == spec.label_target {
+                exploded_target(spec.task, values)
+            } else {
+                take(column(labels, name)?, &rows, None)?
+            };
+            Ok((out.as_str(), array, true))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for (name, ns) in &spec.constant_timestamps {
+        let values = vec![*ns; picked.len()];
+        let array = TimestampNanosecondArray::from(values).with_timezone("UTC");
+        out.push((name.as_str(), Arc::new(array), true));
+    }
+    for (column, (_, name)) in spec.prediction_columns.iter().enumerate() {
+        let arrays: Vec<&dyn Array> = kept.iter().map(|batch| batch[column].as_ref()).collect();
+        out.push((name.as_str(), interleave(&arrays, picked)?, true));
+    }
+    Ok(RecordBatch::try_from_iter_with_nullable(out)?)
+}
+
 fn exploded_target(task: EvaluateTask, values: &[Option<f64>]) -> ArrayRef {
     if task == EvaluateTask::Multilabel {
         let hits: BooleanArray = values.iter().map(|v| v.map(|v| v != 0.0)).collect();
@@ -660,8 +640,7 @@ fn exploded_target(task: EvaluateTask, values: &[Option<f64>]) -> ArrayRef {
     Arc::new(Float64Array::from(values.to_vec()))
 }
 
-/// Exact AUROC, average precision and AUPRC from (score, label) order keys;
-/// None unless both labels occur.
+/// Exact AUROC, AP and AUPRC; None unless both labels occur.
 fn ranking_metrics(pairs: &mut [u64]) -> [Option<f64>; 3] {
     pairs.par_sort_unstable();
     let positives = pairs.iter().filter(|pair| *pair & 1 == 1).count() as f64;
@@ -725,9 +704,6 @@ fn metrics(mut acc: Accumulator, spec: &EvaluateSpec) -> JsonValue {
     }
 }
 
-/// torchmetrics' per-class (macro, over classes with both labels) and pooled
-/// (micro) curves, and the holdout's F1, precision and recall at the
-/// predicted labels.
 fn multilabel_metrics(classes: BTreeMap<u64, (Vec<u64>, [u64; 3])>) -> JsonValue {
     let (mut pooled, mut per_class, mut f1, mut total) =
         (Vec::new(), Vec::new(), Vec::new(), [0u64; 3]);
@@ -758,7 +734,6 @@ fn multilabel_metrics(classes: BTreeMap<u64, (Vec<u64>, [u64; 3])>) -> JsonValue
     })
 }
 
-/// Per-step sums under the names of the holdout's horizon counts.
 fn by_horizon(steps: &[Step]) -> JsonValue {
     let columns = STEP_NAMES.iter().enumerate().map(|(i, name)| {
         (
@@ -769,9 +744,6 @@ fn by_horizon(steps: &[Step]) -> JsonValue {
     JsonValue::Object(columns.collect())
 }
 
-/// Join `prediction_paths` with `label_paths` and compute the realized
-/// metrics; returns `{"rows", "labelled", "metrics"}` and, for a forecast,
-/// `"by_horizon"`.
 pub fn evaluate_prediction_parquet(
     prediction_paths: &[&Path],
     label_paths: &[&Path],
@@ -848,19 +820,19 @@ pub fn evaluate_prediction_parquet(
             .collect()
     };
     let (predictions, labels) = (sinks("predictions"), sinks("labels"));
-    let prediction_keys = (spec.prediction_keys.as_slice(), types.as_slice());
     scatter(
         prediction_paths,
         &prediction_groups,
-        prediction_keys,
+        &spec.prediction_keys,
+        &types,
         &prediction_columns,
         &predictions,
     )?;
-    let label_keys = (spec.label_keys.as_slice(), types.as_slice());
     scatter(
         label_paths,
         &label_groups,
-        label_keys,
+        &spec.label_keys,
+        &types,
         &label_columns,
         &labels,
     )?;
@@ -900,18 +872,24 @@ pub fn evaluate_prediction_parquet(
 mod tests {
     use super::*;
     use arrow::array::{
-        Float64Array, Int64Array, Int64Builder, ListBuilder, StringArray, TimestampMicrosecondArray,
+        Float32Array, Float64Builder, Int64Array, Int64Builder, StringArray,
+        TimestampMicrosecondArray,
     };
+    use arrow::datatypes::{ArrowPrimitiveType, Float32Type, Int64Type};
     use parquet::file::properties::WriterProperties;
     use tempfile::tempdir;
 
-    fn write(path: &Path, columns: Vec<(&str, ArrayRef)>, rows_per_group: usize) {
+    fn arr(array: impl Array + 'static) -> ArrayRef {
+        Arc::new(array)
+    }
+
+    fn write(dir: &Path, name: &str, columns: Vec<(&str, ArrayRef)>, rows_per_group: usize) {
         let batch = RecordBatch::try_from_iter(columns).unwrap();
         let props = WriterProperties::builder()
             .set_max_row_group_row_count(Some(rows_per_group))
             .build();
-        let mut writer =
-            ArrowWriter::try_new(File::create(path).unwrap(), batch.schema(), Some(props)).unwrap();
+        let file = File::create(dir.join(format!("{name}.parquet"))).unwrap();
+        let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props)).unwrap();
         writer.write(&batch).unwrap();
         writer.close().unwrap();
     }
@@ -936,6 +914,15 @@ mod tests {
         }
     }
 
+    /// Keyed by entity only.
+    fn entity_spec(task: EvaluateTask, dir: &Path, partition_rows: usize) -> EvaluateSpec {
+        let mut spec = spec(task, dir, partition_rows);
+        spec.prediction_keys.truncate(1);
+        spec.label_keys.truncate(1);
+        spec.actual_columns.remove(1);
+        spec
+    }
+
     fn evaluate(dir: &Path, spec: &EvaluateSpec) -> JsonValue {
         let predictions = dir.join("predictions.parquet");
         let labels = dir.join("labels.parquet");
@@ -956,10 +943,7 @@ mod tests {
             .collect()
     }
 
-    fn actual_column<T: arrow::datatypes::ArrowPrimitiveType>(
-        dir: &Path,
-        name: &str,
-    ) -> Vec<T::Native> {
+    fn actual_column<T: ArrowPrimitiveType>(dir: &Path, name: &str) -> Vec<T::Native> {
         actuals(dir)
             .iter()
             .flat_map(|batch| {
@@ -989,6 +973,27 @@ mod tests {
         wins / pairs
     }
 
+    fn brute_ap_and_auprc(scores: &[f32], labels: &[bool]) -> (f64, f64) {
+        let mut thresholds = scores.to_vec();
+        thresholds.sort_by(|a, b| b.total_cmp(a));
+        thresholds.dedup();
+        let positives = labels.iter().filter(|l| **l).count() as f64;
+        let (mut ap, mut auprc, mut previous) = (0.0, 0.0, (0.0, 1.0));
+        for t in thresholds {
+            let above = |positive: bool| {
+                (0..scores.len())
+                    .filter(|&i| scores[i] >= t && labels[i] == positive)
+                    .count() as f64
+            };
+            let (tp, fp) = (above(true), above(false));
+            let (recall, precision) = (tp / positives, tp / (tp + fp));
+            ap += (recall - previous.0) * precision;
+            auprc += (recall - previous.0) * (precision + previous.1) / 2.0;
+            previous = (recall, precision);
+        }
+        (ap, auprc)
+    }
+
     #[test]
     fn binary_join_matches_brute_force_in_one_and_many_partitions() {
         let n = 3000i64;
@@ -999,53 +1004,29 @@ mod tests {
         let labels: Vec<bool> = (0..n).map(|i| (i * 31 + i / 7) % 5 < 2).collect();
         // Predictions for every entity; labels for all but the last 500.
         let m = (n - 500) as usize;
+        let reversed = |values: &[i64]| values[..m].iter().rev().copied().collect::<Vec<_>>();
         for partition_rows in [1_000_000, 700] {
             let dir = tempdir().unwrap();
+            let anchor = TimestampMicrosecondArray::from(anchor_us.clone()).with_timezone("UTC");
             write(
-                &dir.path().join("predictions.parquet"),
+                dir.path(),
+                "predictions",
                 vec![
-                    (
-                        "ENTITY",
-                        Arc::new(Int64Array::from(entity.clone())) as ArrayRef,
-                    ),
-                    (
-                        "ANCHOR_TIMESTAMP",
-                        Arc::new(
-                            TimestampMicrosecondArray::from(anchor_us.clone()).with_timezone("UTC"),
-                        ) as ArrayRef,
-                    ),
-                    (
-                        "True_PROB",
-                        Arc::new(arrow::array::Float32Array::from(scores.clone())) as ArrayRef,
-                    ),
+                    ("ENTITY", arr(Int64Array::from(entity.clone()))),
+                    ("ANCHOR_TIMESTAMP", arr(anchor)),
+                    ("True_PROB", arr(Float32Array::from(scores.clone()))),
                 ],
                 256,
             );
+            let label_times: Vec<i64> = reversed(&anchor_us).iter().map(|t| t * 1000).collect();
+            let label_values: Vec<bool> = labels[..m].iter().rev().copied().collect();
             write(
-                &dir.path().join("labels.parquet"),
+                dir.path(),
+                "labels",
                 vec![
-                    (
-                        "ENTITY1",
-                        Arc::new(Int64Array::from(
-                            entity[..m].iter().rev().copied().collect::<Vec<_>>(),
-                        )) as ArrayRef,
-                    ),
-                    (
-                        "TIMESTAMP",
-                        Arc::new(TimestampNanosecondArray::from(
-                            anchor_us[..m]
-                                .iter()
-                                .rev()
-                                .map(|t| t * 1000)
-                                .collect::<Vec<_>>(),
-                        )) as ArrayRef,
-                    ),
-                    (
-                        "TARGET1",
-                        Arc::new(BooleanArray::from(
-                            labels[..m].iter().rev().copied().collect::<Vec<_>>(),
-                        )) as ArrayRef,
-                    ),
+                    ("ENTITY1", arr(Int64Array::from(reversed(&entity)))),
+                    ("TIMESTAMP", arr(TimestampNanosecondArray::from(label_times))),
+                    ("TARGET1", arr(BooleanArray::from(label_values))),
                 ],
                 300,
             );
@@ -1057,8 +1038,8 @@ mod tests {
             let auroc = out["metrics"]["auroc"].as_f64().unwrap();
             assert!((auroc - brute_auroc(&scores[..m], &labels[..m])).abs() < 1e-12);
             assert!(out["metrics"]["ap"].as_f64().unwrap() > 0.0);
-            let entities = actual_column::<arrow::datatypes::Int64Type>(dir.path(), "ENTITY");
-            let emitted = actual_column::<arrow::datatypes::Float32Type>(dir.path(), "True_PROB");
+            let entities = actual_column::<Int64Type>(dir.path(), "ENTITY");
+            let emitted = actual_column::<Float32Type>(dir.path(), "True_PROB");
             assert_eq!(entities.len(), m);
             for (entity, score) in entities.iter().zip(emitted) {
                 assert_eq!(score, scores[*entity as usize]);
@@ -1088,40 +1069,24 @@ mod tests {
     #[test]
     fn regression_multiclass_and_ranking_metrics() {
         let dir = tempdir().unwrap();
-        let mut spec_ = spec(EvaluateTask::Regression, dir.path(), 1_000_000);
-        spec_.prediction_keys.truncate(1);
-        spec_.label_keys.truncate(1);
-        spec_.actual_columns = vec![
-            ("ENTITY1".into(), "ENTITY".into()),
-            ("TARGET1".into(), "TARGET".into()),
-        ];
+        let mut spec_ = entity_spec(EvaluateTask::Regression, dir.path(), 1_000_000);
         spec_.constant_timestamps =
             vec![("ANCHOR_TIMESTAMP".into(), 7), ("EVALUATED_AT".into(), 9)];
         write(
-            &dir.path().join("predictions.parquet"),
+            dir.path(),
+            "predictions",
             vec![
-                (
-                    "ENTITY",
-                    Arc::new(StringArray::from(vec!["a", "b", "c"])) as ArrayRef,
-                ),
-                (
-                    "TARGET_PRED",
-                    Arc::new(Float64Array::from(vec![1.0, 3.0, 4.0])) as ArrayRef,
-                ),
+                ("ENTITY", arr(StringArray::from(vec!["a", "b", "c"]))),
+                ("TARGET_PRED", arr(Float64Array::from(vec![1.0, 3.0, 4.0]))),
             ],
             2,
         );
         write(
-            &dir.path().join("labels.parquet"),
+            dir.path(),
+            "labels",
             vec![
-                (
-                    "ENTITY1",
-                    Arc::new(StringArray::from(vec!["c", "a", "b"])) as ArrayRef,
-                ),
-                (
-                    "TARGET1",
-                    Arc::new(Float64Array::from(vec![5.0, 1.0, 2.0])) as ArrayRef,
-                ),
+                ("ENTITY1", arr(StringArray::from(vec!["c", "a", "b"]))),
+                ("TARGET1", arr(Float64Array::from(vec![5.0, 1.0, 2.0]))),
             ],
             2,
         );
@@ -1130,17 +1095,9 @@ mod tests {
             out["metrics"],
             json!({"mae": 2.0 / 3.0, "rmse": (2.0f64 / 3.0).sqrt()})
         );
-        assert_eq!(
-            actual_column::<arrow::datatypes::TimestampNanosecondType>(
-                dir.path(),
-                "ANCHOR_TIMESTAMP"
-            ),
-            vec![7, 7, 7]
-        );
-        assert_eq!(
-            actual_column::<arrow::datatypes::TimestampNanosecondType>(dir.path(), "EVALUATED_AT"),
-            vec![9, 9, 9]
-        );
+        let timestamps = |name| actual_column::<TimestampNanosecondType>(dir.path(), name);
+        assert_eq!(timestamps("ANCHOR_TIMESTAMP"), vec![7, 7, 7]);
+        assert_eq!(timestamps("EVALUATED_AT"), vec![9, 9, 9]);
 
         // Two anchors of entity 1 (a hit and a miss at rank 1) and entity 2.
         spec_ = spec(EvaluateTask::Multiclass, dir.path(), 1_000_000);
@@ -1148,52 +1105,38 @@ mod tests {
             ("CLASS".into(), "CLASS".into()),
             ("SCORE".into(), "SCORE".into()),
         ];
-        let entity = Int64Array::from(vec![1, 1, 1, 1, 2, 2]);
-        let anchor = TimestampMicrosecondArray::from(vec![0, 0, 1, 1, 0, 0]);
         write(
-            &dir.path().join("predictions.parquet"),
+            dir.path(),
+            "predictions",
             vec![
-                ("ENTITY", Arc::new(entity.clone()) as ArrayRef),
-                ("ANCHOR_TIMESTAMP", Arc::new(anchor.clone()) as ArrayRef),
+                ("ENTITY", arr(Int64Array::from(vec![1, 1, 1, 1, 2, 2]))),
                 (
-                    "CLASS",
-                    Arc::new(Int64Array::from(vec![10, 11, 12, 10, 11, 12])) as ArrayRef,
+                    "ANCHOR_TIMESTAMP",
+                    arr(TimestampMicrosecondArray::from(vec![0, 0, 1, 1, 0, 0])),
                 ),
+                ("CLASS", arr(Int64Array::from(vec![10, 11, 12, 10, 11, 12]))),
                 (
                     "SCORE",
-                    Arc::new(Float64Array::from(vec![0.9, 0.5, 0.7, 0.2, 0.8, 0.1])) as ArrayRef,
+                    arr(Float64Array::from(vec![0.9, 0.5, 0.7, 0.2, 0.8, 0.1])),
                 ),
             ],
             3,
         );
-        write(
-            &dir.path().join("labels.parquet"),
-            vec![
-                (
-                    "ENTITY1",
-                    Arc::new(Int64Array::from(vec![1, 1, 2])) as ArrayRef,
-                ),
-                (
-                    "TIMESTAMP",
-                    Arc::new(TimestampNanosecondArray::from(vec![0, 1000, 0])) as ArrayRef,
-                ),
-                (
-                    "TARGET1",
-                    Arc::new(Float64Array::from(vec![10.0, 10.0, 11.0])) as ArrayRef,
-                ),
-            ],
-            3,
-        );
+        let labels = |target: ArrayRef| {
+            let columns = vec![
+                ("ENTITY1", arr(Int64Array::from(vec![1, 1, 2]))),
+                ("TIMESTAMP", arr(TimestampNanosecondArray::from(vec![0, 1000, 0]))),
+                ("TARGET1", target),
+            ];
+            write(dir.path(), "labels", columns, 3);
+        };
+        labels(arr(Float64Array::from(vec![10.0, 10.0, 11.0])));
         let out = evaluate(dir.path(), &spec_);
         assert_eq!(out["metrics"], json!({"acc": 2.0 / 3.0}));
-        let top: Vec<(i64, f64)> =
-            actual_column::<arrow::datatypes::Int64Type>(dir.path(), "CLASS")
-                .into_iter()
-                .zip(actual_column::<arrow::datatypes::Float64Type>(
-                    dir.path(),
-                    "SCORE",
-                ))
-                .collect();
+        let top: Vec<(i64, f64)> = actual_column::<Int64Type>(dir.path(), "CLASS")
+            .into_iter()
+            .zip(actual_column::<Float64Type>(dir.path(), "SCORE"))
+            .collect();
         assert_eq!(top, vec![(10, 0.9), (12, 0.7), (11, 0.8)]);
         assert_eq!(
             (out["rows"].clone(), out["labelled"].clone()),
@@ -1204,26 +1147,10 @@ mod tests {
         spec_.ks = vec![1, 2, 3];
         let mut targets = ListBuilder::new(Int64Builder::new());
         for items in [vec![11, 13], vec![], vec![11]] {
-            for item in items {
-                targets.values().append_value(item);
-            }
+            targets.values().append_slice(&items);
             targets.append(true);
         }
-        write(
-            &dir.path().join("labels.parquet"),
-            vec![
-                (
-                    "ENTITY1",
-                    Arc::new(Int64Array::from(vec![1, 1, 2])) as ArrayRef,
-                ),
-                (
-                    "TIMESTAMP",
-                    Arc::new(TimestampNanosecondArray::from(vec![0, 1000, 0])) as ArrayRef,
-                ),
-                ("TARGET1", Arc::new(targets.finish()) as ArrayRef),
-            ],
-            3,
-        );
+        labels(arr(targets.finish()));
         // (1, 0) ranks 10, 11 and hits 11 at rank 2 of two labels; (1, 1)
         // has no labels and is skipped; entity 2 hits 11 at rank 1. Only two
         // classes are returned, so there is no k = 3.
@@ -1233,46 +1160,8 @@ mod tests {
             "f1@2": (0.5 + 2.0 / 3.0) / 2.0,
         });
         assert_eq!(evaluate(dir.path(), &spec_)["metrics"], expected);
-        write(
-            &dir.path().join("labels.parquet"),
-            vec![
-                (
-                    "ENTITY1",
-                    Arc::new(Int64Array::from(vec![1, 1, 2])) as ArrayRef,
-                ),
-                (
-                    "TIMESTAMP",
-                    Arc::new(TimestampNanosecondArray::from(vec![0, 1000, 0])) as ArrayRef,
-                ),
-                (
-                    "TARGET1",
-                    Arc::new(StringArray::from(vec!["11|13", "", "11"])) as ArrayRef,
-                ),
-            ],
-            3,
-        );
+        labels(arr(StringArray::from(vec!["11|13", "", "11"])));
         assert_eq!(evaluate(dir.path(), &spec_)["metrics"], expected);
-    }
-
-    fn brute_ap_and_auprc(scores: &[f32], labels: &[bool]) -> (f64, f64) {
-        let mut thresholds = scores.to_vec();
-        thresholds.sort_by(|a, b| b.total_cmp(a));
-        thresholds.dedup();
-        let positives = labels.iter().filter(|l| **l).count() as f64;
-        let (mut ap, mut auprc, mut previous) = (0.0, 0.0, (0.0, 1.0));
-        for t in thresholds {
-            let above = |positive: bool| {
-                (0..scores.len())
-                    .filter(|&i| scores[i] >= t && labels[i] == positive)
-                    .count() as f64
-            };
-            let (tp, fp) = (above(true), above(false));
-            let (recall, precision) = (tp / positives, tp / (tp + fp));
-            ap += (recall - previous.0) * precision;
-            auprc += (recall - previous.0) * (precision + previous.1) / 2.0;
-            previous = (recall, precision);
-        }
-        (ap, auprc)
     }
 
     #[test]
@@ -1292,18 +1181,13 @@ mod tests {
         }
         let dir = tempdir().unwrap();
         write(
-            &dir.path().join("predictions.parquet"),
+            dir.path(),
+            "predictions",
             vec![
-                ("ENTITY", Arc::new(Int64Array::from(entity)) as ArrayRef),
-                ("CLASS", Arc::new(StringArray::from(class)) as ArrayRef),
-                (
-                    "SCORE",
-                    Arc::new(arrow::array::Float32Array::from(scores)) as ArrayRef,
-                ),
-                (
-                    "PREDICTED",
-                    Arc::new(BooleanArray::from(predicted)) as ArrayRef,
-                ),
+                ("ENTITY", arr(Int64Array::from(entity))),
+                ("CLASS", arr(StringArray::from(class))),
+                ("SCORE", arr(Float32Array::from(scores))),
+                ("PREDICTED", arr(BooleanArray::from(predicted))),
             ],
             500,
         );
@@ -1320,26 +1204,17 @@ mod tests {
                 set.join("|")
             })
             .collect();
+        let label_entities = Int64Array::from_iter_values(labelled.iter().map(|&e| e as i64));
         write(
-            &dir.path().join("labels.parquet"),
+            dir.path(),
+            "labels",
             vec![
-                (
-                    "ENTITY1",
-                    Arc::new(Int64Array::from(
-                        labelled.iter().map(|&e| e as i64).collect::<Vec<_>>(),
-                    )) as ArrayRef,
-                ),
-                ("TARGET1", Arc::new(StringArray::from(sets)) as ArrayRef),
+                ("ENTITY1", arr(label_entities)),
+                ("TARGET1", arr(StringArray::from(sets))),
             ],
             150,
         );
-        let mut spec_ = spec(EvaluateTask::Multilabel, dir.path(), 900);
-        spec_.prediction_keys.truncate(1);
-        spec_.label_keys.truncate(1);
-        spec_.actual_columns = vec![
-            ("ENTITY1".into(), "ENTITY".into()),
-            ("TARGET1".into(), "TARGET".into()),
-        ];
+        let mut spec_ = entity_spec(EvaluateTask::Multilabel, dir.path(), 900);
         spec_.prediction_columns = vec![("CLASS".into(), "CLASS".into())];
         let out = evaluate(dir.path(), &spec_);
         assert_eq!(
@@ -1399,32 +1274,19 @@ mod tests {
         let rows = actuals(dir.path());
         let targets: Vec<bool> = rows
             .iter()
-            .flat_map(|batch| column_bools(batch, "TARGET"))
+            .flat_map(|batch| column(batch, "TARGET").unwrap().as_boolean().iter())
+            .map(Option::unwrap)
             .collect();
         let classes_out: Vec<String> = rows
             .iter()
-            .flat_map(|batch| {
-                let array = column(batch, "CLASS").unwrap().as_string::<i32>().clone();
-                array
-                    .iter()
-                    .map(|c| c.unwrap().to_string())
-                    .collect::<Vec<_>>()
-            })
+            .flat_map(|batch| column(batch, "CLASS").unwrap().as_string::<i32>().iter())
+            .map(|class| class.unwrap().to_string())
             .collect();
-        let entities_out = actual_column::<arrow::datatypes::Int64Type>(dir.path(), "ENTITY");
+        let entities_out = actual_column::<Int64Type>(dir.path(), "ENTITY");
         assert_eq!(targets.len(), (entities - 1) * classes);
         for ((e, c), target) in entities_out.iter().zip(&classes_out).zip(&targets) {
             assert_eq!(*target, label(*e as usize, c[1..].parse().unwrap()));
         }
-    }
-
-    fn column_bools(batch: &RecordBatch, name: &str) -> Vec<bool> {
-        column(batch, name)
-            .unwrap()
-            .as_boolean()
-            .iter()
-            .map(Option::unwrap)
-            .collect()
     }
 
     #[test]
@@ -1433,60 +1295,48 @@ mod tests {
         let day = 86_400_000_000_000i64;
         let prediction = |e: i64, h: usize| (e * 13 + h as i64 * 7) as f64 % 50.0;
         let actual = |e: i64, h: usize| ((e * 29 + h as i64 * 11) % 41) as f64;
+        let anchor_of = |e: i64| e % 2 * 30 * day;
+        let steps_of = |e: i64| if e == 0 { steps - 1 } else { steps };
         let (mut entity, mut anchor, mut time, mut value) = (vec![], vec![], vec![], vec![]);
         for e in 0..entities {
             // Steps written newest first; the join orders them by TIMESTAMP.
             for h in (0..steps).rev() {
                 entity.push(e);
-                anchor.push(e % 2 * 30 * day);
-                time.push(e % 2 * 30 * day + h as i64 * 7 * day);
+                anchor.push(anchor_of(e));
+                time.push((anchor_of(e) + h as i64 * 7 * day) / 1000);
                 value.push(prediction(e, h));
             }
         }
         let dir = tempdir().unwrap();
         write(
-            &dir.path().join("predictions.parquet"),
+            dir.path(),
+            "predictions",
             vec![
-                ("ENTITY", Arc::new(Int64Array::from(entity)) as ArrayRef),
-                (
-                    "ANCHOR_TIMESTAMP",
-                    Arc::new(TimestampNanosecondArray::from(anchor)) as ArrayRef,
-                ),
-                (
-                    "TIMESTAMP",
-                    Arc::new(TimestampMicrosecondArray::from(
-                        time.iter().map(|t| t / 1000).collect::<Vec<_>>(),
-                    )) as ArrayRef,
-                ),
-                (
-                    "TARGET_PRED",
-                    Arc::new(Float64Array::from(value)) as ArrayRef,
-                ),
+                ("ENTITY", arr(Int64Array::from(entity))),
+                ("ANCHOR_TIMESTAMP", arr(TimestampNanosecondArray::from(anchor))),
+                ("TIMESTAMP", arr(TimestampMicrosecondArray::from(time))),
+                ("TARGET_PRED", arr(Float64Array::from(value))),
             ],
             200,
         );
         // Entity 0 has a label row with three of the four steps.
-        let mut futures = ListBuilder::new(arrow::array::Float64Builder::new());
+        let mut futures = ListBuilder::new(Float64Builder::new());
         for e in 0..entities {
-            for h in 0..if e == 0 { steps - 1 } else { steps } {
+            for h in 0..steps_of(e) {
                 futures.values().append_value(actual(e, h));
             }
             futures.append(true);
         }
         write(
-            &dir.path().join("labels.parquet"),
+            dir.path(),
+            "labels",
             vec![
-                (
-                    "ENTITY1",
-                    Arc::new(Int64Array::from((0..entities).collect::<Vec<_>>())) as ArrayRef,
-                ),
+                ("ENTITY1", arr(Int64Array::from_iter_values(0..entities))),
                 (
                     "TIMESTAMP",
-                    Arc::new(TimestampNanosecondArray::from(
-                        (0..entities).map(|e| e % 2 * 30 * day).collect::<Vec<_>>(),
-                    )) as ArrayRef,
+                    arr(TimestampNanosecondArray::from_iter_values((0..entities).map(anchor_of))),
                 ),
-                ("future_labels", Arc::new(futures.finish()) as ArrayRef),
+                ("future_labels", arr(futures.finish())),
             ],
             70,
         );
@@ -1505,11 +1355,7 @@ mod tests {
 
         let mut sums = vec![[0.0f64; 6]; steps];
         for e in 0..entities {
-            for (h, sum) in sums
-                .iter_mut()
-                .enumerate()
-                .take(if e == 0 { steps - 1 } else { steps })
-            {
+            for (h, sum) in sums.iter_mut().enumerate().take(steps_of(e)) {
                 let (p, a) = (prediction(e, h), actual(e, h));
                 let values = [1.0, (p - a).abs(), (p - a) * (p - a), p - a, a, a * a];
                 sum.iter_mut().zip(values).for_each(|(s, v)| *s += v);
@@ -1529,15 +1375,14 @@ mod tests {
         assert!((out["metrics"]["mae"].as_f64().unwrap() - mae).abs() < 1e-12);
         assert!((out["metrics"]["rmse"].as_f64().unwrap() - rmse).abs() < 1e-12);
 
-        let entities_out = actual_column::<arrow::datatypes::Int64Type>(dir.path(), "ENTITY");
-        let times =
-            actual_column::<arrow::datatypes::TimestampNanosecondType>(dir.path(), "TIMESTAMP");
-        let targets = actual_column::<arrow::datatypes::Float64Type>(dir.path(), "TARGET");
-        let predictions = actual_column::<arrow::datatypes::Float64Type>(dir.path(), "TARGET_PRED");
+        let entities_out = actual_column::<Int64Type>(dir.path(), "ENTITY");
+        let times = actual_column::<TimestampNanosecondType>(dir.path(), "TIMESTAMP");
+        let targets = actual_column::<Float64Type>(dir.path(), "TARGET");
+        let predictions = actual_column::<Float64Type>(dir.path(), "TARGET_PRED");
         assert_eq!(targets.len(), rows as usize);
         for i in 0..targets.len() {
             let e = entities_out[i];
-            let h = ((times[i] - e % 2 * 30 * day) / (7 * day)) as usize;
+            let h = ((times[i] - anchor_of(e)) / (7 * day)) as usize;
             assert_eq!(
                 (targets[i], predictions[i]),
                 (actual(e, h), prediction(e, h))

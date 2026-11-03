@@ -2,8 +2,7 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Writing a prediction source's skipped rows keeps memory bounded: the peak
-//! heap of a run that skips 2M rows is no more than one that skips 256k.
+//! Peak heap while writing skipped rows does not grow with their count.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::fs;
@@ -14,15 +13,15 @@ use std::sync::Arc;
 use arrow_array::{Int64Array, RecordBatch, TimestampNanosecondArray};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use diskgraph_core::time::Seconds;
-use diskgraph_core::tt_builder::*;
-use diskgraph_ingest::coercion::CoercionMode;
+use diskgraph_core::tt_builder::DiskGraphTTPlan;
 use diskgraph_ingest::config::IngestOptions;
-use diskgraph_ingest::graph_config::*;
 use diskgraph_ingest::io::Dest;
 use diskgraph_train_table::custom_tt_row_errors::IngestOnError;
 use diskgraph_train_table::ttgen_executor::{execute_tt_pass_with_source, CustomTtSource};
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
+use parquet::file::reader::{FileReader, SerializedFileReader};
+use serde_json::json;
 
 #[global_allocator]
 static HEAP: PeakAllocator = PeakAllocator;
@@ -52,7 +51,7 @@ fn users_graph(root: &Path) -> PathBuf {
     fs::create_dir_all(&data).unwrap();
     let users = RecordBatch::try_new(
         Arc::new(Schema::new(vec![Field::new("user_id", DataType::Int64, false)])),
-        vec![Arc::new(Int64Array::from((0..5).collect::<Vec<i64>>()))],
+        vec![Arc::new(Int64Array::from_iter_values(0..5))],
     )
     .unwrap();
     let path = data.join("users.parquet");
@@ -60,45 +59,18 @@ fn users_graph(root: &Path) -> PathBuf {
         .unwrap();
     writer.write(&users).unwrap();
     writer.close().unwrap();
-    let config = GraphConfig {
-        dataset_name: "skipped_rows_memory".to_string(),
-        tables: vec![TableSpec {
-            name: "users".to_string(),
-            columns: vec![ColumnSpec {
-                name: "user_id".to_string(),
-                source_dtype: None,
-                ingested_dtype: IngestedType::Int64,
-                fixed_len: None,
-                timestamp_format: None,
-                timestamp_unit: None,
-                precision: None,
-                scale: None,
-                semantic_type: None,
-                multicategorical_delimiter: None,
-            }],
-            primary_key: Some("user_id".to_string()),
-            create_time: None,
-            end_time: None,
-            weight: None,
-            edge_table: None,
-            rowpack: None,
-            source: DataSource::Parquet {
-                paths: vec![path.to_str().unwrap().to_string()],
-            },
-            source_size: None,
-            fkeys: vec![],
-            data_version: None,
-            kumo_connector_id: None,
-            kumo_source_table_name: None,
-            group_by_timestamp: false,
+    let config = json!({
+        "dataset_name": "skipped_rows_memory",
+        "num_shards": 1,
+        "tables": [{
+            "name": "users",
+            "columns": [{"name": "user_id", "ingested_dtype": "int64"}],
+            "primary_key": "user_id",
+            "source": {"type": "parquet", "paths": [path]},
         }],
-        rowpack: None,
-        num_shards: Some(1),
-        edge_format: None,
-        coercion_mode: CoercionMode::Lossless,
-    };
+    });
     let config_path = data.join("graph_config.json");
-    fs::write(&config_path, serde_json::to_string(&config).unwrap()).unwrap();
+    fs::write(&config_path, config.to_string()).unwrap();
     let index = root.join("index");
     let options = IngestOptions {
         parallel: false,
@@ -116,15 +88,14 @@ fn unknown_rows(path: &Path, rows: usize) {
         Field::new("ENTITY1", DataType::Int64, false),
         Field::new("TIMESTAMP", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
     ]));
-    let per_group = ROWS_PER_GROUP;
     let props = WriterProperties::builder()
-        .set_max_row_group_row_count(Some(per_group))
+        .set_max_row_group_row_count(Some(ROWS_PER_GROUP))
         .build();
     let mut writer =
         ArrowWriter::try_new(fs::File::create(path).unwrap(), schema.clone(), Some(props)).unwrap();
-    for start in (0..rows).step_by(per_group) {
-        let ids: Vec<i64> = (start..start + per_group).map(|i| 1_000 + i as i64).collect();
-        let times = vec![1_700_000_000_000_000_000i64; per_group];
+    for start in (0..rows).step_by(ROWS_PER_GROUP) {
+        let ids: Vec<i64> = (start..start + ROWS_PER_GROUP).map(|i| 1_000 + i as i64).collect();
+        let times = vec![1_700_000_000_000_000_000i64; ROWS_PER_GROUP];
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
@@ -140,28 +111,14 @@ fn unknown_rows(path: &Path, rows: usize) {
 }
 
 fn plan() -> DiskGraphTTPlan<Seconds> {
-    DiskGraphTTPlan::<Seconds> {
-        entity: EntitySpec::<Seconds> {
-            table: "users".to_string(),
-            column: "user_id".to_string(),
-            output_time_col_name: None,
-            default_time_value: None,
-            time_col: None,
-            valid_to_col: None,
-            filter: None,
-        },
-        temporal: None,
-        prediction_type: PredictionType::Node,
-        is_prediction: true,
-        split: None,
-        stages: vec![],
-        target_stype: Some("numerical".to_string()),
-        weight_col: None,
-        fkey_mapping: None,
-        lp_resolution: None,
-        lp_rhs_is_temporal: false,
-        fact_pseudo_time: None,
-    }
+    serde_json::from_value(json!({
+        "entity": {"table": "users", "column": "user_id"},
+        "prediction_type": "node",
+        "is_prediction": true,
+        "stages": [],
+        "target_stype": "numerical",
+    }))
+    .unwrap()
 }
 
 /// Peak heap above the start of the pass, and the skipped rows written.
@@ -195,14 +152,8 @@ fn peak_while_skipping(index: &Path, root: &Path, rows: usize) -> (usize, usize)
     let written = fs::read_dir(out.join("skipped"))
         .unwrap()
         .map(|part| {
-            parquet::file::reader::FileReader::metadata(
-                &parquet::file::reader::SerializedFileReader::new(
-                    fs::File::open(part.unwrap().path()).unwrap(),
-                )
-                .unwrap(),
-            )
-            .file_metadata()
-            .num_rows() as usize
+            let reader = SerializedFileReader::new(fs::File::open(part.unwrap().path()).unwrap());
+            reader.unwrap().metadata().file_metadata().num_rows() as usize
         })
         .sum();
     (peak, written)

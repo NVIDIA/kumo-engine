@@ -34,7 +34,7 @@ from typing import (
     Tuple,
     cast,
 )
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from kumo_core.instrumentation import format_error
 from kumo_core.summaries import Dataset, Note, Summary, Table, Tag
@@ -95,6 +95,14 @@ _PATH_CONNECTORS = ('LOCAL_FILE', 'S3', 'GCS')
 _SAGEMAKER_MODEL = re.compile(r'[a-zA-Z0-9](-*[a-zA-Z0-9]){0,56}')
 _UC_FORBIDDEN = re.compile(r'[ /\x00-\x1f\x7f]')
 _HINTED: set = set()
+_BATCH_METRICS = 1000
+_SYSTEM_METRICS_FAILURES = 6
+_COLUMN_TYPES = {'int64': 'long', 'int32': 'integer', 'float64': 'double',
+                 'float32': 'float', 'bool': 'boolean', 'date': 'datetime',
+                 'time': 'datetime'}
+_Reading = Tuple[Mapping[str, float], int, int]  # values, second, time
+_FLUSH_SECONDS = 10.0
+_MIN_READINGS = 2
 
 
 class MlflowTracking(SingleRunHooks, TrackingBase):
@@ -190,8 +198,7 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
         except ValueError:
             raise
         except Exception as error:
-            raise RuntimeError(f'MLflow at {uri} is not usable with these '
-                               f'credentials: {full_error(error)}') from error
+            raise _unusable(uri, error) from error
         if not missing:
             return
         with _limited_http(), self.target.scope():
@@ -450,15 +457,15 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
             for summary in record.summaries))
 
     def _fold(self, run_id: str, record: RunRecord) -> None:
-        r"""Adds a monitoring record to a finished run and its card."""
         routed = route(record.summaries, charts=True)
         self._log_routed(routed, run_id)
         self._update_card(
             run_id, 'realized' if record.tags.get('kumo.monitor')
             == 'evaluate' else 'drift', routed.card)
         with self.target.scope():
-            self._experiment_id = self._client.get_run(
-                run_id).info.experiment_id
+            run = self._client.get_run(run_id).info
+        self._experiment_id, self.logged_run_name = (run.experiment_id,
+                                                     run.run_name)
         self.run_id = run_id
 
     def on_trial(self, record: RunRecord, event: Event) -> None:
@@ -574,7 +581,6 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
 
     def _update_card(self, run_id: str, block: Optional[str] = None,
                      summaries: Sequence[Summary] = ()) -> None:
-        r"""Regenerates the card's heading and, given block, that part."""
         self._client = self._client or self.target.client()
         with self.target.scope():
             run = self._client.get_run(run_id)
@@ -631,7 +637,6 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                            '%s: %s', self._parent, format_error(error))
 
     def _editable(self, run: Any, first: bool) -> Optional[Tuple[str, str]]:
-        r"""The card and the user's text after it; None once edited."""
         tags = run.data.tags
         if tags.get('kumo.card_frozen') == 'true':
             return None
@@ -654,7 +659,6 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                   render: Callable[[Sequence[Summary], Sequence[str]], str],
                   minimal: Callable[[Sequence[str]], str],
                   items: Sequence[Summary], user: str, budget: int) -> None:
-        r"""Writes the card within budget, moving big tables to files."""
         run_id = run.info.run_id
         files = [entry['path'] for entry in json.loads(
             run.data.tags.get('mlflow.loggedArtifacts', '[]'))]
@@ -747,11 +751,14 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
     def _log_readings(self, client: Any, run_id: str,
                       readings: Sequence['_Reading']) -> None:
         entities = self._mlflow.entities
-        metrics = [
+        self._log_batches(client, run_id, [
             entities.Metric(metric_key(name), float(value), timestamp, step)
             for values, step, timestamp in readings
             for name, value in values.items()
-        ]
+        ])
+
+    def _log_batches(self, client: Any, run_id: str,
+                     metrics: Sequence[Any]) -> None:
         with self.target.scope():
             for start in range(0, len(metrics), _BATCH_METRICS):
                 client.log_batch(
@@ -883,15 +890,11 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
             return
         entities = self._mlflow.entities
         timestamp = int(time.time() * 1000)
-        batch = [
+        self._log_batches(self._client, run_id, [
             entities.Metric(metric_key(key), float(value), timestamp, step,
                             model_id=model_id)
             for key, value in metrics.items()
-        ]
-        with self.target.scope():
-            for start in range(0, len(batch), _BATCH_METRICS):
-                self._client.log_batch(
-                    run_id, metrics=batch[start:start + _BATCH_METRICS])
+        ])
 
 
 def _digest(name: str, source: Mapping[str, Optional[str]],
@@ -912,7 +915,6 @@ _MONITORING_BYTES = 800
 
 
 def _card_hash(card: str) -> str:
-    r"""SHA-256 prefix of the card, stable under an unchanged editor save."""
     lines = card.replace('\r\n', '\n').replace('\r', '\n').split('\n')
     text = '\n'.join(line.rstrip() for line in lines).strip('\n')
     return hashlib.sha256(text.encode()).hexdigest()[:16]
@@ -927,12 +929,10 @@ def _size(card: str) -> int:
 
 
 def _budget(user: str) -> int:
-    r"""Bytes for the card: MLflow guarantees 5000 per tag value."""
     return min(4500, 5000 - len(user.encode()))
 
 
 def _free_name(client: Any, experiment_id: str, name: str) -> str:
-    r"""name, else the first free name-2, name-3, ..."""
     candidate, suffix = name, 1
     while True:
         quote_char = "'" if "'" not in candidate else '"'
@@ -955,7 +955,6 @@ def _part(name: str, text: str) -> str:
 
 
 def _with_block(card: str, name: str, text: str) -> str:
-    r"""The card with its kumo:<name> part set to text."""
     part = _part(name, text)
     existing = re.compile(f'<!-- kumo:{name} -->.*?<!-- /kumo:{name} -->',
                           re.DOTALL)
@@ -963,18 +962,6 @@ def _with_block(card: str, name: str, text: str) -> str:
         return existing.sub(lambda _: part, card, count=1)
     head, notes, rest = card.rpartition(_card.NOTES_LINE)
     return f'{head}{part}\n\n{notes}{rest}' if notes else f'{card}\n{part}'
-
-
-_BATCH_METRICS = 1000
-_SYSTEM_METRICS_FAILURES = 6
-_COLUMN_TYPES = {'int64': 'long', 'int32': 'integer', 'float64': 'double',
-                 'float32': 'float', 'bool': 'boolean', 'date': 'datetime',
-                 'time': 'datetime'}
-
-
-_Reading = Tuple[Mapping[str, float], int, int]  # values, second, time
-_FLUSH_SECONDS = 10.0
-_MIN_READINGS = 2
 
 
 class _SystemMetrics:
@@ -1071,6 +1058,15 @@ def check_model_name(name: str, registry_uri: str) -> None:
                 f'Unity Catalog cannot register a model named {name!r}: use '
                 f'catalog.schema.model without spaces or "/", e.g. '
                 f"'main.ml.users_churn'.")
+
+
+def _unusable(uri: str, error: Exception) -> RuntimeError:
+    if (urlparse(uri).scheme in ('', 'file')
+            and 'MLFLOW_ALLOW_FILE_STORE' in str(error)):
+        return RuntimeError(
+            f'MLflow refused the local folder store at {uri}: use its default '
+            f'sqlite:///mlflow.db or another tracking backend.')
+    return RuntimeError(f'MLflow at {uri} is not usable: {full_error(error)}')
 
 
 def _sagemaker_ui_hint(tracking_uri: str) -> Optional[str]:
@@ -1359,7 +1355,6 @@ def _version_text(metrics: Mapping[str, float], tune: Optional[str],
 
 def _describe_version(target: Any, client: Any, published: PublishedModel,
                       text: str) -> None:
-    r"""Puts text, sealed, at the start of the version's description."""
     name, version = published.name, published.version
     with target.scope():
         current = client.get_model_version(name, version).description or ''

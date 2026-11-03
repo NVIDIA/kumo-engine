@@ -6,6 +6,7 @@ r"""Summaries routed for trackers, and tables as tracker JSON."""
 import json
 import math
 from dataclasses import dataclass, field
+from itertools import accumulate
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from kumo_core.summaries import (
@@ -103,12 +104,9 @@ def _histogram_table(name: str, histograms: Sequence[Histogram]) -> Table:
     columns = [h.name.rpartition('/')[2] for h in histograms]
     shares = []
     for histogram in histograms:
-        total, running = sum(histogram.counts), 0.0
-        cumulative = []
-        for count in histogram.counts:
-            running += count
-            cumulative.append(running / total if total else None)
-        shares.append(cumulative)
+        total = sum(histogram.counts)
+        shares.append([running / total if total else None
+                       for running in accumulate(histogram.counts)])
     return Table(name, (
         'from', 'to', *columns,
         *(f'{column} cumulative share' for column in columns)), tuple(

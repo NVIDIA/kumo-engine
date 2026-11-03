@@ -30,9 +30,7 @@ def test_fit_records_a_self_contained_manifest(fitted):
     result = trainer.result
     manifest = result.manifest
     assert manifest.kind == 'model'
-    assert re.fullmatch('[0-9a-f]{64}', trainer.result.id)
-    assert trainer.result.id == result.id == manifest.id
-    assert trainer.result.manifest == manifest
+    assert re.fullmatch('[0-9a-f]{64}', result.id) and result.id == manifest.id
     table = manifest.parents.training_table
     assert table.kind == 'training_table' and table.id.startswith('tt-')
     assert table.parents.snapshot == snapshot.manifest
@@ -103,7 +101,8 @@ def test_each_fit_returns_a_new_result(fitted):
     assert second is not first and trainer.result is second
 
 
-def _finish_stub_fit(bundle, trainer, warm_start=None, settings=None):
+def _finish_stub_fit(bundle, trainer=None, warm_start=None, settings=None):
+    trainer = trainer or kumo.Trainer(ModelPlan())
     (bundle / 'model').mkdir(parents=True)
     (bundle / 'model' / 'config.json').write_text('{}')
     (bundle / MANIFEST_FILE).write_text(json.dumps({'artifacts': []}))
@@ -120,20 +119,16 @@ def _finish_stub_fit(bundle, trainer, warm_start=None, settings=None):
 
 
 def test_missing_parents_are_stubs_and_retrain_chains_stay_flat(tmp_path):
-    first = _finish_stub_fit(tmp_path / 'one', kumo.Trainer(ModelPlan()))
+    first = _finish_stub_fit(tmp_path / 'one')
     assert first.manifest.parents.training_table.to_dict() == {
         'kind': 'training_table', 'schema_version': 1, 'id': 'tt-1',
         'created_at': None, 'environment': None, 'reconstructed': True,
         'parents': None, 'query': None, 'generation_plan': None,
         'task_type': None, 'split_seed': None}
-    second = _finish_stub_fit(tmp_path / 'two', kumo.Trainer(ModelPlan()),
-                              warm_start=first.manifest)
-    third = _finish_stub_fit(tmp_path / 'three', kumo.Trainer(ModelPlan()),
-                             warm_start=second.manifest)
+    second = _finish_stub_fit(tmp_path / 'two', warm_start=first.manifest)
+    third = _finish_stub_fit(tmp_path / 'three', warm_start=second.manifest)
     parent = third.manifest.parents.warm_start
     assert parent == embedded_model(second.manifest)
-    assert parent.parents.warm_start == ModelManifest(id=first.id,
-                                                      reconstructed=True)
     assert parent.parents == ModelParents(
         training_table=second.manifest.parents.training_table,
         warm_start=ModelManifest(id=first.id, reconstructed=True))
@@ -141,21 +136,18 @@ def test_missing_parents_are_stubs_and_retrain_chains_stay_flat(tmp_path):
 
 def test_a_mlops_block_stores_each_model_once(tmp_path):
     cfg = kumo.MLOps(artifact_root=str(tmp_path / 'artifacts'))
-    result = _finish_stub_fit(tmp_path / 'bundle', kumo.Trainer(ModelPlan()),
-                              settings=cfg)
+    result = _finish_stub_fit(tmp_path / 'bundle', settings=cfg)
     stored = tmp_path / 'artifacts' / 'models' / result.id
     assert kumo.Trainer.load(stored).result.id == result.id
     loaded = kumo.Trainer.load_from_connector(cfg, path=f'models/{result.id}')
     assert loaded.result.id == result.id
     assert loaded.result.snapshot_id == result.snapshot_id
     (stored / 'model' / 'config.json').write_text('{"damaged": 1}')
-    again = _finish_stub_fit(tmp_path / 'again', kumo.Trainer(ModelPlan()),
-                             settings=cfg)
+    again = _finish_stub_fit(tmp_path / 'again', settings=cfg)
     assert again.id == result.id
     assert (stored / 'model' / 'config.json').read_text() == '{}'
     off = kumo.MLOps(artifact_root=str(tmp_path / 'off'), store={'snapshot'})
-    _finish_stub_fit(tmp_path / 'off-bundle', kumo.Trainer(ModelPlan()),
-                     settings=off)
+    _finish_stub_fit(tmp_path / 'off-bundle', settings=off)
     assert not (tmp_path / 'off').exists()
 
 

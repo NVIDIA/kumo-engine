@@ -2,29 +2,24 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Exact quantiles of a numerical parquet column's finite values, as NumPy's
-//! default (`linear`) `np.quantile`, by radix selection over a few reads.
+//! Exact `np.quantile` of a parquet column's finite values, by radix selection.
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use arrow::array::{Array, Float64Array};
-use arrow::compute::cast;
-use arrow_schema::DataType;
 use rayon::prelude::*;
 
-use crate::bp_col_stats::row_group_batches;
+use crate::bp_col_stats::{float64s, row_group_batches};
 
 const DIGIT: u32 = 8;
 const BUCKETS: usize = 1 << DIGIT;
-/// Values a group may hold in memory to be sorted instead of refined further.
+/// Most values sorted in memory instead of refined further.
 pub(crate) const GATHER: u64 = 1 << 22;
 
-/// One parquet column, read by row group in parallel.
 pub(crate) struct Column<'a> {
     pub paths: &'a [&'a Path],
     pub work: &'a [(usize, usize)],
-    /// Per path, the column's physical parquet index.
+    /// Parquet column index per path.
     pub indices: Vec<usize>,
 }
 
@@ -41,11 +36,7 @@ impl Column<'_> {
             .map(|&(pi, rg)| {
                 let mut state = init();
                 for batch in row_group_batches(self.paths[pi], rg, &[self.indices[pi]], &[])? {
-                    let values = cast(batch?.column(0), &DataType::Float64)?;
-                    let values = values
-                        .as_any()
-                        .downcast_ref::<Float64Array>()
-                        .context("quantile values")?;
+                    let values = float64s(batch?.column(0))?;
                     for value in values.iter().flatten().filter(|v| v.is_finite()) {
                         add(&mut state, key(value));
                     }
@@ -61,7 +52,7 @@ impl Column<'_> {
     }
 }
 
-/// An order-preserving integer key; -0.0 and 0.0 are the same value.
+/// Order-preserving; -0.0 and 0.0 map to one key.
 fn key(value: f64) -> u64 {
     let bits = (value + 0.0).to_bits();
     if bits >> 63 == 1 {
@@ -79,8 +70,7 @@ fn value(key: u64) -> f64 {
     })
 }
 
-/// A rank still being selected: the key's leading bits so far and the rank
-/// among the values that share them.
+/// A rank among the values whose keys start with `prefix`.
 #[derive(Clone, Copy)]
 struct Target {
     prefix: u64,
@@ -88,7 +78,6 @@ struct Target {
     population: u64,
 }
 
-/// The values at sorted positions `ranks` (each below `count`).
 fn select(column: &Column<'_>, count: u64, ranks: &[u64], gather: u64) -> Result<Vec<f64>> {
     let mut targets: Vec<Target> = ranks
         .iter()
@@ -174,9 +163,7 @@ fn select(column: &Column<'_>, count: u64, ranks: &[u64], gather: u64) -> Result
         .collect())
 }
 
-/// `np.quantile(values, quantiles)` over the column's finite values, with
-/// their count; no quantiles without values. Groups of at most `gather`
-/// values are sorted in memory.
+/// The count of finite values and their quantiles.
 pub(crate) fn exact_quantiles(
     column: &Column<'_>,
     quantiles: &[f64],

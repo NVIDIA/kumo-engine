@@ -360,12 +360,12 @@ def run_callable_training(
     )
 
     bindings.before_evaluate()
+    threshold = options.binary_classification_threshold
+    scoring = dict(binary_classification_threshold=threshold,
+                   target_edges=options.target_edges)
     with bindings.instrumentation.timing("kumo_auto.best_trainer_test_fit"):
-        evaluation = best_trainer.test(
-            fit_mode_to_use=FitMode.fit,
-            binary_classification_threshold=(
-                options.binary_classification_threshold),
-            target_edges=options.target_edges)
+        evaluation = best_trainer.test(fit_mode_to_use=FitMode.fit,
+                                       **scoring)
     with bindings.instrumentation.timing("kumo_auto.save_test_outputs_fit"):
         evaluation.save_all(
             root_dir=best_trainer.log_dir,
@@ -383,10 +383,7 @@ def run_callable_training(
         with bindings.instrumentation.timing(
                 "kumo_auto.best_trainer_test_refit_trainval"):
             refit_evaluation = best_trainer.test(
-                fit_mode_to_use=FitMode.refit_trainval,
-                binary_classification_threshold=(
-                    options.binary_classification_threshold),
-                target_edges=options.target_edges)
+                fit_mode_to_use=FitMode.refit_trainval, **scoring)
         with bindings.instrumentation.timing(
                 "kumo_auto.save_test_outputs_refit_trainval"):
             refit_evaluation.save_all(

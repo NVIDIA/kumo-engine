@@ -989,7 +989,6 @@ def latest_temporal_timestamp(query: ValidatedNativeQuery,
 
 def _target_maximum(query: ValidatedNativeQuery, index_path: str,
                     pick: Callable[[Iterable[int]], int]) -> int:
-    """``pick`` of the target aggregations' source maxima."""
     return pick(int(maximum.value)
                 for _, maximum in _target_time_bounds(query, index_path))
 

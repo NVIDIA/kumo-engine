@@ -69,7 +69,7 @@ class RunRecord:
                               ...]] = field(default_factory=dict)
     tags: Mapping[str, str] = field(default_factory=dict)
     artifacts: Mapping[str, str] = field(default_factory=dict)
-    #: Local directories logged as artifacts, by artifact path.
+    #: Local directories, by artifact path.
     files: Mapping[str, str] = field(default_factory=dict)
     summaries: Tuple[Summary, ...] = ()
     description: Optional[str] = None
@@ -245,8 +245,8 @@ def prediction_record(manifest: 'PredictionManifest',
     trained = getattr(_parents(model_manifest or manifest.parents.model),
                       'training_table', None)
     registered = getattr(model, 'registered_model', None)
-    label = model_label(getattr(registered, 'name', None),
-                        getattr(trained, 'query', None),
+    query = getattr(trained, 'query', None)
+    label = model_label(getattr(registered, 'name', None), query,
                         getattr(trained, 'task_type', None))
     as_of = _as_of(manifest)
     suffix = f'-{as_of}' + ('' if table.anchors else
@@ -272,7 +272,7 @@ def prediction_record(manifest: 'PredictionManifest',
                 'bundle_id': manifest.parents.model.id,
                 'prediction_id': manifest.id,
                 'as_of': as_of,
-                'entity': entity(getattr(trained, 'query', None)),
+                'entity': entity(query),
                 'tune_metric': _tune_metric(model),
                 'labels_mature': _labels_mature(manifest, window),
                 **prediction_parents(manifest),
@@ -287,7 +287,7 @@ def prediction_record(manifest: 'PredictionManifest',
             files=files,
             summaries=(*_prediction_summaries(
                 manifest, holdout_counts(model_manifest), window,
-                entity(getattr(trained, 'query', None)), as_of), *summaries,
+                entity(query), as_of), *summaries,
                 *prep_summaries(manifest.parents.snapshot)),
             error=None if error is None else format_error(error),
         ))
@@ -324,7 +324,6 @@ def _started(manifest: 'PredictionManifest') -> datetime:
 
 
 def _as_of(manifest: 'PredictionManifest') -> str:
-    r"""The anchor date (UTC), or the scored snapshot's creation date."""
     dates = sorted({_utc(anchor).date().isoformat()
                     for anchor in manifest.prediction_table.anchors})
     if not dates:
@@ -335,7 +334,6 @@ def _as_of(manifest: 'PredictionManifest') -> str:
 
 
 def _tune_metric(model: Any) -> Optional[str]:
-    r"""The metric ``model``, a `TrainingResult`, was tuned on, if known."""
     plan = getattr(getattr(model, '_trainer', None), 'model_plan', None)
     metric = getattr(getattr(plan, 'training_job', None), 'tune_metric', None)
     text = None if metric is None else str(getattr(metric, 'value', metric))
@@ -369,9 +367,9 @@ def _labels_mature(manifest: 'PredictionManifest',
         return None
     _, end, step, unit = window
     stats = (manifest.stats or {}).get('predictions')
-    arrays = getattr(stats, 'counts', None) or {}
+    counts = getattr(stats, 'counts', None) or {}
     last = max((int(name.removeprefix('TARGET_PRED_h'))
-                for name in arrays.get('arrays', {})
+                for name in counts.get('arrays', {})
                 if name.startswith('TARGET_PRED_h')), default=1)
     latest = max(_utc(anchor) for anchor in anchors)
     return (latest + pd.DateOffset(**{unit: end + (last - 1) * step})
@@ -430,12 +428,6 @@ def system_metrics(tracking: Any) -> Iterator[None]:
         yield
 
 
-def record_failure(record: RunRecord) -> Optional[Exception]:
-    r"""The error a run record says ended its run (its ``kumo.error``)."""
-    error = record.tags.get('kumo.error')
-    return None if error is None else RuntimeError(error)
-
-
 def track_prediction(
         manifest: Optional['PredictionManifest'], tracking: Any,
         error: Optional[BaseException] = None,
@@ -453,8 +445,7 @@ def track_prediction(
         record = prediction_record(manifest, error, model, summaries(),
                                    files)
     except Exception as failure:
-        logger.warning('Experiment tracking failed: %s; the prediction run '
-                       'is not tracked', full_error(failure), exc_info=_debug())
+        _untracked(failure, 'prediction')
         return failure
     return log_run(tracker, tracker.log_prediction_run, record)
 
@@ -463,9 +454,10 @@ class SingleRunHooks:
     r"""Each prediction run and monitoring call as one run of its own."""
 
     def log_prediction_run(self, record: RunRecord) -> None:
+        error = record.tags.get('kumo.error')
         self.start(record)  # type: ignore[attr-defined]
         self.finish(record,  # type: ignore[attr-defined]
-                    record_failure(record))
+                    None if error is None else RuntimeError(error))
 
     log_monitoring = log_prediction_run
 
@@ -565,7 +557,6 @@ class _Search:
                    lower=MetricStore.tune_mode(metric) == 'min')
 
     def best_epoch(self, events: Sequence[Event]) -> Optional[int]:
-        r"""The first epoch with the best validation metric."""
         points = [(event.epoch, event.metrics[self.metric])
                   for event in events if event.name == 'epoch_ended'
                   and event.epoch and self.metric in event.metrics]
@@ -679,7 +670,6 @@ class TrackingSession:
 
     def _once_a_line(self, key: Any, event: Event,
                      item: Any) -> List[Any]:
-        r"""An epoch held until its series' second, then both."""
         if event.name != 'epoch_ended':
             return [item]
         if key not in self._first_epoch:
@@ -869,17 +859,13 @@ def log_run(tracker: TrackingBase,
         try:
             method(record)
         except Exception as error:
-            logger.warning('Experiment tracking failed: %s; the %s run is not '
-                           'tracked', full_error(error),
-                           record.tags.get('kumo.kind'), exc_info=_debug())
+            _untracked(error, record.tags.get('kumo.kind'))
             failed.append(error)
 
     try:
         tracker.prepare()
     except Exception as error:
-        logger.warning('Experiment tracking failed: %s; the %s run is not '
-                       'tracked', full_error(error),
-                       record.tags.get('kumo.kind'), exc_info=_debug())
+        _untracked(error, record.tags.get('kumo.kind'))
         return error
     worker = threading.Thread(target=log, name='kumo-tracking', daemon=True)
     worker.start()
@@ -889,6 +875,11 @@ def log_run(tracker: TrackingBase,
             f'experiment tracking did not finish within {FINISH_SECONDS:g}s; '
             f'it goes on in the background')
     return failed[0] if failed else None
+
+
+def _untracked(error: BaseException, kind: Optional[str]) -> None:
+    logger.warning('Experiment tracking failed: %s; the %s run is not tracked',
+                   full_error(error), kind, exc_info=_debug())
 
 
 def _debug() -> bool:

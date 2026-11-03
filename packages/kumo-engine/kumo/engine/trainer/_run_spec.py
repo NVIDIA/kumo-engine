@@ -69,7 +69,8 @@ def holdout_metrics(result: Any) -> Dict[str, float]:
     return logged_names({
         name: value for name, value in result.metrics.items()
         if not name.startswith(('train_', 'val_'))
-    }, refit_full=_fit_mode(result) == 'refit_full')
+    }, refit_full=getattr(getattr(result, 'manifest', None), 'fit_mode',
+                          None) == 'refit_full')
 
 
 def registry_metrics(result: Any) -> Dict[str, float]:
@@ -80,10 +81,6 @@ def registry_metrics(result: Any) -> Dict[str, float]:
            for summary in getattr(result, '_summaries', ())
            if isinstance(summary, Scalar) and summary.role == 'model'}
     }.items()}
-
-
-def _fit_mode(result: Any) -> Optional[str]:
-    return getattr(getattr(result, 'manifest', None), 'fit_mode', None)
 
 
 def _registered(model: Any) -> Mapping[str, Any]:

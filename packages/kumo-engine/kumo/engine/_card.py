@@ -85,16 +85,15 @@ def heading(kind: str, metrics: Mapping[str, float],
     r"""Status line, at most HEADLINE_CHARS."""
     metrics = {metric_key(name): value for name, value in metrics.items()}
     parts = [f"failed: {tags['kumo.error']}"] if 'kumo.error' in tags else []
+    tune = _tuned(tags)
     if kind == 'fit':
-        tune = metric_key(tags.get('kumo.tune_metric') or '')
         if f'test/{tune}' in metrics:
             parts.append(f"holdout {tune} {number(metrics[f'test/{tune}'])}")
     else:
-        tuned = f"realized/{metric_key(tags.get('kumo.tune_metric') or '')}"
         realized = sorted((name for name in metrics
                            if name.startswith('realized/')
                            and name != 'realized/labelled_share'),
-                          key=lambda name: (name != tuned, name))
+                          key=lambda name: (name != f'realized/{tune}', name))
         if realized:
             parts.append(f"realized {realized[0].partition('/')[2]} "
                          f'{number(metrics[realized[0]])}')
@@ -137,7 +136,7 @@ def fit_line(tags: Mapping[str, str], params: Mapping[str, str]) -> str:
     of = tags.get('kumo.entity')
     line = 'Fit' + (f' of {_model(tags)}' if _model(tags) else '') + (
         f" for {task}{f' of {of}' if of else ''}" if task else '')
-    tune = f"val {metric_key(tags.get('kumo.tune_metric') or 'loss')}"
+    tune = f"val {_tuned(tags) or 'loss'}"
     trials = int(params.get('training_job.num_experiments') or 1)
     trial = tags.get('kumo.best_trial') if trials > 1 else None
     epoch = tags.get('kumo.best_epoch')
@@ -154,7 +153,7 @@ def holdout(kind: str, metrics: Mapping[str, float],
     r"""Brief holdout table, tuned metric first."""
     if kind != 'fit':
         return []
-    tuned = f"test/{metric_key(tags.get('kumo.tune_metric') or '')}"
+    tuned = f'test/{_tuned(tags)}'
     tested = {metric_key(name): value for name, value in metrics.items()
               if name.startswith('test/')}
     at = _at(tuned)
@@ -323,6 +322,10 @@ def _notes(summaries: Sequence[Summary], section: str) -> List[str]:
 def _model(tags: Mapping[str, str]) -> Optional[str]:
     name, version = tags.get('kumo.model_name'), tags.get('kumo.model_version')
     return f'`{name}` v{version}' if name and version else None
+
+
+def _tuned(tags: Mapping[str, str]) -> str:
+    return metric_key(tags.get('kumo.tune_metric') or '')
 
 
 def _meaning(name: str) -> str:
