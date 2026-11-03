@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""The MLOps seams take any bundle, run and predictor."""
 
 import io
 import json
@@ -168,10 +167,20 @@ def test_a_bundle_is_scored_by_the_predictor_it_names(tmp_path):
         load_predictor(unknown)
 
 
-def test_a_file_asset_is_stored_once_and_resolved_by_its_hash(tmp_path):
+def _vocab(tmp_path):
     (tmp_path / 'vocab').mkdir()
     (tmp_path / 'vocab' / 'words.txt').write_text('a b c')
-    asset = FileAsset('toy', 'vocab', tmp_path / 'vocab', version='1')
+    return tmp_path / 'vocab'
+
+
+def _volume(filesystem):
+    return SimpleNamespace(sink_backend=SimpleNamespace(
+        holds_files=lambda connector, path: path.startswith('/Volumes/'),
+        filesystem=filesystem))
+
+
+def test_a_file_asset_is_stored_once_and_resolved_by_its_hash(tmp_path):
+    asset = FileAsset('toy', 'vocab', _vocab(tmp_path), version='1')
     settings = kumo.MLOps(str(tmp_path / 'root'))
     recorded = Dependencies(settings=settings)
     record = recorded.require(asset)
@@ -288,7 +297,6 @@ def test_a_model_serves_from_its_bundle_snapshot_and_assets_alone(
 
 
 class _PrefixOnlyS3:
-    r"""S3 credentials that cover only the root's prefix."""
     type_name = 's3'
 
     def __init__(self):
@@ -321,10 +329,8 @@ def test_an_asset_is_stored_on_s3_with_prefix_scoped_rights(
     s3 = _PrefixOnlyS3()
     monkeypatch.setattr(connector, 'file_store',
                         lambda connector, path: (s3, f'bucket/kumo/{path}'))
-    (tmp_path / 'vocab').mkdir()
-    (tmp_path / 'vocab' / 'words.txt').write_text('a b c')
     deps = Dependencies(settings=kumo.MLOps(str(tmp_path / 'root')))
-    record = deps.require(FileAsset('toy', 'vocab', tmp_path / 'vocab'))
+    record = deps.require(FileAsset('toy', 'vocab', _vocab(tmp_path)))
     assert deps.errors == [] and record.location
     assert sorted(s3.objects) == [
         f'bucket/kumo/assets/toy/{record.sha256}/_provenance.json',
@@ -378,13 +384,9 @@ def test_volume_assets_load_through_the_connector_the_loader_was_given(
     monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
     (tmp_path / 'volume').mkdir()
     files = SubTreeFileSystem(str(tmp_path / 'volume'), LocalFileSystem())
-    volume = SimpleNamespace(sink_backend=SimpleNamespace(
-        holds_files=lambda connector, path: path.startswith('/Volumes/'),
-        filesystem=lambda connector, path: (files, path.lstrip('/'))))
-    (tmp_path / 'vocab').mkdir()
-    (tmp_path / 'vocab' / 'words.txt').write_text('a b c')
+    volume = _volume(lambda connector, path: (files, path.lstrip('/')))
     recorded = Dependencies(settings=kumo.MLOps((volume, '/Volumes/c/s/v/a')))
-    record = recorded.require(FileAsset('toy', 'vocab', tmp_path / 'vocab'))
+    record = recorded.require(FileAsset('toy', 'vocab', _vocab(tmp_path)))
     assert record.location.startswith('/Volumes/c/s/v/a/assets/toy/')
     manifest = ModelManifest(id='m', dependencies=[record])
 
@@ -418,9 +420,7 @@ def test_the_pyfunc_reads_a_volume_snapshot_through_assets_from(
     from kumo.engine.graph import GraphSnapshot
     from kumo.engine.integrations import _mlflow_model
 
-    volume = SimpleNamespace(sink_backend=SimpleNamespace(
-        holds_files=lambda connector, path: path.startswith('/Volumes/'),
-        filesystem=lambda connector, path: None))
+    volume = _volume(lambda connector, path: None)
     loads = []
     monkeypatch.setattr(GraphSnapshot, 'load_from_connector',
                         lambda connector, *, path: loads.append(
