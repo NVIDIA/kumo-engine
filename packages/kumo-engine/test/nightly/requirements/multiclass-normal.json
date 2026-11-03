@@ -4,7 +4,6 @@
     "ram_bytes": 65337169920,
     "scratch_bytes": 10807137280,
     "gpu_memory_bytes": 3773562880,
-    "gpu_class": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
     "gpus": 1,
     "time_seconds": 869
   },
