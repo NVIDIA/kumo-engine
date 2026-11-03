@@ -1,0 +1,72 @@
+{
+  "format": "kumo-engine-nightly-resource-proposals-v1",
+  "status": "PROPOSAL_NOT_APPROVED",
+  "input_manifest_sha256": "caba00478af611669d79b9998a6c2139cd689254fc5d642043c1fdde6d1a7cae",
+  "wheel_sha256": "1bc15ecb7696bce216b05aa883d6897d2b8ce4342c6c2f9d62b7cc28b314539e",
+  "cases": {
+    "binary-normal": {
+      "path": "requirements/binary-normal.json",
+      "sha256": "14612196e26ec9b21d79c8eebcb77927a8b49432f2030e65306dee787c49c367"
+    },
+    "binary-control": {
+      "path": "requirements/binary-control.json",
+      "sha256": "3b97dbcea48a27efca5eab7b3f908cb064ef476f2f9d45820abbecc8908f40b2"
+    },
+    "multiclass-normal": {
+      "path": "requirements/multiclass-normal.json",
+      "sha256": "900a4d5f88299912358607aaf7ea95183400e6aa0a51c8c3734c76119cdfc30c"
+    },
+    "multiclass-control": {
+      "path": "requirements/multiclass-control.json",
+      "sha256": "57a49690c59c16b6e7e6c836b5104208e9f7c794b149d85003a1d65f09683987"
+    },
+    "regression-normal": {
+      "path": "requirements/regression-normal.json",
+      "sha256": "004221afe68b13a48672116de9e69103641a35aaa777392d94ff4b2de3ca07ce"
+    },
+    "regression-control": {
+      "path": "requirements/regression-control.json",
+      "sha256": "612f923a86c726c8fbf892a21232242664349516dc5d2f3567012411c2dc1f71"
+    },
+    "multilabel-normal": {
+      "path": "requirements/multilabel-normal.json",
+      "sha256": "1dd072cf07578950233c0d43a5e0b1ccafbcdbb7936f9887e6284294fbf4b931"
+    },
+    "multilabel-control": {
+      "path": "requirements/multilabel-control.json",
+      "sha256": "f792caba79821c1bf9fdb86dd4457e39e3efe64e85af35dd77a9490617a45bab"
+    },
+    "multilabel_ranking-normal": {
+      "path": "requirements/multilabel_ranking-normal.json",
+      "sha256": "6750fc3e19be2f7dd1de662ddba050db3e8183c29a9493780502b87cf8e1a11f"
+    },
+    "multilabel_ranking-control": {
+      "path": "requirements/multilabel_ranking-control.json",
+      "sha256": "5fd455a2402a17d09a1ee2eda7dca083074a224c0301177d3feae37a5cd6e27f"
+    },
+    "forecasting-normal": {
+      "path": "requirements/forecasting-normal.json",
+      "sha256": "d0ce47c86c11a412283f719f5b110885297beb9e8bc5b52b9586cb5699211225"
+    },
+    "forecasting-control": {
+      "path": "requirements/forecasting-control.json",
+      "sha256": "04f0b31f1296087ca51df30f2812a5f300b8518d39449b0551ea21270e6072ce"
+    },
+    "static_link-normal": {
+      "path": "requirements/static_link-normal.json",
+      "sha256": "74dbf41129718ec1f445c2e22953398247b57e9a6485310289e7bb96c6cf435e"
+    },
+    "static_link-control": {
+      "path": "requirements/static_link-control.json",
+      "sha256": "83045d7c575056793ba3cfdb4b6ec237160ae2683492db58e1b2cdf10f6fc2b9"
+    },
+    "temporal_link-normal": {
+      "path": "requirements/temporal_link-normal.json",
+      "sha256": "a7a50b8d7eec4ec5323458a86afb959e01b20f88b990e0e38ad124d96b4a1cb6"
+    },
+    "temporal_link-control": {
+      "path": "requirements/temporal_link-control.json",
+      "sha256": "e26e2b68734ddcde01317db145e4e6ad8aa20fe48fd61fe7bbc0fb4fd2305041"
+    }
+  }
+}

@@ -10,10 +10,10 @@
   },
   "reference": {
     "path": "reference.json",
-    "sha256": "c0ff7a2087646de4ba0fccc3fc031e9e2152ff616e5bdb77a879399bc3bf1aef"
+    "sha256": "8228f3fdf59a733ad0ac3e303c114d13e9f3486fbe2e69e5900eb5e35d6c572d"
   },
   "policy": {
     "path": "policy.json",
-    "sha256": "66d04da9186312fe4d00bb42840333babc41fdcc13b2da3d075ee59d2c46a7cd"
+    "sha256": "372a3f8d72ef6e7e123134f258c6cff8c0d1da94ace2c80a759484c1cc681830"
   }
 }

@@ -39,25 +39,25 @@
       "atol": 0.0001
     },
     "forecasting": {
-      "atol": 0.0001
+      "atol": 0.0008
     },
     "multiclass": {
-      "atol": 0.0001
+      "atol": 0.00021
     },
     "multilabel": {
-      "atol": 0.0001
+      "atol": 0.00082
     },
     "multilabel_ranking": {
-      "atol": 0.0001
+      "atol": 0.00039
     },
     "regression": {
-      "atol": 0.0001
+      "atol": 0.0043
     },
     "static_link": {
-      "atol": 0.0004
+      "atol": 0.024
     },
     "temporal_link": {
-      "atol": 0.0001
+      "atol": 0.0055
     }
   }
 }

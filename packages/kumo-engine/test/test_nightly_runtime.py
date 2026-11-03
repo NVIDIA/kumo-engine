@@ -67,6 +67,8 @@ class NightlyRuntimeTest(unittest.TestCase):
             [frame.iloc[:3], frame.iloc[3:6], frame.iloc[6:]], [1, 2],
             [10, 11, 12, 13, 14], [[10], []], 2, 4)
         self.assertEqual(result['ranked_ids'], [[11, 12], [10, 11]])
+        self.assertEqual(result['boundary_ids'],
+                         [[11, 12, 13], [10, 11, 12, 13]])
         self.assertEqual(result['raw_rows'], 8)
         for bad in (frame.iloc[:-1], frame.assign(SCORE=.5),
                     frame.assign(CLASS=[10] * 8),
@@ -203,10 +205,12 @@ class NightlyRuntimeTest(unittest.TestCase):
 
     def test_complete_roster_rejects_reused_fit_and_partial_result(self):
         rows = self.rows()
+        rows[0]['physical_fits'] = 4
         nightly.check_results(rows)
         invalid = [
             rows[:-1], rows + [rows[0]],
             [dict(row, seed=False) for row in rows],
+            [dict(row, physical_fits=0) for row in rows],
             [dict(row, fit_id=rows[0]['fit_id']) for row in rows],
             [
                 dict(row, status='FAIL') if i == 3 else row

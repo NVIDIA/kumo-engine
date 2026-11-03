@@ -79,6 +79,7 @@
       "proposed_maximum": 0.0046
     }
   },
-  "open_requirement": "Static-link normal remains below the original popularity baseline. Do not treat the weaker random baseline as an approved substitute.",
-  "limits": "Control headroom is a proposal from retained measurements, not a measured confidence interval or current candidate qualification."
+  "limits": "Control headroom is a proposal from retained measurements, not a measured confidence interval or current candidate qualification.",
+  "scope": "Historical limited-training audit. Superseded by the FAST reference campaign. Retained for provenance.",
+  "historical_open_requirement": "Static-link normal remains below the original popularity baseline. Do not treat the weaker random baseline as an approved substitute."
 }

@@ -2,9 +2,12 @@
 
 The suite checks eight tasks on frozen synthetic 100M inputs from S3.
 Each task has a normal case and a case with scrambled answers.
-These sixteen cases each build a snapshot, fit once, and compare full, repeated,
-partial, and reloaded predictions. Cases share only the built wheel and frozen
-inputs. Each command selects one case and uses fresh scratch and evidence paths.
+Each case builds a fresh snapshot and calls the public trainer once.
+That call can try several candidate models through the task's suggested FAST
+plan. A candidate is a model tried during training. Each case compares full,
+repeated, partial, and reloaded predictions. Cases share only the built wheel
+and frozen inputs. Each command selects one case and uses fresh scratch and
+evidence paths.
 
 ## Execution and wheel identity
 
@@ -28,10 +31,13 @@ python packages/kumo-engine/scripts/nightly_job.py build \
 
 Install that wheel with its own requirements in a fresh Python 3.12 environment.
 Run `pip check`. The harness compares the installed product files with the wheel
-archive before fitting. The frozen dependency profile applies only to reference
-execution. Candidate dependency changes do not require a new input archive.
-The runtime requires Linux x86_64 and an RTX PRO 6000. AWS target qualification
-remains open.
+archive before fitting. The frozen dependency profile applies only to ordinary
+reference execution. Resource measurement records the installed dependencies
+for a new reference proposal. It does not require the old smoke-run profile.
+Candidate dependency changes do not require a new input archive.
+The runtime requires Linux x86_64 and an RTX PRO 6000. The reference campaign
+uses one AWS g7e.8xlarge per case, with one Blackwell GPU, 32 CPUs, and 256 GiB
+of RAM. Candidate-wheel qualification remains separate work.
 
 ## Frozen inputs and reference review
 
@@ -44,33 +50,63 @@ static commerce view. The reader rejects changed files, missing rows, invalid
 keys, and incomplete forecast coordinates. No DuckDB step generates the inputs.
 
 The [reference proposal](../../packages/kumo-engine/test/nightly/reference.json)
-retains the historical 1.0.0 scores, fit identities, and checkpoint hashes.
-It records original baselines beside the proposed baselines. The
-[baseline audit](../../packages/kumo-engine/test/nightly/evidence/baseline-audit.json)
-uses existing frozen data and results. It starts no new fits or model predictions.
+contains sixteen complete executions of the approved Engine 1.0.0 wheel.
+Training uses each task's public suggested FAST plan. The Engine chooses
+candidates and checkpoints through validation. The harness does not tune the
+plan or select a model from its test score.
 
-Forecasting previously compared against repeating the last observed value.
-That predictor has error `0.659099` on scrambled answers. An always-zero count
-predictor has lower error, `0.382274`, on both answer arms. The scrambled model's
-error is `0.385228`, only `0.002954` away. The proposal uses this stronger fixed
-baseline and keeps the existing forecasting bounds. The normal model also passes.
+The [campaign evidence](../../packages/kumo-engine/test/nightly/evidence/reference-campaign.json)
+records quality, candidate counts, timing, calibration, and resource file hashes.
+The [baseline provenance](../../packages/kumo-engine/test/nightly/evidence/fast-baseline-provenance.json)
+records the training statistics and frozen input identities used for baselines.
+The earlier [baseline audit](../../packages/kumo-engine/test/nightly/evidence/baseline-audit.json)
+remains a historical record.
+Evidence paths are relative to each case's saved artifact directory.
+The archive checksum identifies the retained evidence. Private storage locations
+stay outside the public descriptors.
 
-The [policy proposal](../../packages/kumo-engine/test/nightly/policy.json) sets
-static-link control drift to `0.00021` and temporal-link control drift to `0.0046`.
-They cover retained differences of `0.000163982` and `0.003657920` with headroom.
-These are calibration proposals from one historical run, not confidence intervals
-across seeds. Other normal learning margins remain positive.
+Static-link normal has recall@5 `0.118145`. The unchanged popularity
+baseline scores `0.009904`. Recall@5 measures the share of each
+customer's true merchants recovered by five recommendations, averaged across
+customers. The older limited-training score, `0.007665`, remains a failure
+counterexample in the CPU checks. The random baseline does not replace the
+popularity requirement.
 
-Static-link normal still fails. Its score, `0.007665`, is below the original
-popularity baseline, `0.009904`. The weaker random baseline appears only as a
-diagnostic. It does not replace the popularity gate. This remains a merge blocker.
+Mean absolute error is the average absolute difference between prediction and
+answer. Forecasting normal has error `0.334672`, below the stronger
+always-zero baseline of `0.382274`. The normal baseline stays unchanged.
+Default FAST trains with Huber loss, which penalizes errors differently from
+mean absolute error. The scrambled model predicts nearly constant values.
 
-A reviewer must approve the baseline methods, bounds, complete candidate evidence,
+The proposed forecast control baseline minimizes Huber loss on training labels,
+independently for each of twelve horizons. It has test error
+`0.544186`. The control model has error `0.512046`.
+The initial zero-baseline failure remains in the campaign evidence. All learning
+limits remain unchanged. The new control baseline is a review proposal.
+
+The [policy proposal](../../packages/kumo-engine/test/nightly/policy.json) also
+calibrates numerical comparisons from observed repeated, partial, and reloaded
+predictions. Each absolute limit covers twice the largest observed score or
+decision-gap difference, rounded upward to two significant digits. Existing
+larger limits stay unchanged. Relative tolerance stays zero. These values are
+observed headroom, not confidence intervals or guarantees across future runs.
+
+All sixteen cases pass the proposed numerical checks. Normal models
+meet their positive baseline margins and beat their paired scrambled controls.
+The controls meet their proposed baseline limits. Original failed attempts and
+comparisons remain in the retained evidence. A completed measurement alone does
+not qualify a reference.
+
+A reviewer must approve the baseline methods, bounds, complete reference evidence,
 and measured resource declarations before the reference is approved. Change the
 pinned checksums through review. A successful run does not publish or approve a
 reference. The current files explicitly remain proposals.
 
 ## Independent cases and resource declarations
+
+The [resource proposal index](../../packages/kumo-engine/test/nightly/resource-proposals.json)
+links each of sixteen measured cases to its proposed manifest and SHA-256.
+These declarations remain proposals until review.
 
 Each qualification case requires a reviewed resource manifest and its checksum.
 The manifest contains `minimum`, `measurement`, and `headroom`. It declares CPU
@@ -101,6 +137,10 @@ descriptor. Case flags cannot override those bindings. The artifact helper's
 `RUNNER_TEMP`, `NIGHTLY_CONFIGURATION`, and `GITHUB_ENV` for those commands. They do
 not create a VM, submit a job, or supply credentials.
 
+If no time override is supplied, a qualification case uses its declared time
+limit. A caller with a shared deadline must pass the remaining time through
+`--time-budget-seconds`.
+
 When no measured manifest exists, use `--measure-resources` instead of the two
 requirements flags. Also supply an explicit `--time-budget-seconds`. This mode
 still performs real case work and needs separate execution approval. It emits
@@ -111,9 +151,15 @@ The resource observer samples process-tree RAM, CPU use, owned scratch and outpu
 files, and device memory once per second. It includes snapshot construction and
 records duration, wheel identity, harness identity, and input identity. Failed or
 invalid observations remain `INCOMPLETE`. Measurements are sampled peaks, not
-instantaneous maxima. Historical records lack complete independent-case CPU and
-scratch peaks. Reviewed declarations for all sixteen cases remain open. This PR
-does not invent those values or claim a complete runtime budget.
+instantaneous maxima. RAM is the sum of process memory reports. Shared pages
+can count more than once, so the proposed RAM requirement is conservative.
+The declarations add 25 percent to measured peaks and duration. GPU class and
+count record the tested hardware.
+
+The campaign uses prepared VMs, installed environments, and frozen inputs.
+It skips a cold wheel build and shared environment setup. Its overall elapsed
+time includes retries and evidence collection. These measurements do not prove
+that a cold nightly build, setup, and all cases fit the 180-minute budget.
 
 ## Learning and prediction gates
 
@@ -122,20 +168,40 @@ minus baseline for higher-is-better metrics. For regression and forecasting,
 it means baseline error minus model error. The scrambled score's absolute distance
 from its own baseline must stay within `max_control_drift`. Missing or invalid
 scores fail. A model with no gain or a control that learns too much fails.
+Normal quality must also exceed the paired control by `min_normal_gain`.
+This prevents a control that matches normal learning from qualifying inside
+the separate baseline limits.
+An individual case result does not qualify the whole suite. Combine all sixteen
+results and apply the paired learning checks before declaring suite success.
 
 Every prediction must return all expected entities with finite coordinates.
 Numeric differences must meet the task's absolute `atol` bound by class ID.
 Relative tolerance is zero. Non-link tasks use the shared Engine PR comparison.
 Binary and multilabel decisions change only near their threshold. Multiclass
 choices and reversed ranking pairs must meet `atol` in both outputs. Changed
-top-K membership needs retained K+1 cutoff coordinates on both sides.
+top-K membership needs retained cutoff coordinates on both sides. The reader
+retains up to 2K eligible scores to cover multiple swaps. A comparison fails
+when those scores cannot prove every changed membership.
 These gates apply to repeated, partial, and reloaded predictions.
+Resource measurement mode retains every numerical comparison and its failure
+status. It still rejects invalid output coordinates. A `MEASURED` result
+records a complete observation and does not approve the reference or its limits.
 
 The harness uses public training results, artifact paths, saved bundles, and
 Lightning callbacks. It compares reloaded weights with the selected checkpoint.
 It does not search private fit directories or replace Engine fit methods.
-Training uses seed zero and the frozen recipe. Prediction keeps default product
-kernels and OOM recovery. A successful out-of-memory recovery stays valid.
+Training uses seed zero and each task's public suggested FAST plan. The Engine
+selects candidates and checkpoints through its default validation process.
+The harness records actual candidate batches, validation histories, stopping
+callbacks, selected checkpoint bytes, and requested plan hashes.
+The frozen input signature retains generator metadata from the archive.
+`requested_plan_sha256` identifies the actual FAST execution plan separately.
+The harness supports multiple candidates, variable batch sizes, and early stopping.
+The selection metric can differ from the reported nightly quality metric.
+Classification calibration can rewrite a candidate's checkpoint after fitting.
+The observer records its final hash after the candidate's validation step.
+Prediction keeps default product kernels and OOM recovery. A successful
+out-of-memory recovery stays valid.
 `result.json` records allocator OOM counter increases under `work.oom_recoveries`.
 The harness does not match log strings to detect recovery. A failure before output
 creates a failed case result. Other cases retain their results and continue.
@@ -147,9 +213,9 @@ a time. The
 [retained 88M-row measurement](../../packages/kumo-engine/test/nightly/evidence/reader-88m.json)
 reports 586 seconds, about 9.8 minutes, for one synthetic prediction stream.
 Peak process RSS was 3,184,672,768 bytes. Peak owned disk was 5,031,972,864 bytes.
-Ordering, row count, checksum, and temporary-file cleanup passed. The reader
-function remains unchanged. This is CPU reader evidence, not complete-case or
-GPU qualification. The evidence does not establish a six-hour suite budget.
+Ordering, row count, checksum, and temporary-file cleanup passed. The streaming
+sorter remains unchanged. This is CPU reader evidence, not complete-case or
+GPU qualification. The evidence does not establish a complete 180-minute nightly budget.
 
 The standalone
 [reader benchmark](../../packages/kumo-engine/benchmarks/nightly_reader.py)

@@ -17,19 +17,30 @@ SPEC.loader.exec_module(nightly)
 
 
 class LearningAndPredictions(unittest.TestCase):
-    def test_reference_calibration_keeps_the_unresolved_static_normal_failure(
-            self):
+    def test_a_scrambled_model_cannot_match_normal_inside_the_chance_band(self):
+        root = SOURCE.parents[1] / 'test/nightly'
+        rows = nightly.read(root / 'reference.json')['cases']
+        for row in rows:
+            if row['task'] == 'forecasting':
+                row['score'] = .335
+                row['baseline'] = .3822739835549215
+        policy = nightly.read(root / 'policy.json')['learning']
+        checked = nightly.check_learning(rows, policy)['tasks']['forecasting']
+        self.assertEqual(checked['status'], 'FAIL')
+
+    def test_reference_calibration_meets_all_task_learning_checks(self):
         root = SOURCE.parents[1] / 'test/nightly'
         reference = nightly.read(root / 'reference.json')
         policy = nightly.read(root / 'policy.json')['learning']
         measured = nightly.check_learning(reference['cases'], policy)
+        self.assertEqual(measured['status'], 'PASS')
+        historical = copy.deepcopy(reference['cases'])
+        next(row for row in historical if row['task'] == 'static_link'
+             and row['arm'] == 'normal')['score'] = .007665
         self.assertEqual(
-            {
-                task
-                for task, row in measured['tasks'].items()
-                if row['status'] == 'FAIL'
-            }, {'static_link'})
-        self.assertLess(measured['tasks']['static_link']['normal_gain'], 0)
+            nightly.check_learning(historical,
+                                   policy)['tasks']['static_link']['status'],
+            'FAIL')
         for task in policy:
             for fault in ('nonlearning', 'leaked_control'):
                 rows = copy.deepcopy(reference['cases'])
@@ -87,6 +98,7 @@ class LearningAndPredictions(unittest.TestCase):
                         task=task, arm=arm, seed=0, status='MEASURED',
                         physical_fits=1, fit_id=f'{task}-{arm}',
                         checkpoint_sha256='a' * 64, seconds=1.,
+                        prediction_checks=dict(status='PASS'),
                         prediction_batches={
                             stage: 1
                             for stage in nightly.PREDICTIONS
@@ -101,6 +113,10 @@ class LearningAndPredictions(unittest.TestCase):
             })
         self.assertEqual(
             nightly.summarize(rows, reference, policy)['status'], 'PASS')
+        rows[0]['prediction_checks']['status'] = 'FAIL'
+        self.assertEqual(
+            nightly.summarize(rows, reference, policy)['status'], 'FAIL')
+        rows[0]['prediction_checks']['status'] = 'PASS'
         rows[0]['score'] = .5
         self.assertEqual(
             nightly.summarize(rows, reference, policy)['status'], 'FAIL')
@@ -167,6 +183,41 @@ class LearningAndPredictions(unittest.TestCase):
         ]:
             with self.subTest(damaged=damaged), self.assertRaises(ValueError):
                 nightly.ranked_difference(before, damaged, atol=.0004)
+
+    def test_rank_measurement_retains_failed_score_and_inversion_bounds(self):
+        before = dict(ranked_ids=[[1, 2]], ranked_scores=[[.9, .5]])
+        after = dict(ranked_ids=[[2, 1]], ranked_scores=[[.9, .5]])
+        result = nightly.ranked_difference(before, after, atol=.0004,
+                                           measure_only=True)
+        self.assertEqual(result['status'], 'FAIL')
+        self.assertAlmostEqual(result['max_abs_aligned_score_difference'], .4)
+        self.assertAlmostEqual(result['max_inverted_score_gap'], .4)
+        with self.assertRaises(ValueError):
+            nightly.ranked_difference(before, dict(after, ranked_ids=[[2, 2]]),
+                                      atol=.0004, measure_only=True)
+
+    def test_rank_measurement_reports_missing_cutoff_proof_as_failure(self):
+        before = dict(ranked_ids=[[1, 2]], ranked_scores=[[.5, .5]],
+                      boundary_ids=[[1, 2, 5]], boundary_scores=[[.5, .5, .5]])
+        after = dict(ranked_ids=[[3, 4]], ranked_scores=[[.5, .5]],
+                     boundary_ids=[[3, 4, 6]], boundary_scores=[[.5, .5, .5]])
+        result = nightly.ranked_difference(before, after, atol=.0004,
+                                           measure_only=True)
+        self.assertEqual(result['status'], 'FAIL')
+        self.assertEqual(result['unproven_membership_changes'], 1)
+        with self.assertRaises(ValueError):
+            nightly.ranked_difference(before, after, atol=.0004)
+
+    def test_multiple_cutoff_swaps_use_all_retained_boundary_coordinates(self):
+        before = dict(ranked_ids=[[1, 2]], ranked_scores=[[.5001, .5]],
+                      boundary_ids=[[1, 2, 3, 4]],
+                      boundary_scores=[[.5001, .5, .4999, .4998]])
+        after = dict(ranked_ids=[[3, 4]], ranked_scores=[[.5001, .5]],
+                     boundary_ids=[[3, 4, 1, 2]],
+                     boundary_scores=[[.5001, .5, .4999, .4998]])
+        self.assertEqual(
+            nightly.ranked_difference(before, after, atol=.0004)['status'],
+            'PASS')
 
     def test_rank_cutoff_changes_need_both_sides_of_the_boundary(self):
         before = dict(ranked_ids=[[1, 2]], ranked_scores=[[.9, .5001]],

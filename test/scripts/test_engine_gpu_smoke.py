@@ -99,6 +99,23 @@ def test_forecasts_require_all_twelve_horizons_at_the_original_anchor():
             check('forecasting', broken, [10], anchor='2025-01-01')
 
 
+def test_forecasts_accept_the_graphs_exported_time_column():
+    check = runner().prediction_values
+    frame = pd.DataFrame({
+        'ENTITY': [10] * 12,
+        'signup_time': pd.date_range('2025-01-01', periods=12, freq='7D'),
+        'TARGET_PRED': range(12),
+        'ANCHOR_TIMESTAMP': ['2025-01-01'] * 12
+    })
+    assert check('forecasting', frame, [10], anchor='2025-01-01').tolist() == [
+        list(range(12))
+    ]
+    for broken in (frame.drop(columns='signup_time'),
+                   frame.assign(other_time=frame.signup_time)):
+        with pytest.raises(ValueError):
+            check('forecasting', broken, [10], anchor='2025-01-01')
+
+
 def test_links_require_the_complete_catalog_without_repeated_pairs():
     check = runner().prediction_values
     frame = pd.DataFrame({
@@ -130,6 +147,21 @@ def test_reload_tolerance_accepts_boundary_and_rejects_larger_or_invalid_values(
     ):
         with pytest.raises(ValueError):
             compare(before, after, task='regression', atol=bound)
+
+
+def test_measurement_retains_failed_bounds_but_rejects_invalid_coordinates():
+    compare = runner().compare_predictions
+    result = compare([[1.]], [[1.01]], task='regression', atol=.0001,
+                     measure_only=True)
+    assert result['status'] == 'FAIL'
+    assert result['max_abs_difference'] > .009
+    with pytest.raises(ValueError):
+        compare([[1.]], [[np.nan]], task='regression', atol=.0001,
+                measure_only=True)
+    with pytest.raises(ValueError):
+        compare([[.7, .3]], [[.69, .31]], task='binary', atol=.0001,
+                before_decisions=np.array([True]),
+                after_decisions=np.array([False]), measure_only=True)
 
 
 def test_training_proof_rejects_zero_work_and_incomplete_fits():

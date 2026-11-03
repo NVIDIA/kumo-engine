@@ -1,0 +1,41 @@
+{
+  "minimum": {
+    "cpus": 19,
+    "ram_bytes": 138961904640,
+    "scratch_bytes": 11265346560,
+    "gpu_memory_bytes": 2213806080,
+    "gpu_class": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "gpus": 1,
+    "time_seconds": 1103
+  },
+  "measurement": {
+    "format": "kumo-engine-nightly-resources-v1",
+    "status": "MEASURED",
+    "task": "forecasting",
+    "arm": "control",
+    "peaks": {
+      "cpu_cores": 15.043854742516862,
+      "ram_bytes": 111169523712,
+      "scratch_bytes": 9012277248,
+      "gpu_memory_bytes": 1771044864
+    },
+    "seconds": 882.0848655700684,
+    "errors": [],
+    "gpu_class": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "gpus": 1,
+    "input_manifest_sha256": "caba00478af611669d79b9998a6c2139cd689254fc5d642043c1fdde6d1a7cae",
+    "wheel_sha256": "1bc15ecb7696bce216b05aa883d6897d2b8ce4342c6c2f9d62b7cc28b314539e",
+    "harness_sha256": "7053b1a1682c4892fb466c1928a4e9886a3ced1a6534c36c7eb29512e39f605f",
+    "monitor_sha256": "75c8029ba0e6e077ce2ec1cfe2d17228367d17db3ceb676a8683b79c854c8325",
+    "requested_plan_sha256": "b5feef36d8bb893a74a07d502aa5cd3935cd3dcc6681788587eaf9781d4d6f9d",
+    "input_signature": {
+      "descriptor": "9a1403a615b09f81509f5ed693da8333398574a3215a0f441bfb21ed56c67725",
+      "prediction": "b4e0d80cfcbfd3c8608b01cf01b34d70e5b4afbe7fbfb0d7da60d1f1d8426ca1",
+      "partial": "5a04d6a9ae68f85848f53fc58a4b8fe9551d9fb9a72e3b2b604a24410e977831",
+      "requested_plan": "be52ef4806808ae16047cb2cb3afa41eb7ec32941dc3fe718e614ebef92edd9f"
+    },
+    "scope": "Complete case process tree, evidence collection and upload. Includes the monitor.",
+    "sample_interval_seconds": 1
+  },
+  "headroom": 1.25
+}

@@ -108,6 +108,12 @@ def prediction_values(task, frame, ids, *, classes=(), anchor=None,
         coordinates = list(classes)
         if task == 'forecasting':
             frame = frame.copy()
+            if time_column not in frame:
+                exported = set(frame) - {'ENTITY', 'TARGET_PRED',
+                                         'ANCHOR_TIMESTAMP'}
+                if len(exported) != 1:
+                    raise ValueError('Forecast output needs one time coordinate')
+                [time_column] = exported
             key, column = time_column, 'TARGET_PRED'
             frame[key] = pd.to_datetime(frame[key])
             coordinates = [
@@ -166,7 +172,7 @@ def prediction_decisions(task, frame, ids, *, classes=()):
 
 
 def compare_predictions(before, after, *, task, atol, before_decisions=None,
-                        after_decisions=None):
+                        after_decisions=None, measure_only=False):
     """Bound every score and allow only tolerance-sized decision ambiguities."""
     import numpy as np
 
@@ -185,53 +191,79 @@ def compare_predictions(before, after, *, task, atol, before_decisions=None,
         max_relative_difference=float(
             (difference / np.maximum(np.abs(left), 1e-12)).max()),
         within_tolerance=bool(np.allclose(left, right, atol=atol, rtol=0.)))
-    if not result['within_tolerance']:
-        raise ValueError(
-            f'Prediction difference exceeds atol={atol}, rtol=0: {result}')
+
+    def finish():
+        result.update(status='PASS' if result['within_tolerance'] else 'FAIL',
+                      policy='measurement' if measure_only else 'enforced',
+                      atol=atol, rtol=0.)
+        if not result['within_tolerance'] and not measure_only:
+            raise ValueError(
+                f'Prediction difference exceeds atol={atol}, rtol=0: {result}')
+        return result
+
+    if not measure_only and not result['within_tolerance']:
+        return finish()
     if task in ('regression', 'forecasting'):
         if before_decisions is not None or after_decisions is not None:
             raise ValueError('Scalar prediction decisions must be absent')
-        return result
+        return finish()
     choices = [np.asarray(v) for v in (before_decisions, after_decisions)]
     for values, selected in zip((left, right), choices):
         if task in ('binary', 'multilabel', 'multiclass'):
-            expected_shape = (len(values),) if task == 'binary' else values.shape
+            expected_shape = (
+                len(values), ) if task == 'binary' else values.shape
             if selected.shape != expected_shape or selected.dtype != np.bool_:
-                raise ValueError('Prediction decisions have invalid label coordinates')
+                raise ValueError(
+                    'Prediction decisions have invalid label coordinates')
             if task == 'multiclass':
                 if (not (selected.sum(axis=1) == 1).all() or not np.array_equal(
                         values[selected], values.max(axis=1))):
-                    raise ValueError('Prediction decisions must choose a highest score')
+                    raise ValueError(
+                        'Prediction decisions must choose a highest score')
             elif not np.array_equal(
                     selected, (values[:, 1] if task == 'binary' else values) > .5):
-                raise ValueError('Prediction decisions must follow the threshold')
+                raise ValueError(
+                    'Prediction decisions must follow the threshold')
         elif task in ('multilabel_ranking', 'static_link', 'temporal_link'):
-            if (selected.shape != values.shape or not np.issubdtype(
-                    selected.dtype, np.number) or not np.isfinite(selected).all()):
-                raise ValueError('Prediction decisions have invalid rank coordinates')
+            if (selected.shape != values.shape
+                    or not np.issubdtype(selected.dtype, np.number)
+                    or not np.isfinite(selected).all()):
+                raise ValueError(
+                    'Prediction decisions have invalid rank coordinates')
             ranks = np.sort(selected, axis=1)
             if (not np.isin(ranks[:, 0], [0, 1]).all() or not np.array_equal(
                     ranks, ranks[:, :1] + np.arange(values.shape[1]))):
-                raise ValueError('Prediction decisions must contain unique contiguous ranks')
+                raise ValueError(
+                    'Prediction decisions must contain unique contiguous ranks')
         else:
             raise ValueError('Unknown prediction decisions task')
     if task == 'multiclass':
         rows = np.arange(len(left))
         old, new = [selected.argmax(axis=1) for selected in choices]
-        if any((np.abs(values[rows, old] - values[rows, new]) > atol).any()
-               for values in (left, right)):
-            raise ValueError('Prediction decisions changed outside a near tie')
+        result['max_decision_score_gap'] = float(
+            max(
+                np.abs(values[rows, old] - values[rows, new]).max()
+                for values in (left, right)))
     elif task in ('multilabel_ranking', 'static_link', 'temporal_link'):
         if not np.array_equal(np.sort(choices[0], axis=1),
                               np.sort(choices[1], axis=1)):
             raise ValueError('Prediction decisions changed the rank convention')
         # A prefix minimum checks every inverted pair, including tie chains.
+        maximum_gap = 0.
         for values in (left, right):
             for selected in choices:
-                ordered = np.take_along_axis(values, selected.argsort(axis=1), axis=1)
-                if (ordered - np.minimum.accumulate(ordered, axis=1) > atol).any():
-                    raise ValueError('Prediction decisions changed outside a near tie')
-    return result
+                ordered = np.take_along_axis(values, selected.argsort(axis=1),
+                                             axis=1)
+                maximum_gap = max(
+                    maximum_gap,
+                    float((ordered -
+                           np.minimum.accumulate(ordered, axis=1)).max()))
+        result['max_decision_score_gap'] = maximum_gap
+    if result.get('max_decision_score_gap', 0.) > atol:
+        result['within_tolerance'] = False
+        if not measure_only:
+            raise ValueError('Prediction decisions changed outside a near tie')
+    return finish()
 
 
 def make_plan(task):
@@ -459,6 +491,8 @@ def observe_cuda(state):
 
         def on_predict_batch_end(self, trainer, module, values, batch,
                                  batch_idx, dataloader_idx=0):
+            if state['stage'] not in state['prediction_batches']:
+                return
             values = values.get('logits', values.get('score')) if isinstance(
                 values, dict) else values
             self.check(

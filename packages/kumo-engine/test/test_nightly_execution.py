@@ -136,7 +136,8 @@ def prepared_run(tmp_path, monkeypatch, failure=None):
             raise RuntimeError('ingest failed before creating case output')
         return built[-1], built[-1]
 
-    def execute(root, manifest, case, graph, snapshot, directory, *args):
+    def execute(root, manifest, case, graph, snapshot, directory, *args,
+                **kwargs):
         if failure == 'case' and case is cases[0]:
             raise RuntimeError('case failed before creating output')
         lower = case['task'] in ('regression', 'forecasting')
@@ -144,6 +145,7 @@ def prepared_run(tmp_path, monkeypatch, failure=None):
             task=case['task'], arm=case['arm'], seed=0, status='MEASURED',
             physical_fits=1, fit_id=case['task'] + '-' + case['arm'],
             checkpoint_sha256='a' * 64, seconds=1.,
+            prediction_checks=dict(status='PASS'),
             prediction_batches={stage: 1
                                 for stage in nightly.PREDICTIONS},
             score=(1. if lower else .5) if case['arm'] == 'control' else
@@ -181,6 +183,7 @@ def test_measurement_mode_proposes_requirements_without_approving_a_case(
     del cases[0]['requirements']
     args.case = 'binary-normal'
     args.measure_resources = True
+    args.reference_only = True
     args.time_budget_seconds = 12
     assert nightly.run(args) is True
     assert len(built) == 1
@@ -192,6 +195,38 @@ def test_measurement_mode_proposes_requirements_without_approving_a_case(
                             'binary-normal/requirements-proposal.json')
     assert proposal['measurement']['input_manifest_sha256'] == 'a' * 64
     assert proposal['minimum']['time_seconds'] == 12
+
+
+@pytest.mark.parametrize('dimension', [
+    'cpus', 'ram_bytes', 'scratch_bytes', 'gpu_class', 'gpus',
+    'gpu_memory_bytes', 'time_seconds'
+])
+def test_insufficient_capacity_stops_before_snapshot_build(
+        tmp_path, monkeypatch, dimension):
+    args, built, cases = prepared_run(tmp_path, monkeypatch)
+    args.case = 'binary-normal'
+    capacity = dict(cases[0]['requirements']['minimum'])
+    capacity[dimension] = ('different GPU' if dimension == 'gpu_class' else
+                           capacity[dimension] - 1)
+    monkeypatch.setattr(nightly, 'available_capacity', lambda *args: capacity)
+    assert nightly.run(args) is False
+    assert built == []
+    [result] = nightly.read(args.output_dir / 'nightly-result.json')['runs']
+    assert result['error'].startswith('ValueError: Insufficient ' + dimension)
+
+
+def test_standalone_case_records_its_declared_time_limit(tmp_path, monkeypatch):
+    args, built, cases = prepared_run(tmp_path, monkeypatch)
+    args.case = 'binary-normal'
+    required = cases[0]['requirements']['minimum']
+    monkeypatch.setattr(
+        nightly, 'available_capacity',
+        lambda scratch, runtime, budget: dict(required, time_seconds=budget))
+    assert nightly.run(args) is True
+    assert len(built) == 1
+    [result] = nightly.read(args.output_dir / 'nightly-result.json')['runs']
+    assert result['admission']['capacity']['time_seconds'] == required[
+        'time_seconds']
 
 
 def test_reviewed_case_requirements_are_bound_by_checksum(

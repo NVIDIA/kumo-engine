@@ -190,7 +190,7 @@ def verify_runtime(version, profile, *, reference_only=False):
         for d in importlib.metadata.distributions()
         if normalize(d.metadata['Name']) != 'kumo-engine'
     }
-    if reference_only:
+    if reference_only and profile is not None:
         check_dependencies(packages, profile)
     if (sys.platform != 'linux' or platform.machine() != 'x86_64'
             or sys.version_info[:2] != (3, 12)
@@ -201,7 +201,6 @@ def verify_runtime(version, profile, *, reference_only=False):
             or torch.cuda.device_count() != 1):
         raise ValueError(
             'Use the installed Linux3.12 wheel and one actual CUDA GPU')
-    torch.set_num_threads(4)
     properties = torch.cuda.get_device_properties(0)
     identifier = str(properties.uuid)
     uuid.UUID(identifier.removeprefix('GPU-'))
@@ -227,11 +226,11 @@ def verify_runtime(version, profile, *, reference_only=False):
             ),
             cublas_workspace_config=os.environ.get('CUBLAS_WORKSPACE_CONFIG')),
         gpu=properties.name, gpu_count=1, driver=driver,
-        architecture=platform.machine(),
-        compute_capability=[properties.major,
-                            properties.minor], gpu_uuid=identifier,
-        gpu_memory_bytes=int(properties.total_memory), torch=torch.__version__,
-        cuda=torch.version.cuda, threads=4, import_path=kumo.__file__,
+        architecture=platform.machine(), compute_capability=[
+            properties.major, properties.minor
+        ], gpu_uuid=identifier, gpu_memory_bytes=int(properties.total_memory),
+        torch=torch.__version__, cuda=torch.version.cuda,
+        threads=torch.get_num_threads(), import_path=kumo.__file__,
         wheel_sha256=wheel_hash, cpu_count=os.cpu_count(),
         system_memory_bytes=os.sysconf('SC_PAGE_SIZE') *
         os.sysconf('SC_PHYS_PAGES'))
@@ -342,26 +341,33 @@ def check_inputs(frame, truth, *, partial=False, static=False):
 
 
 def check_training(state, selected_steps):
-    epochs = state['training_epochs']
-    if (state['fits'] != 1 or state['completed_fits'] != 1
-            or not 1 <= len(epochs) <= 10
-            or any(e['batches'] != 20 or len(e['batch_sizes']) != 20 or any(
-                type(n) is not int or n <= 0 for n in e['batch_sizes'])
-                   for e in epochs)
-            or state['training_batches'] != 20 * len(epochs)
-            or type(state['optimizer_steps']) is not int
-            or state['optimizer_steps'] <= 0 or type(selected_steps) is not int
-            or not 0 < selected_steps <= state['optimizer_steps']):
+    ledger = state['fit_ledger']
+    completed = [fit for fit in ledger if fit['status'] == 'PASS']
+    if (not completed or type(state['fits']) is not int
+            or state['fits'] != len(ledger)
+            or state['completed_fits'] != len(completed)
+            or state['optimizer_steps'] != sum(fit['steps']
+                                               for fit in completed)
+            or state['training_batches'] != sum(fit['cuda_batches']
+                                                for fit in ledger)
+            or type(selected_steps) is not int or selected_steps <= 0):
         raise ValueError(
-            'Fit count, fixed training work or optimizer updates differ')
-    if len(epochs) < 10:
-        stop = state.get('early_stopping', {})
-        if (type(stop.get('stopped_epoch')) is not int
-                or stop['stopped_epoch'] <= 0
-                or type(stop.get('patience')) is not int or stop['patience'] < 0
-                or stop.get('wait_count', 0) < stop['patience']):
-            raise ValueError(
-                'Short training lacks actual early-stopping evidence')
+            'Candidate counts, CUDA work or optimizer updates differ')
+    for fit in ledger:
+        epochs = fit['epochs']
+        if (fit['status'] not in ('PASS', 'FAIL')
+                or fit['cuda_batches'] != sum(e['batches'] for e in epochs)
+                or any(e['batches'] != len(e['batch_sizes']) or any(
+                    type(n) is not int or n <= 0 for n in e['batch_sizes'])
+                       for e in epochs) or fit['status'] == 'PASS' and
+            (type(fit['steps']) is not int or fit['steps'] <= 0
+             or fit['cuda_batches'] <= 0 or not fit['validation'])):
+            raise ValueError('Candidate training evidence is incomplete')
+    if not any(
+            fit.get('checkpoint_sha256') == state['checkpoint_sha256']
+            and selected_steps <= fit['steps'] for fit in completed):
+        raise ValueError(
+            'Selected checkpoint has no completed candidate evidence')
 
 
 def input_signature(manifest, case):
@@ -371,7 +377,7 @@ def input_signature(manifest, case):
                 requested_plan=case['requested_plan_sha256'])
 
 
-def ranked_difference(before, after, *, atol):
+def ranked_difference(before, after, *, atol, measure_only=False):
     """Bound scores, inverted pairs, and proven changes at the top-K boundary."""
     if any(
             type(v) not in (int, float) or not math.isfinite(v) or v < 0
@@ -393,7 +399,8 @@ def ranked_difference(before, after, *, atol):
             raise ValueError('Ranked coordinates are incomplete or invalid')
         return dict(zip(names, scores, strict=True))
 
-    maximum, reordered, inversions, added, removed = 0., 0, 0, 0, 0
+    maximum, maximum_gap, reordered, inversions, added, removed = 0., 0., 0, 0, 0, 0
+    unproven = 0
     for index, (left, a, right, b) in enumerate(zip(*groups, strict=True)):
         old, observed = coordinates(left, a), coordinates(right, b)
         if len(left) != len(right):
@@ -416,17 +423,24 @@ def ranked_difference(before, after, *, atol):
                 mapped = coordinates(boundary, numbers)
                 if (boundary[:len(names)] != names
                         or numbers[:len(scores)] != scores
-                        or len(boundary) != len(names) + 1
-                        or not union <= mapped.keys()):
+                        or len(boundary) < len(names) + 1):
                     raise ValueError(
                         'Cutoff coordinates do not prove the membership change')
                 orders.append([name for name in boundary if name in union])
                 values.append(mapped)
+            if not all(union <= mapped.keys() for mapped in values):
+                if not measure_only:
+                    raise ValueError(
+                        'Cutoff coordinates do not prove the membership change')
+                unproven += 1
+                common = union & values[0].keys() & values[1].keys()
+                orders = [[name for name in order if name in common]
+                          for order in orders]
             left, right = orders
             old, observed = values
         for name in left:
             delta = abs(old[name] - observed[name])
-            if delta > atol:
+            if delta > atol and not measure_only:
                 raise ValueError('Ranked scores exceed the reviewed tolerance')
             maximum = max(maximum, delta)
         if changed:
@@ -435,16 +449,21 @@ def ranked_difference(before, after, *, atol):
             for i, first in enumerate(left):
                 for second in left[i + 1:]:
                     if positions[first] > positions[second]:
-                        if max(old[first] - old[second],
-                               observed[second] - observed[first]) > atol:
+                        maximum_gap = max(maximum_gap, old[first] - old[second],
+                                          observed[second] - observed[first])
+                        if maximum_gap > atol and not measure_only:
                             raise ValueError(
                                 'Rank change exceeds the reviewed score-gap budget'
                             )
                         inversions += 1
-    return dict(status='PASS', policy='enforced', reordered_entities=reordered,
-                rank_inversions=inversions, added_items=added,
-                removed_items=removed, max_abs_aligned_score_difference=maximum,
-                atol=atol, rtol=0.)
+    return dict(
+        status='PASS' if not unproven and max(maximum, maximum_gap) <= atol else
+        'FAIL', policy='measurement' if measure_only else 'enforced',
+        reordered_entities=reordered, rank_inversions=inversions,
+        added_items=added, removed_items=removed,
+        max_abs_aligned_score_difference=maximum,
+        max_inverted_score_gap=maximum_gap,
+        unproven_membership_changes=unproven, atol=atol, rtol=0.)
 
 
 def ranked_rows(batches, ids, catalog, exclusions, k, raw_limit, *,
@@ -475,7 +494,7 @@ def ranked_rows(batches, ids, catalog, exclusions, k, raw_limit, *,
                 'Incomplete, duplicate or invalid ranked coordinates')
         wanted = min(k, len(catalog) - len(blocked))
         eligible = sorted((p for p in pairs if p[0] not in blocked),
-                          key=lambda p: (-p[1], p[0]))[:wanted + 1]
+                          key=lambda p: (-p[1], p[0]))[:2 * wanted]
         if (not wanted or len(eligible) < wanted or raw_limit < len(catalog)
                 and min(p[1] for p in pairs) >= eligible[wanted - 1][1]):
             raise ValueError(
@@ -726,8 +745,10 @@ def observe_cuda(state):
 
     import pytorch_lightning as pl
     import torch
+    from kumo_core.io.filesystem import local_path
     from kumo_core.train.trainer import Trainer
     from pytorch_lightning.callbacks import EarlyStopping
+    from pytorch_lightning.trainer.states import TrainerFn
 
     recoveries = state.setdefault('oom_recoveries', [])
 
@@ -748,18 +769,20 @@ def observe_cuda(state):
     class Proof(pl.Callback):
         def on_fit_start(self, trainer, module):
             if 'fit_ledger' in state:
-                state['fit_ledger'].append(
-                    dict(status='RUNNING', steps=0, cuda_batches=0))
+                self.candidate = dict(status='RUNNING', steps=0, cuda_batches=0,
+                                      epochs=[], validation=[])
+                state['fit_ledger'].append(self.candidate)
 
         def on_train_epoch_start(self, trainer, module):
             if 'training_epochs' in state:
-                state['training_epochs'].append(
-                    dict(epoch=int(trainer.current_epoch), batches=0,
-                         batch_sizes=[]))
+                epoch = dict(epoch=int(trainer.current_epoch), batches=0,
+                             batch_sizes=[])
+                state['training_epochs'].append(epoch)
+                self.candidate['epochs'].append(epoch)
 
         def on_train_batch_end(self, trainer, module, values, batch, batch_idx):
             if 'fit_ledger' in state:
-                state['fit_ledger'][-1]['cuda_batches'] += 1
+                self.candidate['cuda_batches'] += 1
             if 'training_epochs' in state:
                 seed = (getattr(module, 'lhs_name', None)
                         or getattr(module, 'entity_table_name', None)
@@ -773,19 +796,50 @@ def observe_cuda(state):
                 state['training_epochs'][-1]['batch_sizes'].append(int(size))
                 state['training_epochs'][-1]['batches'] += 1
 
+        def on_validation_end(self, trainer, module):
+            if (not getattr(self, 'candidate', None) or trainer.sanity_checking
+                    or state['stage'] != 'fit'):
+                return
+            metrics = {}
+            for name, value in trainer.callback_metrics.items():
+                if isinstance(value, torch.Tensor):
+                    if value.numel() != 1:
+                        continue
+                    value = value.detach().cpu().item()
+                if type(value) in (int, float):
+                    metrics[name] = value if math.isfinite(value) else None
+            fitting = trainer.state.fn == TrainerFn.FITTING
+            self.candidate['validation'].append(
+                dict(epoch=int(trainer.current_epoch), metrics=metrics,
+                     phase='fit' if fitting else 'candidate-validation'))
+            if not fitting and trainer.ckpt_path is not None:
+                self.candidate['checkpoint_sha256'] = digest(
+                    local_path(str(trainer.ckpt_path)))
+
         def on_fit_end(self, trainer, module):
             if 'fit_ledger' in state:
-                state['fit_ledger'][-1].update(status='PASS',
-                                               steps=int(trainer.global_step))
-            if 'training_epochs' in state:
-                [stop] = [
-                    callback for callback in trainer.callbacks
-                    if isinstance(callback, EarlyStopping)
-                ]
-                state['early_stopping'] = dict(
-                    stopped_epoch=int(stop.stopped_epoch),
-                    wait_count=int(stop.wait_count),
-                    patience=int(stop.patience))
+                self.candidate.update(status='PASS',
+                                      steps=int(trainer.global_step))
+                checkpoint = trainer.checkpoint_callback.best_model_path
+                checkpoint_digest = digest(checkpoint)
+                self.candidate.update(
+                    checkpoint_sha256=checkpoint_digest,
+                    checkpoint_before_validation_sha256=checkpoint_digest,
+                    early_stopping=[
+                        dict(callback=type(stop).__name__, monitor=stop.monitor,
+                             stopped_epoch=int(stop.stopped_epoch),
+                             wait_count=int(stop.wait_count),
+                             patience=int(stop.patience))
+                        for stop in trainer.callbacks
+                        if isinstance(stop, EarlyStopping)
+                    ])
+
+        def on_exception(self, trainer, module, error):
+            if state['stage'] == 'fit' and getattr(self, 'candidate', None):
+                self.candidate.update(error=f'{type(error).__name__}: {error}')
+                if self.candidate['status'] == 'RUNNING':
+                    self.candidate.update(status='FAIL',
+                                          steps=int(trainer.global_step))
 
         def on_predict_start(self, trainer, module):
             if state['stage'] == 'reload' and 'reload_checks' in state:
@@ -876,15 +930,16 @@ def check_learning(rows, bounds):
             validate_quality_measurement(task, row.get('baseline'))
         direction = -1 if task in ('regression', 'forecasting') else 1
         gain = direction * (normal['score'] - normal['baseline'])
+        paired_gain = direction * (normal['score'] - control['score'])
         drift = abs(control['score'] - control['baseline'])
-        passed = gain >= limits['min_normal_gain'] and drift <= limits[
-            'max_control_drift']
-        tasks[task] = dict(status='PASS' if passed else 'FAIL',
-                           normal_score=normal['score'],
-                           control_score=control['score'],
-                           normal_baseline=normal['baseline'],
-                           control_baseline=control['baseline'],
-                           normal_gain=gain, control_drift=drift, **limits)
+        passed = (gain >= limits['min_normal_gain']
+                  and paired_gain >= limits['min_normal_gain']
+                  and drift <= limits['max_control_drift'])
+        tasks[task] = dict(
+            status='PASS' if passed else 'FAIL', normal_score=normal['score'],
+            control_score=control['score'], normal_baseline=normal['baseline'],
+            control_baseline=control['baseline'], normal_gain=gain,
+            normal_control_gain=paired_gain, control_drift=drift, **limits)
     return dict(
         status='PASS' if all(v['status'] == 'PASS'
                              for v in tasks.values()) else 'FAIL',
@@ -938,7 +993,9 @@ def summarize(rows, reference, policy):
     ]
     learning = check_learning(scores, policy['learning'])
     return dict(
-        status=learning['status'], learning=learning,
+        status='PASS' if learning['status'] == 'PASS' and all(
+            row.get('prediction_checks', {}).get('status') == 'PASS'
+            for row in rows) else 'FAIL', learning=learning,
         numerical_difference_policy='enforced', cases=[
             dict(score,
                  reference_score=previous[(row['task'], row['arm'])]['score'],
@@ -964,7 +1021,8 @@ def check_snapshot(snapshot, graph_spec):
     return dict(node_counts=stats['node_counts'], key_failures=failures)
 
 
-def run_case(root, manifest, case, graph, snapshot, output, scratch, tolerance):
+def run_case(root, manifest, case, graph, snapshot, output, scratch, tolerance,
+             *, measure_only=False):
     import numpy as np
     import pandas as pd
     import torch
@@ -1005,10 +1063,15 @@ def run_case(root, manifest, case, graph, snapshot, output, scratch, tolerance):
                     'Forecast inputs/answers require all twelve coordinates')
             query = kumo.PredictiveQuery(graph, descriptor['query'])
             query.validate()
-            plan = smoke.make_plan(task)
+            plan = query.suggest_model_plan(snapshot)
             save(output / 'requested-plan.json', plan.as_json())
-            [state['requested_batch_size']
-             ] = plan.as_json()['optimization']['batch_size']
+            state['requested_batch_sizes'] = plan.as_json(
+            )['optimization']['batch_size']
+            report['training_recipe'] = 'engine-suggested-fast'
+            report['requested_plan_sha256'] = digest(output /
+                                                     'requested-plan.json')
+            report['selection_metric'] = plan.as_json(
+            )['training_job']['tune_metric']
             save(output / 'generation-plan.json', descriptor['generation_plan'])
             report['input_signature'] = input_signature(manifest, case)
             classes = case.get('classes', [])
@@ -1036,12 +1099,13 @@ def run_case(root, manifest, case, graph, snapshot, output, scratch, tolerance):
             with measure_operation(report, 'training'):
                 fitted = trainer.fit(table, snapshot=snapshot)
                 torch.cuda.synchronize()
+            save(output / 'candidate-validation.json', state['fit_ledger'])
+            save(output / 'fit-metrics.json', fitted.metrics)
             checkpoint = local_path(
                 str(fitted.artifact_paths['selected_checkpoint']))
             state['checkpoint_sha256'] = digest(checkpoint)
             selected_steps = load_kumo_checkpoint(
                 str(checkpoint), map_location='cpu')['global_step']
-            check_training(state, selected_steps)
             if query.get_task_type().value != smoke.TASKS[task]['task_type']:
                 raise ValueError(
                     'The public query resolves to a different task')
@@ -1065,6 +1129,7 @@ def run_case(root, manifest, case, graph, snapshot, output, scratch, tolerance):
                 checkpoint_sha256=digest(checkpoint),
                 checkpoint_artifact=str(checkpoints[0].relative_to(output)),
                 selected_checkpoint_steps=selected_steps)
+            check_training(state, selected_steps)
             time_column = case.get('prediction_time_column', 'TIMESTAMP')
 
             def predict(model, stage, frame):
@@ -1142,6 +1207,9 @@ def run_case(root, manifest, case, graph, snapshot, output, scratch, tolerance):
                     return values, decisions
 
             original, original_decisions = predict(trainer, 'predict', full)
+            report.update(score=quality(task, truth, original, classes),
+                          metric=smoke.TASKS[task]['metric'])
+            save(output / 'result.json', report)
             repeated, repeat_decisions = predict(trainer, 'repeat', full)
             subset, subset_decisions = predict(trainer, 'partial', partial)
             del trainer
@@ -1168,18 +1236,21 @@ def run_case(root, manifest, case, graph, snapshot, output, scratch, tolerance):
                                   'boundary_scores')
                     }
                     report['differences'][label] = ranked_difference(
-                        before, other, **tolerance)
+                        before, other, **tolerance, measure_only=measure_only)
                 else:
                     report['differences'][label] = smoke.compare_predictions(
                         original if selected is None else original[selected],
                         other, task=task, **tolerance,
                         before_decisions=original_decisions
                         if selected is None or original_decisions is None else
-                        original_decisions[selected], after_decisions=decisions)
+                        original_decisions[selected], after_decisions=decisions,
+                        measure_only=measure_only)
+            report['prediction_checks'] = dict(status='PASS' if all(
+                value['status'] == 'PASS'
+                for value in report['differences'].values()) else 'FAIL')
             report.update(status='MEASURED', physical_fits=state['fits'],
                           prediction_batches=state['prediction_batches'],
-                          score=quality(task, truth, original, classes),
-                          metric=smoke.TASKS[task]['metric'], policy='enforced')
+                          policy='measurement' if measure_only else 'enforced')
             check_training(state, selected_steps)
             load_table(root, manifest['files'], case)
     except BaseException as error:
@@ -1219,12 +1290,12 @@ def check_results(rows, cases=None):
                                      for r in rows} != wanted
             or len({r['fit_id']
                     for r in rows}) != len(wanted)
-            or any(r['status'] != 'MEASURED' or type(r['seed']) is not int
-                   or type(r['physical_fits']) is not int or r['physical_fits']
-                   != 1 or len(r['checkpoint_sha256']) != 64 or not all(
+            or any(r['status'] != 'MEASURED' or type(r['seed']) is not int or
+                   type(r['physical_fits']) is not int or r['physical_fits'] < 1
+                   or len(r['checkpoint_sha256']) != 64 or not all(
                        r['prediction_batches'].get(s, 0) > 0
                        for s in PREDICTIONS) for r in rows)):
-        raise ValueError('Comparison needs complete unique one-fit workflows')
+        raise ValueError('Comparison needs complete unique candidate workflows')
 
 
 def case_learning(row, reference, bounds):
@@ -1445,8 +1516,9 @@ def run(args):
     scratch.mkdir(parents=True, exist_ok=False)
     runtime = verify_runtime(
         args.expected_version,
-        read(root / manifest['reference_dependencies'])
-        if args.reference_only else None, reference_only=args.reference_only)
+        read(root / manifest['reference_dependencies']) if args.reference_only
+        and not getattr(args, 'measure_resources', False) else None,
+        reference_only=args.reference_only)
     runtime['installed_files'] = verify_installed_files(
         args.wheel, importlib.metadata.distribution('kumo-engine'))
     if digest(args.wheel) != runtime['wheel_sha256']:
@@ -1459,6 +1531,7 @@ def run(args):
         reference_sha256=args.reference_sha256,
         policy_sha256=args.policy_sha256, reference_only=args.reference_only,
         measurement_only=getattr(args, 'measure_resources', False),
+        training_recipe='engine-suggested-fast',
         requirements_sha256=getattr(args, 'requirements_sha256',
                                     None), expected_runs=len(selected), runs=[],
         helper_sha256=digest(HELPER), runner_sha256=digest(__file__))
@@ -1472,10 +1545,14 @@ def run(args):
                        status='RUNNING')
             try:
                 import kumo.engine as kumo
-                capacity = available_capacity(
-                    scratch, runtime,
-                    getattr(args, 'time_budget_seconds', None) or math.inf)
                 profile = case.get('requirements')
+                budget = getattr(args, 'time_budget_seconds', None)
+                if budget is None:
+                    declared = profile.get('minimum', {}) if isinstance(
+                        profile, dict) else {}
+                    budget = declared.get('time_seconds', 0) if isinstance(
+                        declared, dict) else 0
+                capacity = available_capacity(scratch, runtime, budget)
                 if report['measurement_only']:
                     budget = getattr(args, 'time_budget_seconds', None)
                     if type(budget) is not int or budget <= 0:
@@ -1511,7 +1588,8 @@ def run(args):
                                            dict(spec, input_root=str(root)))
                         row = run_case(root, manifest, case, graph, snapshot,
                                        directory, scratch,
-                                       policy['predictions'][case['task']])
+                                       policy['predictions'][case['task']],
+                                       measure_only=report['measurement_only'])
                         check_results([row], [case])
                 if resources.get('errors'):
                     raise ValueError('Resource observation failed')
@@ -1565,8 +1643,10 @@ def run(args):
             summary = summarize(report['runs'], reference, policy)
         else:
             summary = dict(
-                status='PASS' if all(row['learning']['status'] == 'PASS'
-                                     for row in report['runs']) else 'FAIL',
+                status='PASS' if all(
+                    row['learning']['status'] == 'PASS'
+                    and row.get('prediction_checks', {}).get('status') == 'PASS'
+                    for row in report['runs']) else 'FAIL',
                 cases=report['runs'])
         save(output / 'comparison.json', summary)
         load_inputs(root, args.input_sha256)
