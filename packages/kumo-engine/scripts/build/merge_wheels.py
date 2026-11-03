@@ -520,9 +520,8 @@ def main():
             archive.writestr(info, data)
         record_name = (dist_info.relative_to(staging) / 'RECORD').as_posix()
         rows.append([record_name, '', ''])
-        buffer = tempfile.NamedTemporaryFile('w', newline='', suffix='.csv',
-                                             delete=False)
-        with buffer:
+        with tempfile.NamedTemporaryFile(
+                'w', newline='', suffix='.csv', delete=False) as buffer:
             csv.writer(buffer).writerows(rows)
         archive.write(buffer.name, record_name)
         os.unlink(buffer.name)

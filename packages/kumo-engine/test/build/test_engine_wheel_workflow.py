@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-WORKFLOW = Path(__file__).resolve().parents[2] / (
+WORKFLOW = Path(__file__).resolve().parents[4] / (
     '.github/workflows/kumo-engine-wheel.yml')
 JOBS = yaml.safe_load(WORKFLOW.read_text())['jobs']
 BUILDS = JOBS['build']['strategy']['matrix']['include']
@@ -65,7 +65,7 @@ def test_checkout_preserves_notice_bytes(tmp_path):
 def test_build_step_selects_native_platform_and_release_mode(
         tmp_path, build, release):
     capture = tmp_path / 'command.json'
-    _capture_command(tmp_path / 'packages/kumo-engine/scripts/build_wheel.sh',
+    _capture_command(tmp_path / 'packages/kumo-engine/scripts/build/build_wheel.sh',
                      capture)
     uname = tmp_path / 'uname'
     uname.write_text(f'#!/bin/sh\necho {build["machine"]}\n')

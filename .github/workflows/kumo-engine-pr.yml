@@ -120,7 +120,7 @@ jobs:
           done
           printf '#!/bin/sh\nexec cargo-zigbuild zig ranlib -- "$@"\n' > "$compiler_dir/zigranlib"
           chmod +x "$compiler_dir"/*
-          packages/kumo-engine/scripts/build_wheel.sh --output-dir "$RUNNER_TEMP/pr-wheel"
+          packages/kumo-engine/scripts/build/build_wheel.sh --output-dir "$RUNNER_TEMP/pr-wheel"
       - name: Retain the candidate wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

@@ -132,7 +132,7 @@ jobs:
 
       - name: Install test dependencies
         run: |
-          uv pip install pytest==9.0.3
+          uv pip install pytest==9.0.3 PyYAML==6.0.3
 
       - name: Check source and manifest licensing
         run: |
@@ -158,7 +158,11 @@ jobs:
             tools/glove-6b-50d
           )
           for project in "${projects[@]}"; do
-            uv build --wheel --no-build-logs --out-dir "$RUNNER_TEMP/license-wheels" "$project"
+            build_args=(--wheel --no-build-logs --out-dir "$RUNNER_TEMP/license-wheels")
+            if [[ "$project" == packages/kumo-engine ]]; then
+              build_args+=(--config-setting kumo-component=true)
+            fi
+            uv build "${build_args[@]}" "$project"
           done
 
       - name: Inspect wheel license metadata

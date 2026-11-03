@@ -63,6 +63,15 @@
       "upstream": "https://github.com/sktime/pytorch-forecasting",
       "upstream_path": "pytorch_forecasting/metrics/base_metrics.py",
       "upstream_ref": "4039c0da8d3a6ffa687968ec7aea985f047d8658"
+    },
+    {
+      "path": "packages/kumo-engine/scripts/build/kumo_engine_build_backend.py",
+      "upstream": "https://github.com/konstin/rustup-pypi",
+      "upstream_path": "src/rustup/_build_wheel.py",
+      "upstream_ref": "a41b40da1edf5b01575c0f5bd4ff1bb5f336fbb2",
+      "license_expression": "MIT OR Apache-2.0",
+      "license_file": "3rdparty/notices/rustup-pypi-LICENSE",
+      "modified": true
     }
   ]
 }

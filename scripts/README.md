@@ -2,6 +2,13 @@
 
 This directory contains scripts for developer setup, CI checks, operational utilities, and releases. See [release tooling](./release/README.md) for the release-specific commands.
 
+## Engine wheel builds
+
+[`build_wheel.sh`](../packages/kumo-engine/scripts/build/build_wheel.sh) assembles the engine bundle for
+both source installs and release wheels. The merger and dependency checker live
+alongside it. See [releasing kumo-engine](../docs/development/releasing-kumo-engine.md)
+for build flags and prerequisites.
+
 ## Object-store transfer diagnostics
 
 Shared S3/ADLS harnesses live in [`benchmarks/object_store/`](benchmarks/object_store/):

@@ -5,6 +5,7 @@
 import json
 import os
 import runpy
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -17,17 +18,29 @@ from zipfile import ZipFile
 
 import pytest
 
-from io_utils.fsutil.api import read_text, write_text
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS = REPO_ROOT / 'packages/kumo-engine/scripts'
+REPO_ROOT = Path(__file__).resolve().parents[4]
+SCRIPTS = REPO_ROOT / 'packages/kumo-engine/scripts/build'
 SCRIPT = SCRIPTS / 'build_wheel.sh'
-MERGE = SCRIPTS / 'merge_wheels.py'
+MERGE = SCRIPTS / "merge_wheels.py"
+BASH_EXECUTABLES = sorted(
+    {
+        Path(shutil.which("bash") or "/bin/bash").resolve(),
+        Path("/bin/bash").resolve(),
+    }
+)
 
 
+@pytest.mark.parametrize('shell', BASH_EXECUTABLES)
 @pytest.mark.parametrize('legacy_selection', ['', 'kumo-databricks'])
 def test_wheel_builds_all_first_party_packages_from_monorepo(
-        tmp_path, legacy_selection):
+        tmp_path: Path, legacy_selection: str, shell: Path) -> None:
+    """Build every component with the PATH and system Bash interpreters.
+
+    Args:
+        tmp_path: Directory containing the mock checkout and build tools.
+        legacy_selection: Ignored legacy component-selection setting.
+        shell: Bash executable, including macOS's system Bash 3.2.
+    """
     repo = tmp_path / 'repo'
     for name in [
             'kumo-api', 'kumo-core', 'kumo-pql', 'kumo-engine', 'kumo-sdk',
@@ -64,12 +77,12 @@ wheel_dir = Path(args[args.index('-w') + 1])
 ''')
     python.chmod(0o755)
     result = subprocess.run(
-        ['bash', str(SCRIPT), '--no-zig', '--version', '1'],
+        [str(shell), str(SCRIPT), '--no-zig', '--version', '1'],
         env=dict(os.environ, KUMO_REPO=str(repo), PYTHON=str(python),
                  EXTRA_COMPONENTS=legacy_selection, BUILD_CALLS=str(calls),
                  THIRD_PARTY_NOTICE=str(repo / 'THIRD-PARTY.txt'),
                  TMPDIR=str(tmp_path), PATH=f'{tmp_path}:{os.environ["PATH"]}'),
-        capture_output=True,
+        check=False, capture_output=True,
         text=True,
     )
     assert result.returncode == 73, result.stderr
@@ -83,13 +96,16 @@ wheel_dir = Path(args[args.index('-w') + 1])
     assert [Path(source) for source in sources] == [
         repo / 'packages' / name for name in sorted(expected) + ['diskgraph']
     ]
+    for call in recorded:
+        assert ('--config-settings=kumo-component=true' in call) == (
+            Path(call[-1]).name == 'kumo-engine')
 
 
 def test_removed_component_selection_flag_is_rejected(tmp_path):
     result = subprocess.run(
         ['bash', str(SCRIPT), '--extra-components', 'kumo-databricks'],
         env=dict(os.environ, KUMO_REPO=str(tmp_path)),
-        capture_output=True, text=True)
+        check=False, capture_output=True, text=True)
     assert result.returncode == 2
     assert "unknown argument '--extra-components'" in result.stderr
 
@@ -112,7 +128,7 @@ def test_macos_deployment_target_rejected_before_build(tmp_path, target):
         ['bash', str(SCRIPT)],
         env=dict(os.environ, MACOSX_DEPLOYMENT_TARGET=target, USE_ZIG='0',
                  PYTHON=str(python), PATH=f'{tmp_path}:{os.environ["PATH"]}'),
-        capture_output=True, text=True)
+        check=False, capture_output=True, text=True)
 
     assert result.returncode == 1
     assert 'MACOSX_DEPLOYMENT_TARGET >= 14.0' in result.stderr
@@ -122,13 +138,13 @@ def test_macos_deployment_target_rejected_before_build(tmp_path, target):
 @pytest.mark.parametrize('host_os', ['MINGW64_NT-10.0', 'MSYS_NT-10.0'])
 def test_windows_rejects_zig(tmp_path, host_os):
     uname = tmp_path / 'uname'
-    write_text(str(uname), f'#!/bin/sh\necho {host_os}\n')
+    uname.write_text(f'#!/bin/sh\necho {host_os}\n')
     uname.chmod(0o755)
     result = subprocess.run(
         ['bash', str(SCRIPT)],
         env=dict(os.environ, USE_ZIG='1',
                  PATH=f'{tmp_path}:{os.environ["PATH"]}'),
-        capture_output=True, text=True)
+        check=False, capture_output=True, text=True)
     assert result.returncode == 1
     assert 'Windows wheels require a native DiskGraph build' in result.stderr
 
@@ -240,7 +256,7 @@ def _merge(tmp_path, names, *args):
         '--license-expression',
         'Apache-2.0 AND MIT',
         *args,
-    ], capture_output=True, text=True)
+    ], check=False, capture_output=True, text=True)
 
 
 def _read_wheel(tmp_path):
@@ -286,8 +302,8 @@ def test_engine_faiss_platform_selection_survives_merge(
         requirement for requirement in engine['requires']
         if 'extra ==' in requirement
     ]
-    project = tomllib.loads(read_text(str(
-        REPO_ROOT / 'packages/kumo-engine/pyproject.toml')))['project']
+    project = tomllib.loads((
+        REPO_ROOT / 'packages/kumo-engine/pyproject.toml').read_text())['project']
     assert not {'faiss-cpu', 'faiss-gpu', 'gpu'} & set(
         project['optional-dependencies'])
     for name in ('cpu',):
@@ -607,7 +623,7 @@ def test_wheel_verify_script_checks_base_install(tmp_path):
             [sys.executable, '-S',
              str(smoke), 'test-bundle'],
             env=dict(os.environ, PYTHONPATH=''),
-            capture_output=True,
+            check=False, capture_output=True,
             text=True,
         )
 
@@ -661,8 +677,7 @@ def test_wheel_uses_torch_fallbacks_without_native_extensions(
     generator = repo / 'scripts/gen_third_party.py'
     generator.parent.mkdir()
     notice_suffix = '-windows' if host_os.startswith('MINGW') else ''
-    write_text(
-        str(generator),
+    generator.write_text(
         'import sys\n'
         f'assert "diskgraph-extension{notice_suffix}" in sys.argv\n'
         f'assert "diskgraph-ingest{notice_suffix}" in sys.argv\n'
@@ -734,7 +749,7 @@ for source in (args[-1:] if args[2] == 'wheel' else args[-2:]):
                  MACOSX_DEPLOYMENT_TARGET=target,
                  THIRD_PARTY_NOTICE=str(repo / 'THIRD-PARTY.txt'),
                  PATH=f'{tmp_path}:{os.environ["PATH"]}'),
-        capture_output=True,
+        check=False, capture_output=True,
         text=True,
     )
     assert result.returncode == 0, result.stderr

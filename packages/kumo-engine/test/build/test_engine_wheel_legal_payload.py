@@ -12,8 +12,8 @@ import zipfile
 from email.parser import Parser
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).parents[3]
-MERGE = REPO_ROOT / 'packages/kumo-engine/scripts/merge_wheels.py'
+REPO_ROOT = Path(__file__).resolve().parents[4]
+MERGE = REPO_ROOT / 'packages/kumo-engine/scripts/build/merge_wheels.py'
 
 
 def _write_component_wheel(path: Path) -> None:

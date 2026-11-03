@@ -19,8 +19,9 @@ HEAD = 'a' * 40
 def _run(job, **env):
     assert job in JOBS, f'The {job} policy job is missing'
     script = next(step['run'] for step in JOBS[job]['steps'] if 'run' in step)
-    return subprocess.run(['bash', '-e', '-c', script], capture_output=True,
-                          text=True, env=dict(os.environ, **env))
+    return subprocess.run(
+        ['bash', '-e', '-c', script], check=False, capture_output=True,
+        text=True, env=dict(os.environ, **env))
 
 
 @pytest.mark.parametrize(
@@ -67,7 +68,7 @@ printf '%s\\n' "$data" | jq -r "${!#}"
         GITHUB_REPOSITORY='NVIDIA/kumo-engine',
         GITHUB_REF_NAME='pull-request/135', GITHUB_SHA=HEAD,
         GITHUB_OUTPUT=str(output), PR_FILES=json.dumps(files),
-        PR_METADATA=json.dumps(dict(head=dict(sha=head), changed_files=count)))
+        PR_METADATA=json.dumps({'head': {'sha': head}, 'changed_files': count}))
     assert result.returncode == 0, result.stderr
     assert output.read_text() == f'gpu={expected}\n'
 
@@ -84,7 +85,7 @@ def test_wheel_step_propagates_one_target_directory_and_exact_build_tools(tmp_pa
     import sys
 
     calls = tmp_path / 'calls.jsonl'
-    executable = '''#!{python}
+    executable = f'''#!{sys.executable}
 import json, os, subprocess, sys
 from pathlib import Path
 with Path(os.environ['CAPTURE']).open('a') as stream:
@@ -99,8 +100,9 @@ if Path(sys.argv[0]).name == 'build_wheel.sh':
         ('RANLIB_x86_64_unknown_linux_gnu', ['libinput.a']),
     ]:
         subprocess.run([os.environ[variable], *arguments], check=True)
-'''.format(python=sys.executable)
-    for name in ['python', 'cargo-zigbuild', 'packages/kumo-engine/scripts/build_wheel.sh']:
+'''
+    for name in ['python', 'cargo-zigbuild',
+                 'packages/kumo-engine/scripts/build/build_wheel.sh']:
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(executable)
@@ -111,7 +113,8 @@ if Path(sys.argv[0]).name == 'build_wheel.sh':
     env = {k: v.replace('${{ github.workspace }}', str(tmp_path)).replace(
         '${{ runner.temp }}', str(tmp_path / 'temp'))
            for k, v in job['env'].items()}
-    result = subprocess.run(['bash', '-e', '-c', step['run']], cwd=tmp_path,
+    result = subprocess.run(['bash', '-e', '-c', step['run']],
+                            check=False, cwd=tmp_path,
                             capture_output=True, text=True,
                             env=dict(os.environ, **env, GITHUB_WORKSPACE=str(tmp_path),
                                      RUNNER_TEMP=str(tmp_path / 'temp'),
