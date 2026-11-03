@@ -153,8 +153,9 @@ def test_the_chart_note_says_what_each_step_is():
                  '× 100 (step 37 = scores 0.37–0.38); '
                  '`pred/item_popularity`: step = item rank '
                  '(1 = most recommended).')]
-    assert _card.charts({'pred/prediction_histogram': 1,
-                         'pred/holdout_prediction_histogram': 2}) == [Note(
+    regression = _card.charts({'pred/prediction_histogram': 1,
+                               'pred/holdout_prediction_histogram': 2})
+    assert regression == [Note(
         'notes', "Charts: `pred/prediction_histogram`: step = bin of the "
                  "training target's bins (0 = below the first; edges in "
                  "`pred/histogram.json`); `pred/holdout_*`: the same counts "
