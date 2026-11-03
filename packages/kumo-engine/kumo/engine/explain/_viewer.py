@@ -618,7 +618,7 @@ const cohortResize=new ResizeObserver(()=>revealCohort());onDispose(()=>cohortRe
 const featureButtons=[],featureContext=el('div',undefined,'kt-detail kt-feature-context');
 const chooseFeature=row=>{selectedFeature=row;drawFeatureContext(featureContext);
 featureButtons.forEach(({button,feature})=>{button.setAttribute('aria-pressed',String(feature===row));
-button.querySelector('.kt-note').textContent=feature===row?'Selected feature':'Inspect loaded context';});
+button.querySelector('.kt-note').textContent=feature===row?'Selected feature':'Inspect input details';});
 if(!sampleView.hidden&&selectedExample)inspectSample(selectedExample.ref,selectedExample.index);enable();};
 const inspectCohort=index=>{cohortView.replaceChildren();const c=cohorts[index];
 if(cohortState.index!==index)cohortState={index,bin:0,className:null};
@@ -696,9 +696,9 @@ if(classes.length){const picker=control(cohortView,'Recorded class',[['','Choose
 picker.value=cohortState.className===null?'':String(classes.indexOf(cohortState.className)+1);}
 cohortView.append(bins);draw(classes.length?cohortState.className:'');
 const feature=valid.find(row=>row.table===c.table_name&&row.column===c.col_name);
-if(feature){cohortView.append(action('Inspect this input in loaded contexts',()=>{chooseFeature(feature);
+if(feature){cohortView.append(action('Inspect this input’s details',()=>{chooseFeature(feature);
 const heading=featureContext.querySelector('h3');if(heading){heading.tabIndex=-1;heading.focus();}}));
-note(cohortView,'Inspect recorded input values and local sensitivity. Cohort membership is not recorded for loaded examples.');}
+note(cohortView,'Inspect global sensitivity and available recorded input values and local sensitivity. Cohort membership is not recorded for loaded examples.');}
 const ranking=el('details');ranking.append(el('summary','Cohort ranking detail'));
 note(ranking,'Prediction variation rank score: '+number(c.prediction_score)+
 (classes.length?'. The ranking averages recorded class dimensions.':'. This is separate from gradient sensitivity and mean prediction error.'));cohortView.append(ranking);
@@ -710,7 +710,7 @@ const score=el('div',undefined,'kt-score'),track=el('div',undefined,'kt-track'),
 bar.style.width=Math.min(100,row.score*100)+'%';track.setAttribute('aria-hidden','true');track.append(bar);
 score.append(track,el('span',number(row.score),'kt-value'));
 const button=action('',()=>chooseFeature(row));button.classList.add('kt-feature-choice');
-const label=el('span',text(row.table)+'.'+text(row.column));label.append(el('span','Inspect loaded context','kt-note'));
+const label=el('span',text(row.table)+'.'+text(row.column));label.append(el('span','Inspect input details','kt-note'));
 button.append(label,score);featureButtons.push({button,feature:row});const item=el('li');item.append(button);rows.append(item);}
 patterns.append(rows,featureContext);
 const exact=el('details');exact.append(el('summary','Exact global sensitivity values'));
@@ -755,14 +755,15 @@ const featureName=text(selectedFeature.table)+'.'+text(selectedFeature.column);
 parent.append(el('h3','Inspect '+featureName));
 note(parent,'Global sensitivity: '+number(selectedFeature.score)+' · across recorded input columns.');
 const matches=loaded.filter(({ref})=>matchingCells(ref).length);
+if(!loaded.length)note(parent,'No examples are loaded in this view, so recorded input values and local sensitivity cannot be inspected here.');
+else if(!matches.length)note(parent,'No loaded example contains this exact recorded table and feature name. Missing, malformed and unloaded bodies cannot establish a match.');
 if(!entry){if(!selectedExample)selectedExample=matches[0];entry=selectedExample;
 if(matches.length){const choices=matches.map(item=>[String(item.index),sampleIdentity(item.ref)+' · collector '+text(item.ref.artifact_id)]);
 if(entry&&!matches.some(item=>item.index===entry.index))choices.unshift([String(entry.index),sampleIdentity(entry.ref)+' · feature not recorded']);
 const select=control(parent,'Matching loaded example',choices,value=>{
 selectedExample=matches.find(item=>String(item.index)===value)||entry;
 if(!sampleView.hidden)inspectSample(selectedExample.ref,selectedExample.index);else drawFeatureContext(parent);enable();});select.value=String(entry.index);}}
-if(!entry){note(parent,'No loaded example contains this exact recorded table and feature name. Missing, malformed and unloaded bodies cannot establish a match.');}
-else{const body=obj(bodies[entry.ref.artifact_id]),store=obj(body.subgraph_store),cells=matchingCells(entry.ref);
+if(entry){const body=obj(bodies[entry.ref.artifact_id]),store=obj(body.subgraph_store),cells=matchingCells(entry.ref);
 identityNote(parent,'Selected example',sampleIdentity(entry.ref)+' · Collector '+text(entry.ref.artifact_id));
 if(!cells.length)note(parent,'This loaded example has no matching recorded feature.');
 else{const axis=localAxis(body);
@@ -781,7 +782,7 @@ note(exact,'Local sensitivity is divided by this example’s maximum source-cell
 table(exact,['Recorded node','Value','Local score'],cells.slice(0,80).map(({id,feature})=>[id,text(feature.value),feature.score]),[2],true);parent.append(exact);}
 if(parent===featureContext)parent.append(action('Inspect this example’s context',()=>{inspectSample(entry.ref,entry.index);showPanel(2);
 const heading=sampleView.querySelector('h3');heading.tabIndex=-1;heading.focus();}));}
-if(parent===featureContext){note(parent,matches.length+' of '+loaded.length+' loaded examples contain this exact feature. These are recorded contexts, not cohort memberships or a population sample.');
+if(parent===featureContext){if(loaded.length)note(parent,matches.length+' of '+loaded.length+' loaded examples contain this exact feature. These are recorded contexts, not cohort memberships or a population sample.');
 const cohortMatches=cohorts.map((c,i)=>c.table_name===selectedFeature.table&&c.col_name===selectedFeature.column?i:-1).filter(i=>i>=0);
 for(const index of cohortMatches)parent.append(action('Inspect cohorts · hop '+text(cohorts[index].hop),()=>{inspectCohort(index);const heading=cohortView.querySelector('h3');heading.tabIndex=-1;heading.focus();}));
 if(!cohortMatches.length)note(parent,'No matching cohort record.');}};
