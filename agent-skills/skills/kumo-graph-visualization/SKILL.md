@@ -7,6 +7,8 @@ description: Provide graph visuals in Kumo notebooks and SDK scripts, display or
 
 Use `Graph.visualize()` to give users a view of the tables and relationships their model uses.
 Reuse the graph for the current task; graph changes follow `kumoai-reference/references/graph_construction.md`.
+The visual shows the graph exactly as built and never changes it: add no primary key, column, or edge for the viewer.
+Tables without a primary key, such as event tables, display as they are.
 A request to view or export an existing graph needs no model-training intake.
 
 ## Generated notebooks
@@ -25,9 +27,11 @@ except (AttributeError, ValueError) as error:
 Introduce the cell as an interactive view where the user can explore tables, columns, and relationships.
 It requires no snapshot and reads no source rows by default.
 Continue the workflow normally; pause for visual review only if the user asks.
+A notebook displays the graph only; it saves no SVG unless the user asks for a file.
 
 ## Generated SDK scripts
 
+This section applies to scripts only, never to notebooks.
 Save `graph.svg` alongside the run's outputs before training and report its path.
 Use the run's output directory; this example uses the current directory:
 
