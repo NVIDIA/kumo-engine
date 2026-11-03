@@ -69,7 +69,7 @@ class RunRecord:
                               ...]] = field(default_factory=dict)
     tags: Mapping[str, str] = field(default_factory=dict)
     artifacts: Mapping[str, str] = field(default_factory=dict)
-    #: Local directories logged as artifacts, by artifact path.
+    #: Local directories, by artifact path.
     files: Mapping[str, str] = field(default_factory=dict)
     summaries: Tuple[Summary, ...] = ()
     description: Optional[str] = None
