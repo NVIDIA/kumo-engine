@@ -75,14 +75,18 @@ popularity requirement.
 Mean absolute error is the average absolute difference between prediction and
 answer. Forecasting normal has error `0.334672`, below the stronger
 always-zero baseline of `0.382274`. The normal baseline stays unchanged.
+Normal error must beat this baseline by the agreed `min_normal_gain` margin.
 Default FAST trains with Huber loss, which penalizes errors differently from
 mean absolute error. The scrambled model predicts nearly constant values.
 
 The proposed forecast control baseline minimizes Huber loss on training labels,
 independently for each of twelve horizons. It has test error
 `0.544186`. The control model has error `0.512046`.
+The scrambled-control closeness check remains required. Its absolute error
+difference from this baseline must stay within `max_control_drift`.
 The initial zero-baseline failure remains in the campaign evidence. All learning
-limits remain unchanged. The new control baseline is a review proposal.
+limits remain unchanged. The new control baseline and its allowed difference
+both need review before the reference is approved.
 
 The [policy proposal](../../packages/kumo-engine/test/nightly/policy.json) also
 calibrates numerical comparisons from observed repeated, partial, and reloaded
