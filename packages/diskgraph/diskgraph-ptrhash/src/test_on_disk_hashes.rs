@@ -15,7 +15,7 @@
 //!     bytes.
 //! - The type and alignment hashes epserde writes into every index header.
 //!   epserde refuses to load a file whose hashes differ. These values describe
-//!   the remap-free layout with epserde 0.12.6; older indexes must be rebuilt.
+//!   the remap-free layout with epserde 0.13.2; older indexes must be rebuilt.
 //!
 //! Shard routing, which places each key on a shard with gxhash, is pinned
 //! next to the functions that compute it, in diskgraph-ingest's
@@ -198,41 +198,56 @@ fn epserde_header_hashes_match_golden_values() {
     use crate::DefaultPtrHash;
     use epserde::prelude::Serialize;
 
-    /// The `TYPE_HASH` and `REPR_HASH` header fields epserde writes for `T`.
-    fn header_hashes<T: Serialize>(value: &T) -> [u64; 2] {
+    /// The `TYPE_HASH` and `ALIGN_HASH` header fields epserde writes for `T`.
+    fn header_hashes<T: Serialize>(value: &T) -> [String; 2] {
         let mut buf = Vec::new();
         // SAFETY: all callers pass valid, initialized PtrHash values.
         let schema = unsafe { value.serialize_with_schema(&mut buf) }.unwrap();
-        ["TYPE_HASH", "REPR_HASH"].map(|field| {
+        ["TYPE_HASH", "ALIGN_HASH"].map(|field| {
             let row = schema.0.iter().find(|row| row.field == field).unwrap();
-            u64::from_ne_bytes(buf[row.offset..][..8].try_into().unwrap())
+            buf[row.offset..][..32]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect()
         })
     }
 
     // The index key types DiskGraph serializes.
-    let cases: [(&str, [u64; 2], [u64; 2]); 4] = [
+    let cases: [(&str, [String; 2], [&str; 2]); 4] = [
         (
             "u64",
             header_hashes(&DefaultPtrHash::<PkHash, u64>::default()),
-            [0x96be_a94f_23d4_9fcd, 0x23cc_9039_4ea0_7eeb],
+            [
+                "ee356f08e853ffcd2157e6526b5668eeef9d27283f743013fcaddc90b47a140c",
+                "31e0d887b2fc4d5829032e84c9d786a90ad0f85455a6385f9f9944e2b453f423",
+            ],
         ),
         (
             "Vec<u8>",
             header_hashes(&DefaultPtrHash::<PkHash, Vec<u8>>::default()),
-            [0x4a6d_9c93_deb5_ae70, 0x23cc_9039_4ea0_7eeb],
+            [
+                "f597b566aa608712f0b01935d78c18f1e5ec6fc8fe798edf3c319a57a54a963a",
+                "31e0d887b2fc4d5829032e84c9d786a90ad0f85455a6385f9f9944e2b453f423",
+            ],
         ),
         (
             "[u8; 16]",
             header_hashes(&DefaultPtrHash::<PkHash, [u8; 16]>::default()),
-            [0xe36d_58de_e86c_52b5, 0x23cc_9039_4ea0_7eeb],
+            [
+                "0a4522999b11a9e8759a5d2f6edf4b8c306982aabb4a666857c030b9f50adf91",
+                "31e0d887b2fc4d5829032e84c9d786a90ad0f85455a6385f9f9944e2b453f423",
+            ],
         ),
         (
             "[u8; 32]",
             header_hashes(&DefaultPtrHash::<PkHash, [u8; 32]>::default()),
-            [0xb28b_5015_6a83_476b, 0x23cc_9039_4ea0_7eeb],
+            [
+                "14ce81bb1f4551ac0a97c93dd3a51e4328b0ba0f0e6bf52861ae54428f5dd812",
+                "31e0d887b2fc4d5829032e84c9d786a90ad0f85455a6385f9f9944e2b453f423",
+            ],
         ),
     ];
     for (key, got, want) in cases {
-        assert_eq!(got, want, "{key}: got [{:#018x}, {:#018x}]", got[0], got[1]);
+        assert_eq!(got, want, "{key}");
     }
 }

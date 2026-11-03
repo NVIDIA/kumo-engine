@@ -35,8 +35,9 @@ Removing the remap parameter and table changes the serialized `PtrHash` type
 hashes. Existing indexes must be rebuilt from source data with this version;
 resuming ingestion from an old primary-key-map checkpoint is unsupported.
 Epserde rejects the old hash files rather than interpreting them as the new type.
-The epserde upgrade to 0.12.6 and removal of unused `MemSize` derives eliminate
-`maligned` without a local dependency patch.
+Epserde 0.13.2 uses file format 2.0 with SHA-256 type and alignment hashes.
+The upgrade and removal of unused `MemSize` derives eliminate `maligned`
+without a local dependency patch.
 
 ## Testing Notes
 

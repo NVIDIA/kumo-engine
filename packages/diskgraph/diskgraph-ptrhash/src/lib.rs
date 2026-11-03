@@ -69,7 +69,7 @@ pub(crate) enum SortPartsError {
 /// While all fields are public, prefer [`PtrHashParams::default()`].
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "epserde", derive(epserde::prelude::Epserde))]
-#[cfg_attr(feature = "epserde", epserde(deep_copy))]
+#[cfg_attr(feature = "epserde", epserde(deep_copy, full_copy(BF)))]
 pub struct PtrHashParams<BF> {
     /// Use `n/alpha` slots approximately.
     pub alpha: f64,
@@ -167,6 +167,7 @@ type PilotHash = u64;
 /// - `Hx`: The hasher to use for keys, default `PkHash`.
 /// - `V`: The pilots type. Usually `Vec<u8>`, or `&[u8]` for Epserde.
 #[cfg_attr(feature = "epserde", derive(epserde::prelude::Epserde))]
+#[cfg_attr(feature = "epserde", epserde(phantom(Key, Hx), full_copy(BF)))]
 #[derive(Clone)]
 pub struct PtrHash<
     Key: KeyT + ?Sized = u64,

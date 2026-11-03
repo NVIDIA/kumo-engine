@@ -375,7 +375,7 @@ fn serialized_slots_round_trip_all_key_types() {
 
 #[cfg(feature = "epserde")]
 #[test]
-fn rejects_previous_remapped_type_hash() {
+fn rejects_previous_file_format() {
     use epserde::prelude::{AlignedCursor, Deserialize, Serialize};
 
     let hash = build_u64(&make_keys(100));
@@ -385,14 +385,13 @@ fn rejects_previous_remapped_type_hash() {
     let row = schema
         .0
         .iter()
-        .find(|row| row.field == "TYPE_HASH")
+        .find(|row| row.field == "VERSION_MAJOR")
         .unwrap();
-    buffer.as_bytes_mut()[row.offset..row.offset + 8]
-        .copy_from_slice(&0x4c5d_2730_c662_a438_u64.to_ne_bytes());
-    // SAFETY: only the header hash changed; the serialized payload is valid.
+    buffer.as_bytes_mut()[row.offset..row.offset + 2].copy_from_slice(&1_u16.to_ne_bytes());
+    // SAFETY: only the header version changed; the serialized payload is valid.
     let result = unsafe { DefaultPtrHash::<hash::PkHash, u64>::deserialize_eps(buffer.as_bytes()) };
     assert!(matches!(
         result,
-        Err(epserde::deser::Error::WrongTypeHash { .. })
+        Err(epserde::deser::Error::MajorVersionMismatch(1))
     ));
 }
