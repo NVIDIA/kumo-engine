@@ -1608,6 +1608,30 @@ def test_model_plan_serialization():
     assert "Link Prediction" in str(errors[0])
 
 
+@pytest.mark.parametrize('max_steps, expected', [
+    (None, (None, None)),
+    (MissingType.VALUE, (2000, 4000)),
+])
+def test_model_plan_eval_steps(max_steps, expected):
+    task = (TaskType.BINARY_CLASSIFICATION, QueryType.STATIC)
+    plan = ModelPlan()
+    plan.optimization.max_val_steps = max_steps
+    plan.optimization.max_test_steps = max_steps
+    plan = model_plan_from_yaml(model_plan_to_yaml(plan, *task))
+    plan = from_json(to_json(plan), ModelPlan)
+
+    errors, _ = plan.validate(
+        *task,
+        has_train_table_time_col=False,
+        run_mode=RunMode.NORMAL,
+        raise_on_error=False,
+    )
+
+    assert errors == []
+    assert (plan.optimization.max_val_steps,
+            plan.optimization.max_test_steps) == expected
+
+
 def test_model_plan_metric_assignment():
     plan = ModelPlan.from_default(
         task_type=TaskType.BINARY_CLASSIFICATION,

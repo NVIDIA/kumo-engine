@@ -22,8 +22,9 @@ PACKAGES = {
     'kumo_core': REPO / 'packages' / 'kumo-core' / 'src' / 'kumo_core',
     'kumoapi': REPO / 'packages' / 'kumo-api' / 'kumoapi',
     'kumo_snowflake': REPO / 'packages' / 'kumo-snowflake' / 'src' / 'kumo_snowflake',
+    'kumo_databricks': REPO / 'packages' / 'kumo-databricks' / 'src' / 'kumo_databricks',
 }
-ROOT = r'(?:kumo\.engine|kumo_core|kumoapi|kumo_snowflake)'
+ROOT = r'(?:kumo\.engine|kumo_core|kumoapi|kumo_snowflake|kumo_databricks)'
 DOTTED = re.compile(rf'`({ROOT}(?:\.[A-Za-z_][A-Za-z0-9_]*)+)`')
 FENCE = re.compile(r'^[ \t]*```[^\n]*\n(.*?)^[ \t]*```', re.DOTALL | re.MULTILINE)
 FROM_IMPORT = re.compile(rf'^[ \t]*from[ \t]+({ROOT}(?:\.\w+)*)[ \t]+import[ \t]+(\([^)]*\)|[^\n]*)', re.MULTILINE)
