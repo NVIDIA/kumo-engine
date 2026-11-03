@@ -21,7 +21,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from enum import Enum
 from numbers import Integral
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from diskgraph import read_col_stats
 from kumoapi.common import ValidationResponse
@@ -992,8 +992,13 @@ def latest_temporal_timestamp(query: ValidatedNativeQuery,
     if query.query_type != "temporal":
         raise PredictiveQueryPlanError(
             "a source-derived timestamp requires a temporal query")
-    return max(int(maximum.value)
-               for _, maximum in _target_time_bounds(query, index_path))
+    return _target_maximum(query, index_path, max)
+
+
+def _target_maximum(query: ValidatedNativeQuery, index_path: str,
+                    pick: Callable[[Iterable[int]], int]) -> int:
+    return pick(int(maximum.value)
+                for _, maximum in _target_time_bounds(query, index_path))
 
 
 def _temporal_timestamps(
@@ -1019,7 +1024,8 @@ def _temporal_timestamps(
     if error is not None:
         raise PredictiveQueryPlanError(f"{error.title}. {error.message}")
     if explicit:
-        return tuple(_timestamp_ns(value) for value in explicit), False
+        return (tuple(_timestamp_ns(value) for value in explicit),
+                "flexible_boundaries" in split)
     minimum, maximum, filter_buffer = _temporal_target_time_range(
         query, index_path)
 

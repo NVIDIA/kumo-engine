@@ -11,7 +11,7 @@ that machinery is dropped rather than ported.
 import os
 from functools import cached_property
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from kumoapi.data_source import (
     DataSourceType,
@@ -100,6 +100,11 @@ class SnowflakeConnector(Connector):
                                                "snowflake").SnowflakeSinkBackend
         return SnowflakeSinkBackend(identity=self.identity)
 
+    def session(self) -> Any:
+        r"""The Snowpark session this connector reads through."""
+        with self.source_backend._session(self) as session:
+            return session
+
     def source_table_for(self, table_name: str) -> SnowflakeSourceTable:
         return SnowflakeSourceTable(
             snowflake_connector_id=self.id,
@@ -107,6 +112,14 @@ class SnowflakeConnector(Connector):
             schema_name=self.schema_name,
             table=table_name,
         )
+
+    def _monitored_files(self, destination: str, files: List[str],
+                         directory: Path) -> List[str]:
+        from kumo.engine.connector import is_file_destination
+
+        if is_file_destination(self, destination):
+            return files
+        return _for_model_monitor(files, directory)
 
     def __repr__(self) -> str:
         return (f"{self.__class__.__name__}(database={self.database!r}, "
@@ -282,3 +295,27 @@ def _connections_toml_identity(entry: Dict[str, str]) -> SnowflakeIdentity:
         "A SnowflakeIdentity holds its credentials directly, so one of the "
         "two has to be readable from the entry; an externalbrowser or SSO "
         "connection cannot be turned into one.")
+
+
+def _for_model_monitor(files: List[str], directory: Path) -> List[str]:
+    import pyarrow as pa
+    import pyarrow.parquet as parquet
+
+    def monitored(field: Any) -> Any:
+        if field.name == 'TARGET' and pa.types.is_boolean(field.type):
+            return field.with_type(pa.int8())
+        if pa.types.is_timestamp(field.type) and field.type.tz is not None:
+            return field.with_type(pa.timestamp(field.type.unit))
+        return field
+
+    typed = []
+    for path in files:
+        source = parquet.ParquetFile(path)
+        schema = pa.schema([monitored(field) for field in source.schema_arrow])
+        target = str(directory / Path(path).name)
+        with parquet.ParquetWriter(target, schema) as writer:
+            for batch in source.iter_batches():
+                writer.write_table(
+                    pa.Table.from_batches([batch]).cast(schema))
+        typed.append(target)
+    return typed

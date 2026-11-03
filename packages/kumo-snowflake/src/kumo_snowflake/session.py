@@ -461,6 +461,16 @@ class _SnowflakeSessions:
                       f'accepted, as {self._default_hint}.'),
         )
 
+    def table_location(self, connector: SourceConnector,
+                       table_name: str) -> str:
+        """``account/"DB"."SCHEMA"."TABLE"``; the account when it resolves."""
+        try:
+            account = _snowflake_config(self._principal(connector)).account
+        except Exception:
+            account = None
+        qualified = self._qualified(connector, table_name)
+        return f'{account}/{qualified}' if account else qualified
+
     @staticmethod
     def _qualified(connector: SourceConnector, table_name: str) -> str:
         return (f'{_quoted(resolved(_target_config(connector).database))}.'

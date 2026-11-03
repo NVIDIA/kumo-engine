@@ -3222,6 +3222,13 @@
         },
         {
           "license": "MIT OR Apache-2.0",
+          "name": "crc32fast",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.5.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
           "name": "crossbeam-deque",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "source_kind": "registry-or-git",
@@ -8289,6 +8296,13 @@
         },
         {
           "license": "MIT OR Apache-2.0",
+          "name": "crc32fast",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.5.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
           "name": "crossbeam-deque",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "source_kind": "registry-or-git",
@@ -10170,6 +10184,6 @@
       ]
     }
   ],
-  "cargo_lock_sha256": "f570e905dc46670cd730ddaca2ba5c63200db298c439e6bd1b5f15b8bef30746",
+  "cargo_lock_sha256": "a89fa665364796373de686de082a8f2a4043da5a6dee89c019aa140c45f9c709",
   "schema": 1
 }

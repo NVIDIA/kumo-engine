@@ -196,9 +196,10 @@ def resolve_warm_start(
     encoders; they do not retain hosted AutoML directory layouts.
     """
     if artifacts is not None:
-        source_schema = load_json(artifacts["prediction_schema"], dict)
+        from kumo_core.artifacts import bundle_task_type
+
         validate_warm_start_task_type(task.task_type,
-                                      TaskType(source_schema["task_type"]))
+                                      bundle_task_type(artifacts))
         checkpoint = artifacts["selected_checkpoint"]
         plan_path = artifacts["resolved_model_plan"]
         encoder_dir = posixpath.dirname(artifacts["encoders"])
