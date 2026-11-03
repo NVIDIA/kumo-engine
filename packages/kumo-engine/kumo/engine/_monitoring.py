@@ -525,7 +525,7 @@ def track(report: Any, run: Any, settings: Any, trainer: Any,
         return report
     return replace(report, tracking=TrackingRef(
         platform=str(tracker.platform), run_id=str(tracker.run_id),
-        url=tracker.run_url))
+        url=tracker.run_url, run_name=tracker.logged_run_name))
 
 
 _IDENTITY = ('kumo.prediction_id', 'kumo.bundle_id', 'kumo.as_of',

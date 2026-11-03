@@ -462,7 +462,8 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
                   (('orders', 100, 104, 4.0),), brief=True),
             Table('drift/inputs/orders', ('column', 'psi'),
                   (('AMOUNT', 0.12),))))) is None
-    assert (later.run_id, later.run_url) == (tracker.run_id, tracker.run_url)
+    assert (later.run_id, later.run_url, later.logged_run_name) == (
+        tracker.run_id, tracker.run_url, tracker.logged_run_name)
     assert log_run(later, later.log_monitoring, RunRecord(
         tags={**monitoring, 'kumo.monitor': 'evaluate'},
         prediction_run=predicted.info.run_id, summaries=(

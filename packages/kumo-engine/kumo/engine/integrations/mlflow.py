@@ -456,8 +456,9 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
             run_id, 'realized' if record.tags.get('kumo.monitor')
             == 'evaluate' else 'drift', routed.card)
         with self.target.scope():
-            self._experiment_id = self._client.get_run(
-                run_id).info.experiment_id
+            run = self._client.get_run(run_id).info
+        self._experiment_id, self.logged_run_name = (run.experiment_id,
+                                                     run.run_name)
         self.run_id = run_id
 
     def on_trial(self, record: RunRecord, event: Event) -> None:

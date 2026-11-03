@@ -796,6 +796,7 @@ class _Tracker:
     def log_monitoring(self, record):
         self.records.append(record)
         self.run_id = f'run-{len(self.records)}'
+        self.logged_run_name = f'DRIFT_{len(self.records)}'
 
 
 def test_tracked_monitoring_is_tagged_like_its_prediction_run(
@@ -811,8 +812,8 @@ def test_tracked_monitoring_is_tagged_like_its_prediction_run(
 
     drift, evaluated = tracker.records
     assert (report.tracking, evaluation.tracking) == (
-        TrackingRef(platform='fake', run_id='run-1'),
-        TrackingRef(platform='fake', run_id='run-2'))
+        TrackingRef(platform='fake', run_id='run-1', run_name='DRIFT_1'),
+        TrackingRef(platform='fake', run_id='run-2', run_name='DRIFT_2'))
     for record, monitor in ((drift, 'drift'), (evaluated, 'evaluate')):
         assert record.tags.items() >= {
             'kumo.kind': 'monitoring', 'kumo.monitor': monitor,
@@ -904,8 +905,8 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
         previous=SimpleNamespace(tracking=TrackingRef(
             platform='fake', run_id='run-0', run_name='2026-10-28-v6-churn')))
 
-    assert tracked == replace(report, tracking=TrackingRef(platform='fake',
-                                                           run_id='run-1'))
+    assert tracked == replace(report, tracking=TrackingRef(
+        platform='fake', run_id='run-1', run_name='DRIFT_1'))
     record, = tracker.records
     assert record.prediction_run == 'run-7'
     assert record.summaries == (
