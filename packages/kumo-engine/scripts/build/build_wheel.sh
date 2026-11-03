@@ -247,11 +247,11 @@ for pkg_dir in "${KUMO_REPO}"/packages/*/; do
     [ -f "${pkg_dir}pyproject.toml" ] || [ -f "${pkg_dir}setup.py" ] || continue
     dist_glob="${pkg_name//-/_}-*.whl"
     log "building ${pkg_name} from ${pkg_dir}"
-    component_args=()
+    component_args=(-m pip wheel --no-deps -q)
     if [ "${pkg_name}" = "kumo-engine" ]; then
         component_args+=(--config-settings=kumo-component=true)
     fi
-    "${PYTHON}" -m pip wheel --no-deps -q "${component_args[@]}" \
+    "${PYTHON}" "${component_args[@]}" \
         -w "${WHEELS}" "${pkg_dir}"
     record "${dist_glob}" kumo-first-party \
         "${KUMO_REPO}/packages/${pkg_name} @ ${KUMO_REPO_HEAD}${KUMO_REPO_DIRTY}"

@@ -5,6 +5,7 @@
 import json
 import os
 import runpy
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -20,12 +21,26 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[4]
 SCRIPTS = REPO_ROOT / 'packages/kumo-engine/scripts/build'
 SCRIPT = SCRIPTS / 'build_wheel.sh'
-MERGE = SCRIPTS / 'merge_wheels.py'
+MERGE = SCRIPTS / "merge_wheels.py"
+BASH_EXECUTABLES = sorted(
+    {
+        Path(shutil.which("bash") or "/bin/bash").resolve(),
+        Path("/bin/bash").resolve(),
+    }
+)
 
 
+@pytest.mark.parametrize('shell', BASH_EXECUTABLES)
 @pytest.mark.parametrize('legacy_selection', ['', 'kumo-databricks'])
 def test_wheel_builds_all_first_party_packages_from_monorepo(
-        tmp_path, legacy_selection):
+        tmp_path: Path, legacy_selection: str, shell: Path) -> None:
+    """Build every component with the PATH and system Bash interpreters.
+
+    Args:
+        tmp_path: Directory containing the mock checkout and build tools.
+        legacy_selection: Ignored legacy component-selection setting.
+        shell: Bash executable, including macOS's system Bash 3.2.
+    """
     repo = tmp_path / 'repo'
     for name in [
             'kumo-api', 'kumo-core', 'kumo-pql', 'kumo-engine', 'kumo-sdk',
@@ -62,7 +77,7 @@ wheel_dir = Path(args[args.index('-w') + 1])
 ''')
     python.chmod(0o755)
     result = subprocess.run(
-        ['bash', str(SCRIPT), '--no-zig', '--version', '1'],
+        [str(shell), str(SCRIPT), '--no-zig', '--version', '1'],
         env=dict(os.environ, KUMO_REPO=str(repo), PYTHON=str(python),
                  EXTRA_COMPONENTS=legacy_selection, BUILD_CALLS=str(calls),
                  THIRD_PARTY_NOTICE=str(repo / 'THIRD-PARTY.txt'),
