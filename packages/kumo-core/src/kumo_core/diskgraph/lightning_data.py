@@ -158,8 +158,17 @@ _WORKER_SHUTDOWN_DEADLINE_SECONDS = 90.0
 _WORKER_SHUTDOWN_POLL_SECONDS = 0.05
 _PIDFD_SEND_SIGNAL_SYSCALL = 424
 _PIDFD_OPEN_SYSCALL = 434
-_LIBC = ctypes.CDLL(None, use_errno=True)
-_LIBC.syscall.restype = ctypes.c_long
+
+
+def _load_pidfd_libc() -> ctypes.CDLL | None:
+    if not sys.platform.startswith('linux'):
+        return None
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.syscall.restype = ctypes.c_long
+    return libc
+
+
+_LIBC = _load_pidfd_libc()
 
 
 def _raise_pidfd_error() -> None:
@@ -174,6 +183,7 @@ def _pidfd_open(pid: int) -> int | None:
     native = getattr(os, 'pidfd_open', None)
     if native is not None:
         return native(pid)
+    assert _LIBC is not None
     result = _LIBC.syscall(
         ctypes.c_long(_PIDFD_OPEN_SYSCALL),
         ctypes.c_int(pid),
@@ -190,6 +200,7 @@ def _pidfd_send_signal(pidfd: int, sig: int) -> None:
     if native is not None:
         native(pidfd, sig)
         return
+    assert _LIBC is not None
     result = _LIBC.syscall(
         ctypes.c_long(_PIDFD_SEND_SIGNAL_SYSCALL),
         ctypes.c_int(pidfd),
@@ -2107,7 +2118,10 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         return self._make_rhs_dataloader(self.predict_time, "predict")
 
     def _pseudo_time_options(self, stage: str) -> dict[str, Any]:
-        from kumo_core.training.splits import pseudo_seed_time, uses_pseudo_time
+        from kumo_core.training.splits import (
+            pseudo_seed_time,
+            uses_pseudo_time,
+        )
         if uses_pseudo_time(self._task_type) and stage in ('pred', 'predict'):
             return {'pseudo_seed_time': None, 'disable_pseudo_time': True}
         seed_time = pseudo_seed_time(self._task_type, stage)
