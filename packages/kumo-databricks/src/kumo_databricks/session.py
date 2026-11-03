@@ -196,7 +196,6 @@ class _DatabricksSessions:
 
     def table_location(self, connector: SourceConnector,
                        table_name: str) -> str:
-        """Fully qualified name of ``table_name`` in the connector's target."""
         return self._qualified(connector, self._bare(connector, table_name))
 
     @staticmethod

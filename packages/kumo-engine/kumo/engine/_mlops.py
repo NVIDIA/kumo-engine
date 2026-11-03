@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""The MLOps switch: :class:`MLOps` settings and the :func:`mlops` block."""
-
 import contextlib
 import contextvars
 import os
@@ -164,13 +162,11 @@ def mlops(settings: MLOps) -> Iterator[MLOps]:
 
 
 def resolve(settings: Optional[MLOps] = None) -> Optional[MLOps]:
-    r"""The ``mlops=`` argument, else the enclosing block's."""
     return settings if settings is not None else _CURRENT.get()
 
 
 def raise_on_error(settings: Optional[MLOps], error: Optional[BaseException],
                    call: str, stacklevel: int = 2) -> None:
-    r"""Raises or warns about ``error``, as ``settings.on_error`` says."""
     if error is None or settings is None:
         return
     message = f'{call} finished, but MLOps failed: {full_error(error)}'
@@ -180,13 +176,11 @@ def raise_on_error(settings: Optional[MLOps], error: Optional[BaseException],
 
 
 def full_error(error: BaseException) -> str:
-    r"""``Type: message``, not shortened."""
     return f'{type(error).__name__}: {error}'
 
 
 def warn_failure(message: str, error: BaseException, stacklevel: int = 2,
                  also: Optional[BaseException] = None) -> None:
-    r"""Warns ``message`` once per ``error`` (and ``also``)."""
     if getattr(error, '_kumo_warned', False):
         return
     warnings.warn(message, UserWarning, stacklevel=stacklevel + 1)
@@ -198,7 +192,6 @@ def warn_failure(message: str, error: BaseException, stacklevel: int = 2,
 
 
 def on_root(source: Any, path: str) -> Tuple[Any, str]:
-    r"""``path`` under an `MLOps` root, else ``source`` as given."""
     if isinstance(source, MLOps):
         return source.root.connector, source.root.location(path.lstrip('/'))
     return source, path

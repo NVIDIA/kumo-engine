@@ -42,8 +42,7 @@ from kumo.engine.connector.source_table import SourceTable, SQLSourceTable
 
 
 def connector_for_root(uri: str) -> Connector:
-    r"""A connector rooted at ``uri``: ``s3://``, ``gs://``, ``file://`` or a
-    local path."""
+    r"""A connector rooted at ``uri``."""
     from urllib.parse import urlparse
     from urllib.request import url2pathname
 

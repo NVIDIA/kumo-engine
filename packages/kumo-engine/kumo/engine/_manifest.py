@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Shared JSON manifest format for engine artifacts."""
-
 import json
 import types
 import warnings
@@ -36,14 +34,11 @@ M = TypeVar('M', bound='Manifest')
 
 
 def omit_none() -> Any:
-    """A field left out of the JSON while it is None."""
     return field(default=None, metadata={_OMIT_NONE: True})
 
 
 @dataclass(frozen=True)
 class Artifact:
-    """An artifact a manifest names."""
-
     kind: str
     id: str
     location: Optional[str]
@@ -155,8 +150,6 @@ KINDS = ('snapshot', 'training_table', 'model')
 
 @dataclass(frozen=True, kw_only=True)
 class Manifest(Record):
-    """An artifact's record."""
-
     kind: str = ''
     schema_version: int = SCHEMA_VERSION
     id: str
@@ -175,7 +168,6 @@ class Manifest(Record):
 
 
 def artifacts(manifest: Manifest) -> List[Artifact]:
-    """``manifest`` and the artifacts it names, once each."""
     found: Dict[Any, Artifact] = {}
     for artifact in _walk(manifest, manifest.kind, manifest):
         found.setdefault((artifact.kind, artifact.id), artifact)
@@ -201,7 +193,6 @@ def _walk(value: Any, key: str, root: Manifest) -> Iterator[Artifact]:
 
 
 def stamp() -> Dict[str, Any]:
-    """Envelope fields for a manifest written now."""
     from kumo.engine._provenance import environment
 
     return dict(
@@ -225,12 +216,10 @@ def _kinds() -> Dict[str, Type['Manifest']]:
 
 
 def stub(kind: str, id: str) -> 'Manifest':
-    """A manifest knowing only ``kind`` and ``id``."""
     return _kinds()[kind](id=id, reconstructed=True)
 
 
 def embedded(manifest: M) -> M:
-    """``manifest`` minus the fields a child's copy omits."""
     return replace(manifest, **{
         name: None
         for name in manifest.EMBED_OMITS

@@ -226,7 +226,6 @@ def _schema_tables(config: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 def schema_changes(before: Mapping[str, Any],
                    after: Mapping[str, Any]) -> List[str]:
-    r"""Schema differences between two graph configs."""
     old, new = _schema_tables(before), _schema_tables(after)
     changes = [
         f"table {name} {'removed' if name in old else 'added'}"

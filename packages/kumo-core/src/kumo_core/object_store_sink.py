@@ -67,7 +67,6 @@ def upload_bundle(filesystem: FileSystem, destination: str,
 
 def holds_bundle(filesystem: FileSystem, destination: str,
                  bundle_dir: str) -> bool:
-    """Whether ``destination`` holds the same files, sizes and provenance."""
     from kumo_core.artifacts import PROVENANCE_FILE
 
     root = Path(bundle_dir)
@@ -84,7 +83,6 @@ def holds_bundle(filesystem: FileSystem, destination: str,
 
 
 def file_sizes(filesystem: FileSystem, directory: str) -> dict[str, int]:
-    """The size of each file under ``directory``, by relative path."""
     from pyarrow.fs import FileSelector, FileType
 
     return {
@@ -382,7 +380,6 @@ def _prepared(filesystem: FileSystem, directory: str) -> None:
 
 
 def holds_export(filesystem: FileSystem, path: str, export_id: str) -> bool:
-    """Whether the directory ``path`` holds a complete export ``export_id``."""
     from kumo_core.artifact_export import EXPORT_MARKER_NAME
     from pyarrow.fs import FileType
 
