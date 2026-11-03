@@ -433,8 +433,10 @@ class FilesystemSink(ObjectStoreSinkBackend):
 
 
 class FileStoreRouting:
-    """Sends ``holds_files`` paths to :class:`FilesystemSink`, the rest on."""
-    def _rest(self, method):
+    """Routes ``holds_files`` paths to :class:`FilesystemSink`."""
+    def _route(self, connector, path, method):
+        if path is not None and self.holds_files(connector, path):
+            return FilesystemSink(self)
         rest = super()
         if not hasattr(rest, method):
             raise NotImplementedError(
@@ -444,39 +446,31 @@ class FileStoreRouting:
     def write_table(self, connector, table_name, frame,
                     write_mode=WriteMode.OVERWRITE, project_id=None, *,
                     export_id=None):
-        sink = FilesystemSink(self) if self.holds_files(
-            connector, table_name) else self._rest('write_table')
-        return sink.write_table(connector, table_name, frame, write_mode,
-                                project_id, export_id=export_id)
+        return self._route(connector, table_name, 'write_table').write_table(
+            connector, table_name, frame, write_mode, project_id,
+            export_id=export_id)
 
     def write_files(self, connector, table_name, files,
                     write_mode=WriteMode.OVERWRITE, project_id=None, *,
                     export_id=None, extra_columns=None):
-        sink = FilesystemSink(self) if self.holds_files(
-            connector, table_name) else self._rest('write_files')
-        return sink.write_files(connector, table_name, files, write_mode,
-                                project_id, export_id=export_id,
-                                extra_columns=extra_columns)
+        return self._route(connector, table_name, 'write_files').write_files(
+            connector, table_name, files, write_mode, project_id,
+            export_id=export_id, extra_columns=extra_columns)
 
     def publish_model(self, connector, bundle_dir, *, path=None, location=None,
                       metadata={}, metrics={}, project_id=None):
-        if location is None and path is not None and self.holds_files(
-                connector, path):
-            return FilesystemSink(self).publish_model(
-                connector, bundle_dir, path=path, metadata=metadata)
-        return self._rest('publish_model').publish_model(
-            connector, bundle_dir, path=path, location=location,
-            metadata=metadata, metrics=metrics, project_id=project_id)
+        sink = self._route(connector, path if location is None else None,
+                           'publish_model')
+        return sink.publish_model(connector, bundle_dir, path=path,
+                                  location=location, metadata=metadata,
+                                  metrics=metrics, project_id=project_id)
 
     def fetch_model(self, connector, local_dir, *, path=None, location=None,
                     project_id=None):
-        if location is None and path is not None and self.holds_files(
-                connector, path):
-            return FilesystemSink(self).fetch_model(connector, local_dir,
-                                                    path=path)
-        return self._rest('fetch_model').fetch_model(
-            connector, local_dir, path=path, location=location,
-            project_id=project_id)
+        sink = self._route(connector, path if location is None else None,
+                           'fetch_model')
+        return sink.fetch_model(connector, local_dir, path=path,
+                                location=location, project_id=project_id)
 
     def preflight_write_files(self, connector, table_name, write_mode=None):
         if self.holds_files(connector, table_name):
