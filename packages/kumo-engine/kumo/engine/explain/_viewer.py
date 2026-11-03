@@ -130,7 +130,7 @@ border-radius:7px;padding:6px 10px;max-width:100%}
 .kumo-training .kt-action{cursor:pointer;white-space:normal;text-align:left}
 .kumo-training .kt-action:hover{background:$chrome_hover}
 .kumo-training summary{cursor:pointer;color:$muted;font-size:13px;padding:6px 0}
-.kumo-training :is(button,select,summary,h2,h3,.kt-history-values,.kt-sample-values):focus-visible{outline:2px solid $focus;outline-offset:2px}
+.kumo-training :is(button,select,summary,h2,h3,h4,.kt-history-values,.kt-sample-values):focus-visible{outline:2px solid $focus;outline-offset:2px}
 .kumo-training .kt-action[aria-pressed="true"]{background:$row_highlight;
 border-color:$focus}
 .kumo-training .kt-detail{padding:12px;border:1px solid $surface_border;
@@ -172,6 +172,24 @@ gap:8px;padding:0;margin:8px 0 16px}
 padding:8px 0;border-bottom:1px solid $surface_border}
 .kumo-training .kt-observed-list .kt-note{margin:0}
 .kumo-training .kt-observed-list details{flex-basis:100%}
+.kumo-training .kt-neighborhood{margin:20px 0}
+.kumo-training .kt-neighborhood-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+gap:20px;align-items:start}
+.kumo-training .kt-neighborhood h4{margin-top:0}
+.kumo-training .kt-selected-node{border-left:3px solid $accent;padding-left:12px}
+.kumo-training .kt-selected-node>h4{color:$accent}
+.kumo-training .kt-connections{list-style:none;margin:8px 0 12px;padding:0}
+.kumo-training .kt-connections>li{padding:10px 0;border-bottom:1px solid $surface_border}
+.kumo-training .kt-connection{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);
+gap:8px;align-items:center}
+.kumo-training .kt-connection>.kt-action{width:100%}
+.kumo-training .kt-connection-direction{color:$muted;font-size:12px}
+.kumo-training .kt-node-features{list-style:none;padding:0;margin:8px 0}
+.kumo-training .kt-node-features>li{padding:10px 0;border-bottom:1px solid $surface_border}
+.kumo-training .kt-node-features>li.kt-match{background:$row_highlight;border-left:3px solid $accent;padding-left:8px}
+.kumo-training .kt-node-features .kt-note{margin:4px 0}
+@container kumo-training (max-width:700px){
+.kumo-training .kt-neighborhood-layout{grid-template-columns:minmax(0,1fr)}}
 @container kumo-training (max-width:520px){
 .kumo-training .kt-table,.kumo-training .kt-table tbody,
 .kumo-training .kt-table tr,.kumo-training .kt-table td{display:block;width:100%}
@@ -416,6 +434,12 @@ Object.hasOwn(node,'pkey')&&node.pkey!==null?(tables.length?tables.join(', ')+'.
 const sampleIdentity=ref=>{const store=obj(obj(bodies[ref.artifact_id]).subgraph_store);return nodeIdentity(store,store.root_id);};
 const featureCells=body=>Object.entries(obj(obj(body.feature_store).features)).flatMap(([id,columns])=>
 Object.entries(obj(columns)).map(([name,value])=>({id,name,feature:obj(value)})));
+const localAxis=body=>featureCells(body).reduce((max,{feature})=>
+finite(feature.score)&&feature.score>=0?Math.max(max,feature.score):max,1);
+const localScore=(parent,feature,axis)=>{
+if(finite(feature.score)&&feature.score>=0){const mark=el('div',undefined,'kt-score'),track=el('div',undefined,'kt-track'),bar=el('div',undefined,'kt-bar');
+bar.style.width=(feature.score/axis*100)+'%';track.setAttribute('aria-hidden','true');track.append(bar);mark.append(track,el('span',number(feature.score),'kt-value'));parent.append(mark);}
+else note(parent,feature.score==null?'Unavailable':'Invalid recorded score');};
 const matchingCells=ref=>featureCells(obj(bodies[ref.artifact_id])).filter(({feature})=>
 typeof selectedFeature.table==='string'&&typeof selectedFeature.column==='string'&&
 feature.table_name===selectedFeature.table&&feature.name===selectedFeature.column);
@@ -433,8 +457,8 @@ if(!sampleView.hidden)inspectSample(selectedExample.ref,selectedExample.index);e
 if(!entry){note(parent,'No loaded example contains this exact recorded table and feature name. Missing, malformed and unloaded bodies cannot establish a match.');}
 else{const body=obj(bodies[entry.ref.artifact_id]),store=obj(body.subgraph_store),cells=matchingCells(entry.ref);
 identityNote(parent,'Selected example',sampleIdentity(entry.ref)+' · Collector '+text(entry.ref.artifact_id));
-if(!cells.length)note(parent,'This loaded example has no matching recorded feature. Choose another global feature in Patterns.');
-else{const axis=featureCells(body).reduce((max,{feature})=>finite(feature.score)&&feature.score>=0?Math.max(max,feature.score):max,1);
+if(!cells.length)note(parent,'This loaded example has no matching recorded feature.');
+else{const axis=localAxis(body);
 note(parent,'Local scores use this example’s own scale (0 to '+number(axis)+'). They cannot be compared numerically with global scores or other examples. Unavailable means unrecorded, not zero.');
 if(cells.some(({id})=>obj(obj(store.nodes)[id]).count!==undefined))note(parent,'Aggregate scores sum normalized source cells and can exceed 1; aggregate values are not retained.');
 const rows=el('ul',undefined,'kt-feature-cells');rows.setAttribute('aria-label','Matching recorded feature values and local sensitivity');
@@ -442,9 +466,7 @@ for(const {id,feature}of cells.slice(0,80)){const row=el('li'),identity=el('div'
 identity.append(el('strong',nodeIdentity(store,id)));note(identity,'Recorded node: '+id);
 value.append(el('span','Recorded value','kt-note'),el('div',feature.value==null&&obj(obj(store.nodes)[id]).count!==undefined?'Aggregate value not retained':text(feature.value)));
 score.append(el('span','Local sensitivity','kt-note'));
-if(finite(feature.score)&&feature.score>=0){const mark=el('div',undefined,'kt-score'),track=el('div',undefined,'kt-track'),bar=el('div',undefined,'kt-bar');
-bar.style.width=(feature.score/axis*100)+'%';track.setAttribute('aria-hidden','true');track.append(bar);mark.append(track,el('span',number(feature.score),'kt-value'));score.append(mark);}
-else note(score,feature.score==null?'Unavailable':'Invalid recorded score');
+localScore(score,feature,axis);
 row.append(identity,value,score);rows.append(row);}parent.append(rows);
 if(cells.length>80)note(parent,'Showing 80 of '+cells.length+' matching recorded cells; complete loaded body remains available in Python.');
 const exact=el('details');exact.append(el('summary','Exact matching feature values and local scores'));
@@ -506,6 +528,102 @@ const details=el('details');details.append(el('summary','Explore '+title.toLower
 const values=el('div',undefined,'kt-sample-values');values.tabIndex=0;
 values.setAttribute('role','region');values.setAttribute('aria-label',title);
 table(values,headers,rows,numeric);details.append(values);sampleView.append(details);};
+const selectedNodes=new Map();
+const drawRelationships=(parent,body,ref)=>{
+const store=obj(body.subgraph_store),nodes=obj(store.nodes),cells=featureCells(body),axis=localAxis(body),relations=[];
+let invalidRelations=0;
+for(const [from,kinds]of Object.entries(obj(store.edges))){
+if(!kinds||typeof kinds!=='object'||Array.isArray(kinds)){invalidRelations++;continue;}
+for(const [kind,tos]of Object.entries(kinds)){
+if(!Array.isArray(tos)){invalidRelations++;continue;}
+for(const to of tos){if(typeof to==='string'||finite(to))relations.push([from,kind,String(to)]);else invalidRelations++;}}}
+const nodeIds=Object.keys(nodes),featureIds=[...new Set(cells.map(cell=>cell.id))];
+const highlighted=new Set(selectedFeature?matchingCells(ref).map(({feature})=>feature):[]);
+const allIds=[...new Set([...nodeIds,...featureIds])],rootId=store.root_id==null?null:String(store.root_id);
+const adjacent=new Map();for(const edge of relations)for(const id of new Set([edge[0],edge[2]])){
+if(!adjacent.has(id))adjacent.set(id,[]);adjacent.get(id).push(edge);}
+const reached=new Set(),queue=Object.hasOwn(nodes,rootId)?[rootId]:[];
+for(let i=0;i<queue.length;i++){const id=queue[i];if(reached.has(id))continue;reached.add(id);
+for(const [from,,to]of adjacent.get(id)||[])if(Object.hasOwn(nodes,from)&&Object.hasOwn(nodes,to)){
+const next=from===id?to:from;if(!reached.has(next))queue.push(next);}}
+const groups={connected:nodeIds.filter(id=>reached.has(id)),disconnected:nodeIds.filter(id=>!reached.has(id)),
+features:featureIds.filter(id=>!Object.hasOwn(nodes,id))};
+let selected=selectedNodes.get(ref.artifact_id);
+if(!allIds.includes(selected))selected=allIds.includes(rootId)?rootId:allIds[0];
+let group=groups.connected.length?'connected':groups.disconnected.length?'disconnected':'features',recordPage=0,edgePage=0,featurePage=0;
+const view=el('div',undefined,'kt-neighborhood');parent.append(view);
+const label=id=>Object.hasOwn(nodes,id)?nodeIdentity(store,id):'Node '+id+' · structure unavailable';
+const compact=value=>value.length>80||/[\r\n]/.test(value)?value.replace(/\s+/g,' ').slice(0,80)+'…':value;
+const draw=(focus=false)=>{const browseOpen=view.querySelector('.kt-record-browser')?.open||false;
+view.replaceChildren();view.append(el('h3','Explore recorded relationships'));
+if(!body.subgraph_store)note(view,'Relational structure unavailable. Recorded feature values remain inspectable below.');
+else if(!nodeIds.length)note(view,'No recorded nodes in this loaded graph.');
+else if(!Object.hasOwn(nodes,rootId))note(view,'Root record unavailable; a complete connection to the example cannot be established.');
+note(view,nodeIds.length+' structure records · '+relations.length+' recorded relations · '+groups.disconnected.length+' records without a recorded path to the root'
++(groups.features.length?' · '+groups.features.length+' feature-only records':''));
+if(invalidRelations)note(view,invalidRelations+' malformed relation entries cannot be drawn. Inspect the retained body in Python.');
+const dangling=relations.filter(([from,,to])=>!Object.hasOwn(nodes,from)||!Object.hasOwn(nodes,to)).length;
+if(dangling)note(view,dangling+' recorded relations have missing endpoints. Missing node structure is labeled explicitly.');
+const controls=el('div',undefined,'kt-controls');
+if(Object.hasOwn(nodes,rootId)){const button=action('Return to root',()=>choose(rootId));button.setAttribute('aria-pressed',String(selected===rootId));controls.append(button);}
+view.append(controls);
+if(!allIds.length){note(view,'No recorded feature values. Inspect another loaded example or explanations.sample(collector_id).');enable();return;}
+const layout=el('div',undefined,'kt-neighborhood-layout'),connections=el('div'),detail=el('div',undefined,'kt-selected-node');
+const selectedLabel=label(selected),heading=el('h4',compact(selectedLabel));heading.tabIndex=-1;heading.id=widgetId+'-selected-node';detail.setAttribute('aria-labelledby',heading.id);
+detail.append(el('span','Selected record'+(selected===rootId?' · Root':''),'kt-note'),heading);
+if(compact(selectedLabel)!==selectedLabel)identityNote(detail,'Full selected record identity',selectedLabel,'div',0);
+const node=obj(nodes[selected]);note(detail,'Recorded node: '+compact(selected));
+if(compact(selected)!==selected)identityNote(detail,'Full recorded node ID',selected,'div',0);
+if(!Object.hasOwn(nodes,selected))note(detail,'Feature values only; this record has no loaded node structure.');
+else if(node.count!==undefined){note(detail,'Aggregate of '+text(node.count)+' recorded nodes. Constituent identities and individual values are not retained.');
+if(node.start_time!==undefined||node.end_time!==undefined)note(detail,'Recorded interval: '+text(node.start_time)+' to '+text(node.end_time));}
+else if(!reached.has(selected))note(detail,'No recorded path to the root. This does not establish absence of a relationship outside this retained graph.');
+const local=cells.filter(cell=>cell.id===selected),matched=local.some(({feature})=>highlighted.has(feature));
+if(selectedFeature)note(detail,(matched?'Highlighted global feature: ':'Selected global feature not recorded on this node: ')+text(selectedFeature.table)+'.'+text(selectedFeature.column));
+if(!local.length)note(detail,'No recorded feature values or local scores for this record.');
+else{note(detail,'Local sensitivity · same example axis: 0 to '+number(axis)+'. Unavailable is unrecorded, not zero.');
+const rows=el('ul',undefined,'kt-node-features');rows.setAttribute('aria-label','Selected record feature values and local sensitivity');
+for(const {name,feature}of local.slice(featurePage*80,(featurePage+1)*80)){
+const match=highlighted.has(feature);
+const item=el('li',undefined,match?'kt-match':'');item.append(el('strong',text(feature.table_name)+'.'+text(feature.name??name)));
+if(match)note(item,'Selected global feature');
+note(item,'Recorded value');item.append(el('div',feature.value==null&&node.count!==undefined?'Aggregate value not retained':text(feature.value)));
+note(item,'Local sensitivity');localScore(item,feature,axis);rows.append(item);}detail.append(rows);
+pages(detail,'feature cells',local.length,80,featurePage,value=>{featurePage=value;draw(true);});
+const exact=el('details');exact.append(el('summary','Exact selected record values and scores'));
+table(exact,['Feature','Value','Local score'],local.slice(featurePage*80,(featurePage+1)*80).map(({name,feature})=>[
+text(feature.table_name)+'.'+text(feature.name??name),text(feature.value),feature.score]),[2],true);detail.append(exact);}
+connections.append(el('h4','Connections to selected record'));
+note(connections,'Arrows show recorded traversal from → to, not foreign-key or causal direction. Select a connected record to follow its context.');
+const edges=adjacent.get(selected)||[],rows=el('ul',undefined,'kt-connections');rows.setAttribute('aria-label','Recorded connections to selected record');
+for(const [from,kind,to]of edges.slice(edgePage*79,(edgePage+1)*79)){
+const row=el('li'),line=el('div',undefined,'kt-connection');row.append(line);
+for(const [i,id]of [from,to].entries()){
+if(i)line.append(el('span','→ '+compact(kind)+' →','kt-connection-direction'));
+const full=id===selected||allIds.includes(id)?label(id):'Missing node '+id;
+const endpoint=id===selected?el('strong',compact(full)):allIds.includes(id)?action(compact(full),()=>choose(id)):el('span',compact(full));
+line.append(endpoint);if(compact(full)!==full)identityNote(row,'Full '+(i?'to':'from')+' record identity',full,'div',0);}
+if(compact(kind)!==kind)identityNote(row,'Full relation label',kind,'div',0);rows.append(row);}
+connections.append(rows);if(!edges.length)note(connections,'No recorded relations for this record.');
+pages(connections,'relations',edges.length,79,edgePage,value=>{edgePage=value;draw(true);});
+layout.append(detail,connections);view.append(layout);
+note(view,'Local sensitivity is divided by this example’s maximum source-cell sensitivity. Aggregate scores sum normalized cells and can exceed 1. Scores have no sign and are not percentages or relationship strength. They cannot be compared numerically with global scores or other examples.');
+const browse=el('details',undefined,'kt-record-browser');browse.open=browseOpen;
+browse.append(el('summary','Browse all loaded records · including disconnected context'));
+const available=Object.entries(groups).filter(([,ids])=>ids.length),names={connected:'Root-connected records',disconnected:'No recorded path to root',features:'Feature values without structure'};
+const scope=control(browse,'Record group',available.map(([key,ids])=>[key,names[key]+' ('+ids.length+')']),value=>{group=value;recordPage=0;draw();view.querySelector('.kt-record-browser').open=true;
+view.querySelector('.kt-record-browser select').focus();});scope.value=group;
+const ids=groups[group],choices=ids.slice(recordPage*80,(recordPage+1)*80);
+const picker=control(browse,'Record',[['','Choose a record'],...choices.map(id=>[id,compact(label(id))])],value=>{if(value!=='')choose(value);});picker.className='kt-record-picker';picker.value=choices.includes(selected)?selected:'';
+pages(browse,'records',ids.length,80,recordPage,value=>{recordPage=value;draw();view.querySelector('.kt-record-browser').open=true;
+view.querySelector('.kt-record-picker').focus();});
+view.append(browse);enable();if(focus)heading.focus();};
+const choose=id=>{selected=id;selectedNodes.set(ref.artifact_id,id);edgePage=0;featurePage=0;draw(true);};
+const pages=(parent,label,total,size,page,change)=>{if(total<=size)return;
+const controls=el('div',undefined,'kt-controls');note(controls,'Showing '+(page*size+1)+'–'+Math.min(total,(page+1)*size)+' of '+total+' '+label+'.');
+if(page>0)controls.append(action('Previous '+label,()=>change(page-1)));
+if((page+1)*size<total)controls.append(action('Next '+label,()=>change(page+1)));parent.append(controls);};
+if(selected!==undefined)selectedNodes.set(ref.artifact_id,selected);draw();};
 const inspectSample=(ref,index)=>{selectedExample={ref,index};sampleView.replaceChildren();sampleView.hidden=false;
 if(selectedFeature)drawFeatureContext(featureContext);
 sampleButtons.find(item=>item.rowIndex===index)?.button.closest('tr').after(sampleDetailRow);
@@ -539,8 +657,6 @@ if(labels.length>100)note(sampleView,'Inspect complete retained output in Python
 const binary=output.task_type==='binary_classification';
 note(sampleView,binary?'Probability of the positive class; observed target: 0 = negative class, 1 = positive class.':'Values use recorded target units.');
 table(sampleView,[binary?'Positive-class probability (0 to 1)':'Prediction','Observed target'],[[output.prediction,output.target]],[0,1]);}}
-if(selectedFeature){const selectedContext=el('div',undefined,'kt-feature-context');sampleView.append(selectedContext);
-drawFeatureContext(selectedContext,{ref,index});}
 const body=obj(bodies[ref.artifact_id]),store=obj(body.subgraph_store),nodes=obj(store.nodes);
 const rootNode=obj(nodes[store.root_id]);
 identityNote(sampleView,'Root identity','Root node: '+text(store.root_id)+' · Original entity: '+text(rootNode.pkey)
@@ -549,19 +665,21 @@ if(!body.subgraph_store)note(sampleView,'Relational structure unavailable.');
 if(store.task_type==='static_link_prediction'||store.task_type==='temporal_link_prediction')
 note(sampleView,'Link-prediction records can include retrieved items outside the sampled graph, with feature values but no local gradient scores. '
 +'Relations and local scores cover only recorded context.');
-const nodeRows=Object.entries(nodes);if(nodeRows.length){sampleView.append(el('h4','Recorded nodes'));
+drawRelationships(sampleView,body,ref);
+if(selectedFeature){const selectedContext=el('details',undefined,'kt-feature-context');
+selectedContext.append(el('summary','Selected global feature across this example'));
+const values=el('div');selectedContext.append(values);sampleView.append(selectedContext);drawFeatureContext(values,{ref,index});}
+const nodeRows=Object.entries(nodes);if(nodeRows.length){
 sampleTable('Recorded nodes',['Node','Identity / aggregate','Table membership'],nodeRows.slice(0,80).map(([id,node])=>[
 id,node.count!==undefined?'Aggregate: '+text(node.count)+' nodes':text(node.pkey_name)+': '+text(node.pkey),
 Object.entries(obj(store.tables)).filter(([,ids])=>list(ids).some(value=>String(value)===id)).map(([name])=>name).join(', ')||'Unavailable']),nodeRows.length);
 if(nodeRows.length>80)note(sampleView,'Showing 80 of '+nodeRows.length+' recorded nodes; complete loaded body is retained.');}
 const relations=[];for(const [from,kinds]of Object.entries(obj(store.edges)))for(const [kind,tos]of Object.entries(obj(kinds)))
 for(const to of list(tos))relations.push([from,kind,text(to)]);
-if(relations.length){sampleView.append(el('h4','Recorded relations'));sampleTable('Recorded relations',['From node','Relation','To node'],relations.slice(0,80),relations.length);
+if(relations.length){sampleTable('Recorded relations',['From node','Relation','To node'],relations.slice(0,80),relations.length);
 if(relations.length>80)note(sampleView,'Showing 80 of '+relations.length+' recorded relations.');}
 else note(sampleView,'No recorded relations in this loaded example.');
-sampleView.append(el('h4','Node features'));
-note(sampleView,'Local scores are per-example normalized sensitivity. Aggregate scores may exceed one; '
-+'unavailable scores differ from zero and are separate from global scores.');
+
 const cells=featureCells(body).map(({id,name,feature})=>[id,text(feature.table_name)+'.'+text(feature.name??name),text(feature.value),feature.score]);
 if(cells.length)sampleTable('Node features',['Node','Feature','Recorded value','Local score'],cells.slice(0,200),cells.length,[3]);
 else note(sampleView,'No recorded feature values.');
