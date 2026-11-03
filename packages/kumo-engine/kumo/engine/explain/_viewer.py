@@ -284,6 +284,9 @@ gap:8px;align-items:center}
 @container kumo-training (max-width:700px){
 .kumo-training .kt-neighborhood-layout{grid-template-columns:minmax(0,1fr)}}
 @container kumo-training (max-width:520px){
+.kumo-training .kt-connection{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:4px 12px}
+.kumo-training .kt-connection-direction{grid-column:1;grid-row:2}
+.kumo-training .kt-connection>:last-child{grid-column:2;grid-row:1/3}
 .kumo-training .kt-table,.kumo-training .kt-table tbody,
 .kumo-training .kt-table tr,.kumo-training .kt-table td{display:block;width:100%}
 .kumo-training .kt-table thead{display:none}
