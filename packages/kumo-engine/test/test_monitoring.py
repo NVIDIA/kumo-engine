@@ -1195,6 +1195,35 @@ def test_feature_drift_detects_a_numeric_and_a_categorical_shift(shifted):
     assert same['users']['PLAN']['psi'] == pytest.approx(0, abs=1e-9)
 
 
+def test_feature_drift_compares_timestamps_across_index_clocks(tmp_path):
+    previous = get_scratch_dir()
+    kumo.configure(scratch_dir=tmp_path / 'scratch')
+    try:
+        data = tmp_path / 'data'
+        data.mkdir()
+        pd.DataFrame({'ID': np.arange(3), 'SEEN': pd.to_datetime([
+            '2026-01-01 00:00:00.250', '2026-01-02 00:00:00.000',
+            '2026-01-03 12:00:00.000'])
+        }).to_parquet(data / 'users.parquet')
+        graph = kumo.Graph(tables={'users': _table(
+            kumo.FileConnector(root_dir=str(data)), 'users', 'ID')}, edges=[])
+        seconds = graph.snapshot()
+        millis = graph.snapshot(timestamp_precision='milliseconds')
+        reasons = {}
+        features = _compare(_encoding(tmp_path, ['SEEN']), millis, seconds,
+                            reasons)
+    finally:
+        kumo.configure(scratch_dir=previous)
+
+    seen = features['users']['SEEN']
+    assert reasons == {} and seen['type'] == 'timestamp'
+    latest = pd.Timestamp('2026-01-03 12:00').timestamp()
+    assert seen['training']['max_secs'] == seen['scoring']['max_secs'] == latest
+    assert seen['scoring']['min_secs'] == pd.Timestamp(
+        '2026-01-01 00:00:00.250').timestamp()
+    assert seen['delta']['max_secs'] == 0
+
+
 def test_feature_drift_explains_what_it_cannot_compare(shifted):
     before, after, root = shifted
     reasons = {}
