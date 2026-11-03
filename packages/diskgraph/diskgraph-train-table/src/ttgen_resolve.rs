@@ -36,7 +36,7 @@ const FORECASTING_TARGET_ANCHOR_ALIAS: &str = "entity_id_target";
 // Wire-compatible representation emitted by the Python compiler for a PQL
 // `-inf` lower window bound. Resolve it as a semantic unbounded endpoint before
 // applying unit conversion; treating it as an ordinary offset can overflow.
-const UNBOUNDED_LOWER_OFFSET: i64 = -(1_i64 << 60);
+pub const UNBOUNDED_LOWER_OFFSET: i64 = -(1_i64 << 60);
 
 // ─── Resolved plan types ─────────────────────────────────────────────────────
 
