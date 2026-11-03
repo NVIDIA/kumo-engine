@@ -31,6 +31,23 @@ ANCHOR = CUTOFF - pd.Timedelta(days=1)
 PREDICTED_AT = pd.Timestamp('2024-05-01', tz='UTC')
 
 
+def _table(connector, name, key, time=None, **stypes):
+    table = kumo.Table.from_source_table(
+        connector[f'{name}.parquet'], primary_key=key,
+        time_column=time).infer_metadata()
+    for column, stype in stypes.items():
+        table = table.with_column(column, stype=stype)
+    return table
+
+
+def _users_orders(connector, **stypes):
+    return kumo.Graph(
+        tables={'users': _table(connector, 'users', 'ID'),
+                'orders': _table(connector, 'orders', 'EID', 'TS',
+                                 USER_ID=Stype.ID, **stypes)},
+        edges=[Edge(src_table='orders', fkey='USER_ID', dst_table='users')])
+
+
 @pytest.fixture(scope='module')
 def snapshots(tmp_path_factory):
     root = tmp_path_factory.mktemp('monitoring')
@@ -61,18 +78,7 @@ def snapshots(tmp_path_factory):
     # File versions are modification times in seconds.
     for path in data.iterdir():
         os.utime(path, (time.time() - 3600, ) * 2)
-    connector = kumo.FileConnector(root_dir=str(data))
-    users = kumo.Table.from_source_table(connector['users.parquet'],
-                                         primary_key='ID').infer_metadata()
-    events = kumo.Table.from_source_table(
-        connector['orders.parquet'], primary_key='EID',
-        time_column='TS').infer_metadata().with_column('USER_ID',
-                                                       stype=Stype.ID)
-    graph = kumo.Graph(
-        tables={
-            'users': users,
-            'orders': events
-        }, edges=[Edge(src_table='orders', fkey='USER_ID', dst_table='users')])
+    graph = _users_orders(kumo.FileConnector(root_dir=str(data)))
     before = graph.snapshot()
     write(flag, orders)
     after = graph.snapshot()
@@ -128,10 +134,16 @@ def _window(orders, anchor):
     return rows.groupby('USER_ID')
 
 
-def test_evaluate_matured_run(snapshots, classifier):
+@pytest.fixture(scope='module')
+def evaluated(snapshots, classifier):
     trainer, run = classifier
     started = pd.Timestamp.now(tz='UTC')
-    result = trainer.evaluate(run, labels_snapshot=snapshots.after)
+    return started, trainer.evaluate(run, labels_snapshot=snapshots.after)
+
+
+def test_evaluate_matured_run(snapshots, classifier, evaluated):
+    trainer, run = classifier
+    started, result = evaluated
 
     assert pd.Timestamp(result.anchors[0]).tz_convert(None) == ANCHOR
     assert (result.matured, result.bundle_matches,
@@ -219,17 +231,8 @@ def categories(snapshots, tmp_path_factory):
         CAT=np.array(list('abcd'))[snapshots.orders.EID % 4])
     pd.DataFrame({'ID': np.arange(60)}).to_parquet(data / 'users.parquet')
     orders.to_parquet(data / 'orders.parquet')
-    connector = kumo.FileConnector(root_dir=str(data))
-    users = kumo.Table.from_source_table(connector['users.parquet'],
-                                         primary_key='ID').infer_metadata()
-    events = kumo.Table.from_source_table(
-        connector['orders.parquet'], primary_key='EID',
-        time_column='TS').infer_metadata().with_column(
-            'USER_ID', stype=Stype.ID).with_column('CAT',
-                                                   stype=Stype.categorical)
-    graph = kumo.Graph(
-        tables={'users': users, 'orders': events},
-        edges=[Edge(src_table='orders', fkey='USER_ID', dst_table='users')])
+    graph = _users_orders(kumo.FileConnector(root_dir=str(data)),
+                          CAT=Stype.categorical)
     return SimpleNamespace(after=graph.snapshot(), orders=orders)
 
 
@@ -279,22 +282,14 @@ def every_task(categories, tmp_path_factory):
                   'ITEM_ID': rng.integers(0, 30, 200)}).to_parquet(
                       data / 'likes.parquet')
     connector = kumo.FileConnector(root_dir=str(data))
-
-    def table(name, key, time=None, **stypes):
-        table = kumo.Table.from_source_table(
-            connector[f'{name}.parquet'], primary_key=key,
-            time_column=time).infer_metadata()
-        for column, stype in stypes.items():
-            table = table.with_column(column, stype=stype)
-        return table
-
     tables = {
-        'users': table('users', 'ID', REGION=Stype.categorical,
-                       TAGS=Stype.multicategorical),
-        'orders': table('orders', 'EID', 'TS', USER_ID=Stype.ID,
-                        ITEM_ID=Stype.ID, CAT=Stype.categorical),
-        'items': table('items', 'IID'),
-        'likes': table('likes', 'LID', USER_ID=Stype.ID, ITEM_ID=Stype.ID),
+        'users': _table(connector, 'users', 'ID', REGION=Stype.categorical,
+                        TAGS=Stype.multicategorical),
+        'orders': _table(connector, 'orders', 'EID', 'TS', USER_ID=Stype.ID,
+                         ITEM_ID=Stype.ID, CAT=Stype.categorical),
+        'items': _table(connector, 'items', 'IID'),
+        'likes': _table(connector, 'likes', 'LID', USER_ID=Stype.ID,
+                        ITEM_ID=Stype.ID),
     }
 
     def graph(*facts):
@@ -421,12 +416,11 @@ def test_evaluate_labels_the_scored_cohort_not_the_training_one(
     assert result.metrics['mae'] == pytest.approx(error.abs().mean(), rel=1e-5)
 
 
-def test_evaluation_exports_its_rows(snapshots, classifier, tmp_path):
+def test_evaluation_exports_its_rows(evaluated, tmp_path):
     from kumo.engine._monitoring import EvaluationResult
     from kumo.engine.trainer.output_config import PredictionOutputConfig
 
-    trainer, run = classifier
-    result = trainer.evaluate(run, labels_snapshot=snapshots.after)
+    _, result = evaluated
     connector = kumo.FileConnector(root_dir=str(tmp_path))
     output = PredictionOutputConfig(connector,
                                     output_paths={'predictions': 'evaluated/'})
@@ -446,59 +440,42 @@ def test_evaluation_exports_its_rows(snapshots, classifier, tmp_path):
     assert (tmp_path / 'evaluated' / '_SUCCESS').stat().st_mtime_ns == written
 
 
-def test_evaluation_appends_to_a_table_with_its_ids(snapshots, classifier,
-                                                    monkeypatch):
-    from unittest.mock import Mock
-
+def test_a_snowflake_evaluation_table_appends_with_its_ids_and_monitor_types(
+        classifier, evaluated, monkeypatch):
+    import pyarrow as pa
+    import pyarrow.parquet as parquet
     from kumoapi.jobs import PredictionArtifactType, WriteMode
 
     from kumo.engine.trainer.output_config import PredictionOutputConfig
 
     trainer, run = classifier
-    result = trainer.evaluate(run, labels_snapshot=snapshots.after)
-    sink = SimpleNamespace(write_files=Mock())
-    monkeypatch.setattr(kumo.SnowflakeConnector, 'sink_backend', sink)
+    _, result = evaluated
+    calls = []
+
+    def write_files(connector, table, files, mode, **kwargs):
+        calls.append((table, mode, kwargs, pa.concat_tables(
+            parquet.read_table(f) for f in files)))
+
+    monkeypatch.setattr(kumo.SnowflakeConnector, 'sink_backend',
+                        SimpleNamespace(write_files=write_files))
     connector = kumo.SnowflakeConnector(warehouse='WH', database='ML',
                                         schema_name='S')
-
-    def export(**options):
+    for options in ({}, {'write_mode': WriteMode.APPEND}):
         result.export(PredictionOutputConfig(
             connector, PredictionArtifactType.PREDICTIONS, 'EVALUATED',
             **options))
-        return sink.write_files.call_args
 
-    (_, table, _, mode), kwargs = export()
+    (table, mode, kwargs, written), (appended, append, extra, _) = calls
     assert (table, mode) == ('EVALUATED', WriteMode.OVERWRITE)
     assert 'extra_columns' not in kwargs
-    (_, table, _, mode), kwargs = export(write_mode=WriteMode.APPEND)
-    assert (table, mode) == ('EVALUATED', WriteMode.APPEND)
-    assert kwargs['extra_columns'] == {'PREDICTION_ID': run.id,
-                                       'BUNDLE_ID': trainer.result.id}
-
-
-def test_a_snowflake_table_gets_the_types_model_monitor_needs(
-        snapshots, classifier, monkeypatch):
-    import pyarrow as pa
-    import pyarrow.parquet as parquet
-
-    from kumo.engine.trainer.output_config import PredictionOutputConfig
-
-    trainer, run = classifier
-    result = trainer.evaluate(run, labels_snapshot=snapshots.after)
-    written = []
-    sink = SimpleNamespace(write_files=lambda connector, table, files, mode,
-                           **_: written.extend(
-                               parquet.read_table(f) for f in files))
-    monkeypatch.setattr(kumo.SnowflakeConnector, 'sink_backend', sink)
-    connector = kumo.SnowflakeConnector(warehouse='WH', database='ML',
-                                        schema_name='S')
-    result.export(PredictionOutputConfig(connector, path='EVALUATED'))
-    schema = pa.concat_tables(written).schema
-    assert schema.field('TARGET').type == pa.int8()
-    assert schema.field('EVALUATED_AT').type == pa.timestamp('ns')
+    assert (appended, append) == ('EVALUATED', WriteMode.APPEND)
+    assert extra['extra_columns'] == {'PREDICTION_ID': run.id,
+                                      'BUNDLE_ID': trainer.result.id}
+    assert written.schema.field('TARGET').type == pa.int8()
+    assert written.schema.field('EVALUATED_AT').type == pa.timestamp('ns')
     original = pd.read_parquet(result.actuals)
     assert original.TARGET.dtype == bool
-    assert pa.concat_tables(written).column('TARGET').to_pylist() == (
+    assert written.column('TARGET').to_pylist() == (
         original.TARGET.astype(int).tolist())
 
 
@@ -737,7 +714,7 @@ def test_score_drift(snapshots, classifier, monkeypatch):
 
 
 def test_monitoring_a_run_loaded_from_its_export(snapshots, classifier,
-                                                 tmp_path):
+                                                 evaluated, tmp_path):
     from kumo.engine.trainer.output_config import PredictionOutputConfig
 
     trainer, run = classifier
@@ -760,7 +737,7 @@ def test_monitoring_a_run_loaded_from_its_export(snapshots, classifier,
             loaded.num_rows) == (run.id, run.bundle_id, run.snapshot_id,
                                  run.num_rows)
     assert trainer.evaluate(loaded, labels_snapshot=snapshots.after).metrics == \
-        trainer.evaluate(run, labels_snapshot=snapshots.after).metrics
+        evaluated[1].metrics
     assert trainer.score_drift(loaded).psi == trainer.score_drift(run).psi
 
     local = loaded._exported.local
@@ -1065,56 +1042,41 @@ def test_evaluation_summaries_name_the_labels_snapshot(tmp_path):
                                                (by_horizon, ))
 
 
-def test_a_monitoring_tracking_failure_warns_or_raises(classifier, tmp_path,
-                                                       caplog):
-    trainer, run = classifier
-
-    class Tracker:
-        def log_monitoring(self, record):
-            raise ConnectionError('tracking server down')
-
-    for on_error in ('warn', 'raise'):
-        cfg = kumo.MLOps(str(tmp_path / 'root'), tracking=Tracker(),
-                         on_error=on_error)
-        if on_error == 'warn':
-            report = trainer.score_drift(run, mlops=cfg)
-            assert report.psi is not None and report.tracking is None
-        else:
-            with pytest.raises(RuntimeError, match='tracking server down'
-                               ) as raised:
-                trainer.score_drift(run, mlops=cfg)
-            assert isinstance(raised.value.__cause__, ConnectionError)
-    assert ('Experiment tracking failed: ConnectionError: tracking server '
-            'down; the monitoring run is not tracked') in caplog.messages
-
-
 @pytest.mark.parametrize('on_error', ['warn', 'raise'])
-def test_an_unfinished_monitoring_hook_warns_or_raises(classifier, tmp_path,
-                                                       monkeypatch, on_error):
+@pytest.mark.parametrize('hangs', [False, True], ids=['fails', 'hangs'])
+def test_a_failing_or_hung_monitoring_tracker_warns_or_raises(
+        classifier, tmp_path, monkeypatch, caplog, hangs, on_error):
     import kumo.engine._tracking as tracking
 
     trainer, run = classifier
     monkeypatch.setattr(tracking, 'FINISH_SECONDS', 0.2)
     release = threading.Event()
 
-    class Blocked:
+    class Tracker:
         def log_monitoring(self, record):
-            release.wait(30)
+            if hangs:
+                release.wait(30)
+            else:
+                raise ConnectionError('tracking server down')
 
-    cfg = kumo.MLOps(str(tmp_path / 'root'), tracking=Blocked(),
+    error, message = (TimeoutError, 'TimeoutError: experiment tracking did '
+                      'not finish within 0.2s') if hangs else (
+        ConnectionError, 'ConnectionError: tracking server down')
+    cfg = kumo.MLOps(str(tmp_path / 'root'), tracking=Tracker(),
                      on_error=on_error)
     try:
         if on_error == 'warn':
-            with pytest.warns(UserWarning, match='TimeoutError: experiment '
-                              'tracking did not finish within 0.2s'):
+            with pytest.warns(UserWarning, match=message):
                 report = trainer.score_drift(run, mlops=cfg)
             assert report.psi is not None and report.tracking is None
         else:
-            with pytest.raises(RuntimeError) as raised:
+            with pytest.raises(RuntimeError, match=message) as raised:
                 trainer.score_drift(run, mlops=cfg)
-            assert isinstance(raised.value.__cause__, TimeoutError)
+            assert isinstance(raised.value.__cause__, error)
     finally:
         release.set()
+    assert hangs or (f'Experiment tracking failed: {message}; the monitoring '
+                     'run is not tracked') in caplog.messages
 
 
 def test_drift_reads_snapshot_statistics_from_the_artifact_root(
@@ -1176,12 +1138,9 @@ def shifted(tmp_path_factory):
 
     connector = kumo.FileConnector(root_dir=str(data))
     users(40.0, [0.6, 0.3, 0.1])
-    graph = kumo.Graph(tables={
-        'users': kumo.Table.from_source_table(
-            connector['users.parquet'], primary_key='ID').infer_metadata()
-        .with_column('PLAN', stype=Stype.categorical)
-        .with_column('BIO', stype=Stype.text)
-    }, edges=[])
+    graph = kumo.Graph(tables={'users': _table(
+        connector, 'users', 'ID', PLAN=Stype.categorical, BIO=Stype.text)},
+        edges=[])
     before = graph.snapshot()
     time.sleep(1.1)
     users(55.0, [0.1, 0.3, 0.6])
