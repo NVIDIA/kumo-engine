@@ -153,7 +153,23 @@ align-items:center;gap:12px;width:100%;max-width:600px;padding:10px}
 align-items:start;gap:8px 16px;padding:10px 0;border-bottom:1px solid $surface_border}
 .kumo-training .kt-feature-cells .kt-note{margin:2px 0;font-size:12px}
 .kumo-training .kt-feature-context>h3{margin-top:0}
-.kumo-training .kt-history-chart{display:block;width:100%;height:auto;max-width:600px;margin:12px 0}
+.kumo-training .kt-history-fit{max-width:680px;margin:20px 0 28px}
+.kumo-training .kt-history-axis{display:flex;justify-content:space-between;font-size:12px;color:$muted;margin-bottom:8px}
+.kumo-training .kt-history-axis>span:first-child{font-weight:600;color:$foreground}
+.kumo-training .kt-history-plot{display:grid;grid-template-columns:minmax(72px,max-content) minmax(0,1fr);gap:8px}
+.kumo-training .kt-history-ticks{display:flex;flex-direction:column;justify-content:space-between;
+text-align:right;font-size:12px;font-variant-numeric:tabular-nums;line-height:16px}
+.kumo-training .kt-history-ticks>span{white-space:nowrap;overflow-wrap:normal}
+.kumo-training .kt-history-ticks.kt-constant{justify-content:center}
+.kumo-training .kt-history-chart{display:block;width:100%;height:180px;overflow:visible}
+.kumo-training .kt-history-chart :is(circle,rect){transform-box:fill-box;transform-origin:center;
+transform:scaleX(var(--kt-history-marker-scale,1))}
+.kumo-training .kt-history-epochs{display:flex;justify-content:space-between;gap:8px;
+grid-column:2;margin:0 0 10px;font-size:12px;color:$muted}
+.kumo-training .kt-history-legend{display:flex;flex-wrap:wrap;gap:8px 20px}
+.kumo-training .kt-history-train{color:$accent}
+.kumo-training .kt-history-observation{font-size:14px;margin:8px 0}
+.kumo-training .kt-history-selection .kt-table{margin-bottom:0}
 .kumo-training :is(.kt-history-values,.kt-sample-values){max-height:400px;overflow:auto;padding:4px}
 .kumo-training .kt-list{padding-left:20px;margin:8px 0 12px}
 .kumo-training .kt-result{border-left:3px solid $accent;padding-left:16px;margin:16px 0 24px}
@@ -303,7 +319,7 @@ if(provenance.selection_verified===false)note(results,'Selection unverified: '+t
 if(['disabled','failed'].includes(provenance.generation_status))note(results,'Explanation generation: '+text(provenance.generation_status));
 if(provenance.generation_failure&&provenance.generation_status!=='failed')note(results,text(provenance.generation_failure));
 const metricRows=list(obj(data.metrics).rows);state(results,data.metrics,'Metrics');
-let rankingEntry;
+let rankingEntry,selectedMetricMeaning;
 if(linkTask)results.append(el('p',context.query?'This task ranks linked IDs for each entity in the predictive query above.':
 'This task ranks linked IDs for each entity. The predictive query was not recorded.'));
 if(regressionTask)note(results,'This task predicts a numeric target for each entity in the predictive query.');
@@ -328,9 +344,9 @@ const classDefinition=classificationTask&&((context.task_type||provenance.task_t
 const definition=regressionTask&&Object.hasOwn(definitions,selected.name)&&definitions[selected.name];
 headline.append(el('h3',map?'TEST MAP@'+map[1]:'TEST '+(definition||classDefinition?selected.name.toUpperCase():text(selected.name))),el('div',number(selected.value),'kt-result-value'));
 identityNote(headline,'Result scope',(fit==='original'?'Original fit':'Refit on train + validation')+' · TEST · '+selected.origin);
-if(map)note(headline,'Mean average precision over the first '+map[1]+' ranked IDs: observed IDs placed earlier raise the score. Higher is better. This is not a probability or an accuracy percentage.');
-else if(definition)note(headline,definition+' Lower is better. Target units are not recorded here.');
-else if(classDefinition)note(headline,classDefinition+' Higher is better.');
+selectedMetricMeaning=map?'Mean average precision over the first '+map[1]+' ranked IDs: observed IDs placed earlier raise the score. Higher is better. This is not a probability or an accuracy percentage.':
+definition?definition+' Lower is better. Target units are not recorded here.':classDefinition?classDefinition+' Higher is better.':null;
+if(selectedMetricMeaning)note(headline,selectedMetricMeaning);
 else note(headline,'Recorded selection metric on TEST'+(provenance.selection_direction==='min'?'; lower is better.':provenance.selection_direction==='max'?'; higher is better.':'. Metric direction is not recorded.'));
 note(headline,'No baseline or quality target is recorded here. This score alone does not establish model quality.');
 const exact=el('details');exact.append(el('summary','Exact result and provenance'));
@@ -357,56 +373,105 @@ if(provenance.selection_metric||obj(data.metrics).selection_metric)
 note(metricDetail,'Selection metric: '+text(provenance.selection_metric||data.metrics.selection_metric)+
 (provenance.selection_direction==='min'?' · Recorded optimization: minimize':provenance.selection_direction==='max'?' · Recorded optimization: maximize':''));
 const histories=list(obj(data.history).rows);state(results,data.history,'Learning history');
-if(histories.length){results.append(el('h3','Learning history'));
-note(results,'Recorded epoch keys. Missing values remain unavailable; fits are shown separately.');
+if(histories.length){const learning=el('div',undefined,'kt-learning');results.append(learning);
+learning.append(el('h3','Learning history · train and validation'));
+note(learning,'Recorded measurements during training, separate from the TEST result. Epoch keys start at 0.');
 const jumps=el('nav',undefined,'kt-controls');jumps.setAttribute('aria-label','After learning history');
 for(const [index,label]of [[1,'recorded patterns'],[2,'selected examples']])jumps.append(action('Go to '+label,()=>{
 showPanel(index,true);}));
-results.append(jumps);
 const historyDetails=el('details');historyDetails.append(el('summary','Explore exact epoch values · '+histories.length+' recorded epochs'));
 const metricName=name=>name.replace(/^(train_|val_|validation_)/,'');
 const historyValue=(values,metric)=>{const entry=Object.entries(obj(values)).find(([name])=>metricName(name)===metric);return entry?.[1]};
 const metrics=[...new Set(histories.flatMap(row=>[...Object.keys(obj(row.train_metrics)),...Object.keys(obj(row.validation_metrics))]).map(metricName))];
-const historyView=el('div'),historyValues=el('div',undefined,'kt-history-values');historyValues.tabIndex=0;
+const historyView=el('div'),historyMeaning=el('div'),historyValues=el('div',undefined,'kt-history-values');historyValues.tabIndex=0;
 historyValues.setAttribute('role','region');historyValues.setAttribute('aria-label','Exact learning history epoch values');historyDetails.append(historyValues);
-let historySeries='both';
+let historySeries='both';const selectedEpochs=new Map();
+const historyResize=new ResizeObserver(entries=>{for(const {target}of entries)
+target.style.setProperty('--kt-history-marker-scale',String(500/Math.max(target.clientWidth,1)));});
+onDispose(()=>historyResize.disconnect());
+const selectionMetric=typeof provenance.selection_metric==='string'?metricName(provenance.selection_metric):null;
 const showHistorySeries=()=>historyView.querySelectorAll('[data-history-series]').forEach(node=>
 node.toggleAttribute('hidden',historySeries!=='both'&&node.dataset.historySeries!==historySeries));
-const chart=(parent,rows,metric)=>{const ordered=rows.filter(row=>Number.isFinite(Number(row.epoch)))
-.slice().sort((a,b)=>Number(a.epoch)-Number(b.epoch));
+const chart=(parent,rows,metric,identity)=>{const metricLabel=metric.length>48?metric.slice(0,45)+'…':metric;
+const epochValue=row=>
+typeof row.epoch==='string'&&/^(0|[1-9][0-9]{0,8})$/.test(row.epoch)?Number(row.epoch):NaN;
+const ordered=rows.filter(row=>Number.isFinite(epochValue(row))).slice().sort((a,b)=>epochValue(a)-epochValue(b));
 const values=ordered.flatMap(row=>[historyValue(row.train_metrics,metric),historyValue(row.validation_metrics,metric)]).filter(finite);
-if(!values.length||!ordered.length)return;
-const low=Math.min(...values),high=Math.max(...values),first=Number(ordered[0].epoch),last=Number(ordered.at(-1).epoch);
+if(ordered.length!==rows.length)note(parent,'Invalid epoch keys are excluded from the plot; inspect exact recorded values below.');
+if(!values.length||!ordered.length){note(parent,'No numeric epoch values recorded for '+metric+'.');return;}
+const low=Math.min(...values),high=Math.max(...values),first=epochValue(ordered[0]),last=epochValue(ordered.at(-1));
+const magnitude=Math.max(Math.abs(low),Math.abs(high),1),lo=low/magnitude,hi=high/magnitude;
+const epochScale=Math.max(Math.abs(first),Math.abs(last),1),start=first/epochScale,end=last/epochScale;
+const x=epoch=>8+(start===end?0.5:(epoch/epochScale-start)/(end-start))*484;
+const y=value=>172-(lo===hi?0.5:(value/magnitude-lo)/(hi-lo))*164;
+const axis=el('div',undefined,'kt-history-axis');axis.append(el('span',metricLabel),el('span','Recorded value'));
+parent.append(axis);
+const plot=el('div',undefined,'kt-history-plot'),ticks=el('div',undefined,'kt-history-ticks');
+if(low===high)ticks.classList.add('kt-constant');
+const tickValues=[...new Set(low===high?[low]:[high,low/2+high/2,low])];
+let tickLabels;for(const precision of [3,6,10,15,17]){tickLabels=tickValues.map(value=>{const rounded=value.toPrecision(precision),parsed=Number(rounded);
+return Number.isFinite(parsed)?String(parsed):rounded;});if(new Set(tickLabels).size===tickValues.length)break;}
+for(const label of tickLabels)ticks.append(el('span',label));
 const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg');
-svg.setAttribute('viewBox','0 0 600 160');svg.setAttribute('role','img');svg.classList.add('kt-history-chart');
-svg.setAttribute('aria-label','Learning history for '+metric+'. History series selects visible curves on a fixed scale. Train: circles, validation: squares. Expand Explore exact epoch values for recorded values.');
-const x=epoch=>20+(Number(epoch)-first)/(last-first||1)*560,y=value=>140-(value-low)/(high-low||1)*120;
-parent.append(svg);
-for(const [key,color,shape]of [['train_metrics','var(--kumo-accent)','circle'],['validation_metrics','var(--kumo-foreground)','rect']]){
-const group=document.createElementNS(ns,'g'),line=document.createElementNS(ns,'path');group.dataset.historySeries=key;svg.append(group);group.append(line);
-let previous=null,path='';for(const [index,row]of ordered.entries()){const value=historyValue(row[key],metric),epoch=Number(row.epoch);
+svg.setAttribute('viewBox','0 0 500 180');svg.setAttribute('preserveAspectRatio','none');svg.setAttribute('role','img');svg.classList.add('kt-history-chart');
+svg.setAttribute('aria-label',metric+' by recorded epoch. Train: filled circles and solid line. Validation: hollow squares and dashed line. Use Recorded epoch to inspect exact values.');
+plot.append(ticks,svg);parent.append(plot);historyResize.observe(svg);
+const shape=(tag,attributes)=>{const node=document.createElementNS(ns,tag);
+for(const [name,value]of Object.entries(attributes))node.setAttribute(name,value);return node;};
+for(const position of low===high?[90]:[8,90,172])svg.append(shape('path',{d:'M8 '+position+' H492',stroke:'var(--kumo-surface-border)',fill:'none','vector-effect':'non-scaling-stroke'}));
+const guide=shape('path',{stroke:'var(--kumo-muted)','stroke-dasharray':'2 3','vector-effect':'non-scaling-stroke'});svg.append(guide);
+const points=[];
+for(const [key,color,marker]of [['train_metrics','var(--kumo-accent)','circle'],['validation_metrics','var(--kumo-foreground)','rect']]){
+const group=shape('g',{}),line=shape('path',{});group.dataset.historySeries=key;svg.append(group);group.append(line);
+let previous=null,path='';for(const [index,row]of ordered.entries()){const value=historyValue(row[key],metric),epoch=epochValue(row);
 if(!finite(value)){previous=null;continue;}
-const adjacent=previous&&epoch-previous.epoch===1,next=ordered[index+1],offset=shape==='rect'?16:0;
+const adjacent=previous!==null&&epoch-previous===1;
 path+=(adjacent?'L':'M')+x(epoch)+' '+y(value)+' ';
-if(!adjacent||!next||Number(next.epoch)-epoch!==1||!finite(historyValue(next[key],metric))||
-Math.floor((x(epoch)-20+offset)/32)!==Math.floor((x(previous.epoch)-20+offset)/32)){
-const point=document.createElementNS(ns,shape);for(const [name,attribute]of Object.entries(shape==='circle'?{cx:x(epoch),cy:y(value),r:3}:{x:x(epoch)-4,y:y(value)-4,width:8,height:8}))point.setAttribute(name,attribute);
-point.setAttribute('fill',shape==='circle'?color:'none');point.setAttribute('stroke',color);point.setAttribute('stroke-width','1.5');group.append(point);}previous={epoch};}
-for(const [name,attribute]of Object.entries({d:path,fill:'none',stroke:color,'stroke-width':2}))line.setAttribute(name,attribute);
-if(shape==='rect')line.setAttribute('stroke-dasharray','5 4');
-if(!path){const missing=el('p',(shape==='circle'?'Train':'Validation')+': no recorded values for this metric.','kt-note');missing.dataset.historySeries=key;parent.append(missing);}}
-note(parent,'Train: circles and solid lines. Validation: hollow squares and dashed lines. Markers are spaced; choose History series to inspect overlaps on the same scale. Epoch '+first+' to '+last+
-'; metric range '+number(low)+' to '+number(high)+'. Missing values and unrecorded epochs break the lines.');};
-const drawHistory=metric=>{historyView.replaceChildren();historyValues.replaceChildren();
-for(const identity of [...new Set(histories.map(row=>text(row.trial)+' / '+text(row.fit)))]){
-const rows=histories.filter(row=>text(row.trial)+' / '+text(row.fit)===identity);
-historyView.append(el('h4',identity));chart(historyView,rows,metric);
-historyValues.append(el('h4',identity));table(historyValues,['Trial / fit','Epoch','Train '+metric,'Validation '+metric],rows.map(row=>[
-text(row.trial)+' / '+text(row.fit),text(row.epoch),historyValue(row.train_metrics,metric),historyValue(row.validation_metrics,metric)]),[1,2,3],true);}};
-if(metrics.length){control(results,'History metric',metrics.map(name=>[name,name]),metric=>{drawHistory(metric);showHistorySeries()});
-control(results,'History series',[['both','Both'],['train_metrics','Train'],['validation_metrics','Validation']],series=>{historySeries=series;showHistorySeries()});
-drawHistory(metrics[0]);results.append(historyView,historyDetails)}
-else note(results,'No recorded epoch metric values.');}
+const next=ordered[index+1],spaced=index===0||!next||!adjacent||epochValue(next)-epoch!==1||
+!finite(historyValue(next[key],metric))||Math.floor(x(epoch)/24)!==Math.floor(x(previous)/24);
+const point=shape(marker,marker==='circle'?{cx:x(epoch),cy:y(value),r:3.5}:{x:x(epoch)-4,y:y(value)-4,width:8,height:8});
+for(const [name,attribute]of Object.entries({fill:marker==='circle'?color:'var(--kumo-background)',stroke:color,'stroke-width':1.5,'vector-effect':'non-scaling-stroke'}))point.setAttribute(name,attribute);
+point.style.display=spaced?'':'none';group.append(point);points.push({point,index,spaced});previous=epoch;}
+for(const [name,attribute]of Object.entries({d:path,fill:'none',stroke:color,'stroke-width':2,'vector-effect':'non-scaling-stroke'}))line.setAttribute(name,attribute);
+if(marker==='rect')line.setAttribute('stroke-dasharray','5 4');
+if(!path){const missing=el('p',(marker==='circle'?'Train':'Validation')+': no recorded values for this metric.','kt-note');missing.dataset.historySeries=key;parent.append(missing);}}
+const epochs=el('div',undefined,'kt-history-epochs');epochs.append(el('span',first===last?'':text(ordered[0].epoch)),el('span',first===last?'Epoch '+text(ordered[0].epoch)+' (recorded key)':'Epoch (recorded key)'),el('span',first===last?'':text(ordered.at(-1).epoch)));plot.append(epochs);
+const legend=el('p',undefined,'kt-note kt-history-legend');
+legend.append(el('span','● Train · solid line','kt-history-train'),el('span','□ Validation · dashed line'));parent.append(legend);
+for(const [key,label]of [['validation_metrics','Validation'],['train_metrics','Train']]){
+const recorded=ordered.filter(row=>finite(historyValue(row[key],metric)));if(!recorded.length)continue;
+const observation=el('p',undefined,'kt-history-observation');observation.dataset.historySeries=key;
+observation.textContent=recorded.length===1?label+' '+metricLabel+': one numeric measurement, '+number(historyValue(recorded[0][key],metric))+' at epoch '+text(recorded[0].epoch)+'.':
+label+' '+metricLabel+': '+number(historyValue(recorded[0][key],metric))+' at epoch '+text(recorded[0].epoch)+' → '+number(historyValue(recorded.at(-1)[key],metric))+' at epoch '+text(recorded.at(-1).epoch)+'. First and last recorded values; inspect the intermediate epochs in the plot.';
+parent.append(observation);}
+const detail=el('div',undefined,'kt-history-selection');detail.setAttribute('aria-live','polite');
+const showEpoch=index=>{selectedEpochs.set(identity,index);const row=ordered[index];guide.setAttribute('d','M'+x(epochValue(row))+' 0 V180');
+for(const item of points){item.point.style.display=item.spaced||item.index===index?'':'none';item.point.setAttribute('stroke-width',item.index===index?3:1.5);}
+detail.replaceChildren();table(detail,['Selected epoch','Train '+metricLabel,'Validation '+metricLabel,'Recorded time (seconds)'],[[row.epoch,historyValue(row.train_metrics,metric),historyValue(row.validation_metrics,metric),row.time_taken]],[0,1,2,3],true);};
+const picker=control(parent,'Recorded epoch',ordered.map((row,index)=>[String(index),'Epoch '+text(row.epoch)]),value=>showEpoch(Number(value)));
+const index=Math.min(selectedEpochs.get(identity)??ordered.length-1,ordered.length-1);picker.value=String(index);showEpoch(index);parent.append(detail);};
+const drawHistory=metric=>{historyResize.disconnect();historyView.replaceChildren();historyValues.replaceChildren();historyMeaning.replaceChildren();
+const direction=metric===selectionMetric?(provenance.selection_direction==='min'?'Lower is preferred.':provenance.selection_direction==='max'?'Higher is preferred.':'Direction is not recorded.'):'Direction is not recorded for this metric.';
+identityNote(historyMeaning,'History metric',metric+(metric===selectionMetric?' · Recorded selection metric. ':' · ')+direction);
+if(metric===selectionMetric&&selectedMetricMeaning)note(historyMeaning,selectedMetricMeaning);
+for(const identity of [...new Set(histories.map(row=>JSON.stringify([row.trial,row.fit])))]){
+const rows=histories.filter(row=>JSON.stringify([row.trial,row.fit])===identity),row=rows[0];
+const group=el('div',undefined,'kt-history-fit');historyView.append(group);
+group.append(el('h4',row.fit==='original'?'Original search fit':row.fit==='refit_trainval'?'Refit on train + validation':row.fit==='refit_full'?'Refit on all data':'Recorded fit'));
+identityNote(group,'History fit identity','Trial: '+text(row.trial)+' · Fit: '+text(row.fit));
+if(row.fit==='refit_trainval')note(group,'The training population includes validation data. No independent validation curve is recorded for this refit.');
+chart(group,rows,metric,identity);
+historyValues.append(el('h4',text(row.trial)+' / '+text(row.fit)));table(historyValues,['Trial / fit','Epoch','Train '+metric,'Validation '+metric],rows.map(row=>[
+text(row.trial)+' / '+text(row.fit),text(row.epoch),historyValue(row.train_metrics,metric),historyValue(row.validation_metrics,metric)]),[1,2,3],true);}
+showHistorySeries();enable();};
+if(metrics.length){const metric=metrics.includes(selectionMetric)?selectionMetric:metrics[0];
+const select=control(learning,'History metric',metrics.map(name=>[name,name]),drawHistory);select.value=metric;
+control(learning,'History series',[['both','Both'],['train_metrics','Train'],['validation_metrics','Validation']],series=>{historySeries=series;showHistorySeries()});
+learning.append(historyMeaning,historyView);drawHistory(metric);
+note(learning,'Missing values and unrecorded epochs break the lines. These records do not identify a selected checkpoint epoch or establish why a metric changed.');
+learning.append(historyDetails,jumps);}
+else note(learning,'No recorded epoch metric values.');}
+else if(obj(data.history).status==='available')note(results,'Learning history: no recorded epoch rows.');
 const trials=list(obj(data.trials).rows);state(results,data.trials,'Trial comparison');
 if(trials.length){results.append(el('h3','Recorded trials'));
 const names=[...new Set(trials.flatMap(row=>Object.keys(obj(row.comparison_metrics??row.final_validation_metrics))))];
