@@ -144,6 +144,8 @@ from kumo.engine.trainer._spec import (
     write_training_spec,
 )
 from kumo.engine.trainer.output_config import (
+    SERVING_OPTION_PREFIX,
+    SERVING_SNAPSHOT_KEY,
     ModelOutputConfig,
     PredictionOutputConfig,
     check_model_location,
@@ -232,7 +234,7 @@ class TrainingResult:
                 return cast(PublishedModel, _with_metrics(
                     tracker.register(self, config.registry),
                     registry_metrics(self)))
-            config = _connector_registry(config)
+            config = _connector_registry(config, self.snapshot_id)
         _require_publisher(config)
         return _publish(self.bundle_dir, self.bundle_id,
                         registry_metrics(self), config)[0]
@@ -623,7 +625,8 @@ def _store_and_register(
         None if stored or not _logs_models(settings) else settings.registry)
     registered = _with_metrics(registered, metrics)
     error = stored or error
-    registry = None if stored else _connector_registry(settings)
+    registry = None if stored else _connector_registry(
+        settings, getattr(snapshot, 'id', None))
     if registry is None:
         return registered, error
     try:
@@ -770,12 +773,25 @@ def _with_metrics(model: Optional[PublishedModel],
     return replace(model, metrics=dict(metrics))
 
 
-def _connector_registry(settings: Any) -> Optional[ModelOutputConfig]:
+def _connector_registry(
+        settings: Any,
+        snapshot_id: Optional[str] = None) -> Optional[ModelOutputConfig]:
+    r"""The registry a connector tracker registers in."""
+    from kumo.engine._mlops import snapshot_path
+
     if (settings is None or settings.registry is None
             or _logs_models(settings)):
         return None
-    return ModelOutputConfig(as_tracking(settings.tracking).connector,
-                             location=settings.registry)
+    tracker = as_tracking(settings.tracking)
+    connector = tracker.connector
+    serving = None
+    if (snapshot_id and settings.wants('snapshot')
+            and dependency.reads(connector, settings.root.path)):
+        serving = settings.root.uri(snapshot_path(snapshot_id))
+    return ModelOutputConfig(
+        connector, location=settings.registry,
+        serving_snapshot=serving,
+        serving_options=tracker.serving_options)
 
 
 def _logs_models(settings: Any) -> bool:
@@ -804,6 +820,13 @@ def _publish(bundle_dir: Path, bundle_id: Optional[str],
             for name in ('spec_version', 'predictive_query', 'snapshot_id')
         }
     metadata.update(registry_pointers(bundle_id))
+    if export_config.serving_snapshot:
+        from kumo.engine._mlops import snapshot_uri
+
+        metadata[SERVING_SNAPSHOT_KEY] = str(
+            snapshot_uri(export_config.serving_snapshot))
+    for name, value in (export_config.serving_options or {}).items():
+        metadata[SERVING_OPTION_PREFIX + name] = str(value)
     location = export_config.location
     alias = location.alias if location else None
     if alias:

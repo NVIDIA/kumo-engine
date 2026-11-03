@@ -51,6 +51,8 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
     Args:
         source: a ``SnowflakeConnector``, or a Snowpark session (tracking only).
         native_model_lineage: link models registered during the fit to its run.
+        serving_options: ``ModelOutputConfig.serving_options`` for registered
+            versions.
     """
 
     platform = 'snowflake'
@@ -65,6 +67,7 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
         run_name: Optional[str] = None,
         tags: Optional[Mapping[str, str]] = None,
         native_model_lineage: bool = False,
+        serving_options: Optional[Mapping[str, str]] = None,
     ) -> None:
         from kumo.engine.connector.base import Connector
 
@@ -81,6 +84,7 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
         self.run_name = run_name
         self.tags = dict(tags or {})
         self.native_model_lineage = native_model_lineage
+        self.serving_options = dict(serving_options or {}) or None
         self.logged_run_name: Optional[str] = None
         self._reset()
 

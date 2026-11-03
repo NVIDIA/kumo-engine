@@ -148,17 +148,30 @@ class SnapshotOutputConfig:
     path: str
 
 
+SERVING_SNAPSHOT_KEY = 'kumo.serving_snapshot'
+SERVING_OPTION_PREFIX = 'kumo.serving.'
+SERVING_OPTIONS = ('cuda_version', 'python_version', 'function_type',
+                   'pip_repository')
+
+
 @dataclass(frozen=True)
 class ModelOutputConfig:
-    """Publish a model to exactly one ``path`` or registry ``location``."""
+    """Publish a model to one ``path`` or registry ``location``."""
 
     connector: Connector
     path: Optional[str] = None
     location: Optional[ModelRegistryLocation] = None
+    serving_snapshot: Any = None
+    serving_options: Optional[Mapping[str, str]] = None
 
     def __post_init__(self) -> None:
         if (self.path is None) == (self.location is None):
             raise ValueError("Exactly one of path or location must be set.")
+        unknown = sorted(set(self.serving_options or {}) -
+                         set(SERVING_OPTIONS))
+        if unknown:
+            raise ValueError(f"Unknown serving_options {unknown}; expected "
+                             f"any of {list(SERVING_OPTIONS)}.")
 
 
 def check_model_location(config: ModelOutputConfig) -> None:

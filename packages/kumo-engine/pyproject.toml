@@ -95,6 +95,9 @@ sagemaker=[
 [project.entry-points."kumo_core.version_providers"]
 kumo-engine = "kumo_engine_version:installed_version"
 
+[project.entry-points."kumo_snowflake.registry_models"]
+kumo-engine = "kumo.engine.integrations._snowflake_model:log_model_args"
+
 [project.urls]
 homepage="https://github.com/NVIDIA/kumo-engine"
 documentation="https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/overview"

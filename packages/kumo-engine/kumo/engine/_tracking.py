@@ -489,6 +489,7 @@ class TrackingBase(Tracking):
     log_prediction_run: Optional[Callable[[RunRecord], None]] = None
     log_monitoring: Optional[Callable[[RunRecord], None]] = None
     sample_system_metrics: Optional[Callable[[], ContextManager[None]]] = None
+    serving_options: Optional[Mapping[str, str]] = None
 
     @property
     def platform(self) -> str:
