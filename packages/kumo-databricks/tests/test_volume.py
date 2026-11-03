@@ -72,6 +72,23 @@ def test_unsized_writes_stay_plain_through_a_part():
     assert f'{ROOT}/over.csv' not in volume.objects
 
 
+def test_uploads_bound_the_sdk_part_buffers():
+    fs, volume = filesystem(part_bytes=1000)
+    calls = []
+
+    def upload(path, contents, *, overwrite, part_size=None,
+               use_parallel=True, parallelism=None):
+        calls.append((part_size, parallelism))
+        volume.objects[path] = contents.read()
+
+    volume.upload = upload
+    write(fs, f'{ROOT}/export.csv', BODY[:1000])
+    with open_sized(fs, f'{ROOT}/sized.csv', 1000) as writer:
+        writer.write(BODY[:1000])
+    assert calls == [(16 << 20, 4)] * 2
+    assert volume.objects[f'{ROOT}/export.csv'] == BODY[:1000]
+
+
 def test_a_failed_upload_raises_without_the_signed_url():
     fs, volume = filesystem()
     signed = 'https://bucket.example/part?X-Amz-Signature=secret'
