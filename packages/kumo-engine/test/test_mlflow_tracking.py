@@ -445,11 +445,10 @@ def test_the_snapshot_input_lists_its_tables_and_rows(tmp_path):
 
     snapshot, = [item.dataset for item in _fit_run().inputs.dataset_inputs
                  if item.dataset.name.startswith('graph snapshot')]
-    assert json.loads(snapshot.schema) == {'mlflow_colspec': [
-        {'name': 'snapshot id', 'type': 'g@5ac245'},
-        {'name': 'users', 'type': '300 rows'},
-        {'name': 'orders', 'type': '6,000 rows'}]}
-    assert json.loads(snapshot.profile) == {'tables': 2, 'rows': 6300}
+    assert json.loads(snapshot.schema) == {'mlflow_colspec': []}
+    assert json.loads(snapshot.profile) == {
+        'snapshot': 'g@5ac245', 'tables': 2, 'rows': 6300,
+        'users rows': 300, 'orders rows': 6000}
 
 
 def test_monitoring_folds_into_its_prediction_run():
