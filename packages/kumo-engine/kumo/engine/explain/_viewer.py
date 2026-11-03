@@ -172,6 +172,29 @@ align-items:start;gap:8px 16px;padding:10px 0;border-bottom:1px solid $surface_b
 .kumo-training .kt-scalar-axis{display:flex;justify-content:space-between;gap:12px;max-width:600px;color:$muted;font-size:12px;font-variant-numeric:tabular-nums}
 .kumo-training .kt-scalar-axis>span:last-child{text-align:right}
 .kumo-training .kt-scalar-error{font-weight:600;font-variant-numeric:tabular-nums;margin-bottom:0}
+.kumo-training .kt-cohort-list{list-style:none;padding:2px;margin:8px 0;max-height:600px;overflow:auto}
+.kumo-training .kt-cohort-row,.kumo-training .kt-cohort-heading{display:grid;grid-template-columns:minmax(100px,24%) minmax(0,1fr) 86px;gap:10px;align-items:center}
+.kumo-training .kt-cohort-row.kt-action{width:100%;margin-bottom:3px;padding:8px;border-color:transparent}
+.kumo-training .kt-cohort-row[aria-pressed="true"]{border-color:$focus}
+.kumo-training .kt-cohort-heading{font-size:12px;color:$muted;padding:0 10px}
+.kumo-training .kt-cohort-heading .kt-scalar-axis{margin:0;max-width:none}
+.kumo-training .kt-cohort-plot{position:relative;height:34px;margin:0 7px}
+.kumo-training .kt-cohort-plot:before{content:"";position:absolute;left:0;right:0;top:17px;border-top:1px solid $surface_border}
+.kumo-training .kt-cohort-marker{position:absolute;width:12px;height:12px;transform:translateX(-50%);border:1px solid $background}
+.kumo-training .kt-cohort-marker.kt-scalar-prediction{top:3px;border-radius:50%;background:$accent}
+.kumo-training .kt-cohort-marker.kt-scalar-observed{top:20px;transform:translateX(-50%) rotate(45deg);background:$foreground}
+.kumo-training .kt-cohort-share .kt-track{display:block;margin-top:5px;height:4px}
+.kumo-training .kt-cohort-share .kt-bar{display:block;background:$muted}
+.kumo-training .kt-cohort-share{font-variant-numeric:tabular-nums;text-align:right}
+.kumo-training .kt-cohort-selection{border-left:3px solid $accent;padding-left:12px;margin:14px 0}
+.kumo-training .kt-cohort-selection h4{margin-top:0}
+@container kumo-training (max-width:520px){
+.kumo-training .kt-cohort-row,.kumo-training .kt-cohort-heading{grid-template-columns:minmax(0,1fr) 66px;gap:3px 12px}
+.kumo-training .kt-cohort-row>.kt-cohort-label{grid-column:1/-1}
+.kumo-training .kt-cohort-heading>.kt-cohort-label{display:none}
+.kumo-training .kt-cohort-row.kt-action{padding:5px 7px}
+.kumo-training .kt-cohort-list{max-height:420px}
+}
 
 .kumo-training .kt-ranked-list{list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(94px,1fr));
 gap:8px;padding:0;margin:8px 0 16px}
@@ -401,21 +424,83 @@ featureButtons.forEach(({button,feature})=>{button.setAttribute('aria-pressed',S
 button.querySelector('.kt-note').textContent=feature===row?'Selected feature':'Inspect loaded context';});
 if(!sampleView.hidden&&selectedExample)inspectSample(selectedExample.ref,selectedExample.index);enable();};
 const inspectCohort=index=>{cohortView.replaceChildren();const c=cohorts[index];
-cohortView.append(el('h3',text(c.table_name)+'.'+text(c.col_name)+' · hop '+text(c.hop)));
-note(cohortView,'Prediction variation rank score: '+number(c.prediction_score)+'. The ranking averages recorded class dimensions.');
-const bins=el('div'),classes=Array.isArray(c.predictions)?[]:Object.keys(obj(c.predictions));
-const draw=className=>{bins.replaceChildren();if(classes.length&&!className){note(bins,'Choose a recorded class to compare cohort means.');return;}
-const predictions=classes.length?obj(c.predictions)[className]:c.predictions;
-const targets=Array.isArray(c.targets)?c.targets:obj(c.targets)[className];
+const identity=text(c.table_name)+'.'+text(c.col_name)+' · hop '+text(c.hop);
+cohortView.append(el('h3',identity.length>100?identity.slice(0,97)+'…':identity));
+if(identity.length>100)identityNote(cohortView,'Cohort input',identity);
+const classKeys=[...new Set([...Object.keys(obj(c.predictions)),...Object.keys(obj(c.targets))])];
+const classes=Array.isArray(c.predictions)&&Array.isArray(c.targets)?[]:classKeys;
+identityNote(cohortView,'Cohort scope',(provenance.selection_verified===true&&provenance.refitted_trainval===false?'Original fit':
+provenance.selection_verified===true&&provenance.refitted_trainval===true?'Refit on train + validation':'Fit not verified')+
+' · TEST · Recorded fit: '+text(provenance.explanation_trial)+(context.target?' · Target: '+text(context.target):''));
+const bins=el('div');
+const draw=className=>{bins.replaceChildren();if(classes.length&&className===null){note(bins,'Choose a recorded class to compare cohort means.');return;}
+const predictions=Array.isArray(c.predictions)?c.predictions:Object.hasOwn(obj(c.predictions),className)?c.predictions[className]:[];
+const targets=Array.isArray(c.targets)?c.targets:Object.hasOwn(obj(c.targets),className)?c.targets[className]:[];
 let predictionLabel='Mean prediction',targetLabel='Mean observed target';
-if(text(obj(data.cohorts).task_type).includes('binary')){predictionLabel='Positive-class probability';targetLabel='Observed positive-class share'}
+if(text(obj(data.cohorts).task_type).includes('binary')){predictionLabel='Mean positive-class probability';targetLabel='Observed positive-class share'}
 else if(classes.length){predictionLabel='Mean class probability';targetLabel='Observed class share'}
-table(bins,['Cohort',predictionLabel,targetLabel,'Population share (%)'],list(c.cohorts).slice(0,100).map((label,i)=>[
-label,list(predictions)[i],list(targets)[i],finite(list(c.populations)[i])?c.populations[i]*100:'Unavailable']),[1,2,3]);
-if(list(c.cohorts).length>100)note(bins,'Showing the first 100 recorded cohorts.');};
-if(classes.length)control(cohortView,'Recorded class',[['','Choose a class'],...classes.map(name=>[name,name])],draw);
-else note(cohortView,text(obj(data.cohorts).task_type).includes('regression')?'Mean values use recorded target units.':'Recorded prediction and target means.');
-cohortView.append(bins);draw('');cohortButtons.forEach((button,i)=>{button.setAttribute('aria-pressed',String(i===index));
+if(classes.length)identityNote(bins,'Recorded class','Recorded class: '+text(className));
+note(bins,classes.length||text(obj(data.cohorts).task_type).includes('binary')?
+'Probability / share scale. ● '+predictionLabel+' · ◆ '+targetLabel+'.':
+'● '+predictionLabel+' · ◆ '+targetLabel+'. Original target scale; target units are not recorded.');
+const labels=list(c.cohorts).slice(0,100),values=labels.flatMap((_,i)=>[list(predictions)[i],list(targets)[i]]).filter(finite);
+const low=values.length?Math.min(...values):null,high=values.length?Math.max(...values):null,scale=Math.max(Math.abs(low),Math.abs(high))||1;
+if(labels.length)note(bins,labels.length+' recorded groups · select a row; scroll within the list to inspect more.');
+const heading=el('div',undefined,'kt-cohort-heading'),axis=el('div',undefined,'kt-scalar-axis');
+axis.append(el('span',low===null?'No numeric means':number(low)),el('span',high===null?'':number(high)));
+heading.append(el('span','Recorded group','kt-cohort-label'),axis,el('span','Population share','kt-value'));bins.append(heading);
+const rows=el('ol',undefined,'kt-cohort-list');rows.setAttribute('aria-label','Recorded cohort mean comparisons');
+const selection=el('div',undefined,'kt-cohort-selection'),buttons=[];let selected=0;
+const selectBin=i=>{selected=i;selection.replaceChildren();selection.append(el('h4','Selected group · '+(i+1)+' of '+labels.length));
+identityNote(selection,'Selected cohort',text(labels[i]));
+const prediction=list(predictions)[i],target=list(targets)[i],share=list(c.populations)[i],gap=prediction-target;
+note(selection,predictionLabel+': '+number(prediction)+' · '+targetLabel+': '+number(target)+'.');
+if(finite(prediction)&&finite(target))note(selection,prediction===target?'The recorded means are equal.':
+'Prediction mean is '+(finite(gap)?number(Math.abs(gap))+' ':'')+(prediction>target?'above':'below')+' the observed mean.');
+else note(selection,'A paired comparison is unavailable for this group. Missing or invalid means are not zero.');
+note(selection,'Recorded population share: '+(finite(share)&&share>=0&&share<=1?number(share*100)+'%':'Unavailable')+'.');
+buttons.forEach((button,j)=>button.setAttribute('aria-pressed',String(i===j)));
+if(rows.clientHeight){const row=buttons[i].getBoundingClientRect(),viewport=rows.getBoundingClientRect();
+if(row.top<viewport.top)rows.scrollTop+=row.top-viewport.top;
+else if(row.bottom>viewport.bottom)rows.scrollTop+=row.bottom-viewport.bottom;}enable();};
+for(const [i,label]of labels.entries()){
+const prediction=list(predictions)[i],target=list(targets)[i],share=list(c.populations)[i];
+const button=action('',()=>selectBin(i));button.classList.add('kt-cohort-row');
+const caption=text(label);button.append(el('span',caption.length>64?caption.slice(0,61)+'…':caption,'kt-cohort-label'));
+button.setAttribute('aria-label','Group '+(i+1)+': '+caption+'. '+predictionLabel+' '+number(prediction)+'; '+targetLabel+' '+number(target)+
+'; population share '+(finite(share)&&share>=0&&share<=1?number(share*100)+'%':'Unavailable'));
+const plot=el('span',undefined,'kt-cohort-plot');plot.setAttribute('aria-hidden','true');
+for(const [value,kind]of [[prediction,'prediction'],[target,'observed']])if(finite(value)){
+const marker=el('span',undefined,'kt-cohort-marker kt-scalar-'+kind);
+marker.style.left=(low===high?50:100*((value/scale-low/scale)/(high/scale-low/scale)))+'%';plot.append(marker);}
+if(!finite(prediction)&&!finite(target))plot.append(el('span','Unavailable','kt-note'));
+const population=el('span',finite(share)&&share>=0&&share<=1?number(share*100)+'%':'Unavailable','kt-cohort-share');
+if(finite(share)&&share>=0&&share<=1){const track=el('span',undefined,'kt-track'),bar=el('span',undefined,'kt-bar');
+bar.style.width=(share*100)+'%';track.setAttribute('aria-hidden','true');track.append(bar);population.append(track);}
+button.append(plot,population);buttons.push(button);const item=el('li');item.append(button);rows.append(item);}
+bins.append(rows);
+if(labels.length){bins.append(selection);selectBin(0);
+if(labels.length>1)bins.append(action('Compare next recorded group',()=>selectBin((selected+1)%labels.length)));}
+else note(bins,'No recorded cohort groups.');
+note(bins,'Shared mean-value axis · '+(c.stype==='numerical'||c.col_name==='COUNT(*)'?'recorded numeric-bin order.':'recorded group order; no trend between categories.')+
+' Shares cover this recorded column/hop, not the whole TEST population or absolute counts.');
+note(bins,'Cohort averages do not establish individual errors, calibration or reliable error segments.');
+const exact=el('details');exact.append(el('summary','Exact cohort means and population fractions'));
+const exactValues=el('div',undefined,'kt-sample-values');exactValues.tabIndex=0;
+exactValues.setAttribute('role','region');exactValues.setAttribute('aria-label','Exact cohort means and population fractions');
+table(exactValues,['Recorded group',predictionLabel,targetLabel,'Recorded population fraction'],labels.map((label,i)=>[
+label,list(predictions)[i],list(targets)[i],list(c.populations)[i]]),[1,2,3],true);exact.append(exactValues);bins.append(exact);
+if(list(c.cohorts).length>100)note(bins,'Showing the first 100 of '+list(c.cohorts).length+' recorded cohorts.');enable();};
+if(classes.length)control(cohortView,'Recorded class',[['','Choose a class'],...classes.map((name,i)=>[String(i+1),name])],value=>draw(value===''?null:classes[Number(value)-1]));
+cohortView.append(bins);draw(classes.length?null:'');
+const feature=valid.find(row=>row.table===c.table_name&&row.column===c.col_name);
+if(feature){cohortView.append(action('Inspect this input in loaded contexts',()=>{chooseFeature(feature);
+const heading=featureContext.querySelector('h3');if(heading){heading.tabIndex=-1;heading.focus();}}));
+note(cohortView,'Inspect recorded input values and local sensitivity. Cohort membership is not recorded for loaded examples.');}
+const ranking=el('details');ranking.append(el('summary','Cohort ranking detail'));
+note(ranking,'Prediction variation rank score: '+number(c.prediction_score)+
+(classes.length?'. The ranking averages recorded class dimensions.':'. This is separate from gradient sensitivity and mean prediction error.'));cohortView.append(ranking);
+cohortButtons.forEach((button,i)=>{button.setAttribute('aria-pressed',String(i===index));
 button.closest('tr').setAttribute('aria-selected',String(i===index));});enable();};
 if(valid.length){const rows=el('ul',undefined,'kt-feature-list');rows.setAttribute('aria-label','Global input sensitivity');
 for(const row of valid.slice(0,20)){
