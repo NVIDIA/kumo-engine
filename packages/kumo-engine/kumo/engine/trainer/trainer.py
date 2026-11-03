@@ -131,12 +131,9 @@ class TrainingResult:
 
     def predict(self, *args: Any, **kwargs: Any) -> 'PredictionResult':
         """Score with this model, as :meth:`Trainer.predict`."""
-        return self._model('predict').predict(*args, **kwargs)
-
-    def _model(self, call: str) -> 'Trainer':
         trainer = self._trainer
         if trainer is None:
-            raise RuntimeError(f'This result has no model to {call} with; '
+            raise RuntimeError('This result has no model to predict with; '
                                'use Trainer.load on its bundle_dir.')
         current = trainer._training_result
         if current is None or current.bundle_dir != self.bundle_dir:
@@ -144,7 +141,7 @@ class TrainingResult:
                                            trainer._embedding_models,
                                            accelerator=trainer._accelerator)
             self._trainer = trainer
-        return trainer
+        return trainer.predict(*args, **kwargs)
 
     def holdout_df(self) -> pd.DataFrame:
         r"""Read the holdout predictions as a pandas DataFrame.

@@ -24,7 +24,6 @@ from kumo.engine._manifest import (
     SourceTableEntry,
     TrainingTableManifest,
     TrainingTableParents,
-    embedded,
     read_manifest,
     stamp,
     stub,
@@ -396,7 +395,7 @@ def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
             TrainingTableManifest(
                 id=table.id,
                 parents=TrainingTableParents(
-                    snapshot=embedded(parent) if parent is not None else
+                    snapshot=parent if parent is not None else
                     stub('snapshot', snapshot.id),
                     source_table=source_table),
                 query=table.query,

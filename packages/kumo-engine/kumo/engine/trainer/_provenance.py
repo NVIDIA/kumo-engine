@@ -10,7 +10,6 @@ from kumo.engine._manifest import (
     FitTiming,
     ModelManifest,
     ModelParents,
-    embedded,
     read_manifest,
     stamp,
     stub,
@@ -38,7 +37,7 @@ class FitRecord:
             ModelManifest(
                 id=bundle_id,
                 parents=ModelParents(
-                    training_table=embedded(table) if table is not None else
+                    training_table=table if table is not None else
                     stub('training_table', train_table.id
                          or train_table.tt_id),
                     warm_start=None if self.warm_start is None else
@@ -56,15 +55,14 @@ class FitRecord:
 
 
 def embedded_model(manifest: ModelManifest) -> ModelManifest:
-    copy = embedded(manifest)
-    parents = copy.parents
+    parents = manifest.parents
     if parents is None:
-        return copy
+        return manifest
 
     def cut(model: Optional[ModelManifest]) -> Optional[ModelManifest]:
         return None if model is None else stub('model', model.id)
 
-    return replace(copy, parents=replace(
+    return replace(manifest, parents=replace(
         parents, warm_start=cut(parents.warm_start)))
 
 

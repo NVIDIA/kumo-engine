@@ -177,26 +177,11 @@ def raise_on_error(settings: Optional[MLOps], error: Optional[BaseException],
                    call: str, stacklevel: int = 2) -> None:
     if error is None or settings is None:
         return
-    message = f'{call} finished, but MLOps failed: {full_error(error)}'
+    message = (f'{call} finished, but MLOps failed: '
+               f'{type(error).__name__}: {error}')
     if settings.on_error == 'raise':
         raise RuntimeError(message) from error
-    warn_failure(message, error, stacklevel + 1)
-
-
-def full_error(error: BaseException) -> str:
-    return f'{type(error).__name__}: {error}'
-
-
-def warn_failure(message: str, error: BaseException, stacklevel: int = 2,
-                 also: Optional[BaseException] = None) -> None:
-    if getattr(error, '_kumo_warned', False):
-        return
     warnings.warn(message, UserWarning, stacklevel=stacklevel + 1)
-    for reported in (error, also):
-        try:
-            setattr(reported, '_kumo_warned', True)
-        except AttributeError:
-            pass
 
 
 def on_root(source: Any, path: str) -> Tuple[Any, str]:
