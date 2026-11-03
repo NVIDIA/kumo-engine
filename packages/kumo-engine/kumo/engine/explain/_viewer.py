@@ -380,6 +380,9 @@ const rootNode=obj(nodes[store.root_id]);
 identityNote(sampleView,'Root identity','Root node: '+text(store.root_id)+' · Original entity: '+text(rootNode.pkey)
 +' · Seed time: '+text(store.seed_time));
 if(!body.subgraph_store)note(sampleView,'Relational structure unavailable.');
+if(store.task_type==='static_link_prediction'||store.task_type==='temporal_link_prediction')
+note(sampleView,'Link-prediction records can include retrieved items outside the sampled graph, with feature values but no local gradient scores. '
++'Relations and local scores cover only recorded context.');
 const nodeRows=Object.entries(nodes);if(nodeRows.length){sampleView.append(el('h4','Recorded nodes'));
 sampleTable('Recorded nodes',['Node','Identity / aggregate','Table membership'],nodeRows.slice(0,80).map(([id,node])=>[
 id,node.count!==undefined?'Aggregate: '+text(node.count)+' nodes':text(node.pkey_name)+': '+text(node.pkey),
