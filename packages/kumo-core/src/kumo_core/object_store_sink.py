@@ -156,7 +156,7 @@ class ObjectStoreSinkBackend(ABC):
 
         return ArtifactDestinationConflict(
             f"Output directory '{self._uri(path.rstrip('/'))}/' already "
-            f"contains data from another export. Choose an empty destination "
+            "contains data from another export. Choose an empty destination "
             "path.")
 
     def publish_model(
@@ -291,10 +291,7 @@ class ObjectStoreSinkBackend(ABC):
             with filesystem.open_input_stream(path) as reader:
                 if reader.readall().decode('utf-8') == marker:
                     return True
-        raise ValueError(
-            f"Output directory '{self._uri(directory)}/' already "
-            f"contains data from another export. Choose an empty destination "
-            f"path.")
+        raise self._conflict(directory)
 
 
 def _write_one(filesystem: FileSystem, frame: pd.DataFrame, path: str,
