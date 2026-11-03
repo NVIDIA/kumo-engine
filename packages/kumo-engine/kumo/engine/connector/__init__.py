@@ -17,6 +17,10 @@ minus the server-registry-only fields (`name`, `description`, `project_id`,
 `_response`) and the `_bind_connector` round-trip. See `kumo.engine.connector.base`.
 """
 
+from typing import Any, Optional, Tuple
+
+from kumoapi.plugin import FileStoreSink
+
 from kumo.engine.connector.adls import ADLSConnector
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.bigquery import BigQueryConnector
@@ -35,6 +39,26 @@ from kumo.engine.connector.identity import (
 from kumo.engine.connector.s3 import S3Connector
 from kumo.engine.connector.snowflake import SnowflakeConnector
 from kumo.engine.connector.source_table import SourceTable, SQLSourceTable
+
+
+def _file_sink(connector: Connector, path: str) -> Optional[FileStoreSink]:
+    try:
+        sink = connector.sink_backend
+    except NotImplementedError:
+        return None
+    return sink if isinstance(sink, FileStoreSink) and sink.holds_files(
+        connector, path) else None
+
+
+def is_file_destination(connector: Connector, path: str) -> bool:
+    return _file_sink(connector, path) is not None
+
+
+def file_store(connector: Connector, path: str) -> Optional[Tuple[Any, str]]:
+    r"""The ``(filesystem, path)`` of a file destination; None for a table."""
+    sink = _file_sink(connector, path)
+    return None if sink is None else sink.filesystem(connector, path)
+
 
 __all__ = [
     "ADLSConnector",
