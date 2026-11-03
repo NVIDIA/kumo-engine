@@ -1,13 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""A recording stand-in for Snowflake's ExperimentTracking."""
 
 import os
 import re
 import sys
 import types
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from kumo_core.sources.sql import resolve_snowflake_identifier as _identifier
 
@@ -157,7 +156,6 @@ class FakeExperimentTracking:
     def log_artifact(self, local_path: str,
                      artifact_path: Optional[str] = None) -> None:
         self._record('log_artifact', local_path, artifact_path)
-        # Artifact URIs do not quote identifiers.
         if not re.fullmatch(r'[A-Z_][A-Z0-9_$]*', self._run.name):
             raise RuntimeError(f'Run "{self._run.name}" does not exist in '
                                f'Experiment {self.experiment}.')
@@ -169,13 +167,15 @@ class FakeExperimentTracking:
 
 class FakeSession:
     def __init__(self, database: Optional[str] = 'DB',
-                 schema: Optional[str] = 'PUBLIC') -> None:
+                 schema: Optional[str] = 'PUBLIC',
+                 schemas: Sequence[Tuple[str]] = ()) -> None:
         self.database, self.schema = database, schema
+        self.schemas = list(schemas)
         self.statements: List[str] = []
 
     def sql(self, query: str) -> Any:
         self.statements.append(query)
-        return types.SimpleNamespace(collect=lambda: [])
+        return types.SimpleNamespace(collect=lambda: self.schemas)
 
     def get_current_database(self) -> Optional[str]:
         return self.database
@@ -185,7 +185,6 @@ class FakeSession:
 
 
 def install(monkeypatch: Any) -> type:
-    """Makes `import snowflake.ml.experiment` return a fresh fake."""
     FakeExperimentTracking._instance = None
     module = types.ModuleType('snowflake.ml.experiment')
     module.ExperimentTracking = FakeExperimentTracking

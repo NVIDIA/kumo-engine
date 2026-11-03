@@ -157,7 +157,6 @@ def test_an_existing_run_is_never_resumed(fake, taken, run_name, new, caplog):
         user.end_run()
     else:
         user._run = None
-    run_name = 'fit' if taken == 'FIT' else 'my_run'
 
     tracking = _tracking(session, run_name=run_name)
     _replay(tracking)
@@ -198,35 +197,24 @@ def test_the_users_session_is_not_altered(fake):
     assert session.statements == []
 
 
-class _SchemaSession:
-    def __init__(self, schemas):
-        self.schemas = schemas
-        self.statements = []
+def _connected():
+    from kumo.engine.connector.base import Connector
 
-    def get_current_database(self):
-        return 'DB'
-
-    def get_current_schema(self):
-        return 'RUNS'
-
-    def sql(self, statement):
-        self.statements.append(statement)
-        return mock.Mock(collect=lambda: self.schemas)
+    session = FakeSession(schema='RUNS', schemas=[('RUNS', )])
+    connector = mock.Mock(spec=Connector, session=lambda: session)
+    return _tracking(connector), connector, session
 
 
 def test_a_connector_opens_the_session_and_the_schema_is_checked_first(
         fake):
     import kumo.engine as kumo
-    from kumo.engine.connector.base import Connector
 
-    session = _SchemaSession([('RUNS', )])
-    connector = mock.Mock(spec=Connector, session=lambda: session)
-    tracking = _tracking(connector)
+    tracking, connector, session = _connected()
     tracking.check()
     assert tracking.session is session and tracking.connector is connector
     assert session.statements == ["SHOW SCHEMAS LIKE 'RUNS' IN DATABASE DB"]
 
-    tracking.session = _SchemaSession([])
+    tracking.session = FakeSession(schema='RUNS')
     with pytest.raises(ValueError, match='schema DB.RUNS does not exist'):
         kumo.MLOps('/tmp/root', tracking=tracking)
     with pytest.raises(ValueError, match='or a Snowpark session'):
@@ -236,7 +224,6 @@ def test_a_connector_opens_the_session_and_the_schema_is_checked_first(
 def test_mlops_loads_a_registered_model_through_the_tracker(
         fake, monkeypatch, tmp_path):
     import kumo.engine as kumo
-    from kumo.engine.connector.base import Connector
 
     loaded = []
     original = kumo.Trainer.load_from_connector.__func__
@@ -245,9 +232,7 @@ def test_mlops_loads_a_registered_model_through_the_tracker(
         classmethod(lambda cls, source, **kwargs: loaded.append(
             (source, kwargs)) if not isinstance(source, kumo.MLOps) else
                     original(cls, source, **kwargs)))
-    session = _SchemaSession([('RUNS', )])
-    connector = mock.Mock(spec=Connector, session=lambda: session)
-    tracking = _tracking(connector)
+    tracking, connector, _ = _connected()
     cfg = kumo.MLOps(str(tmp_path), tracking=tracking)
     location = kumo.ModelRegistryLocation('CHURN', alias='champion')
     kumo.Trainer.load_from_connector(cfg, location=location)
@@ -259,24 +244,16 @@ def test_mlops_loads_a_registered_model_through_the_tracker(
         _tracking().load_model(location)
 
 
-@pytest.mark.parametrize('record, name', [
-    (RunRecord(tags={'kumo.kind': 'fit'}, model_label='kumo-demo-churn',
-               started=datetime(2026, 10, 29, 6, 18, 5, tzinfo=timezone.utc)),
+@pytest.mark.parametrize('run_name, record, name', [
+    (None, RunRecord(tags={'kumo.kind': 'fit'}, model_label='kumo-demo-churn',
+                     started=datetime(2026, 10, 29, 6, 18, 5,
+                                      tzinfo=timezone.utc)),
      'FIT_KUMO_DEMO_CHURN_20261029_061805'),
+    ('nightly', RunRecord(tags={'kumo.kind': 'fit'}), 'FIT_NIGHTLY'),
 ])
-def test_runs_are_named_by_kind_model_version_and_date(fake, record, name):
-    tracking = _tracking()
-    tracking.start(record)
-    tracking.finish(record, None)
-
-    assert list(fake._instance.runs) == [name]
-
-
-@pytest.mark.parametrize('record, name', [
-    (RunRecord(tags={'kumo.kind': 'fit'}), 'FIT_NIGHTLY'),
-])
-def test_a_user_run_name_names_every_run(fake, record, name):
-    tracking = _tracking(run_name='nightly')
+def test_runs_are_named_by_kind_model_and_date_or_the_users_name(
+        fake, run_name, record, name):
+    tracking = _tracking(run_name=run_name)
     tracking.start(record)
     tracking.finish(record, None)
 
