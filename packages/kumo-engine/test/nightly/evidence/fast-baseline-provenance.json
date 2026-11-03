@@ -256,10 +256,10 @@
   },
   "forecast_control_proposal": {
     "status": "DIAGNOSTIC_PROPOSAL_NOT_APPROVED",
-    "method": "Closed-form constant predictor minimizing Huber delta=1 on frozen training labels, independently per horizon. No model fit and no test-label selection.",
+    "method": "Closed-form constant predictor minimizing Huber delta=1 on raw frozen training answers, independently per horizon. No model fit and no test-label selection.",
     "approved_wheel_loss_source_sha256": "a09c3dcd7a0d8b993f355b3e2b1ca8d78ccfcfe564d0ac42092bcbb54b567bfc",
     "normal_zero_baseline_unchanged": true,
-    "policy_limits_changed": false,
+    "policy_limits_changed": true,
     "cases": [
       {
         "arm": "normal",
@@ -337,9 +337,27 @@
         "observed_model_prediction_mean": 0.22825918688774782,
         "training_counts_sha256": "244feb9c4588cbf7f4f0e75bb7da6aa12846db98130adea04307e42252ba527b"
       }
-    ]
+    ],
+    "training_objective_review": {
+      "status": "REVIEW_REQUIRED",
+      "raw_answer_baseline_is_model_training_objective": false,
+      "model_target_encoder": {
+        "offset": -1.0,
+        "scale": 1.0,
+        "log_transform": true
+      },
+      "checkpoint_sha256": "fcd2306811527d721ced2e7e57be7c2f17bfa765bbfe1f3d9ea1d4a5c5841409",
+      "encoder_source_sha256": "55f9e1e441a1aa669157f40fd255e52a4ebaefc657b36aa570c722e1237f2f96",
+      "loss_source_sha256": "a09c3dcd7a0d8b993f355b3e2b1ca8d78ccfcfe564d0ac42092bcbb54b567bfc",
+      "encoded_objective_constant_mae_diagnostic": 0.5256293571755697,
+      "interpretation": "The proposed 0.544186 baseline minimizes Huber on raw training answers. The saved model applies log(1+answer) before Huber. Retaining the raw-answer comparator is an explicit policy choice requiring review."
+    }
   },
   "forecast_constant_formula": "For each horizon, c = count(training target > 0) / (count(training target = 0) + count(training target = 1)). For nonnegative integer targets and 0 <= c <= 1, this minimizes Huber loss with delta 1. The fixed training-derived constants are scored on test labels.",
   "normal_forecast_zero_baseline_unchanged": true,
-  "learning_limits_unchanged": true
+  "learning_limits_unchanged": false,
+  "forecasting_policy_proposal": {
+    "path": "forecasting-policy-proposal.json",
+    "sha256": "81585ac43d06caf5dbc0a141255f6e4712b989b9b1a55e6a9048124610fdbfea"
+  }
 }

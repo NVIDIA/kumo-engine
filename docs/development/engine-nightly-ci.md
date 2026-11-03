@@ -75,18 +75,28 @@ popularity requirement.
 Mean absolute error is the average absolute difference between prediction and
 answer. Forecasting normal has error `0.334672`, below the stronger
 always-zero baseline of `0.382274`. The normal baseline stays unchanged.
-Normal error must beat this baseline by the agreed `min_normal_gain` margin.
+Normal error must improve on this baseline by at least ten percent.
+The proposed `min_normal_gain` is `0.03822739835549215`. The saved normal model passes.
 Default FAST trains with Huber loss, which penalizes errors differently from
 mean absolute error. The scrambled model predicts nearly constant values.
 
-The proposed forecast control baseline minimizes Huber loss on training labels,
+The proposed forecast control baseline minimizes Huber loss on raw training answers,
 independently for each of twelve horizons. It has test error
 `0.544186`. The control model has error `0.512046`.
 The scrambled-control closeness check remains required. Its absolute error
-difference from this baseline must stay within `max_control_drift`.
-The initial zero-baseline failure remains in the campaign evidence. All learning
-limits remain unchanged. The new control baseline and its allowed difference
-both need review before the reference is approved.
+difference from this baseline must stay within ten percent of that baseline.
+The proposed `max_control_drift` is `0.05441856445482517`.
+The observed difference, `0.032140`, passes this proposed rule.
+These two ten-percent limits are policy choices, not statistical guarantees.
+The [forecasting policy proposal](../../packages/kumo-engine/test/nightly/evidence/forecasting-policy-proposal.json)
+records the formulas, saved scores, and previous limits.
+
+The saved model applies `log(1 + answer)` before Huber loss.
+The proposed raw-answer baseline therefore uses a different objective.
+The constant for the encoded objective has test error `0.525629` and remains diagnostic evidence.
+Reviewers must assess the proposed raw-answer comparator and both limits before reference approval.
+The initial zero-baseline failure remains in the campaign evidence.
+Other task limits and prediction tolerances stay unchanged.
 
 The [policy proposal](../../packages/kumo-engine/test/nightly/policy.json) also
 calibrates numerical comparisons from observed repeated, partial, and reloaded

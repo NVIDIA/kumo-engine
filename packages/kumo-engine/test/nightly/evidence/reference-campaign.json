@@ -84,9 +84,19 @@
         "atol": 0.0055
       }
     },
-    "learning_limits_unchanged": true,
+    "learning_limits_unchanged": false,
     "forecast_control_baseline": 0.5441856445482517,
-    "normal_forecast_baseline_unchanged": true
+    "normal_forecast_baseline_unchanged": true,
+    "initial_campaign_learning_limits_unchanged": true,
+    "proposed_forecasting_learning_limits": {
+      "min_normal_gain": 0.03822739835549215,
+      "max_control_drift": 0.05441856445482517
+    },
+    "forecasting_policy_proposal": {
+      "path": "forecasting-policy-proposal.json",
+      "sha256": "81585ac43d06caf5dbc0a141255f6e4712b989b9b1a55e6a9048124610fdbfea"
+    },
+    "forecasting_limit_basis": "Ten percent of each arm's own proposed baseline. Policy choices, not statistical guarantees."
   },
   "original_failures_retained": true,
   "cases": [
