@@ -12,7 +12,8 @@ import pytest
 from _snowflake_experiment_fake import FakeExperimentTracking, FakeSession
 from test_tracking_contract import CONTEXT, EVENTS, RESULT
 
-from kumo.engine._tracking import RunRecord, TrackingSession
+from kumo.engine._manifest import TrackingRef
+from kumo.engine._tracking import RunRecord, TrackingSession, tracking_ref
 from kumo.engine.trainer._run_spec import fit_spec, fitted_spec
 
 FAKED = ('__init__', 'set_experiment', 'start_run', 'end_run', 'log_params',
@@ -162,6 +163,8 @@ def test_an_existing_run_is_never_resumed(fake, taken, run_name, new, caplog):
     _replay(tracking)
 
     assert tracking.run_id == tracking.logged_run_name == new
+    assert tracking_ref(tracking) == TrackingRef(
+        platform='snowflake', run_id=new, experiment='ENTS', run_name=new)
     assert set(user.runs) == {taken, new}
     assert user.runs[taken]['params'] == {}
     assert user.runs[new]['status'] == 'FINISHED'

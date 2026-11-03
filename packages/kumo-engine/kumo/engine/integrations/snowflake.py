@@ -127,7 +127,7 @@ class SnowflakeTracking(TrackingBase):
 
     def start(self, record: RunRecord) -> None:
         self._reset()
-        self.run_id = self.logged_run_name = None
+        self.run_id = self.logged_run_name = self.experiment = None
         cls = self._module.ExperimentTracking
         tracking = getattr(cls, '_instance', None)
         if tracking is None:
@@ -143,6 +143,7 @@ class SnowflakeTracking(TrackingBase):
         experiment = tracking.set_experiment(self.experiment_name,
                                              database_name=database,
                                              schema_name=schema)
+        self.experiment = str(experiment.name)
         existing = [
             str(row['name'])
             for row in tracking._sql_client.show_runs_in_experiment(
