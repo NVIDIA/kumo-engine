@@ -846,7 +846,7 @@
           "version": "0.6.1"
         },
         {
-          "license": "Apache-2.0 OR LGPL-2.1-or-later",
+          "license": "Apache-2.0 AND (Apache-2.0 OR LGPL-2.1-or-later)",
           "name": "epserde",
           "source": "third_party/epserde/Cargo.toml",
           "source_kind": "vendored-third-party",
@@ -3410,7 +3410,7 @@
           "version": "0.6.1"
         },
         {
-          "license": "Apache-2.0 OR LGPL-2.1-or-later",
+          "license": "Apache-2.0 AND (Apache-2.0 OR LGPL-2.1-or-later)",
           "name": "epserde",
           "source": "third_party/epserde/Cargo.toml",
           "source_kind": "vendored-third-party",
@@ -5977,7 +5977,7 @@
           "version": "0.1.2"
         },
         {
-          "license": "Apache-2.0 OR LGPL-2.1-or-later",
+          "license": "Apache-2.0 AND (Apache-2.0 OR LGPL-2.1-or-later)",
           "name": "epserde",
           "source": "third_party/epserde/Cargo.toml",
           "source_kind": "vendored-third-party",
@@ -8470,7 +8470,7 @@
           "version": "0.1.2"
         },
         {
-          "license": "Apache-2.0 OR LGPL-2.1-or-later",
+          "license": "Apache-2.0 AND (Apache-2.0 OR LGPL-2.1-or-later)",
           "name": "epserde",
           "source": "third_party/epserde/Cargo.toml",
           "source_kind": "vendored-third-party",

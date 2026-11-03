@@ -25,9 +25,10 @@ impl<'a> SliceWithPos<'a> {
         }
     }
 
-    pub fn skip(&mut self, bytes: usize) {
-        self.data = &self.data[bytes..];
+    pub fn skip(&mut self, bytes: usize) -> deser::Result<()> {
+        self.data = self.data.get(bytes..).ok_or(Error::ReadError)?;
         self.pos += bytes;
+        Ok(())
     }
 }
 
@@ -56,7 +57,7 @@ impl ReadWithPos for SliceWithPos<'_> {
     fn align<T: MaxSizeOf>(&mut self) -> deser::Result<()> {
         // Skip bytes as needed
         let padding = crate::pad_align_to(self.pos, T::max_size_of());
-        self.skip(padding);
+        self.skip(padding)?;
         // Check that the ptr is indeed aligned
         if self.data.as_ptr() as usize % T::max_size_of() != 0 {
             Err(Error::AlignmentError)

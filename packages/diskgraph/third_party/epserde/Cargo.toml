@@ -10,7 +10,7 @@ version = "0.8.0"
 edition = "2021"
 autoexamples = false
 repository = "https://github.com/vigna/epserde-rs/"
-license = "Apache-2.0 OR LGPL-2.1-or-later"
+license = "Apache-2.0 AND (Apache-2.0 OR LGPL-2.1-or-later)"
 readme = "README.md"
 keywords = ["serialization", "zero-copy", "mmap"]
 
@@ -35,3 +35,6 @@ derive = ["epserde-derive"]
 std = ["alloc", "mem_dbg/std"]
 alloc = []
 mmap = ["mmap-rs", "mem_dbg/mmap-rs"]
+
+[dev-dependencies]
+tempfile = "3"

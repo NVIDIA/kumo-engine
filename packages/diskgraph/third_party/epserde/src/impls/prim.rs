@@ -80,11 +80,11 @@ macro_rules! impl_prim_ser_des {
                 backend: &mut SliceWithPos<'a>,
             ) -> deser::Result<Self::DeserType<'a>> {
                 let res = <$ty>::from_ne_bytes(
-                        backend.data[..size_of::<$ty>()]
+                        backend.data.get(..size_of::<$ty>()).ok_or(deser::Error::ReadError)?
                             .try_into()
                             .unwrap());
 
-                backend.skip(size_of::<$ty>());
+                backend.skip(size_of::<$ty>())?;
                 Ok(res)
             }
         }
@@ -122,11 +122,11 @@ macro_rules! impl_nonzero_ser_des {
                 backend: &mut SliceWithPos<'a>,
             ) -> deser::Result<Self::DeserType<'a>> {
                 let res = <$ty as NonZero>::BaseType::from_ne_bytes(
-                        backend.data[..size_of::<$ty>()]
+                        backend.data.get(..size_of::<$ty>()).ok_or(deser::Error::ReadError)?
                             .try_into()
                             .unwrap()).try_into().unwrap();
 
-                backend.skip(size_of::<$ty>());
+                backend.skip(size_of::<$ty>())?;
                 Ok(res)
             }
         }
@@ -189,8 +189,8 @@ impl DeserializeInner for bool {
     fn _deserialize_eps_inner<'a>(
         backend: &mut SliceWithPos<'a>,
     ) -> deser::Result<Self::DeserType<'a>> {
-        let res = backend.data[0] != 0;
-        backend.skip(1);
+        let res = *backend.data.first().ok_or(deser::Error::ReadError)? != 0;
+        backend.skip(1)?;
         Ok(res)
     }
 }
@@ -358,7 +358,7 @@ impl<T: DeserializeInner> DeserializeInner for Option<T> {
         match tag {
             0 => Ok(None),
             1 => Ok(Some(T::_deserialize_eps_inner(backend)?)),
-            _ => Err(deser::Error::InvalidTag(backend.data[0] as usize)),
+            _ => Err(deser::Error::InvalidTag(tag as usize)),
         }
     }
 }

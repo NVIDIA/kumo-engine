@@ -6730,7 +6730,7 @@ enum-as-inner 0.6.1
 ------------------------------------------------------------------------------
 epserde 0.8.0
 ------------------------------------------------------------------------------
-  License       : Apache-2.0 OR LGPL-2.1-or-later
+  License       : Apache-2.0 AND (Apache-2.0 OR LGPL-2.1-or-later)
   Distributed in: bin/ingest.exe, diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
   Copyright     : Copyright (C) 1991, 1999 Free Software Foundation, Inc
                   copyright law: that is to say, a work containing the Library or a

@@ -118,8 +118,8 @@ use epserde::prelude::*;
 let s = [0_usize; 1000];
 
 // Serialize it
-let mut file = std::env::temp_dir();
-file.push("serialized0");
+let directory = tempfile::tempdir()?;
+let file = directory.path().join("serialized0");
 s.serialize(&mut std::fs::File::create(&file)?)?;
 // Load the serialized form in a buffer
 let b = std::fs::read(&file)?;
@@ -189,8 +189,8 @@ use epserde::prelude::*;
 let s = vec![0; 1000];
 
 // Serialize it
-let mut file = std::env::temp_dir();
-file.push("serialized1");
+let directory = tempfile::tempdir()?;
+let file = directory.path().join("serialized1");
 s.serialize(&mut std::fs::File::create(&file)?)?;
 // Load the serialized form in a buffer
 let b = std::fs::read(&file)?;
@@ -248,8 +248,8 @@ struct Data {
 let s = vec![Data { foo: 0, bar: 0 }; 1000];
 
 // Serialize it
-let mut file = std::env::temp_dir();
-file.push("serialized2");
+let directory = tempfile::tempdir()?;
+let file = directory.path().join("serialized2");
 s.serialize(&mut std::fs::File::create(&file)?)?;
 // Load the serialized form in a buffer
 let b = std::fs::read(&file)?;
@@ -299,8 +299,8 @@ struct MyStruct<A> {
 // Create a structure where A is a Vec<isize>
 let s: MyStruct<Vec<isize>> = MyStruct { id: 0, data: vec![0, 1, 2, 3] };
 // Serialize it
-let mut file = std::env::temp_dir();
-file.push("serialized3");
+let directory = tempfile::tempdir()?;
+let file = directory.path().join("serialized3");
 s.store(&file);
 // Load the serialized form in a buffer
 let b = std::fs::read(&file)?;
@@ -358,8 +358,8 @@ type MyStruct = MyStructParam<Vec<isize>>;
 // Create a structure where A is a Vec<isize>
 let s = MyStruct { id: 0, data: vec![0, 1, 2, 3] };
 // Serialize it
-let mut file = std::env::temp_dir();
-file.push("serialized4");
+let directory = tempfile::tempdir()?;
+let file = directory.path().join("serialized4");
 s.store(&file);
 // Load the serialized form in a buffer
 let b = std::fs::read(&file)?;
@@ -397,8 +397,8 @@ struct MyStruct<A: DeepCopy + 'static>(Vec<A>);
 // Create a structure where A is a Vec<isize>
 let s: MyStruct<Vec<isize>> = MyStruct(vec![vec![0, 1, 2, 3]]);
 // Serialize it
-let mut file = std::env::temp_dir();
-file.push("serialized5");
+let directory = tempfile::tempdir()?;
+let file = directory.path().join("serialized5");
 s.store(&file);
 // Load the serialized form in a buffer
 let b = std::fs::read(&file)?;
@@ -435,8 +435,8 @@ struct MyStruct<A: ZeroCopy> {
 // Create a structure where A is a Vec<isize>
 let s: MyStruct<i32> = MyStruct { data: 0 };
 // Serialize it
-let mut file = std::env::temp_dir();
-file.push("serialized6");
+let directory = tempfile::tempdir()?;
+let file = directory.path().join("serialized6");
 s.store(&file);
 // Load the serialized form in a buffer
 let b = std::fs::read(&file)?;
@@ -474,8 +474,8 @@ enum Enum<T=Vec<usize>> {
 // This enum has T=Vec<i32> by type inference
 let e = Enum::B(vec![0, 1, 2, 3]);
 // Serialize it
-let mut file = std::env::temp_dir();
-file.push("serialized7");
+let directory = tempfile::tempdir()?;
+let file = directory.path().join("serialized7");
 e.store(&file);
 // Deserializing using just Enum will fail, as the type parameter
 // by default is Vec<usize>
@@ -499,8 +499,8 @@ let v = vec![0, 1, 2, 3];
 // This is a slice
 let s: &[i32] = v.as_ref();
 // Serialize it
-let mut file = std::env::temp_dir();
-file.push("serialized8");
+let directory = tempfile::tempdir()?;
+let file = directory.path().join("serialized8");
 s.store(&file);
 // Load the serialized form in a buffer
 let b = std::fs::read(&file)?;
@@ -551,8 +551,8 @@ let v = vec![0, 1, 2, 3];
 // This is an iterator
 let i: Iter<'_, i32> = v.iter();
 // Serialize it by wrapping it in a SerIter
-let mut file = std::env::temp_dir();
-file.push("serialized9");
+let directory = tempfile::tempdir()?;
+let file = directory.path().join("serialized9");
 SerIter::from(i).store(&file);
 // Load the serialized form in a buffer
 let b = std::fs::read(&file)?;

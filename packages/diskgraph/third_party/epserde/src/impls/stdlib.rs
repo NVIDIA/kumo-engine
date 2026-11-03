@@ -381,10 +381,10 @@ impl<B: DeserializeInner, C: DeserializeInner> DeserializeInner for core::ops::C
     fn _deserialize_full_inner(backend: &mut impl ReadWithPos) -> deser::Result<Self> {
         let tag = u8::_deserialize_full_inner(backend)?;
         match tag {
-            1 => Ok(core::ops::ControlFlow::Break(B::_deserialize_full_inner(
+            0 => Ok(core::ops::ControlFlow::Break(B::_deserialize_full_inner(
                 backend,
             )?)),
-            2 => Ok(core::ops::ControlFlow::Continue(
+            1 => Ok(core::ops::ControlFlow::Continue(
                 C::_deserialize_full_inner(backend)?,
             )),
             _ => Err(deser::Error::InvalidTag(tag as usize)),
@@ -400,10 +400,10 @@ impl<B: DeserializeInner, C: DeserializeInner> DeserializeInner for core::ops::C
     ) -> deser::Result<Self::DeserType<'a>> {
         let tag = u8::_deserialize_full_inner(backend)?;
         match tag {
-            1 => Ok(core::ops::ControlFlow::Break(B::_deserialize_eps_inner(
+            0 => Ok(core::ops::ControlFlow::Break(B::_deserialize_eps_inner(
                 backend,
             )?)),
-            2 => Ok(core::ops::ControlFlow::Continue(C::_deserialize_eps_inner(
+            1 => Ok(core::ops::ControlFlow::Continue(C::_deserialize_eps_inner(
                 backend,
             )?)),
             _ => Err(deser::Error::InvalidTag(tag as usize)),

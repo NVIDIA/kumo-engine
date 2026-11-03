@@ -5458,12 +5458,12 @@
         "Copyright (C) 1991, 1999 Free Software Foundation, Inc",
         "copyright law: that is to say, a work containing the Library or a"
       ],
-      "declared_expression": "Apache-2.0 OR LGPL-2.1-or-later",
+      "declared_expression": "Apache-2.0 AND (Apache-2.0 OR LGPL-2.1-or-later)",
       "ecosystem": "rust",
       "elected_licenses": [
         "Apache-2.0"
       ],
-      "expression_source": "packages/diskgraph/third_party/epserde/LICENSE-Apache-2.0",
+      "expression_source": "third_party/epserde/Cargo.toml",
       "files": [
         {
           "path": "third_party/epserde/LICENSE-Apache-2.0",
@@ -5477,7 +5477,7 @@
         }
       ],
       "id": "rust:epserde@0.8.0",
-      "license_expression": "Apache-2.0 OR LGPL-2.1-or-later",
+      "license_expression": "Apache-2.0 AND (Apache-2.0 OR LGPL-2.1-or-later)",
       "name": "epserde",
       "origin": "https://github.com/vigna/epserde-rs/",
       "version": "0.8.0",

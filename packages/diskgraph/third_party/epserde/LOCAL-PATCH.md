@@ -14,6 +14,8 @@ The manifest uses the compact upstream form. Standalone example programs and the
 
 Trailing whitespace is removed from the copied README and deserialization documentation.
 
-No serialization fields, type hashes, format headers, or serialization algorithms change. The index compatibility tests use eight frozen files written with the unpatched release dependencies. They test both hash implementations and all four key storage shapes. They compare lookup results through all three loaders and compare the saved bytes.
+Serialized fields, type hashes, writer tags, and format headers stay unchanged. The readers now check bounds and decode the existing ControlFlow writer tags correctly. The index compatibility tests use eight frozen files written with the unpatched release dependencies. They test both hash implementations and all four key storage shapes. They compare lookup results through all three loaders and compare the saved bytes.
 
-The upstream copyright and license files remain. New code carries its own Apache-2.0 header. This is a local backport for review, not an upstream release.
+The backport also checks truncated inputs, uses owned zeroed storage during loading, and corrects ControlFlow reader tags. Standalone tests run explicitly in CI. Documentation tests use isolated temporary directories.
+
+The package license includes the Apache-2.0-only alignment module alongside the upstream dual license. The upstream copyright and license files remain. New code carries its own Apache-2.0 header. This is a local backport for review, not an upstream release.

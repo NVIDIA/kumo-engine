@@ -75,24 +75,15 @@ pub trait Deserialize: DeserializeInner {
         }
         let file_len = path.as_ref().metadata()?.len() as usize;
         let mut file = std::fs::File::open(path)?;
-        // Round up to u128 size
+        // Round up to the aligned storage size
         let capacity = file_len + crate::pad_align_to(file_len, align_to);
 
         let mut uninit: MaybeUninit<MemCase<<Self as DeserializeInner>::DeserType<'_>>> =
             MaybeUninit::uninit();
         let ptr = uninit.as_mut_ptr();
 
-        // SAFETY: the entire vector will be filled with data read from the file,
-        // or with zeroes if the file is shorter than the vector.
-        #[allow(invalid_value)]
-        let mut aligned_vec = unsafe {
-            <Vec<MemoryAlignment>>::from_raw_parts(
-                std::alloc::alloc(std::alloc::Layout::from_size_align(capacity, align_to)?)
-                    as *mut MemoryAlignment,
-                capacity / align_to,
-                capacity / align_to,
-            )
-        };
+        // Rust owns allocation and initializes every aligned storage element.
+        let mut aligned_vec = vec![MemoryAlignment::default(); capacity / align_to];
 
         let bytes = unsafe {
             core::slice::from_raw_parts_mut(aligned_vec.as_mut_ptr() as *mut u8, capacity)
@@ -103,16 +94,18 @@ pub trait Deserialize: DeserializeInner {
         // for bit vectors and full-vector initialization.
         bytes[file_len..].fill(0);
 
-        // SAFETY: the vector is aligned to 16 bytes.
+        // The vector uses 64-byte aligned storage.
         let backend = MemBackend::Memory(aligned_vec.into_boxed_slice());
 
-        // store the backend inside the MemCase
+        // Keep ownership local until deserialization succeeds, so errors drop it.
+        let mem = backend.as_ref().unwrap();
+        // SAFETY: the boxed allocation stays at the same address when backend
+        // moves into MemCase. On error, backend is still owned and dropped here.
+        let mem = unsafe { core::slice::from_raw_parts(mem.as_ptr(), mem.len()) };
+        let s = Self::deserialize_eps(&mem[..file_len])?;
         unsafe {
             addr_of_mut!((*ptr).1).write(backend);
         }
-        // deserialize the data structure
-        let mem = unsafe { (*ptr).1.as_ref().unwrap() };
-        let s = Self::deserialize_eps(mem)?;
         // write the deserialized struct in the memcase
         unsafe {
             addr_of_mut!((*ptr).0).write(s);
@@ -153,13 +146,14 @@ pub trait Deserialize: DeserializeInner {
 
         let backend = MemBackend::Mmap(mmap.make_read_only().map_err(|(_, err)| err)?);
 
-        // store the backend inside the MemCase
+        let mem = backend.as_ref().unwrap();
+        // SAFETY: moving the mapping into MemCase preserves its address.
+        // On deserialization failure, the local backend releases the mapping.
+        let mem = unsafe { core::slice::from_raw_parts(mem.as_ptr(), file_len) };
+        let s = Self::deserialize_eps(mem)?;
         unsafe {
             addr_of_mut!((*ptr).1).write(backend);
         }
-        // deserialize the data structure
-        let mem = unsafe { (*ptr).1.as_ref().unwrap() };
-        let s = Self::deserialize_eps(mem)?;
         // write the deserialized struct in the MemCase
         unsafe {
             addr_of_mut!((*ptr).0).write(s);
@@ -196,14 +190,15 @@ pub trait Deserialize: DeserializeInner {
                 .map()?
         };
 
-        // store the backend inside the MemCase
+        let backend = MemBackend::Mmap(mmap);
+        let mem = backend.as_ref().unwrap();
+        // SAFETY: moving the mapping into MemCase preserves its address.
+        // On deserialization failure, the local backend releases the mapping.
+        let mem = unsafe { core::slice::from_raw_parts(mem.as_ptr(), mem.len()) };
+        let s = Self::deserialize_eps(mem)?;
         unsafe {
-            addr_of_mut!((*ptr).1).write(MemBackend::Mmap(mmap));
+            addr_of_mut!((*ptr).1).write(backend);
         }
-
-        let mmap = unsafe { (*ptr).1.as_ref().unwrap() };
-        // deserialize the data structure
-        let s = Self::deserialize_eps(mmap)?;
         // write the deserialized struct in the MemCase
         unsafe {
             addr_of_mut!((*ptr).0).write(s);

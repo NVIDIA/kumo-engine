@@ -113,11 +113,11 @@ impl<T: ZeroCopy + DeserializeInner, const N: usize> DeserializeHelper<Zero> for
     ) -> deser::Result<<Self as DeserializeInner>::DeserType<'a>> {
         backend.align::<T>()?;
         let bytes = std::mem::size_of::<[T; N]>();
-        let (pre, data, after) = unsafe { backend.data[..bytes].align_to::<[T; N]>() };
+        let (pre, data, after) = unsafe { backend.data.get(..bytes).ok_or(deser::Error::ReadError)?.align_to::<[T; N]>() };
         debug_assert!(pre.is_empty());
         debug_assert!(after.is_empty());
         let res = &data[0];
-        backend.skip(bytes);
+        backend.skip(bytes)?;
         Ok(res)
     }
 }

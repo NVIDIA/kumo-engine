@@ -78,11 +78,11 @@ pub fn deserialize_eps_zero<'a, T: ZeroCopy>(
         return Ok(unsafe { MaybeUninit::uninit().assume_init() });
     }
     backend.align::<T>()?;
-    let (pre, data, after) = unsafe { backend.data[..bytes].align_to::<T>() };
+    let (pre, data, after) = unsafe { backend.data.get(..bytes).ok_or(deser::Error::ReadError)?.align_to::<T>() };
     debug_assert!(pre.is_empty());
     debug_assert!(after.is_empty());
     let res = &data[0];
-    backend.skip(bytes);
+    backend.skip(bytes)?;
     Ok(res)
 }
 
@@ -92,12 +92,12 @@ pub fn deserialize_eps_slice_zero<'a, T: ZeroCopy>(
     backend: &mut SliceWithPos<'a>,
 ) -> deser::Result<&'a [T]> {
     let len = usize::_deserialize_full_inner(backend)?;
-    let bytes = len * core::mem::size_of::<T>();
+    let bytes = len.checked_mul(core::mem::size_of::<T>()).ok_or(deser::Error::ReadError)?;
     backend.align::<T>()?;
-    let (pre, data, after) = unsafe { backend.data[..bytes].align_to::<T>() };
+    let (pre, data, after) = unsafe { backend.data.get(..bytes).ok_or(deser::Error::ReadError)?.align_to::<T>() };
     debug_assert!(pre.is_empty());
     debug_assert!(after.is_empty());
-    backend.skip(bytes);
+    backend.skip(bytes)?;
     Ok(data)
 }
 
