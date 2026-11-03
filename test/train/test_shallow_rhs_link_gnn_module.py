@@ -5,7 +5,7 @@
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import PropertyMock, patch
+from unittest.mock import Mock, PropertyMock, patch
 
 import kumo_core.modeling.context as modeling_context
 import pandas as pd
@@ -184,6 +184,22 @@ def test_ttng_rhs_temporal_validity_intersects_canonical_ids() -> None:
 
     assert valid is not None
     assert valid.tolist() == [2, 4]
+
+
+def test_temporal_batch_takes_valid_rhs_at_its_earliest_anchor() -> None:
+    model = _rhs_lookup_model(_ttng_rhs_index(['a', 'b', 'c']))
+    lp_train_table = SimpleNamespace(
+        valid_rhs_idx_dict={},
+        get_valid_rhs_idx=Mock(return_value=torch.tensor([0, 1, 2])),
+    )
+    model._trainer = SimpleNamespace(datamodule=SimpleNamespace(
+        lp_train_table=lp_train_table))
+    batch = HeteroData()
+    batch['LHS'].seed_time = torch.tensor([1_500, 1_250, 1_999])
+
+    model._get_valid_rhs_idx_for_batch(batch)
+
+    lp_train_table.get_valid_rhs_idx.assert_called_once_with(1_250)
 
 
 def test_evaluation_end_restores_canonical_rhs_features_for_training() -> None:

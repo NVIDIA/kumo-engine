@@ -110,7 +110,7 @@ def generate_batch_pred_table_via_diskgraph(
         raise RuntimeError('diskgraph index path is required')
 
     with kumo_timing("batch_pred_table.create_plan_compiler"):
-        compiler = DiskGraphPlanCompiler()
+        compiler = DiskGraphPlanCompiler(index_path=index_path)
 
     # Determine execution mode
     if task_type == core_types.TaskType.FORECASTING:
@@ -756,7 +756,7 @@ def generate_batch_pred_table_via_diskgraph_ttng(
     if not index_path:
         raise RuntimeError('diskgraph index path is required')
 
-    compiler = DiskGraphPlanCompiler()
+    compiler = DiskGraphPlanCompiler(index_path=index_path)
 
     if task_type == core_types.TaskType.FORECASTING:
         return _execute_forecasting_ttng(
@@ -804,6 +804,7 @@ def _execute_node_prediction_ttng(
     # Node-pred: no lp_resolution; tt-ingest synthesizes ENTITY1 -> entity_node_id.
     plan_json = build_ttng_predict_plan(
         query,
+        index_path=index_path,
         task_type=task_type,
         graph=graph,
         timestamps=timestamps,
@@ -927,6 +928,7 @@ def _execute_link_prediction_ttng(
 
     lhs_plan = build_ttng_predict_plan(
         original_query,
+        index_path=index_path,
         task_type=task_type,
         graph=graph,
         timestamps=timestamps,
@@ -1141,6 +1143,7 @@ def _stream_to_parquet_ttng(
 def build_ttng_predict_plan(
     query: ValidatedPredictiveQuery,
     *,
+    index_path: str,
     task_type: core_types.TaskType,
     graph: Graph,
     timestamps: List[int],
@@ -1157,7 +1160,7 @@ def build_ttng_predict_plan(
     from diskgraph import DiskGraphPlanCompiler
     from kumo_core.training.table import apply_reference_resolution
 
-    compiler = DiskGraphPlanCompiler()
+    compiler = DiskGraphPlanCompiler(index_path=index_path)
     tt_str = task_type.value
     is_link_pred = bool(getattr(task_type, 'is_link_pred', False))
 

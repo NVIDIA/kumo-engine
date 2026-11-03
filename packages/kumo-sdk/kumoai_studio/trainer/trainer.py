@@ -28,6 +28,7 @@ from kumoapi.jobs import (
     TrainingJobResource,
 )
 from kumoapi.model_plan import ModelPlan
+from kumoapi.typing import TimestampPrecision
 
 from kumoai_studio.artifact_export.config import OutputConfig
 from kumoai_studio.backend import TrainingBackend, cloud_backend
@@ -60,6 +61,19 @@ from kumoai_studio.trainer.util import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _training_precision(training_job_id: str,
+                        project_id: str) -> TimestampPrecision:
+    r"""The clock of the snapshot a training job ran on (seconds when the job
+    recorded none).
+    """
+    job = cloud_backend().training.get(training_job_id, project_id=project_id)
+    snapshot_id = job.config.graph_snapshot_id
+    if snapshot_id is None:
+        return 'seconds'
+    return cloud_backend().graph.get_snapshot_precision(
+        snapshot_id, project_id=project_id)
 
 
 def _active_generated_table_snapshot(
@@ -578,7 +592,12 @@ class Trainer:
         graph_snapshot_id = _active_generated_table_snapshot(
             graph, prediction_table_api, pred_table_job_id)
         if graph_snapshot_id is None:
-            graph_snapshot_id = graph.snapshot(non_blocking=non_blocking)
+            # Predict in the clock the model was trained on, also from a new
+            # session whose graph has no snapshot yet.
+            graph_snapshot_id = graph.snapshot(
+                non_blocking=non_blocking,
+                timestamp_precision=_training_precision(
+                    training_job_id, project_id))
         # Remove to resolve https://github.com/kumo-ai/kumo/issues/24250
         # from kumoai_studio.pquery.predictive_query import PredictiveQuery
         # pquery = PredictiveQuery.load_from_training_job(training_job_id)

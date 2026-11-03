@@ -26,4 +26,5 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+tempfile = "3"
 tracing-subscriber = { workspace = true }

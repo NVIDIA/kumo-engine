@@ -248,8 +248,11 @@ class Workspace:
     """The few Databricks REST calls a deploy needs, with a personal access token."""
 
     def __init__(self, host: str, token: str) -> None:
-        self.host = host if host.startswith('http') else f'https://{host}'
-        self.host = self.host.rstrip('/')
+        if '://' not in host:
+            host = f'https://{host}'
+        if not host.startswith('https://'):
+            raise SystemExit(f'Refusing a non-https Databricks host (the token would go in clear): {host}')
+        self.host = host.rstrip('/')
         self.token = token
 
     def api(self, method: str, path: str, body: dict | None = None,

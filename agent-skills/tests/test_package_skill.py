@@ -301,3 +301,10 @@ def test_archive_is_reproducible(tmp_path: Path) -> None:
     first = package_skill.archive(tmp_path / 'a')
     second = package_skill.archive(tmp_path / 'b')
     assert [z.read_bytes() for z in first] == [z.read_bytes() for z in second]
+
+
+def test_workspace_requires_https() -> None:
+    assert package_skill.Workspace('dbc.example.com', 't').host == 'https://dbc.example.com'
+    assert package_skill.Workspace('https://dbc.example.com/', 't').host == 'https://dbc.example.com'
+    with pytest.raises(SystemExit):
+        package_skill.Workspace('http://dbc.example.com', 't')

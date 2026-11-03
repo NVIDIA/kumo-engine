@@ -89,6 +89,8 @@ class MetrLABenchmarkingDataset(BenchmarkingDataset):
         total = test_end - dataset_start
         train_end = (dataset_start + total * 0.70).ceil("5min")
         val_end = (dataset_start + total * 0.80).ceil("5min")
+        assert isinstance(train_end, pd.Timestamp)
+        assert isinstance(val_end, pd.Timestamp)
         return dataset_start, train_end, val_end, test_end
 
     # -- Single-table benchmarks --------------------------------------
