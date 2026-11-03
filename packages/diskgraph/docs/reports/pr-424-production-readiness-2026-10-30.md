@@ -11,6 +11,11 @@ The candidate now incorporates Engine `main` through `567f6cab`, including the
 extracted native runtime and timestamp clock changes. The October 30 findings
 below remain the historical reproduction record; this follow-up tracks fixes.
 
+At correctness head `d6057381`, the [hosted Linux CI run](https://github.com/NVIDIA/kumo-engine/actions/runs/41696146582)
+passes ordinary Rust, strict native I/O (ten checks without skips), Clippy,
+candidate-wheel build and DiskGraph Python checks. The macOS wheel, explicit
+GPU backend tasks and subsequent coverage-head CI gates are still pending.
+
 - Cache cleanup now relinquishes reservation ownership once. Native runtime and
   cache state are process-owned, including fork during initialization, locked
   cache state, populated cache and inherited in-flight work. The host index and
@@ -30,13 +35,35 @@ below remain the historical reproduction record; this follow-up tracks fixes.
   across independently generated fixtures, so selecting their first rows does
   not establish equivalent prediction inputs. The full 24-fit matrix selects
   canonical entity/time keys, retains each backend's training/reload checks and
-  compares predictions using identical saved model and snapshot artifacts across
-  backends, at absolute tolerance 1e-6. That matrix, GPU training and real macOS
-  packaging remain pending.
-- The updated native wrapper and Core fork lifecycle checks pass 21 tests with
+  compares predictions using identical saved model, snapshot and input artifacts
+  across backends at absolute tolerance 1e-6. All 24 CPU fits pass (eight pytest
+  cases, 199.61 seconds): binary, multiclass, multilabel, multilabel ranking,
+  regression, forecasting, static links and temporal links. Each fit completes
+  at least two optimizer steps; predictions cover eight entities, all classes
+  or RHS items, and all 12 forecast horizons. Own-model repeat/reload parity and
+  shared-model backend parity pass. The matrix does not measure per-fit native
+  I/O counters, projection payload size, GPU behavior or large-graph throughput.
+- The updated native wrapper and Core fork lifecycle checks pass 22 tests with
   two platform-specific skips, including a warmed dataset reused after fork.
   Existing runtime end-to-end tests pass 44 tests, and related Core tests pass
   155 tests.
+
+The 24-fit wheel SHA-256 is
+`8e6c715ae213c3ecf2ab7356cdb494173e2478472e16215cbe5319dac7f7bf0a`.
+The final wheel adds strict rejection of invalid UTF-8 backend configuration;
+normal backend strings are unchanged. Its SHA-256 is
+`36632960b79540e46e3a0602c0c8fa7ec74d9b5b5e57c4ccba7874c5a9293670`,
+and its focused native/Core suite passes 22 tests with two non-Linux skips.
+GPU training and the real macOS wheel gate remain pending.
+
+Run the CPU matrix from the repository root, with this checkout's source
+packages and CPU dependencies installed plus the candidate native wheel:
+
+```bash
+DG_TEST_NATIVE_TASKS=1 python -m pytest -q -s -c /dev/null \
+  --confcutdir=packages/kumo-engine/test \
+  packages/kumo-engine/test/test_native_io_tasks.py
+```
 
 The earlier fork PR's 41 failed checks all stopped at AWS credential setup,
 before tests. The development branch and replacement draft now live in
