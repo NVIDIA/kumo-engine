@@ -7,8 +7,10 @@ The source comes from the published `epserde 0.8.0` crate. The upstream commit i
 The local changes are:
 
 - Add sealed `A16` and `A64` byte storage types in `src/utils/alignment.rs`. Each type has equal size and alignment. Rust owns its allocation and deallocation.
-- Use those types in `AlignedCursor` and `MemBackend`. Remove the `maligned` dependency and the `mem_dbg/maligned` feature from both Cargo manifests.
-- Update upstream tests and examples to import the replacement types. Add tests for alignment during buffer growth.
+- Use those types in `AlignedCursor` and `MemBackend`. Remove the `maligned` dependency and the `mem_dbg/maligned` feature from the Cargo manifest.
+- Update upstream tests to import the replacement types. Add tests for alignment during buffer growth.
+
+The manifest uses the compact upstream form. Standalone example programs and the duplicate manifest are omitted. All integration tests and documentation tests remain.
 
 Trailing whitespace is removed from the copied README and deserialization documentation.
 
