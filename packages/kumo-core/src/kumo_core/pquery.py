@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from dataclasses import replace
@@ -892,6 +893,9 @@ def _split_options(
     return split, family
 
 
+_SECONDS_FRACTION = re.compile(r"[.,](\d+)")
+
+
 def _timestamp_ns(value: Any) -> int:
     if isinstance(value, bool):
         raise PredictiveQueryPlanError("boolean timestamp statistic is invalid")
@@ -913,7 +917,11 @@ def _timestamp_ns(value: Any) -> int:
             f"invalid timestamp statistic {value!r}") from error
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return int(parsed.timestamp() * 1_000_000_000)
+    nanoseconds = Timestamp(parsed).value
+    fraction = _SECONDS_FRACTION.search(rendered)
+    if fraction and len(fraction.group(1)) > 6:  # datetime keeps only 6 digits
+        nanoseconds += int(fraction.group(1)[6:9].ljust(3, "0"))
+    return nanoseconds
 
 
 def _stat_value(stats: Mapping[str, Any], column: str, kind: str) -> Any:
