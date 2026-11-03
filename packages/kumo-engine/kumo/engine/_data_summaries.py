@@ -262,11 +262,10 @@ def table_details(index: Path, snapshot_id: Optional[str] = None) -> Details:
                   'tables') or ()}
     counts = {name: rows.get(table.get('name'), 0)
               for name, table in tables.items()}
-    snapshot = {} if snapshot_id is None else {snapshot_id: (
-        {'snapshot id': {'type': snapshot_id},
-         **{name: {'type': f'{count:,} rows'}
-            for name, count in counts.items()}},
-        {'tables': len(tables), 'rows': sum(counts.values())})}
+    snapshot = {} if snapshot_id is None else {snapshot_id: ({}, {
+        'snapshot': snapshot_id, 'tables': len(tables),
+        'rows': sum(counts.values()),
+        **{f'{name} rows': count for name, count in counts.items()}})}
     return {**snapshot, **{
         name: (
             {column['name']: {'stype': column.get('semantic_type'),
