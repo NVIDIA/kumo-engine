@@ -21,6 +21,7 @@ from kumo_core.diskgraph.metadata import normalize_diskgraph_edge_type
 from kumo_core.diskgraph.runtime_adapter import (
     _expand_lp_exclude,
     attach_tensor_frames,
+    engine_int64_to_ns,
     runtime_batch_to_hetero,
 )
 from kumo_core.encoders.target.categorical import CategoricalTargetEncoder
@@ -1395,6 +1396,16 @@ def test_seed_time_ms_unit_scaled_to_ns() -> None:
                                            task_type="temporal_link_prediction",
                                            index_np_time_unit="ms")
     assert hetero["train_table"].seed_time.tolist() == [1700 * 1_000_000]
+
+
+@pytest.mark.parametrize("unit,tick_ns", [
+    ("h", 3_600_000_000_000),
+    ("D", 86_400_000_000_000),
+])
+def test_hours_and_days_ticks_scale_to_ns(unit, tick_ns) -> None:
+    ticks = pa.array([2, -1, None], type=pa.int64())
+    assert engine_int64_to_ns(
+        ticks, unit).to_pylist() == [2 * tick_ns, -tick_ns, None]
 
 
 def test_neighbor_node_time_normalized_to_ns_int64_seconds() -> None:

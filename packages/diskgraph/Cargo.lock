@@ -1828,14 +1828,16 @@ dependencies = [
  "diskgraph-index",
  "diskgraph-ingest",
  "diskgraph-rowpack",
+ "diskgraph-runtime",
  "diskgraph-train-table",
- "memmap2",
+ "gxhash",
  "parquet",
  "pyo3",
  "pyo3-build-config",
  "pyo3-log",
  "rand 0.8.6",
  "rayon",
+ "regex",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1858,6 +1860,7 @@ dependencies = [
  "base64 0.22.1",
  "bincode",
  "chrono",
+ "diskgraph-core",
  "fast-float2",
  "gxhash",
  "half",
@@ -1870,6 +1873,23 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "uuid-simd",
+]
+
+[[package]]
+name = "diskgraph-runtime"
+version = "0.1.0"
+dependencies = [
+ "diskgraph-core",
+ "diskgraph-engine",
+ "diskgraph-index",
+ "diskgraph-train-table",
+ "memmap2",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]

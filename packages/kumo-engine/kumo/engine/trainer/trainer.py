@@ -34,6 +34,7 @@ from kumo_core.pquery import (
     resolve_query_forecast,
 )
 from kumo_core.train.artifact_manifest import PredictionSelectionRef
+from kumo_core.training.config import FitMode
 from kumo_core.training.explain_aggregation import aggregate_subgraph_features
 from kumo_core.training.workflow import TrainingWorkflowRequest
 from kumo_core.types import ExplainMethod, PredictionArtifactType
@@ -45,6 +46,7 @@ from kumoapi.plugin import (
     SourceConnector,
 )
 from kumoapi.train import TrainingStage
+from kumoapi.typing import check_prediction_precision
 from typing_extensions import Self
 
 from kumo.engine._embeddings import (
@@ -54,7 +56,7 @@ from kumo.engine._embeddings import (
 )
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
 from kumo.engine.connector.base import Connector
-from kumo.engine.graph import GraphSnapshot
+from kumo.engine.graph import GraphSnapshot, index_timestamp_precision
 from kumo.engine.pquery.prediction_table import PredictionTable
 from kumo.engine.pquery.training_table import TrainingTable
 from kumo.engine.trainer._spec import (
@@ -77,11 +79,12 @@ class TrainingResult:
     `published_model` records the destination's assigned name, version and URI
     when `fit()` exports the bundle. It is `None` without an export.
 
-    `holdout_path` is the holdout Parquet file written by `fit()`, or `None`
-    when the task produced none (also for results of `Trainer.load`). It is
-    not part of the published model bundle. The file is capped at 1 GiB in
-    memory; `holdout_truncated` is true when rows were dropped to fit, and
-    `None` when the size record could not be read.
+    `holdout_path` is the published model's holdout Parquet file written by
+    `fit()`, or `None` when it has none (no holdout task, a model refit on the
+    full data, or results of `Trainer.load`). It is not part of the published
+    model bundle. The file is capped at 1 GiB in memory; `holdout_truncated` is
+    true when rows were dropped to fit, and `None` when the size record could
+    not be read.
     """
 
     metrics: Dict[str, float]
@@ -187,6 +190,15 @@ def _find_holdout(log_dir: str) -> tuple[Optional[Path], Optional[bool]]:
     return path, truncated
 
 
+def _published_holdout(trainer: Any) -> tuple[Optional[Path], Optional[bool]]:
+    published = trainer.published_fit_mode()
+    if published is FitMode.refit_full:
+        logger.info('The published model is refit on the full data, including '
+                    'the test split, so it has no holdout predictions.')
+        return None, False
+    return _find_holdout(trainer.get_log_dir(fit_mode=published))
+
+
 def _collect_garbage(stage: str) -> None:
     # Lightning links each trainer to its data module and model in reference
     # cycles; free a finished run now rather than at a later collection.
@@ -264,6 +276,7 @@ class Trainer:
         self._id = new_run_id()
         self._training_result: Optional[TrainingResult] = None
         self._snapshot_id: Optional[str] = None
+        self._timestamp_precision = 'seconds'
         self._training_query: Optional[str] = None
         self._training_table_generation_plan: Optional[
             TrainingTableGenerationPlan] = None
@@ -494,8 +507,8 @@ class Trainer:
                     'failed for run %s. The trained model remains available.',
                     run_id)
 
-        holdout_path, holdout_truncated = _find_holdout(
-            result.best_trainer.log_dir)
+        holdout_path, holdout_truncated = _published_holdout(
+            result.best_trainer)
         training_result = TrainingResult(
             metrics=dict(result.metrics),
             artifact_paths=dict(result.artifact_paths),
@@ -509,6 +522,7 @@ class Trainer:
             training_result,
             predictive_query=train_table.query,
             snapshot_id=snapshot.id,
+            timestamp_precision=index_timestamp_precision(snapshot.index_path),
             training_table_generation=train_table.generation_plan,
             export_config=export_config,
             model_plan=effective_plan,
@@ -520,6 +534,7 @@ class Trainer:
         *,
         predictive_query: str,
         snapshot_id: str,
+        timestamp_precision: str = 'seconds',
         training_table_generation: TrainingTableGenerationPlan,
         export_config: Optional[ModelOutputConfig],
         model_plan: Optional[ModelPlan] = None,
@@ -532,6 +547,7 @@ class Trainer:
             model_plan=effective_plan,
             snapshot_id=snapshot_id,
             training_table_generation=training_table_generation,
+            timestamp_precision=timestamp_precision,
         )
         if export_config is not None:
             spec = read_training_spec(training_result.bundle_dir)
@@ -552,6 +568,7 @@ class Trainer:
 
         self._training_result = training_result
         self._snapshot_id = snapshot_id
+        self._timestamp_precision = timestamp_precision
         self._training_query = predictive_query
         self._training_table_generation_plan = training_table_generation
 
@@ -607,6 +624,9 @@ class Trainer:
         )
         from kumo_core.types import TaskType
 
+        check_prediction_precision(
+            self._timestamp_precision,
+            index_timestamp_precision(snapshot.index_path))
         graph_config = snapshot.graph_config
         contract = prediction_query_contract(prediction_table.query,
                                              graph_config)
@@ -834,6 +854,7 @@ class Trainer:
             encoding='utf-8')) if metrics_path.is_file() else {})
         trainer = cls(plan, embedding_models, accelerator=accelerator)
         trainer._snapshot_id = spec.snapshot_id
+        trainer._timestamp_precision = spec.timestamp_precision
         trainer._training_query = spec.predictive_query
         trainer._training_table_generation_plan = from_json_dict(
             spec.training_table_generation, TrainingTableGenerationPlan)
