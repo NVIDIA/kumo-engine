@@ -324,6 +324,94 @@ def test_sample_coverage_deduplication_and_complete_graph_budget(
     assert '999' not in json.dumps(section['outputs'])
 
 
+@pytest.mark.parametrize('task',
+                         ['static_link_prediction', 'temporal_link_prediction'])
+@pytest.mark.parametrize('state', [
+    'available', 'duplicates', 'prediction_null', 'target_null', 'both_null',
+    'empty', 'many', 'long', 'too_long', 'unsafe_integer', 'safe_integer',
+    'float', 'boolean', 'null_id', 'list_id', 'dict_id', 'nonfinite',
+    'missing_id', 'missing_cols', 'invalid_cols', 'invalid_column',
+    'invalid_name', 'missing_name', 'null_name', 'scalar', 'dict',
+    'node_scalar', 'oversized', 'mismatch', 'unknown'
+])
+def test_link_output_preserves_ordered_ids_and_rejects_malformed_records(
+        tmp_path, task, state):
+    run, trial = _run(tmp_path)
+    root = Path(trial) / 'subgraph_collector/test'
+    graph = _graph()
+    graph.subgraph_store.task_type = TaskType(task)
+    save_json(graph, str(root / 'subgraph_json/0.json'))
+    node = dict(id='item-2', id_name='item_id', cols=[])
+    output = dict(task_type=task, prediction=[node,
+                                              dict(node, id='item-1')],
+                  target=[dict(node, id='observed')])
+    status = 'available'
+    if state in ('mismatch', 'unknown'):
+        output['task_type'] = 'regression' if state == 'mismatch' else None
+        status = 'invalid' if state == 'mismatch' else 'unknown'
+    elif state.endswith('_null'):
+        for key in ('prediction', 'target'):
+            if state in ('both_null', f'{key}_null'):
+                output[key] = None
+        status = 'partial'
+    elif state in ('empty', 'many', 'duplicates'):
+        output['prediction'] = [] if state == 'empty' else [
+            dict(node) for _ in range(120 if state == 'many' else 2)
+        ]
+        if state == 'empty':
+            output['target'] = []
+    elif state in ('scalar', 'dict', 'node_scalar'):
+        output['prediction'] = dict(scalar=1, dict={}, node_scalar=[1])[state]
+        status = 'invalid'
+    elif state not in ('available', 'oversized'):
+        changes = {
+            'long': ('id', '<script>\n' + 'x' * 200),
+            'too_long': ('id', 'x' * (LIMITS['string'] + 1)),
+            'unsafe_integer': ('id', 2**53),
+            'safe_integer': ('id', 2**53 - 1),
+            'float': ('id', 1.25),
+            'boolean': ('id', False),
+            'null_id': ('id', None),
+            'list_id': ('id', [1]),
+            'dict_id': ('id', {
+                'a': 1
+            }),
+            'nonfinite': ('id', float('inf')),
+            'missing_id': ('id', None),
+            'missing_cols': ('cols', None),
+            'invalid_cols': ('cols', {}),
+            'invalid_column': ('cols', [1]),
+            'invalid_name': ('id_name', 1),
+            'missing_name': ('id_name', None),
+            'null_name': ('id_name', None),
+        }
+        key, value = changes[state]
+        node[key] = value
+        if state.startswith('missing_'):
+            del node[key]
+        status = 'available' if state in (
+            'long', 'safe_integer', 'float', 'missing_name',
+            'null_name') else 'limited' if state == 'too_long' else 'invalid'
+    path = root / 'output/0.json'
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(output))
+    if state == 'oversized':
+        path.write_text(' ' * (LIMITS['artifact_bytes'] + 1))
+        status = 'limited'
+    result = build_training_payload(TrainingExplanations.load(run))
+    recorded = result['samples']['outputs']['0']
+    assert recorded['status'] == status
+    assert result['samples']['references'][0]['status'] == 'loaded'
+    if status in ('available', 'partial'):
+        for key in ('prediction', 'target'):
+            assert recorded[key] == (None if output[key] is None else [
+                dict(id=item['id'], id_name=item.get('id_name'))
+                for item in output[key]
+            ])
+    else:
+        assert 'prediction' not in recorded and 'target' not in recorded
+
+
 @pytest.mark.parametrize('kind', ['gradient', 'sample'])
 def test_oversized_artifacts_are_not_opened_by_facade(tmp_path, monkeypatch,
                                                       kind):

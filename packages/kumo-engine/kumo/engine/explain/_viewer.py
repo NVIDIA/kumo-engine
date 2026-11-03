@@ -346,7 +346,18 @@ sampleView.append(el('h4','Prediction and observed target'));
 state(sampleView,output,'Output context');
 if(output.status==='available'||output.status==='partial'){
 const classes=output.task_type==='multiclass_classification'||output.task_type==='multilabel_classification';
-if(classes){
+if(output.task_type==='static_link_prediction'||output.task_type==='temporal_link_prediction'){
+note(sampleView,'Original item IDs in recorded order. Observed links are recorded TEST targets, not a history of all links. No retrieval scores or probabilities are retained. '
++'The explanation retrieval list can differ from query TOP K; no per-item sensitivity breakdown is retained.');
+for(const [key,title]of [['prediction','Predicted item IDs'],['target','Observed TEST item IDs']]){
+const recorded=output[key];
+note(sampleView,title+': '+(recorded==null?'Not recorded':list(recorded).length+' recorded'));
+if(recorded!=null){const rows=list(recorded).slice(0,100).map((node,i)=>{
+const value=el('div');identityNote(value,'Full recorded ID',text(node.id),'div');
+const name=el('div');identityNote(name,'Full ID column',text(node.id_name),'div');return[i+1,value,name];});
+sampleTable(title,['Recorded position','Original item ID','ID column'],rows,list(recorded).length,[0]);
+if(list(recorded).length>100)note(sampleView,'Inspect complete retained output in Python from the matching TEST fit’s subgraph_collector/test/output/'+text(ref.artifact_id)+'.json.');}}
+}else if(classes){
 const labels=Object.keys(obj(output.prediction??output.target)),rows=labels.slice(0,100).map(label=>{
 let name=label;
 if(label.length>120||/[\r\n]/.test(label)){

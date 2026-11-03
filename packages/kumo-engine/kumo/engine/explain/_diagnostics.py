@@ -418,13 +418,28 @@ def _read_sample_output(guard: _Guard, root: Path, artifact_id: str,
         result['task_type'] = task
         class_output = task in ('multiclass_classification',
                                 'multilabel_classification')
-        if not class_output and task not in ('regression',
-                                             'binary_classification'):
+        link_output = task in ('static_link_prediction',
+                               'temporal_link_prediction')
+        if not class_output and not link_output and task not in (
+                'regression', 'binary_classification'):
             result.update(status='unsupported',
                           reason='Output display is unsupported for this task')
             return result
         for key in ('prediction', 'target'):
             value = raw.get(key)
+            if link_output:
+                if value is None:
+                    continue
+                if not isinstance(value, list):
+                    raise ValueError('Expected a recorded RHS node list')
+                for node in value:
+                    if (not isinstance(node, dict)
+                            or type(node.get('id')) not in (str, int, float)
+                            or not isinstance(node.get('cols'), list)
+                            or node.get('id_name') is not None
+                            and not isinstance(node['id_name'], str)):
+                        raise ValueError('Invalid recorded RHS node list')
+                continue
             if class_output:
                 if value is None:
                     continue
@@ -453,6 +468,13 @@ def _read_sample_output(guard: _Guard, root: Path, artifact_id: str,
                 ) != raw['target'].keys():
             raise ValueError('Prediction and target labels do not match')
         typed = to_json_dict(from_json_dict(raw, EntityOutput))
+        if link_output:
+            for key in ('prediction', 'target'):
+                if typed[key] is not None:
+                    typed[key] = [
+                        dict(id=node['id'], id_name=node['id_name'])
+                        for node in typed[key]
+                    ]
         result.update(status='available', reason=None,
                       prediction=typed['prediction'], target=typed['target'])
         absent = [

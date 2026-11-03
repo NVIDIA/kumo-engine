@@ -61,6 +61,9 @@ Known disabled or failed generation is shown separately from artifact retention 
 Generation status remains unknown on reopening because this API does not archive it.
 Select a column's cohort action to inspect its recorded predictions and targets, or select an available example to inspect its sampled nodes, relations, and feature scores.
 Selected regression, binary, multiclass, and multilabel examples also show predictions and observed targets from the matching collector output, when retained and valid.
+Selected static and temporal link-prediction examples show ordered predicted and observed TEST original item IDs, with at most 100 rows displayed per list.
+Empty lists contain zero recorded IDs; null lists are not recorded.
+The explanation retrieval list can differ from query TOP K; observed links are recorded TEST targets rather than a history of all links, and no retrieval scores, probabilities, or per-item sensitivity breakdown are retained.
 Regression values use recorded target units; binary predictions are positive-class probabilities with observed targets encoded as 0 or 1.
 Class-keyed outputs align recorded label probabilities with observed membership indicators (0 or 1), preserving exact values without renormalization.
 Multilabel probabilities are independent and observed memberships are nonexclusive, so their sums can exceed one.
