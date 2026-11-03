@@ -24,6 +24,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arrow_array::builder::*;
+use arrow_array::cast::AsArray;
+use arrow_array::types::{Int64Type, TimestampNanosecondType};
 use arrow_array::{
     Array, Float64Array, Int64Array, ListArray, RecordBatch, TimestampNanosecondArray,
 };
@@ -3418,23 +3420,11 @@ fn test_prediction_writes_every_skipped_row_with_its_conditions() {
     let mut written = Vec::new();
     for part in parts {
         for batch in read_parquet_batches(&part.unwrap().path()) {
-            let entity = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
-            let time = batch
-                .column(1)
-                .as_any()
-                .downcast_ref::<TimestampNanosecondArray>()
-                .unwrap();
-            let condition = batch
-                .column(2)
-                .as_any()
-                .downcast_ref::<arrow_array::StringArray>()
-                .unwrap();
-            for row in 0..batch.num_rows() {
-                written.push((
-                    entity.is_valid(row).then(|| entity.value(row)),
-                    time.is_valid(row).then(|| time.value(row)),
-                    condition.value(row).to_string(),
-                ));
+            let entity = batch.column(0).as_primitive::<Int64Type>();
+            let time = batch.column(1).as_primitive::<TimestampNanosecondType>();
+            let condition = batch.column(2).as_string::<i32>();
+            for ((entity, time), condition) in entity.iter().zip(time).zip(condition) {
+                written.push((entity, time, condition.unwrap().to_string()));
             }
         }
     }

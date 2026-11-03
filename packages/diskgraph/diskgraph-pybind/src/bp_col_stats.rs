@@ -13,9 +13,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
-use arrow::array::{new_null_array, Array, Float64Array, UInt32Array};
+use arrow::array::{new_null_array, Array, AsArray, Float64Array, UInt32Array};
 use arrow::compute::{cast, concat, take};
-use arrow::row::{OwnedRow, RowConverter, SortField};
+use arrow::datatypes::Float64Type;
+use arrow::row::{OwnedRow, RowConverter, Rows, SortField};
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -83,22 +84,13 @@ impl IntegerRange {
     }
 }
 
-/// Options beyond the ingest-compatible statistics; the default changes nothing.
 #[derive(Clone, Debug)]
 pub struct ColStatsOptions {
-    /// Emit `SUMMARY_STATS_BY_CLASS` for a `SCORE`/`CLASS` column pair.
     pub summary_stats_by_class: bool,
-    /// Emit `HISTOGRAM` / `HISTOGRAM_HALF_MONTH` (a second read).
     pub histograms: bool,
-    /// Compute every statistic over the maximum of each column within each
-    /// run of equal values of these columns, in path and row order. Needs
-    /// numerical columns and no histograms or by-class summaries.
+    /// Statistics of each column's maximum per run of equal key values.
     pub max_per: Vec<String>,
-    /// Count these numerical columns' finite values exactly on the given
-    /// edges, in the first pass, as `FIXED_HISTOGRAM`.
     pub fixed_edges: HashMap<String, Vec<f64>>,
-    /// Exact quantiles of these numerical columns' finite values, as
-    /// NumPy's default `np.quantile`, as `QUANTILES`.
     pub quantiles: HashMap<String, Vec<f64>>,
 }
 
@@ -114,12 +106,10 @@ impl Default for ColStatsOptions {
     }
 }
 
-/// A column's finite values counted on `edges` as `kumo_core.score_counts`
-/// does: `counts[i]` holds values in `[edges[i - 1], edges[i])`,
-/// `counts[0]` those below the first edge and the last those at or above
-/// the last edge; with their sum, minimum and maximum.
+/// `counts[i]` holds the finite values in `[edges[i - 1], edges[i])`.
 #[derive(Clone)]
 struct FixedHistogram {
+    edges: Vec<f64>,
     counts: Vec<u64>,
     sum: f64,
     min: f64,
@@ -127,18 +117,19 @@ struct FixedHistogram {
 }
 
 impl FixedHistogram {
-    fn new(edges: &[f64]) -> Self {
+    fn new(edges: Vec<f64>) -> Self {
         Self {
             counts: vec![0; edges.len() + 1],
+            edges,
             sum: 0.0,
             min: f64::INFINITY,
             max: f64::NEG_INFINITY,
         }
     }
 
-    fn add(&mut self, edges: &[f64], value: f64) {
+    fn add(&mut self, value: f64) {
         if value.is_finite() {
-            self.counts[edges.partition_point(|edge| *edge <= value)] += 1;
+            self.counts[self.edges.partition_point(|edge| *edge <= value)] += 1;
             self.sum += value;
             self.min = self.min.min(value);
             self.max = self.max.max(value);
@@ -154,10 +145,10 @@ impl FixedHistogram {
         self.max = self.max.max(other.max);
     }
 
-    fn to_json(&self, edges: &[f64]) -> JsonValue {
+    fn to_json(&self) -> JsonValue {
         let seen = self.min <= self.max;
         json!({
-            "edges": edges,
+            "edges": self.edges,
             "counts": self.counts,
             "sum": self.sum,
             "min": seen.then_some(self.min),
@@ -166,17 +157,20 @@ impl FixedHistogram {
     }
 }
 
-/// `options.fixed_edges` as (column index, edges), checked: numerical
-/// columns, finite and strictly increasing edges.
-fn fixed_edge_specs(
+fn column_index(columns: &[ColumnSpec], option: &str, name: &str) -> Result<usize> {
+    columns
+        .iter()
+        .position(|col| col.name == name)
+        .with_context(|| format!("{option} names column '{name}', which is not among the columns"))
+}
+
+fn fixed_histograms(
     columns: &[ColumnSpec],
     options: &ColStatsOptions,
-) -> Result<Vec<(usize, Vec<f64>)>> {
-    let mut specs = Vec::new();
+) -> Result<Vec<(usize, FixedHistogram)>> {
+    let mut histograms = Vec::new();
     for (name, edges) in &options.fixed_edges {
-        let Some(idx) = columns.iter().position(|col| &col.name == name) else {
-            bail!("fixed_edges names column '{name}', which is not among the columns");
-        };
+        let idx = column_index(columns, "fixed_edges", name)?;
         if columns[idx].semantic_type != Some(SemanticType::Numerical) {
             bail!("fixed_edges needs a numerical column, not '{name}'");
         }
@@ -186,27 +180,41 @@ fn fixed_edge_specs(
         {
             bail!("fixed_edges for '{name}' must be finite and strictly increasing");
         }
-        specs.push((idx, edges.clone()));
+        histograms.push((idx, FixedHistogram::new(edges.clone())));
     }
-    specs.sort_by_key(|(idx, _)| *idx);
-    Ok(specs)
+    histograms.sort_by_key(|(idx, _)| *idx);
+    Ok(histograms)
 }
 
-fn key_rows(batch: &RecordBatch, names: &[String]) -> Result<arrow::row::Rows> {
-    let arrays: Vec<ArrayRef> = names
+pub(crate) fn column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a ArrayRef> {
+    batch
+        .column_by_name(name)
+        .with_context(|| format!("missing column '{name}'"))
+}
+
+pub(crate) fn float64s(array: &ArrayRef) -> Result<Float64Array> {
+    Ok(cast(array, &DataType::Float64)?.as_primitive::<Float64Type>().clone())
+}
+
+pub(crate) fn rows(arrays: &[ArrayRef]) -> Result<Rows> {
+    let fields = arrays
         .iter()
-        .map(|name| Ok(batch.column(batch.schema().index_of(name)?).clone()))
-        .collect::<Result<_>>()?;
-    let converter = RowConverter::new(
-        arrays
-            .iter()
-            .map(|array| SortField::new(array.data_type().clone()))
-            .collect(),
-    )?;
-    Ok(converter.convert_columns(&arrays)?)
+        .map(|array| SortField::new(array.data_type().clone()))
+        .collect();
+    Ok(RowConverter::new(fields)?.convert_columns(arrays)?)
 }
 
-/// Per-column maximum of one run of equal `max_per` keys, as one-row arrays.
+fn columns_of(
+    batch: &RecordBatch,
+    names: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Result<Vec<ArrayRef>> {
+    names
+        .into_iter()
+        .map(|name| column(batch, name.as_ref()).cloned())
+        .collect()
+}
+
+/// Per-column maximum of one run of equal keys, as one-row arrays.
 struct RunMax {
     key: OwnedRow,
     best: Vec<(Option<f64>, Option<ArrayRef>)>,
@@ -226,16 +234,9 @@ fn larger(candidate: Option<f64>, current: Option<f64>) -> bool {
     matches!(candidate, Some(v) if !v.is_nan() && current.is_none_or(|c| v > c))
 }
 
-/// The first and last runs of a row group, which may continue into the
-/// neighbouring row groups.
-#[derive(Default)]
-struct RowGroupRuns {
-    head: Option<RunMax>,
-    tail: Option<RunMax>,
-}
+/// A row group's first and last runs, which may continue past it.
+type RunEdge = (Option<RunMax>, Option<RunMax>);
 
-/// The open run while scanning: its best values so far, and which of them
-/// sit in the current batch.
 struct OpenRun {
     key: Option<OwnedRow>,
     best: Vec<(Option<f64>, Option<ArrayRef>)>,
@@ -244,16 +245,25 @@ struct OpenRun {
 }
 
 impl OpenRun {
-    fn new(columns: usize, key: Option<OwnedRow>, started_in_batch: bool) -> Self {
+    fn new(columns: usize) -> Self {
         Self {
-            key,
+            key: None,
             best: vec![(None, None); columns],
             in_batch: vec![None; columns],
-            started_in_batch,
+            started_in_batch: true,
         }
     }
 
-    /// Copy (not slice, which would pin the batch) the best values out.
+    fn carry(run: RunMax) -> Self {
+        Self {
+            in_batch: vec![None; run.best.len()],
+            key: Some(run.key),
+            best: run.best,
+            started_in_batch: false,
+        }
+    }
+
+    /// Copies, not slices, so the batch is not pinned.
     fn settle(mut self, arrays: &[ArrayRef], key: impl FnOnce() -> OwnedRow) -> Result<RunMax> {
         for (col, row) in self.in_batch.iter().enumerate() {
             if let Some(row) = row {
@@ -295,16 +305,14 @@ fn runs_to_batch(columns: &[ColumnSpec], types: &[DataType], runs: &[RunMax]) ->
     runs_batch(columns, arrays)
 }
 
-/// Reduce a row group's batches to the per-column maximum of each run;
-/// `emit` gets the maxima of every run that starts and ends in the group
-/// except the first.
+/// `emit` gets the maxima of the runs inside the row group, all but the first.
 fn reduce_runs(
     batches: impl Iterator<Item = Result<RecordBatch>>,
     keys: &[String],
     columns: &[ColumnSpec],
     emit: &mut dyn FnMut(&RecordBatch) -> Result<()>,
-) -> Result<RowGroupRuns> {
-    let mut runs = RowGroupRuns::default();
+) -> Result<RunEdge> {
+    let (mut head, mut tail) = (None, None);
     let mut spilled: Vec<RunMax> = Vec::new();
     let mut types: Vec<DataType> = Vec::new();
     let mut open: Option<OpenRun> = None;
@@ -313,22 +321,10 @@ fn reduce_runs(
         if batch.num_rows() == 0 {
             continue;
         }
-        let key = key_rows(&batch, keys)?;
-        let arrays: Vec<ArrayRef> = columns
-            .iter()
-            .map(|col| Ok(batch.column(batch.schema().index_of(&col.name)?).clone()))
-            .collect::<Result<_>>()?;
+        let key = rows(&columns_of(&batch, keys)?)?;
+        let arrays = columns_of(&batch, columns.iter().map(|col| &col.name))?;
         types = arrays.iter().map(|array| array.data_type().clone()).collect();
-        let values: Vec<Float64Array> = arrays
-            .iter()
-            .map(|array| {
-                Ok(cast(array, &DataType::Float64)?
-                    .as_any()
-                    .downcast_ref::<Float64Array>()
-                    .context("numerical column")?
-                    .clone())
-            })
-            .collect::<Result<_>>()?;
+        let values = arrays.iter().map(float64s).collect::<Result<Vec<_>>>()?;
         let mut picks: Vec<Vec<Option<u32>>> = vec![Vec::new(); columns.len()];
         for row in 0..batch.num_rows() {
             let new_run = match (row, open.as_ref()) {
@@ -339,8 +335,8 @@ fn reduce_runs(
             if new_run {
                 if let Some(done) = open.take() {
                     let done_key = || key.row(row - 1).owned();
-                    if runs.head.is_none() {
-                        runs.head = Some(done.settle(&arrays, done_key)?);
+                    if head.is_none() {
+                        head = Some(done.settle(&arrays, done_key)?);
                     } else if done.started_in_batch {
                         for (col, row) in done.in_batch.iter().enumerate() {
                             picks[col].push(row.map(|row| row as u32));
@@ -349,7 +345,7 @@ fn reduce_runs(
                         spilled.push(done.settle(&arrays, done_key)?);
                     }
                 }
-                open = Some(OpenRun::new(columns.len(), None, true));
+                open = Some(OpenRun::new(columns.len()));
             }
             let o = open.as_mut().expect("open run");
             for (col, values) in values.iter().enumerate() {
@@ -370,10 +366,7 @@ fn reduce_runs(
         }
         if let Some(o) = open.take() {
             let last = batch.num_rows() - 1;
-            let run = o.settle(&arrays, || key.row(last).owned())?;
-            let mut next = OpenRun::new(columns.len(), Some(run.key), false);
-            next.best = run.best;
-            open = Some(next);
+            open = Some(OpenRun::carry(o.settle(&arrays, || key.row(last).owned())?));
         }
     }
     if let Some(o) = open {
@@ -381,16 +374,16 @@ fn reduce_runs(
             key: o.key.expect("settled key"),
             best: o.best,
         };
-        if runs.head.is_none() {
-            runs.head = Some(run);
+        if head.is_none() {
+            head = Some(run);
         } else {
-            runs.tail = Some(run);
+            tail = Some(run);
         }
     }
     if !spilled.is_empty() {
         emit(&runs_to_batch(columns, &types, &spilled)?)?;
     }
-    Ok(runs)
+    Ok((head, tail))
 }
 
 fn validate_stats_dtype(col: &ColumnSpec) -> Result<()> {
@@ -1093,9 +1086,13 @@ fn accumulate_by_class(
     Ok(())
 }
 
-type RowGroupStats = (FileColStats, ByClassStats, Vec<IntegerRange>, Vec<FixedHistogram>);
+type RowGroupStats = (
+    FileColStats,
+    ByClassStats,
+    Vec<IntegerRange>,
+    Vec<(usize, FixedHistogram)>,
+);
 
-/// The row group's batches of the projected columns and `keys`.
 pub(crate) fn row_group_batches(
     path: &Path,
     row_group: usize,
@@ -1126,7 +1123,6 @@ pub(crate) fn row_group_batches(
 struct StatsSink<'a> {
     columns: &'a [ColumnSpec],
     integer_spec_indices: &'a [usize],
-    fixed: &'a [(usize, Vec<f64>)],
     score_class: Option<(usize, usize)>,
     stats: RowGroupStats,
 }
@@ -1158,16 +1154,9 @@ impl StatsSink<'_> {
                 )));
             }
         }
-        for ((idx, edges), histogram) in self.fixed.iter().zip(fixed.iter_mut()) {
-            let column = batch.column(schema.index_of(&self.columns[*idx].name)?);
-            let values = cast(column, &DataType::Float64)?;
-            let values = values
-                .as_any()
-                .downcast_ref::<Float64Array>()
-                .context("fixed_edges values")?;
-            for value in values.iter().flatten() {
-                histogram.add(edges, value);
-            }
+        for (idx, histogram) in fixed {
+            let values = float64s(column(batch, &self.columns[*idx].name)?)?;
+            values.iter().flatten().for_each(|value| histogram.add(value));
         }
         if let Some((score, class)) = self.score_class {
             accumulate_by_class(
@@ -1183,15 +1172,13 @@ impl StatsSink<'_> {
     }
 }
 
-type RunEdges = Vec<(Option<RunMax>, Option<RunMax>)>;
-
 fn stats_for_row_group(
     path: &Path,
     row_group: usize,
     parquet_indices: &[usize],
     sink: &mut StatsSink<'_>,
     max_per: &[String],
-) -> Result<(Option<RunMax>, Option<RunMax>)> {
+) -> Result<RunEdge> {
     let batches = row_group_batches(path, row_group, parquet_indices, max_per)?;
     let edges = if max_per.is_empty() {
         for batch in batches {
@@ -1200,18 +1187,17 @@ fn stats_for_row_group(
         (None, None)
     } else {
         let columns = sink.columns;
-        let runs = reduce_runs(batches, max_per, columns, &mut |batch| sink.drive(batch))?;
-        (runs.head, runs.tail)
+        reduce_runs(batches, max_per, columns, &mut |batch| sink.drive(batch))?
     };
     sink.stats.0.flush_categories();
     Ok(edges)
 }
 
-/// Join runs that cross row groups, in order, into one batch of maxima.
+/// Joins the runs that cross row groups.
 fn stitch_runs(
     columns: &[ColumnSpec],
     types: &[DataType],
-    edges: RunEdges,
+    edges: Vec<RunEdge>,
 ) -> Result<Option<RecordBatch>> {
     let mut done = Vec::new();
     let mut pending: Option<RunMax> = None;
@@ -1232,7 +1218,6 @@ fn stitch_runs(
     Ok(Some(runs_to_batch(columns, types, &done)?))
 }
 
-/// Accumulate per-column statistics for [`compute_parquet_col_stats_with_options`].
 fn accumulate_parquet_col_stats<'a>(
     parquet_paths: &'a [&'a Path],
     columns: &'a [ColumnSpec],
@@ -1288,17 +1273,16 @@ fn accumulate_parquet_col_stats<'a>(
     {
         bail!("max_per needs numerical columns and no histograms or by-class summaries");
     }
-    let fixed = fixed_edge_specs(columns, options)?;
+    let fixed = fixed_histograms(columns, options)?;
     let sink = || StatsSink {
         columns,
         integer_spec_indices: &integer_spec_indices,
-        fixed: &fixed,
         score_class,
         stats: (
             FileColStats::new_with_categories(columns, Arc::clone(&table_cat)),
             ByClassStats::new(),
             vec![IntegerRange::default(); integer_spec_indices.len()],
-            fixed.iter().map(|(_, edges)| FixedHistogram::new(edges)).collect(),
+            fixed.clone(),
         ),
     };
     let merge = |total: &mut RowGroupStats,
@@ -1311,20 +1295,20 @@ fn accumulate_parquet_col_stats<'a>(
         for (total, range) in integer_ranges.iter_mut().zip(partial_ranges) {
             total.merge(range);
         }
-        for (total, histogram) in fixed.iter_mut().zip(partial_fixed) {
+        for ((_, total), (_, histogram)) in fixed.iter_mut().zip(partial_fixed) {
             total.merge(histogram);
         }
     };
 
     let mut total = sink();
     if !work.is_empty() {
-        // Fixed chunks merged in order: the result never depends on scheduling.
+        // Merged in a fixed order, so the result never depends on scheduling.
         let chunk = work.len().div_ceil(64);
         let chunks = work
             .par_chunks(chunk)
             .map(|items| {
                 let mut out = sink();
-                let mut edges = RunEdges::new();
+                let mut edges = Vec::new();
                 for &(pi, rg) in items {
                     edges.push(stats_for_row_group(
                         parquet_paths[pi],
@@ -1337,7 +1321,7 @@ fn accumulate_parquet_col_stats<'a>(
                 Ok((out.stats, edges))
             })
             .collect::<Result<Vec<_>>>()?;
-        let mut edges = RunEdges::new();
+        let mut edges = Vec::new();
         for (stats, chunk_edges) in chunks {
             merge(&mut total.stats, stats);
             edges.extend(chunk_edges);
@@ -1358,7 +1342,7 @@ fn accumulate_parquet_col_stats<'a>(
             merge(&mut total.stats, boundary.stats);
         }
     }
-    let (mut acc, by_class, integer_ranges, fixed_counts) = total.stats;
+    let (mut acc, by_class, integer_ranges, fixed) = total.stats;
     if work.is_empty() {
         acc.flush_categories();
     }
@@ -1374,7 +1358,7 @@ fn accumulate_parquet_col_stats<'a>(
             integer_ranges,
             by_class,
             score_class,
-            fixed: fixed.into_iter().zip(fixed_counts).collect(),
+            fixed,
         },
     ))
 }
@@ -1389,29 +1373,10 @@ struct Accumulated<'a> {
     integer_ranges: Vec<IntegerRange>,
     by_class: ByClassStats,
     score_class: Option<(usize, usize)>,
-    fixed: Vec<((usize, Vec<f64>), FixedHistogram)>,
+    fixed: Vec<(usize, FixedHistogram)>,
 }
 
-/// [`compute_parquet_col_stats_with_options`] with default options and a given
-/// retained-vocabulary limit.
-#[cfg(test)]
-fn compute_parquet_col_stats_with_max_categories(
-    parquet_paths: &[&Path],
-    columns: &[ColumnSpec],
-    data_version: &str,
-    max_categories: u64,
-) -> Result<(String, String)> {
-    compute_parquet_col_stats_with_options(
-        parquet_paths,
-        columns,
-        data_version,
-        max_categories,
-        &ColStatsOptions::default(),
-    )
-}
-
-/// Compute full and min Kumo-format statistics for prediction parquet files,
-/// with the optional statistics in `options`.
+/// Full and min Kumo-format statistics of prediction parquet files.
 pub fn compute_parquet_col_stats_with_options(
     parquet_paths: &[&Path],
     columns: &[ColumnSpec],
@@ -1436,17 +1401,15 @@ pub fn compute_parquet_col_stats_with_options(
     // Category arrays are filled in, and trimmed for min, when serialized.
     let mut min = full.clone();
     add_summary_stats_by_class(&run, &mut full, &mut min, data_version);
-    for ((idx, edges), histogram) in &run.fixed {
+    for (idx, histogram) in &run.fixed {
         let count = histogram.counts.iter().sum::<u64>();
         full.insert(
             kumo_key(&columns[*idx].name, "kumo.numerical", "FIXED_HISTOGRAM", false),
-            kumo_entry(histogram.to_json(edges), false, data_version, count),
+            kumo_entry(histogram.to_json(), false, data_version, count),
         );
     }
     for (name, quantiles) in &options.quantiles {
-        let Some(idx) = columns.iter().position(|col| &col.name == name) else {
-            bail!("quantiles names column '{name}', which is not among the columns");
-        };
+        let idx = column_index(columns, "quantiles", name)?;
         if columns[idx].semantic_type != Some(SemanticType::Numerical)
             || quantiles.iter().any(|q| !(0.0..=1.0).contains(q))
         {
@@ -1751,6 +1714,16 @@ mod tests {
     use parquet::arrow::ArrowWriter;
     use parquet::file::properties::WriterProperties;
     use tempfile::tempdir;
+
+    fn compute_parquet_col_stats_with_max_categories(
+        paths: &[&Path],
+        columns: &[ColumnSpec],
+        version: &str,
+        max_categories: u64,
+    ) -> Result<(String, String)> {
+        let options = &ColStatsOptions::default();
+        compute_parquet_col_stats_with_options(paths, columns, version, max_categories, options)
+    }
 
     fn stats(paths: &[&Path], columns: &[ColumnSpec]) -> Result<(String, String)> {
         compute_parquet_col_stats_with_max_categories(paths, columns, "v1", MAX_CATEGORIES)
@@ -2987,10 +2960,12 @@ mod tests {
         }
     }
 
-    fn with_options(paths: &[&Path], columns: &[ColumnSpec], options: ColStatsOptions) -> String {
+    fn with_options(
+        paths: &[&Path],
+        columns: &[ColumnSpec],
+        options: ColStatsOptions,
+    ) -> Result<(String, String)> {
         compute_parquet_col_stats_with_options(paths, columns, "v1", MAX_CATEGORIES, &options)
-            .unwrap()
-            .0
     }
 
     fn write_scores(path: &Path, scores: Vec<f64>, rows_per_group: usize) {
@@ -3000,6 +2975,10 @@ mod tests {
             vec![StdArc::new(Float64Array::from(scores)) as ArrayRef],
             rows_per_group,
         );
+    }
+
+    fn score_column() -> Vec<ColumnSpec> {
+        vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)]
     }
 
     #[test]
@@ -3014,13 +2993,10 @@ mod tests {
                 Field::new("CLASS", DataType::Utf8, false),
             ]),
             vec![
-                StdArc::new(Float64Array::from(
-                    (0..n).map(|i| (i % 97) as f64 / 97.0).collect::<Vec<_>>(),
-                )) as ArrayRef,
-                StdArc::new(StringArray::from(
-                    (0..n)
-                        .map(|i| format!("c{}", (i * i) % 50))
-                        .collect::<Vec<_>>(),
+                StdArc::new(Float64Array::from_iter_values((0..n).map(|i| (i % 97) as f64 / 97.0)))
+                    as ArrayRef,
+                StdArc::new(StringArray::from_iter_values(
+                    (0..n).map(|i| format!("c{}", (i * i) % 50)),
                 )) as ArrayRef,
             ],
             256,
@@ -3031,33 +3007,23 @@ mod tests {
         ];
         let paths = [path.as_path()];
         let parse = |json: &str| serde_json::from_str::<JsonMap<String, JsonValue>>(json).unwrap();
-
-        let (default, default_min) = stats(&paths, &columns).unwrap();
-
-        let (full, min) = compute_parquet_col_stats_with_options(
-            &paths,
-            &columns,
-            "v1",
-            MAX_CATEGORIES,
-            &ColStatsOptions {
-                summary_stats_by_class: false,
-                histograms: false,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let (full, mut default) = (parse(&full), parse(&default));
-        for key in [
-            "SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False",
-            "SCORE__kumo.numerical__HISTOGRAM__False",
-        ] {
-            assert!(default.remove(key).is_some());
+        let options = ColStatsOptions {
+            summary_stats_by_class: false,
+            histograms: false,
+            ..Default::default()
+        };
+        let (full, min) = with_options(&paths, &columns, options).unwrap();
+        let (default_full, default_min) = stats(&paths, &columns).unwrap();
+        for (output, default) in [(full, default_full), (min, default_min)] {
+            let mut default = parse(&default);
+            for key in [
+                "SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False",
+                "SCORE__kumo.numerical__HISTOGRAM__False",
+            ] {
+                assert!(default.remove(key).is_some());
+            }
+            assert_eq!(parse(&output), default);
         }
-        assert_eq!(full, default);
-        let mut default_min = parse(&default_min);
-        default_min.remove("SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False");
-        default_min.remove("SCORE__kumo.numerical__HISTOGRAM__False");
-        assert_eq!(parse(&min), default_min);
     }
 
     #[test]
@@ -3099,13 +3065,16 @@ mod tests {
         }
         let paths: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
         let columns = vec![col("SCORE", IngestedType::Float32, SemanticType::Numerical)];
-        let options = |keys: &[&str]| ColStatsOptions {
-            histograms: false,
-            max_per: keys.iter().map(|key| key.to_string()).collect(),
-            ..Default::default()
+        let max_per = |keys: &[&str]| {
+            let options = ColStatsOptions {
+                histograms: false,
+                max_per: keys.iter().map(|key| key.to_string()).collect(),
+                ..Default::default()
+            };
+            with_options(&paths, &columns, options).unwrap().0
         };
 
-        let full = with_options(&paths, &columns, options(&["ENTITY", "ANCHOR"]));
+        let full = max_per(&["ENTITY", "ANCHOR"]);
         assert_eq!(val(&full, "SCORE__kumo.numerical__COUNT__False"), json!(runs));
         assert_eq!(val(&full, "SCORE__kumo.numerical__NUM_NA__False"), json!(0));
         assert_eq!(val(&full, "SCORE__kumo.numerical__MIN__False"), json!(1.0));
@@ -3114,7 +3083,7 @@ mod tests {
             json!((runs + 1) as f64 / 2.0)
         );
 
-        let entity_only = with_options(&paths, &columns, options(&["ENTITY"]));
+        let entity_only = max_per(&["ENTITY"]);
         assert_eq!(val(&entity_only, "SCORE__kumo.numerical__COUNT__False"), json!(runs / 2));
         assert_eq!(val(&entity_only, "SCORE__kumo.numerical__MIN__False"), json!(2.0));
     }
@@ -3127,14 +3096,12 @@ mod tests {
             .map(|i| ((i * 2_654_435_761) % 1_000_003) as f64 / 1_000_003.0)
             .collect();
         write_scores(&path, scores, 300);
-        let columns = vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)];
-        let options = ColStatsOptions::default();
         let run = |threads| {
             rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
                 .unwrap()
-                .install(|| with_options(&[path.as_path()], &columns, options.clone()))
+                .install(|| stats(&[path.as_path()], &score_column()).unwrap().0)
         };
         let single = run(1);
         for threads in [2, 5, 16] {
@@ -3151,13 +3118,13 @@ mod tests {
         let paths = [dir.path().join("a.parquet"), dir.path().join("b.parquet")];
         write_scores(&paths[0], first.clone(), 64);
         write_scores(&paths[1], second.clone(), 3);
-        let columns = vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)];
         let options = ColStatsOptions {
             histograms: false,
             fixed_edges: HashMap::from([("SCORE".to_string(), edges.clone())]),
             ..Default::default()
         };
-        let full = with_options(&[paths[0].as_path(), paths[1].as_path()], &columns, options);
+        let paths = [paths[0].as_path(), paths[1].as_path()];
+        let (full, _) = with_options(&paths, &score_column(), options).unwrap();
 
         let finite: Vec<f64> = first.into_iter().chain(second).filter(|v| v.is_finite()).collect();
         let mut counts = vec![0u64; edges.len() + 1];
@@ -3224,13 +3191,12 @@ mod tests {
             assert_eq!(count, sorted.len() as u64);
             assert_eq!(values, expected, "gather {gather}");
         }
-        let columns = vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)];
         let options = ColStatsOptions {
             histograms: false,
             quantiles: HashMap::from([("SCORE".to_string(), quantiles.clone())]),
             ..Default::default()
         };
-        let full = with_options(&paths, &columns, options);
+        let (full, _) = with_options(&paths, &score_column(), options).unwrap();
         let values = val(&full, "SCORE__kumo.numerical__QUANTILES__False")["values"].clone();
         let values = values.as_array().unwrap();
         assert_eq!(values.len(), expected.len());
@@ -3245,20 +3211,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("scores.parquet");
         write_scores(&path, vec![0.5], 10);
-        let columns = vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)];
         for edges in [vec![], vec![0.5, 0.5], vec![0.0, f64::NAN]] {
             let options = ColStatsOptions {
                 fixed_edges: HashMap::from([("SCORE".to_string(), edges)]),
                 ..Default::default()
             };
-            let error = compute_parquet_col_stats_with_options(
-                &[path.as_path()],
-                &columns,
-                "v1",
-                MAX_CATEGORIES,
-                &options,
-            )
-            .unwrap_err();
+            let error = with_options(&[path.as_path()], &score_column(), options).unwrap_err();
             assert!(error.to_string().contains("strictly increasing"), "{error}");
         }
     }

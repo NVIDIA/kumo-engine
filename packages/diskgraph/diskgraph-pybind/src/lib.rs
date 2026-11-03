@@ -1416,19 +1416,12 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
 ///         invalid. Semantic and logical types are mapped through the same
 ///         ``map_kumo_stype`` / ``map_kumo_dtype`` helpers ingest uses.
 ///     data_version: version string stamped into every emitted entry.
-///     summary_stats_by_class: emit ``SUMMARY_STATS_BY_CLASS`` for a
-///         ``SCORE``/``CLASS`` pair (the default); ``False`` skips its
-///         per-class map.
-///     histograms: emit ``HISTOGRAM`` statistics (the default), which take a
-///         second read; ``False`` skips them.
-///     max_per: compute every statistic over the maximum of each column
-///         within each run of equal values of these columns, in path and row
-///         order (for example each prediction's top score). Needs numerical
-///         columns, ``histograms=False`` and ``summary_stats_by_class=False``.
-///     fixed_edges: column -> increasing bin edges; emits ``FIXED_HISTOGRAM``
-///         counts.
-///     quantiles: column -> quantiles in [0, 1]; emits ``QUANTILES``, the
-///         exact ``np.quantile`` of the column's finite values.
+///     summary_stats_by_class: emit ``SUMMARY_STATS_BY_CLASS``.
+///     histograms: emit ``HISTOGRAM`` statistics (a second read).
+///     max_per: statistics of each column's maximum per run of equal values
+///         of these columns.
+///     fixed_edges: column -> bin edges, for ``FIXED_HISTOGRAM``.
+///     quantiles: column -> quantiles, for exact ``QUANTILES``.
 ///     _category_count_limit_for_testing: keyword-only test hook that lowers
 ///         the retained category limit. ``None`` preserves the production
 ///         1,000,000-category limit; a supplied value must be greater than 0.
@@ -1556,26 +1549,8 @@ fn compute_col_stats_for_parquet(
     .map_err(map_anyhow_err)
 }
 
-/// Join batch-prediction Parquet outputs with generated label Parquet parts
-/// and compute realized metrics, streaming and hash-partitioning both sides.
-///
-/// Args:
-///     prediction_paths: the run's prediction Parquet files.
-///     label_paths: the label Parquet parts.
-///     spec_json: JSON object with ``task`` (``"binary"``, ``"regression"``,
-///         ``"forecasting"``, ``"multiclass"``, ``"multilabel"`` or
-///         ``"ranking"``), ``prediction_keys`` and ``label_keys`` (paired by
-///         position), ``label_target``, ``spill_dir``, and optional
-///         ``actuals_dir`` with ``actual_columns`` (``[label name, output
-///         name]`` pairs) to write the matched label rows,
-///         ``prediction_columns`` (pairs copied from the matched prediction),
-///         ``constant_timestamps`` (``[output name, UTC nanoseconds]`` pairs
-///         written on every row), ``ks`` (ranking cutoffs) and
-///         ``partition_rows``.
-///
-/// Returns a JSON string ``{"rows", "labelled", "metrics"}``: distinct
-/// predictions, those with a label, and the metric values (``null`` when
-/// undefined); a forecast adds ``"by_horizon"``, its sums per step.
+/// Realized metrics of prediction Parquet files against label Parquet parts,
+/// as JSON ``{"rows", "labelled", "metrics"}`` (and ``"by_horizon"``).
 #[pyfunction]
 #[pyo3(signature = (prediction_paths, label_paths, spec_json))]
 fn evaluate_prediction_parquet(

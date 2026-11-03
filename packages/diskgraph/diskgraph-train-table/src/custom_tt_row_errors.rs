@@ -79,7 +79,6 @@ pub enum RowFailureKind {
 }
 
 impl RowFailureKind {
-    /// The condition's `snake_case` name, as in the row_failures report.
     pub fn name(self) -> &'static str {
         match self {
             Self::NullEntity => "null_entity",
@@ -164,8 +163,6 @@ pub struct RowFailures {
     rows_read: u64,
     skipped_rows: u64,
     entries: BTreeMap<(RowFailureKind, String), Entry>,
-    /// When set, the skipped rows since the last `take_skips`, as `(row,
-    /// conditions)`; drained per batch so it never outgrows one batch.
     skips: Option<Vec<(u64, Vec<RowFailureKind>)>>,
 }
 
@@ -174,12 +171,10 @@ impl RowFailures {
         self.rows_read += rows;
     }
 
-    /// Keep each skipped row for `take_skips`.
     pub fn keep_skips(&mut self) {
         self.skips.get_or_insert_with(Vec::new);
     }
 
-    /// The rows skipped since the last call, as `(row, conditions)`.
     pub fn take_skips(&mut self) -> Vec<(u64, Vec<RowFailureKind>)> {
         self.skips.as_mut().map(std::mem::take).unwrap_or_default()
     }

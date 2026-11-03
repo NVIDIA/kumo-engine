@@ -2,14 +2,7 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The full list of a prediction source's skipped rows, streamed to Parquet.
-//!
-//! Each row-group worker writes its own part file under `skipped/` beside the
-//! prediction table, opened at its first skipped row. A part holds the source
-//! row's `ENTITY1` and `TIMESTAMP` (when the source has one), as read, and the
-//! comma-separated `condition` names that skipped it. The writer closes a
-//! Parquet row group every `ROWS_PER_FLUSH` rows, so memory stays bounded by
-//! one row group per worker however many rows are skipped.
+//! A prediction source's skipped rows, streamed to one Parquet part per worker.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -23,13 +16,11 @@ use parquet::file::properties::WriterProperties;
 use crate::custom_tt_row_errors::RowFailureKind;
 use crate::errors::{TTGenError, TTGenResult};
 
-/// The directory, beside the prediction table, that holds the skipped rows.
 pub const SKIPPED_ROWS_DIR: &str = "skipped";
 
 const ROWS_PER_FLUSH: usize = 64 * 1024;
 const COLUMNS: [&str; 2] = ["ENTITY1", "TIMESTAMP"];
 
-/// One worker's part file, created at its first skipped row.
 pub struct SkippedRowsWriter {
     path: PathBuf,
     writer: Option<ArrowWriter<File>>,
@@ -43,8 +34,6 @@ impl SkippedRowsWriter {
         }
     }
 
-    /// Append `skips`, as `(row, conditions)` with rows counted from
-    /// `row_base`, taking their columns from `batch`.
     pub fn write(
         &mut self,
         batch: &RecordBatch,
