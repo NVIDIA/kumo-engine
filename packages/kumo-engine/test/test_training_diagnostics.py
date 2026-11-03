@@ -485,14 +485,22 @@ def test_producer_guidance_preserves_observation_and_abstains(
                                                     'malformed_head')
     for name in ('gradient', 'cohorts', 'samples'):
         note = result[name].pop('producer_note', None)
-        assert bool(note) == (expected
-                              and (task != 'forecasting' or name != 'gradient'))
+        assert bool(note) == expected
         if note:
             assert ('Recorded forecasting.' if task == 'forecasting' else
                     'two-tower link prediction') in note
-            assert 'Eligibility alone does not explain missing artifacts.' in note
+            if task == 'forecasting' and name == 'gradient':
+                assert 'normalized over produced columns' in note
+                assert 'summed encoded model outputs across all forecast horizons' in note
+                assert 'Dedicated lag/year-over-year encoders' in note
+                assert 'separate forecast-head inputs, when used' in note
+                assert 'No per-horizon scores are retained.' in note
+            else:
+                assert 'Eligibility alone does not explain missing artifacts.' in note
             result[name]['producer_note'] = note
             assert note in static_summary(result)
+            if task == 'forecasting' and name == 'gradient':
+                assert 'Producer scope: ' + note in static_summary(result)
             del result[name]['producer_note']
     assert explanations.availability == availability
     assert 'private/path' not in json.dumps(result)

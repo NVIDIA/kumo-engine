@@ -73,7 +73,10 @@ def static_summary(payload: dict) -> str:
         if section.get('reason'):
             label += '. ' + str(section['reason'])
         if section.get('producer_note'):
-            label += '. Producer eligibility: ' + str(section['producer_note'])
+            scope = key == 'gradient' and context.get(
+                'task_type') == 'forecasting'
+            prefix = 'Producer scope' if scope else 'Producer eligibility'
+            label += f'. {prefix}: ' + str(section['producer_note'])
         parts.append('<li>' + escape(label) + '</li>')
     parts.append('</ul><h2>Selected examples</h2><p>Example values are excluded '
                  'from this summary. Rerun this cell in a trusted notebook '
@@ -152,9 +155,9 @@ const el=(tag,value,cls)=>{const node=document.createElement(tag);if(value!==und
 if(cls)node.className=cls;return node};
 const note=(parent,value)=>parent.append(el('p',value,'kt-note'));
 const section=title=>{const node=el('section');node.append(el('h2',title));root.append(node);return node};
-const state=(parent,source,label)=>{source=obj(source);if(source.status!=='available')
+const state=(parent,source,label,producerLabel='Producer eligibility')=>{source=obj(source);if(source.status!=='available')
 note(parent,label+': '+text(source.status||'unavailable')+(source.reason?'. '+text(source.reason):''));
-if(source.producer_note)note(parent,'Producer eligibility: '+text(source.producer_note));};
+if(source.producer_note)note(parent,producerLabel+': '+text(source.producer_note));};
 const table=(parent,headers,rows,numeric=[],exact=false)=>{const node=el('table',undefined,'kt-table');
 const head=el('thead'),tr=el('tr');for(const [i,h]of headers.entries()){
 const th=el('th',h,numeric.includes(i)?'kt-number':'');th.scope='col';tr.append(th)}head.append(tr);node.append(head);
@@ -270,7 +273,7 @@ note(results,'Missing progress is not evidence that a trial failed.');}
 const patterns=section('Recorded patterns');patterns.append(el('h3','Global input sensitivity'));
 note(patterns,'Unsigned recorded gradient magnitude, normalized across all columns when the total is positive. '
 +'These scores describe sensitivity, not causal effects or prediction probabilities.');
-state(patterns,data.gradient,'Global sensitivity');
+state(patterns,data.gradient,'Global sensitivity',context.task_type==='forecasting'?'Producer scope':'Producer eligibility');
 const gradients=list(obj(data.gradient).rows), valid=gradients.filter(row=>finite(row.score)&&row.score>=0)
 .sort((a,b)=>b.score-a.score||text(a.table).localeCompare(text(b.table))||text(a.column).localeCompare(text(b.column)));
 if(valid.length!==gradients.length)note(patterns,'Invalid or negative gradient scores are excluded from the unsigned ranking.');

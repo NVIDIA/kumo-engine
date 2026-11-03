@@ -250,6 +250,12 @@ def _read_training(guard: _Guard, trial: Path,
                         'kumo_core.modeling.heads.forecasting.ForecastingHead'
                         or not isinstance(plan['model_architecture'], dict)):
                     raise ValueError('Unverified forecasting configuration')
+            producer_notes['gradient'] = (
+                'Recorded forecasting. Scores cover encoded graph columns, '
+                'normalized over produced columns, using summed encoded model '
+                'outputs across all forecast horizons. Dedicated lag/year-over-'
+                'year encoders and separate forecast-head inputs, when used, are outside '
+                'score coverage. No per-horizon scores are retained.')
             for name, rule in (
                 ('cohorts', 'Column cohorts exclude forecasting tasks.'),
                 ('samples',
