@@ -306,25 +306,20 @@ def write_manifest(path: Path, manifest: Manifest) -> None:
 def read_manifest(path: Path, kind: Type[M]) -> Optional[M]:
     try:
         manifest = json.loads(path.read_text(encoding='utf-8'))
+        version = (manifest.get('schema_version')
+                   if isinstance(manifest, dict) else None)
+        if type(version) is not int or not 1 <= version <= SCHEMA_VERSION:
+            warnings.warn(
+                f"Ignoring {path}: manifest schema_version {version!r} is not "
+                f"supported by this kumo-engine (up to {SCHEMA_VERSION}).",
+                UserWarning,
+                stacklevel=3,
+            )
+            return None
+        return kind.from_dict(manifest)
     except FileNotFoundError:
         return None
-    except (OSError, ValueError) as error:
-        warnings.warn(f"Ignoring unreadable manifest {path}: {error}",
-                      UserWarning, stacklevel=3)
-        return None
-    version = (manifest.get('schema_version')
-               if isinstance(manifest, dict) else None)
-    if type(version) is not int or not 1 <= version <= SCHEMA_VERSION:
-        warnings.warn(
-            f"Ignoring {path}: manifest schema_version {version!r} is not "
-            f"supported by this kumo-engine (up to {SCHEMA_VERSION}).",
-            UserWarning,
-            stacklevel=3,
-        )
-        return None
-    try:
-        return kind.from_dict(manifest)
-    except (AttributeError, TypeError, ValueError) as error:
+    except (OSError, ValueError, AttributeError, TypeError) as error:
         warnings.warn(f"Ignoring unreadable manifest {path}: {error}",
                       UserWarning, stacklevel=3)
         return None
