@@ -252,9 +252,16 @@ def charts(metrics: Mapping[str, float]) -> List[Note]:
                 else 'pred/score_histogram/<class>')
         steps.append(f'`{name}`: step = score × 100 (step 37 = scores '
                      '0.37–0.38)')
+    if 'pred/prediction_histogram' in metrics:
+        steps.append("`pred/prediction_histogram`: step = bin of the "
+                     "training target's bins (0 = below the first; edges in "
+                     "`pred/histogram.json`)")
     if 'pred/item_popularity' in metrics:
         steps.append('`pred/item_popularity`: step = item rank '
                      '(1 = most recommended)')
+    if any(name.startswith('pred/holdout_') for name in metrics):
+        steps.append("`pred/holdout_*`: the same counts on the model's "
+                     "holdout, scaled to this run's total")
     return [Note('notes', f"Charts: {'; '.join(steps)}.")] if steps else []
 
 

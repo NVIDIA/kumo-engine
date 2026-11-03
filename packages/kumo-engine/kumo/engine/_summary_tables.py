@@ -10,7 +10,6 @@ from itertools import accumulate
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from kumo_core.summaries import (
-    BarChart,
     Confusion,
     Dataset,
     Histogram,
@@ -21,8 +20,6 @@ from kumo_core.summaries import (
     Table,
     Tag,
 )
-
-from kumo.engine._svg import bar_chart
 
 _DEFINITIONS = frozenset({'from', 'to', 'threshold'})
 
@@ -38,10 +35,9 @@ class Routed:
     tables: List[Table] = field(default_factory=list)
     card: List[Summary] = field(default_factory=list)
     datasets: List[Dataset] = field(default_factory=list)
-    files: Dict[str, str] = field(default_factory=dict)
 
 
-def route(summaries: Sequence[Summary], charts: bool) -> Routed:
+def route(summaries: Sequence[Summary]) -> Routed:
     r"""Sorts summaries by how a tracker writes them; skips unknown types."""
     routed, tables = Routed(), []
     series: Dict[str, Tuple[str, Dict[str, Dict[int, float]]]] = {}
@@ -51,7 +47,7 @@ def route(summaries: Sequence[Summary], charts: bool) -> Routed:
             routed.scalars.append(summary)
         elif isinstance(summary, Tag):
             routed.tags[summary.name] = summary.value
-        elif isinstance(summary, Series) and summary.chart and charts:
+        elif isinstance(summary, Series) and summary.chart:
             routed.charts[summary.name] = summary.points
         elif isinstance(summary, Series):
             parent, _, column = summary.name.rpartition('/')
@@ -64,8 +60,6 @@ def route(summaries: Sequence[Summary], charts: bool) -> Routed:
             if group and group[0].edges != summary.edges:
                 name = summary.name
             histograms.setdefault(name, []).append(summary)
-        elif isinstance(summary, BarChart):
-            routed.files[f'charts/{summary.name}.svg'] = bar_chart(summary)
         elif isinstance(summary, Dataset):
             routed.datasets.append(summary)
         elif isinstance(summary, Note) or (isinstance(summary, Table)

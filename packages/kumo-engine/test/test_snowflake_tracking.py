@@ -12,7 +12,7 @@ from unittest import mock
 import _snowflake_experiment_fake
 import pytest
 from _snowflake_experiment_fake import FakeExperimentTracking, FakeSession
-from kumo_core.summaries import BarChart, Note, Scalar, Series, Table, Tag
+from kumo_core.summaries import Note, Scalar, Series, Table, Tag
 from kumoapi.plugin import PublishedModel
 from test_tracking_contract import (
     CONTEXT,
@@ -299,8 +299,6 @@ def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
             Series('holdout/by_k/map', ((1, 0.5), (10, 0.25)), x_label='k'),
             Series('pred/score_histogram', ((0, 1.0), (1, 2.0)),
                    'score_pct', chart=True),
-            BarChart('pred/score_histogram', 't', ('score', 'ents'),
-                     (0.0, 0.5, 1.0), (1.0, 2.0)),
             Table('data_preparation', ('step', 'seconds', 'bytes', 'reused'),
                   (('training_table', 12.5, 4300, False),), brief=True),
             Tag('prep.training_table.seconds', '12.5'),
@@ -317,15 +315,16 @@ def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
         '| --- | ---: |', '| train | 8 |', '| val | 1 |', '| test | 1 |', '',
         '**Data preparation**', '', '| step | time (s) | disk |',
         '| --- | ---: | --- |', '| Training table | 12.5 | 4.2 KiB |', '',
-        '**Lineage**', '', '- `ents` v1 → graph snapshot g → training table '
+        '**Notes**', '', '- Charts: `pred/score_histogram`: step = score × '
+        '100 (step 37 = scores 0.37–0.38).', '', '**Lineage**', '', '- `ents` v1 → graph snapshot g → training table '
         't → model `bbbbbbbb`', '', '**Where things are**', '', '| Artifact | Location |', '| --- | --- |',
         '| model bundle `bbbbbbbb` | [`s3://b/models/b`](https://s3.console.'
         'aws.amazon.com/s3/buckets/b?prefix=models/b/) |', '',
-        'Full lineage: `_provenance.json`. Tables: `holdout/by_k.json`, '
-        '`pred.json`.'])
+        'Full lineage: `_provenance.json`. Tables: `holdout/by_k.json`.'])
     assert ('duration_seconds', 90.0, 0) in run['metrics']
-    assert run['artifacts']['charts/pred/score_histogram.svg'].startswith(
-        '<svg')
+    assert {('pred/score_histogram', 1.0, 0),
+            ('pred/score_histogram', 2.0, 1)} <= set(run['metrics'])
+    assert not any(name.startswith('charts/') for name in run['artifacts'])
     assert run['params']['prep.training_table.seconds'] == '12.5'
     assert run['params']['prep.training_table.bytes'] == '4300'
 
