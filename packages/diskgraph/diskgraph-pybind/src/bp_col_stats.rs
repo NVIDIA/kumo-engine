@@ -2960,10 +2960,12 @@ mod tests {
         }
     }
 
-    fn with_options(paths: &[&Path], columns: &[ColumnSpec], options: ColStatsOptions) -> String {
+    fn with_options(
+        paths: &[&Path],
+        columns: &[ColumnSpec],
+        options: ColStatsOptions,
+    ) -> Result<(String, String)> {
         compute_parquet_col_stats_with_options(paths, columns, "v1", MAX_CATEGORIES, &options)
-            .unwrap()
-            .0
     }
 
     fn write_scores(path: &Path, scores: Vec<f64>, rows_per_group: usize) {
@@ -2973,6 +2975,10 @@ mod tests {
             vec![StdArc::new(Float64Array::from(scores)) as ArrayRef],
             rows_per_group,
         );
+    }
+
+    fn score_column() -> Vec<ColumnSpec> {
+        vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)]
     }
 
     #[test]
@@ -2987,13 +2993,10 @@ mod tests {
                 Field::new("CLASS", DataType::Utf8, false),
             ]),
             vec![
-                StdArc::new(Float64Array::from(
-                    (0..n).map(|i| (i % 97) as f64 / 97.0).collect::<Vec<_>>(),
-                )) as ArrayRef,
-                StdArc::new(StringArray::from(
-                    (0..n)
-                        .map(|i| format!("c{}", (i * i) % 50))
-                        .collect::<Vec<_>>(),
+                StdArc::new(Float64Array::from_iter_values((0..n).map(|i| (i % 97) as f64 / 97.0)))
+                    as ArrayRef,
+                StdArc::new(StringArray::from_iter_values(
+                    (0..n).map(|i| format!("c{}", (i * i) % 50)),
                 )) as ArrayRef,
             ],
             256,
@@ -3004,33 +3007,23 @@ mod tests {
         ];
         let paths = [path.as_path()];
         let parse = |json: &str| serde_json::from_str::<JsonMap<String, JsonValue>>(json).unwrap();
-
-        let (default, default_min) = stats(&paths, &columns).unwrap();
-
-        let (full, min) = compute_parquet_col_stats_with_options(
-            &paths,
-            &columns,
-            "v1",
-            MAX_CATEGORIES,
-            &ColStatsOptions {
-                summary_stats_by_class: false,
-                histograms: false,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let (full, mut default) = (parse(&full), parse(&default));
-        for key in [
-            "SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False",
-            "SCORE__kumo.numerical__HISTOGRAM__False",
-        ] {
-            assert!(default.remove(key).is_some());
+        let options = ColStatsOptions {
+            summary_stats_by_class: false,
+            histograms: false,
+            ..Default::default()
+        };
+        let (full, min) = with_options(&paths, &columns, options).unwrap();
+        let (default_full, default_min) = stats(&paths, &columns).unwrap();
+        for (output, default) in [(full, default_full), (min, default_min)] {
+            let mut default = parse(&default);
+            for key in [
+                "SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False",
+                "SCORE__kumo.numerical__HISTOGRAM__False",
+            ] {
+                assert!(default.remove(key).is_some());
+            }
+            assert_eq!(parse(&output), default);
         }
-        assert_eq!(full, default);
-        let mut default_min = parse(&default_min);
-        default_min.remove("SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False");
-        default_min.remove("SCORE__kumo.numerical__HISTOGRAM__False");
-        assert_eq!(parse(&min), default_min);
     }
 
     #[test]
@@ -3072,13 +3065,16 @@ mod tests {
         }
         let paths: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
         let columns = vec![col("SCORE", IngestedType::Float32, SemanticType::Numerical)];
-        let options = |keys: &[&str]| ColStatsOptions {
-            histograms: false,
-            max_per: keys.iter().map(|key| key.to_string()).collect(),
-            ..Default::default()
+        let max_per = |keys: &[&str]| {
+            let options = ColStatsOptions {
+                histograms: false,
+                max_per: keys.iter().map(|key| key.to_string()).collect(),
+                ..Default::default()
+            };
+            with_options(&paths, &columns, options).unwrap().0
         };
 
-        let full = with_options(&paths, &columns, options(&["ENTITY", "ANCHOR"]));
+        let full = max_per(&["ENTITY", "ANCHOR"]);
         assert_eq!(val(&full, "SCORE__kumo.numerical__COUNT__False"), json!(runs));
         assert_eq!(val(&full, "SCORE__kumo.numerical__NUM_NA__False"), json!(0));
         assert_eq!(val(&full, "SCORE__kumo.numerical__MIN__False"), json!(1.0));
@@ -3087,7 +3083,7 @@ mod tests {
             json!((runs + 1) as f64 / 2.0)
         );
 
-        let entity_only = with_options(&paths, &columns, options(&["ENTITY"]));
+        let entity_only = max_per(&["ENTITY"]);
         assert_eq!(val(&entity_only, "SCORE__kumo.numerical__COUNT__False"), json!(runs / 2));
         assert_eq!(val(&entity_only, "SCORE__kumo.numerical__MIN__False"), json!(2.0));
     }
@@ -3100,14 +3096,12 @@ mod tests {
             .map(|i| ((i * 2_654_435_761) % 1_000_003) as f64 / 1_000_003.0)
             .collect();
         write_scores(&path, scores, 300);
-        let columns = vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)];
-        let options = ColStatsOptions::default();
         let run = |threads| {
             rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
                 .unwrap()
-                .install(|| with_options(&[path.as_path()], &columns, options.clone()))
+                .install(|| stats(&[path.as_path()], &score_column()).unwrap().0)
         };
         let single = run(1);
         for threads in [2, 5, 16] {
@@ -3124,13 +3118,13 @@ mod tests {
         let paths = [dir.path().join("a.parquet"), dir.path().join("b.parquet")];
         write_scores(&paths[0], first.clone(), 64);
         write_scores(&paths[1], second.clone(), 3);
-        let columns = vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)];
         let options = ColStatsOptions {
             histograms: false,
             fixed_edges: HashMap::from([("SCORE".to_string(), edges.clone())]),
             ..Default::default()
         };
-        let full = with_options(&[paths[0].as_path(), paths[1].as_path()], &columns, options);
+        let paths = [paths[0].as_path(), paths[1].as_path()];
+        let (full, _) = with_options(&paths, &score_column(), options).unwrap();
 
         let finite: Vec<f64> = first.into_iter().chain(second).filter(|v| v.is_finite()).collect();
         let mut counts = vec![0u64; edges.len() + 1];
@@ -3197,13 +3191,12 @@ mod tests {
             assert_eq!(count, sorted.len() as u64);
             assert_eq!(values, expected, "gather {gather}");
         }
-        let columns = vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)];
         let options = ColStatsOptions {
             histograms: false,
             quantiles: HashMap::from([("SCORE".to_string(), quantiles.clone())]),
             ..Default::default()
         };
-        let full = with_options(&paths, &columns, options);
+        let (full, _) = with_options(&paths, &score_column(), options).unwrap();
         let values = val(&full, "SCORE__kumo.numerical__QUANTILES__False")["values"].clone();
         let values = values.as_array().unwrap();
         assert_eq!(values.len(), expected.len());
@@ -3218,20 +3211,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("scores.parquet");
         write_scores(&path, vec![0.5], 10);
-        let columns = vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)];
         for edges in [vec![], vec![0.5, 0.5], vec![0.0, f64::NAN]] {
             let options = ColStatsOptions {
                 fixed_edges: HashMap::from([("SCORE".to_string(), edges)]),
                 ..Default::default()
             };
-            let error = compute_parquet_col_stats_with_options(
-                &[path.as_path()],
-                &columns,
-                "v1",
-                MAX_CATEGORIES,
-                &options,
-            )
-            .unwrap_err();
+            let error = with_options(&[path.as_path()], &score_column(), options).unwrap_err();
             assert!(error.to_string().contains("strictly increasing"), "{error}");
         }
     }
