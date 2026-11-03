@@ -34,6 +34,47 @@ def test_benchmark_uses_selected_graph(orders_graph, tmp_path):
     assert int(edges.split(":")[1]) > 0
 
 
+def test_lookup_node_ids_resolves_raw_primary_keys(orders_graph):
+    """Direct samplers need a bounded raw-PK -> dense-ID entry point."""
+
+    engine = diskgraph_py.SamplerEngine(orders_graph)
+    node_ids = engine.lookup_node_ids(
+        "users",
+        pa.array(["u1", "missing", "u2"]),
+    )
+
+    assert node_ids[0] is not None
+    assert node_ids[1] is None
+    assert node_ids[2] is not None
+    assert engine.canonical_node_mask(
+        "users",
+        [node_ids[0], node_ids[2]],
+        pa.array(["u1", "u2"]),
+    ) == [True, True]
+
+
+def test_lookup_node_ids_preserves_integer_key_types(list_features_graph):
+    engine = diskgraph_py.SamplerEngine(list_features_graph)
+
+    node_ids = engine.lookup_node_ids(
+        "items",
+        pa.array([0, 99, 2], type=pa.int64()),
+    )
+
+    assert node_ids[0] is not None
+    assert node_ids[1] is None
+    assert node_ids[2] is not None
+
+
+def test_lookup_node_ids_refuses_unknown_types_and_null_keys(orders_graph):
+    engine = diskgraph_py.SamplerEngine(orders_graph)
+
+    with pytest.raises(DiskgraphConfigError, match="unknown node type"):
+        engine.lookup_node_ids("not_a_table", pa.array(["u1"]))
+    with pytest.raises(DiskgraphDataError, match="null primary key"):
+        engine.lookup_node_ids("users", pa.array(["u1", None]))
+
+
 def test_canonical_node_mask_uses_typed_primary_keys(orders_graph,
                                                      list_features_graph,
                                                      typed_primary_key_graph):
@@ -421,3 +462,216 @@ def test_temporal_sampling(orders_graph):
     stats_event = next(e for e in events if e["type"] == "stats")
     stats = json.loads(stats_event["stats"])
     assert "total_nodes" in stats
+
+
+def test_temporal_query_shares_multihop_rows_between_sequences_and_aggregates(orders_graph):
+    engine = diskgraph_py.SamplerEngine(orders_graph)
+    root_ids = engine.lookup_node_ids("users", pa.array(["u1", "u2"]))
+    plan = {
+        "frames": [
+            {
+                "name": "orders",
+                "root_type": "users",
+                "path": [
+                    {
+                        "relation": "orders_parquet_user_id_to_users_user_id_reverse",
+                        "destination_type": "orders_parquet",
+                    }
+                ],
+                "time_column": "timestamp",
+                "start_seconds": None,
+                "stop_seconds": 0,
+                "distinct": True,
+                "columns": ["order_id", "amount", "channel", "merchant_id"],
+            },
+            {
+                "name": "merchants",
+                "root_type": "users",
+                "path": [
+                    {
+                        "relation": "orders_parquet_user_id_to_users_user_id_reverse",
+                        "destination_type": "orders_parquet",
+                    },
+                    {
+                        "relation": "orders_parquet_merchant_id_to_merchants_merchant_id",
+                        "destination_type": "merchants",
+                    },
+                ],
+                "time_column": None,
+                "start_seconds": None,
+                "stop_seconds": None,
+                "distinct": True,
+                "columns": ["merchant_id"],
+            },
+        ],
+        "sequences": [
+            {
+                "name": "recent_orders",
+                "frame": "orders",
+                "columns": ["order_id", "amount", "channel"],
+                "order": "ascending",
+                "limit": None,
+            }
+        ],
+        "aggregates": [
+            {
+                "name": "spend",
+                "frame": "orders",
+                "groups": [],
+                "operation": "sum",
+                "column": "amount",
+            },
+            {
+                "name": "mean_spend_by_channel",
+                "frame": "orders",
+                "groups": [
+                    {
+                        "keys": ["channel"],
+                        "values": [
+                            {"name": "channel_spend", "operation": "sum", "column": "amount"}
+                        ],
+                    }
+                ],
+                "operation": "mean",
+                "column": "channel_spend",
+            },
+            {
+                "name": "merchant_count",
+                "frame": "merchants",
+                "groups": [],
+                "operation": "count_distinct",
+                "column": "merchant_id",
+            },
+        ],
+    }
+
+    # Jan 4 UTC in seconds. The fixture's timestamp input is microseconds but
+    # DiskGraph's temporal edge metadata decodes it to epoch seconds.
+    result = engine.query_temporal(
+        {"users": root_ids},
+        {"users": [1609718400, 1609718400]},
+        json.dumps(plan),
+    )
+
+    sequence = result["sequences"][0]
+    assert sequence["offsets"] == [0, 2, 3]
+    assert sequence["batch"].column("order_id").to_pylist() == ["o1", "o3", "o2"]
+    aggregates = {item["name"]: item["values"] for item in result["aggregates"]}
+    assert aggregates == {
+        "spend": [30.0, 30.0],
+        "mean_spend_by_channel": [30.0, 30.0],
+        "merchant_count": [1.0, 1.0],
+    }
+    assert result["stats"]["frames_materialized"] == 2
+    assert result["stats"]["rows_materialized"] == 5
+    assert set(result["timings_ns"]) == {
+        "traversal",
+        "decode_and_select",
+        "sequence_assembly",
+        "aggregation",
+        "total",
+    }
+
+    model_result = engine.query_temporal(
+        {"users": root_ids},
+        {"users": [1609718400, 1609718400]},
+        json.dumps(plan),
+        output_format="model",
+    )
+    model_sequence = model_result["sequences"][0]
+    assert isinstance(model_sequence["offsets"], pa.UInt64Array)
+    assert isinstance(model_sequence["node_ids"], pa.UInt64Array)
+    assert isinstance(model_sequence["timestamps"], pa.Int64Array)
+    assert model_sequence["offsets"].to_pylist() == [0, 2, 3]
+    assert model_sequence["timestamps"].to_pylist() == [1609459200, 1609632000, 1609545600]
+    model_aggregates = {
+        item["name"]: item["values"].to_pylist() for item in model_result["aggregates"]
+    }
+    assert model_aggregates == aggregates
+
+    length_plan = {
+        **plan,
+        "sequences": [
+            *plan["sequences"],
+            {**plan["sequences"][0], "name": "one_order", "limit": 1},
+        ],
+        "aggregates": [],
+    }
+    length_cutoffs = [1609545600, 1609545600]  # Jan 2, inclusive upper bound.
+    filtered = engine.query_temporal(
+        {"users": root_ids},
+        {"users": length_cutoffs},
+        json.dumps(length_plan),
+        output_format="model",
+    )
+    length_result = engine.query_temporal_lengths(
+        {"users": root_ids},
+        {"users": length_cutoffs},
+        json.dumps(length_plan),
+    )
+    expected_lengths = [
+        [
+            stop - start
+            for start, stop in zip(
+                sequence["offsets"].to_pylist()[:-1],
+                sequence["offsets"].to_pylist()[1:],
+                strict=True,
+            )
+        ]
+        for sequence in filtered["sequences"]
+    ]
+    assert expected_lengths == [[1, 1], [1, 1]]
+    assert len(length_result["sequences"]) == 2
+    assert length_result["sequences"][0]["name"] == "recent_orders"
+    assert isinstance(length_result["sequences"][0]["lengths"], pa.UInt64Array)
+    assert [item["lengths"].to_pylist() for item in length_result["sequences"]] == (
+        expected_lengths
+    )
+    assert length_result["stats"]["frames_counted"] == 1
+    assert length_result["stats"]["rows_considered"] == 3
+    # This legacy-style fixture does not materialize destination sort keys, so
+    # exact length filtering exercises the one-column rowpack fallback.
+    assert length_result["stats"]["sort_key_timestamps"] == 0
+    assert length_result["stats"]["rowpack_timestamps"] == 3
+    assert set(length_result["timings_ns"]) == {"traversal", "time_filter", "total"}
+
+    with pytest.raises(DiskgraphConfigError, match="output_format"):
+        engine.query_temporal(
+            {"users": root_ids},
+            {"users": [1609718400, 1609718400]},
+            json.dumps(plan),
+            output_format="not-a-format",
+        )
+
+
+def test_temporal_query_filters_sort_keys_before_rowpack_decode(sorted_orders_graph):
+    engine = diskgraph_py.SamplerEngine(sorted_orders_graph)
+    roots = engine.lookup_node_ids("users", pa.array(["u1", "u2"]))
+    plan = {
+        "frames": [{
+            "name": "orders", "root_type": "users",
+            "path": [{
+                "relation": "orders_parquet_user_id_to_users_user_id_reverse",
+                "destination_type": "orders_parquet",
+            }],
+            "time_column": "timestamp", "start_seconds": None, "stop_seconds": 0,
+            "distinct": True, "columns": ["order_id", "amount"],
+        }],
+        "sequences": [{
+            "name": "history", "frame": "orders", "columns": ["order_id"],
+            "order": "ascending", "limit": None,
+        }],
+        "aggregates": [{
+            "name": "spend", "frame": "orders", "groups": [],
+            "operation": "sum", "column": "amount",
+        }],
+    }
+    cutoffs = [1609545600, 1609545600]  # Jan 2, inclusive.
+    result = engine.query_temporal(
+        {"users": roots}, {"users": cutoffs}, json.dumps(plan),
+    )
+    assert result["sequences"][0]["offsets"] == [0, 1, 2]
+    assert result["sequences"][0]["batch"].column("order_id").to_pylist() == ["o1", "o2"]
+    assert result["aggregates"][0]["values"] == [10.0, 30.0]
+    assert result["stats"]["edges_visited"] == 3
+    assert result["stats"]["rows_decoded"] == 2

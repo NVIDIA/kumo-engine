@@ -27,6 +27,43 @@ For connector changes, start with the [public test command](public-tests.md).
 It builds its prerequisites and runs without cloud credentials. The
 [test matrix](../connector-test-matrix.md) lists coverage and CI limits.
 
+The [Engine PR check](engine-pr-ci.md) builds the candidate wheel on CPU and
+runs eight small task checks on CUDA through one shared smoke action. Repeated
+and reloaded predictions must match within `0.005` absolute tolerance and
+zero relative tolerance for every task. Labels and ranks can change only for
+score ambiguities within that tolerance. Complete valid outputs and completed
+CUDA work remain strict. Training metrics report separately and set
+no learning-quality requirement. Source and package workflows remain separate.
+
+## Finished Kumo Engine wheel
+
+After each manual or release build, `wheel-smoke` downloads the finished Linux
+x86_64 wheel from that run. It uses Python 3.12 and the authorized RTX PRO 6000 runner.
+It does not rebuild the wheel. Failure blocks release attachment and Kitmaker
+publication. The macOS wheel has no GPU smoke check. The GPU job has a 22-minute
+limit.
+
+The job uses the same [GPU test script](../../packages/kumo-engine/test/wheel_gpu_smoke.py)
+and [setup action](../../.github/actions/engine-gpu-smoke/action.yml) as the PR
+check. The action installs the selected wheel in a fresh environment outside the
+checkout. It uses public PyPI and ignores host pip settings. The installed version
+must match the selected wheel. Dependencies must pass `pip check`.
+
+Each of the eight task types trains one model with seed zero, predicts, and
+reloads the saved model on CUDA. Outputs must be finite and complete.
+Repeat and reload scores must satisfy `abs(before - after) <= 0.005` at every
+coordinate, with zero relative tolerance. Labels and ranks can change only when
+their scores justify the change within that bound. These comparisons use the
+same retained model.
+
+The [input manifest](../../packages/kumo-engine/test/pr172/inputs.json) pins
+the prepared S3 data and its checksum. The workflow uses its existing AWS test role.
+The job preserves GPU results and logs in the `kumo-engine-wheel-smoke-*` artifact.
+
+To test a new wheel without publication, run Kumo Engine - Build and publish
+wheel manually at the selected commit. Candidate PR feedback runs separately
+through the trusted PR GPU workflow.
+
 ## Report evidence
 
 Record the command, environment, result, and any untested dependency. Keep
@@ -34,3 +71,10 @@ credentials, customer data, and private logs out of committed test reports.
 For a behavior change, add a regression test at the relevant boundary; pure
 prose edits need reference checks and a factual review rather than tests that
 repeat the prose.
+
+## Local PR feedback
+
+The [Engine PR guide](engine-pr-ci.md#local-feedback) gives one pytest command
+for the small pure output and workflow checks. The existing OSS Readiness job
+runs the same tests. They need no GPU or cloud access. The GPU job runs the
+eight actual training and save/load cases.
