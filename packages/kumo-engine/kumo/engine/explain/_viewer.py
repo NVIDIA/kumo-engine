@@ -120,7 +120,28 @@ white-space:pre-wrap;overflow-wrap:anywhere}
 .kumo-training .kt-table th{font-weight:600;color:$muted;font-size:12px}
 .kumo-training .kt-table th:first-child,.kumo-training .kt-table td:first-child{padding-left:0}
 .kumo-training .kt-table .kt-number{text-align:right;font-variant-numeric:tabular-nums}
+.kumo-training .kt-trials{max-width:680px;margin-top:24px}
 .kumo-training .kt-trials .kt-table{table-layout:auto}
+.kumo-training .kt-trial-list{list-style:none;padding:2px;margin:8px 0 16px;position:relative;overflow:auto;overflow-anchor:none}
+.kumo-training .kt-trial-list.kt-many{max-height:600px}
+.kumo-training .kt-trial-choice{display:grid;grid-template-columns:minmax(0,150px) minmax(0,1fr) 100px;gap:12px;align-items:center;width:100%;margin:3px 0;padding:10px}
+.kumo-training .kt-trial-choice .kt-note{display:block;margin:2px 0 0;font-size:12px}
+.kumo-training .kt-trial-plot{height:20px;position:relative;margin:0 7px}
+.kumo-training .kt-trial-plot:before{content:"";position:absolute;inset:10px 0 auto;border-top:1px solid $surface_border}
+.kumo-training .kt-trial-plot.kt-unverified:before{display:none}
+.kumo-training .kt-trial-dot{position:absolute;top:4px;width:12px;height:12px;border:2px solid $foreground;border-radius:50%;background:$background;transform:translateX(-50%)}
+.kumo-training .kt-trial-choice[aria-pressed="true"] .kt-trial-dot{border-color:$accent;background:$accent}
+.kumo-training .kt-trial-axis{display:grid;grid-template-columns:minmax(0,150px) minmax(0,1fr) 100px;gap:12px;padding:0 10px;color:$muted;font-size:12px}
+.kumo-training .kt-trial-axis .kt-scalar-axis{margin:0 7px}
+.kumo-training .kt-trial-axis .kt-constant{justify-content:center}
+.kumo-training .kt-trial-detail{border-left:3px solid $accent;padding-left:12px;margin:8px 0 16px}
+.kumo-training .kt-trial-detail h4{margin-top:0}
+@container kumo-training (max-width:520px){
+.kumo-training .kt-trial-choice,.kumo-training .kt-trial-axis{grid-template-columns:minmax(0,1fr) 86px;gap:4px 10px}
+.kumo-training .kt-trial-choice>.kt-trial-label{grid-column:1/-1}
+.kumo-training .kt-trial-axis>.kt-trial-label{display:none}
+.kumo-training .kt-trial-list.kt-many{max-height:440px}}
+
 .kumo-training .kt-trials td.kt-number{white-space:nowrap;overflow-wrap:normal}
 .kumo-training .kt-trials td.kt-number:before{white-space:normal;overflow-wrap:anywhere}
 .kumo-training .kt-table tr[aria-selected="true"]{background:$row_highlight}
@@ -472,22 +493,66 @@ note(learning,'Missing values and unrecorded epochs break the lines. These recor
 learning.append(historyDetails,jumps);}
 else note(learning,'No recorded epoch metric values.');}
 else if(obj(data.history).status==='available')note(results,'Learning history: no recorded epoch rows.');
-const trials=list(obj(data.trials).rows);state(results,data.trials,'Trial comparison');
-if(trials.length){results.append(el('h3','Recorded trials'));
-const names=[...new Set(trials.flatMap(row=>Object.keys(obj(row.comparison_metrics??row.final_validation_metrics))))];
-if(obj(data.trials).total!==undefined)note(results,'Recorded completed trials: '+text(data.trials.completed)+' / '+text(data.trials.total));
-const trialView=el('div',undefined,'kt-trials');
-const drawTrials=metric=>{trialView.replaceChildren();
-table(trialView,['Trial / fit','Selection / progress',...(metric?[metric]:[])],trials.map(row=>[
-text(row.trial)+' / '+text(row.fit),(provenance.selection_verified!==true?'Selection unverified':row.selected?'Selected by recorded winner':'Not selected')+' · '+
-(row.status||row.reason||('Epochs: '+text(row.num_epochs_completed)+' · Device: '+text(row.accelerator)))+
-(row.comparison_source==='last_recorded_epoch'?' · Validation from last recorded epoch '+text(row.comparison_epoch):row.comparison_source==='final_validation_metrics'?' · Selected-checkpoint validation':' · Validation origin unverified'),
-...(metric?[obj(row.comparison_metrics??row.final_validation_metrics)[metric]]:[])]),metric?[2]:[]);};
+const trials=list(obj(data.trials).rows).map(obj);state(results,data.trials,'Trial comparison');
+if(trials.length){const trialView=el('div',undefined,'kt-trials');results.append(trialView);
+trialView.append(el('h3','How do the recorded candidates compare?'));
+note(trialView,'Compare original search candidates using recorded validation values. Inspecting a candidate or another metric does not change the recorded selection.');
+if(obj(data.trials).total!==undefined)note(trialView,'Recorded training completions: '+text(data.trials.completed)+' / '+text(data.trials.total)+' planned trials. This count does not establish final validation availability.');
+const originals=trials.filter(row=>row.fit==='original');
+if(originals.length===1)note(trialView,'Only one original search candidate is recorded; no alternative candidate comparison is available.');
+if(provenance.refitted_trainval===true)note(trialView,'The selected candidate was refit on train + validation. That refit is separate from these original search evaluations; inspect its learning history above.');
+const trialMetrics=row=>obj(row.comparison_metrics??row.final_validation_metrics);
+const trialNumber=value=>finite(value)?(finite(Number(value.toPrecision(6)))?number(value):value.toPrecision(6)):'Unavailable';
+const names=[...new Set(trials.flatMap(row=>Object.keys(trialMetrics(row))))];
+const candidateName=row=>row.fit==='original'?'Candidate '+(originals.indexOf(row)+1):'Recorded fit '+(trials.indexOf(row)+1);
+const origin=row=>row.comparison_source==='final_validation_metrics'?'Final validation evaluation':
+row.comparison_source==='last_recorded_epoch'?'Last recorded epoch '+text(row.comparison_epoch)+' · validation':'Validation origin unverified';
+const selection=row=>provenance.selection_verified!==true?'Selection unverified':row.fit==='original'&&row.selected?'Recorded selection':row.fit==='original'?'Not selected':'Separate fit';
+const comparison=el('div'),meaning=el('div'),trialScroll=new Map();let inspected=trials.findIndex(row=>row.fit==='original'&&row.selected&&provenance.selection_verified===true);if(inspected<0)inspected=0;
+const drawTrials=metric=>{for(const node of comparison.querySelectorAll('.kt-trial-list'))trialScroll.set(node.dataset.identity,node.scrollTop);comparison.replaceChildren();meaning.replaceChildren();
+const chosenMetric=metric===provenance.selection_metric;
+note(meaning,(metric?text(metric)+' · ':'')+(chosenMetric?'Recorded selection metric. '+(provenance.selection_direction==='min'?'Lower is preferred.':provenance.selection_direction==='max'?'Higher is preferred.':'Direction is not recorded.'):'Direction is not recorded for this metric.'));
+if(chosenMetric&&selectedMetricMeaning)note(meaning,selectedMetricMeaning);
+const picks=[];
+for(const identity of [...new Set(trials.map(row=>JSON.stringify([row.fit,row.comparison_source,row.comparison_source==='last_recorded_epoch'?row.comparison_epoch:null])))]){
+const rows=trials.filter(row=>JSON.stringify([row.fit,row.comparison_source,row.comparison_source==='last_recorded_epoch'?row.comparison_epoch:null])===identity),first=rows[0];
+const group=el('div');comparison.append(group);group.append(el('h4',(first.fit==='original'?'Original search candidates':first.fit==='refit_trainval'?'Refit on train + validation':first.fit==='refit_full'?'Refit on all data':'Other recorded fit')+' · '+origin(first)));
+const comparable=first.fit==='original'&&(first.comparison_source==='final_validation_metrics'||first.comparison_source==='last_recorded_epoch'&&typeof first.comparison_epoch==='string'&&/^(0|[1-9][0-9]{0,8})$/.test(first.comparison_epoch));
+if(!comparable)note(group,'The recorded fit, epoch or validation origin does not support a shared comparison. Values remain available individually; a shared comparison scale is not shown.');
+const values=rows.map(row=>Object.hasOwn(trialMetrics(row),metric)?trialMetrics(row)[metric]:undefined).filter(finite);
+const low=values.length?Math.min(...values):0,high=values.length?Math.max(...values):0,scale=Math.max(Math.abs(low),Math.abs(high))||1;
+const position=value=>low===high?50:100*(value/scale-low/scale)/(high/scale-low/scale);
+if(comparable&&values.length){const axis=el('div',undefined,'kt-trial-axis'),range=el('div',undefined,'kt-scalar-axis'+(low===high?' kt-constant':''));range.append(el('span',trialNumber(low)===trialNumber(high)&&low!==high?String(low):trialNumber(low)),el('span',low===high?'':trialNumber(low)===trialNumber(high)?String(high):trialNumber(high)));axis.append(el('span','Candidate','kt-trial-label'),range,el('span','Value','kt-value'));group.append(axis);
+note(group,values.length===1?'One numeric validation value in this group.':low===high?'All '+values.length+' numeric validation values in this group are tied. The record does not explain tie-breaking.':'Numeric validation values span '+trialNumber(low)+' to '+trialNumber(high)+'. Each group has its own scale.');}
+else if(!values.length)note(group,'No numeric values for this metric in this group.');
+const choices=el('ul',undefined,'kt-trial-list'+(rows.length>12?' kt-many':''));choices.dataset.identity=identity;group.append(choices);
+for(const row of rows){const index=trials.indexOf(row),item=el('li'),label=el('span',candidateName(row),'kt-trial-label');label.append(el('span',selection(row),'kt-note'));
+const value=Object.hasOwn(trialMetrics(row),metric)?trialMetrics(row)[metric]:undefined,plot=el('span',undefined,'kt-trial-plot'+(comparable?'':' kt-unverified'));plot.setAttribute('aria-hidden','true');
+if(comparable&&finite(value)){const dot=el('span',undefined,'kt-trial-dot');dot.style.left=position(value)+'%';plot.append(dot);}
+const detail=el('div',undefined,'kt-trial-detail');detail.hidden=true;
+const button=action('',()=>choose(index,true));button.classList.add('kt-trial-choice');button.append(label,plot,el('span',trialNumber(value),'kt-value'));button.setAttribute('aria-pressed','false');
+button.setAttribute('aria-label',candidateName(row)+' · '+selection(row)+' · '+text(metric)+' '+(finite(value)?String(value):'Unavailable')+' · Inspect recorded details');
+item.append(button,detail);choices.append(item);picks.push({index,button,detail,row,choices});}
+}
+const choose=(index,reveal=false)=>{inspected=index;for(const pick of picks){const active=pick.index===index;pick.button.setAttribute('aria-pressed',String(active));pick.detail.hidden=!active;if(!active)continue;
+const row=pick.row;pick.detail.replaceChildren();pick.detail.append(el('h4','Inspecting '+candidateName(row)));
+identityNote(pick.detail,'Trial identity','Trial: '+text(row.trial)+' · Fit: '+text(row.fit)+' · '+selection(row));
+note(pick.detail,origin(row)+(row.comparison_source==='final_validation_metrics'?' · Evaluation of this candidate’s chosen checkpoint.':''));
+if(row.status||row.reason)identityNote(pick.detail,'Recorded progress state',text(row.status||'')+(row.reason?' · '+text(row.reason):''));
+table(pick.detail,['Metric','Exact recorded value','Epochs completed'],[[metric??'No metric recorded',metric&&Object.hasOwn(trialMetrics(row),metric)?trialMetrics(row)[metric]:undefined,row.num_epochs_completed]],[1,2],true);
+identityNote(pick.detail,'Device and timing','Device: '+text(row.accelerator)+' · Elapsed seconds: '+text(row.elapsed_time));
+if(reveal||!trialScroll.has(pick.choices.dataset.identity)){const bottom=pick.detail.offsetTop+pick.detail.offsetHeight;if(bottom>pick.choices.scrollTop+pick.choices.clientHeight)pick.choices.scrollTop=bottom-pick.choices.clientHeight;if(pick.button.offsetTop<pick.choices.scrollTop)pick.choices.scrollTop=pick.button.offsetTop;}
+}}
+choose(inspected);for(const node of comparison.querySelectorAll('.kt-trial-list'))if(trialScroll.has(node.dataset.identity))node.scrollTop=trialScroll.get(node.dataset.identity);enable();};
 if(names.length){const metric=names.includes(provenance.selection_metric)?provenance.selection_metric:names[0];
-const select=control(results,'Trial metric',names.map(name=>[name,name]),drawTrials);select.value=metric;drawTrials(metric)}
-else drawTrials(null);
-results.append(trialView);
-note(results,'Missing progress is not evidence that a trial failed.');}
+const select=control(trialView,'Trial metric',names.map(name=>[name,name]),drawTrials);select.value=metric;trialView.append(meaning,comparison);drawTrials(metric);}
+else{trialView.append(meaning,comparison);drawTrials(null);}
+note(trialView,'Metric origins and fits are shown separately. Missing values or progress do not establish that a trial failed. Configurations are not loaded in this view, so changes in settings cannot be compared here.');
+const exact=el('details');exact.append(el('summary','Explore all recorded candidate values'));
+for(const row of trials){identityNote(exact,'Trial identity',candidateName(row)+' · '+text(row.trial)+' / '+text(row.fit)+' · '+selection(row)+' · '+origin(row));
+table(exact,['Recorded metric','Exact value'],Object.entries(trialMetrics(row)),[1],true);}
+trialView.append(exact);
+if(histories.length)trialView.append(action('Inspect recorded fit learning histories',()=>{const heading=results.querySelector('.kt-learning h3');if(heading){heading.tabIndex=-1;heading.focus();}}));}
 const patterns=section('Recorded patterns');patterns.append(el('h3','Global input sensitivity'));
 note(patterns,'Unsigned recorded gradient magnitude, normalized across all columns when the total is positive. '
 +'These scores describe sensitivity, not causal effects or prediction probabilities.');
