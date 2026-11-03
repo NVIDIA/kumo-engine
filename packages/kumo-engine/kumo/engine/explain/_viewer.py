@@ -65,6 +65,9 @@ white-space:pre-wrap;overflow-wrap:anywhere}
 .kumo-training .kt-table th{font-weight:600;color:$muted;font-size:12px}
 .kumo-training .kt-table th:first-child,.kumo-training .kt-table td:first-child{padding-left:0}
 .kumo-training .kt-table .kt-number{text-align:right;font-variant-numeric:tabular-nums}
+.kumo-training .kt-trials .kt-table{table-layout:auto}
+.kumo-training .kt-trials td.kt-number{white-space:nowrap;overflow-wrap:normal}
+.kumo-training .kt-trials td.kt-number:before{white-space:normal;overflow-wrap:anywhere}
 .kumo-training .kt-table tr[aria-selected="true"]{background:$row_highlight}
 .kumo-training .kt-action,.kumo-training select{font:13px/1.4 $font;
 background:$background;color:$foreground;border:1px solid $surface_border;
@@ -192,13 +195,19 @@ if(metrics.length){control(results,'History metric',metrics.map(name=>[name,name
 else note(results,'No recorded epoch metric values.');}
 const trials=list(obj(data.trials).rows);state(results,data.trials,'Trial comparison');
 if(trials.length){results.append(el('h3','Recorded trials'));
-const names=[...new Set(trials.flatMap(row=>Object.keys(obj(row.comparison_metrics??row.final_validation_metrics))))].slice(0,10);
+const names=[...new Set(trials.flatMap(row=>Object.keys(obj(row.comparison_metrics??row.final_validation_metrics))))];
 if(obj(data.trials).total!==undefined)note(results,'Recorded completed trials: '+text(data.trials.completed)+' / '+text(data.trials.total));
-table(results,['Trial / fit','Selection / progress',...names],trials.map(row=>[
+const trialView=el('div',undefined,'kt-trials');
+const drawTrials=metric=>{trialView.replaceChildren();
+table(trialView,['Trial / fit','Selection / progress',...(metric?[metric]:[])],trials.map(row=>[
 text(row.trial)+' / '+text(row.fit),(provenance.selection_verified!==true?'Selection unverified':row.selected?'Selected by recorded winner':'Not selected')+' · '+
 (row.status||row.reason||('Epochs: '+text(row.num_epochs_completed)+' · Device: '+text(row.accelerator)))+
 (row.comparison_source==='last_recorded_epoch'?' · Validation from last recorded epoch '+text(row.comparison_epoch):row.comparison_source==='final_validation_metrics'?' · Selected-checkpoint validation':' · Validation origin unverified'),
-...names.map(name=>obj(row.comparison_metrics??row.final_validation_metrics)[name])]),names.map((_,i)=>i+2));
+...(metric?[obj(row.comparison_metrics??row.final_validation_metrics)[metric]]:[])]),metric?[2]:[]);};
+if(names.length){const metric=names.includes(provenance.selection_metric)?provenance.selection_metric:names[0];
+const select=control(results,'Trial metric',names.map(name=>[name,name]),drawTrials);select.value=metric;drawTrials(metric)}
+else drawTrials(null);
+results.append(trialView);
 note(results,'Missing progress is not evidence that a trial failed.');}
 const patterns=section('Recorded patterns');patterns.append(el('h3','Global input sensitivity'));
 note(patterns,'Unsigned recorded gradient magnitude, normalized across all columns when the total is positive. '
