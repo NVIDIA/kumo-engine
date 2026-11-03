@@ -649,11 +649,14 @@ let predictionLabel='Mean prediction',targetLabel='Mean observed target';
 if(text(obj(data.cohorts).task_type).includes('binary')){predictionLabel='Mean positive-class probability';targetLabel='Observed positive-class share'}
 else if(classes.length){predictionLabel='Mean class probability';targetLabel='Observed class share'}
 if(classes.length)identityNote(bins,'Recorded class','Recorded class: '+text(className));
-note(bins,classes.length||text(obj(data.cohorts).task_type).includes('binary')?
-'Probability / share scale. ● '+predictionLabel+' · ◆ '+targetLabel+'.':
-'● '+predictionLabel+' · ◆ '+targetLabel+'. Original target scale; target units are not recorded.');
+const probability=classes.length||text(obj(data.cohorts).task_type).includes('binary');
 const labels=list(c.cohorts).slice(0,100),values=labels.flatMap((_,i)=>[list(predictions)[i],list(targets)[i]]).filter(finite);
-const low=values.length?Math.min(...values):null,high=values.length?Math.max(...values):null,scale=Math.max(Math.abs(low),Math.abs(high))||1;
+const outsideProbability=probability&&values.some(value=>value<0||value>1);
+note(bins,(probability?(outsideProbability?'Recorded means outside 0 to 1 are invalid probabilities; the axis includes them. ':'Probability / share axis: 0 to 1. '):
+'Zero-inclusive target axis; target units are not recorded. ')+'● '+predictionLabel+' · ◆ '+targetLabel+'.');
+let low=values.length?Math.min(0,...values):null,high=values.length?Math.max(probability?1:0,...values):null;
+if(low===0&&high===0){low=-1;high=1;}
+const scale=Math.max(Math.abs(low),Math.abs(high))||1;
 if(labels.length)note(bins,labels.length+' recorded groups · select a row; scroll within the list to inspect more.');
 const heading=el('div',undefined,'kt-cohort-heading'),axis=el('div',undefined,'kt-scalar-axis');
 axis.append(el('span',low===null?'No numeric means':number(low)),el('span',high===null?'':number(high)));
