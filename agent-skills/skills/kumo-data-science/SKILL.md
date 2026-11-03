@@ -12,7 +12,8 @@ description: "Use for KumoAI graphs and predictive models on relational data in 
 Quote this string verbatim whenever asked which build of the skill is loaded. If you cannot read
 it from this file, you have not loaded the skill — say so rather than guessing.
 
-Targets Kumo bundle `20261007+2e1eb12` (import `kumo.engine`; kumo-ai/kumo#31382).
+Targets the local `kumo.engine` API; the baseline bundle is `20261007+2e1eb12`.
+Graph visualization requires a source build including [NVIDIA/kumo-engine#134](https://github.com/NVIDIA/kumo-engine/pull/134); it is absent from that bundle and the `1.0.0` release.
 One SDK, no variants.
 
 ## When to use
