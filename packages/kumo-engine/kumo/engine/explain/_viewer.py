@@ -622,7 +622,7 @@ if(!valid.length)note(patterns,'No valid global sensitivity scores are available
 else if(valid.length>20||gradient.total>valid.length)
 note(patterns,'Showing '+Math.min(20,valid.length)+' of '+text(gradient.total??gradients.length)+' recorded columns; the visible subset is not renormalized.');
 const cohorts=list(obj(data.cohorts).rows);
-let cohortView,cohortButtons=[],selectedFeature=valid[0],selectedExample;
+let cohortView,cohortPicker,cohortButtons=[],selectedFeature=valid[0],selectedExample;
 let cohortState={index:null,bin:0,className:null},revealCohort=()=>{};
 const cohortResize=new ResizeObserver(()=>revealCohort());onDispose(()=>cohortResize.disconnect());
 const featureButtons=[],featureContext=el('div',undefined,'kt-detail kt-feature-context');
@@ -631,6 +631,7 @@ featureButtons.forEach(({button,feature})=>{button.setAttribute('aria-pressed',S
 button.querySelector('.kt-note').textContent=feature===row?'Selected feature':'Inspect input details';});
 if(!sampleView.hidden&&selectedExample)inspectSample(selectedExample.ref,selectedExample.index);enable();};
 const inspectCohort=index=>{cohortView.replaceChildren();const c=cohorts[index];
+if(cohortPicker)cohortPicker.value=String(index);
 if(cohortState.index!==index)cohortState={index,bin:0,className:null};
 const identity=text(c.table_name)+'.'+text(c.col_name)+' · hop '+text(c.hop);
 cohortView.append(el('h3',identity.length>100?identity.slice(0,97)+'…':identity));
@@ -733,14 +734,18 @@ if(valid.length){patterns.append(featureContext);
 const exact=el('details');exact.append(el('summary','Exact global sensitivity values'));
 table(exact,['Input column','Global score'],valid.slice(0,20).map(row=>[text(row.table)+'.'+text(row.column),row.score]),[1],true);patterns.append(exact);}
 patterns.append(el('h3','Prediction variation across cohorts'));state(patterns,data.cohorts,'Cohorts');
-note(patterns,'Ranked separately from gradient sensitivity. Table, hop and column identify each cohort record.');
 const ranked=cohorts.map((row,index)=>({row,index})).sort((a,b)=>(finite(b.row.prediction_score)?b.row.prediction_score:-Infinity)-(finite(a.row.prediction_score)?a.row.prediction_score:-Infinity)||a.index-b.index);
-if(ranked.length){cohortButtons=Array(cohorts.length);table(patterns,['Table / column / hop','Variation score','Detail'],ranked.slice(0,100).map(({row,index})=>{
-const button=action('Inspect cohorts',()=>inspectCohort(index));cohortButtons[index]=button;return[
-text(row.table_name)+'.'+text(row.col_name)+' · hop '+text(row.hop),row.prediction_score,button];}),[1]);
-if(ranked.length>100)note(patterns,'Showing the first 100 cohort records by recorded variation.');}
+if(ranked.length){note(patterns,'Inputs ordered by recorded prediction variation, separately from gradient sensitivity.');
+cohortPicker=control(patterns,'Recorded input',ranked.map(({row,index})=>[String(index),
+text(row.table_name)+'.'+text(row.col_name)+' · hop '+text(row.hop)]),value=>inspectCohort(Number(value)));}
 cohortView=el('div',undefined,'kt-detail');patterns.append(cohortView);cohortResize.observe(cohortView);
-if(ranked.length)inspectCohort(ranked[0].index);else{cohortView.hidden=true;}
+if(ranked.length){const ranking=el('details');ranking.append(el('summary','Exact input variation ranking'));
+note(ranking,'Table, hop and column identify each cohort record. Variation scores are separate from gradient sensitivity and mean prediction error.');
+cohortButtons=Array(cohorts.length);table(ranking,['Table / column / hop','Variation score','Detail'],ranked.slice(0,100).map(({row,index})=>{
+const button=action('Inspect cohorts',()=>{inspectCohort(index);const heading=cohortView.querySelector('h3');heading.tabIndex=-1;heading.focus();});cohortButtons[index]=button;return[
+text(row.table_name)+'.'+text(row.col_name)+' · hop '+text(row.hop),row.prediction_score,button];}),[1]);
+if(ranked.length>100)note(ranking,'Showing the first 100 of '+ranked.length+' loaded cohort records by recorded variation. All loaded inputs are available in the selector.');
+patterns.append(ranking);inspectCohort(ranked[0].index);}else{cohortView.hidden=true;}
 const examples=section('Selected examples');
 note(examples,'Compare retained TEST predictions and observed targets. Selection strategies may overlap and are not prediction outcomes; selected entities do not represent the full TEST population.');
 state(examples,data.samples,'Examples');
