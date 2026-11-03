@@ -39,7 +39,11 @@ from kumoapi.data_source import ConnectorType
 from kumoapi.explain import ColumnAnalysisOutput, Subgraph
 from kumoapi.pquery import QueryType
 from kumoapi.train import TrainingStage
-from kumoapi.typing import Stype
+from kumoapi.typing import (
+    Stype,
+    TimestampPrecision,
+    check_prediction_precision,
+)
 
 from async_utils.instrument import measure_blocking_code
 from common_utils.string import re
@@ -79,7 +83,7 @@ from rest.config.evaluation import (
 )
 from rest.config.graph_v2 import GraphDataComputeInput
 from rest.config.jobs import BatchPredictionRequest, MetadataField
-from rest.config.ml_backend import MaterializationTaskInfo
+from rest.config.ml_backend import MaterializationTaskInfo, TrainingJobInput
 from rest.config.prediction_output import (
     ADLSPredictionOutput,
     BigQueryPredictionOutput,
@@ -430,6 +434,13 @@ class BatchPredictionJobLogic:
 
         graph_id, graph_data_ver = await self._resolve_bp_graph_id(
             pq_resource, graph_snapshot_id, predictive_query_id)
+        trained_precision = await self._trained_timestamp_precision(
+            training_job_id)
+        if graph_snapshot_id:
+            _, snapshot_info = await self._get_graph_snapshot_info(
+                graph_snapshot_id)
+            check_prediction_precision(trained_precision,
+                                       snapshot_info.timestamp_precision)
 
         config = request.to_config(
             predictive_query_id=predictive_query_id,
@@ -483,6 +494,9 @@ class BatchPredictionJobLogic:
             raise ValueError(
                 f"Invalid batch prediction job input due to {type(ex).__name__}: {ex}"
             ) from ex
+        # Unpinned, the graph refresh builds in the model's clock.
+        job_input.graph_data_compute_input.timestamp_precision = (
+            trained_precision)
 
         # Submit must write the full row before the workflow starts; a separate
         # REST-metadata write afterwards left an early GET racing a 404.
@@ -565,6 +579,19 @@ class BatchPredictionJobLogic:
         graph_snapshot_id: str,
     ) -> Tuple[GraphIDv2, GraphDataVersionInfo]:
         return await get_graph_snapshot_info(graph_snapshot_id)
+
+    async def _trained_timestamp_precision(
+            self, training_job_id: TrainingJobID) -> TimestampPrecision:
+        r"""The clock of the graph a training job ran on: its pinned
+        snapshot's, else the one its refresh built (seconds for older jobs)."""
+        home_dir = await self._ml_backend.get_job_home_dir(training_job_id)
+        job_input = await load_json_async(
+            HomeDirManager(home_dir).training_job_input_file, TrainingJobInput)
+        if job_input is None:
+            return 'seconds'
+        if job_input.graph_version_info is not None:
+            return job_input.graph_version_info.timestamp_precision
+        return job_input.graph_data_compute_input.timestamp_precision
 
     async def _gen_pred_table_graph_context(
         self,

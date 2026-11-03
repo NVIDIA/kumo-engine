@@ -43,11 +43,12 @@
 
 use std::path::{Path, PathBuf};
 
-use diskgraph_core::time::{Seconds, TimeUnit};
+use diskgraph_core::time::{TimeUnit, UnitSystem};
 use diskgraph_core::tt_builder::{
     DiskGraphTTPlan, EntitySpec, FactPseudoTimeSpec, PredictionType, RefResolveKind,
     RefResolveSpec, SplitSpec as PlanSplitSpec,
 };
+use diskgraph_core::with_index_clock;
 use diskgraph_train_table::custom_tt_row_errors::{
     IngestOnError, RowFailuresReport, TimestampReference,
 };
@@ -57,7 +58,7 @@ use diskgraph_train_table::ttgen_output::{PRIMARY_ENTITY_COL, PRIMARY_TARGET_COL
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use crate::tt_executor::{run_gen_bundle, validate_tt_id};
+use crate::tt_executor::{index_clock, run_gen_bundle, validate_tt_id};
 
 fn custom_tt_artifact_base(parquet_path: &Path) -> PathBuf {
     // Multi-part contract (kumo Phase 2): kumo passes the train-table
@@ -98,7 +99,7 @@ fn path_with_suffix(base: &Path, suffix: &str) -> PathBuf {
 ///
 /// Args mirror what kumo's
 /// `ensure_diskgraph_native_artifacts_for_train_table` calls into. The
-/// `split_spec_json` is a JSON-serialized `SplitSpec<Seconds>` shape (the
+/// `split_spec_json` is a JSON-serialized `SplitSpec` in the index clock (the
 /// pure-Rust plan SplitSpec, NOT the Python SplitSpec dataclass — the
 /// Python wrapper does the conversion).
 ///
@@ -160,7 +161,7 @@ pub fn build_train_table_artifacts_for_existing_table(
         .map_err(|e| {
             crate::DiskgraphConfigError::new_err(format!("invalid fact_pseudo_time_json: {e}"))
         })?;
-    build_bundle_for_existing_table(
+    with_index_clock!(index_clock(index_path)?, U => build_bundle_for_existing_table::<U>(
         py,
         output_path,
         index_path,
@@ -180,7 +181,7 @@ pub fn build_train_table_artifacts_for_existing_table(
         allow_negative_weight,
         timestamp_reference_json,
         /* is_prediction */ false,
-    )
+    ))
 }
 
 /// Build TT artifacts (manifest + sidecars) for an already-materialized
@@ -226,7 +227,7 @@ pub fn build_prediction_table_artifacts_for_existing_table(
     task_type: Option<&str>,
     ingest_on_error: &str,
 ) -> PyResult<Py<PyAny>> {
-    build_bundle_for_existing_table(
+    with_index_clock!(index_clock(index_path)?, U => build_bundle_for_existing_table::<U>(
         py,
         output_path,
         index_path,
@@ -251,7 +252,7 @@ pub fn build_prediction_table_artifacts_for_existing_table(
         /* allow_negative_weight */ false,
         /* timestamp_reference_json */ None,
         /* is_prediction */ true,
-    )
+    ))
 }
 
 /// Build the plan's `fkey_mapping`: always the LHS `ENTITY1 → entity_table`
@@ -375,7 +376,7 @@ fn row_failures_to_py<'py>(
 /// entries. `is_prediction` toggles the plan flag (predict skips the customer
 /// TARGET); the PREDICT wrapper additionally passes `split_spec_json=None` so
 /// the executor takes the `SplitMode::None` single-`predict`-stage path.
-fn build_bundle_for_existing_table(
+fn build_bundle_for_existing_table<U: UnitSystem>(
     py: Python<'_>,
     output_path: &str,
     index_path: &str,
@@ -427,7 +428,7 @@ fn build_bundle_for_existing_table(
     // the executor takes the SplitMode::None path. A custom split (e.g.
     // `ManualSplit` on a customer-provided split column) flows through here as a
     // SplitSpec and routes via the column deciders — there is no split.bin.
-    let split: Option<PlanSplitSpec<Seconds>> = match split_spec_json {
+    let split: Option<PlanSplitSpec<U>> = match split_spec_json {
         Some(s) if !s.is_empty() => Some(serde_json::from_str(s).map_err(|e| {
             crate::DiskgraphConfigError::new_err(format!("invalid split_spec_json: {e}"))
         })?),
@@ -445,7 +446,7 @@ fn build_bundle_for_existing_table(
     // (ENTITYk, TIMESTAMP, TARGETk) is read directly from the customer
     // parquet by the chunk processor. LP CTT uses LinkArray output plus
     // the same FK-free resolution contract as PQL TT-NG LP.
-    let plan: DiskGraphTTPlan<Seconds> = DiskGraphTTPlan {
+    let plan: DiskGraphTTPlan<U> = DiskGraphTTPlan {
         entity: EntitySpec {
             table: entity_table_name.to_string(),
             column: entity_pk_column.to_string(),

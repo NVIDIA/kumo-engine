@@ -250,7 +250,7 @@ class ShallowRHSLinkGNNLightningModule(BaseLinkLightningModule):
 
         seed_time = batch[self.lhs_name].seed_time
         return self._get_valid_rhs_idx_for_seed_time(
-            seed_time=int(seed_time[0]),  # Only contains shared seed times.
+            seed_time=int(seed_time.min()),  # Anchors share a second.
             device=seed_time.device,
         )
 
