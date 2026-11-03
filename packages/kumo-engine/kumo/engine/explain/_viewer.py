@@ -130,7 +130,7 @@ border-radius:7px;padding:6px 10px;max-width:100%}
 .kumo-training .kt-action{cursor:pointer;white-space:normal;text-align:left}
 .kumo-training .kt-action:hover{background:$chrome_hover}
 .kumo-training summary{cursor:pointer;color:$muted;font-size:13px;padding:6px 0}
-.kumo-training :is(button,select,summary,h2,.kt-history-values,.kt-sample-values):focus-visible{outline:2px solid $focus;outline-offset:2px}
+.kumo-training :is(button,select,summary,h2,h3,.kt-history-values,.kt-sample-values):focus-visible{outline:2px solid $focus;outline-offset:2px}
 .kumo-training .kt-action[aria-pressed="true"]{background:$row_highlight;
 border-color:$focus}
 .kumo-training .kt-detail{padding:12px;border:1px solid $surface_border;
@@ -144,6 +144,15 @@ align-items:center;gap:8px}
 .kumo-training .kt-track{height:7px;background:$surface;border-radius:4px;overflow:hidden}
 .kumo-training .kt-bar{height:100%;background:$accent;border-radius:4px}
 .kumo-training .kt-value{text-align:right;font-variant-numeric:tabular-nums}
+.kumo-training .kt-feature-list,.kumo-training .kt-feature-cells{list-style:none;padding:0;margin:8px 0 16px}
+.kumo-training .kt-feature-list>li+li{margin-top:6px}
+.kumo-training .kt-feature-choice{display:grid;grid-template-columns:minmax(0,1fr) minmax(120px,38%);
+align-items:center;gap:12px;width:100%;padding:10px}
+.kumo-training .kt-feature-choice .kt-note{display:block;margin:2px 0 0;font-size:12px}
+.kumo-training .kt-feature-cells>li{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 180px;
+align-items:start;gap:8px 16px;padding:10px 0;border-bottom:1px solid $surface_border}
+.kumo-training .kt-feature-cells .kt-note{margin:2px 0;font-size:12px}
+.kumo-training .kt-feature-context>h3{margin-top:0}
 .kumo-training .kt-history-chart{display:block;width:100%;height:auto;max-width:600px;margin:12px 0}
 .kumo-training :is(.kt-history-values,.kt-sample-values){max-height:400px;overflow:auto;padding:4px}
 .kumo-training .kt-list{padding-left:20px;margin:8px 0 12px}
@@ -174,6 +183,7 @@ color:$muted;display:block;text-align:left}
 .kumo-training .kt-table .kt-number{text-align:left}
 .kumo-training .kt-value{text-align:right}
 .kumo-training .kt-detail{padding:10px}
+.kumo-training .kt-feature-choice,.kumo-training .kt-feature-cells>li{grid-template-columns:minmax(0,1fr)}
 }
 """).substitute(CSS_THEME)
 
@@ -341,12 +351,17 @@ const patterns=section('Recorded patterns');patterns.append(el('h3','Global inpu
 note(patterns,'Unsigned recorded gradient magnitude, normalized across all columns when the total is positive. '
 +'These scores describe sensitivity, not causal effects or prediction probabilities.');
 state(patterns,data.gradient,'Global sensitivity','Producer scope');
-const gradients=list(obj(data.gradient).rows), valid=gradients.filter(row=>finite(row.score)&&row.score>=0)
+const gradients=list(obj(data.gradient).rows).map(obj), valid=gradients.filter(row=>finite(row.score)&&row.score>=0)
 .sort((a,b)=>b.score-a.score||text(a.table).localeCompare(text(b.table))||text(a.column).localeCompare(text(b.column)));
 if(valid.length!==gradients.length)note(patterns,'Invalid or negative gradient scores are excluded from the unsigned ranking.');
 note(patterns,'Highest recorded gradient scores; showing '+Math.min(20,valid.length)+' of '+text(obj(data.gradient).total??gradients.length)+' columns. The visible subset is not renormalized.');
 const cohorts=list(obj(data.cohorts).rows);
-let cohortView,cohortButtons=[];
+let cohortView,cohortButtons=[],selectedFeature=valid[0],selectedExample;
+const featureButtons=[],featureContext=el('div',undefined,'kt-detail kt-feature-context');
+const chooseFeature=row=>{selectedFeature=row;drawFeatureContext(featureContext);
+featureButtons.forEach(({button,feature})=>{button.setAttribute('aria-pressed',String(feature===row));
+button.querySelector('.kt-note').textContent=feature===row?'Selected feature':'Inspect loaded context';});
+if(!sampleView.hidden&&selectedExample)inspectSample(selectedExample.ref,selectedExample.index);enable();};
 const inspectCohort=index=>{cohortView.replaceChildren();const c=cohorts[index];
 cohortView.append(el('h3',text(c.table_name)+'.'+text(c.col_name)+' · hop '+text(c.hop)));
 note(cohortView,'Prediction variation rank score: '+number(c.prediction_score)+'. The ranking averages recorded class dimensions.');
@@ -364,13 +379,17 @@ if(classes.length)control(cohortView,'Recorded class',[['','Choose a class'],...
 else note(cohortView,text(obj(data.cohorts).task_type).includes('regression')?'Mean values use recorded target units.':'Recorded prediction and target means.');
 cohortView.append(bins);draw('');cohortButtons.forEach((button,i)=>{button.setAttribute('aria-pressed',String(i===index));
 button.closest('tr').setAttribute('aria-selected',String(i===index));});enable();};
-if(valid.length)table(patterns,['Input column','Recorded score','Cohort detail'],valid.slice(0,20).map(row=>{
+if(valid.length){const rows=el('ul',undefined,'kt-feature-list');rows.setAttribute('aria-label','Global input sensitivity');
+for(const row of valid.slice(0,20)){
 const score=el('div',undefined,'kt-score'),track=el('div',undefined,'kt-track'),bar=el('div',undefined,'kt-bar');
 bar.style.width=Math.min(100,row.score*100)+'%';track.setAttribute('aria-hidden','true');track.append(bar);
 score.append(track,el('span',number(row.score),'kt-value'));
-const matches=cohorts.map((c,i)=>c.table_name===row.table&&c.col_name===row.column?i:-1).filter(i=>i>=0);
-const choices=el('div');for(const index of matches)choices.append(action('Inspect cohorts · hop '+text(cohorts[index].hop),()=>inspectCohort(index)));
-if(!matches.length)choices.textContent='No matching cohort';return[text(row.table)+'.'+text(row.column),score,choices];}));
+const button=action('',()=>chooseFeature(row));button.classList.add('kt-feature-choice');
+const label=el('span',text(row.table)+'.'+text(row.column));label.append(el('span','Inspect loaded context','kt-note'));
+button.append(label,score);featureButtons.push({button,feature:row});const item=el('li');item.append(button);rows.append(item);}
+patterns.append(rows,featureContext);
+const exact=el('details');exact.append(el('summary','Exact global sensitivity values'));
+table(exact,['Input column','Global score'],valid.slice(0,20).map(row=>[text(row.table)+'.'+text(row.column),row.score]),[1],true);patterns.append(exact);}
 patterns.append(el('h3','Prediction variation across cohorts'));state(patterns,data.cohorts,'Cohorts');
 note(patterns,'Ranked separately from gradient sensitivity. Table, hop and column identify each cohort record.');
 const ranked=cohorts.map((row,index)=>({row,index})).sort((a,b)=>(finite(b.row.prediction_score)?b.row.prediction_score:-Infinity)-(finite(a.row.prediction_score)?a.row.prediction_score:-Infinity)||a.index-b.index);
@@ -390,11 +409,53 @@ note(examples,'Coverage: '+text(coverage.references_listed??references.length)+'
 if(references.length)note(examples,'Preloaded example identities and values may be saved in notebook HTML or widget state. '
 +'Inspect other retained graphs in Python with explanations.sample(collector_id).');
 const sampleView=el('div',undefined,'kt-detail'),sampleButtons=[];
-const sampleIdentity=ref=>{
-const store=obj(obj(bodies[ref.artifact_id]).subgraph_store),node=obj(obj(store.nodes)[store.root_id]);
-const tables=Object.entries(obj(store.tables)).filter(([,ids])=>list(ids).some(id=>String(id)===String(store.root_id))).map(([name])=>name);
-return Object.hasOwn(node,'pkey')&&node.pkey!==null?
-(tables.length?tables.join(', ')+'.':'')+text(node.pkey_name)+': '+JSON.stringify(node.pkey):'Original entity unavailable';};
+const nodeIdentity=(store,id)=>{const node=obj(obj(store.nodes)[id]);
+const tables=Object.entries(obj(store.tables)).filter(([,ids])=>list(ids).some(value=>String(value)===String(id))).map(([name])=>name);
+return node.count!==undefined?'Aggregate of '+text(node.count)+' recorded nodes'+(tables.length?' · '+tables.join(', '):''):
+Object.hasOwn(node,'pkey')&&node.pkey!==null?(tables.length?tables.join(', ')+'.':'')+text(node.pkey_name)+': '+JSON.stringify(node.pkey):'Original entity unavailable';};
+const sampleIdentity=ref=>{const store=obj(obj(bodies[ref.artifact_id]).subgraph_store);return nodeIdentity(store,store.root_id);};
+const featureCells=body=>Object.entries(obj(obj(body.feature_store).features)).flatMap(([id,columns])=>
+Object.entries(obj(columns)).map(([name,value])=>({id,name,feature:obj(value)})));
+const matchingCells=ref=>featureCells(obj(bodies[ref.artifact_id])).filter(({feature})=>
+typeof selectedFeature.table==='string'&&typeof selectedFeature.column==='string'&&
+feature.table_name===selectedFeature.table&&feature.name===selectedFeature.column);
+const drawFeatureContext=(parent,entry)=>{parent.replaceChildren();if(!selectedFeature)return;
+const featureName=text(selectedFeature.table)+'.'+text(selectedFeature.column);
+parent.append(el('h3','Inspect '+featureName));
+note(parent,'Global sensitivity: '+number(selectedFeature.score)+' · across recorded input columns.');
+const matches=loaded.filter(({ref})=>matchingCells(ref).length);
+if(!entry){if(!selectedExample)selectedExample=matches[0];entry=selectedExample;
+if(matches.length){const choices=matches.map(item=>[String(item.index),sampleIdentity(item.ref)+' · collector '+text(item.ref.artifact_id)]);
+if(entry&&!matches.some(item=>item.index===entry.index))choices.unshift([String(entry.index),sampleIdentity(entry.ref)+' · feature not recorded']);
+const select=control(parent,'Matching loaded example',choices,value=>{
+selectedExample=matches.find(item=>String(item.index)===value)||entry;
+if(!sampleView.hidden)inspectSample(selectedExample.ref,selectedExample.index);else drawFeatureContext(parent);enable();});select.value=String(entry.index);}}
+if(!entry){note(parent,'No loaded example contains this exact recorded table and feature name. Missing, malformed and unloaded bodies cannot establish a match.');}
+else{const body=obj(bodies[entry.ref.artifact_id]),store=obj(body.subgraph_store),cells=matchingCells(entry.ref);
+identityNote(parent,'Selected example',sampleIdentity(entry.ref)+' · Collector '+text(entry.ref.artifact_id));
+if(!cells.length)note(parent,'This loaded example has no matching recorded feature. Choose another global feature in Patterns.');
+else{const axis=featureCells(body).reduce((max,{feature})=>finite(feature.score)&&feature.score>=0?Math.max(max,feature.score):max,1);
+note(parent,'Local scores use this example’s own scale (0 to '+number(axis)+'). They cannot be compared numerically with global scores or other examples. Unavailable means unrecorded, not zero.');
+if(cells.some(({id})=>obj(obj(store.nodes)[id]).count!==undefined))note(parent,'Aggregate scores sum normalized source cells and can exceed 1; aggregate values are not retained.');
+const rows=el('ul',undefined,'kt-feature-cells');rows.setAttribute('aria-label','Matching recorded feature values and local sensitivity');
+for(const {id,feature}of cells.slice(0,80)){const row=el('li'),identity=el('div'),value=el('div'),score=el('div');
+identity.append(el('strong',nodeIdentity(store,id)));note(identity,'Recorded node: '+id);
+value.append(el('span','Recorded value','kt-note'),el('div',feature.value==null&&obj(obj(store.nodes)[id]).count!==undefined?'Aggregate value not retained':text(feature.value)));
+score.append(el('span','Local sensitivity','kt-note'));
+if(finite(feature.score)&&feature.score>=0){const mark=el('div',undefined,'kt-score'),track=el('div',undefined,'kt-track'),bar=el('div',undefined,'kt-bar');
+bar.style.width=(feature.score/axis*100)+'%';track.setAttribute('aria-hidden','true');track.append(bar);mark.append(track,el('span',number(feature.score),'kt-value'));score.append(mark);}
+else note(score,feature.score==null?'Unavailable':'Invalid recorded score');
+row.append(identity,value,score);rows.append(row);}parent.append(rows);
+if(cells.length>80)note(parent,'Showing 80 of '+cells.length+' matching recorded cells; complete loaded body remains available in Python.');
+const exact=el('details');exact.append(el('summary','Exact matching feature values and local scores'));
+note(exact,'Local sensitivity is divided by this example’s maximum source-cell sensitivity. A source-cell score of 1 marks that maximum. Aggregate scores sum these normalized cells. Numeric scores are unchanged when the bar axis extends above 1.');
+table(exact,['Recorded node','Value','Local score'],cells.slice(0,80).map(({id,feature})=>[id,text(feature.value),feature.score]),[2],true);parent.append(exact);}
+if(parent===featureContext)parent.append(action('Inspect this example’s context',()=>{inspectSample(entry.ref,entry.index);showPanel(2);
+const heading=sampleView.querySelector('h3');heading.tabIndex=-1;heading.focus();}));}
+if(parent===featureContext){note(parent,matches.length+' of '+loaded.length+' loaded examples contain this exact feature. These are recorded contexts, not cohort memberships or a population sample.');
+const cohortMatches=cohorts.map((c,i)=>c.table_name===selectedFeature.table&&c.col_name===selectedFeature.column?i:-1).filter(i=>i>=0);
+for(const index of cohortMatches)parent.append(action('Inspect cohorts · hop '+text(cohorts[index].hop),()=>{inspectCohort(index);const heading=cohortView.querySelector('h3');heading.tabIndex=-1;heading.focus();}));
+if(!cohortMatches.length)note(parent,'No matching cohort record.');}};
 const rankedOutput=(parent,output,artifact)=>{
 state(parent,output,'Output context');
 if(!['available','partial'].includes(output.status))return;
@@ -445,7 +506,8 @@ const details=el('details');details.append(el('summary','Explore '+title.toLower
 const values=el('div',undefined,'kt-sample-values');values.tabIndex=0;
 values.setAttribute('role','region');values.setAttribute('aria-label',title);
 table(values,headers,rows,numeric);details.append(values);sampleView.append(details);};
-const inspectSample=(ref,index)=>{sampleView.replaceChildren();sampleView.hidden=false;
+const inspectSample=(ref,index)=>{selectedExample={ref,index};sampleView.replaceChildren();sampleView.hidden=false;
+if(selectedFeature)drawFeatureContext(featureContext);
 sampleButtons.find(item=>item.rowIndex===index)?.button.closest('tr').after(sampleDetailRow);
 sampleView.append(el('h3',sampleIdentity(ref).length>100?sampleIdentity(ref).slice(0,100)+'…':sampleIdentity(ref)));
 identityNote(sampleView,'Example identity',sampleIdentity(ref)+' · Collector '+text(ref.artifact_id));
@@ -477,7 +539,9 @@ if(labels.length>100)note(sampleView,'Inspect complete retained output in Python
 const binary=output.task_type==='binary_classification';
 note(sampleView,binary?'Probability of the positive class; observed target: 0 = negative class, 1 = positive class.':'Values use recorded target units.');
 table(sampleView,[binary?'Positive-class probability (0 to 1)':'Prediction','Observed target'],[[output.prediction,output.target]],[0,1]);}}
-const body=obj(bodies[ref.artifact_id]),store=obj(body.subgraph_store),features=obj(obj(body.feature_store).features),nodes=obj(store.nodes);
+if(selectedFeature){const selectedContext=el('div',undefined,'kt-feature-context');sampleView.append(selectedContext);
+drawFeatureContext(selectedContext,{ref,index});}
+const body=obj(bodies[ref.artifact_id]),store=obj(body.subgraph_store),nodes=obj(store.nodes);
 const rootNode=obj(nodes[store.root_id]);
 identityNote(sampleView,'Root identity','Root node: '+text(store.root_id)+' · Original entity: '+text(rootNode.pkey)
 +' · Seed time: '+text(store.seed_time));
@@ -498,8 +562,7 @@ else note(sampleView,'No recorded relations in this loaded example.');
 sampleView.append(el('h4','Node features'));
 note(sampleView,'Local scores are per-example normalized sensitivity. Aggregate scores may exceed one; '
 +'unavailable scores differ from zero and are separate from global scores.');
-const cells=[];for(const [id,columns]of Object.entries(features))for(const [name,feature]of Object.entries(obj(columns)))
-cells.push([id,text(feature.table_name)+'.'+text(feature.name??name),text(feature.value),feature.score]);
+const cells=featureCells(body).map(({id,name,feature})=>[id,text(feature.table_name)+'.'+text(feature.name??name),text(feature.value),feature.score]);
 if(cells.length)sampleTable('Node features',['Node','Feature','Recorded value','Local score'],cells.slice(0,200),cells.length,[3]);
 else note(sampleView,'No recorded feature values.');
 if(cells.length>200)note(sampleView,'Showing 200 of '+cells.length+' recorded feature cells.');
@@ -559,6 +622,7 @@ const metadata=results.querySelector(':scope>.kt-note'),details=el('details');
 details.append(el('summary','Run details'));if(metadata)details.append(metadata);
 note(header,'Task: '+text(context.task_type||provenance.task_type)+' · Explanation split: TEST');
 header.append(details);root.prepend(header,navigation);showPanel(0);
+if(selectedFeature)chooseFeature(selectedFeature);
 root.hidden=false;fallback.hidden=true;enable();
 onDispose(()=>{root.querySelectorAll('button,select').forEach(node=>node.disabled=true);
 root.hidden=true;fallback.hidden=false;});
