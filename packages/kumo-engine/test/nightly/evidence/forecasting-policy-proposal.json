@@ -1,7 +1,7 @@
 {
   "format": "kumo-engine-forecasting-policy-proposal-v1",
   "status": "PROPOSAL_NOT_APPROVED",
-  "basis": "User-directed ten-percent policy choices applied to existing reference results. No statistical guarantee is claimed.",
+  "basis": "User-directed ten-percent policy choices applied to the original sixteen-case reference results. No statistical guarantee is claimed.",
   "wheel_sha256": "1bc15ecb7696bce216b05aa883d6897d2b8ce4342c6c2f9d62b7cc28b314539e",
   "input_manifest_sha256": "caba00478af611669d79b9998a6c2139cd689254fc5d642043c1fdde6d1a7cae",
   "normal": {
@@ -45,6 +45,5 @@
     "interpretation": "The proposed 0.544186 baseline minimizes Huber on raw training answers. The saved model applies log(1+answer) before Huber. Retaining the raw-answer comparator is an explicit policy choice requiring review."
   },
   "approval_requirement": "A reviewer must approve the baseline method, both bounds, retained reference evidence, and resources before reference approval.",
-  "new_seed_campaign_used_for_limits": false,
   "normal_control_separation_check_retained": true
 }

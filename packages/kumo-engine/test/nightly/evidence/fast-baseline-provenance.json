@@ -358,6 +358,6 @@
   "learning_limits_unchanged": false,
   "forecasting_policy_proposal": {
     "path": "forecasting-policy-proposal.json",
-    "sha256": "81585ac43d06caf5dbc0a141255f6e4712b989b9b1a55e6a9048124610fdbfea"
+    "sha256": "585b58e59d9e35da5e2ffe45e416940370b150608edb6f781f146efaa2333a36"
   }
 }
