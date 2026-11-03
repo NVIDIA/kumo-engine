@@ -2,13 +2,8 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Join batch-prediction outputs with generated labels and compute realized
-//! metrics. Both sides are hash-partitioned on their key into Arrow IPC
-//! spill files of about `partition_rows` rows each, and at most
-//! `MAX_CONCURRENT_JOINS` partitions are joined at once. Metrics follow the
-//! fit-time definitions: exact AUROC, AP and AUPRC as in torchmetrics (per
-//! label and pooled for multilabel), MAE/RMSE overall and per forecast step,
-//! top-1 accuracy, and MAP, precision, recall and F1 at k as in PyG.
+//! Realized metrics of batch predictions against their labels, joined through
+//! hash-partitioned spill files; metrics follow torchmetrics and PyG.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
@@ -18,7 +13,7 @@ use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use arrow::array::{
     Array, AsArray, BooleanArray, FixedSizeBinaryArray, Float64Array, ListBuilder, StringBuilder,
     TimestampNanosecondArray, UInt32Array,
@@ -27,7 +22,6 @@ use arrow::compute::{cast, interleave, take, take_record_batch};
 use arrow::datatypes::{Float64Type, TimestampNanosecondType};
 use arrow::ipc::reader::FileReader;
 use arrow::ipc::writer::FileWriter;
-use arrow::row::{RowConverter, SortField};
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -36,7 +30,7 @@ use rayon::prelude::*;
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 
-use crate::bp_col_stats::row_group_batches;
+use crate::bp_col_stats::{column, float64s, row_group_batches, rows};
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -54,12 +48,11 @@ impl EvaluateTask {
         !matches!(self, Self::Binary | Self::Regression)
     }
 
-    /// Labels are sets of classes.
     fn sets(self) -> bool {
         matches!(self, Self::Multilabel | Self::Ranking)
     }
 
-    /// One evaluated row per matched prediction row, not per label.
+    /// One actuals row per matched prediction row.
     fn exploded(self) -> bool {
         matches!(self, Self::Forecasting | Self::Multilabel)
     }
@@ -81,17 +74,14 @@ pub struct EvaluateSpec {
     pub label_target: String,
     #[serde(default)]
     pub actuals_dir: Option<PathBuf>,
-    /// (label column, output column) pairs written to `actuals_dir`.
+    /// (input, output) column names.
     #[serde(default)]
     pub actual_columns: Vec<(String, String)>,
-    /// (prediction column, output column) pairs written next to them, from
-    /// the matched prediction (the top-scored row of a grouped task).
     #[serde(default)]
     pub prediction_columns: Vec<(String, String)>,
-    /// (output column, UTC nanoseconds) pairs written as constant timestamps.
+    /// (output column, UTC nanoseconds).
     #[serde(default)]
     pub constant_timestamps: Vec<(String, i64)>,
-    /// Ranking cutoffs; those above the returned count are skipped.
     #[serde(default)]
     pub ks: Vec<usize>,
     pub spill_dir: PathBuf,
@@ -109,7 +99,6 @@ const LABEL_SEPARATOR: char = '|';
 
 type Batches = Box<dyn Iterator<Item = Result<RecordBatch>> + Send>;
 
-/// The type a pair of columns is compared as.
 fn common_type(a: &DataType, b: &DataType) -> DataType {
     let int = |t: &DataType| t.is_integer() || *t == DataType::Boolean;
     if a.is_temporal() || b.is_temporal() {
@@ -135,11 +124,7 @@ fn hashes(arrays: &[&ArrayRef], types: &[DataType]) -> Result<Vec<Option<u128>>>
             _ => cast(array, to),
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let fields = arrays
-        .iter()
-        .map(|a| SortField::new(a.data_type().clone()))
-        .collect();
-    let rows = RowConverter::new(fields)?.convert_columns(&arrays)?;
+    let rows = rows(&arrays)?;
     Ok((0..rows.num_rows())
         .map(|row| {
             arrays.iter().all(|array| array.is_valid(row)).then(|| {
@@ -160,17 +145,8 @@ fn classes(array: &ArrayRef, class: &DataType) -> Result<Vec<Option<u64>>> {
     Ok(hashes.into_iter().map(|h| h.map(|h| h as u64)).collect())
 }
 
-fn column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a ArrayRef> {
-    batch
-        .column_by_name(name)
-        .with_context(|| format!("missing column '{name}'"))
-}
-
 fn floats(array: &ArrayRef) -> Result<Vec<Option<f64>>> {
-    Ok(cast(array, &DataType::Float64)?
-        .as_primitive::<Float64Type>()
-        .iter()
-        .collect())
+    Ok(float64s(array)?.iter().collect())
 }
 
 fn keys(batch: &RecordBatch) -> Result<impl Iterator<Item = u128> + '_> {
@@ -178,8 +154,7 @@ fn keys(batch: &RecordBatch) -> Result<impl Iterator<Item = u128> + '_> {
     Ok((0..keys.len()).map(|row| u128::from_le_bytes(keys.value(row).try_into().unwrap())))
 }
 
-/// Sorted, distinct class hashes of each label: its class, or its set of
-/// classes as a list or a `|`-separated string.
+/// Sorted, distinct class hashes per label; a set is a list or `|`-separated.
 fn label_classes(target: &ArrayRef, sets: bool, class: &DataType) -> Result<Vec<Option<Vec<u64>>>> {
     if !sets {
         let classes = classes(target, class)?;
@@ -221,7 +196,6 @@ fn split(strings: &ArrayRef) -> Result<ArrayRef> {
     Ok(Arc::new(lists.finish()))
 }
 
-/// Each label's value per forecast step.
 fn label_steps(target: &ArrayRef) -> Result<Vec<Option<Vec<Option<f64>>>>> {
     let item = Field::new_list_field(DataType::Float64, true);
     let list = cast(target, &DataType::List(Arc::new(item)))?;
@@ -272,11 +246,12 @@ fn row_groups(paths: &[&Path]) -> Result<(RowGroups, usize, SchemaRef)> {
     Ok((groups, rows, schema))
 }
 
-/// Read `keep` columns, hash `keys`, and route rows with a key to `sinks`.
+/// Routes each row with a non-null key to its partition's sink.
 fn scatter(
     paths: &[&Path],
     groups: &RowGroups,
-    (keys, types): (&[String], &[DataType]),
+    keys: &[String],
+    types: &[DataType],
     keep: &[String],
     sinks: &[Sink],
 ) -> Result<()> {
@@ -313,7 +288,6 @@ fn scatter(
     })
 }
 
-/// A forecast step's sums, named as the holdout's horizon counts.
 type Step = [f64; 6];
 const STEP_NAMES: [&str; 6] = [
     "rows",
@@ -334,10 +308,9 @@ struct Accumulator {
     sum: f64,
     squares: f64,
     steps: Vec<Step>,
-    /// Multilabel, per class: `pairs`, and true positive, false positive and
-    /// false negative counts at the predicted labels.
+    /// Per class: pairs and true positive, false positive, false negative.
     classes: BTreeMap<u64, (Vec<u64>, [u64; 3])>,
-    /// Ranking, per `ks`: MAP, precision, recall and F1 sums.
+    /// Per k: MAP, precision, recall and F1 sums.
     at_k: Vec<[f64; 4]>,
     k: usize,
 }
@@ -395,7 +368,6 @@ impl Accumulator {
         }
     }
 
-    /// PyG's metrics at each of `ks` over `ranked` against `items`.
     fn rank(&mut self, ranked: &[Entry], items: &[u64], ks: &[usize]) {
         let labels = items.len() as f64;
         let (mut hits, mut numerator, mut at) = (0.0, 0.0, Vec::with_capacity(ranked.len()));
@@ -442,11 +414,9 @@ fn order_key(score: f64) -> u64 {
     })
 }
 
-/// A grouped prediction row.
 struct Entry {
     score: Option<f64>,
     class: Option<u64>,
-    /// Forecasting: the step's timestamp.
     time: i64,
     predicted: bool,
     at: (usize, usize),
@@ -491,8 +461,7 @@ fn grouped_entries(
         .collect())
 }
 
-/// Score each label row against the predictions with its key; the first
-/// label of a key counts.
+/// The first label of a key counts.
 fn join(
     predictions: Batches,
     labels: Batches,
@@ -613,29 +582,7 @@ fn join(
         let Some(path) = actuals.as_ref().filter(|_| !rows.is_empty()) else {
             continue;
         };
-        let rows = UInt32Array::from(rows);
-        let mut out = spec
-            .actual_columns
-            .iter()
-            .map(|(name, out)| {
-                let array = if task.exploded() && *name == spec.label_target {
-                    exploded_target(task, &values)
-                } else {
-                    take(column(&batch, name)?, &rows, None)?
-                };
-                Ok((out.as_str(), array, true))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        for (name, ns) in &spec.constant_timestamps {
-            let values = vec![*ns; picked.len()];
-            let array = TimestampNanosecondArray::from(values).with_timezone("UTC");
-            out.push((name.as_str(), Arc::new(array), true));
-        }
-        for (column, (_, name)) in spec.prediction_columns.iter().enumerate() {
-            let arrays: Vec<&dyn Array> = kept.iter().map(|batch| batch[column].as_ref()).collect();
-            out.push((name.as_str(), interleave(&arrays, &picked)?, true));
-        }
-        let out = RecordBatch::try_from_iter_with_nullable(out)?;
+        let out = actuals_batch(spec, &batch, rows, &values, &kept, &picked)?;
         if writer.is_none() {
             writer = Some(ArrowWriter::try_new(
                 File::create(path)?,
@@ -651,7 +598,40 @@ fn join(
     Ok(acc)
 }
 
-/// A forecast step's actual value, or whether a multilabel class is a label.
+/// The matched label rows with their predictions' columns.
+fn actuals_batch(
+    spec: &EvaluateSpec,
+    labels: &RecordBatch,
+    rows: Vec<u32>,
+    values: &[Option<f64>],
+    kept: &[Vec<ArrayRef>],
+    picked: &[(usize, usize)],
+) -> Result<RecordBatch> {
+    let rows = UInt32Array::from(rows);
+    let mut out = spec
+        .actual_columns
+        .iter()
+        .map(|(name, out)| {
+            let array = if spec.task.exploded() && *name == spec.label_target {
+                exploded_target(spec.task, values)
+            } else {
+                take(column(labels, name)?, &rows, None)?
+            };
+            Ok((out.as_str(), array, true))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for (name, ns) in &spec.constant_timestamps {
+        let values = vec![*ns; picked.len()];
+        let array = TimestampNanosecondArray::from(values).with_timezone("UTC");
+        out.push((name.as_str(), Arc::new(array), true));
+    }
+    for (column, (_, name)) in spec.prediction_columns.iter().enumerate() {
+        let arrays: Vec<&dyn Array> = kept.iter().map(|batch| batch[column].as_ref()).collect();
+        out.push((name.as_str(), interleave(&arrays, picked)?, true));
+    }
+    Ok(RecordBatch::try_from_iter_with_nullable(out)?)
+}
+
 fn exploded_target(task: EvaluateTask, values: &[Option<f64>]) -> ArrayRef {
     if task == EvaluateTask::Multilabel {
         let hits: BooleanArray = values.iter().map(|v| v.map(|v| v != 0.0)).collect();
@@ -660,8 +640,7 @@ fn exploded_target(task: EvaluateTask, values: &[Option<f64>]) -> ArrayRef {
     Arc::new(Float64Array::from(values.to_vec()))
 }
 
-/// Exact AUROC, average precision and AUPRC from (score, label) order keys;
-/// None unless both labels occur.
+/// Exact AUROC, AP and AUPRC; None unless both labels occur.
 fn ranking_metrics(pairs: &mut [u64]) -> [Option<f64>; 3] {
     pairs.par_sort_unstable();
     let positives = pairs.iter().filter(|pair| *pair & 1 == 1).count() as f64;
@@ -725,9 +704,6 @@ fn metrics(mut acc: Accumulator, spec: &EvaluateSpec) -> JsonValue {
     }
 }
 
-/// torchmetrics' per-class (macro, over classes with both labels) and pooled
-/// (micro) curves, and the holdout's F1, precision and recall at the
-/// predicted labels.
 fn multilabel_metrics(classes: BTreeMap<u64, (Vec<u64>, [u64; 3])>) -> JsonValue {
     let (mut pooled, mut per_class, mut f1, mut total) =
         (Vec::new(), Vec::new(), Vec::new(), [0u64; 3]);
@@ -758,7 +734,6 @@ fn multilabel_metrics(classes: BTreeMap<u64, (Vec<u64>, [u64; 3])>) -> JsonValue
     })
 }
 
-/// Per-step sums under the names of the holdout's horizon counts.
 fn by_horizon(steps: &[Step]) -> JsonValue {
     let columns = STEP_NAMES.iter().enumerate().map(|(i, name)| {
         (
@@ -769,9 +744,6 @@ fn by_horizon(steps: &[Step]) -> JsonValue {
     JsonValue::Object(columns.collect())
 }
 
-/// Join `prediction_paths` with `label_paths` and compute the realized
-/// metrics; returns `{"rows", "labelled", "metrics"}` and, for a forecast,
-/// `"by_horizon"`.
 pub fn evaluate_prediction_parquet(
     prediction_paths: &[&Path],
     label_paths: &[&Path],
@@ -848,19 +820,19 @@ pub fn evaluate_prediction_parquet(
             .collect()
     };
     let (predictions, labels) = (sinks("predictions"), sinks("labels"));
-    let prediction_keys = (spec.prediction_keys.as_slice(), types.as_slice());
     scatter(
         prediction_paths,
         &prediction_groups,
-        prediction_keys,
+        &spec.prediction_keys,
+        &types,
         &prediction_columns,
         &predictions,
     )?;
-    let label_keys = (spec.label_keys.as_slice(), types.as_slice());
     scatter(
         label_paths,
         &label_groups,
-        label_keys,
+        &spec.label_keys,
+        &types,
         &label_columns,
         &labels,
     )?;
