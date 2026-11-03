@@ -240,8 +240,8 @@ def test_an_unreachable_server_fails_when_mlops_is_built(
     monkeypatch.setenv('MLFLOW_HTTP_REQUEST_MAX_RETRIES', '0')
     tracking = MlflowTracking(target='http://127.0.0.1:9',
                               experiment_name='e')
-    with pytest.raises(RuntimeError, match='MLflow at http://127.0.0.1:9 '
-                       'is not usable with these credentials'):
+    with pytest.raises(RuntimeError,
+                       match='MLflow at http://127.0.0.1:9 is not usable: '):
         kumo.MLOps(str(tmp_path), tracking=tracking)
     with pytest.raises(ValueError, match='needs experiment_name'):
         kumo.MLOps(str(tmp_path),

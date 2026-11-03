@@ -174,8 +174,8 @@ class MlflowTracking(TrackingBase):
         except ValueError:
             raise
         except Exception as error:
-            raise RuntimeError(f'MLflow at {uri} is not usable with these '
-                               f'credentials: {full_error(error)}') from error
+            raise RuntimeError(
+                f'MLflow at {uri} is not usable: {full_error(error)}') from error
         if not missing:
             return
         with _limited_http(), self.target.scope():
