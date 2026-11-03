@@ -180,12 +180,9 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
     ]
     score = drift_column(counts)
     if score is not None and score in counts.extents:
-        low, high = counts.extents[score]
         summaries.append(Table(
             'pred/summary', ('column', 'mean', 'min', 'max'),
-            ((_label(score), float(counts.arrays[f'{score}/sum'] /
-                                   counts.arrays[score].sum()), low, high),),
-            brief=True))
+            ((_label(score), *_mean_range(counts, score)),), brief=True))
     if threshold is not None and 'predicted_positive' in counts.arrays:
         summaries.append(Scalar(
             'pred/positive_rate', float(counts.arrays['predicted_positive'] /
@@ -215,14 +212,6 @@ def _by_class(counts: Counts, ranked: str, order: Sequence[int],
     if holdout is not None and (holdout.shape != tally.shape
                                 or not holdout.sum()):
         holdout = None
-
-    def stats(name: Optional[str]) -> tuple:
-        if name is None:
-            return (None, None, None)
-        low, high = counts.extents[name]
-        return (float(counts.arrays[f'{name}/sum'] /
-                      counts.arrays[name].sum()), low, high)
-
     label = 'class' if ranked == 'classes' else 'label'
     return Table(
         'pred/by_class', (label, 'share now', 'holdout share', 'mean prob',
@@ -230,7 +219,14 @@ def _by_class(counts: Counts, ranked: str, order: Sequence[int],
         tuple((columns[i].removesuffix('_PROB') if columns else str(i),
                float(tally[i] / rows) if rows else 0.0,
                None if holdout is None else float(holdout[i] / holdout.sum()),
-               *stats(columns[i] if columns else None)) for i in order))
+               *(_mean_range(counts, columns[i]) if columns else
+                 (None, None, None))) for i in order))
+
+
+def _mean_range(counts: Counts, name: str) -> Tuple[float, float, float]:
+    low, high = counts.extents[name]
+    return (float(counts.arrays[f'{name}/sum'] / counts.arrays[name].sum()),
+            low, high)
 
 
 def _item_summaries(counts: Counts, as_of: Optional[str]) -> List[Summary]:
