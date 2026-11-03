@@ -8,6 +8,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from packaging.version import Version
 
 import kumo.engine as kumo
 from kumo.engine.connector import (
@@ -231,6 +232,24 @@ def test_pin_mlflow_reads_its_run_link_switch_per_call():
     )
 
     assert MLFLOW_SUPPRESS_PRINTING_URL_TO_STDOUT.name == NO_LINKS
+
+
+@pytest.mark.skipif(Version(mlflow.__version__) < Version('3.17'),
+                    reason='this MLflow still accepts folder stores')
+@pytest.mark.parametrize('store', ['file', 'path'])
+def test_a_refused_folder_store_says_to_use_sqlite(tmp_path, monkeypatch,
+                                                   store):
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    monkeypatch.delenv('MLFLOW_ALLOW_FILE_STORE', raising=False)
+    uri = (tmp_path / 'mlruns').as_uri() if store == 'file' else str(
+        tmp_path / 'mlruns')
+    tracking = MlflowTracking(target=uri, experiment_name='e')
+    with pytest.raises(RuntimeError) as raised:
+        kumo.MLOps(str(tmp_path / 'root'), tracking=tracking)
+    assert str(raised.value) == (
+        f'MLflow refused the local folder store at {uri}: use its default '
+        f'sqlite:///mlflow.db or another tracking backend.')
 
 
 def test_an_unreachable_server_fails_when_mlops_is_built(

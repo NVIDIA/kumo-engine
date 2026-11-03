@@ -33,7 +33,7 @@ from typing import (
     Tuple,
     cast,
 )
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from kumo_core.instrumentation import format_error
 from kumo_core.summaries import Dataset, Summary, Table
@@ -182,8 +182,7 @@ class MlflowTracking(TrackingBase):
         except ValueError:
             raise
         except Exception as error:
-            raise RuntimeError(
-                f'MLflow at {uri} is not usable: {full_error(error)}') from error
+            raise _unusable(uri, error) from error
         if not missing:
             return
         with _limited_http(), self.target.scope():
@@ -689,6 +688,15 @@ def check_model_name(name: str, registry_uri: str) -> None:
                 f'Unity Catalog cannot register a model named {name!r}: use '
                 f'catalog.schema.model without spaces or "/", e.g. '
                 f"'main.ml.users_churn'.")
+
+
+def _unusable(uri: str, error: Exception) -> RuntimeError:
+    if (urlparse(uri).scheme in ('', 'file')
+            and 'MLFLOW_ALLOW_FILE_STORE' in str(error)):
+        return RuntimeError(
+            f'MLflow refused the local folder store at {uri}: use its default '
+            f'sqlite:///mlflow.db or another tracking backend.')
+    return RuntimeError(f'MLflow at {uri} is not usable: {full_error(error)}')
 
 
 def _sagemaker_ui_hint(tracking_uri: str) -> Optional[str]:
