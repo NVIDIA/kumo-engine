@@ -392,6 +392,66 @@ def test_source_tables_are_logged_as_native_inputs(monkeypatch):
     assert mlflow.data.get_source(orders).delta_table_id == 'table-id'
 
 
+def _fit_manifest():
+    from kumo.engine._manifest import (
+        ModelManifest,
+        ModelParents,
+        SnapshotManifest,
+        SnapshotParents,
+        SourceTableEntry,
+        TrainingTableManifest,
+        TrainingTableParents,
+    )
+
+    return ModelManifest(id='m', parents=ModelParents(
+        training_table=TrainingTableManifest(
+            id='tt-fadf04', created_at='2026-11-01T10:00:00+00:00',
+            location='s3://root/training_tables/tt-fadf04',
+            parents=TrainingTableParents(snapshot=SnapshotManifest(
+                id='g@5ac245', created_at='2026-11-01T09:00:00+00:00',
+                location='s3://root/snapshots/g/5ac245',
+                parents=SnapshotParents(source_tables={
+                    name: SourceTableEntry(
+                        connector='S3', location=f's3://data/{name}',
+                        version='3', version_kind='exact')
+                    for name in ('users', 'orders')}))))))
+
+
+def test_a_fits_inputs_are_logged_in_role_order():
+    from kumo.engine._manifest import FIT_ROLES, artifact_summaries
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    replay(MlflowTracking(log_system_metrics=False),
+           summaries=artifact_summaries(_fit_manifest(), FIT_ROLES))
+
+    assert [item.dataset.name for item in
+            _fit_run().inputs.dataset_inputs] == [
+        'training table 2026-11-01-fadf04',
+        'graph snapshot 2026-11-01-5ac245', 'orders', 'users']
+
+
+def test_the_snapshot_input_lists_its_tables_and_rows(tmp_path):
+    from kumo.engine._data_summaries import table_details
+    from kumo.engine._manifest import FIT_ROLES, artifact_summaries
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    (tmp_path / 'ingest_stats.json').write_text(json.dumps(
+        {'stats': {'node_counts': {'users': 300, 'orders': 6000}}}))
+    (tmp_path / 'diskgraph_config.json').write_text(json.dumps(
+        {'tables': [{'name': 'users'}, {'name': 'orders'}]}))
+    replay(MlflowTracking(log_system_metrics=False),
+           summaries=artifact_summaries(_fit_manifest(), FIT_ROLES,
+                                        table_details(tmp_path, 'g@5ac245')))
+
+    snapshot, = [item.dataset for item in _fit_run().inputs.dataset_inputs
+                 if item.dataset.name.startswith('graph snapshot')]
+    assert json.loads(snapshot.schema) == {'mlflow_colspec': [
+        {'name': 'snapshot id', 'type': 'g@5ac245'},
+        {'name': 'users', 'type': '300 rows'},
+        {'name': 'orders', 'type': '6,000 rows'}]}
+    assert json.loads(snapshot.profile) == {'tables': 2, 'rows': 6300}
+
+
 def test_monitoring_folds_into_its_prediction_run():
     from kumo.engine.integrations.mlflow import MlflowTracking
 

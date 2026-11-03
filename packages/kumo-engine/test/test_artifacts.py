@@ -159,9 +159,9 @@ def test_a_fits_datasets_are_named_and_labelled_by_role():
     assert [(s.name, s.context, s.source['version'])
             for s in artifact_summaries(model, FIT_ROLES)
             if isinstance(s, Dataset)] == [
-        ('graph snapshot 2026-11-01-5ac245', 'graph context', 'g@5ac245'),
         ('training table 2026-11-01-fadf04', 'training examples',
          'tt-fadf04'),
+        ('graph snapshot 2026-11-01-5ac245', 'graph context', 'g@5ac245'),
         ('users', 'source table', '3'),
     ]
 

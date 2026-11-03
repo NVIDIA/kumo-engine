@@ -257,18 +257,24 @@ def table_details(index: Path, snapshot_id: Optional[str] = None) -> Details:
     rows = (_read(index / 'ingest_stats.json').get('stats')
             or {}).get('node_counts') or {}
     profiles = _profiles(_read(index / 'col_stats.json'))
-    tables = _read(index / 'diskgraph_config.json').get('tables') or ()
-    snapshot = {} if snapshot_id is None else {snapshot_id: ({}, {
-        'tables': len(tables),
-        'rows': sum(rows.get(table.get('name'), 0) for table in tables)})}
+    tables = {table.get('kumo_source_table_name') or table.get('name'): table
+              for table in _read(index / 'diskgraph_config.json').get(
+                  'tables') or ()}
+    counts = {name: rows.get(table.get('name'), 0)
+              for name, table in tables.items()}
+    snapshot = {} if snapshot_id is None else {snapshot_id: (
+        {'snapshot id': {'type': snapshot_id},
+         **{name: {'type': f'{count:,} rows'}
+            for name, count in counts.items()}},
+        {'tables': len(tables), 'rows': sum(counts.values())})}
     return {**snapshot, **{
-        table.get('kumo_source_table_name') or table.get('name'): (
+        name: (
             {column['name']: {'stype': column.get('semantic_type'),
                               'dtype': column.get('source_dtype')}
              for column in table.get('columns') or ()},
             {'rows': rows.get(table.get('name')),
              'columns': profiles.get(table.get('name'), {})})
-        for table in tables
+        for name, table in tables.items()
     }}
 
 
