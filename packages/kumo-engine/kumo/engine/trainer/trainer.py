@@ -858,6 +858,13 @@ class Trainer:
             raise ValueError('A prediction table already holds its entities '
                              'and times; pass it or entities=/'
                              'prediction_time=, not both.')
+        if self._training_result is None:
+            raise RuntimeError(
+                "Trainer.predict() requires a prior Trainer.fit() call on "
+                "this same Trainer instance.")
+        check_prediction_precision(
+            self._timestamp_precision,
+            index_timestamp_precision(snapshot.index_path))
         table = (prediction_table if prediction_table is not None else
                  self._prediction_table(snapshot, entities, prediction_time))
         return self._predict(
@@ -903,10 +910,6 @@ class Trainer:
         num_workers: int = 1,
         binary_classification_threshold: Optional[float] = None,
     ) -> PredictionResult:
-        if self._training_result is None:
-            raise RuntimeError(
-                "Trainer.predict() requires a prior Trainer.fit() call on "
-                "this same Trainer instance.")
         from kumo_core.pquery import normalize_graph, parse_and_validate_query
         from kumo_core.prediction_options import (
             prediction_query_contract,
@@ -915,9 +918,6 @@ class Trainer:
         )
         from kumo_core.types import TaskType
 
-        check_prediction_precision(
-            self._timestamp_precision,
-            index_timestamp_precision(snapshot.index_path))
         graph_config = snapshot.graph_config
         contract = prediction_query_contract(prediction_table.query,
                                              graph_config)
