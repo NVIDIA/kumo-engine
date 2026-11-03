@@ -68,6 +68,7 @@ from typing import Any, Dict, Mapping, Sequence
 
 from kumo_core.pquery import NativeGraph, normalize_graph
 from kumoapi.graph import Edge
+from kumoapi.typing import TimestampPrecision, validate_timestamp_precision
 
 from kumo.engine._scratch import (
     fingerprint,
@@ -75,6 +76,7 @@ from kumo.engine._scratch import (
     snapshot_scratch_dir,
 )
 from kumo.engine._storage import network_storage
+from kumo.engine._visualization import SVG
 from kumo.engine.table import Table
 
 _warned_scratch: set[Path] = set()
@@ -216,6 +218,15 @@ class GraphSnapshot:
     graph_config: Dict[str, Any]
 
 
+def index_timestamp_precision(index_path: Path) -> TimestampPrecision:
+    r"""The clock an index stores timestamps in (seconds when it records
+    none)."""
+    path = Path(index_path) / 'index_metadata.json'
+    if not path.is_file():
+        return 'seconds'
+    return json.loads(path.read_text()).get('timestamp_unit', 'seconds')
+
+
 @dataclass(frozen=True)
 class Graph:
     r"""An immutable, metadata-only description of a graph: a set of `Table`
@@ -345,7 +356,67 @@ class Graph:
         """
         self.native_graph
 
-    def snapshot(self) -> GraphSnapshot:
+    def visualize(self, path: str | Path | None = None, *,
+                  show_cols: bool = False, show_samples: bool = False,
+                  layout: str = 'auto') -> SVG:
+        """Display pannable table relationships in notebooks and return SVG.
+
+        Args:
+            path: Optional local file, overwritten if it exists. A .pdf suffix
+                writes a vector graph and full schema/connection index.
+                A .md or .markdown suffix writes a Mermaid relationship
+                diagram and complete Markdown schema tables;
+                other paths receive UTF-8 SVG. Paths refer to the filesystem
+                where Kumo Engine runs.
+            show_cols: Add columns up to 10 rows per table (5 above 10 tables).
+                Primary keys, foreign keys, and declared time (TS) and end-time
+                (TE) columns are always included, even above this limit.
+                False shows only these columns.
+            show_samples: Show up to six non-null examples per column in notebook
+                tooltips, in two columns and up to three rows, selected from
+                up to 30 preview rows per table. False (default) reads no
+                source data. Previews may
+                run warehouse queries and incur costs; returned row limits
+                do not bound bytes scanned. Unavailable previews are labeled.
+                Samples become part of saved notebook output, never file exports.
+            layout: Initial arrangement: auto, standard, or compact.
+                Auto chooses from graph structure, independently of viewport
+                size. Standard preserves the layered relationship view;
+                compact balances crowded groups.
+                Notebook views offer a selector to compare arrangements.
+
+        Uses declared schemas. More than 30 tables, self-relations,
+        and missing schema/key definitions raise ValueError.
+        Display automatically uses environment-provided widget packages in
+        detected Snowflake Workspace notebooks and HTML in other hosts.
+        The optional as_widget() helper explicitly selects the widget view.
+        Full screen is available when the notebook host permits it.
+        Dragging, full screen, Fit, and zoom preserve the selected arrangement.
+        SVG exports use the initial layout and contain no interactive controls.
+        The export control shows Python commands to save PDF and Markdown
+        files in the notebook filesystem. PDF exports include all declared
+        columns in the index, even when the diagram omits them.
+        Markdown diagrams use the Markdown viewer's Mermaid layout rather than
+        the notebook arrangement; schema tables remain readable without Mermaid.
+        """
+        from kumo.engine._visualization import render
+
+        svg = render(self._named_tables, self.edges, show_cols=show_cols,
+                     show_samples=show_samples, layout=layout)
+        if path is not None:
+            destination = Path(path)
+            if destination.suffix.lower() == '.pdf':
+                destination.write_bytes(svg._pdf(svg._initial_layout))
+            elif destination.suffix.lower() in ('.md', '.markdown'):
+                destination.write_text(svg._markdown(), encoding='utf-8')
+            else:
+                destination.write_text(svg, encoding='utf-8')
+        return svg
+
+    def snapshot(
+        self,
+        timestamp_precision: TimestampPrecision = 'seconds',
+    ) -> GraphSnapshot:
         r"""Materialize this graph: read each table's connector, run the
         result through `kumo-core` to build column stats and the on-disk
         index. The index is stored under a directory keyed by both `self.id`
@@ -354,9 +425,16 @@ class Graph:
         and `GraphSnapshot`'s docstring for the resulting `id` shape. If a
         valid build already exists for that exact key, ingest is skipped and
         it's reused as is.
+
+        `timestamp_precision` is the clock the index stores timestamps in:
+        `"nanoseconds"`, `"microseconds"`, `"milliseconds"`, `"seconds"` (the
+        default), `"hours"` or `"days"`. Window lengths truncate to the clock,
+        and a window shorter than one tick is a configuration error. Each
+        clock is cached as a separate snapshot.
         """
         from filelock import FileLock
 
+        validate_timestamp_precision(timestamp_precision)
         self.validate()
         for table in self._named_tables.values():
             table.connector.validate_scratch_dir(get_scratch_dir())
@@ -383,9 +461,11 @@ class Graph:
         # processes, and a lock-file-existence mutex would leave a stale
         # lock behind after a crash.
         with FileLock(f'{persist_dir}.lock'):
-            return self._snapshot_no_lock(graph_key, persist_dir)
+            return self._snapshot_no_lock(graph_key, persist_dir,
+                                          timestamp_precision)
 
-    def _snapshot_no_lock(self, graph_key: str, persist_dir: Path) \
+    def _snapshot_no_lock(self, graph_key: str, persist_dir: Path,
+                          timestamp_precision: TimestampPrecision = 'seconds') \
             -> GraphSnapshot:
         r"""`snapshot()`'s body, run under its `FileLock`. Not meant to be
         called on its own -- `persist_dir`, unlike everything else here,
@@ -466,8 +546,12 @@ class Graph:
                     source_paths[alias] = str(
                         prepared.source.get('path') or dest_dir)
 
-            data_version = fingerprint(
-                json.dumps(table_data_versions, sort_keys=True).encode())
+            version_parts = [
+                json.dumps(table_data_versions, sort_keys=True).encode()
+            ]
+            if timestamp_precision != 'seconds':
+                version_parts.append(timestamp_precision.encode())
+            data_version = fingerprint(*version_parts)
             handle = DiskgraphSnapshotHandle(graph_key=graph_key,
                                              graph_data_version=data_version)
             output_dir = Path(store.path(handle))
@@ -494,6 +578,7 @@ class Graph:
                         table_data_versions=table_data_versions,
                         output_dir=str(output_dir),
                         source_paths=source_paths,
+                        timestamp_precision=timestamp_precision,
                         execution=IngestExecutionConfig(
                             success_marker_content=predicted.to_json()),
                     ),

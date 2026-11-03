@@ -97,8 +97,8 @@ def prediction_values(task, frame, ids, *, classes=(), anchor=None,
             values = ordered[['False_PROB', 'True_PROB']].to_numpy(dtype=float)
             if (not ((values >= 0) & (values <= 1)).all() or
                     not np.allclose(values.sum(axis=1), 1, atol=1e-6, rtol=1e-7)
-                    or not np.array_equal(ordered['TARGET_PRED'],
-                                          values[:, 1] > .5)):
+                    or not np.array_equal(ordered['TARGET_PRED'], values[:, 1]
+                                          > .5)):
                 raise ValueError(
                     'Binary probabilities or chosen labels are invalid')
         else:
@@ -122,10 +122,10 @@ def prediction_values(task, frame, ids, *, classes=(), anchor=None,
         if (not coordinates or len(set(coordinates)) != len(coordinates)
                 or frame[key].isna().any()
                 or frame.duplicated(['ENTITY', key]).any()
-                or set(zip(frame['ENTITY'], frame[key])) != {
-                    (entity, coordinate)
-                    for entity in ids for coordinate in coordinates
-                }):
+                or set(zip(frame['ENTITY'],
+                           frame[key])) != {(entity, coordinate)
+                                            for entity in ids
+                                            for coordinate in coordinates}):
             raise ValueError(
                 'Prediction output coordinates are incomplete or repeated')
         values = frame.pivot(
@@ -455,8 +455,10 @@ def prepare_task(task, root, metadata, directory, graphs):
     inputs = directory / 'inputs.parquet'
     import pyarrow as pa
     pq.write_table(
-        pa.Table.from_pylist([{key: row[key]
-                               for key in columns} for row in test]), inputs)
+        pa.Table.from_pylist([{
+            key: row[key]
+            for key in columns
+        } for row in test]), inputs)
     return dict(query=query, snapshot=snapshot, training_table=table,
                 input_file=inputs, ids=ids, classes=classes, anchor=anchor)
 
@@ -473,8 +475,8 @@ def observe_cuda(state):
 
         def check(self, module, values):
             if (str(module.device) != 'cuda:0' or not values
-                    or any(not isinstance(value, torch.Tensor) or
-                           str(value.device) != 'cuda:0' or not value.numel()
+                    or any(not isinstance(value, torch.Tensor) or str(
+                        value.device) != 'cuda:0' or not value.numel()
                            for value in values)):
                 raise ValueError('Completed work did not use CUDA tensors')
             torch.cuda.synchronize()

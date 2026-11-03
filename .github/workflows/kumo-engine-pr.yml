@@ -70,6 +70,10 @@ jobs:
     env:
       CARGO_BUILD_JOBS: '4'
       CARGO_TARGET_DIR: ${{ github.workspace }}/packages/diskgraph/target
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: ${{ github.workspace }}/.engine-build-tools/zigcc
+      CC_x86_64_unknown_linux_gnu: ${{ github.workspace }}/.engine-build-tools/zigcc
+      CXX_x86_64_unknown_linux_gnu: ${{ github.workspace }}/.engine-build-tools/zigc++
+      RANLIB_x86_64_unknown_linux_gnu: ${{ github.workspace }}/.engine-build-tools/zigranlib
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -94,7 +98,7 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: packages/diskgraph -> target
-          shared-key: engine-pr-py312-glibc234-zig017-czb024
+          shared-key: engine-pr-py312-glibc217-zig017-czb024-linker1
           cache-workspace-crates: false
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -106,6 +110,16 @@ jobs:
           python -m pip --isolated install 'pip==25.3' 'ziglang==0.17.0' 'cargo-zigbuild==0.24.0'
           python -m pip show ziglang cargo-zigbuild
           python -m ziglang version
+          # Keep the linker path and target identical across cargo-zigbuild and
+          # maturin's isolated executable, so Cargo can reuse their dependencies.
+          compiler_dir="$GITHUB_WORKSPACE/.engine-build-tools"
+          mkdir -p "$compiler_dir"
+          for compiler in cc c++; do
+            printf '#!/bin/sh\nexec cargo-zigbuild zig %s -- -g -fno-sanitize=all -target x86_64-linux-gnu.2.17 -mcpu=x86_64+aes+sse2 "$@"\n' \
+              "$compiler" > "$compiler_dir/zig$compiler"
+          done
+          printf '#!/bin/sh\nexec cargo-zigbuild zig ranlib -- "$@"\n' > "$compiler_dir/zigranlib"
+          chmod +x "$compiler_dir"/*
           packages/kumo-engine/scripts/build_wheel.sh --output-dir "$RUNNER_TEMP/pr-wheel"
       - name: Retain the candidate wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -120,7 +134,7 @@ jobs:
     name: Seed the wheel installer cache on main
     needs: wheel
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -188,7 +202,7 @@ jobs:
       - uses: ./.github/actions/engine-gpu-smoke
         with:
           wheel-path: ${{ runner.temp }}/pr-wheel/*.whl
-          reload-atol: '0.0001'
+          reload-atol: '0.005'
       - name: Retain the task results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

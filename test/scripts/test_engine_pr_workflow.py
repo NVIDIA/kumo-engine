@@ -85,14 +85,22 @@ def test_wheel_step_propagates_one_target_directory_and_exact_build_tools(tmp_pa
 
     calls = tmp_path / 'calls.jsonl'
     executable = '''#!{python}
-import json, os, sys
+import json, os, subprocess, sys
 from pathlib import Path
 with Path(os.environ['CAPTURE']).open('a') as stream:
     stream.write(json.dumps(dict(command=Path(sys.argv[0]).name,
         args=sys.argv[1:], target=os.environ.get('CARGO_TARGET_DIR'),
         constraints=os.environ.get('PIP_BUILD_CONSTRAINT'))) + '\\n')
+if Path(sys.argv[0]).name == 'build_wheel.sh':
+    for variable, arguments in [
+        ('CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER', ['-shared', 'input.o']),
+        ('CC_x86_64_unknown_linux_gnu', ['-c', 'input.c']),
+        ('CXX_x86_64_unknown_linux_gnu', ['-c', 'input.cc']),
+        ('RANLIB_x86_64_unknown_linux_gnu', ['libinput.a']),
+    ]:
+        subprocess.run([os.environ[variable], *arguments], check=True)
 '''.format(python=sys.executable)
-    for name in ['python', 'packages/kumo-engine/scripts/build_wheel.sh']:
+    for name in ['python', 'cargo-zigbuild', 'packages/kumo-engine/scripts/build_wheel.sh']:
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(executable)
@@ -105,7 +113,8 @@ with Path(os.environ['CAPTURE']).open('a') as stream:
            for k, v in job['env'].items()}
     result = subprocess.run(['bash', '-e', '-c', step['run']], cwd=tmp_path,
                             capture_output=True, text=True,
-                            env=dict(os.environ, **env, RUNNER_TEMP=str(tmp_path / 'temp'),
+                            env=dict(os.environ, **env, GITHUB_WORKSPACE=str(tmp_path),
+                                     RUNNER_TEMP=str(tmp_path / 'temp'),
                                      PATH=f'{tmp_path}:{os.environ["PATH"]}', CAPTURE=str(calls)))
     assert result.returncode == 0, result.stderr
     recorded = [json.loads(v) for v in calls.read_text().splitlines()]
@@ -114,6 +123,16 @@ with Path(os.environ['CAPTURE']).open('a') as stream:
     tools = recorded[0]['args']
     assert 'ziglang==0.17.0' in tools and 'cargo-zigbuild==0.24.0' in tools
     assert Path(recorded[-1]['constraints']).read_text().strip() == 'ziglang==0.17.0'
+    compiler_calls = [row['args'] for row in recorded if row['command'] == 'cargo-zigbuild']
+    assert compiler_calls == [
+        ['zig', 'cc', '--', '-g', '-fno-sanitize=all', '-target', 'x86_64-linux-gnu.2.17',
+         '-mcpu=x86_64+aes+sse2', '-shared', 'input.o'],
+        ['zig', 'cc', '--', '-g', '-fno-sanitize=all', '-target', 'x86_64-linux-gnu.2.17',
+         '-mcpu=x86_64+aes+sse2', '-c', 'input.c'],
+        ['zig', 'c++', '--', '-g', '-fno-sanitize=all', '-target', 'x86_64-linux-gnu.2.17',
+         '-mcpu=x86_64+aes+sse2', '-c', 'input.cc'],
+        ['zig', 'ranlib', '--', 'libinput.a'],
+    ]
 
 
 @pytest.mark.parametrize('event,changes,required,wheel,gpu,expected', [
