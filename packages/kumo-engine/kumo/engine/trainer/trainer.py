@@ -534,7 +534,7 @@ def _publish(bundle_dir: Path, bundle_id: Optional[str],
     metadata.update(registry_pointers(bundle_id))
     location = export_config.location
     alias = location.alias if location else None
-    if location and alias:
+    if alias:
         location = replace(location, alias=None)
     published = export_config.connector.sink_backend.publish_model(
         export_config.connector,
@@ -544,23 +544,24 @@ def _publish(bundle_dir: Path, bundle_id: Optional[str],
         metadata=metadata,
         metrics=metrics,
     )
-    if location and alias:
-        try:
-            aliasing = export_config.connector.sink_backend
-            if not isinstance(aliasing, ModelAliasingSink):
-                raise NotImplementedError(
-                    f'{type(export_config.connector).__name__} cannot set '
-                    f'model aliases')
-            aliasing.set_model_alias(
-                cast(SourceConnector, export_config.connector),
-                replace(location, version=published.version), alias)
-        except Exception as error:
-            if warn:
-                warn_failure(
-                    f"Published {published.name} version "
-                    f"{published.version} without alias {alias}: "
-                    f"{full_error(error)}", error, 4)
-            return published, error
+    if not alias:
+        return published, None
+    try:
+        aliasing = export_config.connector.sink_backend
+        if not isinstance(aliasing, ModelAliasingSink):
+            raise NotImplementedError(
+                f'{type(export_config.connector).__name__} cannot set '
+                f'model aliases')
+        aliasing.set_model_alias(
+            cast(SourceConnector, export_config.connector),
+            replace(location, version=published.version), alias)
+    except Exception as error:
+        if warn:
+            warn_failure(
+                f"Published {published.name} version "
+                f"{published.version} without alias {alias}: "
+                f"{full_error(error)}", error, 4)
+        return published, error
     return published, None
 
 
