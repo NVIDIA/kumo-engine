@@ -13,7 +13,10 @@ from zipfile import ZipFile
 
 import pytest
 
-BUILDER = Path(__file__).resolve().parents[2] / "scripts/build/build_wheel.py"
+BUILDER = (
+    Path(__file__).resolve().parents[2]
+    / "packages/kumo-engine/scripts/build/build_wheel.py"
+)
 
 
 @pytest.fixture

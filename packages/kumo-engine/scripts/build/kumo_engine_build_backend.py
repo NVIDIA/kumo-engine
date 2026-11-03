@@ -76,10 +76,10 @@ def build_wheel(
             wheel_directory, config_settings, metadata_directory
         )
 
-    script = Path(__file__).resolve().parents[2] / "scripts/build/build_wheel.py"
+    script = Path(__file__).with_name("build_wheel.py").resolve()
     environment = dict(
         os.environ,
-        KUMO_REPO=str(script.parents[2]),
+        KUMO_REPO=str(script.parents[4]),
         USE_ZIG="0",
         VERIFY_IMAGE="",
         PLATFORM_TAG="",

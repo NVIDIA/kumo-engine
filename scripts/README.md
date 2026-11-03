@@ -4,7 +4,7 @@ This directory contains scripts for developer setup, CI checks, operational util
 
 ## Engine wheel builds
 
-[`build/build_wheel.py`](build/build_wheel.py) assembles the engine bundle for
+[`build_wheel.py`](../packages/kumo-engine/scripts/build/build_wheel.py) assembles the engine bundle for
 both source installs and release wheels. The merger and dependency checker live
 alongside it. See [releasing kumo-engine](../docs/development/releasing-kumo-engine.md)
 for build flags and prerequisites.

@@ -21,7 +21,7 @@ from wheel.wheelfile import WheelFile  # type: ignore[import-untyped]
 
 BACKEND = (
     Path(__file__).resolve().parents[2]
-    / "packages/kumo-engine/kumo_engine_build_backend.py"
+    / "packages/kumo-engine/scripts/build/kumo_engine_build_backend.py"
 )
 
 
@@ -77,13 +77,13 @@ def test_source_build_reuses_assembler_with_native_tags(
     command = run.call_args.args[0]
     assert command == [
         "/isolated-build/bin/python",
-        str(BACKEND.parents[2] / "scripts/build/build_wheel.py"),
+        str(BACKEND.with_name("build_wheel.py")),
         "--no-zig",
         "--output-dir",
         "/wheels",
     ]
     environment = run.call_args.kwargs["env"]
-    assert environment["KUMO_REPO"] == str(BACKEND.parents[2])
+    assert environment["KUMO_REPO"] == str(BACKEND.parents[4])
     assert environment["PYTHON"] == "/isolated-build/bin/python"
     assert environment["VIRTUAL_ENV"] == "/isolated-build"
     assert "PYTHONPATH" not in environment
@@ -208,9 +208,8 @@ def test_pip_frontend_installs_the_assembled_wheel(tmp_path: Path) -> None:
     """
     repository = tmp_path / "repository"
     source = repository / "packages/kumo-engine"
-    scripts = repository / "scripts/build"
+    scripts = source / "scripts/build"
     scripts.mkdir(parents=True)
-    source.mkdir(parents=True)
     build_tools = repository / "build-tools"
     build_tools.mkdir()
     pip = importlib.metadata.distribution("pip")
@@ -220,8 +219,8 @@ def test_pip_frontend_installs_the_assembled_wheel(tmp_path: Path) -> None:
                 continue
             if relative.parts[0] == "pip" or relative.parts[0].endswith(".dist-info"):
                 wheel.write(pip.locate_file(relative), str(relative))
-    shutil.copyfile(BACKEND, source / BACKEND.name)
-    project = tomllib.loads((BACKEND.parent / "pyproject.toml").read_text())
+    shutil.copyfile(BACKEND, scripts / BACKEND.name)
+    project = tomllib.loads((BACKEND.parents[2] / "pyproject.toml").read_text())
     build = project["build-system"]
     (source / "pyproject.toml").write_text(
         "[build-system]\n"
@@ -310,7 +309,7 @@ def test_missing_cargo_fails_before_component_builds(tmp_path: Path) -> None:
     result = subprocess.run(
         [
             sys.executable,
-            str(BACKEND.parents[2] / "scripts/build/build_wheel.py"),
+            str(BACKEND.with_name("build_wheel.py")),
             "--no-zig",
         ],
         env=dict(os.environ, PATH=str(tmp_path), PYTHON=sys.executable),

@@ -14,7 +14,7 @@ pip install 'kumo-engine[snowflake]'  # adds snowflake-connector-python, ...
 
 The extras are the ones declared in
 [`packages/kumo-engine/pyproject.toml`](../../packages/kumo-engine/pyproject.toml);
-`scripts/build/merge_wheels.py` turns each into the dependencies of the provider it
+`packages/kumo-engine/scripts/build/merge_wheels.py` turns each into the dependencies of the provider it
 names and fails if a bundled package is not reachable from any of them.
 Provider code must be imported at the point of use, never at module top level,
 so a bare install can still `import kumo.engine`
@@ -170,13 +170,14 @@ extras work with source installs too, for example
 `python -m pip install './packages/kumo-engine[databricks]'`.
 
 The package's PEP 517 backend calls the Python assembler at
-`scripts/build/build_wheel.py`, which also builds release wheels. Source installs
+`packages/kumo-engine/scripts/build/build_wheel.py`, which also builds release wheels. Source installs
 run the assembler in a temporary Python environment, excluding managed notebook
 paths that can override isolated build dependencies. The assembler builds every
 bundled component from the checkout and merges their external requirements,
 entry points and legal notices into one wheel.
-The backend hook stays in `packages/kumo-engine/` so pip can load it from
-within the package source directory. All build scripts live in `scripts/build/`.
+All build tooling, including `kumo_engine_build_backend.py`, lives in
+`packages/kumo-engine/scripts/build/`. The package declares
+`backend-path = ["scripts/build"]` so pip loads the backend within its source tree.
 
 The assembler selects the backend's internal `kumo-component=true` mode for
 its engine input wheel to avoid recursively assembling another bundle.
@@ -200,8 +201,8 @@ Databricks runtime or GPU profile.
 ### Build a distributable wheel
 
 ```bash
-python3 scripts/build/build_wheel.py --help
-python3 scripts/build/build_wheel.py --offline-report   # <version>+<sha>
+python3 packages/kumo-engine/scripts/build/build_wheel.py --help
+python3 packages/kumo-engine/scripts/build/build_wheel.py --offline-report   # <version>+<sha>
 ```
 
 Needs `cargo` (and `cargo-zigbuild`, installed on demand), a current committed

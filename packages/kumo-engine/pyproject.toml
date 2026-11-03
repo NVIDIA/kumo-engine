@@ -99,7 +99,7 @@ kumo-glove-6b-50d = { workspace = true }
 [build-system]
 requires = ["setuptools>=77", "setuptools_scm", "pip>=25"]
 build-backend = "kumo_engine_build_backend"
-backend-path = ["."]
+backend-path = ["scripts/build"]
 
 [tool.setuptools]
 py-modules=["kumo_engine_version"]

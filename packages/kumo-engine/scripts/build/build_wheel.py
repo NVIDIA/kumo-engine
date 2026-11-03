@@ -22,7 +22,7 @@ import tempfile
 from pathlib import Path
 from zipfile import ZipFile
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 logger = logging.getLogger(__name__)
 NOTICE_ARTIFACTS = [
     "--artifact",
