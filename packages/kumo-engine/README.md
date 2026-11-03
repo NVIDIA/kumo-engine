@@ -163,6 +163,9 @@ Sample values are saved in notebook HTML or widget state, but never included in 
 
 ### Developing another notebook widget
 
+Before implementing or reviewing a visual feature, follow the [widget design checklist](../../docs/development/notebook-widget-design.md).
+Record its task brief before coding and its evidence checklist before handoff, including for explainability widgets.
+
 Use the private `_widget` helpers to define one feature specification for both notebook transports.
 The shared shell supplies theme tokens, controls, view identity, and disposal; keep feature behavior inside its initializer.
 This chart uses the same specification with trusted HTML and with real widget MIME:

@@ -21,6 +21,7 @@ mean every nested instruction file has already been loaded.
 | Query syntax or table semantics | [PQL instructions](packages/kumo-pql/AGENTS.md), [query integration](kumo/pquery/AGENTS.md), [DiskGraph source ownership](docs/development/generated-artifacts.md#diskgraph-source), UI grammar/help generators |
 | UI feature or shared component | [UI instructions](ui/AGENTS.md), [catalog instructions](packages/kumo-ui-catalog/CLAUDE.md), shared API and generated clients |
 | Filesystem/backend behavior | [fsutil instructions](io_utils/fsutil/AGENTS.md), affected connector and storage consumers |
+| Notebook widget or visualization | [Widget design](docs/development/notebook-widget-design.md), [shared widget recipe](packages/kumo-engine/README.md#developing-another-notebook-widget), affected renderer and tests |
 | Local Python interface | `packages/kumo-engine/`, `packages/kumo-core/`, relevant connector packages and their tests |
 | Documentation or skills | [maintenance](docs/maintenance/README.md), [agent setup](docs/development/agents.md), [.agents/README.md](.agents/README.md) |
 
