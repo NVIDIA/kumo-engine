@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TypeVar
 
 from kumo_core.io import filesystem
-from kumo_core.io.json import load_json
+from kumo_core.io.json import from_json_dict, load_json
 from kumoapi.explain.column_analysis import ColumnAnalysisOutput, ColumnCohorts
 from kumoapi.explain.common import EntityMappings
 from kumoapi.explain.gradient import GraphGradientScore, TableGradientScore
@@ -78,6 +78,8 @@ def resolve_run(run_root: str | Path) -> tuple[str, str]:
     Selection paths are rebased onto the supplied run so copied runs remain
     usable. Only the selected direct trial under the record's AutoML directory
     is accepted; arbitrary paths and multiple task records are ambiguous.
+    Local discovery and metadata reads enforce retained-run containment and
+    notebook artifact byte, structure, and directory-entry bounds.
     """
     root = artifact_root(run_root)
     models = posixpath.join(root, 'models')
@@ -85,19 +87,29 @@ def resolve_run(run_root: str | Path) -> tuple[str, str]:
         raise InvalidRunError(
             f'Expected a retained training run with models/: {root}. '
             'A model bundle alone does not contain training explanations.')
-    records = []
-    for task in filesystem.listdir(models):
-        record = posixpath.join(models, posixpath.basename(task), 'automl',
-                                'best_trainer.json')
-        if filesystem.exists(record):
-            records.append(record)
-    if len(records) != 1:
-        raise InvalidRunError(
-            f'Expected one selected-trial record in {root}; '
-            f'found {len(records)}. Supply one training run root.')
-    record = records[0]
     try:
-        selected = read_typed(record, _SelectedTrial).best_trainer.rstrip('/')
+        guard = None
+        if filesystem.is_local(root):
+            from kumo.engine.explain._diagnostics import _Guard
+            guard = _Guard(root)
+        tasks = (guard.entries(Path(models))
+                 if guard is not None else filesystem.listdir(models))
+        records = []
+        for task in tasks:
+            record = posixpath.join(models, posixpath.basename(str(task)),
+                                    'automl', 'best_trainer.json')
+            if guard is not None:
+                guard.path(record)
+            if filesystem.exists(record):
+                records.append(record)
+        if len(records) != 1:
+            raise InvalidRunError(
+                f'Expected one selected-trial record in {root}; '
+                f'found {len(records)}. Supply one training run root.')
+        record = records[0]
+        selection = (from_json_dict(guard.json(record), _SelectedTrial) if guard
+                     is not None else read_typed(record, _SelectedTrial))
+        selected = selection.best_trainer.rstrip('/')
         automl = posixpath.dirname(record)
         trial_name = posixpath.basename(selected)
         # A selected path identifies an original trial, never a refit or parent.
@@ -115,10 +127,15 @@ def resolve_run(run_root: str | Path) -> tuple[str, str]:
         if not filesystem.exists(trial):
             raise InvalidRunError(f'Selected trial is not retained: {trial}')
         config = posixpath.join(trial, 'config.json')
-        state = read_typed(config, _TrialState)
-        return root, explanation_trial(
+        state = (from_json_dict(guard.json(config), _TrialState)
+                 if guard is not None else read_typed(config, _TrialState))
+        explanation = explanation_trial(
             trial, refitted_trainval=state.refit_cfg.refitted_trainval)
-    except (InvalidExplanationError, ExplanationUnavailableError) as error:
+        if guard is not None:
+            guard.path(explanation)
+        return root, explanation
+    except (InvalidExplanationError, ExplanationUnavailableError, OSError,
+            ValueError, TypeError, RuntimeError) as error:
         raise InvalidRunError(f'Invalid run selection: {error}') from error
 
 

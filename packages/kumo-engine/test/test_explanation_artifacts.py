@@ -8,9 +8,9 @@ JSON uses the shared producer schemas and kumo_core.io.json.save_json. Their
 provenance is the source at 74465d01, not release-wide compatibility evidence.
 """
 
-import json
 from dataclasses import replace
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 from kumo_core.io import filesystem
@@ -122,11 +122,32 @@ def test_selected_refit_reopen_and_rounding(tmp_path):
     assert result.availability['cohorts'].reason == 'unknown'
 
 
-def test_copied_run_rebases_old_absolute_trial(tmp_path):
+@pytest.mark.parametrize('refit', [False, True])
+@pytest.mark.parametrize('location', ['path', 'file', 'symlink', 'memory'])
+def test_copied_run_rebases_old_absolute_trial(tmp_path, refit, location):
     run, trial = _run(
-        tmp_path, recorded_path='/old/host/run/models/task/automl/version_2')
+        tmp_path, refit=refit,
+        recorded_path='/old/host/run/models/task/automl/version_2')
     _gradient(trial)
-    assert TrainingExplanations.load(run).trial_root == trial
+    supplied = run
+    if location == 'file':
+        supplied = run.as_uri()
+    elif location == 'symlink':
+        supplied = tmp_path / 'run-link'
+        supplied.symlink_to(run, target_is_directory=True)
+        trial = str(supplied / Path(trial).relative_to(run))
+    elif location == 'memory':
+        supplied = f'memory://{tmp_path.name}/run'
+        for path in run.rglob('*'):
+            if path.is_file():
+                target = f'{supplied}/{path.relative_to(run)}'
+                filesystem.makedirs(target.rsplit('/', 1)[0], exist_ok=True)
+                with filesystem.open_file(target, 'wb') as destination:
+                    destination.write(path.read_bytes())
+        trial = f'{supplied}/{Path(trial).relative_to(run)}'
+    result = TrainingExplanations.load(supplied)
+    assert result.trial_root == trial
+    assert result.gradient_scores().tables['users'].columns['age'] == 0.333333
 
 
 def test_lazy_local_paths_survive_cwd_change(tmp_path, monkeypatch):
@@ -163,6 +184,37 @@ def test_ambiguous_run_and_model_only_rejected(tmp_path):
     filesystem.makedirs(str(model), exist_ok=True)
     with pytest.raises(InvalidRunError, match='model bundle alone'):
         TrainingExplanations.load(model)
+    with pytest.raises(InvalidRunError):
+        TrainingExplanations.load(tmp_path / 'missing')
+
+
+@pytest.mark.parametrize('location', ['models', 'task', 'trial', 'refit'])
+@pytest.mark.parametrize('cycle', [False, True])
+def test_selection_directories_cannot_escape_run(tmp_path, location, cycle):
+    run, trial = _run(tmp_path, refit=True)
+    source = {
+        'models': run / 'models',
+        'task': run / 'models/task',
+        'trial': Path(trial.removesuffix('_refit_trainval')),
+        'refit': Path(trial)
+    }[location]
+    external = tmp_path / 'outside'
+    source.rename(external)
+    source.symlink_to(source if cycle else external, target_is_directory=True)
+    with pytest.raises(InvalidRunError):
+        TrainingExplanations.load(run)
+
+
+def test_selected_run_discovery_is_bounded(tmp_path, monkeypatch):
+    from kumo.engine.explain._diagnostics import LIMITS
+
+    run, _ = _run(tmp_path)
+    monkeypatch.setitem(LIMITS, 'directory_entries', 2)
+    (run / 'models/unused').mkdir()
+    assert TrainingExplanations.load(run).trial_root.endswith('version_2')
+    (run / 'models/above-limit').mkdir()
+    with pytest.raises(InvalidRunError, match='Directory entry limit'):
+        TrainingExplanations.load(run)
 
 
 def test_explicit_refit_metadata_beats_stale_directory(tmp_path):
@@ -399,10 +451,43 @@ def test_read_access_does_not_create_directories(tmp_path, monkeypatch):
         result.column_analysis()
 
 
-def test_malformed_metadata_rejected(tmp_path):
+@pytest.mark.parametrize('artifact',
+                         ['best_trainer.json', 'version_2/config.json'])
+@pytest.mark.parametrize('defect', [
+    'type',
+    'json',
+    'array',
+    'large',
+    'directory',
+    'symlink',
+    'cycle',
+])
+def test_malformed_metadata_rejected(tmp_path, monkeypatch, artifact, defect):
     run, _ = _run(tmp_path)
-    _text(run / 'models/task/automl/best_trainer.json', json.dumps({
-        'best_trainer': 1234,
-    }))
+    path = run / 'models/task/automl' / artifact
+    valid = path.read_bytes()
+    path.unlink()
+    if defect == 'directory':
+        path.mkdir()
+    elif defect in {'symlink', 'cycle'}:
+        external = tmp_path / 'outside.json'
+        external.write_bytes(valid)
+        path.symlink_to(path if defect == 'cycle' else external)
+    else:
+        contents = {
+            'type': '{"best_trainer":1234,"refit_cfg":[]}',
+            'json': '{',
+            'array': '[]',
+            'large': ' ' * (1024 * 1024 + 1)
+        }[defect]
+        path.write_text(contents)
+    if defect in {'large', 'directory', 'symlink', 'cycle'}:
+        original_open = Path.open
+
+        def guarded_open(source, *args, **kwargs):
+            assert source not in {path, tmp_path / 'outside.json'}
+            return original_open(source, *args, **kwargs)
+
+        monkeypatch.setattr(Path, 'open', guarded_open)
     with pytest.raises(InvalidRunError):
         TrainingExplanations.load(run)
