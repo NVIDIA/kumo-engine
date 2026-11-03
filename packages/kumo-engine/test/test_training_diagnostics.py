@@ -301,7 +301,8 @@ def test_run_containment_rejects_symlink_escape(tmp_path, kind):
     assert str(tmp_path) not in json.dumps(result)
 
 
-@pytest.mark.parametrize('kind', ['directory', 'gradient', 'cohorts'])
+@pytest.mark.parametrize(
+    'kind', ['directory', 'gradient', 'cohorts', 'input_exact', 'input_short'])
 def test_count_limits_precede_facade_reads(tmp_path, monkeypatch, kind):
     run, trial = _run(tmp_path)
     if kind == 'directory':
@@ -310,17 +311,35 @@ def test_count_limits_precede_facade_reads(tmp_path, monkeypatch, kind):
                 _graph(),
                 f'{trial}/subgraph_collector/test/subgraph_json/{key}.json')
         bound, method, section = 'directory_entries', 'samples', 'samples'
-    elif kind == 'gradient':
+    elif kind == 'gradient' or kind.startswith('input_'):
         _gradient(trial)
         bound, method, section = 'gradient_rows', 'gradient_scores', 'gradient'
     else:
         _save_cohorts(trial, [_cohort(), _cohort()])
         bound, method, section = 'cohorts', 'column_analysis', 'cohorts'
-    monkeypatch.setitem(LIMITS, bound, 1)
+    limit = 1
+    if kind.startswith('input_'):
+        selection = sum(path.stat().st_size
+                        for path in (Path(trial) / 'config.json',
+                                     Path(trial).parent / 'best_trainer.json'))
+        bound = 'input_bytes'
+        limit = (2 * selection +
+                 (Path(trial) / 'explain_test/scores.csv').stat().st_size -
+                 (kind == 'input_short'))
+    monkeypatch.setitem(LIMITS, bound, limit)
     forbidden = Mock(side_effect=AssertionError('Count limit was bypassed'))
     monkeypatch.setattr(TrainingExplanations, method, forbidden)
-    result = build_training_payload(TrainingExplanations.load(run))
-    assert result[section]['status'] == 'limited'
+    facade = TrainingExplanations.load(run)
+    result = facade.visualize()._payload
+    assert result[section]['status'] == ('available' if kind == 'input_exact'
+                                         else 'limited')
+    if kind.startswith('input_'):
+        assert facade.visualize()._payload == result
+        attached = TrainingExplanations.from_trial(run, trial)
+        assert attached == facade
+        assert attached.visualize()._payload[section]['status'] == 'available'
+        assert _artifacts.read_gradient(
+            f'{trial}/explain_test/scores.csv').tables
     forbidden.assert_not_called()
 
 

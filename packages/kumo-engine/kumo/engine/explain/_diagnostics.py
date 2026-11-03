@@ -510,6 +510,8 @@ def build_training_payload(explanations: TrainingExplanations, *,
         return payload
     try:
         guard = _Guard(explanations.run_root)
+        guard.remaining = max(0,
+                              guard.remaining - explanations._selection_bytes)
         trial = guard.path(explanations.trial_root)
         producer_task, producer_notes = _read_training(guard, trial, payload)
     except (OSError, ValueError, TypeError, KeyError) as error:

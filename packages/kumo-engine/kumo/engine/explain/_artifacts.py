@@ -9,7 +9,7 @@ import math
 import posixpath
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from kumo_core.io import filesystem
 from kumo_core.io.json import from_json_dict, load_json
@@ -25,6 +25,9 @@ from kumo.engine.explain.errors import (
     InvalidRunError,
 )
 from kumo.engine.explain.types import CohortKey, SampleReference
+
+if TYPE_CHECKING:
+    from kumo.engine.explain._diagnostics import _Guard
 
 T = TypeVar('T')
 
@@ -74,7 +77,8 @@ def read_typed(path: str, cls: type[T], *, raw: dict | None = None) -> T:
             f'Invalid explanation artifact {path}: {error}') from error
 
 
-def resolve_run(run_root: str | Path) -> tuple[str, str]:
+def resolve_run(run_root: str | Path, *,
+                guard: '_Guard | None' = None) -> tuple[str, str]:
     """Resolve exactly one models/<task>/automl/best_trainer.json record.
 
     Selection paths are rebased onto the supplied run so copied runs remain
@@ -90,8 +94,7 @@ def resolve_run(run_root: str | Path) -> tuple[str, str]:
             f'Expected a retained training run with models/: {root}. '
             'A model bundle alone does not contain training explanations.')
     try:
-        guard = None
-        if filesystem.is_local(root):
+        if guard is None and filesystem.is_local(root):
             from kumo.engine.explain._diagnostics import _Guard
             guard = _Guard(root)
         tasks = (guard.entries(Path(models))

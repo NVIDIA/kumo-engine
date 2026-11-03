@@ -4,7 +4,7 @@
 """Lazy access to explanation artifacts from one selected training trial."""
 
 import posixpath
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,7 +23,10 @@ from kumo.engine.explain._artifacts import (
     resolve_run,
     sample_paths,
 )
-from kumo.engine.explain.errors import ExplanationUnavailableError
+from kumo.engine.explain.errors import (
+    ExplanationUnavailableError,
+    InvalidRunError,
+)
 from kumo.engine.explain.types import (
     ArtifactAvailability,
     CohortKey,
@@ -53,6 +56,7 @@ class TrainingExplanations:
     trial_root: str | None
     _reason: UnavailableReason = 'unknown'
     _failure: str | None = None
+    _selection_bytes: int = field(default=0, repr=False, compare=False)
 
     @classmethod
     def load(cls, run_root: str | Path) -> Self:
@@ -62,8 +66,17 @@ class TrainingExplanations:
         Multiple selected-task records and model-only bundles are rejected.
         Older runs cannot establish why a particular artifact is absent.
         """
-        root, trial = resolve_run(run_root)
-        return cls(root, trial)
+        from kumo.engine.explain._diagnostics import LIMITS, _Guard
+
+        root = artifact_root(run_root)
+        try:
+            guard = _Guard(root) if filesystem.is_local(root) else None
+        except (OSError, ValueError, RuntimeError) as error:
+            raise InvalidRunError(f'Invalid run selection: {error}') from error
+        root, trial = resolve_run(root, guard=guard)
+        return cls(
+            root, trial, _selection_bytes=(LIMITS['input_bytes'] -
+                                           guard.remaining if guard else 0))
 
     @classmethod
     def from_trial(cls, run_root: str | Path, trial_root: str | Path, *,
@@ -162,6 +175,7 @@ class TrainingExplanations:
         Preloaded example values enter saved notebook output. Both transports
         use the same snapshot; selecting an example never calls Python or
         retrains the model. Set ``max_samples=0`` to omit example bodies.
+        Each call budgets local selection reads plus this snapshot together.
         """
         from kumo.engine.explain._diagnostics import build_training_payload
         from kumo.engine.explain._visualization import TrainingVisualization
