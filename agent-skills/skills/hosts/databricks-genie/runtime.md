@@ -145,6 +145,9 @@ written = count_output() - before
 assert written == prediction_result.num_rows, (written, prediction_result.num_rows)
 ```
 
+The APPEND delta holds only when nothing else writes to the destination during the run. When the
+user says the table is shared with other jobs, confirm a run-specific destination instead.
+
 Report the destination as `catalog.schema.table`, unchanged.
 
 ### 4.1 Populations
