@@ -58,6 +58,9 @@ display(explanations.visualize(max_samples=12))
 
 The view combines split-qualified metrics, learning history, recorded trials, input sensitivity, cohorts, and retained examples.
 Select a column's cohort action to inspect its recorded predictions and targets, or select an available example to inspect its sampled nodes, relations, and feature scores.
+Selected regression and binary examples also show predictions and observed targets from the matching collector output, when retained and valid.
+Regression values use recorded target units; binary predictions are positive-class probabilities with observed targets encoded as 0 or 1.
+Missing, invalid, limited, or unsupported output remains explicit while sampled structure stays available.
 Scores describe recorded behavior; the view does not prescribe model changes or start training.
 The [CPU demo notebook](../../example_notebooks/training_explainability.ipynb) trains a small synthetic example and reopens its retained run.
 

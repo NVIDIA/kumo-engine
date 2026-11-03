@@ -8,8 +8,10 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from kumo_core.explain.schemas import EntityOutput
 from kumo_core.io.json import save_json
 from kumoapi.explain.common import EntityMappings
+from kumoapi.task import TaskType
 from test_explanation_artifacts import (
     _cohort,
     _gradient,
@@ -141,11 +143,69 @@ def test_snapshot_preserves_refit_metrics_epochs_and_missing_values(
     json.dumps(result, allow_nan=False)
 
 
-def test_sample_coverage_deduplication_and_complete_graph_budget(tmp_path):
-    run, trial = _run(tmp_path)
+@pytest.mark.parametrize('task', ['regression', 'binary_classification'])
+@pytest.mark.parametrize('output_state', [
+    'available', 'missing', 'invalid', 'mismatch', 'boolean', 'string',
+    'nonfinite', 'prediction_null', 'target_null', 'both_null', 'unsupported',
+    'unknown', 'oversized', 'escape', 'range', 'fractional_target'
+])
+def test_sample_coverage_deduplication_and_complete_graph_budget(
+        tmp_path, task, output_state):
+    run, trial = _run(tmp_path, refit=True)
     root = f'{trial}/subgraph_collector/test'
     for artifact in ('0', '2', '3'):
-        save_json(_graph(), f'{root}/subgraph_json/{artifact}.json')
+        graph = _graph()
+        graph.subgraph_store.task_type = TaskType(task)
+        save_json(graph, f'{root}/subgraph_json/{artifact}.json')
+    output = dict(task_type=task, prediction=0, target=1)
+    status = 'available'
+    if output_state in ('prediction_null', 'target_null', 'both_null'):
+        for key in ('prediction', 'target'):
+            if output_state == 'both_null' or output_state == f'{key}_null':
+                output[key] = None
+        status = 'partial'
+    elif output_state == 'unknown':
+        output['task_type'] = None
+        status = 'unknown'
+    elif output_state == 'mismatch':
+        output[
+            'task_type'] = 'regression' if task != 'regression' else 'binary_classification'
+        status = 'invalid'
+    elif output_state == 'unsupported':
+        output.update(task_type='multiclass_classification',
+                      prediction={'recorded class': 0.5}, target=None)
+        graph.subgraph_store.task_type = TaskType.MULTICLASS_CLASSIFICATION
+        save_json(graph, f'{root}/subgraph_json/0.json')
+        status = 'unsupported'
+    elif output_state in ('boolean', 'string', 'nonfinite'):
+        output['prediction'] = dict(boolean=False, string='0',
+                                    nonfinite=float('nan'))[output_state]
+        status = 'invalid'
+    elif output_state in ('range', 'fractional_target'):
+        output['prediction' if output_state == 'range' else 'target'] = (
+            2 if output_state == 'range' else 0.5)
+        status = 'invalid' if task == 'binary_classification' else 'available'
+    path = Path(root) / 'output/0.json'
+    save_json(EntityOutput(**output), str(path))
+    if output_state in ('missing', 'invalid', 'oversized', 'escape'):
+        status = dict(missing='missing', invalid='invalid', oversized='limited',
+                      escape='invalid')[output_state]
+        if output_state == 'missing':
+            path.unlink()
+        elif output_state == 'escape':
+            path.unlink()
+            path.symlink_to(tmp_path / 'outside.json')
+            (tmp_path / 'outside.json').write_text('{"private":"secret"}')
+        else:
+            _text(
+                path, '{' if output_state == 'invalid' else ' ' *
+                (LIMITS['artifact_bytes'] + 1))
+    # Other collectors, original entity IDs and the original fit cannot match.
+    for unrelated in (
+            f'{root}/output/2.json', f'{root}/output/user-7.json',
+            f'{trial.removesuffix("_refit_trainval")}/subgraph_collector/test/output/0.json'
+    ):
+        save_json(EntityOutput(TaskType(task), 999, 999), unrelated)
     save_json(
         EntityMappings(
             mappings={
@@ -170,6 +230,18 @@ def test_sample_coverage_deduplication_and_complete_graph_budget(tmp_path):
     assert graph['subgraph_store']['edges']['0']['events'] == [-1]
     assert graph['subgraph_store']['nodes']['-1']['count'] == 12
     assert graph['feature_store']['features']['0']['age']['score'] == 0
+    assert list(section['outputs']) == ['0']
+    recorded = section['outputs']['0']
+    assert recorded['status'] == status
+    if status in ('available', 'partial'):
+        assert recorded['prediction'] == output['prediction']
+        assert recorded['target'] == output['target']
+        assert recorded['task_type'] == task
+    else:
+        assert recorded.get('prediction') is None
+        assert recorded.get('target') is None
+    assert 'secret' not in json.dumps(result)
+    assert '999' not in json.dumps(section['outputs'])
 
 
 @pytest.mark.parametrize('kind', ['gradient', 'sample'])
@@ -338,11 +410,14 @@ def test_negative_gradient_and_failed_generation_are_explicit(tmp_path):
 def test_payload_limit_discards_whole_graphs(tmp_path, monkeypatch):
     run, trial = _run(tmp_path)
     save_json(_graph(), f'{trial}/subgraph_collector/test/subgraph_json/0.json')
+    save_json(EntityOutput(TaskType.REGRESSION, 0, None),
+              f'{trial}/subgraph_collector/test/output/0.json')
     original = build_training_payload(TrainingExplanations.load(run))
     bound = len(json.dumps(original, separators=(',', ':')).encode()) - 100
     monkeypatch.setitem(LIMITS, 'payload_bytes', bound)
     result = build_training_payload(TrainingExplanations.load(run))
     assert not result['samples']['bodies']
+    assert not result['samples']['outputs']
     assert all(ref['status'] != 'loaded'
                for ref in result['samples']['references'])
     assert len(json.dumps(result, separators=(',', ':')).encode()) <= bound

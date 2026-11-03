@@ -244,7 +244,7 @@ if(ranked.length>100)note(patterns,'Showing the first 100 cohort records by reco
 cohortView=el('div',undefined,'kt-detail');patterns.append(cohortView);
 if(ranked.length)inspectCohort(ranked[0].index);else{cohortView.hidden=true;}
 const examples=section('Selected examples');
-note(examples,'Selected TEST examples with sampled relational context. Recorded selection strategies can overlap. '
+note(examples,'Selected TEST examples with sampled relational context. Recorded selection strategies can overlap and do not define thresholded prediction outcomes. '
 +'Collector IDs identify artifacts, not original entities.');state(examples,data.samples,'Examples');
 const samples=obj(data.samples),coverage=obj(samples.coverage),references=list(samples.references),bodies=obj(samples.bodies);
 note(examples,'Coverage: '+text(coverage.references_listed??references.length)+' listed of '+text(coverage.references_total)+' recorded references; '
@@ -260,6 +260,13 @@ sampleButtons.find(item=>item.rowIndex===index)?.button.closest('tr').after(samp
 sampleView.append(el('h3','Collector '+text(ref.artifact_id)));
 note(sampleView,'Recorded original IDs: '+text(Object.keys(obj(ref.original_ids)).length?ref.original_ids:'Unavailable')
 +' · Strategies: '+(list(ref.categories).join(', ')||'Unavailable'));
+const output=obj(obj(samples.outputs)[ref.artifact_id]);
+sampleView.append(el('h4','Prediction and observed target'));
+state(sampleView,output,'Output context');
+if(output.status==='available'||output.status==='partial'){
+const binary=output.task_type==='binary_classification';
+note(sampleView,binary?'Probability of the positive class; observed target: 0 = negative class, 1 = positive class.':'Values use recorded target units.');
+table(sampleView,[binary?'Positive-class probability (0 to 1)':'Prediction','Observed target'],[[output.prediction,output.target]],[0,1]);}
 const body=obj(bodies[ref.artifact_id]),store=obj(body.subgraph_store),features=obj(obj(body.feature_store).features),nodes=obj(store.nodes);
 const rootNode=obj(nodes[store.root_id]);
 note(sampleView,'Root node: '+text(store.root_id)+' · Original entity: '+text(rootNode.pkey)

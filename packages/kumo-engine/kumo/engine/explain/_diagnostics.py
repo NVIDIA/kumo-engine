@@ -12,8 +12,10 @@ import stat
 from pathlib import Path
 from typing import Any, TypedDict
 
+from kumo_core.explain.schemas import EntityOutput
 from kumo_core.io.json import from_json_dict, to_json_dict
 from kumoapi.jobs import AutoTrainerProgress, TrainerProgress
+from kumoapi.task import TaskType
 
 from kumo.engine.explain.results import TrainingExplanations
 
@@ -324,6 +326,46 @@ def _read_training(guard: _Guard, trial: Path,
         _failure(section, error)
 
 
+def _read_sample_output(guard: _Guard, root: Path, artifact_id: str,
+                        body: dict) -> dict:
+    result = dict(status='unknown',
+                  reason='Sample or output task type unavailable')
+    try:
+        raw = guard.json(root / 'output' / f'{artifact_id}.json')
+        task = raw.get('task_type')
+        graph_task = (body.get('subgraph_store') or {}).get('task_type')
+        if task is None or graph_task is None:
+            return result
+        if task != graph_task:
+            raise ValueError('Output task does not match sampled graph')
+        TaskType(task)
+        result['task_type'] = task
+        if task not in ('regression', 'binary_classification'):
+            result.update(status='unsupported',
+                          reason='Output display is unsupported for this task')
+            return result
+        for key in ('prediction', 'target'):
+            value = raw.get(key)
+            if value is not None and type(value) not in (int, float):
+                raise ValueError('Expected a numeric scalar or null')
+            if task == 'binary_classification' and value is not None and (
+                    not 0 <= value <= 1
+                    or key == 'target' and value not in (0, 1)):
+                raise ValueError('Invalid binary probability or target')
+        typed = to_json_dict(from_json_dict(raw, EntityOutput))
+        result.update(status='available', reason=None,
+                      prediction=typed['prediction'], target=typed['target'])
+        absent = [
+            name for name in ('prediction', 'target') if typed[name] is None
+        ]
+        if absent:
+            result.update(status='partial',
+                          reason='Not recorded: ' + ', '.join(absent))
+    except (OSError, ValueError, TypeError) as error:
+        _failure(result, error)
+    return result
+
+
 def _read_samples(guard: _Guard, trial: Path,
                   explanations: TrainingExplanations, section: dict,
                   max_samples: int) -> None:
@@ -397,6 +439,9 @@ def _read_samples(guard: _Guard, trial: Path,
                          'limited' if coverage['excluded']
                          or coverage['catalog_excluded'] else 'available')
     section['reason'] = None
+    for artifact_id, body in section['bodies'].items():
+        section['outputs'][artifact_id] = _read_sample_output(
+            guard, root, artifact_id, body)
 
 
 def build_training_payload(explanations: TrainingExplanations, *,
@@ -418,7 +463,7 @@ def build_training_payload(explanations: TrainingExplanations, *,
             for name in ('metrics', 'history', 'trials', 'gradient', 'cohorts')
         }, samples=dict(
             status='missing', reason=explanations._reason, references=[],
-            bodies={},
+            bodies={}, outputs={},
             coverage=dict(references_total=None, references_listed=0,
                           available=None, loaded=0, missing=None, malformed=0,
                           excluded=0, catalog_excluded=0)))
@@ -486,6 +531,7 @@ def build_training_payload(explanations: TrainingExplanations, *,
             section = payload[name]
             if name == 'samples':
                 section['bodies'] = {}
+                section['outputs'] = {}
                 for reference in section['references']:
                     if reference['status'] == 'loaded':
                         reference.update(status='limited',
