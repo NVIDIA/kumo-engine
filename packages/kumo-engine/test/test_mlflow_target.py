@@ -24,15 +24,6 @@ mlflow = pytest.importorskip('mlflow')
 ARN = 'arn:aws:sagemaker:us-west-2:account:mlflow-tracking-server/demo'
 
 
-@pytest.fixture
-def tracking_uri(tmp_path):
-    previous = mlflow.get_tracking_uri()
-    uri = f'sqlite:///{tmp_path / "mlflow.db"}'
-    mlflow.set_tracking_uri(uri)
-    yield uri
-    mlflow.set_tracking_uri(previous)
-
-
 def _connector(identity):
     return DatabricksConnector(catalog='main', schema_name='ml',
                                identity=identity, warehouse_id='w')

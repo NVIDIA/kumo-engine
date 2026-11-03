@@ -10,13 +10,8 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 from kumo_core.artifacts import PROVENANCE_FILE
-from kumoapi.model_plan import ModelPlan
 from kumoapi.plugin import PublishedModel
-from test_mlflow_tracking import (  # noqa: F401
-    _runs,
-    table_and_snapshot,
-    tracking_uri,
-)
+from test_mlflow_tracking import _fit_run
 
 import kumo.engine as kumo
 from kumo.engine._scratch import get_scratch_dir
@@ -24,15 +19,7 @@ from kumo.engine._tracking import logged_names
 from kumo.engine.trainer._run_spec import registry_metrics
 
 mlflow = pytest.importorskip('mlflow')
-
-
-def _plan():
-    plan = ModelPlan()
-    plan.training_job.num_experiments = 1
-    plan.training_job.disable_explain = True
-    plan.optimization.max_epochs = 2
-    plan.optimization.max_steps_per_epoch = 2
-    return plan
+pytestmark = pytest.mark.usefixtures('tracking_uri')
 
 
 def _sorted(frame):
@@ -40,24 +27,19 @@ def _sorted(frame):
 
 
 def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
-                                                 tmp_path, caplog,
-                                                 monkeypatch):
+                                                 quick_plan, tmp_path, caplog):
     from kumo.engine.integrations.mlflow import MlflowTracking, load_model
 
     table, snapshot = table_and_snapshot
-    plan = _plan()
     cfg = kumo.MLOps(str(tmp_path / 'root'),
                      tracking=MlflowTracking(log_system_metrics=False),
                      registry=kumo.ModelRegistryLocation('m',
                                                          alias='champion'))
-    trainer = kumo.Trainer(plan)
+    trainer = kumo.Trainer(quick_plan)
     result = trainer.fit(table, snapshot=snapshot, mlops=cfg)
 
     assert 'MLflow tracking failed' not in caplog.text
-    parent, = [
-        run for run in _runs(mlflow.MlflowClient())
-        if 'mlflow.parentRunId' not in run.data.tags
-    ]
+    parent = _fit_run()
     model, = mlflow.search_logged_models(output_format='list')
     assert (model.name, model.source_run_id) == ('m', parent.info.run_id)
     version = mlflow.MlflowClient().get_model_version_by_alias('m', 'champion')
@@ -124,7 +106,7 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
         load_model('models:/m@champion')
 
 
-def test_logged_model_scores_given_rows(fitted, tracking_uri, tmp_path):
+def test_logged_model_scores_given_rows(fitted, tmp_path):
     from kumo.engine.integrations.mlflow import log_model
 
     trainer, table, snapshot = fitted
@@ -244,8 +226,7 @@ def test_scores_pair_with_their_rows_when_scoring_reorders():
     ('mlflow', kumo.ModelRegistryLocation('m', alias='SageMakerLifecycle-p')),
     ('mlflow', kumo.ModelRegistryLocation('m', version='3')),
 ])
-def test_invalid_mlflow_registry_is_refused(tracking_uri, tmp_path, tracking,
-                                            registry):
+def test_invalid_mlflow_registry_is_refused(tmp_path, tracking, registry):
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     if tracking == 'mlflow':
@@ -342,7 +323,7 @@ def test_model_logging_wait_is_bounded(monkeypatch, stall):
 
 
 def test_model_upload_gets_a_longer_http_timeout_and_a_late_one_is_dropped(
-        tracking_uri, monkeypatch, caplog):
+        monkeypatch, caplog):
     import os
 
     from test_tracking_contract import CONTEXT
@@ -428,7 +409,7 @@ def test_a_tracker_dropped_earlier_says_the_model_was_not_logged():
 
 @pytest.mark.parametrize('on_error', ['warn', 'raise'])
 def test_a_registration_failure_is_tagged_on_the_fit_run_and_can_raise(
-        table_and_snapshot, tmp_path, monkeypatch, on_error):
+        table_and_snapshot, quick_plan, tmp_path, monkeypatch, on_error):
     from mlflow.exceptions import MlflowException
     from mlflow.tracking import MlflowClient
 
@@ -447,7 +428,7 @@ def test_a_registration_failure_is_tagged_on_the_fit_run_and_can_raise(
                      tracking=MlflowTracking(log_system_metrics=False),
                      registry=kumo.ModelRegistryLocation('nope.s.m'),
                      on_error=on_error)
-    trainer = kumo.Trainer(_plan())
+    trainer = kumo.Trainer(quick_plan)
     cause = f'MlflowException: {detail}'
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
@@ -464,8 +445,7 @@ def test_a_registration_failure_is_tagged_on_the_fit_run_and_can_raise(
                         if on_error == 'warn' else [])
     assert result.id and result.registered_model is None
 
-    run, = [run for run in _runs(mlflow.MlflowClient())
-            if 'mlflow.parentRunId' not in run.data.tags]
+    run = _fit_run()
     assert run.info.status == 'FAILED'
     assert run.data.tags['kumo.error'].startswith('MlflowException: '
                                                   'CATALOG_DOES_NOT_EXIST')
@@ -473,7 +453,7 @@ def test_a_registration_failure_is_tagged_on_the_fit_run_and_can_raise(
 
 
 def test_a_tracking_start_failure_names_its_cause_and_can_raise(
-        table_and_snapshot, tmp_path, monkeypatch, caplog):
+        table_and_snapshot, quick_plan, tmp_path, monkeypatch, caplog):
     from mlflow.exceptions import MlflowException
     from mlflow.tracking import MlflowClient
 
@@ -492,7 +472,7 @@ def test_a_tracking_start_failure_names_its_cause_and_can_raise(
     monkeypatch.setattr(MlflowClient, 'get_experiment_by_name',
                         lambda self, name: None)
     monkeypatch.setattr(MlflowClient, 'create_experiment', no_folder)
-    trainer = kumo.Trainer(_plan())
+    trainer = kumo.Trainer(quick_plan)
     with pytest.raises(RuntimeError, match='RESOURCE_DOES_NOT_EXIST') as raised:
         trainer.fit(table, snapshot=snapshot, mlops=cfg)
 
@@ -529,12 +509,12 @@ def test_a_logged_model_is_named_after_its_model():
 
 
 def test_a_later_registration_logs_the_model_in_its_fit_run_else_in_none(
-        table_and_snapshot, tmp_path, tracking_uri):
+        table_and_snapshot, quick_plan, tmp_path):
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     table, snapshot = table_and_snapshot
     tracking = MlflowTracking('fits', log_system_metrics=False)
-    result = kumo.Trainer(_plan()).fit(table, snapshot=snapshot, mlops=(
+    result = kumo.Trainer(quick_plan).fit(table, snapshot=snapshot, mlops=(
         kumo.MLOps(str(tmp_path / 'root'), tracking=tracking)))
     fits = [mlflow.get_experiment_by_name('fits').experiment_id]
     assert mlflow.MlflowClient().search_logged_models(fits) == []

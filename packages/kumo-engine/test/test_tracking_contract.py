@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Every tracking adapter records the same run records as a recorded fit."""
 
 import hashlib
 import json
@@ -126,7 +125,6 @@ def join_tracking_threads():
 def replay(tracker=None, events=EVENTS, result=RESULT, error=None,
            context=CONTEXT, series=None,
            summaries=()) -> Dict[str, RunRecord]:
-    r"""Feeds the recorded fit to `tracker`; returns the expected records."""
     recorder = _Recorder(tracker)
     session = TrackingSession(recorder)
     session.start(lambda: fit_spec(context))
@@ -223,19 +221,15 @@ def gaps(expected: Dict[str, RunRecord], observed: Dict[str, Observed],
 
 
 def _trial(run):
-    r"""An MLflow trial run's record name, ``trial-<i>-attempt-<j>``."""
     trial = run.info.run_name.split('-')[1]
     return f"trial-{trial}-attempt-{run.data.params['attempt']}"
 
 
 @pytest.fixture
-def mlflow_adapter(tmp_path, monkeypatch):
-    mlflow = pytest.importorskip('mlflow')
-    from kumo.engine.integrations.mlflow import MlflowTracking, _mlflow_params
+def mlflow_adapter(tracking_uri):
+    import mlflow
 
-    monkeypatch.chdir(tmp_path)
-    previous = mlflow.get_tracking_uri()
-    mlflow.set_tracking_uri(f'sqlite:///{tmp_path / "mlflow.db"}')
+    from kumo.engine.integrations.mlflow import MlflowTracking, _mlflow_params
 
     def observe():
         client = mlflow.MlflowClient()
@@ -269,16 +263,10 @@ def mlflow_adapter(tmp_path, monkeypatch):
             for run in runs
         }
 
-    try:
-        yield Adapter(
-            make=lambda: MlflowTracking(log_system_metrics=False,
-                                        tags=USER_TAGS), observe=observe,
-            kept_params=_mlflow_params, nested_runs=True, step_metrics=True,
-            artifacts=True)
-    finally:
-        while mlflow.active_run() is not None:
-            mlflow.end_run()
-        mlflow.set_tracking_uri(previous)
+    return Adapter(
+        make=lambda: MlflowTracking(log_system_metrics=False, tags=USER_TAGS),
+        observe=observe, kept_params=_mlflow_params, nested_runs=True,
+        step_metrics=True, artifacts=True)
 
 
 @pytest.fixture
@@ -303,7 +291,6 @@ def snowflake_adapter(monkeypatch):
 
             for key, value in run['params'].items():
                 runs, name = bucket(key)
-                # Snowflake logs tags as params.
                 if name.startswith('kumo.') or name in USER_TAGS:
                     runs['tags'][name] = value
                 else:
@@ -323,7 +310,6 @@ def snowflake_adapter(monkeypatch):
         return observed
 
     def expected(records):
-        r"""What Snowflake keeps of each trial."""
         kept = {}
         for key, record in records.items():
             if record.tags['kumo.kind'] == 'trial':

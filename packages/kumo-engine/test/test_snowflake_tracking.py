@@ -10,8 +10,6 @@ from unittest import mock
 import _snowflake_experiment_fake
 import pytest
 from _snowflake_experiment_fake import FakeExperimentTracking, FakeSession
-from kumoapi.model_plan import ModelPlan
-from test_fit_events import table_and_snapshot  # noqa: F401
 from test_tracking_contract import CONTEXT, EVENTS, RESULT
 
 from kumo.engine._tracking import RunRecord, TrackingSession
@@ -110,7 +108,7 @@ def test_failed_fit_ends_the_run_failed(fake):
 
 @pytest.mark.parametrize('busy', ['active run', 'other session'])
 def test_an_instance_in_use_is_left_alone_and_fails_strict_mode(
-        fake, busy, table_and_snapshot, tmp_path, monkeypatch):
+        fake, busy, table_and_snapshot, quick_plan, tmp_path, monkeypatch):
     import kumo.engine as kumo
     from kumo.engine.integrations.snowflake import SnowflakeTracking
 
@@ -124,12 +122,7 @@ def test_an_instance_in_use_is_left_alone_and_fails_strict_mode(
         session = FakeSession()
     calls, run = len(user.calls), user._run
     table, snapshot = table_and_snapshot
-    plan = ModelPlan()
-    plan.training_job.num_experiments = 1
-    plan.training_job.disable_explain = True
-    plan.optimization.max_epochs = 2
-    plan.optimization.max_steps_per_epoch = 2
-    trainer = kumo.Trainer(plan)
+    trainer = kumo.Trainer(quick_plan)
     in_use = 'Snowflake ExperimentTracking is already in use'
 
     with pytest.raises(RuntimeError, match=in_use):
