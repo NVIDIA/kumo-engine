@@ -3576,7 +3576,6 @@ async def test_ensure_snapshot_local_fresh_ingest_reports_snapshot_size(
     table = mock.MagicMock()
     table.fingerprint.return_value = mock.sentinel.fingerprint
     ingest_args = SimpleNamespace(
-        timestamp_precision='seconds',
         graph_config=mock.sentinel.graph_config,
         timestamp_precision='seconds',
         data_persist_dir=str(tmp_path / 'data-persist-dir'),
