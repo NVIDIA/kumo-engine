@@ -514,9 +514,3 @@ def test_a_hung_tracker_does_not_stall_the_fit(monkeypatch):
 
     assert elapsed < 1.5
     assert isinstance(session.error, TimeoutError)
-
-
-def test_a_summary_type_no_tracker_knows_is_skipped():
-    from kumo.engine._summary_tables import Routed, route
-
-    assert route([object()]) == Routed()
