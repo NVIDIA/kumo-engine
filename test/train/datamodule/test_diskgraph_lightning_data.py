@@ -43,6 +43,34 @@ def auto_setup_kumo_backend() -> bool:
     return False
 
 
+@pytest.mark.parametrize('platform', ['win32', 'darwin'])
+def test_nonlinux_pidfd_skips_libc(
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+) -> None:
+    monkeypatch.setattr(dldm, 'sys', types.SimpleNamespace(platform=platform))
+
+    def reject_load(name: str | None, *, use_errno: bool) -> None:
+        pytest.fail('Non-Linux pidfd initialization must not load libc')
+
+    monkeypatch.setattr(dldm.ctypes, 'CDLL', reject_load)
+    assert dldm._load_pidfd_libc() is None
+    assert dldm._pidfd_open(os.getpid()) is None
+
+
+@pytest.mark.skipif(not sys.platform.startswith('linux'),
+                    reason='pidfd syscalls require Linux')
+def test_pidfd_syscall_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delattr(dldm.os, 'pidfd_open', raising=False)
+    monkeypatch.delattr(dldm.signal, 'pidfd_send_signal', raising=False)
+    pidfd = dldm._pidfd_open(os.getpid())
+    assert pidfd is not None
+    try:
+        dldm._pidfd_send_signal(pidfd, 0)
+    finally:
+        os.close(pidfd)
+
+
 def _numerical_mapper(values: list[float]) -> TensorMapper:
     return TensorMapper.from_stype(Stype.numerical, pd.Series(values))
 
