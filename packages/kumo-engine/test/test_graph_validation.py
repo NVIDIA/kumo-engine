@@ -903,3 +903,76 @@ def test_visualize_table_cap_precedes_source_access(count):
             assert len(root.findall(
                 './{http://www.w3.org/2000/svg}g[@data-kumo-card]')) == 30
         backend.assert_not_called()
+
+
+def _keyed(table: Table, columns: list[Column], pkey: str) -> Table:
+    definition = replace(table.definition, cols=columns, pkey=pkey)
+    return replace(table, definition=definition)
+
+
+@pytest.mark.parametrize('table_name, key', [('users', 'id'),
+                                             ('events', 'user_id')])
+def test_float_key_columns_are_declared_int64_with_a_warning(table_name, key):
+    from unittest import mock
+
+    users, events = _s3_tables()
+    tables = {'users': users, 'events': events}
+    owner = tables[table_name]
+    tables[table_name] = replace(
+        owner,
+        definition=replace(
+            owner.definition,
+            cols=[
+                replace(col, dtype=Dtype.float64) if col.name == key else col
+                for col in owner.definition.cols
+            ]))
+    graph = Graph(tables, [Edge('events', 'user_id', 'users')])
+
+    with pytest.warns(UserWarning,
+                      match=rf"{table_name}\.{key} .*float64.*int64") as caught:
+        graph.validate()
+        with mock.patch.object(Graph, '_snapshot_no_lock'):
+            graph.snapshot()
+    assert sum('float64' in str(w.message) for w in caught) == 1
+
+    config = {t['table_name']: t for t in graph._graph_config['tables']}
+    projected = (config['users']['pkey']
+                 if key == 'id' else config['events']['fkeys'][0])
+    assert projected['dtype'] == 'int64'
+    assert Dtype(graph.native_graph.table(table_name).column(key).dtype) \
+        == Dtype.int64
+    assert next(col for col in tables[table_name].definition.cols
+                if col.name == key).dtype == Dtype.float64
+
+
+@pytest.mark.parametrize('shape', ['direct', 'shared', 'shared_reversed',
+                                   'chained'])
+def test_float_foreign_keys_take_the_destination_key_width(shape):
+    users, events = _s3_tables()
+    narrow = _keyed(users, [Column('id', Stype.ID, Dtype.int32)], 'id')
+    wide = _keyed(users, [Column('id', Stype.ID, Dtype.int64)], 'id')
+    bridge = _keyed(users, [Column('id', Stype.ID, Dtype.float64)], 'id')
+    events = _keyed(events, [
+        Column('event_id', Stype.ID, Dtype.int64),
+        Column('user_id', Stype.ID, Dtype.float64),
+    ], 'event_id')
+    tables = {'narrow': narrow, 'events': events}
+    edges = [Edge('events', 'user_id', 'narrow')]
+    if shape.startswith('shared'):
+        tables['wide'] = wide
+        edges.append(Edge('events', 'user_id', 'wide'))
+        if shape == 'shared_reversed':
+            edges.reverse()
+    if shape == 'chained':
+        tables['bridge'] = bridge
+        edges = [Edge('bridge', 'id', 'narrow'),
+                 Edge('events', 'user_id', 'bridge')]
+    graph = Graph(tables, edges)
+
+    with pytest.warns(UserWarning) as caught:
+        graph.validate()
+    assert all('converted to int32' in str(w.message) for w in caught)
+    config = {t['table_name']: t for t in graph._graph_config['tables']}
+    assert {fk['dtype'] for fk in config['events']['fkeys']} == {'int32'}
+    if shape == 'chained':
+        assert config['bridge']['pkey']['dtype'] == 'int32'
