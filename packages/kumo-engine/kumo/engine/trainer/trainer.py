@@ -833,14 +833,14 @@ class Trainer:
             })
             session.finish(None, error)
             raise
-        seconds = time.monotonic() - fit_start
         events.emit('fit_ended', metrics={
-            **result.metrics, 'seconds': seconds
+            **result.metrics, 'seconds': time.monotonic() - fit_start
         }, params={'status': 'succeeded'})
         registered, error = _store_and_register(
             result.bundle_dir,
             bundle_manifest(result.bundle_dir, result.bundle_id), settings,
-            session=session, snapshot=snapshot, metrics=registry_metrics(result), warn=warn,
+            session=session, snapshot=snapshot,
+            metrics=registry_metrics(result), warn=warn,
             stored=(deps.errors or [None])[0])
         if registered is not None:
             result = replace(result, registered_model=registered)
