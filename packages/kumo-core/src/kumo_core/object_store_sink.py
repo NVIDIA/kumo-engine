@@ -170,27 +170,29 @@ class ObjectStoreSinkBackend(ABC):
                 file_type=kind, convert_csv=storage.convert_csv,
                 sidecars=sidecars)
         except ArtifactDestinationConflict:
-            raise self._conflict(path) from None
+            raise self._conflict(path, '') from None
         return self._uri(output)
 
     def preflight_write_files(self, connector, table_name, write_mode=None):
-        del write_mode
         from pyarrow.fs import FileSelector
 
-        if not table_name.endswith('/'):
+        if write_mode is WriteMode.OVERWRITE or not table_name.endswith('/'):
             return
         filesystem, path = self._destination(connector, table_name)
         if filesystem.get_file_info(
                 FileSelector(path.rstrip('/'), allow_not_found=True)):
             raise self._conflict(path)
 
-    def _conflict(self, path: str) -> ValueError:
+    def _conflict(
+        self, path: str,
+        hint: str = ', or replace it with write_mode=WriteMode.OVERWRITE'
+    ) -> ValueError:
         from kumo_core.artifact_export import ArtifactDestinationConflict
 
         return ArtifactDestinationConflict(
             f"Output directory '{self._uri(path.rstrip('/'))}/' already "
             "contains data from another export. Choose an empty destination "
-            "path.")
+            f"path{hint}.")
 
     def publish_model(
         self,
@@ -328,7 +330,7 @@ class ObjectStoreSinkBackend(ABC):
             with filesystem.open_input_stream(path) as reader:
                 if reader.readall().decode('utf-8') == marker:
                     return True
-        raise self._conflict(directory)
+        raise self._conflict(directory, '')
 
 
 def _write_one(filesystem: FileSystem, frame: pd.DataFrame, path: str,

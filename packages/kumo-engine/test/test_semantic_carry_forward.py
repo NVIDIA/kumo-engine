@@ -165,7 +165,7 @@ def test_binary_predictions_preserve_probabilities_and_metadata_contract(
     monkeypatch.setattr(type(trainer), 'scratch_dir',
                         property(lambda _: tmp_path))
     trainer._training_result = SimpleNamespace(
-        artifact_paths={}, scoring_defaults=ScoringDefaults())
+        artifact_paths={}, manifest=None, scoring_defaults=ScoringDefaults())
     trainer._snapshot_id = snapshot.id
     trainer._training_query = 'PREDICT users.label FOR EACH users.id'
     table = PredictionTable(trainer._training_query, tmp_path, tmp_path, 0,
@@ -275,7 +275,7 @@ def test_predict_reuses_generated_table_without_recompiling(
     monkeypatch.setattr(type(trainer), 'scratch_dir',
                         property(lambda _: tmp_path))
     trainer._training_result = SimpleNamespace(
-        artifact_paths={}, scoring_defaults=ScoringDefaults())
+        artifact_paths={}, manifest=None, scoring_defaults=ScoringDefaults())
     trainer._snapshot_id = snapshot.id
     trainer._training_query = query
 
@@ -416,6 +416,7 @@ def test_fit_consumes_generated_rows_with_fresh_task_metadata(
             artifact_paths={},
             explain_disabled=True,
             best_trainer=_best_trainer(tmp_path),
+            published_counts=None,
         ))
     monkeypatch.setattr('kumo.engine.trainer.trainer.write_training_spec',
                         lambda *args, **kwargs: None)
@@ -546,6 +547,7 @@ def test_fit_materializes_existing_rows_against_explicit_snapshot(
             artifact_paths={},
             explain_disabled=True,
             best_trainer=_best_trainer(tmp_path),
+            published_counts=None,
         ))
     monkeypatch.setattr('kumo.engine.trainer.trainer.write_training_spec',
                         lambda *args, **kwargs: None)
@@ -622,6 +624,7 @@ def test_fit_uses_selected_graph_task_semantics_without_regenerating_rows(
             artifact_paths={},
             explain_disabled=True,
             best_trainer=_best_trainer(tmp_path),
+            published_counts=None,
         ))
     monkeypatch.setattr('kumo.engine.trainer.trainer.write_training_spec',
                         lambda *args, **kwargs: None)
@@ -711,7 +714,8 @@ def test_repeated_predict_calls_get_distinct_ingest_targets(
         monkeypatch.setattr(type(trainer), 'scratch_dir',
                             property(lambda _: tmp_path))
         trainer._training_result = SimpleNamespace(
-            artifact_paths={}, scoring_defaults=ScoringDefaults())
+            artifact_paths={}, manifest=None,
+            scoring_defaults=ScoringDefaults())
         trainer._snapshot_id = snapshot.id
         trainer._training_query = query
         trainer.predict(table, snapshot=snapshot, output_config=output,
@@ -724,7 +728,7 @@ def test_repeated_predict_calls_get_distinct_ingest_targets(
     monkeypatch.setattr(type(same_trainer), 'scratch_dir',
                         property(lambda _: tmp_path))
     same_trainer._training_result = SimpleNamespace(
-        artifact_paths={}, scoring_defaults=ScoringDefaults())
+        artifact_paths={}, manifest=None, scoring_defaults=ScoringDefaults())
     same_trainer._snapshot_id = snapshot.id
     same_trainer._training_query = query
     same_trainer.predict(table, snapshot=snapshot, output_config=output,
@@ -803,6 +807,7 @@ def test_repeated_fit_calls_get_distinct_ingest_targets(snapshot, tmp_path,
             artifact_paths={},
             explain_disabled=True,
             best_trainer=_best_trainer(tmp_path),
+            published_counts=None,
         ))
     monkeypatch.setattr('kumo.engine.trainer.trainer.write_training_spec',
                         lambda *args, **kwargs: None)
@@ -882,7 +887,8 @@ def test_concurrent_to_thread_fits_keep_loop_live_and_propagate_results(
         run_name = Path(training_input.home_dir).name
         return SimpleNamespace(metrics={'run_name': run_name},
                                artifact_paths={}, explain_disabled=True,
-                               best_trainer=_best_trainer(tmp_path))
+                               best_trainer=_best_trainer(tmp_path),
+                               published_counts=None)
 
     monkeypatch.setattr(
         'kumo.engine.trainer.trainer.build_generated_training_task_dataset',

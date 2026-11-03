@@ -184,6 +184,8 @@ use diskgraph_engine::state::{SamplingState, StatePool};
 
 mod artifact_helpers;
 mod bp_col_stats;
+mod bp_evaluate;
+mod exact_quantiles;
 mod col_stats_export;
 mod custom_tt_entry;
 mod index_metadata;
@@ -1538,7 +1540,7 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
 
 /// Compute Kumo-format column statistics over one or more parquet files.
 ///
-/// Wraps :func:`bp_col_stats::compute_parquet_col_stats` for kumo's
+/// Wraps :func:`bp_col_stats::compute_parquet_col_stats_with_options` for kumo's
 /// batch-prediction stats path: after a BP run writes its output parquet,
 /// kumo invokes this to produce the same ``kumo_col_stats_v1`` JSON that
 /// ingest emits, so downstream readers (UI, encoder inference,
@@ -1565,6 +1567,12 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
 ///         invalid. Semantic and logical types are mapped through the same
 ///         ``map_kumo_stype`` / ``map_kumo_dtype`` helpers ingest uses.
 ///     data_version: version string stamped into every emitted entry.
+///     summary_stats_by_class: emit ``SUMMARY_STATS_BY_CLASS``.
+///     histograms: emit ``HISTOGRAM`` statistics (a second read).
+///     max_per: statistics of each column's maximum per run of equal values
+///         of these columns.
+///     fixed_edges: column -> bin edges, for ``FIXED_HISTOGRAM``.
+///     quantiles: column -> quantiles, for exact ``QUANTILES``.
 ///     timestamp_unit: keyword-only index clock that timestamp statistics are
 ///         computed in (default ``"seconds"``).
 ///     _category_count_limit_for_testing: keyword-only test hook that lowers
@@ -1581,6 +1589,11 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
     kumo_column_specs_json,
     data_version,
     *,
+    summary_stats_by_class=true,
+    histograms=true,
+    max_per=None,
+    fixed_edges=None,
+    quantiles=None,
     timestamp_unit="seconds",
     _category_count_limit_for_testing=None,
 ))]
@@ -1590,6 +1603,11 @@ fn compute_col_stats_for_parquet(
     parquet_paths: Vec<String>,
     kumo_column_specs_json: &str,
     data_version: &str,
+    summary_stats_by_class: bool,
+    histograms: bool,
+    max_per: Option<Vec<String>>,
+    fixed_edges: Option<HashMap<String, Vec<f64>>>,
+    quantiles: Option<HashMap<String, Vec<f64>>>,
     timestamp_unit: &str,
     _category_count_limit_for_testing: Option<u64>,
 ) -> PyResult<(String, String)> {
@@ -1598,9 +1616,9 @@ fn compute_col_stats_for_parquet(
     };
     use diskgraph_ingest::graph_config::ColumnSpec;
 
-    use crate::bp_col_stats::{
-        compute_parquet_col_stats, compute_parquet_col_stats_with_max_categories,
-    };
+    use diskgraph_core::accumulators::MAX_CATEGORIES;
+
+    use crate::bp_col_stats::{compute_parquet_col_stats_with_options, ColStatsOptions};
 
     if _category_count_limit_for_testing == Some(0) {
         return Err(DiskgraphConfigError::new_err(
@@ -1660,26 +1678,51 @@ fn compute_col_stats_for_parquet(
         .collect::<PyResult<Vec<_>>>()?;
     let data_version = data_version.to_string();
     let paths_owned = parquet_paths;
-    let clock = tt_builder::parse_index_clock(timestamp_unit)?;
+    let options = ColStatsOptions {
+        summary_stats_by_class,
+        histograms,
+        max_per: max_per.unwrap_or_default(),
+        fixed_edges: fixed_edges.unwrap_or_default(),
+        quantiles: quantiles.unwrap_or_default(),
+        clock: tt_builder::parse_index_clock(timestamp_unit)?,
+    };
 
     py.detach(|| -> anyhow::Result<(String, String)> {
         let paths: Vec<&std::path::Path> =
             paths_owned.iter().map(std::path::Path::new).collect();
-        match _category_count_limit_for_testing {
-            Some(limit) => compute_parquet_col_stats_with_max_categories(
-                &paths,
-                &columns,
-                &data_version,
-                limit,
-                clock,
-            ),
-            None => compute_parquet_col_stats(&paths, &columns, &data_version, clock),
-        }
+        compute_parquet_col_stats_with_options(
+            &paths,
+            &columns,
+            &data_version,
+            _category_count_limit_for_testing.unwrap_or(MAX_CATEGORIES),
+            &options,
+        )
     })
     // Route schema failures through the shared exception classifier rather
     // than reporting missing columns or invalid timestamp metadata as a
     // blanket system error. Unclassified failures still fall through to
     // `DiskgraphSystemError`.
+    .map_err(map_anyhow_err)
+}
+
+/// Realized metrics of prediction Parquet files against label Parquet parts,
+/// as JSON ``{"rows", "labelled", "metrics"}`` (and ``"by_horizon"``).
+#[pyfunction]
+#[pyo3(signature = (prediction_paths, label_paths, spec_json))]
+fn evaluate_prediction_parquet(
+    py: Python<'_>,
+    prediction_paths: Vec<String>,
+    label_paths: Vec<String>,
+    spec_json: &str,
+) -> PyResult<String> {
+    let spec: bp_evaluate::EvaluateSpec = serde_json::from_str(spec_json)
+        .map_err(|e| DiskgraphConfigError::new_err(format!("invalid spec_json: {e}")))?;
+    py.detach(|| -> anyhow::Result<String> {
+        let predictions: Vec<&std::path::Path> =
+            prediction_paths.iter().map(std::path::Path::new).collect();
+        let labels: Vec<&std::path::Path> = label_paths.iter().map(std::path::Path::new).collect();
+        Ok(bp_evaluate::evaluate_prediction_parquet(&predictions, &labels, &spec)?.to_string())
+    })
     .map_err(map_anyhow_err)
 }
 
@@ -1784,6 +1827,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(has_resumable_ingest, m)?)?;
     m.add_function(wrap_pyfunction!(validated_index_resume_progress, m)?)?;
     m.add_function(wrap_pyfunction!(compute_col_stats_for_parquet, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_prediction_parquet, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_export::read_col_stats, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_export::read_edge_stats, m)?)?;
     m.add_class::<SamplerEngine>()?;

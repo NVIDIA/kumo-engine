@@ -55,8 +55,10 @@ test=[
 snowflake=[
     "kumo-snowflake[sdk]>=0.1.0.dev1",
 ]
+# databricks-sdk 0.68 added the data_quality API the monitor recipe uses.
 databricks=[
     "kumo-databricks>=0.1.0.dev1",
+    "databricks-sdk>=0.68",
 ]
 bigquery=[
     "kumo-bigquery>=0.1.0.dev1",

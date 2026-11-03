@@ -14,6 +14,7 @@ import threading
 import time
 import warnings
 from contextlib import ExitStack, contextmanager
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,21 +37,30 @@ from typing import (
 from urllib.parse import quote, urlparse
 
 from kumo_core.instrumentation import format_error
-from kumo_core.summaries import Dataset, Summary, Table
+from kumo_core.summaries import Dataset, Note, Summary, Table, Tag
 from kumoapi.plugin import BUNDLE_ID_KEY, ModelRegistryLocation, PublishedModel
 
+from kumo.engine import _card
 from kumo.engine._events import Event
 from kumo.engine._mlops import full_error
-from kumo.engine._run_names import model_label, record_name, trial_name
+from kumo.engine._run_names import (
+    is_dated_fit,
+    model_label,
+    record_name,
+    registered_fit_name,
+    trial_name,
+)
 from kumo.engine._summary_tables import Routed, route, table_json
 from kumo.engine._text import metric_key
 from kumo.engine._tracking import (
     DROPPED_PARAMS,
     RegistrationError,
     RunRecord,
+    SingleRunHooks,
     TrackingBase,
     by_step,
     fit_run_id,
+    model_metrics,
 )
 from kumo.engine._version import __version__
 from kumo.engine.connector._extras import import_provider
@@ -95,7 +105,7 @@ _FLUSH_SECONDS = 10.0
 _MIN_READINGS = 2
 
 
-class MlflowTracking(TrackingBase):
+class MlflowTracking(SingleRunHooks, TrackingBase):
     r"""Records `Trainer.fit` in MLflow, one run per fit.
 
     Args:
@@ -128,14 +138,20 @@ class MlflowTracking(TrackingBase):
         self.logged_run_name: Optional[str] = None
         self.experiment: Optional[str] = None
         self._experiment_id: Optional[str] = None
+        self._samples: List[_Reading] = []
+        self._sampled_run: Optional[Tuple[Any, str]] = None
         self._reset()
 
     def _reset(self) -> None:
         self._client: Any = None
         self._parent: Optional[str] = None
         self._children: Dict[Tuple[int, int], str] = {}
+        self._trials: Dict[Tuple[int, int], str] = {}
         self._artifacts: Set[str] = set()
+        self._card: List[Summary] = []
         self._model_id: Optional[str] = None
+        self._published: Optional[PublishedModel] = None
+        self._fit: Tuple[Any, Any] = (None, None)
         self._http_owned: FrozenSet[str] = frozenset()
         self._guard = ExitStack()
 
@@ -228,8 +244,10 @@ class MlflowTracking(TrackingBase):
             with self.target.scope():
                 version = self.target.client().get_model_version_by_alias(
                     name, alias).version
-        return load_model(f'models:/{name}/{version}', target=self.target,
-                          **kwargs)
+        uri = f'models:/{name}/{version}'
+        trainer = load_model(uri, target=self.target, **kwargs)
+        trainer._from_registry(PublishedModel(name, str(version), uri), alias)
+        return trainer
 
     def register(self, result: Any,
                  location: ModelRegistryLocation) -> PublishedModel:
@@ -268,8 +286,17 @@ class MlflowTracking(TrackingBase):
                 if fit is not None:
                     self._log_metrics(fit.run_id, metrics,
                                       model_id=info.model_id)
-            return _register(self.target, client, info, location, pointers,
-                             held)
+            published = _register(self.target, client, info, location,
+                                  pointers, held)
+            if fit is None:
+                _describe_version(self.target, client, published,
+                                  _version_text(metrics, None, None, None,
+                                                True))
+            else:
+                if held is None:
+                    self._rename_fit(fit, published)
+                self._describe(published, fit.run_id, metrics)
+            return published
 
     def _logged_model(self, fit: Any) -> Any:
         try:
@@ -290,6 +317,22 @@ class MlflowTracking(TrackingBase):
             name = f'/Shared/kumo/{name}'
         with self.target.scope():
             return self._experiment_for(self._client, name)
+
+    def _rename_fit(self, fit: Any, published: PublishedModel) -> None:
+        if not is_dated_fit(fit.run_name):
+            return
+        name = registered_fit_name(published.name, published.version)
+        with self.target.scope():
+            self._client.update_run(fit.run_id, name=name)
+            for trial in self._client.search_runs(
+                    [fit.experiment_id], filter_string=(
+                        f"tags.mlflow.parentRunId = '{fit.run_id}'")):
+                self._client.update_run(
+                    trial.info.run_id,
+                    name=trial.info.run_name.replace(fit.run_name, name, 1))
+        self._log_tags(fit.run_id, {'kumo.model_name': published.name,
+                                    'kumo.model_version': published.version})
+        self._update_card(fit.run_id)
 
     def start(self, record: RunRecord) -> None:
         self._require_experiment()
@@ -318,6 +361,13 @@ class MlflowTracking(TrackingBase):
                     client.create_experiment(self.experiment_name))
             experiment_id, self.experiment = (experiment.experiment_id,
                                               experiment.name)
+            note = experiment.tags.get(_NOTE)
+            if note != _EXPERIMENT_NOTE and (
+                    note.startswith(('kumo-engine:', 'Runs from kumo-engine'))
+                    if note else
+                    not client.search_runs([experiment_id], max_results=1)):
+                client.set_experiment_tag(experiment_id, _NOTE,
+                                          _EXPERIMENT_NOTE)
             tags = dict(record.tags)
             if self._outer is not None:
                 tags['mlflow.parentRunId'] = self._outer
@@ -325,6 +375,8 @@ class MlflowTracking(TrackingBase):
             name = (record_name(record, self.run_name)
                     if self.run_name and kind in ('fit', 'prediction')
                     else record.name)
+            if kind == 'prediction' and name:
+                name = _free_name(client, experiment_id, name)
             run = client.create_run(
                 experiment_id, run_name=name,
                 start_time=_millis(record.started),
@@ -332,12 +384,89 @@ class MlflowTracking(TrackingBase):
         self._parent = self.run_id = run.info.run_id
         self.logged_run_name = run.info.run_name
         self._experiment_id = run.info.experiment_id
-        if self.log_system_metrics and record.tags.get('kumo.kind') == 'fit':
+        if self._samples_system() and record.tags.get('kumo.kind') == 'fit':
             self._guard.enter_context(_SystemMetrics(
                 lambda readings: self._log_readings(client, run.info.run_id,
                                                     readings)))
         self._log_params(self._parent, record.params)
         self._log_artifacts(record.artifacts)
+        self._sampled_run = (self._client, self._parent)
+        self._log_samples(*self._sampled_run)
+
+    @contextmanager
+    def sample_system_metrics(self) -> Iterator[None]:
+        r"""Samples system metrics for the next prediction run."""
+        self._samples, self._sampled_run = [], None
+        if not self._samples_system():
+            yield
+            return
+        with _SystemMetrics(lambda readings: self._samples.extend(readings)):
+            yield
+        if self._sampled_run is not None:
+            self._log_samples(*self._sampled_run)
+
+    def _samples_system(self) -> bool:
+        return self.log_system_metrics and os.environ.get(
+            'MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING', '').strip().lower() not in (
+                'false', '0')
+
+    def log_monitoring(self, record: RunRecord) -> None:
+        r"""Folds a monitoring call into the prediction run it checks."""
+        self.run_id = None
+        prediction_id = record.tags.get('kumo.prediction_id')
+        with _limited_http():
+            self._client = self.target.client()
+            run_id = record.prediction_run
+            if run_id is None:
+                found = self._prediction_run(prediction_id)
+                if found is None:
+                    raise LookupError(f'No MLflow prediction run has '
+                                      f'kumo.prediction_id {prediction_id}')
+                run_id = found.info.run_id
+            self._fold(run_id, self._name_previous(record))
+
+    def _prediction_run(self, prediction_id: Optional[str]) -> Optional[Any]:
+        with self.target.scope():
+            experiment = (None if self.experiment_name is None else
+                          self._client.get_experiment_by_name(
+                              self.experiment_name))
+            found = self._client.search_runs(
+                [experiment.experiment_id if experiment else
+                 self._default_experiment or '0'],
+                filter_string=("tags.`kumo.kind` = 'prediction' AND "
+                               "tags.`kumo.prediction_id` = "
+                               f"'{prediction_id}'"),
+                max_results=1)
+        return found[0] if found else None
+
+    def _name_previous(self, record: RunRecord) -> RunRecord:
+        previous = next((summary.value for summary in record.summaries
+                         if isinstance(summary, Tag)
+                         and summary.name == 'kumo.drift_previous'), None)
+        if previous is None or not any(
+                isinstance(summary, Note) and previous in summary.text
+                for summary in record.summaries):
+            return record
+        found = self._prediction_run(previous)
+        if found is None:
+            return record
+        return replace(record, summaries=tuple(
+            replace(summary, text=summary.text.replace(
+                previous, found.info.run_name))
+            if isinstance(summary, Note) else summary
+            for summary in record.summaries))
+
+    def _fold(self, run_id: str, record: RunRecord) -> None:
+        routed = route(record.summaries)
+        self._log_routed(routed, run_id)
+        self._update_card(
+            run_id, 'realized' if record.tags.get('kumo.monitor')
+            == 'evaluate' else 'drift', routed.card)
+        with self.target.scope():
+            run = self._client.get_run(run_id).info
+        self._experiment_id, self.logged_run_name = (run.experiment_id,
+                                                     run.run_name)
+        self.run_id = run_id
 
     def on_trial(self, record: RunRecord, event: Event) -> None:
         key = (event.trial or 0, int(event.params['attempt']))
@@ -347,7 +476,7 @@ class MlflowTracking(TrackingBase):
                     self._experiment_id, run_name=trial_name(
                         *key, cast(str, self.logged_run_name)),
                     tags={**record.tags, 'mlflow.parentRunId': self._parent})
-            self._children[key] = run.info.run_id
+            self._children[key] = self._trials[key] = run.info.run_id
             self._log_params(run.info.run_id, record.params)
         elif event.name == 'epoch_ended':
             self._log_metrics(self._children.get(key), event.metrics,
@@ -400,16 +529,18 @@ class MlflowTracking(TrackingBase):
             with self.target.scope():
                 held = _registered_version(self._client,
                                            registry.model_name, pointers)
-            return _register(self.target, self._client, info, registry,
-                             pointers, held)
+            self._published = _register(self.target, self._client, info,
+                                        registry, pointers, held)
         except Exception as error:
             raise RegistrationError(full_error(error)) from error
+        return self._published
 
     def finish(self, record: Optional[RunRecord],
                error: Optional[BaseException]) -> None:
         status = 'FAILED'
         kind = None if record is None else record.tags.get('kumo.kind')
         started = self._parent is not None
+        fit_run = started and kind == 'fit'
         ended = None if record is None else _millis(record.finished)
         try:
             if record is not None and self._parent is not None:
@@ -420,6 +551,15 @@ class MlflowTracking(TrackingBase):
                                   model_id=self._model_id)
                 self._log_tags(self._parent, record.tags)
                 self._log_artifacts(record.artifacts)
+                self._log_files(record.files)
+                if kind == 'prediction':
+                    self._fit = self._fit_of(record.tags.get('kumo.fit_run_id'))
+                    self._log_model_input()
+                if fit_run and not self.run_name:
+                    self._rename(record)
+                if fit_run and self._published is not None:
+                    self._describe_version(record)
+                self._write_card(record)
                 if error is None:
                     status = 'FINISHED'
         finally:
@@ -439,6 +579,134 @@ class MlflowTracking(TrackingBase):
                           f'{self.experiment!r}: {hint}', UserWarning,
                           stacklevel=2)
 
+    def _update_card(self, run_id: str, block: Optional[str] = None,
+                     summaries: Sequence[Summary] = ()) -> None:
+        self._client = self._client or self.target.client()
+        with self.target.scope():
+            run = self._client.get_run(run_id)
+        split = self._editable(run, first=False)
+        if split is None:
+            return
+        card, user = split
+        card = _card.refreshed(card, run.data.metrics, run.data.tags,
+                               run.data.params)
+        items = list(summaries)
+
+        def render(kept: Sequence[Summary], files: Sequence[str]) -> str:
+            return card if block is None else _with_block(
+                card, block, _card.block(kept, [
+                    item for item in items
+                    if isinstance(item, Table) and item not in kept]))
+
+        def minimal(files: Sequence[str]) -> str:
+            return '\n'.join([_card.shortened(card, files), *_card.TAIL])
+
+        self._set_card(run, render, minimal, items, user, _budget(user))
+
+    def _write_card(self, record: RunRecord) -> None:
+        kind = record.tags.get('kumo.kind')
+        if kind not in ('fit', 'prediction'):
+            return
+        try:
+            with self.target.scope():
+                run = self._client.get_run(self._parent)
+            split = self._editable(run, first=True)
+            if split is None:
+                return
+            blocks = ([_part(name, '') for name in _BLOCKS]
+                      if kind == 'prediction' else [])
+            card = _card.run_card(
+                run.data.tags, run.data.params, run.data.metrics,
+                model_metrics(record), record.description,
+                [*self._card, *_card.charts(run.data.metrics)],
+                *self._fit_link(), blocks=blocks)
+
+            def render(kept: Sequence[Summary], files: Sequence[str]) -> str:
+                return '\n'.join([replace(card, summaries=kept).text(files),
+                                  *_card.TAIL])
+
+            def minimal(files: Sequence[str]) -> str:
+                return '\n'.join([card.minimal(files), *_card.TAIL])
+
+            user = split[1]
+            self._set_card(run, render, minimal, card.summaries, user,
+                           _budget(user)
+                           - (_MONITORING_BYTES if blocks else 0))
+        except Exception as error:
+            logger.warning('Could not write the description of MLflow run '
+                           '%s: %s', self._parent, format_error(error))
+
+    def _editable(self, run: Any, first: bool) -> Optional[Tuple[str, str]]:
+        tags = run.data.tags
+        if tags.get('kumo.card_frozen') == 'true':
+            return None
+        description = tags.get(_NOTE, '')
+        end = _CARD_END.search(description)
+        if end and _card_hash(description[:end.start()]) == end.group(1):
+            return description[:end.start()].rstrip('\n'), description[
+                end.end():]
+        if first and end is None:
+            return '', description and f'\n\n{description}'
+        with self.target.scope():
+            self._client.set_tag(run.info.run_id, 'kumo.card_frozen', 'true')
+        warnings.warn(
+            f'The description of MLflow run {run.info.run_name!r} was edited '
+            f"above kumo's card, so kumo no longer updates it.", UserWarning,
+            stacklevel=2)
+        return None
+
+    def _set_card(self, run: Any,
+                  render: Callable[[Sequence[Summary], Sequence[str]], str],
+                  minimal: Callable[[Sequence[str]], str],
+                  items: Sequence[Summary], user: str, budget: int) -> None:
+        run_id = run.info.run_id
+        files = [entry['path'] for entry in json.loads(
+            run.data.tags.get('mlflow.loggedArtifacts', '[]'))]
+        kept = list(items)
+        while True:
+            card = render(kept, files)
+            tables = [item for item in kept if isinstance(item, Table)]
+            if _size(card) <= budget or not tables:
+                break
+            largest = max(tables, key=lambda t: len(_card.table_text(t)))
+            kept.remove(largest)
+            self._write_tables(run_id, [replace(largest, brief=False)])
+            files.append(f'{largest.name}.json')
+        if _size(card) > budget:
+            card = minimal(files)
+        with self.target.scope():
+            self._client.set_tag(run_id, _NOTE,
+                                 _sealed(card) + user)
+
+    def _rename(self, record: RunRecord) -> None:
+        version = record.tags.get('kumo.model_version')
+        if version is None:
+            return
+        name = registered_fit_name(record.tags['kumo.model_name'], version)
+        self.logged_run_name = name
+        with self.target.scope():
+            self._client.update_run(cast(str, self._parent), name=name)
+            for key, run_id in self._trials.items():
+                self._client.update_run(run_id, name=trial_name(*key, name))
+
+    def _describe_version(self, record: RunRecord) -> None:
+        published = cast(PublishedModel, self._published)
+        try:
+            self._describe(published, cast(str, self._parent),
+                           model_metrics(record))
+        except Exception as error:
+            logger.warning('Could not describe %s version %s: %s',
+                           published.name, published.version,
+                           format_error(error))
+
+    def _describe(self, published: PublishedModel, fit_id: str,
+                  metrics: Mapping[str, float]) -> None:
+        with self.target.scope():
+            run = self._client.get_run(fit_id)
+        _describe_version(self.target, self._client, published, _version_text(
+            metrics, run.data.tags.get('kumo.tune_metric'), run.info.run_name,
+            run.data.tags.get('kumo.bundle_uri'), not self._unity()))
+
     def _fit_of(self, fit_id: Optional[str]) -> Tuple[Any, Any]:
         r"""The fit run's info and its logged model, each None if missing."""
         if not fit_id:
@@ -451,8 +719,34 @@ class MlflowTracking(TrackingBase):
             return None, None
         return fit, self._logged_model(fit)
 
+    def _unity(self) -> bool:
+        return import_provider('mlflow.utils.uri', 'mlflow'
+                               ).is_databricks_unity_catalog_uri(
+                                   self.target.registry_uri or '')
+
+    def _log_model_input(self) -> None:
+        if self._fit[1] is None:
+            return
+        entities = self._mlflow.entities
+        with self.target.scope():
+            self._client.log_inputs(self._parent, models=[
+                entities.LoggedModelInput(self._fit[1].model_id)])
+
+    def _fit_link(self) -> Tuple[Optional[str], Optional[str]]:
+        fit = self._fit[0]
+        if fit is None:
+            return None, None
+        return fit.run_name, (
+            self.target.run_url(fit.experiment_id, fit.run_id)
+            if self.platform == 'databricks' else
+            f'#/experiments/{fit.experiment_id}/runs/{fit.run_id}')
+
     def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
         self._log_metrics(self._parent, metrics, step)
+
+    def _log_samples(self, client: Any, run_id: str) -> None:
+        samples, self._samples = self._samples, []
+        self._log_readings(client, run_id, samples)
 
     def _log_readings(self, client: Any, run_id: str,
                       readings: Sequence['_Reading']) -> None:
@@ -471,7 +765,9 @@ class MlflowTracking(TrackingBase):
                     run_id, metrics=metrics[start:start + _BATCH_METRICS])
 
     def _log_summaries(self, summaries: Sequence[Summary]) -> None:
-        self._log_routed(route(summaries), self._parent)
+        routed = route(summaries)
+        self._card += routed.card
+        self._log_routed(routed, self._parent)
 
     def _log_routed(self, routed: Routed, run_id: str) -> None:
         self._log_inputs(run_id, routed.datasets)
@@ -481,6 +777,11 @@ class MlflowTracking(TrackingBase):
                           model_id=self._model_id)
         self._log_metrics(run_id, {s.name: s.value for s in scalars
                                    if s.role != 'model'})
+        if routed.charts:
+            timestamp = int(time.time() * 1000)
+            self._log_readings(self._client, run_id, [
+                (values, step, timestamp)
+                for step, values in by_step(routed.charts)])
         if routed.tags:
             self._log_tags(run_id, routed.tags)
         self._write_tables(run_id, routed.tables)
@@ -493,7 +794,7 @@ class MlflowTracking(TrackingBase):
 
     def _dataset_input(self, summary: Dataset) -> Any:
         source = _dataset_source(summary.source)
-        if source is None:
+        if source is None or summary.context == 'output':
             return None
         entities = self._mlflow.entities
         dataset = entities.Dataset(
@@ -533,6 +834,17 @@ class MlflowTracking(TrackingBase):
             if name not in self._artifacts:
                 self._write_text(self._parent, name, text)
                 self._artifacts.add(name)
+
+    def _log_files(self, files: Mapping[str, str]) -> None:
+        for name, directory in files.items():
+            with self.target.scope():
+                repository = self.target.artifact_repository(
+                    self._client.get_run(self._parent).info.artifact_uri
+                ) if self.target.explicit else None
+                if repository is None:
+                    self._client.log_artifacts(self._parent, directory, name)
+                else:
+                    repository.log_artifacts(directory, name)
 
     def _write_text(self, run_id: str, name: str, text: str) -> None:
         with self.target.scope():
@@ -590,8 +902,64 @@ def _digest(name: str, source: Mapping[str, Optional[str]],
         default=str).encode()).hexdigest()[:8]
 
 
+_NOTE = 'mlflow.note.content'
+_EXPERIMENT_NOTE = (
+    "Runs from kumo-engine. Fits: `tags.kumo.kind = 'fit'`. Daily "
+    "predictions: `tags.kumo.kind = 'prediction'`, sorted by the `anchors` "
+    'param.')
+_CARD_END = re.compile(r'<!-- /kumo:card sha256=([0-9a-f]{16}) -->')
+_BLOCKS = ('drift', 'realized')
+_MONITORING_BYTES = 800
+
+
+def _card_hash(card: str) -> str:
+    lines = card.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    text = '\n'.join(line.rstrip() for line in lines).strip('\n')
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def _sealed(card: str) -> str:
+    return f'{card}\n<!-- /kumo:card sha256={_card_hash(card)} -->'
+
+
+def _size(card: str) -> int:
+    return len(_sealed(card).encode())
+
+
+def _budget(user: str) -> int:
+    return min(4500, 5000 - len(user.encode()))
+
+
+def _free_name(client: Any, experiment_id: str, name: str) -> str:
+    candidate, suffix = name, 1
+    while True:
+        quote_char = "'" if "'" not in candidate else '"'
+        if quote_char in candidate or not client.search_runs(
+                [experiment_id], max_results=1, filter_string=(
+                    'attributes.run_name = '
+                    f'{quote_char}{candidate}{quote_char}')):
+            return candidate
+        suffix += 1
+        candidate = f'{name}-{suffix}'
+
+
 def _millis(moment: Optional[datetime]) -> Optional[int]:
     return None if moment is None else int(moment.timestamp() * 1000)
+
+
+def _part(name: str, text: str) -> str:
+    return (f'<!-- kumo:{name} -->\n\n{text}\n\n<!-- /kumo:{name} -->' if text
+            else f'<!-- kumo:{name} --><!-- /kumo:{name} -->')
+
+
+def _with_block(card: str, name: str, text: str) -> str:
+    part = _part(name, text)
+    existing = re.compile(f'<!-- kumo:{name} -->.*?<!-- /kumo:{name} -->',
+                          re.DOTALL)
+    if existing.search(card):
+        return existing.sub(lambda _: part, card, count=1)
+    head, notes, rest = card.rpartition(_card.NOTES_LINE)
+    return f'{head}{part}\n\n{notes}{rest}' if notes else f'{card}\n{part}'
 
 
 class _SystemMetrics:
@@ -971,6 +1339,34 @@ def _register(target: Any, client: Any, info: Any,
     return PublishedModel(name=name, version=version,
                           uri=f'models:/{name}/{version}',
                           metadata=dict(metadata))
+
+
+def _version_text(metrics: Mapping[str, float], tune: Optional[str],
+                  fit: Optional[str], bundle: Optional[str],
+                  with_metrics: bool) -> str:
+    trained = ' '.join([*([f'Trained by `{fit}`.'] if fit else []),
+                        *([f'Bundle `{bundle}`.'] if bundle else [])])
+    return '\n'.join(filter(None, [
+        _card.version_headline(metrics, tune) if with_metrics else '',
+        trained]))
+
+
+def _describe_version(target: Any, client: Any, published: PublishedModel,
+                      text: str) -> None:
+    name, version = published.name, published.version
+    with target.scope():
+        current = client.get_model_version(name, version).description or ''
+        end = _VERSION_END.search(current)
+        if end and _card_hash(current[:end.start()]) != end.group(1):
+            return
+        user = current[end.end():] if end else current and f'\n\n{current}'
+        described = (f'{text}\n<!-- /kumo:version sha256='
+                     f'{_card_hash(text)} -->{user}')
+        if len(described) <= 5000 and described != current:
+            client.update_model_version(name, version, description=described)
+
+
+_VERSION_END = re.compile(r'<!-- /kumo:version sha256=([0-9a-f]{16}) -->')
 
 
 def _registered_version(client: Any, name: str,

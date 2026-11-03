@@ -201,10 +201,11 @@ def test_an_occupied_directory_is_refused_by_its_full_location(
     pd.DataFrame({'x': range(3)}).to_parquet(part)
     sink.preflight_write_files(connector, '@stage/out/')
     sink.write_files(connector, '@stage/out/', [str(part)])
-    for mode in (None, WriteMode.APPEND, WriteMode.OVERWRITE):
+    for mode in (None, WriteMode.APPEND):
         with pytest.raises(ArtifactDestinationConflict,
                            match="'@stage/out/' already"):
             sink.preflight_write_files(connector, '@stage/out/', mode)
+    sink.preflight_write_files(connector, '@stage/out/', WriteMode.OVERWRITE)
 
 
 def test_a_file_only_sink_refuses_a_table(connector, tmp_path):

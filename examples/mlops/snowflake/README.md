@@ -1,0 +1,92 @@
+# Snowflake ML Jobs and Tasks (experimental)
+
+**Experimental.** This template is built on preview Snowflake APIs
+(`MLJobDefinition` is in preview and the `SYSTEM$EXECUTE_ML_JOB` statement it
+generates is undocumented) and has not been run end to end; see
+[Unverified](#unverified). They may change without notice.
+
+`register_jobs.py` registers two ML Job definitions whose payload is this
+`examples/mlops` directory, and one Task per definition that runs it.
+
+- **`KUMO_TRAIN`** (`KUMO_TRAIN_TASK`, Sundays 02:00 UTC) runs `fit_job.py`
+  on `USERS`, `ITEMS` and `ORDERS` in `<database>.<schema>`, publishes a new
+  version of model `USERS_CHURN` in that schema's Model Registry and moves the
+  `champion` alias to it. The fit is recorded in Snowflake Experiment
+  Tracking through the connector's Snowpark session.
+- **`KUMO_SCORE`** (`KUMO_SCORE_TASK`, daily 03:00 UTC) runs `score_job.py`,
+  loading the version `champion` points at and writing
+  `USERS_CHURN_PREDICTIONS`.
+
+To review a model before scoring, drop the alias from the registry location
+in `jobs.mlops` and move `champion` yourself
+([Promote a model](../../../packages/kumo-engine/docs/mlops.md#promote-a-model)).
+If moving the alias fails, the fit still publishes and scoring keeps the
+previous `champion`. Each Task runs its job synchronously
+(`to_sql(job_args=..., use_async=False)`); `USER_TASK_TIMEOUT_MS` is 24 h for
+train and 6 h for score.
+
+## Before running
+
+1. Put the kumo-engine wheel in the payload: copy it into
+   `examples/mlops/wheels/` and pass
+   `--requirement './wheels/<kumo_engine wheel>[snowflake]'`. The ML Jobs
+   launcher runs `pip install -r requirements.txt` inside the payload
+   directory, so a path relative to it works; pip cannot read an `@stage`
+   path. The wheel's third-party dependencies come from PyPI through the
+   external access integration (or `SNOWFLAKE.PYPI_REPOSITORY_USER`). A bare
+   `kumo-engine[snowflake]` resolves to PyPI's kumo-engine 1.0.0, which
+   predates the MLOps API.
+2. Create the GPU compute pool `<compute_pool>`, the stage `<stage>` for the
+   job payloads, and a named internal stage for the artifact root, as for
+   any Snowflake artifact root: `CREATE STAGE <db>.<schema>.<root stage>
+   ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')`. An `s3://` or `gs://` root also
+   works if the external access integration reaches it.
+3. Run:
+   ```bash
+   python examples/mlops/snowflake/register_jobs.py --connection <connection> \
+     --compute-pool <compute_pool> --stage <stage> --database <database> \
+     --schema <schema> --warehouse <warehouse> \
+     --artifact-root @<db>.<schema>.<root stage>/kumo \
+     --requirement './wheels/<kumo_engine wheel>[snowflake]' \
+     --external-access-integration <eai>
+   ```
+   `--model-name`, `--predictions-table`, `--table-prefix` and `--on-error`
+   are passed to the jobs.
+4. New tasks are created suspended: `ALTER TASK <name> RESUME`, or
+   `EXECUTE TASK <name>` to run one now. Running `register_jobs.py` again
+   replaces both tasks and resumes each one that was started.
+
+## Privileges for the role that owns the tasks
+
+- `USAGE` on the database, schema, warehouse and compute pool;
+  `CREATE SERVICE`, `CREATE TASK`, `CREATE TABLE` and `CREATE MODEL` on the
+  schema; `EXECUTE TASK` on the account.
+- Read and write on the stage; `USAGE` on the external access integration (or
+  `SNOWFLAKE.PYPI_REPOSITORY_USER`).
+- `SELECT` on the source tables, `INSERT` for predictions, and ownership of
+  the model to move its alias.
+
+## Notes
+
+- The ML Jobs launcher runs the job script from the payload directory, so
+  `jobs.py` imports; a non-zero exit fails the job (its `mljob_result` is
+  still `None`, so judge a run by its status).
+- The Task's synchronous `CALL` holds the task warehouse while the job runs;
+  a serverless task avoids that.
+- `--scratch-dir` is `/tmp/kumo`; add a volume through `spec_overrides` if the
+  graph needs more disk. Tasks retry only via `TASK_AUTO_RETRY_ATTEMPTS`.
+
+## Unverified
+
+Nothing has been registered or run. Open: reaching the reader's presigned
+URLs without an external access integration, a failed job failing the Task,
+and creating experiments from a job's OAuth session.
+
+## References
+
+- `MLJobDefinition`:
+  https://docs.snowflake.com/en/developer-guide/snowpark-ml/reference/latest/api/jobs/snowflake.ml.jobs.MLJobDefinition
+- ML Jobs: https://docs.snowflake.com/en/developer-guide/snowflake-ml/ml-jobs/overview
+- `CREATE TASK`: https://docs.snowflake.com/en/sql-reference/sql/create-task
+- Model versions:
+  https://docs.snowflake.com/en/developer-guide/snowflake-ml/model-registry/model-management

@@ -6,18 +6,25 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from kumo_core.artifacts import bundle_id_from_manifest
-from kumo_core.summaries import Dataset, Table, Tag
+from kumo_core.summaries import Dataset, Note, Table, Tag
 
 import kumo.engine as kumo
 from kumo.engine._deps import Dependencies, FileAsset
 from kumo.engine._manifest import (
     FIT_ROLES,
+    SCORING_ROLES,
     Artifact,
     Dependency,
     Manifest,
     ModelManifest,
     ModelParents,
+    OutputDestination,
+    PredictionManifest,
+    PredictionOutput,
+    PredictionParents,
+    PredictionTableRecord,
     Record,
+    RunScoring,
     SnapshotManifest,
     SnapshotParents,
     SourceTableEntry,
@@ -156,4 +163,55 @@ def test_a_fits_datasets_are_named_and_labelled_by_role():
          'tt-fadf04'),
         ('graph snapshot 2026-11-01-5ac245', 'graph context', 'g@5ac245'),
         ('users', 'source table', '3'),
+    ]
+
+
+def test_a_prediction_run_reads_its_snapshot_and_writes_its_outputs():
+    orders = SourceTableEntry(connector='S3', location='s3://data/orders',
+                              version='7', version_kind='exact')
+    run = PredictionManifest(
+        id='p', location='s3://root/predictions/p',
+        parents=PredictionParents(
+            model=ModelManifest(id='m', location='s3://root/models/m'),
+            snapshot=SnapshotManifest(
+                id='g@d', parents=SnapshotParents(
+                    source_tables={'orders': orders}))),
+        prediction_table=PredictionTableRecord(
+            query_sha256='q', source='pql', anchors=[], rows=2),
+        scoring=RunScoring(
+            binary_classification_threshold=None, threshold_source='none',
+            num_classes_to_return=None, count_source='none',
+            num_workers=None),
+        outputs=[
+            PredictionOutput(artifact='predictions',
+                             destination=OutputDestination(
+                                 connector='S3', location='s3://out/p')),
+            PredictionOutput(artifact='embeddings',
+                             destination=OutputDestination(
+                                 connector='SNOWFLAKE',
+                                 location='"DB"."S"."EMB"')),
+        ], status='succeeded', timings=None, stats=None)
+
+    assert artifact_summaries(run, SCORING_ROLES) == [
+        Tag('kumo.bundle_uri', 's3://root/models/m'),
+        Tag('kumo.output_uri', 's3://out/p'),
+        Tag('kumo.output_table', '"DB"."S"."EMB"'),
+        Table('locations', ('kind', 'id', 'location'), (
+            ('prediction', 'p', 's3://root/predictions/p'),
+            ('model', 'm', 's3://root/models/m'),
+            ('source_table', 'orders', 's3://data/orders'),
+            ('prediction_output', 'predictions', 's3://out/p'),
+            ('prediction_output', 'embeddings', '"DB"."S"."EMB"')),
+              brief=True),
+        Dataset('orders', {'connector': 'S3', 'location': 's3://data/orders',
+                           'version': '7', 'version_kind': 'exact'}, {}, {},
+                'scoring source table'),
+        Dataset('embeddings', {'connector': 'SNOWFLAKE',
+                               'location': '"DB"."S"."EMB"', 'version': None,
+                               'version_kind': None}, {}, {}, 'output'),
+        Dataset('predictions', {'connector': 'S3', 'location': 's3://out/p',
+                                'version': None, 'version_kind': None},
+                {}, {}, 'output'),
+        Note('lineage', 'Scored: graph snapshot g@d ← `orders` v7 '
+             '(`s3://data/orders`)'),
     ]

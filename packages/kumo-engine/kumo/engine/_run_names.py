@@ -45,6 +45,15 @@ def fit_name(model: str, started: datetime) -> str:
     return run_name('fit', f'{model}-{started:%Y%m%d-%H%M%S}')
 
 
+def is_dated_fit(name: str) -> bool:
+    return re.search(r'-\d{8}-\d{6}$', name) is not None
+
+
+def registered_fit_name(model_name: str, version: str) -> str:
+    return run_name('fit', versioned(model_label(model_name, None, None),
+                                     version))
+
+
 def trial_name(trial: int, attempt: int, fit: str) -> str:
     return f'trial-{trial}-{fit}' + (f'-attempt-{attempt}' if attempt > 1
                                      else '')

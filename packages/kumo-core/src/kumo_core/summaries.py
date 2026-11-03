@@ -23,6 +23,26 @@ class Tag:
 
 
 @dataclass(frozen=True)
+class Series:
+    r"""``(step, value)`` points; a ``chart`` one is logged as step metrics."""
+
+    name: str
+    points: Tuple[Tuple[int, float], ...]
+    x_label: str = 'step'
+    chart: bool = False
+
+
+@dataclass(frozen=True)
+class Histogram:
+    r"""Counts on ``edges``, with open end bins; ``extent`` is (min, max)."""
+
+    name: str
+    edges: Tuple[float, ...]
+    counts: Tuple[float, ...]
+    extent: Optional[Tuple[float, float]] = None
+
+
+@dataclass(frozen=True)
 class Table:
     r"""A table; a ``brief`` one (at most 12 x 5) goes on the run card."""
 
@@ -41,6 +61,15 @@ class Note:
 
 
 @dataclass(frozen=True)
+class Confusion:
+    r"""``counts[i][j]``: rows of actual ``labels[i]``, predicted ``labels[j]``."""
+
+    name: str
+    labels: Tuple[str, ...]
+    counts: Tuple[Tuple[int, ...], ...]
+
+
+@dataclass(frozen=True)
 class Dataset:
     r"""A source table's location, schema, profile and context."""
 
@@ -51,4 +80,5 @@ class Dataset:
     context: str
 
 
-Summary = Union[Scalar, Tag, Table, Note, Dataset]
+Summary = Union[Scalar, Tag, Series, Histogram, Table, Confusion, Note,
+                Dataset]

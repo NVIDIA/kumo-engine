@@ -11,9 +11,11 @@ from kumo_core.summaries import Dataset, Note, Table, Tag
 
 import kumo.engine as kumo
 from kumo.engine._data_summaries import (
+    _bins_note,
     snapshot_summaries,
     split_summaries,
     table_details,
+    target_edges,
 )
 from kumo.engine._manifest import FIT_ROLES, artifact_summaries
 from kumo.engine._scratch import get_scratch_dir
@@ -177,3 +179,27 @@ def test_approximate_counts_never_exceed_the_exact_ones(tmp_path):
     distinct = columns.columns.index('distinct≈')
     assert [(row[1], row[distinct]) for row in columns.rows] == [
         ('BIO', 2000), ('AGE', 61)]
+
+
+def test_target_edges_need_the_split_statistics_histogram(tmp_path):
+    target = {'target_min': 0, 'target_percentile_25': 0, 'target_median': 0,
+              'target_percentile_75': 25, 'target_max': 200,
+              'target_mean': 30.5}
+    (tmp_path / 'split_stats.json').write_text(json.dumps({
+        'train_table_stats': {'num_train_rows': 80, 'num_entities': 20,
+                              'target_distribution': target},
+        'test_table_stats': {'num_train_rows': 10, 'target_distribution': {
+            'target_mean': 1.5, 'target_min': -1, 'target_max': 9}}}))
+
+    assert target_edges(tmp_path) == ()
+    assert split_summaries(tmp_path) == [
+        Table('data/splits', ('split', 'rows', 'distinct entities (approx.)',
+                              'target mean'),
+              (('train', 80, 20, 30.5), ('test', 10, None, 1.5)), brief=True),
+    ]
+    assert _bins_note({'histogram': {'bins': [0, 10, 20, 30]},
+                       'target_min': 0, 'target_percentile_25': 5,
+                       'target_median': 15, 'target_percentile_75': 25,
+                       'target_max': 30}) == (
+        "Target histograms: the training target's 3 histogram bins + 3 "
+        'quartile edges.')

@@ -11,14 +11,17 @@ import queue
 import threading
 import time
 import warnings
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
     Callable,
+    ContextManager,
     Dict,
+    Iterator,
     List,
     Mapping,
     Optional,
@@ -27,17 +30,24 @@ from typing import (
     Tuple,
 )
 
+from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.instrumentation import format_error
-from kumo_core.summaries import Summary
+from kumo_core.summaries import Note, Scalar, Summary
 
 from kumo.engine._events import Event, _finite_floats
 from kumo.engine._mlops import full_error, warn_failure
+from kumo.engine._run_names import model_label, run_name, scored_model
+from kumo.engine._text import entity, number
 from kumo.engine._version import __version__
 
 if TYPE_CHECKING:
     from kumoapi.plugin import ModelRegistryLocation, PublishedModel
 
-    from kumo.engine._manifest import ModelManifest, TrackingRef
+    from kumo.engine._manifest import (
+        ModelManifest,
+        PredictionManifest,
+        TrackingRef,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +69,14 @@ class RunRecord:
                               ...]] = field(default_factory=dict)
     tags: Mapping[str, str] = field(default_factory=dict)
     artifacts: Mapping[str, str] = field(default_factory=dict)
+    #: Local directories, by artifact path.
+    files: Mapping[str, str] = field(default_factory=dict)
     summaries: Tuple[Summary, ...] = ()
+    description: Optional[str] = None
     model_label: Optional[str] = None
     started: Optional[datetime] = None
     finished: Optional[datetime] = None
+    prediction_run: Optional[str] = None
     name_suffix: Optional[str] = None
 
 
@@ -79,9 +93,11 @@ class RunSpec:
     tags: Mapping[str, Any] = field(default_factory=dict)
     parents: Mapping[str, Optional[str]] = field(default_factory=dict)
     artifacts: Mapping[str, str] = field(default_factory=dict)
+    files: Mapping[str, str] = field(default_factory=dict)
     summaries: Sequence[Summary] = ()
     status: Optional[str] = None
     error: Optional[str] = None
+    description: Optional[str] = None
     model_label: Optional[str] = None
     started: Optional[datetime] = None
     finished: Optional[datetime] = None
@@ -91,6 +107,19 @@ class RunSpec:
 def metric_name(metric: str) -> str:
     r"""The plan's acc is logged as accuracy."""
     return 'accuracy' if metric == 'acc' else metric
+
+
+def _parents(manifest: Any) -> Any:
+    if manifest is None or getattr(manifest, 'reconstructed', False):
+        return None
+    return getattr(manifest, 'parents', None)
+
+
+def model_metrics(record: RunRecord) -> Dict[str, float]:
+    r"""A run's metrics and its exact ``role='model'`` scalars."""
+    return {**record.metrics,
+            **{summary.name: summary.value for summary in record.summaries
+               if isinstance(summary, Scalar) and summary.role == 'model'}}
 
 
 def logged_name(name: str) -> str:
@@ -151,7 +180,9 @@ def run_record(spec: RunSpec) -> RunRecord:
             **({} if spec.error is None else {'kumo.error': spec.error}),
         },
         artifacts=dict(spec.artifacts),
+        files=dict(spec.files),
         summaries=tuple(spec.summaries),
+        description=spec.description,
         model_label=spec.model_label,
         started=spec.started,
         finished=spec.finished,
@@ -199,10 +230,235 @@ def trial_spec(events: Sequence[Event]) -> RunSpec:
     )
 
 
+def prediction_record(manifest: 'PredictionManifest',
+                      error: Optional[BaseException] = None,
+                      model: Any = None,
+                      summaries: Sequence['Summary'] = (),
+                      files: Mapping[str, str] = {}) -> RunRecord:
+    r"""A prediction run's record, from its manifest."""
+    from kumo.engine._prep_cost import prep_summaries
+    from kumo.engine.trainer._provenance import holdout_counts
+
+    table = manifest.prediction_table
+    params = {**manifest.scoring.to_dict(), 'anchors': table.anchors}
+    model_manifest = getattr(model, 'manifest', None)
+    trained = getattr(_parents(model_manifest or manifest.parents.model),
+                      'training_table', None)
+    registered = getattr(model, 'registered_model', None)
+    query = getattr(trained, 'query', None)
+    label = model_label(getattr(registered, 'name', None), query,
+                        getattr(trained, 'task_type', None))
+    as_of = _as_of(manifest)
+    suffix = f'-{as_of}' + ('' if table.anchors else
+                            f'-{_started(manifest):%H%M%S}')
+    timings = manifest.timings
+    window = getattr(getattr(model_manifest, 'holdout', None), 'window', None)
+    return run_record(
+        RunSpec(
+            kind='prediction',
+            name=run_name('prediction', scored_model(
+                label, getattr(registered, 'version', None),
+                manifest.parents.model.id), suffix),
+            name_suffix=suffix,
+            model_label=label,
+            started=_started(manifest),
+            finished=(None if timings is None or not timings.finished_at
+                      else _utc(timings.finished_at)),
+            params={
+                key: value
+                for key, value in params.items() if value not in (None, 'none')
+            },
+            parents={
+                'bundle_id': manifest.parents.model.id,
+                'prediction_id': manifest.id,
+                'as_of': as_of,
+                'entity': entity(query),
+                'tune_metric': _tune_metric(model),
+                'labels_mature': _labels_mature(manifest, window),
+                **prediction_parents(manifest),
+                'fit_run_id': fit_run_id(model_manifest),
+                **registered_parents(model),
+            },
+            artifacts={
+                PROVENANCE_FILE:
+                json.dumps(manifest.to_dict(), indent=2, sort_keys=True,
+                           default=str)
+            },
+            files=files,
+            summaries=(*_prediction_summaries(
+                manifest, holdout_counts(model_manifest), window),
+                *summaries,
+                *prep_summaries(manifest.parents.snapshot)),
+            error=None if error is None else format_error(error),
+        ))
+
+
+def prediction_parents(manifest: Optional['PredictionManifest']
+                       ) -> Mapping[str, Any]:
+    r"""Pointer tags to the scoring snapshot and task type."""
+    if manifest is None:
+        return {}
+    training_table = getattr(_parents(manifest.parents.model),
+                             'training_table', None)
+    return {'snapshot_id': manifest.parents.snapshot.id,
+            'task_type': getattr(training_table, 'task_type', None)}
+
+
 def fit_run_id(manifest: Any) -> Optional[str]:
     r"""The tracker's run of the fit a `ModelManifest` records."""
     tracking = getattr(manifest, 'tracking', None)
     return None if tracking is None else tracking.run_id
+
+
+def registered_parents(model: Any) -> Mapping[str, Any]:
+    r"""The model's registered name and version, not its alias."""
+    from kumo.engine.trainer._run_spec import _registered
+
+    return {} if model is None else _registered(model.registered_model)
+
+
+def _started(manifest: 'PredictionManifest') -> datetime:
+    timings = manifest.timings
+    return (datetime.now(timezone.utc) if timings is None else
+            _utc(timings.started_at))
+
+
+def _as_of(manifest: 'PredictionManifest') -> str:
+    dates = sorted({_utc(anchor).date().isoformat()
+                    for anchor in manifest.prediction_table.anchors})
+    if not dates:
+        created = manifest.parents.snapshot.created_at
+        dates = [(_utc(created) if created else _started(manifest)
+                  ).date().isoformat()]
+    return dates[0] if len(dates) == 1 else f'{dates[0]}..{dates[-1]}'
+
+
+def _tune_metric(model: Any) -> Optional[str]:
+    plan = getattr(getattr(model, '_trainer', None), 'model_plan', None)
+    metric = getattr(getattr(plan, 'training_job', None), 'tune_metric', None)
+    text = None if metric is None else str(getattr(metric, 'value', metric))
+    return None if text in (None, '', '???') else metric_name(text)
+
+
+def _one_epoch_note(spec: RunSpec,
+                    held: Optional[Mapping[str, float]]) -> RunSpec:
+    single = {name: points[0][1] for name, points in spec.steps.items()
+              if len(points) < 2}
+    values = {**{logged_name(name): value for name, value in single.items()},
+              **(held or {})}
+    values.pop('train/epoch_seconds', None)
+    if not single and held is None:
+        return spec
+    text = ' · '.join(f"{name.replace('/', ' ')} {number(value)}"
+                      for name, value in values.items())
+    return dataclasses.replace(
+        spec, steps={name: points for name, points in spec.steps.items()
+                     if name not in single},
+        summaries=(*spec.summaries, Note('notes',
+                                         f'Training (1 epoch): {text}')))
+
+
+def _labels_mature(manifest: 'PredictionManifest',
+                   window: Optional[Sequence[Any]]) -> Optional[str]:
+    import pandas as pd
+
+    anchors = manifest.prediction_table.anchors
+    if not window or not anchors:
+        return None
+    _, end, step, unit = window
+    stats = (manifest.stats or {}).get('predictions')
+    counts = getattr(stats, 'counts', None) or {}
+    last = max((int(name.removeprefix('TARGET_PRED_h'))
+                for name in counts.get('arrays', {})
+                if name.startswith('TARGET_PRED_h')), default=1)
+    latest = max(_utc(anchor) for anchor in anchors)
+    return (latest + pd.DateOffset(**{unit: end + (last - 1) * step})
+            ).date().isoformat()
+
+
+def _utc(text: str) -> datetime:
+    moment = datetime.fromisoformat(text)
+    return (moment.replace(tzinfo=timezone.utc) if moment.tzinfo is None else
+            moment.astimezone(timezone.utc))
+
+
+def _prediction_summaries(manifest: 'PredictionManifest', baseline: Any,
+                          window: Optional[Sequence[Any]] = None
+                          ) -> List[Summary]:
+    from kumo_core.prediction_counts import prediction_summaries
+    from kumo_core.score_counts import Counts
+
+    table = manifest.prediction_table
+    summaries: List[Summary] = []
+    if table.rows is not None:
+        summaries.append(Scalar('pred/rows', table.rows))
+    if table.skipped_rows is not None:
+        requested = table.requested_rows
+        summaries.append(Scalar('pred/skipped_share', table.skipped_rows /
+                                requested if requested else 0.0))
+        if table.skipped_rows:
+            reason = (', found while building the prediction table'
+                      + (f': {table.skip_reason}' if table.skip_reason else ''))
+            sample = ', '.join(map(str, table.skipped_sample or ()))
+            full = '; full list: skipped/' if table.skipped_location else ''
+            summaries.append(Note(
+                'notes', f'{table.skipped_rows:,} requested rows were not '
+                f'scored{reason}' + (f' ({sample})' if sample else '') +
+                f'{full}.'))
+    stats = (manifest.stats or {}).get('predictions')
+    if stats is not None and stats.counts is not None:
+        summaries += prediction_summaries(
+            Counts.from_dict(stats.counts),
+            threshold=manifest.scoring.binary_classification_threshold,
+            baseline=baseline, timeframe=None if window is None else tuple(
+                window))
+    return summaries
+
+
+@contextmanager
+def system_metrics(tracking: Any) -> Iterator[None]:
+    r"""Samples system metrics during the block, if the tracker can."""
+    tracker = as_tracking(tracking)
+    sample = None if tracker is None else tracker.sample_system_metrics
+    if sample is None or _rank() != 0:
+        yield
+        return
+    with sample():
+        yield
+
+
+def track_prediction(
+        manifest: Optional['PredictionManifest'], tracking: Any,
+        error: Optional[BaseException] = None,
+        model: Any = None,
+        summaries: Callable[[], Sequence['Summary']] = tuple,
+        files: Mapping[str, str] = {},
+) -> Optional[Exception]:
+    r"""Tracks a prediction run; returns the failure instead of raising."""
+    tracker = as_tracking(tracking)
+    if tracker is None or tracker.log_prediction_run is None:
+        return None
+    try:
+        if manifest is None:
+            raise ValueError('the run has no prediction manifest')
+        record = prediction_record(manifest, error, model, summaries(),
+                                   files)
+    except Exception as failure:
+        _untracked(failure, 'prediction')
+        return failure
+    return log_run(tracker, tracker.log_prediction_run, record)
+
+
+class SingleRunHooks:
+    r"""Each prediction run and monitoring call as one run of its own."""
+
+    def log_prediction_run(self, record: RunRecord) -> None:
+        error = record.tags.get('kumo.error')
+        self.start(record)  # type: ignore[attr-defined]
+        self.finish(record,  # type: ignore[attr-defined]
+                    None if error is None else RuntimeError(error))
+
+    log_monitoring = log_prediction_run
 
 
 class Tracking(Protocol):
@@ -230,6 +486,9 @@ class TrackingBase(Tracking):
     load_model: Optional[Callable[..., Any]] = None
     experiment: Optional[str] = None
     logged_run_name: Optional[str] = None
+    log_prediction_run: Optional[Callable[[RunRecord], None]] = None
+    log_monitoring: Optional[Callable[[RunRecord], None]] = None
+    sample_system_metrics: Optional[Callable[[], ContextManager[None]]] = None
 
     @property
     def platform(self) -> str:
@@ -295,6 +554,15 @@ class _Search:
                    metric=metric,
                    lower=MetricStore.tune_mode(metric) == 'min')
 
+    def best_epoch(self, events: Sequence[Event]) -> Optional[int]:
+        points = [(event.epoch, event.metrics[self.metric])
+                  for event in events if event.name == 'epoch_ended'
+                  and event.epoch and self.metric in event.metrics]
+        if not points:
+            return None
+        best = (min if self.lower else max)(value for _, value in points)
+        return next(epoch for epoch, value in points if value == best)
+
     def on(self, event: Event) -> Optional[Tuple[Dict[str, float], int]]:
         if event.name == 'epoch_ended' and self.single:
             return dict(event.metrics), event.epoch or 0
@@ -318,6 +586,7 @@ class TrackingSession:
         self._warn = warn
         self.spec: Optional[RunSpec] = None
         self._trials: Dict[int, List[Event]] = {}
+        self._first_epoch: Dict[Any, Any] = {}
         self._search: Optional[_Search] = None
         self._jobs: 'queue.Queue[Optional[Callable[[], Any]]]' = queue.Queue(
             QUEUE_SIZE)
@@ -325,6 +594,7 @@ class TrackingSession:
         self._behind = False
         self._started = threading.Event()
         self.error: Optional[BaseException] = None
+        self.final: Optional['TrackingRef'] = None
 
     @property
     def enabled(self) -> bool:
@@ -384,13 +654,27 @@ class TrackingSession:
                 }))
             logged = dataclasses.replace(event,
                                          metrics=logged_names(event.metrics))
-            self._submit(lambda: self._call(
-                lambda tracker: tracker.on_trial(record, logged)))
+            for each in self._once_a_line(
+                    (event.trial, event.params.get('attempt')), event,
+                    logged):
+                self._submit(lambda each=each: self._call(
+                    lambda tracker: tracker.on_trial(record, each)))
         series = None if self._search is None else self._search.on(event)
         if series is not None:
-            metrics, step = logged_names(series[0]), series[1]
-            self._submit(lambda: self._call(
-                lambda tracker: tracker.log_metrics(metrics, step)))
+            for metrics, step in self._once_a_line(
+                    None, event, (logged_names(series[0]), series[1])):
+                self._submit(lambda metrics=metrics, step=step: self._call(
+                    lambda tracker: tracker.log_metrics(metrics, step)))
+
+    def _once_a_line(self, key: Any, event: Event,
+                     item: Any) -> List[Any]:
+        if event.name != 'epoch_ended':
+            return [item]
+        if key not in self._first_epoch:
+            self._first_epoch[key] = item
+            return []
+        first, self._first_epoch[key] = self._first_epoch[key], None
+        return [item] if first is None else [first, item]
 
     def log_model(
         self,
@@ -464,6 +748,16 @@ class TrackingSession:
                 final = dataclasses.replace(
                     final, steps=trial_spec(self._trials[selected[1]]).steps,
                     parents={**final.parents, 'best_trial': selected[1]})
+            search = self._search
+            if error is None and search is not None and (
+                    selected or len(self._trials) == 1):
+                kept = selected[1] if selected else next(iter(self._trials))
+                epoch = search.best_epoch(self._trials[kept])
+                if epoch is not None:
+                    final = dataclasses.replace(
+                        final, parents={**final.parents, 'best_epoch': epoch})
+            held = self._first_epoch.get(None)
+            final = _one_epoch_note(final, None if held is None else held[0])
             if error is not None and final.error is None:
                 final = dataclasses.replace(final, error=format_error(error))
             record: Optional[RunRecord] = run_record(final)
@@ -478,6 +772,7 @@ class TrackingSession:
             if tracker is not None:
                 try:
                     tracker.finish(record, error)
+                    self.final = tracking_ref(tracker)
                 except Exception as failure:
                     self._fail(failure)
                     raise
@@ -548,6 +843,41 @@ def tracking_ref(tracking: Any) -> Optional['TrackingRef']:
         platform=str(tracker.platform), run_id=str(tracker.run_id),
         url=tracker.run_url, experiment=tracker.experiment,
         run_name=tracker.logged_run_name)
+
+
+def log_run(tracker: TrackingBase,
+            method: Optional[Callable[[RunRecord], None]],
+            record: RunRecord) -> Optional[Exception]:
+    r"""Runs ``method(record)`` on a thread; returns the failure."""
+    if method is None or _rank() != 0:
+        return None
+    failed: List[Exception] = []
+
+    def log() -> None:
+        try:
+            method(record)
+        except Exception as error:
+            _untracked(error, record.tags.get('kumo.kind'))
+            failed.append(error)
+
+    try:
+        tracker.prepare()
+    except Exception as error:
+        _untracked(error, record.tags.get('kumo.kind'))
+        return error
+    worker = threading.Thread(target=log, name='kumo-tracking', daemon=True)
+    worker.start()
+    worker.join(FINISH_SECONDS)
+    if worker.is_alive():
+        return TimeoutError(
+            f'experiment tracking did not finish within {FINISH_SECONDS:g}s; '
+            f'it goes on in the background')
+    return failed[0] if failed else None
+
+
+def _untracked(error: BaseException, kind: Optional[str]) -> None:
+    logger.warning('Experiment tracking failed: %s; the %s run is not tracked',
+                   full_error(error), kind, exc_info=_debug())
 
 
 def _debug() -> bool:

@@ -4,9 +4,24 @@
 
 import json
 
-from kumo_core.summaries import Table
+from kumo_core.summaries import Histogram, Table
 
 from kumo.engine._summary_tables import Routed, route, table_json
+
+
+def test_a_histogram_table_closes_its_end_bins_at_the_values_extent():
+    table, = route([
+        Histogram('holdout/histogram/actual', (0.0, 1.0), (1, 2, 3),
+                  (-2.5, 4.0)),
+        Histogram('holdout/histogram/predicted', (0.0, 1.0), (0, 5, 1),
+                  (-1.0, 6.0)),
+    ]).tables
+
+    assert table.columns == ('from', 'to', 'actual', 'predicted',
+                             'actual cumulative share',
+                             'predicted cumulative share')
+    assert [row[:4] for row in table.rows] == [
+        (-2.5, 0.0, 1, 0), (0.0, 1.0, 2, 5), (1.0, 6.0, 3, 1)]
 
 
 def test_tables_round_measurements_and_keep_definitions_and_counts():
@@ -21,3 +36,10 @@ def test_tables_round_measurements_and_keep_definitions_and_counts():
 
 def test_a_summary_type_no_tracker_knows_is_skipped():
     assert route([object()]) == Routed()
+
+
+def test_a_histogram_table_leaves_out_empty_bins():
+    table, = route([Histogram('pred/histogram/score', (0.0, 0.5, 1.0),
+                              (0, 4, 0, 1), (0.1, 1.0))]).tables
+
+    assert table.rows == ((0.0, 0.5, 4, 0.8), (1.0, 1.0, 1, 1.0))

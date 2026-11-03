@@ -10,22 +10,26 @@ import tempfile
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from kumo_core.instrumentation import format_error
 from kumo_core.sources.sql import resolve_snowflake_identifier
 from kumo_core.summaries import Summary
 
+from kumo.engine import _card
 from kumo.engine._events import Event
 from kumo.engine._mlops import full_error
 from kumo.engine._run_names import record_name
 from kumo.engine._summary_tables import route, table_json
+from kumo.engine._text import metric_key
 from kumo.engine._tracking import (
     DROPPED_METRICS,
     DROPPED_PARAMS,
     RunRecord,
+    SingleRunHooks,
     TrackingBase,
     by_step,
+    model_metrics,
 )
 from kumo.engine.connector._extras import import_provider
 
@@ -36,10 +40,13 @@ _MAX_PARAMS = 1000
 _EPOCH_METRICS = _MAX_METRICS - 60
 _SUMMARY_METRICS = _MAX_METRICS - 30
 _FINISH_PARAMS = 20
+_CARD_FILE = 'run_card.md'
+_MAX_RUNS = 500
+_WARN_RUNS = 450
 
 
-class SnowflakeTracking(TrackingBase):
-    r"""Records `Trainer.fit` in Snowflake Experiment Tracking as one run.
+class SnowflakeTracking(SingleRunHooks, TrackingBase):
+    r"""Records each fit, prediction and monitoring call as a Snowflake run.
 
     Args:
         source: a ``SnowflakeConnector``, or a Snowpark session (tracking only).
@@ -83,10 +90,12 @@ class SnowflakeTracking(TrackingBase):
         self._run_context = ExitStack()
         self._tune = 'loss'
         self._metrics: Set[str] = set()
+        self._values: Dict[str, float] = {}
         self._started = _now()
         self._params = 0
         self._start_tags: Set[str] = set()
         self._artifacts: Set[str] = set()
+        self._card: List[Summary] = []
         self._dropped_metrics: Set[str] = set()
         self._dropped_params = 0
 
@@ -149,6 +158,7 @@ class SnowflakeTracking(TrackingBase):
             for row in tracking._sql_client.show_runs_in_experiment(
                 experiment_name=experiment.name)
         ]
+        self._check_room(len(existing), record.tags.get('kumo.kind'))
         self._started = record.started or _now()
         self._run = tracking.start_run(self._new_run_name(
             existing, _identifier(record_name(record, self.run_name))))
@@ -157,7 +167,8 @@ class SnowflakeTracking(TrackingBase):
             self._run_context.enter_context(self._run)
         self._start_tags = set(record.tags)
         self._tune = record.tags.get('kumo.tune_metric', 'loss')
-        self._log_params({**record.params, **record.tags})
+        self._log_params({**record.params, **record.tags,
+                          **_model_param(record)})
         self._log_artifacts(record.artifacts)
 
     def on_trial(self, record: RunRecord, event: Event) -> None:
@@ -188,10 +199,12 @@ class SnowflakeTracking(TrackingBase):
                                   for k, v in record.tags.items()
                                   if k not in self._start_tags}, _MAX_PARAMS)
                 self._log_artifacts(record.artifacts)
+                self._log_files(record.files)
                 self._log_summaries(record.summaries)
                 finished = record.finished or _now()
                 self._log_metrics({'duration_seconds': (
                     finished - self._started).total_seconds()}, _MAX_METRICS)
+                self._log_card(record)
                 self._log_dropped()
                 if error is None:
                     status = 'FINISHED'
@@ -209,6 +222,20 @@ class SnowflakeTracking(TrackingBase):
     def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
         self._log_metrics(metrics, _EPOCH_METRICS, step=step)
 
+    def _check_room(self, runs: int, kind: Optional[str]) -> None:
+        if runs >= _MAX_RUNS:
+            raise RuntimeError(
+                f'Snowflake experiment {self.experiment_name} holds {runs} '
+                f'runs, the most it can ({_MAX_RUNS}), so this {kind} run is '
+                f'not tracked; track into a new experiment, e.g. '
+                f'SnowflakeTracking(..., experiment_name='
+                f"'{self.experiment_name}_2')")
+        if runs >= _WARN_RUNS:
+            logger.warning(
+                'Snowflake experiment %s holds %d of the %d runs it can; '
+                'track into a new experiment before it is full',
+                self.experiment_name, runs, _MAX_RUNS)
+
     def _new_run_name(self, existing: List[str], run_name: str) -> str:
         # start_run matches name with LIKE.
         name, number = run_name, 1
@@ -223,11 +250,27 @@ class SnowflakeTracking(TrackingBase):
 
     def _log_summaries(self, summaries: Sequence[Summary]) -> None:
         routed = route(summaries)
+        self._card += routed.card
         self._log_metrics({s.name: s.value for s in routed.scalars},
                           _MAX_METRICS)
+        for step, metrics in by_step(routed.charts):
+            self._log_metrics(metrics, _MAX_METRICS, step=step)
         self._log_params(routed.tags)
         self._log_artifacts({f'{table.name}.json': table_json(table)
                              for table in routed.tables})
+
+    def _log_card(self, record: RunRecord) -> None:
+        try:
+            card = _card.run_card(record.tags, record.params, self._values,
+                                  model_metrics(record), record.description,
+                                  [*self._card, *_card.charts(self._values)],
+                                  record.tags.get('kumo.fit_run_id'))
+            files = sorted(name for name in self._artifacts
+                           if name.endswith('.json'))
+            self._log_artifacts({_CARD_FILE: card.text(files)})
+        except Exception as error:
+            logger.warning('Could not write the card of Snowflake run %s: %s',
+                           self.run_id, format_error(error))
 
     def _log_artifacts(self, artifacts: Mapping[str, str]) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -239,6 +282,11 @@ class SnowflakeTracking(TrackingBase):
                 self._tracking.log_artifact(
                     str(path), posixpath.dirname(name) or None)
                 self._artifacts.add(name)
+
+    def _log_files(self, files: Mapping[str, str]) -> None:
+        for name, directory in files.items():
+            for path in sorted(Path(directory).iterdir()):
+                self._tracking.log_artifact(str(path), name)
 
     def _log_dropped(self) -> None:
         dropped = {
@@ -265,6 +313,7 @@ class SnowflakeTracking(TrackingBase):
                      step: int = 0) -> None:
         kept = {}
         for name, value in metrics.items():
+            name = metric_key(name)
             if '$$' in name:
                 self._dropped_metrics.add(name)
                 continue
@@ -276,10 +325,20 @@ class SnowflakeTracking(TrackingBase):
             kept[name] = value
         if kept:
             self._tracking.log_metrics(kept, step=step)
+            self._values.update(kept)
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _model_param(record: RunRecord) -> Dict[str, str]:
+    tags = record.tags
+    if (tags.get('kumo.kind') != 'prediction' or not tags.get('kumo.model_name')
+            or not tags.get('kumo.model_version')):
+        return {}
+    return {'kumo.model':
+            f"{tags['kumo.model_name']}/{tags['kumo.model_version']}"}
 
 
 def _identifier(name: str) -> str:

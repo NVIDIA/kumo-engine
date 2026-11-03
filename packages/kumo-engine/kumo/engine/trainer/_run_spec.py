@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""A `Trainer.fit` as a tracked run's `RunSpec`."""
 
-import json
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,11 +46,7 @@ def fit_spec(context: FitContext) -> RunSpec:
                  'task_type': context.task_type,
                  'entity': entity(context.query),
                  'tune_metric': tune and metric_name(tune)},
-        artifacts={
-            'query.pql': context.query,
-            'model_plan.json': json.dumps(dict(context.model_plan), indent=2,
-                                          default=str),
-        },
+        description=f'`{context.query}`',
     )
 
 

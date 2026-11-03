@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+import html
 import json
 import re
 import types
@@ -27,7 +28,7 @@ from typing import (
 )
 
 from kumo_core.io.filesystem import atomic_write_bytes
-from kumo_core.summaries import Dataset, Summary, Table, Tag
+from kumo_core.summaries import Dataset, Note, Summary, Table, Tag
 
 SCHEMA_VERSION = 1
 _OMIT_NONE = 'omit_none'
@@ -149,7 +150,7 @@ class SourceTableEntry(Record):
                         version_kind=self.version_kind)
 
 
-KINDS = ('snapshot', 'training_table', 'model')
+KINDS = ('snapshot', 'training_table', 'model', 'prediction')
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -177,6 +178,9 @@ class Manifest(Record):
         return Artifact(self.kind, self.id, self.location, self.IS_DATASET,
                         self.URI_TAG, version=self.id, version_kind='exact',
                         label=self.title)
+
+    def lineage(self) -> List[Note]:
+        return []
 
 
 def artifacts(manifest: Manifest) -> List[Artifact]:
@@ -211,6 +215,8 @@ Details = Mapping[str, Tuple[Mapping[str, Any], Mapping[str, Any]]]
 
 FIT_ROLES = {'snapshot': 'graph context', 'training_table':
              'training examples', 'source_table': 'source table'}
+SCORING_ROLES = {'snapshot': 'scoring graph',
+                 'source_table': 'scoring source table'}
 
 
 def artifact_summaries(manifest: Manifest, roles: Mapping[str, str],
@@ -239,7 +245,7 @@ def artifact_summaries(manifest: Manifest, roles: Mapping[str, str],
         summaries.append(Dataset(
             item.label or item.id, source, schema, profile, item.context
             or roles.get(item.kind, item.kind.replace('_', ' '))))
-    return summaries
+    return [*summaries, *manifest.lineage()]
 
 
 _DATASET_ORDER = {'training_table': 0, 'snapshot': 1, 'source_table': 2}
@@ -297,6 +303,16 @@ def _parent(hint: Type[M], value: Any) -> M:
 
 
 @dataclass(frozen=True, kw_only=True)
+class BuildCost(Record):
+    r"""When building an artifact ran, how long, and its bytes on disk."""
+
+    started_at: str
+    finished_at: str
+    seconds: float
+    disk_bytes: int
+
+
+@dataclass(frozen=True, kw_only=True)
 class SnapshotParents(Record):
     source_tables: Dict[str, SourceTableEntry]
 
@@ -310,6 +326,7 @@ class SnapshotManifest(Manifest):
     NOUN: ClassVar[Optional[str]] = 'graph snapshot'
     parents: Optional[SnapshotParents] = None
     record_sources: Optional[bool] = omit_none()
+    build: Optional[BuildCost] = omit_none()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -329,6 +346,7 @@ class TrainingTableManifest(Manifest):
     generation_plan: Optional[Dict[str, Any]] = None
     task_type: Optional[str] = None
     split_seed: Optional[int] = None
+    build: Optional[BuildCost] = omit_none()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -355,6 +373,15 @@ class TrackingRef(Record):
     experiment: Optional[str] = omit_none()
     run_name: Optional[str] = omit_none()
 
+    def _repr_html_(self) -> str:
+        name = html.escape(self.run_name or self.run_id)
+        where = (f' in {html.escape(self.experiment)}'
+                 if self.experiment else '')
+        if self.url is None:
+            return f'{html.escape(self.platform)} run <code>{name}</code>{where}'
+        return (f'<a href="{html.escape(self.url)}" target="_blank" '
+                f'rel="noopener">{name}</a>{where}')
+
 
 @dataclass(frozen=True, kw_only=True)
 class Dependency(Record):
@@ -378,6 +405,14 @@ class Dependency(Record):
 
 
 @dataclass(frozen=True, kw_only=True)
+class HoldoutStats(Record):
+    truncated: Optional[bool]
+    rows: int
+    counts: Optional[Dict[str, Any]] = omit_none()
+    window: Optional[List[Any]] = omit_none()
+
+
+@dataclass(frozen=True, kw_only=True)
 class ModelManifest(Manifest):
     """How a model bundle was fitted; ``id`` is the bundle id."""
 
@@ -388,8 +423,140 @@ class ModelManifest(Manifest):
     fit_mode: Optional[str] = None
     tracking: Optional[TrackingRef] = omit_none()
     dependencies: Optional[List[Dependency]] = omit_none()
+    holdout: Optional[HoldoutStats] = omit_none()
 
-    EMBED_OMITS = ('tracking', )
+    EMBED_OMITS = ('tracking', 'holdout')
+
+    def lineage(self) -> List[Note]:
+        table, graph = _fit_data(self)
+        if table is None or graph is None:
+            return []
+        return [Note('lineage/model', ' → '.join(filter(None, [
+            ', '.join(_tables(graph, located=True)), graph.title,
+            table.title])))]
+
+
+def _fit_data(model: ModelManifest) -> Tuple[
+        Optional[TrainingTableManifest], Optional[SnapshotManifest]]:
+    table = model.parents and model.parents.training_table
+    return table, table and table.parents and table.parents.snapshot
+
+
+def _sources(graph: SnapshotManifest) -> Dict[str, SourceTableEntry]:
+    return graph.parents.source_tables if graph.parents else {}
+
+
+def _tables(graph: SnapshotManifest, located: bool) -> List[str]:
+    return [
+        f'`{name}`' + (f' v{entry.version}' if entry.version else '') +
+        (f' (`{entry.location}`)' if located and entry.location else '')
+        for name, entry in _sources(graph).items()]
+
+
+def _changed(trained: SnapshotManifest, scored: SnapshotManifest) -> str:
+    before = {name: entry.version
+              for name, entry in _sources(trained).items()}
+    newer = [f'`{name}` (v{before[name]} → v{entry.version})'
+             if before.get(name) else f'`{name}`'
+             for name, entry in _sources(scored).items()
+             if entry.version != before.get(name)]
+    return ('Scored on a different snapshot than the model was trained on'
+            + (f"; newer: {', '.join(newer)}." if newer
+               else ', with the same table versions.'))
+
+
+@dataclass(frozen=True, kw_only=True)
+class PredictionParents(Record):
+    model: ModelManifest
+    snapshot: SnapshotManifest
+
+
+@dataclass(frozen=True, kw_only=True)
+class PredictionTableRecord(Record):
+    query_sha256: str
+    source: Optional[str]
+    anchors: List[str]
+    rows: Optional[int]
+    requested_rows: Optional[int] = None
+    scored_rows: Optional[int] = None
+    skipped_rows: Optional[int] = None
+    skipped_sample: Optional[List[Any]] = None
+    skip_reason: Optional[str] = omit_none()
+    skipped_location: Optional[str] = omit_none()
+
+
+@dataclass(frozen=True, kw_only=True)
+class RunScoring(Record):
+    binary_classification_threshold: Optional[float]
+    threshold_source: str
+    num_classes_to_return: Optional[int]
+    count_source: str
+    num_workers: Optional[int]
+
+
+@dataclass(frozen=True, kw_only=True)
+class OutputDestination(Record):
+    connector: str
+    location: Optional[str]
+
+
+PATH_CONNECTORS = ('LOCAL_FILE', 'S3', 'GCS')
+
+
+@dataclass(frozen=True, kw_only=True)
+class PredictionOutput(Record):
+    artifact: str
+    destination: OutputDestination
+
+    def as_artifact(self, key: str) -> Artifact:
+        connector, location = (self.destination.connector,
+                               self.destination.location)
+        file = connector in PATH_CONNECTORS or (
+            location or '').startswith(('/', '@'))
+        return Artifact('prediction_output', self.artifact, location, True,
+                        'kumo.output_uri' if file else 'kumo.output_table',
+                        connector=connector, context='output')
+
+
+@dataclass(frozen=True, kw_only=True)
+class RunTimings(Record):
+    started_at: str
+    finished_at: Optional[str]
+
+
+@dataclass(frozen=True, kw_only=True)
+class ArtifactStats(Record):
+    rows: Optional[int]
+    counts: Optional[Dict[str, Any]] = omit_none()
+
+
+@dataclass(frozen=True, kw_only=True)
+class PredictionManifest(Manifest):
+    """A prediction run's record."""
+
+    kind: str = 'prediction'
+    parents: PredictionParents
+    prediction_table: PredictionTableRecord
+    scoring: RunScoring
+    outputs: Optional[List[PredictionOutput]]
+    status: Optional[str]
+    timings: Optional[RunTimings]
+    stats: Optional[Dict[str, ArtifactStats]]
+
+    EMBED_OMITS = ('outputs', 'stats', 'status', 'timings')
+
+    def lineage(self) -> List[Note]:
+        table, trained = _fit_data(self.parents.model)
+        scored = self.parents.snapshot
+        notes = [] if table is None or trained is None else [Note(
+            'lineage/model', ' ← '.join(filter(None, [
+                table.title, trained.title,
+                ', '.join(_tables(trained, located=False))])))]
+        notes.append(Note('lineage', 'Scored: ' + ' ← '.join(filter(None, [
+            scored.title, ', '.join(_tables(scored, located=True))]))))
+        if trained is not None and trained.id != scored.id:
+            notes.append(Note('lineage', _changed(trained, scored)))
+        return notes
 
 
 @dataclass(frozen=True, kw_only=True)
