@@ -57,6 +57,7 @@ fn base_table(name: &str) -> TableSpec {
 
 fn base_metadata() -> GraphConfig {
     GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test".into(),
         tables: vec![base_table("User"), base_table("Device")],
         rowpack: None,
@@ -80,6 +81,7 @@ fn assert_err_contains(meta: GraphConfig, needle: &str) {
 #[test]
 fn validate_minimal_metadata() {
     let meta = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test".into(),
         tables: vec![base_table("User")],
         rowpack: None,
@@ -106,6 +108,7 @@ fn validate_rejects_unsupported_direct_multicategorical_dtype() {
         multicategorical_delimiter: None,
     });
     let meta = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test".into(),
         tables: vec![table],
         rowpack: None,
@@ -122,6 +125,7 @@ fn validate_rejects_unsupported_direct_multicategorical_dtype() {
 #[test]
 fn validate_missing_pk_column() {
     let meta = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test".into(),
         tables: vec![TableSpec {
             name: "User".into(),

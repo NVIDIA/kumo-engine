@@ -37,7 +37,7 @@ def test_forecasting_train_generation_passes_history_offsets(
             return '{"time_col_name": "TIMESTAMP"}'
 
     diskgraph = SimpleNamespace(
-        DiskGraphPlanCompiler=lambda: _Compiler(),
+        DiskGraphPlanCompiler=lambda *, index_path: _Compiler(),
         SplitSpec=_SplitSpec,
         execute_tt_plan_with_artifacts=lambda **_kwargs: {
             'manifest_path': str(tmp_path / 'manifest.json'),
@@ -162,7 +162,7 @@ def test_forecasting_ttng_train_generation_passes_offsets(
             return '{"time_col_name": "TIMESTAMP"}'
 
     diskgraph = SimpleNamespace(
-        DiskGraphPlanCompiler=lambda: _Compiler(),
+        DiskGraphPlanCompiler=lambda *, index_path: _Compiler(),
         SplitSpec=_SplitSpec,
         execute_tt_gen=lambda *_args: {
             'staging_dir': str(tmp_path / 'staging'),
@@ -273,7 +273,7 @@ def test_ttng_link_prediction_keeps_atemporal_rhs_flag_false(
         }
 
     diskgraph = SimpleNamespace(
-        DiskGraphPlanCompiler=lambda: _Compiler(),
+        DiskGraphPlanCompiler=lambda *, index_path: _Compiler(),
         SplitSpec=_SplitSpec,
         execute_tt_gen=_execute_tt_gen,
     )

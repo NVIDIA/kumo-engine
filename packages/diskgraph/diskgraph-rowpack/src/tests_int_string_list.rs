@@ -1487,7 +1487,7 @@ fn test_int8_array_rejects_i16_overflow() -> anyhow::Result<()> {
 fn test_int32_array_arrow_output_schema_uses_int32_child() -> anyhow::Result<()> {
     use arrow_schema::DataType;
     let (field, _builder) =
-        crate::make_arrow_builder("tags", IngestedType::Int32Array, 16)?;
+        crate::make_arrow_builder("tags", IngestedType::Int32Array, 16, TimeUnit::Seconds)?;
     match field.data_type() {
         DataType::List(child) => assert_eq!(*child.data_type(), DataType::Int32),
         other => panic!("expected List<Int32>, got {:?}", other),
@@ -1498,7 +1498,8 @@ fn test_int32_array_arrow_output_schema_uses_int32_child() -> anyhow::Result<()>
 #[test]
 fn test_int8_array_arrow_output_schema_uses_int8_child() -> anyhow::Result<()> {
     use arrow_schema::DataType;
-    let (field, _) = crate::make_arrow_builder("tags", IngestedType::Int8Array, 16)?;
+    let (field, _) =
+        crate::make_arrow_builder("tags", IngestedType::Int8Array, 16, TimeUnit::Seconds)?;
     match field.data_type() {
         DataType::List(child) => assert_eq!(*child.data_type(), DataType::Int8),
         other => panic!("expected List<Int8>, got {:?}", other),
@@ -1509,7 +1510,8 @@ fn test_int8_array_arrow_output_schema_uses_int8_child() -> anyhow::Result<()> {
 #[test]
 fn test_int16_array_arrow_output_schema_uses_int16_child() -> anyhow::Result<()> {
     use arrow_schema::DataType;
-    let (field, _) = crate::make_arrow_builder("tags", IngestedType::Int16Array, 16)?;
+    let (field, _) =
+        crate::make_arrow_builder("tags", IngestedType::Int16Array, 16, TimeUnit::Seconds)?;
     match field.data_type() {
         DataType::List(child) => assert_eq!(*child.data_type(), DataType::Int16),
         other => panic!("expected List<Int16>, got {:?}", other),

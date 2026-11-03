@@ -42,13 +42,11 @@ def test_build_step_selects_native_platform_and_release_mode(
     uname.write_text(f'#!/bin/sh\necho {build["arch"]}\n')
     uname.chmod(0o755)
     step = _step('build', 'Build wheel')
-    subprocess.run(
-        ['bash', '-e', '-c', step['run']], cwd=tmp_path,
-        env=dict(os.environ, PATH=f'{tmp_path}:{os.environ["PATH"]}',
-                 WHEEL_ARCH=build['arch'], WHEEL_PLATFORM=build['platform'],
-                 MACOSX_DEPLOYMENT_TARGET=step['env'][
-                     'MACOSX_DEPLOYMENT_TARGET'],
-                 IS_RELEASE=str(release).lower()), check=True)
+    subprocess.run(['bash', '-e', '-c', step['run']], cwd=tmp_path, env=dict(
+        os.environ, PATH=f'{tmp_path}:{os.environ["PATH"]}',
+        WHEEL_ARCH=build['arch'], WHEEL_PLATFORM=build['platform'],
+        MACOSX_DEPLOYMENT_TARGET=step['env']['MACOSX_DEPLOYMENT_TARGET'],
+        IS_RELEASE=str(release).lower()), check=True)
 
     command = json.loads(capture.read_text())
     expected = (['--platform-tag', build['platform']]
@@ -79,13 +77,13 @@ def test_release_steps_use_the_matching_platform_and_wheel(
     wheel.touch()
     capture = tmp_path / 'command.json'
     _capture_command(tmp_path / 'python3', capture)
-    subprocess.run(
-        ['bash', '-e', '-c', step['run']], cwd=tmp_path,
-        env=dict(os.environ, PATH=f'{tmp_path}:{os.environ["PATH"]}',
-                 WHEEL_PLATFORM=row['platform'], RELEASE_TAG='kumo-engine-v1.0',
-                 REPO='NVIDIA/kumo-engine',
-                 MACOSX_DEPLOYMENT_TARGET=step.get('env', {}).get(
-                     'MACOSX_DEPLOYMENT_TARGET', '')), check=True)
+    subprocess.run(['bash', '-e', '-c', step['run']], cwd=tmp_path, env=dict(
+        os.environ, PATH=f'{tmp_path}:{os.environ["PATH"]}',
+        WHEEL_PLATFORM=row['platform'], RELEASE_TAG='kumo-engine-v1.0',
+        REPO='NVIDIA/kumo-engine',
+        MACOSX_DEPLOYMENT_TARGET=step.get('env',
+                                          {}).get('MACOSX_DEPLOYMENT_TARGET',
+                                                  '')), check=True)
 
     command = json.loads(capture.read_text())
     args = command['args']
@@ -95,17 +93,43 @@ def test_release_steps_use_the_matching_platform_and_wheel(
         assert command['target'] == '14.0'
 
 
-def test_all_platforms_require_validation_and_release_approval():
+def test_all_platforms_require_validation_and_release_environment():
     arches = {build['arch'] for build in BUILDS}
     assert len(arches) == len(BUILDS)
     for job in ['check-requirements', 'kitmaker']:
-        assert {row['arch'] for row in JOBS[job]['strategy']['matrix'][
-            'include']} == arches
+        assert {
+            row['arch']
+            for row in JOBS[job]['strategy']['matrix']['include']
+        } == arches
     assert JOBS['check-requirements']['needs'] == ['build']
     assert set(JOBS['attach-to-release']['needs']) == {
-        'build', 'check-requirements'
+        'build', 'check-requirements', 'wheel-smoke'
     }
     assert JOBS['kitmaker']['needs'] == ['attach-to-release']
     assert JOBS['kitmaker']['environment'] == 'kumo-engine-release'
     for job in ['attach-to-release', 'kitmaker']:
         assert JOBS[job]['if'] == "${{ github.event_name == 'release' }}"
+    smoke = yaml.safe_load(
+        (WORKFLOW.parent / 'kumo-engine-wheel-smoke.yml').read_text())
+    assert set(smoke[True]) == {'workflow_call'}
+
+
+def test_publication_forwards_the_shared_prediction_tolerance():
+    root = WORKFLOW.parents[2]
+    workflow = yaml.safe_load(
+        (root / ('.github/workflows/kumo-engine-wheel-smoke.yml')).read_text())
+    action = yaml.safe_load(
+        (root / ('.github/actions/engine-gpu-smoke/action.yml')).read_text())
+    call = next(step['with'] for step in workflow['jobs']['smoke']['steps']
+                if step.get('uses') == './.github/actions/engine-gpu-smoke')
+    pr = yaml.safe_load(
+        (root / '.github/workflows/kumo-engine-pr.yml').read_text())
+    pr_call = next(step['with'] for job in pr['jobs'].values()
+                   for step in job.get('steps', [])
+                   if step.get('uses') == './.github/actions/engine-gpu-smoke')
+    run = next(
+        step for step in action['runs']['steps']
+        if step.get('name') == 'Run the eight GPU tasks outside the checkout')
+    assert call['reload-atol'] == pr_call['reload-atol'] == '0.005'
+    assert run['env']['RELOAD_ATOL'] == '${{ inputs.reload-atol }}'
+    assert '--reload-atol "$RELOAD_ATOL"' in run['run']
