@@ -136,11 +136,24 @@ white-space:pre-wrap;overflow-wrap:anywhere}
 .kumo-training .kt-trial-axis .kt-constant{justify-content:center}
 .kumo-training .kt-trial-detail{border-left:3px solid $accent;padding-left:12px;margin:8px 0 16px}
 .kumo-training .kt-trial-detail h4{margin-top:0}
+.kumo-training .kt-settings .kt-table{table-layout:fixed}
+.kumo-training .kt-settings .kt-table td.kt-number{text-align:right;white-space:normal;overflow-wrap:anywhere}
+.kumo-training .kt-setting-state{display:block;font-size:12px;color:$muted}
 @container kumo-training (max-width:520px){
 .kumo-training .kt-trial-choice,.kumo-training .kt-trial-axis{grid-template-columns:minmax(0,1fr) 86px;gap:4px 10px}
 .kumo-training .kt-trial-choice>.kt-trial-label{grid-column:1/-1}
 .kumo-training .kt-trial-axis>.kt-trial-label{display:none}
-.kumo-training .kt-trial-list.kt-many{max-height:440px}}
+.kumo-training .kt-trial-list.kt-many{max-height:440px}
+.kumo-training .kt-settings .kt-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 12px}
+.kumo-training .kt-settings .kt-table td:first-child{grid-column:1/-1}
+.kumo-training .kt-settings .kt-table td:first-child:before{display:none}
+.kumo-training .kt-settings .kt-table td:nth-child(2):last-child{grid-column:1/-1}
+.kumo-training .kt-settings .kt-table td:before{display:block}
+.kumo-training .kt-settings .kt-settings-single tr{grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:8px;align-items:start}
+.kumo-training .kt-settings .kt-settings-single td:first-child,.kumo-training .kt-settings .kt-settings-single td:nth-child(2):last-child{grid-column:auto}
+.kumo-training .kt-settings .kt-settings-single td:before{display:none}
+.kumo-training .kt-settings .kt-settings-single thead{display:table-header-group;position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+}
 
 .kumo-training .kt-trials td.kt-number{white-space:nowrap;overflow-wrap:normal}
 .kumo-training .kt-trials td.kt-number:before{white-space:normal;overflow-wrap:anywhere}
@@ -509,6 +522,33 @@ const origin=row=>row.comparison_source==='final_validation_metrics'?'Final vali
 row.comparison_source==='last_recorded_epoch'?'Last recorded epoch '+text(row.comparison_epoch)+' · validation':'Validation origin unverified';
 const selection=row=>provenance.selection_verified!==true?'Selection unverified':row.fit==='original'&&row.selected?'Recorded selection':row.fit==='original'?'Not selected':'Separate fit';
 const comparison=el('div'),meaning=el('div'),trialScroll=new Map();let inspected=trials.findIndex(row=>row.fit==='original'&&row.selected&&provenance.selection_verified===true);if(inspected<0)inspected=0;
+const settingsCompared=new Map();
+const drawSettings=(parent,row)=>{if(row.fit!=='original')return;
+const view=el('div',undefined,'kt-settings');parent.append(view);view.append(el('h4','Recorded settings'));
+const settings=source=>obj(source.settings),recorded=source=>new Map(['available','limited','partial'].includes(settings(source).status)?list(settings(source).rows).map(obj).filter(item=>typeof item.key==='string'&&Object.hasOwn(item,'value')&&(item.value===null||typeof item.value==='string'||typeof item.value==='boolean'||finite(item.value))).map(item=>[item.key,item]):[]);
+const current=recorded(row),others=originals.filter(other=>other!==row),content=el('div');
+const showValue=(item,source)=>item?item.value===null?'null (recorded)':typeof item.value==='string'?JSON.stringify(item.value):String(item.value):settings(source).status==='available'?'Not recorded':'Unavailable · settings '+text(settings(source).status||'not loaded');
+const evidence=(parent,sources)=>{const exact=el('details');exact.append(el('summary','Explore settings sources and fields'));
+for(const source of sources){const data=settings(source);identityNote(exact,'Settings source',candidateName(source)+' · '+text(data.source||'Source unavailable'));
+if(recorded(source).size)table(exact,['Setting','Recorded field'],[...recorded(source).values()].map(item=>[item.label,item.field]),[],true);}
+parent.append(exact);};
+const availability=(parent,source)=>{const data=settings(source);if(data.status!=='available')note(parent,candidateName(source)+' settings: '+text(data.status||'not loaded')+(data.reason?'. '+text(data.reason):''));};
+const settingsTable=(parent,keys,other,changed=false)=>{const compared=other?recorded(other):new Map(),headers=other?['Setting',candidateName(row),candidateName(other)]:['Setting',candidateName(row)];
+const values=keys.map(key=>{const item=current.get(key)||compared.get(key),label=el('span',item.label||'Recorded setting');if(changed)label.append(el('span','Differs','kt-setting-state'));
+return other?[label,showValue(current.get(key),row),showValue(compared.get(key),other)]:[label,showValue(current.get(key),row)];});
+const node=table(parent,headers,values,[],false);if(!other)node.classList.add('kt-settings-single');for(const cell of [...node.tHead.rows[0].cells].slice(1))cell.classList.add('kt-number');for(const [index,key]of keys.entries()){const cells=node.tBodies[0].rows[index].cells;for(const [offset,source]of (other?[row,other]:[row]).entries())if(finite(recorded(source).get(key)?.value))cells[offset+1].classList.add('kt-number');}};
+const draw=other=>{content.replaceChildren();availability(content,row);if(other)availability(content,other);
+if(!other){if(current.size){note(content,'Only one original candidate is recorded: '+candidateName(row)+'. These are its loaded settings; no alternative settings comparison is available.');settingsTable(content,[...current.keys()]);}else note(content,'No recorded settings are loaded for this candidate.');evidence(content,[row]);return;}
+const compared=recorded(other),keys=[...new Set([...current.keys(),...compared.keys()])],joint=keys.filter(key=>current.has(key)&&compared.has(key)),different=joint.filter(key=>current.get(key).value!==compared.get(key).value),same=joint.filter(key=>!different.includes(key)),missing=keys.filter(key=>!joint.includes(key));
+note(content,candidateName(row)+' compared with '+candidateName(other)+': '+different.length+' recorded setting'+(different.length===1?' differs.':'s differ.')+' '+joint.length+' jointly recorded setting'+(joint.length===1?' was':'s were')+' compared.');
+if(different.length)settingsTable(content,different,other,true);
+else note(content,joint.length?'The jointly recorded values match. This does not establish that the complete configurations are equal.':'No jointly recorded settings are available to compare.');
+if(missing.length){note(content,missing.length+' setting'+(missing.length===1?' is':'s are')+' not jointly recorded. Missing values are not defaults.');const details=el('details');details.append(el('summary','Explore settings not jointly recorded'));settingsTable(details,missing,other);content.append(details);}
+if(same.length){const details=el('details');details.append(el('summary','Explore '+same.length+' matching recorded settings'));settingsTable(details,same,other);content.append(details);}
+note(content,'Only loaded settings are compared. Setting differences do not establish why validation scores differ or why a candidate was selected.');evidence(content,[row,other]);};
+if(others.length){const index=trials.indexOf(row),saved=trials[settingsCompared.get(index)],other=others.includes(saved)?saved:others.find(other=>other.selected&&provenance.selection_verified===true)||others[0];settingsCompared.set(index,trials.indexOf(other));
+const select=control(view,'Compare settings with',others.map(other=>[String(trials.indexOf(other)),candidateName(other)+(other.selected&&provenance.selection_verified===true?' · Recorded selection':'')]),value=>{settingsCompared.set(index,Number(value));draw(trials[Number(value)]);enable();});select.value=String(trials.indexOf(other));view.append(content);draw(other);}
+else{view.append(content);draw(null);}};
 const drawTrials=metric=>{for(const node of comparison.querySelectorAll('.kt-trial-list'))trialScroll.set(node.dataset.identity,node.scrollTop);comparison.replaceChildren();meaning.replaceChildren();
 const chosenMetric=metric===provenance.selection_metric;
 note(meaning,(metric?text(metric)+' · ':'')+(chosenMetric?'Recorded selection metric. '+(provenance.selection_direction==='min'?'Lower is preferred.':provenance.selection_direction==='max'?'Higher is preferred.':'Direction is not recorded.'):'Direction is not recorded for this metric.'));
@@ -541,13 +581,14 @@ note(pick.detail,origin(row)+(row.comparison_source==='final_validation_metrics'
 if(row.status||row.reason)identityNote(pick.detail,'Recorded progress state',text(row.status||'')+(row.reason?' · '+text(row.reason):''));
 table(pick.detail,['Metric','Exact recorded value','Epochs completed'],[[metric??'No metric recorded',metric&&Object.hasOwn(trialMetrics(row),metric)?trialMetrics(row)[metric]:undefined,row.num_epochs_completed]],[1,2],true);
 identityNote(pick.detail,'Device and timing','Device: '+text(row.accelerator)+' · Elapsed seconds: '+text(row.elapsed_time));
+drawSettings(pick.detail,row);
 if(reveal||!trialScroll.has(pick.choices.dataset.identity)){const bottom=pick.detail.offsetTop+pick.detail.offsetHeight;if(bottom>pick.choices.scrollTop+pick.choices.clientHeight)pick.choices.scrollTop=bottom-pick.choices.clientHeight;if(pick.button.offsetTop<pick.choices.scrollTop)pick.choices.scrollTop=pick.button.offsetTop;}
 }}
 choose(inspected);for(const node of comparison.querySelectorAll('.kt-trial-list'))if(trialScroll.has(node.dataset.identity))node.scrollTop=trialScroll.get(node.dataset.identity);enable();};
 if(names.length){const metric=names.includes(provenance.selection_metric)?provenance.selection_metric:names[0];
 const select=control(trialView,'Trial metric',names.map(name=>[name,name]),drawTrials);select.value=metric;trialView.append(meaning,comparison);drawTrials(metric);}
 else{trialView.append(meaning,comparison);drawTrials(null);}
-note(trialView,'Metric origins and fits are shown separately. Missing values or progress do not establish that a trial failed. Configurations are not loaded in this view, so changes in settings cannot be compared here.');
+note(trialView,'Metric origins and fits are shown separately. Missing values or progress do not establish that a trial failed.');
 const exact=el('details');exact.append(el('summary','Explore all recorded candidate values'));
 for(const row of trials){identityNote(exact,'Trial identity',candidateName(row)+' · '+text(row.trial)+' / '+text(row.fit)+' · '+selection(row)+' · '+origin(row));
 table(exact,['Recorded metric','Exact value'],Object.entries(trialMetrics(row)),[1],true);}

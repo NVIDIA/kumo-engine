@@ -14,6 +14,7 @@ from typing import Any, TypedDict
 
 from kumo_core.explain.schemas import EntityOutput
 from kumo_core.io.json import from_json_dict, to_json_dict
+from kumo_core.training.config import TrainerConfig
 from kumoapi.jobs import AutoTrainerProgress, TrainerProgress
 from kumoapi.task import TaskType
 
@@ -28,6 +29,7 @@ from kumo.engine.explain.results import TrainingExplanations
 LIMITS = {
     'artifact_bytes': 1024 * 1024,
     'input_bytes': 8 * 1024 * 1024,
+    'settings_bytes': 1024 * 1024,
     'sample_bytes': 2 * 1024 * 1024,
     'payload_bytes': 4 * 1024 * 1024,
     'samples': 12,
@@ -402,6 +404,68 @@ def _read_training(guard: _Guard, trial: Path,
     return payload['context'].get('task_type'), producer_notes
 
 
+def _read_trial_settings(guard: _Guard, automl: Path, rows: list[dict]) -> None:
+    guard.remaining = min(guard.remaining, LIMITS['settings_bytes'])
+    fields = (
+        ('model.channels', 'Model channels', 'positive'),
+        ('model.num_mp_layers', 'Message-passing layers', 'integer'),
+        ('model.num_pre_mp_layers', 'Pre-message-passing layers', 'integer'),
+        ('head.num_layers', 'Prediction-head layers', 'positive'),
+        ('model.dropout', 'Dropout', 'fraction'),
+        ('model.act', 'Activation', 'nullable'),
+        ('model.norm', 'Normalization', 'nullable'),
+        ('optimizer', 'Optimizer', 'text'),
+        ('optimizer_kwargs.lr', 'Learning rate', 'number'),
+        ('optimizer_kwargs.weight_decay', 'Weight decay', 'number'),
+        ('lr_scheduler', 'Learning-rate schedule', 'nullable'),
+        ('lr_scheduler_interval', 'Schedule interval', 'interval'),
+        ('loader_kwargs.batch_size', 'Batch size', 'positive'),
+        ('max_epochs', 'Maximum epochs', 'epochs'),
+    )
+    for row in rows:
+        source = automl / row['trial'] / 'config.json'
+        section = row['settings'] = dict(
+            status='missing', reason=None,
+            source=source.relative_to(guard.root).as_posix(), rows=[])
+        try:
+            if guard.path(source) != source:
+                raise ValueError('Settings redirect to another artifact')
+            raw = guard.json(source)
+            if (type(raw.get('version')) is not int or raw['version'] != int(
+                    row['trial'].removeprefix('version_'))):
+                raise ValueError('Settings do not identify this candidate')
+            from_json_dict(raw, TrainerConfig)
+            for key in ('model', 'head'):
+                if raw[key] is not None and not isinstance(raw[key], dict):
+                    raise ValueError('Invalid model configuration')
+            settings = []
+            for key, label, kind in fields:
+                value = raw
+                for part in key.split('.'):
+                    if not isinstance(value, dict) or part not in value:
+                        break
+                    value = value[part]
+                else:
+                    if kind in ('integer', 'positive', 'epochs'):
+                        minimum = dict(integer=0, positive=1, epochs=-1)[kind]
+                        valid = type(value) is int and value >= minimum
+                    elif kind in ('number', 'fraction'):
+                        valid = (type(value) in (int, float) and value >= 0
+                                 and (kind != 'fraction' or value <= 1))
+                    elif kind == 'interval':
+                        valid = value is None or value in ('step', 'epoch')
+                    else:
+                        valid = (kind == 'nullable' and value is None
+                                 or isinstance(value, str) and bool(value))
+                    if not valid:
+                        raise ValueError('Invalid recorded setting')
+                    settings.append(
+                        dict(key=key, field=key, label=label, value=value))
+            section.update(status='available', rows=settings)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            _failure(section, error)
+
+
 def _read_sample_output(guard: _Guard, root: Path, artifact_id: str,
                         body: dict) -> dict:
     result = dict(status='unknown',
@@ -664,6 +728,14 @@ def build_training_payload(explanations: TrainingExplanations, *,
         if explanations._failure and section['status'] == 'available':
             section.update(status='partial',
                            reason='Explanation generation failed')
+    _read_trial_settings(guard, trial.parent, payload['trials']['rows'])
+    if len(_encoded(payload)) > LIMITS['payload_bytes']:
+        for row in payload['trials']['rows']:
+            row['settings'].update(status='limited',
+                                   reason='Payload byte limit', rows=[])
+        if len(_encoded(payload)) > LIMITS['payload_bytes']:
+            for row in payload['trials']['rows']:
+                del row['settings']
     if len(_encoded(payload)) > LIMITS['payload_bytes']:
         for name in ('samples', 'cohorts', 'history', 'trials', 'gradient',
                      'metrics'):

@@ -145,6 +145,147 @@ def test_snapshot_preserves_refit_metrics_epochs_and_missing_values(
     json.dumps(result, allow_nan=False)
 
 
+@pytest.mark.parametrize('state', [
+    'available', 'absent_field', 'null', 'missing', 'malformed', 'boolean',
+    'negative', 'fraction', 'version', 'version_boolean', 'schema', 'escape',
+    'candidate_redirect', 'directory_redirect', 'oversized', 'tree', 'string',
+    'aggregate', 'input', 'payload', 'unlimited', 'model_container', 'items',
+    'nonfinite'
+])
+def test_trial_settings_preserve_identity_bounds_and_existing_evidence(
+        tmp_path, monkeypatch, state):
+    run, trial = _run(tmp_path)
+    selected = Path(trial)
+    candidate = selected.with_name('version_0')
+    config = dict(
+        encoder={}, model=dict(channels=64, num_mp_layers=2, dropout=0.0,
+                               norm='layer_norm'), head=dict(num_layers=1),
+        version=2, optimizer='Adam',
+        optimizer_kwargs=dict(lr=0.001, weight_decay=0), lr_scheduler=None,
+        max_epochs=3, refit_cfg=dict(refitted_trainval=False),
+        root_dir='private-path', unknown=dict(secret='private-token'))
+    save_json(config, str(selected / 'config.json'))
+    config['version'] = 0
+    save_json(config, str(candidate / 'config.json'))
+    progress = dict(final_validation_metrics={'val_loss': 0.25})
+    save_json(
+        dict(total_trials=2, completed_trials=2, trial_progress={
+            '0': progress,
+            '2': progress
+        }), str(selected.parent / 'auto_train_progress.json'))
+    _gradient(trial)
+    save_json(_graph(), f'{trial}/subgraph_collector/test/subgraph_json/0.json')
+    facade = TrainingExplanations.load(run)
+    baseline = build_training_payload(facade)
+    path = candidate / 'config.json'
+    expected = 'available'
+    if state in ('absent_field', 'null', 'boolean', 'negative', 'fraction',
+                 'version', 'version_boolean', 'schema', 'unlimited',
+                 'model_container'):
+        if state == 'absent_field':
+            del config['optimizer']
+        elif state == 'null':
+            config['model']['norm'] = None
+        elif state in ('boolean', 'negative', 'fraction'):
+            config['model']['channels'] = dict(boolean=True, negative=-1,
+                                               fraction=1.5)[state]
+        elif state in ('version', 'version_boolean'):
+            config['version'] = 2 if state == 'version' else False
+        elif state == 'unlimited':
+            config['max_epochs'] = -1
+        elif state == 'model_container':
+            config['model'] = 'invalid-model'
+        else:
+            del config['encoder']
+        save_json(config, str(path))
+        if state not in ('absent_field', 'null', 'unlimited'):
+            expected = 'invalid'
+    elif state in ('missing', 'malformed', 'escape', 'candidate_redirect',
+                   'directory_redirect', 'oversized', 'tree', 'string', 'items',
+                   'nonfinite'):
+        expected = 'missing' if state == 'missing' else 'limited' if state in (
+            'oversized', 'tree', 'string', 'items') else 'invalid'
+        path.unlink()
+        if state == 'malformed':
+            path.write_text('{')
+        elif state in ('escape', 'candidate_redirect', 'directory_redirect'):
+            if state == 'escape':
+                external = tmp_path / 'outside.json'
+                save_json(config, str(external))
+                path.symlink_to(external)
+            elif state == 'candidate_redirect':
+                path.symlink_to(selected / 'config.json')
+            else:
+                candidate.rmdir()
+                candidate.symlink_to(selected, target_is_directory=True)
+        elif state == 'oversized':
+            path.write_text(' ' * (LIMITS['artifact_bytes'] + 1))
+        elif state == 'tree':
+            value = []
+            for _ in range(LIMITS['depth'] + 1):
+                value = [value]
+            config['unknown'] = value
+            save_json(config, str(path))
+        elif state == 'string':
+            config['unknown'] = 'x' * (LIMITS['string'] + 1)
+            save_json(config, str(path))
+        elif state == 'items':
+            config['unknown'] = [0] * LIMITS['json_items']
+            save_json(config, str(path))
+        elif state == 'nonfinite':
+            config['optimizer_kwargs']['lr'] = float('nan')
+            save_json(config, str(path))
+    elif state in ('aggregate', 'input', 'payload'):
+        expected = 'limited'
+        if state == 'aggregate':
+            monkeypatch.setitem(LIMITS, 'settings_bytes',
+                                path.stat().st_size - 1)
+        elif state == 'input':
+            sources = (selected / 'config.json',
+                       selected.parent / 'best_trainer.json',
+                       selected.parent / 'auto_train_progress.json',
+                       selected / 'explain_test/scores.csv', selected /
+                       'subgraph_collector/test/subgraph_json/0.json')
+            monkeypatch.setitem(
+                LIMITS, 'input_bytes',
+                facade._selection_bytes + sum(source.stat().st_size
+                                              for source in sources))
+        else:
+            monkeypatch.setitem(
+                LIMITS, 'payload_bytes',
+                len(json.dumps(baseline, separators=(',', ':')).encode()) - 100)
+    result = build_training_payload(facade)
+    first, second = result['trials']['rows']
+    settings = first['settings']
+    assert settings['status'] == expected
+    assert settings['source'] == 'models/task/automl/version_0/config.json'
+    if expected == 'available':
+        values = {row['key']: row['value'] for row in settings['rows']}
+        assert values['lr_scheduler'] is None
+        assert ('optimizer' in values) == (state != 'absent_field')
+        assert values['model.norm'] == (None
+                                        if state == 'null' else 'layer_norm')
+        assert 'loader_kwargs.batch_size' not in values
+        assert values['max_epochs'] == (-1 if state == 'unlimited' else 3)
+        assert all(row['key'] == row['field'] for row in settings['rows'])
+    else:
+        assert settings['rows'] == [] and settings['reason']
+    for row, original in zip((first, second), baseline['trials']['rows']):
+        assert {
+            key: value
+            for key, value in row.items() if key != 'settings'
+        } == {
+            key: value
+            for key, value in original.items() if key != 'settings'
+        }
+    if state not in ('aggregate', 'input', 'payload'):
+        assert second['settings']['status'] == 'available'
+    for name in ('gradient', 'cohorts', 'samples', 'history', 'metrics'):
+        assert result[name] == baseline[name]
+    assert all(value not in json.dumps(result)
+               for value in ('private-path', 'private-token', str(tmp_path)))
+
+
 @pytest.mark.parametrize('task', [
     'regression', 'binary_classification', 'multiclass_classification',
     'multilabel_classification'
