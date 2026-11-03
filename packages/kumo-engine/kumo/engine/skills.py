@@ -32,12 +32,20 @@ coco       coco       ``user`` ``~/.snowflake/cortex/skills`` (CLI, Desktop) ·
                       ``project`` ``./.cortex/skills`` · ``workspace`` a Snowsight
                       workspace · ``extension`` a Cortex Extension in the account
 genie      genie      ``/Users/<you>/.assistant/skills`` in the Databricks workspace
+genie-cli  generic    as ``codex``: the Genie Code CLI reads ``.agents/skills``
 =========  =========  ==============================================================
 
 ``path=`` installs a package into any skills directory instead, for an agent
 not listed here. Each install replaces the ``kumo-data-science/`` directory it
 writes, and only that directory: a package carries exactly one host's files,
 and a second host left behind would be read too.
+
+Versions: each package is stamped ``SKILL-BUILD: <date>-<sha>``. An install
+prints the build it installed and the one it replaced. Installing again
+always replaces a local or Genie copy; a Cortex Extension gets a new version
+only when the package changed. ``import kumo.engine`` warns when a local
+install is from another build, and ``python -m kumo.engine.skills --check``
+lists the local installs and exits 1 if any is stale.
 
 This module uses the standard library and ``filelock``, plus
 ``databricks-sdk`` for Genie and a Snowpark session for the ``coco`` account
@@ -52,6 +60,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import uuid
 import warnings
 from contextlib import contextmanager
@@ -77,6 +86,13 @@ AGENTS: dict[str, tuple[str, dict[str, str]]] = {
         'project': '.cortex/skills'
     }),
     'genie': ('genie', {}),
+    # Genie Code CLI runs locally and reaches Databricks through its shell,
+    # like any coding agent, and reads the same directories as Codex. A copy
+    # in ~/.genie/skills as well would load as a second, competing skill.
+    'genie-cli': ('generic', {
+        'user': '~/.agents/skills',
+        'project': '.agents/skills'
+    }),
 }
 COCO_ACCOUNT_SCOPES = ('workspace', 'extension')
 # A home directory that marks an agent as present, for `install_skills()`.
@@ -85,8 +101,14 @@ HOME_MARKERS = [
     ('codex', '.codex'),
     ('codex', '.agents'),
     ('coco', '.snowflake/cortex'),
+    ('genie-cli', '.genie'),
 ]
 GENIE_SKILLS = '/Users/{user}/.assistant/skills'
+_MARKER = re.compile(r'SKILL-BUILD: ([^`*\s]+)')
+# How long a Cortex Extension install waits for Snowflake's scan of the new
+# version, which Cortex Code needs to have passed before it installs it.
+SCAN_TIMEOUT = 300.0
+SCAN_POLL = 5.0
 
 _BUNDLED = Path(__file__).resolve().parent / '_skills'
 # In a source checkout (an editable install) the skill is built fresh from
@@ -130,6 +152,81 @@ def skill_package(host: str) -> Iterator[Path]:
 def _files(pkg: Path) -> list[Path]:
     return sorted(p for p in pkg.rglob('*')
                   if p.is_file() and '__pycache__' not in p.parts)
+
+
+def build_of(skill_md: str) -> Optional[str]:
+    r"""The ``SKILL-BUILD`` stamp of a ``SKILL.md``, or ``None``."""
+    m = _MARKER.search(skill_md)
+    return m.group(1) if m else None
+
+
+def _read_build(skill_dir: Path) -> Optional[str]:
+    try:
+        return build_of((skill_dir / 'SKILL.md').read_text())
+    except OSError:
+        return None
+
+
+def _report(pkg: Path, target: str, previous: Optional[str] = None,
+            note: str = '') -> None:
+    build = _read_build(pkg)
+    if note:
+        status = note
+    elif previous is None:
+        status = 'new'
+    elif previous == build:
+        status = 'reinstalled'
+    else:
+        status = f'replaced {previous}'
+    print(f'{SKILL} {build} -> {target} ({status})')
+
+
+def _install_local(pkg: Path, skills_dir: Path) -> str:
+    previous = _read_build(skills_dir.expanduser() / SKILL)
+    target = str(_copy(pkg, skills_dir))
+    _report(pkg, target, previous)
+    return target
+
+
+def bundled_build() -> Optional[str]:
+    r"""The build this wheel carries, or ``None`` in a source checkout."""
+    if _PACKAGER.is_file():
+        return None
+    return _read_build(_BUNDLED / 'generic' / SKILL)
+
+
+def installed_skills() -> dict[str, Optional[str]]:
+    r"""The local installs of the skill, user and current project scope, and
+    the build of each."""
+    dirs = {
+        str(Path(d).expanduser().resolve() / SKILL)
+        for _, scopes in AGENTS.values()
+        for d in scopes.values()
+    }
+    return {d: _read_build(Path(d)) for d in sorted(dirs) if Path(d).is_dir()}
+
+
+def stale_skills() -> dict[str, Optional[str]]:
+    r"""The local installs whose build is not this wheel's."""
+    build = bundled_build()
+    if build is None:
+        return {}
+    return {d: b for d, b in installed_skills().items() if b != build}
+
+
+def warn_if_stale() -> None:
+    r"""Warns, once per import of ``kumo.engine``, about local installs of the
+    skill from another build than this wheel's."""
+    try:
+        stale = stale_skills()
+    except Exception:  # never let a check of skills break the import
+        return
+    if stale:
+        listed = ', '.join(f'{d} ({b})' for d, b in stale.items())
+        warnings.warn(
+            f'The {SKILL} agent skill installed at {listed} is not the one '
+            f'this kumo-engine ({bundled_build()}) ships. Run '
+            'kumo.engine.install_skills() to update it.', stacklevel=2)
 
 
 def _copy(pkg: Path, skills_dir: Path) -> Path:
@@ -182,10 +279,14 @@ def _detect() -> list[str]:
             "Snowsight workspace, or install_skills('coco', "
             "scope='extension') for a Cortex Extension in this account.")
     found = [
-        agent for agent, marker in HOME_MARKERS
-        if (Path.home() / marker).is_dir()
-    ]
-    return list(dict.fromkeys(found)) or ['claude', 'codex']
+        agent
+        for agent, marker in HOME_MARKERS if (Path.home() / marker).is_dir()
+    ] or ['claude', 'codex']
+    # One install per directory: Codex and Genie Code CLI share theirs.
+    by_dir: dict[str, str] = {}
+    for agent in found:
+        by_dir.setdefault(AGENTS[agent][1]['user'], agent)
+    return list(by_dir.values())
 
 
 def install_skills(
@@ -204,14 +305,16 @@ def install_skills(
     The skill is the one built from the same commit as this wheel.
 
     Args:
-        agent: ``claude``, ``codex``, ``coco`` or ``genie``. ``None`` picks
-            Genie on Databricks; elsewhere, every agent whose home directory
-            exists (``~/.claude``, ``~/.codex`` or ``~/.agents``,
-            ``~/.snowflake/cortex``), or Claude Code and Codex if none does.
+        agent: ``claude``, ``codex``, ``coco``, ``genie`` (Genie Code in the
+            Databricks workspace) or ``genie-cli`` (the Genie Code CLI).
+            ``None`` picks Genie on Databricks; elsewhere, every agent whose
+            home directory exists (``~/.claude``, ``~/.codex`` or
+            ``~/.agents``, ``~/.snowflake/cortex``, ``~/.genie``), or Claude
+            Code and Codex if none does.
         scope: ``user`` (the agent's home skills directory) or ``project``
             (under the current directory). For ``coco`` also ``workspace``
-            and ``extension``. Ignored for ``genie``, whose skills folder is
-            per user.
+            and ``extension``. ``genie`` takes only ``user``: its skills
+            folder is per user.
         path: a skills directory to install into instead; ``agent`` then
             picks only the package (default ``generic``).
         session: ``coco`` ``workspace``/``extension``: the Snowpark session.
@@ -229,13 +332,15 @@ def install_skills(
             one with default authentication (the notebook's own, inside
             Databricks).
 
+    Each install prints the build it installed and the one it replaced.
+
     Returns:
         Where each install went.
     """
     if path is not None:
         host = AGENTS.get(agent or '', ('generic', ))[0]
         with skill_package(host) as pkg:
-            return [str(_copy(pkg, Path(path)))]
+            return [_install_local(pkg, Path(path))]
     if agent is None:
         # Only coco has account scopes, so they name it; detection would try
         # every local agent first, or refuse inside a Snowflake notebook.
@@ -271,7 +376,7 @@ def install_skills(
             if scope == 'workspace':
                 return [_install_coco_workspace(pkg, session, workspace)]
             return [_install_coco_extension(pkg, session, extension, stage)]
-        target = str(_copy(pkg, Path(scopes[scope])))
+        target = _install_local(pkg, Path(scopes[scope]))
         if scope == 'user' and agent in ('claude', 'coco'):
             _warn_coco_shadowed()
         return [target]
@@ -318,6 +423,7 @@ def _install_genie(pkg: Path, client: Any = None) -> str:
         f'{target}/{p.relative_to(pkg).as_posix()}': p
         for p in _files(pkg)
     }
+    previous = _genie_build(w, target)
     for path, p in remote.items():
         w.workspace.mkdirs(path.rsplit('/', 1)[0])
         w.workspace.upload(path, io.BytesIO(p.read_bytes()),
@@ -336,7 +442,20 @@ def _install_genie(pkg: Path, client: Any = None) -> str:
         raise RuntimeError(f'Another install changed {target} while this one '
                            f'ran (e.g. {changed[0]}); run install_skills '
                            'again.')
+    _report(pkg, target, previous)
     return target
+
+
+def _genie_build(w: Any, target: str) -> Optional[str]:
+    r"""The build of the Genie install at ``target``, if there is one."""
+    from databricks.sdk.errors import NotFound
+    from databricks.sdk.service.workspace import ExportFormat
+    try:
+        md = w.workspace.download(f'{target}/SKILL.md',
+                                  format=ExportFormat.AUTO).read()
+    except NotFound:
+        return None
+    return build_of(md.decode('utf-8', 'replace'))
 
 
 def _genie_unequal(w: Any, remote: dict[str, Path]) -> list[str]:
@@ -483,6 +602,7 @@ def _install_coco_workspace(pkg: Path, session: Any, workspace: str) -> str:
         raise RuntimeError(f'Another install changed {root} while this one '
                            f'ran (e.g. {changed[0]}); run install_skills '
                            'again.')
+    _report(pkg, root, note='uploaded')
     return root
 
 
@@ -504,32 +624,66 @@ def _is_marker(rel: str) -> bool:
     return rel == '.folder' or rel.endswith('/.folder')
 
 
+def _digest(pkg: Path) -> str:
+    r"""A digest of the package's paths and contents."""
+    h = hashlib.sha256()
+    for p in _files(pkg):
+        h.update(p.relative_to(pkg).as_posix().encode() + b'\0')
+        h.update(p.read_bytes() + b'\0')
+    return h.hexdigest()[:16]
+
+
+def _extension_versions(session: Any, extension: str) -> list[dict[str, Any]]:
+    try:
+        return _rows(session, f'SHOW VERSIONS IN CORTEX EXTENSION {extension}')
+    except Exception as e:
+        if 'does not exist' in str(e):
+            return []
+        raise
+
+
 def _install_coco_extension(pkg: Path, session: Any, extension: str,
                             stage: str) -> str:
     r"""Publishes ``pkg`` as a new version of a Cortex Extension.
 
     The version root holds only ``skills/kumo-data-science/``, as a Cortex
     Extension requires. Installing it for a user still happens in Cortex Code
-    (``cortex skill add <extension> --catalog``), and only once Snowflake has
-    scanned the version; until then the install fails with "No files shared
-    with this skill". ``cortex skill check`` then reports later versions, and
-    ``cortex skill update`` installs them.
+    (``cortex skill add <extension> --catalog``); ``cortex skill check`` then
+    reports later versions, and ``cortex skill update`` installs them.
+
+    Each version is added from a stage folder named after a digest of the
+    package, which Snowflake records as the version's source. When the
+    default version already holds this package, nothing is published, so
+    reinstalls do not pile up identical versions. A new version is usable
+    only once Snowflake has scanned it, so the install waits for the scan.
     """
+    digest = _digest(pkg)
+    for v in _extension_versions(session, extension):
+        source = v.get('source_location_uri') or ''
+        if str(v.get('is_default')).lower() == 'true' and \
+                f'/kumo-ds-{digest}-' in source:
+            _report(pkg, extension, note=f'unchanged, {v["name"]}')
+            return extension
     session.sql(f'CREATE STAGE IF NOT EXISTS {stage} '
                 "ENCRYPTION=(TYPE='SNOWFLAKE_SSE') "
                 'DIRECTORY=(ENABLE=TRUE)').collect()
     # A folder of its own per install, so concurrent installs sharing the
     # stage never publish each other's files. A version holds its own copy
     # of the files, so the folder is removed once it is added.
-    root = f'@{stage}/kumo-ds-{uuid.uuid4().hex}'
+    folder = f'kumo-ds-{digest}-{uuid.uuid4().hex[:8]}'
+    root = f'@{stage}/{folder}'
     try:
         _put(session, pkg, f'{root}/skills/{SKILL}')
-        session.sql(
-            f'CREATE CORTEX EXTENSION IF NOT EXISTS {extension}').collect()
-        session.sql(f'ALTER CORTEX EXTENSION {extension} '
-                    f'ADD VERSION FROM {root}/').collect()
+        # Created from the package, so its first version is not empty.
+        session.sql(f'CREATE CORTEX EXTENSION IF NOT EXISTS {extension} '
+                    f'FROM {root}/').collect()
+        if not _our_version(session, extension, folder):
+            session.sql(f'ALTER CORTEX EXTENSION {extension} '
+                        f'ADD VERSION FROM {root}/').collect()
     finally:
         session.sql(f'REMOVE {root}/').collect()
+    version = _await_scan(session, extension, folder)
+    _report(pkg, extension, note=version)
     return extension
 
 
@@ -539,6 +693,38 @@ def _connect(connection: str) -> Any:
     """
     from snowflake.snowpark import Session
     return Session.builder.config('connection_name', connection).create()
+
+
+def _our_version(session: Any, extension: str,
+                 folder: str) -> Optional[dict[str, Any]]:
+    for v in _extension_versions(session, extension):
+        if f'/{folder}/' in (v.get('source_location_uri') or ''):
+            return v
+    return None
+
+
+def _await_scan(session: Any, extension: str, folder: str) -> str:
+    r"""Waits for Snowflake's scan of the version added from ``folder``.
+    Returns its name, and a note if the scan is still running."""
+    deadline = time.monotonic() + SCAN_TIMEOUT
+    while True:
+        v = _our_version(session, extension, folder)
+        if v is None:
+            raise RuntimeError(f'{extension} has no version from {folder}.')
+        status = str(v.get('effective_status') or v.get('scan_status') or '')
+        if 'FAIL' in status or 'BLOCK' in status:
+            raise RuntimeError(
+                f'Snowflake rejected {extension} {v["name"]}: {status}, '
+                f'{v.get("scan_findings")}')
+        if status != 'SCANNING':
+            return str(v['name'])
+        if time.monotonic() >= deadline:
+            warnings.warn(
+                f'{extension} {v["name"]} is still being scanned; Cortex Code '
+                'can install it once SHOW VERSIONS IN CORTEX EXTENSION '
+                f'{extension} shows it passed.', stacklevel=4)
+            return f'{v["name"]}, scanning'
+        time.sleep(SCAN_POLL)
 
 
 def main(argv: Optional[list[str]] = None) -> None:
@@ -563,7 +749,17 @@ def main(argv: Optional[list[str]] = None) -> None:
     ap.add_argument(
         '--profile', help='genie: the Databricks CLI profile to authenticate '
         'with (default: default authentication)')
+    ap.add_argument(
+        '--check', action='store_true',
+        help='list the local installs and exit 1 if any is not '
+        "this wheel's build")
     args = ap.parse_args(argv)
+    if args.check:
+        stale = stale_skills()
+        for d, b in installed_skills().items():
+            print(f'{d}: {b}' + (' (stale)' if d in stale else ''))
+        print(f'this kumo-engine: {bundled_build() or "source checkout"}')
+        ap.exit(1 if stale else 0)
     account = (args.path is None and args.agent in (None, 'coco')
                and args.scope in COCO_ACCOUNT_SCOPES)
     # Checked before connecting, so a missing argument is the error reported.
@@ -581,17 +777,15 @@ def main(argv: Optional[list[str]] = None) -> None:
         client = WorkspaceClient(profile=args.profile)
     session = _connect(args.connection) if account else None
     try:
-        targets = install_skills(args.agent, scope=args.scope, path=args.path,
-                                 session=session, workspace=args.workspace,
-                                 extension=args.extension, stage=args.stage,
-                                 client=client)
+        install_skills(args.agent, scope=args.scope, path=args.path,
+                       session=session, workspace=args.workspace,
+                       extension=args.extension, stage=args.stage,
+                       client=client)
     except (ValueError, FileNotFoundError, RuntimeError) as e:
         ap.exit(1, f'{ap.prog}: error: {e}\n')
     finally:
         if session is not None:
             session.close()
-    for target in targets:
-        print(f'{SKILL} -> {target}')
 
 
 if __name__ == '__main__':

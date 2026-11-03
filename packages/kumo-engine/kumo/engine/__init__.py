@@ -15,6 +15,8 @@ directory root (DiskGraph ingest, GNN training) at, e.g., a local NVMe SSD
 mount.
 """
 
+import sys
+
 from kumo_core.embedding_models import (
     EmbeddingModelStore,
     GloVeVectors,
@@ -109,4 +111,17 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+def _warn_if_skill_stale() -> None:
+    # `python -m kumo.engine.skills` runs that module as `__main__` and
+    # checks with --check; importing it here as well would load it twice.
+    argv = sys.orig_argv
+    if any(a == "-m" and b == "kumo.engine.skills"
+           for a, b in zip(argv, argv[1:])):
+        return
+    from kumo.engine.skills import warn_if_stale
+    warn_if_stale()
+
+
 ensure_nofile()
+# A local install of the agent skill from another build is out of date.
+_warn_if_skill_stale()

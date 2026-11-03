@@ -212,6 +212,10 @@ def test_the_bundled_copy_is_used_outside_a_checkout(
         skills.install_skills('claude')
 
 
+class NotFound(LookupError):
+    pass
+
+
 class FakeDatabricks:
     """A `WorkspaceClient` holding files in a dict, plus the `databricks.sdk` modules it needs."""
 
@@ -272,12 +276,15 @@ class FakeDatabricks:
         self.files[path] = content.read()
 
     def download(self, path: str, format):
+        if path not in self.files:
+            raise NotFound(f'Path ({path}) doesn\'t exist.')
         return io.BytesIO(self.files[path])
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mods = {
             'databricks': types.ModuleType('databricks'),
             'databricks.sdk': types.SimpleNamespace(WorkspaceClient=lambda: self),
+            'databricks.sdk.errors': types.SimpleNamespace(NotFound=NotFound),
             'databricks.sdk.service': types.ModuleType('databricks.sdk.service'),
             'databricks.sdk.service.workspace': types.SimpleNamespace(
                 ImportFormat=types.SimpleNamespace(AUTO='AUTO'),
@@ -444,48 +451,123 @@ class FakeSession:
         return types.SimpleNamespace(collect=lambda: rows)
 
 
-def test_coco_extension(home: Path) -> None:
-    session = FakeSession()
+class FakeExtension(FakeSession):
+    r"""Also keeps the versions of Cortex Extensions: each version records the stage folder it
+    was added from, and its scan passes after ``scans`` polls (``status`` then)."""
+
+    def __init__(self, scans: int = 0, status: str = 'SCAN_PASSED') -> None:
+        super().__init__()
+        self.versions: dict[str, list[dict]] = {}
+        self.scans, self.status = scans, status
+
+    def _add(self, ext: str, source: str) -> None:
+        versions = self.versions.setdefault(ext, [])
+        for v in versions:
+            v['is_default'] = 'false'
+        versions.append(dict(name=f'VERSION${len(versions) + 1}', is_default='true',
+                             source_location_uri=source, polls=0))
+
+    def sql(self, text: str):
+        if m := re.fullmatch(r'SHOW VERSIONS IN CORTEX EXTENSION (\S+)', text):
+            self.sql_log.append(text)
+            if m[1] not in self.versions:
+                raise RuntimeError(f'Cortex Extension {m[1]} does not exist.')
+            rows = []
+            for v in self.versions[m[1]]:
+                v['polls'] += 1
+                status = 'SCANNING' if v['polls'] <= self.scans else self.status
+                rows.append(FakeRow(**{k: x for k, x in v.items() if k != 'polls'},
+                                    effective_status=status, scan_findings=''))
+            return types.SimpleNamespace(collect=lambda: rows)
+        if m := re.fullmatch(r'CREATE CORTEX EXTENSION IF NOT EXISTS (\S+) FROM (\S+)', text):
+            if m[1] not in self.versions:
+                self._add(m[1], m[2])
+        elif m := re.fullmatch(r'ALTER CORTEX EXTENSION (\S+) ADD VERSION FROM (\S+)', text):
+            self._add(m[1], m[2])
+        return super().sql(text)
+
+
+@pytest.fixture(autouse=True)
+def no_scan_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(skills, 'SCAN_POLL', 0)
+
+
+def test_coco_extension(home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    session = FakeExtension()
     assert skills.install_skills('coco', scope='extension', session=session) == [
         'KUMO_DATA_SCIENCE']
     log = session.sql_log
-    assert "ENCRYPTION=(TYPE='SNOWFLAKE_SSE')" in log[0]
+    assert "ENCRYPTION=(TYPE='SNOWFLAKE_SSE')" in log[1]
     puts = [s for s in log if s.startswith('PUT')]
     root = puts[0].split("'")[3].split('/skills/')[0]
-    assert re.fullmatch(r'@KUMO_SKILL_PKG/kumo-ds-[0-9a-f]{32}', root)
+    assert re.fullmatch(r'@KUMO_SKILL_PKG/kumo-ds-[0-9a-f]{16}-[0-9a-f]{8}', root)
     assert all(f"'{root}/skills/kumo-data-science" in s for s in puts)
     assert any('/hosts/snowflake-coco/' in s for s in puts)
-    assert log[-2:] == [f'ALTER CORTEX EXTENSION KUMO_DATA_SCIENCE ADD VERSION FROM {root}/',
-                        f'REMOVE {root}/']
+    # Created from the package: no empty first version, and no second ADD VERSION.
+    assert f'CREATE CORTEX EXTENSION IF NOT EXISTS KUMO_DATA_SCIENCE FROM {root}/' in log
+    assert not any(s.startswith('ALTER CORTEX') for s in log)
+    assert f'REMOVE {root}/' in log
+    assert [v['name'] for v in session.versions['KUMO_DATA_SCIENCE']] == ['VERSION$1']
+    assert '(VERSION$1)' in capsys.readouterr().out
+
+
+def test_an_unchanged_extension_is_not_republished(
+        home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    session = FakeExtension()
+    skills.install_skills('coco', scope='extension', session=session)
+    skills.install_skills('coco', scope='extension', session=session)
+    assert len(session.versions['KUMO_DATA_SCIENCE']) == 1
+    assert '(unchanged, VERSION$1)' in capsys.readouterr().out
+    # A changed package is published as a new version.
+    session.versions['KUMO_DATA_SCIENCE'][0]['source_location_uri'] = '@S/kumo-ds-0-0/'
+    skills.install_skills('coco', scope='extension', session=session)
+    assert session.sql_log.count(
+        next(s for s in session.sql_log if s.startswith('ALTER CORTEX'))) == 1
+    assert len(session.versions['KUMO_DATA_SCIENCE']) == 2
+
+
+def test_the_extension_install_waits_for_the_scan(home: Path,
+                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    session = FakeExtension(scans=3)
+    skills.install_skills('coco', scope='extension', session=session)
+    assert session.versions['KUMO_DATA_SCIENCE'][0]['polls'] == 4
+    monkeypatch.setattr(skills, 'SCAN_TIMEOUT', 0)
+    with pytest.warns(UserWarning, match='still being scanned'):
+        skills.install_skills('coco', scope='extension', session=FakeExtension(scans=99))
+    with pytest.raises(RuntimeError, match='rejected .* SCAN_FAILED'):
+        skills.install_skills('coco', scope='extension',
+                              session=FakeExtension(status='SCAN_FAILED'))
 
 
 def test_concurrent_extension_installs_use_their_own_folders(home: Path) -> None:
-    first, second = FakeSession(), FakeSession()
+    first, second = FakeExtension(), FakeExtension()
     skills.install_skills('coco', scope='extension', session=first)
     skills.install_skills('coco', scope='extension', session=second, extension='OTHER')
-    assert first.sql_log[-1] != second.sql_log[-1]
-    assert not any(s.startswith('REMOVE') for s in first.sql_log[:-1])
+    removes = [[s for s in log if s.startswith('REMOVE')]
+               for log in (first.sql_log, second.sql_log)]
+    assert len(removes[0]) == len(removes[1]) == 1 and removes[0] != removes[1]
 
 
 def test_a_failed_extension_install_removes_its_folder(home: Path) -> None:
-    class Failing(FakeSession):
+    class Failing(FakeExtension):
         def sql(self, text: str):
-            if text.startswith('ALTER CORTEX'):
-                raise RuntimeError('add version failed')
+            if text.startswith('CREATE CORTEX'):
+                raise RuntimeError('create failed')
             return super().sql(text)
 
     session = Failing()
-    with pytest.raises(RuntimeError, match='add version failed'):
+    with pytest.raises(RuntimeError, match='create failed'):
         skills.install_skills('coco', scope='extension', session=session)
     assert session.sql_log[-1].startswith('REMOVE @KUMO_SKILL_PKG/kumo-ds-')
 
 
 def test_no_agent_forwards_the_snowflake_destination(home: Path) -> None:
     (home / '.snowflake' / 'cortex').mkdir(parents=True)
-    session = FakeSession()
+    session = FakeExtension()
     assert skills.install_skills(scope='extension', session=session, extension='MY_EXT',
                                  stage='MY_STAGE') == ['MY_EXT']
-    assert session.sql_log[-2].startswith('ALTER CORTEX EXTENSION MY_EXT ADD VERSION FROM @MY_STAGE/')
+    assert any(s.startswith('CREATE CORTEX EXTENSION IF NOT EXISTS MY_EXT FROM @MY_STAGE/')
+               for s in session.sql_log)
     [root] = skills.install_skills(scope='workspace', session=FakeSession(), workspace='WS')
     assert root.startswith('snow://workspace/"USER$ME".PUBLIC."WS"/')
 
@@ -493,7 +575,7 @@ def test_no_agent_forwards_the_snowflake_destination(home: Path) -> None:
 def test_no_agent_sends_account_scopes_to_coco_alone(home: Path, monkeypatch) -> None:
     (home / '.claude').mkdir()
     (home / '.snowflake' / 'cortex').mkdir(parents=True)
-    assert skills.install_skills(scope='extension', session=FakeSession(), extension='MY_EXT',
+    assert skills.install_skills(scope='extension', session=FakeExtension(), extension='MY_EXT',
                                  stage='MY_STAGE') == ['MY_EXT']
     assert not (home / '.claude' / 'skills').exists()
     # In a Snowflake notebook, detection refuses; a named account scope does not need it.
@@ -677,7 +759,7 @@ def test_packaging_without_git_ships_what_git_tracks(monkeypatch: pytest.MonkeyP
     assert package_skill.git_tracked(package_skill.SKILLS) == sorted(tracked)
 
 
-class Connected(FakeSession):
+class Connected(FakeExtension):
     closed = False
 
     def close(self) -> None:
@@ -703,12 +785,13 @@ def test_cli_account_scopes_sign_in_with_a_connection(
     [(name, session)] = connect
     assert name == 'mine' and session.closed
     assert any(s.startswith('PUT') and '"USER$ME".PUBLIC."WS"' in s for s in session.sql_log)
-    assert 'kumo-data-science -> snow://workspace/"USER$ME".PUBLIC."WS"/' in capsys.readouterr().out
+    assert ' -> snow://workspace/"USER$ME".PUBLIC."WS"/' in capsys.readouterr().out
     skills.main(['--scope', 'extension', '--extension', 'EXT', '--stage', 'STG',
                  '--connection', 'other'])
     name, session = connect[1]
     assert name == 'other' and session.closed
-    assert session.sql_log[-2].startswith('ALTER CORTEX EXTENSION EXT ADD VERSION FROM @STG/')
+    assert any(s.startswith('CREATE CORTEX EXTENSION IF NOT EXISTS EXT FROM @STG/')
+               for s in session.sql_log)
 
 
 def test_cli_closes_the_session_when_the_install_fails(home: Path, connect: list,
@@ -738,3 +821,66 @@ def test_cli_connection_errors(home: Path, connect: list, capsys: pytest.Capture
         skills.main(argv)
     assert message in capsys.readouterr().err
     assert connect == []   # rejected before connecting
+
+
+def test_genie_code_cli_shares_the_codex_directory(home: Path) -> None:
+    # Genie Code CLI reads ~/.agents/skills; a second copy elsewhere would load as a rival skill.
+    [target] = skills.install_skills('genie-cli')
+    assert Path(target) == (home / '.agents' / 'skills' / 'kumo-data-science').resolve()
+    assert hosts(Path(target)) == ['generic']
+    (home / '.genie').mkdir()
+    assert [Path(t).parts[-3] for t in skills.install_skills()] == ['.agents']
+    (home / '.codex').mkdir()
+    assert len(skills.install_skills()) == 1
+
+
+def build(target: Path, stamp: str) -> None:
+    md = target / 'SKILL.md'
+    md.write_text(re.sub(r'SKILL-BUILD: [^`*\s]+', f'SKILL-BUILD: {stamp}', md.read_text()))
+
+
+def test_an_install_reports_the_build_it_replaced(
+        home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    [target] = skills.install_skills('claude')
+    assert capsys.readouterr().out.endswith('(new)\n')
+    skills.install_skills('claude')
+    assert capsys.readouterr().out.endswith('(reinstalled)\n')
+    build(Path(target), 'older')
+    skills.install_skills('claude')
+    assert capsys.readouterr().out.endswith('(replaced older)\n')
+
+
+def test_genie_reports_the_build_it_replaced(
+        home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    ws = FakeDatabricks({f'{GENIE}/kumo-data-science/SKILL.md': b'`SKILL-BUILD: older`'})
+    ws.install(monkeypatch)
+    skills.install_skills('genie')
+    assert capsys.readouterr().out.endswith('(replaced older)\n')
+
+
+def test_stale_installs_are_found(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                  capsys: pytest.CaptureFixture[str]) -> None:
+    package_skill.bundle(tmp_path / '_skills')
+    monkeypatch.setattr(skills, '_PACKAGER', tmp_path / 'missing.py')
+    monkeypatch.setattr(skills, '_BUNDLED', tmp_path / '_skills')
+    [claude] = skills.install_skills('claude')
+    [codex] = skills.install_skills('codex', scope='project')
+    assert skills.stale_skills() == {}
+    with pytest.raises(SystemExit) as exc:
+        skills.main(['--check'])
+    assert exc.value.code == 0
+    build(Path(codex), 'older')
+    assert skills.stale_skills() == {codex: 'older'}
+    with pytest.warns(UserWarning, match=f'installed at {re.escape(codex)} \\(older\\)'):
+        skills.warn_if_stale()
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as exc:
+        skills.main(['--check'])
+    assert exc.value.code == 1
+    assert f'{codex}: older (stale)' in capsys.readouterr().out
+
+
+def test_a_source_checkout_is_never_stale(home: Path) -> None:
+    [target] = skills.install_skills('claude')
+    build(Path(target), 'older')
+    assert skills.bundled_build() is None and skills.stale_skills() == {}

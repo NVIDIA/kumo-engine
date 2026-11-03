@@ -67,13 +67,26 @@ kumo.install_skills('coco')            # ~/.snowflake/cortex/skills/ (scope='pro
 kumo.install_skills('coco', scope='workspace', workspace='MY_WS')   # a Snowsight workspace
 kumo.install_skills('coco', scope='extension')                      # a Cortex Extension
 kumo.install_skills('genie')           # /Users/<you>/.assistant/skills/
+kumo.install_skills('genie-cli')       # ~/.agents/skills/, which the Genie Code CLI reads
 kumo.install_skills(path='...')        # any other agent's skills directory (generic package)
 ```
 
 `python -m kumo.engine.skills [agent] [--scope ...]` does the same from a shell. A shell has no
 Snowpark session, so `--scope workspace` and `--scope extension` need `--connection NAME`, a
 `connections.toml` entry as the `snow` CLI uses. Claude Code and Codex get the `generic` package,
-CoCo `coco`, Genie `genie`.
+CoCo `coco`, Genie `genie`. The Genie Code CLI works locally through its shell, like Codex, and
+reads Codex's `.agents/skills`, so it gets the `generic` package there; a second copy in
+`~/.genie/skills` would load as a competing skill.
+
+Cortex Code also reads `~/.claude/skills`, and a copy there wins over `~/.snowflake/cortex/skills`.
+With both agents installed, CoCo would run the `generic` package; `install_skills` warns, and
+`scope='project'` or `scope='extension'` gives CoCo its own.
+
+Each package is stamped `SKILL-BUILD: <date>-<sha>`. An install prints the build it installed and
+the one it replaced. `import kumo.engine` warns when a local install is from another build than the
+wheel, and `python -m kumo.engine.skills --check` lists the local installs and exits 1 if any is
+stale. A Cortex Extension gets a new version only when the package changed, and the install waits
+for Snowflake's scan of it, which Cortex Code needs before it installs the version.
 
 `packages/kumo-engine/setup.py` calls `package_skill.bundle()` on every build from a checkout,
 writing all three packages to `kumo/engine/_skills/` (gitignored), which the wheel ships as package
