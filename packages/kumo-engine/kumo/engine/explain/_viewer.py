@@ -163,7 +163,8 @@ const head=el('thead'),tr=el('tr');for(const [i,h]of headers.entries()){
 const th=el('th',h,numeric.includes(i)?'kt-number':'');th.scope='col';tr.append(th)}head.append(tr);node.append(head);
 const body=el('tbody');for(const values of rows){const row=el('tr');values.forEach((value,i)=>{
 const td=el('td',undefined,numeric.includes(i)?'kt-number':'');td.dataset.label=headers[i];
-if(value instanceof Node){if(exact)td.textContent=value.textContent;else td.append(value)}
+if(value instanceof Node){if(exact){if(value.classList.contains('kt-class-label'))td.append(value.cloneNode(true));
+else td.textContent=value.textContent;}else td.append(value)}
 else td.textContent=finite(value)?(exact?String(value):number(value)):text(value);row.append(td)});body.append(row)}
 node.append(body);parent.append(node);
 if(!exact&&numeric.length&&rows.some(row=>numeric.some(i=>finite(row[i])&&String(row[i])!==number(row[i])))){
@@ -345,9 +346,25 @@ const output=obj(obj(samples.outputs)[ref.artifact_id]);
 sampleView.append(el('h4','Prediction and observed target'));
 state(sampleView,output,'Output context');
 if(output.status==='available'||output.status==='partial'){
+const classes=output.task_type==='multiclass_classification'||output.task_type==='multilabel_classification';
+if(classes){
+const labels=Object.keys(obj(output.prediction??output.target)),rows=labels.slice(0,100).map(label=>{
+let name=label;
+if(label.length>120||/[\r\n]/.test(label)){
+name=el('div',undefined,'kt-class-label');name.append(el('div',label.replace(/\s+/g,' ').slice(0,80)+'…'));
+identityNote(name,'Full recorded label',label,'div');}
+return[name,output.prediction?.[label],output.target?.[label]];});
+note(sampleView,output.task_type==='multilabel_classification'?
+'Independent label probabilities; observed membership: 0 = absent, 1 = present. Multiple labels may be present; values need not sum to one.':
+'Mutually exclusive class probabilities; observed membership: 0 = absent, 1 = present. Recorded values are not renormalized.');
+note(sampleView,'Showing '+rows.length+' of '+labels.length+' retained labels. Total class coverage is not recorded.');
+const headers=['Recorded label','Class probability (0 to 1)','Observed membership (0 or 1)'];
+sampleTable('Recorded class outputs',headers,rows,labels.length,[1,2]);
+if(labels.length>100)note(sampleView,'Inspect complete retained output in Python from the matching TEST fit’s subgraph_collector/test/output/'+text(ref.artifact_id)+'.json.');
+}else{
 const binary=output.task_type==='binary_classification';
 note(sampleView,binary?'Probability of the positive class; observed target: 0 = negative class, 1 = positive class.':'Values use recorded target units.');
-table(sampleView,[binary?'Positive-class probability (0 to 1)':'Prediction','Observed target'],[[output.prediction,output.target]],[0,1]);}
+table(sampleView,[binary?'Positive-class probability (0 to 1)':'Prediction','Observed target'],[[output.prediction,output.target]],[0,1]);}}
 const body=obj(bodies[ref.artifact_id]),store=obj(body.subgraph_store),features=obj(obj(body.feature_store).features),nodes=obj(store.nodes);
 const rootNode=obj(nodes[store.root_id]);
 identityNote(sampleView,'Root identity','Root node: '+text(store.root_id)+' · Original entity: '+text(rootNode.pkey)

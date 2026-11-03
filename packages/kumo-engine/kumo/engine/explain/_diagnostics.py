@@ -394,18 +394,42 @@ def _read_sample_output(guard: _Guard, root: Path, artifact_id: str,
             raise ValueError('Output task does not match sampled graph')
         TaskType(task)
         result['task_type'] = task
-        if task not in ('regression', 'binary_classification'):
+        class_output = task in ('multiclass_classification',
+                                'multilabel_classification')
+        if not class_output and task not in ('regression',
+                                             'binary_classification'):
             result.update(status='unsupported',
                           reason='Output display is unsupported for this task')
             return result
         for key in ('prediction', 'target'):
             value = raw.get(key)
+            if class_output:
+                if value is None:
+                    continue
+                if not isinstance(value, dict) or not value or any(
+                        type(item) not in (int, float) or not 0 <= item <= 1
+                        or key == 'target' and item not in (0, 1)
+                        for item in value.values()):
+                    raise ValueError('Invalid class probabilities or targets')
+                if task == 'multiclass_classification' and key == 'target' and sum(
+                        value.values()) > 1:
+                    raise ValueError('Nonexclusive multiclass target')
+                if task == 'multiclass_classification' and key == 'prediction':
+                    total = math.fsum(value.values())
+                    if total > 1 and not math.isclose(total, 1, rel_tol=1e-6):
+                        raise ValueError(
+                            'Multiclass probability mass exceeds one')
+                continue
             if value is not None and type(value) not in (int, float):
                 raise ValueError('Expected a numeric scalar or null')
             if task == 'binary_classification' and value is not None and (
                     not 0 <= value <= 1
                     or key == 'target' and value not in (0, 1)):
                 raise ValueError('Invalid binary probability or target')
+        if class_output and raw.get('prediction') is not None and raw.get(
+                'target') is not None and raw['prediction'].keys(
+                ) != raw['target'].keys():
+            raise ValueError('Prediction and target labels do not match')
         typed = to_json_dict(from_json_dict(raw, EntityOutput))
         result.update(status='available', reason=None,
                       prediction=typed['prediction'], target=typed['target'])

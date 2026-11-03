@@ -145,11 +145,16 @@ def test_snapshot_preserves_refit_metrics_epochs_and_missing_values(
     json.dumps(result, allow_nan=False)
 
 
-@pytest.mark.parametrize('task', ['regression', 'binary_classification'])
+@pytest.mark.parametrize('task', [
+    'regression', 'binary_classification', 'multiclass_classification',
+    'multilabel_classification'
+])
 @pytest.mark.parametrize('output_state', [
     'available', 'missing', 'invalid', 'mismatch', 'boolean', 'string',
     'nonfinite', 'prediction_null', 'target_null', 'both_null', 'unsupported',
-    'unknown', 'oversized', 'escape', 'range', 'fractional_target'
+    'unknown', 'oversized', 'escape', 'range', 'fractional_target', 'empty',
+    'list', 'label_mismatch', 'multiple_targets', 'excess_mass', 'rounding',
+    'subset', 'many_labels', 'special_labels'
 ])
 def test_sample_coverage_deduplication_and_complete_graph_budget(
         tmp_path, monkeypatch, task, output_state):
@@ -162,6 +167,16 @@ def test_sample_coverage_deduplication_and_complete_graph_budget(
         graph.subgraph_store.task_type = TaskType(task)
         save_json(graph, f'{root}/subgraph_json/{artifact}.json')
     output = dict(task_type=task, prediction=0, target=1)
+    class_output = task in ('multiclass_classification',
+                            'multilabel_classification')
+    if class_output:
+        output.update(prediction={
+            'second': 0.25,
+            'first': 0.75
+        }, target={
+            'second': 0,
+            'first': 1
+        })
     status = 'available'
     if output_state in ('prediction_null', 'target_null', 'both_null'):
         for key in ('prediction', 'target'):
@@ -176,19 +191,70 @@ def test_sample_coverage_deduplication_and_complete_graph_budget(
             'task_type'] = 'regression' if task != 'regression' else 'binary_classification'
         status = 'invalid'
     elif output_state == 'unsupported':
-        output.update(task_type='multiclass_classification',
+        output.update(task_type='multilabel_ranking',
                       prediction={'recorded class': 0.5}, target=None)
-        graph.subgraph_store.task_type = TaskType.MULTICLASS_CLASSIFICATION
+        graph.subgraph_store.task_type = TaskType.MULTILABEL_RANKING
         save_json(graph, f'{root}/subgraph_json/0.json')
         status = 'unsupported'
     elif output_state in ('boolean', 'string', 'nonfinite'):
-        output['prediction'] = dict(boolean=False, string='0',
-                                    nonfinite=float('nan'))[output_state]
+        value = dict(boolean=False, string='0',
+                     nonfinite=float('nan'))[output_state]
+        output['prediction'] = {
+            'second': value,
+            'first': 0.75
+        } if class_output else value
         status = 'invalid'
     elif output_state in ('range', 'fractional_target'):
-        output['prediction' if output_state == 'range' else 'target'] = (
-            2 if output_state == 'range' else 0.5)
-        status = 'invalid' if task == 'binary_classification' else 'available'
+        key = 'prediction' if output_state == 'range' else 'target'
+        value = 2 if output_state == 'range' else 0.5
+        output[key] = {'second': value, 'first': 0} if class_output else value
+        status = 'available' if task == 'regression' else 'invalid'
+    elif output_state in ('empty', 'list', 'label_mismatch', 'multiple_targets',
+                          'excess_mass', 'rounding', 'subset', 'many_labels',
+                          'special_labels'):
+        predictions = {
+            'empty': {},
+            'list': [0.5],
+            'label_mismatch': {
+                'other': 0.5
+            },
+            'multiple_targets': {
+                'second': 0.25,
+                'first': 0.75
+            },
+            'excess_mass': {
+                'second': 0.6,
+                'first': 0.6
+            },
+            'rounding': {
+                'second': 0.5,
+                'first': 0.50000006
+            },
+            'subset': {
+                'second': 0.25
+            },
+            'many_labels': {
+                f'label-{i}': 0.001
+                for i in range(120)
+            },
+            'special_labels': {
+                '__proto__': 0.25,
+                'constructor': 0.75
+            }
+        }
+        output['prediction'] = predictions[output_state]
+        if output_state == 'multiple_targets':
+            output['target'] = {'second': 1, 'first': 1}
+        elif output_state in ('subset', 'many_labels'):
+            output['target'] = dict.fromkeys(output['prediction'], 0)
+        elif output_state == 'special_labels':
+            output['target'] = None
+        status = 'available' if class_output and (
+            output_state in ('rounding', 'subset', 'many_labels')
+            or task == 'multilabel_classification' and output_state in
+            ('multiple_targets', 'excess_mass')) else 'invalid'
+        if class_output and output_state == 'special_labels':
+            status = 'partial'
     path = Path(root) / 'output/0.json'
     save_json(EntityOutput(**output), str(path))
     if output_state in ('missing', 'invalid', 'oversized', 'escape'):
@@ -249,6 +315,8 @@ def test_sample_coverage_deduplication_and_complete_graph_budget(
         assert recorded['prediction'] == output['prediction']
         assert recorded['target'] == output['target']
         assert recorded['task_type'] == task
+        if class_output and recorded['prediction'] is not None:
+            assert list(recorded['prediction']) == list(output['prediction'])
     else:
         assert recorded.get('prediction') is None
         assert recorded.get('target') is None

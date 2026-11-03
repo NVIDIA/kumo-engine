@@ -60,8 +60,12 @@ The view combines split-qualified metrics, learning history, recorded trials, in
 Known disabled or failed generation is shown separately from artifact retention and producer eligibility; retained artifacts remain inspectable.
 Generation status remains unknown on reopening because this API does not archive it.
 Select a column's cohort action to inspect its recorded predictions and targets, or select an available example to inspect its sampled nodes, relations, and feature scores.
-Selected regression and binary examples also show predictions and observed targets from the matching collector output, when retained and valid.
+Selected regression, binary, multiclass, and multilabel examples also show predictions and observed targets from the matching collector output, when retained and valid.
 Regression values use recorded target units; binary predictions are positive-class probabilities with observed targets encoded as 0 or 1.
+Class-keyed outputs align recorded label probabilities with observed membership indicators (0 or 1), preserving exact values without renormalization.
+Multilabel probabilities are independent and observed memberships are nonexclusive, so their sums can exceed one.
+The view shows up to 100 retained labels in a bounded disclosure and identifies coverage.
+Complete retained outputs remain in the matching TEST fit's `subgraph_collector/test/output/<collector_id>.json`; the artifact does not record total class coverage or which label caused selection.
 Missing, invalid, limited, or unsupported output remains explicit while sampled structure stays available.
 Scores describe recorded behavior; the view does not prescribe model changes or start training.
 The [CPU demo notebook](../../example_notebooks/training_explainability.ipynb) trains a small synthetic example and reopens its retained run.
