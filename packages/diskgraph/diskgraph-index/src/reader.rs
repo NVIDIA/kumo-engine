@@ -14,6 +14,7 @@ use crate::page_io::{
 use crate::prefetch;
 use anyhow::Result;
 use diskgraph_core::errors::DiskgraphError;
+#[cfg(unix)]
 use libc::madvise;
 use memmap2::Mmap;
 use smallvec::SmallVec;
@@ -850,6 +851,7 @@ fn decode_offset_pair(
     Ok((start, end))
 }
 
+#[cfg(unix)]
 fn advise_random(map: &Mmap) {
     let ret = unsafe {
         madvise(
@@ -862,6 +864,9 @@ fn advise_random(map: &Mmap) {
         let _ = std::io::Error::last_os_error();
     }
 }
+
+#[cfg(windows)]
+fn advise_random(_map: &Mmap) {}
 
 #[cfg(target_os = "linux")]
 fn advise_file_random(file: &File) -> std::io::Result<()> {

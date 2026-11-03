@@ -345,6 +345,7 @@ fn lookup_id_only(shard: &PkHashShard, key: &Key) -> Option<u32> {
     Some(value)
 }
 
+#[cfg(unix)]
 fn advise_willneed(map: &Mmap) {
     let ret = unsafe {
         libc::madvise(
@@ -358,6 +359,7 @@ fn advise_willneed(map: &Mmap) {
     }
 }
 
+#[cfg(unix)]
 fn advise_data(map: &Mmap, advice: PkDataAdvice) {
     match advice {
         PkDataAdvice::WillNeed => advise_willneed(map),
@@ -375,6 +377,13 @@ fn advise_data(map: &Mmap, advice: PkDataAdvice) {
         }
     }
 }
+
+// Memory advice is an optional optimization, not a mapping requirement.
+#[cfg(windows)]
+fn advise_willneed(_map: &Mmap) {}
+
+#[cfg(windows)]
+fn advise_data(_map: &Mmap, _advice: PkDataAdvice) {}
 
 // ---------------------------------------------------------------------------
 // External pkmap loader (Phase 1, subtask #2).
