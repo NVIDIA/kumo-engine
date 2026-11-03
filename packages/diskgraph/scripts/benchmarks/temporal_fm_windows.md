@@ -26,7 +26,9 @@ native implementation. Complete result hashes must match across builds.
 
 Use one Python environment with NumPy and PyArrow plus two separately built
 DiskGraph packages. Each package-parent directory contains a `diskgraph/` package
-and its extension. From `packages/diskgraph`:
+and its extension. Use a separate `CARGO_TARGET_DIR` for each source revision
+when building them, so switching trees cannot reuse the other build's extension.
+From `packages/diskgraph`:
 
 ```bash
 BENCH_DATA=$(mktemp -d)
@@ -48,8 +50,9 @@ python scripts/benchmarks/temporal_fm_windows_compare.py "$BENCH_DATA" \
 ```
 
 The [paired runner](temporal_fm_windows_compare.py) rejects an existing output
-directory, checks that the clock indexes use identical source data, records raw
-samples/hashes/counters, and runs adjacent baseline/candidate batches with
+directory, rejects identical baseline/candidate native libraries, records their
+hashes, checks that clock indexes use identical source data, and records raw
+samples/hashes/counters. It runs adjacent baseline/candidate batches with
 balanced AB/BA order. Linux workers share one CPU affinity. Each cycle starts
 fresh worker processes; each batch has two warmups. Queries never overlap.
 Use `--baseline-revision` and `--candidate-revision` to record build provenance.
@@ -62,7 +65,49 @@ source checks, and hashing are excluded. Report median paired ratios together
 with absolute times, variability, edges visited, and rows decoded. Do not infer
 an improvement from a noisy unchanged control.
 
-## Recorded evaluation (2026-11-02)
+## Rebased validation (2026-11-03 UTC)
+
+Current main `3d199ee657d88c927c83356a5cf3e5f5899153d8` was compared with the
+revised native source at `a9efb9d050b6a50036963e02652d71593bc301d7`.
+The release build, 411 Python tests and 11 focused Rust tests passed. The six
+index-unit regressions also ran against unmodified main: seconds passed, while
+all five non-second units produced wrong selected rows. The revised unit guard
+uses exact row decoding for those encodings.
+
+All **68 aligned cases and nine shifted-cutoff cases** matched between builds,
+with independent source-ID/length checks. Aligned cases used eight pairs;
+shifted cases used four; both used two warmups and eleven measured calls per
+batch on one CPU. Native extension SHA-256 values:
+
+- Main: `ac19a03cf15624ae293741ba92128c984e92298d8c5bb1de361779e8f9fcfe93`
+- Revised: `68375881b49d40e4475745b2f29e1390d300fbab068aa8daa472c91e84c46a56`
+
+| Query | Median paired speedup across coarse bucket steps |
+| --- | ---: |
+| Recent upper-only, latest 24 | Approximately unchanged |
+| 7-day window, latest 24 | 3.96–4.48× |
+| 30-day window, latest 24 | 3.12–3.45× |
+| 90-day window, latest 24 | 2.23–2.27× |
+| 365-day window, latest 24 | 1.50–1.52× |
+| Historical upper-only, latest 24 | 2.35–2.41× |
+| 30-day window, every eligible row | 3.22–3.28× |
+| Degree 16, 30-day window | 1.84–1.93× |
+| Degree 128, 30-day window | 2.85× |
+
+Ranges include shifted cutoffs where measured. The aligned hour-bucket 30-day
+query measured 23.804 ms versus 7.082 ms; rows decoded fell from 74,880 to
+17,667 while edges visited remained 74,880. Separately aggregated times need
+not divide to the median paired ratio.
+
+Small upper-only queries were near parity. The earlier noisy 10% slowdown in
+a degree-16 exact-second extraction comparison did not reproduce: this run's
+paired ratio was 1.014×. There are still overhead cases: the shifted day-bucket
+upper-only query was **1.5% slower**, and the exact-second 30-day length query
+was **3.3% slower** (3.418 ms versus 3.528 ms). Unbounded/mismatched controls
+were within about 1.1% of parity by median paired ratio. These measurements do
+not establish zero regression on every ordinary workload.
+
+## Earlier evaluation (2026-11-02)
 
 The following measurements compare PR82 at
 `7e5669f043a871e3a8ec433f1fd353dceb324feb` with the original coarse-admission patch,
