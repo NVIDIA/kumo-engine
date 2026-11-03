@@ -15,6 +15,7 @@ from kumo_core.pquery import (
     _column_stats,
     _default_split,
     _split_options,
+    _target_maximum,
     _temporal_timestamps,
     build_generated_training_task_dataset,
     build_native_pquery_task_plan,
@@ -758,11 +759,44 @@ def test_latest_temporal_timestamp_uses_source_maximum(tmp_path, monkeypatch):
     assert latest_temporal_timestamp(query, str(tmp_path / "index")) == maximum
 
 
+@pytest.mark.parametrize("maximum, expected", [
+    ("2023-11-14T22:13:20.123456789", 1_700_000_000_123_456_789),
+    ("kumo_timestamp_2023-11-14 22:13:20.123456789+00:00",
+     1_700_000_000_123_456_789),
+    ("2024-04-29 23:59:26.477365909", 1_714_435_166_477_365_909),
+    ("2024-04-29T23:59:26.477365909", 1_714_435_166_477_365_909),
+    ("2024-04-29T23:59:26.477365909+02:00", 1_714_427_966_477_365_909),
+    ("2024-04-29T23:59:26.477365909-05:30", 1_714_454_966_477_365_909),
+    ("20240429T235926.477365909", 1_714_435_166_477_365_909),
+    ("2024-04-29 23:59:26,477365909", 1_714_435_166_477_365_909),
+    ("2024-W18-1T23:59:26.477365909", 1_714_435_166_477_365_909),
+    ("2024-04-29 23:59:26.4773659091234", 1_714_435_166_477_365_909),
+    ("2024-W18-1", 1_714_348_800_000_000_000),
+    ("2024-04-29", 1_714_348_800_000_000_000),
+    ("2024-04-29 23:59:26.477", 1_714_435_166_477_000_000),
+    ("1969-12-31 23:59:59.999999999", -1),
+])
+def test_latest_temporal_timestamp_keeps_subsecond_statistics(
+        monkeypatch, maximum, expected):
+    monkeypatch.setattr(
+        "kumo_core.pquery.read_col_stats",
+        lambda *args: json.dumps({
+            "event_time__NA_FRACTION__False": 0.0,
+            "event_time__MIN__False": "1969-01-01T00:00:00",
+            "event_time__MAX__False": maximum,
+        }))
+    graph = normalize_graph(forecasting_graph_config())
+    query = parse_and_validate_query(
+        "PREDICT COUNT(events.*, 0, 7, days) FOR EACH articles.aid", graph)
+
+    assert latest_temporal_timestamp(query, "/index") == expected
+
+
 @pytest.mark.parametrize("order", [
     ("first", "second"),
     ("second", "first"),
 ])
-def test_latest_temporal_timestamp_is_order_independent(monkeypatch, order):
+def test_target_maxima_are_order_independent(monkeypatch, order):
     maxima = {
         "first": 1_700_000_000_000_000_000,
         "second": 1_800_000_000_000_000_000,
@@ -790,6 +824,7 @@ def test_latest_temporal_timestamp_is_order_independent(monkeypatch, order):
 
     assert latest_temporal_timestamp(query, "/index") == maxima["second"]
     assert calls == list(order)
+    assert _target_maximum(query, "/index", min) == maxima["first"]
 
 
 def test_generation_plan_keeps_earliest_anchor_needed_for_filter_history(
@@ -1010,6 +1045,7 @@ def test_generation_plan_forecast_horizon(tmp_path, monkeypatch, pql_horizon,
         scratch_dir=request.scratch_dir, artifact_dir=request.artifact_dir,
         timestamps=request.timestamps)
     assert plan.train_table.forecast_length == expected
+    assert plan.train_table.split_config["flexible_boundaries"] is False
     assert plan.train_table.compiler_options["future_offsets_secs"] == tuple(
         index * 86_400 for index in range(expected))
     assert plan.task_dataset.task_type == "forecasting"

@@ -38,11 +38,12 @@ PLATFORM_ROOTS = frozenset({
     "temporalio_commons",
 })
 VENDOR_ROOTS = frozenset(
-    {"boto3", "botocore", "databricks", "google", "snowflake"})
+    {"azure", "boto3", "botocore", "databricks", "google", "snowflake"})
 PROVIDER_ROOTS = frozenset({
     "kumo_bigquery",
     "kumo_databricks",
     "kumo_gcs",
+    "kumo_adls",
     "kumo_s3",
     "kumo_snowflake",
 })

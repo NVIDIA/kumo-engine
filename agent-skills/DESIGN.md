@@ -60,3 +60,8 @@ or nothing. Without the check it falls back on its priors, the failure seen when
 empty skill tree. The agent's access is never the artifact's: the generated code authenticates
 where it runs, so §0 changes no gate and no generated line. Credentials stay with the user —
 the agent may ask them to authenticate a tool, never for a value.
+
+Genie Code is the Databricks counterpart of CoCo: its own SQL, run as the signed-in user, is the
+read tool, and the notebook it generates runs as whoever runs it, through `DatabricksIdentity()`'s
+ambient credentials. So the Genie host names no service principal and no secret scope unless the
+user asks for one; the legacy Databricks host required both, before the SDK had an ambient form.

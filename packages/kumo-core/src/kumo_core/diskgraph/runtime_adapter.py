@@ -19,14 +19,15 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import torch
-from kumo_core.diskgraph.metadata import normalize_diskgraph_edge_type
-from kumo_core.encoders.tensor_mapper import TensorMapper
-from kumo_core.features.stores.in_memory_feature import get_tf
-from kumo_core.encoders.target.base import TargetEncoder
 from torch_frame import TensorFrame
 from torch_frame.data import MultiNestedTensor
 from torch_geometric.data import HeteroData
 from torch_geometric.sampler.base import HeteroSamplerOutput
+
+from kumo_core.diskgraph.metadata import normalize_diskgraph_edge_type
+from kumo_core.encoders.target.base import TargetEncoder
+from kumo_core.encoders.tensor_frame import get_tf
+from kumo_core.encoders.tensor_mapper import TensorMapper
 
 # A column value as handed across the diskgraph FFI boundary: the wheel
 # always builds these through pyarrow (see diskgraph-pybind's py_*_array
@@ -64,6 +65,8 @@ _NP_UNIT_TO_NS_FACTOR = {
     "ms": 1_000_000,
     "us": 1_000,
     "ns": 1,
+    "h": 3_600_000_000_000,
+    "D": 86_400_000_000_000,
 }
 
 # --- FFI-boundary shapes -----------------------------------------------

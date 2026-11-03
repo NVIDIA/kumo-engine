@@ -1070,14 +1070,17 @@ class OptimizationPlan(PlanMixin):
         mini-batch (*default:* ``run_mode``-dependent).
         **Supported Task Types:** All
 
-    :ivar max_val_steps: (``int``) The maximum number of steps to be included
-        in a validation pass; one step corresponds to one forward pass of a
-        mini-batch (*default:* ``run_mode``-dependent).
+    :ivar max_val_steps: (``int | None``) The maximum number of steps to be
+        included in a validation pass; one step corresponds to one forward pass
+        of a mini-batch (*default:* ``run_mode``-dependent). ``None`` evaluates
+        the whole validation split every epoch; time and memory then grow
+        with the split size, since the split's logits are held in memory.
         **Supported Task Types:** All
 
-    :ivar max_test_steps: (``int``) The maximum number of steps to be included
-        in a test pass; one step corresponds to one forward pass of a
-        mini-batch (*default:* ``run_mode``-dependent).
+    :ivar max_test_steps: (``int | None``) The maximum number of steps to be
+        included in a test pass; one step corresponds to one forward pass of a
+        mini-batch (*default:* ``run_mode``-dependent). ``None`` evaluates the
+        whole test split; memory then grows with the split size.
         **Supported Task Types:** All
 
     :ivar loss: (``list[str]``) The loss type to use in the model optimizer
@@ -1166,15 +1169,17 @@ class OptimizationPlan(PlanMixin):
         metadata=Metadata(),
     )
 
-    max_val_steps: Union[conint(ge=1, le=8000), MissingType] = compat_field(
-        default_factory=lambda: MissingType.VALUE,
-        metadata=Metadata(),
-    )
+    max_val_steps: Union[conint(ge=1, le=8000), MissingType,
+                         None] = compat_field(
+                             default_factory=lambda: MissingType.VALUE,
+                             metadata=Metadata(),
+                         )
 
-    max_test_steps: Union[conint(ge=1, le=8000), MissingType] = compat_field(
-        default_factory=lambda: MissingType.VALUE,
-        metadata=Metadata(),
-    )
+    max_test_steps: Union[conint(ge=1, le=8000), MissingType,
+                          None] = compat_field(
+                              default_factory=lambda: MissingType.VALUE,
+                              metadata=Metadata(),
+                          )
 
     loss: Union[compat_conlist(
         Union[

@@ -453,6 +453,7 @@ def generate_train_table(
     request: TrainTableRequest,
     *,
     runtime: Any | None = None,
+    validate_targets: bool = True,
 ) -> GeneratedTrainTableResult:
     """Compile and execute the real DiskGraph TT-NG node/link producer."""
 
@@ -485,7 +486,7 @@ def generate_train_table(
     )
     if split is None:
         raise RuntimeError("split_config has no resolvable split family")
-    compiler = runtime.DiskGraphPlanCompiler()
+    compiler = runtime.DiskGraphPlanCompiler(index_path=request.index_path)
     compile_options = dict(request.compiler_options or {})
     plan_json = compiler.compile(
         query=request.query,
@@ -531,11 +532,12 @@ def generate_train_table(
     if not isinstance(table_path, str) or not table_path:
         raise RuntimeError("execute_tt_gen result missing tt_parquet_path")
     try:
-        _validate_classification_targets(request, staging_dir)
+        if validate_targets:
+            _validate_classification_targets(request, staging_dir)
     except ValueError:
         _discard_invalid_staging_dir(staging_dir, request)
         raise
-    top_k = getattr(request.query, "top_k", None)
+    top_k = getattr(request.query, "top_k", None) if validate_targets else None
     if (task_type in {"multilabel_classification", "multilabel_ranking"}
             and top_k is not None):
         class_count = _observed_target_class_count(staging_dir)

@@ -780,10 +780,10 @@ impl<U: UnitSystem> ChannelBatchWriter<U> {
             columns.push(flush_entity_buf(&mut self.entity_bufs[slot], dtype));
         }
 
-        // Convert epoch seconds → nanoseconds to match Kumo's datetime64[ns] convention.
+        // Convert index ticks → nanoseconds to match Kumo's datetime64[ns] convention.
         let ts_nanos: Vec<i64> = std::mem::take(&mut self.timestamp_buf)
             .into_iter()
-            .map(|s| s.saturating_mul(1_000_000_000))
+            .map(|ticks| Abs::<U>::from_raw(ticks).to_nanos())
             .collect();
         let ts_arr = TimestampNanosecondArray::from(ts_nanos);
         columns.push(Arc::new(ts_arr));

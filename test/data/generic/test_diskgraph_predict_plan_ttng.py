@@ -35,6 +35,9 @@ def stub_compiler(monkeypatch):
     captured = {}
 
     class _StubCompiler:
+        def __init__(self, *, index_path):
+            captured['index_path'] = index_path
+
         def compile(self, **kwargs):
             captured['kwargs'] = kwargs
             plan = {
@@ -62,6 +65,7 @@ def _build(task_type, *, list_array, stub_compiler):
     plan_json = bp.build_ttng_predict_plan(
         SimpleNamespace(
             entity_column='users.user_id'),  # only entity_column read
+        index_path='/index',
         task_type=task_type,
         graph=SimpleNamespace(),
         timestamps=[],
@@ -160,6 +164,9 @@ def test_forecasting_ttng_prediction_uses_kept_staging(monkeypatch, tmp_path):
         Seconds = 'Seconds'
 
     class _Compiler:
+        def __init__(self, *, index_path):
+            captured['compiler_index_path'] = index_path
+
         def compile(self, **kwargs):
             captured['compile'] = kwargs
             return json.dumps({'task_type': kwargs['task_type']})
@@ -228,6 +235,7 @@ def test_forecasting_ttng_prediction_uses_kept_staging(monkeypatch, tmp_path):
 
     assert (rows, parts) == (7, 1)
     assert captured['execute']['index_path'] == index_path
+    assert captured['compiler_index_path'] == index_path
     assert captured['execute']['tt_id'] == 'pred_bp-job'
     assert captured['compile']['is_prediction'] is True
     assert captured['compile']['task_type'] == TaskType.FORECASTING.value

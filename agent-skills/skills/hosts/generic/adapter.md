@@ -73,6 +73,12 @@ reader, and if none is found, send the ask-back below with **Details** as the wa
 A skipped probe leaves its candidates `[inferred, unverified]`, as preflight §0 says. A BigQuery
 probe is billed by the bytes it scans; probe only the candidate columns.
 
+For BigQuery, also read each dataset's `location` with `bq show --format=prettyjson
+<project>:<dataset>` — the source, and the population and destination datasets once confirmed.
+A population dataset in a different location from the source cannot be filled by one query: say
+so before accepting it. The notebook reads locations itself (`runtime.md` §2), so they are not
+config constants.
+
 **What a check may do.** Read catalog metadata and run the preflight §3 probe — nothing else.
 Never run a command that writes, creates, copies or exports data; never sign in, switch a
 profile or account, or edit a tool's configuration; never add or update software to get a

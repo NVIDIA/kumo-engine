@@ -3,6 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from ._c import (
+    __version__,
+    BUILD_COMMIT,
+    StringLookup,
+    pack_token_stream,
     export_tt_artifacts,
     convert_kumo_config,
     ingest,
@@ -38,9 +42,11 @@ from ._c import (
     write_success_marker,
     touch_success_marker,
     verify_snapshot_integrity,
+    snapshot_range_checksums,
     has_resumable_ingest,
     validated_index_resume_progress,
     compute_col_stats_for_parquet,
+    evaluate_prediction_parquet,
     resolve_temporal,
     detect_multicat_delimiter,
     multicat_delimiter_is_proven,
@@ -110,6 +116,8 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
+    "StringLookup",
+    "pack_token_stream",
     "export_tt_artifacts",
     "convert_kumo_config",
     "ingest",
@@ -139,9 +147,11 @@ __all__ = [
     "write_success_marker",
     "touch_success_marker",
     "verify_snapshot_integrity",
+    "snapshot_range_checksums",
     "has_resumable_ingest",
     "validated_index_resume_progress",
     "compute_col_stats_for_parquet",
+    "evaluate_prediction_parquet",
     "DiskGraphPlanCompiler",
     "SplitSpec",
     "DiskgraphConfigConverter",

@@ -849,6 +849,17 @@ def test_init_passes_eval_limits_and_runtime_options(
     }
 
 
+def test_init_passes_uncapped_eval_limits(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    stub = _StubTrainer(max_val_steps=None, max_test_steps=None)
+
+    _run_init(stub, monkeypatch=monkeypatch)
+
+    dm_kwargs = stub.datamodule_kwargs  # type: ignore[attr-defined]
+    assert dm_kwargs["max_val_steps"] is None
+    assert dm_kwargs["max_test_steps"] is None
+
+
 def test_init_applies_diskgraph_auto_config_to_ttng_runtime(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """TT-NG must forward the legacy policy to the wheel, not bypass it."""
@@ -1030,7 +1041,7 @@ def test_load_rebinds_class_and_sets_bundle_dir(
     assert type(out) is DiskgraphNestedTrainer
     # Bundle dir was stamped on.
     assert out.diskgraph_task_dataset_bundle_dir == "/mnt/localssd/foo/bundle"
-    # Omitted stores use the None defaults in Trainer.load.
+    # Store setup belongs to the trainer's runtime initialization.
     assert "feature_store" not in captured["kwargs"]
     assert "graph_store" not in captured["kwargs"]
     # encoders + version passed through.
@@ -1558,7 +1569,7 @@ def test_init_attaches_runtime_feature_store_for_rhs_feature_mode(
 
     def _fake_build_runtime_feature_store(**kwargs: Any) -> tuple[str, str]:
         captured.update(kwargs)
-        return "feature-store", "graph-store"
+        return "feature-store", "graph-schema"
 
     monkeypatch.setattr(
         dg_nested_mod,
@@ -1573,8 +1584,8 @@ def test_init_attaches_runtime_feature_store_for_rhs_feature_mode(
     assert captured["encoders"] is stub.encoders
     assert captured["entity_table_names"] == ["my_customers", "articles"]
     assert stub.feature_store == "feature-store"
-    assert stub.graph_store == "graph-store"
-    assert stub.datamodule._data == ("feature-store", "graph-store")
+    assert stub.graph_schema == "graph-schema"
+    assert stub.datamodule._data == ("feature-store", "graph-schema")
 
 
 def test_init_does_not_attach_runtime_feature_store_for_rhs_lookup_mode(
@@ -1604,7 +1615,7 @@ def test_init_does_not_attach_runtime_feature_store_for_rhs_lookup_mode(
     _run_init(stub, monkeypatch=monkeypatch, fake_manifest=manifest)
 
     assert not hasattr(stub, "feature_store")
-    assert not hasattr(stub, "graph_store")
+    assert not hasattr(stub, "graph_schema")
     assert not hasattr(stub.datamodule, "_data")
 
 
@@ -3820,6 +3831,8 @@ def test_predict_lp_timestamp_is_ns_not_overflowed(tmp_path) -> None:
 
 
 class _MetricListTrainer:
+    global_rank = 0
+
     def __init__(self, results: list[dict[str, Any]]) -> None:
         self.results = results
 

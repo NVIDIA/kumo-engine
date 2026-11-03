@@ -50,7 +50,9 @@ async def test_embeddings_only_bp_stats_never_opens_predictions() -> None:
 
 
 @pytest.mark.asyncio
-async def test_bp_stats_reads_only_manifest_selected_parts(tmp_path) -> None:
+@pytest.mark.parametrize('clock', ['seconds', 'milliseconds'])
+async def test_bp_stats_reads_only_manifest_selected_parts(tmp_path,
+                                                           clock) -> None:
     from types import SimpleNamespace
 
     from rest.utils.table import ColStatsSet
@@ -71,6 +73,7 @@ async def test_bp_stats_reads_only_manifest_selected_parts(tmp_path) -> None:
     )
     job_input.predictive_query.get_bp_entity_col_name.return_value = 'ENTITY'
     job_input.predictive_query.query_type = mock.sentinel.query_type
+    job_input.graph_version_info = SimpleNamespace(timestamp_precision=clock)
 
     table_def = mock.Mock()
     table_def.fingerprint.return_value = 'fingerprint'
@@ -131,6 +134,7 @@ async def test_bp_stats_reads_only_manifest_selected_parts(tmp_path) -> None:
     kwargs = compute.coroutine.await_args.kwargs
     assert kwargs['parquet_paths'] == [str(path) for path in selected]
     assert str(artifact_root / 'foreign.parquet') not in kwargs['parquet_paths']
+    assert kwargs['timestamp_precision'] == clock
 
 
 class _UnapprovedSingleActivityError(PublicException):
@@ -877,6 +881,7 @@ async def test_direct_databricks_bp_stats_sample_stage_without_internal_copy(
     connector_id = ConnectorID('connector_' + '2' * 32)
     job_input = mock.Mock()
     job_input.id = 'bp-job-direct'
+    job_input.graph_version_info.timestamp_precision = 'seconds'
     job_input.config = mock.Mock(
         outputs=[
             DatabricksPredictionOutput(

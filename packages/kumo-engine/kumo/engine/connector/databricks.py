@@ -36,8 +36,9 @@ class DatabricksConnector(Connector):
     Args:
         catalog: Databricks Unity Catalog name.
         schema_name: Schema within `catalog`.
-        identity: The `DatabricksIdentity` used to authenticate. See
-            `from_notebook` for the credential-free notebook case.
+        identity: The `DatabricksIdentity` used to authenticate. `None`
+            uses the Databricks SDK's ambient auth (a notebook, a job, or
+            `databricks auth login`).
         warehouse_id: Databricks SQL warehouse ID. Mutually exclusive with
             `cluster_id`.
         cluster_id: Databricks all-purpose cluster ID. Mutually exclusive
@@ -53,7 +54,7 @@ class DatabricksConnector(Connector):
         *,
         catalog: str,
         schema_name: str,
-        identity: DatabricksIdentity,
+        identity: Optional[DatabricksIdentity] = None,
         warehouse_id: Optional[str] = None,
         cluster_id: Optional[str] = None,
         staging_volume_path: Optional[str] = None,
@@ -61,7 +62,7 @@ class DatabricksConnector(Connector):
     ) -> None:
         if require_staged and not staging_volume_path:
             raise ValueError("require_staged needs a staging_volume_path")
-        super().__init__(identity=identity)
+        super().__init__(identity=identity or DatabricksIdentity())
         self._config = DatabricksConnectorResourceConfig(
             catalog=catalog,
             schema_name=schema_name,

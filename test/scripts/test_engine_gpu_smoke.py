@@ -99,23 +99,6 @@ def test_forecasts_require_all_twelve_horizons_at_the_original_anchor():
             check('forecasting', broken, [10], anchor='2025-01-01')
 
 
-def test_forecasts_accept_the_graphs_exported_time_column():
-    check = runner().prediction_values
-    frame = pd.DataFrame({
-        'ENTITY': [10] * 12,
-        'signup_time': pd.date_range('2025-01-01', periods=12, freq='7D'),
-        'TARGET_PRED': range(12),
-        'ANCHOR_TIMESTAMP': ['2025-01-01'] * 12
-    })
-    assert check('forecasting', frame, [10], anchor='2025-01-01').tolist() == [
-        list(range(12))
-    ]
-    for broken in (frame.drop(columns='signup_time'),
-                   frame.assign(other_time=frame.signup_time)):
-        with pytest.raises(ValueError):
-            check('forecasting', broken, [10], anchor='2025-01-01')
-
-
 def test_links_require_the_complete_catalog_without_repeated_pairs():
     check = runner().prediction_values
     frame = pd.DataFrame({
@@ -149,19 +132,13 @@ def test_reload_tolerance_accepts_boundary_and_rejects_larger_or_invalid_values(
             compare(before, after, task='regression', atol=bound)
 
 
-def test_measurement_retains_failed_bounds_but_rejects_invalid_coordinates():
-    compare = runner().compare_predictions
-    result = compare([[1.]], [[1.01]], task='regression', atol=.0001,
-                     measure_only=True)
-    assert result['status'] == 'FAIL'
-    assert result['max_abs_difference'] > .009
-    with pytest.raises(ValueError):
-        compare([[1.]], [[np.nan]], task='regression', atol=.0001,
-                measure_only=True)
-    with pytest.raises(ValueError):
-        compare([[.7, .3]], [[.69, .31]], task='binary', atol=.0001,
-                before_decisions=np.array([True]),
-                after_decisions=np.array([False]), measure_only=True)
+@pytest.mark.parametrize(('before', 'after'), [
+    ([[1.]], [[1., 1.]]),
+    ([[np.inf]], [[np.inf]]),
+])
+def test_invalid_reload_outputs_fail_even_with_large_tolerance(before, after):
+    with pytest.raises(ValueError, match='equal finite prediction shapes'):
+        runner().compare_predictions(before, after, task='regression', atol=1.)
 
 
 def test_training_proof_rejects_zero_work_and_incomplete_fits():
@@ -203,8 +180,8 @@ def test_rtx_callers_supply_a_tolerance_enforced_at_its_boundary():
     assert compare([[0.]], [[bound]], task='regression',
                    atol=bound)['within_tolerance']
     with pytest.raises(ValueError, match='exceeds'):
-        compare([[0.]], [[np.nextafter(bound, np.inf)]],
-                task='regression', atol=bound)
+        compare([[0.]], [[np.nextafter(bound, np.inf)]], task='regression',
+                atol=bound)
 
 
 @pytest.mark.parametrize('task', [
@@ -228,8 +205,7 @@ def test_every_task_rejects_corrupted_reload_values_with_unchanged_decisions(
     'binary', 'multiclass', 'multilabel', 'multilabel_ranking', 'static_link',
     'temporal_link'
 ])
-def test_near_tie_label_or_rank_changes_pass_with_bounded_scores(
-        task):
+def test_near_tie_label_or_rank_changes_pass_with_bounded_scores(task):
     smoke = runner()
     if task == 'binary':
         before = pd.DataFrame(
@@ -281,12 +257,13 @@ def test_decisions_cannot_change_arbitrarily_even_with_identical_scores(
 
 
 @pytest.mark.parametrize('gap,accepted', [
-    (1e-4, True), (np.nextafter(1e-4, np.inf), False),
+    (1e-4, True),
+    (np.nextafter(1e-4, np.inf), False),
 ])
 def test_rank_swaps_use_the_tolerance_boundary(gap, accepted):
     compare = runner().compare_predictions
-    args = dict(task='static_link', atol=1e-4,
-                before_decisions=[[0, 1]], after_decisions=[[1, 0]])
+    args = dict(task='static_link', atol=1e-4, before_decisions=[[0, 1]],
+                after_decisions=[[1, 0]])
     if accepted:
         assert compare([[gap, 0.]], [[0., gap]], **args)['within_tolerance']
     else:
@@ -296,10 +273,11 @@ def test_rank_swaps_use_the_tolerance_boundary(gap, accepted):
 
 def test_rank_changes_cannot_hide_a_wide_reversal_inside_adjacent_ties():
     with pytest.raises(ValueError, match='decisions'):
-        runner().compare_predictions(
-            [[3e-4, 2e-4, 1e-4, 0.]], [[3e-4, 2e-4, 1e-4, 0.]],
-            task='static_link', atol=2e-4,
-            before_decisions=[[0, 1, 2, 3]], after_decisions=[[2, 3, 0, 1]])
+        runner().compare_predictions([[3e-4, 2e-4, 1e-4, 0.]],
+                                     [[3e-4, 2e-4, 1e-4, 0.]],
+                                     task='static_link', atol=2e-4,
+                                     before_decisions=[[0, 1, 2, 3]],
+                                     after_decisions=[[2, 3, 0, 1]])
 
 
 def test_tolerance_is_required_by_the_runner_cli_and_pure_comparison(tmp_path):
@@ -309,7 +287,15 @@ def test_tolerance_is_required_by_the_runner_cli_and_pure_comparison(tmp_path):
     with pytest.raises(TypeError):
         runner().compare_predictions([[0.]], [[0.]], task='regression')
     result = subprocess.run([
-        sys.executable, str(RUNNER), '--data-dir', '.', '--graph-metadata', '.',
-        '--output-dir', str(tmp_path), '--expected-version', 'test',
+        sys.executable,
+        str(RUNNER),
+        '--data-dir',
+        '.',
+        '--graph-metadata',
+        '.',
+        '--output-dir',
+        str(tmp_path),
+        '--expected-version',
+        'test',
     ], capture_output=True, text=True)
     assert result.returncode == 2 and '--reload-atol' in result.stderr

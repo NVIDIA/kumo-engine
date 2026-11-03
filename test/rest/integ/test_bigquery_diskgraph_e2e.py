@@ -15,7 +15,8 @@ Prerequisites:
     - Temporal dev server running: make up-local-temporal
     - diskgraph Python package installed
     - DEPLOY_ENV_CONFIG_FILE pointing to a diskgraph deploy config
-    - BigQuery credentials available (via AWS Secrets Manager or env vars)
+    - GOOGLE_APPLICATION_CREDENTIALS pointing to an explicit local ADC file
+      (external_account credentials when workload exchange is enabled)
     - GCP_STORAGE_TRANSFER_BUCKET set to a writable GCS bucket
 
 Usage:

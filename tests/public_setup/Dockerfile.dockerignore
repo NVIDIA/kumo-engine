@@ -25,6 +25,7 @@
 !packages/kumo-pql/**
 !packages/kumo-s3/**
 !packages/kumo-gcs/**
+!packages/kumo-adls/**
 !packages/kumo-snowflake/**
 !packages/kumo-databricks/**
 !packages/kumo-bigquery/**

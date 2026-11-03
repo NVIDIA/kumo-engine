@@ -1,6 +1,6 @@
 ---
 name: kumo-data-science
-description: "Use for any work with KumoAI predictive models on relational data in a warehouse, an object store or local files: train a model, score data with a trained one, or answer questions about an existing model or run — explain its predictions, diagnose its training, publish, reload or retain it, train or score on custom labels or rows, or tune it. Covers churn, propensity, fraud, recommendation, forecasting and link prediction; feature attribution and column cohorts; metrics, trials and learning curves; registry publishing and artifact retention; caller-supplied labels, weights and splits; encoders, run mode and experiments. For a new model it checks that the request names the data (a schema, dataset, folder of files, connector, or semantic view), the outcome and the time window, confirms the inferred tables and the task, then generates one notebook or script; it runs the job only when asked, in the notebook or, on Snowflake, as an ML Job on a compute pool. Triggers: kumo, predict, churn, recommend, forecast, fraud, train a model, run inference, explain a prediction, feature importance, model metrics, publish or load a model, tune a model, semantic view, ML Job, compute pool."
+description: "Use for KumoAI graphs and predictive models on relational data in a warehouse, an object store or local files: inspect, visualize or export a graph's schema and relationships; train a model, score data with a trained one, explain its predictions, diagnose its training, publish, reload or retain it, train or score on custom labels or rows, or tune it. Covers churn, propensity, fraud, recommendation, forecasting and link prediction. For a new model it checks that the request names the data, outcome and time window, confirms the inferred tables and task, then generates one notebook or script; it runs it only when asked, in the notebook or as a host job."
 ---
 
 # Data Science Agent — Router Skill
@@ -12,8 +12,18 @@ description: "Use for any work with KumoAI predictive models on relational data 
 Quote this string verbatim whenever asked which build of the skill is loaded. If you cannot read
 it from this file, you have not loaded the skill — say so rather than guessing.
 
-Targets Kumo bundle `20261007+2e1eb12` (import `kumo.engine`; kumo-ai/kumo#31382).
+Targets the local `kumo.engine` API; the baseline bundle is `20261007+2e1eb12`.
+Graph visualization requires a source build including [NVIDIA/kumo-engine#134](https://github.com/NVIDIA/kumo-engine/pull/134); it is absent from that bundle and the `1.0.0` release.
 One SDK, no variants.
+
+## When to use
+
+Requests that mention any of: kumo, predict, churn, recommend, forecast, fraud, train a model, run
+inference, explain a prediction, feature importance, feature attribution, column cohorts, model
+metrics, trials, learning curves, publish or load a model, registry publishing, artifact retention,
+caller-supplied labels, weights or splits, encoders, run mode, experiments, tune a model, semantic
+view, metric view, ML Job, compute pool, Databricks job, graph diagram, visualize a graph,
+inspect graph schema, export graph relationships.
 
 ## Routing
 
@@ -22,6 +32,7 @@ build and artifact checks:
 
 | Request | Skill |
 |---|---|
+| Show or export a graph; inspect its schema during model iteration | `kumo-graph-visualization/SKILL.md` |
 | Attribution or column cohorts for an existing run | `kumo-model-explanations/SKILL.md` |
 | Metrics, trial comparisons, learning curves, recorded progress | `kumo-training-diagnostics/SKILL.md` |
 | Publish, reload, retain or retrieve a model or its artifacts | `kumo-model-persistence/SKILL.md` |
@@ -34,8 +45,8 @@ for what the selected workflow is missing. If the host has not provided the refe
 report that limitation rather than inventing its workflow. **New training requests still follow
 the gates below**, unchanged.
 
-A request to run the artifact as a **job** — a Snowflake ML Job on a compute pool, unattended, or
-on a schedule — or a question about a job already submitted (status, logs, cost) also reads the
+A request to run the artifact as a **job** — a Snowflake ML Job on a compute pool, a Databricks
+job on a cluster, unattended, or on a schedule — or a question about a job already submitted (status, logs, cost) also reads the
 host's job file, when the host adapter names one. It adds settings to the gates below and changes
 where Step 3 runs; it never replaces the gates. If the adapter names no job file, say that this
 host does not run jobs and offer the notebook. A request that does not mention a job stays in the
@@ -260,6 +271,8 @@ After ACCEPT, load `kumoai-reference/SKILL.md` and hand off the confirmed payloa
 
 1. Connector from environment credentials; confirmed tables, metadata, links; graph and PQL
    validation; SDK-default training table and model plan, no tuning.
+   After graph construction and validation, include the interactive graph cell from `kumo-graph-visualization/SKILL.md` for the user, before snapshot creation and training.
+   Visualization adds no approval gate; continue unless the user requests a pause for review.
 2. **Exactly one** training call — `trainer.fit(...)`. It blocks until training finishes and
    returns a `TrainingResult`; print its `metrics`.
 3. **Predict in the same notebook** — same `Trainer`, same process, immediately after
@@ -275,6 +288,7 @@ After ACCEPT, load `kumoai-reference/SKILL.md` and hand off the confirmed payloa
    still executes nothing (Step 3 is opt-in).
 
 The user may ask for a script instead of a notebook.
+Include the SVG export from `kumo-graph-visualization/SKILL.md` before training, saving it alongside run outputs and reporting its path.
 
 ### `batch_inference`
 

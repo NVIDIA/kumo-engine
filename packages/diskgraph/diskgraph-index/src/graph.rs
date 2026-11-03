@@ -17,6 +17,7 @@ use diskgraph_core::metadata::{
     DatasetMetadata, EdgeRelationMetadata, NodeDataCompression, NodeShardMetadata,
     NodeTypeMetadata, PrimaryKeyMap,
 };
+use diskgraph_core::time::{convert_trunc, TimeUnit};
 use diskgraph_core::tt_builder::Value;
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -808,14 +809,34 @@ fn validate_committed_shard_files(output_dir: &Path, commit: &IndexShardCommit) 
 }
 
 fn sync_file_len(path: &Path) -> Result<u64> {
-    let file = fs::File::open(path).with_context(|| format!("open {} for sync", path.display()))?;
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    // Windows FlushFileBuffers requires GENERIC_WRITE on the file handle.
+    #[cfg(windows)]
+    options.write(true);
+    let file = options
+        .open(path)
+        .with_context(|| format!("open {} for sync", path.display()))?;
     file.sync_all()
         .with_context(|| format!("sync completed shard file {}", path.display()))?;
     Ok(file.metadata()?.len())
 }
 
 fn sync_directory(path: &Path) -> Result<()> {
-    fs::File::open(path)
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        // CreateFile requires this flag to open a directory, and
+        // FlushFileBuffers requires write access. Keep flush failures fatal:
+        // unsupported filesystems must not silently weaken shard durability.
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        options.write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+    }
+    options
+        .open(path)
         .and_then(|dir| dir.sync_all())
         .with_context(|| format!("sync directory {}", path.display()))
 }
@@ -1055,7 +1076,8 @@ impl GraphIndexReader {
                     let bytes = fs::read(&ctx_path)
                         .with_context(|| format!("read node data ctx {}", ctx_path.display()))?;
                     let ctx = diskgraph_rowpack::RowPackContext::from_bytes(&bytes)?;
-                    let decoder = diskgraph_rowpack::RowPackDecoder::new(ctx)?;
+                    let decoder = diskgraph_rowpack::RowPackDecoder::new(ctx)?
+                        .with_clock(metadata.timestamp_unit);
                     (Some(cfg.clone()), Some(decoder))
                 }
                 None => (None, None),
@@ -1746,7 +1768,7 @@ impl TableReader {
     }
 
     /// Check whether the entity identified by `node_id` is temporally valid at
-    /// `observation_ts` (epoch seconds). Returns `true` if the entity's
+    /// `observation_ts` (index-clock ticks). Returns `true` if the entity's
     /// `create_time_col <= observation_ts` and `(end_time_col IS NULL OR
     /// end_time_col > observation_ts)`.
     ///
@@ -1793,12 +1815,13 @@ impl TableReader {
             None => return Ok(true),
         };
 
+        let clock = decoder.clock();
         // Check create_time_col <= create_ref_ts
         if let Some(col_idx) = create_col_idx {
             let val = decoder.decode_column_value(raw, col_idx, scratch)?;
-            let ts_secs = temporal_value_to_epoch_secs(&val);
-            if let Some(secs) = ts_secs {
-                if secs > create_ref_ts {
+            let ticks = temporal_value_in_clock(&val, clock);
+            if let Some(ticks) = ticks {
+                if ticks > create_ref_ts {
                     return Ok(false);
                 }
             }
@@ -1808,9 +1831,9 @@ impl TableReader {
         // Check end_time_col IS NULL OR end_time_col > end_ref_ts
         if let Some(col_idx) = end_col_idx {
             let val = decoder.decode_column_value(raw, col_idx, scratch)?;
-            let ts_secs = temporal_value_to_epoch_secs(&val);
-            if let Some(secs) = ts_secs {
-                if secs <= end_ref_ts {
+            let ticks = temporal_value_in_clock(&val, clock);
+            if let Some(ticks) = ticks {
+                if ticks <= end_ref_ts {
                     return Ok(false);
                 }
             }
@@ -1878,12 +1901,16 @@ impl TableReader {
     }
 }
 
-/// Convert a rowpack `ValueRef` representing a temporal column to epoch seconds.
-fn temporal_value_to_epoch_secs(val: &diskgraph_rowpack::ValueRef<'_>) -> Option<i64> {
+/// Convert a rowpack `ValueRef` representing a temporal column to the index clock.
+fn temporal_value_in_clock(val: &diskgraph_rowpack::ValueRef<'_>, clock: TimeUnit) -> Option<i64> {
     match val {
-        diskgraph_rowpack::ValueRef::Timestamp(secs) => Some(*secs),
-        diskgraph_rowpack::ValueRef::Int64(ns) => Some(*ns / 1_000_000_000),
-        diskgraph_rowpack::ValueRef::Date(days) => Some(*days as i64 * 86400),
+        diskgraph_rowpack::ValueRef::Timestamp(ticks) => Some(*ticks),
+        diskgraph_rowpack::ValueRef::Int64(ns) => {
+            Some(convert_trunc(*ns, TimeUnit::Nanoseconds, clock))
+        }
+        diskgraph_rowpack::ValueRef::Date(days) => {
+            Some(convert_trunc(i64::from(*days), TimeUnit::Days, clock))
+        }
         diskgraph_rowpack::ValueRef::Null => None,
         _ => None,
     }
@@ -1914,6 +1941,38 @@ fn load_pk_hash_table(
 #[cfg(test)]
 mod scratch_cleanup_tests {
     use super::*;
+
+    #[test]
+    fn sync_completed_file_preserves_contents() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("offsets.bin");
+        let contents = b"completed shard offsets";
+        fs::write(&path, contents).unwrap();
+
+        assert_eq!(sync_file_len(&path).unwrap(), contents.len() as u64);
+        assert_eq!(fs::read(&path).unwrap(), contents);
+    }
+
+    #[test]
+    fn sync_missing_file_does_not_create_it() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("missing.bin");
+
+        assert!(sync_file_len(&path).is_err());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn sync_directory_flushes_completed_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("completed.bin");
+        fs::write(&path, b"completed").unwrap();
+        sync_file_len(&path).unwrap();
+
+        sync_directory(root.path()).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"completed");
+        assert!(sync_directory(&root.path().join("missing")).is_err());
+    }
 
     #[test]
     fn committed_shard_requires_durable_marker_and_matching_files() {

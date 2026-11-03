@@ -21,7 +21,7 @@ temporal:
     # Updating this annotation with the packaged bundle digest rolls the server
     # pods when the provider trust bundle changes.
     podAnnotations:
-      kumo.ai/aws-rds-ca-sha256: 3904eb87884e7f062f6634d4e52f30cca4f6ad0c10142a960184b60cc3852a60
+      kumo.ai/aws-rds-ca-sha256: 76347a34b21546410e9c51cfebacf38d60853151b830cba0486a9d5b865cfcc2
     additionalVolumes:
       - name: aws-rds-ca
         configMap:
@@ -62,4 +62,4 @@ temporal:
 
   schema:
     podAnnotations:
-      kumo.ai/aws-rds-ca-sha256: 3904eb87884e7f062f6634d4e52f30cca4f6ad0c10142a960184b60cc3852a60
+      kumo.ai/aws-rds-ca-sha256: 76347a34b21546410e9c51cfebacf38d60853151b830cba0486a9d5b865cfcc2

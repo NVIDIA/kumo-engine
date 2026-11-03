@@ -52,7 +52,7 @@ from .errors import (
     TransientSourceError,
     UnsupportedReadModeError,
 )
-from .identity import epoch_second
+from .identity import SourceVersion, epoch_second
 from .object_store_access import ObjectFetch, ObjectIdentity
 from .parallel import run_in_parallel
 from .prepare import ReadOutput, run_prepare
@@ -98,17 +98,23 @@ _io_base: list[int] = []
 _io_wanted: list[int] = []
 
 
-def _source_version(path: str, entries: Sequence[Any]) -> str:
+def _source_version(path: str, entries: Sequence[Any],
+                    identity: ObjectIdentity | None = None) -> str:
     if len(entries) == 1 and entries[0].path.rstrip("/") == path.rstrip("/"):
+        if identity is not None:
+            token, version, *_ = (*identity(entries[0].path), "")
+            return SourceVersion(version or token.strip('"'), "exact")
         latest = entries[0].mtime
-        return epoch_second(latest) if latest is not None else "-1"
+        return (SourceVersion(epoch_second(latest), "timestamp")
+                if latest is not None else SourceVersion("-1"))
     # A maximum mtime misses changes to older files and added/deleted parts.
     metadata = [
         (entry.path, entry.size, getattr(entry, "mtime_ns", None),
          entry.mtime.isoformat() if entry.mtime is not None else None)
         for entry in sorted(entries, key=lambda entry: entry.path)
     ]
-    return hashlib.sha256(json.dumps(metadata).encode()).hexdigest()
+    return SourceVersion(
+        hashlib.sha256(json.dumps(metadata).encode()).hexdigest(), "listing")
 
 
 class _CsvSource(NamedTuple):
@@ -159,7 +165,10 @@ class ObjectStoreSourceReader:
                 exact=self.file_format is not None or not table)
             entries = ([info] if info.type is FileType.File else
                        self._objects(table, info.path, include_hidden=True))
-        return _source_version(info.path, entries)
+        return self._data_version(info.path, entries)
+
+    def _data_version(self, path: str, entries: Sequence[Any]) -> str:
+        return _source_version(path, entries, self.object_identity)
 
     def resolve(self, table: str) -> tuple[str, str]:
         """An explicit format addresses an exact path; discovery infers both."""
@@ -325,7 +334,7 @@ class ObjectStoreSourceReader:
                               include_hidden=not transform)
         # Stamp the same metadata listing the read consumes, before fetching
         # any files; later additions must not be stamped onto this output.
-        stamped = version or _source_version(path, found)
+        stamped = version or self._data_version(path, found)
         source_bytes = (sum(entry.size for entry in found) if all(
             entry.size is not None and entry.size >= 0
             for entry in found) else None)
@@ -489,7 +498,7 @@ class ObjectStoreSourceReader:
         if self.fetch is not None:
             return self._download_objects(path, found, dest, worker_ceiling,
                                           parquet=True)
-        with _copies(found, worker_ceiling) as workers:
+        with copies(found, worker_ceiling) as workers:
             return fetch_all([
                 StagedFile(
                     entry.path, entry.size
@@ -519,7 +528,7 @@ class ObjectStoreSourceReader:
             return target
 
         try:
-            with _copies(found, worker_ceiling) as workers, ThreadPoolExecutor(
+            with copies(found, worker_ceiling) as workers, ThreadPoolExecutor(
                     max_workers=workers) as pool:
                 futures = [pool.submit(download, entry) for entry in found]
                 try:
@@ -814,8 +823,8 @@ def _parquet_batches(fragment: Any,
 
 
 @contextmanager
-def _copies(found: Sequence[Any],
-            worker_ceiling: int | None) -> Iterator[int]:
+def copies(found: Sequence[Any],
+           worker_ceiling: int | None = None) -> Iterator[int]:
     """Arrow-backed downloaders copy on Arrow's IO pool."""
     with memory_share(
             COPY_WORKER_BYTES, lambda ceiling: min(

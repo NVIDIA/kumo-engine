@@ -22,7 +22,7 @@ use diskgraph_core::accumulators::{
     for_each_split_ascii_byte, HyperLogLog, LocalColumnCounts, SharedColumnCounts,
     TDigestEstimator, WelfordAccumulator,
 };
-use diskgraph_core::time::{add_calendar_months, dur_from_unit, Abs, Dur, TimeUnit, UnitSystem};
+use diskgraph_core::time::{dur_from_unit, Abs, Dur, TimeUnit, UnitSystem};
 use diskgraph_core::tt_builder::*;
 use diskgraph_index::graph::GraphIndexReader;
 use parquet::arrow::ArrowWriter;
@@ -45,6 +45,7 @@ use crate::split_decider::{
     DateOffsetDecider, FixedDecider, ManualDecider, NoSplitDecider, OffsetUnit, RandomDecider,
     RandomLinkDecider, SplitDecider, TemporalDecider, TimeRangeDecider,
 };
+use crate::split_stats::TargetHistogram;
 use crate::ttgen_accumulator::{hash_i64, hash_str, hash_value, Accumulator};
 use crate::ttgen_filter::{
     compare_values, eval_row_filter, eval_stage_filter, is_nullish_filter_value,
@@ -1066,7 +1067,9 @@ where
     let (total_rows, mut stats, per_anchor_parts) = pass_outputs?;
     let row_failures: Option<RowFailuresReport> = custom_tt_source_ref.map(|source| {
         let report = stats.take_source_rows().failures.report(source.on_error);
-        report.warn_if_any(total_rows);
+        if !plan.is_prediction {
+            report.warn_if_any(total_rows);
+        }
         report
     });
     // Node-task categorical targets require exact CATEGORY_COUNTS for encoder
@@ -1327,12 +1330,19 @@ fn run_pass_a_then_pass_b<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
     mut fact_pseudo_time: Option<&mut crate::pseudo_time::FactPseudoTime>,
 ) -> TTGenResult<PassAOutputs<U>> {
     let pass_a_result = if let Some(source) = custom_tt_source {
+        let skipped_dir = resolved.is_prediction.then(|| {
+            tt_parquet_path
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(crate::skipped_rows::SKIPPED_ROWS_DIR)
+        });
         run_pass_a_custom_tt::<U, D>(
             resolved,
             &sender,
             shared_target_counts,
             &decider_template,
             source,
+            skipped_dir.as_deref(),
         )
     } else {
         run_pass_a::<U, D>(
@@ -1406,12 +1416,25 @@ fn run_pass_a_then_pass_b<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
                 &out_schema,
                 forecasting_horizon,
                 fact_pseudo_time.as_deref(),
+                node_target_histogram(resolved, &stats),
             )?)
         }
         PassBMode::Deferred => None,
     };
 
     Ok((total_rows, stats, stage_parts))
+}
+
+fn node_target_histogram<U: UnitSystem>(
+    plan: &ResolvedPlan<U>,
+    stats: &StatsMerger<U>,
+) -> Option<TargetHistogram> {
+    if !matches!(plan.prediction_type, PredictionType::Node) || plan.target_stype != "numerical" {
+        return None;
+    }
+    stats
+        .target_range()
+        .map(|(min, max)| TargetHistogram::new(min, max))
 }
 
 /// The directory containing `tt.parquet` — the staging dir where per-stage
@@ -1582,6 +1605,7 @@ fn run_pass_a_custom_tt<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
     shared_target_counts: Option<&Arc<SharedColumnCounts>>,
     decider_template: &D,
     source: &CustomTtSource,
+    skipped_dir: Option<&Path>,
 ) -> TTGenResult<(u64, StatsMerger<U>, D)> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -1619,6 +1643,7 @@ fn run_pass_a_custom_tt<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
                 decider_template,
                 shared_target_counts.cloned(),
                 source,
+                skipped_dir,
             )
         })
         .collect();
@@ -1643,8 +1668,8 @@ fn run_pass_a_custom_tt<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
         }
     }
     // A source that keeps nothing trains on nothing and would report success.
-    // Both modes refuse it; the skip counts say why.
-    if total_rows == 0 {
+    // Training refuses it; a prediction returns it with its row_failures.
+    if total_rows == 0 && !resolved.is_prediction {
         stats.source_rows.failures.report(source.on_error).warn_if_any(0);
         return Err(empty_source_error(&stats.source_rows));
     }
@@ -1860,11 +1885,11 @@ fn execute_entity<U: UnitSystem, D: SplitDecider<U>>(
     let time_col_val: Option<Abs<U>> = plan
         .entity_time_col_idx
         .and_then(|idx| read_column_i64(&plan.entity_table, entity_node, idx))
-        .map(Abs::<U>::from_secs);
+        .map(Abs::<U>::from_raw);
     let valid_to_val: Option<Abs<U>> = plan
         .entity_valid_to_col_idx
         .and_then(|idx| read_column_i64(&plan.entity_table, entity_node, idx))
-        .map(Abs::<U>::from_secs);
+        .map(Abs::<U>::from_raw);
 
     // 2. Pre-resolve entity column values (for filter RHS EntityColumn)
     let entity_cols: Vec<Option<Value>> = plan
@@ -1906,6 +1931,9 @@ fn execute_entity<U: UnitSystem, D: SplitDecider<U>>(
             (_, Some(t)) => t,
             (None, None) => default_ts,
         };
+        if !plan.fits_clock(Abs::<U>::from_raw(0)) {
+            return Ok(());
+        }
         link_frequencies.clear();
         link_split_values.clear();
         if execute_stages(
@@ -1941,7 +1969,7 @@ fn execute_entity<U: UnitSystem, D: SplitDecider<U>>(
     // 4. Temporal: binary search for valid timestamp range
     let timestamps = &plan.timestamps;
 
-    // Timestamps are sorted ascending. Point anchors (epoch seconds).
+    // Timestamps are sorted ascending. Point anchors (index-clock ticks).
     // Entity excluded if time_col > ts (strict >)
     // Entity excluded if valid_to_col < ts (strict <, i.e. LEQ boundary)
     let first_valid = match time_col_val {
@@ -2546,39 +2574,30 @@ fn execute_target_sequence<U: UnitSystem>(
 
     if !can_optimize {
         for &offset in offsets {
-            let shifted_ts = base_ts + offset;
-            let val_opt = execute_aggregate(
-                plan,
-                entity_node,
-                agg,
-                entity_cols,
-                Some(shifted_ts),
-                &mut Vec::new(),
-                &mut Vec::new(),
-            );
+            let val_opt = base_ts.checked_add(offset).and_then(|shifted_ts| {
+                execute_aggregate(
+                    plan,
+                    entity_node,
+                    agg,
+                    entity_cols,
+                    Some(shifted_ts),
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                )
+            });
             results.push(val_opt);
         }
         return results;
     }
 
-    let ResolvedWindow::Fixed {
-        offset_lo,
-        offset_hi,
-        encoder,
-    } = agg.window.as_ref().unwrap()
-    else {
-        unreachable!()
-    };
-    let windows: Vec<SortKeyWindow> = offsets
+    let window = agg.window.as_ref().unwrap();
+    let Some(windows) = offsets
         .iter()
-        .map(|&offset| {
-            let win_ts = base_ts + offset;
-            let abs_lo = offset_lo
-                .map(|offset_lo| encoder.encode_upper((win_ts + offset_lo).raw()));
-            let abs_hi = encoder.encode_upper((win_ts + *offset_hi).raw());
-            (abs_lo, abs_hi)
-        })
-        .collect();
+        .map(|&offset| window.sort_keys(base_ts.checked_add(offset)?))
+        .collect::<Option<Vec<SortKeyWindow>>>()
+    else {
+        return vec![None; offsets.len()];
+    };
     let min_lo = windows.iter().map(|w| w.0).min().unwrap();
     let max_hi = windows.iter().map(|w| w.1).max().unwrap();
     let edge_ref = &agg.path[0];
@@ -2702,7 +2721,7 @@ fn execute_target_sequence<U: UnitSystem>(
 /// Execute all stages for an (entity, timestamp) pair.
 /// Returns true if all stages passed (output row should be emitted).
 ///
-/// `observation_ts` is the current observation timestamp (epoch seconds) for
+/// `observation_ts` is the current observation timestamp (index-clock ticks) for
 /// temporal plans. Used to compute absolute window bounds from relative offsets.
 /// `None` for non-temporal plans.
 ///
@@ -2904,37 +2923,11 @@ fn execute_has_edges<U: UnitSystem>(
     entity_cols: &[Option<Value>],
     observation_ts: Option<Abs<U>>,
 ) -> Option<Value> {
-    // SAFETY: encode_upper expects epoch-seconds (the index's internal unit).
-    // This is correct when U=Seconds. If the pipeline is ever monomorphized
-    // over a different unit (e.g. Nanoseconds), the encoder must be made
-    // unit-aware as part of the ingest/sampling unit awareness work.
-    let window = has_edges.window.as_ref().map(|w| {
-        let obs = observation_ts.unwrap_or(Abs::<U>::from_raw(0));
-        match w {
-            ResolvedWindow::Fixed {
-                offset_lo,
-                offset_hi,
-                encoder,
-            } => {
-                let lo = offset_lo
-                    .map(|offset_lo| encoder.encode_upper((obs + offset_lo).raw()));
-                let hi = encoder.encode_upper((obs + *offset_hi).raw());
-                (lo, hi)
-            }
-            ResolvedWindow::Calendar {
-                lo_months,
-                hi_months,
-                encoder,
-            } => {
-                let hi_abs = add_calendar_months(obs, *hi_months);
-                let lo = lo_months.map(|lo_months| {
-                    encoder.encode_upper(add_calendar_months(obs, lo_months).raw())
-                });
-                let hi = encoder.encode_upper(hi_abs.raw());
-                (lo, hi)
-            }
-        }
-    });
+    let obs = observation_ts.unwrap_or(Abs::<U>::from_raw(0));
+    let window = match &has_edges.window {
+        Some(window) => Some(window.sort_keys(obs)?),
+        None => None,
+    };
 
     let dst_table = &has_edges.path.last().unwrap().dst_table;
     let mut traversed = false;
@@ -2975,33 +2968,11 @@ fn execute_aggregate<U: UnitSystem>(
     // timestamp bucket. Combined with the (lo, hi] search in iter_edge, this
     // ensures edges exactly at the lower boundary are excluded and edges exactly
     // at the upper boundary are included.
-    let window = agg.window.as_ref().map(|w| {
-        let obs = observation_ts.unwrap_or(Abs::<U>::from_raw(0));
-        match w {
-            ResolvedWindow::Fixed {
-                offset_lo,
-                offset_hi,
-                encoder,
-            } => {
-                let lo = offset_lo
-                    .map(|offset_lo| encoder.encode_upper((obs + offset_lo).raw()));
-                let hi = encoder.encode_upper((obs + *offset_hi).raw());
-                (lo, hi)
-            }
-            ResolvedWindow::Calendar {
-                lo_months,
-                hi_months,
-                encoder,
-            } => {
-                let hi_abs = add_calendar_months(obs, *hi_months);
-                let lo = lo_months.map(|lo_months| {
-                    encoder.encode_upper(add_calendar_months(obs, lo_months).raw())
-                });
-                let hi = encoder.encode_upper(hi_abs.raw());
-                (lo, hi)
-            }
-        }
-    });
+    let obs = observation_ts.unwrap_or(Abs::<U>::from_raw(0));
+    let window = match &agg.window {
+        Some(window) => Some(window.sort_keys(obs)?),
+        None => None,
+    };
 
     // Get the destination table for column reads
     let dst_table = &agg.path.last().unwrap().dst_table;
@@ -3137,13 +3108,11 @@ fn execute_aggregate<U: UnitSystem>(
                     if agg.target_temporal_create_col_idx.is_some()
                         || agg.target_temporal_end_col_idx.is_some() =>
                 {
-                    let create_ref = match agg.window.as_ref() {
-                        Some(ResolvedWindow::Fixed { offset_hi, .. }) => ts + *offset_hi,
-                        Some(ResolvedWindow::Calendar { hi_months, .. }) => {
-                            add_calendar_months(ts, *hi_months)
-                        }
-                        None => ts,
-                    };
+                    let create_ref = agg
+                        .window
+                        .as_ref()
+                        .and_then(|w| w.bounds(ts))
+                        .map_or(ts, |(_, end)| end);
                     Some((create_ref.raw().max(ts.raw()), ts.raw()))
                 }
                 _ => None,
@@ -3324,6 +3293,7 @@ fn execute_aggregate<U: UnitSystem>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use diskgraph_core::time::add_calendar_months;
 
     #[test]
     fn pass_a_writer_rotates_into_ordered_parts() {
@@ -3637,7 +3607,7 @@ mod tests {
         // 2024-01-01 00:00:00 UTC
         let jan1 = Abs::<Seconds>::from_raw(1704067200);
         // +3 months = 2024-04-01 (leap year, so Jan→Apr = 91 days)
-        let apr1 = add_calendar_months(jan1, 3);
+        let apr1 = add_calendar_months(jan1, 3).unwrap();
         assert_eq!(apr1.raw(), 1704067200 + 91 * 86400);
     }
 
@@ -3646,7 +3616,7 @@ mod tests {
         // 2023-01-01 00:00:00 UTC
         let jan1 = Abs::<Seconds>::from_raw(1672531200);
         // +3 months = 2023-04-01 (non-leap, Jan→Apr = 90 days)
-        let apr1 = add_calendar_months(jan1, 3);
+        let apr1 = add_calendar_months(jan1, 3).unwrap();
         assert_eq!(apr1.raw(), 1672531200 + 90 * 86400);
     }
 
@@ -3655,7 +3625,7 @@ mod tests {
         // 2023-04-01 00:00:00 UTC
         let apr1 = Abs::<Seconds>::from_raw(1680307200);
         // +3 months = 2023-07-01 (Apr→Jul = 91 days)
-        let jul1 = add_calendar_months(apr1, 3);
+        let jul1 = add_calendar_months(apr1, 3).unwrap();
         assert_eq!(jul1.raw(), apr1.raw() + 91 * 86400);
     }
 
@@ -3664,7 +3634,7 @@ mod tests {
         // 2023-07-01 00:00:00 UTC
         let jul1 = Abs::<Seconds>::from_raw(1688169600);
         // +3 months = 2023-10-01 (Jul→Oct = 92 days)
-        let oct1 = add_calendar_months(jul1, 3);
+        let oct1 = add_calendar_months(jul1, 3).unwrap();
         assert_eq!(oct1.raw(), jul1.raw() + 92 * 86400);
     }
 
@@ -3673,7 +3643,7 @@ mod tests {
         // 2023-10-01 00:00:00 UTC
         let oct1 = Abs::<Seconds>::from_raw(1696118400);
         // +3 months = 2024-01-01 (Oct→Jan = 92 days)
-        let jan1 = add_calendar_months(oct1, 3);
+        let jan1 = add_calendar_months(oct1, 3).unwrap();
         assert_eq!(jan1.raw(), oct1.raw() + 92 * 86400);
     }
 
@@ -3681,7 +3651,7 @@ mod tests {
     fn test_add_calendar_months_negative() {
         // 2023-04-01 → -3 months = 2023-01-01
         let apr1 = Abs::<Seconds>::from_raw(1680307200);
-        let jan1 = add_calendar_months(apr1, -3);
+        let jan1 = add_calendar_months(apr1, -3).unwrap();
         assert_eq!(jan1.raw(), 1672531200);
     }
 
@@ -3689,7 +3659,7 @@ mod tests {
     fn test_add_calendar_months_years() {
         // 2023-01-01 + 12 months = 2024-01-01
         let y2023 = Abs::<Seconds>::from_raw(1672531200);
-        let y2024 = add_calendar_months(y2023, 12);
+        let y2024 = add_calendar_months(y2023, 12).unwrap();
         assert_eq!(y2024.raw(), y2023.raw() + 365 * 86400);
     }
 }
