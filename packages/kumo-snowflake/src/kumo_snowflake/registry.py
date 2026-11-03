@@ -37,7 +37,6 @@ import logging
 import math
 import re
 import shutil
-import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import (
@@ -187,8 +186,7 @@ def _carrier_signature() -> Dict[str, "model_signature.ModelSignature"]:
     }
 
 
-def _model_args(bundle: Path, metadata: Mapping[str, str],
-                connector: SourceConnector, workdir: str) -> Dict[str, Any]:
+def _model_args(bundle: Path) -> Dict[str, Any]:
     r"""``log_model`` arguments for the bundle's carrier model."""
     return {
         'model': _bundle_model(str(bundle)),
@@ -397,9 +395,8 @@ class SnowflakeModelRegistryMixin:
                 f"has no {_SPEC_FILE}, which an export writes into every one.")
 
         record = {**_finite(metrics), **_version_record(metadata)}
-        with tempfile.TemporaryDirectory() as workdir, \
-                self._registry(connector) as registry:
-            args = _model_args(bundle, metadata, connector, workdir)
+        with self._registry(connector) as registry:
+            args = _model_args(bundle)
             name = location.version or _next_version(registry,
                                                      location.model_name)
             for attempt in range(3):
