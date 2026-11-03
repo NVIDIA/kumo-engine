@@ -943,7 +943,7 @@ class BaseLightningModule(pl.LightningModule, ABC):
                 batch_idx=batch_idx,
             )
 
-        if not self.is_fitting:
+        if self.explainers or not self.is_fitting:
             self._validation_step_outputs.append(_to_cpu(out))
 
     def on_validation_epoch_end(self):

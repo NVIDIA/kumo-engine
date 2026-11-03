@@ -123,19 +123,36 @@ def test_calibration_uses_registered_filesystem_for_adls_checkpoint(
         'calibration/reliability_diagram_test.png')
 
 
-@pytest.mark.parametrize('fn, kept', [
-    (TrainerFn.FITTING, 0),
-    (TrainerFn.VALIDATING, 1),
+class _StubExplainer:
+    requires_grad = False
+
+    def explain_pre_step(self, **kwargs):
+        pass
+
+    def explain_post_step(self, **kwargs):
+        pass
+
+    def explain_end(self, **kwargs):
+        pass
+
+
+@pytest.mark.parametrize('fn, explainers, kept', [
+    (TrainerFn.FITTING, [], 0),
+    (TrainerFn.FITTING, [_StubExplainer()], 1),
+    (TrainerFn.VALIDATING, [], 1),
 ])
-def test_validation_keeps_step_outputs_only_outside_fit(
-        monkeypatch, fn, kept):
+def test_validation_keeps_step_outputs_unless_fitting_unexplained(
+        monkeypatch, fn, explainers, kept):
     monkeypatch.setattr(BaseNodeLightningModule, '__abstractmethods__', set())
     module = BaseNodeLightningModule(TaskType.BINARY_CLASSIFICATION)
     module._trainer = SimpleNamespace(
         ckpt_path=None,
         sanity_checking=False,
         state=SimpleNamespace(fn=fn),
+        datamodule=None,
     )
+    module.explainers = explainers
+    module.is_explaining = Mock(return_value=False)
     module.evaluation_step = Mock(return_value={
         'logits': torch.tensor([[1.0]]),
         'target': torch.tensor([[1.0]]),
@@ -146,4 +163,5 @@ def test_validation_keeps_step_outputs_only_outside_fit(
 
     with patch.object(BaseLightningModule, 'compute_metrics'):
         module.on_validation_epoch_end()
-    assert ('prob' in module.outputs) == bool(kept)
+    assert bool(module.outputs) == bool(kept)
+    assert ('prob' in module.outputs) == (fn != TrainerFn.FITTING)
