@@ -1728,9 +1728,8 @@ async fn upload_file_once_from_path(
         // happens in parallel via the spawned put_part tasks below.
         let read_file = Arc::clone(&file);
         let buf = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<u8>> {
-            use std::os::unix::fs::FileExt;
             let mut buf = vec![0u8; part_len];
-            read_file.read_exact_at(&mut buf, part_offset)?;
+            read_exact_at(&read_file, &mut buf, part_offset)?;
             Ok(buf)
         })
         .await
@@ -1808,6 +1807,29 @@ async fn upload_file_once_from_path(
         .map_err(|err| anyhow!("upload (from path) complete failed for {}: {}", path, err))
 }
 
+#[cfg(unix)]
+fn read_exact_at(file: &std::fs::File, bytes: &mut [u8], offset: u64) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.read_exact_at(bytes, offset)
+}
+
+#[cfg(windows)]
+fn read_exact_at(file: &std::fs::File, mut bytes: &mut [u8], mut offset: u64) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !bytes.is_empty() {
+        match file.seek_read(bytes, offset) {
+            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(read) => {
+                offset += read as u64;
+                bytes = &mut bytes[read..];
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
         .ok()
@@ -1832,6 +1854,23 @@ mod tests {
     use super::*;
     use object_store::memory::InMemory;
     use std::sync::Once;
+
+    #[test]
+    fn positioned_read_requires_full_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("positioned.bin");
+        std::fs::write(&path, b"0123456789").unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let mut bytes = [0; 4];
+        read_exact_at(&file, &mut bytes, 3).unwrap();
+        assert_eq!(&bytes, b"3456");
+        assert_eq!(
+            read_exact_at(&file, &mut bytes, 8).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+        read_exact_at(&file, &mut [], 100).unwrap();
+        drop(file);
+    }
 
     fn init_tracing() {
         static INIT: Once = Once::new();
