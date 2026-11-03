@@ -21,6 +21,7 @@ from kumo.engine._events import Event
 from kumo.engine._mlops import full_error
 from kumo.engine._run_names import record_name
 from kumo.engine._summary_tables import route, table_json
+from kumo.engine._text import metric_key
 from kumo.engine._tracking import (
     DROPPED_METRICS,
     DROPPED_PARAMS,
@@ -252,20 +253,22 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
         return name
 
     def _log_summaries(self, summaries: Sequence[Summary]) -> None:
-        routed = route(summaries, charts=False)
+        routed = route(summaries)
         self._card += routed.card
         self._log_metrics({s.name: s.value for s in routed.scalars},
                           _MAX_METRICS)
+        for step, metrics in by_step(routed.charts):
+            self._log_metrics(metrics, _MAX_METRICS, step=step)
         self._log_params(routed.tags)
-        self._log_artifacts({**routed.files, **{
-            f'{table.name}.json': table_json(table)
-            for table in routed.tables}})
+        self._log_artifacts({f'{table.name}.json': table_json(table)
+                             for table in routed.tables})
 
     def _log_card(self, record: RunRecord) -> None:
         try:
             card = _card.run_card(record.tags, record.params, self._values,
                                   model_metrics(record), record.description,
-                                  self._card, record.tags.get('kumo.fit_run_id'))
+                                  [*self._card, *_card.charts(self._values)],
+                                  record.tags.get('kumo.fit_run_id'))
             files = sorted(name for name in self._artifacts
                            if name.endswith('.json'))
             self._log_artifacts({_CARD_FILE: card.text(files)})
@@ -314,6 +317,7 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
                      step: int = 0) -> None:
         kept = {}
         for name, value in metrics.items():
+            name = metric_key(name)
             if '$$' in name:
                 self._dropped_metrics.add(name)
                 continue

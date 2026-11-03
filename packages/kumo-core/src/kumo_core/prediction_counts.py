@@ -18,14 +18,7 @@ from kumo_core.evaluation_counts import (
 )
 from kumo_core.score_counts import PROBABILITY_EDGES, Counts
 from kumo_core.score_drift import PSI_SHIFTS, axis, drift_column, score_drift
-from kumo_core.summaries import (
-    BarChart,
-    Note,
-    Scalar,
-    Series,
-    Summary,
-    Table,
-)
+from kumo_core.summaries import Note, Scalar, Series, Summary, Table
 from kumo_core.types import TaskType
 
 ITEMS = 'items'
@@ -148,9 +141,8 @@ def _column(counts: Counts, name: str, edges: str, values: Any) -> None:
 
 def prediction_summaries(counts: Counts, *, threshold: Optional[float],
                          baseline: Optional[Counts],
-                         timeframe: Optional[Timeframe] = None,
-                         entity: str = 'entities',
-                         as_of: Optional[str] = None) -> List[Summary]:
+                         timeframe: Optional[Timeframe] = None
+                         ) -> List[Summary]:
     r"""Score histograms, shares and drift vs the holdout."""
     summaries: List[Summary] = []
     scores = [name for name in counts.extents if name in _SCORES]
@@ -167,11 +159,9 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
     ]
     for name in (*scores, *columns):
         if counts.edges[axis(name)] == PROBABILITY_EDGES:
-            summaries += _score_histogram(name, counts, baseline, entity,
-                                          as_of)
+            summaries += _score_histogram(name, counts, baseline)
     if 'TARGET_PRED' in counts.extents:
-        summaries.append(_prediction_histogram(counts, baseline, entity,
-                                               as_of))
+        summaries += _prediction_histogram(counts, baseline)
     summaries += [
         counts.summary(name, 'target', 'pred/histogram/predicted, ' +
                        horizon_label(int(name.removeprefix('TARGET_PRED_h'))
@@ -194,7 +184,7 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
             tuple((int(n), float(per_row[n])) for n in np.flatnonzero(per_row)),
             'labels'))
     if 'item_frequency' in counts.arrays:
-        summaries += _item_summaries(counts, as_of)
+        summaries += _item_summaries(counts)
     drift = None if baseline is None else score_drift(counts, baseline)
     if drift is not None:
         summaries += [Scalar(f'drift/{name}', value)
@@ -229,7 +219,7 @@ def _mean_range(counts: Counts, name: str) -> Tuple[float, float, float]:
             low, high)
 
 
-def _item_summaries(counts: Counts, as_of: Optional[str]) -> List[Summary]:
+def _item_summaries(counts: Counts) -> List[Summary]:
     arrays = counts.arrays
     total = {name: float(arrays[name])
              for name in ('catalogue', 'items_recommended', 'recommendations',
@@ -237,9 +227,6 @@ def _item_summaries(counts: Counts, as_of: Optional[str]) -> List[Summary]:
     coverage = total['items_recommended'] / max(total['catalogue'], 1)
     top_share = (total['top1pct_recommendations'] /
                  max(total['recommendations'], 1))
-    title = (f"Item popularity{f', {as_of}' if as_of else ''}: "
-             f'{_percent(coverage)} of items recommended, top 1% get '
-             f'{_percent(top_share)} of recommendations')
     edges = counts.edges['recommendations']
     bounds = [0, *(int(edge) for edge in edges),
               int(total['most_recommendations']) + 1]
@@ -253,44 +240,27 @@ def _item_summaries(counts: Counts, as_of: Optional[str]) -> List[Summary]:
                     for b in range(len(edges) + 1))),
         Scalar('pred/item_coverage', coverage),
         Scalar('pred/top_1pct_items_share', top_share),
-        *_item_popularity(arrays.get('items_by_rank', ()), title),
+        *_item_popularity(arrays.get('items_by_rank', ())),
     ]
 
 
 def _score_histogram(column: str, counts: Counts,
-                     baseline: Optional[Counts], entity: str,
-                     as_of: Optional[str]) -> List[Summary]:
-    per_pct = _per_pct(counts.arrays[column])
-    holdout = _holdout(baseline, column, PROBABILITY_EDGES)
-    name, label = 'pred/score_histogram', ''
+                     baseline: Optional[Counts]) -> List[Summary]:
+    name = 'pred/score_histogram'
     if column != 'True_PROB':
-        label = _label(column).removesuffix('_PROB')
-        name += '/' + re.sub(r'[^\w.-]', '_', label)
-    title = (f'Scores of {int(per_pct.sum()):,} {entity}' +
-             (f' ({label})' if label else ''))
-    return [
-        Series(name, tuple(enumerate(per_pct.tolist())), 'score_pct',
-               chart=True),
-        _chart(name, title, ('score', entity), PROBABILITY_EDGES, per_pct,
-               None if holdout is None else _per_pct(holdout), as_of),
-    ]
+        name += '/' + re.sub(r'[^\w.-]', '_',
+                             _label(column).removesuffix('_PROB'))
+    holdout = _holdout(baseline, column, PROBABILITY_EDGES)
+    return _with_holdout(name, 'score_pct', _per_pct(counts.arrays[column]),
+                         None if holdout is None else _per_pct(holdout))
 
 
-def _prediction_histogram(counts: Counts, baseline: Optional[Counts],
-                          entity: str, as_of: Optional[str]) -> BarChart:
-    edges = counts.edges['target']
-    bins = counts.arrays['TARGET_PRED']
-    holdout = _holdout(baseline, 'TARGET_PRED', edges)
-    lows, highs = zip(*(
-        side.extents['TARGET_PRED'] for side in (counts, baseline)
-        if side is not None and 'TARGET_PRED' in side.extents and
-        (side is counts or holdout is not None)))
-    return _chart(
-        'pred/prediction_histogram',
-        f'Predictions for {int(bins.sum()):,} {entity}',
-        ("predicted value, on the training target's bins", entity),
-        (min(*edges, *lows), *edges, max(*edges, *highs)), bins, holdout,
-        as_of)
+def _prediction_histogram(counts: Counts,
+                          baseline: Optional[Counts]) -> List[Summary]:
+    return _with_holdout('pred/prediction_histogram', 'bin',
+                         counts.arrays['TARGET_PRED'],
+                         _holdout(baseline, 'TARGET_PRED',
+                                  counts.edges['target']))
 
 
 def _holdout(baseline: Optional[Counts], column: str,
@@ -301,15 +271,19 @@ def _holdout(baseline: Optional[Counts], column: str,
     return holdout if holdout is not None and holdout.sum() else None
 
 
-def _chart(name: str, title: str, axes: Tuple[str, str],
-           edges: Sequence[float], counts: np.ndarray,
-           holdout: Optional[np.ndarray], as_of: Optional[str]) -> BarChart:
-    line = () if holdout is None else tuple(
-        (holdout * counts.sum() / holdout.sum()).tolist())
-    title += (f', {as_of}' if as_of else '') + (' vs holdout' if line else '')
-    return BarChart(name, title, axes, tuple(edges),
-                    tuple(counts.astype(np.float64).tolist()), line,
-                    ('this run', 'holdout, scaled to the same total'))
+def _with_holdout(name: str, x_label: str, counts: np.ndarray,
+                  holdout: Optional[np.ndarray]) -> List[Summary]:
+    series = [Series(name, _points(counts), x_label, chart=True)]
+    if holdout is not None:
+        series.append(Series(
+            name.replace('pred/', 'pred/holdout_', 1),
+            _points(holdout * counts.sum() / holdout.sum()), x_label,
+            chart=True))
+    return series
+
+
+def _points(counts: np.ndarray) -> Tuple[Tuple[int, float], ...]:
+    return tuple(enumerate(counts.astype(np.float64).tolist()))
 
 
 def _per_pct(counts: np.ndarray) -> np.ndarray:
@@ -319,24 +293,12 @@ def _per_pct(counts: np.ndarray) -> np.ndarray:
     return per_pct
 
 
-def _item_popularity(ranked: Sequence[float], title: str) -> List[Summary]:
+def _item_popularity(ranked: Sequence[float]) -> List[Summary]:
     points = tuple((rank, float(count))
                    for rank, count in enumerate(ranked, 1) if count)
     if len(points) < 2:
         return []
-    return [
-        Series('pred/item_popularity', points, 'item_rank', chart=True),
-        BarChart('pred/item_popularity', title,
-                 ('item rank', 'times recommended'),
-                 tuple(float(edge) for edge in range(len(ranked) + 1)),
-                 tuple(float(count) for count in ranked)),
-    ]
-
-
-def _percent(share: float) -> str:
-    if share >= 0.01 or not share:
-        return f'{share:.0%}'
-    return f'{100 * share:.1g}%'
+    return [Series('pred/item_popularity', points, 'item_rank', chart=True)]
 
 
 def _range(low: int, high: int) -> str:

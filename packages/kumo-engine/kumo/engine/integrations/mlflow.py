@@ -457,7 +457,7 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
             for summary in record.summaries))
 
     def _fold(self, run_id: str, record: RunRecord) -> None:
-        routed = route(record.summaries, charts=True)
+        routed = route(record.summaries)
         self._log_routed(routed, run_id)
         self._update_card(
             run_id, 'realized' if record.tags.get('kumo.monitor')
@@ -765,7 +765,7 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                     run_id, metrics=metrics[start:start + _BATCH_METRICS])
 
     def _log_summaries(self, summaries: Sequence[Summary]) -> None:
-        routed = route(summaries, charts=True)
+        routed = route(summaries)
         self._card += routed.card
         self._log_routed(routed, self._parent)
 
@@ -784,8 +784,6 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                 for step, values in by_step(routed.charts)])
         if routed.tags:
             self._log_tags(run_id, routed.tags)
-        for name, text in routed.files.items():
-            self._write_text(run_id, name, text)
         self._write_tables(run_id, routed.tables)
 
     def _log_inputs(self, run_id: str, summaries: Sequence[Dataset]) -> None:
