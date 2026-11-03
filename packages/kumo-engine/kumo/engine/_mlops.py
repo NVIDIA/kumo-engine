@@ -5,8 +5,10 @@ import contextlib
 import contextvars
 import os
 import posixpath
+import re
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import (
     Any,
     FrozenSet,
@@ -15,10 +17,13 @@ from typing import (
     Literal,
     Optional,
     Tuple,
+    Type,
     Union,
 )
 
-from kumo.engine._manifest import KINDS
+from kumoapi.plugin import ModelRegistryLocation, check_model_alias
+
+from kumo.engine._manifest import KINDS, M, read_manifest, write_manifest
 
 
 @dataclass(frozen=True)
@@ -41,11 +46,14 @@ class MLOps:
 
     Args:
         artifact_root: a URI, local path or ``(connector, path)`` pair.
+        registry: where each fit registers its model, through the tracker.
         store: artifact kinds to store; ``True`` for all, ``False`` none.
         on_error: ``'warn'`` or ``'raise'`` when MLOps fails.
     """
 
     artifact_root: Union[str, Tuple[Any, str]]
+    tracking: Any = field(default=None, kw_only=True)
+    registry: Any = field(default=None, kw_only=True)
     store: Union[bool, Iterable[str]] = field(default=True, kw_only=True)
     on_error: Literal['warn', 'raise'] = field(default='warn', kw_only=True)
     root: _Root = field(init=False, repr=False, compare=False)
@@ -85,11 +93,56 @@ class MLOps:
                              f'{list(KINDS)}.')
         if kinds:
             _require_writable(root)
+        from kumo.engine._tracking import as_tracking
+
+        tracker = as_tracking(self.tracking)
+        if self.registry is not None:
+            self._check_registry(tracker)
+        if tracker is not None:
+            tracker.check(self.registry)
         object.__setattr__(self, 'root', root)
         object.__setattr__(self, 'kinds', kinds)
 
+    def _check_registry(self, tracker: Any) -> None:
+        from kumo.engine.trainer.output_config import (
+            ModelOutputConfig,
+            check_model_location,
+        )
+
+        registry = self.registry
+        if not isinstance(registry, ModelRegistryLocation):
+            raise TypeError(
+                f'registry takes a ModelRegistryLocation, not '
+                f'{type(registry).__name__}; the tracker registers it.')
+        if registry.alias is not None:
+            check_model_alias(registry.alias)
+        if tracker is not None and tracker.log_model is not None:
+            if registry.version is not None:
+                raise ValueError('the tracker assigns registered model '
+                                 'versions; leave ModelRegistryLocation.version unset.')
+            return
+        connector = None if tracker is None else tracker.connector
+        if connector is None:
+            raise ValueError(
+                'registry= needs tracking=MlflowTracking(...) or '
+                'SnowflakeTracking(connector, ...).')
+        check_model_location(ModelOutputConfig(connector, location=registry))
+
+    def snapshot_uri(self, snapshot: Any) -> str:
+        r"""Where a `GraphSnapshot`, or a snapshot id, is stored."""
+        return self.root.uri(snapshot_path(snapshot))
+
     def wants(self, kind: str) -> bool:
         return kind in self.kinds
+
+    def locate(self, path: Path, kind: Type[M], relative: str) -> Optional[M]:
+        r"""Sets the manifest at ``path`` to say it is at ``relative``."""
+        location = self.root.uri(relative)
+        manifest = read_manifest(path, kind)
+        if manifest is not None and manifest.location != location:
+            manifest = replace(manifest, location=location)
+            write_manifest(path, manifest)
+        return manifest
 
 
 def _require_within_root(connector: Any, path: str) -> None:
@@ -177,11 +230,27 @@ def raise_on_error(settings: Optional[MLOps], error: Optional[BaseException],
                    call: str, stacklevel: int = 2) -> None:
     if error is None or settings is None:
         return
-    message = (f'{call} finished, but MLOps failed: '
-               f'{type(error).__name__}: {error}')
+    message = f'{call} finished, but MLOps failed: {full_error(error)}'
     if settings.on_error == 'raise':
         raise RuntimeError(message) from error
+    warn_failure(message, error, stacklevel + 1)
+
+
+def full_error(error: BaseException) -> str:
+    return f'{type(error).__name__}: {error}'
+
+
+def warn_failure(message: str, error: BaseException, stacklevel: int = 2,
+                 also: Optional[BaseException] = None) -> None:
+    r"""Warns ``message`` once per ``error`` (and ``also``)."""
+    if getattr(error, '_kumo_warned', False):
+        return
     warnings.warn(message, UserWarning, stacklevel=stacklevel + 1)
+    for reported in (error, also):
+        try:
+            setattr(reported, '_kumo_warned', True)
+        except AttributeError:
+            pass
 
 
 def on_root(source: Any, path: str) -> Tuple[Any, str]:
@@ -193,3 +262,20 @@ def on_root(source: Any, path: str) -> Tuple[Any, str]:
 def snapshot_path(snapshot: Any) -> str:
     snapshot_id = snapshot if isinstance(snapshot, str) else snapshot.id
     return 'snapshots/' + snapshot_id.replace('@', '/')
+
+
+_SNAPSHOT_ID = re.compile(r'[0-9a-f]+@[0-9a-f]+')
+
+
+def snapshot_uri(snapshot: Any,
+                 settings: Optional[MLOps] = None) -> Optional[str]:
+    r"""A snapshot location; an object or id is read from the root."""
+    if snapshot is None or (isinstance(snapshot, str)
+                            and not _SNAPSHOT_ID.fullmatch(snapshot)):
+        return snapshot
+    settings = resolve(settings)
+    if settings is None:
+        raise ValueError(
+            'A snapshot object or id needs a kumo.mlops block; otherwise '
+            'pass the URI snapshot.export(...) returned.')
+    return settings.snapshot_uri(snapshot)

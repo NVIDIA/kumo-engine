@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+from kumo.engine.trainer._scoring import ScoringDefaults
 from kumo.engine.trainer.output_config import (
     ModelOutputConfig,
     PredictionOutputConfig,
@@ -18,6 +19,7 @@ __all__ = [
     "Trainer",
     "TrainingResult",
     "PredictionResult",
+    "ScoringDefaults",
     "ModelOutputConfig",
     "PredictionOutputConfig",
     "SnapshotOutputConfig",

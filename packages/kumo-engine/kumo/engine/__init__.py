@@ -21,10 +21,13 @@ from kumo_core.embedding_models import (
     TokenEmbeddingModel,
 )
 from kumo_core.utils.nofile import ensure_nofile
+from kumoapi.encoder import TextEmbedding
 from kumoapi.graph import Edge
+from kumoapi.jobs import WriteMode
 from kumoapi.plugin import ModelRegistryLocation
 from kumoapi.table import Column
 
+from kumo.engine import _quiet  # noqa: F401
 from kumo.engine._manifest import (
     ModelManifest,
     SnapshotManifest,
@@ -59,6 +62,7 @@ from kumo.engine.trainer import (
     ModelOutputConfig,
     PredictionOutputConfig,
     PredictionResult,
+    ScoringDefaults,
     SnapshotOutputConfig,
     Trainer,
     TrainingResult,
@@ -72,6 +76,8 @@ __all__ = [
     "configure",
     "EmbeddingModelStore",
     "GloVeVectors",
+    "TextEmbedding",
+    "WriteMode",
     "TokenEmbeddingModel",
     "ModelRegistryLocation",
     "Connector",
@@ -105,6 +111,7 @@ __all__ = [
     "Trainer",
     "TrainingResult",
     "PredictionResult",
+    "ScoringDefaults",
     "ModelOutputConfig",
     "PredictionOutputConfig",
     "TrainingTableOutputConfig",

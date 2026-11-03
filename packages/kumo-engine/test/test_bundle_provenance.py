@@ -22,7 +22,7 @@ from kumo.engine._manifest import (
 )
 from kumo.engine.trainer._provenance import FitRecord, embedded_model
 from kumo.engine.trainer._spec import MANIFEST_FILE
-from kumo.engine.trainer.trainer import TrainingResult, _store_model
+from kumo.engine.trainer.trainer import TrainingResult, _store_and_register
 
 
 def test_fit_records_a_self_contained_manifest(fitted):
@@ -114,8 +114,7 @@ def _finish_stub_fit(bundle, trainer=None, warm_start=None, settings=None):
         training_table_generation=TrainingTableGenerationPlan(),
         provenance=FitRecord(table, warm_start, datetime.now(timezone.utc),
                              None))
-    if settings is not None and settings.wants('model'):
-        _store_model(result.bundle_dir, result.manifest, settings)
+    _store_and_register(result.bundle_dir, result.manifest, settings)
     return result
 
 

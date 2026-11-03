@@ -60,18 +60,30 @@ remote/durable cache, e.g. a Snowflake stage) -- out of scope for now.
 """
 
 import json
+import logging
 import threading
+import time
 import warnings
 from dataclasses import dataclass, field, replace
 from functools import cached_property, partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+)
 
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.pquery import NativeGraph, normalize_graph
 from kumoapi.graph import Edge
 from kumoapi.typing import TimestampPrecision, validate_timestamp_precision
 
+from kumo.engine._events import Event, EventEmitter
 from kumo.engine._manifest import (
     RECONSTRUCTED,
     SnapshotManifest,
@@ -95,6 +107,7 @@ from kumo.engine.table import Table
 if TYPE_CHECKING:
     from kumo.engine.trainer.output_config import SnapshotOutputConfig
 
+logger = logging.getLogger(__name__)
 _warned_scratch: set[Path] = set()
 _warned_backfill: set[Path] = set()
 
@@ -267,6 +280,19 @@ def report_other_graph(message: str, before: Optional[Mapping[str, Any]],
                   "locations differ.")
     warnings.warn(f"{message} {detail}", UserWarning,
                   stacklevel=stacklevel + 1)
+
+
+class _SnapshotEvents(EventEmitter):
+
+    def __init__(self, callbacks: Sequence[Callable[[Event], None]]):
+        super().__init__(callbacks)
+        self._started = time.monotonic()
+
+    def emit(self, name: Any, **fields: Any) -> None:
+        params = {**fields.pop('params', {}),
+                  'seconds': round(time.monotonic() - self._started, 1)}
+        logger.info('Graph.snapshot: %s %s', name, params)
+        super().emit(name, params=params, **fields)
 
 
 def _store() -> Any:
@@ -734,7 +760,9 @@ class Graph:
     def snapshot(self,
                  timestamp_precision: TimestampPrecision = 'seconds', *,
                  record_sources: bool = True,
-                 mlops: Optional[Any] = None) -> GraphSnapshot:
+                 mlops: Optional[Any] = None,
+                 callbacks: Sequence[Callable[[Event], None]] = ()
+                 ) -> GraphSnapshot:
         r"""Materialize this graph: read each table's connector, run the
         result through `kumo-core` to build column stats and the on-disk
         index. The index is stored under a directory keyed by both `self.id`
@@ -754,6 +782,7 @@ class Graph:
             mlops: also export the snapshot under this `kumo.MLOps` root.
             record_sources: if False, record sources without locations or
                 SQL text.
+            callbacks: called with each progress `Event`.
         """
         validate_timestamp_precision(timestamp_precision)
         self.validate()
@@ -783,10 +812,13 @@ class Graph:
         from kumo.engine._mlops import resolve
 
         settings = resolve(mlops)
+        events = _SnapshotEvents(callbacks)
+        events.emit('snapshot_started', params={
+            'graph': graph_key, 'tables': list(self._named_tables)})
         with _lock(graph_key):
             snapshot = self._snapshot_no_lock(graph_key, persist_dir,
                                               timestamp_precision,
-                                              record_sources)
+                                              record_sources, events)
         if settings is not None and settings.wants('snapshot'):
             from kumo.engine._mlops import raise_on_error
             from kumo.engine._snapshot_io import store
@@ -800,7 +832,8 @@ class Graph:
     def _snapshot_no_lock(
             self, graph_key: str, persist_dir: Path,
             timestamp_precision: TimestampPrecision = 'seconds',
-            record_sources: bool = True) -> GraphSnapshot:
+            record_sources: bool = True,
+            events: Optional['_SnapshotEvents'] = None) -> GraphSnapshot:
         r"""`snapshot()`'s body, run under its `FileLock`. Not meant to be
         called on its own -- `persist_dir`, unlike everything else here,
         isn't a pure function of `self` alone (it's `snapshot()`'s lock key,
@@ -862,6 +895,8 @@ class Graph:
                         "limitation in kumoai/backend/local/graph.py's "
                         "_stage_sources, which raises the same way.")
                 table_data_versions[alias] = prepared.version
+                if events is not None:
+                    events.emit('table_staged', params={'table': alias})
                 source_tables[alias] = source_table(
                     connector, name, sql, prepared.version,
                     record_sources=record_sources)
@@ -923,6 +958,9 @@ class Graph:
                                      record_sources, fresh=existing is None)
 
             _warn_ingest_data_loss(result, graph_config)
+            if events is not None:
+                events.emit('snapshot_ended', params={
+                    'snapshot_id': snapshot_id, 'reused': existing is not None})
             return GraphSnapshot(
                 id=snapshot_id,
                 index_path=Path(result.index_path),

@@ -33,11 +33,15 @@ under today. That path is snowflake-ml's private layout; the marker is ours.
 """
 
 import json
+import logging
+import math
+import re
 import shutil
 from contextlib import contextmanager
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
+    Any,
     ContextManager,
     Dict,
     Iterator,
@@ -53,9 +57,13 @@ from kumo_snowflake.session import (
     resolved,
 )
 from kumoapi.plugin import (
+    BUNDLE_ID_KEY,
+    ENGINE_MARKER,
     ModelRegistryLocation,
     PublishedModel,
     SourceConnector,
+    check_model_alias,
+    registry_lineage,
 )
 
 if TYPE_CHECKING:
@@ -74,13 +82,18 @@ _SPEC_FILE = 'training-spec.json'
 #: merely happens to be named alike.
 _MANIFEST_FILE = 'publication-manifest.json'
 
-#: Engine-bundle marker stored through the registry metadata API.
-_ENGINE_MARKER = 'kumo_engine'
+_SYSTEM_ALIASES = frozenset({'DEFAULT', 'FIRST', 'LAST'})
+_IDENTIFIER = r'(?:[A-Za-z_][A-Za-z0-9_$]*|"(?:[^"]|"")+")'
+_MODEL_NAME = re.compile(rf'(?:{_IDENTIFIER}\.){{0,2}}{_IDENTIFIER}')
+
+_LOG = logging.getLogger(__name__)
 
 #: Where a fetched version is unpacked before its bundle is lifted out. Named
 #: rather than a temporary directory so a half-finished import leaves something
 #: a reader can look at.
 _EXPORT_DIR = '_registry-export'
+
+_METRICS_LINE = 'Holdout: '
 
 
 def _require_registry() -> type["Registry"]:
@@ -113,7 +126,8 @@ def _bundle_model(bundle_dir: str) -> "custom_model.CustomModel":
         Deliberately not runnable. Scoring a Kumo model needs a materialized
         DiskGraph task over the graph being scored, built where the data is, so
         this refuses rather than answering. The version exists to carry,
-        version and expose the bundle; :func:`kumoai_studio.import_model` runs it.
+        version and expose the bundle; load it with
+        ``Trainer.load_from_connector``.
         """
         # Unquoted, and evaluated here rather than deferred: the registry
         # compares this annotation against `pandas.DataFrame` itself, so a
@@ -121,12 +135,30 @@ def _bundle_model(bundle_dir: str) -> "custom_model.CustomModel":
         @custom_model.inference_api
         def predict(self, df: pd.DataFrame) -> pd.DataFrame:
             raise NotImplementedError(
-                "This model version carries a Kumo model bundle; it does not "
-                "score in Snowflake. Import it with kumoai_studio.import_model() and "
-                "predict against a graph.")
+                "This model version holds a Kumo bundle and does not score in "
+                "Snowflake; load it with Trainer.load_from_connector.")
 
     return _BundleModel(
         custom_model.ModelContext(artifacts={'bundle': bundle_dir}))
+
+
+_TASKS = {
+    'binary_classification': 'TABULAR_BINARY_CLASSIFICATION',
+    'multiclass_classification': 'TABULAR_MULTI_CLASSIFICATION',
+    'regression': 'TABULAR_REGRESSION',
+}
+
+
+def _task(bundle: Path) -> Dict[str, Any]:
+    r"""``log_model``'s ``task=`` for the bundle, if Snowflake has one."""
+    try:
+        from snowflake.ml.model import type_hints
+
+        schema = json.loads((bundle / 'prediction-schema.json').read_text())
+        name = _TASKS.get(schema.get('task_type'))
+        return {} if name is None else {'task': getattr(type_hints.Task, name)}
+    except Exception:
+        return {}
 
 
 def _carrier_signature() -> Dict[str, "model_signature.ModelSignature"]:
@@ -151,6 +183,14 @@ def _carrier_signature() -> Dict[str, "model_signature.ModelSignature"]:
                     name='score', dtype=model_signature.DataType.DOUBLE)
             ],
         )
+    }
+
+
+def _model_args(bundle: Path) -> Dict[str, Any]:
+    r"""``log_model`` arguments for the bundle's carrier model."""
+    return {
+        'model': _bundle_model(str(bundle)),
+        'signatures': _carrier_signature()
     }
 
 
@@ -209,6 +249,64 @@ def _refuse_path(path: Optional[str], action: str) -> None:
             f'a path.')
 
 
+def _version_record(metadata: Mapping[str, str]) -> Dict[str, str]:
+    record = {ENGINE_MARKER: '1'}
+    if metadata.get(BUNDLE_ID_KEY):
+        record[BUNDLE_ID_KEY] = str(metadata[BUNDLE_ID_KEY])
+    return record
+
+
+def _finite(metrics: Mapping[str, float]) -> Dict[str, float]:
+    return {name: float(value) for name, value in metrics.items()
+            if math.isfinite(value)}
+
+
+def _comment(user: Optional[str],
+             metrics: Mapping[str, float]) -> Optional[str]:
+    r"""The user's comment, then a line of the model's holdout metrics."""
+    line = ' · '.join(f'{name} {value:.3g}'
+                      for name, value in _finite(metrics).items())
+    return '\n'.join(text for text in (user, line and _METRICS_LINE + line)
+                     if text) or None
+
+
+def _recorded_lineage(version: "ModelVersion") -> Dict[str, str]:
+    try:
+        return registry_lineage(dict(version.show_metrics() or {}))
+    except Exception as error:
+        _LOG.warning('Could not read registry metadata: %s', error)
+        return {}
+
+
+def _alias_holders(model: Any) -> Dict[str, str]:
+    holders = {}
+    for row in model.show_versions().to_dict('records'):
+        for alias in json.loads(row.get('aliases') or '[]'):
+            holders[alias] = str(row['name'])
+    return holders
+
+
+def _restore_alias(model: Any, version: str, alias: str) -> None:
+    try:
+        model.version(version).set_alias(alias)
+    except Exception as error:
+        _LOG.warning('Alias %s is now unset: restoring it on version %s '
+                     'failed: %s', alias, version, error)
+    else:
+        _LOG.warning('Could not move alias %s; it stays on version %s.',
+                     alias, version)
+
+
+def _next_version(registry: Any, model_name: str) -> str:
+    try:
+        names = [str(version.version_name)
+                 for version in registry.get_model(model_name).versions()]
+    except ValueError:
+        names = []
+    numbers = [int(name[1:]) for name in names if re.fullmatch(r'V\d+', name)]
+    return f'V{max(numbers, default=0) + 1}'
+
+
 class SnowflakeModelRegistryMixin:
     r"""The model half of :class:`SnowflakeSinkBackend`.
 
@@ -228,6 +326,17 @@ class SnowflakeModelRegistryMixin:
             connector: SourceConnector,
         ) -> ContextManager[SnowflakeSession]:
             ...
+
+    def check_model_location(self, connector: SourceConnector,
+                             location: ModelRegistryLocation) -> None:
+        r"""Raises ``ValueError`` unless the model name is an identifier."""
+        del connector
+        if not _MODEL_NAME.fullmatch(location.model_name):
+            raise ValueError(
+                f'Snowflake cannot register a model named '
+                f'{location.model_name!r}: start with a letter or underscore '
+                f'and use letters, digits, underscores and $, or double-quote '
+                f"the name, e.g. 'USERS_CHURN'.")
 
     @contextmanager
     def _registry(self, connector: SourceConnector) -> Iterator["Registry"]:
@@ -264,13 +373,10 @@ class SnowflakeModelRegistryMixin:
             path: Refused. A registry addresses a model by name.
             location: The
                 :class:`~kumoapi.plugin.ModelRegistryLocation` naming
-                the model, and optionally the version. A version of ``None``
-                lets the registry assign one -- the usual case, and the reason
-                this reports back what it created.
-            metadata: Returned with the publication result. Training metadata
-                remains in the bundle and is not recorded in registry tags.
-            metrics: Returned with the publication result. Training metrics
-                remain in the bundle's metrics.json.
+                the model, and optionally the version; by default the next
+                ``V<n>``.
+            metadata: Returned with the result; its bundle id is recorded.
+            metrics: The model's holdout metrics, recorded on the version.
             project_id: Ignored; a local runtime has no projects.
 
         Returns:
@@ -288,15 +394,27 @@ class SnowflakeModelRegistryMixin:
                 f"{bundle} does not look like a published model bundle: it "
                 f"has no {_SPEC_FILE}, which an export writes into every one.")
 
+        record = {**_finite(metrics), **_version_record(metadata)}
         with self._registry(connector) as registry:
-            version = registry.log_model(
-                _bundle_model(str(bundle)),
-                model_name=location.model_name,
-                version_name=location.version,
-                comment=location.comment,
-                metrics={_ENGINE_MARKER: '1'},
-                signatures=_carrier_signature(),
-            )
+            args = _model_args(bundle)
+            name = location.version or _next_version(registry,
+                                                     location.model_name)
+            for attempt in range(3):
+                try:
+                    version = registry.log_model(
+                        model_name=location.model_name,
+                        version_name=name,
+                        comment=_comment(location.comment, metrics),
+                        metrics=record,
+                        **args,
+                        **_task(bundle),
+                    )
+                    break
+                except Exception:
+                    taken, name = name, location.version or _next_version(
+                        registry, location.model_name)
+                    if name == taken or attempt == 2:
+                        raise
         return _published(connector, version, metadata=metadata,
                           metrics=metrics)
 
@@ -308,7 +426,7 @@ class SnowflakeModelRegistryMixin:
     ) -> List[PublishedModel]:
         r"""Lists Kumo model versions visible in the connector's registry.
 
-        A Kumo export records only ``kumo_engine=1`` in registry metadata.
+        A Kumo export records ``kumo_engine=1`` in registry metadata.
         That marker makes discovery both cheap and precise:
         versions logged by another tool are omitted, and no bundle is
         downloaded merely to decide whether it belongs in this list.
@@ -319,9 +437,11 @@ class SnowflakeModelRegistryMixin:
             for model in registry.models():
                 for version in model.versions():
                     recorded = dict(version.show_metrics() or {})
-                    if recorded.get(_ENGINE_MARKER) != '1':
+                    if recorded.get(ENGINE_MARKER) != '1':
                         continue
-                    found.append(_published(connector, version))
+                    found.append(
+                        _published(connector, version,
+                                   metadata=registry_lineage(recorded)))
         return sorted(found, key=lambda item: (item.name, item.version))
 
     def fetch_model(
@@ -345,14 +465,13 @@ class SnowflakeModelRegistryMixin:
                 though the caller always hands this a fresh, empty
                 ``mkdtemp``.
             path: Refused, as in :meth:`publish_model`.
-            location: The model, and optionally the version. ``None`` takes the
-                registry's default version, which is what a caller who names
-                none means.
+            location: The model, and optionally a version or alias (else the
+                registry's default version).
             project_id: Ignored.
 
         Returns:
             The name, the version actually read -- resolved, when the caller
-            named none -- where it lives, and metrics read from metrics.json.
+            named none -- where it lives, metrics and the recorded bundle id.
         """
         del project_id
         _refuse_path(path, 'fetching')
@@ -366,8 +485,17 @@ class SnowflakeModelRegistryMixin:
             # Resolved before anything on disk is touched: a name the registry
             # does not know must not cost the caller the bundle already there.
             model = registry.get_model(location.model_name)
-            version = (model.default if location.version is None else
-                       model.version(location.version))
+            if location.alias is not None:
+                if resolved(location.alias) not in _alias_holders(model):
+                    raise ValueError(
+                        f'No version of {location.model_name} holds alias '
+                        f'{location.alias}.')
+                version = model.version(location.alias)
+            elif location.version is None:
+                version = model.default
+            else:
+                version = model.version(location.version)
+            recorded = _recorded_lineage(version)
 
             destination.parent.mkdir(parents=True, exist_ok=True)
             staged = destination.parent / f'{destination.name}{_EXPORT_DIR}'
@@ -385,9 +513,48 @@ class SnowflakeModelRegistryMixin:
                 isinstance(key, str) and isinstance(value, (int, float))
                 for key, value in metrics.items())):
             raise ValueError('Invalid training metrics in model bundle.')
-        published = _published(connector, version, metrics=metrics)
+        published = _published(connector, version, metadata=recorded,
+                               metrics=metrics)
         if destination.exists():
             shutil.rmtree(destination)
         shutil.move(str(bundle), str(destination))
         shutil.rmtree(staged, ignore_errors=True)
         return published
+
+    def set_model_alias(
+        self,
+        connector: SourceConnector,
+        location: ModelRegistryLocation,
+        alias: str,
+    ) -> None:
+        r"""Points :obj:`alias` at ``location.version``, moving it if held."""
+        if location.version is None:
+            raise ValueError('Setting an alias needs a ModelRegistryLocation '
+                             'naming an exact version.')
+        check_model_alias(alias)
+        wanted = resolved(alias)
+        with self._registry(connector) as registry:
+            model = registry.get_model(location.model_name)
+            target = model.version(location.version)
+            name = resolved(str(target.version_name))
+            holders = {
+                held: version
+                for held, version in _alias_holders(model).items()
+                if held not in _SYSTEM_ALIASES
+            }
+            if holders.get(wanted) == name:
+                return
+            held = sorted(a for a, v in holders.items() if v == name)
+            if held:
+                raise ValueError(
+                    f'Version {name} of {location.model_name} already holds '
+                    f'alias {held[0]}; unset it first.')
+            previous = holders.get(wanted)
+            if previous is not None:
+                model.version(previous).unset_alias(alias)
+            try:
+                target.set_alias(alias)
+            except Exception:
+                if previous is not None:
+                    _restore_alias(model, previous, alias)
+                raise

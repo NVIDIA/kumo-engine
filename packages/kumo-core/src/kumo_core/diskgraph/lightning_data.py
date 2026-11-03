@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import ctypes
+import errno
 import itertools
 import json
 import logging
@@ -246,6 +247,11 @@ class _WorkerHandle:
             # The duplicated sentinel still gives an authoritative exit
             # observation for a worker that won the startup/exit race.
             pass
+        except OSError as error:
+            # SageMaker hosting refuses pidfd_open.
+            if error.errno not in (errno.ENOSYS, errno.EPERM):
+                os.close(sentinel_fd)
+                raise
         except BaseException:
             try:
                 os.close(sentinel_fd)
@@ -272,9 +278,7 @@ class _WorkerHandle:
         try:
             if self.pidfd is not None:
                 _pidfd_send_signal(self.pidfd, sig)
-            elif not sys.platform.startswith('linux'):
-                # Non-Linux development fallback. Production Linux/Python 3.14
-                # uses pidfds, avoiding numeric-PID reuse entirely.
+            else:
                 os.kill(self.pid, sig)
         except ProcessLookupError:
             pass

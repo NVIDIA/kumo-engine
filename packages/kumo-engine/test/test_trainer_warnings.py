@@ -8,16 +8,21 @@ import pytest
 from kumoapi.model_plan import ModelPlan
 
 from kumo.engine import Trainer
-from kumo.engine.trainer.trainer import _without_torch_scatter_hint
+from kumo.engine.trainer.trainer import _without_unactionable_warnings
 
 HINT = ("The usage of `scatter(reduce='min')` can be accelerated via the "
         "'torch-scatter' package, but it was not found")
 
 
-def test_torch_scatter_hint_is_hidden_and_other_warnings_are_not() -> None:
-    @_without_torch_scatter_hint
+def test_unactionable_warnings_are_hidden_and_other_warnings_are_not() -> None:
+    @_without_unactionable_warnings
     def run() -> str:
         warnings.warn(HINT, UserWarning)
+        warnings.warn('This process (pid=1) is multi-threaded, use of fork() '
+                      'may lead to deadlocks in the child.',
+                      DeprecationWarning)
+        warnings.warn('Your `IterableDataset` has `__len__` defined.',
+                      UserWarning)
         warnings.warn('an unrelated warning', UserWarning)
         return 'done'
 

@@ -12,6 +12,7 @@ from kumoapi.plugin import (
     FileArtifactSink,
     ModelRegistryLocation,
     SourceConnector,
+    check_model_alias,
 )
 from kumoapi.prediction_outputs import resolve_prediction_output_paths
 
@@ -113,3 +114,16 @@ class ModelOutputConfig:
     def __post_init__(self) -> None:
         if (self.path is None) == (self.location is None):
             raise ValueError("Exactly one of path or location must be set.")
+
+
+def check_model_location(config: ModelOutputConfig) -> None:
+    """Raises ``ValueError`` unless ``config.location`` is registrable."""
+    location = config.location
+    if location is None:
+        return
+    if location.alias:
+        check_model_alias(location.alias)
+    check = getattr(config.connector.sink_backend, 'check_model_location',
+                    None)
+    if callable(check):
+        check(config.connector, location)

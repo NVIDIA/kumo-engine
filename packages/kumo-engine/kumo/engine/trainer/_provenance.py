@@ -4,12 +4,15 @@
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from kumo.engine._manifest import (
+    Dependency,
     FitTiming,
     ModelManifest,
     ModelParents,
+    TrackingRef,
+    embedded,
     read_manifest,
     stamp,
     stub,
@@ -25,6 +28,8 @@ class FitRecord:
     warm_start: Optional[ModelManifest]
     started_at: datetime
     fit_mode: Optional[str]
+    tracking: Optional[TrackingRef] = None
+    dependencies: Optional[List[Dependency]] = None
 
     def write(self, bundle_dir: Path, bundle_id: str) -> None:
         from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
@@ -37,7 +42,7 @@ class FitRecord:
             ModelManifest(
                 id=bundle_id,
                 parents=ModelParents(
-                    training_table=table if table is not None else
+                    training_table=embedded(table) if table is not None else
                     stub('training_table', train_table.id
                          or train_table.tt_id),
                     warm_start=None if self.warm_start is None else
@@ -49,21 +54,25 @@ class FitRecord:
                         (finished_at - started_at).total_seconds(), 3),
                 ),
                 fit_mode=self.fit_mode,
+                tracking=self.tracking,
+                dependencies=self.dependencies,
                 **stamp(),
             ))
         add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
 
 
 def embedded_model(manifest: ModelManifest) -> ModelManifest:
-    parents = manifest.parents
+    copy = embedded(manifest)
+    parents = copy.parents
     if parents is None:
-        return manifest
+        return copy
 
     def cut(model: Optional[ModelManifest]) -> Optional[ModelManifest]:
         return None if model is None else stub('model', model.id)
 
-    return replace(manifest, parents=replace(
-        parents, warm_start=cut(parents.warm_start)))
+    return replace(copy, parents=replace(
+        parents, warm_start=cut(parents.warm_start),
+        derived_from=cut(parents.derived_from)))
 
 
 def bundle_manifest(bundle_dir: Path,
@@ -77,3 +86,26 @@ def bundle_manifest(bundle_dir: Path,
 def read_provenance(bundle_dir: Path) -> Optional[ModelManifest]:
     path = listed_file(bundle_dir, PROVENANCE_ROLE)
     return None if path is None else read_manifest(path, ModelManifest)
+
+
+def record_derivation(bundle_dir: Path, parent_dir: Path,
+                      parent_id: Optional[str]) -> None:
+    r"""Writes the manifest of a bundle derived from ``parent_dir``."""
+    from kumo_core.artifacts import (
+        PROVENANCE_FILE,
+        add_bundle_file,
+        bundle_id_from_manifest,
+    )
+
+    parent = bundle_manifest(parent_dir, parent_id)
+    write_manifest(
+        bundle_dir / PROVENANCE_FILE,
+        ModelManifest(
+            id=bundle_id_from_manifest(bundle_dir),
+            parents=ModelParents(
+                derived_from=None if parent is None else embedded_model(
+                    parent)),
+            dependencies=None if parent is None else parent.dependencies,
+            **stamp(),
+        ))
+    add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)

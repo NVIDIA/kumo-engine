@@ -74,6 +74,18 @@ adls=[
 gcs=[
     "kumo-gcs>=0.1.0.dev1",
 ]
+# mlflow-skinny 3.5 added download_artifacts(registry_uri=), which loading
+# by alias uses; nvidia-ml-py adds GPU system metrics.
+mlflow=[
+    "mlflow-skinny>=3.5,<4",
+    "nvidia-ml-py",
+]
+# SageMaker managed MLflow: 0.5.0 added the per-thread boto3 session
+# (sagemaker_mlflow.session.use_session) that explicit AWS identities use.
+sagemaker=[
+    "kumo-engine[mlflow,s3]",
+    "sagemaker-mlflow>=0.5.0",
+]
 
 # Reports this wheel's release version as the Kumo version. The provider is a
 # top-level module (see `[tool.setuptools] py-modules`) because importing

@@ -201,7 +201,12 @@ def export_location(snapshot: Any, path: str) -> str:
 
 
 def store(snapshot: Any, settings: Any) -> None:
+    from kumo.engine._manifest import SnapshotManifest
+    from kumo.engine._mlops import snapshot_path
+
     try:
+        settings.locate(Path(snapshot.index_path) / PROVENANCE_FILE,
+                        SnapshotManifest, snapshot_path(snapshot))
         connector = settings.root.connector
         path = settings.root.location('snapshots')
         filesystem, root = _location(connector,

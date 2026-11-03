@@ -583,6 +583,7 @@ def _score_prediction_shard(
         runtime_num_workers=config.worker_count,
         runtime_worker_id=worker_id,
         task_manifest=manifest,
+        binary_labels=config.binary_threshold is not None,
     )
     return _publish_scored_shard(
         collector, output_dir=config.output_dir, run_id=config.run_id,

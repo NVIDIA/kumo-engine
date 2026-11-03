@@ -24,6 +24,7 @@ from kumo.engine._manifest import (
     SourceTableEntry,
     TrainingTableManifest,
     TrainingTableParents,
+    embedded,
     read_manifest,
     stamp,
     stub,
@@ -144,6 +145,8 @@ class TrainingTable:
 
         path = settings.root.location(f'training_tables/{self.id}/')
         try:
+            settings.locate(self.staging_dir / PROVENANCE_FILE,
+                            TrainingTableManifest, f'training_tables/{self.id}')
             filesystem, root = file_store(settings.root.connector, path)
             if filesystem.get_file_info(
                     f'{root}/_SUCCESS').type is not FileType.File:
@@ -395,7 +398,7 @@ def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
             TrainingTableManifest(
                 id=table.id,
                 parents=TrainingTableParents(
-                    snapshot=parent if parent is not None else
+                    snapshot=embedded(parent) if parent is not None else
                     stub('snapshot', snapshot.id),
                     source_table=source_table),
                 query=table.query,

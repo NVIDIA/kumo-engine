@@ -1366,6 +1366,7 @@ class DiskgraphNestedTrainer(Trainer):
         artifact_stats_collector: PredictionArtifactStatsCollector
         | None = None,
         task_manifest: DiskgraphTaskManifest | None = None,
+        binary_labels: bool = True,
     ) -> Any:
         """TT-NG batch prediction over the wheel-backed predict stage.
 
@@ -1542,6 +1543,10 @@ class DiskgraphNestedTrainer(Trainer):
                     out_timestamps=out_timestamps,
                     array_targets=allow_array_targets(),
                 )
+                if (not binary_labels and self.task.task_type
+                        == TaskType.BINARY_CLASSIFICATION):
+                    df['TARGET_PRED'] = pd.Series(pd.NA, index=df.index,
+                                                  dtype='boolean')
 
             embedding = None
             if return_embeddings:

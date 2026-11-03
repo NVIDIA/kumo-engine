@@ -2,18 +2,22 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 import json
+import re
 import types
 import warnings
 from collections.abc import Mapping as AbcMapping
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
     Any,
+    ClassVar,
     Dict,
+    Iterator,
     List,
     Mapping,
     Optional,
+    Tuple,
     Type,
     TypeVar,
     Union,
@@ -23,6 +27,7 @@ from typing import (
 )
 
 from kumo_core.io.filesystem import atomic_write_bytes
+from kumo_core.summaries import Dataset, Summary, Table, Tag
 
 SCHEMA_VERSION = 1
 _OMIT_NONE = 'omit_none'
@@ -35,12 +40,29 @@ def omit_none() -> Any:
     return field(default=None, metadata={_OMIT_NONE: True})
 
 
+@dataclass(frozen=True)
+class Artifact:
+    kind: str
+    id: str
+    location: Optional[str]
+    is_dataset: bool
+    tag: Optional[str] = None
+    connector: Optional[str] = None
+    version: Optional[str] = None
+    version_kind: Optional[str] = None
+    context: Optional[str] = None
+    label: Optional[str] = None
+
+
 @dataclass(frozen=True, kw_only=True)
 class Record:
     """A JSON object that keeps unknown keys in ``extra``."""
 
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False,
                                      compare=False)
+
+    def as_artifact(self, key: str) -> Optional[Artifact]:
+        return None
 
     def to_dict(self) -> Dict[str, Any]:
         data = dict(self.extra)
@@ -121,6 +143,11 @@ class SourceTableEntry(Record):
     dialect: Optional[str] = omit_none()
     namespace: Optional[List[Any]] = omit_none()
 
+    def as_artifact(self, key: str) -> Artifact:
+        return Artifact('source_table', key, self.location, True,
+                        connector=self.connector, version=self.version,
+                        version_kind=self.version_kind)
+
 
 KINDS = ('snapshot', 'training_table', 'model')
 
@@ -133,6 +160,96 @@ class Manifest(Record):
     created_at: Optional[str] = None
     environment: Optional[Environment] = None
     reconstructed: Optional[bool] = omit_none()
+    location: Optional[str] = omit_none()
+
+    EMBED_OMITS = ()
+    IS_DATASET: ClassVar[bool] = False
+    URI_TAG: ClassVar[Optional[str]] = None
+    NOUN: ClassVar[Optional[str]] = None
+
+    @property
+    def title(self) -> str:
+        short = self.created_at and (
+            f"{self.created_at[:10]}-{re.split('[@-]', self.id)[-1][:6]}")
+        return f"{self.NOUN or self.kind.replace('_', ' ')} {short or self.id}"
+
+    def as_artifact(self, key: str) -> Artifact:
+        return Artifact(self.kind, self.id, self.location, self.IS_DATASET,
+                        self.URI_TAG, version=self.id, version_kind='exact',
+                        label=self.title)
+
+
+def artifacts(manifest: Manifest) -> List[Artifact]:
+    found: Dict[Any, Artifact] = {}
+    for artifact in _walk(manifest, manifest.kind, manifest):
+        found.setdefault((artifact.kind, artifact.id), artifact)
+    return list(found.values())
+
+
+def _walk(value: Any, key: str, root: Manifest) -> Iterator[Artifact]:
+    if isinstance(value, Record):
+        artifact = value.as_artifact(key)
+        if artifact is not None:
+            yield artifact
+        if isinstance(value, Manifest) and not value.IS_DATASET and \
+                value is not root:
+            return
+        for item in fields(value):
+            yield from _walk(getattr(value, item.name), item.name, root)
+    elif isinstance(value, AbcMapping):
+        for name, item in value.items():
+            yield from _walk(item, str(name), root)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _walk(item, key, root)
+
+
+_SCHEMES = {'s3': 'S3', 'gs': 'GCS', 'file': 'LOCAL_FILE', '': 'LOCAL_FILE'}
+
+Details = Mapping[str, Tuple[Mapping[str, Any], Mapping[str, Any]]]
+
+
+FIT_ROLES = {'snapshot': 'graph context', 'training_table':
+             'training examples', 'source_table': 'source table'}
+
+
+def artifact_summaries(manifest: Manifest, roles: Mapping[str, str],
+                       details: Optional[Details] = None) -> List[Summary]:
+    r"""Location tags, the locations table and datasets of a manifest."""
+    located = [item for item in artifacts(manifest) if item.location]
+    tags: Dict[str, str] = {}
+    for item in located:
+        if item.tag:
+            tags.setdefault(item.tag, str(item.location))
+    summaries: List[Summary] = [
+        *(Tag(name, value) for name, value in tags.items()),
+        *([Table('locations', ('kind', 'id', 'location'), tuple(
+            (item.kind, item.id, str(item.location)) for item in located),
+                 brief=True)] if located else []),
+    ]
+    for item in sorted(located, key=lambda item: (_DATASET_ORDER.get(
+            item.kind, len(_DATASET_ORDER)), item.label or item.id)):
+        if not item.is_dataset:
+            continue
+        location = str(item.location)
+        source = {'connector': item.connector or _connector(location),
+                  'location': location, 'version': item.version,
+                  'version_kind': item.version_kind}
+        schema, profile = (details or {}).get(item.id, ({}, {}))
+        summaries.append(Dataset(
+            item.label or item.id, source, schema, profile, item.context
+            or roles.get(item.kind, item.kind.replace('_', ' '))))
+    return summaries
+
+
+_DATASET_ORDER = {'training_table': 0, 'snapshot': 1, 'source_table': 2}
+
+
+def _connector(location: str) -> Optional[str]:
+    from urllib.parse import urlparse
+
+    return None if location.startswith('@') else _SCHEMES.get(
+        urlparse(location).scheme)
 
 
 def stamp() -> Dict[str, Any]:
@@ -162,6 +279,13 @@ def stub(kind: str, id: str) -> 'Manifest':
     return _kinds()[kind](id=id, reconstructed=True)
 
 
+def embedded(manifest: M) -> M:
+    return replace(manifest, **{
+        name: None
+        for name in manifest.EMBED_OMITS
+    })
+
+
 def _parent(hint: Type[M], value: Any) -> M:
     try:
         return hint.from_dict(value)
@@ -182,6 +306,8 @@ class SnapshotManifest(Manifest):
     """The sources and engine build of a snapshot."""
 
     kind: str = 'snapshot'
+    IS_DATASET: ClassVar[bool] = True
+    NOUN: ClassVar[Optional[str]] = 'graph snapshot'
     parents: Optional[SnapshotParents] = None
     record_sources: Optional[bool] = omit_none()
 
@@ -197,6 +323,7 @@ class TrainingTableManifest(Manifest):
     """The snapshot, query and rows of a training table."""
 
     kind: str = 'training_table'
+    IS_DATASET: ClassVar[bool] = True
     parents: Optional[TrainingTableParents] = None
     query: Optional[str] = None
     generation_plan: Optional[Dict[str, Any]] = None
@@ -208,6 +335,7 @@ class TrainingTableManifest(Manifest):
 class ModelParents(Record):
     training_table: Optional[TrainingTableManifest] = None
     warm_start: Optional['ModelManifest'] = None
+    derived_from: Optional['ModelManifest'] = omit_none()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -218,13 +346,62 @@ class FitTiming(Record):
 
 
 @dataclass(frozen=True, kw_only=True)
+class TrackingRef(Record):
+    r"""A run in an experiment tracker."""
+
+    platform: str
+    run_id: str
+    url: Optional[str] = omit_none()
+    experiment: Optional[str] = omit_none()
+    run_name: Optional[str] = omit_none()
+
+
+@dataclass(frozen=True, kw_only=True)
+class Dependency(Record):
+    r"""A predictor, package or asset a model needs to predict."""
+
+    kind: str
+    name: str
+    version: Optional[str] = omit_none()
+    extras: Optional[List[str]] = omit_none()
+    asset_kind: Optional[str] = omit_none()
+    sha256: Optional[str] = omit_none()
+    entry_point: Optional[str] = omit_none()
+    packing: Optional[str] = omit_none()
+    location: Optional[str] = omit_none()
+
+    def as_artifact(self, key: str) -> Optional[Artifact]:
+        kind = _kinds().get(self.kind)
+        return None if kind is None else Artifact(
+            self.kind, str(self.sha256), self.location, kind.IS_DATASET,
+            version=self.sha256, version_kind='exact')
+
+
+@dataclass(frozen=True, kw_only=True)
 class ModelManifest(Manifest):
     """How a model bundle was fitted; ``id`` is the bundle id."""
 
     kind: str = 'model'
+    URI_TAG: ClassVar[Optional[str]] = 'kumo.bundle_uri'
     parents: Optional[ModelParents] = None
     fit: Optional[FitTiming] = None
     fit_mode: Optional[str] = None
+    tracking: Optional[TrackingRef] = omit_none()
+    dependencies: Optional[List[Dependency]] = omit_none()
+
+    EMBED_OMITS = ('tracking', )
+
+
+@dataclass(frozen=True, kw_only=True)
+class AssetManifest(Manifest):
+    """An asset a model depends on; its ``id`` is the sha256."""
+
+    kind: str = 'asset'
+    asset_kind: Optional[str] = None
+    name: Optional[str] = None
+    version: Optional[str] = None
+    format: Optional[str] = None
+    source: Optional[str] = None
 
 
 def manifest_bytes(manifest: Manifest) -> bytes:
