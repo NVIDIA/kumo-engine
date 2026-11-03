@@ -261,6 +261,7 @@ def test_export_missing_artifact_does_not_publish_partial_outputs(
     writes = []
     connector = SimpleNamespace(
         source_type='LOCAL_FILE', sink_backend=SimpleNamespace(
+            holds_files=lambda *a: True, filesystem=lambda *a: None,
             write_files=lambda *a, **kw: writes.append(a)))
     config = PredictionOutputConfig(
         connector, output_paths={

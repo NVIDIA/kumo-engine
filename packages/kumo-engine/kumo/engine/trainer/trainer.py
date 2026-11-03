@@ -41,6 +41,7 @@ from kumo_core.types import ExplainMethod, PredictionArtifactType
 from kumoapi.model_plan import ModelPlan, TrainingTableGenerationPlan
 from kumoapi.plugin import (
     ModelFetchingSink,
+    ModelPublishingSink,
     ModelRegistryLocation,
     PublishedModel,
     SourceConnector,
@@ -158,20 +159,17 @@ class PredictionResult:
         self._export(output_config)
 
     def _export(self, output_config: PredictionOutputConfig) -> None:
-        write_files = getattr(output_config.connector.sink_backend,
-                              'write_files', None)
-        if not callable(write_files):
-            raise NotImplementedError(
-                'Prediction export requires FileArtifactSink.write_files')
+        writer = output_config.writer()
         outputs = []
         for name, destination in output_config.destinations().items():
             kind = PredictionArtifactType(name.upper())
             files = PredictionResult(self.selection, kind).files
             outputs.append((kind, destination, files))
         for kind, destination, files in outputs:
-            write_files(output_config.connector, destination, list(files),
-                        output_config.write_mode,
-                        export_id=f'{self.selection.job_id}-{kind.value}')
+            writer.write_files(
+                output_config.connector, destination, list(files),
+                output_config.write_mode,
+                export_id=f'{self.selection.job_id}-{kind.value}')
 
 
 def _find_holdout(log_dir: str) -> tuple[Optional[Path], Optional[bool]]:
@@ -214,6 +212,22 @@ def _to_core_model_plan(model_plan: ModelPlan) -> CoreModelPlan:
     from kumo_core.model_plan_conversion import internal_model_plan_from_public
 
     return internal_model_plan_from_public(model_plan)
+
+
+def _require_publisher(export_config: ModelOutputConfig) -> None:
+    if not isinstance(export_config.connector.sink_backend,
+                      ModelPublishingSink):
+        raise NotImplementedError(
+            f'{type(export_config.connector).__name__} cannot publish '
+            f'models')
+
+
+def _preflight(output_config: PredictionOutputConfig) -> None:
+    preflight = getattr(output_config.writer(), 'preflight_write_files', None)
+    if callable(preflight):
+        for destination in output_config.destinations().values():
+            preflight(output_config.connector, destination,
+                      write_mode=output_config.write_mode)
 
 
 def _stage_model_bundle(artifacts: Mapping[str, str], dest: Path) -> Path:
@@ -358,12 +372,8 @@ class Trainer:
 
         from kumo.engine.trainer._runtime import local_training_bindings
 
-        if export_config is not None and not callable(
-                getattr(export_config.connector.sink_backend, 'publish_model',
-                        None)):
-            raise NotImplementedError(
-                f'{type(export_config.connector).__name__} cannot publish '
-                f'models')
+        if export_config is not None:
+            _require_publisher(export_config)
         run_id = f'{self._id}-fit-{new_run_id()}'
         run_dir = self.scratch_dir / 'runs' / run_id
 
@@ -659,20 +669,8 @@ class Trainer:
             has_predictions=PredictionArtifactType.PREDICTIONS in artifacts,
         )
 
-        write_files = None
         if output_config is not None:
-            write_files = getattr(output_config.connector.sink_backend,
-                                  'write_files', None)
-            if not callable(write_files):
-                raise NotImplementedError(
-                    'Prediction export requires FileArtifactSink.write_files; '
-                    'this sink only supports in-memory table output')
-            preflight = getattr(output_config.connector.sink_backend,
-                                'preflight_write_files', None)
-            if callable(preflight):
-                for destination in destinations.values():
-                    preflight(output_config.connector, destination,
-                              write_mode=output_config.write_mode)
+            _preflight(output_config)
 
         from kumo_core.encoders.config import EncodersConfig
         from kumo_core.io.json import load_json
