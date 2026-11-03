@@ -92,13 +92,7 @@ def log_model_args(bundle_dir: str, metadata: Mapping[str, str],
             f"serving_options python_version={python!r} differs from the "
             f"registering Python {DEFAULTS['python_version']}; the container "
             f"must run the same Python, so register from Python {python}.")
-    environment: Dict[str, Any] = dict(
-        pip_requirements=pip_requirements() +
-        text_requirements(paths.get('encoders')),
-        code_paths=embedded_code(Path(workdir) / 'code'))
-    if repository:
-        environment['artifact_repository_map'] = {'pip': repository}
-    return dict(
+    args = dict(
         model=KumoModel(
             custom_model.ModelContext(artifacts={
                 'bundle': str(bundle),
@@ -108,8 +102,13 @@ def log_model_args(bundle_dir: str, metadata: Mapping[str, str],
         target_platforms=['SNOWPARK_CONTAINER_SERVICES'],
         python_version=python,
         options=options,
-        **environment,
+        pip_requirements=pip_requirements() +
+        text_requirements(paths.get('encoders')),
+        code_paths=embedded_code(Path(workdir) / 'code'),
     )
+    if repository:
+        args['artifact_repository_map'] = {'pip': repository}
+    return args
 
 
 def check_host() -> None:
@@ -233,6 +232,7 @@ def signature(task: Any) -> Any:
 
     binary = task is TaskType.BINARY_CLASSIFICATION
     dtypes = {
+        'ENTITY': ms.DataType.STRING,
         'PREDICTED': ms.DataType.BOOL,
         'CLASS': ms.DataType.STRING,
         'TIMESTAMP': ms.DataType.TIMESTAMP_NTZ,
@@ -242,9 +242,7 @@ def signature(task: Any) -> Any:
     return ms.ModelSignature(
         inputs=[ms.FeatureSpec('ENTITY', ms.DataType.STRING)],
         outputs=[
-            ms.FeatureSpec(
-                name, ms.DataType.STRING if name == 'ENTITY' else dtypes.get(
-                    name, ms.DataType.DOUBLE))
+            ms.FeatureSpec(name, dtypes.get(name, ms.DataType.DOUBLE))
             for name in output_columns(task)
         ],
         params=[
