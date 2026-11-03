@@ -553,8 +553,13 @@ fn indexed_time_filter_accepts_production_encoded_in_window_rows() {
                             },
                         }),
                     };
-                    let filter =
-                        IndexedTimeFilter::matching(Some(&metadata), "events", "time").unwrap();
+                    let filter = IndexedTimeFilter::matching(
+                        Some(&metadata),
+                        "events",
+                        "time",
+                        diskgraph_core::time::TimeUnit::Seconds,
+                    )
+                    .unwrap();
                     for bucket in [
                         low - 1, low, low + 1, -2, -1, 0, 1, 2, high - 1, high, high + 1,
                     ] {

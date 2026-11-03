@@ -24,6 +24,7 @@ use arrow::pyarrow::ToPyArrow;
 use arrow_array::RecordBatch;
 use diskgraph_core::metadata::{EdgeRelationMetadata, EdgeSortKeyMetadata};
 use diskgraph_core::sortkey::SortKeyDecoder;
+use diskgraph_core::time::TimeUnit;
 use diskgraph_core::time_filter::{unclipped_bucket_end, IndexedTimeFilter};
 use diskgraph_engine::edge_unpacker::EdgeUnpacker;
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
@@ -673,8 +674,9 @@ fn matching_time_decoder(
     metadata: Option<&EdgeSortKeyMetadata>,
     destination: &str,
     clock: &str,
+    index_clock: TimeUnit,
 ) -> Option<SortKeyDecoder> {
-    IndexedTimeFilter::matching(metadata, destination, clock)
+    IndexedTimeFilter::matching(metadata, destination, clock, index_clock)
         .filter(IndexedTimeFilter::is_exact)
         .map(|clock| clock.decoder().clone())
 }
@@ -811,6 +813,7 @@ fn materialize_frame(
                         relation.dest_sort_key.as_ref(),
                         &step.destination_type,
                         clock,
+                        reader.metadata().timestamp_unit,
                     )
                 })
             } else {
@@ -1456,8 +1459,13 @@ fn count_frame(
     let has_bounds = plan.start_seconds.is_some() || plan.stop_seconds.is_some();
     if has_bounds {
         if let Some(clock) = plan.time_column.as_deref().and_then(|column| {
-            IndexedTimeFilter::matching(final_sort_key.as_ref(), &destination, column)
-                .filter(|clock| !clock.is_exact())
+            IndexedTimeFilter::matching(
+                final_sort_key.as_ref(),
+                &destination,
+                column,
+                reader.metadata().timestamp_unit,
+            )
+            .filter(|clock| !clock.is_exact())
         }) {
             // Preserve rows_considered as the reached distinct candidate count;
             // rowpack_timestamps measures the smaller exact-refinement work.
@@ -1478,14 +1486,18 @@ fn count_frame(
             .time_column
             .as_ref()
             .expect("frame validation requires a time column for bounds");
-        let sort_decoder =
-            matching_time_decoder(final_sort_key.as_ref(), &destination, time_column)
-                .filter(|decoder| {
-                    rows_by_anchor
-                        .iter()
-                        .flatten()
-                        .all(|&(_, key)| unclipped_bucket_end(decoder, key).is_some())
-                });
+        let sort_decoder = matching_time_decoder(
+            final_sort_key.as_ref(),
+            &destination,
+            time_column,
+            reader.metadata().timestamp_unit,
+        )
+        .filter(|decoder| {
+            rows_by_anchor
+                .iter()
+                .flatten()
+                .all(|&(_, key)| unclipped_bucket_end(decoder, key).is_some())
+        });
         if let Some(decoder) = sort_decoder {
             for (anchor, rows) in rows_by_anchor.iter().enumerate() {
                 let lower = plan

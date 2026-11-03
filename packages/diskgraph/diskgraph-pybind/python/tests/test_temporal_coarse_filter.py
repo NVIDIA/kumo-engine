@@ -15,13 +15,15 @@ import pytest
 
 
 def build_graph(root, *, unit="minute", bits=16, anchor=0, null=False, weighted=False,
-                adversarial=False):
+                adversarial=False, index_clock="seconds", times_override=None):
     step = {"minute": 60, "hour": 3600, "day": 86400}[unit]
     # Interior bucket boundaries and timestamps beyond both encoded endpoints.
     floor, ceiling = -(1 << (bits - 1)), (1 << (bits - 1)) - 1
     offsets = [bucket * step + delta for bucket in range(-8, 9) for delta in (-1, 0, 1)]
     offsets += [(floor - 2) * step, (ceiling + 2) * step]
     times = [anchor + offset for offset in offsets]
+    if times_override is not None:
+        times = list(times_override)
     if adversarial:
         times += [anchor + delta for delta in [1, 2, step // 2, step // 2, step - 1, step]]
     if null:
@@ -40,7 +42,7 @@ def build_graph(root, *, unit="minute", bits=16, anchor=0, null=False, weighted=
         events = events.take(pa.array(np.random.default_rng(82).permutation(n)))
     pq.write_table(events, root / "events.parquet")
     config = {
-        "dataset_name": "coarse_filter", "num_shards": 1,
+        "dataset_name": "coarse_filter", "num_shards": 1, "timestamp_unit": index_clock,
         "tables": [
             {"name": "users", "primary_key": "id",
              "columns": [{"name": "id", "ingested_dtype": "int64"}],
@@ -223,3 +225,38 @@ def test_coarse_refinement_ties_and_complete_aggregates(tmp_path, unit, bits, we
                 lengths = engine.query_temporal_lengths({"users": roots}, {"users": cutoffs},
                                                         json.dumps(plan))
                 assert lengths["sequences"][0]["lengths"].to_pylist() == expected_lengths
+
+
+@pytest.mark.parametrize("index_clock", ["seconds", "milliseconds", "microseconds",
+                                         "nanoseconds", "hours", "days"])
+def test_index_clock_units_preserve_seconds_query_bounds(tmp_path, index_clock):
+    # Whole-day source times are exactly representable in every index clock.
+    day = 86400
+    times = [day * value for value in [-3, -2, -1, 0, 1, 1, 2, 3]]
+    engine, reverse, _, _, _ = build_graph(
+        tmp_path, unit="hour", bits=8, index_clock=index_clock, times_override=times)
+    roots = engine.lookup_node_ids("users", pa.array([1, 2, 1]))
+    cutoffs = [0, 0, day + 1379]
+    for lower, upper in [(None, 0), (-day, 0), (0, day), (-2 * day, 2 * day)]:
+        for order in ("ascending", "descending"):
+            plan = make_plan(reverse, lower=lower, upper=upper, limit=2)
+            plan["sequences"][0]["order"] = order
+            actual = run(engine, roots, cutoffs, plan)
+            reference = copy.deepcopy(plan)
+            reference["frames"][0]["time_column"] = "reference_time"
+            assert_same(actual, run(engine, roots, cutoffs, reference))
+            expected_lengths = []
+            seq = actual["sequences"][0]
+            for anchor, cutoff in enumerate(cutoffs):
+                eligible = [] if anchor == 1 else [
+                    i for i, time in enumerate(times)
+                    if (lower is None or time > cutoff + lower)
+                    and (upper is None or time <= cutoff + upper)]
+                eligible.sort(key=lambda i: (times[i], repr(i)), reverse=order == "descending")
+                selected = eligible[:2]
+                assert seq["batch"].column("id").to_pylist()[
+                    seq["offsets"][anchor]:seq["offsets"][anchor + 1]] == selected
+                expected_lengths.append(len(selected))
+            lengths = engine.query_temporal_lengths({"users": roots}, {"users": cutoffs},
+                                                    json.dumps(plan))
+            assert lengths["sequences"][0]["lengths"].to_pylist() == expected_lengths

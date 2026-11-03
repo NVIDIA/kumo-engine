@@ -197,6 +197,9 @@ clock admission. Rejection proves that the bucket cannot intersect `(lower, uppe
 admission only produces candidates for the existing exact row-clock checks.
 Ordering, duplicate handling, and complete aggregate inputs remain downstream.
 Missing/mismatched clocks and unsafe arithmetic use the exact row-clock fallback.
+Query bounds use seconds: index-wide millisecond/microsecond/nanosecond/hour/day
+clocks and full-width keys also use row decoding. A bucket step of one alone
+does not establish compatible units.
 
 The admission predicate is not a binary-search predicate: retained clipped codes
 at both extremes can make candidates noncontiguous. A shared range-seeking

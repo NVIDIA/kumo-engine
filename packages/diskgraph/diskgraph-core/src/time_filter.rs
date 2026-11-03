@@ -15,6 +15,7 @@
 
 use crate::metadata::{EdgeSortKeyMetadata, EdgeSortKeyTimestampKind};
 use crate::sortkey::SortKeyDecoder;
+use crate::time::TimeUnit;
 
 /// A non-sentinel key's bucket end; exact only at one-second resolution.
 /// Floor/NULL and ceiling codes may represent clipped timestamps and return None.
@@ -35,14 +36,20 @@ pub struct IndexedTimeFilter {
 }
 
 impl IndexedTimeFilter {
-    /// None requires the caller's existing exact row-clock fallback. Missing or
-    /// mismatched clocks, invalid steps, and unsafe decoding arithmetic cannot
+    /// None requires the caller's exact row-clock fallback. Missing, differently
+    /// scaled, or mismatched clocks, invalid steps, and unsafe decoding arithmetic cannot
     /// be used to reject candidates. This also validates one-second encodings.
     pub fn matching(
         metadata: Option<&EdgeSortKeyMetadata>,
         destination: &str,
         clock: &str,
+        index_clock: TimeUnit,
     ) -> Option<Self> {
+        // Query bounds are seconds. Other index clocks require row decoding;
+        // a matching column name or step of one does not establish equal units.
+        if index_clock != TimeUnit::Seconds {
+            return None;
+        }
         let metadata = metadata?;
         let timestamp = metadata.timestamp.as_ref()?;
         let encoding = &timestamp.encoding;
@@ -53,6 +60,9 @@ impl IndexedTimeFilter {
             EdgeSortKeyTimestampKind::Int8 => 8,
             EdgeSortKeyTimestampKind::Int16 => 16,
             EdgeSortKeyTimestampKind::Int32 => 32,
+            // Full-width keys are currently emitted for subsecond index clocks.
+            // Keep unsupported encodings on the exact row-clock fallback.
+            EdgeSortKeyTimestampKind::Int64 => return None,
         };
         // Decoder arithmetic multiplies before adding. Validate both operations
         // across the encoded range, including extremes retained as sentinels.
@@ -116,7 +126,9 @@ mod tests {
         for step in [1, 60, 3600, 86400] {
             for anchor in [-1_700_000_003, 0, 1_700_000_003] {
                 let meta = coarse_metadata(step, anchor);
-                let clock = IndexedTimeFilter::matching(Some(&meta), "events", "time").unwrap();
+                let clock =
+                    IndexedTimeFilter::matching(Some(&meta), "events", "time", TimeUnit::Seconds)
+                        .unwrap();
                 // Include both clipped endpoints, negative deltas, and every
                 // exact/before/after bucket boundary in the interior.
                 for bucket in -130i64..=130 {
@@ -139,7 +151,8 @@ mod tests {
     #[test]
     fn coarse_window_endpoints_and_ambiguous_codes() {
         let meta = coarse_metadata(60, 0);
-        let clock = IndexedTimeFilter::matching(Some(&meta), "events", "time").unwrap();
+        let clock = IndexedTimeFilter::matching(Some(&meta), "events", "time", TimeUnit::Seconds)
+            .unwrap();
         let key = 129; // Bucket (0, 60], or integer times [1, 60].
         assert!(!clock.may_overlap(key, Some(60), None));
         assert!(!clock.may_overlap(key, None, Some(0)));
@@ -163,29 +176,56 @@ mod tests {
             (1, i64::MIN),
         ] {
             let meta = coarse_metadata(step, anchor);
-            assert!(IndexedTimeFilter::matching(Some(&meta), "events", "time").is_none());
+            assert!(
+                IndexedTimeFilter::matching(Some(&meta), "events", "time", TimeUnit::Seconds).is_none()
+            );
         }
         let meta = coarse_metadata(60, 0);
-        assert!(IndexedTimeFilter::matching(None, "events", "time").is_none());
+        assert!(
+            IndexedTimeFilter::matching(None, "events", "time", TimeUnit::Seconds).is_none()
+        );
         let mut missing = meta.clone();
         missing.timestamp = None;
-        assert!(IndexedTimeFilter::matching(Some(&missing), "events", "time").is_none());
-        assert!(IndexedTimeFilter::matching(Some(&meta), "other", "time").is_none());
-        assert!(IndexedTimeFilter::matching(Some(&meta), "events", "other").is_none());
-        assert!(!IndexedTimeFilter::matching(Some(&meta), "events", "time")
+        assert!(
+            IndexedTimeFilter::matching(Some(&missing), "events", "time", TimeUnit::Seconds).is_none()
+        );
+        assert!(
+            IndexedTimeFilter::matching(Some(&meta), "other", "time", TimeUnit::Seconds).is_none()
+        );
+        assert!(
+            IndexedTimeFilter::matching(Some(&meta), "events", "other", TimeUnit::Seconds).is_none()
+        );
+        assert!(!IndexedTimeFilter::matching(Some(&meta), "events", "time", TimeUnit::Seconds)
             .unwrap()
             .is_exact());
     }
 
     #[test]
+    fn differently_scaled_and_full_width_clocks_use_row_fallback() {
+        let mut meta = coarse_metadata(1, 0);
+        for unit in TimeUnit::INDEX_CLOCKS {
+            assert_eq!(
+                IndexedTimeFilter::matching(Some(&meta), "events", "time", unit).is_some(),
+                unit == TimeUnit::Seconds,
+            );
+        }
+        meta.width_bits = 64;
+        meta.timestamp.as_mut().unwrap().encoding.kind = EdgeSortKeyTimestampKind::Int64;
+        assert!(
+            IndexedTimeFilter::matching(Some(&meta), "events", "time", TimeUnit::Seconds).is_none()
+        );
+    }
+
+    #[test]
     fn admitted_sentinels_do_not_form_a_binary_search_range() {
         let meta = coarse_metadata(60, 0);
-        let clock = IndexedTimeFilter::matching(Some(&meta), "events", "time").unwrap();
+        let clock = IndexedTimeFilter::matching(Some(&meta), "events", "time", TimeUnit::Seconds)
+            .unwrap();
         // Descending encoded time: ceiling, newer interior, matching bucket,
         // older interior, floor/NULL. A range seeker must retain the endpoints
         // separately or fall back; partition_point(may_overlap) is invalid.
-        let admitted =
-            [255, 130, 129, 128, 0].map(|key| clock.may_overlap(key, Some(0), Some(1)));
+        let admitted = [255, 130, 129, 128, 0]
+            .map(|key| clock.may_overlap(key, Some(0), Some(1)));
         assert_eq!(admitted, [true, false, true, false, true]);
     }
 }
