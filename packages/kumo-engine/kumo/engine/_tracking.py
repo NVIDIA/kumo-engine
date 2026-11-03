@@ -367,9 +367,9 @@ def _labels_mature(manifest: 'PredictionManifest',
         return None
     _, end, step, unit = window
     stats = (manifest.stats or {}).get('predictions')
-    arrays = getattr(stats, 'counts', None) or {}
+    counts = getattr(stats, 'counts', None) or {}
     last = max((int(name.removeprefix('TARGET_PRED_h'))
-                for name in arrays.get('arrays', {})
+                for name in counts.get('arrays', {})
                 if name.startswith('TARGET_PRED_h')), default=1)
     latest = max(_utc(anchor) for anchor in anchors)
     return (latest + pd.DateOffset(**{unit: end + (last - 1) * step})
