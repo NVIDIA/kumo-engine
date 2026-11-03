@@ -10,18 +10,32 @@ import socket
 import threading
 import time
 import warnings
+from dataclasses import replace
+from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
 from kumo_core.artifacts import PROVENANCE_FILE
-from kumo_core.summaries import Dataset, Scalar, Table
+from kumo_core.summaries import (
+    BarChart,
+    Dataset,
+    Histogram,
+    Note,
+    Scalar,
+    Series,
+    Table,
+    Tag,
+)
 from kumoapi.encoder import Numerical
 from kumoapi.model_plan import ModelPlan
 from test_tracking_contract import (
     CONTEXT,
     INPUTS,
+    PREDICTION_MANIFEST,
+    RESULT,
     join_tracking_threads,
     replay,
 )
@@ -29,7 +43,15 @@ from test_tracking_contract import (
 import kumo.engine as kumo
 from kumo.engine._manifest import TrackingRef
 from kumo.engine._scratch import get_scratch_dir
-from kumo.engine._tracking import logged_names, run_record
+from kumo.engine._tracking import (
+    RunRecord,
+    log_run,
+    logged_names,
+    run_record,
+    system_metrics,
+    track_prediction,
+    tracking_ref,
+)
 from kumo.engine.trainer._run_spec import fit_spec
 
 mlflow = pytest.importorskip('mlflow')
@@ -233,9 +255,6 @@ def test_mlflow_error_ends_runs_failed_and_is_not_raised(
 
 
 def test_a_user_run_name_names_every_run(tracking_uri):
-    from test_tracking_contract import PREDICTION_MANIFEST
-
-    from kumo.engine._tracking import track_prediction
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     tracking = MlflowTracking(run_name='nightly', log_system_metrics=False)
@@ -417,9 +436,6 @@ def test_source_tables_are_logged_as_native_inputs(
 
 
 def test_monitoring_folds_into_its_prediction_run(tracking_uri):
-    from kumo_core.summaries import Note, Table, Tag
-
-    from kumo.engine._tracking import RunRecord, log_run
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     MlflowTracking('scores', log_system_metrics=False).log_prediction_run(
@@ -496,11 +512,6 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
 
 
 def test_prediction_run_nests_under_the_active_run(tracking_uri):
-    from dataclasses import replace
-
-    from test_tracking_contract import PREDICTION_MANIFEST
-
-    from kumo.engine._tracking import track_prediction
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     client = mlflow.MlflowClient()
@@ -525,9 +536,6 @@ def test_prediction_run_nests_under_the_active_run(tracking_uri):
 
 
 def test_a_prediction_run_logs_its_skipped_rows(tracking_uri, tmp_path):
-    from test_tracking_contract import PREDICTION_MANIFEST
-
-    from kumo.engine._tracking import track_prediction
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     skipped = tmp_path / 'skipped'
@@ -624,11 +632,6 @@ def test_system_metrics_sample_every_second_unless_the_environment_says(
     (True, None), (False, None), (True, 'false')])
 def test_prediction_run_logs_the_system_metrics_sampled_while_it_scored(
         tracking_uri, monkeypatch, enabled, environment):
-    from functools import partial
-
-    from test_tracking_contract import PREDICTION_MANIFEST
-
-    from kumo.engine._tracking import system_metrics, track_prediction
     from kumo.engine.integrations import mlflow as integration
 
     class Monitor:
@@ -670,9 +673,6 @@ def test_prediction_run_logs_the_system_metrics_sampled_while_it_scored(
 
 def test_series_and_histograms_become_one_table_per_name_prefix(
         tracking_uri):
-    from kumo_core.summaries import Histogram, Series
-
-    from kumo.engine._tracking import RunRecord
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     tracker = MlflowTracking(experiment_name='e', log_system_metrics=False)
@@ -706,9 +706,6 @@ def test_series_and_histograms_become_one_table_per_name_prefix(
 
 
 def test_charted_series_become_metrics_over_their_steps(tracking_uri):
-    from kumo_core.summaries import BarChart, Series
-
-    from kumo.engine._tracking import RunRecord
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     tracker = MlflowTracking(experiment_name='e', log_system_metrics=False)
@@ -748,8 +745,6 @@ def _sealed(card):
 
 
 def _fit_with_a_card(tracker, summaries=(), note=None):
-    from kumo.engine._tracking import RunRecord
-
     record = RunRecord(
         name='r', tags={'kumo.kind': 'fit', 'kumo.tune_metric': 'mae',
                         'kumo.task_type': 'regression',
@@ -765,8 +760,6 @@ def _fit_with_a_card(tracker, summaries=(), note=None):
 
 
 def test_a_fit_run_gets_a_card_before_the_users_notes(tracking_uri):
-    from kumo_core.summaries import Note, Scalar, Table
-
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     run = _fit_with_a_card(MlflowTracking('e', log_system_metrics=False), (
@@ -804,9 +797,6 @@ def test_an_edited_card_is_frozen_with_one_warning(tracking_uri):
 
 
 def test_monitoring_fills_its_part_of_a_prediction_card(tracking_uri):
-    from kumo_core.summaries import Note, Scalar
-
-    from kumo.engine._tracking import RunRecord
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     tracker = MlflowTracking('e', log_system_metrics=False)
@@ -838,8 +828,6 @@ def test_monitoring_fills_its_part_of_a_prediction_card(tracking_uri):
 
 def test_a_card_over_its_budget_moves_tables_to_files_then_shrinks(
         tracking_uri):
-    from kumo_core.summaries import Table
-
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     summaries = (Table('data/splits', ('split', 'rows'), tuple(
@@ -862,10 +850,6 @@ def test_a_card_over_its_budget_moves_tables_to_files_then_shrinks(
 
 
 def test_a_fit_that_registers_is_renamed_with_its_trials(tracking_uri):
-    from types import SimpleNamespace
-
-    from test_tracking_contract import RESULT
-
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     replay(MlflowTracking(log_system_metrics=False), result=SimpleNamespace(
@@ -878,11 +862,6 @@ def test_a_fit_that_registers_is_renamed_with_its_trials(tracking_uri):
 
 
 def test_a_prediction_run_spans_its_work_and_links_its_model(tracking_uri):
-    from types import SimpleNamespace
-
-    from test_tracking_contract import PREDICTION_MANIFEST
-
-    from kumo.engine._tracking import track_prediction, tracking_ref
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     client = mlflow.MlflowClient()
@@ -929,7 +908,6 @@ def test_a_run_reference_shows_as_a_link_in_a_notebook():
 
 def test_kumo_describes_an_unused_experiment_and_refreshes_its_own_text(
         tracking_uri):
-    from kumo.engine._tracking import RunRecord
     from kumo.engine.integrations.mlflow import (
         _EXPERIMENT_NOTE,
         MlflowTracking,

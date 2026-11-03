@@ -4,48 +4,54 @@
 
 from dataclasses import replace
 
+import pytest
 from kumo_core.summaries import Note, Table
 
 from kumo.engine import _card
 
 MODEL = {'kumo.model_name': 'kumo-demo-churn', 'kumo.model_version': '6'}
 QUERY = '`PREDICT COUNT(orders.*, 0, 7, days) > 0 FOR EACH users.USER_ID`'
+WATCH = {'drift/psi': 0.031, 'pred/rows': 10000, 'pred/skipped_share': 0.0125,
+         'realized/auroc': 0.7, 'realized/labelled_share': 1.0}
+UNLABELLED = {name: value for name, value in WATCH.items()
+              if not name.startswith('realized/')}
+AS_OF = {**MODEL, 'kumo.as_of': '2026-10-29', 'kumo.data_warnings': '1'}
+REALIZED = {'realized/ap': 0.71, 'realized/auroc': 0.78}
 
 
-def test_a_fit_heading_leads_with_the_tuned_holdout_metric():
-    tags = {**MODEL, 'kumo.tune_metric': 'auroc', 'kumo.data_warnings': '2'}
+@pytest.mark.parametrize('kind,metrics,tags,line', [
+    ('fit', {'test/auroc': 0.7871, 'test/ap': 0.5},
+     {**MODEL, 'kumo.tune_metric': 'auroc', 'kumo.data_warnings': '2'},
+     'holdout auroc 0.787, 2 data problems'),
+    ('fit', {'test/loss': 0.25},
+     {'kumo.tune_metric': 'loss', 'kumo.data_warnings': '0',
+      'kumo.error': 'ValueError:\n  stop'},
+     'failed: ValueError: stop, holdout loss 0.25'),
+    ('fit', {'test/map@12': 0.25}, {'kumo.tune_metric': 'map@12'},
+     'holdout map_at_12 0.25'),
+    ('prediction', WATCH, AS_OF,
+     'realized auroc 0.7, psi 0.031 vs holdout (small shift), 10,000 rows '
+     'as of 2026-10-29, 1.2% skipped, 1 data problem'),
+    ('prediction', {**UNLABELLED, 'drift/psi': 0.3},
+     {**AS_OF, 'kumo.entity': 'users', 'kumo.labels_mature': '2026-11-05'},
+     'psi 0.3 vs holdout (large shift), 10,000 users as of 2026-10-29, '
+     'labels mature 2026-11-05, 1.2% skipped, 1 data problem'),
+    ('prediction', {'drift/psi': 1.24},
+     {'kumo.task_type': 'temporal_link_prediction'},
+     'psi 1.24 vs holdout (link prediction: compare with the previous run)'),
+    ('prediction', {}, {}, 'prediction'),
+    ('prediction', REALIZED, {'kumo.tune_metric': 'auroc'},
+     'realized auroc 0.78'),
+    ('prediction', REALIZED, {}, 'realized ap 0.71'),
+], ids=['fit-tuned', 'fit-failed', 'fit-at-k', 'prediction-watch',
+        'prediction-unlabelled', 'prediction-link', 'prediction-empty',
+        'prediction-tuned-realized', 'prediction-first-realized'])
+def test_a_heading_leads_with_the_tuned_metric_and_watch_numbers(
+        kind, metrics, tags, line):
+    assert _card.heading(kind, metrics, tags) == [line, '']
 
-    assert _card.heading('fit', {'test/auroc': 0.7871, 'test/ap': 0.5},
-                         tags) == [
-        'holdout auroc 0.787, 2 data problems', '']
-    assert _card.heading('fit', {'test/loss': 0.25}, {
-        'kumo.tune_metric': 'loss', 'kumo.data_warnings': '0',
-        'kumo.error': 'ValueError:\n  stop'})[0] == (
-            'failed: ValueError: stop, holdout loss 0.25')
-    assert _card.heading('fit', {'test/map@12': 0.25}, {
-        'kumo.tune_metric': 'map@12'})[0] == 'holdout map_at_12 0.25'
 
-
-def test_a_prediction_heading_leads_with_its_watch_numbers():
-    metrics = {'drift/psi': 0.031, 'pred/rows': 10000,
-               'pred/skipped_share': 0.0125, 'realized/auroc': 0.7,
-               'realized/labelled_share': 1.0}
-    tags = {**MODEL, 'kumo.as_of': '2026-10-29', 'kumo.data_warnings': '1'}
-
-    assert _card.heading('prediction', metrics, tags)[0] == (
-        'realized auroc 0.7, psi 0.031 vs holdout (small shift), 10,000 rows '
-        'as of 2026-10-29, 1.2% skipped, 1 data problem')
-    unlabelled = {name: value for name, value in metrics.items()
-                  if not name.startswith('realized/')}
-    assert _card.heading('prediction', {**unlabelled, 'drift/psi': 0.3}, {
-        **tags, 'kumo.entity': 'users',
-        'kumo.labels_mature': '2026-11-05'})[0] == (
-        'psi 0.3 vs holdout (large shift), 10,000 users as of 2026-10-29, '
-        'labels mature 2026-11-05, 1.2% skipped, 1 data problem')
-    assert _card.heading('prediction', {'drift/psi': 1.24}, {
-        'kumo.task_type': 'temporal_link_prediction'})[0] == (
-        'psi 1.24 vs holdout (link prediction: compare with the previous run)')
-    assert _card.heading('prediction', {}, {}) == ['prediction', '']
+def test_a_long_heading_is_cut():
     long = _card.heading('prediction', {}, {'kumo.error': 'x' * 200})[0]
     assert len(long) == _card.HEADLINE_CHARS and long.endswith('x…')
 
@@ -170,15 +176,6 @@ def test_a_version_headline_leads_with_the_tuned_metric_then_logloss():
               'test/auprc': 0.5, 'test/logloss': 0.25}
     assert _card.version_headline(binary, 'auroc') == (
         'test/auroc 0.75 · test/logloss 0.25 · test/loss 0.5 · test/ap 0.5')
-
-
-def test_a_prediction_heading_leads_with_the_tuned_realized_metric():
-    metrics = {'realized/ap': 0.71, 'realized/auroc': 0.78}
-
-    assert _card.heading('prediction', metrics,
-                         {'kumo.tune_metric': 'auroc'})[0] == (
-        'realized auroc 0.78')
-    assert _card.heading('prediction', metrics, {})[0] == 'realized ap 0.71'
 
 
 def test_data_preparation_marks_a_snapshot_built_by_another_process(
