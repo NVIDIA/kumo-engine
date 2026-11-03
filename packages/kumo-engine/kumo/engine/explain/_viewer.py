@@ -84,7 +84,7 @@ border-radius:7px;padding:6px 10px;max-width:100%}
 .kumo-training .kt-action{cursor:pointer;white-space:normal;text-align:left}
 .kumo-training .kt-action:hover{background:$chrome_hover}
 .kumo-training summary{cursor:pointer;color:$muted;font-size:13px;padding:6px 0}
-.kumo-training :is(button,select,summary):focus-visible{outline:2px solid $focus;outline-offset:2px}
+.kumo-training :is(button,select,summary,h2,.kt-history-values):focus-visible{outline:2px solid $focus;outline-offset:2px}
 .kumo-training .kt-action[aria-pressed="true"]{background:$row_highlight;
 border-color:$focus}
 .kumo-training .kt-detail{padding:12px;border:1px solid $surface_border;
@@ -99,6 +99,7 @@ align-items:center;gap:8px}
 .kumo-training .kt-bar{height:100%;background:$accent;border-radius:4px}
 .kumo-training .kt-value{text-align:right;font-variant-numeric:tabular-nums}
 .kumo-training .kt-history-chart{display:block;width:100%;height:auto;max-width:600px;margin:12px 0}
+.kumo-training .kt-history-values{max-height:400px;overflow:auto;padding:4px}
 .kumo-training .kt-list{padding-left:20px;margin:8px 0 12px}
 @container kumo-training (max-width:520px){
 .kumo-training .kt-table,.kumo-training .kt-table tbody,
@@ -175,10 +176,16 @@ note(results,'Selection metric: '+text(provenance.selection_metric||data.metrics
 const histories=list(obj(data.history).rows);state(results,data.history,'Learning history');
 if(histories.length){results.append(el('h3','Learning history'));
 note(results,'Recorded epoch keys. Missing values remain unavailable; fits are shown separately.');
+const jumps=el('nav',undefined,'kt-controls');jumps.setAttribute('aria-label','After learning history');
+for(const [index,label]of [[1,'recorded patterns'],[2,'selected examples']])jumps.append(action('Go to '+label,()=>{
+const heading=root.querySelectorAll('section')[index].querySelector('h2');heading.tabIndex=-1;heading.focus();heading.scrollIntoView({block:'start'});}));
+results.append(jumps);
+const historyDetails=el('details');historyDetails.append(el('summary','Explore exact epoch values · '+histories.length+' recorded epochs'));
 const metricName=name=>name.replace(/^(train_|val_|validation_)/,'');
 const historyValue=(values,metric)=>{const entry=Object.entries(obj(values)).find(([name])=>metricName(name)===metric);return entry?.[1]};
 const metrics=[...new Set(histories.flatMap(row=>[...Object.keys(obj(row.train_metrics)),...Object.keys(obj(row.validation_metrics))]).map(metricName))];
-const historyView=el('div');
+const historyView=el('div'),historyValues=el('div',undefined,'kt-history-values');historyValues.tabIndex=0;
+historyValues.setAttribute('role','region');historyValues.setAttribute('aria-label','Exact learning history epoch values');historyDetails.append(historyValues);
 const chart=(parent,rows,metric)=>{const ordered=rows.filter(row=>Number.isFinite(Number(row.epoch)))
 .slice().sort((a,b)=>Number(a.epoch)-Number(b.epoch));
 const values=ordered.flatMap(row=>[historyValue(row.train_metrics,metric),historyValue(row.validation_metrics,metric)]).filter(finite);
@@ -186,7 +193,7 @@ if(!values.length||!ordered.length)return;
 const low=Math.min(...values),high=Math.max(...values),first=Number(ordered[0].epoch),last=Number(ordered.at(-1).epoch);
 const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg');
 svg.setAttribute('viewBox','0 0 600 160');svg.setAttribute('role','img');svg.classList.add('kt-history-chart');
-svg.setAttribute('aria-label','Learning history for '+metric+'. Train: circles, validation: squares. Exact values follow in the table.');
+svg.setAttribute('aria-label','Learning history for '+metric+'. Train: circles, validation: squares. Expand Explore exact epoch values for recorded values.');
 const x=epoch=>20+(Number(epoch)-first)/(last-first||1)*560,y=value=>140-(value-low)/(high-low||1)*120;
 for(const [key,color,shape]of [['train_metrics','var(--kumo-accent)','circle'],['validation_metrics','var(--kumo-foreground)','rect']]){
 let previous=null;for(const row of ordered){const value=historyValue(row[key],metric),epoch=Number(row.epoch);
@@ -198,12 +205,13 @@ const point=document.createElementNS(ns,shape);for(const [name,attribute]of Obje
 point.setAttribute('fill',color);svg.append(point);previous={epoch,value};}}
 parent.append(svg);note(parent,'Train: circles and solid lines. Validation: squares and dashed lines. Epoch '+first+' to '+last+
 '; metric range '+number(low)+' to '+number(high)+'. Missing values and unrecorded epochs break the lines.');};
-const drawHistory=metric=>{historyView.replaceChildren();
+const drawHistory=metric=>{historyView.replaceChildren();historyValues.replaceChildren();
 for(const identity of [...new Set(histories.map(row=>text(row.trial)+' / '+text(row.fit)))]){
-historyView.append(el('h4',identity));chart(historyView,histories.filter(row=>text(row.trial)+' / '+text(row.fit)===identity),metric)}
-table(historyView,['Trial / fit','Epoch','Train '+metric,'Validation '+metric],histories.map(row=>[
-text(row.trial)+' / '+text(row.fit),text(row.epoch),historyValue(row.train_metrics,metric),historyValue(row.validation_metrics,metric)]),[1,2,3]);};
-if(metrics.length){control(results,'History metric',metrics.map(name=>[name,name]),drawHistory);drawHistory(metrics[0]);results.append(historyView)}
+const rows=histories.filter(row=>text(row.trial)+' / '+text(row.fit)===identity);
+historyView.append(el('h4',identity));chart(historyView,rows,metric);
+historyValues.append(el('h4',identity));table(historyValues,['Trial / fit','Epoch','Train '+metric,'Validation '+metric],rows.map(row=>[
+text(row.trial)+' / '+text(row.fit),text(row.epoch),historyValue(row.train_metrics,metric),historyValue(row.validation_metrics,metric)]),[1,2,3],true);}};
+if(metrics.length){control(results,'History metric',metrics.map(name=>[name,name]),drawHistory);drawHistory(metrics[0]);results.append(historyView,historyDetails)}
 else note(results,'No recorded epoch metric values.');}
 const trials=list(obj(data.trials).rows);state(results,data.trials,'Trial comparison');
 if(trials.length){results.append(el('h3','Recorded trials'));
