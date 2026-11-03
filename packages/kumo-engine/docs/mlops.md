@@ -12,7 +12,7 @@ Each block assumes a `graph` and a `pquery` (see the README). It trains, stores 
 
 ```python
 import kumo.engine as kumo
-from kumo.engine.integrations.mlflow import MlflowTracking   # MLflow's own tracking URI, else ./mlruns
+from kumo.engine.integrations.mlflow import MlflowTracking   # where MLflow's own setting points; by default sqlite:///mlflow.db
 
 cfg = kumo.MLOps("artifacts", tracking=MlflowTracking("churn"),
                  registry=kumo.ModelRegistryLocation("users-churn", alias="candidate"))
@@ -183,7 +183,7 @@ Jobs that load `alias="champion"` pick up the new version on their next run.
 ### Trackers
 
 `MlflowTracking(experiment_name=None, run_name=None, log_system_metrics=True, tags=None, log_model=False, *, target=None)`:
-- With no `target`, it records where MLflow's own configuration points (`MLFLOW_TRACKING_URI`, `mlflow.set_tracking_uri`; automatic on Databricks). `target` names another server with its credentials: a `DatabricksConnector`, a `SageMakerMLflow(arn)`, or a tracking URI. With a `target`, `experiment_name` is required to record runs.
+- With no `target`, it records where MLflow's own setting points (`MLFLOW_TRACKING_URI`, `mlflow.set_tracking_uri`; automatic on Databricks); MLflow's default is a local `sqlite:///mlflow.db`. `target` names another server with its credentials: a `DatabricksConnector`, a `SageMakerMLflow(arn)`, or a tracking URI. With a `target`, `experiment_name` is required to record runs.
 - `log_model=True` logs the model on the fit run without registering it; `MLOps(registry=)` implies it.
 - Building `kumo.MLOps` creates a missing experiment; if MLflow refuses (on Databricks, the experiment's folder must exist), it raises and says so.
 
