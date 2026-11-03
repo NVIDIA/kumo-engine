@@ -6546,7 +6546,7 @@ fn integ_forecasting_split_stats_use_future_labels() {
     assert!(num_train_rows > 0);
     assert_eq!(
         train["target_distribution"]["histogram"]["num_bins"].as_u64(),
-        Some(0)
+        Some(50)
     );
     assert!(
         train["target_distribution"]["target_max"]
@@ -6557,7 +6557,8 @@ fn integ_forecasting_split_stats_use_future_labels() {
     let counts = train["target_distribution"]["histogram"]["counts"]
         .as_array()
         .unwrap();
-    assert!(counts.is_empty());
+    assert_eq!(counts.len(), 50);
+    assert!(counts.iter().any(|count| count.as_u64().unwrap() > 0));
 }
 
 #[test]

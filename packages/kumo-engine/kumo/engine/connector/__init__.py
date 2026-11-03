@@ -41,6 +41,23 @@ from kumo.engine.connector.snowflake import SnowflakeConnector
 from kumo.engine.connector.source_table import SourceTable, SQLSourceTable
 
 
+def connector_for_root(uri: str) -> Connector:
+    r"""A connector rooted at ``uri``."""
+    from urllib.parse import urlparse
+    from urllib.request import url2pathname
+
+    parsed = urlparse(uri)
+    if parsed.scheme == 's3':
+        return S3Connector(root_dir=uri)
+    if parsed.scheme == 'gs':
+        return GCSConnector(root_dir=uri)
+    if parsed.scheme not in ('', 'file'):
+        raise ValueError(f'{uri!r} is not s3://, gs://, file:// or a local '
+                         f'path.')
+    return FileConnector(
+        root_dir=url2pathname(parsed.path) if parsed.scheme else uri)
+
+
 def _file_sink(connector: Connector, path: str) -> Optional[FileStoreSink]:
     try:
         sink = connector.sink_backend
@@ -78,4 +95,5 @@ __all__ = [
     "GCSIdentity",
     "BigQueryIdentity",
     "DatabricksIdentity",
+    "connector_for_root",
 ]

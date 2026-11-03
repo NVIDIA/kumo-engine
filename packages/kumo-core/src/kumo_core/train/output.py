@@ -350,6 +350,7 @@ class EvalOutput:
         embedding: Embedding dataframe containing embedding meta-information
             and embedding outputs. See formatting.py/format_embeddings for
             more details.
+        counts: Exact counts of the test scores, the holdout baseline.
         frames: The prediction output as spooled chunks, in place of ``df``.
     """
     def __init__(
@@ -357,11 +358,13 @@ class EvalOutput:
         metrics: dict[str, float],
         df: pd.DataFrame | None = None,
         embedding: pd.DataFrame | None = None,
+        counts: Any = None,
         *,
         frames: EvalFrames | None = None,
     ) -> None:
         self.metrics = metrics
         self.embedding = embedding
+        self.counts = counts
         self.frames = EvalFrames.of(df) if df is not None else frames
         self._df = df
 

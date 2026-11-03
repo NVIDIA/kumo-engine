@@ -16,7 +16,7 @@ from collections.abc import Callable
 from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from functools import wraps
-from typing import IO, Any, Literal, Optional
+from typing import IO, Any, Literal, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -64,7 +64,7 @@ from kumo_core.train.loss import (
 )
 from kumo_core.train.mapping import NODE_INDEX_COLUMN
 from kumo_core.train.node_gnn_module import NodeGNNLightningModule
-from kumo_core.train.output import EvalOutput, PredOutput
+from kumo_core.train.output import EvalFrames, EvalOutput, PredOutput
 from kumo_core.training.config import (
     RHS_NUM_EMB_SIZE_LIMIT,
     FitMode,
@@ -1902,6 +1902,8 @@ class Trainer(PortableConfigMixin):
         self,
         stage: TrainingStage,
         return_embeddings: bool = False,
+        binary_classification_threshold: float | None = None,
+        target_edges: Sequence[float] = (),
     ) -> EvalOutput | None:
         assert stage in {TrainingStage.VAL, TrainingStage.TEST}
 
@@ -2097,7 +2099,52 @@ class Trainer(PortableConfigMixin):
             embedding = list(embeddings.values())[0].numpy()
             embedding = format_embeddings(embedding, meta_df)
 
-        return EvalOutput(metrics, df, embedding)
+        counts = None
+        if stage == TrainingStage.TEST and df is not None:
+            counts = self._test_counts(outputs, EvalFrames.of(df),
+                                       binary_classification_threshold,
+                                       target_edges)
+        return EvalOutput(metrics, df, embedding, counts)
+
+    def _test_counts(self, outputs: dict[str, Any], frames: EvalFrames,
+                     threshold: float | None,
+                     edges: Sequence[float]) -> Any:
+        from kumo_core.evaluation_counts import evaluation_counts
+
+        task_type = self.task.task_type
+        if task_type == TaskType.MULTILABEL_RANKING:
+            return self._top_score_counts(outputs['prob'])
+        if task_type not in (TaskType.REGRESSION, TaskType.FORECASTING):
+            return evaluation_counts(task_type, prob=outputs.get('prob'),
+                                     pred=outputs.get('pred'),
+                                     target=outputs['target'],
+                                     threshold=threshold)
+        if len(edges) < 2:
+            logger.warning('No holdout counts: the split statistics give no '
+                           'target bins.')
+            return None
+        column = self.encoders.target.col_name
+        horizon = (frames.num_rows // len(outputs['target'])
+                   if task_type == TaskType.FORECASTING else None)
+        pred = frames.column(f'{column}_PRED')[f'{column}_PRED'].to_numpy()
+        target = frames.column(column)[column].to_numpy()
+        return evaluation_counts(task_type, pred=pred, target=target,
+                                 target_edges=edges, horizon=horizon)
+
+    def _top_score_counts(self, prob: Any) -> Any:
+        prob = np.asarray(prob)
+        spill = self._top_score_spill()
+        for start in range(0, len(prob), 1 << 16):
+            rows = prob[start:start + (1 << 16)]
+            spill.write(np.arange(start, start + len(rows)), rows.max(axis=1))
+        return spill.counts()
+
+    def _top_score_spill(self) -> Any:
+        from kumo_core.top_scores import TopScoreSpill
+
+        return TopScoreSpill(osp.join(
+            self.log_dir,
+            f'test_top_scores-{self.pl_trainer.global_rank}.parquet'))
 
     @trace()
     def validate(
@@ -2143,9 +2190,11 @@ class Trainer(PortableConfigMixin):
         fit_mode_to_use: FitMode = FitMode.fit,
         *,
         return_embeddings: bool = False,
+        binary_classification_threshold: float | None = None,
+        target_edges: Sequence[float] = (),
     ) -> EvalOutput | None:
         r"""Get test model performance based on checkpoint trained with the
-        given `fit_mode_to_use`"""
+        given `fit_mode_to_use`, and the exact counts of its scores."""
         if fit_mode_to_use == FitMode.refit_full:
             raise ValueError(
                 f"test(fit_mode={fit_mode_to_use}) is invalid since the model "
@@ -2158,6 +2207,8 @@ class Trainer(PortableConfigMixin):
         return self._eval(
             stage=TrainingStage.TEST,
             return_embeddings=return_embeddings,
+            binary_classification_threshold=binary_classification_threshold,
+            target_edges=target_edges,
         )
 
     @trace()

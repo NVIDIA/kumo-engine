@@ -14,7 +14,7 @@ import json
 import logging
 import os.path as osp
 from collections.abc import Iterator
-from typing import Any, ContextManager, Mapping
+from typing import Any, ContextManager, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -31,6 +31,7 @@ from kumo_core.diskgraph.metadata import normalize_diskgraph_edge_type
 from kumo_core.diskgraph.stores import iter_primary_key_batches
 from kumo_core.io.csv import save_csv
 from kumo_core.io.filesystem import fsspec_mangle
+from kumo_core.score_counts import Counts
 from kumo_core.task_dataset import DiskgraphTaskManifest
 from kumo_core.train.artifact_stats import PredictionArtifactStatsCollector
 from kumo_core.train.mapping import (
@@ -1195,6 +1196,8 @@ class DiskgraphNestedTrainer(Trainer):
         self,
         stage: Any,
         return_embeddings: bool = False,
+        binary_classification_threshold: float | None = None,
+        target_edges: Sequence[float] = (),
     ) -> Any:
         """Run PL validate/test, then build the formatted EvalOutput
         (``_build_eval_df`` reconstructs the per-row df from ``pl_model.outputs``).
@@ -1216,6 +1219,7 @@ class DiskgraphNestedTrainer(Trainer):
                 'DiskgraphNestedTrainer.')
 
         self.pl_model.eval_top_k = None
+        spill = None
 
         with suppress_iterable_len_warning(), \
                 suppress_lightning_leafspec_warning():
@@ -1226,11 +1230,16 @@ class DiskgraphNestedTrainer(Trainer):
                     ckpt_path=fsspec_mangle(self.best_ckpt),
                 )
             else:
-                metric_results = self.pl_trainer.test(
-                    model=self.pl_model,
-                    datamodule=self.datamodule,
-                    ckpt_path=fsspec_mangle(self.best_ckpt),
-                )
+                spill = self._top_score_spill()
+                self.pl_model.top_score_spill = spill
+                try:
+                    metric_results = self.pl_trainer.test(
+                        model=self.pl_model,
+                        datamodule=self.datamodule,
+                        ckpt_path=fsspec_mangle(self.best_ckpt),
+                    )
+                finally:
+                    self.pl_model.top_score_spill = None
 
         if metric_results:
             metrics = metric_results[0]
@@ -1247,21 +1256,24 @@ class DiskgraphNestedTrainer(Trainer):
                 )
             metrics = {}
 
-        if self.task.task_type.is_link_pred:
-            # Link prediction has no row-wise evaluation frame. A zero-row
-            # loader may also skip the hook that creates ``outputs``.
-            outputs = None
-            self.pl_model.outputs = None
-        else:
-            outputs, self.pl_model.outputs = self.pl_model.outputs, None
+        # a zero-row link-prediction loader may not set it
+        outputs = getattr(self.pl_model, 'outputs', None)
+        self.pl_model.outputs = None
 
         path = osp.join(self.log_dir, f'{stage.value}_result.csv')
         save_csv(metrics, path, overwrite=True)
 
         if self.task.task_type.is_link_pred:
-            return EvalOutput(metrics, None, None)
+            return EvalOutput(metrics, None, None,
+                              None if spill is None else spill.counts())
 
-        return EvalOutput(metrics, frames=self._build_eval_frames(outputs))
+        frames = self._build_eval_frames(outputs)
+        counts = None
+        if stage == TrainingStage.TEST and frames is not None:
+            counts = self._test_counts(outputs, frames,
+                                       binary_classification_threshold,
+                                       target_edges)
+        return EvalOutput(metrics, None, None, counts, frames=frames)
 
     def _build_eval_frames(self, outputs: Any) -> EvalFrames | None:
         if self.encoders.target is None or self.encoders.target.encoder is None:
@@ -1397,6 +1409,8 @@ class DiskgraphNestedTrainer(Trainer):
         artifact_stats_collector: PredictionArtifactStatsCollector
         | None = None,
         task_manifest: DiskgraphTaskManifest | None = None,
+        binary_labels: bool = True,
+        prediction_counts: Counts | None = None,
     ) -> Any:
         """TT-NG batch prediction over the wheel-backed predict stage.
 
@@ -1415,7 +1429,13 @@ class DiskgraphNestedTrainer(Trainer):
 
         import torch
         from kumo_core.callbacks import PredictionProgressLogger
+        from kumo_core.prediction_counts import (
+            count_predictions,
+            count_recommendations,
+            count_top_scores,
+        )
         from kumo_core.train.formatting import (
+            _get_col_names,
             format_embeddings,
             format_prediction,
         )
@@ -1451,6 +1471,8 @@ class DiskgraphNestedTrainer(Trainer):
             if artifact_stats_collector is not None:
                 link_prediction_kwargs["artifact_stats_collector"] = (
                     artifact_stats_collector)
+            if prediction_counts is not None:
+                link_prediction_kwargs["prediction_counts"] = prediction_counts
             return self._predict_lp(**link_prediction_kwargs)
 
         self._prediction_mode = True
@@ -1573,6 +1595,10 @@ class DiskgraphNestedTrainer(Trainer):
                     out_timestamps=out_timestamps,
                     array_targets=allow_array_targets(),
                 )
+                if (not binary_labels and self.task.task_type
+                        == TaskType.BINARY_CLASSIFICATION):
+                    df['TARGET_PRED'] = pd.Series(pd.NA, index=df.index,
+                                                  dtype='boolean')
 
             embedding = None
             if return_embeddings:
@@ -1584,6 +1610,31 @@ class DiskgraphNestedTrainer(Trainer):
                     embedding_arr = embedding_arr.detach().cpu().numpy()
                 embedding = format_embeddings(embedding_arr, main_df)
             return PredOutput(df, embedding)
+
+        numerical = self.task.task_type.has_numerical_target
+        count_columns = ([] if prediction_counts is None or numerical else
+                         _get_col_names(
+                             self.target_encoder.tensor_mapper.mapping,
+                             self.task.task_type, is_wide_format=True))
+
+        def _count(counts: Counts, prediction: dict[str, Any],
+                   df: pd.DataFrame) -> None:
+            if self.task.task_type == TaskType.MULTILABEL_RANKING:
+                prob = prediction['prob']
+                k = min(top_k or prob.shape[1], prob.shape[1])
+                top = prob.topk(k, dim=1)
+                count_recommendations(counts, top.indices, prob.shape[1])
+                count_top_scores(counts, top.values[:, 0].cpu().numpy())
+                return
+            forecast = self.task.task_type == TaskType.FORECASTING
+            count_predictions(
+                counts, self.task.task_type,
+                prob=prediction.get('prob'), pred=prediction.get('pred'),
+                target_pred=(df['TARGET_PRED'].to_numpy(
+                    dtype=np.float64, na_value=np.nan) if numerical else None),
+                columns=count_columns,
+                horizon=(df.groupby(level=0, sort=False).cumcount().to_numpy()
+                         if forecast else None))
 
         datamodule = self.datamodule
 
@@ -1635,6 +1686,8 @@ class DiskgraphNestedTrainer(Trainer):
                     self.partition_idx = partition_idx
                     self.saved_output_count += 1
                 out = _build_output(prediction)
+                if prediction_counts is not None and emit_predictions:
+                    _count(prediction_counts, prediction, out.df)
                 assert self.stream is not None
                 self.stream.write(out)
                 self.last_output = out
@@ -1721,7 +1774,7 @@ class DiskgraphNestedTrainer(Trainer):
             # The per-call writer class is a reference cycle; release what its
             # methods close over so this trainer and its data module free on
             # return rather than at the next garbage collection.
-            datamodule = _build_output = None
+            datamodule = _build_output = _count = None
         if writer.saved_output_count == 0:
             raise RuntimeError('[TT-NG] predict produced no batches')
         logger.info('[TT-NG] saved batch prediction output to %s', output_dir)
@@ -1749,6 +1802,7 @@ class DiskgraphNestedTrainer(Trainer):
         artifact_stats_collector: PredictionArtifactStatsCollector
         | None = None,
         task_manifest: DiskgraphTaskManifest | None = None,
+        prediction_counts: Counts | None = None,
     ) -> Any:
         """TT-NG batch prediction for link prediction (all 4 model families).
 
@@ -1765,6 +1819,10 @@ class DiskgraphNestedTrainer(Trainer):
         import numpy as np
         import torch
         from kumo_core.callbacks import PredictionProgressLogger
+        from kumo_core.prediction_counts import (
+            count_recommendations,
+            count_top_scores,
+        )
         from kumo_core.train.output import (
             PredOutput,
             StreamingPredOutputWriter,
@@ -1909,6 +1967,16 @@ class DiskgraphNestedTrainer(Trainer):
                 class_metadata=class_metadata,
             )
 
+        def _count_lp(counts: Counts, prediction: dict[str, Any]) -> None:
+            target = _np(prediction['target'])
+            count_recommendations(
+                counts,
+                np.where(target < 0, -1,
+                         np.searchsorted(catalog_node_ids, target)),
+                catalog_node_ids.shape[0])
+            count_top_scores(counts, np.where(
+                target >= 0, _np(prediction['score']), -np.inf).max(axis=1))
+
         def _rhs_embedding_tables(
             output_partition_id: int,
             rhs_emb: torch.Tensor,
@@ -2034,6 +2102,8 @@ class DiskgraphNestedTrainer(Trainer):
                     self.partition_idx = partition_idx
                     self.saved_output_count += 1
                 out = _build_chunk_output(prediction)
+                if prediction_counts is not None and emit_predictions:
+                    _count_lp(prediction_counts, prediction)
                 assert self.stream is not None
                 self.stream.write(out)
                 self.last_output = out
@@ -2104,7 +2174,7 @@ class DiskgraphNestedTrainer(Trainer):
                 else:
                     delattr(self.pl_model, '_kumo_return_predict_embeddings')
             # See predict(): release what the per-call writer class closes over.
-            datamodule = _build_chunk_output = None
+            datamodule = _build_chunk_output = _count_lp = None
         if writer.saved_output_count == 0:
             raise RuntimeError('[TT-NG LP] predict produced no batches')
         logger.info('[TT-NG LP] saved batch prediction output to %s',

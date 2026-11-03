@@ -304,3 +304,14 @@ def test_listing_auth_and_transient_errors_propagate(listing_service,
     expected = ReconnectRequiredError if status == 401 else TransientSourceError
     with pytest.raises(expected):
         filesystem.object_identities(PATHS)
+
+
+def test_versions_say_whether_they_name_one_object_or_a_listing(
+        listing_service):
+    from kumo_core.sources.identity import version_kind
+
+    service, _ = listing_service
+    source = reader(ADLSFileSystem(service, 'companylake',
+                                   'dfs.core.windows.net'))
+    assert version_kind(source.data_version('')) == 'listing'
+    assert version_kind(source.data_version('a.parquet')) == 'exact'

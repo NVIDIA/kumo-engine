@@ -108,3 +108,18 @@ def test_a_missing_target_field_with_no_override_is_reported(
 
     with pytest.raises(ValueError, match="names no warehouse"):
         SnowflakeConnector.from_spcs_env()
+
+
+def test_session_is_the_readers_session(monkeypatch):
+    from kumo_snowflake import session as sessions
+
+    connector = SnowflakeConnector(warehouse='WH', database='DB',
+                                   schema_name='S')
+    calls = []
+    monkeypatch.setattr(
+        sessions._sessions, 'get',
+        lambda principal, target, fresh=False: calls.append(target) or 'live')
+    monkeypatch.setattr(type(connector.source_backend), '_principal',
+                        lambda self, target: 'principal')
+    assert connector.session() == 'live'
+    assert calls == [connector]

@@ -440,10 +440,23 @@ def select_text_encoder(
     logger.warning(
         "Text column %r will not be encoded by default: its values are too "
         "short or have too few known words. To encode it anyway, set its "
-        "encoder to TextEmbedding().",
+        "encoder to TextEmbedding().%s",
         column_name,
+        _no_default_model(),
     )
     return Null()
+
+
+def _no_default_model() -> str:
+    from kumo_core.embedding_models import (
+        DEFAULT_MODEL,
+        INSTALL_DEFAULT_MODEL,
+        _installed,
+    )
+    if DEFAULT_MODEL in _installed():
+        return ""
+    return (f" No word-vector model is installed for it either: "
+            f"{INSTALL_DEFAULT_MODEL}, or pass embedding_models= to Trainer.")
 
 
 def select_sequence_encoder(

@@ -3831,6 +3831,8 @@ def test_predict_lp_timestamp_is_ns_not_overflowed(tmp_path) -> None:
 
 
 class _MetricListTrainer:
+    global_rank = 0
+
     def __init__(self, results: list[dict[str, Any]]) -> None:
         self.results = results
 
