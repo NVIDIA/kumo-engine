@@ -1,0 +1,38 @@
+// Local patch: import the built-in alignment types.
+/*
+ * SPDX-FileCopyrightText: 2023 Inria
+ * SPDX-FileCopyrightText: 2023 Sebastiano Vigna
+ *
+ * SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
+ */
+
+use epserde::prelude::*;
+use epserde::utils::A16;
+
+/// Example of zero-copy deserialization of an array.
+fn main() {
+    // Create a vector to serialize
+
+    let a = [1_usize; 100];
+    let mut cursor = <AlignedCursor<A16>>::new(); // Serialize
+    let _bytes_written = a.serialize(&mut cursor).unwrap();
+
+    // Do a full-copy deserialization
+    cursor.set_position(0);
+    let full = <[usize; 100]>::deserialize_full(&mut cursor).unwrap();
+    println!(
+        "Full-copy deserialization type: {}",
+        std::any::type_name::<[usize; 100]>(),
+    );
+    println!("Value: {:x?}", full);
+
+    println!();
+
+    // Do an ε-copy deserialization (which will be a zero-copy deserialization)
+    let eps = <[usize; 100]>::deserialize_eps(cursor.as_bytes()).unwrap();
+    println!(
+        "ε-copy deserialization type: {}",
+        std::any::type_name::<<[usize; 100] as DeserializeInner>::DeserType<'_>>(),
+    );
+    println!("Value: {:x?}", eps);
+}
