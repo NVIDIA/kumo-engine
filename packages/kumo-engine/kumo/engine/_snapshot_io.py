@@ -102,7 +102,6 @@ def _transfer(connector: Any, path: str, items: Sequence[Any],
         return []
     stop = threading.Event()
     with copies(items) as workers:
-        # After `copies`: Arrow's IO pool size sets the connection pool.
         client = _Client(connector, path)
         logger.info('Snapshot %s of %s: %d files, %d bytes, %d workers',
                     action, path, len(items), sum(sizes), workers)
@@ -132,7 +131,6 @@ def _retried(client: _Client, work: Callable[..., Any], item: Any,
             if attempt + 1 == _ATTEMPTS:
                 raise
             logger.warning('Retrying a snapshot transfer after: %s', error)
-            # Arrow keeps the credentials a client was built with.
             client.renew(current)
             stop.wait(2**attempt)
             attempt += 1
@@ -150,6 +148,18 @@ def _read_json(filesystem: FileSystem, path: str) -> Optional[Any]:
         return json.loads(_files(filesystem).read_text(path))
     except FileNotFoundError:
         return None
+
+
+def _read_bytes(filesystem: FileSystem, path: str) -> bytes:
+    with filesystem.open_input_stream(path) as reader:
+        return reader.readall()
+
+
+def _listed_sizes(index_manifest: bytes) -> Dict[str, int]:
+    return {
+        entry['rel_path']: int(entry['size_bytes'])
+        for entry in json.loads(index_manifest)['files']
+    }
 
 
 def _open_output(filesystem: FileSystem, path: str, size: int) -> Any:
@@ -191,7 +201,6 @@ def export_location(snapshot: Any, path: str) -> str:
 
 
 def store(snapshot: Any, settings: Any) -> None:
-    r"""Exports ``snapshot`` under the root unless it is there."""
     from kumo.engine._manifest import SnapshotManifest
     from kumo.engine._mlops import snapshot_path
 
@@ -228,10 +237,7 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
                     'reused it', location, snapshot.id)
         return location
     index_manifest = (source / _INDEX_MANIFEST).read_bytes()
-    sizes = {
-        entry['rel_path']: int(entry['size_bytes'])
-        for entry in json.loads(index_manifest)['files']
-    }
+    sizes = _listed_sizes(index_manifest)
     generation = uuid.uuid4().hex
     filesystem, root = _location(connector, location)
     base = f'{root}/{generation}'
@@ -288,15 +294,14 @@ def _holds_copy(connector: Any, location: str, snapshot_id: str,
             return False
         filesystem, _ = _location(connector, location)
         remote = file_sizes(filesystem, root)
-        listed = json.loads((index / _INDEX_MANIFEST).read_bytes())['files']
+        listed = _listed_sizes((index / _INDEX_MANIFEST).read_bytes())
         if (_DONE not in remote
                 or f'index/{_INDEX_MANIFEST}' not in remote) or any(
-                remote.get(f"index/{entry['rel_path']}") != int(
-                    entry['size_bytes']) for entry in listed):
+                    remote.get(f'index/{name}') != size
+                    for name, size in listed.items()):
             return False
-        with filesystem.open_input_stream(
-                f'{root}/{PROVENANCE_FILE}') as reader:
-            return reader.readall() == snapshot_manifest
+        return _read_bytes(filesystem,
+                           f'{root}/{PROVENANCE_FILE}') == snapshot_manifest
     except Exception:
         return False
 
@@ -419,9 +424,7 @@ def _index_files(
     from kumo_core.sources.layout import confined
 
     filesystem, _ = _location(connector, path)
-    with filesystem.open_input_stream(
-            f'{root}/index/{_INDEX_MANIFEST}') as reader:
-        index_manifest = reader.readall()
+    index_manifest = _read_bytes(filesystem, f'{root}/index/{_INDEX_MANIFEST}')
     if _fingerprint(index_manifest) != manifest['index_manifest']:
         raise _corrupt(path, f'{_INDEX_MANIFEST} is not the exported one')
     try:
@@ -432,9 +435,7 @@ def _index_files(
     if len({name for name, _ in files}) != len(files):
         raise _corrupt(path, f'{_INDEX_MANIFEST} lists a file twice')
     try:
-        with filesystem.open_input_stream(
-                f'{root}/{PROVENANCE_FILE}') as reader:
-            snapshot_manifest = reader.readall()
+        snapshot_manifest = _read_bytes(filesystem, f'{root}/{PROVENANCE_FILE}')
     except FileNotFoundError:
         snapshot_manifest = None
     return index_manifest, files, snapshot_manifest
@@ -442,11 +443,6 @@ def _index_files(
 
 def load_into(connector: Any, path: str, root: str, manifest: dict,
               target: Path) -> None:
-    from diskgraph import (
-        DiskgraphCorruptionError,
-        snapshot_range_checksums,
-        verify_snapshot_integrity,
-    )
     from kumo_core.diskgraph.snapshot import (
         DiskgraphIngestResult,
         write_diskgraph_success_marker,
@@ -461,20 +457,7 @@ def load_into(connector: Any, path: str, root: str, manifest: dict,
     discard_destination(str(target))
     discard_destination(str(staging))
     try:
-        staging.mkdir(parents=True)
-        needed = sum(size for _, size in files)
-        disk = os.statvfs(staging)
-        if disk.f_bavail * disk.f_frsize < needed:
-            raise OSError(f'Loading this snapshot needs {needed} free bytes '
-                          f'in {staging}.')
-        for name, size in files:
-            (staging / name).parent.mkdir(parents=True, exist_ok=True)
-            fd = os.open(staging / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
-            try:
-                if size:
-                    os.posix_fallocate(fd, 0, size)
-            finally:
-                os.close(fd)
+        _allocate(staging, files)
         ranges = sorted(((name, offset, min(span, size - offset))
                          for name, size in files
                          for offset in range(0, size, span)),
@@ -487,19 +470,7 @@ def load_into(connector: Any, path: str, root: str, manifest: dict,
         (staging / _INDEX_MANIFEST).write_bytes(index_manifest)
         write_diskgraph_success_marker(str(staging),
                                        DiskgraphIngestResult.for_index(target))
-        try:
-            verify_snapshot_integrity(str(staging))
-            loaded = snapshot_range_checksums(str(staging), span)
-        except DiskgraphCorruptionError as error:
-            raise _corrupt(path, str(error)) from error
-        for name, crcs in sorted(loaded.items()):
-            expected = manifest['crc32'].get(name)
-            if crcs != expected:
-                offset = next((index * span for index, crc in enumerate(crcs)
-                               if not expected or index >= len(expected)
-                               or crc != expected[index]), 0)
-                raise _corrupt(
-                    path, f'{name} failed its checksum at offset {offset}')
+        _verify(path, staging, manifest)
         _check_readable(staging, manifest)
         (staging / _EXPORT_IDENTITY).write_text(export_identity(manifest))
         if snapshot_manifest is not None:
@@ -512,6 +483,46 @@ def load_into(connector: Any, path: str, root: str, manifest: dict,
     except BaseException:
         discard_destination(str(staging))
         raise
+
+
+def _allocate(staging: Path, files: List[Tuple[str, int]]) -> None:
+    staging.mkdir(parents=True)
+    needed = sum(size for _, size in files)
+    disk = os.statvfs(staging)
+    if disk.f_bavail * disk.f_frsize < needed:
+        raise OSError(f'Loading this snapshot needs {needed} free bytes '
+                      f'in {staging}.')
+    for name, size in files:
+        (staging / name).parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(staging / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+        try:
+            if size:
+                os.posix_fallocate(fd, 0, size)
+        finally:
+            os.close(fd)
+
+
+def _verify(path: str, staging: Path, manifest: dict) -> None:
+    from diskgraph import (
+        DiskgraphCorruptionError,
+        snapshot_range_checksums,
+        verify_snapshot_integrity,
+    )
+
+    span = manifest['range_bytes']
+    try:
+        verify_snapshot_integrity(str(staging))
+        loaded = snapshot_range_checksums(str(staging), span)
+    except DiskgraphCorruptionError as error:
+        raise _corrupt(path, str(error)) from error
+    for name, crcs in sorted(loaded.items()):
+        expected = manifest['crc32'].get(name)
+        if crcs != expected:
+            offset = next((index * span for index, crc in enumerate(crcs)
+                           if not expected or index >= len(expected)
+                           or crc != expected[index]), 0)
+            raise _corrupt(path,
+                           f'{name} failed its checksum at offset {offset}')
 
 
 def _check_readable(index: Path, manifest: dict) -> None:

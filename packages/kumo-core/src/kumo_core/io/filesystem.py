@@ -97,7 +97,6 @@ def fsync_directory(directory: str | Path) -> None:
 
 
 def atomic_write_bytes(path: str | Path, payload: bytes) -> None:
-    """Replace a local file so readers see the old or the new bytes."""
     path = Path(path)
     temporary: Path | None = None
     try:

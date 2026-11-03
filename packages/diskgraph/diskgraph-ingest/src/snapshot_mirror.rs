@@ -489,8 +489,7 @@ pub(crate) fn validate_manifest_rel_path(rel: &str) -> Result<(), &'static str> 
     Ok(())
 }
 
-/// Read and validate `_MANIFEST.json` at `output_dir`: schema version and
-/// every rel_path's confinement to the snapshot root.
+/// `_MANIFEST.json` at `output_dir`, schema and paths checked.
 fn read_manifest(output_dir: &std::path::Path) -> std::result::Result<Manifest, CorruptionError> {
     let manifest_path = output_dir.join(MANIFEST_FILENAME);
     let manifest_bytes = match std::fs::read(&manifest_path) {
@@ -592,10 +591,7 @@ pub fn verify_snapshot_integrity(output_dir: &std::path::Path) -> std::result::R
     Ok(())
 }
 
-/// CRC-32 of every `range_bytes` span of each file `_MANIFEST.json` lists,
-/// and of `_MANIFEST.json` itself, keyed by rel_path (an empty file has one
-/// zero entry). Lets a copy of the snapshot be checked for content as well
-/// as size; the manifest format is unchanged.
+/// CRC-32 per `range_bytes` span of each listed file and the manifest.
 pub fn snapshot_range_checksums(
     output_dir: &std::path::Path,
     range_bytes: u64,

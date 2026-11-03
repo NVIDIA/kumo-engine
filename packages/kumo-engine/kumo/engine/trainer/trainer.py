@@ -336,7 +336,6 @@ HOLDOUT_META_FILE = 'holdout-meta.json'
 
 
 def _bundle_holdout(result: TrainingResult) -> None:
-    r"""Copy the holdout into the bundle."""
     from kumo_core.artifacts import add_bundle_file
 
     if result.holdout_path is None:
@@ -421,7 +420,6 @@ def _fit_identity(snapshot: GraphSnapshot,
 
 def _store_model(bundle_dir: Path, manifest: Optional[ModelManifest],
                  settings: Any) -> None:
-    r"""Copies the bundle under the root unless it is there."""
     from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
     from kumo_core.object_store_sink import holds_bundle, upload_bundle
     from pyarrow.fs import FileSelector
@@ -568,7 +566,6 @@ def _publish(bundle_dir: Path, bundle_id: Optional[str],
 def _warm_start_plan(
     public_plan: ModelPlan, warm_start: Optional['Trainer']
 ) -> Tuple[CoreModelPlan, ModelPlan, Optional[Dict[str, str]], Optional[str]]:
-    r"""The model plan with the warm start's inherited, and its artifacts."""
     from kumo_core.automl.runtime import inherit_warm_start_model_plan
     from kumo_core.io.json import load_json
 
@@ -992,7 +989,6 @@ class Trainer:
         warm_start_artifacts: Optional[Mapping[str, str]],
         events: EventEmitter
     ) -> Tuple[TrainingResult, Optional[str]]:
-        r"""The trained model and its fit mode."""
         from kumo_core.training.orchestration import (
             CallableTrainingOptions,
             ResolvedTrainingInput,

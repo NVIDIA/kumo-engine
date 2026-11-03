@@ -9,8 +9,11 @@ import pyarrow.parquet as pq
 import pytest
 from databricks.sdk.errors import PermissionDenied
 from fakes import FakeVolume, FakeWorkspaceClient
+from kumo_core.artifact_export import ArtifactDestinationConflict
+from kumo_core.object_store_sink import open_sized
 from kumo_databricks.sink import DatabricksSinkBackend
 from kumo_databricks.volume import VolumeHandler
+from kumoapi.jobs import WriteMode
 from pyarrow.fs import FileType, PyFileSystem
 
 ROOT = '/Volumes/main/analytics/artifacts'
@@ -47,8 +50,6 @@ def test_reads_cross_part_boundaries():
 
 
 def test_sized_writes_stay_plain_up_to_a_part():
-    from kumo_core.object_store_sink import open_sized
-
     fs, volume = filesystem(part_bytes=1000)
     fs.handler.plain_bytes = 100
     for name, body in (('plain', BODY[:1000]), ('parts', BODY[:1500])):
@@ -62,9 +63,16 @@ def test_sized_writes_stay_plain_up_to_a_part():
                and path.endswith('/_SUCCESS') for path in volume.objects)
 
 
-def test_a_failed_upload_raises_without_the_signed_url():
-    from kumo_core.object_store_sink import open_sized
+def test_unsized_writes_stay_plain_through_a_part():
+    assert VolumeHandler.plain_bytes == VolumeHandler.part_bytes == 4 << 30
+    fs, volume = filesystem(part_bytes=1000)
+    write(fs, f'{ROOT}/export.csv', BODY[:1000])
+    assert volume.objects[f'{ROOT}/export.csv'] == BODY[:1000]
+    write(fs, f'{ROOT}/over.csv', BODY[:1001])
+    assert f'{ROOT}/over.csv' not in volume.objects
 
+
+def test_a_failed_upload_raises_without_the_signed_url():
     fs, volume = filesystem()
     signed = 'https://bucket.example/part?X-Amz-Signature=secret'
 
@@ -186,9 +194,6 @@ def test_predictions_and_frames_written_to_a_volume_path(tmp_path):
 
 
 def test_an_occupied_volume_directory_is_refused_before_scoring(tmp_path):
-    from kumo_core.artifact_export import ArtifactDestinationConflict
-    from kumoapi.jobs import WriteMode
-
     sink, volume = volume_sink()
     target = f'{ROOT}/predictions/'
     sink.preflight_write_files(SimpleNamespace(), target)
