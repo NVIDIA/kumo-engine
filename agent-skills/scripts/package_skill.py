@@ -178,8 +178,7 @@ class Workspace:
             host = f'https://{host}'
         if not host.startswith('https://'):
             raise SystemExit(f'Refusing a non-https Databricks host (the token would go in clear): {host}')
-        self.host = host
-        self.host = self.host.rstrip('/')
+        self.host = host.rstrip('/')
         self.token = token
 
     def api(self, method: str, path: str, body: dict | None = None,

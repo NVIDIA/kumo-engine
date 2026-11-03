@@ -127,10 +127,16 @@ Node 1d output line says so — `Output: <catalog.schema.table>; creates the sta
 `PredictionArtifactType` and `WriteMode` come from `kumoapi.jobs`. Then read the destination back
 and compare its row count to `prediction_result.num_rows` — the only proof the write worked. An
 OVERWRITE run compares the table total; an APPEND run compares the delta against a count taken
-before the write, as `kumoai-reference/references/outputs.md` says:
+before the write, as `kumoai-reference/references/outputs.md` says. A first APPEND run finds no
+table yet (the write creates it), so a missing table counts as 0:
 
 ```python
 def count_output():
+    exists = run_sql(f"SELECT 1 FROM {q(OUTPUT_CATALOG)}.information_schema.tables "
+                     f"WHERE table_schema = lower('{OUTPUT_SCHEMA}') "
+                     f"AND table_name = lower('{OUTPUT_TABLE}')")
+    if not exists:
+        return 0
     return int(run_sql(f'SELECT COUNT(*) FROM {q(OUTPUT_CATALOG, OUTPUT_SCHEMA, OUTPUT_TABLE)}')[0][0])
 
 before = count_output() if WRITE_MODE == WriteMode.APPEND else 0   # before the predict call
