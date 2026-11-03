@@ -482,6 +482,30 @@ def test_unavailable_reason_is_explicit(reason):
             in static_summary(result)) == (reason in ('disabled', 'failed'))
 
 
+@pytest.mark.parametrize('count', [0, 100, 101, 450])
+def test_static_metric_limit_is_explicit(tmp_path, count):
+    run, _ = _run(tmp_path)
+    save_json(
+        {f'test_metric_{i}_<img>': 0 if i == 0 else None
+         for i in range(count)}, str(run / 'published-model/metrics.json'))
+    result = TrainingExplanations.load(run).visualize()._payload
+    summary = static_summary(result)
+    assert len(result['metrics']['rows']) == count
+    assert summary.count(' / test / ') == min(count, 100)
+    notice = f'Showing 100 of {count} loaded metrics.'
+    recovery = ('Rerun this cell in a trusted notebook to inspect all '
+                'loaded metrics.')
+    assert (notice in summary) == (count > 100)
+    assert (recovery in summary) == (count > 100)
+    if count:
+        assert 'metric_0_&lt;img&gt; / Unknown metric origin: 0' in summary
+        assert 'metric_99_&lt;img&gt; / Unknown metric origin: Unavailable' in summary
+    assert '<img>' not in summary
+    assert 'metric_100_' not in summary
+    if count > 100:
+        assert summary.index(notice) < summary.index('<ul>')
+
+
 @pytest.mark.parametrize('generation',
                          ['unknown', 'disabled', 'failed', 'both'])
 @pytest.mark.parametrize(

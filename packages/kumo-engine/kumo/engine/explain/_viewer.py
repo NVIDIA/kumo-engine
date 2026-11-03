@@ -13,12 +13,20 @@ from kumo.engine._widget import CSS_THEME
 def static_summary(payload: dict) -> str:
     """Return escaped metrics and availability without selected-example data."""
     provenance = payload.get('provenance', {})
-    parts = ['<div class="kumo-training-static"><h2>Training results</h2>',
-             '<p>Recorded TEST diagnostics. Selected trial: ' +
-             escape(str(provenance.get('selected_trial') or 'Unavailable')) +
-             '. Explanation fit: ' +
-             escape(str(provenance.get('explanation_trial') or 'Unavailable')) +
-             '.</p><ul>']
+    metrics = payload.get('metrics', {}).get('rows', [])
+    parts = [
+        '<div class="kumo-training-static"><h2>Training results</h2>',
+        '<p>Recorded TEST diagnostics. Selected trial: ' +
+        escape(str(provenance.get('selected_trial') or 'Unavailable')) +
+        '. Explanation fit: ' +
+        escape(str(provenance.get('explanation_trial') or 'Unavailable')) +
+        '.</p>'
+    ]
+    if len(metrics) > 100:
+        parts.append(f'<p>Showing 100 of {len(metrics)} loaded metrics. '
+                     'Rerun this cell in a trusted notebook to inspect all '
+                     'loaded metrics.</p>')
+    parts.append('<ul>')
     if provenance.get('generation_status') in ('disabled', 'failed'):
         parts.append('<li>Explanation generation: ' +
                      escape(str(provenance['generation_status'])) + '</li>')
@@ -30,7 +38,7 @@ def static_summary(payload: dict) -> str:
         parts.append('<li>Selection unverified: ' + escape(str(
             provenance.get('selection_reason') or
             'Selection metadata is missing or invalid')) + '</li>')
-    for row in payload.get('metrics', {}).get('rows', [])[:100]:
+    for row in metrics[:100]:
         value = row.get('value')
         number = (str(value) if isinstance(value, (int, float))
                   and not isinstance(value, bool) and isfinite(value)
