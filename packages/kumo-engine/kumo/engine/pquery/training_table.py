@@ -107,9 +107,9 @@ class TrainingTable:
 
         from kumo.engine.connector import is_file_destination
 
-        name = output_config.table_name.rstrip('/')
-        if (not is_file_destination(connector, output_config.table_name)
-                or layout.file_type(name) == layout.CSV):
+        name = output_config.table_name
+        if (not is_file_destination(connector, name)
+                or layout.file_type(name.rstrip('/')) == layout.CSV):
             return {}
         sidecars = self._sidecars()
         return {'sidecars': sidecars} if sidecars else {}
