@@ -152,7 +152,7 @@ def _require_within_root(connector: Any, path: str) -> None:
     if not isinstance(sink, ObjectStoreSessions):
         return
     try:
-        sink._resolved(connector, path)
+        sink._resolved_directory(connector, path)
     except ValueError as error:
         target = sink._root_for(connector)
         within = (f'root_dir {sink.scheme}://{target.path}'

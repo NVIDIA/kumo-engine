@@ -38,7 +38,8 @@ from kumo.engine._manifest import (
 Location = Union[str, Tuple[Any, str]]
 Hint = Callable[[str, str], str]
 _READERS = (('@', 'SnowflakeConnector'), ('/Volumes/', 'DatabricksConnector'),
-            ('s3://', 'S3Connector'), ('gs://', 'GCSConnector'))
+            ('s3://', 'S3Connector'), ('gs://', 'GCSConnector'),
+            ('abfss://', 'ADLSConnector'))
 
 _LOCATIONS: ContextVar[Tuple[Location, ...]] = ContextVar(
     'kumo_asset_locations', default=())
@@ -234,6 +235,7 @@ class Dependencies:
 def reads(connector: Any, location: str) -> bool:
     r"""Whether ``connector`` reads the stored ``location`` itself."""
     from kumo.engine.connector import (
+        ADLSConnector,
         FileConnector,
         GCSConnector,
         S3Connector,
@@ -241,7 +243,7 @@ def reads(connector: Any, location: str) -> bool:
     )
 
     for kind, prefix in ((S3Connector, 's3://'), (GCSConnector, 'gs://'),
-                         (FileConnector, None)):
+                         (ADLSConnector, 'abfss://'), (FileConnector, None)):
         if isinstance(connector, kind):
             return prefix is not None and location.startswith(prefix)
     return (location.startswith(('@', '/Volumes/'))

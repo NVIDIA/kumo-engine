@@ -106,6 +106,15 @@ class ADLSSessions(ObjectStoreSessions):
     def _filesystem(self, connector, bucket, region):
         return self._source_access(connector, bucket, region).filesystem
 
+    def _resolved_directory(self, connector, coordinate):
+        root = self._root_for(connector)
+        if root is not None and '://' in coordinate:
+            parsed = urlsplit(normalize_adls_root_uri(coordinate))
+            key = unquote(parsed.path).strip('/')
+            if parsed.netloc == root.bucket and key == root.prefix:
+                return root.bucket, root.path, root.region
+        return self._resolved(connector, coordinate)
+
     def _resolved(self, connector, coordinate):
         root = self._root_for(connector)
         if root is None:
@@ -133,3 +142,7 @@ class ADLSSourceBackend(ADLSSessions, ObjectStoreSourceBackend):
         del project_id
         reader, name = self._reader(connector, table_name)
         return [canonical_uri(path) for path in reader.object_paths(name)]
+
+    def table_location(self, connector, table_name):
+        _, root, name, _ = self._placement(connector, table_name)
+        return canonical_uri(f'{root.rstrip("/")}/{name}').rstrip('/')

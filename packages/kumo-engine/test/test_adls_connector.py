@@ -215,3 +215,81 @@ def test_an_adls_root_holds_files_and_round_trips_an_artifact(
     assert (stored / 'weights' / 'w.bin').read_bytes() == b'\x00\x01\x02'
     for name in ('_provenance.json', 'weights/w.bin'):
         assert (fetched / name).read_bytes() == (bundle / name).read_bytes()
+
+
+@pytest.mark.parametrize('suffix', [
+    'dfs.core.windows.net',
+    'dfs.core.usgovcloudapi.net',
+    'dfs.core.chinacloudapi.cn',
+])
+@pytest.mark.parametrize('prefix', ['', 'orders/', 'space%20name/nested/'])
+def test_mlops_adls_roots_validate_without_storage_access(
+        monkeypatch, suffix, prefix):
+    from kumo.engine import MLOps
+
+    access = Mock(side_effect=AssertionError('storage accessed'))
+    monkeypatch.setattr('kumo_adls.backend.session_for', access)
+    uri = f'abfss://curated@companylake.{suffix}/{prefix}'
+    connector = ADLSConnector(root_dir=uri)
+    for root in (uri, (connector, uri), (connector, uri.rstrip('/'))):
+        config = MLOps(root, store=False)
+        assert isinstance(config.root.connector, ADLSConnector)
+    access.assert_not_called()
+    with pytest.raises(ValueError):
+        connector.source_table_for(uri)
+    with pytest.raises(ValueError):
+        connector.sink_backend.preflight_write_files(connector, uri)
+
+
+@pytest.mark.parametrize('path', [
+    ROOT.replace('companylake', 'otherlake'),
+    ROOT.replace('curated@', 'otherfs@'),
+    ROOT.replace('orders/', 'orders-sibling/'),
+    ROOT + '../escape',
+    ROOT + '?sig=secret',
+    ROOT.replace('abfss:', 'abfs:'),
+])
+def test_mlops_rejects_invalid_adls_root_before_access(monkeypatch, path):
+    from kumo.engine import MLOps
+
+    access = Mock(side_effect=AssertionError('storage accessed'))
+    monkeypatch.setattr('kumo_adls.backend.session_for', access)
+    with pytest.raises(ValueError):
+        MLOps((ADLSConnector(root_dir=ROOT), path), store=False)
+    access.assert_not_called()
+
+
+def test_adls_provenance_uses_canonical_file_locations():
+    from kumo.engine._manifest import PredictionOutput, _connector
+    from kumo.engine._provenance import source_location
+    from kumo.engine.trainer._run_manifest import destination_record
+
+    connector = ADLSConnector(root_dir=ROOT)
+    for path in ('events.parquet', ROOT + 'events.parquet'):
+        assert source_location(connector, path) == ROOT + 'events.parquet'
+    with pytest.raises(ValueError, match='outside'):
+        source_location(connector, ROOT.replace('orders/', 'outside/'))
+    for path in ('scores/', ROOT + 'scores/'):
+        destination = destination_record(connector, path)
+        assert destination.location == ROOT + 'scores'
+        assert destination.connector == 'ADLS'
+        artifact = PredictionOutput(artifact='predictions',
+                                    destination=destination).as_artifact('out')
+        assert artifact.tag == 'kumo.output_uri'
+        assert _connector(artifact.location) == 'ADLS'
+
+
+@pytest.mark.parametrize('rooted', [False, True])
+@pytest.mark.parametrize('relative,encoded', [
+    ('events.parquet', 'events.parquet'),
+    ('caf\u00e9 report.parquet', 'caf%C3%A9%20report.parquet'),
+])
+def test_source_lineage_preserves_rootless_and_encoded_adls_names(
+        rooted, relative, encoded):
+    from kumo.engine._provenance import source_location
+
+    connector = ADLSConnector(root_dir=ROOT if rooted else None)
+    uri = ROOT + encoded
+    assert source_location(connector, uri) == uri
+    if rooted:
+        assert source_location(connector, relative) == uri

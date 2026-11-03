@@ -79,6 +79,8 @@ def _assets_from(reader: str) -> str:
 
 
 def _remote_reader(uri: str) -> Optional[str]:
+    if uri.startswith('abfss://'):
+        return 'ADLSConnector'
     if uri.startswith('@'):
         return 'SnowflakeConnector'
     if uri.startswith('/Volumes/') and not os.path.isdir('/Volumes'):

@@ -201,6 +201,7 @@ def test_an_occupied_directory_is_refused_by_its_full_location(
     pd.DataFrame({'x': range(3)}).to_parquet(part)
     sink.preflight_write_files(connector, '@stage/out/')
     sink.write_files(connector, '@stage/out/', [str(part)])
+    # Default/append retain ownership checks; explicit overwrite may replace data.
     for mode in (None, WriteMode.APPEND):
         with pytest.raises(ArtifactDestinationConflict,
                            match="'@stage/out/' already"):

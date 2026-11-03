@@ -408,6 +408,28 @@ def test_a_model_with_text_columns_requires_the_text_extra():
                         }) == f'kumo-engine[s3,gcs,text]=={kumo.__version__}'
 
 
+@pytest.mark.parametrize('scheme,extra', [
+    ('s3', ''),
+    ('gs', ''),
+    ('file', ''),
+    ('abfss', ',adls'),
+])
+@pytest.mark.parametrize('where', ['model', 'asset', 'snapshot'])
+def test_serving_dependencies_only_add_adls_for_adls_locations(
+        scheme, extra, where):
+    from kumo.engine._manifest import Dependency, ModelManifest
+    from kumo.engine.integrations.mlflow import _requirement
+
+    uri = f'{scheme}://artifacts/root'
+    manifest = ModelManifest(
+        id='model', location=uri if where == 'model' else None,
+        dependencies=[Dependency(kind='asset', name='words', location=uri)]
+        if where == 'asset' else [])
+    assert _requirement(
+        None, manifest=manifest, serving_snapshot=uri if where == 'snapshot'
+        else None) == (f'kumo-engine[s3,gcs{extra}]=={kumo.__version__}')
+
+
 def test_a_tracker_dropped_earlier_says_the_model_was_not_logged():
     import time
 

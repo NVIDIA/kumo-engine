@@ -1270,7 +1270,8 @@ def _log_model(target: Any, client: Any, bundle_dir: Path,
                 input_example=example,
                 metadata=pointers,
                 pip_requirements=[
-                    _requirement(_encoders(bundle_dir))
+                    _requirement(_encoders(bundle_dir), manifest=manifest,
+                                 serving_snapshot=serving_snapshot)
                 ],
             )
             with target.scope():
@@ -1299,10 +1300,18 @@ def _id(manifest: Optional['ModelManifest']) -> Optional[str]:
     return None if manifest is None else manifest.id
 
 
-def _requirement(config: Any) -> str:
+def _requirement(config: Any, *, manifest: Optional['ModelManifest'] = None,
+                 serving_snapshot: Optional[str] = None) -> str:
     from kumoapi.encoder import TextEmbedding
 
     extras = ['s3', 'gcs']
+    locations = [serving_snapshot]
+    if manifest is not None:
+        locations.append(manifest.location)
+        locations.extend(item.location for item in manifest.dependencies or ())
+    if any(location and location.startswith('abfss://')
+           for location in locations):
+        extras.append('adls')
     if config is not None and any(
             isinstance(encoder, TextEmbedding)
             for table in config.encoders.values()
