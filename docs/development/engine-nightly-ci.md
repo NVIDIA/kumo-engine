@@ -57,6 +57,7 @@ plan or select a model from its test score.
 
 The [campaign evidence](../../packages/kumo-engine/test/nightly/evidence/reference-campaign.json)
 records quality, candidate counts, timing, calibration, and resource file hashes.
+The policy and resource proposals use the original sixteen completed reference cases.
 The [baseline provenance](../../packages/kumo-engine/test/nightly/evidence/fast-baseline-provenance.json)
 records the training statistics and frozen input identities used for baselines.
 The earlier [baseline audit](../../packages/kumo-engine/test/nightly/evidence/baseline-audit.json)
