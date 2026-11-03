@@ -108,6 +108,7 @@ box-shadow:inset 0 -2px $accent}
 .kumo-training h2{font:700 20px/1.3 $font;color:$heading;margin:0 0 12px}
 .kumo-training h3{font:600 16px/1.4 $font;color:$foreground;margin:20px 0 8px}
 .kumo-training h4{font:600 14px/1.4 $font;margin:12px 0 6px}
+.kumo-training :is(h2,h3,h4){scroll-margin-top:8px}
 .kumo-training p{margin:6px 0 12px}
 .kumo-training section+section{margin-top:30px;padding-top:24px;
 border-top:1px solid $surface_border}
@@ -406,9 +407,13 @@ const row=rows.find(item=>baseMetric(item)===name&&text(item.split)===split);ret
 if(provenance.selection_metric||obj(data.metrics).selection_metric)
 note(metricDetail,'Selection metric: '+text(provenance.selection_metric||data.metrics.selection_metric)+
 (provenance.selection_direction==='min'?' · Recorded optimization: minimize':provenance.selection_direction==='max'?' · Recorded optimization: maximize':''));
+const resultJumps=el('nav',undefined,'kt-controls kt-results-navigation');resultJumps.setAttribute('aria-label','In Results');
+results.querySelector('h2').after(resultJumps);
 const histories=list(obj(data.history).rows);state(results,data.history,'Learning history');
 if(histories.length){const learning=el('div',undefined,'kt-learning');results.append(learning);
 learning.append(el('h3','Learning history · train and validation'));
+resultJumps.append(action('Learning history',()=>showPanel(0,true,learning.querySelector('h3'))));
+learning.append(action(resultTask?'Back to TEST result':'Back to results',()=>showPanel(0,true,results.querySelector('.kt-result h3'))));
 note(learning,'Recorded measurements during training, separate from the TEST result. Epoch keys start at 0.');
 const jumps=el('nav',undefined,'kt-controls');jumps.setAttribute('aria-label','After learning history');
 for(const [index,label]of [[1,'recorded patterns'],[2,'selected examples']])jumps.append(action('Go to '+label,()=>{
@@ -505,10 +510,13 @@ learning.append(historyMeaning,historyView);drawHistory(metric);
 note(learning,'Missing values and unrecorded epochs break the lines. These records do not identify a selected checkpoint epoch or establish why a metric changed.');
 learning.append(historyDetails,jumps);}
 else note(learning,'No recorded epoch metric values.');}
-else if(obj(data.history).status==='available')note(results,'Learning history: no recorded epoch rows.');
+else{note(resultJumps,'Learning history: no recorded epoch rows loaded.');
+if(obj(data.history).status==='available')note(results,'Learning history: no recorded epoch rows.');}
 const trials=list(obj(data.trials).rows).map(obj);state(results,data.trials,'Trial comparison');
 if(trials.length){const trialView=el('div',undefined,'kt-trials');results.append(trialView);
 trialView.append(el('h3','How do the recorded candidates compare?'));
+resultJumps.append(action('Candidates & settings',()=>showPanel(0,true,trialView.querySelector('h3'))));
+trialView.append(action(resultTask?'Back to TEST result':'Back to results',()=>showPanel(0,true,results.querySelector('.kt-result h3'))));
 note(trialView,'Compare original search candidates using recorded validation values. Inspecting a candidate or another metric does not change the recorded selection.');
 if(obj(data.trials).total!==undefined)note(trialView,'Recorded training completions: '+text(data.trials.completed)+' / '+text(data.trials.total)+' planned trials. This count does not establish final validation availability.');
 const originals=trials.filter(row=>row.fit==='original');
@@ -593,7 +601,8 @@ const exact=el('details');exact.append(el('summary','Explore all recorded candid
 for(const row of trials){identityNote(exact,'Trial identity',candidateName(row)+' · '+text(row.trial)+' / '+text(row.fit)+' · '+selection(row)+' · '+origin(row));
 table(exact,['Recorded metric','Exact value'],Object.entries(trialMetrics(row)),[1],true);}
 trialView.append(exact);
-if(histories.length)trialView.append(action('Inspect recorded fit learning histories',()=>{const heading=results.querySelector('.kt-learning h3');if(heading){heading.tabIndex=-1;heading.focus();}}));}
+if(histories.length)trialView.append(action('Inspect recorded fit learning histories',()=>showPanel(0,true,results.querySelector('.kt-learning h3'))));}
+else note(resultJumps,'Candidates & settings: no recorded candidates loaded.');
 const patterns=section('Recorded patterns');patterns.append(el('h3','Global input sensitivity'));
 note(patterns,'Unsigned recorded gradient magnitude, normalized across all columns when the total is positive. '
 +'These scores describe sensitivity, not causal effects or prediction probabilities.');
@@ -1083,9 +1092,9 @@ note(rankingEntry,'Loaded '+loaded.length+' of '+text(coverage.references_total?
 sampleView.hidden=true;
 const panels=[results,patterns,examples],navigation=el('nav',undefined,'kt-navigation');
 navigation.setAttribute('aria-label','Training explanation sections');
-const showPanel=(index,focus=false)=>{panels.forEach((panel,i)=>{panel.hidden=i!==index;
+const showPanel=(index,focus=false,target=null)=>{panels.forEach((panel,i)=>{panel.hidden=i!==index;
 navigation.querySelectorAll(':scope>button')[i].setAttribute('aria-pressed',String(i===index));});
-if(focus){const heading=panels[index].querySelector('h2');heading.tabIndex=-1;heading.focus();}};
+if(focus){const heading=target||panels[index].querySelector('h2');heading.tabIndex=-1;heading.focus();heading.scrollIntoView({block:'start'});}};
 for(const [index,label]of ['Results','Patterns','Examples'].entries()){
 const button=action(label,()=>showPanel(index));panels[index].id=widgetId+'-panel-'+index;
 button.setAttribute('aria-controls',panels[index].id);navigation.append(button);}
