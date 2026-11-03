@@ -8,14 +8,20 @@
 //! owns every destination buffer until its CQE arrives and accepts a short
 //! completion only for the logical final page of an immutable file.
 
+#[cfg(target_os = "linux")]
 use io_uring::{opcode, types, IoUring};
 use std::cell::Cell;
+#[cfg(target_os = "linux")]
 use std::cell::RefCell;
 use std::fs::File;
 use std::io;
+use std::mem::ManuallyDrop;
 use std::os::fd::{AsRawFd, RawFd};
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::Path;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU16, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU16, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -36,18 +42,34 @@ pub enum EdgeIoBackend {
 
 impl EdgeIoBackend {
     pub fn from_env() -> io::Result<Self> {
-        match std::env::var("DG_EDGE_BACKEND")
-            .unwrap_or_else(|_| "mmap".to_string())
-            .as_str()
-        {
-            "mmap" => Ok(Self::Mmap),
-            "buffered" => Ok(Self::Buffered),
-            "direct" => Ok(Self::Direct),
-            other => Err(io::Error::new(
+        let configured = match std::env::var("DG_EDGE_BACKEND") {
+            Ok(value) => value,
+            Err(std::env::VarError::NotPresent) => "mmap".to_string(),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "DG_EDGE_BACKEND must be valid UTF-8 and one of mmap|buffered|direct",
+                ));
+            }
+        };
+        let backend = match configured.as_str() {
+            "mmap" => Self::Mmap,
+            "buffered" => Self::Buffered,
+            "direct" => Self::Direct,
+            other => return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("DG_EDGE_BACKEND must be mmap|buffered|direct, got `{other}`"),
             )),
+        };
+        backend.ensure_supported()?;
+        Ok(backend)
+    }
+
+    pub fn ensure_supported(self) -> io::Result<()> {
+        if self != Self::Mmap && !cfg!(target_os = "linux") {
+            return Err(unsupported_backend());
         }
+        Ok(())
     }
 
     pub fn name(self) -> &'static str {
@@ -59,6 +81,28 @@ impl EdgeIoBackend {
     }
 }
 
+fn unsupported_backend() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "buffered/direct edge I/O requires Linux io_uring; use DG_EDGE_BACKEND=mmap on this platform",
+    )
+}
+
+pub fn open_direct_file(path: &Path) -> io::Result<File> {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECT | libc::O_CLOEXEC)
+            .open(path)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        Err(unsupported_backend())
+    }
+}
+
 #[repr(align(4096))]
 pub struct AlignedPage(pub [u8; PAGE_SIZE]);
 
@@ -67,7 +111,7 @@ pub struct PageData {
     // moving completed pages between the I/O owner and sampler stays cheap.
     bytes: Option<Box<AlignedPage>>,
     valid_len: usize,
-    recycler: Option<&'static SyncSender<Box<AlignedPage>>>,
+    recycler: Option<(&'static SyncSender<Box<AlignedPage>>, u32)>,
 }
 
 impl PageData {
@@ -84,10 +128,11 @@ impl PageData {
         Self {
             bytes: Some(bytes),
             valid_len: 0,
-            recycler: Some(recycler),
+            recycler: Some((recycler, std::process::id())),
         }
     }
 
+    #[cfg(any(target_os = "linux", test))]
     fn bytes_mut(&mut self) -> &mut [u8; PAGE_SIZE] {
         &mut self.bytes.as_mut().unwrap().0
     }
@@ -103,7 +148,11 @@ impl PageData {
 
 impl Drop for PageData {
     fn drop(&mut self) {
-        if let (Some(bytes), Some(recycler)) = (self.bytes.take(), self.recycler.as_ref()) {
+        if let (Some(bytes), Some((recycler, pid))) = (self.bytes.take(), self.recycler.as_ref()) {
+            // A forked child has no owner for the inherited recycle channel.
+            if *pid != std::process::id() {
+                return;
+            }
             // Never make a sampling worker wait for pool capacity. A full pool
             // simply releases this frame back to the allocator.
             if recycler.try_send(bytes).is_ok() {
@@ -369,7 +418,7 @@ impl PreparedPageCursor<'_> {
         if range_end > page.valid_len() {
             return Err(io::ErrorKind::UnexpectedEof.into());
         }
-        Ok(Some(&page.valid()[in_page..range_end]))
+        Ok(Some(&page.valid()?[in_page..range_end]))
     }
 }
 
@@ -380,9 +429,9 @@ enum PreparedPage {
 }
 
 impl PreparedPage {
-    fn valid(&self) -> &[u8] {
+    fn valid(&self) -> io::Result<&[u8]> {
         match self {
-            Self::Transient(page) => page.valid(),
+            Self::Transient(page) => Ok(page.valid()),
             Self::Cached(page) => page.valid(),
             Self::Missing => unreachable!("unfinished prepared page"),
         }
@@ -417,8 +466,7 @@ impl PendingPreparedPages {
                 page_numbers,
                 result,
             } => match result
-                .recv()
-                .map_err(|_| other_error("edge-I/O owner dropped response"))?
+                .recv()?
             {
                 Ok(batch)
                     if batch.groups.as_slice() == [(0, batch.pages.len())]
@@ -556,7 +604,7 @@ impl PreparedPages {
         if range_end > page.valid_len() {
             return Err(io::ErrorKind::UnexpectedEof.into());
         }
-        Ok(Some(&page.valid()[in_page..range_end]))
+        Ok(Some(&page.valid()?[in_page..range_end]))
     }
 
     pub fn copy_range(&self, start: u64, end: u64) -> io::Result<Vec<u8>> {
@@ -586,7 +634,7 @@ impl PreparedPages {
                 return Err(io::ErrorKind::UnexpectedEof.into());
             }
             let take = ((end - cursor) as usize).min(page.valid_len() - in_page);
-            out.extend_from_slice(&page.valid()[in_page..in_page + take]);
+            out.extend_from_slice(&page.valid()?[in_page..in_page + take]);
             cursor += take as u64;
         }
         Ok(out)
@@ -622,7 +670,7 @@ impl PreparedPages {
                 return Err(io::ErrorKind::UnexpectedEof.into());
             }
             let take = ((end - cursor) as usize).min(page.valid_len() - in_page);
-            out.extend_from_slice(&page.valid()[in_page..in_page + take]);
+            out.extend_from_slice(&page.valid()?[in_page..in_page + take]);
             cursor += take as u64;
         }
         Ok(())
@@ -718,6 +766,7 @@ pub fn page_read_request_owned(
     backend: EdgeIoBackend,
     mut page_numbers: Vec<u64>,
 ) -> io::Result<PageReadRequest> {
+    backend.ensure_supported()?;
     if file_id > MAX_CACHE_FILE_ID {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -790,8 +839,7 @@ impl PendingPreparedPageBatch {
                 }
                 for response in responses {
                     let batch = response
-                        .recv()
-                        .map_err(|_| other_error("edge-I/O owner dropped batch response"))?
+                        .recv()?
                         .map_err(other_error)?;
                     let grouped_pages = batch
                         .groups
@@ -837,12 +885,11 @@ impl PendingPreparedPageBatch {
                 let mut miss_counts = vec![usize::MAX; plans.len()];
                 for response in responses {
                     let batch = match response
-                        .recv()
-                        .map_err(|_| other_error("edge-I/O owner dropped cache-batch response"))?
+                        .recv()?
                     {
                         Ok(batch) => batch,
                         Err(message) => {
-                            for plan in &plans {
+                            for plan in &mut plans {
                                 plan.fail(&message);
                             }
                             return Err(other_error(message));
@@ -855,7 +902,7 @@ impl PendingPreparedPageBatch {
                         .ok_or_else(|| other_error("cache batch page count overflow"))?;
                     if grouped_pages != batch.pages.len() {
                         let message = "cache batch returned an invalid grouped page count";
-                        for plan in &plans {
+                        for plan in &mut plans {
                             plan.fail(message);
                         }
                         return Err(other_error(message));
@@ -863,14 +910,14 @@ impl PendingPreparedPageBatch {
                     for &(request_idx, page_count) in &batch.groups {
                         let Some(count) = miss_counts.get_mut(request_idx) else {
                             let message = "cache batch returned an invalid request index";
-                            for plan in &plans {
+                            for plan in &mut plans {
                                 plan.fail(message);
                             }
                             return Err(other_error(message));
                         };
                         if *count != usize::MAX {
                             let message = "cache batch returned a duplicate request index";
-                            for plan in &plans {
+                            for plan in &mut plans {
                                 plan.fail(message);
                             }
                             return Err(other_error(message));
@@ -890,7 +937,7 @@ impl PendingPreparedPageBatch {
                             "edge-I/O cache batch returned {actual} pages for {} misses",
                             plan.reads.len()
                         );
-                        for plan in &plans {
+                        for plan in &mut plans {
                             plan.fail(&message);
                         }
                         return Err(other_error(message));
@@ -1031,6 +1078,7 @@ pub fn submit_prepared_pages(
     backend: EdgeIoBackend,
     page_numbers: &[u64],
 ) -> io::Result<PendingPreparedPages> {
+    backend.ensure_supported()?;
     if file_id > MAX_CACHE_FILE_ID {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1101,8 +1149,7 @@ fn direct_cache_enabled() -> bool {
 }
 
 fn configured_direct_cache_gib() -> usize {
-    static CACHE_GIB: OnceLock<usize> = OnceLock::new();
-    *CACHE_GIB.get_or_init(|| {
+    *process_state().cache_gib.get_or_init(|| {
         std::env::var("DG_DIRECT_CACHE_GB")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
@@ -1134,9 +1181,9 @@ fn configured_batch_depth_multiplier() -> usize {
         .clamp(1, 32)
 }
 
+#[cfg(target_os = "linux")]
 fn configured_coalesce_pages() -> usize {
-    static COALESCE_PAGES: OnceLock<usize> = OnceLock::new();
-    *COALESCE_PAGES.get_or_init(|| {
+    *process_state().coalesce_pages.get_or_init(|| {
         std::env::var("DG_IO_COALESCE_PAGES")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
@@ -1152,7 +1199,46 @@ pub struct RuntimePageBatch {
 }
 
 type RuntimeResult = Result<RuntimePageBatch, String>;
-type RuntimeResponse = Receiver<RuntimeResult>;
+
+pub struct RuntimeResponse {
+    pid: u32,
+    receiver: ManuallyDrop<Receiver<RuntimeResult>>,
+}
+
+impl RuntimeResponse {
+    fn new(receiver: Receiver<RuntimeResult>) -> Self {
+        Self {
+            pid: std::process::id(),
+            receiver: ManuallyDrop::new(receiver),
+        }
+    }
+
+    fn recv(&self) -> io::Result<RuntimeResult> {
+        check_process(self.pid)?;
+        self.receiver.recv().map_err(|_| other_error("edge-I/O owner dropped response"))
+    }
+}
+
+impl Drop for RuntimeResponse {
+    fn drop(&mut self) {
+        if self.pid == std::process::id() {
+            // A receiver inherited at fork can contain a channel lock held by
+            // a vanished thread. Only its creating process may run Drop.
+            unsafe { ManuallyDrop::drop(&mut self.receiver) };
+        }
+    }
+}
+
+fn check_process(pid: u32) -> io::Result<()> {
+    if pid == std::process::id() {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "prepared edge I/O belongs to another process; submit a new read after fork",
+        ))
+    }
+}
 
 struct ReadPart {
     request_idx: usize,
@@ -1214,7 +1300,7 @@ impl PageRuntime {
             .map_err(|_| other_error("edge-I/O owner stopped"))?;
         COUNTERS.runtime_jobs.fetch_add(1, Ordering::Relaxed);
         COUNTERS.runtime_envelopes.fetch_add(1, Ordering::Relaxed);
-        Ok(result)
+        Ok(RuntimeResponse::new(result))
     }
 
     fn submit_batch(&self, parts: Vec<ReadPart>) -> io::Result<Vec<RuntimeResponse>> {
@@ -1240,7 +1326,7 @@ impl PageRuntime {
             self.senders[owner]
                 .send(ReadJob { parts, response })
                 .map_err(|_| other_error("edge-I/O owner stopped"))?;
-            responses.push(result);
+            responses.push(RuntimeResponse::new(result));
         }
         COUNTERS
             .runtime_jobs
@@ -1361,11 +1447,47 @@ fn page_owner_loop(
 }
 
 fn page_runtime() -> &'static PageRuntime {
-    static RUNTIME: OnceLock<PageRuntime> = OnceLock::new();
-    RUNTIME.get_or_init(PageRuntime::new)
+    process_state().runtime.get_or_init(PageRuntime::new)
 }
 
-#[cfg(test)]
+struct ProcessState {
+    pid: u32,
+    runtime: OnceLock<PageRuntime>,
+    cache: OnceLock<Result<DirectCache, String>>,
+    cache_gib: OnceLock<usize>,
+    #[cfg(target_os = "linux")]
+    coalesce_pages: OnceLock<usize>,
+}
+
+fn process_state() -> &'static ProcessState {
+    static CURRENT: AtomicPtr<ProcessState> = AtomicPtr::new(std::ptr::null_mut());
+    let pid = std::process::id();
+    loop {
+        let current = CURRENT.load(Ordering::Acquire);
+        // Published nodes live until process exit. Reading their immutable PID
+        // never enters an inherited OnceLock or channel after fork.
+        if !current.is_null() && unsafe { (*current).pid } == pid {
+            return unsafe { &*current };
+        }
+        let fresh = Box::into_raw(Box::new(ProcessState {
+            pid,
+            runtime: OnceLock::new(),
+            cache: OnceLock::new(),
+            cache_gib: OnceLock::new(),
+            #[cfg(target_os = "linux")]
+            coalesce_pages: OnceLock::new(),
+        }));
+        if CURRENT.compare_exchange(current, fresh, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            // Do not destroy inherited state: its locks may have been held by
+            // other threads at fork, and its cache arena was MADV_DONTFORK.
+            return unsafe { &*fresh };
+        }
+        // This allocation was never published and contains only empty cells.
+        unsafe { drop(Box::from_raw(fresh)) };
+    }
+}
+
+#[cfg(all(target_os = "linux", test))]
 fn read_pages_local(
     file: Arc<File>,
     file_len: u64,
@@ -1391,12 +1513,13 @@ struct PageReadSpec {
     page_number: u64,
 }
 
-#[cfg(test)]
+#[cfg(all(target_os = "linux", test))]
 fn read_specs_local(specs: &[PageReadSpec], qd: usize) -> io::Result<Vec<PageData>> {
     let buffers = specs.iter().map(|_| PageData::zeroed()).collect();
     read_specs_local_with_buffers(specs, qd, buffers)
 }
 
+#[cfg(target_os = "linux")]
 fn read_specs_local_with_buffers(
     specs: &[PageReadSpec],
     qd: usize,
@@ -1443,6 +1566,16 @@ fn read_specs_local_with_buffers(
     })
 }
 
+#[cfg(not(target_os = "linux"))]
+fn read_specs_local_with_buffers(
+    _specs: &[PageReadSpec],
+    _qd: usize,
+    _buffers: Vec<PageData>,
+) -> io::Result<Vec<PageData>> {
+    Err(unsupported_backend())
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn has_consecutive_pages(specs: &[PageReadSpec]) -> bool {
     specs.windows(2).any(|pair| {
         pair[0].fd == pair[1].fd
@@ -1451,6 +1584,7 @@ fn has_consecutive_pages(specs: &[PageReadSpec]) -> bool {
     })
 }
 
+#[cfg(any(target_os = "linux", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CoalescedRead {
     first: usize,
@@ -1458,6 +1592,7 @@ struct CoalescedRead {
     iovec_start: usize,
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn plan_coalesced_reads(specs: &[PageReadSpec], max_pages: usize) -> Vec<CoalescedRead> {
     let mut reads = Vec::with_capacity(specs.len());
     let mut first = 0usize;
@@ -1484,6 +1619,7 @@ fn plan_coalesced_reads(specs: &[PageReadSpec], max_pages: usize) -> Vec<Coalesc
     reads
 }
 
+#[cfg(target_os = "linux")]
 fn read_pages_on_ring_coalesced(
     ring: &mut IoUring,
     specs: &[PageReadSpec],
@@ -1627,6 +1763,7 @@ fn read_pages_on_ring_coalesced(
     Ok(buffers)
 }
 
+#[cfg(target_os = "linux")]
 fn read_pages_on_ring(
     ring: &mut IoUring,
     specs: &[PageReadSpec],
@@ -1760,6 +1897,7 @@ impl CacheArena {
             return Err(io::Error::last_os_error());
         }
         let ptr: NonNull<u8> = NonNull::new(ptr.cast()).unwrap();
+        #[cfg(target_os = "linux")]
         unsafe {
             libc::madvise(ptr.as_ptr().cast(), len, libc::MADV_DONTDUMP);
             libc::madvise(ptr.as_ptr().cast(), len, libc::MADV_DONTFORK);
@@ -1794,6 +1932,7 @@ impl Drop for CacheArena {
 }
 
 struct DirectCache {
+    pid: u32,
     arena: CacheArena,
     set_count: usize,
     ways: usize,
@@ -1811,8 +1950,9 @@ struct CacheLease {
 }
 
 impl CacheLease {
-    fn valid(&self) -> &[u8] {
-        self.cache.arena.page(self.slot, self.valid_len())
+    fn valid(&self) -> io::Result<&[u8]> {
+        check_process(self.cache.pid)?;
+        Ok(self.cache.arena.page(self.slot, self.valid_len()))
     }
 
     fn valid_len(&self) -> usize {
@@ -1822,6 +1962,9 @@ impl CacheLease {
 
 impl Drop for CacheLease {
     fn drop(&mut self) {
+        if self.cache.pid != std::process::id() {
+            return;
+        }
         let previous = self.cache.pins[self.slot].fetch_sub(1, Ordering::Release);
         debug_assert!(previous > 0);
     }
@@ -1845,9 +1988,9 @@ struct DirectReadPlan {
 }
 
 impl DirectReadPlan {
-    fn fail(&self, _message: &str) {
-        for read in &self.reads {
-            if let Some(slot) = read.slot {
+    fn fail(&mut self, _message: &str) {
+        for read in &mut self.reads {
+            if let Some(slot) = read.slot.take() {
                 self.cache.abort_fill(slot, read.key.packed());
             }
         }
@@ -1903,11 +2046,7 @@ impl Drop for DirectReadPlan {
         // A cancelled batch still owns every reservation it has not
         // published. Return those LOADING slots so they cannot become
         // permanent transient-read bypasses.
-        for read in &mut self.reads {
-            if let Some(slot) = read.slot.take() {
-                self.cache.abort_fill(slot, read.key.packed());
-            }
-        }
+        self.fail("canceled read");
     }
 }
 
@@ -1918,11 +2057,10 @@ pub struct PendingDirectRead {
 
 impl PendingDirectRead {
     fn finish(mut self) -> io::Result<Vec<PreparedPage>> {
-        let plan = self.plan.take().unwrap();
+        let mut plan = self.plan.take().unwrap();
         let pages = if let Some(result) = self.result.take() {
             let received = result
-                .recv()
-                .map_err(|_| other_error("edge-I/O owner dropped direct-cache response"))?;
+                .recv()?;
             match received {
                 Ok(batch)
                     if batch.groups.as_slice() == [(0, batch.pages.len())]
@@ -2027,6 +2165,7 @@ impl DirectCache {
             slot_count as f64 / 1_000_000.0,
         );
         Ok(Self {
+            pid: std::process::id(),
             arena,
             set_count,
             ways,
@@ -2172,6 +2311,9 @@ impl DirectCache {
     }
 
     fn abort_fill(&self, slot: usize, key: u64) {
+        if self.pid != std::process::id() {
+            return;
+        }
         // A LOADING slot has exactly one owner and its exclusive pin prevents
         // all readers. Clear that pin before making the slot empty.
         if self.tags[slot].load(Ordering::Acquire) == (key | CACHE_LOADING_BIT) {
@@ -2189,7 +2331,7 @@ impl DirectCache {
         file_len: u64,
         page_numbers: &[u64],
     ) -> io::Result<PendingDirectRead> {
-        let plan = self.plan_read(file_id, page_numbers);
+        let mut plan = self.plan_read(file_id, page_numbers);
         let missing: Vec<u64> = plan.reads.iter().map(|read| read.key.page_number).collect();
         let result = if missing.is_empty() {
             None
@@ -2244,8 +2386,7 @@ impl DirectCache {
 }
 
 fn direct_cache() -> io::Result<&'static DirectCache> {
-    static CACHE: OnceLock<Result<DirectCache, String>> = OnceLock::new();
-    match CACHE.get_or_init(|| DirectCache::from_env().map_err(|error| error.to_string())) {
+    match process_state().cache.get_or_init(|| DirectCache::from_env().map_err(|error| error.to_string())) {
         Ok(cache) => Ok(cache),
         Err(message) => Err(other_error(message.clone())),
     }
@@ -2254,8 +2395,8 @@ fn direct_cache() -> io::Result<&'static DirectCache> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
     use std::sync::Barrier;
 
     fn lookup(cache: &'static DirectCache, key: PageKey) -> Lookup {
@@ -2390,6 +2531,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn io_uring_accepts_exact_eof_short_completion() {
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
@@ -2418,11 +2560,7 @@ mod tests {
         assert_eq!(buffered[1].valid_len(), 1373);
         assert_eq!(buffered[1].valid(), &bytes[PAGE_SIZE..]);
 
-        let direct = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECT | libc::O_CLOEXEC)
-            .open(tmp.path())
-            .unwrap();
+        let direct = open_direct_file(tmp.path()).unwrap();
         let direct_pages =
             read_pages_local(Arc::new(direct), bytes.len() as u64, &[0, 1], 2).unwrap();
         assert_eq!(direct_pages[0].valid_len(), PAGE_SIZE);
@@ -2431,6 +2569,7 @@ mod tests {
         assert_eq!(direct_pages[1].valid(), &bytes[PAGE_SIZE..]);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn batched_requests_preserve_request_and_page_mapping() {
         let mut first = tempfile::NamedTempFile::new().unwrap();

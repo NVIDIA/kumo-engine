@@ -163,16 +163,26 @@ use diskgraph_rowpack::{RowPackDecodeScratch, RowPackDecoder};
 /// fetch with the edge walk (wins when the per-batch working set fits L2);
 /// non-fused walks edges then fetches in a parallel pass (wins when it blows
 /// L2, where map-reduce hides memory latency better).
+/// Explicit I/O backends use non-fused dispatch, which supports their prepared pages.
 ///
 /// v1 heuristic: `working_set ≈ batch_size × Πlayer_fanout × ~128 B/row` vs the
 /// L2 budget (`DG_FUSED_L2_TARGET`, default 512 KB); below → fused. Missing
 /// fanouts count as 0 (a layer's true expansion is the relation's natural
 /// fanout, unknown here); bias toward non-fused on uncertainty.
 pub fn choose_fused_mode(
-    _reader: &diskgraph_index::graph::GraphIndexReader,
+    reader: &diskgraph_index::graph::GraphIndexReader,
     plan: &SamplingPlan,
     batch_size: usize,
 ) -> bool {
+    if reader.tables().iter().any(|table| {
+        (0..table.shard_count()).any(|index| {
+            table
+                .shard(index)
+                .is_some_and(|shard| shard.edge_backend() != EdgeIoBackend::Mmap)
+        })
+    }) {
+        return false;
+    }
     let nodes_per_seed: usize = plan
         .layers
         .iter()
@@ -2278,6 +2288,19 @@ impl DiskGraphEngine {
             ));
         }
 
+        let fused = request.flags.fused_feature_fetching;
+        if fused
+            && self
+                .readers
+                .iter()
+                .flatten()
+                .any(|shard| shard.reader.edge_backend() != EdgeIoBackend::Mmap)
+        {
+            return Err(EngineError::InvalidRequest(
+                "fused feature fetching is not yet implemented for explicit edge I/O".into(),
+            ));
+        }
+
         debug!(
             dataset_id = %request.dataset_id,
             seed_types = ?request.seed_nodes.keys().collect::<Vec<_>>(),
@@ -2311,8 +2334,6 @@ impl DiskGraphEngine {
                 state.capped_neighbor_counts[seed_type_id].resize(seed_ids.len(), 0);
             }
         }
-
-        let fused = request.flags.fused_feature_fetching;
 
         let per_seed = self.per_seed_recording(fused);
         if per_seed {
@@ -3601,17 +3622,6 @@ impl DiskGraphEngine {
         cutoff: Option<&NodeCutoff<'_>>,
     ) -> Result<()> {
         let fused = request.flags.fused_feature_fetching;
-        if fused
-            && self
-                .readers
-                .iter()
-                .flatten()
-                .any(|shard| shard.reader.edge_backend() != EdgeIoBackend::Mmap)
-        {
-            return Err(EngineError::InvalidRequest(
-                "fused feature fetching is not yet implemented for explicit edge I/O".into(),
-            ));
-        }
         let mut work_queue = Vec::new();
         let capped_counts = &state.capped_neighbor_counts;
         for (node_type_id, type_state) in state.type_states.iter_mut() {

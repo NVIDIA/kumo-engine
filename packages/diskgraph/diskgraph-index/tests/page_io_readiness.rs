@@ -3,7 +3,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Explicit native checks. Run on Linux with io_uring permitted; no EPERM skip.
-//! The fork regression is a diagnostic for a known PR424 readiness blocker.
+//! Forked workers submit new reads without inheriting parent runtime state.
+
+#![cfg(target_os = "linux")]
 
 use diskgraph_index::page_io::{
     page_read_request, read_prepared_pages, stats, submit_prepared_page_batch, EdgeIoBackend,
@@ -116,11 +118,8 @@ fn canceled_batches_release_reservations() {
     });
 }
 
-fn fork_read(
-    file: &Arc<File>,
-    direct: Option<&Arc<File>>,
-    backend: EdgeIoBackend,
-    len: u64,
+fn fork_child(
+    action: impl FnOnce() -> bool,
     timeout: Duration,
 ) -> bool {
     // Each diagnostic is selected alone in its own test process. The child
@@ -128,11 +127,7 @@ fn fork_read(
     let child = unsafe { libc::fork() };
     assert!(child >= 0);
     if child == 0 {
-        let result = read_prepared_pages(file, direct, 1003, len, backend, &[0]);
-        let code = match result {
-            Ok(pages) if pages.copy_range(0, 1).unwrap() == [0] => 0,
-            _ => 2,
-        };
+        let code = if action() { 0 } else { 2 };
         unsafe { libc::_exit(code) };
     }
     let deadline = Instant::now() + timeout;
@@ -157,6 +152,20 @@ fn fork_read(
     }
 }
 
+fn fork_read(
+    file: &Arc<File>,
+    direct: Option<&Arc<File>>,
+    backend: EdgeIoBackend,
+    len: u64,
+    timeout: Duration,
+) -> bool {
+    fork_child(|| {
+        read_prepared_pages(file, direct, 1003, len, backend, &[0])
+            .and_then(|pages| pages.copy_range(0, 1))
+            .is_ok_and(|bytes| bytes == [0])
+    }, timeout)
+}
+
 #[test]
 #[ignore = "run alone: native io_uring process lifecycle diagnostic"]
 fn fork_before_first_read() {
@@ -171,7 +180,7 @@ fn fork_before_first_read() {
 }
 
 #[test]
-#[ignore = "run alone: known PR424 blocker, inherited owner threads do not survive fork"]
+#[ignore = "run alone: requires native Linux io_uring"]
 fn fork_after_first_read() {
     let (_tmp, expected, file, _direct) = fixture();
     read_prepared_pages(
@@ -196,7 +205,7 @@ fn fork_after_first_read() {
 }
 
 #[test]
-#[ignore = "run alone with DG_DIRECT_CACHE_GB=1: inherited direct-cache arena is MADV_DONTFORK"]
+#[ignore = "run alone with DG_DIRECT_CACHE_GB=1: requires native Linux io_uring"]
 fn fork_with_populated_cache() {
     assert_eq!(std::env::var("DG_DIRECT_CACHE_GB").as_deref(), Ok("1"));
     let (_tmp, expected, file, direct) = fixture();
@@ -219,4 +228,71 @@ fn fork_with_populated_cache() {
         ),
         "child cannot read an inherited cache hit"
     );
+}
+
+#[test]
+#[ignore = "requires native Linux io_uring and O_DIRECT; set DG_DIRECT_CACHE_GB=1"]
+fn read_error_recovers_cache() {
+    let (tmp, expected, file, direct) = fixture();
+    let write_only = Arc::new(OpenOptions::new().write(true)
+        .custom_flags(libc::O_DIRECT | libc::O_CLOEXEC)
+        .open(tmp.path()).unwrap());
+    for iteration in 0..12 {
+        let file_id = 2000 + iteration;
+        assert!(read_prepared_pages(&file, Some(&write_only), file_id,
+            expected.len() as u64, EdgeIoBackend::Direct, &[0, 70]).is_err());
+        let prepared = read_prepared_pages(&file, Some(&direct), file_id,
+            expected.len() as u64, EdgeIoBackend::Direct, &[0, 70]).unwrap();
+        assert_eq!(prepared.copy_range(0, 71).unwrap(), expected[..71]);
+        assert_eq!(prepared.copy_range((PAGE_SIZE * 70) as u64,
+            expected.len() as u64).unwrap(), expected[PAGE_SIZE * 70..]);
+        // Use a fresh identity so every iteration exercises a real failed fill.
+        drop(prepared);
+    }
+}
+
+#[test]
+#[ignore = "run alone with DG_DIRECT_CACHE_GB=1: requires native Linux io_uring"]
+fn fork_handles_inherited_work() {
+    assert_eq!(std::env::var("DG_DIRECT_CACHE_GB").as_deref(), Ok("1"));
+    let (_tmp, expected, file, direct) = fixture();
+    let prepared = read_prepared_pages(&file, Some(&direct), 1005,
+        expected.len() as u64, EdgeIoBackend::Direct, &[0]).unwrap();
+    let make_pending = || {
+        submit_prepared_page_batch([EdgeIoBackend::Buffered, EdgeIoBackend::Direct]
+            .into_iter().map(|backend| page_read_request(&file, Some(&direct), 1006,
+                expected.len() as u64, backend, &[0, 1]).unwrap()).collect()).unwrap()
+    };
+    let mut pending_finish = Some(make_pending());
+    let mut pending_drop = Some(make_pending());
+    assert!(fork_child(|| {
+        drop(pending_drop.take());
+        if pending_finish.take().unwrap().finish().err()
+            .is_none_or(|error| error.kind() != std::io::ErrorKind::InvalidInput) {
+            return false;
+        }
+        if prepared.copy_range(0, 1).err()
+            .is_none_or(|error| error.kind() != std::io::ErrorKind::InvalidInput) {
+            return false;
+        }
+        if prepared.contiguous_range(0, 1).err()
+            .is_none_or(|error| error.kind() != std::io::ErrorKind::InvalidInput) {
+            return false;
+        }
+        if prepared.cursor_at(0).contiguous_range(0, 1).err()
+            .is_none_or(|error| error.kind() != std::io::ErrorKind::InvalidInput) {
+            return false;
+        }
+        let mut bytes = Vec::new();
+        if prepared.append_range(0, 1, &mut bytes).err()
+            .is_none_or(|error| error.kind() != std::io::ErrorKind::InvalidInput) {
+            return false;
+        }
+        read_prepared_pages(&file, Some(&direct), 1005, expected.len() as u64,
+            EdgeIoBackend::Direct, &[0]).and_then(|pages| pages.copy_range(0, 71))
+            .is_ok_and(|bytes| bytes == expected[..71])
+    }, Duration::from_secs(5)));
+    assert!(pending_finish.take().unwrap().finish().is_ok());
+    assert!(pending_drop.take().unwrap().finish().is_ok());
+    assert_eq!(prepared.copy_range(0, 71).unwrap(), expected[..71]);
 }

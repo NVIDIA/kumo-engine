@@ -90,6 +90,14 @@ def diskgraph_auto_config(
     worker counts, and rayon thread counts on a production ranking job's
     graph (500GB index, 64 vCPUs, 500GB RAM).
     """
+    backend = os.environ.get("DG_EDGE_BACKEND", "mmap")
+    if backend not in {"mmap", "buffered", "direct"}:
+        raise ValueError(
+            "DG_EDGE_BACKEND must be mmap|buffered|direct, "
+            f"got `{backend}`")
+    # This selects an automatic mode, not a caller's explicit fused request.
+    # Native readers use this same setting when each worker opens its index.
+    small_mode = "fused" if backend == "mmap" else "standalone"
     # On non-Linux platforms (macOS, Windows) multiprocessing uses 'spawn',
     # where re-importing the whole module graph per worker makes worker startup
     # expensive enough that single-process loading is the better default. The
@@ -98,11 +106,11 @@ def diskgraph_auto_config(
     # cost heuristic, not a correctness guard.
     if multiprocessing.get_start_method(allow_none=True) in (None, 'spawn') \
             and sys.platform != 'linux':
-        return {"mode": "fused", "num_workers": 0, "rayon_threads": 1}
+        return {"mode": small_mode, "num_workers": 0, "rayon_threads": 1}
 
     if estimated_edges < 5_000:
         return {
-            "mode": "fused",
+            "mode": small_mode,
             "num_workers": shm_safe_num_workers(max(2, min(cpu_count // 4,
                                                            16))),
             "rayon_threads": 1,

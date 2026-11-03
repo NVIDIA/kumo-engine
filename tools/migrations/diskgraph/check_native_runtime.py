@@ -52,6 +52,7 @@ def main() -> int:
     parser.add_argument('--backend', choices=('mmap', 'buffered', 'direct'), required=True)
     parser.add_argument('--manifest', required=True)
     parser.add_argument('--preinitialize', action='store_true')
+    parser.add_argument('--reuse-parent-dataset', action='store_true')
     args = parser.parse_args()
     assert diskgraph._c.__file__.startswith(sys.prefix + os.sep), diskgraph._c.__file__
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..'))
@@ -81,6 +82,8 @@ def main() -> int:
             'swap_edge_direction': False,
         },
     )
+    if args.reuse_parent_dataset:
+        assert len(list(dataset)) == 2, "parent dataset warmup must complete"
     loader = DataLoader(
         dataset,
         batch_size=None,
@@ -115,6 +118,7 @@ def main() -> int:
     print(json.dumps({
         'backend': args.backend,
         'preinitialized': args.preinitialize,
+        'reused_parent_dataset': args.reuse_parent_dataset,
         'native_module': diskgraph._c.__file__,
         'core_module': lightning_data.__file__,
         **outcome,

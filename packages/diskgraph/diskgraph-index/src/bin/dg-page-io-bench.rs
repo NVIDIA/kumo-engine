@@ -6,11 +6,13 @@
 //! O_DIRECT plus the experimental userspace cache.
 
 use anyhow::{anyhow, Result};
-use diskgraph_index::page_io::{read_prepared_pages, reset_stats, stats, EdgeIoBackend, PAGE_SIZE};
+use diskgraph_index::page_io::{
+    open_direct_file, read_prepared_pages, reset_stats, stats, EdgeIoBackend, PreparedPages,
+    PAGE_SIZE,
+};
 use memmap2::Mmap;
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
-use std::os::unix::fs::OpenOptionsExt;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -77,6 +79,16 @@ fn opt<T: std::str::FromStr>(args: &HashMap<String, String>, key: &str, default:
     }
 }
 
+fn page_checksum(prepared: &PreparedPages, requested: &[u64]) -> Result<u64> {
+    requested.iter().try_fold(0u64, |checksum, &page| {
+        let offset = page * PAGE_SIZE as u64;
+        let bytes = prepared
+            .contiguous_range(offset, offset + 1)?
+            .ok_or_else(|| anyhow!("first page byte was not contiguous"))?;
+        Ok(checksum.wrapping_add(bytes[0] as u64))
+    })
+}
+
 fn main() -> Result<()> {
     let args = parse_args()?;
     let file_count: usize = opt(&args, "file-count", 128usize)?;
@@ -130,12 +142,7 @@ fn main() -> Result<()> {
             return Err(anyhow!("input file is empty: {}", path.display()));
         }
         direct.push(if backend == EdgeIoBackend::Direct {
-            Some(Arc::new(
-                OpenOptions::new()
-                    .read(true)
-                    .custom_flags(libc::O_DIRECT | libc::O_CLOEXEC)
-                    .open(path)?,
-            ))
+            Some(Arc::new(open_direct_file(path)?))
         } else {
             None
         });
@@ -198,7 +205,7 @@ fn main() -> Result<()> {
                             backend,
                             batch,
                         )?;
-                        checksum = checksum.wrapping_add(prepared.page_count() as u64);
+                        checksum = checksum.wrapping_add(page_checksum(&prepared, batch)?);
                     }
                 }
                 Ok(checksum)

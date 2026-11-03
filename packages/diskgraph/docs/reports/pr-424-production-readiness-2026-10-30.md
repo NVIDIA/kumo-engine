@@ -5,6 +5,43 @@ backend parity have useful coverage, but error recovery, process lifecycle,
 automatic dispatch and the supported macOS build have reproduced failures.
 Keep the default `DG_EDGE_BACKEND=mmap` while those issues are resolved.
 
+## November 3 follow-up
+
+The candidate now incorporates Engine `main` through `567f6cab`, including the
+extracted native runtime and timestamp clock changes. The October 30 findings
+below remain the historical reproduction record; this follow-up tracks fixes.
+
+- Cache cleanup now relinquishes reservation ownership once. Native runtime and
+  cache state are process-owned, including fork during initialization, locked
+  cache state, populated cache and inherited in-flight work. The host index and
+  engine suites pass 138 tests with 11 opt-in tests ignored; all selected native
+  error/lifecycle diagnostics pass when run explicitly. All-target Clippy passes.
+- Linux-only dependencies and I/O primitives are gated, and mmap remains the
+  non-Linux implementation. A real macOS ARM64 wheel build/import remains a
+  required CI gate; a Linux cross-check alone does not complete that gate.
+- Native automatic fused dispatch is capability-aware. Actual CPU training also
+  exposed Core's automatic caller forcing `fused=True`. Backend-aware Core
+  configuration fixes that gap while preserving mmap's worker/thread policy;
+  118 configuration tests pass. The training test exercises the actual default.
+- The provider benchmark now checks the same page bytes for all three backends;
+  its bounded native run passes. This establishes digest parity, not a speedup.
+- All eight task types complete real CPU mmap fits, validate eight prediction
+  entities and match repeated/reloaded predictions. Export row order can vary
+  across independently generated fixtures, so selecting their first rows does
+  not establish equivalent prediction inputs. The full 24-fit matrix selects
+  canonical entity/time keys, retains each backend's training/reload checks and
+  compares predictions using identical saved model and snapshot artifacts across
+  backends, at absolute tolerance 1e-6. That matrix, GPU training and real macOS
+  packaging remain pending.
+- The updated native wrapper and Core fork lifecycle checks pass 21 tests with
+  two platform-specific skips, including a warmed dataset reused after fork.
+  Existing runtime end-to-end tests pass 44 tests, and related Core tests pass
+  155 tests.
+
+The earlier fork PR's 41 failed checks all stopped at AWS credential setup,
+before tests. The development branch and replacement draft now live in
+`NVIDIA/kumo-engine`; their current CI results must be assessed independently.
+
 ## Provenance and scope
 
 - Engine base: `dbe45326705c706d1f87beb2b1dd320218edbc70`, freshly fetched

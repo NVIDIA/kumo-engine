@@ -7,9 +7,9 @@ use crate::layout::{
     EdgeListView, OffsetFileHeader, RelationLayout, DELTA_CHUNK, EDGES_FILENAME, OFFSETS_FILENAME,
 };
 use crate::page_io::{
-    page_read_request, page_read_request_owned, pages_for_ranges, read_prepared_pages,
-    submit_prepared_pages, EdgeIoBackend, PageReadRequest, PendingPreparedPages, PreparedPages,
-    PAGE_SIZE,
+    open_direct_file, page_read_request, page_read_request_owned, pages_for_ranges,
+    read_prepared_pages, submit_prepared_pages, EdgeIoBackend, PageReadRequest,
+    PendingPreparedPages, PreparedPages, PAGE_SIZE,
 };
 use crate::prefetch;
 use anyhow::Result;
@@ -18,9 +18,9 @@ use libc::madvise;
 use memmap2::Mmap;
 use smallvec::SmallVec;
 use std::borrow::Cow;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
+#[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -139,12 +139,7 @@ impl ShardReader {
         }
         let direct_edges_file =
             if edge_backend == EdgeIoBackend::Direct && edges_file.metadata()?.len() > 0 {
-                Some(Arc::new(
-                    OpenOptions::new()
-                        .read(true)
-                        .custom_flags(libc::O_DIRECT | libc::O_CLOEXEC)
-                        .open(&edges_path)?,
-                ))
+                Some(Arc::new(open_direct_file(&edges_path)?))
             } else {
                 None
             };
@@ -180,6 +175,7 @@ impl ShardReader {
         let edge_count = header.edge_count;
         tracing::info!(
             dir = %dir.display(),
+            edge_backend = edge_backend.name(),
             edge_count,
             total_offsets = header.total_offsets,
             delta_bytes = header.delta_bytes,
@@ -867,6 +863,7 @@ fn advise_random(map: &Mmap) {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn advise_file_random(file: &File) -> std::io::Result<()> {
     let ret = unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_RANDOM) };
     if ret == 0 {
@@ -874,6 +871,11 @@ fn advise_file_random(file: &File) -> std::io::Result<()> {
     } else {
         Err(std::io::Error::from_raw_os_error(ret))
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn advise_file_random(_file: &File) -> std::io::Result<()> {
+    EdgeIoBackend::Buffered.ensure_supported()
 }
 
 fn read_len_le(buf: &[u8]) -> usize {

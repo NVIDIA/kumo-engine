@@ -9,8 +9,11 @@ checks deliberately fail on EPERM, rather than treating denied I/O as success.
 """
 
 import datetime
+import gc
 import json
+import multiprocessing
 import os
+from functools import partial
 
 import diskgraph
 import pyarrow as pa
@@ -79,6 +82,134 @@ def iterator_options():
     }
 
 
+def _check_inherited_handles(handles, connection):
+    """Exercise actual native owners, then destroy them before child exit."""
+    index, iterator = handles
+    operations = (
+        partial(index.iter, **iterator_options(), fused=False),
+        iterator.num_samples,
+        iterator.worker_batch_count,
+        iterator.stage_size,
+        partial(len, iterator),
+        partial(next, iterator),
+    )
+    errors = []
+    try:
+        for operation in operations:
+            try:
+                operation()
+            except diskgraph.DiskgraphSystemError as error:
+                assert "another process" in str(error), str(error)
+                errors.append(str(error))
+            else:
+                raise AssertionError("inherited native handle accepted an operation")
+        del operations, operation, index, iterator
+        handles.clear()
+        gc.collect()
+        connection.send({"errors": len(errors), "dropped": True})
+    except Exception as error:
+        connection.send({"failed": repr(error)})
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("backend", ("mmap", "direct"))
+def test_inherited_runtime_handles(seed_table_fixture, monkeypatch, backend):
+    monkeypatch.setenv("DG_EDGE_BACKEND", backend)
+
+    def open_handles():
+        index = diskgraph.RuntimeIndex(
+            seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=1
+        )
+        iterator, count = index.iter(**iterator_options(), fused=False)
+        assert count == 6
+        assert next(iterator)["task"]["input_ids"].to_pylist()
+        return [index, iterator]
+
+    handles = open_handles()
+    context = multiprocessing.get_context("fork")
+    receiver, sender = context.Pipe(duplex=False)
+    child = context.Process(target=_check_inherited_handles, args=(handles, sender))
+    child.start()
+    sender.close()
+    try:
+        child.join(timeout=5)
+        assert not child.is_alive(), "inherited runtime access or destruction hung"
+        assert child.exitcode == 0
+        assert receiver.poll(), "child exited without validating inherited handles"
+        assert receiver.recv() == {"errors": 6, "dropped": True}
+    finally:
+        if child.is_alive():
+            child.kill()
+            child.join(timeout=5)
+        receiver.close()
+    # Fork does not invalidate the creator's handles or ordinary epoch reuse.
+    assert len(list(handles[1])) == 1
+    iterator, count = handles[0].iter(**iterator_options(), fused=False)
+    assert count == 6 and len(list(iterator)) == 2
+
+
+def _identity(batch):
+    return batch
+
+
+@pytest.mark.skipif(
+    os.environ.get("DG_TEST_CORE_IO") != "1",
+    reason="requires checkout kumo_core and its real Torch dependencies",
+)
+@pytest.mark.parametrize("backend", ("mmap", "direct"))
+def test_warmed_dataset_worker(seed_table_fixture, monkeypatch, backend):
+    from kumo_core.diskgraph.lightning_data import (
+        DiskgraphTaskBatchIterable,
+        _ShuffleStreamState,
+    )
+    from torch.utils.data import DataLoader
+
+    monkeypatch.setenv("DG_EDGE_BACKEND", backend)
+    options = iterator_options()
+    dataset = DiskgraphTaskBatchIterable(
+        manifest_path=seed_table_fixture["manifest_path"],
+        stage="train",
+        sampling_plan=options["sampling_plan"],
+        batch_size=3,
+        shuffle=False,
+        drop_last=False,
+        base_seed=42,
+        shuffle_state=_ShuffleStreamState(),
+        num_seeds=6,
+        replay=False,
+        runtime_options={
+            "num_threads": 1,
+            "fused": False,
+            "entity_node_type": "users",
+            "swap_edge_direction": False,
+        },
+    )
+    reference = snapshot(list(dataset))
+    assert len(reference) == 2
+    owner = dataset._runtime_index()
+    assert dataset._runtime_index() is owner
+    assert snapshot(list(dataset)) == reference
+    state = dataset.__getstate__()
+    assert state["_runtime_index_handle"] is None
+    assert state["_runtime_index_pid"] is None
+    loader = DataLoader(
+        dataset,
+        batch_size=None,
+        num_workers=1,
+        multiprocessing_context="fork",
+        collate_fn=_identity,
+        timeout=3,
+    )
+    iterator = iter(loader)
+    try:
+        assert snapshot(list(iterator)) == reference
+    finally:
+        iterator._shutdown_workers()
+    assert dataset._runtime_index() is owner
+    assert snapshot(list(dataset)) == reference
+
+
 def test_parent_tt_backend_parity(seed_table_fixture, monkeypatch):
     reference = None
     for backend in ("mmap", "buffered", "direct"):
@@ -101,23 +232,26 @@ def test_parent_tt_backend_parity(seed_table_fixture, monkeypatch):
 
 
 @pytest.mark.parametrize("backend", ("buffered", "direct"))
-@pytest.mark.xfail(
-    strict=True,
-    raises=diskgraph.DiskgraphConfigError,
-    reason="PR424 auto-fused heuristic selects unsupported explicit-I/O dispatch",
-)
 def test_auto_fused_backend(seed_table_fixture, monkeypatch, backend):
     monkeypatch.setenv("DG_EDGE_BACKEND", backend)
     index = diskgraph.RuntimeIndex(
         seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=1
     )
-    try:
-        iterator, count = index.iter(**iterator_options())
-        assert len(list(iterator)) == 2
-        assert count == 6
-    except diskgraph.DiskgraphConfigError as error:
-        assert "fused feature fetching is not yet implemented for explicit edge I/O" in str(error)
-        raise
+    iterator, count = index.iter(**iterator_options())
+    observed = snapshot(list(iterator))
+    explicit, explicit_count = index.iter(**iterator_options(), fused=False)
+    assert observed == snapshot(list(explicit))
+    assert len(observed) == 2
+    assert count == explicit_count == 6
+
+
+@pytest.mark.parametrize("backend", ("buffered", "direct"))
+@pytest.mark.parametrize("layers", ([], iterator_options()["sampling_plan"]["layers"]))
+def test_explicit_fused_rejected(seed_table_fixture, monkeypatch, backend, layers):
+    monkeypatch.setenv("DG_EDGE_BACKEND", backend)
+    engine = diskgraph.SamplerEngine(seed_table_fixture["parent_root"], num_threads=1)
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="fused feature fetching is not yet implemented"):
+        list(engine.sample({"users": [0]}, json.dumps({"layers": layers}), fused=True))
 
 
 def test_projected_backend_parity(seed_table_fixture, monkeypatch):
