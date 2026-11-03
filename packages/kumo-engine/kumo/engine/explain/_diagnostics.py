@@ -239,6 +239,24 @@ def _read_training(guard: _Guard, trial: Path,
                 producer_notes[name] = (
                     'Recorded two-tower link prediction. ' + rule +
                     ' Eligibility alone does not explain missing artifacts.')
+        elif provenance['selection_verified'] and payload['context'].get(
+                'task_type') == 'forecasting':
+            for path in dict.fromkeys((original, trial)):
+                recorded = config if path == original else guard.json(
+                    path / 'config.json')
+                plan = guard.json(path / 'model_plan.json')
+                if (recorded['module_kwargs'] is not None
+                        or recorded['head']['_target_'] !=
+                        'kumo_core.modeling.heads.forecasting.ForecastingHead'
+                        or not isinstance(plan['model_architecture'], dict)):
+                    raise ValueError('Unverified forecasting configuration')
+            for name, rule in (
+                ('cohorts', 'Column cohorts exclude forecasting tasks.'),
+                ('samples',
+                 'Selected-example collection excludes forecasting tasks.')):
+                producer_notes[name] = (
+                    'Recorded forecasting. ' + rule +
+                    ' Eligibility alone does not explain missing artifacts.')
     except (OSError, ValueError, TypeError, KeyError):
         pass
 

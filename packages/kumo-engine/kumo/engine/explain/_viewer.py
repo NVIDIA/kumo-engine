@@ -317,7 +317,7 @@ const samples=obj(data.samples),coverage=obj(samples.coverage),references=list(s
 note(examples,'Coverage: '+text(coverage.references_listed??references.length)+' listed of '+text(coverage.references_total)+' recorded references; '
 +text(coverage.available)+' available graph files; '+text(coverage.loaded??Object.keys(bodies).length)+' loaded; '
 +text(coverage.missing)+' missing; '+text(coverage.malformed)+' malformed; '+text(coverage.excluded)+' excluded by load limits.');
-note(examples,'Preloaded example identities and values may be saved in notebook HTML or widget state. '
+if(references.length)note(examples,'Preloaded example identities and values may be saved in notebook HTML or widget state. '
 +'Inspect other retained graphs in Python with explanations.sample(collector_id).');
 const sampleView=el('div',undefined,'kt-detail'),sampleButtons=[];
 const identityNote=(parent,title,value,tag='p')=>{

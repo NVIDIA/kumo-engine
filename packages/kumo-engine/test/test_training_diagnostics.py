@@ -391,27 +391,36 @@ def test_unverified_selection_does_not_identify_a_winner(tmp_path):
     assert 'Selection unverified:' in view._repr_html_()
 
 
-@pytest.mark.parametrize('task',
-                         ['static_link_prediction', 'temporal_link_prediction'])
+@pytest.mark.parametrize(
+    'task',
+    ['static_link_prediction', 'temporal_link_prediction', 'forecasting'])
 @pytest.mark.parametrize('refit', [False, True])
 @pytest.mark.parametrize('state', [
     'missing', 'retained', 'invalid', 'disabled', 'failed', 'unknown_module',
     'original_conflict', 'plan_conflict', 'missing_config', 'missing_plan',
     'malformed_config', 'oversized_plan', 'escaping_plan', 'unknown_task',
-    'unverified_selection', 'cohort_conflict', 'sample_conflict'
+    'unverified_selection', 'cohort_conflict', 'sample_conflict',
+    'missing_module_key', 'head_conflict', 'malformed_head',
+    'malformed_architecture'
 ])
-def test_two_tower_guidance_preserves_observation_and_abstains(
+def test_producer_guidance_preserves_observation_and_abstains(
         tmp_path, task, refit, state):
     run, trial = _run(tmp_path, refit=refit)
     trial = Path(trial)
     original = trial.with_name('version_2')
     for path in dict.fromkeys((original, trial)):
         save_json(
-            dict(refit_cfg=dict(refitted_trainval=refit),
-                 module_kwargs=dict(module='two_tower')),
-            str(path / 'config.json'))
-        save_json(dict(model_architecture=dict(module='two_tower')),
-                  str(path / 'model_plan.json'))
+            dict(
+                refit_cfg=dict(refitted_trainval=refit),
+                module_kwargs=None if task == 'forecasting' else dict(
+                    module='two_tower'), head={
+                        '_target_':
+                        'kumo_core.modeling.heads.forecasting.ForecastingHead'
+                    }), str(path / 'config.json'))
+        save_json(
+            dict(model_architecture=dict(
+                module='???' if task == 'forecasting' else 'two_tower')),
+            str(path / 'model_plan.json'))
     save_json(dict(task_type=task),
               str(run / 'published-model/manifests/task.json'))
     if state in ('retained', 'disabled', 'failed', 'cohort_conflict',
@@ -431,11 +440,22 @@ def test_two_tower_guidance_preserves_observation_and_abstains(
     elif state in ('unknown_module', 'original_conflict', 'malformed_config'):
         path = original if state == 'original_conflict' else trial
         config = json.loads((path / 'config.json').read_text())
-        config['module_kwargs'] = (None if state == 'malformed_config' else {
+        config['module_kwargs'] = ([] if state == 'malformed_config' else {
             'module':
             'unknown' if state == 'unknown_module' else 'shallow_rhs'
         })
         save_json(config, str(path / 'config.json'))
+    elif state in ('missing_module_key', 'head_conflict', 'malformed_head'):
+        config = json.loads((trial / 'config.json').read_text())
+        if state == 'missing_module_key':
+            del config['module_kwargs']
+        else:
+            config['head'] = (None if state == 'malformed_head' else {
+                '_target_': 'untrusted.module.Head'
+            })
+        save_json(config, str(trial / 'config.json'))
+    elif state == 'malformed_architecture':
+        save_json(dict(model_architecture=None), str(trial / 'model_plan.json'))
     elif state in ('missing_config', 'missing_plan'):
         (trial /
          ('config.json' if state == 'missing_config' else 'model_plan.json')
@@ -461,11 +481,15 @@ def test_two_tower_guidance_preserves_observation_and_abstains(
     availability = explanations.availability
     result = build_training_payload(explanations)
     expected = state in ('missing', 'retained', 'invalid', 'disabled', 'failed')
+    expected |= task != 'forecasting' and state in ('head_conflict',
+                                                    'malformed_head')
     for name in ('gradient', 'cohorts', 'samples'):
         note = result[name].pop('producer_note', None)
-        assert bool(note) == expected
+        assert bool(note) == (expected
+                              and (task != 'forecasting' or name != 'gradient'))
         if note:
-            assert 'two-tower link prediction' in note
+            assert ('Recorded forecasting.' if task == 'forecasting' else
+                    'two-tower link prediction') in note
             assert 'Eligibility alone does not explain missing artifacts.' in note
             result[name]['producer_note'] = note
             assert note in static_summary(result)
