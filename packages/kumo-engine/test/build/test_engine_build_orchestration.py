@@ -89,12 +89,14 @@ def test_missing_component_wheel_fails(builder: ModuleType, tmp_path: Path) -> N
         )
 
 
+@pytest.mark.parametrize("stale", [False, True])
 def test_notice_zig_and_docker_share_orchestration(
     builder: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    stale: bool,
 ) -> None:
-    """Preserve release-only checks and forward native build settings."""
+    """Preserve release checks while invoking notice and merge APIs directly."""
     repository = tmp_path / "repo"
     local = repository / "packages/kumo-engine"
     local.mkdir(parents=True)
@@ -116,6 +118,15 @@ def test_notice_zig_and_docker_share_orchestration(
     work = tmp_path / "work"
     work.mkdir()
     output = tmp_path / "output.whl"
+    output.touch()
+    legal = Mock()
+    legal.render.return_value = b"stale" if stale else b""
+    legal.selected_license_expression.return_value = "Apache-2.0 AND MIT"
+    merger = Mock()
+    merger.merge_wheels.return_value = output
+    merger.MergeOptions.side_effect = lambda **kwargs: argparse.Namespace(**kwargs)
+    load = Mock(side_effect=[legal, merger])
+    monkeypatch.setattr(builder, "_load_module", load)
     native = "diskgraph-1-cp311-abi3-manylinux_2_17_x86_64.whl"
 
     def run(
@@ -124,11 +135,6 @@ def test_notice_zig_and_docker_share_orchestration(
         if command[1:4] == ["-m", "pip", "wheel"]:
             assert environment["DISKGRAPH_BUILD_ZIG"] == "1"
             (work / "wheels" / native).touch()
-        if "--license-expression" in command and "--base-license" in command:
-            return "Apache-2.0 AND MIT\n"
-        if Path(command[1]).name == "merge_wheels.py":
-            output.touch()
-            return str(output)
         return ""
 
     invoked = Mock(side_effect=run)
@@ -144,13 +150,34 @@ def test_notice_zig_and_docker_share_orchestration(
         verify_image="test:image",
     )
 
+    if stale:
+        with pytest.raises(RuntimeError, match="notice is stale"):
+            builder._assemble(args, {"PYTHON": "python"}, work)
+        merger.merge_wheels.assert_not_called()
+        return
+
     assert builder._assemble(args, {"PYTHON": "python"}, work) == output
 
     commands = [call.args[0] for call in invoked.call_args_list]
     assert ["cargo", "install", "cargo-zigbuild", "--locked"] in commands
-    assert any("--check" in command for command in commands)
-    assert any("--components" in command for command in commands)
-    assert any("--offline-report" in command for command in commands)
+    assert legal.render.call_count == 2
+    assert legal.render.call_args.kwargs["components_path"] == work / "components.tsv"
+    assert legal.render.call_args.kwargs["artifact_ids"] == builder.NOTICE_ARTIFACTS
+    legal.selected_license_expression.assert_called_once_with(
+        legal.load_json.return_value,
+        legal.load_json.return_value,
+        artifact_ids=builder.NOTICE_ARTIFACTS,
+        base_licenses=("Apache-2.0",),
+    )
+    options = merger.merge_wheels.call_args.args[0]
+    assert options.offline_report is True
+    assert options.license_expression == "Apache-2.0 AND MIT"
+    assert options.notice == work / "THIRD-PARTY.txt"
+    assert all(
+        "gen_third_party.py" not in str(command)
+        and "merge_wheels.py" not in str(command)
+        for command in commands
+    )
     docker = commands[-1]
     assert docker[:3] == ["docker", "run", "--rm"]
     assert "test:image" in docker

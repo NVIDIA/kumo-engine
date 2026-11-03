@@ -646,7 +646,12 @@ def test_wheel_uses_torch_fallbacks_without_native_extensions(
     (repo / 'THIRD-PARTY.txt').touch()
     generator = repo / 'scripts/gen_third_party.py'
     generator.parent.mkdir()
-    generator.write_text("print('Apache-2.0 AND MIT')\n")
+    generator.write_text(
+        "DEFAULT_INVENTORY = DEFAULT_POLICY = None\n"
+        "def load_json(path): return {}\n"
+        "def selected_license_expression(*args, **kwargs): "
+        "return 'Apache-2.0 AND MIT'\n"
+    )
     calls = tmp_path / 'calls.jsonl'
     python = tmp_path / 'python'
     python.write_text(f'''#!{sys.executable}

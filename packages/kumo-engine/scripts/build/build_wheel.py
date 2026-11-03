@@ -11,6 +11,7 @@ Linux; source installations select native compilation through --no-zig.
 """
 
 import argparse
+import importlib.util
 import logging
 import os
 import platform
@@ -20,18 +21,27 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import ModuleType
 from zipfile import ZipFile
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 logger = logging.getLogger(__name__)
-NOTICE_ARTIFACTS = [
-    "--artifact",
+NOTICE_ARTIFACTS = (
     "diskgraph-extension",
-    "--artifact",
     "diskgraph-ingest",
-    "--artifact",
     "kumo-core-bundled-source",
-]
+)
+
+
+def _load_module(path: Path) -> ModuleType:
+    name = f"_kumo_build_{path.stem}"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load build module {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _run(
@@ -266,59 +276,42 @@ def _assemble(
         raise RuntimeError(
             f"Expected a manylinux DiskGraph wheel from Zig, got {native.name}"
         )
-    generator = repository / "scripts/gen_third_party.py"
+    legal = _load_module(repository / "scripts/gen_third_party.py")
+    inventory = legal.load_json(legal.DEFAULT_INVENTORY)
+    policy = legal.load_json(legal.DEFAULT_POLICY)
     if generate_notice:
-        _run([python, str(generator), "--check", str(notice)], environment)
+        if notice.read_bytes() != legal.render(inventory, policy):
+            raise RuntimeError("The committed third-party notice is stale")
         notice = work / "THIRD-PARTY.txt"
-        _run(
-            [
-                python,
-                str(generator),
-                "--wheels",
-                str(wheels),
-                "--components",
-                str(manifest),
-                *NOTICE_ARTIFACTS,
-                "--output",
-                str(notice),
-            ],
-            environment,
+        notice.write_bytes(
+            legal.render(
+                inventory,
+                policy,
+                wheels_dir=wheels,
+                components_path=manifest,
+                artifact_ids=NOTICE_ARTIFACTS,
+            )
         )
-    expression = _run(
-        [
-            python,
-            str(generator),
-            *NOTICE_ARTIFACTS,
-            "--base-license",
-            "Apache-2.0",
-            "--license-expression",
-        ],
-        environment,
-        capture=True,
-    ).strip()
-    merged = _run(
-        [
-            python,
-            str(Path(__file__).with_name("merge_wheels.py")),
-            str(wheels),
-            str(manifest),
-            str(output),
-            "--version",
-            version,
-            "--platform-tag",
-            tag,
-            "--notice",
-            str(notice),
-            "--license",
-            str(license_file),
-            "--license-expression",
-            expression,
-            *(["--offline-report"] if args.offline_report else []),
-        ],
-        environment,
-        capture=True,
+    expression = legal.selected_license_expression(
+        inventory,
+        policy,
+        artifact_ids=NOTICE_ARTIFACTS,
+        base_licenses=("Apache-2.0",),
     )
-    wheel = Path(merged.strip().splitlines()[-1])
+    merger = _load_module(Path(__file__).with_name("merge_wheels.py"))
+    wheel: Path = merger.merge_wheels(
+        merger.MergeOptions(
+            wheels_dir=wheels,
+            components_tsv=manifest,
+            out_dir=output,
+            version=version,
+            platform_tag=tag,
+            notice=notice,
+            license=license_file,
+            license_expression=expression,
+            offline_report=args.offline_report,
+        )
+    )
     logger.info("wrote %s (%s MiB)", wheel, wheel.stat().st_size // 1024**2)
     if args.verify_image:
         verification = work / "verify.py"

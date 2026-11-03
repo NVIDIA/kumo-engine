@@ -26,13 +26,16 @@ import configparser
 import csv
 import hashlib
 import json
+import logging
 import os
 import re
 import sys
 import tempfile
 import zipfile
+from dataclasses import dataclass
 from email.parser import Parser
 from pathlib import Path
+from typing import NoReturn
 
 try:
     from packaging.specifiers import InvalidSpecifier, SpecifierSet
@@ -57,8 +60,16 @@ def log(message):
     print(f'[wheel] {message}', file=sys.stderr, flush=True)
 
 
-def fail(message):
-    raise SystemExit(f'[wheel] ERROR: {message}')
+def fail(message: str) -> NoReturn:
+    """Reject invalid wheel inputs.
+
+    Args:
+        message: Description of the invalid component or metadata.
+
+    Raises:
+        ValueError: Always, with the input validation message.
+    """
+    raise ValueError(f'[wheel] ERROR: {message}')
 
 
 def canonical(dist):
@@ -293,7 +304,36 @@ def resolve_requirements(components):
     }, reached)
 
 
-def main():
+@dataclass(frozen=True)
+class MergeOptions:
+    """Inputs and metadata for a complete engine wheel.
+
+    Args:
+        wheels_dir: Directory containing the component wheels.
+        components_tsv: Component filenames, classifications, and origins.
+        out_dir: Destination directory for the bundle.
+        version: Bundle version in PEP 440 form.
+        platform_tag: Platform claimed by the native bundle.
+        notice: Reviewed or generated third-party notice.
+        license: First-party license file.
+        license_expression: Combined SPDX expression.
+        name: Published distribution name.
+        offline_report: Whether to report remaining installer requirements.
+    """
+
+    wheels_dir: Path
+    components_tsv: Path
+    out_dir: Path
+    version: str
+    platform_tag: str
+    notice: Path
+    license: Path
+    license_expression: str
+    name: str = ENGINE
+    offline_report: bool = False
+
+
+def _parse_args() -> MergeOptions:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('wheels_dir', type=Path)
     parser.add_argument(
@@ -314,7 +354,22 @@ def main():
     parser.add_argument('--license-expression', required=True,
                         help='SPDX expression for the whole wheel')
     parser.add_argument('--offline-report', action='store_true')
-    args = parser.parse_args()
+    return MergeOptions(**vars(parser.parse_args()))
+
+
+def merge_wheels(args: MergeOptions) -> Path:
+    """Merge component wheels without parsing arguments or printing a result.
+
+    Args:
+        args: Component inputs, bundle metadata, and output settings.
+
+    Returns:
+        Path to the completed wheel.
+
+    Raises:
+        ValueError: If components, dependencies, or wheel metadata conflict.
+        OSError: If reading components or writing the wheel fails.
+    """
     name, version = args.name, args.version
     wheels_dir = args.wheels_dir
 
@@ -536,6 +591,22 @@ def main():
             print(f'  [{extra}]', file=sys.stderr)
             for requirement in requirements:
                 print(f'    {requirement}', file=sys.stderr)
+    return output
+
+
+def main() -> None:
+    """Parse CLI options, merge the wheels, and print the output path.
+
+    Raises:
+        SystemExit: If CLI arguments or wheel inputs are invalid.
+        OSError: If reading components or writing the wheel fails.
+    """
+    options = _parse_args()
+    try:
+        output = merge_wheels(options)
+    except ValueError as error:
+        logging.getLogger(__name__).error("%s", error)
+        raise SystemExit(1) from error
     print(output)
 
 

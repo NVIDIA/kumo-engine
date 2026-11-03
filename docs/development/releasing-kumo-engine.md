@@ -179,6 +179,10 @@ All build tooling, including `kumo_engine_build_backend.py`, lives in
 `packages/kumo-engine/scripts/build/`. The package declares
 `backend-path = ["scripts/build"]` so pip loads the backend within its source tree.
 
+Within the assembler, merging and notice generation use direct Python function
+calls. Pip component builds retain subprocess isolation; Cargo, Git, binary
+inspection, and Docker run as external tools.
+
 The assembler selects the backend's internal `kumo-component=true` mode for
 its engine input wheel to avoid recursively assembling another bundle.
 
