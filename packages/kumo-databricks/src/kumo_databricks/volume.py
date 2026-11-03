@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Unity Catalog volumes as a pyarrow filesystem, over the Files API."""
+"""Unity Catalog volumes as a pyarrow filesystem."""
 
 from __future__ import annotations
 
@@ -36,7 +36,6 @@ def volume_filesystem(client: WorkspaceClient) -> FileSystem:
 
 @contextmanager
 def _translated(path: str) -> Iterator[None]:
-    """OS errors, unchained; non-SDK text may hold a signed URL."""
     try:
         yield
     except NotFound as error:
@@ -60,7 +59,6 @@ class VolumeHandler(ChunkedFileHandler):
         return 'databricks-volume'
 
     def _size(self, path: str) -> Optional[int]:
-        path = path.rstrip('/')
         with _translated(path):
             try:
                 return int(self._client.files.get_metadata(path).content_length)
@@ -68,7 +66,6 @@ class VolumeHandler(ChunkedFileHandler):
                 return None
 
     def _list(self, directory: str) -> Dict[str, int]:
-        directory = directory.rstrip('/')
         with _translated(directory):
             try:
                 entries = list(
@@ -95,7 +92,6 @@ class VolumeHandler(ChunkedFileHandler):
         return _Part(self._client, path)
 
     def _remove(self, path: str, *, tree: bool) -> None:
-        path = path.rstrip('/')
         with _translated(path):
             if tree:
                 clear_volume(self._client, path)
@@ -107,7 +103,6 @@ class VolumeHandler(ChunkedFileHandler):
 
 
 class _Part:
-    """Serves consecutive reads from one open-ended ranged download."""
     def __init__(self, client: WorkspaceClient, path: str) -> None:
         self._client, self._path = client, path
         self._stream = None
@@ -185,7 +180,6 @@ class _Feed(io.RawIOBase):
 
 
 class _Upload(io.RawIOBase):
-    """One ``files.upload`` fed from writes; ``close`` commits it."""
     def __init__(self, client: WorkspaceClient, path: str) -> None:
         self._path = path
         self._feed = _Feed()
