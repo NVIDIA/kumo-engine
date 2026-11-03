@@ -87,7 +87,24 @@ _STYLE = Template(r"""
 .kumo-training{container:kumo-training/inline-size;padding:16px;line-height:1.45;
 overflow-wrap:anywhere;text-align:left}
 .kumo-training *{box-sizing:border-box;min-width:0}
-.kumo-training .kt-content{max-width:960px;width:100%}
+.kumo-training .kt-content{max-width:1040px;width:100%;margin:0 auto}
+.kumo-training{border:1px solid $surface_border;border-radius:12px;padding:24px}
+.kumo-training .kt-header{padding-bottom:16px}
+.kumo-training .kt-header h2{font-size:24px;color:$foreground;margin-bottom:8px}
+.kumo-training .kt-header>p{font-size:15px;margin-bottom:8px}
+.kumo-training .kt-navigation{display:flex;align-items:center;flex-wrap:wrap;gap:8px;
+padding:12px 0;margin-bottom:24px;border-block:1px solid $surface_border}
+.kumo-training .kt-navigation>.kt-controls{margin:0 0 0 auto}
+.kumo-training .kt-navigation>.kt-action{font-weight:600;padding:8px 14px}
+.kumo-training .kt-navigation>.kt-action[aria-pressed="true"]{color:$accent;
+box-shadow:inset 0 -2px $accent}
+.kumo-training .kt-content>section{margin:0;padding:0;border:0}
+.kumo-training .kt-header details .kt-note{margin:8px 0}
+.kumo-training .kt-provenance{display:flex;flex-wrap:wrap;gap:8px 24px}
+.kumo-training .kt-provenance>.kt-note{flex:1 1 200px;margin:4px 0}
+@container kumo-training (max-width:520px){
+.kumo-training .kt-navigation>.kt-controls{margin:0;width:100%}}
+
 .kumo-training h2{font:700 20px/1.3 $font;color:$heading;margin:0 0 12px}
 .kumo-training h3{font:600 16px/1.4 $font;color:$foreground;margin:20px 0 8px}
 .kumo-training h4{font:600 14px/1.4 $font;margin:12px 0 6px}
@@ -194,9 +211,10 @@ for(const fit of fits){results.append(el('h3','Measured results · '+fit));
 const rows=metricRows.filter(row=>text(row.fit)===fit),names=[...new Set(rows.map(baseMetric))];
 const splits=['train','val','test'].filter(split=>rows.some(row=>row.split===split));
 for(const split of rows.map(row=>text(row.split)))if(!splits.includes(split))splits.push(split);
+const originNotes=el('div',undefined,'kt-provenance');results.append(originNotes);
 for(const split of splits){const group=rows.filter(row=>row.split===split);
 const origins=[...new Set(group.map(row=>row.origin||'Unknown metric origin'))];
-for(const origin of origins)note(results,split+': '+origin+(origins.length>1?' · '+group
+for(const origin of origins)note(originNotes,split+': '+origin+(origins.length>1?' · '+group
 .filter(row=>(row.origin||'Unknown metric origin')===origin).map(baseMetric).join(', '):''));}
 table(results,['Metric',...splits],names.map(name=>[name,...splits.map(split=>{
 const row=rows.find(item=>baseMetric(item)===name&&text(item.split)===split);return row?row.value:'Unavailable'})]),splits.map((_,i)=>i+1));}
@@ -208,7 +226,7 @@ if(histories.length){results.append(el('h3','Learning history'));
 note(results,'Recorded epoch keys. Missing values remain unavailable; fits are shown separately.');
 const jumps=el('nav',undefined,'kt-controls');jumps.setAttribute('aria-label','After learning history');
 for(const [index,label]of [[1,'recorded patterns'],[2,'selected examples']])jumps.append(action('Go to '+label,()=>{
-const heading=root.querySelectorAll('section')[index].querySelector('h2');heading.tabIndex=-1;heading.focus();heading.scrollIntoView({block:'start'});}));
+showPanel(index,true);}));
 results.append(jumps);
 const historyDetails=el('details');historyDetails.append(el('summary','Explore exact epoch values · '+histories.length+' recorded epochs'));
 const metricName=name=>name.replace(/^(train_|val_|validation_)/,'');
@@ -419,6 +437,23 @@ if(remaining.length){const details=el('details');details.append(el('summary','Ot
 referenceTable(details,remaining);examples.append(details)}
 if(references.length>100)note(examples,'Showing the first 100 catalog references.');
 sampleView.hidden=true;
+const panels=[results,patterns,examples],navigation=el('nav',undefined,'kt-navigation');
+navigation.setAttribute('aria-label','Training explanation sections');
+const showPanel=(index,focus=false)=>{panels.forEach((panel,i)=>{panel.hidden=i!==index;
+navigation.querySelectorAll(':scope>button')[i].setAttribute('aria-pressed',String(i===index));});
+if(focus){const heading=panels[index].querySelector('h2');heading.tabIndex=-1;heading.focus();}};
+for(const [index,label]of ['Results','Patterns','Examples'].entries()){
+const button=action(label,()=>showPanel(index));panels[index].id=widgetId+'-panel-'+index;
+button.setAttribute('aria-controls',panels[index].id);navigation.append(button);}
+const theme=control(navigation,'Theme',[['auto','Automatic'],['light','Light'],['dark','Dark']],value=>{
+if(value==='auto')delete host.dataset.kumoTheme;else host.dataset.kumoTheme=value;});
+theme.value=host.dataset.kumoTheme||'auto';
+const header=el('header',undefined,'kt-header');header.append(el('h2','Training explainability'));
+if(context.query)header.append(results.querySelector(':scope>p'));
+const metadata=results.querySelector(':scope>.kt-note'),details=el('details');
+details.append(el('summary','Run details'));if(metadata)details.append(metadata);
+note(header,'Task: '+text(context.task_type||provenance.task_type)+' · Explanation split: TEST');
+header.append(details);root.prepend(header,navigation);showPanel(0);
 root.hidden=false;fallback.hidden=true;enable();
 onDispose(()=>{root.querySelectorAll('button,select').forEach(node=>node.disabled=true);
 root.hidden=true;fallback.hidden=false;});
