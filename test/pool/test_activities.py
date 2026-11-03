@@ -3578,6 +3578,7 @@ async def test_ensure_snapshot_local_fresh_ingest_reports_snapshot_size(
     ingest_args = SimpleNamespace(
         timestamp_precision='seconds',
         graph_config=mock.sentinel.graph_config,
+        timestamp_precision='seconds',
         data_persist_dir=str(tmp_path / 'data-persist-dir'),
         table_data_versions={'transactions': 'v1'},
         connector_specs={},
