@@ -109,6 +109,10 @@ def test_output_configs_take_a_sinks_file_paths(connector):
         PredictionOutputConfig(connector, output_paths={'predictions': 'T'})
     PredictionOutputConfig(connector, PredictionArtifactType.PREDICTIONS,
                            'PREDS')
+    tables = SimpleNamespace(sink_backend=object())
+    with pytest.raises(NotImplementedError, match='requires'):
+        PredictionOutputConfig(tables, PredictionArtifactType.PREDICTIONS,
+                               'DB.S.T').writer()
 
 
 def test_bundles_upload_provenance_last(tmp_path, connector):
@@ -152,10 +156,6 @@ def test_predictions_export_through_a_filesystem_only_sink(fitted, connector):
         PredictionOutputConfig(connector,
                                output_paths={'predictions': '@stage/again/'}))
     assert any(name.startswith('@stage/again/') for name in store.objects)
-    tables = SimpleNamespace(sink_backend=object())
-    with pytest.raises(NotImplementedError, match='requires'):
-        PredictionOutputConfig(tables, PredictionArtifactType.PREDICTIONS,
-                               'DB.S.T').writer()
 
 
 def test_parquet_writes_stay_plain_up_to_one_part(connector):
@@ -201,26 +201,15 @@ def test_publishing_an_identical_bundle_again_reuses_the_copy(
 
 def test_an_occupied_directory_is_refused_by_its_full_location(
         tmp_path, connector):
-    files = connector.sink_backend
+    sink = connector.sink_backend
     part = tmp_path / 'part-0.parquet'
     pd.DataFrame({'x': range(3)}).to_parquet(part)
-    files.write_files(connector, '@stage/out/', [str(part)])
-
-    files.preflight_write_files(connector, '@stage/new/')
-    with pytest.raises(ArtifactDestinationConflict, match="'@stage/out/'"):
-        files.preflight_write_files(connector, '@stage/out/')
-
-
-def test_an_occupied_directory_is_refused_before_scoring(connector):
-    sink = connector.sink_backend
     sink.preflight_write_files(connector, '@stage/out/')
-    sink.store.objects['@stage/out/old.parquet'] = b'x'
-    for mode in (None, WriteMode.APPEND):
-        with pytest.raises(ArtifactDestinationConflict, match='already'):
+    sink.write_files(connector, '@stage/out/', [str(part)])
+    for mode in (None, WriteMode.APPEND, WriteMode.OVERWRITE):
+        with pytest.raises(ArtifactDestinationConflict,
+                           match="'@stage/out/' already"):
             sink.preflight_write_files(connector, '@stage/out/', mode)
-    with pytest.raises(ArtifactDestinationConflict, match='already'):
-        sink.preflight_write_files(connector, '@stage/out/',
-                                   WriteMode.OVERWRITE)
 
 
 def test_a_file_only_sink_refuses_a_table(connector, tmp_path):

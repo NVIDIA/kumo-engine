@@ -35,7 +35,6 @@ def _chunked(filesystem: FileSystem) -> bool:
 
 
 def open_sized(filesystem: FileSystem, path: str, size: int) -> Any:
-    """``open_output_stream`` that tells a chunked filesystem the size."""
     if _chunked(filesystem):
         from kumo_core.chunked_fs import SIZE_KEY
 
@@ -53,7 +52,6 @@ def upload_file(filesystem: FileSystem, source: str,
 
 def upload_bundle(filesystem: FileSystem, destination: str,
                   bundle_dir: str) -> None:
-    """Copy ``bundle_dir`` under ``destination``, provenance last."""
     from kumo_core.artifacts import PROVENANCE_FILE
 
     root = Path(bundle_dir)
@@ -176,7 +174,6 @@ class ObjectStoreSinkBackend(ABC):
         return self._uri(output)
 
     def preflight_write_files(self, connector, table_name, write_mode=None):
-        """Refuse an occupied output directory before scoring."""
         del write_mode
         from pyarrow.fs import FileSelector
 
@@ -192,7 +189,7 @@ class ObjectStoreSinkBackend(ABC):
 
         return ArtifactDestinationConflict(
             f"Output directory '{self._uri(path.rstrip('/'))}/' already "
-            f"contains data from another export. Choose an empty destination "
+            "contains data from another export. Choose an empty destination "
             "path.")
 
     def publish_model(
@@ -331,10 +328,7 @@ class ObjectStoreSinkBackend(ABC):
             with filesystem.open_input_stream(path) as reader:
                 if reader.readall().decode('utf-8') == marker:
                     return True
-        raise ValueError(
-            f"Output directory '{self._uri(directory)}/' already "
-            f"contains data from another export. Choose an empty destination "
-            f"path.")
+        raise self._conflict(directory)
 
 
 def _write_one(filesystem: FileSystem, frame: pd.DataFrame, path: str,
@@ -478,7 +472,6 @@ class _ArrowExportFiles:
 
 
 class FilesystemSink(ObjectStoreSinkBackend):
-    """The object-store file writers over any sink's ``filesystem()``."""
     def __init__(self, sink: FileStoreSink) -> None:
         self._sink = sink
         self.provider = type(sink).__name__
@@ -492,8 +485,10 @@ class FilesystemSink(ObjectStoreSinkBackend):
 
 
 class FileStoreRouting:
-    """Sends ``holds_files`` paths to :class:`FilesystemSink`, the rest on."""
-    def _rest(self, method):
+    """Routes ``holds_files`` paths to :class:`FilesystemSink`."""
+    def _route(self, connector, path, method):
+        if path is not None and self.holds_files(connector, path):
+            return FilesystemSink(self)
         rest = super()
         if not hasattr(rest, method):
             raise NotImplementedError(
@@ -503,42 +498,34 @@ class FileStoreRouting:
     def write_table(self, connector, table_name, frame,
                     write_mode=WriteMode.OVERWRITE, project_id=None, *,
                     export_id=None):
-        sink = FilesystemSink(self) if self.holds_files(
-            connector, table_name) else self._rest('write_table')
-        return sink.write_table(connector, table_name, frame, write_mode,
-                                project_id, export_id=export_id)
+        return self._route(connector, table_name, 'write_table').write_table(
+            connector, table_name, frame, write_mode, project_id,
+            export_id=export_id)
 
     def write_files(self, connector, table_name, files,
                     write_mode=WriteMode.OVERWRITE, project_id=None, *,
                     export_id=None, extra_columns=None, sidecars={}):
-        if self.holds_files(connector, table_name):
-            return FilesystemSink(self).write_files(
-                connector, table_name, files, write_mode, project_id,
-                export_id=export_id, extra_columns=extra_columns,
-                sidecars=sidecars)
-        return self._rest('write_files').write_files(
+        sink = self._route(connector, table_name, 'write_files')
+        files_only = {'sidecars': sidecars} if isinstance(
+            sink, FilesystemSink) else {}
+        return sink.write_files(
             connector, table_name, files, write_mode, project_id,
-            export_id=export_id, extra_columns=extra_columns)
+            export_id=export_id, extra_columns=extra_columns, **files_only)
 
     def publish_model(self, connector, bundle_dir, *, path=None, location=None,
                       metadata={}, metrics={}, project_id=None):
-        if location is None and path is not None and self.holds_files(
-                connector, path):
-            return FilesystemSink(self).publish_model(
-                connector, bundle_dir, path=path, metadata=metadata)
-        return self._rest('publish_model').publish_model(
-            connector, bundle_dir, path=path, location=location,
-            metadata=metadata, metrics=metrics, project_id=project_id)
+        sink = self._route(connector, path if location is None else None,
+                           'publish_model')
+        return sink.publish_model(connector, bundle_dir, path=path,
+                                  location=location, metadata=metadata,
+                                  metrics=metrics, project_id=project_id)
 
     def fetch_model(self, connector, local_dir, *, path=None, location=None,
                     project_id=None):
-        if location is None and path is not None and self.holds_files(
-                connector, path):
-            return FilesystemSink(self).fetch_model(connector, local_dir,
-                                                    path=path)
-        return self._rest('fetch_model').fetch_model(
-            connector, local_dir, path=path, location=location,
-            project_id=project_id)
+        sink = self._route(connector, path if location is None else None,
+                           'fetch_model')
+        return sink.fetch_model(connector, local_dir, path=path,
+                                location=location, project_id=project_id)
 
     def preflight_write_files(self, connector, table_name, write_mode=None):
         if self.holds_files(connector, table_name):
