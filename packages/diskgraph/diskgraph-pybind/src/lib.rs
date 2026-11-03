@@ -185,6 +185,7 @@ use diskgraph_engine::state::{SamplingState, StatePool};
 mod artifact_helpers;
 mod bp_col_stats;
 mod col_stats_export;
+mod columnar_input;
 mod custom_tt_entry;
 mod index_metadata;
 mod success_marker;
@@ -676,41 +677,15 @@ fn lookup_node_ids_from_arrow(
     primary_key_lookup_from_arrow(table, values, |_, node_id| node_id)
 }
 
-#[pymethods]
 impl SamplerEngine {
-    #[new]
-    #[pyo3(signature = (path, random_seed=None, num_threads=None))]
-    #[tracing::instrument(level = "info", skip(path), fields(index_path = %path))]
-    pub fn new(path: String, random_seed: Option<u64>, num_threads: Option<usize>) -> PyResult<Self> {
-        let root = std::path::Path::new(&path);
-        let reader = Arc::new(
-            diskgraph_index::graph::GraphIndexReader::open(&root.join("index_metadata.json"), root)
-                .map_err(|e| DiskgraphSystemError::new_err(e.to_string()))?,
-        );
-        let engine = DiskGraphEngine::from_reader(Arc::clone(&reader), random_seed, num_threads)
-            .map_err(map_engine_err)?;
-        info!("SamplerEngine initialized successfully");
-        Ok(Self {
-            reader,
-            engine: Arc::new(engine),
-            pool: StatePool::new(),
-            sample_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        })
-    }
-
-    /// Resolve raw primary-key values to the dense node IDs used by sampling.
-    ///
-    /// Missing keys are returned as ``None`` in their original positions. A
-    /// null or physically incompatible Arrow value is a data error rather than
-    /// being conflated with a well-formed key that is absent from the index.
-    pub fn lookup_node_ids(
+    fn resolve_keys(
         &self,
         py: Python<'_>,
-        node_type: String,
+        node_type: &str,
         primary_keys: &Bound<'_, PyAny>,
     ) -> PyResult<Vec<Option<u64>>> {
         let primary_keys = make_array(ArrayData::from_pyarrow_bound(primary_keys)?);
-        let table = self.reader.table(&node_type).ok_or_else(|| {
+        let table = self.reader.table(node_type).ok_or_else(|| {
             DiskgraphConfigError::new_err(format!("unknown node type: {node_type}"))
         })?;
         if table.pk_map().is_none() {
@@ -721,167 +696,16 @@ impl SamplerEngine {
         py.detach(move || lookup_node_ids_from_arrow(&table, primary_keys.as_ref()))
     }
 
-    /// Traverse exact relation paths and derive temporal sequences/aggregates.
-    ///
-    /// This intentionally accepts dense IDs: raw primary-key resolution stays
-    /// a separate, reusable boundary (`lookup_node_ids`).  Both dictionaries
-    /// must contain the same single root type, and cutoffs are epoch seconds.
-    /// The JSON plan is storage-oriented rather than task/model-oriented; see
-    /// `diskgraph-pybind/README.md` for its compact schema.
-    #[pyo3(signature = (seed_nodes, seed_timestamps, plan_json, *, output_format = "inspectable"))]
-    pub fn query_temporal(
+    fn start_sample(
         &self,
         py: Python<'_>,
-        seed_nodes: Bound<'_, PyDict>,
-        seed_timestamps: Bound<'_, PyDict>,
-        plan_json: String,
-        output_format: &str,
-    ) -> PyResult<Py<PyDict>> {
-        let model_format = match output_format {
-            "inspectable" => false,
-            "model" => true,
-            value => {
-                return Err(DiskgraphConfigError::new_err(format!(
-                    "output_format must be 'inspectable' or 'model', got {value:?}"
-                )))
-            }
-        };
-        if seed_nodes.len() != 1 || seed_timestamps.len() != 1 {
-            return Err(DiskgraphConfigError::new_err(
-                "temporal queries require exactly one root node type",
-            ));
-        }
-        let (root_key, root_values) = seed_nodes
-            .into_iter()
-            .next()
-            .expect("one seed node entry was validated");
-        let root_type: String = root_key.extract()?;
-        let roots: Vec<u64> = root_values.extract()?;
-        let cutoff_values = seed_timestamps.get_item(&root_type)?.ok_or_else(|| {
-            DiskgraphConfigError::new_err(format!(
-                "seed_timestamps has no entry for root type {root_type:?}"
-            ))
-        })?;
-        let cutoffs: Vec<i64> = cutoff_values.extract()?;
-        let reader = Arc::clone(&self.reader);
-        let result = py
-            .detach(move || {
-                temporal_query::execute(
-                    reader.as_ref(),
-                    &root_type,
-                    &roots,
-                    &cutoffs,
-                    &plan_json,
-                )
-            })
-            .map_err(temporal_query::config_error)?;
-        result.into_python(py, model_format)
-    }
-
-    /// Return exact cutoff-aware sequence lengths without decoding row values.
-    ///
-    /// The plan and seed contract match `query_temporal`. Only frames consumed
-    /// by sequences are visited. Time bounds use the destination timestamp
-    /// embedded in edge sort keys when available, with a one-column rowpack
-    /// fallback for older or differently indexed relations.
-    pub fn query_temporal_lengths(
-        &self,
-        py: Python<'_>,
-        seed_nodes: Bound<'_, PyDict>,
-        seed_timestamps: Bound<'_, PyDict>,
-        plan_json: String,
-    ) -> PyResult<Py<PyDict>> {
-        if seed_nodes.len() != 1 || seed_timestamps.len() != 1 {
-            return Err(DiskgraphConfigError::new_err(
-                "temporal queries require exactly one root node type",
-            ));
-        }
-        let (root_key, root_values) = seed_nodes
-            .into_iter()
-            .next()
-            .expect("one seed node entry was validated");
-        let root_type: String = root_key.extract()?;
-        let roots: Vec<u64> = root_values.extract()?;
-        let cutoff_values = seed_timestamps.get_item(&root_type)?.ok_or_else(|| {
-            DiskgraphConfigError::new_err(format!(
-                "seed_timestamps has no entry for root type {root_type:?}"
-            ))
-        })?;
-        let cutoffs: Vec<i64> = cutoff_values.extract()?;
-        let reader = Arc::clone(&self.reader);
-        let result = py
-            .detach(move || {
-                temporal_query::execute_lengths(
-                    reader.as_ref(),
-                    &root_type,
-                    &roots,
-                    &cutoffs,
-                    &plan_json,
-                )
-            })
-            .map_err(temporal_query::config_error)?;
-        result.into_python(py)
-    }
-
-    /// Return whether each supplied node ID is the PK map's canonical row.
-    /// The caller already fetched the aligned primary-key values, so this is a
-    /// bounded lookup-only bridge over `TableReader::node_id_from_pk`.
-    pub fn canonical_node_mask(
-        &self,
-        py: Python<'_>,
-        node_type: String,
-        node_ids: Vec<u64>,
-        primary_keys: &Bound<'_, PyAny>,
-    ) -> PyResult<Vec<bool>> {
-        let primary_keys = make_array(ArrayData::from_pyarrow_bound(primary_keys)?);
-        if node_ids.len() != primary_keys.len() {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "node_ids and primary_keys must have equal length: {} != {}",
-                node_ids.len(),
-                primary_keys.len()
-            )));
-        }
-        let table = self.reader.table(&node_type).ok_or_else(|| {
-            DiskgraphConfigError::new_err(format!("unknown node type: {node_type}"))
-        })?;
-        if table.pk_map().is_none() {
-            return Err(DiskgraphConfigError::new_err(format!(
-                "node type {node_type} has no primary-key index"
-            )));
-        }
-        py.detach(move || canonical_node_mask_from_arrow(&table, primary_keys.as_ref(), node_ids))
-    }
-
-    #[pyo3(signature = (seed_nodes, plan_json, fused, seed_timestamps=None, swap_edge_direction=None, seed_timestamp_unit=None))]
-    #[tracing::instrument(level = "debug", skip(self, py, seed_nodes, plan_json))]
-    pub fn sample(
-        &self,
-        py: Python<'_>,
-        seed_nodes: Bound<'_, PyDict>,
+        seeds: HashMap<String, Vec<u64>>,
         plan_json: String,
         fused: bool,
-        seed_timestamps: Option<Bound<'_, PyDict>>,
+        timestamps: Option<HashMap<String, Vec<i64>>>,
         swap_edge_direction: Option<bool>,
         seed_timestamp_unit: Option<PyTimeUnit>,
     ) -> PyResult<PySampleIterator> {
-        let mut seeds = HashMap::new();
-        for (key, value) in seed_nodes.into_iter() {
-            let type_name: String = key.extract()?;
-            let ids: Vec<u64> = value.extract()?;
-            seeds.insert(type_name, ids);
-        }
-
-        let mut timestamps = None;
-        if let Some(st) = seed_timestamps {
-            let mut ts_map = HashMap::new();
-            for (key, value) in st.into_iter() {
-                let type_name: String = key.extract()?;
-                let ts: Vec<i64> = value.extract()?;
-                ts_map.insert(type_name, ts);
-            }
-            timestamps = Some(ts_map);
-        }
-
         let plan: SamplingPlan = serde_json::from_str(&plan_json)
             .map_err(|e| DiskgraphConfigError::new_err(format!("Invalid plan JSON: {}", e)))?;
 
@@ -982,6 +806,262 @@ impl SamplerEngine {
 
         Ok(PySampleIterator { receiver: rx })
     }
+}
+
+#[pymethods]
+impl SamplerEngine {
+    #[new]
+    #[pyo3(signature = (path, random_seed=None, num_threads=None))]
+    #[tracing::instrument(level = "info", skip(path), fields(index_path = %path))]
+    pub fn new(path: String, random_seed: Option<u64>, num_threads: Option<usize>) -> PyResult<Self> {
+        let root = std::path::Path::new(&path);
+        let reader = Arc::new(
+            diskgraph_index::graph::GraphIndexReader::open(&root.join("index_metadata.json"), root)
+                .map_err(|e| DiskgraphSystemError::new_err(e.to_string()))?,
+        );
+        let engine = DiskGraphEngine::from_reader(Arc::clone(&reader), random_seed, num_threads)
+            .map_err(map_engine_err)?;
+        info!("SamplerEngine initialized successfully");
+        Ok(Self {
+            reader,
+            engine: Arc::new(engine),
+            pool: StatePool::new(),
+            sample_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
+    }
+
+    /// Resolve raw primary-key values to the dense node IDs used by sampling.
+    ///
+    /// Missing keys are returned as ``None`` in their original positions. A
+    /// null or physically incompatible Arrow value is a data error rather than
+    /// being conflated with a well-formed key that is absent from the index.
+    #[pyo3(signature = (node_type, primary_keys, *, output_format = "inspectable"))]
+    pub fn lookup_node_ids(
+        &self,
+        py: Python<'_>,
+        node_type: String,
+        primary_keys: &Bound<'_, PyAny>,
+        output_format: &str,
+    ) -> PyResult<Py<PyAny>> {
+        if !matches!(output_format, "inspectable" | "model") {
+            return Err(DiskgraphConfigError::new_err(format!(
+                "output_format must be 'inspectable' or 'model', got {output_format:?}"
+            )));
+        }
+        let ids = self.resolve_keys(py, &node_type, primary_keys)?;
+        if output_format == "model" {
+            Ok(UInt64Array::from(ids).to_data().to_pyarrow(py)?.unbind())
+        } else {
+            Ok(ids.into_pyobject(py)?.into_any().unbind())
+        }
+    }
+
+    /// Traverse exact relation paths and derive temporal sequences/aggregates.
+    ///
+    /// This intentionally accepts dense IDs: raw primary-key resolution stays
+    /// a separate, reusable boundary (`lookup_node_ids`).  Both dictionaries
+    /// must contain the same single root type, and cutoffs are epoch seconds.
+    /// The JSON plan is storage-oriented rather than task/model-oriented; see
+    /// `diskgraph-pybind/README.md` for its compact schema.
+    #[pyo3(signature = (seed_nodes, seed_timestamps, plan_json, *, output_format = "inspectable"))]
+    pub fn query_temporal(
+        &self,
+        py: Python<'_>,
+        seed_nodes: Bound<'_, PyDict>,
+        seed_timestamps: Bound<'_, PyDict>,
+        plan_json: String,
+        output_format: &str,
+    ) -> PyResult<Py<PyDict>> {
+        let model_format = match output_format {
+            "inspectable" => false,
+            "model" => true,
+            value => {
+                return Err(DiskgraphConfigError::new_err(format!(
+                    "output_format must be 'inspectable' or 'model', got {value:?}"
+                )))
+            }
+        };
+        if seed_nodes.len() != 1 || seed_timestamps.len() != 1 {
+            return Err(DiskgraphConfigError::new_err(
+                "temporal queries require exactly one root node type",
+            ));
+        }
+        let (root_key, root_values) = seed_nodes
+            .into_iter()
+            .next()
+            .expect("one seed node entry was validated");
+        let root_type: String = root_key.extract()?;
+        let roots = columnar_input::node_ids(&root_values, "seed_nodes")?;
+        let cutoff_values = seed_timestamps.get_item(&root_type)?.ok_or_else(|| {
+            DiskgraphConfigError::new_err(format!(
+                "seed_timestamps has no entry for root type {root_type:?}"
+            ))
+        })?;
+        let cutoffs = columnar_input::timestamps(&cutoff_values, "seed_timestamps")?;
+        let reader = Arc::clone(&self.reader);
+        let result = py
+            .detach(move || {
+                temporal_query::execute(
+                    reader.as_ref(),
+                    &root_type,
+                    &roots,
+                    &cutoffs,
+                    &plan_json,
+                )
+            })
+            .map_err(temporal_query::config_error)?;
+        result.into_python(py, model_format)
+    }
+
+    /// Return exact cutoff-aware sequence lengths without decoding row values.
+    ///
+    /// The plan and seed contract match `query_temporal`. Only frames consumed
+    /// by sequences are visited. Time bounds use the destination timestamp
+    /// embedded in edge sort keys when available, with a one-column rowpack
+    /// fallback for older or differently indexed relations.
+    pub fn query_temporal_lengths(
+        &self,
+        py: Python<'_>,
+        seed_nodes: Bound<'_, PyDict>,
+        seed_timestamps: Bound<'_, PyDict>,
+        plan_json: String,
+    ) -> PyResult<Py<PyDict>> {
+        if seed_nodes.len() != 1 || seed_timestamps.len() != 1 {
+            return Err(DiskgraphConfigError::new_err(
+                "temporal queries require exactly one root node type",
+            ));
+        }
+        let (root_key, root_values) = seed_nodes
+            .into_iter()
+            .next()
+            .expect("one seed node entry was validated");
+        let root_type: String = root_key.extract()?;
+        let roots = columnar_input::node_ids(&root_values, "seed_nodes")?;
+        let cutoff_values = seed_timestamps.get_item(&root_type)?.ok_or_else(|| {
+            DiskgraphConfigError::new_err(format!(
+                "seed_timestamps has no entry for root type {root_type:?}"
+            ))
+        })?;
+        let cutoffs = columnar_input::timestamps(&cutoff_values, "seed_timestamps")?;
+        let reader = Arc::clone(&self.reader);
+        let result = py
+            .detach(move || {
+                temporal_query::execute_lengths(
+                    reader.as_ref(),
+                    &root_type,
+                    &roots,
+                    &cutoffs,
+                    &plan_json,
+                )
+            })
+            .map_err(temporal_query::config_error)?;
+        result.into_python(py)
+    }
+
+    /// Return whether each supplied node ID is the PK map's canonical row.
+    /// The caller already fetched the aligned primary-key values, so this is a
+    /// bounded lookup-only bridge over `TableReader::node_id_from_pk`.
+    pub fn canonical_node_mask(
+        &self,
+        py: Python<'_>,
+        node_type: String,
+        node_ids: &Bound<'_, PyAny>,
+        primary_keys: &Bound<'_, PyAny>,
+    ) -> PyResult<Vec<bool>> {
+        let node_ids = columnar_input::node_ids(node_ids, "node_ids")?;
+        let primary_keys = make_array(ArrayData::from_pyarrow_bound(primary_keys)?);
+        if node_ids.len() != primary_keys.len() {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "node_ids and primary_keys must have equal length: {} != {}",
+                node_ids.len(),
+                primary_keys.len()
+            )));
+        }
+        let table = self.reader.table(&node_type).ok_or_else(|| {
+            DiskgraphConfigError::new_err(format!("unknown node type: {node_type}"))
+        })?;
+        if table.pk_map().is_none() {
+            return Err(DiskgraphConfigError::new_err(format!(
+                "node type {node_type} has no primary-key index"
+            )));
+        }
+        py.detach(move || canonical_node_mask_from_arrow(&table, primary_keys.as_ref(), node_ids))
+    }
+
+    #[pyo3(signature = (seed_nodes, plan_json, fused, seed_timestamps=None, swap_edge_direction=None, seed_timestamp_unit=None))]
+    #[tracing::instrument(level = "debug", skip(self, py, seed_nodes, plan_json))]
+    pub fn sample(
+        &self,
+        py: Python<'_>,
+        seed_nodes: Bound<'_, PyDict>,
+        plan_json: String,
+        fused: bool,
+        seed_timestamps: Option<Bound<'_, PyDict>>,
+        swap_edge_direction: Option<bool>,
+        seed_timestamp_unit: Option<PyTimeUnit>,
+    ) -> PyResult<PySampleIterator> {
+        let mut seeds = HashMap::new();
+        for (key, value) in seed_nodes.into_iter() {
+            let type_name: String = key.extract()?;
+            let ids = columnar_input::node_ids(&value, "seed_nodes")?;
+            seeds.insert(type_name, ids);
+        }
+
+        let timestamps = columnar_input::timestamp_map(seed_timestamps, &seeds)?;
+
+        self.start_sample(
+            py,
+            seeds,
+            plan_json,
+            fused,
+            timestamps,
+            swap_edge_direction,
+            seed_timestamp_unit,
+        )
+    }
+
+    /// Resolve typed raw keys and sample in one call. Missing keys fail before
+    /// sampling; dropping them would change per-anchor ownership and cutoffs.
+    /// With `fused=True`, the existing sampler also returns feature batches.
+    #[pyo3(signature = (seed_primary_keys, plan_json, fused, seed_timestamps=None, swap_edge_direction=None, seed_timestamp_unit=None))]
+    pub fn sample_from_keys(
+        &self,
+        py: Python<'_>,
+        seed_primary_keys: Bound<'_, PyDict>,
+        plan_json: String,
+        fused: bool,
+        seed_timestamps: Option<Bound<'_, PyDict>>,
+        swap_edge_direction: Option<bool>,
+        seed_timestamp_unit: Option<PyTimeUnit>,
+    ) -> PyResult<PySampleIterator> {
+        let mut seeds = HashMap::new();
+        for (key, values) in seed_primary_keys.iter() {
+            let node_type: String = key.extract()?;
+            let ids = self.resolve_keys(py, &node_type, &values)?;
+            let ids = ids
+                .into_iter()
+                .enumerate()
+                .map(|(offset, id)| {
+                    id.ok_or_else(|| {
+                        DiskgraphDataError::new_err(format!(
+                            "missing primary key for {node_type:?} at batch offset {offset}"
+                        ))
+                    })
+                })
+                .collect::<PyResult<Vec<u64>>>()?;
+            seeds.insert(node_type, ids);
+        }
+        let timestamps = columnar_input::timestamp_map(seed_timestamps, &seeds)?;
+        self.start_sample(
+            py,
+            seeds,
+            plan_json,
+            fused,
+            timestamps,
+            swap_edge_direction,
+            seed_timestamp_unit,
+        )
+    }
 
     #[tracing::instrument(level = "debug", skip(self, py, batch))]
     pub fn fetch_features(
@@ -996,10 +1076,12 @@ impl SamplerEngine {
                 .get_item("node_type")?
                 .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("missing 'node_type' in feature request"))?
                 .extract()?;
-            let node_ids: Vec<u64> = dict
-                .get_item("node_ids")?
-                .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("missing 'node_ids' in feature request"))?
-                .extract()?;
+            let node_ids = columnar_input::node_ids(
+                &dict.get_item("node_ids")?.ok_or_else(|| {
+                    pyo3::exceptions::PyKeyError::new_err("missing 'node_ids' in feature request")
+                })?,
+                "node_ids",
+            )?;
             let feature_names: Vec<String> = dict
                 .get_item("feature_names")?
                 .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("missing 'feature_names' in feature request"))?
