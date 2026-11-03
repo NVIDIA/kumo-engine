@@ -108,7 +108,10 @@ To use your own data, point `FileConnector` at a directory of CSV or Parquet fil
 cohorts, and sampled graphs. For example, after checking availability:
 
 ```python
+from IPython.display import display
+
 explanations = training_result.explanations
+display(explanations.visualize())  # bounded notebook diagnostics
 if explanations.availability["gradient"].available:
     print(explanations.gradient_scores().to_pandas())
     figure, axis = explanations.plot_gradient(top_k=20)

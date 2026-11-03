@@ -903,3 +903,36 @@ def test_visualize_table_cap_precedes_source_access(count):
             assert len(root.findall(
                 './{http://www.w3.org/2000/svg}g[@data-kumo-card]')) == 30
         backend.assert_not_called()
+
+
+def test_training_viewer_reuses_shell_and_keeps_samples_out_of_static_summary():
+    from kumo.engine._widget import render_widget
+    from kumo.engine.explain._viewer import static_summary, viewer_spec
+
+    hostile = '</script><script>alert("training")</script>'
+    payload = {
+        'provenance': {'selected_trial': hostile, 'explanation_trial': 'version_0'},
+        'metrics': {'status': 'available', 'rows': [
+            {'name': hostile, 'value': 1e-12, 'split': 'test', 'fit': 'original'},
+            {'name': 'missing', 'value': None, 'split': 'val', 'fit': 'original'},
+        ]},
+        'samples': {'status': 'limited', 'references': [
+            {'artifact_id': 'private-collector-id', 'original_ids': {
+                'random': 'private-original-id'}}], 'bodies': {
+                    'private-collector-id': {'feature_store': {
+                        'features': {'0': {'secret': {'value': 'private-value'}}}}}}},
+    }
+    summary = static_summary(payload)
+    assert '<script' not in summary
+    assert 'private-' not in summary
+    assert '1e-12' in summary and 'Unavailable' in summary
+    spec = viewer_spec(payload)
+    assert spec['data'] is payload
+    assert 'var(--kumo-' in spec['style']
+    assert 'onDispose(' in spec['script'] and '{signal}' in spec['script']
+    html = render_widget(**spec)
+    root = ElementTree.fromstring(html)
+    assert 'kumo-training' in root.get('class').split()
+    assert json.loads(root.find('./script[@type="application/json"]').text) == payload
+    assert not root.find('./div[@class="kumo-training-static"]').findall('.//script')
+    assert '<script>alert(' not in html

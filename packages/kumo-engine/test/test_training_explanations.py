@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -20,6 +21,56 @@ from kumo.engine import (
     TrainingTable,
 )
 from kumo.engine.explain import results as explanation_results
+
+
+def test_training_visualization_uses_shared_notebook_transports(monkeypatch):
+    pytest.importorskip('IPython')
+    from IPython.core.interactiveshell import InteractiveShell
+    from IPython.display import display
+
+    from kumo.engine import _widget
+
+    result = TrainingExplanations.unavailable().visualize(max_samples=0)
+    monkeypatch.setattr(_widget, 'is_snowflake_workspace', lambda: False)
+    shell = InteractiveShell.instance()
+    published = []
+    monkeypatch.setattr(shell.display_pub, 'publish',
+                        lambda **kwargs: published.append(kwargs['data']))
+    display(result)
+    assert '<script' in published.pop()['text/html']
+    assert result._widget is None
+
+    monkeypatch.setattr(_widget, 'is_snowflake_workspace', lambda: True)
+    with monkeypatch.context() as context:
+        context.setitem(sys.modules, 'anywidget', None)
+        display(result)
+    fallback = published.pop()
+    assert '<script' not in fallback['text/html']
+    assert 'anywidget&gt;=0.9,&lt;1' in fallback['text/html']
+    assert 'graph.visualize' not in fallback['text/html']
+
+    pytest.importorskip('anywidget')
+    try:
+        display(result)
+        widget = result.as_widget()
+        data = published.pop()
+        assert 'text/html' not in data
+        assert data['application/vnd.jupyter.widget-view+json'][
+            'model_id'] == widget.model_id
+        assert result.as_widget() is widget
+        assert widget.data == result._payload
+        assert '<script' not in widget.body
+        with monkeypatch.context() as context:
+            context.setitem(shell.user_ns, '_training_view', result)
+            assert shell.run_cell('_training_view').success
+        assert published.pop()['application/vnd.jupyter.widget-view+json'][
+            'model_id'] == widget.model_id
+        widget.close()
+        replacement = result.as_widget()
+        assert replacement is not widget
+    finally:
+        if result._widget is not None:
+            result._widget.close()
 
 
 @pytest.mark.parametrize('disabled,explain_fails,aggregate_fails', [

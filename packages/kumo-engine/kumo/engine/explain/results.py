@@ -35,6 +35,8 @@ if TYPE_CHECKING:
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
 
+    from kumo.engine.explain._visualization import TrainingVisualization
+
 
 @dataclass(frozen=True)
 class TrainingExplanations:
@@ -153,6 +155,19 @@ class TrainingExplanations:
     def sample(self, artifact_id: str) -> Subgraph:
         """Load one graph by collector ID, independently of mapping metadata."""
         return read_sample(self._require('subgraph_collector/test'), artifact_id)
+
+    def visualize(self, *, max_samples: int = 12) -> 'TrainingVisualization':
+        """Inspect a bounded snapshot of a local retained training run.
+
+        Preloaded example values enter saved notebook output. Both transports
+        use the same snapshot; selecting an example never calls Python or
+        retrains the model. Set ``max_samples=0`` to omit example bodies.
+        """
+        from kumo.engine.explain._diagnostics import build_training_payload
+        from kumo.engine.explain._visualization import TrainingVisualization
+
+        return TrainingVisualization(build_training_payload(
+            self, max_samples=max_samples))
 
     def plot_gradient(self, *, top_k: int = 20) -> tuple['Figure', 'Axes']:
         """Return a ranked gradient bar figure and axes without displaying it."""

@@ -48,6 +48,33 @@ Published model bundles omit these diagnostics. `Trainer.load(bundle)` leaves
 its result's explanations unavailable with reason `model_only`; retain and
 open the training run separately. Clearing the scratch run removes access.
 
+## Notebook diagnostics
+
+```python
+from IPython.display import display
+
+display(explanations.visualize(max_samples=12))
+```
+
+The view combines split-qualified metrics, learning history, recorded trials, input sensitivity, cohorts, and retained examples.
+Select a column's cohort action to inspect its recorded predictions and targets, or select an available example to inspect its sampled nodes, relations, and feature scores.
+Scores describe recorded behavior; the view does not prescribe model changes or start training.
+The [CPU demo notebook](../../example_notebooks/training_explainability.ipynb) trains a small synthetic example and reopens its retained run.
+
+Visualization requires a local retained run.
+Both notebook transports receive the same bounded snapshot, including at most 12 sample bodies; `max_samples=0` omits bodies.
+Coverage and unavailable states identify data excluded by limits or missing from the run.
+Integer values outside the browser's exact numeric range (`±(2**53 - 1)`) make the containing artifact unavailable; recorded string identifiers preserve their text.
+Selecting a loaded example makes no Python callback.
+Use `explanations.sample(collector_id)` to read a retained graph outside the widget's preload; the widget does not fetch additional graphs in place.
+Example identities and values may be saved in notebook HTML or widget state; the static summary excludes them.
+
+Confirmed Snowflake Workspace notebooks use the runtime's optional widget packages; other hosts, including Databricks, use self-contained HTML.
+HTML requires trusted execution, and native host validation remains separate from local browser tests.
+If Workspace widget packages are unavailable, the output retains a static metrics and availability summary with a diagnostic.
+The optional `.as_widget()` method explicitly selects widget transport on compatible hosts.
+Rerun the cell after restoring a notebook whose interactive state is unavailable.
+
 ## Gradient scores
 
 ```python
@@ -123,7 +150,8 @@ aggregated nodes. A reference can exist for a missing graph; check `available`.
 identifiers organized by sampling category; they are not interchangeable with
 collector IDs. Without those mappings, arbitrary original-key lookup is not
 available. These bounded samples are training context, not explanations for
-every entity. The API does not render interactive graphs.
+every entity. The notebook view presents recorded nodes, relations, and feature
+values; it does not provide arbitrary-entity lookup.
 
 ## Availability and validation
 
