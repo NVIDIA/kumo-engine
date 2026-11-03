@@ -6,8 +6,8 @@
       "max_control_drift": 0.05
     },
     "forecasting": {
-      "min_normal_gain": 0.041079268586867376,
-      "max_control_drift": 0.06590988979178297
+      "min_normal_gain": 0.03822739835549215,
+      "max_control_drift": 0.05441856445482517
     },
     "multiclass": {
       "min_normal_gain": 0.03791898993783247,

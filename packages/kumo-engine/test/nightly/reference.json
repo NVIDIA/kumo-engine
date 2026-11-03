@@ -290,7 +290,7 @@
       "score": 0.5120455566087465,
       "baseline": 0.5441856445482517,
       "historical_baseline": 0.3822739835549215,
-      "baseline_method": "training_huber_delta_1_constant_per_horizon",
+      "baseline_method": "training_raw_answer_huber_delta_1_constant_per_horizon",
       "fit_id": "5d03815f-a1f3-402e-919b-bf9ee7184bb4",
       "checkpoint_sha256": "fcd2306811527d721ced2e7e57be7c2f17bfa765bbfe1f3d9ea1d4a5c5841409",
       "input_signature": {
