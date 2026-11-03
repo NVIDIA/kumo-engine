@@ -607,13 +607,20 @@ trialView.append(exact);
 if(histories.length)trialView.append(action('Inspect recorded fit learning histories',()=>showPanel(0,true,results.querySelector('.kt-learning h3'))));}
 else note(resultJumps,'Candidates & settings: no recorded candidates loaded.');
 const patterns=section('Recorded patterns');patterns.append(el('h3','Global input sensitivity'));
-note(patterns,'Unsigned recorded gradient magnitude, normalized across all columns when the total is positive. '
-+'These scores describe sensitivity, not causal effects or prediction probabilities.');
-state(patterns,data.gradient,'Global sensitivity','Producer scope');
+note(patterns,'Compare unsigned global sensitivity across input columns. Scores are not causal effects or prediction probabilities.');
+const gradient=obj(data.gradient),producerScope=text(gradient.producer_note);
+state(patterns,{...gradient,producer_note:null},'Global sensitivity');
+if(producerScope==='Recorded shallow-RHS link prediction. Global and local feature sensitivities use summed retrieved dot-product scores through sampled graph feature encoders. No per-item breakdown is retained. These are not probabilities or complete attributions to learned entity/item embeddings. Query TOP K does not establish the explanation retrieval count.')
+note(patterns,'Sampled graph features, summed retrieved scores; no per-item breakdown or complete learned-embedding attribution.');
+else if(producerScope==='Recorded forecasting. Scores cover encoded graph columns, normalized over produced columns, using summed encoded model outputs across all forecast horizons. Dedicated lag/year-over-year encoders and separate forecast-head inputs, when used, are outside score coverage. No per-horizon scores are retained.')
+note(patterns,'Encoded graph columns, summed across all forecast horizons; no per-horizon scores. Dedicated lag/year-over-year encoders and separate forecast-head inputs, when used, are outside coverage.');
+else if(gradient.producer_note)note(patterns,'Producer scope: '+producerScope);
 const gradients=list(obj(data.gradient).rows).map(obj), valid=gradients.filter(row=>finite(row.score)&&row.score>=0)
 .sort((a,b)=>b.score-a.score||text(a.table).localeCompare(text(b.table))||text(a.column).localeCompare(text(b.column)));
 if(valid.length!==gradients.length)note(patterns,'Invalid or negative gradient scores are excluded from the unsigned ranking.');
-note(patterns,'Highest recorded gradient scores; showing '+Math.min(20,valid.length)+' of '+text(obj(data.gradient).total??gradients.length)+' columns. The visible subset is not renormalized.');
+if(!valid.length)note(patterns,'No valid global sensitivity scores are available to compare.');
+else if(valid.length>20||gradient.total>valid.length)
+note(patterns,'Showing '+Math.min(20,valid.length)+' of '+text(gradient.total??gradients.length)+' recorded columns; the visible subset is not renormalized.');
 const cohorts=list(obj(data.cohorts).rows);
 let cohortView,cohortButtons=[],selectedFeature=valid[0],selectedExample;
 let cohortState={index:null,bin:0,className:null},revealCohort=()=>{};
@@ -715,7 +722,14 @@ score.append(track,el('span',number(row.score),'kt-value'));
 const button=action('',()=>chooseFeature(row));button.classList.add('kt-feature-choice');
 const label=el('span',text(row.table)+'.'+text(row.column));label.append(el('span','Inspect input details','kt-note'));
 button.append(label,score);featureButtons.push({button,feature:row});const item=el('li');item.append(button);rows.append(item);}
-patterns.append(rows,featureContext);
+patterns.append(rows);
+}
+const sensitivityDetails=el('details');sensitivityDetails.append(el('summary','How sensitivity was recorded'));
+note(sensitivityDetails,'Unsigned recorded gradient magnitude, normalized across all columns when the total is positive.');
+if(gradient.producer_note)note(sensitivityDetails,'Producer scope: '+producerScope);
+note(sensitivityDetails,'Highest recorded gradient scores; showing '+Math.min(20,valid.length)+' of '+text(gradient.total??gradients.length)+' columns. The visible subset is not renormalized.');
+patterns.append(sensitivityDetails);
+if(valid.length){patterns.append(featureContext);
 const exact=el('details');exact.append(el('summary','Exact global sensitivity values'));
 table(exact,['Input column','Global score'],valid.slice(0,20).map(row=>[text(row.table)+'.'+text(row.column),row.score]),[1],true);patterns.append(exact);}
 patterns.append(el('h3','Prediction variation across cohorts'));state(patterns,data.cohorts,'Cohorts');
