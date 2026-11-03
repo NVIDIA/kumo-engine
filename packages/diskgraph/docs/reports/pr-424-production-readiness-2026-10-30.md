@@ -1,77 +1,146 @@
-# PR #424 production readiness — October 30, 2026
+# PR #424 production readiness — October 30 investigation, November 3 qualification
 
-Production enablement remains gated on validation of the latest merged
-candidate. The October 30 investigation reproduced cache recovery, process
-lifecycle, automatic dispatch and macOS build failures. The November 3 follow-up
-records their fixes and completed checks. The default remains
-`DG_EDGE_BACKEND=mmap`.
+The reproduced correctness and portability defects are fixed. At candidate
+`88fd60424ea8f3617327f635531ef82823a537c3`, native Linux, installed macOS,
+all 24 real CPU task/backend fits and all 24 GPU task/backend fits pass.
+No unresolved production-code defect is established by the completed checks.
+The candidate is ready for controlled Linux opt-in under the documented
+resource/capability requirements. Keep the PR draft until general CI clears;
+this report does not claim the entire CI matrix is green. The deployment
+default remains `DG_EDGE_BACKEND=mmap`.
 
-## November 3 follow-up
+## November 3 current status
 
-The candidate now incorporates Engine `main` through `f8ba7e17`, including the
-extracted native runtime, timestamp clock and platform-ingestion changes.
-The latest main merge passes 930 native tests and 158 related Core tests.
-The October 30 findings below remain the historical reproduction record;
-this follow-up tracks fixes.
+The candidate incorporates Engine `main` through `f8ba7e17`, preserving the
+extracted native runtime, timestamp clocks, ingestion portability and
+experimental Windows/WSL qualification. The merged native baseline passes
+930 tests and related Core checks pass 158 tests. The results below test the
+final source head `88fd6042`, including the Windows portability adaptation.
 
-At correctness head `d6057381`, the [hosted Linux CI run](https://github.com/NVIDIA/kumo-engine/actions/runs/41696146582)
-passes ordinary Rust, strict native I/O (ten checks without skips), Clippy,
-candidate-wheel build and DiskGraph Python checks. The same head's
-[macOS job](https://github.com/NVIDIA/kumo-engine/actions/runs/41696146582/job/126127793077)
-builds and installs the actual `cp311-abi3-macosx_14_0_arm64` wheel on macOS
-15.8.2 ARM64, Rust 1.98.1 and Python 3.12.10: all 11 checks pass, including mmap
-ingestion/fused feature sampling and explicit-backend rejection. No wheel hash
-was printed. These results precede the latest main merge and Windows changes;
-their final-head platform, explicit GPU and CPU task gates remain pending.
+| Qualification | Observed result |
+| --- | --- |
+| [Final-head Linux native and Python CI](https://github.com/NVIDIA/kumo-engine/actions/runs/41700694125) | Ordinary Rust, all-target Clippy with warnings denied, candidate-wheel build/import and installed Python checks pass. The strict native gate executes all ten I/O/cache/error/fork/provider cases without skips; actual submissions and cache hits are asserted. |
+| [Real CPU task/backend matrix](https://github.com/NVIDIA/kumo-engine/actions/runs/41700694125/job/126147535511) | All 24 fits pass: eight task types across mmap, buffered and cached direct I/O (eight pytest cases, 325.78 seconds). Non-link fits execute two optimizer steps; link fits execute four. |
+| [Installed macOS ARM64 wheel](https://github.com/NVIDIA/kumo-engine/actions/runs/41700694125/job/126143730551) | Actual `cp311-abi3-macosx_14_0_arm64` wheel builds and installs; all 11 default/mmap ingestion, sampling, feature and configuration checks pass, with no skips. |
+| [Finished-wheel direct-I/O GPU tasks](https://github.com/NVIDIA/kumo-engine/actions/runs/41700700752) | All eight task types pass fit, repeat prediction and save/reload prediction: 1,600 optimizer steps and 1,280 observed CUDA training batches. Maximum reload absolute difference is 0.002417, below the declared 0.005 tolerance. The job requests `direct`, enables a 1 GiB per-process cache and logs 696 real direct-cache initializations. |
+| [Finished-wheel buffered GPU tasks](https://github.com/NVIDIA/kumo-engine/actions/runs/41701343545) | All eight tasks pass fit, repeat and save/reload prediction: 1,660 optimizer steps and 1,360 observed CUDA training batches. Worst reload absolute difference is 0.0001518726, below 0.005. Both explicit GPU runs cover 8,930 entities with unchanged prediction decisions. |
+| [Finished-wheel default-mmap GPU control](https://github.com/NVIDIA/kumo-engine/actions/runs/41700708272/job/126160089452) | All eight tasks pass: 1,640 optimizer steps, 1,320 observed CUDA training batches and 8,930 entities with unchanged decisions. Worst reload absolute difference is 0.000175655, below 0.005. |
+| [Full platform qualification](https://github.com/NVIDIA/kumo-engine/actions/runs/41700708272) | All four wheel producers pass. Windows MSVC passes wheel/payload verification, ten ingestion path-safety tests and one unsupported-profiling rejection test. All twelve installed CPU qualifications pass: native Windows, WSL and Linux ARM64 on Python 3.11–3.14. Each completes four optimizer steps and 100 finite predictions with save/reload parity. Four hosted platform requirements jobs remain queued; their exact cross-resolver commands pass locally against the same verified wheel artifacts (144 combinations). |
 
-- Cache cleanup now relinquishes reservation ownership once. Native runtime and
-  cache state are process-owned, including fork during initialization, locked
-  cache state, populated cache and inherited in-flight work. The host index and
-  engine suites pass 138 tests with 11 opt-in tests ignored; all selected native
-  error/lifecycle diagnostics pass when run explicitly. All-target Clippy passes.
-- Linux-only dependencies and I/O primitives are gated, and mmap remains the
-  non-Linux implementation. Latest main adds experimental native Windows builds.
-  The proposal's page-I/O/prefetch code and benchmark profiler now preserve that
-  build boundary: Unix profiling stays Unix-only and unsupported explicit I/O
-  returns checked errors. Windows GNU compile checks cover the actual source
-  and unit-test code; a full local cross-build lacks a C cross-compiler, and the actual MSVC wheel
-  build/import remains a CI gate. The WSL-only Windows release boundary stays
-  unchanged.
-- Native automatic fused dispatch is capability-aware. Actual CPU training also
-  exposed Core's automatic caller forcing `fused=True`. Backend-aware Core
-  configuration fixes that gap while preserving mmap's worker/thread policy;
-  118 configuration tests pass. The training test exercises the actual default.
-- The provider benchmark now checks the same page bytes for all three backends;
-  its bounded native run passes. This establishes digest parity, not a speedup.
-- All eight task types complete real CPU mmap fits, validate eight prediction
-  entities and match repeated/reloaded predictions. Export row order can vary
-  across independently generated fixtures, so selecting their first rows does
-  not establish equivalent prediction inputs. The full 24-fit matrix selects
-  canonical entity/time keys, retains each backend's training/reload checks and
-  compares predictions using identical saved model, snapshot and input artifacts
-  across backends at absolute tolerance 1e-6. All 24 CPU fits pass (eight pytest
-  cases, 199.61 seconds): binary, multiclass, multilabel, multilabel ranking,
-  regression, forecasting, static links and temporal links. Each fit completes
-  at least two optimizer steps; predictions cover eight entities, all classes
-  or RHS items, and all 12 forecast horizons. Own-model repeat/reload parity and
-  shared-model backend parity pass. The matrix does not measure per-fit native
-  I/O counters, projection payload size, GPU behavior or large-graph throughput.
-- The updated native wrapper and Core fork lifecycle checks pass 22 tests with
-  two platform-specific skips, including a warmed dataset reused after fork.
-  Existing runtime end-to-end tests pass 44 tests, and related Core tests pass
-  155 tests.
+The CPU matrix covers binary, multiclass and multilabel classification,
+multilabel ranking, regression, forecasting, static links and temporal links.
+It validates complete finite predictions for eight canonical entities, all
+classes/RHS items and all 12 forecast horizons, plus own-model repeated and
+reloaded predictions. Backend parity uses identical saved model weights,
+snapshot and entity/time inputs at absolute tolerance `1e-6`, relative
+tolerance zero. Each backend/task runs in a fresh process with asserted
+candidate native and Core/SDK import paths. Training is real and uses the
+normal Core automatic mode selection; no forced `fused=False` workaround is
+applied by the harness.
 
-The 24-fit wheel SHA-256 is
-`8e6c715ae213c3ecf2ab7356cdb494173e2478472e16215cbe5319dac7f7bf0a`.
-The final wheel adds strict rejection of invalid UTF-8 backend configuration;
-normal backend strings are unchanged. Its SHA-256 is
-`36632960b79540e46e3a0602c0c8fa7ec74d9b5b5e57c4ccba7874c5a9293670`,
-and its focused native/Core suite passes 22 tests with two non-Linux skips.
-These artifact results also precede the latest main merge and Windows changes.
-Fresh candidate-wheel qualification and GPU task checks remain pending.
+The model matrix does not expose per-fit native I/O counters. Those counters
+are Rust-only and process-local; the separate mandatory native checks establish
+explicit submissions, cache hits and byte parity. Source dispatch propagates
+explicit I/O errors without retrying mmap. Projection/parent/train-table parity
+is covered by the native Python companion checks rather than inferred from
+model prediction parity. The GPU reload tolerance is intentionally distinct
+from the tighter CPU shared-model backend tolerance. Across all three backends
+the GPU checks execute 24 real fits, 4,900
+optimizer steps and 3,960 observed CUDA training batches, with unchanged
+prediction decisions. The runs execute different step counts; their durations
+do not establish a backend performance comparison.
 
-Run the CPU matrix from the repository root, with this checkout's source
-packages and CPU dependencies installed plus the candidate native wheel:
+## Exact wheel and resolver provenance
+
+The four completed platform producers in run `41700708272` are tied to
+`88fd60424ea8f3617327f635531ef82823a537c3` by the GitHub artifact API. Downloaded
+archive SHA-256 values were checked against that API before extracting the
+single `1.0.0.dev0+88fd604` wheel. Extracted wheel SHA-256 values are:
+
+| Target | Artifact ID | Wheel SHA-256 |
+| --- | --- | --- |
+| Linux x86-64 | 13264346687 | `f3de80405b5fa894c33c2c3374858787c64e46515d34c4a3b654105dbae02318` |
+| Linux ARM64 | 13264286253 | `e164a3f5e8c146b1e0f5203becd58c20c74da4afc4dfcfd191bfc00a2eb40c19` |
+| macOS ARM64 | 13264431683 | `4cb4b199d79056436c3b199c55ab0b9f5846fd5f4dcc5b78de50f31ed5d742ae` |
+| Windows x86-64 | 13265018533 | `c43efe7f1ef9f47ccbe6278d90fdc4443c1d1254206fb8002c4462d9da430ead` |
+
+The unmodified `packages/kumo-engine/scripts/check_pypi_requirements.py` passes
+locally for each actual wheel and its exact CI target: Linux
+`x86_64-manylinux_2_34` and `aarch64-manylinux_2_34`, macOS
+`aarch64-apple-darwin`, and Windows `x86_64-pc-windows-msvc`. It resolves the
+base wheel and each of eight extras for Python 3.11, 3.12, 3.13 and 3.14:
+**144 successful resolutions**, using uv 0.12.23 and PyPI. It installs no
+packages and executes no wheel runtime. This reproduces the four queued CI
+resolver commands; native operating-system proof comes from the separate
+hosted qualifications above.
+
+The local evidence bundle is `/tmp/dg424-requirements-88fd/verification.md`,
+with `artifact-provenance.json`, per-platform logs and downloaded wheels in the
+same directory. To reproduce after downloading a producer artifact and
+verifying its wheel hash, run from the repository root:
+
+```bash
+MACOSX_DEPLOYMENT_TARGET=14.0 python3 \
+  packages/kumo-engine/scripts/check_pypi_requirements.py \
+  /path/to/kumo_engine-1.0.0.dev0+88fd604-cp311-abi3-PLATFORM.whl \
+  --platform TARGET
+```
+
+## Implemented corrections
+
+- Failed plans relinquish cache reservations exactly once; error, cancellation
+  and replacement interleavings have executable regressions.
+- Runtime/cache state is process-owned. Fork during initialization, locked
+  cache state, populated cache and inherited in-flight work are checked. Native
+  RuntimeIndex/iterator access rejects inherited owners before touching their
+  thread state; Core reopens a cached index when a worker PID changes. The
+  actual warmed-parent dataset/DataLoader/runtime-adapter checks pass.
+- Native automatic fusion checks backend capability, including zero-hop
+  requests. Core automatic training selects standalone mode for explicit I/O,
+  preserving mmap's existing worker/thread policy. Explicit unsupported fused
+  requests and invalid backend text/UTF-8 return checked errors; 118 Core
+  automatic-configuration cases pass.
+- Linux dependencies/syscalls are target-gated. Supported macOS and newly
+  merged experimental Windows preserve default mmap; explicit non-Linux I/O
+  returns unsupported-operation errors. Unix page advice and profiling remain
+  Unix-only. The existing Windows/WSL release boundary is unchanged.
+- Provider benchmark backends checksum the same literal page bytes, including
+  duplicate requests. The mandatory native parity regression passes.
+- Unused profiler dependencies that failed existing notice policy were
+  removed; generated artifact/license inventories were refreshed without
+  changing licensing policy.
+
+Engine's existing sorted `rand::seq::index::sample` behavior remains the seeded
+selection contract. The source proposal's Floyd replacement is omitted because
+it changes sampled neighborhoods for the same seed. Imported source timings
+therefore do not establish performance for this candidate.
+
+## Current action items
+
+1. Keep the PR draft until outstanding general CI jobs and the four hosted
+   requirements jobs complete. Broader Ubuntu 24 jobs are queued/unallocated;
+   the scheduler cause is unknown. There is no observed failure in the port's
+   completed qualification gates. A separate base-main `f8ba7e17` connector
+   control passes 1,911 tests and fails two tests requiring restricted GCP
+   BigQuery identities; those failures are outside this change's runtime path.
+   Do not label queued jobs as passes or infer that all CI is green.
+2. Before enabling an explicit backend in a deployment, verify that its Linux
+   host permits `io_uring` and its storage supports the selected direct mode.
+   Configure the environment before process/worker startup and budget the
+   direct cache across all active reading processes. The [package README](../../README.md#sampling-io-configuration) records
+   the actual defaults: mmap, cache disabled, eight rings and queue depth 256.
+3. Establish a workload-specific performance case before changing deployment
+   defaults. Compare identical training/prediction inputs and output digests,
+   realistic workers and aggregate memory, resident and storage-bound cases,
+   disk utilization and swap. The correctness and GPU checks prove execution
+   and output behavior; they establish no production throughput improvement.
+
+No additional production-code blocker has been demonstrated by the completed
+qualification. Historical multi-terabyte reports remain imported provenance,
+not independently reproduced speedup evidence.
+
+Run the CPU matrix from the repository root with this checkout's source
+packages, CPU dependencies and candidate native wheel installed:
 
 ```bash
 DG_TEST_NATIVE_TASKS=1 python -m pytest -q -s -c /dev/null \
@@ -79,9 +148,19 @@ DG_TEST_NATIVE_TASKS=1 python -m pytest -q -s -c /dev/null \
   packages/kumo-engine/test/test_native_io_tasks.py
 ```
 
-The earlier fork PR's 41 failed checks all stopped at AWS credential setup,
-before tests. The development branch and replacement draft now live in
-`NVIDIA/kumo-engine`; their current CI results must be assessed independently.
+Run the strict native gate from `packages/diskgraph` on a Linux host permitting
+`io_uring` and direct I/O:
+
+```bash
+bash scripts/check_native_io.sh
+```
+
+## October 30 historical investigation
+
+The remaining sections preserve the original reproductions and original
+action plan. Their failure results and pending-assurance statements describe
+the pre-fix candidate, not the November 3 source. The corrections and current
+gates above supersede those historical release blockers.
 
 ## Provenance and scope
 
@@ -111,7 +190,7 @@ The port retains Engine's newer resident-Parquet memory-budget default, adds
 the proposed explicit budget override and buffered compressed scratch output,
 and retains the newer nested-list prefix sizing implementation and tests.
 
-## Verified findings
+## October 30 verified findings
 
 | Finding | Evidence and consequence | Required action |
 | --- | --- | --- |
@@ -143,7 +222,7 @@ extension and ingest graphs, and benchmark `pprof 0.13.0` to the extension graph
 Notice validation passes for 389 components. Original upstream license text is
 retained, including its indentation.
 
-## Reproduction and validation
+## October 30 reproduction and validation
 
 Run Rust commands from `packages/diskgraph` with the package toolchain and
 dependencies installed. Native diagnostics require Linux permitting io_uring
@@ -209,7 +288,7 @@ fixture produces mmap checksum zero and explicit checksum 128,000 for the same
 128,000 pages. Use the strict byte comparisons for correctness; unify this
 benchmark's digest before using it as a parity gate.
 
-## Focused follow-up PRs and release gate
+## October 30 proposed fixes and release gate (completed)
 
 1. **Cache error ownership:** fix failed-plan cleanup; the replacement-reservation
    diagnostic must pass, followed by concurrent cancellation/read verification.
