@@ -34,13 +34,13 @@ not listed here. Each install replaces the ``kumo-data-science/`` directory it
 writes, and only that directory: a package carries exactly one host's files,
 and a second host left behind would be read too.
 
-This module uses only the standard library, plus ``databricks-sdk`` for
-Genie and a Snowpark session for the ``coco`` account scopes.
+This module uses the standard library and ``filelock``, plus
+``databricks-sdk`` for Genie and a Snowpark session for the ``coco`` account
+scopes.
 """
 from __future__ import annotations
 
 import argparse
-import fcntl
 import io
 import os
 import re
@@ -50,6 +50,8 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Optional
+
+from filelock import FileLock
 
 SKILL = 'kumo-data-science'
 
@@ -133,8 +135,7 @@ def _copy(pkg: Path, skills_dir: Path) -> Path:
     root = skills_dir.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     target = root / SKILL
-    with open(root / f'.{SKILL}.lock', 'w') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with FileLock(root / f'.{SKILL}.lock'):
         staging = Path(tempfile.mkdtemp(prefix=f'.{SKILL}.', dir=root))
         try:
             new, old = staging / SKILL, staging / 'previous'
@@ -215,7 +216,7 @@ def install_skills(
         Where each install went.
     """
     if path is not None:
-        host = AGENTS[agent][0] if agent else 'generic'
+        host = AGENTS.get(agent or '', ('generic', ))[0]
         with skill_package(host) as pkg:
             return [str(_copy(pkg, Path(path)))]
     if agent is None:
@@ -232,21 +233,24 @@ def install_skills(
             f'Unknown agent {agent!r}; expected one of {sorted(AGENTS)}, '
             'or pass path= for any other agent.')
     host, scopes = AGENTS[agent]
+    account = agent == 'coco' and scope in COCO_ACCOUNT_SCOPES
+    # The arguments are checked before the package is built or a session
+    # is looked for, so a missing one is the error reported.
+    if agent != 'genie' and not account and scope not in scopes:
+        raise ValueError(
+            f'{agent}: scope must be one of '
+            f'{sorted(scopes) + (list(COCO_ACCOUNT_SCOPES) if agent == "coco" else [])}'
+        )
+    if account and scope == 'workspace' and not workspace:
+        raise ValueError("scope='workspace' needs workspace=")
     with skill_package(host) as pkg:
         if agent == 'genie':
             return [_install_genie(pkg, client)]
-        if agent == 'coco' and scope in COCO_ACCOUNT_SCOPES:
+        if account:
             session = session or _active_session()
             if scope == 'workspace':
-                if not workspace:
-                    raise ValueError("scope='workspace' needs workspace=")
                 return [_install_coco_workspace(pkg, session, workspace)]
             return [_install_coco_extension(pkg, session, extension, stage)]
-        if scope not in scopes:
-            raise ValueError(
-                f'{agent}: scope must be one of '
-                f'{sorted(scopes) + (list(COCO_ACCOUNT_SCOPES) if agent == "coco" else [])}'
-            )
         return [str(_copy(pkg, Path(scopes[scope])))]
 
 

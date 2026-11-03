@@ -48,7 +48,6 @@ from kumo.engine.connector import (
 )
 from kumo.engine.graph import Graph, GraphSnapshot
 from kumo.engine.pquery import PredictionTable, PredictiveQuery, TrainingTable
-from kumo.engine.skills import install_skills
 from kumo.engine.table import Table
 from kumo.engine.trainer import (
     ModelOutputConfig,
@@ -99,5 +98,15 @@ __all__ = [
     "PredictionOutputConfig",
     "TrainingTableOutputConfig",
 ]
+
+
+def __getattr__(name: str):
+    # Imported on first use, so `python -m kumo.engine.skills` does not find
+    # the module already imported by this package.
+    if name == "install_skills":
+        from kumo.engine.skills import install_skills
+        return install_skills
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 ensure_nofile()

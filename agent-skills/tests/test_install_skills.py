@@ -3,13 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """`kumo.engine.install_skills()`: the wheel carries every host package and installs the right one.
 
-`kumo/engine/skills.py` uses only the standard library, so it is loaded here by path, without
-importing `kumo.engine` and the training stack behind it.
+`kumo/engine/skills.py` uses only the standard library and `filelock`, so it is loaded here by
+path, without importing `kumo.engine` and the training stack behind it.
 """
+import ast
 import importlib.util
 import io
 import re
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -28,7 +30,8 @@ def load(name: str, path: Path) -> types.ModuleType:
 
 
 package_skill = load('package_skill', ROOT / 'agent-skills' / 'scripts' / 'package_skill.py')
-skills = load('kumo_engine_skills', ROOT / 'packages' / 'kumo-engine' / 'kumo' / 'engine' / 'skills.py')
+ENGINE = ROOT / 'packages' / 'kumo-engine' / 'kumo' / 'engine'
+skills = load('kumo_engine_skills', ENGINE / 'skills.py')
 
 
 @pytest.fixture
@@ -93,6 +96,11 @@ def test_path_installs_anywhere(home: Path, tmp_path: Path) -> None:
     assert hosts(Path(target)) == ['snowflake-coco']
 
 
+def test_path_installs_for_an_agent_not_listed(home: Path, tmp_path: Path) -> None:
+    [target] = skills.install_skills('cursor', path=tmp_path / 'cursor')
+    assert hosts(Path(target)) == ['generic']
+
+
 def test_no_agent_installs_for_the_agents_present(home: Path) -> None:
     assert len(skills.install_skills()) == 2   # none present: Claude Code and Codex
     for d in ['.codex', '.snowflake/cortex']:
@@ -107,6 +115,63 @@ def test_bad_arguments(home: Path) -> None:
         skills.install_skills('cursor')
     with pytest.raises(ValueError, match='scope must be one of'):
         skills.install_skills('claude', scope='workspace')
+
+
+def test_a_missing_workspace_is_reported_before_the_session(
+        home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_session():
+        raise RuntimeError('no active session')
+
+    monkeypatch.setattr(skills, '_active_session', no_session)
+    with pytest.raises(ValueError, match='needs workspace='):
+        skills.install_skills('coco', scope='workspace')
+    with pytest.raises(ValueError, match='needs workspace='):
+        skills.install_skills(scope='workspace')
+
+
+def test_skills_imports_no_posix_only_module() -> None:
+    # `kumo.engine` imports it, so it must import on Windows.
+    tree = ast.parse((ENGINE / 'skills.py').read_text())
+    names = {a.name.split('.')[0] for n in ast.walk(tree) if isinstance(n, ast.Import)
+             for a in n.names}
+    names |= {n.module.split('.')[0] for n in ast.walk(tree)
+              if isinstance(n, ast.ImportFrom) and n.module}
+    assert not names & {'fcntl', 'termios', 'pwd', 'grp', 'resource'}
+
+
+def test_an_install_waits_for_the_lock(home: Path, tmp_path: Path) -> None:
+    from filelock import FileLock
+    root = tmp_path / 'locked'
+    root.mkdir()
+    done = threading.Event()
+    with FileLock(root / '.kumo-data-science.lock'):
+        thread = threading.Thread(
+            target=lambda: (skills.install_skills(path=root), done.set()))
+        thread.start()
+        assert not done.wait(1)
+        assert not (root / 'kumo-data-science').exists()
+    thread.join(60)
+    assert done.is_set() and hosts(root / 'kumo-data-science') == ['generic']
+
+
+def test_kumo_engine_imports_install_skills_on_first_use(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    # `python -m kumo.engine.skills` warns if importing `kumo.engine` already
+    # imported it. The package's own imports need the training stack, so its
+    # top level is read, and its `__getattr__` run against stand-in modules.
+    tree = ast.parse((ENGINE / '__init__.py').read_text())
+    assert not [n for n in tree.body if isinstance(n, ast.ImportFrom)
+                and (n.module or '').startswith('kumo.engine.skills')]
+    [getattr_] = [n for n in tree.body
+                  if isinstance(n, ast.FunctionDef) and n.name == '__getattr__']
+    namespace: dict = {'__name__': 'kumo.engine'}
+    exec(compile(ast.Module([getattr_], []), 'kumo/engine/__init__.py', 'exec'), namespace)
+    for name in ['kumo', 'kumo.engine']:
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, 'kumo.engine.skills', skills)
+    assert namespace['__getattr__']('install_skills') is skills.install_skills
+    with pytest.raises(AttributeError):
+        namespace['__getattr__']('nothing')
 
 
 def test_the_bundled_copy_is_used_outside_a_checkout(
@@ -484,8 +549,9 @@ def test_a_failed_copy_keeps_the_previous_install(home: Path,
         skills.install_skills('claude')
     assert (Path(target) / 'SKILL.md').read_text() == before
     root = Path(target).parent
-    names = sorted(p.name for p in root.iterdir())
-    assert names == ['.kumo-data-science.lock', 'kumo-data-science']
+    # Some filelock versions delete the lock file on release.
+    names = sorted(p.name for p in root.iterdir() if p.name != '.kumo-data-science.lock')
+    assert names == ['kumo-data-science']
 
 
 def test_a_checkout_install_checks_references_first(home: Path, tmp_path: Path,
