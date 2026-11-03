@@ -204,9 +204,8 @@ def verify_runtime(version, profile, *, reference_only=False):
     properties = torch.cuda.get_device_properties(0)
     identifier = str(properties.uuid)
     uuid.UUID(identifier.removeprefix('GPU-'))
-    if 'RTX PRO 6000' not in properties.name or properties.total_memory <= 0:
-        raise ValueError(
-            'CUDA work requires the authorized RTX PRO 6000 profile')
+    if not properties.name or properties.total_memory <= 0:
+        raise ValueError('CUDA GPU name or memory is missing')
     driver = subprocess.check_output([
         'nvidia-smi', '--id=GPU-' + identifier.removeprefix('GPU-'),
         '--query-gpu=driver_version', '--format=csv,noheader'
@@ -1340,7 +1339,7 @@ def resource_requirements(measurement, headroom=1.25):
         ram_bytes=math.ceil(peaks['ram_bytes'] * headroom),
         scratch_bytes=math.ceil(peaks['scratch_bytes'] * headroom),
         gpu_memory_bytes=math.ceil(peaks['gpu_memory_bytes'] * headroom),
-        gpu_class=measurement['gpu_class'], gpus=measurement['gpus'],
+        gpus=measurement['gpus'],
         time_seconds=math.ceil(measurement['seconds'] * headroom))
     return dict(minimum=minimum, measurement=measurement, headroom=headroom)
 
@@ -1356,8 +1355,7 @@ def admit_resources(profile, capacity):
         raise ValueError('Resource minima differ from their measured evidence')
     for name, required in profile['minimum'].items():
         actual = capacity.get(name)
-        if ((actual != required)
-                if name == 'gpu_class' else type(actual) not in (int, float) or
+        if (type(actual) not in (int, float) or
             (not math.isfinite(actual)
              and not (name == 'time_seconds' and actual == math.inf))
                 or actual < required):
@@ -1390,7 +1388,7 @@ def available_capacity(scratch, runtime, time_seconds):
         pass
     return dict(cpus=cpus, ram_bytes=memory,
                 scratch_bytes=shutil.disk_usage(scratch).free,
-                gpu_class=runtime['gpu'], gpus=runtime['gpu_count'],
+                gpus=runtime['gpu_count'],
                 gpu_memory_bytes=torch.cuda.mem_get_info()[0],
                 time_seconds=time_seconds)
 

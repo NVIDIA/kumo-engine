@@ -31,8 +31,9 @@ def measurement():
 def test_resource_minima_come_from_measured_peaks_with_headroom():
     profile = nightly.resource_requirements(measurement())
     assert profile['minimum'] == dict(cpus=3, ram_bytes=125, scratch_bytes=250,
-                                      gpu_class='RTX PRO 6000', gpus=1,
-                                      gpu_memory_bytes=63, time_seconds=12)
+                                      gpus=1, gpu_memory_bytes=63,
+                                      time_seconds=12)
+    assert profile['measurement']['gpu_class'] == 'RTX PRO 6000'
     assert nightly.admit_resources(profile,
                                    profile['minimum']) == profile['minimum']
     for field in ('cpus', 'ram_bytes', 'scratch_bytes', 'gpus',
@@ -44,9 +45,53 @@ def test_resource_minima_come_from_measured_peaks_with_headroom():
         with pytest.raises(ValueError, match=field):
             nightly.admit_resources(
                 profile, dict(profile['minimum'], **{field: float('nan')}))
-    with pytest.raises(ValueError, match='gpu_class'):
-        nightly.admit_resources(
-            profile, dict(profile['minimum'], gpu_class='different GPU'))
+    assert nightly.admit_resources(
+        profile, dict(profile['minimum'], gpu_class='NVIDIA A10G'))
+
+
+@pytest.mark.parametrize('available,gpus,memory,passes', [
+    (True, 1, 24 * 1024**3, True),
+    (False, 1, 24 * 1024**3, False),
+    (True, 0, 24 * 1024**3, False),
+    (True, 2, 24 * 1024**3, False),
+    (True, 1, 0, False),
+])
+def test_runtime_uses_cuda_capacity_without_requiring_a_gpu_model(
+        monkeypatch, available, gpus, memory, passes):
+    import torch
+
+    import kumo.engine as kumo
+
+    prefix = nightly.sys.prefix
+    monkeypatch.setattr(nightly, 'sys',
+                        SimpleNamespace(platform='linux',
+                                        version_info=(3, 12), prefix=prefix))
+    monkeypatch.setattr(nightly, 'platform',
+                        SimpleNamespace(machine=lambda: 'x86_64'))
+    monkeypatch.setattr(kumo, '__file__',
+                        str(Path(prefix) / 'lib/kumo/engine/__init__.py'))
+    metadata = SimpleNamespace(
+        distributions=lambda: [], version=lambda name: kumo.__version__,
+        distribution=lambda name: SimpleNamespace(read_text=lambda filename:
+            json.dumps(dict(archive_info=dict(hashes=dict(sha256='a' * 64))))))
+    monkeypatch.setattr(nightly, 'importlib', SimpleNamespace(metadata=metadata))
+    monkeypatch.setattr(nightly, 'subprocess',
+                        SimpleNamespace(check_output=lambda *args, **kwargs:
+                                        '580.0\n'))
+    properties = SimpleNamespace(name='NVIDIA A10G', total_memory=memory,
+                                 uuid='GPU-12345678-1234-1234-1234-123456789abc',
+                                 major=8, minor=6)
+    monkeypatch.setattr(torch.cuda, 'is_available', lambda: available)
+    monkeypatch.setattr(torch.cuda, 'device_count', lambda: gpus)
+    monkeypatch.setattr(torch.cuda, 'get_device_properties', lambda i: properties)
+    if passes:
+        runtime = nightly.verify_runtime(kumo.__version__, None)
+        assert runtime['gpu'] == 'NVIDIA A10G'
+        assert runtime['gpu_memory_bytes'] == 24 * 1024**3
+        assert runtime['compute_capability'] == [8, 6]
+    else:
+        with pytest.raises(ValueError):
+            nightly.verify_runtime(kumo.__version__, None)
 
 
 @pytest.mark.parametrize('damage', [
@@ -198,7 +243,7 @@ def test_measurement_mode_proposes_requirements_without_approving_a_case(
 
 
 @pytest.mark.parametrize('dimension', [
-    'cpus', 'ram_bytes', 'scratch_bytes', 'gpu_class', 'gpus',
+    'cpus', 'ram_bytes', 'scratch_bytes', 'gpus',
     'gpu_memory_bytes', 'time_seconds'
 ])
 def test_insufficient_capacity_stops_before_snapshot_build(
@@ -206,13 +251,22 @@ def test_insufficient_capacity_stops_before_snapshot_build(
     args, built, cases = prepared_run(tmp_path, monkeypatch)
     args.case = 'binary-normal'
     capacity = dict(cases[0]['requirements']['minimum'])
-    capacity[dimension] = ('different GPU' if dimension == 'gpu_class' else
-                           capacity[dimension] - 1)
+    capacity[dimension] -= 1
     monkeypatch.setattr(nightly, 'available_capacity', lambda *args: capacity)
     assert nightly.run(args) is False
     assert built == []
     [result] = nightly.read(args.output_dir / 'nightly-result.json')['runs']
     assert result['error'].startswith('ValueError: Insufficient ' + dimension)
+
+
+def test_different_gpu_model_does_not_block_case_with_enough_capacity(
+        tmp_path, monkeypatch):
+    args, built, cases = prepared_run(tmp_path, monkeypatch)
+    args.case = 'binary-normal'
+    capacity = dict(cases[0]['requirements']['minimum'], gpu_class='NVIDIA A10G')
+    monkeypatch.setattr(nightly, 'available_capacity', lambda *args: capacity)
+    assert nightly.run(args) is True
+    assert len(built) == 1
 
 
 def test_standalone_case_records_its_declared_time_limit(tmp_path, monkeypatch):

@@ -35,7 +35,7 @@ archive before fitting. The frozen dependency profile applies only to ordinary
 reference execution. Resource measurement records the installed dependencies
 for a new reference proposal. It does not require the old smoke-run profile.
 Candidate dependency changes do not require a new input archive.
-The runtime requires Linux x86_64 and an RTX PRO 6000. The reference campaign
+The runtime requires Linux x86_64 and one CUDA GPU. The reference campaign
 uses one AWS g7e.8xlarge per case, with one Blackwell GPU, 32 CPUs, and 256 GiB
 of RAM. Candidate-wheel qualification remains separate work.
 
@@ -126,7 +126,9 @@ These declarations remain proposals until review.
 
 Each qualification case requires a reviewed resource manifest and its checksum.
 The manifest contains `minimum`, `measurement`, and `headroom`. It declares CPU
-cores, RAM bytes, scratch bytes, GPU class and count, GPU memory bytes, and seconds.
+cores, RAM bytes, scratch bytes, GPU count, GPU memory bytes, and seconds.
+The measurement retains the GPU model name as an observation. It does not
+require that exact model for admission.
 The harness derives minima from measured peaks with 25 percent headroom. It
 rejects incomplete evidence, changed minima, and evidence from another case or
 input manifest. Startup compares available capacity with each minimum before
