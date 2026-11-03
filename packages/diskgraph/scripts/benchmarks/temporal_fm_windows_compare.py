@@ -32,6 +32,14 @@ if args.cycles < 1 or args.repeats < 1:
     parser.error("cycles and repeats must be positive")
 root = args.data_root.resolve()
 packages = {"baseline": args.baseline.resolve(), "candidate": args.candidate.resolve()}
+native_hashes = {}
+for variant, package in packages.items():
+    extensions = list((package / "diskgraph").glob("_c*.so")) + list((package / "diskgraph").glob("_c*.pyd"))
+    if len(extensions) != 1:
+        raise ValueError(f"Expected one native extension in {package / 'diskgraph'}: {extensions}")
+    native_hashes[variant] = hashlib.sha256(extensions[0].read_bytes()).hexdigest()
+if len(set(native_hashes.values())) != 2:
+    raise ValueError("Baseline and candidate native libraries are identical; check build isolation")
 worker_script = Path(__file__).with_name("temporal_fm_windows.py").resolve()
 output = args.output.resolve()
 output.mkdir(parents=True, exist_ok=False)
@@ -66,6 +74,7 @@ summary = {
     "cutoff_offset_seconds": cutoff_offset, "cpu_affinity": [cpu] if cpu is not None else None,
     "source_events_sha256": fixture_hashes.pop(),
     "worker_sha256": hashlib.sha256(worker_script.read_bytes()).hexdigest(),
+    "native_sha256": native_hashes,
     "baseline_revision": args.baseline_revision, "candidate_revision": args.candidate_revision,
     "packages": {variant: str(path) for variant, path in packages.items()}, "units": {},
 }
