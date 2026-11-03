@@ -514,13 +514,40 @@ def test_unavailable_reason_is_explicit(reason):
 
 
 @pytest.mark.parametrize('count', [0, 100, 101, 450])
-def test_static_metric_limit_is_explicit(tmp_path, count):
+@pytest.mark.parametrize('context_state',
+                         ['retained', 'long', 'missing', 'provenance'])
+def test_static_metric_limit_is_explicit(tmp_path, count, context_state):
     run, _ = _run(tmp_path)
     save_json(
-        {f'test_metric_{i}_<img>': 0 if i == 0 else None
-         for i in range(count)}, str(run / 'published-model/metrics.json'))
+        {
+            f'test_metric_{i}_<img>':
+            0 if i == 0 else 1.2345678901234567 if i == 1 else None
+            for i in range(count)
+        }, str(run / 'published-model/metrics.json'))
     result = TrainingExplanations.load(run).visualize()._payload
+    suffix = 'x' * 8192 if context_state == 'long' else ''
+    result['context'] = dict(run='run-<img>' + suffix,
+                             task_type='forecasting<&>',
+                             query='PREDICT <script>&"quoted"' + suffix,
+                             target='target<&>')
+    if context_state in ('missing', 'provenance'):
+        result['context'] = {}
+    if context_state == 'provenance':
+        result['provenance']['task_type'] = 'forecasting<&>'
+    result['samples']['bodies'] = {'0': {'value': 'PRIVATE_EXAMPLE_SENTINEL'}}
     summary = static_summary(result)
+    if context_state in ('retained', 'long'):
+        assert 'Run: run-&lt;img&gt;' + suffix in summary
+        assert 'Predictive query: PREDICT &lt;script&gt;&amp;&quot;quoted&quot;' + suffix in summary
+        assert 'Target: target&lt;&amp;&gt;' in summary
+    else:
+        assert 'Run: Unavailable' in summary
+        assert 'Predictive query: Unavailable' in summary
+    assert ('Task: forecasting&lt;&amp;&gt;' in summary) == (context_state
+                                                             != 'missing')
+    assert ('Task: Unavailable' in summary) == (context_state == 'missing')
+    assert ('Explore predictive query' in summary) == (context_state == 'long')
+    assert 'PRIVATE_EXAMPLE_SENTINEL' not in summary
     assert len(result['metrics']['rows']) == count
     assert summary.count(' / test / ') == min(count, 100)
     notice = f'Showing 100 of {count} loaded metrics.'
@@ -530,6 +557,7 @@ def test_static_metric_limit_is_explicit(tmp_path, count):
     assert (recovery in summary) == (count > 100)
     if count:
         assert 'metric_0_&lt;img&gt; / Unknown metric origin: 0' in summary
+        assert 'metric_1_&lt;img&gt; / Unknown metric origin: 1.2345678901234567' in summary
         assert 'metric_99_&lt;img&gt; / Unknown metric origin: Unavailable' in summary
     assert '<img>' not in summary
     assert 'metric_100_' not in summary

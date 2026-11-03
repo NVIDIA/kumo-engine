@@ -11,7 +11,8 @@ from kumo.engine._widget import CSS_THEME
 
 
 def static_summary(payload: dict) -> str:
-    """Return escaped metrics and availability without selected-example data."""
+    """Return escaped context, metrics and availability without example data."""
+    context = payload.get('context', {})
     provenance = payload.get('provenance', {})
     metrics = payload.get('metrics', {}).get('rows', [])
     parts = [
@@ -22,6 +23,24 @@ def static_summary(payload: dict) -> str:
         escape(str(provenance.get('explanation_trial') or 'Unavailable')) +
         '.</p>'
     ]
+    identities = [('Run', context.get('run')),
+                  ('Task', context.get('task_type')
+                   or provenance.get('task_type')),
+                  ('Predictive query', context.get('query'))]
+    if context.get('target'):
+        identities.append(('Target', context['target']))
+    for label, value in identities:
+        value = str(value or 'Unavailable')
+        content = ('<p class="kt-note" style="white-space:pre-wrap;'
+                   'overflow-wrap:anywhere">' + escape(label + ': ' + value) +
+                   '</p>')
+        if len(value) > 120 or '\n' in value or '\r' in value:
+            content = ('<details><summary>Explore ' + label.lower() +
+                       '</summary><div class="kt-sample-values" tabindex="0" '
+                       'role="region" aria-label="' + label + '" '
+                       'style="max-height:400px;overflow:auto">' + content +
+                       '</div></details>')
+        parts.append(content)
     if len(metrics) > 100:
         parts.append(f'<p>Showing 100 of {len(metrics)} loaded metrics. '
                      'Rerun this cell in a trusted notebook to inspect all '

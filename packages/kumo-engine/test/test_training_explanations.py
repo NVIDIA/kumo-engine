@@ -31,6 +31,8 @@ def test_training_visualization_uses_shared_notebook_transports(monkeypatch):
     from kumo.engine import _widget
 
     result = TrainingExplanations.unavailable().visualize(max_samples=0)
+    result._payload['context'] = dict(run='run<&>', task_type='forecasting',
+                                      query='PREDICT <img>' + 'x' * 8192)
     monkeypatch.setattr(_widget, 'is_snowflake_workspace', lambda: False)
     shell = InteractiveShell.instance()
     published = []
@@ -48,6 +50,11 @@ def test_training_visualization_uses_shared_notebook_transports(monkeypatch):
     assert '<script' not in fallback['text/html']
     assert 'anywidget&gt;=0.9,&lt;1' in fallback['text/html']
     assert 'graph.visualize' not in fallback['text/html']
+    assert 'Run: run&lt;&amp;&gt;' in fallback['text/html']
+    assert 'Task: forecasting' in fallback['text/html']
+    assert 'Predictive query: PREDICT &lt;img&gt;' + 'x' * 8192 in fallback[
+        'text/html']
+    assert 'Explore predictive query' in fallback['text/html']
 
     pytest.importorskip('anywidget')
     try:
