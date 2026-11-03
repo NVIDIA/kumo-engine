@@ -290,6 +290,12 @@ note(examples,'Coverage: '+text(coverage.references_listed??references.length)+'
 note(examples,'Preloaded example identities and values may be saved in notebook HTML or widget state. '
 +'Inspect other retained graphs in Python with explanations.sample(collector_id).');
 const sampleView=el('div',undefined,'kt-detail'),sampleButtons=[];
+const identityNote=(parent,title,value,tag='p')=>{
+if(value.length<=120&&!/[\r\n]/.test(value)){parent.append(el(tag,value,'kt-note'));return;}
+const details=el('details');details.append(el('summary','Explore '+title.toLowerCase()));
+const values=el('div',undefined,'kt-sample-values');values.tabIndex=0;
+values.setAttribute('role','region');values.setAttribute('aria-label',title);
+note(values,value);details.append(values);parent.append(details);};
 const sampleDetailRow=el('tr'),sampleDetailCell=el('td');sampleDetailCell.colSpan=3;
 sampleDetailCell.append(sampleView);sampleDetailRow.append(sampleDetailCell);
 const sampleTable=(title,headers,rows,total,numeric=[])=>{
@@ -300,7 +306,7 @@ table(values,headers,rows,numeric);details.append(values);sampleView.append(deta
 const inspectSample=(ref,index)=>{sampleView.replaceChildren();sampleView.hidden=false;
 sampleButtons.find(item=>item.rowIndex===index)?.button.closest('tr').after(sampleDetailRow);
 sampleView.append(el('h3','Collector '+text(ref.artifact_id)));
-note(sampleView,'Recorded original IDs: '+text(Object.keys(obj(ref.original_ids)).length?ref.original_ids:'Unavailable')
+identityNote(sampleView,'Recorded original IDs','Recorded original IDs: '+text(Object.keys(obj(ref.original_ids)).length?ref.original_ids:'Unavailable')
 +' · Strategies: '+(list(ref.categories).join(', ')||'Unavailable'));
 const output=obj(obj(samples.outputs)[ref.artifact_id]);
 sampleView.append(el('h4','Prediction and observed target'));
@@ -311,7 +317,7 @@ note(sampleView,binary?'Probability of the positive class; observed target: 0 = 
 table(sampleView,[binary?'Positive-class probability (0 to 1)':'Prediction','Observed target'],[[output.prediction,output.target]],[0,1]);}
 const body=obj(bodies[ref.artifact_id]),store=obj(body.subgraph_store),features=obj(obj(body.feature_store).features),nodes=obj(store.nodes);
 const rootNode=obj(nodes[store.root_id]);
-note(sampleView,'Root node: '+text(store.root_id)+' · Original entity: '+text(rootNode.pkey)
+identityNote(sampleView,'Root identity','Root node: '+text(store.root_id)+' · Original entity: '+text(rootNode.pkey)
 +' · Seed time: '+text(store.seed_time));
 if(!body.subgraph_store)note(sampleView,'Relational structure unavailable.');
 const nodeRows=Object.entries(nodes);if(nodeRows.length){sampleView.append(el('h4','Recorded nodes'));
@@ -337,7 +343,8 @@ button.closest('tr').setAttribute('aria-selected',String(rowIndex===index));});}
 const catalogRows=references.slice(0,100).map((ref,index)=>({ref,index}));
 const referenceTable=(parent,entries)=>table(parent,['Collector / original IDs','Recorded strategies','Availability / detail'],entries.map(({ref,index})=>{
 const identity=el('div'),original=[...new Set(Object.values(obj(ref.original_ids)).map(text))];
-identity.append(el('div','Collector '+text(ref.artifact_id)),el('div',original.length?'Original ID: '+original.join(', '):'Original IDs unavailable','kt-note'));
+identity.append(el('div','Collector '+text(ref.artifact_id)));
+identityNote(identity,'Original IDs',original.length?'Original ID: '+original.join(', '):'Original IDs unavailable','div');
 let detail;if(Object.hasOwn(bodies,ref.artifact_id)){detail=action('Inspect example',()=>inspectSample(ref,index));sampleButtons.push({button:detail,rowIndex:index});}
 else detail=el('span',ref.reason||ref.status||(ref.available?'Not loaded':'Graph file missing'));
 return[identity,list(ref.categories).join(', ')||'Unavailable',detail];}));
