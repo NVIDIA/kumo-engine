@@ -3,10 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import os
 from collections import Counter
 from dataclasses import replace
 from functools import partial
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pandas as pd
@@ -25,6 +27,7 @@ from kumo.engine.trainer.output_config import TrainingTableOutputConfig
 
 SPLITS = {'train': 0, 'val': 1, 'test': 2}
 FREQ = '__kumo_internal_frequency_column__'
+LABEL = 'PREDICT ents.LABEL FOR EACH ents.ID'
 
 
 @pytest.fixture(scope='module')
@@ -96,6 +99,12 @@ def _rows(table, columns):
         for row in zip(*values))
 
 
+def _generate(graph, **kwargs):
+    graph, snapshot, _, _ = graph
+    pquery = kumo.PredictiveQuery(graph=graph, query=LABEL)
+    return pquery, pquery.generate_training_table(snapshot, **kwargs)
+
+
 def _export(graph, query, name):
     graph, snapshot, connector, out = graph
     pquery = kumo.PredictiveQuery(graph=graph, query=query)
@@ -107,7 +116,7 @@ def _export(graph, query, name):
 
 @pytest.mark.parametrize('name, query', [
     ('temporal', 'PREDICT COUNT(events.*, 0, 7, days) > 0 FOR EACH ents.ID'),
-    ('static', 'PREDICT ents.LABEL FOR EACH ents.ID'),
+    ('static', LABEL),
 ])
 def test_node_export_roundtrip(graph, name, query):
     _, snapshot, connector, out = graph
@@ -307,14 +316,13 @@ def test_manifest_and_export_sidecar(graph, tmp_path):
     from kumo_core.training.export import export_train_table
 
     _, snapshot, connector, out = graph
-    query = 'PREDICT ents.LABEL FOR EACH ents.ID'
-    pquery, table, _ = _export(graph, query, 'lineage')
+    pquery, table, _ = _export(graph, LABEL, 'lineage')
     manifest = table.manifest
     assert manifest.id == table.id and table.id.startswith('tt-')
     assert table.id != _spec(table)['tt_id']
     assert manifest.parents == TrainingTableParents(
         snapshot=snapshot.manifest)
-    assert manifest.query == query
+    assert manifest.query == LABEL
     assert manifest.extra == {}
     assert manifest.split_seed == 0
     again = pquery.generate_training_table(snapshot)
@@ -346,8 +354,7 @@ def test_manifest_and_export_sidecar(graph, tmp_path):
 def test_custom_table_follows_the_snapshots_record_sources(
         graph, monkeypatch):
     graph_, snapshot, connector, _ = graph
-    pquery, _, _ = _export(graph, 'PREDICT ents.LABEL FOR EACH ents.ID',
-                           'unlocated')
+    pquery, _, _ = _export(graph, LABEL, 'unlocated')
 
     def location(snapshot):
         table = kumo.TrainingTable.from_source_table(
@@ -368,25 +375,19 @@ def test_manifest_write_failure_keeps_generation_and_export(
         graph, monkeypatch):
     from kumo.engine.pquery import training_table
 
-    _, _, connector, out = graph
-
-    def fail(*args, **kwargs):
-        raise OSError('read-only scratch')
-
-    monkeypatch.setattr(training_table, 'write_manifest', fail)
+    out = graph[3]
+    monkeypatch.setattr(training_table, 'write_manifest',
+                        Mock(side_effect=OSError('read-only scratch')))
     with pytest.warns(UserWarning, match='read-only scratch'):
-        _, table, exported = _export(
-            graph, 'PREDICT ents.LABEL FOR EACH ents.ID', 'no_manifest')
+        _, table, exported = _export(graph, LABEL, 'no_manifest')
     assert table.manifest is None
     assert not (out / 'no_manifest' / '_provenance.json').exists()
     assert exported.num_rows == sum(_seeds(table)[1].values())
 
 
 def test_unreadable_manifest_still_exports(graph):
-    graph_, snapshot, connector, out = graph
-    table = kumo.PredictiveQuery(
-        graph=graph_, query='PREDICT ents.LABEL FOR EACH ents.ID'
-    ).generate_training_table(snapshot)
+    _, _, connector, out = graph
+    _, table = _generate(graph)
     manifest = table.staging_dir / '_provenance.json'
     manifest.chmod(0)
     try:
@@ -399,31 +400,23 @@ def test_unreadable_manifest_still_exports(graph):
 
 
 def test_no_sidecar_for_warehouse_or_csv_exports(graph):
-    graph_, snapshot, connector, out = graph
-    table = kumo.PredictiveQuery(
-        graph=graph_, query='PREDICT ents.LABEL FOR EACH ents.ID'
-    ).generate_training_table(snapshot)
-    calls = []
-
-    def write_files(connector, table_name, files, write_mode, **kwargs):
-        calls.append(kwargs)
-
+    _, _, connector, out = graph
+    _, table = _generate(graph)
+    write_files = Mock()
     warehouse = SimpleNamespace(
         source_type='SNOWFLAKE',
         sink_backend=SimpleNamespace(write_files=write_files))
     table.export(TrainingTableOutputConfig(warehouse, 'DB.SCHEMA.TT'))
-    assert calls == [{'export_id': f'{table.tt_id}:tt-export-v1'}]
+    assert [call.kwargs for call in write_files.call_args_list] == [{
+        'export_id': f'{table.tt_id}:tt-export-v1'}]
     table.export(TrainingTableOutputConfig(connector, 'rows.csv/'))
     assert not (out / 'rows.csv' / '_provenance.json').exists()
 
 
 def test_the_store_spills_at_most_two_parts(graph, tmp_path, monkeypatch):
-    import os
-
     from kumo_core import object_store_sink
     from kumo_core.training import export
 
-    graph_, snapshot, _, _ = graph
     stage_parts = export.stage_parts
     monkeypatch.setattr(
         export, 'stage_parts', lambda spec: {
@@ -438,23 +431,18 @@ def test_the_store_spills_at_most_two_parts(graph, tmp_path, monkeypatch):
         upload_file(filesystem, source, destination)
 
     monkeypatch.setattr(object_store_sink, 'upload_file', upload)
-    table = kumo.PredictiveQuery(
-        graph=graph_, query='PREDICT ents.LABEL FOR EACH ents.ID'
-    ).generate_training_table(
-        snapshot, mlops=kumo.MLOps(artifact_root=str(tmp_path)))
+    _, table = _generate(graph, mlops=kumo.MLOps(artifact_root=str(tmp_path)))
     stored = tmp_path / 'training_tables' / table.id
     assert len(spilled) == len(list(stored.glob('part-*.parquet'))) >= 8
     assert max(spilled) <= 2
 
 
 def test_a_mlops_block_stores_each_table_once_under_the_root(graph, tmp_path):
-    graph_, snapshot, _, _ = graph
-    pquery = kumo.PredictiveQuery(graph=graph_,
-                                  query='PREDICT ents.LABEL FOR EACH ents.ID')
+    snapshot = graph[1]
     root = tmp_path / 'artifacts'
     cfg = kumo.MLOps(artifact_root=str(root))
     with kumo.mlops(cfg):
-        table = pquery.generate_training_table(snapshot)
+        pquery, table = _generate(graph)
         stored = root / 'training_tables' / table.id
         parts = {p.name: p.stat().st_mtime_ns for p in stored.iterdir()}
         pquery.generate_training_table(snapshot)
