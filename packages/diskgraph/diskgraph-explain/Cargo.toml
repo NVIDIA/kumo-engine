@@ -27,7 +27,7 @@ diskgraph-index = { path = "../diskgraph-index" }
 diskgraph-core = { path = "../diskgraph-core" }
 diskgraph-rowpack = { path = "../diskgraph-rowpack" }
 
-parquet = "58.4.0"
+parquet = "59.3.2"
 rand = "0.8"
 rayon = "1.10"
 

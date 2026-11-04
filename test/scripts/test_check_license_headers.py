@@ -182,6 +182,35 @@ def test_repository_generated_and_vendored_policy_is_applied() -> None:
         assert exclusion["kind"] == "vendored"
 
 
+def test_epserde_preserves_upstream_headers_and_checks_local_additions() -> None:
+    prefix = "packages/diskgraph/third_party/epserde/"
+    policy = deepcopy(POLICY)
+    policy["derived_sources"] = []
+    policy["license_scopes"] = []
+    policy["exclusions"] = [
+        exclusion for exclusion in policy["exclusions"]
+        if exclusion["pattern"].startswith(prefix)
+    ]
+    paths = [
+        path.relative_to(REPOSITORY_ROOT).as_posix()
+        for path in (REPOSITORY_ROOT / prefix).rglob("*")
+        if path.is_file() and path.suffix in {".rs", ".toml"}
+        and path.name != "Cargo.lock"
+    ]
+    errors, _, excluded = check_license_headers.check_paths(
+        REPOSITORY_ROOT, policy, paths)
+    assert errors == []
+    assert excluded
+    for name in ("src/utils/alignment.rs", "tests/test_review_regressions.rs"):
+        path = prefix + name
+        assert check_license_headers.matching_exclusion(path, policy) is None
+        text = (REPOSITORY_ROOT / path).read_text(encoding="utf-8")
+        assert check_license_headers.validate_text(path, text, policy) is None
+        assert check_license_headers.validate_text(
+            path, text.replace("// All rights reserved.\n", ""),
+            policy) is not None
+
+
 def test_exclusions_are_exact_and_self_cleaning(tmp_path: Path) -> None:
     policy = deepcopy(POLICY)
     policy["license_scopes"] = []

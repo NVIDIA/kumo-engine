@@ -85,7 +85,7 @@ def test_wheel_owns_training_dependency_closure(tmp_path: Path) -> None:
     assert Version("2025.3.0") in fsspec_versions
     assert Version("2025.5.1") in fsspec_versions
     assert Version("2025.5.2") in fsspec_versions
-    assert str(requirements["pytorch-lightning"].specifier) == "==2.6.5"
+    assert str(requirements["pytorch-lightning"].specifier) == "==2.6.6"
     tensorboard_versions = requirements["tensorboard"].specifier
     assert Version("2.16.2") in tensorboard_versions
     assert Version("2.17.1") in tensorboard_versions
