@@ -141,6 +141,15 @@ def test_cli_reports_errors_without_a_traceback(
     assert 'error: genie installs' in capsys.readouterr().err
 
 
+def test_cli_reports_a_filesystem_error_without_a_traceback(
+        home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (tmp_path / 'a-file').write_text('')
+    with pytest.raises(SystemExit) as exc:
+        skills.main(['--path', str(tmp_path / 'a-file' / 'skills')])
+    assert exc.value.code == 1
+    assert 'error: ' in capsys.readouterr().err
+
+
 def test_a_missing_workspace_is_reported_before_the_session(
         home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def no_session():

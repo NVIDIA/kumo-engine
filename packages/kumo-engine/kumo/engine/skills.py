@@ -808,7 +808,8 @@ def main(argv: Optional[list[str]] = None) -> None:
                        session=session, workspace=args.workspace,
                        extension=args.extension, stage=args.stage,
                        client=client)
-    except (ValueError, FileNotFoundError, RuntimeError) as e:
+    # OSError: e.g. a --path through a file, or a directory not writable.
+    except (ValueError, OSError, RuntimeError) as e:
         ap.exit(1, f'{ap.prog}: error: {e}\n')
     finally:
         if session is not None:
