@@ -1190,8 +1190,7 @@ def _target_hint(reader: str, location: str) -> str:
 
 def _download(mlflow: Any, target: Any, model_uri: str,
               destination: Path) -> str:
-    if model_uri.startswith('models:/') and (target.explicit
-                                             or target.platform == 'mlflow'):
+    if target.explicit and model_uri.startswith('models:/'):
         client = target.client()
         source = model_uri
         reference = model_uri[len('models:/'):]
@@ -1202,15 +1201,28 @@ def _download(mlflow: Any, target: Any, model_uri: str,
             name, _, version = reference.partition('/')
             source = client.get_model_version(name, version).source
         if source.startswith('models:/') and '/' not in source[8:]:
-            source = client.get_logged_model(source[8:]).artifact_location
-            repository = target.artifact_repository(source)
+            location = client.get_logged_model(source[8:]).artifact_location
+            repository = target.artifact_repository(location)
             if repository is not None:
                 return repository.download_artifacts('', str(destination))
-        if not target.explicit:
-            model_uri = source
+    elif target.platform == 'mlflow' and model_uri.startswith('models:/'):
+        model_uri = _registry_download_uri(target.client(), model_uri)
     return mlflow.artifacts.download_artifacts(
         artifact_uri=model_uri, dst_path=str(destination),
         tracking_uri=target.tracking_uri, registry_uri=target.registry_uri)
+
+
+def _registry_download_uri(client: Any, model_uri: str) -> str:
+    r"""MLflow's own models:/ resolution, against the target's registry.
+
+    MLflow resolves models:/ with the process-wide registry URI and ignores
+    the one passed to download_artifacts.
+    """
+    from mlflow.store.artifact.utils.models import get_model_name_and_version
+    resolved = get_model_name_and_version(client, model_uri)
+    if len(resolved) == 1:
+        return client.get_logged_model(resolved[0]).artifact_location
+    return client.get_model_version_download_uri(*resolved)
 
 
 def _logged_model_name(registered: Optional[str], manifest: Any) -> str:

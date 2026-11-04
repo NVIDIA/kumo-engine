@@ -373,7 +373,8 @@ def test_a_registry_reference_downloads_from_the_target_registry(
     client.set_registered_model_alias('m', 'champion', '1')
     mlflow.set_tracking_uri(tracking_uri)
 
-    for name, reference in (('alias', 'm@champion'), ('version', 'm/1')):
+    for name, reference in (('alias', 'm@champion'), ('version', 'm/1'),
+                            ('latest', 'm/latest')):
         local = _download(mlflow, resolve(uri), f'models:/{reference}',
                           tmp_path / name)
         assert open(f'{local}/MLmodel').read() == 'kumo'
