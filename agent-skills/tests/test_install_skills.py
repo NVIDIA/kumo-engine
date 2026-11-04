@@ -10,6 +10,7 @@ import ast
 import importlib.util
 import io
 import re
+import runpy
 import sys
 import threading
 import types
@@ -231,6 +232,45 @@ def test_the_import_check_skips_the_skills_command(
     monkeypatch.setitem(sys.modules, 'kumo.engine.skills', stand_in)
     namespace['_warn_if_skill_stale']()
     assert calls == ([1] if checked else [])
+
+
+def test_only_a_wheel_or_sdist_build_bundles_the_skills(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # An editable install (`uv sync`, `pip install -e`) reads the skill from the checkout, so a
+    # broken skill must not block it. setup.py is run against stand-in setuptools modules.
+    class Command:
+        editable_mode = False
+        build_lib = str(tmp_path)
+
+        def run(self) -> None:
+            pass
+
+    captured: dict = {}
+    for name, module in {
+        'setuptools': types.SimpleNamespace(setup=lambda **kw: captured.update(kw)),
+        'setuptools.command': types.ModuleType('setuptools.command'),
+        'setuptools.command.build_py': types.SimpleNamespace(build_py=Command),
+        'setuptools.command.sdist': types.SimpleNamespace(sdist=Command),
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    spec_from_file_location = importlib.util.spec_from_file_location
+
+    def no_bundling(name, *args, **kwargs):
+        assert name != 'package_skill', 'running setup.py bundled the skills'
+        return spec_from_file_location(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, 'spec_from_file_location', no_bundling)
+    runpy.run_path(str(ROOT / 'packages' / 'kumo-engine' / 'setup.py'))
+    build_py, sdist = captured['cmdclass']['build_py'], captured['cmdclass']['sdist']
+    calls: list = []
+    monkeypatch.setitem(build_py.run.__globals__, '_bundle_skills', lambda: calls.append(1))
+    editable = build_py()
+    editable.editable_mode = True
+    editable.run()
+    assert calls == []
+    build_py().run()
+    sdist().run()
+    assert calls == [1, 1]
 
 
 def test_the_bundled_copy_is_used_outside_a_checkout(
