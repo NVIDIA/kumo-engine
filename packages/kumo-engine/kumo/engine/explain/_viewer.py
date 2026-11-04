@@ -115,6 +115,7 @@ border-top:1px solid $surface_border}
 .kumo-training .kt-note{color:$muted;font-size:13px;white-space:pre-wrap}
 .kumo-training .kt-table{border-collapse:collapse;width:100%;margin:8px 0 16px;
 font:14px/1.45 $font;color:$foreground;table-layout:fixed}
+.kumo-training table.kt-table tbody tr{background:transparent}
 .kumo-training .kt-table th,.kumo-training .kt-table td{
 padding:8px;text-align:left;vertical-align:top;border-bottom:1px solid $surface_border;
 white-space:pre-wrap;overflow-wrap:anywhere}
