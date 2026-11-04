@@ -1727,7 +1727,7 @@ dependencies = [
  "libc",
  "parking_lot",
  "parquet",
- "pprof 0.13.0",
+ "pprof",
  "rand 0.8.6",
  "rand_chacha",
  "ratatui",
@@ -1919,7 +1919,7 @@ dependencies = [
  "object_store",
  "parking_lot",
  "parquet",
- "pprof 0.14.1",
+ "pprof",
  "ratatui",
  "rayon",
  "serde",
@@ -3972,30 +3972,6 @@ name = "powerfmt"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
-
-[[package]]
-name = "pprof"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef5c97c51bd34c7e742402e216abdeb44d415fbe6ae41d56b114723e953711cb"
-dependencies = [
- "backtrace",
- "cfg-if",
- "findshlibs",
- "libc",
- "log",
- "nix 0.26.4",
- "once_cell",
- "parking_lot",
- "prost 0.12.6",
- "prost-build",
- "prost-derive 0.12.6",
- "sha2 0.10.9",
- "smallvec",
- "symbolic-demangle",
- "tempfile",
- "thiserror 1.0.69",
-]
 
 [[package]]
 name = "pprof"

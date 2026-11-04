@@ -46,7 +46,7 @@ arrow = "59.3.2"
 arrow-select = "59.3.2"
 
 [target.'cfg(unix)'.dependencies]
-pprof = { version = "0.13", features = ["prost-codec"] }
+pprof = { version = "0.14.1", features = ["prost-codec"] }
 
 [features]
 default = []

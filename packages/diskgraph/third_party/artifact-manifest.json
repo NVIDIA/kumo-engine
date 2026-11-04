@@ -1732,13 +1732,6 @@
           "name": "pprof",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "source_kind": "registry-or-git",
-          "version": "0.13.0"
-        },
-        {
-          "license": "Apache-2.0",
-          "name": "pprof",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "source_kind": "registry-or-git",
           "version": "0.14.1"
         },
         {
@@ -10205,6 +10198,6 @@
       ]
     }
   ],
-  "cargo_lock_sha256": "0e966163ab5f51c0bd3b0ef0f57a8a1d903026354b4b756fc35e1be3fa2f30f2",
+  "cargo_lock_sha256": "1b174e8f37cbb98271f7069701f2c66081d9549ec01d72aa9b4e19a7fbbcd5ab",
   "schema": 1
 }

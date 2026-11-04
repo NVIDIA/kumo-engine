@@ -2,6 +2,13 @@
 
 ## November 4 integration and evidence scope
 
+The dependency audit found that the imported Unix benchmark profiler used
+`pprof 0.13.0`, affected by [RUSTSEC-2024-0408](https://rustsec.org/advisories/RUSTSEC-2024-0408.html).
+The optional `--cpu-profile` path calls the affected report builder. Aligning
+Engine's profiler with ingest's existing `pprof 0.14.1` removes that affected
+version while preserving Unix gating and protobuf output. This correction
+requires fresh candidate qualification; earlier runs do not qualify it.
+
 The candidate integrates Engine `main` at
 `502adef65ab0011545eeeb242610412c6ed8e7e3`. This adds Arrow/Parquet 59.3.2,
 PyO3 0.29.3, the saved-index-compatible epserde security backport and changes

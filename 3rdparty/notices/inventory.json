@@ -281,7 +281,6 @@
         "rust:portable-atomic@1.13.1",
         "rust:potential-utf@0.1.5",
         "rust:powerfmt@0.2.0",
-        "rust:pprof@0.13.0",
         "rust:pprof@0.14.1",
         "rust:ppv-lite86@0.2.21",
         "rust:proc-macro-error-attr2@2.0.0",
@@ -9720,31 +9719,6 @@
       "origin": "https://github.com/jhpratt/powerfmt",
       "version": "0.2.0",
       "review_reference": "OSRB-6649311"
-    },
-    {
-      "artifact_ids": [
-        "diskgraph-extension"
-      ],
-      "copyright": [
-        "Copyright 2019 TiKV Project Authors"
-      ],
-      "declared_expression": "Apache-2.0",
-      "ecosystem": "rust",
-      "elected_licenses": [],
-      "expression_source": "index.crates.io-1949cf8c6b5b557f/pprof-0.13.0/LICENSE",
-      "files": [
-        {
-          "path": "LICENSE",
-          "sha256": "aef4aa957b4403aa2a332872a6d2216c5258700c99816e575ee3adca93f23ce6",
-          "source": "cargo-package"
-        }
-      ],
-      "id": "rust:pprof@0.13.0",
-      "license_expression": "Apache-2.0",
-      "name": "pprof",
-      "origin": "https://github.com/tikv/pprof-rs",
-      "version": "0.13.0",
-      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
     },
     {
       "artifact_ids": [
