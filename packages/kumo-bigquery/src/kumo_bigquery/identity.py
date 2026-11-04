@@ -6,7 +6,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from kumo_core.sources.identity import epoch_second, hour_version
+from kumo_core.sources.identity import (
+    SourceVersion,
+    epoch_second,
+    hour_version,
+)
 
 LOGICAL_VIEW = "VIEW"
 UNDATED_VERSION = "-1"
@@ -23,8 +27,8 @@ def stamp(table: Any) -> str:
     if is_logical_view(table):
         return hour_version()
     if table.modified is None:
-        return UNDATED_VERSION
-    return epoch_second(table.modified)
+        return SourceVersion(UNDATED_VERSION)
+    return SourceVersion(epoch_second(table.modified), "timestamp")
 
 
 def data_version(client: Any, fqn: str) -> str:

@@ -10251,7 +10251,8 @@ impl IngestContext {
             }
         }
         let mut hash_writer = BufWriter::with_capacity(4 * 1024 * 1024, target.sink(&hash_path)?);
-        mphf.serialize(&mut hash_writer)?;
+        // SAFETY: callers pass constructed PtrHash values with valid fields.
+        unsafe { mphf.serialize(&mut hash_writer)? };
         hash_writer.flush()?;
         let hash_sink = hash_writer
             .into_inner()
@@ -12310,10 +12311,10 @@ fn compact_record_batch_prefix(batch: &RecordBatch, rows: usize) -> Result<Recor
         .map(|array| {
             let data = array.to_data();
             let mut compact = MutableArrayData::new(vec![&data], false, rows);
-            compact.extend(0, 0, rows);
-            make_array(compact.freeze())
+            compact.try_extend(0, 0, rows)?;
+            Ok(make_array(compact.freeze()))
         })
-        .collect();
+        .collect::<std::result::Result<Vec<_>, arrow_schema::ArrowError>>()?;
     Ok(RecordBatch::try_new(batch.schema(), arrays)?)
 }
 

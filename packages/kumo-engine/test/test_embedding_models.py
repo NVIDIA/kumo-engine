@@ -14,7 +14,7 @@ import pytest
 from kumo_core import embedding_models
 from kumo_core.embedding_models import EmbeddingModelNotFoundError, Release
 from kumo_core.glove import TokenEmbeddingTable
-from kumoapi.encoder import TextEmbedding
+from kumoapi.encoder import Null
 from kumoapi.typing import Stype
 
 from kumo.engine import (
@@ -24,6 +24,7 @@ from kumo.engine import (
     Graph,
     PredictiveQuery,
     Table,
+    TextEmbedding,
     Trainer,
 )
 
@@ -70,7 +71,8 @@ def fitted(tmp_path_factory):
         warnings['failed fit'] = warned.take()
 
         plan.column_processing.encoder_overrides = {
-            'users.bio': TextEmbedding('words')
+            'users.bio': TextEmbedding('words'),
+            'users.code': Null(),
         }
         store = EmbeddingModelStore()
         store.add('words', GloVeVectors(archive, cache_dir=root / 'emb'))
@@ -148,11 +150,14 @@ def test_a_missing_model_fails_fit_before_any_work(fitted, monkeypatch):
 def test_each_fit_reports_what_inference_leaves_unencoded(fitted):
     unencoded = ("Text column 'users.code' will not be encoded by default: its "
                  "values are too short or have too few known words. To "
-                 "encode it anyway, set its encoder to TextEmbedding().")
+                 "encode it anyway, set its encoder to TextEmbedding(). No "
+                 "word-vector model is installed for it either: pip install "
+                 "\"kumo-engine[text]\", or pass embedding_models= to "
+                 "Trainer.")
     assert fitted[-1] == {
         'tables': [],
         'failed fit': [unencoded],
-        'fit': [unencoded],
+        'fit': [],
     }
 
 

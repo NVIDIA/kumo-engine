@@ -20,6 +20,7 @@ from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
 
 from kumo.engine import ADLSConnector, ADLSIdentity, Table
 from kumo.engine._portable import _source_table_name, portable_graph_config
+from kumo.engine.trainer._scoring import ScoringDefaults
 
 ROOT = 'abfss://curated@companylake.dfs.core.windows.net/orders/'
 
@@ -159,8 +160,9 @@ def test_invalid_prediction_output_fails_before_scoring(monkeypatch, tmp_path,
         table_name=destination, write_mode=WriteMode.APPEND
         if case == 'append' else WriteMode.OVERWRITE)
     trainer = Trainer(ModelPlan(), accelerator='cpu')
-    monkeypatch.setattr(trainer, '_training_result',
-                        SimpleNamespace(artifact_paths={}))
+    monkeypatch.setattr(
+        trainer, '_training_result',
+        SimpleNamespace(artifact_paths={}, scoring_defaults=ScoringDefaults()))
     trainer._training_query = 'trained query'
     monkeypatch.setattr(Trainer, 'scratch_dir', property(lambda _: tmp_path))
     # Isolate output validation from query parsing and model execution.

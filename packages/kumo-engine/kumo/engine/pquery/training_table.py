@@ -2,20 +2,42 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from dataclasses import dataclass, replace
+import hashlib
+import json
+import os
+import warnings
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterator, Optional
 
+from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.model_plan import TrainingTableGenerationPlan
+from kumo_core.training.table import TrainTableRequest
 from kumoapi.model_plan import \
     TrainingTableGenerationPlan as PublicGenerationPlan
 from kumoapi.train import TrainingTableSpec
 
+from kumo.engine import _provenance as provenance
+from kumo.engine._manifest import (
+    SourceTableEntry,
+    TrainingTableManifest,
+    TrainingTableParents,
+    embedded,
+    read_manifest,
+    stamp,
+    stub,
+    write_manifest,
+)
+from kumo.engine._prep_cost import Start, build_cost, directory_bytes, start
 from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot
 
 if TYPE_CHECKING:
     from kumo.engine.trainer.output_config import TrainingTableOutputConfig
+
+_RANDOM_SPLITS = ('RandomSplit', 'RandomLinkSplit')
 
 
 @dataclass(frozen=True)
@@ -37,6 +59,20 @@ class TrainingTable:
     required_stages: tuple[str, ...]
     #: Effective generation settings carried forward into ``Trainer.fit``.
     generation_plan: TrainingTableGenerationPlan
+    id: Optional[str] = field(default=None, compare=False)
+
+    @property
+    def tt_id(self) -> str:
+        """The DiskGraph id of this table."""
+        from kumo_core.training.export import read_spec
+
+        return read_spec(str(self.staging_dir))['tt_id']
+
+    @property
+    def manifest(self) -> Optional[TrainingTableManifest]:
+        """The recorded manifest, if any."""
+        return read_manifest(self.staging_dir / PROVENANCE_FILE,
+                             TrainingTableManifest)
 
     def export(self, output_config: "TrainingTableOutputConfig") -> str:
         r"""Write the staged rows with a ``SPLIT`` column (``0`` train, ``1``
@@ -63,7 +99,86 @@ class TrainingTable:
         with tempfile.TemporaryDirectory(dir=root) as output:
             files = export_train_table(str(self.staging_dir), output)
             return write_files(connector, output_config.table_name, files,
-                               output_config.write_mode, export_id=export_id)
+                               output_config.write_mode, export_id=export_id,
+                               **self._export_sidecars(connector,
+                                                       output_config))
+
+    def _export_sidecars(self, connector, output_config) -> Dict[str, Any]:
+        from kumo_core.sources import layout
+
+        from kumo.engine.connector import is_file_destination
+
+        name = output_config.table_name
+        if (not is_file_destination(connector, name)
+                or layout.file_type(name.rstrip('/')) == layout.CSV):
+            return {}
+        sidecars = self._sidecars()
+        return {'sidecars': sidecars} if sidecars else {}
+
+    def _sidecars(self) -> Dict[str, bytes]:
+        manifest = self.staging_dir / PROVENANCE_FILE
+        try:
+            if not manifest.is_file():
+                return {}
+            return {PROVENANCE_FILE: manifest.read_bytes()}
+        except Exception as error:
+            warnings.warn(
+                f"Exporting without {PROVENANCE_FILE}: {error}",
+                UserWarning, stacklevel=4)
+            return {}
+
+    @classmethod
+    def load_from_connector(cls, connector: Any, *, path: str,
+                            pquery: "PredictiveQuery",  # noqa: F821
+                            snapshot: GraphSnapshot) -> "TrainingTable":
+        r"""Load a table written by :meth:`export` against ``snapshot``."""
+        from kumo.engine._mlops import on_root
+
+        connector, path = on_root(connector, path)
+        return cls.from_source_table(connector[path],
+                                     TrainingTableSpec(split_col='SPLIT'),
+                                     pq=pquery, snapshot=snapshot)
+
+    def _store(self, settings: Any) -> None:
+        from pyarrow.fs import FileType
+
+        from kumo.engine.connector import file_store
+
+        path = settings.root.location(f'training_tables/{self.id}/')
+        try:
+            settings.locate(self.staging_dir / PROVENANCE_FILE,
+                            TrainingTableManifest, f'training_tables/{self.id}')
+            filesystem, root = file_store(settings.root.connector, path)
+            if filesystem.get_file_info(
+                    f'{root}/_SUCCESS').type is not FileType.File:
+                self._upload(filesystem, f'{root}/')
+        except Exception as error:
+            raise RuntimeError(
+                f"Could not store training table {self.id} under the "
+                f"artifact root: {error}") from error
+
+    def _upload(self, filesystem: Any, path: str) -> None:
+        import tempfile
+
+        from kumo_core.artifact_export import export_selected_files
+        from kumo_core.object_store_sink import _ArrowExportFiles
+        from kumo_core.training.export import (
+            identity,
+            iter_export_parts,
+            read_spec,
+        )
+
+        from kumo.engine._scratch import get_scratch_dir
+
+        root = get_scratch_dir()
+        root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=root) as spill:
+            export_selected_files(
+                iter_export_parts(str(self.staging_dir), spill), path,
+                fs=_ArrowExportFiles(filesystem, None),
+                identity=identity(read_spec(str(self.staging_dir))),
+                copy_parquet=partial(_move_each, filesystem),
+                sidecars=self._sidecars())
 
     @classmethod
     def from_source_table(
@@ -74,6 +189,7 @@ class TrainingTable:
         pq: "PredictiveQuery",  # noqa: F821
         snapshot: GraphSnapshot,
         plan: Optional[PublicGenerationPlan] = None,
+        mlops: Optional[Any] = None,
     ) -> "TrainingTable":
         r"""Materialize caller-supplied labeled rows as a training table.
 
@@ -86,7 +202,9 @@ class TrainingTable:
         ``snapshot`` supplies the index used to validate and normalize the
         rows. The returned object retains only the materialized rows and
         generation metadata; :meth:`Trainer.fit` independently selects its
-        graph through its own required ``snapshot=`` argument.
+        graph through its own required ``snapshot=`` argument. With MLOps on
+        (``mlops=`` or a ``kumo.mlops`` block), the table is also stored
+        under the artifact root.
         """
         # Local imports keep the immutable descriptor cheap to import and
         # avoid pquery -> trainer -> pquery cycles.
@@ -124,9 +242,11 @@ class TrainingTable:
                 split=(f"ManualSplit(col={split_column!r}, train_value=0, "
                        "val_value=1, test_value=2)"),
             )
+        started = start()
         run_id = new_run_id()
         run_dir = train_table_scratch_dir(run_id)
-        rows_path = stage_source_table(source_table, run_dir / "source-table")
+        rows_path, version = stage_source_table(source_table,
+                                                run_dir / "source-table")
         generation_plan = from_json_dict(
             to_json_dict(public_plan),
             TrainingTableGenerationPlan,
@@ -183,7 +303,7 @@ class TrainingTable:
                 year_over_year=("yoy_offsets_secs" in
                                 (task_plan.train_table.compiler_options or {})),
             )
-        return cls(
+        table = cls(
             query=pq.query,
             train_table_path=Path(generated.train_table_path),
             manifest_path=Path(generated.manifest_path),
@@ -191,3 +311,110 @@ class TrainingTable:
             required_stages=task_plan.task_dataset.required_stages,
             generation_plan=generation_plan,
         )
+        return finish_generated(
+            table, snapshot, task_plan.train_table, mlops,
+            source_table=provenance.source_table(
+                source_table.connector, source_table.table_name,
+                source_table.sql, version,
+                record_sources=_record_sources(snapshot)),
+            source_version=version, started=started)
+
+
+def _move_each(filesystem: Any, parts: Iterator[str], output: str) -> None:
+    from kumo_core.object_store_sink import upload_file
+
+    def move(part: str) -> None:
+        upload_file(filesystem, part, output + os.path.basename(part))
+        os.remove(part)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = []
+        for part in parts:
+            pending.append(pool.submit(move, part))
+            if len(pending) > 1:
+                pending.pop(0).result()
+        for upload in pending:
+            upload.result()
+
+
+def _record_sources(snapshot: GraphSnapshot) -> bool:
+    if snapshot.record_sources is not None:
+        return snapshot.record_sources
+    manifest = snapshot.manifest
+    return manifest is not None and manifest.record_sources is True
+
+
+def finish_generated(table: TrainingTable, snapshot: GraphSnapshot,
+                     request: TrainTableRequest, mlops: Optional[Any], *,
+                     source_table: Optional[SourceTableEntry] = None,
+                     source_version: Any = None,
+                     started: Optional[Start] = None) -> TrainingTable:
+    from kumo.engine._mlops import resolve
+
+    settings = resolve(mlops)
+    seed = None
+    if request.split_family in _RANDOM_SPLITS:
+        seed = (request.split_config or {}).get('rnd_seed') or 0
+    table = replace(table, id=_table_id(table, snapshot, seed, source_version,
+                                        custom=source_table is not None))
+    _record_manifest(table, snapshot, request, seed, source_table=source_table,
+                     started=None if settings is None else started)
+    if settings is not None and settings.wants('training_table'):
+        from kumo.engine._mlops import raise_on_error
+
+        try:
+            table._store(settings)
+        except Exception as error:
+            raise_on_error(settings, error, 'Training table generation',
+                           stacklevel=3)
+    return table
+
+
+def _table_id(table: TrainingTable, snapshot: GraphSnapshot,
+              seed: Optional[int], source_version: Any, *,
+              custom: bool) -> str:
+    from kumo_core.io.json import to_json_dict
+
+    if custom and source_version is None:
+        from kumo.engine._scratch import new_run_id
+        return f'tt-{new_run_id()}'
+    build = provenance.environment()
+    key = json.dumps([
+        snapshot.id, table.query,
+        to_json_dict(table.generation_plan), seed,
+        None if source_version is None else str(source_version),
+        build.kumo_engine, build.build_commit, build.diskgraph,
+        build.diskgraph_build_commit
+    ], sort_keys=True, default=str)
+    return f'tt-{hashlib.sha256(key.encode()).hexdigest()[:32]}'
+
+
+def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
+                     request: TrainTableRequest, seed: Optional[int], *,
+                     source_table: Optional[SourceTableEntry] = None,
+                     started: Optional[Start] = None) -> None:
+    from kumo_core.io.json import to_json_dict
+
+    path = table.staging_dir / PROVENANCE_FILE
+    try:
+        parent = snapshot.manifest
+        write_manifest(
+            path,
+            TrainingTableManifest(
+                id=table.id,
+                parents=TrainingTableParents(
+                    snapshot=embedded(parent) if parent is not None else
+                    stub('snapshot', snapshot.id),
+                    source_table=source_table),
+                query=table.query,
+                generation_plan=to_json_dict(table.generation_plan),
+                task_type=request.task_type,
+                split_seed=seed,
+                build=None if started is None else build_cost(
+                    table.id, started, directory_bytes(table.staging_dir)),
+                **stamp(),
+            ))
+    except Exception as error:
+        warnings.warn(
+            f"Could not write the training-table manifest at {path}: "
+            f"{error}", UserWarning, stacklevel=3)

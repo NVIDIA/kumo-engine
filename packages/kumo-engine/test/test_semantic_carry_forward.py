@@ -24,7 +24,10 @@ from kumo.engine.pquery.prediction_table import (
     PredictionTable,
     _compile_prediction_table,
 )
+from kumo.engine.trainer._scoring import ScoringDefaults
 from kumo.engine.trainer.trainer import Trainer, _stage_model_bundle
+
+_SPLIT = SimpleNamespace(stage_counts={'test': 1})
 
 
 @dataclass(frozen=True)
@@ -126,7 +129,6 @@ def test_compile_rejects_invalid_prediction_time(snapshot, tmp_path, value,
 
 @pytest.mark.parametrize('query, threshold, message', [
     ('PREDICT users.age FOR EACH users.id', .5, 'target/entity'),
-    ('PREDICT users.label FOR EACH users.id', None, 'must be specified'),
     ('PREDICT users.label FOR EACH users.id', 1.1, 'between 0 and 1'),
 ])
 def test_prediction_admission_before_materialization(snapshot, tmp_path, query,
@@ -134,7 +136,7 @@ def test_prediction_admission_before_materialization(snapshot, tmp_path, query,
                                                      monkeypatch):
     from kumoapi.model_plan import ModelPlan
     trainer = Trainer(ModelPlan())
-    trainer._training_result = SimpleNamespace()
+    trainer._training_result = SimpleNamespace(scoring_defaults=ScoringDefaults())
     trainer._snapshot_id = snapshot.id
     trainer._training_query = 'PREDICT users.label FOR EACH users.id'
     materialize = Mock(side_effect=AssertionError('must not materialize'))
@@ -162,7 +164,8 @@ def test_binary_predictions_preserve_probabilities_and_metadata_contract(
     _stub_generated_task_dataset_builder(monkeypatch)
     monkeypatch.setattr(type(trainer), 'scratch_dir',
                         property(lambda _: tmp_path))
-    trainer._training_result = SimpleNamespace(artifact_paths={})
+    trainer._training_result = SimpleNamespace(
+        artifact_paths={}, manifest=None, scoring_defaults=ScoringDefaults())
     trainer._snapshot_id = snapshot.id
     trainer._training_query = 'PREDICT users.label FOR EACH users.id'
     table = PredictionTable(trainer._training_query, tmp_path, tmp_path, 0,
@@ -271,7 +274,8 @@ def test_predict_reuses_generated_table_without_recompiling(
     trainer = Trainer(ModelPlan())
     monkeypatch.setattr(type(trainer), 'scratch_dir',
                         property(lambda _: tmp_path))
-    trainer._training_result = SimpleNamespace(artifact_paths={})
+    trainer._training_result = SimpleNamespace(
+        artifact_paths={}, manifest=None, scoring_defaults=ScoringDefaults())
     trainer._snapshot_id = snapshot.id
     trainer._training_query = query
 
@@ -395,7 +399,7 @@ def test_fit_consumes_generated_rows_with_fresh_task_metadata(
 
     def fake_materialize(request, task_dataset, generated, **kwargs):
         calls.append((request, task_dataset, generated, kwargs.get('tt_id')))
-        return SimpleNamespace(task=Mock(spec=ResolvedNumericalTask),
+        return SimpleNamespace(task=Mock(spec=ResolvedNumericalTask, split=_SPLIT),
                                model_plan=CoreModelPlan(),
                                bundle_dir=str(tmp_path))
 
@@ -412,6 +416,7 @@ def test_fit_consumes_generated_rows_with_fresh_task_metadata(
             artifact_paths={},
             explain_disabled=True,
             best_trainer=_best_trainer(tmp_path),
+            published_counts=None,
         ))
     monkeypatch.setattr('kumo.engine.trainer.trainer.write_training_spec',
                         lambda *args, **kwargs: None)
@@ -528,7 +533,7 @@ def test_fit_materializes_existing_rows_against_explicit_snapshot(
 
     def fake_materialize(request, task_dataset, generated, **kwargs):
         calls.append((request, task_dataset, generated))
-        return SimpleNamespace(task=Mock(spec=ResolvedNumericalTask),
+        return SimpleNamespace(task=Mock(spec=ResolvedNumericalTask, split=_SPLIT),
                                model_plan=CoreModelPlan(),
                                bundle_dir=str(tmp_path))
 
@@ -542,6 +547,7 @@ def test_fit_materializes_existing_rows_against_explicit_snapshot(
             artifact_paths={},
             explain_disabled=True,
             best_trainer=_best_trainer(tmp_path),
+            published_counts=None,
         ))
     monkeypatch.setattr('kumo.engine.trainer.trainer.write_training_spec',
                         lambda *args, **kwargs: None)
@@ -604,7 +610,7 @@ def test_fit_uses_selected_graph_task_semantics_without_regenerating_rows(
     def fake_materialize(request, task_dataset, generated, **kwargs):
         captured.update(request=request, task_dataset=task_dataset,
                         generated=generated)
-        return SimpleNamespace(task=Mock(spec=ResolvedNumericalTask),
+        return SimpleNamespace(task=Mock(spec=ResolvedNumericalTask, split=_SPLIT),
                                model_plan=CoreModelPlan(),
                                bundle_dir=str(tmp_path))
 
@@ -618,6 +624,7 @@ def test_fit_uses_selected_graph_task_semantics_without_regenerating_rows(
             artifact_paths={},
             explain_disabled=True,
             best_trainer=_best_trainer(tmp_path),
+            published_counts=None,
         ))
     monkeypatch.setattr('kumo.engine.trainer.trainer.write_training_spec',
                         lambda *args, **kwargs: None)
@@ -706,7 +713,9 @@ def test_repeated_predict_calls_get_distinct_ingest_targets(
         trainer = Trainer(ModelPlan())
         monkeypatch.setattr(type(trainer), 'scratch_dir',
                             property(lambda _: tmp_path))
-        trainer._training_result = SimpleNamespace(artifact_paths={})
+        trainer._training_result = SimpleNamespace(
+            artifact_paths={}, manifest=None,
+            scoring_defaults=ScoringDefaults())
         trainer._snapshot_id = snapshot.id
         trainer._training_query = query
         trainer.predict(table, snapshot=snapshot, output_config=output,
@@ -718,7 +727,8 @@ def test_repeated_predict_calls_get_distinct_ingest_targets(
     same_trainer = Trainer(ModelPlan())
     monkeypatch.setattr(type(same_trainer), 'scratch_dir',
                         property(lambda _: tmp_path))
-    same_trainer._training_result = SimpleNamespace(artifact_paths={})
+    same_trainer._training_result = SimpleNamespace(
+        artifact_paths={}, manifest=None, scoring_defaults=ScoringDefaults())
     same_trainer._snapshot_id = snapshot.id
     same_trainer._training_query = query
     same_trainer.predict(table, snapshot=snapshot, output_config=output,
@@ -780,7 +790,7 @@ def test_repeated_fit_calls_get_distinct_ingest_targets(snapshot, tmp_path,
     def fake_materialize(request, task_dataset, generated, **kwargs):
         tt_ids.append(kwargs.get('tt_id'))
         task_datasets.append(task_dataset)
-        return SimpleNamespace(task=Mock(spec=ResolvedNumericalTask),
+        return SimpleNamespace(task=Mock(spec=ResolvedNumericalTask, split=_SPLIT),
                                model_plan=CoreModelPlan(),
                                bundle_dir=str(tmp_path))
 
@@ -797,6 +807,7 @@ def test_repeated_fit_calls_get_distinct_ingest_targets(snapshot, tmp_path,
             artifact_paths={},
             explain_disabled=True,
             best_trainer=_best_trainer(tmp_path),
+            published_counts=None,
         ))
     monkeypatch.setattr('kumo.engine.trainer.trainer.write_training_spec',
                         lambda *args, **kwargs: None)
@@ -864,7 +875,7 @@ def test_concurrent_to_thread_fits_keep_loop_live_and_propagate_results(
     def fake_materialize(request, task_dataset, generated, **kwargs):
         with records_lock:
             records.append((kwargs['tt_id'], task_dataset, request.run_id))
-        return SimpleNamespace(task=Mock(spec=ResolvedNumericalTask),
+        return SimpleNamespace(task=Mock(spec=ResolvedNumericalTask, split=_SPLIT),
                                model_plan=CoreModelPlan(),
                                bundle_dir=str(tmp_path))
 
@@ -876,7 +887,8 @@ def test_concurrent_to_thread_fits_keep_loop_live_and_propagate_results(
         run_name = Path(training_input.home_dir).name
         return SimpleNamespace(metrics={'run_name': run_name},
                                artifact_paths={}, explain_disabled=True,
-                               best_trainer=_best_trainer(tmp_path))
+                               best_trainer=_best_trainer(tmp_path),
+                               published_counts=None)
 
     monkeypatch.setattr(
         'kumo.engine.trainer.trainer.build_generated_training_task_dataset',
