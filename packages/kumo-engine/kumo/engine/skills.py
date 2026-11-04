@@ -237,7 +237,10 @@ def warn_if_stale() -> None:
                            for d, b in stale.items())
         warnings.warn(
             f'The {SKILL} agent skill is not the one this kumo-engine '
-            f'({bundled_build()}) ships. To update it, run: {listed}',
+            f'({bundled_build()}) ships. To update it, run: {listed}. A '
+            'user-scope install is shared by every Python environment, so '
+            'environments with different kumo-engine builds replace each '
+            "other's; give each project its own with scope='project'.",
             stacklevel=2)
 
 

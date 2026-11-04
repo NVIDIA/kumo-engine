@@ -944,6 +944,9 @@ def test_the_stale_warning_names_the_call_that_updates_each_install(
     call = "install_skills('claude', scope='project')"
     with pytest.warns(UserWarning, match=re.escape(call)):
         skills.warn_if_stale()
+    # A user-scope install is shared by every environment; the advice says so.
+    with pytest.warns(UserWarning, match="shared by every Python environment.*scope='project'"):
+        skills.warn_if_stale()
     with pytest.raises(SystemExit):
         skills.main(['--check'])
     assert call in capsys.readouterr().out
