@@ -189,6 +189,23 @@ def test_an_install_waits_for_the_lock(home: Path, tmp_path: Path) -> None:
     assert done.is_set() and hosts(root / 'kumo-data-science') == ['generic']
 
 
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX permissions')
+def test_the_lock_is_shared_by_every_user(home: Path, tmp_path: Path,
+                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    # The lock outlives the install, so another user installing into the same destination
+    # must be able to open it, despite the umask.
+    import os
+    import tempfile
+    monkeypatch.setattr(tempfile, 'tempdir', str(tmp_path))
+    umask = os.umask(0o022)
+    try:
+        [target] = skills.install_skills(path=tmp_path / 'shared')
+    finally:
+        os.umask(umask)
+    lock = skills._lock_path(Path(target).parent)
+    assert lock.parent == tmp_path and lock.stat().st_mode & 0o777 == 0o666
+
+
 def test_kumo_engine_imports_install_skills_on_first_use(
         monkeypatch: pytest.MonkeyPatch) -> None:
     # `python -m kumo.engine.skills` warns if importing `kumo.engine` already

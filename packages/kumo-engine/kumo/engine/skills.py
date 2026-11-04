@@ -271,7 +271,9 @@ def _copy(pkg: Path, skills_dir: Path) -> Path:
     root = skills_dir.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     target = root / SKILL
-    with FileLock(_lock_path(root)):
+    # Readable and writable by every user, whatever the umask, so users
+    # sharing a destination share its lock too.
+    with FileLock(_lock_path(root), mode=0o666):
         staging = Path(tempfile.mkdtemp(prefix=f'.{SKILL}.', dir=root))
         try:
             new, old = staging / SKILL, staging / 'previous'
