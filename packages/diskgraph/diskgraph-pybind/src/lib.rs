@@ -493,6 +493,7 @@ impl OutputHandler for PyOutputHandler {
 #[pyclass]
 pub struct SamplerEngine {
     reader: Arc<diskgraph_index::graph::GraphIndexReader>,
+    time_hints: Arc<temporal_query::TimeHints>,
     engine: Arc<DiskGraphEngine>,
     pool: StatePool,
     sample_count: Arc<std::sync::atomic::AtomicUsize>,
@@ -694,6 +695,7 @@ impl SamplerEngine {
         info!("SamplerEngine initialized successfully");
         Ok(Self {
             reader,
+            time_hints: Arc::new(temporal_query::time_hints(root)),
             engine: Arc::new(engine),
             pool: StatePool::new(),
             sample_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -766,10 +768,12 @@ impl SamplerEngine {
         })?;
         let cutoffs: Vec<i64> = cutoff_values.extract()?;
         let reader = Arc::clone(&self.reader);
+        let time_hints = Arc::clone(&self.time_hints);
         let result = py
             .detach(move || {
                 temporal_query::execute(
                     reader.as_ref(),
+                    time_hints.as_ref(),
                     &root_type,
                     &roots,
                     &cutoffs,
@@ -811,10 +815,12 @@ impl SamplerEngine {
         })?;
         let cutoffs: Vec<i64> = cutoff_values.extract()?;
         let reader = Arc::clone(&self.reader);
+        let time_hints = Arc::clone(&self.time_hints);
         let result = py
             .detach(move || {
                 temporal_query::execute_lengths(
                     reader.as_ref(),
+                    time_hints.as_ref(),
                     &root_type,
                     &roots,
                     &cutoffs,

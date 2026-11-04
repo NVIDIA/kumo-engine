@@ -669,7 +669,7 @@ fn histogram_left_edge(spec: FloatingHistogramSpec, idx: usize) -> f64 {
     }
 }
 
-fn row_access_hints(col: &ColumnSpec) -> RowAccessHints {
+pub(crate) fn row_access_hints(col: &ColumnSpec) -> RowAccessHints {
     RowAccessHints {
         timestamp_format: col.timestamp_format.clone(),
         timestamp_unit: col.timestamp_unit.map(|unit| match unit {
