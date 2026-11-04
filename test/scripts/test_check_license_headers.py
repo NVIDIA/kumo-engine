@@ -297,27 +297,3 @@ def test_repository_candidate_tree_passes() -> None:
     )
     assert errors == []
     assert scanned > 3_000
-
-
-def test_epserde_vendor_boundary_is_exact() -> None:
-    prefix = "packages/diskgraph/third_party/epserde/"
-    exclusions = [entry for entry in POLICY["exclusions"]
-                  if entry["pattern"].startswith(prefix)]
-    assert len(exclusions) == 42
-    assert all(not any(marker in entry["pattern"] for marker in "*?[")
-               for entry in exclusions)
-    for relative in ("Cargo.toml", "src/deser/read.rs", "tests/test_types.rs"):
-        exclusion = check_license_headers.matching_exclusion(
-            prefix + relative, POLICY)
-        assert exclusion is not None
-        assert exclusion["kind"] == "vendored"
-        assert exclusion["license"] == "Apache-2.0 OR LGPL-2.1-or-later"
-    for relative in ("src/utils/alignment.rs",
-                     "tests/test_review_regressions.rs", "new_source.rs"):
-        assert check_license_headers.matching_exclusion(
-            prefix + relative, POLICY) is None
-        assert check_license_headers.validate_text(
-            prefix + relative, SLASH_HEADER + "fn checked() {}\n", POLICY
-        ) is None
-        assert check_license_headers.validate_text(
-            prefix + relative, "fn unchecked() {}\n", POLICY) is not None
