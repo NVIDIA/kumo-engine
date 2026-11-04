@@ -215,6 +215,258 @@
       "kind": "vendored",
       "license": "MIT",
       "reason": "Vendored upstream PtrHash sources; preserve the upstream files and license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/Cargo.toml",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/build.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/deser/helpers.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/deser/mem_case.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/deser/mod.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/deser/read.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/deser/reader_with_pos.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/deser/slice_with_pos.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/impls/array.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/impls/boxed_slice.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/impls/iter.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/impls/mod.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/impls/prim.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/impls/slice.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/impls/stdlib.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/impls/string.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/impls/tuple.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/impls/vec.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/lib.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/ser/helpers.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/ser/mod.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/ser/write.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/ser/write_with_names.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/traits/copy_type.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/traits/mod.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/traits/type_info.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/utils/aligned_cursor.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/utils/mod.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_bad_deser.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_bad_ser.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_generics.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_max_size_of.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_memcase.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_phantom.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_prim.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_slice.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_std.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_stdlib.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_tuples.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_type_hash_val.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_types.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_zero.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Copied epserde 0.8.0 source; retain upstream attribution and licensing recorded in packages/diskgraph/third_party/source-provenance.json."
     }
   ]
 }
