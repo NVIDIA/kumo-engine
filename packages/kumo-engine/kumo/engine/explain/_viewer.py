@@ -757,13 +757,16 @@ const samples=obj(data.samples),coverage=obj(samples.coverage),references=list(s
 note(examples,text(coverage.loaded??Object.keys(bodies).length)+(coverage.references_total==null?' loaded; recorded total unavailable':' of '+text(coverage.references_total)+' recorded references loaded')
 +(coverage.missing?'; '+text(coverage.missing)+' missing':'')+(coverage.malformed?'; '+text(coverage.malformed)+' malformed':'')
 +(coverage.excluded?'; '+text(coverage.excluded)+' excluded by load limits':'')+(coverage.catalog_excluded?'; '+text(coverage.catalog_excluded)+' catalog references excluded':'')+'.');
+if(coverage.excluded||coverage.catalog_excluded)note(examples,'For a new snapshot with up to 12 examples and any retained predictions/outcomes, run explanations.visualize(max_samples=12) as the final line of a notebook cell. '
++'This creates and displays a new snapshot; existing views stay unchanged. Byte limits and unavailable artifacts still apply.');
 const loadingDetails=el('details');loadingDetails.append(el('summary','Selection and loading details'));
 note(loadingDetails,'Coverage: '+text(coverage.references_listed??references.length)+' listed of '+text(coverage.references_total)+' recorded references; '
 +text(coverage.available)+' available graph files; '+text(coverage.loaded??Object.keys(bodies).length)+' loaded; '
 +text(coverage.missing)+' missing; '+text(coverage.malformed)+' malformed; '+text(coverage.excluded)+' excluded by load limits.');
 note(loadingDetails,'Recorded selection strategies can overlap and do not define thresholded prediction outcomes. Collector IDs identify artifacts, not original entities.');
 if(references.length)note(loadingDetails,'Preloaded example identities and values may be saved in notebook HTML or widget state. '
-+'Inspect other retained graphs in Python with explanations.sample(collector_id).');
++'Inspect other retained graphs in Python with explanations.sample(collector_id), using the collector ID as a string. '
++'This returns graph/feature stores only, without predictions/outcomes, and does not update displayed snapshots.');
 const sampleView=el('div',undefined,'kt-detail'),sampleButtons=[];
 const nodeIdentity=(store,id)=>{const node=obj(obj(store.nodes)[id]);
 const tables=Object.entries(obj(store.tables)).filter(([,ids])=>list(ids).some(value=>String(value)===String(id))).map(([name])=>name);
