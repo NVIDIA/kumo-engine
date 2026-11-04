@@ -7,6 +7,40 @@ They do not measure FM payload assembly, model accuracy, or GNN-versus-RDL publi
 API performance.
 
 
+## Shared indexed-range validation (2026-11-04 UTC)
+
+These **incremental** measurements compare the previous PR158 scan/filter head `825349bcbd84f705ffc37b0a6e1cad261cbf6715` with shared-range native source `097227725dec9a65447e896c15507f1a62471182`. They do not compare against the original pre-coarse-filter linear path or against GNN’s public API.
+
+Eight independent anchors, **1,048,576 events each**, shifted minute buckets, 99% newer than the historical cutoff:
+
+| Query | Previous PR158 ms | Shared range ms | Median paired speedup (pair range) |
+| --- | ---: | ---: | ---: |
+| Historical cutoff, every eligible row | 121.446 | 26.050 | 4.66× (4.60–4.85) |
+| Historical cutoff, latest 128 | 118.483 | 22.193 | 5.34× (5.02–5.36) |
+| Historical cutoff, lengths | 537.948 | 17.205 | 30.76× (29.90–31.87) |
+| Recent cutoff, latest 128 control | 3137.024 | 3079.097 | 1.02× (1.01–1.03) |
+
+The uncapped query returns **10,485 events per anchor (83,880 total)** in both builds. It unpacks **8,388,608 → 84,008 candidates**, while decoding **84,008 rows in both builds**. Thus its improvement does not depend on capped-history early stopping or fewer row decodes. Length queries also avoid constructing/deduplicating rejected candidates. The recent control retains all candidates and is near parity.
+
+The broader 32-root, 74,880-event FM-shaped workload shows additional coarse-clock gains of **1.15–1.17× for 7-day windows**, **1.10–1.12× for 30-day windows**, and **1.53–1.54× for 30-day lengths**. Ranges include shifted-cutoff cases where measured. Recent upper-only queries are near parity. The aligned hour-clock 30-day query measured **7.114 → 6.418 ms**, visiting **74,880 → 17,667 edges** with **17,667 rows decoded in both builds**.
+
+All **68 aligned + 9 shifted + 8 small/high-degree cases** matched output hashes and independent source-ID/length checks. Small controls remain noisy: the degree-16 hour-clock upper-only query measured **0.0676 → 0.0706 ms** (median paired ratio 0.960, about 4.2% overhead). Unbounded/mismatched controls were within 0.8% of parity by median paired ratio. The separate degree-256 workload had sub-millisecond variability (historical row-query pair ratios 0.73–1.72), so it supports no reliable small-graph speedup claim.
+
+Protocol: adjacent balanced AB/BA pairs, one CPU, fresh workers per cycle, two warmups; 8 pairs × 11 measured calls for aligned/small workloads, 4 × 11 for shifted cutoffs, 4 × 5 for high degree. Times include native execution and Python result conversion; setup, source validation and hashing are excluded. Independently aggregated medians need not divide to the median paired ratio. No simultaneous compilation or test workloads.
+
+Native SHA-256 values:
+
+- Previous PR158: `7aeddc274fd7bb8cd028921a665b7358b901548759408bd12bf6d9f9cf49623a`
+- Shared range: `93e4cc326f268099b49f6d1aaf1ce9e7ec06a1faa82cb41b949ab3f5310ac7af`
+
+Release validation passed 142 core, 58 engine, 275 PQL unit and 144 PQL integration
+Rust tests, plus 418 native Python regressions. Companion RDL validation passed
+792 both-engine conformance and 1,991 full-suite tests (three CUDA-only skips;
+44 opt-in lifecycle cases excluded by default). All 240 Rust/Cargo files in the
+build snapshot matched the committed native revision. Rustfmt and Clippy were
+unavailable. The historical sections below retain their original baselines;
+do not multiply speedup ratios across those separate runs.
+
 ## Uncapped range-admission workload
 
 [temporal_indexed_range.py](temporal_indexed_range.py) isolates the long-history
