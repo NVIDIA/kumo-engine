@@ -1008,7 +1008,7 @@ fn materialize_frame(
         .time_column
         .as_ref()
         .map(|column| {
-            let hint = hints.get(&destination).and_then(|hints| hints.get(column));
+            let hint = column_hint(hints.get(&destination), Some(column));
             epoch_seconds(decoded.column(positions[column]), hint)
         })
         .transpose()?;
@@ -1365,7 +1365,7 @@ fn reduce(
     })
 }
 
-/// `hints` apply only to frame columns, not to reductions of an earlier group.
+/// `hints` describe the input columns.
 fn group_rows(
     rows: RowsView<'_>,
     plan: &GroupPlan,
@@ -1447,6 +1447,26 @@ fn group_rows(
     Ok(output)
 }
 
+/// Hints of a group stage's outputs: keys, and min, max and mode, which keep
+/// their input's stored values.
+fn group_output_hints(plan: &GroupPlan, hints: Option<&ColumnHints>) -> ColumnHints {
+    let mut output = ColumnHints::new();
+    for key in &plan.keys {
+        if let Some(hint) = column_hint(hints, Some(key)) {
+            output.insert(key.clone(), hint.clone());
+        }
+    }
+    for value in &plan.values {
+        match column_hint(hints, value.column.as_deref())
+            .filter(|_| matches!(value.operation.as_str(), "min" | "max" | "mode"))
+        {
+            Some(hint) => output.insert(value.name.clone(), hint.clone()),
+            None => output.remove(&value.name),
+        };
+    }
+    output
+}
+
 fn aggregate_result(
     frame: &MaterializedFrame,
     hints: Option<&ColumnHints>,
@@ -1454,6 +1474,11 @@ fn aggregate_result(
     cutoffs: &[i64],
 ) -> Result<AggregateResult, String> {
     validate_reduction(&plan.operation, plan.column.as_deref())?;
+    let mut stage_hints = Vec::with_capacity(plan.groups.len());
+    for group in &plan.groups {
+        let output = group_output_hints(group, stage_hints.last().or(hints));
+        stage_hints.push(output);
+    }
     let mut values = Vec::with_capacity(cutoffs.len());
     for (anchor, cutoff) in cutoffs.iter().copied().enumerate() {
         let frame_view = RowsView::Frame {
@@ -1463,8 +1488,8 @@ fn aggregate_result(
         };
         let value = if let Some((first, remaining)) = plan.groups.split_first() {
             let mut grouped = group_rows(frame_view, first, cutoff, hints)?;
-            for group in remaining {
-                grouped = group_rows(RowsView::Owned(&grouped), group, cutoff, None)?;
+            for (group, hints) in remaining.iter().zip(&stage_hints) {
+                grouped = group_rows(RowsView::Owned(&grouped), group, cutoff, Some(hints))?;
             }
             reduce(
                 RowsView::Owned(&grouped),
@@ -1472,7 +1497,7 @@ fn aggregate_result(
                 plan.column.as_deref(),
                 cutoff,
                 plan.sum_type,
-                None,
+                column_hint(stage_hints.last(), plan.column.as_deref()),
             )?
         } else {
             reduce(
@@ -1618,9 +1643,7 @@ fn count_frame(
                 .map(|(node_id, _)| *node_id)
                 .collect::<Vec<_>>();
             let decoded = table_rows(table.as_ref(), &flat_nodes, &projection_indices)?;
-            let hint = hints
-                .get(&destination)
-                .and_then(|hints| hints.get(time_column));
+            let hint = column_hint(hints.get(&destination), Some(time_column));
             let times = epoch_seconds(decoded.column(0), hint)?;
             let mut row = 0;
             for (anchor, rows) in rows_by_anchor.iter().enumerate() {
