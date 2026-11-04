@@ -160,6 +160,8 @@ SELECT table_name, column_name, data_type, full_data_type FROM <catalog>.informa
 WHERE table_schema = lower('<schema>') ORDER BY table_name, ordinal_position;
 -- declared keys, if any (informational constraints); a FOREIGN KEY row names its target
 SELECT tc.table_name, tc.constraint_name, tc.constraint_type, kcu.column_name,
+       rc.unique_constraint_catalog AS referenced_catalog,
+       rc.unique_constraint_schema AS referenced_schema,
        ref.table_name AS referenced_table, ref.column_name AS referenced_column
 FROM <catalog>.information_schema.table_constraints tc
 JOIN <catalog>.information_schema.key_column_usage kcu
@@ -177,6 +179,10 @@ WHERE tc.table_schema = lower('<schema>')
 ORDER BY tc.table_name, tc.constraint_name, kcu.ordinal_position;
 ```
 
+- A FOREIGN KEY row links two tables in scope only when its `referenced_catalog` and
+  `referenced_schema` are the confirmed `source_scope`, compared lowercased. A key into another
+  schema or catalog (there `referenced_table` may be empty) is not a link: never propose it, and
+  name it in the proposal as a reference outside the scope.
 - Row counts are not in `information_schema` and are not needed for the graph proposal.
 - Unity Catalog types: `STRING`, `BIGINT`, `INT`, `DOUBLE`, `DECIMAL(p,s)`, `BOOLEAN`, `DATE`,
   `TIMESTAMP`, `TIMESTAMP_NTZ`, `ARRAY<...>`. Read the type from `full_data_type`: `data_type`

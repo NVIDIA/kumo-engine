@@ -18,8 +18,10 @@ The source tree under `skills/` is not the layout that ships. A package holds on
 the portable core plus only its own host files, so an agent never reads another host's adapter.
 
 The build stamps the router's `SKILL-BUILD` marker with the commit the package was built from,
-`<commit date>-<short sha>`, suffixed `-dirty` when `skills/` has uncommitted changes. The source
-tree carries `SKILL-BUILD: source`, so a session quoting that value read an unpackaged copy.
+`<commit date>-<short sha>`, suffixed `-dirty` when `skills/` has uncommitted changes. Without git
+(an extracted source archive) it is `unknown-<digest>`, a hash of the skill files, so two different
+archives never share a stamp. The source tree carries `SKILL-BUILD: source`, so a session quoting
+that value read an unpackaged copy.
 
 `genie --deploy` uploads the package to `/Users/<you>/.assistant/skills/kumo-data-science/`, the
 folder Genie Code reads skills from, through the Workspace API, then reads every file back and
@@ -32,7 +34,7 @@ package does not ship are reported, and deleted with `--prune` (only inside
 `kumo-data-science/` directory at its root: unzip it into an agent's skills directory, or upload it
 where an agent takes a skill zip. The release workflow attaches them to each `kumo-engine-v*`
 GitHub release, beside the wheel built from the same commit. Entries are sorted and carry a fixed
-timestamp, so one commit always yields the same bytes.
+timestamp and creating system, so one commit always yields the same bytes, on any OS.
 
 Every build is checked: each markdown link must resolve relative to the file that holds it, and
 each backticked path naming a package directory must resolve relative to the package root. A
@@ -42,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
@@ -92,7 +95,11 @@ CODE_PATH = re.compile(r'`([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+\.(?:md|py))`')
 
 
 def build_id() -> str:
-    """Name the source commit: `<commit date>-<short sha>`, `-dirty` if `skills/` has edits."""
+    """Name the source commit: `<commit date>-<short sha>`, `-dirty` if `skills/` has edits.
+
+    Without git, name the content instead: `unknown-<digest>` of every skill file, the same for
+    every host, so the stale check never takes two different builds for one.
+    """
     def git(*args: str) -> str:
         return subprocess.run(['git', '-C', str(ROOT), *args], check=True, capture_output=True,
                               text=True).stdout.strip()
@@ -104,7 +111,11 @@ def build_id() -> str:
         stamp = f'{date}-{sha[:8]}'
         dirty = git('status', '--porcelain', '--', str(SKILLS))
     except (OSError, subprocess.CalledProcessError):
-        return 'unknown'
+        digest = hashlib.sha256()
+        for p in skill_files(SKILLS):
+            data = p.read_bytes()
+            digest.update(f'{p.relative_to(SKILLS).as_posix()}\0{len(data)}\0'.encode() + data)
+        return f'unknown-{digest.hexdigest()[:12]}'
     return f'{stamp}-dirty' if dirty else stamp
 
 
@@ -239,6 +250,8 @@ def archive(out: Path) -> list[Path]:
                     info = zipfile.ZipInfo(p.relative_to(root).as_posix(), ZIP_EPOCH)
                     info.compress_type = zipfile.ZIP_DEFLATED
                     info.external_attr = 0o644 << 16
+                    # Each entry records the system that wrote it, 0 on Windows: fix it to Unix.
+                    info.create_system = 3
                     zf.writestr(info, p.read_bytes())
             zips.append(dest)
     return zips

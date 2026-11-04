@@ -141,6 +141,15 @@ def test_cli_reports_errors_without_a_traceback(
     assert 'error: genie installs' in capsys.readouterr().err
 
 
+def test_cli_reports_a_filesystem_error_without_a_traceback(
+        home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (tmp_path / 'a-file').write_text('')
+    with pytest.raises(SystemExit) as exc:
+        skills.main(['--path', str(tmp_path / 'a-file' / 'skills')])
+    assert exc.value.code == 1
+    assert 'error: ' in capsys.readouterr().err
+
+
 def test_a_missing_workspace_is_reported_before_the_session(
         home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def no_session():
@@ -196,6 +205,31 @@ def test_kumo_engine_imports_install_skills_on_first_use(
     assert namespace['__getattr__']('install_skills') is skills.install_skills
     with pytest.raises(AttributeError):
         namespace['__getattr__']('nothing')
+
+
+@pytest.mark.parametrize('argv, checked', [
+    (['python', '-m', 'kumo.engine.skills', '--check'], False),
+    (['python', '-W', 'error', '-m', 'kumo.engine.skills'], False),
+    (['python', 'train.py'], True),
+    (['python', '-m', 'kumo.engine.other', 'kumo.engine.skills'], True),
+])
+def test_the_import_check_skips_the_skills_command(
+        monkeypatch: pytest.MonkeyPatch, argv: list, checked: bool) -> None:
+    # Under `python -m kumo.engine.skills`, importing `kumo.engine` must not import the module a
+    # second time to check. Its `_warn_if_skill_stale` is run against a stand-in `sys` and module.
+    tree = ast.parse((ENGINE / '__init__.py').read_text())
+    [guard] = [n for n in tree.body
+               if isinstance(n, ast.FunctionDef) and n.name == '_warn_if_skill_stale']
+    namespace: dict = {'sys': types.SimpleNamespace(orig_argv=argv)}
+    exec(compile(ast.Module([guard], []), 'kumo/engine/__init__.py', 'exec'), namespace)
+    calls: list = []
+    stand_in = types.ModuleType('kumo.engine.skills')
+    stand_in.warn_if_stale = lambda: calls.append(1)
+    for name in ['kumo', 'kumo.engine']:
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, 'kumo.engine.skills', stand_in)
+    namespace['_warn_if_skill_stale']()
+    assert calls == ([1] if checked else [])
 
 
 def test_the_bundled_copy_is_used_outside_a_checkout(
@@ -908,14 +942,21 @@ def test_the_stale_warning_names_the_call_that_updates_each_install(
     [target] = skills.install_skills('claude', scope='project')
     build(Path(target), 'older')
     call = "install_skills('claude', scope='project')"
-    with pytest.warns(UserWarning, match=re.escape(call)):
+    with pytest.warns(UserWarning, match=re.escape(call)) as caught:
         skills.warn_if_stale()
+    # A project install is not shared, so the advice to make one is left out.
+    assert 'shared by every Python environment' not in str(caught[0].message)
     with pytest.raises(SystemExit):
         skills.main(['--check'])
     assert call in capsys.readouterr().out
     # Following the advice clears it.
     skills.install_skills('claude', scope='project')
     assert skills.stale_skills() == {}
+    # A user-scope install is shared by every environment; the advice says so.
+    [target] = skills.install_skills('claude')
+    build(Path(target), 'older')
+    with pytest.warns(UserWarning, match="shared by every Python environment.*scope='project'"):
+        skills.warn_if_stale()
 
 
 def test_detection_skips_the_coco_copy_claude_code_would_shadow(

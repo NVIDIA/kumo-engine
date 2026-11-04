@@ -105,9 +105,10 @@ install_requires = major_dependencies + observability_requires + [
     # ImportError while computing BP column stats).
     "pyarrow>=18,<25",
     "kubernetes==24.2.0",
-    # filelock >=3.20.3 fixes CVE-2025-68146 / CVE-2026-22701. (3.29.5+ are
-    # newer than the uv exclude-newer quarantine window at time of writing.)
-    "filelock==3.29.4",
+    # filelock >=3.20.3 fixes CVE-2025-68146 / CVE-2026-22701; 3.29.5 stops
+    # unlinking the Unix lock file on release (3.20.4-3.29.4 do), which let
+    # two processes lock different inodes at one path. kumo-engine needs it.
+    "filelock==3.29.5",
     # cryptography 50 clears CVE-2026-27459 (critical) and the cryptography
     # 38.x CVE set. The historical "newer cryptography rejects legacy-cipher
     # Snowflake keys" concern no longer reproduces: 50.0.0 loads DES3-,

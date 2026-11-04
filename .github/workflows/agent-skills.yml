@@ -53,6 +53,6 @@ jobs:
       # every Kumo module and SDK name the skills cite still exists.
       - name: Test skill packaging and scripts
         run: |
-          uvx --python 3.14 --from pytest==9.0.3 --with filelock==3.29.4 \
+          uvx --python 3.14 --from pytest==9.0.3 --with filelock==3.29.5 \
             python -m pytest -c /dev/null --confcutdir=agent-skills/tests \
             -p no:cacheprovider -q agent-skills/tests

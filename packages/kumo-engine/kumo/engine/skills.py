@@ -235,10 +235,18 @@ def warn_if_stale() -> None:
     if stale:
         listed = '; '.join(f'{d} ({b}): kumo.engine.{update_call(d)}'
                            for d, b in stale.items())
+        user_dirs = {
+            str(Path(scopes['user']).expanduser().resolve() / SKILL)
+            for _, scopes in AGENTS.values() if 'user' in scopes
+        }
+        shared = (' A user-scope install is shared by every Python '
+                  'environment, so environments with different kumo-engine '
+                  "builds replace each other's; give each project its own "
+                  "with scope='project'." if user_dirs & stale.keys() else '')
         warnings.warn(
             f'The {SKILL} agent skill is not the one this kumo-engine '
-            f'({bundled_build()}) ships. To update it, run: {listed}',
-            stacklevel=2)
+            f'({bundled_build()}) ships. To update it, run: {listed}.'
+            f'{shared}', stacklevel=2)
 
 
 def _copy(pkg: Path, skills_dir: Path) -> Path:
@@ -808,7 +816,8 @@ def main(argv: Optional[list[str]] = None) -> None:
                        session=session, workspace=args.workspace,
                        extension=args.extension, stage=args.stage,
                        client=client)
-    except (ValueError, FileNotFoundError, RuntimeError) as e:
+    # OSError: e.g. a --path through a file, or a directory not writable.
+    except (ValueError, OSError, RuntimeError) as e:
         ap.exit(1, f'{ap.prog}: error: {e}\n')
     finally:
         if session is not None:
