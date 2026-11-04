@@ -110,6 +110,23 @@ To use your own data, point `FileConnector` at a directory of CSV or Parquet fil
 
 `graph.snapshot()` ingests the tables into an on-disk graph index under the scratch directory, which also holds training runs, model bundles, and predictions. It defaults to `~/.cache/kumo-engine`; to put it on a large local disk, call `kumo.engine.configure(scratch_dir=...)` first.
 
+## Agent skills
+
+Kumo Engine ships an agent skill, `kumo-data-science`, that teaches a coding agent to build, train, and run Kumo models with this version of the SDK. Install it for your agent:
+
+```python
+import kumo.engine as kumo
+
+kumo.install_skills()          # every agent found locally, or Genie Code on Databricks
+kumo.install_skills("claude")  # or "codex", "coco" (Snowflake Cortex Code), "genie" (Databricks Genie Code), "genie-cli" (Genie Code CLI)
+```
+
+`scope="project"` installs into the current project instead of your home directory. From a shell, run `python -m kumo.engine.skills`; for a Snowsight workspace or a Cortex Extension, name a Snowflake connection from `connections.toml`, as the `snow` CLI uses: `python -m kumo.engine.skills coco --scope workspace --workspace MY_WS --connection my_conn`.
+
+The skill is versioned with the wheel. After upgrading `kumo-engine`, run `install_skills()` again; `import kumo.engine` warns when a local install is out of date and names the call that updates it, and `python -m kumo.engine.skills --check` lists your installs.
+
+Without the wheel, download the skill from the GitHub release for your version: `kumo-data-science-generic.zip` (Claude Code, Codex, other agents), `kumo-data-science-coco.zip` (Snowflake Cortex Code) or `kumo-data-science-genie.zip` (Databricks Genie Code). Unzip it into your agent's skills directory.
+
 ## Visualize table relationships
 
 Display declared tables and relationships in a notebook, or export SVG, PDF, or Markdown:

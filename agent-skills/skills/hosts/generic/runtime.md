@@ -35,7 +35,8 @@ SQL warehouse or cluster — are constants here too. S3, GCS and BigQuery have n
 chain resolves credentials and region where the code runs (an instance or job role, the
 environment, `aws configure`, `gcloud`), and BigQuery bills queries to the confirmed dataset's own
 project. So add no region, profile, project or billing constant for them beyond the confirmed
-location, and pass `region=` or `billing_project_id=` only when the user named one. For the
+location, and pass `region=` or `billing_project_id=` only when the user named one. A BigQuery
+dataset's location is not a constant either: the notebook reads it from the dataset (§2). For the
 values that are constants, write the user's value if they gave one; otherwise a placeholder of
 the form `'<DATABRICKS_WAREHOUSE_ID>'`, and list each placeholder in your reply as something to
 fill in before running. A placeholder never stands in for a confirmed
@@ -65,9 +66,10 @@ connector = kumo.S3Connector(root_dir=SOURCE_URI)            # 's3://bucket/pref
 connector = kumo.GCSConnector(root_dir=SOURCE_URI)           # 'gs://bucket/prefix/'
 # BigQuery — PROJECT_ID and DATASET_ID are the two parts of the confirmed `project.dataset` scope,
 # never placeholders. The identity is required; with no arguments it is the ambient Google
-# credential. No billing_project_id (§1).
+# credential. No billing_project_id (§1). location= is the dataset's own, read by bq_location below.
 connector = kumo.BigQueryConnector(project_id=PROJECT_ID, dataset_id=DATASET_ID,
-                                   identity=kumo.BigQueryIdentity())
+                                   identity=kumo.BigQueryIdentity(),
+                                   location=bq_location(DATASET_ID))
 # Databricks — exactly one of warehouse_id / cluster_id
 connector = kumo.DatabricksConnector(
     catalog=CATALOG, schema_name=SCHEMA, identity=kumo.DatabricksIdentity(),
@@ -82,6 +84,21 @@ assert connector.table_names(), 'Connector reached no tables.'
 
 Emit only the line for the confirmed system. Never emit a rootless S3 or GCS connector for a
 source: it cannot list tables.
+
+**BigQuery location.** `BigQueryConnector` defaults to `location='US'`, and a dataset anywhere
+else — `EU`, or a single region such as `us-central1`, which is not `US` — fails: reads with
+not-found, and the prediction write only after training, at the sink's location check. Whenever
+any connector in the notebook is BigQuery — source, population or destination — define this
+once, in the connect step before the first connector, and pass
+`location=bq_location(<its dataset>)` to every `BigQueryConnector`:
+
+```python
+from google.cloud import bigquery
+
+def bq_location(dataset):
+    """The location a dataset lives in; the dataset must already exist."""
+    return bigquery.Client(project=PROJECT_ID).get_dataset(f'{PROJECT_ID}.{dataset}').location
+```
 
 Name file and object-store tables without their suffix — `connector['accounts']` for
 `accounts.parquet` — and use those names in the tables, edges and PQL (`adapter.md` §3).
@@ -127,6 +144,9 @@ output_config = kumo.PredictionOutputConfig(
 OUTPUT_LOCATION = OUTPUT_PARENT + OUTPUT_LEAF                   # the confirmed path, for read-back
 ```
 
+A BigQuery destination's connector is scoped to `OUTPUT_DATASET` and takes
+`location=bq_location(OUTPUT_DATASET)` (§2), which may differ from the source's.
+
 Rooting the connector at the destination itself and passing a `table_name` writes one level
 below it, to a path the user never confirmed. A directory destination must be empty or absent;
 the sink creates it.
@@ -146,12 +166,24 @@ from google.cloud import bigquery
 written = next(iter(bigquery.Client(project=PROJECT_ID).query(
     f'SELECT COUNT(*) FROM `{PROJECT_ID}.{OUTPUT_DATASET}.{OUTPUT_TABLE}`').result()))[0]
 
-# Databricks — with the confirmed SQL warehouse; wait_timeout is at most '50s'
+# Databricks — with the confirmed SQL warehouse; wait_timeout is at most '50s', so poll
+import time
 from databricks.sdk import WorkspaceClient
-response = WorkspaceClient().statement_execution.execute_statement(
-    warehouse_id=DATABRICKS_WAREHOUSE_ID, wait_timeout='30s',
-    statement=f'SELECT COUNT(*) FROM {CATALOG}.{OUTPUT_SCHEMA}.{OUTPUT_TABLE}')
-written = int(response.result.data_array[0][0])
+from databricks.sdk.service.sql import StatementState
+
+def q(*parts):
+    """`catalog`.`schema`.`table`: Unity Catalog names may contain hyphens."""
+    return '.'.join('`' + p.replace('`', '``') + '`' for p in parts)
+
+ws = WorkspaceClient()
+r = ws.statement_execution.execute_statement(
+    warehouse_id=DATABRICKS_WAREHOUSE_ID, wait_timeout='50s',
+    statement=f'SELECT COUNT(*) FROM {q(CATALOG, OUTPUT_SCHEMA, OUTPUT_TABLE)}')
+while r.status.state in (StatementState.PENDING, StatementState.RUNNING):
+    time.sleep(5)
+    r = ws.statement_execution.get_statement(r.statement_id)
+assert r.status.state == StatementState.SUCCEEDED, r.status
+written = int(r.result.data_array[0][0])
 
 # Snowflake — through the same connections.toml entry
 import snowflake.connector
@@ -236,13 +268,17 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   from databricks.sdk import WorkspaceClient
   from databricks.sdk.service.sql import StatementState
 
+  def q(*parts):
+      """`catalog`.`schema`.`table`: Unity Catalog names may contain hyphens."""
+      return '.'.join('`' + p.replace('`', '``') + '`' for p in parts)
+
   ws = WorkspaceClient()
-  time_col = f', CAST({ENTITY_TIME} AS TIMESTAMP) AS TIMESTAMP' if ENTITY_TIME else ''
+  time_col = f', CAST({q(ENTITY_TIME)} AS TIMESTAMP) AS TIMESTAMP' if ENTITY_TIME else ''
   r = ws.statement_execution.execute_statement(
       warehouse_id=DATABRICKS_WAREHOUSE_ID, wait_timeout='50s',
-      statement=(f'CREATE OR REPLACE TABLE {CATALOG}.{POP_SCHEMA}.{POP_TABLE} AS '
-                 f'SELECT {ENTITY_KEY} AS ENTITY1{time_col} '
-                 f'FROM {CATALOG}.{SCHEMA}.{ENTITY_TABLE}'))
+      statement=(f'CREATE OR REPLACE TABLE {q(CATALOG, POP_SCHEMA, POP_TABLE)} AS '
+                 f'SELECT {q(ENTITY_KEY)} AS ENTITY1{time_col} '
+                 f'FROM {q(CATALOG, SCHEMA, ENTITY_TABLE)}'))
   while r.status.state in (StatementState.PENDING, StatementState.RUNNING):
       time.sleep(5)
       r = ws.statement_execution.get_statement(r.statement_id)
@@ -253,6 +289,8 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   scoped to the population's dataset. The same `TIMESTAMP` rule applies: project
   `CAST(<time> AS TIMESTAMP) AS TIMESTAMP` only when the entity table has a time column, and drop
   it otherwise. The population's dataset must already exist; `CREATE TABLE` does not create it.
+  It must be in the source dataset's location, because one BigQuery query cannot read and write
+  across locations.
 
   ```python
   from google.cloud import bigquery
@@ -263,7 +301,8 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
       f'SELECT {ENTITY_KEY} AS ENTITY1{time_col} '
       f'FROM `{PROJECT_ID}.{DATASET_ID}.{ENTITY_TABLE}`').result()   # waits; raises on failure
   population_connector = kumo.BigQueryConnector(project_id=PROJECT_ID, dataset_id=POP_DATASET,
-                                                 identity=kumo.BigQueryIdentity())
+                                                 identity=kumo.BigQueryIdentity(),
+                                                 location=bq_location(POP_DATASET))
   prediction_table = kumo.PredictionTable.from_source_table(
       population_connector[POP_TABLE], pq=pquery, snapshot=snapshot)
   ```

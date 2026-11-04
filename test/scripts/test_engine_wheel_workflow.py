@@ -207,6 +207,7 @@ def test_all_platforms_require_validation_and_release_environment() -> None:
         "check-requirements",
         "wheel-smoke",
         "platform-qualification",
+        "skill-zips",
     }
     assert JOBS["kitmaker"]["needs"] == ["attach-to-release"]
     portal = PORTAL_JOBS["portal"]

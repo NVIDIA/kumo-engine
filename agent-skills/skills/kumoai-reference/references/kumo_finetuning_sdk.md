@@ -572,6 +572,11 @@ PredictionResult.export(output_config)
 - For Snowflake, always pass `artifact_type` and `table_name`. `output_paths` is for file and
   object-store connectors only; with a `SnowflakeConnector` it raises `ValueError`. Every
   connector's form is in §9.2.
+- `extra_fields=[MetadataField.JOB_TIMESTAMP, MetadataField.ANCHOR_TIMESTAMP]` (`kumoapi.jobs`)
+  adds those two columns: when the run started, and the time each prediction is anchored at.
+  `ANCHOR_TIMESTAMP` exists only for a query with a time window; requesting it for one without
+  raises `ValueError` after scoring. Source: shipped package (`kumo_core.train.output`,
+  `kumo_core.prediction_options`).
 
 - **`snapshot=` is required.** `output_config` is optional — omit it to keep results local.
 - `predict` requires a trainer holding fitted state — from `fit` on that same `Trainer`, or from
@@ -596,10 +601,16 @@ PredictionResult.export(output_config)
 ### 9.1 The output table keeps its name
 
 **The table is written with exactly the name you pass.** No suffix, no case change, no quoting
-needed. Verify by reading it back and comparing the row count:
+needed on the write. Verify by reading it back and comparing the row count. Quote the table name
+in the read: `session.table` upper-cases an unquoted part, so `churn_scores` would look for
+`CHURN_SCORES` and not find the table Kumo wrote. The database and schema stay unquoted; both
+sides resolve those the same way.
 
 ```python
-destination = session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA, output_table])
+def quoted(name):
+    return '"' + name.replace('"', '""') + '"'
+
+destination = session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA, quoted(output_table)])
 assert destination.count() == prediction_result.num_rows
 ```
 
@@ -723,8 +734,8 @@ prediction_result = trainer.predict(
 )
 print('rows:', prediction_result.num_rows)
 
-# 8. Verify the write-back.
-destination = session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA, OUTPUT_TABLE])
+# 8. Verify the write-back. The table name is quoted (§9.1).
+destination = session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA, '"' + OUTPUT_TABLE.replace('"', '""') + '"'])
 assert destination.count() == prediction_result.num_rows
 ```
 
@@ -853,7 +864,6 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
   nowhere. `load_from_connector` needs a connector whose sink implements `ModelFetchingSink`
   (otherwise `TypeError`); `FileConnector` provides `fetch_model`, other sinks are unverified.
 - `num_workers` above 1.
-- `extra_fields` on `PredictionOutputConfig` (`MetadataField` values).
 - `PredictionResult.export` against Snowflake — in the package, exercised nowhere.
 - Whether a snapshot can be reused across graphs or persisted between processes.
 - The written column schema for a ranking task.
