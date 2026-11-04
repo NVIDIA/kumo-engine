@@ -953,7 +953,12 @@ fn materialize_frame(
             .stop_seconds
             .map(|value| cutoffs[anchor].saturating_add(value));
         let mut anchor_rows = Vec::<(usize, Option<i64>, ScalarValue)>::new();
-        for row in input_offsets[anchor]..input_offsets[anchor + 1] {
+        for (row, &node_id) in flat_nodes
+            .iter()
+            .enumerate()
+            .take(input_offsets[anchor + 1])
+            .skip(input_offsets[anchor])
+        {
             let timestamp = match time_position {
                 Some(position) => Some(
                     scalar_at(decoded.column(position).as_ref(), row)?
@@ -972,7 +977,7 @@ fn materialize_frame(
             }
             let key = match primary_key_position {
                 Some(position) => scalar_at(decoded.column(position).as_ref(), row)?,
-                None => ScalarValue::U64(flat_nodes[row]),
+                None => ScalarValue::U64(node_id),
             };
             anchor_rows.push((row, timestamp, key));
         }
