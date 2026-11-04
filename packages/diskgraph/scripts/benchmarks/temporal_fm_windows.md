@@ -1,8 +1,38 @@
-# Coarse-clock admission benchmark
+# Indexed temporal-window benchmarks
 
-This benchmark evaluates conservative indexed-clock admission followed by exact
-row filtering. It does not evaluate range seeking, GNN-versus-RDL API performance,
-FM payload assembly, or model accuracy. The native query still scans adjacency.
+These benchmarks evaluate native temporal-window lookup and exact row filtering.
+The historical measurements below used a scan with coarse admission. The range
+revision seeks candidate slices with the common GNN/PQL/RDL search primitive.
+They do not measure FM payload assembly, model accuracy, or GNN-versus-RDL public
+API performance.
+
+
+## Uncapped range-admission workload
+
+[temporal_indexed_range.py](temporal_indexed_range.py) isolates the long-history
+case: eight independent entities, 1,048,576 events each, 99% newer than the old
+cutoff. Returning every eligible row removes capped-history early stopping as
+an explanation for a gain. Additional cases return latest-128, count lengths,
+and use a recent cutoff. Run the same cases with degree 256 as a small-history
+control. The fixture uses a shifted minute-bucket anchor; exact IDs and lengths
+are checked against the source pattern before timing.
+
+```bash
+for degree in 256 1048576; do
+  PYTHONPATH="$BASE_PACKAGE" python scripts/benchmarks/temporal_indexed_range.py \
+    "$BENCH_DATA/range-$degree/fm-minute" --prepare --degree "$degree" --unit minute
+  python scripts/benchmarks/temporal_fm_windows_compare.py "$BENCH_DATA/range-$degree" \
+    --baseline "$BASE_PACKAGE" --candidate "$OPT_PACKAGE" --units minute \
+    --worker scripts/benchmarks/temporal_indexed_range.py \
+    --case old_all_rows --case old_latest128 --case recent_latest128 --case old_lengths \
+    --output "$BENCH_DATA/range-$degree/paired" --cycles 8 --repeats 11
+done
+```
+
+This uses the same balanced AB/BA protocol, native-hash guard, and output-hash
+comparison as the broader FM matrix. `edges_visited` counts unpacked candidates,
+not the logarithmic key probes used for seeking. Large sentinel regions can
+still require scanning; unsupported clocks retain the complete scan fallback.
 
 ## Workload
 

@@ -151,8 +151,9 @@ sequence limit choose the final rows. Distinct frames count distinct node IDs
 when choosing that boundary. If a candidate reaches the encoded timestamp
 ceiling, selection falls back to full-frame decoding: ingestion may have clamped
 its real timestamp. Other frames also retain full-frame decoding. This
-reduces rowpack work, not edge scanning: candidate edge buffers still grow with
-the adjacency, and boundary ties can require decoding more than the limit.
+reduces rowpack work after indexed window lookup. Candidate buffers grow with
+the sought ranges (including sentinel regions); boundary ties can still require
+decoding more than the limit.
 
 When one bounded sequence shares a frame with aggregates, traversal is still
 shared. The full frame decodes only its keys, clock, and aggregate input columns,
@@ -186,11 +187,12 @@ decodes only the destination rowpack's timestamp column. `timings_ns` separates
 traversal and filtering;
 `stats` reports which timestamp path ran.
 
-For matching coarse clocks, the length query also discards non-overlapping
-buckets before decoding the retained row clocks. `rows_considered` remains the
-reached candidate count, while `rowpack_timestamps` records the reduced refinement
-work. Coarse clocks do not enable early sequence-limit selection. Both APIs
-still scan the reached adjacency; this filtering reduces decoding, not edge scanning.
+Both temporal APIs seek compatible exact or coarse clocks on the final hop
+before unpacking candidate edges. `edges_visited` counts unpacked candidates,
+excluding logarithmic key-only search probes. The length query's `rows_considered`
+counts candidates after seeking and distinct handling; `rowpack_timestamps`
+counts exact row-clock refinement. Coarse clocks do not enable early
+sequence-limit selection. Unbounded or incompatible clocks retain full traversal.
 
 Both APIs use `diskgraph_core::time_filter::IndexedTimeFilter` for compatible
 clock admission. Rejection proves that the bucket cannot intersect `(lower, upper]`;
@@ -201,10 +203,14 @@ Query bounds use seconds: index-wide millisecond/microsecond/nanosecond/hour/day
 clocks and full-width keys also use row decoding. A bucket step of one alone
 does not establish compatible units.
 
-The admission predicate is not a binary-search predicate: retained clipped codes
-at both extremes can make candidates noncontiguous. A shared range-seeking
-implementation must handle those regions separately or fall back to scanning.
-Range seeking and projection consolidation are separate from this component.
+The shared `diskgraph_core::indexed_range::descending_range_by` primitive locates
+`(lower, upper]` in descending keys without materializing adjacency. GNN recent
+sampling, PQL training-table traversal (including cached autoregression windows),
+and RDL temporal queries all use it with their existing clock/endpoint policies.
+RDL's `IndexedTimeFilter::candidate_ranges` widens coarse bounds conservatively
+and retains ceiling and floor/NULL regions separately from the sought interior.
+The ranges are ordered and disjoint, preserving duplicates and ties for exact
+refinement. Projection/RowPack-to-Arrow consolidation remains separate work.
 See the [benchmark protocol and limitations](../scripts/benchmarks/temporal_fm_windows.md),
 including the measured overhead when coarse filtering cannot eliminate rows.
 
@@ -309,9 +315,8 @@ accumulation and result; mean and moments continue to use float64.
 Model-format integer sums retain their declared Arrow type when all results
 are null.
 
-The full row kernel still scans the reached adjacency; a sequence limit does
-not stop traversal, and aggregates still consider the entire selected frame.
-Neither API binary-prunes a time window within adjacency storage, applies
+A sequence limit does not stop traversal of the sought candidate ranges, and
+aggregates still consider the entire selected frame. Neither API applies
 arbitrary row predicates, follows field-level joins, or executes across a
 distributed mesh.
 Those limitations are explicit so callers do not mistake this boundary for the

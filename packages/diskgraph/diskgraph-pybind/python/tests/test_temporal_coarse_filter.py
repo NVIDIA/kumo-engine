@@ -155,11 +155,41 @@ def test_coarse_filter_reduces_decode_work(coarse_graph):
     reference["frames"][0]["time_column"] = "reference_time"
     actual, expected = run(engine, roots, [anchor], plan), run(engine, roots, [anchor], reference)
     assert_same(actual, expected)
-    assert actual["stats"]["edges_visited"] == expected["stats"]["edges_visited"]
+    assert actual["stats"]["edges_visited"] < expected["stats"]["edges_visited"]
     assert actual["stats"]["rows_decoded"] < expected["stats"]["rows_decoded"] / 2
     lengths = [engine.query_temporal_lengths({"users": roots}, {"users": [anchor]}, json.dumps(p))
                for p in (plan, reference)]
     assert lengths[0]["stats"]["rowpack_timestamps"] < lengths[1]["stats"]["rowpack_timestamps"] / 2
+    assert lengths[0]["stats"]["edges_visited"] < lengths[1]["stats"]["edges_visited"]
+
+
+@pytest.mark.parametrize("degree", [256, 131072])
+def test_indexed_seek_skips_newer_adjacency_without_history_cap(tmp_path, degree):
+    anchor = 1_700_000_003
+    engine, reverse, _, _, _ = build_graph(
+        tmp_path, unit="minute", bits=32, anchor=anchor,
+        times_override=list(range(anchor + 1, anchor + degree + 1)))
+    roots = engine.lookup_node_ids("users", pa.array([1, 2]))
+    cutoff = anchor + degree // 100
+    plan = make_plan(reverse, lower=None, upper=0, limit=None)
+    plan["aggregates"] = [{"name": "all_amount", "frame": "f",
+                           "operation": "sum", "column": "amount"}]
+    reference = copy.deepcopy(plan)
+    reference["frames"][0]["time_column"] = "reference_time"
+    actual = run(engine, roots, [cutoff, cutoff], plan)
+    expected = run(engine, roots, [cutoff, cutoff], reference)
+    assert_same(actual, expected)
+    assert actual["sequences"][0]["batch"].column("id").to_pylist() == list(
+        reversed(range(degree // 100)))
+    # Include the partial minute bucket; no capped-history early stop is used.
+    assert actual["stats"]["edges_visited"] <= degree // 100 + 60
+    assert expected["stats"]["edges_visited"] == degree
+    lengths = [engine.query_temporal_lengths({"users": roots}, {"users": [cutoff, cutoff]},
+                                            json.dumps(p)) for p in (plan, reference)]
+    for result in lengths:
+        assert result["sequences"][0]["lengths"].to_pylist() == [degree // 100, 0]
+    assert lengths[0]["stats"]["edges_visited"] <= degree // 100 + 60
+    assert lengths[1]["stats"]["edges_visited"] == degree
 
 
 def test_coarse_null_clock_still_raises(tmp_path):

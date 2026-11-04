@@ -9,10 +9,10 @@
 //! must preserve exact row-clock checks, ordering, duplicates, and null behavior.
 //! It cannot justify truncating a sequence or an aggregate's input.
 //!
-//! This is NOT a binary-search predicate. Clipped/sentinel codes at both ends
-//! remain candidates, so admission need not form one contiguous range. A future
-//! range seeker must handle those regions explicitly or use its scan fallback.
+//! Admission is not itself a binary-search predicate. `candidate_ranges` seeks
+//! the interior and retains both sentinel regions separately, in index order.
 
+use crate::indexed_range::descending_range_by;
 use crate::metadata::{EdgeSortKeyMetadata, EdgeSortKeyTimestampKind};
 use crate::sortkey::SortKeyDecoder;
 use crate::time::TimeUnit;
@@ -36,6 +36,35 @@ pub struct IndexedTimeFilter {
 }
 
 impl IndexedTimeFilter {
+    /// Seek candidate positions in a descending sort-key index. The three
+    /// disjoint ranges retain the ceiling, matching interior, and floor/NULL
+    /// regions respectively. Sentinels always require exact row refinement.
+    /// Probe reads are O(log N); returned ranges preserve order and multiplicity.
+    pub fn candidate_ranges(
+        &self,
+        len: usize,
+        lower: Option<i64>,
+        upper: Option<i64>,
+        mut key_at: impl FnMut(usize) -> u64,
+    ) -> [std::ops::Range<usize>; 3] {
+        if lower.is_none() && upper.is_none() {
+            return [0..len, 0..0, 0..0];
+        }
+        // i128 leaves a distinct value below all decoded clocks for floor/NULL
+        // and avoids overflow when widening the inclusive upper bucket bound.
+        let mut end_at = |i| self.decoder.decode(key_at(i)).0.map_or(i128::MIN, i128::from);
+        let ceiling = i128::from(self.decoder.decode(u64::MAX).0.unwrap());
+        let prefix = descending_range_by(len, Some(ceiling - 1), None, &mut end_at).end;
+        let suffix = descending_range_by(len, None, Some(i128::MIN), &mut end_at).start;
+        let interior = descending_range_by(
+            suffix - prefix,
+            lower.map(i128::from),
+            upper.map(|value| i128::from(value) + i128::from(self.step) - 1),
+            |i| end_at(prefix + i),
+        );
+        [0..prefix, prefix + interior.start..prefix + interior.end, suffix..len]
+    }
+
     /// None requires the caller's exact row-clock fallback. Missing, differently
     /// scaled, or mismatched clocks, invalid steps, and unsafe decoding arithmetic cannot
     /// be used to reject candidates. This also validates one-second encodings.
@@ -103,6 +132,48 @@ impl IndexedTimeFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sought_ranges_equal_admission_with_sentinels_weights_and_extreme_bounds() {
+        use crate::metadata::{EdgeSortKeyWeightEncoding, EdgeSortKeyWeightKind,
+            EdgeSortKeyWeightMetadata};
+        for step in [1, 60, 3600, 86400] {
+            for anchor in [-1_700_000_003, 0, 1_700_000_003] {
+                for weighted in [false, true] {
+                    let mut meta = coarse_metadata(step, anchor);
+                    if weighted {
+                        meta.width_bits = 16;
+                        meta.weight = Some(EdgeSortKeyWeightMetadata {
+                            table: "events".into(), expr: "amount".into(),
+                            encoding: EdgeSortKeyWeightEncoding { dtype: EdgeSortKeyWeightKind::Byte },
+                        });
+                    }
+                    let clock = IndexedTimeFilter::matching(Some(&meta), "events", "time",
+                        TimeUnit::Seconds).unwrap();
+                    let keys: Vec<_> = (0..256u64).rev().flat_map(|code| {
+                        [255, 127, 0].map(|weight| if weighted { (code << 8) | weight } else { code })
+                    }).collect();
+                    let bounds = [None, Some(i64::MIN), Some(anchor - 130 * step),
+                        Some(anchor - step), Some(anchor), Some(anchor + 1),
+                        Some(anchor + step), Some(anchor + 130 * step), Some(i64::MAX)];
+                    for lower in bounds {
+                        for upper in bounds {
+                            let ranges = clock.candidate_ranges(keys.len(), lower, upper, |i| keys[i]);
+                            let positions: Vec<_> = ranges.into_iter().flatten().collect();
+                            let expected: Vec<_> = (0..keys.len())
+                                .filter(|&i| clock.may_overlap(keys[i], lower, upper)).collect();
+                            assert_eq!(positions, expected, "step={step} anchor={anchor} {lower:?} {upper:?}");
+                        }
+                    }
+                    for keys in [vec![], vec![0, 0], vec![*keys.first().unwrap(); 3]] {
+                        let positions: Vec<_> = clock.candidate_ranges(keys.len(), Some(0), Some(1),
+                            |i| keys[i]).into_iter().flatten().collect();
+                        assert_eq!(positions, (0..keys.len()).collect::<Vec<_>>());
+                    }
+                }
+            }
+        }
+    }
 
     fn coarse_metadata(step: i64, anchor: i64) -> EdgeSortKeyMetadata {
         use crate::metadata::{EdgeSortKeyTimestampEncoding, EdgeSortKeyTimestampMetadata};

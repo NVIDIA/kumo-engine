@@ -571,39 +571,35 @@ fn relation_columns(
         .iter()
         .find(|segment| segment.layout.relation_id as usize == relation_id)
         .ok_or_else(|| format!("relation {relation_name:?} has no physical segment"))?;
-    let mut unpacker = EdgeUnpacker::new(segment.data, &segment.layout);
-    let mut destinations = Vec::with_capacity(segment.count as usize);
+    let keys = EdgeUnpacker::new(segment.data, &segment.layout);
+    let ranges = window.map_or([0..keys.len(), 0..0, 0..0], |(clock, lower, upper)| {
+        clock.candidate_ranges(keys.len(), lower, upper, |i| keys.key_at(i))
+    });
+    let capacity = ranges.iter().map(|range| range.len()).sum();
+    let mut destinations = Vec::with_capacity(capacity);
     let mut sort_keys = if include_sort_keys {
-        Vec::with_capacity(segment.count as usize)
+        Vec::with_capacity(capacity)
     } else {
         Vec::new()
     };
     let mut destination_buffer = [0u64; 256];
     let mut sort_key_buffer = [0u64; 256];
-    loop {
-        let count = unpacker.unpack_batch(&mut destination_buffer, &mut sort_key_buffer);
-        if count == 0 {
-            break;
-        }
-        if let Some((clock, lower, upper)) = window {
-            for (&destination, &key) in destination_buffer[..count]
-                .iter()
-                .zip(&sort_key_buffer[..count])
-            {
-                if clock.may_overlap(key, lower, upper) {
-                    destinations.push(destination);
-                    if include_sort_keys {
-                        sort_keys.push(key);
-                    }
-                }
+    for range in ranges {
+        let entry_bytes = segment.layout.entry_bytes;
+        let data = &segment.data[range.start * entry_bytes..range.end * entry_bytes];
+        let mut unpacker = EdgeUnpacker::new(data, &segment.layout);
+        loop {
+            let count = unpacker.unpack_batch(&mut destination_buffer, &mut sort_key_buffer);
+            if count == 0 {
+                break;
             }
-        } else {
             destinations.extend_from_slice(&destination_buffer[..count]);
             if include_sort_keys {
                 sort_keys.extend_from_slice(&sort_key_buffer[..count]);
             }
+            // Count decoded candidates, excluding logarithmic key-only probes.
+            *edges_visited = edges_visited.saturating_add(count as u64);
         }
-        *edges_visited = edges_visited.saturating_add(count as u64);
     }
     Ok((destinations, sort_keys))
 }
@@ -1425,11 +1421,21 @@ fn count_frame(
         .last()
         .and_then(|(relation, _)| relation.dest_sort_key.clone());
 
+    let has_bounds = plan.start_seconds.is_some() || plan.stop_seconds.is_some();
+    let indexed_clock = plan.time_column.as_deref().filter(|_| has_bounds).and_then(|column| {
+        IndexedTimeFilter::matching(final_sort_key.as_ref(), &destination, column,
+            reader.metadata().timestamp_unit)
+    });
     let traversal_started = Instant::now();
     let mut rows_by_anchor = Vec::with_capacity(roots.len());
-    for &root in roots {
+    for (anchor, &root) in roots.iter().enumerate() {
         let mut frontier = vec![(root, 0)];
-        for (step, (_, table)) in plan.path.iter().zip(&hops) {
+        for (hop, (step, (_, table))) in plan.path.iter().zip(&hops).enumerate() {
+            let window = indexed_clock.as_ref().filter(|_| hop + 1 == plan.path.len()).map(|clock| {
+                (clock,
+                 plan.start_seconds.map(|offset| cutoffs[anchor].saturating_add(offset)),
+                 plan.stop_seconds.map(|offset| cutoffs[anchor].saturating_add(offset)))
+            });
             let mut next = Vec::new();
             for (node_id, _) in frontier {
                 let (destinations, sort_keys) = relation_columns(
@@ -1437,7 +1443,7 @@ fn count_frame(
                     &step.relation,
                     node_id,
                     true,
-                    None,
+                    window,
                     &mut stats.edges_visited,
                 )?;
                 next.extend(destinations.into_iter().zip(sort_keys));
@@ -1456,30 +1462,6 @@ fn count_frame(
         .saturating_add(elapsed_ns(traversal_started));
 
     let filter_started = Instant::now();
-    let has_bounds = plan.start_seconds.is_some() || plan.stop_seconds.is_some();
-    if has_bounds {
-        if let Some(clock) = plan.time_column.as_deref().and_then(|column| {
-            IndexedTimeFilter::matching(
-                final_sort_key.as_ref(),
-                &destination,
-                column,
-                reader.metadata().timestamp_unit,
-            )
-            .filter(|clock| !clock.is_exact())
-        }) {
-            // Preserve rows_considered as the reached distinct candidate count;
-            // rowpack_timestamps measures the smaller exact-refinement work.
-            for (anchor, rows) in rows_by_anchor.iter_mut().enumerate() {
-                let lower = plan
-                    .start_seconds
-                    .map(|offset| cutoffs[anchor].saturating_add(offset));
-                let upper = plan
-                    .stop_seconds
-                    .map(|offset| cutoffs[anchor].saturating_add(offset));
-                rows.retain(|&(_, key)| clock.may_overlap(key, lower, upper));
-            }
-        }
-    }
     let mut lengths = rows_by_anchor.iter().map(Vec::len).collect::<Vec<_>>();
     if has_bounds {
         let time_column = plan

@@ -2587,13 +2587,10 @@ fn execute_target_sequence<U: UnitSystem>(
     let col_idx = agg.target_col_idx.unwrap_or(0);
 
     for (abs_lo, abs_hi) in windows {
-        let start = edges.partition_point(|e| e.sort_key > abs_hi);
-        let end = abs_lo
-            .map(|abs_lo| {
-                start + edges[start..].partition_point(|e| e.sort_key > abs_lo)
-            })
-            .unwrap_or(edges.len());
-        let slice = &edges[start..end];
+        let range = diskgraph_core::indexed_range::descending_range_by(
+            edges.len(), abs_lo, Some(abs_hi), |i| edges[i].sort_key,
+        );
+        let slice = &edges[range];
 
         if slice.is_empty() {
             results.push(match agg.func {

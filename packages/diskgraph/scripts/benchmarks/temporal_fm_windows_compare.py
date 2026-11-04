@@ -27,6 +27,8 @@ parser.add_argument("--cutoff-offset-seconds", type=int, default=0)
 parser.add_argument("--case", action="append", dest="case_names")
 parser.add_argument("--baseline-revision", default="unspecified")
 parser.add_argument("--candidate-revision", default="unspecified")
+parser.add_argument("--worker", type=Path, default=Path(__file__).with_name("temporal_fm_windows.py"),
+                    help="Worker implementing the same JSON request/response protocol")
 args = parser.parse_args()
 if args.cycles < 1 or args.repeats < 1:
     parser.error("cycles and repeats must be positive")
@@ -40,7 +42,7 @@ for variant, package in packages.items():
     native_hashes[variant] = hashlib.sha256(extensions[0].read_bytes()).hexdigest()
 if len(set(native_hashes.values())) != 2:
     raise ValueError("Baseline and candidate native libraries are identical; check build isolation")
-worker_script = Path(__file__).with_name("temporal_fm_windows.py").resolve()
+worker_script = args.worker.resolve()
 output = args.output.resolve()
 output.mkdir(parents=True, exist_ok=False)
 raw_output = output / "raw"

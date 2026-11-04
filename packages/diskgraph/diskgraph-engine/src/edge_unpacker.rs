@@ -82,31 +82,26 @@ impl<'a> EdgeUnpacker<'a> {
         n
     }
 
-    /// Number of leading entries whose sort key satisfies `pred`, which must be
-    /// true on a prefix and false after it. Entry 0 is checked first, so an empty
-    /// prefix only touches the front of the segment.
-    pub fn partition_point(&self, mut pred: impl FnMut(u64) -> bool) -> usize {
-        if self.entry_bytes == 0 {
-            return 0;
-        }
-        let len = (self.end as usize - self.ptr as usize) / self.entry_bytes;
-        if len == 0 || !pred(self.key_at(0)) {
-            return 0;
-        }
-        let (mut lo, mut hi) = (1, len);
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            if pred(self.key_at(mid)) {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
-        }
-        lo
+    /// Number of complete entries remaining in this view.
+    #[inline]
+    pub fn len(&self) -> usize {
+        if self.entry_bytes == 0 { return 0; }
+        (self.end as usize - self.ptr as usize) / self.entry_bytes
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Compatibility entry point for monotone true-prefix predicates.
+    pub fn partition_point(&self, mut pred: impl FnMut(u64) -> bool) -> usize {
+        diskgraph_core::indexed_range::partition_point_by(self.len(), |i| pred(self.key_at(i)))
+    }
+
+    /// Read a sort key by index without advancing the unpacker.
     #[inline]
-    fn key_at(&self, index: usize) -> u64 {
+    pub fn key_at(&self, index: usize) -> u64 {
+        assert!(index < self.len(), "edge key index out of bounds");
         unsafe {
             let ptr = self.ptr.add(index * self.entry_bytes);
             if self.entry_bytes <= 8 {
@@ -263,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn test_partition_point_matches_linear_count() {
+    fn test_indexed_range_matches_linear_count() {
         let layout = RelationLayout {
             relation_id: 0,
             dst_bits: 8,
@@ -276,8 +271,10 @@ mod tests {
             let data: Vec<u8> = (0..len).flat_map(|i| [0, (len - i) as u8]).collect();
             for cut in 0..=len + 1 {
                 let unpacker = EdgeUnpacker::new(&data, &layout);
-                let expected = (1..=len).filter(|&key| key >= cut).count();
-                assert_eq!(unpacker.partition_point(|key| key >= cut), expected);
+                let expected = (1..=len).filter(|&key| key > cut).count();
+                let range = diskgraph_core::indexed_range::descending_range_by(
+                    unpacker.len(), Some(cut), None, |i| unpacker.key_at(i));
+                assert_eq!(range, 0..expected);
             }
         }
     }
