@@ -235,13 +235,18 @@ def warn_if_stale() -> None:
     if stale:
         listed = '; '.join(f'{d} ({b}): kumo.engine.{update_call(d)}'
                            for d, b in stale.items())
+        user_dirs = {
+            str(Path(scopes['user']).expanduser().resolve() / SKILL)
+            for _, scopes in AGENTS.values() if 'user' in scopes
+        }
+        shared = (' A user-scope install is shared by every Python '
+                  'environment, so environments with different kumo-engine '
+                  "builds replace each other's; give each project its own "
+                  "with scope='project'." if user_dirs & stale.keys() else '')
         warnings.warn(
             f'The {SKILL} agent skill is not the one this kumo-engine '
-            f'({bundled_build()}) ships. To update it, run: {listed}. A '
-            'user-scope install is shared by every Python environment, so '
-            'environments with different kumo-engine builds replace each '
-            "other's; give each project its own with scope='project'.",
-            stacklevel=2)
+            f'({bundled_build()}) ships. To update it, run: {listed}.'
+            f'{shared}', stacklevel=2)
 
 
 def _copy(pkg: Path, skills_dir: Path) -> Path:

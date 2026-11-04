@@ -942,17 +942,21 @@ def test_the_stale_warning_names_the_call_that_updates_each_install(
     [target] = skills.install_skills('claude', scope='project')
     build(Path(target), 'older')
     call = "install_skills('claude', scope='project')"
-    with pytest.warns(UserWarning, match=re.escape(call)):
+    with pytest.warns(UserWarning, match=re.escape(call)) as caught:
         skills.warn_if_stale()
-    # A user-scope install is shared by every environment; the advice says so.
-    with pytest.warns(UserWarning, match="shared by every Python environment.*scope='project'"):
-        skills.warn_if_stale()
+    # A project install is not shared, so the advice to make one is left out.
+    assert 'shared by every Python environment' not in str(caught[0].message)
     with pytest.raises(SystemExit):
         skills.main(['--check'])
     assert call in capsys.readouterr().out
     # Following the advice clears it.
     skills.install_skills('claude', scope='project')
     assert skills.stale_skills() == {}
+    # A user-scope install is shared by every environment; the advice says so.
+    [target] = skills.install_skills('claude')
+    build(Path(target), 'older')
+    with pytest.warns(UserWarning, match="shared by every Python environment.*scope='project'"):
+        skills.warn_if_stale()
 
 
 def test_detection_skips_the_coco_copy_claude_code_would_shadow(
