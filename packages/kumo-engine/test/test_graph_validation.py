@@ -926,9 +926,11 @@ def test_training_viewer_reuses_shell_and_keeps_samples_out_of_static_summary():
     assert '<script' not in summary
     assert 'private-' not in summary
     assert '1e-12' in summary and 'Unavailable' in summary
+    assert summary.index('trusted notebook') < summary.index('<details>')
     spec = viewer_spec(payload)
     assert spec['data'] is payload
     assert 'var(--kumo-' in spec['style']
+    assert not re.search(r'#[0-9a-f]{3,8}\b', spec['style'], re.IGNORECASE)
     assert 'onDispose(' in spec['script'] and '{signal}' in spec['script']
     html = render_widget(**spec)
     root = ElementTree.fromstring(html)

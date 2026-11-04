@@ -17,6 +17,8 @@ def static_summary(payload: dict) -> str:
     metrics = payload.get('metrics', {}).get('rows', [])
     parts = [
         '<div class="kumo-training-static"><h2>Training results</h2>',
+        '<p>Static summary. Run this cell in a trusted notebook for the '
+        'interactive view.</p>',
         '<p>Recorded TEST diagnostics. Selected trial: ' +
         escape(str(provenance.get('selected_trial') or 'Unavailable')) +
         '. Explanation fit: ' +
@@ -45,18 +47,22 @@ def static_summary(payload: dict) -> str:
         parts.append(f'<p>Showing 100 of {len(metrics)} loaded metrics. '
                      'Rerun this cell in a trusted notebook to inspect all '
                      'loaded metrics.</p>')
-    parts.append('<ul>')
+    notices = []
     if provenance.get('generation_status') in ('disabled', 'failed'):
-        parts.append('<li>Explanation generation: ' +
-                     escape(str(provenance['generation_status'])) + '</li>')
+        notices.append('Explanation generation: ' +
+                       escape(str(provenance['generation_status'])))
     if (provenance.get('generation_failure')
             and provenance.get('generation_status') != 'failed'):
-        parts.append('<li>' + escape(str(provenance['generation_failure'])) +
-                     '</li>')
+        notices.append(escape(str(provenance['generation_failure'])))
     if provenance.get('selection_verified') is False:
-        parts.append('<li>Selection unverified: ' + escape(str(
-            provenance.get('selection_reason') or
-            'Selection metadata is missing or invalid')) + '</li>')
+        reason = (provenance.get('selection_reason')
+                  or 'Selection metadata is missing or invalid')
+        notices.append('Selection unverified: ' + escape(str(reason)))
+    if notices:
+        items = ''.join(f'<li>{item}</li>' for item in notices)
+        parts.append(f'<ul>{items}</ul>')
+    parts.append(f'<details><summary>Recorded metrics ({len(metrics)})'
+                 '</summary><ul>')
     for row in metrics[:100]:
         value = row.get('value')
         number = (str(value) if isinstance(value, (int, float))
@@ -66,7 +72,7 @@ def static_summary(payload: dict) -> str:
                            for key in ('fit', 'split', 'name'))
         label += ' / ' + str(row.get('origin') or 'Unknown metric origin')
         parts.append('<li>' + escape(label) + ': ' + escape(number) + '</li>')
-    parts.append('</ul><h2>Recorded patterns</h2><ul>')
+    parts.append('</ul></details><h2>Recorded patterns</h2><ul>')
     for key in ('gradient', 'cohorts', 'samples', 'history', 'trials'):
         section = payload.get(key, {})
         label = key + ': ' + str(section.get('status', 'unavailable'))
@@ -84,1072 +90,1452 @@ def static_summary(payload: dict) -> str:
 
 
 _STYLE = Template(r"""
-.kumo-training{container:kumo-training/inline-size;padding:16px;line-height:1.45;
-overflow-wrap:anywhere;text-align:left}
+.kumo-training{container:kumo-training/inline-size;padding:20px 24px 24px;
+border:1px solid $surface_border;border-radius:12px;line-height:1.45;text-align:left}
 .kumo-training *{box-sizing:border-box;min-width:0}
-.kumo-training .kt-content{max-width:1040px;width:100%;margin:0 auto}
-.kumo-training{border:1px solid $surface_border;border-radius:12px;padding:24px}
-.kumo-training .kt-header{padding-bottom:16px}
-.kumo-training .kt-header h2{font-size:24px;color:$foreground;margin-bottom:8px}
-.kumo-training .kt-header>p{font-size:15px;margin-bottom:8px}
-.kumo-training .kt-navigation{display:flex;align-items:center;flex-wrap:wrap;gap:8px;
-padding:12px 0;margin-bottom:24px;border-block:1px solid $surface_border}
-.kumo-training .kt-navigation>.kt-controls{margin:0 0 0 auto}
-.kumo-training .kt-navigation>.kt-action{font-weight:600;padding:8px 14px}
-.kumo-training .kt-navigation>.kt-action[aria-pressed="true"]{color:$accent;
-box-shadow:inset 0 -2px $accent}
-.kumo-training .kt-content>section{margin:0;padding:0;border:0}
-.kumo-training .kt-header details .kt-note{margin:8px 0}
-.kumo-training .kt-provenance{display:flex;flex-wrap:wrap;gap:8px 24px}
-.kumo-training .kt-provenance>.kt-note{flex:1 1 200px;margin:4px 0}
-@container kumo-training (max-width:520px){
-.kumo-training .kt-navigation>.kt-controls{margin:0;width:100%}}
+.kumo-training .kt-content{width:100%;max-width:1120px;margin:0 auto;overflow-wrap:anywhere}
+.kumo-training :is(.kt-h2,.kt-h3,.kt-h4,.kt-p,.kt-table,.kt-dl){margin:0;padding:0;
+font-style:normal;letter-spacing:normal;text-align:left;text-transform:none}
+.kumo-training .kt-h2{font:700 20px/1.25 $font;color:$foreground}
+.kumo-training .kt-h3{font:600 15px/1.35 $font;color:$foreground}
+.kumo-training .kt-h4{font:600 13px/1.35 $font;color:$foreground}
+.kumo-training .kt-p{font-size:13px;line-height:1.5}
+.kumo-training .kt-muted{color:$muted}
+.kumo-training .kt-small{font-size:12px}
+.kumo-training .kt-num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.kumo-training .kt-sr{position:absolute;width:1px;height:1px;overflow:hidden;
+clip-path:inset(50%);white-space:nowrap}
+.kumo-training .kt-missing{color:$muted}
+.kumo-training .kt-stack{display:grid;gap:16px;align-content:start}
+.kumo-training .kt-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px}
+.kumo-training .kt-spread{display:flex;flex-wrap:wrap;align-items:baseline;
+justify-content:space-between;gap:4px 16px}
 
-.kumo-training h2{font:700 20px/1.3 $font;color:$heading;margin:0 0 12px}
-.kumo-training h3{font:600 16px/1.4 $font;color:$foreground;margin:20px 0 8px}
-.kumo-training h4{font:600 14px/1.4 $font;margin:12px 0 6px}
-.kumo-training :is(h2,h3,h4){scroll-margin-top:8px}
-.kumo-training p{margin:6px 0 12px}
-.kumo-training section+section{margin-top:30px;padding-top:24px;
+.kumo-training .kt-head{display:flex;flex-wrap:wrap;align-items:flex-start;
+justify-content:space-between;gap:12px 24px;margin:0 0 12px}
+.kumo-training .kt-head-main{flex:1 1 420px;display:grid;gap:4px}
+.kumo-training .kt-tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;padding-top:2px}
+.kumo-training .kt-query{margin:6px 0 0;padding:6px 10px;border:1px solid $surface_border;
+border-radius:6px;background:$surface;color:$foreground;
+font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.kumo-training .kt-query-text{display:block}
+.kumo-training .kt-query-text.kt-clamped{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.kumo-training .kt-notice{display:flex;flex-wrap:wrap;gap:2px 8px;align-items:baseline;margin:0 0 12px;padding:8px 12px;
+border:1px solid $surface_border;border-left:3px solid $foreground;border-radius:6px;
+background:$surface;font-size:13px}
+.kumo-training .kt-notice>strong{flex:none}
+
+.kumo-training :is(button,select,input){font:inherit;color:inherit;margin:0}
+.kumo-training .kt-field{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:$muted}
+.kumo-training .kt-select{height:30px;max-width:100%;padding:0 6px;font-size:13px;color:$foreground;
+background:$background;border:1px solid $card_border;border-radius:6px}
+.kumo-training .kt-check{display:inline-flex;align-items:center;gap:6px;font-size:13px;
+color:$foreground;cursor:pointer}
+.kumo-training .kt-check input{width:15px;height:15px;accent-color:$accent;cursor:pointer}
+.kumo-training .kt-btn{display:inline-flex;align-items:center;gap:6px;min-height:30px;max-width:100%;padding:4px 10px;
+font-size:13px;line-height:1.3;color:$foreground;background:$background;border:1px solid $card_border;
+border-radius:6px;cursor:pointer;text-align:left}
+.kumo-training .kt-btn:hover:not(:disabled){background:$chrome_hover}
+.kumo-training .kt-btn:disabled{opacity:.45;cursor:default}
+.kumo-training .kt-link{padding:2px 0;font-size:13px;font-weight:600;color:$accent;background:none;
+border:0;cursor:pointer;text-align:left}
+.kumo-training .kt-link:hover{text-decoration:underline}
+.kumo-training :is(button,select,input,summary,[tabindex]):focus-visible{
+outline:2px solid $focus;outline-offset:2px}
+
+.kumo-training .kt-tabs{display:flex;gap:2px;margin:0 0 20px;border-bottom:1px solid $surface_border;
+overflow-x:auto;scrollbar-width:none}
+.kumo-training .kt-tab{flex:none;margin:0 0 -1px;padding:10px 14px;font-size:14px;font-weight:600;
+color:$muted;background:none;border:0;border-bottom:2px solid transparent;
+border-radius:6px 6px 0 0;cursor:pointer}
+.kumo-training .kt-tab:hover{color:$foreground;background:$chrome_hover}
+.kumo-training .kt-tab[aria-selected="true"]{color:$accent;border-bottom-color:$accent}
+.kumo-training .kt-tab:focus-visible{outline-offset:-2px}
+
+.kumo-training .kt-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.kumo-training .kt-card{display:flex;flex-direction:column;gap:12px;padding:16px;
+border:1px solid $surface_border;border-radius:10px}
+.kumo-training .kt-card>.kt-link{align-self:flex-start}
+.kumo-training .kt-metric{display:grid;gap:4px}
+.kumo-training .kt-metric-name{font-size:13px;font-weight:600;color:$muted}
+.kumo-training .kt-metric-value{font:600 34px/1.15 $font;font-variant-numeric:tabular-nums;color:$foreground}
+.kumo-training .kt-facts{display:grid;gap:8px;margin:0;padding:0;list-style:none}
+.kumo-training .kt-facts>li{display:grid;gap:2px;margin:0;padding:0}
+.kumo-training .kt-fact-value{font-size:20px;font-weight:600;font-variant-numeric:tabular-nums}
+
+.kumo-training .kt-bar{position:relative;display:block;height:8px;border-radius:4px;
+background:$surface;overflow:hidden}
+.kumo-training .kt-bar>span{position:absolute;inset:0 auto 0 0;border-radius:4px;background:$accent}
+.kumo-training .kt-bar.kt-thin{height:4px;border-radius:2px}
+
+.kumo-training .kt-split{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);
+gap:24px;align-items:start}
+.kumo-training .kt-detail{position:sticky;top:8px;display:grid;gap:20px;padding:16px 18px;
+border:1px solid $surface_border;border-radius:10px}
+.kumo-training .kt-section{display:grid;gap:10px}
+.kumo-training .kt-section-head{display:flex;flex-wrap:wrap;align-items:center;
+justify-content:space-between;gap:8px 16px}
+
+.kumo-training .kt-list{display:grid;gap:2px;margin:0;padding:0}
+.kumo-training .kt-group-label{padding:12px 10px 4px;font-size:12px;font-weight:600;color:$muted}
+.kumo-training .kt-option{display:grid;align-items:center;gap:4px 12px;padding:8px 10px;
+border-radius:6px;color:$foreground;cursor:pointer;text-align:left}
+.kumo-training .kt-option:hover{background:$chrome_hover}
+.kumo-training .kt-option[aria-selected="true"]{background:$row_highlight;box-shadow:inset 3px 0 $accent}
+.kumo-training .kt-option:focus-visible{outline-offset:-2px}
+.kumo-training .kt-feature{grid-template-columns:minmax(0,1fr) minmax(56px,34%) 48px}
+.kumo-training .kt-feature .kt-num{text-align:right}
+.kumo-training .kt-label{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kumo-training .kt-label>.kt-muted{font-weight:400}
+.kumo-training .kt-example{grid-template-columns:minmax(0,1fr) auto}
+.kumo-training .kt-example>.kt-outcome{text-align:right}
+.kumo-training .kt-list-head{display:grid;gap:4px;margin-bottom:8px}
+.kumo-training .kt-col-head{display:grid;gap:12px;padding:0 10px 4px;font-size:12px;color:$muted}
+.kumo-training .kt-col-head>:last-child{text-align:right}
+.kumo-training .kt-hit{color:$accent;font-weight:600}
+
+.kumo-training .kt-table{width:auto;max-width:100%;border-collapse:collapse;font-size:13px;table-layout:auto;
+color:$foreground;background:none;border:0}
+.kumo-training .kt-table :is(th,td){padding:6px 16px 6px 10px;border:0;border-bottom:1px solid $surface_border;
+text-align:left;vertical-align:baseline;line-height:1.4;white-space:normal}
+.kumo-training .kt-table th{font-size:12px;font-weight:600;color:$muted}
+.kumo-training .kt-table :is(th,td):first-child{padding-left:0}
+.kumo-training .kt-table :is(th,td):last-child{padding-right:0}
+.kumo-training .kt-table :is(th,td).kt-num{text-align:right}
+.kumo-training .kt-table tbody tr:nth-child(n){background:transparent}
+.kumo-training .kt-table tr.kt-strong td{font-weight:600}
+.kumo-training .kt-table tr[aria-selected="true"] td{background:$row_highlight}
+.kumo-training .kt-table .kt-bar{width:72px;display:inline-block;vertical-align:middle;margin-right:8px}
+.kumo-training .kt-scroll{overflow-x:auto}
+.kumo-training .kt-mark{margin-left:2px;color:$muted}
+
+.kumo-training details{margin:0}
+.kumo-training details>summary{width:fit-content;padding:2px 0;font-size:13px;font-weight:600;
+color:$foreground;cursor:pointer}
+.kumo-training details[open]>summary{margin-bottom:8px}
+.kumo-training .kt-dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:6px 16px;font-size:13px}
+
+.kumo-training .kt-axis{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:$muted;
+font-variant-numeric:tabular-nums}
+.kumo-training .kt-track{position:relative;height:24px}
+.kumo-training .kt-track:before{content:"";position:absolute;left:0;right:0;top:50%;
 border-top:1px solid $surface_border}
-.kumo-training .kt-note{color:$muted;font-size:13px;white-space:pre-wrap}
-.kumo-training .kt-table{border-collapse:collapse;width:100%;margin:8px 0 16px;
-font:14px/1.45 $font;color:$foreground;table-layout:fixed}
-.kumo-training table.kt-table tbody tr{background:transparent}
-.kumo-training .kt-table th,.kumo-training .kt-table td{
-padding:8px;text-align:left;vertical-align:top;border-bottom:1px solid $surface_border;
-white-space:pre-wrap;overflow-wrap:anywhere}
-.kumo-training .kt-table th{font-weight:600;color:$muted;font-size:12px}
-.kumo-training .kt-table th:first-child,.kumo-training .kt-table td:first-child{padding-left:0}
-.kumo-training .kt-table .kt-number{text-align:right;font-variant-numeric:tabular-nums}
-.kumo-training .kt-trials{max-width:680px;margin-top:24px}
-.kumo-training .kt-trials .kt-table{table-layout:auto}
-.kumo-training .kt-trial-list{list-style:none;padding:2px;margin:8px 0 16px;position:relative;overflow:auto;overflow-anchor:none}
-.kumo-training .kt-trial-list.kt-many{max-height:600px}
-.kumo-training .kt-trial-choice{display:grid;grid-template-columns:minmax(0,150px) minmax(0,1fr) 100px;gap:12px;align-items:center;width:100%;margin:3px 0;padding:10px}
-.kumo-training .kt-trial-choice .kt-note{display:block;margin:2px 0 0;font-size:12px}
-.kumo-training .kt-trial-plot{height:20px;position:relative;margin:0 7px}
-.kumo-training .kt-trial-plot:before{content:"";position:absolute;inset:10px 0 auto;border-top:1px solid $surface_border}
-.kumo-training .kt-trial-plot.kt-unverified:before{display:none}
-.kumo-training .kt-trial-dot{position:absolute;top:4px;width:12px;height:12px;border:2px solid $foreground;border-radius:50%;background:$background;transform:translateX(-50%)}
-.kumo-training .kt-trial-choice[aria-pressed="true"] .kt-trial-dot{border-color:$accent;background:$accent}
-.kumo-training .kt-trial-axis{display:grid;grid-template-columns:minmax(0,150px) minmax(0,1fr) 100px;gap:12px;padding:0 10px;color:$muted;font-size:12px}
-.kumo-training .kt-trial-axis .kt-scalar-axis{margin:0 7px}
-.kumo-training .kt-trial-axis .kt-constant{justify-content:center}
-.kumo-training .kt-trial-detail{border-left:3px solid $accent;padding-left:12px;margin:8px 0 16px}
-.kumo-training .kt-trial-detail h4{margin-top:0}
-.kumo-training .kt-settings .kt-table{table-layout:fixed}
-.kumo-training .kt-settings .kt-table td.kt-number{text-align:right;white-space:normal;overflow-wrap:anywhere}
-.kumo-training .kt-setting-state{display:block;font-size:12px;color:$muted}
-@container kumo-training (max-width:520px){
-.kumo-training .kt-trial-choice,.kumo-training .kt-trial-axis{grid-template-columns:minmax(0,1fr) 86px;gap:4px 10px}
-.kumo-training .kt-trial-choice>.kt-trial-label{grid-column:1/-1}
-.kumo-training .kt-trial-axis>.kt-trial-label{display:none}
-.kumo-training .kt-trial-list.kt-many{max-height:440px}
-.kumo-training .kt-settings .kt-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 12px}
-.kumo-training .kt-settings .kt-table td:first-child{grid-column:1/-1}
-.kumo-training .kt-settings .kt-table td:first-child:before{display:none}
-.kumo-training .kt-settings .kt-table td:nth-child(2):last-child{grid-column:1/-1}
-.kumo-training .kt-settings .kt-table td:before{display:block}
-.kumo-training .kt-settings .kt-settings-single tr{grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:8px;align-items:start}
-.kumo-training .kt-settings .kt-settings-single td:first-child,.kumo-training .kt-settings .kt-settings-single td:nth-child(2):last-child{grid-column:auto}
-.kumo-training .kt-settings .kt-settings-single td:before{display:none}
-.kumo-training .kt-settings .kt-settings-single thead{display:table-header-group;position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
-}
+.kumo-training .kt-gap{position:absolute;top:50%;height:2px;margin-top:-1px;background:$edge}
+.kumo-training .kt-dot,.kumo-training .kt-diamond{position:absolute;top:50%;width:10px;height:10px;
+margin:-5px 0 0 -5px}
+.kumo-training .kt-paired>.kt-dot{margin-top:-10px}
+.kumo-training .kt-paired>.kt-diamond{margin-top:0}
+.kumo-training .kt-dot{border-radius:50%;background:$accent;box-shadow:0 0 0 2px $background}
+.kumo-training .kt-diamond{background:$foreground;transform:rotate(45deg) scale(.86);
+box-shadow:0 0 0 2px $background}
+.kumo-training .kt-legend{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:12px;color:$muted}
+.kumo-training .kt-legend .kt-key{color:$accent}
+.kumo-training .kt-legend .kt-key-observed{color:$foreground}
 
-.kumo-training .kt-trials td.kt-number{white-space:nowrap;overflow-wrap:normal}
-.kumo-training .kt-trials td.kt-number:before{white-space:normal;overflow-wrap:anywhere}
-.kumo-training .kt-table tr[aria-selected="true"]{background:$row_highlight}
-.kumo-training .kt-action,.kumo-training select{font:13px/1.4 $font;
-background:$background;color:$foreground;border:1px solid $surface_border;
-border-radius:7px;padding:6px 10px;max-width:100%}
-.kumo-training .kt-action{cursor:pointer;white-space:normal;text-align:left}
-.kumo-training .kt-action:hover{background:$chrome_hover}
-.kumo-training summary{cursor:pointer;color:$muted;font-size:13px;padding:6px 0}
-.kumo-training :is(button,select,summary,h2,h3,h4,.kt-history-values,.kt-sample-values):focus-visible{outline:2px solid $focus;outline-offset:2px}
-.kumo-training .kt-action[aria-pressed="true"]{background:$row_highlight;
-border-color:$focus}
-.kumo-training .kt-detail{padding:12px;border:1px solid $surface_border;
-border-radius:10px;margin:12px 0 20px}
-.kumo-training .kt-detail h3{margin-top:0}
-.kumo-training .kt-controls{display:flex;align-items:center;flex-wrap:wrap;
-gap:8px;margin:8px 0}
-.kumo-training .kt-controls label{font-size:13px;color:$muted}
-.kumo-training .kt-score{display:grid;grid-template-columns:minmax(0,1fr) 84px;
-align-items:center;gap:8px}
-.kumo-training .kt-track{height:7px;background:$surface;border-radius:4px;overflow:hidden}
-.kumo-training .kt-bar{height:100%;background:$accent;border-radius:4px}
-.kumo-training .kt-value{text-align:right;font-variant-numeric:tabular-nums}
-.kumo-training .kt-feature-list,.kumo-training .kt-feature-cells{list-style:none;padding:0;margin:8px 0 16px}
-.kumo-training .kt-feature-list>li+li{margin-top:6px}
-.kumo-training .kt-feature-choice{display:grid;grid-template-columns:minmax(0,160px) minmax(120px,1fr);
-align-items:center;gap:12px;width:100%;max-width:600px;padding:10px}
-.kumo-training .kt-feature-choice .kt-note{display:block;margin:2px 0 0;font-size:12px}
-.kumo-training .kt-feature-cells>li{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 180px;
-align-items:start;gap:8px 16px;padding:10px 0;border-bottom:1px solid $surface_border}
-.kumo-training .kt-feature-cells .kt-note{margin:2px 0;font-size:12px}
-.kumo-training .kt-feature-context>h3{margin-top:0}
-.kumo-training .kt-history-fit{max-width:680px;margin:20px 0 28px}
-.kumo-training .kt-history-axis{display:flex;justify-content:space-between;font-size:12px;color:$muted;margin-bottom:8px}
-.kumo-training .kt-history-axis>span:first-child{font-weight:600;color:$foreground}
-.kumo-training .kt-history-plot{display:grid;grid-template-columns:minmax(72px,max-content) minmax(0,1fr);gap:8px}
-.kumo-training .kt-history-ticks{display:flex;flex-direction:column;justify-content:space-between;
-text-align:right;font-size:12px;font-variant-numeric:tabular-nums;line-height:16px}
-.kumo-training .kt-history-ticks>span{white-space:nowrap;overflow-wrap:normal}
-.kumo-training .kt-history-ticks.kt-constant{justify-content:center}
-.kumo-training .kt-history-chart{display:block;width:100%;height:180px;overflow:visible}
-.kumo-training .kt-history-chart :is(circle,rect){transform-box:fill-box;transform-origin:center;
-transform:scaleX(var(--kt-history-marker-scale,1))}
-.kumo-training .kt-history-epochs{display:flex;justify-content:space-between;gap:8px;
-grid-column:2;margin:0 0 10px;font-size:12px;color:$muted}
-.kumo-training .kt-history-legend{display:flex;flex-wrap:wrap;gap:8px 20px}
-.kumo-training .kt-history-train{color:$accent}
-.kumo-training .kt-history-observation{font-size:14px;margin:8px 0}
-.kumo-training .kt-history-selection .kt-table{margin-bottom:0}
-.kumo-training :is(.kt-history-values,.kt-sample-values){max-height:400px;overflow:auto;padding:4px}
-.kumo-training .kt-list{padding-left:20px;margin:8px 0 12px}
-.kumo-training .kt-result{border-left:3px solid $accent;padding-left:16px;margin:16px 0 24px}
-.kumo-training .kt-result h3{margin:0 0 4px}
-.kumo-training .kt-result-value{font-size:32px;font-weight:600;font-variant-numeric:tabular-nums}
-.kumo-training .kt-ranking{margin:20px 0 24px}
-.kumo-training .kt-ranking h3{margin-top:0}
-.kumo-training .kt-scalar-values{display:grid;gap:6px;margin:12px 0 0;width:fit-content;max-width:100%}
-.kumo-training .kt-scalar-values>div{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:baseline}
-.kumo-training .kt-scalar-chart{display:block;width:100%;height:auto;max-width:600px;margin:0}
-.kumo-training .kt-scalar-baseline{stroke:$muted;stroke-width:1}
-.kumo-training .kt-scalar-gap{stroke:$accent;stroke-width:3;vector-effect:non-scaling-stroke}
-.kumo-training .kt-scalar-key{color:$accent}
-.kumo-training .kt-scalar-prediction{fill:$accent;stroke:$background;stroke-width:2}
-.kumo-training .kt-scalar-observed{fill:$foreground;stroke:$background;stroke-width:2}
-.kumo-training .kt-scalar-axis{display:flex;justify-content:space-between;gap:12px;max-width:600px;color:$muted;font-size:12px;font-variant-numeric:tabular-nums}
-.kumo-training .kt-scalar-axis>span:last-child{text-align:right}
-.kumo-training .kt-scalar-error{font-weight:600;font-variant-numeric:tabular-nums;margin-bottom:0}
-.kumo-training .kt-class-list{list-style:none;padding:0;margin:8px 0 16px;max-width:600px}
-.kumo-training .kt-class-list>li{display:grid;grid-template-columns:minmax(0,140px) minmax(0,1fr);gap:8px 16px;align-items:center;padding:10px 0;border-bottom:1px solid $surface_border}
-.kumo-training .kt-class-comparison .kt-scalar-axis{margin:0 7px}
-.kumo-training .kt-class-values{display:flex;justify-content:space-between;gap:12px;font-size:13px;font-variant-numeric:tabular-nums}
-.kumo-training .kt-class-values>span:last-child{text-align:right}
-@container kumo-training (max-width:520px){
-.kumo-training .kt-class-list>li{grid-template-columns:minmax(0,1fr);gap:3px}}
-.kumo-training .kt-cohort-list{list-style:none;padding:2px;margin:8px 0;max-height:600px;overflow:auto;overflow-anchor:none}
-.kumo-training .kt-cohort-row,.kumo-training .kt-cohort-heading{display:grid;grid-template-columns:minmax(100px,24%) minmax(0,1fr) 86px;gap:10px;align-items:center}
-.kumo-training .kt-cohort-row.kt-action{width:100%;margin-bottom:3px;padding:8px;border-color:transparent}
-.kumo-training .kt-cohort-row[aria-pressed="true"]{border-color:$focus}
-.kumo-training .kt-cohort-heading{font-size:12px;color:$muted;padding:0 10px}
-.kumo-training .kt-cohort-heading .kt-scalar-axis{margin:0;max-width:none}
-.kumo-training .kt-cohort-plot{position:relative;height:34px;margin:0 7px}
-.kumo-training .kt-cohort-plot:before{content:"";position:absolute;left:0;right:0;top:17px;border-top:1px solid $surface_border}
-.kumo-training .kt-cohort-marker{position:absolute;width:12px;height:12px;transform:translateX(-50%);border:1px solid $background}
-.kumo-training .kt-cohort-marker.kt-scalar-prediction{top:3px;border-radius:50%;background:$accent}
-.kumo-training .kt-cohort-marker.kt-scalar-observed{top:20px;transform:translateX(-50%) rotate(45deg);background:$foreground}
-.kumo-training .kt-cohort-share .kt-track{display:block;margin-top:5px;height:4px}
-.kumo-training .kt-cohort-share .kt-bar{display:block;background:$muted}
-.kumo-training .kt-cohort-share{font-variant-numeric:tabular-nums;text-align:right}
-.kumo-training .kt-cohort-selection{border-left:3px solid $accent;padding-left:12px;margin:14px 0}
-.kumo-training .kt-cohort-selection h4{margin-top:0}
-@container kumo-training (max-width:520px){
-.kumo-training .kt-cohort-row,.kumo-training .kt-cohort-heading{grid-template-columns:minmax(0,1fr) 66px;gap:3px 12px}
-.kumo-training .kt-cohort-row>.kt-cohort-label{grid-column:1/-1}
-.kumo-training .kt-cohort-heading>.kt-cohort-label{display:none}
-.kumo-training .kt-cohort-row.kt-action{padding:5px 7px}
-.kumo-training .kt-cohort-list{max-height:420px}
-}
+.kumo-training .kt-cohort{display:grid;gap:0}
+.kumo-training .kt-cohort-row{display:grid;grid-template-columns:minmax(72px,26%) minmax(0,1fr) 58px 58px 64px;
+align-items:center;gap:8px 12px;padding:5px 0;border-bottom:1px solid $surface_border;font-size:13px}
+.kumo-training .kt-cohort-row.kt-cohort-head{border-bottom:0;padding:0 0 4px;font-size:12px;color:$muted}
+.kumo-training .kt-cohort-row>.kt-num{text-align:right}
+.kumo-training .kt-share{display:grid;gap:3px;text-align:right}
 
-.kumo-training .kt-ranked-list{list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(94px,1fr));
-gap:8px;padding:0;margin:8px 0 16px}
-.kumo-training .kt-ranked-list>li{padding:10px;background:$surface;border:1px solid $surface_border;border-radius:6px}
-.kumo-training .kt-ranked-list>li.kt-match{border-color:$accent;background:$row_highlight}
-.kumo-training .kt-ranked-list strong{display:block;font-size:17px;margin:4px 0;overflow-wrap:anywhere}
-.kumo-training .kt-ranked-list .kt-note{font-size:12px;margin:4px 0}
-.kumo-training .kt-observed-list{list-style:none;padding:0;margin:8px 0 16px}
-.kumo-training .kt-observed-list>li{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 16px;
-padding:8px 0;border-bottom:1px solid $surface_border}
-.kumo-training .kt-observed-list .kt-note{margin:0}
-.kumo-training .kt-observed-list details{flex-basis:100%}
-.kumo-training .kt-neighborhood{margin:20px 0}
-.kumo-training .kt-neighborhood-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);
-gap:20px;align-items:start}
-.kumo-training .kt-neighborhood h4{margin-top:0}
-.kumo-training .kt-selected-node{border-left:3px solid $accent;padding-left:12px}
-.kumo-training .kt-selected-node>h4{color:$accent}
-.kumo-training .kt-connections{list-style:none;margin:8px 0 12px;padding:0}
-.kumo-training .kt-connections>li{padding:10px 0;border-bottom:1px solid $surface_border}
-.kumo-training .kt-connection{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);
-gap:8px;align-items:center}
-.kumo-training .kt-connection>.kt-action{width:100%}
-.kumo-training .kt-connection-direction{color:$muted;font-size:12px}
-.kumo-training .kt-node-features{list-style:none;padding:0;margin:8px 0}
-.kumo-training .kt-node-features>li{padding:10px 0;border-bottom:1px solid $surface_border}
-.kumo-training .kt-node-features>li.kt-match{background:$row_highlight;border-left:3px solid $accent;padding-left:8px}
-.kumo-training .kt-node-features .kt-note{margin:4px 0}
-@container kumo-training (max-width:700px){
-.kumo-training .kt-neighborhood-layout{grid-template-columns:minmax(0,1fr)}}
-@container kumo-training (max-width:520px){
-.kumo-training .kt-connection{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:4px 12px}
-.kumo-training .kt-connection-direction{grid-column:1;grid-row:2}
-.kumo-training .kt-connection>:last-child{grid-column:2;grid-row:1/3}
-.kumo-training .kt-table,.kumo-training .kt-table tbody,
-.kumo-training .kt-table tr,.kumo-training .kt-table td{display:block;width:100%}
-.kumo-training .kt-table thead{display:none}
-.kumo-training .kt-table tr{padding:8px 0;border-bottom:1px solid $surface_border}
-.kumo-training .kt-table td{padding:3px 0;border:0;white-space:normal}
-.kumo-training .kt-table td:before{content:attr(data-label);font-size:12px;
-color:$muted;display:block;text-align:left}
-.kumo-training .kt-table .kt-number{text-align:left}
-.kumo-training .kt-value{text-align:right}
-.kumo-training .kt-detail{padding:10px}
-.kumo-training .kt-feature-choice,.kumo-training .kt-feature-cells>li{grid-template-columns:minmax(0,1fr)}
-}
+.kumo-training .kt-ranks{display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:6px;
+margin:0;padding:0;list-style:none}
+.kumo-training .kt-rank{display:grid;gap:2px;margin:0;padding:4px 6px;border-radius:4px;font-size:12px;color:$muted}
+.kumo-training .kt-rank>strong{font-size:14px;color:$foreground;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kumo-training .kt-rank.kt-match{background:$row_highlight}
+.kumo-training .kt-rank.kt-match>span{color:$accent;font-weight:600}
+.kumo-training .kt-compare{display:grid;grid-template-columns:minmax(0,max-content) minmax(0,max-content) minmax(0,1fr);
+align-items:center;gap:8px 14px;font-size:13px}
+.kumo-training .kt-compare .kt-num{text-align:right;font-weight:600}
+.kumo-training .kt-classes{display:grid;grid-template-columns:minmax(0,max-content) minmax(80px,1fr) 52px auto;
+align-items:center;gap:6px 12px;font-size:13px}
+.kumo-training .kt-classes .kt-num{text-align:right}
+
+.kumo-training .kt-chart-box{position:relative;width:100%}
+.kumo-training .kt-chart{display:block;width:100%;overflow:visible}
+.kumo-training .kt-chart text{font:11px $font;fill:$muted}
+.kumo-training .kt-chart .kt-gridline{stroke:$surface_border;stroke-width:1}
+.kumo-training .kt-chart .kt-cursor{stroke:$muted;stroke-dasharray:2 3}
+.kumo-training .kt-chart-frame{display:grid;gap:6px}
+.kumo-training .kt-readout{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:13px;min-height:19px}
+.kumo-training .kt-readout b{font-weight:600}
+.kumo-training .kt-plot{border-radius:6px}
+
+.kumo-training .kt-records{display:grid;gap:12px}
+.kumo-training .kt-record-group{display:grid;gap:6px;padding-left:12px;border-left:2px solid $surface_border}
+.kumo-training .kt-record-cell{display:grid;gap:3px}
+.kumo-training .kt-record-cell .kt-bar{width:100%;max-width:96px}
+
+@container kumo-training (max-width:760px){
+.kumo-training .kt-split{grid-template-columns:minmax(0,1fr);gap:16px}
+.kumo-training .kt-detail{position:static}
+.kumo-training .kt-grid{grid-template-columns:minmax(0,1fr)}
+.kumo-training .kt-ranks{grid-template-columns:repeat(5,minmax(0,1fr))}}
+@container kumo-training (max-width:480px){
+.kumo-training{padding:14px 12px 16px}
+.kumo-training .kt-detail{padding:12px}
+.kumo-training .kt-tab{padding:10px 10px}
+.kumo-training .kt-cohort-row{grid-template-columns:minmax(0,1fr) 52px 52px;
+grid-template-areas:"label label share" "track pred obs"}
+.kumo-training .kt-cohort-row>:nth-child(1){grid-area:label}
+.kumo-training .kt-cohort-row>:nth-child(2){grid-area:track}
+.kumo-training .kt-cohort-row>:nth-child(3){grid-area:pred}
+.kumo-training .kt-cohort-row>:nth-child(4){grid-area:obs}
+.kumo-training .kt-cohort-row>:nth-child(5){grid-area:share}
+.kumo-training .kt-cohort-head>:nth-child(2){visibility:hidden}
+.kumo-training .kt-ranks{grid-template-columns:repeat(4,minmax(0,1fr))}
+.kumo-training .kt-classes{grid-template-columns:minmax(0,1fr) 52px auto}
+.kumo-training .kt-classes .kt-bar{grid-column:1/-1;grid-row:span 1}
+.kumo-training .kt-dl{grid-template-columns:minmax(0,1fr)}
+.kumo-training .kt-dl>:nth-child(2n){margin-bottom:6px}}
+.kumo-training .kt-related{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:0;
+padding-top:12px;border-top:1px solid $surface_border}
+.kumo-training .kt-related-value{font-size:15px;font-weight:600}
+.kumo-training .kt-strip{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;margin:0;padding:0;list-style:none}
+.kumo-training .kt-strip>li{margin:0;padding:0}
+.kumo-training .kt-strip-cell{display:grid;gap:1px;width:100%;padding:5px 4px;border:1px solid $surface_border;
+border-radius:6px;background:none;color:$foreground;text-align:center;cursor:pointer}
+.kumo-training .kt-strip-cell:hover{background:$chrome_hover}
+.kumo-training .kt-strip-cell>strong{font-weight:600}
+.kumo-training .kt-strip-cell.kt-match>strong{color:$accent}
+.kumo-training .kt-card.kt-wide{grid-column:1/-1}
+.kumo-training .kt-gaps{display:grid;gap:4px;margin:16px 0 0;padding:0;list-style:none;font-size:13px;color:$muted}
+.kumo-training .kt-gaps b{color:$foreground;font-weight:600}
+.kumo-training .kt-code{padding:1px 4px;border-radius:4px;background:$surface;color:$foreground;
+font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow-wrap:anywhere}
+.kumo-training .kt-dotrow{display:grid;grid-template-columns:132px minmax(0,1fr);align-items:center;gap:10px}
+.kumo-training button.kt-option{width:100%;margin:0;font:inherit;background:none;border:0}
+.kumo-training .kt-btn,.kumo-training .kt-link{justify-self:start;align-self:flex-start}
+.kumo-training .kt-settings .kt-table,.kumo-training .kt-detail .kt-table{max-width:640px}
+.kumo-training .kt-settings .kt-table td.kt-num{white-space:normal;overflow-wrap:anywhere}
+.kumo-training .kt-stack>.kt-fit{max-width:860px}
+@container kumo-training (max-width:480px){
+.kumo-training .kt-strip{grid-template-columns:repeat(4,minmax(0,1fr))}
+.kumo-training .kt-dotrow{grid-template-columns:minmax(0,1fr)}
+.kumo-training .kt-related{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.kumo-training :is(.kt-section,.kt-stack,.kt-card,.kt-list-head){align-content:start}
+.kumo-training .kt-narrow{display:grid;gap:2px;max-width:640px}
+.kumo-training .kt-scores{display:grid;max-width:640px}
+.kumo-training .kt-score-row{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) auto;gap:2px 16px;
+align-items:start;padding:7px 0;border-bottom:1px solid $surface_border;font-size:13px}
+.kumo-training .kt-score-head{padding-top:0;font-size:12px;font-weight:600;color:$muted}
+.kumo-training .kt-score-row>:last-child{text-align:right}
+.kumo-training .kt-score{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:112px}
+.kumo-training .kt-score .kt-bar{flex:none;width:64px}
+.kumo-training .kt-strip-cell>strong{white-space:nowrap}
+@container kumo-training (max-width:480px){
+.kumo-training .kt-score-row{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"name name" "value score"}
+.kumo-training .kt-score-row>:nth-child(1){grid-area:name}
+.kumo-training .kt-score-row>:nth-child(2){grid-area:value}
+.kumo-training .kt-score-row>:nth-child(3){grid-area:score}
+.kumo-training .kt-score-head>:nth-child(1){display:none}
+.kumo-training .kt-tabs{flex-wrap:wrap;overflow:visible}
+.kumo-training .kt-tab{padding:8px 4px;font-size:12.5px}
+.kumo-training .kt-tab .kt-count{display:none}
+.kumo-training .kt-label{white-space:normal}
+.kumo-training .kt-feature{grid-template-columns:minmax(0,1fr) 48px;grid-template-areas:"name name" "bar value";row-gap:6px}
+.kumo-training .kt-feature>:nth-child(1){grid-area:name}
+.kumo-training .kt-feature>:nth-child(2){grid-area:bar;align-self:center}
+.kumo-training .kt-feature>:nth-child(3){grid-area:value}}
+.kumo-training .kt-fname{display:flex;align-items:baseline;min-width:0}
+.kumo-training .kt-ftable{flex:0 4 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kumo-training .kt-fcol{flex:0 1 auto;min-width:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+overflow:hidden;overflow-wrap:anywhere}
+.kumo-training .kt-ranks.kt-ranks-long{grid-template-columns:repeat(2,minmax(0,1fr))}
+.kumo-training .kt-ranks-long>.kt-rank{grid-template-columns:3.2em minmax(0,1fr);align-items:baseline}
+@container kumo-training (max-width:480px){.kumo-training .kt-ranks.kt-ranks-long{grid-template-columns:minmax(0,1fr)}}
+.kumo-training .kt-rank>span{white-space:nowrap}
+.kumo-training .kumo-training-static{display:grid;gap:8px;font-size:13px}
+.kumo-training .kumo-training-static :is(h2,p,ul){margin:0}
+.kumo-training .kumo-training-static h2{font:600 15px/1.35 $font}
+.kumo-training .kumo-training-static ul{padding-left:18px}
+.kumo-training .kt-axis>span{white-space:nowrap}
+.kumo-training .kt-cohort-row>.kt-label{white-space:normal;overflow:visible;text-overflow:clip}
+.kumo-training.kumo-widget .kt-content :is(ul,ol){margin:0;padding:0;list-style:none}
+.kumo-training.kumo-widget .kt-content :is(ul,ol)>li{margin:0;padding:0}
+.kumo-training.kumo-widget .kt-table tbody tr:hover{background:transparent}
+.kumo-training .kt-related-value .kt-num,.kumo-training .kt-metric-value .kt-num{white-space:normal;overflow-wrap:anywhere}
+.kumo-training .kt-tab:hover .kt-count{color:$foreground}
+.kumo-training .kt-content .kt-gaps{margin-top:16px}
+.kumo-training .kt-scores-num .kt-score-row>:nth-child(2){text-align:right}
+.kumo-training .kt-score-row{align-items:baseline}
+.kumo-training .kt-score-row .kt-score{align-self:center}
+.kumo-training .kt-link.kt-inline{padding:0;font-weight:500;color:$foreground;text-decoration:underline;
+text-decoration-color:$surface_border;text-underline-offset:3px}
+.kumo-training .kt-link.kt-inline:hover{text-decoration-color:currentColor}
+.kumo-training .kt-kv{display:grid;grid-template-columns:max-content max-content;gap:0;font-size:13px;max-width:100%}
+.kumo-training .kt-kv.kt-kv-3{grid-template-columns:max-content max-content max-content}
+.kumo-training .kt-kv-row{display:contents}
+.kumo-training .kt-kv-row>span{padding:6px 32px 6px 0;border-bottom:1px solid $surface_border;overflow-wrap:anywhere}
+.kumo-training .kt-kv-row>span:last-child{padding-right:0}
+.kumo-training .kt-kv-head>span{font-size:12px;font-weight:600;color:$muted}
+.kumo-training .kt-kv-row.kt-strong>span{font-weight:600}
+.kumo-training .kt-training{max-width:860px}
+.kumo-training .kt-exact .kt-num,.kumo-training .kt-content.kt-exact .kt-num{white-space:normal;overflow-wrap:anywhere}
+.kumo-training .kt-content.kt-exact .kt-label{white-space:normal;overflow:visible;text-overflow:clip}
+.kumo-training .kt-content.kt-exact .kt-cohort-row{grid-template-columns:minmax(72px,22%) minmax(0,1fr) minmax(0,96px) minmax(0,96px) 64px}
+.kumo-training .kt-content.kt-exact .kt-feature{grid-template-columns:minmax(0,1fr) minmax(48px,24%) minmax(48px,auto)}
+.kumo-training .kt-content.kt-exact .kt-example>.kt-outcome{max-width:50%}
+@media (min-height:480px){@container kumo-training (min-width:761px){
+.kumo-training .kt-content:not(.kt-framed) .kt-detail{max-height:calc(100vh - 16px);overflow:auto}}}
+@container kumo-training (max-width:480px){
+.kumo-training .kt-kv,.kumo-training .kt-kv.kt-kv-3{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.kumo-training .kt-kv.kt-kv-3{grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) minmax(0,1fr)}
+.kumo-training .kt-content.kt-exact .kt-cohort-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)}}
 """).substitute(CSS_THEME)
 
 _SCRIPT = r"""
-const root=host.querySelector('.kt-content'),fallback=host.querySelector('.kumo-training-static');
-const list=v=>Array.isArray(v)?v:[], obj=v=>v&&typeof v==='object'&&!Array.isArray(v)?v:{};
-const finite=v=>typeof v==='number'&&Number.isFinite(v);
-const text=v=>v===null||v===undefined?'Unavailable':typeof v==='object'?JSON.stringify(v):String(v);
-const number=v=>finite(v)?(v===0?'0':String(Number(v.toPrecision(6)))):'Unavailable';
-const el=(tag,value,cls)=>{const node=document.createElement(tag);if(value!==undefined)node.textContent=text(value);
-if(cls)node.className=cls;return node};
-const note=(parent,value)=>parent.append(el('p',value,'kt-note'));
-const section=title=>{const node=el('section');node.append(el('h2',title));root.append(node);return node};
-const state=(parent,source,label,producerLabel='Producer eligibility')=>{source=obj(source);if(source.status!=='available')
-note(parent,label+': '+text(source.status||'unavailable')+(source.reason?'. '+text(source.reason):''));
-if(source.producer_note)note(parent,producerLabel+': '+text(source.producer_note));};
-const table=(parent,headers,rows,numeric=[],exact=false)=>{const node=el('table',undefined,'kt-table');
-const head=el('thead'),tr=el('tr');for(const [i,h]of headers.entries()){
-const th=el('th',h,numeric.includes(i)?'kt-number':'');th.scope='col';tr.append(th)}head.append(tr);node.append(head);
-const body=el('tbody');for(const values of rows){const row=el('tr');values.forEach((value,i)=>{
-const td=el('td',undefined,numeric.includes(i)?'kt-number':'');td.dataset.label=headers[i];
-if(value instanceof Node){if(exact){if(value.classList.contains('kt-class-label'))td.append(value.cloneNode(true));
-else td.textContent=value.textContent;}else td.append(value)}
-else td.textContent=finite(value)?(exact?String(value):number(value)):text(value);row.append(td)});body.append(row)}
-node.append(body);parent.append(node);
-if(!exact&&numeric.length&&rows.some(row=>numeric.some(i=>finite(row[i])&&String(row[i])!==number(row[i])))){
-const details=el('details');details.append(el('summary','Exact recorded values'));
-table(details,headers,rows,numeric,true);parent.append(details)}return node};
-const action=(label,callback)=>{const button=el('button',label,'kt-action');button.type='button';button.disabled=true;
-button.addEventListener('click',callback,{signal});return button};
-const control=(parent,label,values,callback)=>{const wrap=el('div',undefined,'kt-controls'),select=el('select');
-select.id=widgetId+'-control-'+(++controlId);select.disabled=true;const caption=el('label',label);caption.htmlFor=select.id;
-for(const [value,name]of values){const option=el('option',name);option.value=value;select.append(option)}
-select.addEventListener('change',()=>callback(select.value),{signal});wrap.append(caption,select);parent.append(wrap);return select};
-const enable=()=>root.querySelectorAll('button,select').forEach(node=>node.disabled=false);
-let controlId=0;
-const identityNote=(parent,title,value,tag='p',limit=120)=>{
-if(value.length<=limit&&!/[\r\n]/.test(value)){parent.append(el(tag,value,'kt-note'));return;}
-const details=el('details');details.append(el('summary','Explore '+title.toLowerCase()));
-const values=el('div',undefined,'kt-sample-values');values.tabIndex=0;
-values.setAttribute('role','region');values.setAttribute('aria-label',title);
-note(values,value);details.append(values);parent.append(details);};
+const content=host.querySelector('.kt-content'),fallback=host.querySelector('.kumo-training-static');
+const NS='http://www.w3.org/2000/svg';
+const list=value=>Array.isArray(value)?value:[];
+const obj=value=>value&&typeof value==='object'&&!Array.isArray(value)?value:{};
+const has=(value,key)=>Object.prototype.hasOwnProperty.call(value,key);
+const finite=value=>typeof value==='number'&&Number.isFinite(value);
+const str=value=>value===null||value===undefined?'':typeof value==='object'?JSON.stringify(value):String(value);
+const plural=(count,one,many)=>count+' '+(count===1?one:many||one+'s');
+let uid=0;
+const nextId=name=>widgetId+'-'+name+'-'+(++uid);
+const append=(node,...children)=>{
+  for(const child of children.flat(Infinity))
+    if(child!==null&&child!==undefined&&child!==false&&child!=='')node.append(child instanceof Node?child:String(child));
+  return node;
+};
+const h=(tag,props,...children)=>{
+  const node=document.createElement(tag);
+  for(const [key,value] of Object.entries(props||{})){
+    if(value===null||value===undefined||value===false)continue;
+    if(key==='class')node.className=value;
+    else if(key==='text')node.textContent=value;
+    else if(key==='style')for(const [name,item] of Object.entries(value))node.style.setProperty(name,item);
+    else if(key.startsWith('on'))node.addEventListener(key.slice(2),value,{signal});
+    else node.setAttribute(key,value===true?'':String(value));
+  }
+  return append(node,children);
+};
+const sv=(tag,attributes)=>{
+  const node=document.createElementNS(NS,tag);
+  for(const [key,value] of Object.entries(attributes||{}))
+    if(value!==null&&value!==undefined)node.setAttribute(key,String(value));
+  return node;
+};
+const svText=(attributes,text)=>{const node=sv('text',attributes);node.textContent=text;return node};
+
+// View state survives tab changes; each view keeps its own copy.
+const S={tab:0,exact:false,feature:null,allFeatures:false,hop:new Map(),cls:new Map(),
+  example:0,allLocal:false,metric:null,epochs:new Map(),trial:null};
+
+const fmt=(value,places)=>{
+  if(!finite(value))return null;
+  if(S.exact)return String(value);
+  if(value===0)return '0';
+  const size=Math.abs(value);
+  if(size>=1e6)return value.toExponential(2).replace('e+','e');
+  if(size>=1e3)return Math.round(value).toLocaleString('en-US');
+  const digits=places??(size>=100?1:size>=10?2:size>=1?3:4);
+  if(size<0.5*10**-digits)return value.toExponential(2).replace('e+','e');
+  return value.toFixed(digits);
+};
+// Recorded data values drop padding zeros: 70, 72.5, -0.5508.
+const dataValue=value=>{if(S.exact||Number.isInteger(value)&&Math.abs(value)<1e15)return String(value);
+  const text=fmt(value);return /e/.test(text)?text:text.replace(/(\.\d*?)0+$/,'$1').replace(/\.$/,'')};
+// Shared decimal places keep a column of comparable numbers aligned.
+const placesFor=(values,significant=4)=>{const size=Math.max(0,...values.filter(finite).map(Math.abs));
+  return size>0&&size<1e3?Math.max(0,Math.min(6,significant-1-Math.floor(Math.log10(size)))):undefined};
+const prob=value=>{
+  if(!(finite(value)&&value>=0&&value<=1))return fmt(value,3);
+  if(S.exact)return String(value);
+  if(value===0||value===1)return value.toFixed(3);
+  return value<0.001?'<0.001':value>0.999?'>0.999':value.toFixed(3)};
+const numProb=(value,label)=>{const text=prob(value);return text===null?missing(label):h('span',{class:'kt-num',text})};
+const missing=(label='not recorded')=>h('span',{class:'kt-missing'},
+  h('span',{'aria-hidden':'true',text:'—'}),h('span',{class:'kt-sr',text:label}));
+const num=(value,places,label)=>{const text=fmt(value,places);
+  return text===null?missing(label):h('span',{class:'kt-num',text})};
+const signed=(value,places)=>{const text=fmt(value,places);return text===null?null:value>0?'+'+text:text};
+const axisLabel=value=>value===0?'0':Math.abs(value)>=1e4||Math.abs(value)<1e-3?value.toExponential(1).replace('e+','e'):
+  String(Number(value.toPrecision(3)));
+const compareValues=(a,b)=>finite(a)&&finite(b)?a-b:finite(a)?-1:finite(b)?1:str(a).localeCompare(str(b),undefined,{numeric:true});
+const rangeLabel=label=>str(label).replace(/ - /g,' to ');
+const percent=value=>finite(value)?(S.exact?String(value*100):(value*100).toFixed(1))+'%':null;
+const bar=(value,scale,cls='')=>{
+  const share=finite(value)&&finite(scale)&&scale>0?Math.max(0,Math.min(1,value/scale)):0;
+  return h('span',{class:'kt-bar '+cls,'aria-hidden':'true'},h('span',{style:{width:(share*100).toFixed(2)+'%'}}));
+};
+const p=(content,cls='')=>Array.isArray(content)||content instanceof Node?h('p',{class:'kt-p '+cls},content):
+  h('p',{class:'kt-p '+cls,text:content});
+const note=text=>p(text,'kt-muted kt-small');
+const heading=(level,text,props)=>h('h'+level,{class:'kt-h'+level,text,...props});
+const code=text=>h('span',{class:'kt-code',text});
+
+// ---------------------------------------------------------------- payload
 const provenance=obj(data.provenance),context=obj(data.context);
-const linkTask=['static_link_prediction','temporal_link_prediction'].includes(context.task_type||provenance.task_type);
-const regressionTask=(context.task_type||provenance.task_type)==='regression';
-const classificationTasks=['binary_classification','multiclass_classification','multilabel_classification'];
-const classificationTask=classificationTasks.includes(context.task_type||provenance.task_type),resultTask=linkTask||regressionTask||classificationTask;
-const baseMetric=row=>text(row.name).replace(/^(test_refit_|train_|val_|test_)/,'');
-const results=section('Training results');
-const queryNode=el('div');
-if(context.query){identityNote(queryNode,'Predictive query',text(context.query));results.append(queryNode);}
-note(results,[(context.task_type||provenance.task_type)&&('Task: '+text(context.task_type||provenance.task_type)),context.target&&('Target: '+text(context.target)),
-context.run&&('Run: '+context.run),'Selected trial: '+text(provenance.selected_trial),
-'Explanation fit: '+text(provenance.explanation_trial),'Explanation split: TEST',
-'Refit on train + validation: '+(provenance.refitted_trainval===true?'yes':provenance.refitted_trainval===false?'no':'unknown')].filter(Boolean).join(' · '));
-if(provenance.selection_verified===false)note(results,'Selection unverified: '+text(provenance.selection_reason));
-if(['disabled','failed'].includes(provenance.generation_status))note(results,'Explanation generation: '+text(provenance.generation_status));
-if(provenance.generation_failure&&provenance.generation_status!=='failed')note(results,text(provenance.generation_failure));
-const metricRows=list(obj(data.metrics).rows);state(results,data.metrics,'Metrics');
-let rankingEntry,selectedMetricMeaning;
-if(linkTask)results.append(el('p',context.query?'This task ranks linked IDs for each entity in the predictive query above.':
-'This task ranks linked IDs for each entity. The predictive query was not recorded.'));
-if(regressionTask)note(results,'This task predicts a numeric target for each entity in the predictive query.');
-if(classificationTask)note(results,'This task records class-membership probabilities for each entity in the predictive query.');
-const metricDetail=resultTask?el('details'):results;
-if(resultTask){
-const selectedName=typeof provenance.selection_metric==='string'?provenance.selection_metric.replace(/^val_/,''):null;
-const fit=provenance.refitted_trainval===true?'refit_trainval':provenance.refitted_trainval===false?'original':null;
-const selected=provenance.selection_verified===true&&fit&&selectedName?metricRows.find(row=>
-row.name===selectedName&&row.split==='test'&&row.fit===fit&&finite(row.value)&&
-(!regressionTask||!['mae','rmse','mse'].includes(row.name)||row.value>=0)&&row.origin==='Selected-checkpoint evaluation'):null;
-const headline=el('div',undefined,'kt-result');results.append(headline);
-if(selected){
-const map=linkTask&&/^map@([1-9][0-9]*)$/.exec(selected.name);
-const definitions={mae:'Mean absolute error: the average absolute distance between predictions and observed targets, on the target’s numeric scale.',
-rmse:'Root mean squared error: the square root of the average squared prediction error, on the target’s numeric scale. Larger errors receive more weight.',
-mse:'Mean squared error: the average squared distance between predictions and observed targets, on the squared target scale.'};
-const classDefinitions={auroc:'Area under the ROC curve: how well positive examples rank above negative examples across decision thresholds. This is not accuracy or a measure of probability calibration.',
-acc:'Accuracy: the fraction of evaluated examples whose highest-scoring class matches the observed class.',
-ap_macro:'Macro average precision: summarizes how well examples with a label rank ahead of examples without it, calculated per label and averaged equally across evaluated labels. Labels with constant observed membership are excluded. This is not accuracy or probability calibration.'};
-const classDefinition=classificationTask&&((context.task_type||provenance.task_type)==='binary_classification'&&selected.name==='auroc'||(context.task_type||provenance.task_type)==='multiclass_classification'&&selected.name==='acc'||(context.task_type||provenance.task_type)==='multilabel_classification'&&selected.name==='ap_macro')&&classDefinitions[selected.name];
-const definition=regressionTask&&Object.hasOwn(definitions,selected.name)&&definitions[selected.name];
-headline.append(el('h3',map?'TEST MAP@'+map[1]:'TEST '+(definition||classDefinition?selected.name.toUpperCase():text(selected.name))),el('div',number(selected.value),'kt-result-value'));
-identityNote(headline,'Result scope',(fit==='original'?'Original fit':'Refit on train + validation')+' · TEST · '+selected.origin);
-selectedMetricMeaning=map?'Mean average precision over the first '+map[1]+' ranked IDs: observed IDs placed earlier raise the score. Higher is better. This is not a probability or an accuracy percentage.':
-definition?definition+' Lower is better. Target units are not recorded here.':classDefinition?classDefinition+' Higher is better.':null;
-if(selectedMetricMeaning)note(headline,selectedMetricMeaning);
-else note(headline,'Recorded selection metric on TEST'+(provenance.selection_direction==='min'?'; lower is better.':provenance.selection_direction==='max'?'; higher is better.':'. Metric direction is not recorded.'));
-note(headline,'No baseline or quality target is recorded here. This score alone does not establish model quality.');
-const exact=el('details');exact.append(el('summary','Exact result and provenance'));
-table(exact,['Recorded metric','Exact value','Fit / split / origin'],[[selected.recorded_name,selected.value,
-text(selected.fit)+' / TEST / '+selected.origin]],[1],true);headline.append(exact);
-}else{headline.append(el('h3','Selected TEST result unavailable'));
-note(headline,'A verified selection, matching TEST fit, selected-checkpoint origin and numeric selection metric are required. Inspect the recorded metrics below.');}
-rankingEntry=el('div',undefined,'kt-ranking');results.append(rankingEntry);
-metricDetail.append(el('summary','Explore all recorded metrics'));results.append(metricDetail);
-}
-const fits=[...new Set(metricRows.map(row=>text(row.fit)))];
-for(const fit of fits){metricDetail.append(el('h3','Measured results · '+fit));
-const rows=metricRows.filter(row=>text(row.fit)===fit),names=[...new Set(rows.map(baseMetric))];
-const splits=['train','val','test'].filter(split=>rows.some(row=>row.split===split));
-for(const split of rows.map(row=>text(row.split)))if(!splits.includes(split))splits.push(split);
-const originNotes=el('div',undefined,'kt-provenance');metricDetail.append(originNotes);
-for(const split of splits){const group=rows.filter(row=>row.split===split);
-const origins=[...new Set(group.map(row=>row.origin||'Unknown metric origin'))];
-for(const origin of origins)note(originNotes,split+': '+origin+(origins.length>1?' · '+group
-.filter(row=>(row.origin||'Unknown metric origin')===origin).map(baseMetric).join(', '):''));}
-table(metricDetail,['Metric',...splits],names.map(name=>[name,...splits.map(split=>{
-const row=rows.find(item=>baseMetric(item)===name&&text(item.split)===split);return row?row.value:'Unavailable'})]),splits.map((_,i)=>i+1));}
-if(provenance.selection_metric||obj(data.metrics).selection_metric)
-note(metricDetail,'Selection metric: '+text(provenance.selection_metric||data.metrics.selection_metric)+
-(provenance.selection_direction==='min'?' · Recorded optimization: minimize':provenance.selection_direction==='max'?' · Recorded optimization: maximize':''));
-const resultJumps=el('nav',undefined,'kt-controls kt-results-navigation');resultJumps.setAttribute('aria-label','In Results');
-results.querySelector('h2').after(resultJumps);
-const histories=list(obj(data.history).rows);state(results,data.history,'Learning history');
-if(histories.length){const learning=el('div',undefined,'kt-learning');results.append(learning);
-learning.append(el('h3','Learning history · train and validation'));
-resultJumps.append(action('Learning history',()=>showPanel(0,true,learning.querySelector('h3'))));
-learning.append(action(resultTask?'Back to TEST result':'Back to results',()=>showPanel(0,true,results.querySelector('.kt-result h3'))));
-note(learning,'Recorded measurements during training, separate from the TEST result. Epoch keys start at 0.');
-const jumps=el('nav',undefined,'kt-controls');jumps.setAttribute('aria-label','After learning history');
-for(const [index,label]of [[1,'recorded patterns'],[2,'selected examples']])jumps.append(action('Go to '+label,()=>{
-showPanel(index,true);}));
-const historyDetails=el('details');historyDetails.append(el('summary','Explore exact epoch values · '+histories.length+' recorded epochs'));
-const metricName=name=>name.replace(/^(train_|val_|validation_)/,'');
-const historyValue=(values,metric)=>{const entry=Object.entries(obj(values)).find(([name])=>metricName(name)===metric);return entry?.[1]};
-const metrics=[...new Set(histories.flatMap(row=>[...Object.keys(obj(row.train_metrics)),...Object.keys(obj(row.validation_metrics))]).map(metricName))];
-const historyView=el('div'),historyMeaning=el('div'),historyValues=el('div',undefined,'kt-history-values');historyValues.tabIndex=0;
-historyValues.setAttribute('role','region');historyValues.setAttribute('aria-label','Exact learning history epoch values');historyDetails.append(historyValues);
-let historySeries='both';const selectedEpochs=new Map();
-const historyResize=new ResizeObserver(entries=>{for(const {target}of entries)
-target.style.setProperty('--kt-history-marker-scale',String(500/Math.max(target.clientWidth,1)));});
-onDispose(()=>historyResize.disconnect());
-const selectionMetric=typeof provenance.selection_metric==='string'?metricName(provenance.selection_metric):null;
-const showHistorySeries=()=>historyView.querySelectorAll('[data-history-series]').forEach(node=>
-node.toggleAttribute('hidden',historySeries!=='both'&&node.dataset.historySeries!==historySeries));
-const chart=(parent,rows,metric,identity)=>{const metricLabel=metric.length>48?metric.slice(0,45)+'…':metric;
-const epochValue=row=>
-typeof row.epoch==='string'&&/^(0|[1-9][0-9]{0,8})$/.test(row.epoch)?Number(row.epoch):NaN;
-const ordered=rows.filter(row=>Number.isFinite(epochValue(row))).slice().sort((a,b)=>epochValue(a)-epochValue(b));
-const values=ordered.flatMap(row=>[historyValue(row.train_metrics,metric),historyValue(row.validation_metrics,metric)]).filter(finite);
-if(ordered.length!==rows.length)note(parent,'Invalid epoch keys are excluded from the plot; inspect exact recorded values below.');
-if(!values.length||!ordered.length){note(parent,'No numeric epoch values recorded for '+metric+'.');return;}
-const low=Math.min(...values),high=Math.max(...values),first=epochValue(ordered[0]),last=epochValue(ordered.at(-1));
-const magnitude=Math.max(Math.abs(low),Math.abs(high),1),lo=low/magnitude,hi=high/magnitude;
-const epochScale=Math.max(Math.abs(first),Math.abs(last),1),start=first/epochScale,end=last/epochScale;
-const x=epoch=>8+(start===end?0.5:(epoch/epochScale-start)/(end-start))*484;
-const y=value=>172-(lo===hi?0.5:(value/magnitude-lo)/(hi-lo))*164;
-const axis=el('div',undefined,'kt-history-axis');axis.append(el('span',metricLabel),el('span','Recorded value'));
-parent.append(axis);
-const plot=el('div',undefined,'kt-history-plot'),ticks=el('div',undefined,'kt-history-ticks');
-if(low===high)ticks.classList.add('kt-constant');
-const tickValues=[...new Set(low===high?[low]:[high,low/2+high/2,low])];
-let tickLabels;for(const precision of [3,6,10,15,17]){tickLabels=tickValues.map(value=>{const rounded=value.toPrecision(precision),parsed=Number(rounded);
-return Number.isFinite(parsed)?String(parsed):rounded;});if(new Set(tickLabels).size===tickValues.length)break;}
-for(const label of tickLabels)ticks.append(el('span',label));
-const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg');
-svg.setAttribute('viewBox','0 0 500 180');svg.setAttribute('preserveAspectRatio','none');svg.setAttribute('role','img');svg.classList.add('kt-history-chart');
-svg.setAttribute('aria-label',metric+' by recorded epoch. Train: filled circles and solid line. Validation: hollow squares and dashed line. Use Recorded epoch to inspect exact values.');
-plot.append(ticks,svg);parent.append(plot);historyResize.observe(svg);
-const shape=(tag,attributes)=>{const node=document.createElementNS(ns,tag);
-for(const [name,value]of Object.entries(attributes))node.setAttribute(name,value);return node;};
-for(const position of low===high?[90]:[8,90,172])svg.append(shape('path',{d:'M8 '+position+' H492',stroke:'var(--kumo-surface-border)',fill:'none','vector-effect':'non-scaling-stroke'}));
-const guide=shape('path',{stroke:'var(--kumo-muted)','stroke-dasharray':'2 3','vector-effect':'non-scaling-stroke'});svg.append(guide);
-const points=[];
-for(const [key,color,marker]of [['train_metrics','var(--kumo-accent)','circle'],['validation_metrics','var(--kumo-foreground)','rect']]){
-const group=shape('g',{}),line=shape('path',{});group.dataset.historySeries=key;svg.append(group);group.append(line);
-let previous=null,path='';for(const [index,row]of ordered.entries()){const value=historyValue(row[key],metric),epoch=epochValue(row);
-if(!finite(value)){previous=null;continue;}
-const adjacent=previous!==null&&epoch-previous===1;
-path+=(adjacent?'L':'M')+x(epoch)+' '+y(value)+' ';
-const next=ordered[index+1],spaced=index===0||!next||!adjacent||epochValue(next)-epoch!==1||
-!finite(historyValue(next[key],metric))||Math.floor(x(epoch)/24)!==Math.floor(x(previous)/24);
-const point=shape(marker,marker==='circle'?{cx:x(epoch),cy:y(value),r:3.5}:{x:x(epoch)-4,y:y(value)-4,width:8,height:8});
-for(const [name,attribute]of Object.entries({fill:marker==='circle'?color:'var(--kumo-background)',stroke:color,'stroke-width':1.5,'vector-effect':'non-scaling-stroke'}))point.setAttribute(name,attribute);
-point.style.display=spaced?'':'none';group.append(point);points.push({point,index,spaced});previous=epoch;}
-for(const [name,attribute]of Object.entries({d:path,fill:'none',stroke:color,'stroke-width':2,'vector-effect':'non-scaling-stroke'}))line.setAttribute(name,attribute);
-if(marker==='rect')line.setAttribute('stroke-dasharray','5 4');
-if(!path){const missing=el('p',(marker==='circle'?'Train':'Validation')+': no recorded values for this metric.','kt-note');missing.dataset.historySeries=key;parent.append(missing);}}
-const epochs=el('div',undefined,'kt-history-epochs');epochs.append(el('span',first===last?'':text(ordered[0].epoch)),el('span',first===last?'Epoch '+text(ordered[0].epoch)+' (recorded key)':'Epoch (recorded key)'),el('span',first===last?'':text(ordered.at(-1).epoch)));plot.append(epochs);
-const legend=el('p',undefined,'kt-note kt-history-legend');
-legend.append(el('span','● Train · solid line','kt-history-train'),el('span','□ Validation · dashed line'));parent.append(legend);
-for(const [key,label]of [['validation_metrics','Validation'],['train_metrics','Train']]){
-const recorded=ordered.filter(row=>finite(historyValue(row[key],metric)));if(!recorded.length)continue;
-const observation=el('p',undefined,'kt-history-observation');observation.dataset.historySeries=key;
-observation.textContent=recorded.length===1?label+' '+metricLabel+': one numeric measurement, '+number(historyValue(recorded[0][key],metric))+' at epoch '+text(recorded[0].epoch)+'.':
-label+' '+metricLabel+': '+number(historyValue(recorded[0][key],metric))+' at epoch '+text(recorded[0].epoch)+' → '+number(historyValue(recorded.at(-1)[key],metric))+' at epoch '+text(recorded.at(-1).epoch)+'. First and last recorded values; inspect the intermediate epochs in the plot.';
-parent.append(observation);}
-const detail=el('div',undefined,'kt-history-selection');detail.setAttribute('aria-live','polite');
-const showEpoch=index=>{selectedEpochs.set(identity,index);const row=ordered[index];guide.setAttribute('d','M'+x(epochValue(row))+' 0 V180');
-for(const item of points){item.point.style.display=item.spaced||item.index===index?'':'none';item.point.setAttribute('stroke-width',item.index===index?3:1.5);}
-detail.replaceChildren();table(detail,['Selected epoch','Train '+metricLabel,'Validation '+metricLabel,'Recorded time (seconds)'],[[row.epoch,historyValue(row.train_metrics,metric),historyValue(row.validation_metrics,metric),row.time_taken]],[0,1,2,3],true);};
-const picker=control(parent,'Recorded epoch',ordered.map((row,index)=>[String(index),'Epoch '+text(row.epoch)]),value=>showEpoch(Number(value)));
-const index=Math.min(selectedEpochs.get(identity)??ordered.length-1,ordered.length-1);picker.value=String(index);showEpoch(index);parent.append(detail);};
-const drawHistory=metric=>{historyResize.disconnect();historyView.replaceChildren();historyValues.replaceChildren();historyMeaning.replaceChildren();
-const direction=metric===selectionMetric?(provenance.selection_direction==='min'?'Lower is preferred.':provenance.selection_direction==='max'?'Higher is preferred.':'Direction is not recorded.'):'Direction is not recorded for this metric.';
-identityNote(historyMeaning,'History metric',metric+(metric===selectionMetric?' · Recorded selection metric. ':' · ')+direction);
-if(metric===selectionMetric&&selectedMetricMeaning)note(historyMeaning,selectedMetricMeaning);
-for(const identity of [...new Set(histories.map(row=>JSON.stringify([row.trial,row.fit])))]){
-const rows=histories.filter(row=>JSON.stringify([row.trial,row.fit])===identity),row=rows[0];
-const group=el('div',undefined,'kt-history-fit');historyView.append(group);
-group.append(el('h4',row.fit==='original'?'Original search fit':row.fit==='refit_trainval'?'Refit on train + validation':row.fit==='refit_full'?'Refit on all data':'Recorded fit'));
-identityNote(group,'History fit identity','Trial: '+text(row.trial)+' · Fit: '+text(row.fit));
-if(row.fit==='refit_trainval')note(group,'The training population includes validation data. No independent validation curve is recorded for this refit.');
-chart(group,rows,metric,identity);
-historyValues.append(el('h4',text(row.trial)+' / '+text(row.fit)));table(historyValues,['Trial / fit','Epoch','Train '+metric,'Validation '+metric],rows.map(row=>[
-text(row.trial)+' / '+text(row.fit),text(row.epoch),historyValue(row.train_metrics,metric),historyValue(row.validation_metrics,metric)]),[1,2,3],true);}
-showHistorySeries();enable();};
-if(metrics.length){const metric=metrics.includes(selectionMetric)?selectionMetric:metrics[0];
-const select=control(learning,'History metric',metrics.map(name=>[name,name]),drawHistory);select.value=metric;
-control(learning,'History series',[['both','Both'],['train_metrics','Train'],['validation_metrics','Validation']],series=>{historySeries=series;showHistorySeries()});
-learning.append(historyMeaning,historyView);drawHistory(metric);
-note(learning,'Missing values and unrecorded epochs break the lines. These records do not identify a selected checkpoint epoch or establish why a metric changed.');
-learning.append(historyDetails,jumps);}
-else note(learning,'No recorded epoch metric values.');}
-else{note(resultJumps,'Learning history: no recorded epoch rows loaded.');
-if(obj(data.history).status==='available')note(results,'Learning history: no recorded epoch rows.');}
-const trials=list(obj(data.trials).rows).map(obj);state(results,data.trials,'Trial comparison');
-if(trials.length){const trialView=el('div',undefined,'kt-trials');results.append(trialView);
-trialView.append(el('h3','How do the recorded candidates compare?'));
-resultJumps.append(action('Candidates & settings',()=>showPanel(0,true,trialView.querySelector('h3'))));
-trialView.append(action(resultTask?'Back to TEST result':'Back to results',()=>showPanel(0,true,results.querySelector('.kt-result h3'))));
-note(trialView,'Compare original search candidates using recorded validation values. Inspecting a candidate or another metric does not change the recorded selection.');
-if(obj(data.trials).total!==undefined)note(trialView,'Recorded training completions: '+text(data.trials.completed)+' / '+text(data.trials.total)+' planned trials. This count does not establish final validation availability.');
-const originals=trials.filter(row=>row.fit==='original');
-if(originals.length===1)note(trialView,'Only one original search candidate is recorded; no alternative candidate comparison is available.');
-if(provenance.refitted_trainval===true)note(trialView,'The selected candidate was refit on train + validation. That refit is separate from these original search evaluations; inspect its learning history above.');
+const task=str(context.task_type||provenance.task_type);
+const isLink=/^(static|temporal)_link_prediction$/.test(task),isRegression=task==='regression',
+  isBinary=task==='binary_classification',isMulticlass=task==='multiclass_classification',
+  isMultilabel=task==='multilabel_classification',isClass=isBinary||isMulticlass||isMultilabel;
+const TASKS={static_link_prediction:'Link prediction',temporal_link_prediction:'Temporal link prediction',
+  regression:'Regression',binary_classification:'Binary classification',
+  multiclass_classification:'Multiclass classification',multilabel_classification:'Multilabel classification',
+  forecasting:'Forecasting'};
+const verified=provenance.selection_verified===true;
+const explainedFit=verified&&provenance.refitted_trainval===true?'refit_trainval':
+  verified&&provenance.refitted_trainval===false?'original':null;
+const fitName=fit=>({original:'Original fit',refit_trainval:'Refit on train + validation',
+  refit_full:'Refit on all data'}[fit]||'Unverified fit');
+const section=name=>obj(data[name]);
+
+const metricBase=name=>str(name).replace(/^(test_refit_|train_|val_|validation_|test_)/,'');
+const FAMILIES={map:'MAP',precision:'Precision',recall:'Recall',f1:'F1',ndcg:'NDCG',hit_ratio:'Hit rate',mrr:'MRR'};
+const NAMES={auroc:'AUROC',auprc:'AUPRC',ap:'Average precision',acc:'Accuracy',accuracy:'Accuracy',
+  mae:'MAE',rmse:'RMSE',mse:'MSE',loss:'Loss',r2:'R²',mape:'MAPE',smape:'SMAPE'};
+const metricLabel=name=>{
+  const base=metricBase(name),ranked=/^([a-z0-9_]+)@([0-9]+)$/.exec(base);
+  if(ranked&&FAMILIES[ranked[1]])return FAMILIES[ranked[1]]+'@'+ranked[2];
+  const averaged=/^(ap|auroc|auprc|f1|precision|recall)_(macro|micro)$/.exec(base);
+  if(averaged)return (NAMES[averaged[1]]||averaged[1])+' ('+averaged[2]+')';
+  const label=/^(ap|auroc|auprc)_per_label_(.+)$/.exec(base);
+  if(label)return (NAMES[label[1]]||label[1])+' · '+label[2];
+  return NAMES[base]||base;
+};
+const metricPhrase=name=>{const label=metricLabel(name);return /^[A-Z][a-z]/.test(label)?label[0].toLowerCase()+label.slice(1):label};
+const selectionBase=typeof provenance.selection_metric==='string'?metricBase(provenance.selection_metric):null;
+const LOWER=/^(loss|mae|mse|rmse|mape|smape)$/;
+const HIGHER=/^((map|precision|recall|f1|ndcg|hit_ratio|mrr)@[0-9]+|auroc|auprc|ap|acc|accuracy|r2|(ap|auroc|auprc|f1|precision|recall)_(macro|micro)|(ap|auroc|auprc)_per_label_.+)$/;
+const direction=name=>{
+  const base=metricBase(name);
+  if(base===selectionBase&&['min','max'].includes(provenance.selection_direction))
+    return provenance.selection_direction==='max'?'higher':'lower';
+  return LOWER.test(base)?'lower':HIGHER.test(base)?'higher':null;
+};
+const metricMeaning=name=>{
+  const base=metricBase(name),ranked=/^([a-z0-9_]+)@([0-9]+)$/.exec(base);
+  let text=null;
+  if(ranked){const k=ranked[2];text={
+    map:'Mean average precision of each entity’s top '+k+' ranked IDs; observed IDs ranked higher score more.',
+    precision:'Share of each entity’s top '+k+' ranked IDs that were observed.',
+    recall:'Share of each entity’s observed IDs found in its top '+k+'.',
+    f1:'Harmonic mean of precision@'+k+' and recall@'+k+'.',
+    ndcg:'Ranking quality of the top '+k+', weighting higher positions more.',
+    hit_ratio:'Share of entities with at least one observed ID in the top '+k+'.',
+    mrr:'Average reciprocal rank of the first observed ID within the top '+k+'.'}[ranked[1]]||null;}
+  else text={auroc:'Chance that a positive example is scored above a negative one; 0.5 is random ordering.',
+    auprc:'Area under the precision-recall curve.',ap:'Average precision across score thresholds.',
+    acc:'Share of examples whose most probable class is the observed class.',
+    accuracy:'Share of examples whose most probable class is the observed class.',
+    mae:'Average absolute difference between prediction and observed value, in target units.',
+    rmse:'Square root of the mean squared error, in target units; large errors weigh more.',
+    mse:'Mean squared error, in squared target units.',loss:'Training objective measured on this split.',
+    ap_macro:'Average precision computed for each label, then averaged across labels.',
+    auroc_macro:'AUROC computed for each label, then averaged across labels.'}[base]||null;
+  const way=direction(name);
+  return [text,way==='higher'?'Higher is better.':way==='lower'?'Lower is better.':''].filter(Boolean).join(' ');
+};
+const ORDER=['map','ndcg','mrr','hit_ratio','precision','recall','f1','auroc','auprc','ap','acc','accuracy','mae','rmse','mse','loss'];
+const metricOrder=(a,b)=>{
+  const key=name=>{const base=metricBase(name),ranked=/^([a-z0-9_]+)@([0-9]+)$/.exec(base);
+    const family=ORDER.indexOf(ranked?ranked[1]:base.split('_')[0]);
+    return [base===selectionBase?0:1,family<0?ORDER.length:family,ranked?Number(ranked[2]):Infinity,base]};
+  const x=key(a),y=key(b);
+  for(let i=0;i<4;i++)if(x[i]!==y[i])return i===3?String(x[i]).localeCompare(String(y[i])):x[i]<y[i]?-1:1;
+  return 0;
+};
+
+const REASONS={disabled:'Explanations were turned off for this training run.',
+  failed:'Explanation generation failed during training.',
+  model_only:'Only a published model was opened; it does not include training diagnostics.'};
+const NOTES=[
+  ['Gradient explanations exclude this module','Two-tower link-prediction models do not produce feature sensitivity.'],
+  ['Column cohorts require a node-prediction module','Cohort analysis is produced for entity-level predictions, not for link prediction.'],
+  ['Selected-example collection excludes this module','Two-tower link-prediction models do not save examples.'],
+  ['Column cohorts exclude forecasting','Cohort analysis is not produced for forecasting models.'],
+  ['Selected-example collection excludes forecasting','Examples are not saved for forecasting models.']];
+const producerNote=name=>{const text=str(section(name).producer_note),found=NOTES.find(([marker])=>text.includes(marker));
+  return found?found[1]:null};
+const unavailable=(name,what)=>{
+  const part=section(name),status=str(part.status);
+  if(status==='unavailable')return REASONS[str(part.reason)]||what+' is not available for this run.';
+  if(status==='invalid')return what+' could not be read because the saved file is invalid.';
+  if(status==='limited')return what+' is too large to display in a notebook.';
+  return producerNote(name)||what+' was not saved with this training run.';
+};
+const degraded=name=>str(section(name).reason)==='Explanation generation failed'?
+  note('This may be incomplete because explanation generation failed.'):null;
+const scopeNote=()=>{const text=str(section('gradient').producer_note);
+  if(text.includes('shallow-RHS'))return 'For this ranking model, sensitivity is how the ranking scores respond to features in each entity’s sampled graph, not whether the ranked IDs change; the ranked IDs themselves have no scores.';
+  if(text.startsWith('Recorded forecasting'))return 'For forecasting, sensitivity sums over all forecast horizons; dedicated lag and year-over-year inputs are not scored.';
+  return null};
+
+const metricRows=list(section('metrics').rows).map(obj).filter(row=>typeof row.name==='string');
+const headline=verified&&selectionBase&&explainedFit?metricRows.find(row=>metricBase(row.name)===selectionBase&&
+  row.split==='test'&&row.fit===explainedFit&&finite(row.value)&&row.origin==='Selected-checkpoint evaluation'&&
+  !(isRegression&&['mae','rmse','mse'].includes(row.name)&&row.value<0))||null:null;
+
+const gradientRows=list(section('gradient').rows).map(obj);
+const gradient=gradientRows.filter(row=>finite(row.score)&&row.score>=0&&typeof row.table==='string'&&typeof row.column==='string')
+  .sort((a,b)=>b.score-a.score||a.table.localeCompare(b.table)||a.column.localeCompare(b.column));
+const cohorts=list(section('cohorts').rows).map(obj);
+// The recorded query names the ranked column and its TOP k; nothing else is inferred from it.
+const query=str(context.query);
+const rankedColumn=isLink?(/LIST_DISTINCT\(\s*([A-Za-z_][\w.]*)/i.exec(query)||[])[1]||null:null;
+const idName=rankedColumn?rankedColumn.split('.').pop():'ID';
+const queryTopK=isLink?Number((/\bRANK\s+TOP\s+([0-9]+)/i.exec(query)||[])[1])||null:null;
+const featureKey=(table,column)=>JSON.stringify([str(table),str(column)]);
+const features=[],byKey=new Map(),cohortOnly=[];
+gradient.forEach((row,rank)=>{const feature={key:featureKey(row.table,row.column),table:row.table,
+  column:row.column,score:row.score,rank,cohorts:[]};features.push(feature);byKey.set(feature.key,feature)});
+cohorts.forEach((row,index)=>{const key=featureKey(row.table_name,row.col_name);let feature=byKey.get(key);
+  if(!feature){feature={key,table:str(row.table_name),column:str(row.col_name),score:null,rank:null,cohorts:[]};
+    byKey.set(key,feature);cohortOnly.push(feature)}
+  feature.cohorts.push(index)});
+cohortOnly.sort((a,b)=>a.table.localeCompare(b.table)||a.column.localeCompare(b.column));
+const featureList=[...features,...cohortOnly];
+S.feature=featureList[0]?.key??null;
+const featureName=(table,column)=>h('span',{class:'kt-fname'},h('span',{class:'kt-ftable kt-muted',text:str(table)+'.'}),
+  h('span',{class:'kt-fcol',text:str(column)}));
+
+// ---------------------------------------------------------------- examples
+const samples=section('samples'),coverage=obj(samples.coverage),bodies=obj(samples.bodies),outputs=obj(samples.outputs);
+const references=list(samples.references).map(obj);
+const nodeTables=store=>{const map=new Map();
+  for(const [table,ids] of Object.entries(obj(store.tables)))for(const id of list(ids)){
+    const key=String(id);if(!map.has(key))map.set(key,[]);map.get(key).push(table)}
+  return map};
+const shortText=(value,limit=60)=>{const text=str(value).replace(/\s+/g,' ');
+  return text.length>limit?text.slice(0,limit-1)+'…':text};
+// Long identifiers keep their distinguishing end: acct-xxx…xx15.
+const midText=(value,limit=28)=>{const text=str(value).replace(/\s+/g,' ');
+  if(text.length<=limit)return text;const head=Math.ceil((limit-1)/2);return text.slice(0,head)+'…'+text.slice(text.length-(limit-1-head))};
+const recordName=(store,tables,id)=>{
+  const node=obj(obj(store.nodes)[id]),table=(tables.get(String(id))||[])[0];
+  if(node.count!==undefined)return (table?table+' · ':'')+'aggregate of '+str(node.count)+' records';
+  if(has(node,'pkey')&&node.pkey!==null&&node.pkey!==undefined)
+    return (table?table+'.':'')+(str(node.pkey_name)||'id')+' '+str(node.pkey);
+  return (table?table+' ':'')+'record '+id;
+};
+const recordList=(store,tables,ids)=>{
+  const names=ids.map(id=>recordName(store,tables,id)),prefix=/^(\S+ )/.exec(names[0]||'');
+  if(prefix&&names.every(name=>name.startsWith(prefix[1])&&!name.includes('aggregate')))
+    return prefix[1]+names.map(name=>shortText(name.slice(prefix[1].length),24)).join(', ');
+  return names.map(name=>shortText(name,32)).join(', ')};
+const cellsOf=body=>Object.entries(obj(obj(body.feature_store).features)).flatMap(([id,columns])=>
+  Object.entries(obj(columns)).map(([name,cell])=>{cell=obj(cell);
+    const valid=finite(cell.score)&&cell.score>=0;
+    return {id:String(id),table:str(cell.table_name),column:str(cell.name??name),value:cell.value,
+      score:valid?cell.score:null,invalid:cell.score!==null&&cell.score!==undefined&&!valid}}));
+const examples=references.filter(ref=>typeof ref.artifact_id==='string'&&has(bodies,ref.artifact_id)).map((ref,index)=>{
+  const body=obj(bodies[ref.artifact_id]),store=obj(body.subgraph_store),tables=nodeTables(store);
+  const root=str(store.root_id),node=obj(obj(store.nodes)[root]);
+  const originals=[...new Set(Object.values(obj(ref.original_ids)).map(str))];
+  const name=has(node,'pkey')&&node.pkey!==null?recordName(store,tables,root):
+    originals.length===1?'ID '+originals[0]:'Example '+ref.artifact_id;
+  return {index,ref,body,store,tables,root,name,table:(tables.get(root)||[])[0]||null,
+    output:obj(outputs[ref.artifact_id]),cells:cellsOf(body).map(cell=>Object.assign(cell,{store}))}});
+const entityTables=[...new Set(examples.map(example=>example.table).filter(Boolean))];
+const entityNoun=entityTables.length===1?entityTables[0]:'examples';
+const outputReady=output=>['available','partial'].includes(output.status)&&output.task_type===task;
+const idKey=node=>{node=obj(node);
+  return (typeof node.id==='string'||finite(node.id))&&typeof node.id_name==='string'&&node.id_name?
+    JSON.stringify([typeof node.id,node.id_name,node.id]):null};
+const ranking=output=>{
+  const predictions=Array.isArray(output.prediction)?output.prediction.map(obj):null;
+  const targets=Array.isArray(output.target)?output.target.map(obj):null,first=new Map();
+  (predictions||[]).forEach((node,i)=>{const key=idKey(node);if(key!==null&&!first.has(key))first.set(key,i)});
+  const observed=(targets||[]).map(node=>{const key=idKey(node);
+    const comparable=key!==null&&predictions!==null&&predictions.every(item=>idKey(item)!==null&&item.id_name===node.id_name);
+    return {node,comparable,rank:comparable?first.get(key):undefined}});
+  const ranks=observed.map(item=>item.rank).filter(rank=>rank!==undefined);
+  return {predictions,targets,observed,best:ranks.length?Math.min(...ranks):null,hits:new Set(ranks)}};
+const probability=value=>finite(value)&&value>=0&&value<=1;
+const membership=value=>value===0||value===1;
+const classRows=output=>{
+  const predictions=isBinary?{'Positive class':output.prediction}:obj(output.prediction);
+  const targets=isBinary?{'Positive class':output.target}:obj(output.target);
+  return [...new Set([...Object.keys(predictions),...Object.keys(targets)])].map(name=>({name,
+    probability:probability(predictions[name])?predictions[name]:null,
+    observed:membership(targets[name])?targets[name]:null}))
+    .sort((a,b)=>(b.probability??-1)-(a.probability??-1)||a.name.localeCompare(b.name))};
+const scalarRange=(()=>{const values=examples.flatMap(example=>outputReady(example.output)&&isRegression?
+  [example.output.prediction,example.output.target].filter(finite):[]);
+  return values.length?[Math.min(0,...values),Math.max(0,...values)]:null})();
+const regressionPlaces=placesFor(examples.flatMap(example=>isRegression&&outputReady(example.output)?
+  [example.output.prediction,example.output.target,finite(example.output.prediction)&&finite(example.output.target)?
+    example.output.prediction-example.output.target:null]:[]));
+const outcome=example=>{
+  const output=example.output;
+  if(!outputReady(output))return {ready:false};
+  if(isLink){const result=ranking(output);return {ready:true,...result}}
+  if(isRegression){const prediction=finite(output.prediction)?output.prediction:null,target=finite(output.target)?output.target:null;
+    const error=prediction!==null&&target!==null&&finite(prediction-target)?prediction-target:null;
+    return {ready:true,prediction,target,error}}
+  if(isClass){const rows=classRows(output),top=rows[0]&&rows[0].probability!==null?rows[0]:null;
+    const observed=rows.filter(row=>row.observed===1);
+    return {ready:true,rows,top,observed,match:isMulticlass&&top&&observed.length===1?observed[0].name===top.name:null}}
+  return {ready:false}};
+
+// ---------------------------------------------------------------- components
+const listbox=({label,items,selected,onSelect,render,cls,groups})=>{
+  const box=h('div',{class:'kt-list',role:'listbox','aria-label':label}),options=[];
+  let how='key';
+  const choose=(index,focus)=>{
+    options.forEach((option,i)=>{option.setAttribute('aria-selected',String(i===index));option.tabIndex=i===index?0:-1});
+    if(focus)options[index].focus();
+    onSelect(index,how)};
+  items.forEach((item,index)=>{
+    const group=(groups||[]).find(([,start])=>start===index);
+    if(group)append(box,h('div',{class:'kt-group-label','aria-hidden':'true',text:group[0]}));
+    const rendered=render(item,index);
+    const option=h('div',{class:'kt-option '+cls,role:'option',id:nextId('option'),
+      'aria-selected':String(index===selected),tabindex:index===selected||(selected<0&&index===0)?'0':'-1',
+      'aria-label':rendered.label,onclick:()=>{how='pointer';choose(index,true);how='key'}},rendered.content);
+    options.push(option);append(box,option)});
+  box.addEventListener('keydown',event=>{
+    const current=options.indexOf(event.target.closest('[role=option]'));
+    if(current<0)return;
+    if(event.key===' '||event.key==='Enter'){event.preventDefault();how='pointer';choose(current,true);how='key';return}
+    let next={ArrowDown:current+1,ArrowUp:current-1,Home:0,End:options.length-1}[event.key];
+    if(next===undefined)return;
+    event.preventDefault();choose(Math.max(0,Math.min(options.length-1,next)),true)},{signal});
+  return box};
+// When the detail is stacked below its list, an explicit pick scrolls the detail into view; arrow keys do not.
+const revealDetail=(detail,how)=>{
+  if(how!=='pointer'||!detail||getComputedStyle(detail).position==='sticky')return;
+  const box=detail.getBoundingClientRect();
+  if(box.top<0||box.top>innerHeight*0.6)detail.scrollIntoView({block:'start'})};
+const selectField=(label,choices,value,onChange)=>{
+  const id=nextId('select'),select=h('select',{class:'kt-select',id,onchange:()=>onChange(select.value)},
+    choices.map(([key,text])=>h('option',{value:key,text})));
+  select.value=value;
+  return h('label',{class:'kt-field',for:id},label,select)};
+const link=(text,onClick,props)=>h('button',{type:'button',class:'kt-link',onclick:onClick,...props},text);
+
+// Charts are drawn at their measured width so text and markers stay crisp.
+const charts=new Map();
+const resizer=new ResizeObserver(entries=>{for(const entry of entries){
+  const draw=charts.get(entry.target);if(draw)draw(Math.floor(entry.contentRect.width))}});
+onDispose(()=>resizer.disconnect());
+const forgetCharts=node=>{for(const box of node.querySelectorAll('.kt-chart-box')){resizer.unobserve(box);charts.delete(box)}};
+const chartBox=(draw,props)=>{
+  const box=h('div',{class:'kt-chart-box',...props});let drawn=0;
+  charts.set(box,width=>{if(width>0&&width!==drawn){drawn=width;draw(box,width)}});
+  resizer.observe(box);return box};
+const niceTicks=(low,high,count)=>{
+  if(!(high>low)){const pad=Math.abs(low)*0.1||1;low-=pad;high+=pad}
+  const raw=(high-low)/count,magnitude=10**Math.floor(Math.log10(raw)),scaled=raw/magnitude;
+  const step=(scaled<1.5?1:scaled<3?2:scaled<7?5:10)*magnitude;
+  const start=Math.floor(low/step+1e-9)*step,end=Math.ceil(high/step-1e-9)*step,values=[];
+  for(let i=0;start+i*step<=end+step*1e-6&&i<50;i++)values.push(start+i*step);
+  const places=Math.max(0,Math.min(10,-Math.floor(Math.log10(step)+1e-9)));
+  return {values,low:start,high:end,label:value=>Math.abs(value)<step*1e-6?'0':value.toFixed(places)}};
+
+// One learning-curve chart: a slider over recorded epochs with a readout.
+const learningChart=({series,title,height=190,stateKey})=>{
+  const epochs=[...new Set(series.flatMap(item=>item.points.map(point=>point.x)))].sort((a,b)=>a-b);
+  const values=series.flatMap(item=>item.points.map(point=>point.y)).filter(finite);
+  const frame=h('div',{class:'kt-chart-frame'});
+  if(!epochs.length||!values.length){append(frame,note('No numeric values were recorded for this metric.'));return frame}
+  let cursor=Math.min(S.epochs.get(stateKey)??epochs.length-1,epochs.length-1),geometry=null;
+  const readout=h('div',{class:'kt-readout','aria-hidden':'true'});
+  const valueAt=(item,epoch)=>{const point=item.points.find(point=>point.x===epoch);return point?point.y:null};
+  const describe=()=>'Epoch '+epochs[cursor]+': '+series.map(item=>item.name+' '+(fmt(valueAt(item,epochs[cursor]))??'not recorded')).join(', ');
+  const box=chartBox((box,width)=>{
+    const ticks=niceTicks(Math.min(...values),Math.max(...values),4);
+    const left=Math.max(...ticks.values.map(value=>ticks.label(value).length))*6.4+14,right=12,top=8,bottom=24;
+    const inner=Math.max(20,width-left-right),tall=height-top-bottom;
+    const x=epoch=>left+(epochs.length===1?inner/2:(epoch-epochs[0])/(epochs.at(-1)-epochs[0])*inner);
+    const y=value=>top+tall-(value-ticks.low)/(ticks.high-ticks.low)*tall;
+    const svg=sv('svg',{class:'kt-chart',width,height,viewBox:'0 0 '+width+' '+height,'aria-hidden':'true'});
+    for(const value of ticks.values){
+      append(svg,sv('line',{class:'kt-gridline',x1:left,x2:width-right,y1:y(value),y2:y(value)}));
+      append(svg,svText({x:left-8,y:y(value)+4,'text-anchor':'end'},ticks.label(value)))}
+    const every=Math.max(1,Math.ceil(epochs.length/Math.max(2,Math.floor(inner/44))));
+    epochs.forEach((epoch,i)=>{if(i%every===0||i===epochs.length-1&&(epochs.length-1)%every>every/2)
+      append(svg,svText({x:x(epoch),y:height-6,'text-anchor':'middle'},String(epoch)))});
+    const markers=epochs.length<=inner/8;
+    for(const item of series){
+      const color=item.secondary?'var(--kumo-foreground)':'var(--kumo-accent)';let path='',previous=null;
+      for(const point of item.points.slice().sort((a,b)=>a.x-b.x)){
+        if(!finite(point.y)){previous=null;continue}
+        path+=(previous!==null&&point.x-previous===1?'L':'M')+x(point.x).toFixed(1)+' '+y(point.y).toFixed(1)+' ';
+        previous=point.x}
+      append(svg,sv('path',{d:path,fill:'none',stroke:color,'stroke-width':2,'stroke-linejoin':'round',
+        'stroke-dasharray':item.secondary?'5 4':null}));
+      if(markers)for(const point of item.points)if(finite(point.y))append(svg,item.secondary?
+        sv('rect',{x:x(point.x)-3.5,y:y(point.y)-3.5,width:7,height:7,fill:'var(--kumo-background)',stroke:color,'stroke-width':1.5}):
+        sv('circle',{cx:x(point.x),cy:y(point.y),r:3.2,fill:color}))}
+    const line=sv('line',{class:'kt-cursor',y1:top,y2:top+tall});append(svg,line);
+    geometry={x,line,left,inner};box.replaceChildren(svg);update()});
+  const update=()=>{
+    if(geometry){const at=geometry.x(epochs[cursor]);geometry.line.setAttribute('x1',at);geometry.line.setAttribute('x2',at)}
+    readout.replaceChildren(h('b',{text:'Epoch '+epochs[cursor]+(cursor===epochs.length-1&&epochs.length>1?' (last)':'')}),...series.map(item=>
+      h('span',{},h('span',{class:item.secondary?'kt-key-observed':'kt-key','aria-hidden':'true',text:item.secondary?'□ ':'● '}),item.name+' ',num(valueAt(item,epochs[cursor])))));
+    box.setAttribute('aria-valuenow',String(epochs[cursor]));box.setAttribute('aria-valuetext',describe())};
+  let committed=cursor;
+  const move=(index,commit=true)=>{cursor=Math.max(0,Math.min(epochs.length-1,index));if(commit){committed=cursor;S.epochs.set(stateKey,cursor)}update()};
+  Object.entries({tabindex:'0',role:'slider','aria-label':title+' by epoch',
+    'aria-valuemin':String(epochs[0]),'aria-valuemax':String(epochs.at(-1))}).forEach(([key,value])=>box.setAttribute(key,value));
+  box.classList.add('kt-plot');
+  box.addEventListener('keydown',event=>{
+    const next={ArrowRight:cursor+1,ArrowUp:cursor+1,ArrowLeft:cursor-1,ArrowDown:cursor-1,Home:0,End:epochs.length-1,
+      PageUp:cursor+10,PageDown:cursor-10}[event.key];
+    if(next!==undefined){event.preventDefault();move(next)}},{signal});
+  box.addEventListener('pointerleave',()=>{if(cursor!==committed)move(committed,false)},{signal});
+  box.addEventListener('click',()=>move(cursor),{signal});
+  box.addEventListener('pointermove',event=>{if(!geometry)return;
+    const rect=box.getBoundingClientRect(),position=event.clientX-rect.left;let best=0;
+    epochs.forEach((epoch,i)=>{if(Math.abs(geometry.x(epoch)-position)<Math.abs(geometry.x(epochs[best])-position))best=i});
+    if(best!==cursor)move(best,false)},{signal});
+  update();
+  append(frame,readout,box);
+  return frame};
+
+// Name, value and local-sensitivity rows that reflow into two lines at narrow widths.
+const scoreTable=(headers,rows,numeric)=>h('div',{class:'kt-scores'+(numeric?' kt-scores-num':''),role:'table'},
+  h('div',{class:'kt-score-row kt-score-head',role:'row'},headers.map(text=>h('span',{role:'columnheader',text}))),
+  rows.map(([name,value,score])=>h('div',{class:'kt-score-row',role:'row'},h('span',{role:'cell'},name),
+    h('span',{role:'cell'},value),h('span',{role:'cell',class:'kt-score'},score))));
+const scoreCell=(cell,scale)=>cell.score!==null?[bar(cell.score,scale),num(cell.score,2)]:
+  [missing(cell.invalid?'invalid score':'not scored')];
+const legend=items=>h('div',{class:'kt-legend'},items.map(([symbol,cls,text])=>
+  h('span',{},h('span',{class:cls,'aria-hidden':'true',text:symbol+' '}),text)));
+const axisRange=(values,isProbability)=>{
+  if(isProbability)return [0,1];
+  const finiteValues=values.filter(finite);
+  if(!finiteValues.length)return null;
+  let low=Math.min(0,...finiteValues),high=Math.max(0,...finiteValues);
+  if(low===high){low-=1;high+=1}
+  return [low,high]};
+const place=(value,range)=>((value-range[0])/(range[1]-range[0])*100).toFixed(2)+'%';
+const track=(prediction,observed,range,label)=>{
+  // A paired prediction sits above its observation so equal values never hide each other.
+  const node=h('div',{class:'kt-track'+(finite(prediction)&&finite(observed)?' kt-paired':''),role:label?'img':null,
+    'aria-label':label,'aria-hidden':label?null:'true'});
+  if(!range)return node;
+  if(finite(prediction)&&finite(observed)){const a=Math.min(prediction,observed),b=Math.max(prediction,observed);
+    append(node,h('span',{class:'kt-gap',style:{left:place(a,range),width:((b-a)/(range[1]-range[0])*100).toFixed(2)+'%'}}))}
+  if(finite(observed))append(node,h('span',{class:'kt-diamond',style:{left:place(observed,range)}}));
+  if(finite(prediction))append(node,h('span',{class:'kt-dot',style:{left:place(prediction,range)}}));
+  return node};
+
+// ---------------------------------------------------------------- navigation
+const panels=[],tabs=[];
+const TAB_NAMES=['Overview','Features','Examples','Training'];
+const renderers=[];
+const showTab=(index,focusTarget)=>{
+  S.tab=index;
+  tabs.forEach((tab,i)=>{tab.setAttribute('aria-selected',String(i===index));tab.tabIndex=i===index?0:-1});
+  panels.forEach((panel,i)=>{panel.hidden=i!==index});
+  forgetCharts(panels[index]);panels[index].replaceChildren();renderers[index](panels[index]);
+  if(focusTarget){const target=panels[index].querySelector('[role=option][aria-selected=true]')||panels[index].querySelector('.kt-focus');
+    if(target){if(!target.hasAttribute('tabindex'))target.tabIndex=-1;target.focus({preventScroll:true})}
+    tablist.scrollIntoView({block:'nearest'})}};
+const openFeature=key=>{S.feature=key;showTab(1,true)};
+const openExample=index=>{S.example=index;S.allLocal=false;showTab(2,true)};
+
+// ---------------------------------------------------------------- overview
+const card=(title,...children)=>{const id=nextId('card');
+  return h('section',{class:'kt-card','aria-labelledby':id},heading(3,title,{id}),children)};
+const topKNote=()=>{const k=Number((/@([0-9]+)$/.exec(metricBase(headline?.name||''))||[])[1]);
+  return queryTopK&&k&&k!==queryTopK?note('The query asks for the top '+queryTopK+'; evaluation and saved examples use ranked lists of '+k+'.'):null};
+const performanceCard=()=>{
+  if(!headline){
+    const tests=metricRows.filter(row=>row.split==='test'&&finite(row.value)).sort((a,b)=>metricOrder(a.name,b.name)).slice(0,6);
+    return card('Test performance',p(verified?'The selection metric has no verified test value for the explained model.':
+      'Model selection could not be verified, so no headline score is shown.','kt-muted'),
+      tests.length?h('div',{class:'kt-related'},tests.map(row=>h('div',{},h('div',{class:'kt-small kt-muted',
+        text:metricLabel(row.name)+(row.fit==='refit_trainval'?' · refit':'')}),h('div',{class:'kt-related-value'},num(row.value))))):
+        note(unavailable('metrics','The metrics file')))}
+  const k=(/@([0-9]+)$/.exec(metricBase(headline.name))||[])[1];
+  const pool=metricRows.filter(row=>row.split==='test'&&row.fit===headline.fit&&row.name!==headline.name&&
+    metricBase(row.name)!=='loss'&&!/_per_label_/.test(row.name)).sort((a,b)=>metricOrder(a.name,b.name));
+  const related=[...pool.filter(row=>k&&row.name.endsWith('@'+k)),...pool.filter(row=>!(k&&row.name.endsWith('@'+k)))].slice(0,3);
+  return card('Test performance',h('div',{class:'kt-metric'},
+      h('div',{class:'kt-metric-name',text:metricLabel(headline.name)}),
+      h('div',{class:'kt-metric-value'},num(headline.value)),
+      p(metricMeaning(headline.name))),
+    note([fitName(headline.fit),'test split'].join(' · ')),
+    selectedValidation()!==null?note('Validation '+metricLabel(selectionBase)+' at the selected checkpoint: '+fmt(selectedValidation())+
+      (trialRows.length>1?'; it chose this model among '+trialRows.length+' candidates.':'.')):null,
+    topKNote(),
+    related.length?h('div',{class:'kt-related'},related.map(row=>h('div',{},h('div',{class:'kt-small kt-muted',text:metricLabel(row.name)}),
+      h('div',{class:'kt-related-value'},num(row.value))))):null)};
+const featuresCard=()=>{
+  if(!features.length)return card('Strongest features',p(gradientRows.length?'No valid sensitivity scores were recorded.':unavailable('gradient','Feature sensitivity'),'kt-muted'));
+  const top=features.slice(0,5),scale=top[0].score;
+  return card('Strongest features',note('Global sensitivity: how strongly test predictions respond to each feature.'+
+      (isLink&&scopeNote()?' For ranking, this is score sensitivity, not whether the ranked IDs change.':'')),
+    h('div',{class:'kt-list'},top.map(feature=>h('button',{type:'button',class:'kt-option kt-feature',
+      'aria-label':feature.table+'.'+feature.column+', sensitivity '+fmt(feature.score,3)+'. Open feature details',
+      onclick:()=>openFeature(feature.key)},
+      h('span',{title:feature.table+'.'+feature.column},featureName(feature.table,feature.column)),bar(feature.score,scale),num(feature.score,3)))),
+    link(features.length>5?'All '+features.length+' features →':'Feature details →',()=>openFeature(S.feature)))};
+const exampleFacts=()=>{
+  const ready=examples.map(example=>({example,result:outcome(example)})).filter(item=>item.result.ready);
+  if(!ready.length)return null;
+  const n=ready.length,facts=[];
+  const fact=(value,text)=>h('li',{},h('span',{class:'kt-fact-value'},value),p(text,'kt-muted'));
+  const jump=(item,text)=>link(item.example.name+' · '+text+' →',()=>openExample(item.example.index));
+  if(isLink){
+    const hits=ready.filter(item=>item.result.best!==null),sizes=new Set(ready.map(item=>(item.result.predictions||[]).length));
+    const top=sizes.size===1?'top '+[...sizes][0]:'ranked list';
+    facts.push(fact(hits.length+' of '+n,entityNoun+' have an observed ID in their '+top));
+    const best=hits.slice().sort((a,b)=>a.result.best-b.result.best)[0];
+    if(best)facts.push(jump(best,'observed '+idName+' '+shortText(str(best.result.predictions[best.result.best].id),24)+' at rank '+(best.result.best+1)));
+    const slots=ready.flatMap(item=>(item.result.predictions||[]).map(idKey).filter(key=>key!==null)),counts=new Map();
+    for(const key of slots)counts.set(key,(counts.get(key)||0)+1);
+    const common=[...counts.entries()].sort((a,b)=>b[1]-a[1])[0];
+    if(slots.length&&common)facts.push(fact(plural(counts.size,'distinct '+idName),'fill the '+slots.length+' ranked slots of the '+n+' saved '+
+      (entityNoun==='examples'?'examples':entityNoun)+'; '+idName+' '+shortText(str(JSON.parse(common[0])[2]),16)+' is in '+
+      (common[1]===n?'all '+n:common[1]+' of '+n)+' lists'))}
+  else if(isRegression){
+    const errors=ready.filter(item=>item.result.error!==null).map(item=>({item,size:Math.abs(item.result.error)}));
+    if(errors.length){const sorted=errors.map(e=>e.size).sort((a,b)=>a-b),middle=sorted.length>>1;
+      const median=sorted.length%2?sorted[middle]:(sorted[middle-1]+sorted[middle])/2;
+      facts.push(fact(num(median),'median absolute error across '+(errors.length<ready.length?errors.length+' of '+ready.length+' examples with both values':
+        plural(errors.length,'example'))));
+      const worst=errors.slice().sort((a,b)=>b.size-a.size)[0];
+      facts.push(jump(worst.item,'largest error '+signed(worst.item.result.error)))}}
+  else if(isBinary){
+    const groups=[1,0].map(label=>ready.filter(item=>item.result.observed.length===(label?1:0)&&item.result.top&&
+      item.result.rows[0].observed===label));
+    const mean=items=>items.length?items.reduce((sum,item)=>sum+item.result.top.probability,0)/items.length:null;
+    facts.push(h('li',{},h('span',{class:'kt-fact-value'},numProb(mean(groups[0])),h('span',{class:'kt-muted',text:' vs '}),numProb(mean(groups[1]))),
+      p('mean positive-class probability for observed positives ('+groups[0].length+') vs negatives ('+groups[1].length+')','kt-muted')));
+    const doubtful=groups[1].slice().sort((a,b)=>b.result.top.probability-a.result.top.probability)[0];
+    if(doubtful)facts.push(jump(doubtful,'highest-probability negative ('+prob(doubtful.result.top.probability)+')'))}
+  else if(isMulticlass){
+    const judged=ready.filter(item=>item.result.match!==null),matches=judged.filter(item=>item.result.match);
+    facts.push(fact(matches.length+' of '+judged.length,'examples where the most probable class is the observed class'));
+    const miss=judged.find(item=>!item.result.match);
+    if(miss)facts.push(jump(miss,'predicted '+shortText(miss.result.top.name,20)+', observed '+shortText(miss.result.observed[0].name,20)))}
+  else if(isMultilabel){
+    const cells=ready.flatMap(item=>item.result.rows.filter(row=>row.probability!==null&&row.observed!==null).map(row=>({item,row})));
+    const mean=rows=>rows.length?rows.reduce((sum,cell)=>sum+cell.row.probability,0)/rows.length:null;
+    const present=cells.filter(cell=>cell.row.observed===1),absent=cells.filter(cell=>cell.row.observed===0);
+    facts.push(h('li',{},h('span',{class:'kt-fact-value'},numProb(mean(present)),h('span',{class:'kt-muted',text:' vs '}),numProb(mean(absent))),
+      p('mean probability for observed labels vs absent labels','kt-muted')));
+    const weakest=present.slice().sort((a,b)=>a.row.probability-b.row.probability)[0];
+    if(weakest)facts.push(jump(weakest.item,'lowest-probability observed label '+shortText(weakest.row.name,20)))}
+  return facts.length?facts:null};
+const exampleKey=example=>{const node=obj(obj(example.store.nodes)[example.root]);
+  return has(node,'pkey')&&node.pkey!==null?midText(node.pkey,10):midText(example.name,10)};
+const outcomeStrip=ready=>{
+  if(isRegression){
+    const points=ready.filter(item=>item.result.prediction!==null&&item.result.target!==null);
+    if(points.length<2)return null;
+    const values=points.flatMap(item=>[item.result.prediction,item.result.target]);
+    let low=Math.min(...values),high=Math.max(...values);const pad=(high-low)*0.08||1;low-=pad;high+=pad;
+    return h('div',{class:'kt-section'},chartBox((box,width)=>{
+      const height=170,left=46,bottom=22,top=6,right=8,inner=width-left-right,tall=height-top-bottom;
+      const x=value=>left+(value-low)/(high-low)*inner,y=value=>top+tall-(value-low)/(high-low)*tall;
+      const svg=sv('svg',{class:'kt-chart',width,height,viewBox:'0 0 '+width+' '+height,role:'img',
+        'aria-label':'Predicted versus observed values for '+plural(points.length,'saved example')+'; the dashed line marks exact predictions.'});
+      append(svg,sv('rect',{x:left,y:top,width:inner,height:tall,fill:'none',stroke:'var(--kumo-surface-border)'}),
+        sv('line',{x1:x(low),y1:y(low),x2:x(high),y2:y(high),stroke:'var(--kumo-muted)','stroke-dasharray':'4 4'}),
+        svText({x:left+inner/2,y:height-4,'text-anchor':'middle'},'Observed'),
+        svText({x:left,y:height-4,'text-anchor':'start'},axisLabel(low)),svText({x:left+inner,y:height-4,'text-anchor':'end'},axisLabel(high)),
+        svText({x:left-5,y:top+tall,'text-anchor':'end'},axisLabel(low)),svText({x:left-5,y:top+9,'text-anchor':'end'},axisLabel(high)),
+        svText({x:12,y:top+tall/2,'text-anchor':'middle',transform:'rotate(-90 12 '+(top+tall/2)+')'},'Predicted'),
+        points.map(item=>sv('circle',{cx:x(item.result.target),cy:y(item.result.prediction),r:4,fill:'var(--kumo-accent)',
+          stroke:'var(--kumo-background)','stroke-width':1.5})));
+      box.replaceChildren(svg)}),note('Each dot is a saved example; dots on the dashed line are exact.'))}
+  if(isBinary){
+    const rows=[[1,'Observed positive'],[0,'Observed negative']].map(([label,name])=>[name,ready.filter(item=>item.result.top&&
+      item.result.rows[0].observed===label)]).filter(([,items])=>items.length);
+    if(!rows.length)return null;
+    return h('div',{class:'kt-section',role:'img','aria-label':rows.map(([name,items])=>name+': probabilities '+
+        items.map(item=>fmt(item.result.top.probability,2)).join(', ')).join('; ')},
+      rows.map(([name,items])=>h('div',{class:'kt-dotrow','aria-hidden':'true'},h('span',{class:'kt-small kt-muted',text:name+' ('+items.length+')'}),
+        h('div',{class:'kt-track'},items.map(item=>h('span',{class:'kt-dot',style:{left:place(item.result.top.probability,[0,1])}}))))),
+      h('div',{class:'kt-dotrow','aria-hidden':'true'},h('span'),h('div',{class:'kt-axis'},h('span',{text:'0'}),
+        h('span',{text:'positive-class probability'}),h('span',{text:'1'}))))}
+  const cells=ready.map(({example,result})=>{
+    const good=isLink?result.best!==null:isMulticlass?result.match===true:isMultilabel?!!(result.top&&result.observed.some(row=>row.name===result.top.name)):false;
+    const value=isLink?(result.best!==null?'✓ #'+(result.best+1):'—'):good?'✓':result.top?'✗':'—';
+    const label=example.name+': '+(isLink?(result.best!==null?'observed ID at rank '+(result.best+1):'no observed ID ranked'):
+      good?'most probable '+(isMultilabel?'label':'class')+' observed':'most probable '+(isMultilabel?'label':'class')+' not observed');
+    return h('li',{},h('button',{type:'button',class:'kt-strip-cell'+(good?' kt-match':''),'aria-label':label+'. Open example',
+      onclick:()=>openExample(example.index)},h('span',{class:'kt-small kt-muted kt-label',text:exampleKey(example)}),h('strong',{text:value})))});
+  return h('div',{class:'kt-section'},h('ul',{class:'kt-strip','aria-label':isLink?'Best observed rank per saved example':
+    'Whether the most probable '+(isMultilabel?'label':'class')+' was observed, per saved example'},cells),
+    note(isLink?'Best rank of an observed ID for each saved '+(entityNoun==='examples'?'example':entityNoun.replace(/s$/,''))+'; — means none was ranked.':
+      '✓ the most probable '+(isMultilabel?'label':'class')+' was observed · ✗ it was not.'))};
+const examplesCard=()=>{
+  if(!examples.length)return card('Examples',p(examplesUnavailable(),'kt-muted'));
+  const ready=examples.map(example=>({example,result:outcome(example)})).filter(item=>item.result.ready);
+  const facts=exampleFacts();
+  return card('Examples',facts?h('ul',{class:'kt-facts'},facts.map(item=>item.tagName==='LI'?item:h('li',{},item))):
+      p('Predictions were not saved for these examples.','kt-muted'),ready.length?outcomeStrip(ready):null,
+    note(loadedNote()),
+    link('Open examples →',()=>openExample(S.example)))};
+
+// ---------------------------------------------------------------- learning history
+const historyRows=list(section('history').rows).map(obj);
+const historyBase=name=>str(name).replace(/^(train_|val_|validation_)/,'');
+const historyMetrics=[...new Set(historyRows.flatMap(row=>[...Object.keys(obj(row.train_metrics)),
+  ...Object.keys(obj(row.validation_metrics))]).map(historyBase))].sort(metricOrder);
+const fits=[...new Map(historyRows.map(row=>[JSON.stringify([row.trial,row.fit]),{trial:str(row.trial),fit:str(row.fit)}])).values()]
+  .sort((a,b)=>(a.fit==='original'?0:1)-(b.fit==='original'?0:1));
+S.metric=historyMetrics.includes(selectionBase)?selectionBase:historyMetrics[0]??null;
+const epochOf=row=>typeof row.epoch==='string'&&/^(0|[1-9][0-9]{0,8})$/.test(row.epoch)?Number(row.epoch):null;
+const historyValue=(values,metric)=>{const entry=Object.entries(obj(values)).find(([name])=>historyBase(name)===metric);
+  return entry&&finite(entry[1])?entry[1]:null};
+const fitSeries=(fit,metric)=>{
+  const rows=historyRows.filter(row=>str(row.trial)===fit.trial&&str(row.fit)===fit.fit&&epochOf(row)!==null);
+  return [['Train','train_metrics',false],['Validation','validation_metrics',true]].map(([name,key,secondary])=>
+    ({name,secondary,points:rows.map(row=>({x:epochOf(row),y:historyValue(row[key],metric)}))}))
+    .filter(item=>item.points.some(point=>point.y!==null))};
+const learningCard=()=>{
+  const fit=fits[0];
+  if(!fit||!S.metric)return card('Learning curve',p(historyRows.length?'No numeric epoch values were recorded.':
+    unavailable('history','Learning history'),'kt-muted'));
+  const series=fitSeries(fit,S.metric),epochs=new Set(historyRows.filter(row=>str(row.trial)===fit.trial&&str(row.fit)===fit.fit).map(row=>row.epoch));
+  return card('Learning curve',
+    p(metricLabel(S.metric)+' by epoch · '+fitName(fit.fit)+' · '+series.map(item=>item.secondary?'validation dashed':'train solid').join(', '),'kt-muted kt-small'),
+    learningChart({series,title:metricLabel(S.metric)+' learning curve',height:150,stateKey:'overview'}),
+    note(plural(epochs.size,'recorded epoch')+' · '+plural(trialRows.length,'candidate')+' trained'),
+    link('Training details →',()=>showTab(3,true)))};
+
+// ---------------------------------------------------------------- metrics table
+const metricsTable=()=>{
+  const columns=[],key=row=>str(row.fit)+'|'+str(row.split);
+  const order=['original|train','original|val','original|test','refit_trainval|test','refit_full|test'];
+  for(const name of order)if(metricRows.some(row=>key(row)===name)){columns.push(name);
+    if(name==='original|val'&&selectedTrialRow()?.comparison_source==='final_validation_metrics')columns.push('selected|val')}
+  for(const row of metricRows)if(!columns.includes(key(row)))columns.push(key(row));
+  const refit=metricRows.some(row=>row.fit!=='original');
+  const label=name=>({'original|train':'Train (last epoch)','original|val':'Validation (last epoch)',
+    'selected|val':'Validation (selected checkpoint)','original|test':refit?'Test · original fit':'Test','refit_trainval|test':'Test · refit',
+    'refit_full|test':'Test · full refit'}[name]||name.replace('|',' · '));
+  const names=[...new Set(metricRows.map(row=>row.name))].sort(metricOrder);
+  let unverified=false;
+  const table=h('table',{class:'kt-table'},
+    h('thead',{},h('tr',{},h('th',{scope:'col',text:'Metric'}),columns.map(name=>h('th',{scope:'col',class:'kt-num',text:label(name)})))),
+    h('tbody',{},names.map(name=>{
+      return h('tr',{class:headline&&name===headline.name?'kt-strong':''},
+      h('td',{},metricLabel(name),metricBase(name)===selectionBase?h('span',{class:'kt-muted',text:' · used for selection'}):null),
+      columns.map(column=>{const row=metricRows.find(item=>item.name===name&&key(item)===column);
+        if(column==='selected|val'){const value=obj(selectedTrialRow().comparison_metrics)['val_'+metricBase(name)];
+          return h('td',{class:'kt-num'},finite(value)?num(value):missing())}
+        const cell=h('td',{class:'kt-num'},row?num(row.value):missing());
+        if(row&&finite(row.value)&&row.origin==='Unknown metric origin'){unverified=true;
+          append(cell,h('span',{class:'kt-mark','aria-hidden':'true',text:'*'}),h('span',{class:'kt-sr',text:' origin not verified'}))}
+        return cell}))})));
+  const origins=[...new Set(metricRows.map(row=>row.origin))];
+  const notes=[origins.includes('Last recorded training metrics (epoch unverified)')?'Train and validation values are the last values recorded during training.':null,
+    origins.includes('Selected-checkpoint evaluation')?'Test values evaluate the selected checkpoint.':null,
+    unverified?'* The source of this value could not be confirmed.':null].filter(Boolean);
+  return [h('div',{class:'kt-scroll'},table),notes.length?note(notes.join(' ')):null]};
+
+// ---------------------------------------------------------------- overview panel
+renderers[0]=panel=>{
+  const metricsCount=new Set(metricRows.map(row=>row.name)).size;
+  const cards=[performanceCard()],gaps=[];
+  if(features.length)cards.push(featuresCard());
+  else gaps.push(['Features',gradientRows.length?'No valid sensitivity scores were recorded.':unavailable('gradient','Feature sensitivity')]);
+  if(examples.length)cards.push(examplesCard());else gaps.push(['Examples',examplesUnavailable()]);
+  if(fits.length&&S.metric)cards.push(learningCard());
+  else gaps.push(['Learning curve',historyRows.length?'No numeric epoch values were recorded.':unavailable('history','Learning history')]);
+  if(cards.length%2)cards.at(-1).classList.add('kt-wide');
+  append(panel,h('h3',{class:'kt-sr kt-focus',text:'Overview'}),h('div',{class:'kt-grid'},cards),
+    gaps.length?h('ul',{class:'kt-gaps','aria-label':'Not available for this run'},gaps.map(([name,text])=>
+      h('li',{},h('b',{text:name+': '}),text))):null);
+  if(metricsCount){const details=h('details',{class:'kt-section'},h('summary',{text:'All recorded metrics ('+metricsCount+')'}),metricsTable());
+    details.style.marginTop='16px';append(panel,details)}
+  else append(panel,note(unavailable('metrics','The metrics file')))};
+
+// ---------------------------------------------------------------- features panel
+const cohortSection=feature=>{
+  const wrap=h('div',{class:'kt-section'});
+  const title=heading(4,'Predictions across '+feature.table+'.'+feature.column);
+  if(!feature.cohorts.length){
+    if(!cohorts.length&&producerNote('cohorts'))return null;
+    const reason=cohorts.length?'No cohort analysis was saved for this feature.':unavailable('cohorts','Cohort analysis');
+    return append(wrap,title,note(reason))}
+  const chosen=feature.cohorts.includes(S.hop.get(feature.key))?S.hop.get(feature.key):feature.cohorts[0];
+  const cohort=cohorts[chosen];
+  const controls=h('div',{class:'kt-row'});
+  if(feature.cohorts.length>1)append(controls,selectField('Hop',feature.cohorts.map(index=>[String(index),
+    'Hop '+str(cohorts[index].hop)]),String(chosen),value=>{S.hop.set(feature.key,Number(value));redrawFeature()}));
+  const classNames=Array.isArray(cohort.predictions)?[]:[...new Set([...Object.keys(obj(cohort.predictions)),...Object.keys(obj(cohort.targets))])];
+  let className=null;
+  if(classNames.length){className=classNames.includes(S.cls.get(feature.key))?S.cls.get(feature.key):classNames[0];
+    append(controls,selectField(isMultilabel?'Label':'Class',classNames.map(name=>[name,shortText(name,40)]),className,
+      value=>{S.cls.set(feature.key,value);redrawFeature()}))}
+  const pick=value=>Array.isArray(value)?value:className!==null&&Array.isArray(obj(value)[className])?obj(value)[className]:[];
+  const predictions=pick(cohort.predictions),targets=pick(cohort.targets),shares=list(cohort.populations);
+  const labels=list(cohort.cohorts).slice(0,100);
+  const isProbability=isClass||str(section('cohorts').task_type).includes('classification');
+  const range=axisRange(labels.flatMap((_,i)=>[predictions[i],targets[i]]),isProbability&&
+    labels.every((_,i)=>[predictions[i],targets[i]].every(value=>!finite(value)||value>=0&&value<=1)));
+  const maxShare=Math.max(0,...shares.filter(finite));
+  const places=placesFor(labels.flatMap((_,i)=>[predictions[i],targets[i]]));
+  const predictionName=isBinary?'Mean positive-class probability':isClass?'Mean probability':'Mean prediction';
+  const observedName=isBinary?'Observed positive share':isClass?'Observed share':'Mean observed value';
+  const rows=h('div',{class:'kt-cohort',role:'table','aria-label':'Predictions across '+feature.table+'.'+feature.column},
+    h('div',{class:'kt-cohort-row kt-cohort-head',role:'row'},h('span',{role:'columnheader',text:'Group'}),
+      h('span',{role:'columnheader'},range?h('span',{class:'kt-axis'},h('span',{text:axisLabel(range[0])}),h('span',{text:axisLabel(range[1])})):null),
+      h('span',{role:'columnheader',class:'kt-num',title:predictionName},h('span',{'aria-hidden':'true',class:'kt-key',text:'● '}),'Pred.'),
+      h('span',{role:'columnheader',class:'kt-num',title:observedName},h('span',{'aria-hidden':'true',text:'◆ '}),'Obs.'),
+      h('span',{role:'columnheader',class:'kt-num',text:'Share'})),
+    labels.map((label,i)=>h('div',{class:'kt-cohort-row',role:'row'},
+      h('span',{role:'cell',class:'kt-label',title:str(label),text:shortText(rangeLabel(label),48)}),
+      h('span',{role:'cell'},track(predictions[i],targets[i],range)),
+      h('span',{role:'cell',class:'kt-num'},isProbability?numProb(predictions[i]):num(predictions[i],places)),
+      h('span',{role:'cell',class:'kt-num'},isProbability?numProb(targets[i]):num(targets[i],places)),
+      h('span',{role:'cell',class:'kt-share'},percent(shares[i])??missing(),bar(shares[i],maxShare,'kt-thin')))));
+  append(wrap,h('div',{class:'kt-section-head'},title,controls),
+    legend([['●','kt-key',predictionName],['◆','kt-key-observed',observedName],['','','Share: fraction of the analyzed test population; counts are not recorded']]),rows);
+  if(list(cohort.cohorts).length>100)append(wrap,note('Showing the first 100 of '+list(cohort.cohorts).length+' groups.'));
+  if(!isProbability)append(wrap,note('Target units are not recorded.'));
+  return wrap};
+const exampleValues=feature=>{
+  const wrap=h('div',{class:'kt-section'},heading(4,feature.table+'.'+feature.column+' in the saved examples'));
+  if(!examples.length)return append(wrap,note(examplesUnavailable()));
+  const rows=examples.map(example=>{const cells=example.cells.filter(cell=>cell.table===feature.table&&cell.column===feature.column);
+    const scored=cells.filter(cell=>cell.score!==null).sort((a,b)=>b.score-a.score);
+    return {example,cells,top:scored[0]||cells[0]||null}}).filter(row=>row.cells.length)
+    .sort((a,b)=>compareValues(a.top.value,b.top.value)||a.example.index-b.example.index);
+  if(!rows.length)return append(wrap,note('No saved example records this feature.'));
+  const maxScore=Math.max(1,...rows.map(row=>row.top.score).filter(finite));
+  const trivial=features.length===1&&rows.every(row=>row.top.score===1);
+  append(wrap,scoreTable(['Example','Value',trivial?'':'Local sensitivity'],rows.map(({example,cells,top})=>[
+      link(midText(example.name,32),()=>openExample(example.index),{class:'kt-link kt-inline',title:example.name,'aria-label':'Open example '+example.name}),
+      [valueText(top),cells.length>1?h('span',{class:'kt-muted',text:' +'+(cells.length-1)+' more'}):null],
+      trivial?null:scoreCell(top,maxScore)]),rows.every(row=>finite(row.top.value))),
+    note(trivial?'This is the only scored feature, so its local sensitivity is 1 in every example.':
+      'Sorted by value. Local sensitivity compares features within one example (its strongest is 1); it is not comparable across examples.'));
+  if(rows.length<examples.length)append(wrap,note(plural(examples.length-rows.length,'saved example')+' do not record this feature.'));
+  return wrap};
+const valueText=cell=>{
+  const node=obj(obj(cellStore(cell).nodes)[cell.id]);
+  if((cell.value===null||cell.value===undefined)&&node.count!==undefined)return h('span',{class:'kt-muted',text:'aggregate (value not saved)'});
+  if(cell.value===null||cell.value===undefined)return missing();
+  if(finite(cell.value))return h('span',{class:'kt-num',title:String(cell.value),text:dataValue(cell.value)});
+  return h('span',{title:str(cell.value),text:shortText(cell.value,40)})};
+const cellStore=cell=>cell.store||{};
+
+let redrawFeature=()=>{};
+renderers[1]=panel=>{
+  if(!featureList.length){
+    append(panel,h('div',{class:'kt-section'},heading(3,'Features',{class:'kt-h3 kt-focus'}),p(gradientRows.length?'No valid sensitivity scores were recorded.':
+      unavailable('gradient','Feature sensitivity'),'kt-muted'),producerNote('cohorts')&&!cohorts.length?note(producerNote('cohorts')):null));
+    return}
+  const shown=S.allFeatures?featureList:[...features.slice(0,20),...cohortOnly.slice(0,10)];
+  if(!shown.some(feature=>feature.key===S.feature))S.feature=shown[0].key;
+  const scale=features.length?features[0].score:1;
+  const detail=h('div',{class:'kt-detail'});
+  redrawFeature=()=>{forgetCharts(detail);detail.replaceChildren(featureDetail(byKey.get(S.feature)))};
+  const firstCohortOnly=shown.findIndex(feature=>feature.score===null);
+  const groups=firstCohortOnly>0?[['Cohort analysis only (no sensitivity score)',firstCohortOnly]]:[];
+  const box=listbox({label:'Features',items:shown,selected:shown.findIndex(feature=>feature.key===S.feature),cls:'kt-feature',groups,
+    onSelect:(index,how)=>{S.feature=shown[index].key;redrawFeature();revealDetail(detail,how)},
+    render:feature=>({label:feature.table+'.'+feature.column+(feature.score===null?', no sensitivity score':', sensitivity '+fmt(feature.score,3)),
+      content:[h('span',{title:feature.table+'.'+feature.column},featureName(feature.table,feature.column)),
+        feature.score===null?h('span'):bar(feature.score,scale),feature.score===null?missing('no sensitivity score'):num(feature.score,3)]})});
+  const master=h('div',{class:'kt-stack'},h('div',{class:'kt-list-head'},heading(3,'Global sensitivity'),
+      note('How strongly test predictions respond to each feature. Unsigned: not a direction or a cause. Scores sum to 1 across features.'),
+      degraded('gradient')),
+    features.length?h('div',{class:'kt-col-head',style:{'grid-template-columns':'minmax(0,1fr) auto'}},h('span',{text:'Feature'}),h('span',{text:'Sensitivity'})):null,
+    box,
+    features.length>20||cohortOnly.length>10?h('button',{type:'button',class:'kt-btn kt-more','aria-expanded':String(S.allFeatures),
+      onclick:()=>{S.allFeatures=!S.allFeatures;showTab(1,false);panels[1].querySelector('.kt-more')?.focus()}},
+      S.allFeatures?'Show fewer features':'Show all '+featureList.length+' features'):null,
+    !features.length?note(unavailable('gradient','Feature sensitivity')):null,
+    scopeNote()?note(scopeNote()):null,
+    gradientRows.length>gradient.length?note(plural(gradientRows.length-gradient.length,'invalid or negative score')+' not shown.'):null);
+  append(panel,h('div',{class:'kt-split'},master,detail));
+  redrawFeature()};
+const featureDetail=feature=>{
+  const total=features.length;
+  return h('div',{class:'kt-stack'},
+    h('div',{class:'kt-section'},heading(3,feature.table+'.'+feature.column),
+      feature.score===null?note('No global sensitivity score was recorded for this feature.'):
+        h('p',{class:'kt-p'},'Global sensitivity ',h('b',{},num(feature.score,3)),h('span',{class:'kt-muted',text:' · rank '+(feature.rank+1)+' of '+total}))),
+    cohortSection(feature),
+    exampleValues(feature))};
+
+// ---------------------------------------------------------------- examples panel
+const examplesUnavailable=()=>{
+  const part=section('samples'),loaded=finite(coverage.loaded)?coverage.loaded:0;
+  if(['available','limited','partial'].includes(part.status)&&references.length&&!loaded)
+    return ['No examples are loaded in this view. Show up to 12 by displaying ',code('explanations.visualize(max_samples=12)'),'.'];
+  return unavailable('samples','Example collection')};
+const exampleSummary=example=>{
+  const result=outcome(example);
+  if(!result.ready)return {line:'Prediction not saved',value:missing('no prediction'),label:'prediction not saved'};
+  if(isLink){
+    const targets=result.targets;
+    if(targets===null)return {line:'Observed IDs not recorded',value:missing(),label:'observed IDs not recorded'};
+    if(!targets.length)return {line:'No observed IDs',value:missing('no observed IDs'),label:'no observed IDs'};
+    const observed='Observed '+idName+' '+targets.slice(0,3).map(node=>shortText(str(node.id),16)).join(', ')+(targets.length>3?' +'+(targets.length-3):'');
+    if(result.best!==null)return {line:observed,value:h('span',{},h('span',{class:'kt-hit','aria-hidden':'true',text:'✓ '}),'rank '+(result.best+1)),
+      label:observed+', best rank '+(result.best+1)};
+    const size=(result.predictions||[]).length,comparable=result.observed.some(item=>item.comparable);
+    return {line:observed,value:h('span',{class:'kt-muted',text:comparable?'not in top '+size:'not comparable'}),
+      label:observed+(comparable?', not in top '+size:', not comparable')}}
+  if(isRegression){
+    const places=regressionPlaces;
+    return {line:'Predicted '+(fmt(result.prediction,places)??'—')+' · observed '+(fmt(result.target,places)??'—'),
+      value:result.error===null?missing('no error'):h('span',{class:'kt-num',text:signed(result.error,places)}),
+      label:'predicted '+(fmt(result.prediction,places)??'not recorded')+', observed '+(fmt(result.target,places)??'not recorded')+(result.error===null?'':', error '+signed(result.error,places))}}
+  if(isBinary){
+    const row=result.rows[0]||{},observed=row.observed===1?'positive':row.observed===0?'negative':'not recorded';
+    return {line:'Observed '+observed,value:numProb(row.probability),
+      label:'positive-class probability '+(prob(row.probability)??'not recorded')+', observed '+observed}}
+  const observed=result.observed.map(row=>shortText(row.name,14));
+  const line='Observed '+(observed.length?observed.slice(0,2).join(', ')+(observed.length>2?' +'+(observed.length-2):''):'none');
+  if(!result.top)return {line,value:missing(),label:line};
+  return {line,value:h('span',{},result.match?h('span',{class:'kt-hit','aria-hidden':'true',text:'✓ '}):null,shortText(result.top.name,14)+' '+prob(result.top.probability)),
+    label:line+', most probable '+result.top.name+' '+prob(result.top.probability)+(result.match?', matches observed':'')}};
+renderers[2]=panel=>{
+  if(!examples.length){append(panel,h('div',{class:'kt-section'},heading(3,'Examples',{class:'kt-h3 kt-focus'}),p(examplesUnavailable(),'kt-muted'),coverageNote()));return}
+  S.example=Math.min(S.example,examples.length-1);
+  const detail=h('div',{class:'kt-detail'});
+  const box=listbox({label:'Saved test examples',items:examples,selected:S.example,cls:'kt-example',
+    onSelect:(index,how)=>{S.example=index;S.allLocal=false;drawExample(detail,false);revealDetail(detail,how)},
+    render:example=>{const summary=exampleSummary(example);
+      return {label:example.name+', '+summary.label,content:[h('span',{class:'kt-name'},
+        h('span',{class:'kt-label',title:example.name,text:midText(example.name,34)}),h('span',{class:'kt-label kt-muted kt-small',text:summary.line})),
+        h('span',{class:'kt-outcome'},summary.value)]}}});
+  const column=isLink?'Best observed rank':isRegression?'Error (pred. − obs.)':isBinary?'Positive probability':'Most probable';
+  const master=h('div',{class:'kt-stack'},h('div',{class:'kt-list-head'},heading(3,'Saved test examples'),
+      note(loadedNote()),
+      sharedStrategies?note('Selected by: '+sharedStrategies.join(', ')):null,degraded('samples')),
+    h('div',{class:'kt-col-head',style:{'grid-template-columns':'minmax(0,1fr) auto'}},h('span',{text:'Example'}),h('span',{text:column})),
+    box,coverageNote());
+  append(panel,h('div',{class:'kt-split'},master,detail));
+  drawExample(detail,false)};
+const loadedNote=()=>(references.length>examples.length?examples.length+' of '+references.length:String(examples.length))+
+  ' saved test examples loaded; they do not represent the whole test set.';
+const coverageNote=()=>{
+  const extra=references.length-examples.length;
+  if(extra<=0)return null;
+  const ids=references.filter(ref=>!has(bodies,ref.artifact_id)).map(ref=>str(ref.artifact_id)).slice(0,20);
+  return h('details',{},h('summary',{class:'kt-small',text:examples.length?plural(extra,'more saved example')+' not loaded':
+      plural(extra,'saved example')+(extra===1?' is':' are')+' not loaded'}),
+    h('p',{class:'kt-p kt-muted kt-small'},'Load one in Python with ',code('explanations.sample("<collector ID>")'),'; it returns the sampled graph without the prediction.'),
+    note('Collector IDs (artifact names, not entity IDs): '+ids.join(', ')+(extra>ids.length?' …':'')))};
+const strategiesOf=example=>list(example.ref.categories).map(name=>str(name).replace(/_/g,' '));
+const sharedStrategies=examples.length&&examples.every(example=>strategiesOf(example).join('|')===strategiesOf(examples[0]).join('|'))&&
+  strategiesOf(examples[0]).length?strategiesOf(examples[0]):null;
+
+const drawExample=(detail,focus)=>{
+  forgetCharts(detail);
+  const example=examples[S.example];
+  const strategies=list(example.ref.categories).map(name=>str(name).replace(/_/g,' '));
+  const nav=h('div',{class:'kt-row'},
+    h('button',{type:'button',class:'kt-btn',disabled:S.example===0,'aria-label':'Previous example',
+      onclick:()=>selectExample(S.example-1)},'‹ Previous'),
+    h('span',{class:'kt-muted kt-small',text:(S.example+1)+' of '+examples.length}),
+    h('button',{type:'button',class:'kt-btn',disabled:S.example===examples.length-1,'aria-label':'Next example',
+      onclick:()=>selectExample(S.example+1)},'Next ›'));
+  const title=heading(3,example.name,{class:'kt-h3 kt-focus',tabindex:'-1'});
+  detail.replaceChildren(h('div',{class:'kt-stack'},
+    h('div',{class:'kt-section'},h('div',{class:'kt-section-head'},title,nav),
+      strategies.length&&!sharedStrategies?note('Selected by: '+strategies.join(', ')):null,
+      example.store.seed_time!==null&&example.store.seed_time!==undefined?note('Prediction time: '+str(example.store.seed_time)):null),
+    predictionSection(example),localSection(example),recordsSection(example)));
+  if(focus)title.focus()};
+const selectExample=index=>{
+  S.example=Math.max(0,Math.min(examples.length-1,index));S.allLocal=false;
+  const option=panels[2].querySelectorAll('[role=option]')[S.example];
+  if(option){panels[2].querySelectorAll('[role=option]').forEach(item=>{item.setAttribute('aria-selected',String(item===option));item.tabIndex=item===option?0:-1})}
+  drawExample(panels[2].querySelector('.kt-detail'),false)};
+const predictionSection=example=>{
+  const wrap=h('div',{class:'kt-section'},heading(4,'Prediction'));
+  const output=example.output,result=outcome(example);
+  if(!result.ready){
+    const status=str(output.status);
+    return append(wrap,note(status==='unsupported'?'Prediction display is not supported for this task.':
+      status==='invalid'?'The saved prediction for this example is invalid.':
+      status==='limited'?'The saved prediction is too large to display.':'The prediction for this example was not saved.'))}
+  if(str(output.status)==='partial')append(wrap,note(/target/.test(str(output.reason))?'The observed value was not saved for this example.':
+    /prediction/.test(str(output.reason))?'The prediction was not saved for this example.':str(output.reason)));
+  if(isLink){
+    if(result.predictions===null)append(wrap,note('Ranked IDs were not saved.'));
+    else if(!result.predictions.length)append(wrap,note('The ranked list is empty.'));
+    else{
+      const shown=result.predictions.slice(0,100);
+      const long=shown.some(node=>str(node.id).length>6);
+      append(wrap,note('Ranked '+idName+' values, best first · observed values are marked ✓'+
+        (queryTopK&&queryTopK!==result.predictions.length?' · the query asks for the top '+queryTopK:'')),h('ol',{class:'kt-ranks'+(long?' kt-ranks-long':''),'aria-label':'Ranked '+idName+' values'},shown.map((node,i)=>{
+        const match=result.hits.has(i),id=str(node.id);
+        return h('li',{class:'kt-rank'+(match?' kt-match':'')},h('span',{text:'#'+(i+1)+(match?' ✓':'')}),
+          h('strong',{title:id,text:shortText(id,long?48:24)}),match?h('span',{class:'kt-sr',text:'observed'}):null)})));
+      if(result.predictions.length>100)append(wrap,note('Showing the first 100 of '+result.predictions.length+' ranked IDs.'))}
+    if(result.targets===null)append(wrap,note('Observed IDs were not saved, so matches cannot be checked.'));
+    else if(!result.targets.length)append(wrap,note('No observed IDs were recorded for this example.'));
+    else append(wrap,h('div',{class:'kt-section'},h('div',{class:'kt-small kt-muted',text:'Observed '+idName+' values (test)'}),
+      h('div',{class:'kt-row'},result.observed.slice(0,30).map(item=>h('span',{},h('b',{title:str(item.node.id),text:shortText(str(item.node.id),24)}),
+        h('span',{class:item.rank!==undefined?'kt-hit':'kt-muted',text:item.rank!==undefined?' · rank '+(item.rank+1):
+          item.comparable?' · not ranked':' · not comparable'})))),
+      result.observed.length>30?note('+'+(result.observed.length-30)+' more observed IDs.'):null));
+    return wrap}
+  if(isRegression){
+    const range=scalarRange;
+    append(wrap,h('div',{class:'kt-compare'},
+      h('span',{},h('span',{class:'kt-key','aria-hidden':'true',text:'● '}),'Predicted'),num(result.prediction,regressionPlaces),h('span'),
+      h('span',{},h('span',{'aria-hidden':'true',text:'◆ '}),'Observed'),num(result.target,regressionPlaces),h('span'),
+      h('span',{class:'kt-muted',text:'Error'}),result.error===null?missing():h('span',{class:'kt-num',text:signed(result.error,regressionPlaces)}),
+      h('span',{class:'kt-muted kt-small',text:'predicted − observed'})),
+      range?h('div',{},track(result.prediction,result.target,range,'Predicted '+(fmt(result.prediction)??'not recorded')+', observed '+(fmt(result.target)??'not recorded')),
+        h('div',{class:'kt-axis'},h('span',{text:axisLabel(range[0])}),h('span',{text:axisLabel(range[1])}))):null,
+      range?note('Shared scale across the saved examples.'):null,
+      note('Target units are not recorded.'));
+    return wrap}
+  const rows=result.rows.slice(0,100);
+  if(isBinary){const row=rows[0]||{};
+    append(wrap,h('div',{class:'kt-compare'},
+      h('span',{},h('span',{class:'kt-key','aria-hidden':'true',text:'● '}),'Positive-class probability'),numProb(row.probability),
+      track(row.probability,null,[0,1],'Positive-class probability '+(prob(row.probability)??'not recorded')),
+      h('span',{},h('span',{'aria-hidden':'true',text:'◆ '}),'Observed'),
+      h('span',{class:'kt-num',text:row.observed===1?'1':row.observed===0?'0':'—'}),
+      h('span',{class:'kt-muted',text:row.observed===1?'positive':row.observed===0?'negative':'not recorded'})),
+      note('No decision threshold is recorded, so the probability is not labeled as a predicted class.'));
+    return wrap}
+  append(wrap,note(isMultilabel?'Each label has its own probability; several can be present.':'Class probabilities, most probable first.'),
+    h('div',{class:'kt-classes',role:'table','aria-label':'Class probabilities'},
+      h('span',{role:'columnheader',class:'kt-small kt-muted',text:isMultilabel?'Label':'Class'}),h('span',{role:'columnheader','aria-hidden':'true'}),
+      h('span',{role:'columnheader',class:'kt-small kt-muted kt-num',text:'Prob.'}),h('span',{role:'columnheader',class:'kt-small kt-muted',text:'Observed'}),
+      rows.map(row=>[h('span',{role:'cell',class:'kt-label',title:row.name,text:shortText(row.name,32)}),
+        h('span',{role:'cell'},bar(row.probability,1)),h('span',{role:'cell',class:'kt-num'},numProb(row.probability)),
+        h('span',{role:'cell',class:row.observed===1?'kt-hit':'kt-muted',text:row.observed===1?'✓ observed':row.observed===0?'absent':'—'})])));
+  if(result.rows.length>100)append(wrap,note('Showing 100 of '+result.rows.length+' classes.'));
+  return wrap};
+const localSection=example=>{
+  const wrap=h('div',{class:'kt-section'},heading(4,'What this prediction responded to'));
+  const cells=example.cells;
+  if(!cells.length)return append(wrap,note('No feature values were saved for this example.'));
+  const sorted=cells.slice().sort((a,b)=>(b.score??-1)-(a.score??-1)||(a.id===example.root?-1:b.id===example.root?1:0));
+  const scored=sorted.filter(cell=>cell.score!==null);
+  const shown=S.allLocal?scored:scored.slice(0,8);
+  const scale=Math.max(1,...scored.map(cell=>cell.score));
+  append(wrap,note('Local sensitivity: relative to this example’s strongest feature (1). Not comparable across examples.'),
+    isLink&&scopeNote()?note(scopeNote()):null);
+  if(!scored.length)append(wrap,note('No local sensitivity scores were saved; values are listed without scores.'));
+  const rows=(shown.length?shown:sorted.slice(0,8)).map(cell=>{
+    const feature=byKey.get(featureKey(cell.table,cell.column));
+    const name=feature?link([h('span',{class:'kt-muted',text:cell.table+'.'}),cell.column],()=>openFeature(feature.key),
+      {class:'kt-link kt-inline',title:'Open '+cell.table+'.'+cell.column+' in Features'}):h('span',{},featureName(cell.table,cell.column));
+    const where=recordName(example.store,example.tables,cell.id);
+    return [[name,h('div',{class:'kt-muted kt-small',text:shortText(where,48),title:where})],valueText(cell),scoreCell(cell,scale)]});
+  append(wrap,scoreTable(['Feature','Value','Local sensitivity'],rows));
+  const hidden=scored.length-rows.length;
+  if(hidden>0||S.allLocal)append(wrap,h('button',{type:'button',class:'kt-btn','aria-expanded':String(S.allLocal),
+    onclick:()=>{S.allLocal=!S.allLocal;drawExample(panels[2].querySelector('.kt-detail'),false);
+      panels[2].querySelector('.kt-local-toggle')?.focus()}},S.allLocal?'Show strongest only':'Show all '+scored.length+' scored values'));
+  if(scored.length&&cells.length>scored.length)append(wrap,note(plural(cells.length-scored.length,'unscored value')+' appear under Related records.'));
+  wrap.querySelector('.kt-btn')?.classList.add('kt-local-toggle');
+  return wrap};
+const recordsSection=example=>{
+  const wrap=h('div',{class:'kt-section'},heading(4,'Related records'));
+  const store=example.store,nodes=obj(store.nodes),root=example.root;
+  if(!Object.keys(nodes).length)return append(wrap,note(example.body.subgraph_store?'No related records were saved.':
+    'The sampled graph structure was not saved for this example.'));
+  const children=new Map();let malformed=0;
+  for(const [from,kinds] of Object.entries(obj(store.edges))){
+    if(!kinds||typeof kinds!=='object'||Array.isArray(kinds)){malformed++;continue}
+    for(const [relation,targets] of Object.entries(kinds)){
+      if(!Array.isArray(targets)){malformed++;continue}
+      for(const target of targets){if(typeof target!=='string'&&!finite(target)){malformed++;continue}
+        if(!children.has(from))children.set(from,[]);children.get(from).push([relation,String(target)])}}}
+  const depth=new Map(),via=new Map();
+  if(has(nodes,root)){depth.set(root,0);const queue=[root];
+    for(let i=0;i<queue.length;i++)for(const [relation,target] of children.get(queue[i])||[])
+      if(!depth.has(target)&&has(nodes,target)){depth.set(target,depth.get(queue[i])+1);via.set(target,relation);queue.push(target)}}
+  const groups=new Map(),cellsById=new Map();
+  for(const cell of example.cells){if(!cellsById.has(cell.id))cellsById.set(cell.id,[]);cellsById.get(cell.id).push(cell)}
+  for(const id of new Set([...Object.keys(nodes),...cellsById.keys()])){
+    if(id===root)continue;
+    const table=(example.tables.get(id)||[])[0]||'unknown table';
+    const key=depth.has(id)?JSON.stringify([depth.get(id),table,via.get(id)]):JSON.stringify([Infinity,table,null]);
+    if(!groups.has(key))groups.set(key,{hop:depth.get(id)??null,table,relation:via.get(id)??null,ids:[]});
+    groups.get(key).ids.push(id)}
+  const scale=Math.max(1,...example.cells.map(cell=>cell.score).filter(finite));
+  const sorted=[...groups.values()].sort((a,b)=>(a.hop??Infinity)-(b.hop??Infinity)||a.table.localeCompare(b.table));
+  append(wrap,note(sorted.length?'Records sampled around '+example.name+' when this prediction was explained.':
+    'Only the example’s own record was saved.'));
+  const container=h('div',{class:'kt-records'});
+  for(const group of sorted){
+    const columns=[...new Set(group.ids.flatMap(id=>(cellsById.get(id)||[]).map(cell=>cell.column)))].slice(0,6);
+    const outside=group.hop===null;
+    const rankOf=new Map();if(outside&&isLink)(ranking(example.output).predictions||[]).forEach((node,i)=>{
+      const key=str(node.id_name)+'|'+str(node.id);if(!rankOf.has(key))rankOf.set(key,i)});
+    const rankFor=id=>{const node=obj(nodes[id]);return rankOf.get(str(node.pkey_name)+'|'+str(node.pkey))};
+    if(rankOf.size)group.ids.sort((a,b)=>(rankFor(a)??Infinity)-(rankFor(b)??Infinity));
+    const title=outside?'Outside the sampled graph · '+group.table:
+      'Hop '+group.hop+' · '+group.table+(group.relation?' via '+group.relation:'');
+    const box=h('div',{class:'kt-record-group'},h('div',{class:'kt-spread'},h('span',{class:'kt-h4',text:title}),
+      h('span',{class:'kt-muted kt-small',text:plural(group.ids.length,'record')})));
+    const draw=all=>{
+      box.querySelector('.kt-record-body')?.remove();
+      const ids=all||group.ids.length<=8?group.ids:group.ids.slice(0,6),body=h('div',{class:'kt-record-body kt-section'});
+      if(columns.length)append(body,h('div',{class:'kt-scroll'},h('table',{class:'kt-table'},
+        h('thead',{},h('tr',{},h('th',{scope:'col',text:'Record'}),rankOf.size?h('th',{scope:'col',class:'kt-num',text:'Ranked'}):null,
+          columns.map(column=>h('th',{scope:'col',text:column})))),
+        h('tbody',{},ids.map(id=>h('tr',{},h('td',{text:midText(recordName(store,example.tables,id),36),title:recordName(store,example.tables,id)}),
+          rankOf.size?h('td',{class:'kt-num'},rankFor(id)!==undefined?'#'+(rankFor(id)+1):missing('not in the ranked list')):null,
+          columns.map(column=>{const cell=(cellsById.get(id)||[]).find(item=>item.column===column);
+            if(!cell)return h('td',{},missing());
+            return h('td',{},h('div',{class:'kt-record-cell'},valueText(cell),
+              cell.score!==null?bar(cell.score,scale,'kt-thin'):null,
+              h('span',{class:'kt-sr',text:cell.score!==null?'local sensitivity '+fmt(cell.score,2):'not scored'})))})))))));
+      else append(body,p(recordList(store,example.tables,ids),'kt-small'));
+      if(group.ids.length>8)append(body,h('button',{type:'button',class:'kt-btn','aria-expanded':String(all),
+        onclick:event=>{draw(!all);box.querySelector('.kt-record-body .kt-btn')?.focus()}},all?'Show fewer':'Show all '+group.ids.length+' records'));
+      append(box,body)};
+    if(outside)append(box,note(isLink?'No recorded path connects these records to '+midText(example.name,32)+'. Link-prediction samples can include retrieved candidates here; they carry values but no scores.'+
+      (rankOf.size?' Ranked matches a record to the ranked list by ID value.':''):'No recorded path connects these records to '+midText(example.name,32)+'.'));
+    draw(false);append(container,box)}
+  if(sorted.length)append(wrap,container);
+  if(sorted.some(group=>group.ids.some(id=>(cellsById.get(id)||[]).some(cell=>cell.score!==null))))
+    append(wrap,note('Bars under values show local sensitivity on the same scale as the list above.'));
+  if(malformed)append(wrap,note(plural(malformed,'malformed relation')+' could not be shown.'));
+  return wrap};
+
+// ---------------------------------------------------------------- training panel
+const trials=section('trials'),trialRows=list(trials.rows).map(obj);
 const trialMetrics=row=>obj(row.comparison_metrics??row.final_validation_metrics);
-const trialNumber=value=>finite(value)?(finite(Number(value.toPrecision(6)))?number(value):value.toPrecision(6)):'Unavailable';
-const names=[...new Set(trials.flatMap(row=>Object.keys(trialMetrics(row))))];
-const candidateName=row=>row.fit==='original'?'Candidate '+(originals.indexOf(row)+1):'Recorded fit '+(trials.indexOf(row)+1);
-const origin=row=>row.comparison_source==='final_validation_metrics'?'Final validation evaluation':
-row.comparison_source==='last_recorded_epoch'?'Last recorded epoch '+text(row.comparison_epoch)+' · validation':'Validation origin unverified';
-const selection=row=>provenance.selection_verified!==true?'Selection unverified':row.fit==='original'&&row.selected?'Recorded selection':row.fit==='original'?'Not selected':'Separate fit';
-const comparison=el('div'),meaning=el('div'),trialScroll=new Map();let inspected=trials.findIndex(row=>row.fit==='original'&&row.selected&&provenance.selection_verified===true);if(inspected<0)inspected=0;
-const settingsCompared=new Map();
-const drawSettings=(parent,row)=>{if(row.fit!=='original')return;
-const view=el('div',undefined,'kt-settings');parent.append(view);view.append(el('h4','Recorded settings'));
-const settings=source=>obj(source.settings),recorded=source=>new Map(['available','limited','partial'].includes(settings(source).status)?list(settings(source).rows).map(obj).filter(item=>typeof item.key==='string'&&Object.hasOwn(item,'value')&&(item.value===null||typeof item.value==='string'||typeof item.value==='boolean'||finite(item.value))).map(item=>[item.key,item]):[]);
-const current=recorded(row),others=originals.filter(other=>other!==row),content=el('div');
-const showValue=(item,source)=>item?item.value===null?'null (recorded)':typeof item.value==='string'?JSON.stringify(item.value):String(item.value):settings(source).status==='available'?'Not recorded':'Unavailable · settings '+text(settings(source).status||'not loaded');
-const evidence=(parent,sources)=>{const exact=el('details');exact.append(el('summary','Explore settings sources and fields'));
-for(const source of sources){const data=settings(source);identityNote(exact,'Settings source',candidateName(source)+' · '+text(data.source||'Source unavailable'));
-if(recorded(source).size)table(exact,['Setting','Recorded field'],[...recorded(source).values()].map(item=>[item.label,item.field]),[],true);}
-parent.append(exact);};
-const availability=(parent,source)=>{const data=settings(source);if(data.status!=='available')note(parent,candidateName(source)+' settings: '+text(data.status||'not loaded')+(data.reason?'. '+text(data.reason):''));};
-const settingsTable=(parent,keys,other,changed=false)=>{const compared=other?recorded(other):new Map(),headers=other?['Setting',candidateName(row),candidateName(other)]:['Setting',candidateName(row)];
-const values=keys.map(key=>{const item=current.get(key)||compared.get(key),label=el('span',item.label||'Recorded setting');if(changed)label.append(el('span','Differs','kt-setting-state'));
-return other?[label,showValue(current.get(key),row),showValue(compared.get(key),other)]:[label,showValue(current.get(key),row)];});
-const node=table(parent,headers,values,[],false);if(!other)node.classList.add('kt-settings-single');for(const cell of [...node.tHead.rows[0].cells].slice(1))cell.classList.add('kt-number');for(const [index,key]of keys.entries()){const cells=node.tBodies[0].rows[index].cells;for(const [offset,source]of (other?[row,other]:[row]).entries())if(finite(recorded(source).get(key)?.value))cells[offset+1].classList.add('kt-number');}};
-const draw=other=>{content.replaceChildren();availability(content,row);if(other)availability(content,other);
-if(!other){if(current.size){note(content,'Only one original candidate is recorded: '+candidateName(row)+'. These are its loaded settings; no alternative settings comparison is available.');settingsTable(content,[...current.keys()]);}else note(content,'No recorded settings are loaded for this candidate.');evidence(content,[row]);return;}
-const compared=recorded(other),keys=[...new Set([...current.keys(),...compared.keys()])],joint=keys.filter(key=>current.has(key)&&compared.has(key)),different=joint.filter(key=>current.get(key).value!==compared.get(key).value),same=joint.filter(key=>!different.includes(key)),missing=keys.filter(key=>!joint.includes(key));
-note(content,candidateName(row)+' compared with '+candidateName(other)+': '+different.length+' recorded setting'+(different.length===1?' differs.':'s differ.')+' '+joint.length+' jointly recorded setting'+(joint.length===1?' was':'s were')+' compared.');
-if(different.length)settingsTable(content,different,other,true);
-else note(content,joint.length?'The jointly recorded values match. This does not establish that the complete configurations are equal.':'No jointly recorded settings are available to compare.');
-if(missing.length){note(content,missing.length+' setting'+(missing.length===1?' is':'s are')+' not jointly recorded. Missing values are not defaults.');const details=el('details');details.append(el('summary','Explore settings not jointly recorded'));settingsTable(details,missing,other);content.append(details);}
-if(same.length){const details=el('details');details.append(el('summary','Explore '+same.length+' matching recorded settings'));settingsTable(details,same,other);content.append(details);}
-note(content,'Only loaded settings are compared. Setting differences do not establish why validation scores differ or why a candidate was selected.');evidence(content,[row,other]);};
-if(others.length){const index=trials.indexOf(row),saved=trials[settingsCompared.get(index)],other=others.includes(saved)?saved:others.find(other=>other.selected&&provenance.selection_verified===true)||others[0];settingsCompared.set(index,trials.indexOf(other));
-const select=control(view,'Compare settings with',others.map(other=>[String(trials.indexOf(other)),candidateName(other)+(other.selected&&provenance.selection_verified===true?' · Recorded selection':'')]),value=>{settingsCompared.set(index,Number(value));draw(trials[Number(value)]);enable();});select.value=String(trials.indexOf(other));view.append(content);draw(other);}
-else{view.append(content);draw(null);}};
-const drawTrials=metric=>{for(const node of comparison.querySelectorAll('.kt-trial-list'))trialScroll.set(node.dataset.identity,node.scrollTop);comparison.replaceChildren();meaning.replaceChildren();
-const chosenMetric=metric===provenance.selection_metric;
-note(meaning,(metric?text(metric)+' · ':'')+(chosenMetric?'Recorded selection metric. '+(provenance.selection_direction==='min'?'Lower is preferred.':provenance.selection_direction==='max'?'Higher is preferred.':'Direction is not recorded.'):'Direction is not recorded for this metric.'));
-if(chosenMetric&&selectedMetricMeaning)note(meaning,selectedMetricMeaning);
-const picks=[];
-for(const identity of [...new Set(trials.map(row=>JSON.stringify([row.fit,row.comparison_source,row.comparison_source==='last_recorded_epoch'?row.comparison_epoch:null])))]){
-const rows=trials.filter(row=>JSON.stringify([row.fit,row.comparison_source,row.comparison_source==='last_recorded_epoch'?row.comparison_epoch:null])===identity),first=rows[0];
-const group=el('div');comparison.append(group);group.append(el('h4',(first.fit==='original'?'Original search candidates':first.fit==='refit_trainval'?'Refit on train + validation':first.fit==='refit_full'?'Refit on all data':'Other recorded fit')+' · '+origin(first)));
-const comparable=first.fit==='original'&&(first.comparison_source==='final_validation_metrics'||first.comparison_source==='last_recorded_epoch'&&typeof first.comparison_epoch==='string'&&/^(0|[1-9][0-9]{0,8})$/.test(first.comparison_epoch));
-if(!comparable)note(group,'The recorded fit, epoch or validation origin does not support a shared comparison. Values remain available individually; a shared comparison scale is not shown.');
-const values=rows.map(row=>Object.hasOwn(trialMetrics(row),metric)?trialMetrics(row)[metric]:undefined).filter(finite);
-const low=values.length?Math.min(...values):0,high=values.length?Math.max(...values):0,scale=Math.max(Math.abs(low),Math.abs(high))||1;
-const position=value=>low===high?50:100*(value/scale-low/scale)/(high/scale-low/scale);
-if(comparable&&values.length){const axis=el('div',undefined,'kt-trial-axis'),range=el('div',undefined,'kt-scalar-axis'+(low===high?' kt-constant':''));range.append(el('span',trialNumber(low)===trialNumber(high)&&low!==high?String(low):trialNumber(low)),el('span',low===high?'':trialNumber(low)===trialNumber(high)?String(high):trialNumber(high)));axis.append(el('span','Candidate','kt-trial-label'),range,el('span','Value','kt-value'));group.append(axis);
-note(group,values.length===1?'One numeric validation value in this group.':low===high?'All '+values.length+' numeric validation values in this group are tied. The record does not explain tie-breaking.':'Numeric validation values span '+trialNumber(low)+' to '+trialNumber(high)+'. Each group has its own scale.');}
-else if(!values.length)note(group,'No numeric values for this metric in this group.');
-const choices=el('ul',undefined,'kt-trial-list'+(rows.length>12?' kt-many':''));choices.dataset.identity=identity;group.append(choices);
-for(const row of rows){const index=trials.indexOf(row),item=el('li'),label=el('span',candidateName(row),'kt-trial-label');label.append(el('span',selection(row),'kt-note'));
-const value=Object.hasOwn(trialMetrics(row),metric)?trialMetrics(row)[metric]:undefined,plot=el('span',undefined,'kt-trial-plot'+(comparable?'':' kt-unverified'));plot.setAttribute('aria-hidden','true');
-if(comparable&&finite(value)){const dot=el('span',undefined,'kt-trial-dot');dot.style.left=position(value)+'%';plot.append(dot);}
-const detail=el('div',undefined,'kt-trial-detail');detail.hidden=true;
-const button=action('',()=>choose(index,true));button.classList.add('kt-trial-choice');button.append(label,plot,el('span',trialNumber(value),'kt-value'));button.setAttribute('aria-pressed','false');
-button.setAttribute('aria-label',candidateName(row)+' · '+selection(row)+' · '+text(metric)+' '+(finite(value)?String(value):'Unavailable')+' · Inspect recorded details');
-item.append(button,detail);choices.append(item);picks.push({index,button,detail,row,choices});}
-}
-const choose=(index,reveal=false)=>{inspected=index;for(const pick of picks){const active=pick.index===index;pick.button.setAttribute('aria-pressed',String(active));pick.detail.hidden=!active;if(!active)continue;
-const row=pick.row;pick.detail.replaceChildren();pick.detail.append(el('h4','Inspecting '+candidateName(row)));
-identityNote(pick.detail,'Trial identity','Trial: '+text(row.trial)+' · Fit: '+text(row.fit)+' · '+selection(row));
-note(pick.detail,origin(row)+(row.comparison_source==='final_validation_metrics'?' · Evaluation of this candidate’s chosen checkpoint.':''));
-if(row.status||row.reason)identityNote(pick.detail,'Recorded progress state',text(row.status||'')+(row.reason?' · '+text(row.reason):''));
-table(pick.detail,['Metric','Exact recorded value','Epochs completed'],[[metric??'No metric recorded',metric&&Object.hasOwn(trialMetrics(row),metric)?trialMetrics(row)[metric]:undefined,row.num_epochs_completed]],[1,2],true);
-identityNote(pick.detail,'Device and timing','Device: '+text(row.accelerator)+' · Elapsed seconds: '+text(row.elapsed_time));
-drawSettings(pick.detail,row);
-if(reveal||!trialScroll.has(pick.choices.dataset.identity)){const bottom=pick.detail.offsetTop+pick.detail.offsetHeight;if(bottom>pick.choices.scrollTop+pick.choices.clientHeight)pick.choices.scrollTop=bottom-pick.choices.clientHeight;if(pick.button.offsetTop<pick.choices.scrollTop)pick.choices.scrollTop=pick.button.offsetTop;}
-}}
-choose(inspected);for(const node of comparison.querySelectorAll('.kt-trial-list'))if(trialScroll.has(node.dataset.identity))node.scrollTop=trialScroll.get(node.dataset.identity);enable();};
-if(names.length){const metric=names.includes(provenance.selection_metric)?provenance.selection_metric:names[0];
-const select=control(trialView,'Trial metric',names.map(name=>[name,name]),drawTrials);select.value=metric;trialView.append(meaning,comparison);drawTrials(metric);}
-else{trialView.append(meaning,comparison);drawTrials(null);}
-note(trialView,'Metric origins and fits are shown separately. Missing values or progress do not establish that a trial failed.');
-const exact=el('details');exact.append(el('summary','Explore all recorded candidate values'));
-for(const row of trials){identityNote(exact,'Trial identity',candidateName(row)+' · '+text(row.trial)+' / '+text(row.fit)+' · '+selection(row)+' · '+origin(row));
-table(exact,['Recorded metric','Exact value'],Object.entries(trialMetrics(row)),[1],true);}
-trialView.append(exact);
-if(histories.length)trialView.append(action('Inspect recorded fit learning histories',()=>showPanel(0,true,results.querySelector('.kt-learning h3'))));}
-else note(resultJumps,'Candidates & settings: no recorded candidates loaded.');
-const patterns=section('Recorded patterns');patterns.append(el('h3','Global input sensitivity'));
-note(patterns,'Compare unsigned global sensitivity across input columns. Scores are not causal effects or prediction probabilities.');
-const gradient=obj(data.gradient),producerScope=text(gradient.producer_note);
-state(patterns,{...gradient,producer_note:null},'Global sensitivity');
-if(producerScope==='Recorded shallow-RHS link prediction. Global and local feature sensitivities use summed retrieved dot-product scores through sampled graph feature encoders. No per-item breakdown is retained. These are not probabilities or complete attributions to learned entity/item embeddings. Query TOP K does not establish the explanation retrieval count.')
-note(patterns,'Sampled graph features, summed retrieved scores; no per-item breakdown or complete learned-embedding attribution.');
-else if(producerScope==='Recorded forecasting. Scores cover encoded graph columns, normalized over produced columns, using summed encoded model outputs across all forecast horizons. Dedicated lag/year-over-year encoders and separate forecast-head inputs, when used, are outside score coverage. No per-horizon scores are retained.')
-note(patterns,'Encoded graph columns, summed across all forecast horizons; no per-horizon scores. Dedicated lag/year-over-year encoders and separate forecast-head inputs, when used, are outside coverage.');
-else if(gradient.producer_note)note(patterns,'Producer scope: '+producerScope);
-const gradients=list(obj(data.gradient).rows).map(obj), valid=gradients.filter(row=>finite(row.score)&&row.score>=0)
-.sort((a,b)=>b.score-a.score||text(a.table).localeCompare(text(b.table))||text(a.column).localeCompare(text(b.column)));
-if(valid.length!==gradients.length)note(patterns,'Invalid or negative gradient scores are excluded from the unsigned ranking.');
-if(!valid.length)note(patterns,'No valid global sensitivity scores are available to compare.');
-else if(valid.length>20||gradient.total>valid.length)
-note(patterns,'Showing '+Math.min(20,valid.length)+' of '+text(gradient.total??gradients.length)+' recorded columns; the visible subset is not renormalized.');
-const cohorts=list(obj(data.cohorts).rows);
-let cohortView,cohortPicker,cohortButtons=[],selectedFeature=valid[0],selectedExample;
-let cohortState={index:null,bin:0,className:null},revealCohort=()=>{};
-const cohortResize=new ResizeObserver(()=>revealCohort());onDispose(()=>cohortResize.disconnect());
-const featureButtons=[],featureContext=el('div',undefined,'kt-detail kt-feature-context');
-const chooseFeature=row=>{selectedFeature=row;drawFeatureContext(featureContext);
-featureButtons.forEach(({button,feature})=>{button.setAttribute('aria-pressed',String(feature===row));
-button.querySelector('.kt-note').textContent=feature===row?'Selected feature':'Inspect input details';});
-if(!sampleView.hidden&&selectedExample)inspectSample(selectedExample.ref,selectedExample.index);enable();};
-const inspectCohort=index=>{cohortView.replaceChildren();const c=cohorts[index];
-if(cohortPicker)cohortPicker.value=String(index);
-if(cohortState.index!==index)cohortState={index,bin:0,className:null};
-const identity=text(c.table_name)+'.'+text(c.col_name)+' · hop '+text(c.hop);
-cohortView.append(el('h3',identity.length>100?identity.slice(0,97)+'…':identity));
-if(identity.length>100)identityNote(cohortView,'Cohort input',identity);
-const classKeys=[...new Set([...Object.keys(obj(c.predictions)),...Object.keys(obj(c.targets))])];
-const classes=Array.isArray(c.predictions)&&Array.isArray(c.targets)?[]:classKeys;
-identityNote(cohortView,'Cohort scope',(provenance.selection_verified===true&&provenance.refitted_trainval===false?'Original fit':
-provenance.selection_verified===true&&provenance.refitted_trainval===true?'Refit on train + validation':'Fit not verified')+
-' · TEST · Recorded fit: '+text(provenance.explanation_trial)+(context.target?' · Target: '+text(context.target):''));
-const bins=el('div');
-const draw=className=>{cohortState.className=className;revealCohort=()=>{};bins.replaceChildren();if(classes.length&&className===null){note(bins,'Choose a recorded class to compare cohort means.');return;}
-const predictions=Array.isArray(c.predictions)?c.predictions:Object.hasOwn(obj(c.predictions),className)?c.predictions[className]:[];
-const targets=Array.isArray(c.targets)?c.targets:Object.hasOwn(obj(c.targets),className)?c.targets[className]:[];
-let predictionLabel='Mean prediction',targetLabel='Mean observed target';
-if(text(obj(data.cohorts).task_type).includes('binary')){predictionLabel='Mean positive-class probability';targetLabel='Observed positive-class share'}
-else if(classes.length){predictionLabel='Mean class probability';targetLabel='Observed class share'}
-if(classes.length)identityNote(bins,'Recorded class','Recorded class: '+text(className));
-const probability=classes.length||text(obj(data.cohorts).task_type).includes('binary');
-const labels=list(c.cohorts).slice(0,100),values=labels.flatMap((_,i)=>[list(predictions)[i],list(targets)[i]]).filter(finite);
-const outsideProbability=probability&&values.some(value=>value<0||value>1);
-note(bins,(probability?(outsideProbability?'Recorded means outside 0 to 1 are invalid probabilities; the axis includes them. ':'Probability / share axis: 0 to 1. '):
-'Zero-inclusive target axis; target units are not recorded. ')+'● '+predictionLabel+' · ◆ '+targetLabel+'.');
-let low=values.length?Math.min(0,...values):null,high=values.length?Math.max(probability?1:0,...values):null;
-if(low===0&&high===0){low=-1;high=1;}
-const scale=Math.max(Math.abs(low),Math.abs(high))||1;
-if(labels.length)note(bins,labels.length+' recorded groups · select a row; scroll within the list to inspect more.');
-const heading=el('div',undefined,'kt-cohort-heading'),axis=el('div',undefined,'kt-scalar-axis');
-axis.append(el('span',low===null?'No numeric means':number(low)),el('span',high===null?'':number(high)));
-heading.append(el('span','Recorded group','kt-cohort-label'),axis,el('span','Population share','kt-value'));bins.append(heading);
-const rows=el('ol',undefined,'kt-cohort-list');rows.setAttribute('aria-label','Recorded cohort mean comparisons');
-const selection=el('div',undefined,'kt-cohort-selection'),buttons=[];
-revealCohort=()=>{if(!rows.clientHeight||!buttons[cohortState.bin])return;
-const item=buttons[cohortState.bin].parentElement.getBoundingClientRect(),viewport=rows.getBoundingClientRect();
-if(item.top<viewport.top)rows.scrollTop+=item.top-viewport.top;
-else if(item.bottom>viewport.bottom)rows.scrollTop+=Math.min(item.bottom-viewport.bottom,item.top-viewport.top);};
-const selectBin=(i,reveal=true)=>{cohortState.bin=i;selection.replaceChildren();selection.append(el('h4','Selected group · '+(i+1)+' of '+labels.length));
-identityNote(selection,'Cohort input',identity+(classes.length?' · Class: '+text(className):''));
-identityNote(selection,'Selected cohort',text(labels[i]));
-const prediction=list(predictions)[i],target=list(targets)[i],share=list(c.populations)[i],gap=prediction-target;
-note(selection,'● '+predictionLabel+': '+number(prediction)+' · ◆ '+targetLabel+': '+number(target)+'.');
-if(finite(prediction)&&finite(target))note(selection,prediction===target?'The recorded means are equal.':
-'Prediction mean is '+(finite(gap)?number(Math.abs(gap))+' ':'')+(prediction>target?'above':'below')+' the observed mean.');
-else note(selection,'A paired comparison is unavailable for this group. Missing or invalid means are not zero.');
-note(selection,'Recorded population share: '+(finite(share)&&share>=0&&share<=1?number(share*100)+'%':'Unavailable')+'. This column/hop, not the whole TEST population.');
-buttons.forEach((button,j)=>button.setAttribute('aria-pressed',String(i===j)));
-buttons[i].parentElement.append(selection);if(reveal)revealCohort();enable();};
-for(const [i,label]of labels.entries()){
-const prediction=list(predictions)[i],target=list(targets)[i],share=list(c.populations)[i];
-const button=action('',()=>selectBin(i));button.classList.add('kt-cohort-row');
-const caption=text(label);button.append(el('span',caption.length>64?caption.slice(0,61)+'…':caption,'kt-cohort-label'));
-button.setAttribute('aria-label','Group '+(i+1)+': '+caption+'. '+predictionLabel+' '+number(prediction)+'; '+targetLabel+' '+number(target)+
-'; population share '+(finite(share)&&share>=0&&share<=1?number(share*100)+'%':'Unavailable'));
-const plot=el('span',undefined,'kt-cohort-plot');plot.setAttribute('aria-hidden','true');
-for(const [value,kind]of [[prediction,'prediction'],[target,'observed']])if(finite(value)){
-const marker=el('span',undefined,'kt-cohort-marker kt-scalar-'+kind);
-marker.style.left=(low===high?50:100*((value/scale-low/scale)/(high/scale-low/scale)))+'%';plot.append(marker);}
-if(!finite(prediction)&&!finite(target))plot.append(el('span','Unavailable','kt-note'));
-const population=el('span',finite(share)&&share>=0&&share<=1?number(share*100)+'%':'Unavailable','kt-cohort-share');
-if(finite(share)&&share>=0&&share<=1){const track=el('span',undefined,'kt-track'),bar=el('span',undefined,'kt-bar');
-bar.style.width=(share*100)+'%';track.setAttribute('aria-hidden','true');track.append(bar);population.append(track);}
-button.append(plot,population);buttons.push(button);const item=el('li');item.append(button);rows.append(item);}
-bins.append(rows);
-if(labels.length){selectBin(Math.min(cohortState.bin,labels.length-1),false);
-if(labels.length>1)bins.append(action('Compare next recorded group',()=>selectBin((cohortState.bin+1)%labels.length)));}
-else note(bins,'No recorded cohort groups.');
-note(bins,'Shared mean-value axis · '+(c.stype==='numerical'||c.col_name==='COUNT(*)'?'recorded numeric-bin order.':'recorded group order; no trend between categories.')+
-' Shares cover this recorded column/hop, not the whole TEST population or absolute counts.');
-note(bins,'Cohort averages do not establish individual errors, calibration or reliable error segments.');
-const exact=el('details');exact.append(el('summary','Exact cohort means and population fractions'));
-const exactValues=el('div',undefined,'kt-sample-values');exactValues.tabIndex=0;
-exactValues.setAttribute('role','region');exactValues.setAttribute('aria-label','Exact cohort means and population fractions');
-table(exactValues,['Recorded group',predictionLabel,targetLabel,'Recorded population fraction'],labels.map((label,i)=>[
-label,list(predictions)[i],list(targets)[i],list(c.populations)[i]]),[1,2,3],true);exact.append(exactValues);bins.append(exact);
-if(list(c.cohorts).length>100)note(bins,'Showing the first 100 of '+list(c.cohorts).length+' recorded cohorts.');revealCohort();enable();};
-if(classes.length){const picker=control(cohortView,'Recorded class',[['','Choose a class'],...classes.map((name,i)=>[String(i+1),name])],value=>draw(value===''?null:classes[Number(value)-1]));
-picker.value=cohortState.className===null?'':String(classes.indexOf(cohortState.className)+1);}
-cohortView.append(bins);draw(classes.length?cohortState.className:'');
-const feature=valid.find(row=>row.table===c.table_name&&row.column===c.col_name);
-if(feature){cohortView.append(action('Inspect this input’s details',()=>{chooseFeature(feature);
-const heading=featureContext.querySelector('h3');if(heading){heading.tabIndex=-1;heading.focus();}}));
-note(cohortView,'Inspect global sensitivity and available recorded input values and local sensitivity. Cohort membership is not recorded for loaded examples.');}
-const ranking=el('details');ranking.append(el('summary','Cohort ranking detail'));
-note(ranking,'Prediction variation rank score: '+number(c.prediction_score)+
-(classes.length?'. The ranking averages recorded class dimensions.':'. This is separate from gradient sensitivity and mean prediction error.'));cohortView.append(ranking);
-cohortButtons.forEach((button,i)=>{button.setAttribute('aria-pressed',String(i===index));
-button.closest('tr').setAttribute('aria-selected',String(i===index));});enable();};
-if(valid.length){const rows=el('ul',undefined,'kt-feature-list');rows.setAttribute('aria-label','Global input sensitivity');
-for(const row of valid.slice(0,20)){
-const score=el('div',undefined,'kt-score'),track=el('div',undefined,'kt-track'),bar=el('div',undefined,'kt-bar');
-bar.style.width=Math.min(100,row.score*100)+'%';track.setAttribute('aria-hidden','true');track.append(bar);
-score.append(track,el('span',number(row.score),'kt-value'));
-const button=action('',()=>chooseFeature(row));button.classList.add('kt-feature-choice');
-const label=el('span',text(row.table)+'.'+text(row.column));label.append(el('span','Inspect input details','kt-note'));
-button.append(label,score);featureButtons.push({button,feature:row});const item=el('li');item.append(button);rows.append(item);}
-patterns.append(rows);
-}
-const sensitivityDetails=el('details');sensitivityDetails.append(el('summary','How sensitivity was recorded'));
-note(sensitivityDetails,'Unsigned recorded gradient magnitude, normalized across all columns when the total is positive.');
-if(gradient.producer_note)note(sensitivityDetails,'Producer scope: '+producerScope);
-note(sensitivityDetails,'Highest recorded gradient scores; showing '+Math.min(20,valid.length)+' of '+text(gradient.total??gradients.length)+' columns. The visible subset is not renormalized.');
-patterns.append(sensitivityDetails);
-if(valid.length){patterns.append(featureContext);
-const exact=el('details');exact.append(el('summary','Exact global sensitivity values'));
-table(exact,['Input column','Global score'],valid.slice(0,20).map(row=>[text(row.table)+'.'+text(row.column),row.score]),[1],true);patterns.append(exact);}
-patterns.append(el('h3','Prediction variation across cohorts'));state(patterns,data.cohorts,'Cohorts');
-const ranked=cohorts.map((row,index)=>({row,index})).sort((a,b)=>(finite(b.row.prediction_score)?b.row.prediction_score:-Infinity)-(finite(a.row.prediction_score)?a.row.prediction_score:-Infinity)||a.index-b.index);
-if(ranked.length){note(patterns,'Inputs ordered by recorded prediction variation, separately from gradient sensitivity.');
-cohortPicker=control(patterns,'Recorded input',ranked.map(({row,index})=>[String(index),
-text(row.table_name)+'.'+text(row.col_name)+' · hop '+text(row.hop)]),value=>inspectCohort(Number(value)));}
-cohortView=el('div',undefined,'kt-detail');patterns.append(cohortView);cohortResize.observe(cohortView);
-if(ranked.length){const ranking=el('details');ranking.append(el('summary','Exact input variation ranking'));
-note(ranking,'Table, hop and column identify each cohort record. Variation scores are separate from gradient sensitivity and mean prediction error.');
-cohortButtons=Array(cohorts.length);table(ranking,['Table / column / hop','Variation score','Detail'],ranked.slice(0,100).map(({row,index})=>{
-const button=action('Inspect cohorts',()=>{inspectCohort(index);const heading=cohortView.querySelector('h3');heading.tabIndex=-1;heading.focus();});cohortButtons[index]=button;return[
-text(row.table_name)+'.'+text(row.col_name)+' · hop '+text(row.hop),row.prediction_score,button];}),[1]);
-if(ranked.length>100)note(ranking,'Showing the first 100 of '+ranked.length+' loaded cohort records by recorded variation. All loaded inputs are available in the selector.');
-patterns.append(ranking);inspectCohort(ranked[0].index);}else{cohortView.hidden=true;}
-const examples=section('Selected examples');
-note(examples,'Compare retained TEST predictions and observed targets. Selection strategies may overlap and are not prediction outcomes; selected entities do not represent the full TEST population.');
-state(examples,data.samples,'Examples');
-const samples=obj(data.samples),coverage=obj(samples.coverage),references=list(samples.references),bodies=obj(samples.bodies);
-note(examples,text(coverage.loaded??Object.keys(bodies).length)+(coverage.references_total==null?' loaded; recorded total unavailable':' of '+text(coverage.references_total)+' recorded references loaded')
-+(coverage.missing?'; '+text(coverage.missing)+' missing':'')+(coverage.malformed?'; '+text(coverage.malformed)+' malformed':'')
-+(coverage.excluded?'; '+text(coverage.excluded)+' excluded by load limits':'')+(coverage.catalog_excluded?'; '+text(coverage.catalog_excluded)+' catalog references excluded':'')+'.');
-if(coverage.excluded||coverage.catalog_excluded)note(examples,'For a new snapshot with up to 12 examples and any retained predictions/outcomes, run explanations.visualize(max_samples=12) as the final line of a notebook cell. '
-+'This creates and displays a new snapshot; existing views stay unchanged. Byte limits and unavailable artifacts still apply.');
-const loadingDetails=el('details');loadingDetails.append(el('summary','Selection and loading details'));
-note(loadingDetails,'Coverage: '+text(coverage.references_listed??references.length)+' listed of '+text(coverage.references_total)+' recorded references; '
-+text(coverage.available)+' available graph files; '+text(coverage.loaded??Object.keys(bodies).length)+' loaded; '
-+text(coverage.missing)+' missing; '+text(coverage.malformed)+' malformed; '+text(coverage.excluded)+' excluded by load limits.');
-note(loadingDetails,'Recorded selection strategies can overlap and do not define thresholded prediction outcomes. Collector IDs identify artifacts, not original entities.');
-if(references.length)note(loadingDetails,'Preloaded example identities and values may be saved in notebook HTML or widget state. '
-+'Inspect other retained graphs in Python with explanations.sample(collector_id), using the collector ID as a string. '
-+'This returns graph/feature stores only, without predictions/outcomes, and does not update displayed snapshots.');
-const sampleView=el('div',undefined,'kt-detail'),sampleButtons=[];
-const nodeIdentity=(store,id)=>{const node=obj(obj(store.nodes)[id]);
-const tables=Object.entries(obj(store.tables)).filter(([,ids])=>list(ids).some(value=>String(value)===String(id))).map(([name])=>name);
-return node.count!==undefined?'Aggregate of '+text(node.count)+' recorded nodes'+(tables.length?' · '+tables.join(', '):''):
-Object.hasOwn(node,'pkey')&&node.pkey!==null?(tables.length?tables.join(', ')+'.':'')+text(node.pkey_name)+': '+JSON.stringify(node.pkey):'Original entity unavailable';};
-const sampleIdentity=ref=>{const store=obj(obj(bodies[ref.artifact_id]).subgraph_store),identity=nodeIdentity(store,store.root_id);
-const original=[...new Set(Object.values(obj(ref.original_ids)).map(value=>JSON.stringify(value)??'Unavailable'))];
-return identity!=='Original entity unavailable'?identity:original.length?'Recorded original ID: '+original.join(', '):identity;};
-const featureCells=body=>Object.entries(obj(obj(body.feature_store).features)).flatMap(([id,columns])=>
-Object.entries(obj(columns)).map(([name,value])=>({id,name,feature:obj(value)})));
-const localAxis=body=>featureCells(body).reduce((max,{feature})=>
-finite(feature.score)&&feature.score>=0?Math.max(max,feature.score):max,1);
-const localScore=(parent,feature,axis)=>{
-if(finite(feature.score)&&feature.score>=0){const mark=el('div',undefined,'kt-score'),track=el('div',undefined,'kt-track'),bar=el('div',undefined,'kt-bar');
-bar.style.width=(feature.score/axis*100)+'%';track.setAttribute('aria-hidden','true');track.append(bar);mark.append(track,el('span',number(feature.score),'kt-value'));parent.append(mark);}
-else note(parent,feature.score==null?'Unavailable':'Invalid recorded score');};
-const matchingCells=ref=>featureCells(obj(bodies[ref.artifact_id])).filter(({feature})=>
-typeof selectedFeature.table==='string'&&typeof selectedFeature.column==='string'&&
-feature.table_name===selectedFeature.table&&feature.name===selectedFeature.column);
-const drawFeatureContext=(parent,entry)=>{parent.replaceChildren();if(!selectedFeature)return;
-const featureName=text(selectedFeature.table)+'.'+text(selectedFeature.column);
-parent.append(el('h3','Inspect '+featureName));
-note(parent,'Global sensitivity: '+number(selectedFeature.score)+' · across recorded input columns.');
-const matches=loaded.filter(({ref})=>matchingCells(ref).length);
-if(!loaded.length)note(parent,'No examples are loaded in this view, so recorded input values and local sensitivity cannot be inspected here.');
-else if(!matches.length)note(parent,'No loaded example contains this exact recorded table and feature name. Missing, malformed and unloaded bodies cannot establish a match.');
-if(!entry){if(!selectedExample)selectedExample=matches[0];entry=selectedExample;
-if(matches.length){const choices=matches.map(item=>[String(item.index),sampleIdentity(item.ref)+' · collector '+text(item.ref.artifact_id)]);
-if(entry&&!matches.some(item=>item.index===entry.index))choices.unshift([String(entry.index),sampleIdentity(entry.ref)+' · feature not recorded']);
-const select=control(parent,'Matching loaded example',choices,value=>{
-selectedExample=matches.find(item=>String(item.index)===value)||entry;
-if(!sampleView.hidden)inspectSample(selectedExample.ref,selectedExample.index);else drawFeatureContext(parent);enable();});select.value=String(entry.index);}}
-if(entry){const body=obj(bodies[entry.ref.artifact_id]),store=obj(body.subgraph_store),cells=matchingCells(entry.ref);
-identityNote(parent,'Selected example',sampleIdentity(entry.ref)+' · Collector '+text(entry.ref.artifact_id));
-if(!cells.length)note(parent,'This loaded example has no matching recorded feature.');
-else{const axis=localAxis(body);
-note(parent,'Local scores use this example’s own scale (0 to '+number(axis)+'). They cannot be compared numerically with global scores or other examples. Unavailable means unrecorded, not zero.');
-if(cells.some(({id})=>obj(obj(store.nodes)[id]).count!==undefined))note(parent,'Aggregate scores sum normalized source cells and can exceed 1; aggregate values are not retained.');
-const rows=el('ul',undefined,'kt-feature-cells');rows.setAttribute('aria-label','Matching recorded feature values and local sensitivity');
-for(const {id,feature}of cells.slice(0,80)){const row=el('li'),identity=el('div'),value=el('div'),score=el('div');
-identity.append(el('strong',nodeIdentity(store,id)));note(identity,'Recorded node: '+id);
-value.append(el('span','Recorded value','kt-note'),el('div',feature.value==null&&obj(obj(store.nodes)[id]).count!==undefined?'Aggregate value not retained':text(feature.value)));
-score.append(el('span','Local sensitivity','kt-note'));
-localScore(score,feature,axis);
-row.append(identity,value,score);rows.append(row);}parent.append(rows);
-if(cells.length>80)note(parent,'Showing 80 of '+cells.length+' matching recorded cells; complete loaded body remains available in Python.');
-const exact=el('details');exact.append(el('summary','Exact matching feature values and local scores'));
-note(exact,'Local sensitivity is divided by this example’s maximum source-cell sensitivity. A source-cell score of 1 marks that maximum. Aggregate scores sum these normalized cells. Numeric scores are unchanged when the bar axis extends above 1.');
-table(exact,['Recorded node','Value','Local score'],cells.slice(0,80).map(({id,feature})=>[id,text(feature.value),feature.score]),[2],true);parent.append(exact);}
-if(parent===featureContext)parent.append(action('Inspect this example’s context',()=>{inspectSample(entry.ref,entry.index);showPanel(2);
-const heading=sampleView.querySelector('h3');heading.tabIndex=-1;heading.focus();}));}
-if(parent===featureContext){if(loaded.length)note(parent,matches.length+' of '+loaded.length+' loaded examples contain this exact feature. These are recorded contexts, not cohort memberships or a population sample.');
-const cohortMatches=cohorts.map((c,i)=>c.table_name===selectedFeature.table&&c.col_name===selectedFeature.column?i:-1).filter(i=>i>=0);
-for(const index of cohortMatches)parent.append(action('Inspect cohorts · hop '+text(cohorts[index].hop),()=>{inspectCohort(index);const heading=cohortView.querySelector('h3');heading.tabIndex=-1;heading.focus();}));
-if(!cohortMatches.length)note(parent,'No matching cohort record.');}};
-const scalarOutput=(parent,output)=>{
-state(parent,output,'Output context');
-if(!['available','partial'].includes(output.status))return;
-if(output.task_type!=='regression'){note(parent,'Numeric regression output unavailable: recorded task does not match.');return;}
-const prediction=output.prediction,observed=output.target;
-const values=el('div',undefined,'kt-scalar-values');
-for(const [label,value]of [['Prediction',prediction],['Observed',observed]]){
-const row=el('div'),caption=el('span');caption.append(el('span',label==='Prediction'?'● ':'◆ ',label==='Prediction'?'kt-scalar-key':''),document.createTextNode(label));
-row.append(caption,el('strong',finite(value)?number(value):value==null?'Not recorded':'Invalid numeric value','kt-value'));values.append(row);}
-parent.append(values);
-if(scalarMin!==null){
-const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 600 64');svg.classList.add('kt-scalar-chart');
-svg.setAttribute('role','img');svg.setAttribute('aria-label','Prediction '+(finite(prediction)?String(prediction):'unavailable')+'; observed '+(finite(observed)?String(observed):'unavailable')+'. Shared loaded range '+scalarMin+' to '+scalarMax+'.');
-const mark=(tag,attrs)=>{const node=document.createElementNS(svg.namespaceURI,tag);for(const [key,value]of Object.entries(attrs))node.setAttribute(key,String(value));svg.append(node);return node;};
-const position=value=>scalarMin===scalarMax?300:20+560*((value/scalarScale-scalarMin/scalarScale)/(scalarMax/scalarScale-scalarMin/scalarScale));
-mark('line',{x1:20,x2:580,y1:32,y2:32,class:'kt-scalar-baseline'});
-if(finite(prediction)&&finite(observed))mark('line',{x1:position(prediction),x2:position(observed),y1:32,y2:32,class:'kt-scalar-gap'});
-if(finite(prediction))mark('circle',{cx:position(prediction),cy:20,r:10,class:'kt-scalar-prediction'});
-if(finite(observed)){const x=position(observed);mark('path',{d:'M '+x+' 32 l 10 10 -10 10 -10 -10 Z',class:'kt-scalar-observed'});}
-parent.append(svg);
-const axis=el('div',undefined,'kt-scalar-axis');axis.append(el('span',number(scalarMin)),el('span',number(scalarMax)));parent.append(axis);
-note(parent,'Same axis across loaded examples · '+scalarValues.length+' recorded numeric prediction/observation values. Target units are not recorded here.');
-}else note(parent,'No valid numeric outputs are loaded for a comparison axis.');
-const gap=finite(prediction)&&finite(observed)?prediction-observed:null;
-if(finite(gap)){parent.append(el('p','Prediction − observed: '+(gap>0?'+':'')+number(gap),'kt-scalar-error'));
-note(parent,gap>0?'Prediction is above the observed value.':gap<0?'Prediction is below the observed value.':'Prediction equals the observed value.');}
-else note(parent,finite(prediction)&&finite(observed)?'Prediction − observed unavailable: the arithmetic difference exceeds the finite numeric range.':'Prediction − observed unavailable: both values must be recorded finite numbers.');
-note(parent,'The signed gap describes numeric error direction, not a feature contribution or a causal effect.');
-const exact=el('details');exact.append(el('summary','Exact prediction, observation and arithmetic gap'));
-table(exact,['Prediction','Observed','Prediction − observed'],[[finite(prediction)?prediction:prediction==null?'Not recorded':'Invalid numeric value',finite(observed)?observed:observed==null?'Not recorded':'Invalid numeric value',finite(gap)?gap:'Unavailable']],[0,1,2],true);parent.append(exact);
-};
-const classificationOutput=(parent,output,artifact)=>{
-state(parent,output,'Output context');
-if(!['available','partial'].includes(output.status))return;
-if(!classificationTasks.includes(output.task_type)||output.task_type!==(context.task_type||provenance.task_type)){
-note(parent,'Classification output unavailable: recorded task does not match.');return;}
-const binary=output.task_type==='binary_classification',multi=output.task_type==='multilabel_classification';
-const predictions=binary?{'Positive class':output.prediction}:obj(output.prediction),targets=binary?{'Positive class':output.target}:obj(output.target);
-const labels=[...new Set([...Object.keys(predictions),...Object.keys(targets)])];
-const probability=v=>finite(v)&&v>=0&&v<=1,membership=v=>finite(v)&&(v===0||v===1);
-const shown=(value,valid)=>value==null?'Not recorded':valid(value)?number(value):'Invalid recorded value';
-note(parent,binary?'Probability of the positive class; observed membership: 0 = negative class, 1 = positive class. The positive-class name is not recorded.':multi?
-'Independent label probabilities; multiple labels may be present. Probabilities need not sum to one.':
-'Mutually exclusive class probabilities. Recorded values are not renormalized.');
-if(!binary)note(parent,'Showing '+Math.min(100,labels.length)+' of '+labels.length+' retained labels. Total class coverage is not recorded.');
-note(parent,'● Class probability · ◆ Observed membership: 0 = absent, 1 = present. The same 0 to 1 scale is used for every row.');
-const rows=el('ul',undefined,'kt-class-list');rows.setAttribute('aria-label','Recorded class probabilities and observed membership');
-const exactRows=[];
-for(const label of labels.slice(0,100)){
-const row=el('li'),name=el('div',undefined,'kt-class-label'),comparison=el('div',undefined,'kt-class-comparison');
-if(label.length>120||/[\r\n]/.test(label)){name.append(el('strong',label.replace(/\s+/g,' ').slice(0,80)+'…'));identityNote(name,'Full recorded label',label,'div');}
-else name.append(el('strong',label));
-const prediction=Object.hasOwn(predictions,label)?predictions[label]:null,observed=Object.hasOwn(targets,label)?targets[label]:null,plot=el('div',undefined,'kt-cohort-plot');plot.setAttribute('aria-hidden','true');
-for(const [value,valid,kind]of [[prediction,probability,'prediction'],[observed,membership,'observed']])if(valid(value)){
-const marker=el('span',undefined,'kt-cohort-marker kt-scalar-'+kind);marker.style.left=(value*100)+'%';plot.append(marker);}
-const axis=el('div',undefined,'kt-scalar-axis');axis.append(el('span','0'),el('span','1'));
-const values=el('div',undefined,'kt-class-values');values.append(el('span','● Probability: '+shown(prediction,probability)),
-el('span','◆ Observed: '+(membership(observed)?observed===1?'Present (1)':'Absent (0)':shown(observed,membership))));
-comparison.append(axis,plot,values);row.append(name,comparison);rows.append(row);
-exactRows.push([name,prediction==null?'Not recorded':prediction,observed==null?'Not recorded':observed]);}
-parent.append(rows);
-if(!labels.length)note(parent,'No recorded class labels are available for comparison.');
-note(parent,'These outputs do not record a decision threshold or establish probability calibration.');
-if(labels.length){const exact=el('details');exact.append(el('summary','Exact recorded class outputs'));
-table(exact,['Recorded label','Class probability (0 to 1)','Observed membership (0 or 1)'],exactRows,[1,2],true);parent.append(exact);}
-if(labels.length>100)identityNote(parent,'Complete output location','Inspect complete retained output in Python from the matching TEST fit’s subgraph_collector/test/output/'+text(artifact)+'.json.');
-};
-const rankedOutput=(parent,output,artifact)=>{
-state(parent,output,'Output context');
-if(!['available','partial'].includes(output.status))return;
-const predictions=output.prediction,targets=output.target;
-// Only complete typed identities support matches; unknown namespaces cannot prove absence.
-const key=node=>{node=obj(node);return (typeof node.id==='string'||finite(node.id))&&typeof node.id_name==='string'&&node.id_name.length?
-JSON.stringify([typeof node.id,node.id_name,node.id]):null;};
-const first=new Map(),observed=new Set();
-list(predictions).forEach((node,index)=>{const identity=key(node);if(identity!==null&&!first.has(identity))first.set(identity,index)});
-list(targets).forEach(node=>{const identity=key(node);if(identity!==null)observed.add(identity)});
-const appendID=(parent,node)=>{node=obj(node);const value=JSON.stringify(node.id)??'Unavailable',name=text(node.id_name);
-parent.append(el('strong',value.length>48||/[\r\n]/.test(value)?value.replace(/\s+/g,' ').slice(0,48)+'…':value));
-if(value.length>48||/[\r\n]/.test(value))identityNote(parent,'Full recorded ID',value,'div',0);
-if(name.length>48||/[\r\n]/.test(name)){note(parent,'ID column: '+name.replace(/\s+/g,' ').slice(0,48)+'…');identityNote(parent,'Full ID column',name,'div',0);}
-else note(parent,'ID column: '+(node.id_name==null||name===''?'not recorded':name));};
-parent.append(el('h4','Predicted IDs · '+(Array.isArray(predictions)?'recorded top '+predictions.length:'ranking unavailable')));
-if(predictions==null)note(parent,'Prediction list not recorded.');
-else if(!Array.isArray(predictions))note(parent,'Prediction list is invalid.');
-else if(!predictions.length)note(parent,'Prediction list recorded empty (0 IDs).');
-else{const ranks=el('ol',undefined,'kt-ranked-list');ranks.setAttribute('aria-label','Predicted IDs in recorded rank order');
-for(const [index,node]of predictions.slice(0,100).entries()){
-const identity=key(node),duplicate=identity!==null&&first.get(identity)!==index;
-const match=identity!==null&&observed.has(identity)&&!duplicate;
-const item=el('li',undefined,match?'kt-match':'');item.append(el('span','Rank '+(index+1),'kt-note'));appendID(item,node);
-if(match)note(item,'Observed ID');else if(duplicate)note(item,'Repeated ID');ranks.append(item);}parent.append(ranks);}
-parent.append(el('h4','Observed TEST IDs'));
-if(targets==null)note(parent,'Observed target list not recorded; matches cannot be assessed.');
-else if(!Array.isArray(targets))note(parent,'Observed target list is invalid; matches cannot be assessed.');
-else if(!targets.length)note(parent,'Observed target list recorded empty (0 IDs).');
-else{const values=el('ul',undefined,'kt-observed-list'),seen=new Set();values.setAttribute('aria-label','Observed TEST IDs and their predicted ranks');
-for(const node of targets.slice(0,100)){
-const identity=key(node),rank=identity===null?undefined:first.get(identity),item=el('li');appendID(item,node);
-let comparison=predictions==null?'Ranking not recorded':!Array.isArray(predictions)?'Ranking invalid':
-rank!==undefined?'Rank '+(rank+1)+' of '+predictions.length:
-identity===null||predictions.some(pred=>key(pred)===null||obj(pred).id_name!==obj(node).id_name)?
-'Comparison unavailable: ID columns differ or are missing':'Absent from '+predictions.length+' retained predictions';
-if(identity!==null&&seen.has(identity))comparison='Repeated observed ID · '+comparison;
-if(identity!==null)seen.add(identity);note(item,comparison);values.append(item);}parent.append(values);}
-if(list(predictions).length>100||list(targets).length>100)note(parent,'Showing the first 100 IDs of each list; matched ranks and absence compare the complete retained prediction list. '
-+'Inspect complete output in Python from the matching TEST fit’s subgraph_collector/test/output/'+text(artifact)+'.json.');
-note(parent,'Observed IDs are TEST targets, not a complete link history. ID values and recorded ID columns must agree for comparison. '
-+'No retrieval scores, probabilities or output-ID links to sampled graph nodes are retained.');
-};
-const sampleDetailRow=el('tr'),sampleDetailCell=el('td');sampleDetailCell.colSpan=3;
-sampleDetailCell.append(sampleView);sampleDetailRow.append(sampleDetailCell);
-const sampleTable=(title,headers,rows,total,numeric=[])=>{
-const details=el('details');details.append(el('summary','Explore '+title.toLowerCase()+' · '+rows.length+' of '+total+' shown'));
-const values=el('div',undefined,'kt-sample-values');values.tabIndex=0;
-values.setAttribute('role','region');values.setAttribute('aria-label',title);
-table(values,headers,rows,numeric);details.append(values);sampleView.append(details);};
-const selectedNodes=new Map();
-const drawRelationships=(parent,body,ref)=>{
-const store=obj(body.subgraph_store),nodes=obj(store.nodes),cells=featureCells(body),axis=localAxis(body),relations=[];
-let invalidRelations=0;
-for(const [from,kinds]of Object.entries(obj(store.edges))){
-if(!kinds||typeof kinds!=='object'||Array.isArray(kinds)){invalidRelations++;continue;}
-for(const [kind,tos]of Object.entries(kinds)){
-if(!Array.isArray(tos)){invalidRelations++;continue;}
-for(const to of tos){if(typeof to==='string'||finite(to))relations.push([from,kind,String(to)]);else invalidRelations++;}}}
-const nodeIds=Object.keys(nodes),featureIds=[...new Set(cells.map(cell=>cell.id))];
-const highlighted=new Set(selectedFeature?matchingCells(ref).map(({feature})=>feature):[]);
-const allIds=[...new Set([...nodeIds,...featureIds])],rootId=store.root_id==null?null:String(store.root_id);
-const adjacent=new Map();for(const edge of relations)for(const id of new Set([edge[0],edge[2]])){
-if(!adjacent.has(id))adjacent.set(id,[]);adjacent.get(id).push(edge);}
-const reached=new Set(),queue=Object.hasOwn(nodes,rootId)?[rootId]:[];
-for(let i=0;i<queue.length;i++){const id=queue[i];if(reached.has(id))continue;reached.add(id);
-for(const [from,,to]of adjacent.get(id)||[])if(Object.hasOwn(nodes,from)&&Object.hasOwn(nodes,to)){
-const next=from===id?to:from;if(!reached.has(next))queue.push(next);}}
-const groups={connected:nodeIds.filter(id=>reached.has(id)),disconnected:nodeIds.filter(id=>!reached.has(id)),
-features:featureIds.filter(id=>!Object.hasOwn(nodes,id))};
-let selected=selectedNodes.get(ref.artifact_id);
-if(!allIds.includes(selected))selected=allIds.includes(rootId)?rootId:allIds[0];
-let group=groups.connected.length?'connected':groups.disconnected.length?'disconnected':'features',recordPage=0,edgePage=0,featurePage=0;
-const view=el('div',undefined,'kt-neighborhood');parent.append(view);
-const label=id=>Object.hasOwn(nodes,id)?nodeIdentity(store,id):'Node '+id+' · structure unavailable';
-const compact=value=>value.length>80||/[\r\n]/.test(value)?value.replace(/\s+/g,' ').slice(0,80)+'…':value;
-const draw=(focus=false)=>{const browseOpen=view.querySelector('.kt-record-browser')?.open||false;
-view.replaceChildren();view.append(el('h3','Explore recorded relationships'));
-if(!body.subgraph_store)note(view,'Relational structure unavailable. Recorded feature values remain inspectable below.');
-else if(!nodeIds.length)note(view,'No recorded nodes in this loaded graph.');
-else if(!Object.hasOwn(nodes,rootId))note(view,'Root record unavailable; a complete connection to the example cannot be established.');
-note(view,nodeIds.length+' structure records · '+relations.length+' recorded relations · '+groups.disconnected.length+' records without a recorded path to the root'
-+(groups.features.length?' · '+groups.features.length+' feature-only records':''));
-if(invalidRelations)note(view,invalidRelations+' malformed relation entries cannot be drawn. Inspect the retained body in Python.');
-const dangling=relations.filter(([from,,to])=>!Object.hasOwn(nodes,from)||!Object.hasOwn(nodes,to)).length;
-if(dangling)note(view,dangling+' recorded relations have missing endpoints. Missing node structure is labeled explicitly.');
-const controls=el('div',undefined,'kt-controls');
-if(Object.hasOwn(nodes,rootId)){const button=action('Return to root',()=>choose(rootId));button.setAttribute('aria-pressed',String(selected===rootId));controls.append(button);}
-view.append(controls);
-if(!allIds.length){note(view,'No recorded feature values. Inspect another loaded example or explanations.sample(collector_id).');enable();return;}
-const layout=el('div',undefined,'kt-neighborhood-layout'),connections=el('div'),detail=el('div',undefined,'kt-selected-node');
-const selectedLabel=label(selected),heading=el('h4',compact(selectedLabel));heading.tabIndex=-1;heading.id=widgetId+'-selected-node';detail.setAttribute('aria-labelledby',heading.id);
-detail.append(el('span','Selected record'+(selected===rootId?' · Root':''),'kt-note'),heading);
-if(compact(selectedLabel)!==selectedLabel)identityNote(detail,'Full selected record identity',selectedLabel,'div',0);
-const node=obj(nodes[selected]);note(detail,'Recorded node: '+compact(selected));
-if(compact(selected)!==selected)identityNote(detail,'Full recorded node ID',selected,'div',0);
-if(!Object.hasOwn(nodes,selected))note(detail,'Feature values only; this record has no loaded node structure.');
-else if(node.count!==undefined){note(detail,'Aggregate of '+text(node.count)+' recorded nodes. Constituent identities and individual values are not retained.');
-if(node.start_time!==undefined||node.end_time!==undefined)note(detail,'Recorded interval: '+text(node.start_time)+' to '+text(node.end_time));}
-else if(!reached.has(selected))note(detail,'No recorded path to the root. This does not establish absence of a relationship outside this retained graph.');
-const local=cells.filter(cell=>cell.id===selected),matched=local.some(({feature})=>highlighted.has(feature));
-if(selectedFeature)note(detail,(matched?'Highlighted global feature: ':'Selected global feature not recorded on this node: ')+text(selectedFeature.table)+'.'+text(selectedFeature.column));
-if(!local.length)note(detail,'No recorded feature values or local scores for this record.');
-else{note(detail,'Local sensitivity · same example axis: 0 to '+number(axis)+'. Unavailable is unrecorded, not zero.');
-const rows=el('ul',undefined,'kt-node-features');rows.setAttribute('aria-label','Selected record feature values and local sensitivity');
-for(const {name,feature}of local.slice(featurePage*80,(featurePage+1)*80)){
-const match=highlighted.has(feature);
-const item=el('li',undefined,match?'kt-match':'');item.append(el('strong',text(feature.table_name)+'.'+text(feature.name??name)));
-if(match)note(item,'Selected global feature');
-note(item,'Recorded value');item.append(el('div',feature.value==null&&node.count!==undefined?'Aggregate value not retained':text(feature.value)));
-note(item,'Local sensitivity');localScore(item,feature,axis);rows.append(item);}detail.append(rows);
-pages(detail,'feature cells',local.length,80,featurePage,value=>{featurePage=value;draw(true);});
-const exact=el('details');exact.append(el('summary','Exact selected record values and scores'));
-table(exact,['Feature','Value','Local score'],local.slice(featurePage*80,(featurePage+1)*80).map(({name,feature})=>[
-text(feature.table_name)+'.'+text(feature.name??name),text(feature.value),feature.score]),[2],true);detail.append(exact);}
-connections.append(el('h4','Connections to selected record'));
-note(connections,'Arrows show recorded traversal from → to, not foreign-key or causal direction. Select a connected record to follow its context.');
-const edges=adjacent.get(selected)||[],rows=el('ul',undefined,'kt-connections');rows.setAttribute('aria-label','Recorded connections to selected record');
-for(const [from,kind,to]of edges.slice(edgePage*79,(edgePage+1)*79)){
-const row=el('li'),line=el('div',undefined,'kt-connection');row.append(line);
-for(const [i,id]of [from,to].entries()){
-if(i)line.append(el('span','→ '+compact(kind)+' →','kt-connection-direction'));
-const full=id===selected||allIds.includes(id)?label(id):'Missing node '+id;
-const endpoint=id===selected?el('strong',compact(full)):allIds.includes(id)?action(compact(full),()=>choose(id)):el('span',compact(full));
-line.append(endpoint);if(compact(full)!==full)identityNote(row,'Full '+(i?'to':'from')+' record identity',full,'div',0);}
-if(compact(kind)!==kind)identityNote(row,'Full relation label',kind,'div',0);rows.append(row);}
-connections.append(rows);if(!edges.length)note(connections,'No recorded relations for this record.');
-pages(connections,'relations',edges.length,79,edgePage,value=>{edgePage=value;draw(true);});
-layout.append(detail,connections);view.append(layout);
-note(view,'Local sensitivity is divided by this example’s maximum source-cell sensitivity. Aggregate scores sum normalized cells and can exceed 1. Scores have no sign and are not percentages or relationship strength. They cannot be compared numerically with global scores or other examples.');
-const browse=el('details',undefined,'kt-record-browser');browse.open=browseOpen;
-browse.append(el('summary','Browse all loaded records · including disconnected context'));
-const available=Object.entries(groups).filter(([,ids])=>ids.length),names={connected:'Root-connected records',disconnected:'No recorded path to root',features:'Feature values without structure'};
-const scope=control(browse,'Record group',available.map(([key,ids])=>[key,names[key]+' ('+ids.length+')']),value=>{group=value;recordPage=0;draw();view.querySelector('.kt-record-browser').open=true;
-view.querySelector('.kt-record-browser select').focus();});scope.value=group;
-const ids=groups[group],choices=ids.slice(recordPage*80,(recordPage+1)*80);
-const picker=control(browse,'Record',[['','Choose a record'],...choices.map(id=>[id,compact(label(id))])],value=>{if(value!=='')choose(value);});picker.className='kt-record-picker';picker.value=choices.includes(selected)?selected:'';
-pages(browse,'records',ids.length,80,recordPage,value=>{recordPage=value;draw();view.querySelector('.kt-record-browser').open=true;
-view.querySelector('.kt-record-picker').focus();});
-view.append(browse);enable();if(focus)heading.focus();};
-const choose=id=>{selected=id;selectedNodes.set(ref.artifact_id,id);edgePage=0;featurePage=0;draw(true);};
-const pages=(parent,label,total,size,page,change)=>{if(total<=size)return;
-const controls=el('div',undefined,'kt-controls');note(controls,'Showing '+(page*size+1)+'–'+Math.min(total,(page+1)*size)+' of '+total+' '+label+'.');
-if(page>0)controls.append(action('Previous '+label,()=>change(page-1)));
-if((page+1)*size<total)controls.append(action('Next '+label,()=>change(page+1)));parent.append(controls);};
-if(selected!==undefined)selectedNodes.set(ref.artifact_id,selected);draw();};
-const inspectSample=(ref,index)=>{selectedExample={ref,index};sampleView.replaceChildren();sampleView.hidden=false;
-if(selectedFeature)drawFeatureContext(featureContext);
-sampleButtons.find(item=>item.rowIndex===index)?.button.closest('tr').after(sampleDetailRow);
-sampleView.append(el('h3',sampleIdentity(ref).length>100?sampleIdentity(ref).slice(0,100)+'…':sampleIdentity(ref)));
-if(sampleIdentity(ref).length>100)identityNote(sampleView,'Example identity',sampleIdentity(ref));
-const body=obj(bodies[ref.artifact_id]),store=obj(body.subgraph_store),nodes=obj(store.nodes);
-note(sampleView,'TEST · Seed time: '+text(store.seed_time));
-const output=obj(obj(samples.outputs)[ref.artifact_id]);
-sampleView.append(el('h4','Prediction and observed target'));
-if(classificationTask){classificationOutput(sampleView,output,ref.artifact_id);
-}else if(output.task_type==='regression'){scalarOutput(sampleView,output);
-}else if(['static_link_prediction','temporal_link_prediction'].includes(output.task_type)){
-rankedOutput(sampleView,output,ref.artifact_id);
-note(sampleView,'The retained retrieval list can differ from query TOP K. Selected examples do not decompose the aggregate TEST metric.');
-}else{state(sampleView,output,'Output context');
-if(['available','partial'].includes(output.status)){
-const binary=output.task_type==='binary_classification';
-note(sampleView,binary?'Probability of the positive class; observed target: 0 = negative class, 1 = positive class.':'Values use recorded target units.');
-table(sampleView,[binary?'Positive-class probability (0 to 1)':'Prediction','Observed target'],[[output.prediction,output.target]],[0,1]);}}
-note(sampleView,'Retained selection: '+(list(ref.categories).map(value=>text(value).replaceAll('_',' ')).join(', ')||'Unavailable')+'. Strategies may overlap; they are not prediction outcomes.');
-const identityDetails=el('details');identityDetails.append(el('summary','Recorded example identifiers'));
-identityNote(identityDetails,'Example identity',sampleIdentity(ref)+' · Collector '+text(ref.artifact_id));
-identityNote(identityDetails,'Recorded original IDs','Recorded original IDs: '+text(Object.keys(obj(ref.original_ids)).length?ref.original_ids:'Unavailable')
-+' · Strategies: '+(list(ref.categories).join(', ')||'Unavailable')+' · Root node: '+text(store.root_id));sampleView.append(identityDetails);
-if(!body.subgraph_store)note(sampleView,'Relational structure unavailable.');
-if(store.task_type==='static_link_prediction'||store.task_type==='temporal_link_prediction')
-note(sampleView,'Link-prediction records can include retrieved items outside the sampled graph, with feature values but no local gradient scores. '
-+'Relations and local scores cover only recorded context.');
-drawRelationships(sampleView,body,ref);
-if(selectedFeature){const selectedContext=el('details',undefined,'kt-feature-context');
-selectedContext.append(el('summary','Selected global feature across this example'));
-const values=el('div');selectedContext.append(values);sampleView.append(selectedContext);drawFeatureContext(values,{ref,index});}
-const nodeRows=Object.entries(nodes);if(nodeRows.length){
-sampleTable('Recorded nodes',['Node','Identity / aggregate','Table membership'],nodeRows.slice(0,80).map(([id,node])=>[
-id,node.count!==undefined?'Aggregate: '+text(node.count)+' nodes':text(node.pkey_name)+': '+text(node.pkey),
-Object.entries(obj(store.tables)).filter(([,ids])=>list(ids).some(value=>String(value)===id)).map(([name])=>name).join(', ')||'Unavailable']),nodeRows.length);
-if(nodeRows.length>80)note(sampleView,'Showing 80 of '+nodeRows.length+' recorded nodes; complete loaded body is retained.');}
-const relations=[];for(const [from,kinds]of Object.entries(obj(store.edges)))for(const [kind,tos]of Object.entries(obj(kinds)))
-for(const to of list(tos))relations.push([from,kind,text(to)]);
-if(relations.length){sampleTable('Recorded relations',['From node','Relation','To node'],relations.slice(0,80),relations.length);
-if(relations.length>80)note(sampleView,'Showing 80 of '+relations.length+' recorded relations.');}
-else note(sampleView,'No recorded relations in this loaded example.');
+const trialMetricNames=[...new Set(trialRows.flatMap(row=>Object.keys(trialMetrics(row))))].sort(metricOrder);
+const trialOrigin=row=>row.comparison_source==='final_validation_metrics'?'final validation':
+  row.comparison_source==='last_recorded_epoch'?'last recorded epoch '+str(row.comparison_epoch):'origin unverified';
+const selectedTrial=trialRows.findIndex(row=>row.selected===true&&verified);
+S.trial=selectedTrial>=0?selectedTrial:0;
+const settingsOf=row=>{const part=obj(row.settings);
+  return new Map(list(part.rows).map(obj).filter(item=>typeof item.key==='string'&&has(item,'value')&&
+    (item.value===null||typeof item.value==='string'||typeof item.value==='boolean'||finite(item.value))).map(item=>[item.key,item]))};
+const settingText=item=>item===undefined?null:item.value===null?'none':str(item.value);
+const settingsView=()=>{
+  const wrap=h('div',{class:'kt-section'});
+  const row=trialRows[S.trial],current=settingsOf(row),reference=selectedTrial>=0&&selectedTrial!==S.trial?trialRows[selectedTrial]:null;
+  append(wrap,heading(4,'Settings · '+str(row.trial)));
+  const status=str(obj(row.settings).status);
+  if(!current.size){append(wrap,note(row.settings?'Settings for this candidate are '+(status==='available'?'empty.':'not available ('+(status||'missing')+').'):
+    'Settings were not saved with this training run.'));return wrap}
+  const other=reference?settingsOf(reference):null;
+  const keys=[...current.keys(),...(other?[...other.keys()].filter(key=>!current.has(key)):[])];
+  const differs=key=>other&&settingText(current.get(key))!==settingText(other.get(key));
+  if(other)append(wrap,note(keys.filter(differs).length?plural(keys.filter(differs).length,'setting')+' differ from the selected candidate '+str(reference.trial)+'.':
+    'Recorded settings match the selected candidate '+str(reference.trial)+'.'));
+  const orderKeys=other?[...keys.filter(differs),...keys.filter(key=>!differs(key))]:keys;
+  append(wrap,h('div',{class:'kt-kv'+(other?' kt-kv-3':''),role:'table','aria-label':'Recorded settings'},
+    h('div',{class:'kt-kv-row kt-kv-head',role:'row'},h('span',{role:'columnheader',text:'Setting'}),
+      h('span',{role:'columnheader',text:str(row.trial)}),other?h('span',{role:'columnheader',text:str(reference.trial)+' (selected)'}):null),
+    orderKeys.map(key=>{const item=current.get(key)||other.get(key);
+      return h('div',{class:'kt-kv-row'+(differs(key)?' kt-strong':''),role:'row'},
+        h('span',{role:'cell'},item.label||key,differs(key)?h('span',{class:'kt-muted',text:' · differs'}):null),
+        h('span',{role:'cell'},settingText(current.get(key))??missing()),other?h('span',{role:'cell'},settingText(other.get(key))??missing()):null)})));
+  return wrap};
+const selectedTrialRow=()=>selectedTrial>=0?trialRows[selectedTrial]:null;
+const selectedValidation=()=>{const row=selectedTrialRow();if(!row||!selectionBase||row.comparison_source!=='final_validation_metrics')return null;
+  const value=obj(row.comparison_metrics)['val_'+selectionBase];return finite(value)?value:null};
 
-const cells=featureCells(body).map(({id,name,feature})=>[id,text(feature.table_name)+'.'+text(feature.name??name),text(feature.value),feature.score]);
-if(cells.length)sampleTable('Node features',['Node','Feature','Recorded value','Local score'],cells.slice(0,200),cells.length,[3]);
-else note(sampleView,'No recorded feature values.');
-if(cells.length>200)note(sampleView,'Showing 200 of '+cells.length+' recorded feature cells.');
-sampleButtons.forEach(({button,rowIndex})=>{button.setAttribute('aria-pressed',String(rowIndex===index));
-button.closest('tr').setAttribute('aria-selected',String(rowIndex===index));});};
-const catalogRows=references.slice(0,100).map((ref,index)=>({ref,index}));
-const referenceTable=(parent,entries)=>table(parent,['Entity','Retained selection','Availability / detail'],entries.map(({ref,index})=>{
-const identity=el('div'),original=[...new Set(Object.values(obj(ref.original_ids)).map(value=>JSON.stringify(value)??'Unavailable'))];
-identityNote(identity,'Entity',Object.hasOwn(bodies,ref.artifact_id)?sampleIdentity(ref):original.length?'Original ID: '+original.join(', '):'Original entity unavailable','div');
-const identifiers=el('details');identifiers.append(el('summary','Recorded IDs'));note(identifiers,'Collector '+text(ref.artifact_id)+' · Original IDs: '+text(ref.original_ids));identity.append(identifiers);
-let detail;if(Object.hasOwn(bodies,ref.artifact_id)){detail=action('Inspect example',()=>inspectSample(ref,index));sampleButtons.push({button:detail,rowIndex:index});}
-else detail=el('span',ref.reason||ref.status||(ref.available?'Not loaded':'Graph file missing'));
-return[identity,list(ref.categories).map(value=>text(value).replaceAll('_',' ')).join(', ')||'Unavailable',detail];}));
+renderers[3]=panel=>{
+  const learning=h('section',{class:'kt-section'});
+  const metricControl=historyMetrics.length>1?selectField('Metric',historyMetrics.map(name=>[name,metricLabel(name)]),S.metric,
+    value=>{S.metric=value;showTab(3,false);panels[3].querySelector('select')?.focus()}):null;
+  append(learning,h('div',{class:'kt-section-head'},heading(3,'Learning curves',{class:'kt-h3 kt-focus'}),metricControl),
+    degraded('history'));
+  if(!fits.length||!S.metric)append(learning,p(historyRows.length?'No numeric epoch values were recorded.':unavailable('history','Learning history'),'kt-muted'));
+  else{
+    const present=new Set(fits.flatMap(fit=>fitSeries(fit,S.metric).map(item=>item.secondary?'validation':'train')));
+    append(learning,p(metricMeaning(S.metric)||metricLabel(S.metric),'kt-muted kt-small'),
+      legend([present.has('train')?['●','kt-key','Train (solid line)']:null,present.has('validation')?['□','kt-key-observed','Validation (dashed line)']:null].filter(Boolean)),
+      S.metric===selectionBase&&selectedValidation()!==null?note('The selected checkpoint’s epoch is not recorded; its validation '+metricLabel(S.metric)+' was '+fmt(selectedValidation())+'.'):null,
+      verified&&fits[0]&&fits[0].trial.replace(/_refit_trainval$/,'')!==str(provenance.selected_trial)?
+        note('This history is recorded for '+fits[0].trial+', not the selected candidate '+str(provenance.selected_trial)+'.'):null);
+    const grid=h('div',{class:fits.length>1?'kt-grid':'kt-stack'});
+    for(const fit of fits){
+      const series=fitSeries(fit,S.metric);
+      append(grid,h('div',{class:'kt-section kt-fit'},
+        h('div',{class:'kt-spread'},heading(4,fitName(fit.fit)),h('span',{class:'kt-muted kt-small',text:fit.trial})),
+        series.length?learningChart({series,title:metricLabel(S.metric)+', '+fitName(fit.fit),stateKey:fit.trial+'|'+fit.fit}):
+          note('No values were recorded for this metric.'),
+        fit.fit!=='original'&&!series.some(item=>item.secondary)?note('No validation curve: validation data was used to train this fit.'):null))}
+    append(learning,grid);
+    if(str(section('history').status)==='partial')append(learning,note('One fit’s history could not be read.'))}
+  const candidates=h('section',{class:'kt-section'});
+  append(candidates,h('div',{class:'kt-section-head'},heading(3,'Candidates'),
+    finite(trials.total)?h('span',{class:'kt-muted kt-small',text:(finite(trials.completed)?trials.completed:'?')+' of '+plural(trials.total,'planned trial')+' completed'}):null));
+  if(!trialRows.length)append(candidates,p(unavailable('trials','Candidate history'),'kt-muted'));
+  else{
+    const metric=trialMetricNames.includes('val_'+selectionBase)?'val_'+selectionBase:trialMetricNames[0]??null;
+    const origins=[...new Set(trialRows.map(trialOrigin))];
+    if(trialRows.length===1){
+      const row=trialRows[0];
+      append(candidates,p('One candidate was trained'+(row.selected===true&&verified?' and selected':'')+': '+str(row.trial)+
+        (metric&&finite(trialMetrics(row)[metric])?' · validation '+metricLabel(metric)+' '+fmt(trialMetrics(row)[metric]):'')+
+        (finite(row.num_epochs_completed)?' · '+plural(row.num_epochs_completed,'epoch'):'')+'.','kt-p'))}
+    else{
+      const box=listbox({label:'Candidates',items:trialRows,selected:S.trial,cls:'kt-feature kt-trial',
+        onSelect:index=>{S.trial=index;const target=panels[3].querySelector('.kt-settings');
+          target.replaceChildren(settingsView())},
+        render:row=>{const value=metric?trialMetrics(row)[metric]:undefined,chosen=row.selected===true&&verified;
+          return {label:str(row.trial)+(chosen?', selected':'')+', validation '+(metric?metricLabel(metric):'metric')+' '+(fmt(value)??'not recorded'),
+            content:[h('span',{class:'kt-name'},h('span',{class:'kt-label',text:str(row.trial)}),
+              h('span',{class:'kt-label kt-muted kt-small',text:[chosen?'Selected':null,finite(row.num_epochs_completed)?plural(row.num_epochs_completed,'epoch'):null,
+                finite(row.elapsed_time)?fmt(row.elapsed_time,1)+' s':null].filter(Boolean).join(' · ')||' '})),
+              h('span'),num(value)]}}});
+      append(candidates,h('div',{class:'kt-narrow'},h('div',{class:'kt-col-head',style:{'grid-template-columns':'minmax(0,1fr) auto'}},h('span',{text:'Candidate'}),
+        h('span',{text:'Validation '+(metric?metricLabel(metric):'metric')})),box));
+      const unusual=trialRows.filter(row=>trialOrigin(row)!=='final validation');
+      if(unusual.length)append(candidates,note(unusual.slice(0,8).map(row=>str(row.trial)+': '+(row.comparison_source==='last_recorded_epoch'?
+        'value from '+trialOrigin(row):'no final validation value')).join('; ')+(unusual.length>8?'; …':'')+'. Other values are final validation scores.'))}
+    append(candidates,h('div',{class:'kt-settings'},settingsView()))}
+  const details=h('section',{class:'kt-section'},heading(3,'Run details'));
+  const rows=[['Run',context.run?midText(context.run,40):null],
+    ['Selected candidate',verified?str(provenance.selected_trial):'Not verified'+(provenance.selection_reason?': '+str(provenance.selection_reason):'')],
+    ['Explained model',explainedFit?fitName(explainedFit)+' · '+str(provenance.explanation_trial):str(provenance.explanation_trial)||null],
+    ['Selection metric',selectionBase?'Validation '+metricLabel(selectionBase)+(provenance.selection_direction==='max'?', higher is better':
+      provenance.selection_direction==='min'?', lower is better':''):null],
+    ['Explanations',['disabled','failed'].includes(provenance.generation_status)?str(provenance.generation_status):null],
+    ['Task',TASKS[task]||task||null]].filter(([,value])=>value);
+  append(details,h('div',{class:'kt-dl'},rows.map(([term,value])=>[h('span',{class:'kt-muted',text:term}),h('span',{text:value})])));
+  append(panel,h('div',{class:'kt-stack kt-training',style:{gap:'28px'}},learning,candidates,details))};
 
-const loaded=catalogRows.filter(({ref})=>Object.hasOwn(bodies,ref.artifact_id));
-const remaining=catalogRows.filter(({ref})=>!Object.hasOwn(bodies,ref.artifact_id));
-const scalarValues=loaded.flatMap(({ref})=>{const output=obj(obj(samples.outputs)[ref.artifact_id]);
-return output.task_type==='regression'&&['available','partial'].includes(output.status)?[output.prediction,output.target].filter(finite):[];});
-const scalarMin=scalarValues.length?Math.min(...scalarValues):null,scalarMax=scalarValues.length?Math.max(...scalarValues):null;
-const scalarScale=Math.max(Math.abs(scalarMin),Math.abs(scalarMax))||1;
-if(loaded.length){examples.append(el('h3','Loaded examples'));referenceTable(examples,loaded)}
-if(remaining.length){const details=el('details');details.append(el('summary','Other recorded references ('+remaining.length+')'));
-referenceTable(details,remaining);examples.append(details)}
-if(references.length>100)note(examples,'Showing the first 100 catalog references.');
-examples.append(loadingDetails);
-if(rankingEntry){
-rankingEntry.append(el('h3',classificationTask?'How do class probabilities compare with observed membership?':regressionTask?'How far was the prediction from the observed value?':'Where did observed IDs appear?'));
-if(classificationTask)note(rankingEntry,'Compare a loaded TEST example’s class probabilities with its observed membership, then inspect the same entity’s recorded context. These selected examples do not represent all TEST entities or reconstruct the aggregate metric.');
-else if(regressionTask)note(rankingEntry,'Compare a loaded TEST prediction with its observed value, then inspect the same entity’s recorded context. These selected examples do not represent all TEST entities or reconstruct the aggregate error.');
-else note(rankingEntry,'Compare a retained TEST ranking with its observed IDs, then inspect the same example’s recorded context. '
-+'These selected examples do not decompose the aggregate metric or represent all evaluation entities. The query’s TOP K and each retained list width are separate.');
-const rankingView=el('div');
-if(loaded.length){
-let selected=loaded[0];
-const drawRanking=()=>{rankingView.replaceChildren();const identity=sampleIdentity(selected.ref);
-rankingView.append(el('h4',identity.length>100?identity.slice(0,100)+'…':identity));
-identityNote(rankingView,'Selected entity identity',identity+' · Collector '+text(selected.ref.artifact_id));
-identityNote(rankingView,'Recorded selection strategies','Retained strategies: '+(list(selected.ref.categories).join(', ')||'Unavailable'));
-const output=obj(obj(samples.outputs)[selected.ref.artifact_id]);
-if(classificationTask)classificationOutput(rankingView,output,selected.ref.artifact_id);else if(regressionTask)scalarOutput(rankingView,output);else rankedOutput(rankingView,output,selected.ref.artifact_id);
-rankingView.append(action('Inspect this example’s context',()=>{inspectSample(selected.ref,selected.index);showPanel(2);
-const heading=sampleView.querySelector('h3');heading.tabIndex=-1;heading.focus();}));enable();};
-control(rankingEntry,'Loaded original entity',loaded.map(({ref,index})=>{
-const identity=sampleIdentity(ref);return[String(index),(identity.length>100?identity.slice(0,100)+'…':identity)+' · collector '+text(ref.artifact_id)];}),value=>{
-selected=loaded.find(entry=>String(entry.index)===value);drawRanking();});
-rankingEntry.append(rankingView);drawRanking();
-note(rankingEntry,'Loaded '+loaded.length+' of '+text(coverage.references_total??references.length)+' recorded references; selection strategies may overlap.');
-}else note(rankingEntry,'No loaded examples are available for '+(classificationTask?'class-output':regressionTask?'numeric-output':'ranked-output')+' comparison. Inspect recorded reference availability in Examples.');
-}
-sampleView.hidden=true;
-const panels=[results,patterns,examples],navigation=el('nav',undefined,'kt-navigation');
-navigation.setAttribute('aria-label','Training explanation sections');
-const showPanel=(index,focus=false,target=null)=>{panels.forEach((panel,i)=>{panel.hidden=i!==index;
-navigation.querySelectorAll(':scope>button')[i].setAttribute('aria-pressed',String(i===index));});
-if(focus){const heading=target||panels[index].querySelector('h2');heading.tabIndex=-1;heading.focus();heading.scrollIntoView({block:'start'});}};
-for(const [index,label]of ['Results','Patterns','Examples'].entries()){
-const button=action(label,()=>showPanel(index));panels[index].id=widgetId+'-panel-'+index;
-button.setAttribute('aria-controls',panels[index].id);navigation.append(button);}
-const theme=control(navigation,'Theme',[['auto','Automatic'],['light','Light'],['dark','Dark']],value=>{
-if(value==='auto')delete host.dataset.kumoTheme;else host.dataset.kumoTheme=value;});
-theme.value=host.dataset.kumoTheme||'auto';
-const header=el('header',undefined,'kt-header');header.append(el('h2','Training explainability'));
-if(context.query)header.append(queryNode);
-const metadata=results.querySelector(':scope>.kt-note'),details=el('details');
-details.append(el('summary','Run details'));if(metadata)details.append(metadata);
-note(header,'Task: '+text(context.task_type||provenance.task_type)+' · Explanation split: TEST');
-header.append(details);root.prepend(header,navigation);showPanel(0);
-if(selectedFeature)chooseFeature(selectedFeature);
-root.hidden=false;fallback.hidden=true;enable();
-onDispose(()=>{root.querySelectorAll('button,select').forEach(node=>node.disabled=true);
-root.hidden=true;fallback.hidden=false;});
+// ---------------------------------------------------------------- shell
+const header=h('header',{class:'kt-head'});
+const queryText=query?h('span',{class:'kt-query-text'+(query.length>160||/\n/.test(query)?' kt-clamped':''),text:query}):null;
+const queryBox=queryText?h('div',{class:'kt-query'},queryText):null;
+const queryToggle=queryText&&queryText.classList.contains('kt-clamped')?h('button',{type:'button',class:'kt-link','aria-expanded':'false',
+  onclick:()=>{const open=queryText.classList.toggle('kt-clamped');queryToggle.setAttribute('aria-expanded',String(!open));
+    queryToggle.textContent=open?'Show full query':'Show less'}},'Show full query'):null;
+const exact=h('input',{type:'checkbox',onchange:()=>{S.exact=exact.checked;content.classList.toggle('kt-exact',S.exact);showTab(S.tab,false)}});
+const theme=selectField('Theme',[['auto','Automatic'],['light','Light'],['dark','Dark']],host.dataset.kumoTheme||'auto',value=>{
+  if(value==='auto')delete host.dataset.kumoTheme;else host.dataset.kumoTheme=value});
+append(header,h('div',{class:'kt-head-main'},heading(2,'Training explainability'),
+    p([TASKS[task]||(task?task.replace(/_/g,' '):'Task not recorded'),context.target?'target '+str(context.target):null,
+      'test split'].filter(Boolean).join(' · '),'kt-muted'),
+    queryBox||note('Predictive query not recorded.'),queryToggle),
+  h('div',{class:'kt-tools'},h('label',{class:'kt-check'},exact,'Exact values'),theme));
+const notices=[];
+if(!verified)notices.push(['Selection unverified.',str(provenance.selection_reason||'The selected candidate and fit could not be confirmed from the saved records.')]);
+if(provenance.generation_status==='disabled')notices.push(['Explanations off.','This run did not generate explanations; training results are still shown.']);
+if(provenance.generation_status==='failed')notices.push(['Explanations failed.','Generation failed during training; anything shown may be incomplete.']);
+else if(provenance.generation_failure)notices.push(['Explanations failed.',str(provenance.generation_failure)]);
+const counts=[null,features.length||null,examples.length||null,null];
+const tablist=h('div',{class:'kt-tabs',role:'tablist','aria-label':'Training explanation views'});
+TAB_NAMES.forEach((name,index)=>{
+  const panel=h('div',{class:'kt-panel',role:'tabpanel',id:nextId('panel'),hidden:index!==0});
+  const tab=h('button',{type:'button',class:'kt-tab',role:'tab',id:nextId('tab'),'aria-controls':panel.id,
+    'aria-selected':String(index===0),tabindex:index===0?'0':'-1',onclick:()=>showTab(index,false)},name,
+    counts[index]?h('span',{class:'kt-muted kt-count',style:{'font-weight':'400'},text:' '+counts[index]}):null);
+  panel.setAttribute('aria-labelledby',tab.id);
+  tabs.push(tab);panels.push(panel);append(tablist,tab)});
+tablist.addEventListener('keydown',event=>{
+  const current=tabs.indexOf(event.target.closest('[role=tab]'));if(current<0)return;
+  const next={ArrowRight:current+1,ArrowLeft:current-1,Home:0,End:tabs.length-1}[event.key];
+  if(next===undefined)return;
+  event.preventDefault();const index=(next+tabs.length)%tabs.length;showTab(index,false);tabs[index].focus()},{signal});
+append(content,header,...notices.map(([title,text])=>h('div',{class:'kt-notice',role:'note'},h('strong',{text:title}),h('span',{text}))),
+  tablist,...panels);
+showTab(0,false);
+// Hosts that size an output frame to its content cannot keep a viewport-height pane in view.
+try{if(window.self!==window.top)content.classList.add('kt-framed')}catch(error){content.classList.add('kt-framed')}
+content.hidden=false;fallback.hidden=true;
+onDispose(()=>{content.querySelectorAll('button,select,input').forEach(node=>node.disabled=true);
+  content.hidden=true;fallback.hidden=false});
 """
 
 
