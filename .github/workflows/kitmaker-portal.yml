@@ -6,6 +6,9 @@ name: Kitmaker Portal via Charon
 
 on:  # yamllint disable-line rule:truthy
   workflow_call:
+    secrets:
+      KITMAKER_API_TOKEN:
+        required: true
     inputs:
       project:
         type: string
@@ -34,6 +37,9 @@ permissions:
 
 jobs:
   portal:
+    if: >-
+      ${{ github.event_name == 'release'
+      || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     environment: kumo-engine-release

@@ -12,11 +12,12 @@ import pytest
 import yaml
 
 WORKFLOW = Path(__file__).resolve().parents[2] / (
-    '.github/workflows/kumo-engine-wheel.yml')
-JOBS = yaml.safe_load(WORKFLOW.read_text())['jobs']
-BUILDS = JOBS['build']['strategy']['matrix']['include']
-PORTAL_JOBS = yaml.safe_load(
-    (WORKFLOW.parent / 'kitmaker-portal.yml').read_text())['jobs']
+    ".github/workflows/kumo-engine-wheel.yml"
+)
+JOBS = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+BUILDS = JOBS["build"]["strategy"]["matrix"]["include"]
+PORTAL_WORKFLOW = yaml.safe_load((WORKFLOW.parent / "kitmaker-portal.yml").read_text())
+PORTAL_JOBS = PORTAL_WORKFLOW["jobs"]
 
 
 def _step(job, name):
@@ -210,6 +211,24 @@ def test_all_platforms_require_validation_and_release_environment() -> None:
     assert JOBS["kitmaker"]["needs"] == ["attach-to-release"]
     portal = PORTAL_JOBS["portal"]
     assert portal["environment"] == "kumo-engine-release"
+    assert portal["if"] == (
+        "${{ github.event_name == 'release' "
+        "|| (github.event_name == 'workflow_dispatch' "
+        "&& github.ref == 'refs/heads/main') }}"
+    )
+    assert (
+        PORTAL_WORKFLOW[True]["workflow_call"]["secrets"]["KITMAKER_API_TOKEN"][
+            "required"
+        ]
+        is True
+    )
+    glove = yaml.safe_load(
+        (WORKFLOW.parent / "kumo-glove-6b-50d-wheel.yml").read_text()
+    )
+    for caller in [JOBS["kitmaker"], glove["jobs"]["kitmaker"]]:
+        assert caller["secrets"] == {
+            "KITMAKER_API_TOKEN": "${{ secrets.KITMAKER_API_TOKEN }}"
+        }
     assert portal["env"]["RELEASE_TAG"] == "${{ inputs.release_tag }}"
     assert JOBS["kitmaker"]["with"]["release_tag"] == (
         "${{ github.event.release.tag_name }}"
@@ -219,10 +238,11 @@ def test_all_platforms_require_validation_and_release_environment() -> None:
             assert step["if"] == "${{ github.event_name == 'release' }}"
     assert _step("build", "Checkout repository")["with"]["persist-credentials"] is False
     for job in ["attach-to-release", "kitmaker"]:
-        assert JOBS[job]['if'] == "${{ github.event_name == 'release' }}"
+        assert JOBS[job]["if"] == "${{ github.event_name == 'release' }}"
     smoke = yaml.safe_load(
-        (WORKFLOW.parent / 'kumo-engine-wheel-smoke.yml').read_text())
-    assert set(smoke[True]) == {'workflow_call'}
+        (WORKFLOW.parent / "kumo-engine-wheel-smoke.yml").read_text()
+    )
+    assert set(smoke[True]) == {"workflow_call"}
 
 
 def test_publication_forwards_the_shared_prediction_tolerance():
