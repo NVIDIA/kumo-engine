@@ -162,7 +162,7 @@ def build_of(skill_md: str) -> Optional[str]:
 
 def _read_build(skill_dir: Path) -> Optional[str]:
     try:
-        return build_of((skill_dir / 'SKILL.md').read_text())
+        return build_of((skill_dir / 'SKILL.md').read_text(encoding='utf-8'))
     except OSError:
         return None
 

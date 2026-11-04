@@ -308,3 +308,16 @@ def test_workspace_requires_https() -> None:
     assert package_skill.Workspace('https://dbc.example.com/', 't').host == 'https://dbc.example.com'
     with pytest.raises(SystemExit):
         package_skill.Workspace('http://dbc.example.com', 't')
+
+
+def test_text_io_names_its_encoding() -> None:
+    """The skill holds non-ASCII text; Windows' default (cp1252) cannot decode it."""
+    sources = [SCRIPT, SCRIPT.parents[2] / 'packages' / 'kumo-engine' / 'kumo' / 'engine' / 'skills.py']
+    unnamed = [
+        f'{src.name}:{node.lineno}' for src in sources
+        for node in ast.walk(ast.parse(src.read_text(encoding='utf-8')))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr in ('read_text', 'write_text')
+        and not any(k.arg == 'encoding' for k in node.keywords)
+    ]
+    assert not unnamed, unnamed

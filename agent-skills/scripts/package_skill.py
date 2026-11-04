@@ -164,10 +164,10 @@ def build(host: str, dist: Path) -> Path:
         for name in CAPABILITY:
             copy_tracked(SKILLS / name, pkg / name)
     router = pkg / 'SKILL.md'
-    text, n = MARKER.subn(f'SKILL-BUILD: {build_id()}', router.read_text())
+    text, n = MARKER.subn(f'SKILL-BUILD: {build_id()}', router.read_text(encoding='utf-8'))
     if n != 1:
         raise SystemExit(f'expected one SKILL-BUILD marker in {router}, found {n}')
-    router.write_text(text)
+    router.write_text(text, encoding='utf-8')
     return pkg
 
 
@@ -177,7 +177,7 @@ def unresolved(pkg: Path) -> list[str]:
     roots = {p.name for p in pkg.iterdir()}
     errors = []
     for doc in sorted(pkg.rglob('*.md')):
-        text = doc.read_text()
+        text = doc.read_text(encoding='utf-8')
         where = doc.relative_to(pkg)
         for target in MD_LINK.findall(text):
             if '://' in target or target.startswith('mailto:'):
@@ -294,7 +294,7 @@ class Workspace:
 
 def read_env_file(path: Path) -> None:
     """Set KEY=VALUE lines from `path` into the environment, without overriding it."""
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding='utf-8').splitlines():
         key, sep, value = line.strip().partition('=')
         if sep and not key.startswith('#'):
             os.environ.setdefault(key.strip(), value.strip().strip('\'"'))
