@@ -164,4 +164,4 @@ def test_validation_keeps_step_outputs_unless_fitting_unexplained(
     with patch.object(BaseLightningModule, 'compute_metrics'):
         module.on_validation_epoch_end()
     assert bool(module.outputs) == bool(kept)
-    assert ('prob' in module.outputs) == (fn != TrainerFn.FITTING)
+    assert ('pred' in module.outputs) == bool(kept)
