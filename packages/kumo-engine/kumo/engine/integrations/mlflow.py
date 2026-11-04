@@ -1242,7 +1242,8 @@ def _registry_download_uri(client: Any, model_uri: str) -> str:
     location = (client.get_logged_model(resolved[0]).artifact_location
                 if len(resolved) == 1 else
                 client.get_model_version_download_uri(*resolved))
-    return posixpath.join(location, path) if path else location
+    uri = import_provider('mlflow.utils.uri', 'mlflow')
+    return uri.append_to_uri_path(location, path) if path else location
 
 
 def _logged_model_name(registered: Optional[str], manifest: Any) -> str:

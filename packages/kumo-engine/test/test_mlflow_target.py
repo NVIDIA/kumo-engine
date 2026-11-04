@@ -383,6 +383,15 @@ def test_a_registry_reference_downloads_from_the_target_registry(
     assert open(local).read() == 'kumo'
 
 
+def test_a_nested_path_goes_before_the_location_query():
+    from kumo.engine.integrations.mlflow import _registry_download_uri
+
+    client = SimpleNamespace(
+        get_model_version_download_uri=lambda name, version: 's3://b/m?x=y')
+    assert _registry_download_uri(
+        client, 'models:/m/1/MLmodel') == 's3://b/m/MLmodel?x=y'
+
+
 @pytest.mark.parametrize('registry',
                          ['databricks-uc', 'databricks', 'uc:http://uc:8080'])
 def test_a_databricks_or_unity_catalog_reference_stays_on_mlflow_path(
