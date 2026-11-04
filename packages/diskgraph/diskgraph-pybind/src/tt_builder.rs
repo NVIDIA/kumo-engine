@@ -810,7 +810,10 @@ fn check_windows<U: UnitSystem>(op: &tt::Op<U>) -> PyResult<()> {
             }
             [*lo, *hi]
                 .into_iter()
-                .try_for_each(|bound| check_tick::<U>("window bound", bound, unit))
+                .try_for_each(|bound| {
+                    check_tick::<U>("window bound", bound, unit)
+                        .map_err(crate::DiskgraphConfigError::new_err)
+                })
         }
         tt::Op::Autoregression { target_op, .. } | tt::Op::FutureLabels { target_op, .. } => {
             check_windows(target_op)
@@ -819,13 +822,13 @@ fn check_windows<U: UnitSystem>(op: &tt::Op<U>) -> PyResult<()> {
     }
 }
 
-fn check_tick<U: UnitSystem>(what: &str, value: i64, unit: TimeUnit) -> PyResult<()> {
+pub(crate) fn check_tick<U: UnitSystem>(what: &str, value: i64, unit: TimeUnit) -> Result<(), String> {
     if value != 0 && dur_from_unit::<U>(value, unit).raw() == 0 {
-        return Err(crate::DiskgraphConfigError::new_err(format!(
+        return Err(format!(
             "a {what} of {value} {} is shorter than one tick of the {} index clock",
             unit_name(unit),
             unit_name(U::UNIT)
-        )));
+        ));
     }
     Ok(())
 }
@@ -848,7 +851,8 @@ impl ShiftedOp {
         self.offsets
             .iter()
             .map(|&v| {
-                check_tick::<U>("offset", v, self.unit)?;
+                check_tick::<U>("offset", v, self.unit)
+                    .map_err(crate::DiskgraphConfigError::new_err)?;
                 Ok(dur_from_unit::<U>(v, self.unit))
             })
             .collect()

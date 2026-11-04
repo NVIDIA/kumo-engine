@@ -24,9 +24,7 @@ use arrow::pyarrow::ToPyArrow;
 use arrow_array::RecordBatch;
 use diskgraph_core::metadata::{EdgeRelationMetadata, EdgeSortKeyMetadata};
 use diskgraph_core::sortkey::SortKeyDecoder;
-use diskgraph_core::time::{
-    convert_floor, convert_trunc, split_parts, Abs, Dur, TimeUnit, UnitSystem,
-};
+use diskgraph_core::time::{convert_ceil, convert_floor, split_parts, Abs, Dur, TimeUnit, UnitSystem};
 use diskgraph_core::with_index_clock;
 use diskgraph_engine::edge_unpacker::EdgeUnpacker;
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
@@ -250,10 +248,10 @@ impl ScalarValue {
 
     fn index_time<U: UnitSystem>(&self) -> Result<Option<i64>, String> {
         match self {
-            Self::Timestamp(value, unit) => Ok(Some(convert_trunc(*value, *unit, U::UNIT))),
+            Self::Timestamp(value, unit) => Ok(Some(convert_ceil(*value, *unit, U::UNIT))),
             _ => self
                 .epoch_seconds()
-                .map(|value| value.map(|value| Abs::<U>::from_secs(value).raw())),
+                .map(|value| value.map(|value| convert_ceil(value, TimeUnit::Seconds, U::UNIT))),
         }
     }
 
@@ -841,7 +839,7 @@ fn take_batch(batch: &RecordBatch, rows: &[u64], columns: &[usize]) -> Result<Re
         .map_err(|error| error.to_string())
 }
 
-fn sort_frame_rows(rows: &mut [(usize, Option<i64>, ScalarValue)]) {
+fn sort_frame_rows(rows: &mut [(usize, Option<i64>, ScalarValue, Option<i64>)]) {
     rows.sort_by_key(|row| row.1);
     let mut start = 0;
     while start < rows.len() {
@@ -865,14 +863,8 @@ fn frame_windows<U: UnitSystem>(
     cutoffs: &[Abs<U>],
 ) -> Result<Vec<TimeWindow>, String> {
     let duration = |seconds| {
-        let ticks = Dur::<U>::from_secs(seconds).raw();
-        if seconds != 0 && ticks == 0 {
-            return Err(format!(
-                "a window bound of {seconds} seconds is shorter than one tick of the {:?} index clock",
-                U::UNIT
-            ));
-        }
-        Ok(ticks)
+        crate::tt_builder::check_tick::<U>("window bound", seconds, TimeUnit::Seconds)?;
+        Ok::<_, String>(Dur::<U>::from_secs(seconds).raw())
     };
     let lower = plan.start_seconds.map(duration).transpose()?;
     let upper = plan.stop_seconds.map(duration).transpose()?;
@@ -1025,18 +1017,16 @@ fn materialize_frame<U: UnitSystem>(
     offsets.push(0);
     for anchor in 0..roots.len() {
         let (lower, upper) = windows[anchor];
-        let mut anchor_rows = Vec::<(usize, Option<i64>, ScalarValue)>::new();
+        let mut anchor_rows = Vec::<(usize, Option<i64>, ScalarValue, Option<i64>)>::new();
         for row in input_offsets[anchor]..input_offsets[anchor + 1] {
-            let timestamp = match time_position {
-                Some(position) => Some(
-                    scalar_at(decoded.column(position).as_ref(), row)?
-                        .index_time::<U>()?
-                        .ok_or_else(|| {
-                            format!("frame {:?} contains a null timestamp", plan.name)
-                        })?,
-                ),
-                None => None,
-            };
+            let time = time_position
+                .map(|position| scalar_at(decoded.column(position).as_ref(), row))
+                .transpose()?
+                .unwrap_or(ScalarValue::Null);
+            let timestamp = time.index_time::<U>()?;
+            if time_position.is_some() && timestamp.is_none() {
+                return Err(format!("frame {:?} contains a null timestamp", plan.name));
+            }
             if timestamp.is_some_and(|value| {
                 lower.is_some_and(|bound| value <= bound)
                     || upper.is_some_and(|bound| value > bound)
@@ -1044,14 +1034,20 @@ fn materialize_frame<U: UnitSystem>(
                 continue;
             }
             let key = scalar_at(decoded.column(primary_key_position).as_ref(), row)?;
-            anchor_rows.push((row, timestamp, key));
+            let seconds = time.epoch_seconds()?;
+            // A frame has one time column/unit. Sort its raw values so clock
+            // rounding or saturation cannot create artificial timestamp ties.
+            let sort_time = match time {
+                ScalarValue::Timestamp(value, _) => Some(value),
+                _ => seconds,
+            };
+            anchor_rows.push((row, sort_time, key, seconds));
         }
         sort_frame_rows(&mut anchor_rows);
-        for (row, timestamp, _) in anchor_rows {
+        for (row, _, _, timestamp) in anchor_rows {
             selected_rows.push(row as u64);
             node_ids.push(flat_nodes[row]);
-            timestamps
-                .push(timestamp.map(|value| convert_floor(value, U::UNIT, TimeUnit::Seconds)));
+            timestamps.push(timestamp);
         }
         offsets.push(selected_rows.len());
     }
@@ -1649,7 +1645,11 @@ pub(crate) fn execute_lengths(
     }
     let plan: QueryPlan = serde_json::from_str(plan_json)
         .map_err(|error| format!("invalid temporal query JSON: {error}"))?;
-    with_index_clock!(reader.metadata().timestamp_unit, U => {
+    let clock = reader.metadata().timestamp_unit;
+    if !clock.is_index_clock() {
+        return Err(format!("{clock:?} is not an index clock"));
+    }
+    with_index_clock!(clock, U => {
         let cutoffs = cutoffs.iter().copied().map(Abs::<U>::from_secs).collect::<Vec<_>>();
         execute_lengths_in_clock(reader, root_type, roots, &cutoffs, plan, total_started)
     })
@@ -1730,7 +1730,11 @@ pub(crate) fn execute(
     }
     let plan: QueryPlan = serde_json::from_str(plan_json)
         .map_err(|error| format!("invalid temporal query JSON: {error}"))?;
-    with_index_clock!(reader.metadata().timestamp_unit, U => {
+    let clock = reader.metadata().timestamp_unit;
+    if !clock.is_index_clock() {
+        return Err(format!("{clock:?} is not an index clock"));
+    }
+    with_index_clock!(clock, U => {
         let cutoffs = cutoffs.iter().copied().map(Abs::<U>::from_secs).collect::<Vec<_>>();
         execute_in_clock(reader, root_type, roots, &cutoffs, plan, total_started)
     })
@@ -2002,17 +2006,19 @@ mod tests {
                                 _ => Some((row % 7) as i64),
                             },
                             keys[row % keys.len()].clone(),
+                            Some(row as i64),
                         )
                     })
                     .collect::<Vec<_>>();
                 actual.shuffle(&mut rng);
                 let mut expected = actual
                     .iter()
-                    .map(|(row, time, key)| (*row, *time, key.stable_sort_key()))
+                    .map(|(row, time, key, _)| (*row, *time, key.stable_sort_key()))
                     .collect::<Vec<_>>();
                 expected
                     .sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.2.cmp(&right.2)));
                 sort_frame_rows(&mut actual);
+                assert!(actual.iter().all(|row| row.3 == Some(row.0 as i64)));
                 assert_eq!(
                     actual.iter().map(|row| row.0).collect::<Vec<_>>(),
                     expected.iter().map(|row| row.0).collect::<Vec<_>>()

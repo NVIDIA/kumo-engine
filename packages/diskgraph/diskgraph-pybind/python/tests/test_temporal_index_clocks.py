@@ -4,6 +4,7 @@
 
 """Temporal queries must compare stored times and windows in the same clock."""
 
+import datetime
 import json
 
 import diskgraph
@@ -14,14 +15,14 @@ import pytest
 from test_index_clocks import CLOCKS, DAY, EPOCH_DAY, TICK_NS
 
 
-def make_graph(root, clock, ids, owners, times):
+def make_graph(root, clock, ids, owners, times, *, other_times=None, other_dtype="timestamp"):
     root.mkdir()
     pq.write_table(pa.table({"id": [1, 2, 3]}), root / "users.parquet")
     pq.write_table(pa.table({
         "id": ids,
         "owner": owners,
         "time": times,
-        "other_time": times,
+        "other_time": times if other_times is None else other_times,
         "amount": [float(i + 1) for i in range(len(ids))],
         "text": ["payload " * 20] * len(ids),
     }), root / "events.parquet")
@@ -39,7 +40,7 @@ def make_graph(root, clock, ids, owners, times):
                 "columns": [
                     {"name": name, "ingested_dtype": dtype}
                     for name, dtype in [("id", "int64"), ("owner", "int64"),
-                                        ("time", "timestamp"), ("other_time", "timestamp"),
+                                        ("time", "timestamp"), ("other_time", other_dtype),
                                         ("amount", "float64"), ("text", "string")]
                 ],
                 "fkeys": [{"src_column": "owner", "dst_table": "users", "reverse": {
@@ -253,11 +254,108 @@ def test_timestamp_reductions_do_not_collapse_subseconds(fine_graph, output_form
 
 
 @pytest.mark.parametrize("method", ["query_temporal", "query_temporal_lengths"])
-def test_subtick_windows_are_rejected(day_graph, method):
+@pytest.mark.parametrize("bound", ["start_seconds", "stop_seconds"])
+@pytest.mark.parametrize("seconds", [-1, 1])
+def test_subtick_windows_are_rejected(day_graph, method, bound, seconds):
     engine, relation, clock = day_graph
     if clock not in ("hours", "days"):
         pytest.skip("a one-second bound is representable in this clock")
-    plan = plan_for(relation, start=-1)
+    plan = plan_for(relation, start=None)
+    plan["frames"][0]["stop_seconds"] = None
+    plan["frames"][0][bound] = seconds
     roots = {"users": engine.lookup_node_ids("users", pa.array([1]))}
     with pytest.raises(diskgraph.DiskgraphConfigError, match="shorter than one tick"):
         getattr(engine, method)(roots, {"users": [(EPOCH_DAY + 6) * DAY]}, json.dumps(plan))
+
+
+@pytest.fixture(scope="module", params=["hours", "days"])
+def integer_graph(tmp_path_factory, request):
+    clock = request.param
+    tick = TICK_NS[clock] // 10**9
+    base = EPOCH_DAY * DAY
+    times = [base + n * tick // 2 for n in (20, 21, 22, 23)]
+    times += [n * tick // 2 for n in (-5, -4, -3, -2, -1, 0)]
+    engine, relation = make_graph(
+        tmp_path_factory.mktemp("integer_clocks") / clock, clock,
+        [1, 30, 2, 4, 20, 21, 22, 23, 24, 25], [1] * 4 + [2] * 6,
+        pa.array(times, pa.timestamp("s")), other_times=pa.array(times, pa.int64()), other_dtype="int64")
+    return engine, relation, tick, times
+
+
+@pytest.mark.parametrize("output_format", ["inspectable", "model"])
+@pytest.mark.parametrize("shared", [False, True])
+@pytest.mark.parametrize("case", ["past", "fractional_start", "fractional_stop", "negative"])
+def test_integer_times_follow_ingest_rounding(integer_graph, output_format, shared, case):
+    engine, relation, tick, times = integer_graph
+    base = EPOCH_DAY * DAY
+    # Hand-calculated answers: event times round up, while anchors and relative
+    # durations truncate towards zero, as in ingestion and the graph/TT paths.
+    owner, anchor, start, stop, expected = {
+        "past": (1, base + 10 * tick + tick // 4, None, 0, [1]),
+        "fractional_start": (1, base + 11 * tick + tick // 4, -3 * tick // 2, 0, [2, 30]),
+        "fractional_stop": (1, base + 10 * tick + tick // 4, None, 3 * tick // 2, [2, 30, 1]),
+        "negative": (2, -7 * tick // 4, None, 0, [23, 22, 21, 20]),
+    }[case]
+    plan = plan_for(relation, time_column="other_time", start=start, limit=None, shared=shared)
+    plan["frames"][0]["stop_seconds"] = stop
+    result, _ = run(engine, plan, [owner], [anchor], output_format)
+    sequence = result["sequences"][0]
+    assert sequence["batch"].column("id").to_pylist() == expected
+    event_times = dict(zip([1, 30, 2, 4, 20, 21, 22, 23, 24, 25], times))
+    assert values(sequence["timestamps"]) == [event_times[node] for node in expected]
+    if shared:
+        amounts = {node: i + 1 for i, node in enumerate(event_times)}
+        aggregates = {a["name"]: values(a["values"])[0] for a in result["aggregates"]}
+        rounded_anchor = -tick if case == "negative" else base + (
+            11 if case == "fractional_start" else 10) * tick
+        assert aggregates == {"n": len(expected), "total": sum(amounts[node] for node in expected),
+                              "age": rounded_anchor - max(event_times[node] for node in expected)}
+    # A sole bounded sequence must agree with the full sequence prefix. This
+    # also checks the selection after applying a limit.
+    plan["sequences"][0]["limit"] = 1
+    limited, _ = run(engine, plan, [owner], [anchor], output_format)
+    assert limited["sequences"][0]["batch"].column("id").to_pylist() == expected[:1]
+    assert values(limited["sequences"][0]["timestamps"]) == [event_times[expected[0]]]
+    # The declared clock column contains the same source instants, converted by
+    # ingestion. Indexed filtering must admit the same rows; rounding can make
+    # additional time ties, so their delivery orders need not match.
+    plan["aggregates"] = []
+    plan["sequences"][0]["limit"] = None
+    plan["frames"][0]["time_column"] = "time"
+    indexed, _ = run(engine, plan, [owner], [anchor], output_format)
+    assert sorted(indexed["sequences"][0]["batch"].column("id").to_pylist()) == sorted(expected)
+
+
+@pytest.mark.parametrize("output_format", ["inspectable", "model"])
+def test_sequence_metadata_preserves_dates_beyond_nanosecond_range(tmp_path, output_format):
+    engine, relation = make_graph(
+        tmp_path / "date_clocks", "nanoseconds", [2, 1], [1, 1],
+        pa.array([EPOCH_DAY * DAY] * 2, pa.timestamp("s")),
+        other_times=pa.array([datetime.date(3000, 1, 1), datetime.date(9999, 12, 31)], pa.date32()),
+        other_dtype="date")
+    plan = plan_for(relation, time_column="other_time", start=None)
+    plan["frames"][0]["stop_seconds"] = None
+    result, _ = run(engine, plan, [1], [EPOCH_DAY * DAY], output_format)
+    assert result["sequences"][0]["batch"].column("id").to_pylist() == [1]
+    assert values(result["sequences"][0]["timestamps"]) == [253_402_214_400]
+
+
+@pytest.mark.parametrize("clock", ["minutes", "weeks", "months", "years"])
+def test_unsupported_index_clock_is_a_configuration_error(tmp_path, clock):
+    # An integer-only index can be opened even with an unsupported clock.
+    source = tmp_path / "users.parquet"
+    pq.write_table(pa.table({"id": [1]}), source)
+    diskgraph.ingest(json.dumps({"dataset_name": "invalid_clock", "tables": [{
+        "name": "users", "primary_key": "id",
+        "columns": [{"name": "id", "ingested_dtype": "int64"}],
+        "source": {"type": "parquet", "paths": [str(source)]},
+    }]}), str(tmp_path / "index"), col_stats=False,
+        context_threads=2, encode_threads=2, pk_map_threads=2, edges_map_threads=2, index_threads=2)
+    metadata_path = tmp_path / "index" / "index_metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["timestamp_unit"] = clock
+    metadata_path.write_text(json.dumps(metadata))
+    engine = diskgraph.SamplerEngine(str(tmp_path / "index"))
+    for method in ("query_temporal", "query_temporal_lengths"):
+        with pytest.raises(diskgraph.DiskgraphConfigError, match="not an index clock"):
+            getattr(engine, method)({"users": [0]}, {"users": [0]}, '{"frames": []}')
