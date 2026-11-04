@@ -56,10 +56,9 @@ the write, after training and scoring. Say so at the gate and let the user pick:
 columns (`ALTER TABLE … ADD COLUMN`, type `TIMESTAMP_NTZ`; earlier rows hold nulls), a new table
 the first run creates, or OVERWRITE. Adding columns is a write, confirmed like any other.
 
-The exact table name is used; no suffix is appended. Quote case-sensitive identifiers through
-Snowpark's identifier handling. Read back, with the session taken in the first cell
-(`kumoai-reference/references/kumo_finetuning_sdk.md` §3.3), using `session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA,
-OUTPUT_TABLE])`, inspect schema and bounded values. For a new/replaced table compare its count
+The exact table name is used; no suffix is appended and its case is kept. Read back, with the
+session taken in the first cell (`kumoai-reference/references/kumo_finetuning_sdk.md` §3.3), using
+the quoted table name of §9.1 there, inspect schema and bounded values. For a new/replaced table compare its count
 with `written.num_rows`. For APPEND compare the count delta against a recorded pre-write count
 only without concurrent writers, or use a run-specific destination for unambiguous verification.
 Check entity/anchor/class coverage too. A count alone does not prove semantic correctness.

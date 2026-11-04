@@ -601,10 +601,16 @@ PredictionResult.export(output_config)
 ### 9.1 The output table keeps its name
 
 **The table is written with exactly the name you pass.** No suffix, no case change, no quoting
-needed. Verify by reading it back and comparing the row count:
+needed on the write. Verify by reading it back and comparing the row count. Quote the table name
+in the read: `session.table` upper-cases an unquoted part, so `churn_scores` would look for
+`CHURN_SCORES` and not find the table Kumo wrote. The database and schema stay unquoted; both
+sides resolve those the same way.
 
 ```python
-destination = session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA, output_table])
+def quoted(name):
+    return '"' + name.replace('"', '""') + '"'
+
+destination = session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA, quoted(output_table)])
 assert destination.count() == prediction_result.num_rows
 ```
 
@@ -728,8 +734,8 @@ prediction_result = trainer.predict(
 )
 print('rows:', prediction_result.num_rows)
 
-# 8. Verify the write-back.
-destination = session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA, OUTPUT_TABLE])
+# 8. Verify the write-back. The table name is quoted (§9.1).
+destination = session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA, '"' + OUTPUT_TABLE.replace('"', '""') + '"'])
 assert destination.count() == prediction_result.num_rows
 ```
 
