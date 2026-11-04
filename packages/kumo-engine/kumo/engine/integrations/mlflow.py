@@ -790,7 +790,10 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
         datasets = [d for d in map(self._dataset_input, summaries) if d]
         if datasets:
             with self.target.scope():
-                self._client.log_inputs(run_id, datasets=datasets)
+                try:
+                    self._client.log_inputs(run_id, datasets=datasets)
+                except self._mlflow.exceptions.MlflowException:
+                    self._client.log_inputs(run_id, datasets=datasets)
 
     def _dataset_input(self, summary: Dataset) -> Any:
         source = _dataset_source(summary.source)

@@ -392,6 +392,28 @@ def test_source_tables_are_logged_as_native_inputs(monkeypatch):
     assert mlflow.data.get_source(orders).delta_table_id == 'table-id'
 
 
+def test_a_dataset_a_concurrent_run_logged_first_is_reused(monkeypatch):
+    from mlflow.exceptions import MlflowException
+
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    log_inputs = mlflow.MlflowClient.log_inputs
+    raced = []
+
+    def race(self, *args, **kwargs):
+        if not raced:
+            raced.append(True)
+            raise MlflowException('UNIQUE constraint failed: datasets.name')
+        return log_inputs(self, *args, **kwargs)
+
+    monkeypatch.setattr(mlflow.MlflowClient, 'log_inputs', race)
+    replay(MlflowTracking(log_system_metrics=False), summaries=[
+        Dataset('ents', INPUTS['ents'], {}, {}, 'source table')])
+
+    assert [item.dataset.name
+            for item in _fit_run().inputs.dataset_inputs] == ['ents']
+
+
 def _fit_manifest():
     from kumo.engine._manifest import (
         ModelManifest,
