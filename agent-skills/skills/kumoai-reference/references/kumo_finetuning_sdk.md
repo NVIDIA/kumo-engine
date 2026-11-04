@@ -7,11 +7,12 @@ process. There is no hosted service, no project, no job registry, no API key, no
 
 ## 0. Ground truth
 
-Everything in this file is verified against **one** build:
+The baseline API was verified against the bundle below; graph visualization was checked against source including [NVIDIA/kumo-engine#134](https://github.com/NVIDIA/kumo-engine/pull/134).
 
 | | |
 |---|---|
-| Bundle | `kumo_fat_bundle` `20261007+2e1eb12` (after the `kumo-engine` rename, kumo-ai/kumo#31382) |
+| Baseline bundle | `kumo_fat_bundle` `20261007+2e1eb12` (after the `kumo-engine` rename, kumo-ai/kumo#31382) |
+| Graph visualization | Source build including #134 (merged at `fa46bed23fb01921955cb77bfec21e80ab7e0fc6`); unavailable in the baseline bundle and `kumo-engine` `1.0.0`, with no released build verified |
 | Import name | `kumo.engine` (the `kumo-engine` package; `kumoai` / `kumoai-local` before the rename) |
 | Python / torch | 3.12 / `2.9.1+cu129` |
 

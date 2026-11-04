@@ -18,10 +18,13 @@ After graph construction and `graph.validate()`, include a separate cell before 
 ```python
 from IPython.display import display
 
-try:
-    display(graph.visualize())
-except (AttributeError, ValueError) as error:
-    print(f'Graph preview unavailable: {error}')
+if not hasattr(graph, 'visualize'):
+    print('Graph preview needs a kumo-engine build including #134; upgrade when available. Continuing.')
+else:
+    try:
+        display(graph.visualize())
+    except Exception as error:
+        print(f'Graph preview unavailable: {type(error).__name__}: {error}')
 ```
 
 Introduce the cell as an interactive view where the user can explore tables, columns, and relationships.
@@ -39,11 +42,14 @@ Use the run's output directory; this example uses the current directory:
 from pathlib import Path
 
 graph_path = Path('graph.svg').resolve()
-try:
-    _ = graph.visualize(graph_path)
-    print(f'Graph diagram: {graph_path}')
-except (AttributeError, ValueError, OSError) as error:
-    print(f'Graph preview unavailable: {error}')
+if not hasattr(graph, 'visualize'):
+    print('Graph preview needs a kumo-engine build including #134; upgrade when available. Continuing.')
+else:
+    try:
+        _ = graph.visualize(graph_path)
+        print(f'Graph diagram: {graph_path}')
+    except Exception as error:
+        print(f'Graph preview unavailable: {type(error).__name__}: {error}')
 ```
 
 A missing visualization API, unsupported graph, or export failure should report the error and let modeling continue with the original graph.

@@ -280,7 +280,8 @@ Run only on explicit request (router Step 3).
 
 ## Graph visualization
 
-Databricks notebooks display the interactive HTML view; rerun the cell if saved output is static.
+> **Not verified:** interactive HTML rendering and saved-output behavior have not been tested in Databricks notebooks.
+The SDK supplies an HTML view; rerun the cell if saved output is static.
 Exports are saved on the notebook runtime; use the workspace's file tools to retrieve them.
 
 Source: shipped package (`kumo.engine.graph.Graph.visualize`, `kumo.engine._visualization.SVG`)
