@@ -178,11 +178,15 @@ class ObjectStoreSinkBackend(ABC):
         return self._uri(output)
 
     def preflight_write_files(self, connector, table_name, write_mode=None):
-        from pyarrow.fs import FileSelector
-
         if write_mode is WriteMode.OVERWRITE or not table_name.endswith('/'):
             return
         filesystem, path = self._destination(connector, table_name)
+        self._require_empty_destination(filesystem, path)
+
+    def _require_empty_destination(self, filesystem: FileSystem,
+                                   path: str) -> None:
+        from pyarrow.fs import FileSelector
+
         if filesystem.get_file_info(
                 FileSelector(path.rstrip('/'), allow_not_found=True)):
             raise self._conflict(path)

@@ -226,7 +226,10 @@ Every value comes from exact counts over all rows, with no sampling. Numbers you
 - Problems, when there are any, come right after the sentence.
 - Then tables: holdout metrics (fit; `ap`, `auprc`, `loss` and `logloss` with their meanings, as under Metrics); the 2x2
   matrix at the binary threshold; the training data; data preparation; notes; "Lineage"; "Where things are", with
-  each artifact's full location, linked to the S3 or GCS console.
+  each artifact's full location, linked to the S3 or GCS console. ADLS locations
+  include an Azure Storage accounts link for their public, Government or China
+  cloud; opening a specific directory requires subscription and resource-group
+  IDs that are absent from an ADLS URI.
 - "Lineage" is how the run's data depend on each other. A fit: its source tables with their versions and locations →
   graph snapshot → training table → model. A prediction: the model ← its training table ← its snapshot ← its source
   tables, then the snapshot it scored ← that snapshot's tables, and, when the two snapshots differ, which tables are

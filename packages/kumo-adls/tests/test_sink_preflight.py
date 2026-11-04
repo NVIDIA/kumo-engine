@@ -63,3 +63,20 @@ def test_default_write_policy_checks_occupancy_but_overwrite_preserves_behavior(
     with pytest.raises(NotImplementedError, match='OVERWRITE'):
         backend.preflight_write_files(target, 'out/',
                                       write_mode=WriteMode.APPEND)
+
+
+@pytest.mark.parametrize('mode', [None, WriteMode.OVERWRITE])
+@pytest.mark.parametrize('path', ['out/', 'scores.parquet'])
+def test_preflight_resolves_once_and_only_opens_storage_for_occupancy(
+        service, connector, monkeypatch, mode, path):
+    backend = ADLSSinkBackend()
+    target = connector()
+    resolve = Mock(wraps=backend._resolved)
+    filesystem = Mock(wraps=backend._filesystem)
+    monkeypatch.setattr(backend, '_resolved', resolve)
+    monkeypatch.setattr(backend, '_filesystem', filesystem)
+
+    backend.preflight_write_files(target, path, write_mode=mode)
+
+    resolve.assert_called_once_with(target, path)
+    assert filesystem.call_count == int(mode is None and path.endswith('/'))

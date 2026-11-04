@@ -32,12 +32,14 @@ class ADLSSinkBackend(ADLSSessions, ObjectStoreSinkBackend):
         # None requests the default file policy; OVERWRITE permits replacement.
         if write_mode not in (None, WriteMode.OVERWRITE):
             raise NotImplementedError('ADLS output only supports OVERWRITE')
-        bucket, _, _ = self._resolved(connector, table_name)
+        bucket, path, region = self._resolved(connector, table_name)
         container, host = bucket.split('@', 1)
         account, suffix = host.split('.', 1)
         validate_output_configuration(self._principal(connector), account,
                                       suffix, container)
-        super().preflight_write_files(connector, table_name, write_mode)
+        if write_mode is None and table_name.endswith('/'):
+            self._require_empty_destination(
+                self._filesystem(connector, bucket, region), path)
 
     def _uri(self, path: str) -> str:
         return canonical_uri(path)
