@@ -211,6 +211,36 @@ def test_epserde_preserves_upstream_headers_and_checks_local_additions() -> None
             policy) is not None
 
 
+def test_epserde_vendor_boundary() -> None:
+    prefix = "packages/diskgraph/third_party/epserde/"
+    exclusions = [entry for entry in POLICY["exclusions"]
+                  if entry["pattern"].startswith(prefix)]
+    assert len(exclusions) == 42
+    assert all(not any(marker in entry["pattern"] for marker in "*?[")
+               for entry in exclusions)
+    for relative in ("Cargo.toml", "src/deser/read.rs", "tests/test_types.rs"):
+        exclusion = check_license_headers.matching_exclusion(
+            prefix + relative, POLICY)
+        assert exclusion is not None
+        assert exclusion["kind"] == "vendored"
+        license_identifier = "Apache-2.0 OR LGPL-2.1-or-later"
+        if relative == "Cargo.toml":
+            license_identifier = f"Apache-2.0 AND ({license_identifier})"
+        assert exclusion["license"] == license_identifier
+    for relative in ("src/utils/alignment.rs",
+                     "tests/test_review_regressions.rs", "new_source.rs",
+                     "src/deser/new_source.rs", "src/impls/new_source.rs",
+                     "src/ser/new_source.rs", "src/traits/new_source.rs",
+                     "tests/test_bad_new.rs", "tests/test_std_new.rs",
+                     "tests/test_type_new.rs"):
+        path = prefix + relative
+        assert check_license_headers.matching_exclusion(path, POLICY) is None
+        assert check_license_headers.validate_text(
+            path, SLASH_HEADER + "fn checked() {}\n", POLICY) is None
+        assert check_license_headers.validate_text(
+            path, "fn unchecked() {}\n", POLICY) is not None
+
+
 def test_exclusions_are_exact_and_self_cleaning(tmp_path: Path) -> None:
     policy = deepcopy(POLICY)
     policy["license_scopes"] = []
