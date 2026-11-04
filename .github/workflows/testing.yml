@@ -551,6 +551,7 @@ jobs:
       SETUPTOOLS_SCM_PRETEND_VERSION: '0.0.0'
       DG_TEST_NATIVE_TASKS: '1'
       DG_TEST_NATIVE_IO: '1'
+      DG_TEST_CORE_IO: '1'
       DG_DIRECT_CACHE_GB: '1'
       DG_IO_RINGS: '2'
       DG_IO_QD: '8'
@@ -608,6 +609,20 @@ jobs:
           python -m pytest -q -s -c /dev/null \
             --confcutdir=packages/kumo-engine/test \
             packages/kumo-engine/test/test_native_io_tasks.py
+      - name: Verify native Python ownership, parity and seeded sampling
+        run: |
+          python -m pytest -q -c /dev/null \
+            --confcutdir=packages/diskgraph/diskgraph-pybind/python/tests \
+            --junitxml=/tmp/diskgraph-native-python.xml \
+            packages/diskgraph/diskgraph-pybind/python/tests/test_native_io_readiness.py
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+
+          from io_utils import fsutil
+
+          suites = ET.fromstring(fsutil.read_text('/tmp/diskgraph-native-python.xml'))
+          assert sum(int(suite.get('skipped', '0')) for suite in suites) == 0
+          PY
 
   pyarrow-range:
     # DiskGraph accepts pyarrow>=16,<25 and every other job runs the locked
