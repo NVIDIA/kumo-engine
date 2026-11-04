@@ -382,6 +382,8 @@ jobs:
         with:
           workspaces: packages/diskgraph -> target
           key: rust-tests-py${{ steps.python.outputs.version }}
+      - name: Test copied epserde library
+        run: cargo test --manifest-path third_party/epserde/Cargo.toml
       - run: cargo test --locked --workspace
 
   diskgraph-clippy:

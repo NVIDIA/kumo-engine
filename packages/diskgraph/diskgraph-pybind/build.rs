@@ -50,7 +50,7 @@ fn main() {
     // linked. Python extension builds are loaded by Python, so leave them alone.
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os == "linux" {
-        if let Some(lib_dir) = &pyo3_build_config::get().lib_dir {
+        if let Some(lib_dir) = pyo3_build_config::get().lib_dir() {
             println!("cargo:rustc-link-arg=-Wl,-rpath,{lib_dir}");
         }
     }
