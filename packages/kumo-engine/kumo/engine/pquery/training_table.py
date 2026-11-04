@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from kumo_core.artifacts import PROVENANCE_FILE
-from kumo_core.model_plan import TrainingTableGenerationPlan
 from kumo_core.diskgraph.sampling_artifacts import ArtifactFile
+from kumo_core.model_plan import TrainingTableGenerationPlan
 from kumo_core.training.table import TrainTableRequest
 from kumoapi.model_plan import \
     TrainingTableGenerationPlan as PublicGenerationPlan

@@ -6,13 +6,14 @@
 from pathlib import Path
 from unittest.mock import Mock
 
-import kumo.engine as kumo
 import pytest
 from kumo_core.model_plan import TrainingTableGenerationPlan
 from kumo_core.training import preparation
 from kumo_core.training.table import GeneratedTrainTableResult
 from kumo_core.training.workflow import TrainingWorkflowRequest
 from kumoapi.model_plan import ModelPlan
+
+import kumo.engine as kumo
 
 
 def test_local_fit_forwards_rows_and_feature_validation_to_core(

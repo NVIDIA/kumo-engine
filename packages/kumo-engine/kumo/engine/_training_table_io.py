@@ -52,8 +52,9 @@ def store_native(
         ValueError: If staging paths are invalid or staging is empty.
         OSError: If an upload or marker write fails. Callback failures propagate.
     """
-    from kumo.engine._snapshot_io import _location, _write, upload_files
     from pyarrow.fs import FileType
+
+    from kumo.engine._snapshot_io import _location, _write, upload_files
 
     source = table.staging_dir.resolve(strict=True)
     path = settings.root.location(f"training_tables/{table.id}")
@@ -63,8 +64,12 @@ def store_native(
         and filesystem.get_file_info(f"{root}/_SUCCESS").type is FileType.File
     ):
         return
-    train_table_path = table.train_table_path.resolve(strict=True).relative_to(source)
-    manifest_path = table.manifest_path.resolve(strict=True).relative_to(source)
+    train_table_path = table.train_table_path.resolve(strict=True).relative_to(
+        source
+    )
+    manifest_path = table.manifest_path.resolve(strict=True).relative_to(
+        source
+    )
     generation = uuid4().hex
     prefix = f"{root}/native/{generation}"
     inventory = _inventory(source, (source,))
@@ -145,7 +150,11 @@ def store_prepared(
     path = settings.root.location(f"training_tables/ingested/{uuid4().hex}")
     filesystem, prefix = _location(settings.root.connector, path)
     entries = upload_files(
-        settings.root.connector, root, f"{path}/files", inventory, on_file_uploaded
+        settings.root.connector,
+        root,
+        f"{path}/files",
+        inventory,
+        on_file_uploaded,
     )
     on_files_uploaded()
     bundle = ArtifactBundle(str(root), entries)
@@ -180,7 +189,9 @@ def load_native(
         return None
     filesystem, root = location
     try:
-        with filesystem.open_input_stream(f"{root.rstrip('/')}/{_MARKER}") as reader:
+        with filesystem.open_input_stream(
+            f"{root.rstrip('/')}/{_MARKER}"
+        ) as reader:
             marker = orjson.loads(reader.read())
     except (FileNotFoundError, NotADirectoryError):
         return None
@@ -193,13 +204,18 @@ def load_native(
         raise ValueError("Unsupported native training-table publication")
     pquery._require_matching_snapshot(snapshot)
     if marker["query"] != pquery.query:
-        raise ValueError("Native training-table publication belongs to another query")
+        raise ValueError(
+            "Native training-table publication belongs to another query"
+        )
     entries = tuple(ArtifactFile(**entry) for entry in marker["files"])
     if not entries or len({entry.name for entry in entries}) != len(entries):
         raise ValueError("Empty or duplicate native training-table inventory")
     for entry in entries:
         relative_artifact_path(entry.name)
-        if entry.size < 0 or re.fullmatch(r"[0-9a-f]{64}", entry.sha256) is None:
+        if (
+            entry.size < 0
+            or re.fullmatch(r"[0-9a-f]{64}", entry.sha256) is None
+        ):
             raise ValueError("Invalid native training-table file identity")
     train_table = relative_artifact_path(marker["train_table_path"])
     manifest = relative_artifact_path(marker["manifest_path"])
@@ -213,14 +229,20 @@ def load_native(
         run_in_parallel(
             [
                 partial(
-                    download_artifact, filesystem, f"{prefix}/files", entry, destination
+                    download_artifact,
+                    filesystem,
+                    f"{prefix}/files",
+                    entry,
+                    destination,
                 )
                 for entry in entries
             ],
             workers=workers,
             stop=threading.Event(),
         )
-    relocate_artifacts(ArtifactBundle(marker["source_root"], entries), destination)
+    relocate_artifacts(
+        ArtifactBundle(marker["source_root"], entries), destination
+    )
     if (
         not (destination / train_table).exists()
         or not (destination / manifest).is_file()

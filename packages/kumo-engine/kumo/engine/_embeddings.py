@@ -5,11 +5,10 @@
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from kumo_core import embedding_models
+from kumo_core import embedding_models, encoder_selection
 from kumo_core.embedding_models import EmbeddingModelStore
-from kumo_core.encoder_selection import (
-    no_encoder_inference_warnings as no_encoder_inference_warnings,
-)
+
+no_encoder_inference_warnings = encoder_selection.no_encoder_inference_warnings
 
 
 def require_embedding_models(store: EmbeddingModelStore,
