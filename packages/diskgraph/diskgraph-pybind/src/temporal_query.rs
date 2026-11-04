@@ -21,7 +21,7 @@ use arrow::array::{
     TimestampSecondArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
 };
 use arrow::pyarrow::ToPyArrow;
-use arrow_array::RecordBatch;
+use arrow_array::{RecordBatch, RecordBatchOptions};
 use diskgraph_core::metadata::{EdgeRelationMetadata, EdgeSortKeyMetadata};
 use diskgraph_core::sortkey::SortKeyDecoder;
 use diskgraph_engine::edge_unpacker::EdgeUnpacker;
@@ -455,6 +455,14 @@ fn table_rows(
     node_ids: &[u64],
     projection_indices: &[usize],
 ) -> Result<RecordBatch, String> {
+    if projection_indices.is_empty() {
+        return RecordBatch::try_new_with_options(
+            Arc::new(arrow_schema::Schema::empty()),
+            vec![],
+            &RecordBatchOptions::new().with_row_count(Some(node_ids.len())),
+        )
+        .map_err(|error| error.to_string());
+    }
     let decoder = table
         .node_data_decoder()
         .ok_or_else(|| format!("table {:?} has no rowpack data", table.node_type()))?;
@@ -775,8 +783,12 @@ fn take_batch(batch: &RecordBatch, rows: &[u64], columns: &[usize]) -> Result<Re
         .iter()
         .map(|&column| batch.schema().field(column).clone())
         .collect::<Vec<_>>();
-    RecordBatch::try_new(Arc::new(arrow_schema::Schema::new(fields)), arrays)
-        .map_err(|error| error.to_string())
+    RecordBatch::try_new_with_options(
+        Arc::new(arrow_schema::Schema::new(fields)),
+        arrays,
+        &RecordBatchOptions::new().with_row_count(Some(rows.len())),
+    )
+    .map_err(|error| error.to_string())
 }
 
 fn sort_frame_rows(rows: &mut [(usize, Option<i64>, ScalarValue)]) {
@@ -867,17 +879,17 @@ fn materialize_frame(
         .ok_or_else(|| format!("unknown destination table {destination:?}"))?;
     let primary_key = table
         .primary_key_map()
-        .ok_or_else(|| format!("table {destination:?} has no primary key metadata"))?
-        .column
-        .clone();
+        .map(|metadata| metadata.column.clone());
     let mut columns = plan.columns.clone();
     if let Some(time_column) = &plan.time_column {
         if !columns.contains(time_column) {
             columns.push(time_column.clone());
         }
     }
-    if !columns.contains(&primary_key) {
-        columns.push(primary_key.clone());
+    if let Some(primary_key) = &primary_key {
+        if !columns.contains(primary_key) {
+            columns.push(primary_key.clone());
+        }
     }
     let projection_indices = projection(table.as_ref(), &columns)?;
     let mut deferred_columns = HashMap::new();
@@ -898,7 +910,7 @@ fn materialize_frame(
             .zip(projection_indices)
             .filter(|(name, index)| {
                 let keep = required.contains(name.as_str())
-                    || name == &primary_key
+                    || primary_key.as_ref() == Some(name)
                     || plan.time_column.as_ref() == Some(name);
                 if !keep {
                     deferred_columns.insert(name.clone(), *index);
@@ -915,7 +927,9 @@ fn materialize_frame(
         .map(|(index, name)| (name.clone(), index))
         .collect::<HashMap<_, _>>();
     let flat_nodes = rows_by_anchor.iter().flatten().copied().collect::<Vec<_>>();
-    stats.rows_decoded += flat_nodes.len();
+    if !projection_indices.is_empty() {
+        stats.rows_decoded += flat_nodes.len();
+    }
     stats.values_decoded += flat_nodes.len() * projection_indices.len();
     let decoded = table_rows(table.as_ref(), &flat_nodes, &projection_indices)?;
 
@@ -924,7 +938,7 @@ fn materialize_frame(
     for rows in &rows_by_anchor {
         input_offsets.push(input_offsets.last().copied().unwrap_or(0) + rows.len());
     }
-    let primary_key_position = positions[&primary_key];
+    let primary_key_position = primary_key.as_ref().map(|name| positions[name]);
     let time_position = plan.time_column.as_ref().map(|column| positions[column]);
     let mut selected_rows = Vec::<u64>::new();
     let mut node_ids = Vec::new();
@@ -956,7 +970,10 @@ fn materialize_frame(
             }) {
                 continue;
             }
-            let key = scalar_at(decoded.column(primary_key_position).as_ref(), row)?;
+            let key = match primary_key_position {
+                Some(position) => scalar_at(decoded.column(position).as_ref(), row)?,
+                None => ScalarValue::U64(flat_nodes[row]),
+            };
             anchor_rows.push((row, timestamp, key));
         }
         sort_frame_rows(&mut anchor_rows);
