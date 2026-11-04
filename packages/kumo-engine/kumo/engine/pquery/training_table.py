@@ -4,16 +4,15 @@
 
 import hashlib
 import json
-import os
 import warnings
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterator, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.model_plan import TrainingTableGenerationPlan
+from kumo_core.diskgraph.sampling_artifacts import ArtifactFile
 from kumo_core.training.table import TrainTableRequest
 from kumoapi.model_plan import \
     TrainingTableGenerationPlan as PublicGenerationPlan
@@ -35,6 +34,7 @@ from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot
 
 if TYPE_CHECKING:
+    from kumo.engine.cluster import ComputeCluster
     from kumo.engine.trainer.output_config import TrainingTableOutputConfig
 
 _RANDOM_SPLITS = ('RandomSplit', 'RandomLinkSplit')
@@ -60,6 +60,7 @@ class TrainingTable:
     #: Effective generation settings carried forward into ``Trainer.fit``.
     generation_plan: TrainingTableGenerationPlan
     id: Optional[str] = field(default=None, compare=False)
+    _compute: 'ComputeCluster | None' = field(default=None, compare=False, repr=False)
 
     @property
     def tt_id(self) -> str:
@@ -131,54 +132,33 @@ class TrainingTable:
     def load_from_connector(cls, connector: Any, *, path: str,
                             pquery: "PredictiveQuery",  # noqa: F821
                             snapshot: GraphSnapshot) -> "TrainingTable":
-        r"""Load a table written by :meth:`export` against ``snapshot``."""
+        r"""Load a portable export or native MLOps bundle against ``snapshot``."""
         from kumo.engine._mlops import on_root
+        from kumo.engine._training_table_io import load_native
 
         connector, path = on_root(connector, path)
+        native = load_native(connector, path, pquery, snapshot)
+        if native is not None:
+            return native
         return cls.from_source_table(connector[path],
                                      TrainingTableSpec(split_col='SPLIT'),
                                      pq=pquery, snapshot=snapshot)
 
-    def _store(self, settings: Any) -> None:
-        from pyarrow.fs import FileType
+    def _store(
+        self, settings: Any,
+        on_file_uploaded: Callable[[str, ArtifactFile], None] | None = None,
+        on_files_uploaded: Callable[[], None] | None = None,
+    ) -> None:
+        from kumo.engine._training_table_io import store_native
 
-        from kumo.engine.connector import file_store
-
-        path = settings.root.location(f'training_tables/{self.id}/')
         try:
             settings.locate(self.staging_dir / PROVENANCE_FILE,
                             TrainingTableManifest, f'training_tables/{self.id}')
-            filesystem, root = file_store(settings.root.connector, path)
-            if filesystem.get_file_info(
-                    f'{root}/_SUCCESS').type is not FileType.File:
-                self._upload(filesystem, f'{root}/')
+            store_native(self, settings, on_file_uploaded, on_files_uploaded)
         except Exception as error:
             raise RuntimeError(
                 f"Could not store training table {self.id} under the "
                 f"artifact root: {error}") from error
-
-    def _upload(self, filesystem: Any, path: str) -> None:
-        import tempfile
-
-        from kumo_core.artifact_export import export_selected_files
-        from kumo_core.object_store_sink import _ArrowExportFiles
-        from kumo_core.training.export import (
-            identity,
-            iter_export_parts,
-            read_spec,
-        )
-
-        from kumo.engine._scratch import get_scratch_dir
-
-        root = get_scratch_dir()
-        root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=root) as spill:
-            export_selected_files(
-                iter_export_parts(str(self.staging_dir), spill), path,
-                fs=_ArrowExportFiles(filesystem, None),
-                identity=identity(read_spec(str(self.staging_dir))),
-                copy_parquet=partial(_move_each, filesystem),
-                sidecars=self._sidecars())
 
     @classmethod
     def from_source_table(
@@ -318,23 +298,6 @@ class TrainingTable:
                 source_table.sql, version,
                 record_sources=_record_sources(snapshot)),
             source_version=version, started=started)
-
-
-def _move_each(filesystem: Any, parts: Iterator[str], output: str) -> None:
-    from kumo_core.object_store_sink import upload_file
-
-    def move(part: str) -> None:
-        upload_file(filesystem, part, output + os.path.basename(part))
-        os.remove(part)
-
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        pending = []
-        for part in parts:
-            pending.append(pool.submit(move, part))
-            if len(pending) > 1:
-                pending.pop(0).result()
-        for upload in pending:
-            upload.result()
 
 
 def _record_sources(snapshot: GraphSnapshot) -> bool:

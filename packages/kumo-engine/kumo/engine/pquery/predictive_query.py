@@ -251,6 +251,11 @@ class PredictiveQuery:
                 block), the table is also stored under the artifact root.
         """
         self._require_matching_snapshot(snapshot)
+        if snapshot._compute is not None:
+            from kumo.engine._mlops import resolve
+
+            return snapshot._compute._training_table_generate(
+                self, snapshot, plan, resolve(mlops))
         for name in ('train_table_path_override', 'task_path_override'):
             if plan is not None and getattr(plan, name) is not None:
                 raise ValueError(

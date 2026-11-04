@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
-import os
 from collections import Counter
 from dataclasses import replace
 from functools import partial
@@ -413,28 +412,19 @@ def test_no_sidecar_for_warehouse_or_csv_exports(graph):
     assert not (out / 'rows.csv' / '_provenance.json').exists()
 
 
-def test_the_store_spills_at_most_two_parts(graph, tmp_path, monkeypatch):
-    from kumo_core import object_store_sink
+def test_mlops_uploads_native_staging_without_export_spill(graph, tmp_path, monkeypatch):
     from kumo_core.training import export
 
-    stage_parts = export.stage_parts
-    monkeypatch.setattr(
-        export, 'stage_parts', lambda spec: {
-            split: parts * 4
-            for split, parts in stage_parts(spec).items()
-        })
-    upload_file = object_store_sink.upload_file
-    spilled = []
-
-    def upload(filesystem, source, destination):
-        spilled.append(len(os.listdir(os.path.dirname(source))))
-        upload_file(filesystem, source, destination)
-
-    monkeypatch.setattr(object_store_sink, 'upload_file', upload)
+    monkeypatch.setattr(export, 'iter_export_parts', Mock(
+        side_effect=AssertionError('MLOps regenerated portable rows')))
     _, table = _generate(graph, mlops=kumo.MLOps(artifact_root=str(tmp_path)))
     stored = tmp_path / 'training_tables' / table.id
-    assert len(spilled) == len(list(stored.glob('part-*.parquet'))) >= 8
-    assert max(spilled) <= 2
+    marker = json.loads((stored / 'kumo_training_table.json').read_text())
+    files = stored / 'native' / marker['generation'] / 'files'
+    assert not list(stored.glob('part-*.parquet'))
+    for entry in marker['files']:
+        assert (files / entry['name']).read_bytes() == (
+            table.staging_dir / entry['name']).read_bytes()
 
 
 def test_a_mlops_block_stores_each_table_once_under_the_root(graph, tmp_path):

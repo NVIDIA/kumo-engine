@@ -107,6 +107,7 @@ from kumo.engine.connector.base import Connector
 from kumo.engine.table import Table
 
 if TYPE_CHECKING:
+    from kumo.engine.cluster import ComputeCluster
     from kumo.engine.trainer.output_config import SnapshotOutputConfig
 
 logger = logging.getLogger(__name__)
@@ -443,6 +444,7 @@ class GraphSnapshot:
     index_path: Path
     graph_config: Dict[str, Any]
     record_sources: bool | None = field(default=None, compare=False)
+    _compute: 'ComputeCluster | None' = field(default=None, compare=False, repr=False)
 
     @property
     def _graph_key(self) -> str:
@@ -771,6 +773,7 @@ class Graph:
                  timestamp_precision: TimestampPrecision = 'seconds', *,
                  record_sources: bool = True,
                  mlops: Optional[Any] = None,
+                 cluster: 'ComputeCluster | None' = None,
                  callbacks: Sequence[Callable[[Event], None]] = ()
                  ) -> GraphSnapshot:
         r"""Materialize this graph: read each table's connector, run the
@@ -790,10 +793,21 @@ class Graph:
 
         Args:
             mlops: also export the snapshot under this `kumo.MLOps` root.
+            cluster: build and replicate artifacts on this active ComputeCluster.
+                If omitted, build the snapshot locally.
             record_sources: if False, record sources without locations or
                 SQL text.
             callbacks: called with each progress `Event`.
         """
+        if cluster is not None:
+            from kumo.engine._mlops import resolve
+
+            if callbacks:
+                raise ValueError('Remote snapshot callbacks are not supported')
+            return cluster._graph_snapshot(self, {
+                'timestamp_precision': timestamp_precision,
+                'record_sources': record_sources,
+            }, resolve(mlops))
         validate_timestamp_precision(timestamp_precision)
         self.validate()
         for table in self._named_tables.values():
