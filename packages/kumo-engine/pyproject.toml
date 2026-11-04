@@ -55,8 +55,10 @@ test=[
 snowflake=[
     "kumo-snowflake[sdk]>=0.1.0.dev1",
 ]
+# databricks-sdk 0.68 added the data_quality API the monitor recipe uses.
 databricks=[
     "kumo-databricks>=0.1.0.dev1",
+    "databricks-sdk>=0.68",
 ]
 bigquery=[
     "kumo-bigquery>=0.1.0.dev1",
@@ -74,12 +76,27 @@ adls=[
 gcs=[
     "kumo-gcs>=0.1.0.dev1",
 ]
+# mlflow-skinny 3.5 added download_artifacts(registry_uri=), which loading
+# by alias uses; nvidia-ml-py adds GPU system metrics.
+mlflow=[
+    "mlflow-skinny>=3.5,<4",
+    "nvidia-ml-py",
+]
+# SageMaker managed MLflow: 0.5.0 added the per-thread boto3 session
+# (sagemaker_mlflow.session.use_session) that explicit AWS identities use.
+sagemaker=[
+    "kumo-engine[mlflow,s3]",
+    "sagemaker-mlflow>=0.5.0",
+]
 
 # Reports this wheel's release version as the Kumo version. The provider is a
 # top-level module (see `[tool.setuptools] py-modules`) because importing
 # anything under `kumo.engine` would import the whole engine.
 [project.entry-points."kumo_core.version_providers"]
 kumo-engine = "kumo_engine_version:installed_version"
+
+[project.entry-points."kumo_snowflake.registry_models"]
+kumo-engine = "kumo.engine.integrations._snowflake_model:log_model_args"
 
 [project.urls]
 homepage="https://github.com/NVIDIA/kumo-engine"

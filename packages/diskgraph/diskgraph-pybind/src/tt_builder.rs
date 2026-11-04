@@ -23,6 +23,7 @@ use diskgraph_core::time::{
 };
 use diskgraph_core::tt_builder as tt;
 use diskgraph_core::with_index_clock;
+use diskgraph_train_table::ttgen_resolve::UNBOUNDED_LOWER_OFFSET;
 
 // ─── EdgeRef ─────────────────────────────────────────────────────────────────
 
@@ -808,12 +809,12 @@ fn check_windows<U: UnitSystem>(op: &tt::Op<U>) -> PyResult<()> {
             if matches!(unit, TimeUnit::Months | TimeUnit::Years) {
                 return Ok(());
             }
-            [*lo, *hi]
-                .into_iter()
-                .try_for_each(|bound| {
-                    check_tick::<U>("window bound", bound, unit)
-                        .map_err(crate::DiskgraphConfigError::new_err)
-                })
+            if *lo != UNBOUNDED_LOWER_OFFSET {
+                check_tick::<U>("window bound", *lo, unit)
+                    .map_err(crate::DiskgraphConfigError::new_err)?;
+            }
+            check_tick::<U>("window bound", *hi, unit)
+                .map_err(crate::DiskgraphConfigError::new_err)
         }
         tt::Op::Autoregression { target_op, .. } | tt::Op::FutureLabels { target_op, .. } => {
             check_windows(target_op)

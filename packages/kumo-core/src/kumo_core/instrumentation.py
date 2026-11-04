@@ -24,6 +24,9 @@ class TrainingInstrumentation(Protocol):
     def timing(self, name: str, **fields: Any) -> ContextManager[None]:
         ...
 
+    def event(self, name: str, **fields: Any) -> None:
+        return None
+
 
 class NoOpTrainingInstrumentation:
     def record_metrics_job_name(self, job_name: str) -> None:
@@ -36,6 +39,9 @@ class NoOpTrainingInstrumentation:
     @contextmanager
     def timing(self, name: str, **fields: Any) -> Iterator[None]:
         yield
+
+    def event(self, name: str, **fields: Any) -> None:
+        return None
 
 
 _instrumentation: TrainingInstrumentation = NoOpTrainingInstrumentation()
@@ -52,6 +58,10 @@ def set_metrics_job_name(job_name: str) -> None:
 
 def timing(name: str, **fields: Any) -> ContextManager[None]:
     return _instrumentation.timing(name, **fields)
+
+
+def format_error(error: BaseException) -> str:
+    return f'{type(error).__name__}: {error}'[:200]
 
 
 def trace() -> Callable[[Callable[..., T]], Callable[..., T]]:

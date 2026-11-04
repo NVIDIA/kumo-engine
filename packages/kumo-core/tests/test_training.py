@@ -37,6 +37,7 @@ from kumo_core.types import TaskType
 class Evaluation:
     def __init__(self, metrics):
         self.metrics = metrics
+        self.counts = None
         self.saved = []
 
     def save_all(self, **kwargs):
@@ -67,7 +68,7 @@ class Trainer:
         if fit_mode == FitMode.refit_full:
             self.refit_cfg.refitted_full = True
 
-    def test(self, *, fit_mode_to_use):
+    def test(self, *, fit_mode_to_use, **options):
         self.test_calls.append(fit_mode_to_use)
         return self.evaluations.pop(0)
 

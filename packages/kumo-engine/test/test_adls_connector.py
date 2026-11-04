@@ -20,6 +20,7 @@ from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
 
 from kumo.engine import ADLSConnector, ADLSIdentity, Table
 from kumo.engine._portable import _source_table_name, portable_graph_config
+from kumo.engine.trainer._scoring import ScoringDefaults
 
 ROOT = 'abfss://curated@companylake.dfs.core.windows.net/orders/'
 
@@ -159,8 +160,9 @@ def test_invalid_prediction_output_fails_before_scoring(monkeypatch, tmp_path,
         table_name=destination, write_mode=WriteMode.APPEND
         if case == 'append' else WriteMode.OVERWRITE)
     trainer = Trainer(ModelPlan(), accelerator='cpu')
-    monkeypatch.setattr(trainer, '_training_result',
-                        SimpleNamespace(artifact_paths={}))
+    monkeypatch.setattr(
+        trainer, '_training_result',
+        SimpleNamespace(artifact_paths={}, scoring_defaults=ScoringDefaults()))
     trainer._training_query = 'trained query'
     monkeypatch.setattr(Trainer, 'scratch_dir', property(lambda _: tmp_path))
     # Isolate output validation from query parsing and model execution.
@@ -189,3 +191,27 @@ def test_invalid_prediction_output_fails_before_scoring(monkeypatch, tmp_path,
     work.assert_not_called()
     azure.assert_not_called()
     assert not (tmp_path / 'runs').exists()
+
+
+def test_an_adls_root_holds_files_and_round_trips_an_artifact(
+        storage, tmp_path):
+    from kumo.engine.connector import is_file_destination
+
+    connector = ADLSConnector(root_dir=ROOT)
+    sink = connector.sink_backend
+    assert is_file_destination(connector, ROOT + 'artifacts/')
+    bundle = tmp_path / 'bundle'
+    (bundle / 'weights').mkdir(parents=True)
+    (bundle / '_provenance.json').write_bytes(b'{"id": 1}')
+    (bundle / 'weights' / 'w.bin').write_bytes(b'\x00\x01\x02')
+
+    published = sink.publish_model(connector, str(bundle),
+                                   path=ROOT + 'artifacts/m')
+    fetched = tmp_path / 'fetched'
+    sink.fetch_model(connector, str(fetched), path=published.uri)
+
+    stored = storage / ('curated@companylake.dfs.core.windows.net/'
+                        'orders/artifacts/m')
+    assert (stored / 'weights' / 'w.bin').read_bytes() == b'\x00\x01\x02'
+    for name in ('_provenance.json', 'weights/w.bin'):
+        assert (fetched / name).read_bytes() == (bundle / name).read_bytes()
