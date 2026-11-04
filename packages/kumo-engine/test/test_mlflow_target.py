@@ -374,19 +374,22 @@ def test_a_registry_reference_downloads_from_the_target_registry(
     mlflow.set_tracking_uri(tracking_uri)
 
     for name, reference in (('alias', 'm@champion'), ('version', 'm/1'),
-                            ('latest', 'm/latest')):
+                            ('latest', 'm/latest'), ('id', model.model_id)):
         local = _download(mlflow, resolve(uri), f'models:/{reference}',
                           tmp_path / name)
         assert open(f'{local}/MLmodel').read() == 'kumo'
 
 
-def test_a_unity_catalog_reference_stays_on_mlflow_registry_path(tmp_path):
+@pytest.mark.parametrize('registry',
+                         ['databricks-uc', 'databricks', 'uc:http://uc:8080'])
+def test_a_databricks_or_unity_catalog_reference_stays_on_mlflow_path(
+        registry, tmp_path):
     from kumo.engine.integrations.mlflow import _download
 
     calls = []
     fake = SimpleNamespace(artifacts=SimpleNamespace(
         download_artifacts=lambda **kwargs: calls.append(kwargs) or ''))
-    target = target_module.Target('http://tracking:5000', 'databricks-uc')
+    target = target_module.Target('http://tracking:5000', registry)
     _download(fake, target, 'models:/main.s.m@champion', tmp_path)
 
     assert calls[0]['artifact_uri'] == 'models:/main.s.m@champion'

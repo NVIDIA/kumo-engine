@@ -1206,12 +1206,21 @@ def _download(mlflow: Any, target: Any, model_uri: str,
             if repository is not None:
                 return repository.download_artifacts('', str(destination))
     elif (target.platform == 'mlflow' and model_uri.startswith('models:/')
-          and not import_provider('mlflow.utils.uri', 'mlflow')
-          .is_databricks_unity_catalog_uri(target.registry_uri)):
+          and _plain_registry(target.registry_uri)):
         model_uri = _registry_download_uri(target.client(), model_uri)
     return mlflow.artifacts.download_artifacts(
         artifact_uri=model_uri, dst_path=str(destination),
         tracking_uri=target.tracking_uri, registry_uri=target.registry_uri)
+
+
+def _plain_registry(registry_uri: Optional[str]) -> bool:
+    r"""Whether MLflow reads models:/ in this registry without a
+    registry-specific artifact repository (Databricks, Unity Catalog)."""
+    uri = import_provider('mlflow.utils.uri', 'mlflow')
+    registry = registry_uri or ''
+    return not (uri.is_databricks_uri(registry)
+                or uri.is_databricks_unity_catalog_uri(registry)
+                or uri.is_oss_unity_catalog_uri(registry))
 
 
 def _registry_download_uri(client: Any, model_uri: str) -> str:
