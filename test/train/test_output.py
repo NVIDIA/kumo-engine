@@ -64,6 +64,15 @@ def test_iterator_keeps_spool_alive():
     assert pd.concat(it)['SCORE'].tolist() == [1.0, 2.0]
 
 
+def test_save_df_keeps_edits_to_materialized_df(tmp_path: pathlib.Path):
+    out = EvalOutput({}, frames=_spooled(pd.DataFrame({'SCORE': [1., 2.]}), 1))
+    out.df['SCORE'] = [3., 4.]
+    out.save_df(str(tmp_path), TrainingStage.TEST)
+
+    saved = pd.read_parquet(tmp_path / 'test_df.parquet')
+    assert saved['SCORE'].tolist() == [3., 4.]
+
+
 def test_holdout_keeps_leading_rows_that_fit(tmp_path: pathlib.Path):
     sizes = np.repeat([200, 100, 1], 1000)
     frame = pd.DataFrame({'ENTITY': ['x' * int(k) for k in sizes]})

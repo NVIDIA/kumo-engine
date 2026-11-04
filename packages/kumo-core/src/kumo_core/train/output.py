@@ -373,6 +373,7 @@ class EvalOutput:
     def df(self) -> pd.DataFrame | None:
         if self._df is None and self.frames is not None:
             self._df = self.frames.to_frame()
+            self.frames = EvalFrames.of(self._df)
         return self._df
 
     def save_all(
