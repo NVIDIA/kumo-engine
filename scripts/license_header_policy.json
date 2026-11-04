@@ -215,6 +215,126 @@
       "kind": "vendored",
       "license": "MIT",
       "reason": "Vendored upstream PtrHash sources; preserve the upstream files and license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/Cargo.toml",
+      "kind": "vendored",
+      "license": "Apache-2.0 AND (Apache-2.0 OR LGPL-2.1-or-later)",
+      "reason": "Patched epserde manifest; preserve upstream notices and the aggregate license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/build.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Vendored epserde 0.8.0 source; preserve upstream headers and license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/deser/**",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Vendored epserde 0.8.0 source; preserve upstream headers and license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/impls/**",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Vendored epserde 0.8.0 source; preserve upstream headers and license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/lib.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Vendored epserde 0.8.0 source; preserve upstream headers and license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/ser/**",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Vendored epserde 0.8.0 source; preserve upstream headers and license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/traits/**",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Vendored epserde 0.8.0 source; preserve upstream headers and license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/utils/aligned_cursor.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Vendored epserde 0.8.0 source; preserve upstream headers and license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/src/utils/mod.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Vendored epserde 0.8.0 source; preserve upstream headers and license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_bad_*.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Vendored epserde 0.8.0 source; preserve upstream headers and license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_generics.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Vendored epserde 0.8.0 source; preserve upstream headers and license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_max_size_of.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Vendored epserde 0.8.0 source; preserve upstream headers and license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_memcase.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Vendored epserde 0.8.0 source; preserve upstream headers and license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_phantom.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Vendored epserde 0.8.0 source; preserve upstream headers and license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_prim.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Vendored epserde 0.8.0 source; preserve upstream headers and license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_slice.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Vendored epserde 0.8.0 source; preserve upstream headers and license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_std*.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Vendored epserde 0.8.0 source; preserve upstream headers and license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_tuples.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Vendored epserde 0.8.0 source; preserve upstream headers and license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_type*.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Vendored epserde 0.8.0 source; preserve upstream headers and license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/tests/test_zero.rs",
+      "kind": "vendored",
+      "license": "Apache-2.0 OR LGPL-2.1-or-later",
+      "reason": "Vendored epserde 0.8.0 source; preserve upstream headers and license."
     }
   ]
 }
