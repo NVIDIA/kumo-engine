@@ -162,8 +162,8 @@ def test_forecasting_tt_gen_ingest_preserves_split_stats(parent_index):
     assert train_stats["num_train_rows"] == train_stage["row_count"]
     target_distribution = train_stats["target_distribution"]
     assert target_distribution["target_max"] >= target_distribution["target_min"]
-    assert target_distribution["histogram"]["num_bins"] == 0
-    assert target_distribution["histogram"]["counts"] == []
+    assert target_distribution["histogram"]["num_bins"] == 50
+    assert len(target_distribution["histogram"]["bins"]) == 51
 
     execute_tt_ingest(
         staging_dir=str(staging),

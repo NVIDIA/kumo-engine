@@ -118,7 +118,7 @@ def stable_source(package: dict[str, Any], root: Path) -> tuple[str, str]:
         return "registry-or-git", source
     manifest = Path(package["manifest_path"])
     relative = manifest.resolve().relative_to(root.resolve()).as_posix()
-    if relative.startswith("diskgraph-ptrhash/"):
+    if relative.startswith(("diskgraph-ptrhash/", "third_party/epserde/")):
         return "vendored-third-party", relative
     return "workspace-first-party", relative
 

@@ -15,6 +15,7 @@ from kumoapi.typing import Stype
 
 import kumo.engine as kumo
 from kumo.engine._scratch import get_scratch_dir
+from kumo.engine.trainer._provenance import embedded_model
 from kumo.engine.trainer.trainer import _find_holdout
 
 
@@ -93,6 +94,10 @@ def test_holdout_df_after_fit(graph):
     assert len(frame) > 0
     assert {'ENTITY', 'TARGET_PRED'} <= set(frame.columns)
     assert not (result.bundle_dir / 'test_df.parquet').exists()
+    holdout = result.manifest.holdout
+    assert holdout.rows == len(frame)
+    assert holdout.truncated is False
+    assert embedded_model(result.manifest).holdout is None
 
 
 @pytest.mark.parametrize('refit_trainval,refit_full,explain,model', [
@@ -104,13 +109,16 @@ def test_holdout_is_the_published_models(graph, refit_trainval, refit_full,
                                          explain, model):
     result = _fit(graph, QUERY, refit_trainval, refit_full, explain)
 
+    assert result.manifest.fit_mode == (model or 'refit_full')
     if model is None:
         assert result.holdout_path is None
+        assert result.manifest.holdout is None
     else:
         suffix = '' if model == 'fit' else '_refit_trainval'
         assert re.fullmatch(rf'version_\d+{suffix}',
                             result.holdout_path.parent.name)
         assert len(result.holdout_df()) > 0
+        assert result.manifest.holdout.rows == len(result.holdout_df())
 
 
 def test_no_holdout(graph):
@@ -120,18 +128,38 @@ def test_no_holdout(graph):
 
     assert result.holdout_path is None
     assert not result.holdout_truncated
+    assert set(result.manifest.holdout.counts['arrays']) == {'top_score'}
     with pytest.raises(FileNotFoundError, match='No holdout'):
         result.holdout_df()
 
 
-def test_loaded_trainer_has_no_holdout(graph):
-    graph, snapshot = graph
-    result = _fit((graph, snapshot), 'PREDICT COUNT(events.*, 0, 7, days) > 0 '
-                  'FOR EACH ents.ID')
+def test_a_loaded_or_fetched_model_keeps_its_holdout(graph, tmp_path,
+                                                     monkeypatch):
+    monkeypatch.setattr('kumo_core.train.output._HOLDOUT_MAX_BYTES', 1000)
+    result = _fit(graph, QUERY)
+    expected = result.holdout_df()
+    registry = kumo.FileConnector(root_dir=str(tmp_path))
+    registry.sink_backend.publish_model(registry, str(result.bundle_dir),
+                                        path='models/m')
 
-    loaded = kumo.Trainer.load(result.bundle_dir)
+    for loaded in (kumo.Trainer.load(result.bundle_dir).result,
+                   kumo.Trainer.load_from_connector(registry,
+                                                    path='models/m').result):
+        assert loaded.bundle_id == result.bundle_id
+        assert loaded.holdout_truncated is True
+        pd.testing.assert_frame_equal(loaded.holdout_df(), expected)
+        assert loaded.manifest.holdout == result.manifest.holdout
 
-    assert loaded._training_result.holdout_path is None
+
+def test_a_bundle_without_a_holdout_says_so(graph, monkeypatch):
+    monkeypatch.setattr('kumo.engine.trainer.trainer._bundle_holdout',
+                        lambda result: None)
+    result = _fit(graph, QUERY)
+
+    loaded = kumo.Trainer.load(result.bundle_dir).result
+    assert loaded.holdout_path is None
+    with pytest.raises(FileNotFoundError, match='No holdout'):
+        loaded.holdout_df()
 
 
 def test_truncation_is_recorded(tmp_path):
@@ -157,6 +185,7 @@ def test_fit_reports_truncation(graph, monkeypatch, caplog):
     result = _fit(graph, QUERY)
 
     assert result.holdout_truncated is True
+    assert result.manifest.holdout.truncated is True
     with caplog.at_level('WARNING'):
         assert len(result.holdout_df()) > 0
     assert 'truncated' in caplog.text
@@ -177,3 +206,13 @@ def test_unreadable_size_record_does_not_fail_fit(tmp_path, caplog, content):
     assert truncated is None
     assert len(pd.read_parquet(path)) == 2
     assert 'truncation is unknown' in caplog.text
+
+
+def test_an_empty_test_split_fails_the_fit_with_a_clear_message(graph):
+    graph, snapshot = graph
+    pquery = kumo.PredictiveQuery(
+        graph=graph,
+        query='PREDICT COUNT(events.*, 0, 30, days) > 15 FOR EACH ents.ID')
+    with pytest.raises(ValueError, match='test split is empty'):
+        kumo.Trainer(pquery.suggest_model_plan(snapshot)).fit(
+            pquery.generate_training_table(snapshot), snapshot=snapshot)

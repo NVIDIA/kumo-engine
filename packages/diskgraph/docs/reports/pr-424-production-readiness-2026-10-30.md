@@ -1,5 +1,26 @@
 # PR #424 production readiness — October 30 investigation, November 3 qualification
 
+## November 4 integration and evidence scope
+
+The candidate integrates Engine `main` at
+`502adef65ab0011545eeeb242610412c6ed8e7e3`. This adds Arrow/Parquet 59.3.2,
+PyO3 0.29.3, the saved-index-compatible epserde security backport and changes
+to training, prediction and model persistence. The November 3 results below
+qualify their recorded `88fd6042` or `d4088a12` revisions; they do not qualify
+this combined revision. Qualification of the integration requires fresh
+native and installed-wheel checks, all task/backend CPU and GPU runs, and
+platform build/runtime checks.
+
+The maintained [PR #169 change map](https://github.com/NVIDIA/kumo-engine/pull/169#issuecomment-6611981159)
+and PR description record the current revision and its completed CI evidence.
+[PR #196](https://github.com/NVIDIA/kumo-engine/pull/196) is a separate baseline
+prerequisite correcting BigQuery test eligibility: explicit
+`KUMO_RUN_GCP_TESTS=0` must prevent credential setup when the workflow disables
+GCP authentication. This preserves enabled-mode credential failures and does
+not provision cloud access.
+
+## November 3 qualified candidate
+
 The reproduced correctness and portability defects are fixed. At candidate
 `88fd60424ea8f3617327f635531ef82823a537c3`, native Linux, installed macOS,
 all 24 real CPU task/backend fits and all 24 GPU task/backend fits pass.

@@ -130,7 +130,7 @@ class ObjectStoreSourceBackend(ABC):
     ) -> str:
         del project_id
         reader, name = self._reader(connector, table_name)
-        return str(reader.data_version(name))
+        return reader.data_version(name)
 
     def prepare_ingest(
         self,

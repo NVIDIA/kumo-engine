@@ -12345,10 +12345,10 @@ fn compact_record_batch_prefix(batch: &RecordBatch, rows: usize) -> Result<Recor
         .map(|array| {
             let data = array.to_data();
             let mut compact = MutableArrayData::new(vec![&data], false, rows);
-            compact.extend(0, 0, rows);
-            make_array(compact.freeze())
+            compact.try_extend(0, 0, rows)?;
+            Ok(make_array(compact.freeze()))
         })
-        .collect();
+        .collect::<std::result::Result<Vec<_>, arrow_schema::ArrowError>>()?;
     Ok(RecordBatch::try_new(batch.schema(), arrays)?)
 }
 
