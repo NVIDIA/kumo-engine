@@ -24,7 +24,7 @@ self-links. Preserve the actual schema and task rather than assuming one row per
 Inputs: `output_connector` scoped to the confirmed destination database/schema, exact bare
 `OUTPUT_TABLE`, explicit `WRITE_MODE`, and task-specific `PREDICT_OPTIONS`. WriteMode has
 APPEND and OVERWRITE. Select the mode deliberately: File export OVERWRITE replaces existing data while retaining the table and grants when its schema matches;
-APPEND can duplicate outputs on retry. A column mismatch fails rather than silently changing the existing schema. Check destination
+APPEND can duplicate outputs on retry and never changes the existing table's schema (below). Check destination
 existence and access first.
 
 ```python
@@ -45,16 +45,22 @@ written = trainer.predict(
 print(written.num_rows, written.files)
 ```
 
-**APPEND rows say which run wrote them.** An APPEND write adds `JOB_TIMESTAMP` (when the run
-started) and `ANCHOR_TIMESTAMP` (the time its predictions are for), so the table's history can be
-ordered and filtered by run, and a retried run shows as a second `JOB_TIMESTAMP`. A query with no
-time window has no anchor: pass `JOB_TIMESTAMP` alone, or the write fails after scoring.
+**APPEND rows say which run wrote them.** An APPEND write to a table adds `PREDICTION_ID` (this
+prediction run) and `BUNDLE_ID` (the model that scored it), and the `extra_fields` above add
+`JOB_TIMESTAMP` (when the run started) and `ANCHOR_TIMESTAMP` (the time its predictions are for),
+so the table's history can be ordered and filtered by run, and a retried run shows as a second
+`PREDICTION_ID` and `JOB_TIMESTAMP`. A query with no time window has no anchor: pass
+`JOB_TIMESTAMP` alone, or the write fails after scoring.
 
 The write never adds a column to an existing table. When an APPEND destination already exists,
-read its columns before generating the artifact. If it lacks either column, a run would fail at
-the write, after training and scoring. Say so at the gate and let the user pick: add the missing
-columns (`ALTER TABLE … ADD COLUMN`, type `TIMESTAMP_NTZ`; earlier rows hold nulls), a new table
-the first run creates, or OVERWRITE. Adding columns is a write, confirmed like any other.
+read its columns before generating the artifact and check every column the run emits:
+`PREDICTION_ID`, `BUNDLE_ID`, `JOB_TIMESTAMP`, and `ANCHOR_TIMESTAMP` when the query has a time
+window. What a missing one does depends on the destination. Snowflake loads by column name and
+drops a column the table lacks, silently: the rows land without it, and a row-count check still
+passes. Databricks fails the write, after scoring. Either way, say so at the gate and let the user
+pick: add the missing columns (`ALTER TABLE … ADD COLUMN`; the IDs are strings, `VARCHAR` on
+Snowflake and `STRING` on Databricks, the timestamps `TIMESTAMP_NTZ`; earlier rows hold nulls), a
+new table the first run creates, or OVERWRITE. Adding columns is a write, confirmed like any other.
 
 The exact table name is used; no suffix is appended and its case is kept. Read back, with the
 session taken in the first cell (`kumoai-reference/references/kumo_finetuning_sdk.md` §3.3), using

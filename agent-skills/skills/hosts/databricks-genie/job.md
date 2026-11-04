@@ -221,9 +221,9 @@ the proposal before anything is created:
 - **Scoring time moves forward.** The job notebook omits `prediction_time`, so each run anchors at
   the latest data. A date fixed in the notebook would score the same day forever.
 - **Write mode for repeated runs.** OVERWRITE keeps only the latest run. APPEND keeps history:
-  each row carries `JOB_TIMESTAMP` and `ANCHOR_TIMESTAMP`, and a retried run adds a second copy of
-  its rows under a second `JOB_TIMESTAMP`. An existing table without those columns fails the
-  write after scoring; settle it at the gate (`kumoai-reference/references/outputs.md` *Write
+  each row carries `PREDICTION_ID`, `BUNDLE_ID`, `JOB_TIMESTAMP` and `ANCHOR_TIMESTAMP`, and a
+  retried run adds a second copy of its rows under a second `JOB_TIMESTAMP`. An existing table
+  without one of those columns fails the write after scoring; settle it at the gate (`kumoai-reference/references/outputs.md` *Write
   predictions*). If the user already chose a mode, restate it with
   that consequence. Otherwise ask which they want.
 - **The model version stays pinned.** A new version reaches the schedule only through an explicit
