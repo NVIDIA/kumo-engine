@@ -319,23 +319,25 @@ class EvalFrames:
         schema = pa.unify_schemas(schemas, promote_options='permissive')
         writer: pq.ParquetWriter | None = None
         pending: list[pa.Table] = []
-        for chunk in chunks:
-            frame = chunk.load()
-            if mixed_class:
-                frame = _class_to_str(frame)
-            table = pa.Table.from_pandas(frame, preserve_index=index)
-            if writer is None:
-                schema = pa.schema(
-                    [schema.field(name) for name in table.schema.names],
-                    metadata=table.schema.metadata,
-                )
-                writer = pq.ParquetWriter(sink, schema)
-            pending.append(table.cast(schema))
-            pending = _write_row_groups(writer, pending)
-        if writer is not None:
-            if len(rest := pa.concat_tables(pending)) > 0:
+        try:
+            for chunk in chunks:
+                frame = chunk.load()
+                if mixed_class:
+                    frame = _class_to_str(frame)
+                table = pa.Table.from_pandas(frame, preserve_index=index)
+                if writer is None:
+                    schema = pa.schema(
+                        [schema.field(name) for name in table.schema.names],
+                        metadata=table.schema.metadata,
+                    )
+                    writer = pq.ParquetWriter(sink, schema)
+                pending.append(table.cast(schema))
+                pending = _write_row_groups(writer, pending)
+            if writer is not None and len(rest := pa.concat_tables(pending)):
                 writer.write_table(rest)
-            writer.close()
+        finally:
+            if writer is not None:
+                writer.close()
         return sum(chunk.num_rows for chunk in chunks)
 
 

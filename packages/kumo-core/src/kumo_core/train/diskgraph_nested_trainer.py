@@ -1200,7 +1200,8 @@ class DiskgraphNestedTrainer(Trainer):
         target_edges: Sequence[float] = (),
     ) -> Any:
         """Run PL validate/test, then build the formatted EvalOutput
-        (``_build_eval_df`` reconstructs the per-row df from ``pl_model.outputs``).
+        (``_build_eval_frames`` builds the per-row frames from
+        ``pl_model.outputs`` in chunks).
         """
         from kumo_core.train.output import EvalOutput
         from kumoapi.train import TrainingStage
