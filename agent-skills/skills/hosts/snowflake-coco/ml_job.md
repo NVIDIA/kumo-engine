@@ -147,15 +147,25 @@ snapshot = graph.snapshot()
 population = pq.generate_prediction_table(
     snapshot, plan=loaded.training_table_generation_plan)   # add prediction_time= if the user gave one
 
+def catalog_name(declared):
+    # The writer's rule for the database and schema: an unquoted name is stored upper-case, a
+    # double-quoted one as written. The table it writes under exactly OUTPUT_TABLE.
+    return declared[1:-1].replace('""', '"') if declared.startswith('"') else declared.upper()
+
+def quoted(name):
+    return '"' + name.replace('"', '""') + '"'
+
+OUT_DB, OUT_SCHEMA = catalog_name(OUTPUT_DATABASE), catalog_name(OUTPUT_SCHEMA)
+
 def count_output():
     # 0 before the first APPEND, which creates the table.
-    database = '"' + OUTPUT_DATABASE.replace('"', '""') + '"'
     found = session.sql(
-        f'SELECT COUNT(*) FROM {database}.INFORMATION_SCHEMA.TABLES '
-        'WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?', params=[OUTPUT_SCHEMA, OUTPUT_TABLE]).collect()
+        f'SELECT COUNT(*) FROM {quoted(OUT_DB)}.INFORMATION_SCHEMA.TABLES '
+        'WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?', params=[OUT_SCHEMA, OUTPUT_TABLE]).collect()
     if not found[0][0]:
         return 0
-    return session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA, OUTPUT_TABLE]).count()
+    return session.sql(f'SELECT COUNT(*) FROM {quoted(OUT_DB)}.{quoted(OUT_SCHEMA)}.'
+                       f'{quoted(OUTPUT_TABLE)}').collect()[0][0]
 
 before = count_output() if WRITE_MODE == WriteMode.APPEND else 0
 result = loaded.predict(
@@ -231,8 +241,7 @@ if status is not None:
     if status != 'DONE':
         print(job.get_logs(limit=200))
         raise RuntimeError(f'ML Job {job.id} ended {status}')
-    written = session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA, OUTPUT_TABLE]).count()
-    print('table rows:', written)
+    # DONE means the script's own row-count check against the table passed (§5).
 ```
 
 - `KUMO_JOB_RUNTIME` and `KUMO_JOB_REQUIREMENTS` are the host's (`adapter.md` §10). Pass them
