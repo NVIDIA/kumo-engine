@@ -41,6 +41,7 @@ jobs:
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       - name: Install dependencies
         if: steps.lockfile-only.outputs.only_changed != 'true'
@@ -73,6 +74,7 @@ jobs:
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       - name: Install dependencies
         if: steps.lockfile-only.outputs.only_changed != 'true'
@@ -105,6 +107,7 @@ jobs:
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       - name: Install dependencies
         if: steps.lockfile-only.outputs.only_changed != 'true'
@@ -129,6 +132,7 @@ jobs:
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       - name: Install test dependencies
         run: |
@@ -186,6 +190,7 @@ jobs:
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       - name: Install dependencies
         if: steps.lockfile-only.outputs.only_changed != 'true'
@@ -300,6 +305,7 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
           python-version: "3.14"
+          prune-cache: true
 
       - name: Run focused offline deployment tests
         if: steps.deploy-test-changes.outputs.any_changed == 'true'
@@ -340,6 +346,7 @@ jobs:
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       # Reuse the DiskGraph wheel that testing.yml caches per source tree, as
       # .github/actions/setup does, instead of compiling it on every run.
@@ -485,6 +492,7 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.14"
+          prune-cache: true
 
       # Fails when a pyproject.toml/setup.py change was
       # not followed by `uv lock`.

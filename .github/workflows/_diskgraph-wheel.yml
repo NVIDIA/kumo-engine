@@ -55,6 +55,7 @@ jobs:
         with:
           python-version: '3.11'
           activate-environment: true
+          prune-cache: true
       - id: python
         if: steps.cache.outputs.cache-hit != 'true'
         run: echo "version=$(python -c 'import platform; print(platform.python_version())')" >> "$GITHUB_OUTPUT"
