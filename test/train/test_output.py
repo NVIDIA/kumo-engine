@@ -56,6 +56,17 @@ def _spooled(frame: pd.DataFrame, chunk_rows: int) -> EvalFrames:
     return frames
 
 
+def test_numeric_and_string_class_chunks_save_as_strings(
+        tmp_path: pathlib.Path):
+    frame = pd.DataFrame({'CLASS': [1, 2, 'three', 'four']})
+    frames = _spooled(frame.iloc[:2].astype({'CLASS': int}), 2)
+    frames.append(frame.iloc[2:])
+    EvalOutput({}, frames=frames).save_df(str(tmp_path), TrainingStage.TEST)
+
+    saved = pd.read_parquet(tmp_path / 'test_df.parquet')
+    assert saved['CLASS'].tolist() == ['1', '2', 'three', 'four']
+
+
 def test_iterator_keeps_spool_alive():
     frames = _spooled(pd.DataFrame({'SCORE': [1.0, 2.0]}), 1)
     it = iter(frames)

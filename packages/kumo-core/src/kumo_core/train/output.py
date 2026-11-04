@@ -200,7 +200,10 @@ class _Chunk:
 
 def _has_mixed_class(chunks: list[_Chunk]) -> bool:
     dtypes = {c.class_dtype for c in chunks} - {None, 'empty'}
-    return len(dtypes) > 1 or any(d.startswith('mixed') for d in dtypes)
+    if len(dtypes) > 1 or any(d.startswith('mixed') for d in dtypes):
+        return True
+    return 'string' in dtypes and any(
+        c.class_dtype is None and 'CLASS' in c.schema.names for c in chunks)
 
 
 def _class_to_str(frame: pd.DataFrame) -> pd.DataFrame:
