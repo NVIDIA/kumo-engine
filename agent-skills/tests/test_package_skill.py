@@ -4,6 +4,7 @@
 import ast
 import importlib.util
 import re
+import shutil
 import sys
 import zipfile
 from pathlib import Path
@@ -40,7 +41,26 @@ def test_build_stamps_the_marker(tmp_path: Path) -> None:
     built = (package_skill.build('coco', tmp_path) / 'SKILL.md').read_text()
     marker = package_skill.MARKER.findall(built)
     assert marker == [f'SKILL-BUILD: {package_skill.build_id()}']
-    assert re.fullmatch(r'SKILL-BUILD: (\d{4}-\d{2}-\d{2}-[0-9a-f]{8}(-dirty)?|unknown)', marker[0])
+    assert re.fullmatch(r'SKILL-BUILD: (\d{4}-\d{2}-\d{2}-[0-9a-f]{8}(-dirty)?|unknown-[0-9a-f]{12})',
+                        marker[0])
+
+
+def test_a_build_without_git_is_named_by_its_content(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Two archives built without git must not share a stamp, or `--check` takes one for the other.
+    def no_git(*args, **kwargs):
+        raise FileNotFoundError('git')
+
+    skills = tmp_path / 'skills'
+    shutil.copytree(package_skill.SKILLS, skills)
+    monkeypatch.setattr(package_skill, 'SKILLS', skills)
+    monkeypatch.setattr(package_skill.subprocess, 'run', no_git)
+    first = package_skill.build_id()
+    assert re.fullmatch(r'unknown-[0-9a-f]{12}', first)
+    assert package_skill.build_id() == first
+    router = skills / 'kumo-data-science' / 'SKILL.md'
+    router.write_text(router.read_text() + '\n', encoding='utf-8')
+    assert package_skill.build_id() != first
 
 
 def test_broken_references_are_reported(tmp_path: Path) -> None:
