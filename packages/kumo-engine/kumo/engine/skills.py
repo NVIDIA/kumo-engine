@@ -685,15 +685,17 @@ def _install_coco_extension(pkg: Path, session: Any, extension: str,
     Each version is added from a stage folder named after a digest of the
     package, which Snowflake records as the version's source. When the
     default version already holds this package, nothing is published, so
-    reinstalls do not pile up identical versions. A new version is usable
-    only once Snowflake has scanned it, so the install waits for the scan.
+    reinstalls do not pile up identical versions. A version is usable only
+    once Snowflake has scanned it, so the install waits for the scan, of an
+    unchanged version too.
     """
     digest = _digest(pkg)
     for v in _extension_versions(session, extension):
         source = v.get('source_location_uri') or ''
-        if str(v.get('is_default')).lower() == 'true' and \
-                f'/kumo-ds-{digest}-' in source:
-            _report(pkg, extension, note=f'unchanged, {v["name"]}')
+        m = re.search(rf'/(kumo-ds-{digest}-[0-9a-f]+)/', source)
+        if str(v.get('is_default')).lower() == 'true' and m:
+            version = _await_scan(session, extension, m.group(1))
+            _report(pkg, extension, note=f'unchanged, {version}')
             return extension
     session.sql(f'CREATE STAGE IF NOT EXISTS {stage} '
                 "ENCRYPTION=(TYPE='SNOWFLAKE_SSE') "

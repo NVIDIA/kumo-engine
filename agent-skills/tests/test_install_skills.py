@@ -573,6 +573,23 @@ def test_the_extension_install_waits_for_the_scan(home: Path,
                               session=FakeExtension(status='SCAN_FAILED'))
 
 
+def test_an_unchanged_extension_still_waits_for_its_scan(
+        home: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    # A retry after the scan-timeout warning finds the same package as the default version.
+    monkeypatch.setattr(skills, 'SCAN_TIMEOUT', 0)
+    session = FakeExtension(scans=99)
+    with pytest.warns(UserWarning, match='still being scanned'):
+        skills.install_skills('coco', scope='extension', session=session)
+    with pytest.warns(UserWarning, match='still being scanned'):
+        skills.install_skills('coco', scope='extension', session=session)
+    assert '(unchanged, VERSION$1, scanning)' in capsys.readouterr().out
+    session.scans, session.status = 0, 'SCAN_FAILED'
+    with pytest.raises(RuntimeError, match='rejected .* SCAN_FAILED'):
+        skills.install_skills('coco', scope='extension', session=session)
+    assert len(session.versions['KUMO_DATA_SCIENCE']) == 1
+
+
 def test_concurrent_extension_installs_use_their_own_folders(home: Path) -> None:
     first, second = FakeExtension(), FakeExtension()
     skills.install_skills('coco', scope='extension', session=first)
