@@ -113,7 +113,7 @@ def build_id() -> str:
     except (OSError, subprocess.CalledProcessError):
         digest = hashlib.sha256()
         for p in skill_files(SKILLS):
-            data = p.read_bytes()
+            data = p.read_bytes().replace(b'\r\n', b'\n')   # as build() ships it
             digest.update(f'{p.relative_to(SKILLS).as_posix()}\0{len(data)}\0'.encode() + data)
         return f'unknown-{digest.hexdigest()[:12]}'
     return f'{stamp}-dirty' if dirty else stamp
@@ -174,11 +174,18 @@ def build(host: str, dist: Path) -> Path:
     if spec['capability']:
         for name in CAPABILITY:
             copy_tracked(SKILLS / name, pkg / name)
+    # Text ships with LF line endings, so a CRLF checkout (git's autocrlf on Windows) packages
+    # the same bytes.
+    for p in pkg.rglob('*'):
+        if p.is_file() and p.suffix in SKILL_SUFFIXES:
+            data = p.read_bytes()
+            if b'\r\n' in data:
+                p.write_bytes(data.replace(b'\r\n', b'\n'))
     router = pkg / 'SKILL.md'
     text, n = MARKER.subn(f'SKILL-BUILD: {build_id()}', router.read_text(encoding='utf-8'))
     if n != 1:
         raise SystemExit(f'expected one SKILL-BUILD marker in {router}, found {n}')
-    router.write_text(text, encoding='utf-8')
+    router.write_text(text, encoding='utf-8', newline='\n')
     return pkg
 
 

@@ -331,6 +331,28 @@ def test_archive_is_the_same_built_on_windows(tmp_path: Path, monkeypatch: pytes
     assert [z.read_bytes() for z in first] == [z.read_bytes() for z in second]
 
 
+def test_archive_is_the_same_from_a_crlf_checkout(tmp_path: Path,
+                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    # On Windows, git's autocrlf checks text out with CRLF, and text mode writes CRLF.
+    first = package_skill.archive(tmp_path / 'a')
+    copy2, write_text = shutil.copy2, Path.write_text
+
+    def crlf_checkout(src, dst, **kwargs):
+        copy2(src, dst, **kwargs)
+        if Path(dst).suffix in package_skill.SKILL_SUFFIXES:
+            Path(dst).write_bytes(Path(src).read_bytes().replace(b'\n', b'\r\n'))
+
+    def windows_text(self, data, encoding=None, errors=None, newline=None):
+        if newline is None:
+            data = data.replace('\n', '\r\n')
+        return write_text(self, data, encoding, errors, newline)
+
+    monkeypatch.setattr(shutil, 'copy2', crlf_checkout)
+    monkeypatch.setattr(Path, 'write_text', windows_text)
+    second = package_skill.archive(tmp_path / 'b')
+    assert [z.read_bytes() for z in first] == [z.read_bytes() for z in second]
+
+
 def test_workspace_requires_https() -> None:
     assert package_skill.Workspace('dbc.example.com', 't').host == 'https://dbc.example.com'
     assert package_skill.Workspace('https://dbc.example.com/', 't').host == 'https://dbc.example.com'
