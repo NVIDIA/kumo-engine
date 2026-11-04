@@ -69,6 +69,7 @@ class _StampBuildCommit(build_py):
 setup(
     cmdclass={'build_py': _StampBuildCommit},
     install_requires=[
+        "orjson>=3.10",
         "pandas",
         "pyarrow>=8.0.0",
         "typing_extensions>=4.5.0",  # for override
