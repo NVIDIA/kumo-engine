@@ -113,7 +113,7 @@ def test_fit_runs_shared_explanations_after_training(tmp_path, snapshot,
     core_plan = CoreModelPlan()
     core_plan.training_job.disable_explain = disabled
     monkeypatch.setattr(
-        'kumo.engine.trainer.trainer.build_generated_training_task_dataset',
+        'kumo_core.training.preparation.build_generated_training_task_dataset',
         lambda **kwargs: SimpleNamespace(feature_schema={'node_types': {}}))
     monkeypatch.setattr(
         'kumo_core.training.workflow.materialize_generated_training_task',

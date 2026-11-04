@@ -410,7 +410,7 @@ def test_fit_consumes_generated_rows_with_fresh_task_metadata(
                                bundle_dir=str(tmp_path))
 
     monkeypatch.setattr(
-        'kumo.engine.trainer.trainer.build_generated_training_task_dataset',
+        'kumo_core.training.preparation.build_generated_training_task_dataset',
         fake_build)
     monkeypatch.setattr(
         'kumo_core.training.workflow.materialize_generated_training_task',
@@ -803,7 +803,7 @@ def test_repeated_fit_calls_get_distinct_ingest_targets(snapshot, tmp_path,
                                bundle_dir=str(tmp_path))
 
     monkeypatch.setattr(
-        'kumo.engine.trainer.trainer.build_generated_training_task_dataset',
+        'kumo_core.training.preparation.build_generated_training_task_dataset',
         fake_build)
     monkeypatch.setattr(
         'kumo_core.training.workflow.materialize_generated_training_task',
@@ -899,7 +899,7 @@ def test_concurrent_to_thread_fits_keep_loop_live_and_propagate_results(
                                published_counts=None)
 
     monkeypatch.setattr(
-        'kumo.engine.trainer.trainer.build_generated_training_task_dataset',
+        'kumo_core.training.preparation.build_generated_training_task_dataset',
         fake_build)
     monkeypatch.setattr(
         'kumo_core.training.workflow.materialize_generated_training_task',

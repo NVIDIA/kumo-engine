@@ -15,9 +15,9 @@ builds e.g. `SnowflakeIdentity(account=..., username=..., password=...)` and
 passes it straight to `SnowflakeConnector(identity=...)`. Construction
 registers the identity into `kumo_core`'s store under a random slug and the
 object exposes that slug (`Named.slug`), so from `kumo_core`'s point of view
-it's still going through `PrincipalStore` -- credentials still live only in
-that process-local store, never copied elsewhere -- but the caller never
-sees the "register, then reference by name" two-step.
+it's still going through `PrincipalStore`. Worker processes restore the same
+registration when a connector is serialized for remote execution, while the
+caller never sees the "register, then reference by name" two-step.
 
 The slug is a random per-registration key, not derived from `config`/
 `credentials` in any way: a slug computed from credential content, even
@@ -40,6 +40,7 @@ uses, including their validation (`validate_identity_credentials_match`,
 per-field normalization).
 """
 
+import threading
 import uuid
 from typing import Optional
 
@@ -73,6 +74,7 @@ from kumoapi.data_source import (
     validate_identity_credentials_match,
 )
 
+_RESTORE_LOCK = threading.Lock()
 
 class Identity:
     r"""Base class for per-provider identity objects.
@@ -116,6 +118,28 @@ class Identity:
                 config=self._config,
                 credentials=self._credentials,
             ))
+
+    def __setstate__(self, state: dict[str, object]) -> None:
+        """Restore identity registration when a connector enters another process.
+
+        Args:
+            state: Serialized identity attributes, including provider configuration.
+        Raises:
+            ValueError: If the receiving process already uses this slug differently.
+        """
+        self.__dict__.update(state)
+        with _RESTORE_LOCK:
+            try:
+                existing = store.get(self._slug)
+            except KeyError:
+                store.create(CreateIdentityArgs(
+                    display_name=self._slug, slug=self._slug,
+                    config=self._config, credentials=self._credentials))
+                return
+            if (existing.config != self._config
+                    or existing.credentials != self._credentials):
+                raise ValueError(
+                    'Serialized identity conflicts with a registered identity')
 
     @property
     def slug(self) -> str:

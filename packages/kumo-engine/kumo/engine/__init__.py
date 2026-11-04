@@ -3,8 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""Local, in-process relational deep learning with Kumo.
 
-No `Backend` protocol, no `set_backend`, no remote/hosted mode, no
-hosted project.
+ComputeCluster optionally offloads artifact production to Ray workers.
 There is nothing to call analogous to the cloud SDK's
 `kumoai_studio.init(url=..., api_key=...)`: connectors and tables are constructed
 and threaded through directly (`Table`, `Graph`, `Connector` subclasses), and
@@ -37,6 +36,11 @@ from kumo.engine._manifest import (
     TrainingTableManifest,
 )
 from kumo.engine._mlops import MLOps, mlops
+from kumo.engine.cluster import (
+    ArtifactReplica,
+    ComputeCluster,
+    PreparedTrainingArtifacts,
+)
 from kumo.engine._monitoring import DriftReport, EvaluationResult
 from kumo.engine._version import __version__
 from kumo.engine.config import configure
@@ -114,6 +118,9 @@ __all__ = [
     "Graph",
     "GraphSnapshot",
     "MLOps",
+    "ComputeCluster",
+    "ArtifactReplica",
+    "PreparedTrainingArtifacts",
     "mlops",
     "SnapshotManifest",
     "TrainingTableManifest",
