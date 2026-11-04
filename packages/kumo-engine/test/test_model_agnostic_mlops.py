@@ -641,3 +641,25 @@ def test_pyfunc_falls_back_for_an_unrelated_adls_reader(monkeypatch, root):
     model._snapshot(uri)
     assert loads == [(fallback, 'v')]
     assert _mlflow_model._remote_reader(uri) == 'ADLSConnector'
+
+
+@pytest.mark.parametrize('scheme', ['abfss', 'ABFSS'])
+def test_rootless_adls_serving_does_not_fall_back_to_ambient_identity(
+        monkeypatch, scheme):
+    pytest.importorskip('mlflow')
+    from kumo.engine.integrations import _mlflow_model
+
+    rootless = kumo.ADLSConnector(
+        identity=kumo.ADLSIdentity(tenant_id='tenant', client_id='client'))
+    uri = f'{scheme}://artifacts@companylake.dfs.core.windows.net/root/snapshots/g/v'
+    monkeypatch.setattr(
+        _mlflow_model, 'snapshot_location',
+        lambda location: pytest.fail('fell back to ambient snapshot identity'))
+    monkeypatch.setattr(
+        kumo.GraphSnapshot, 'load_from_connector',
+        lambda *args, **kwargs: pytest.fail('attempted snapshot I/O'))
+    model = _mlflow_model.KumoModel()
+    model._snapshots, model._reader = {}, rootless
+    with pytest.raises(NotImplementedError, match='Rootless ADLS.*source-only'):
+        model._snapshot(uri)
+    assert model._snapshots == {}

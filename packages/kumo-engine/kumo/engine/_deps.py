@@ -250,7 +250,7 @@ def reads(connector: Any, location: str) -> bool:
             return False
         try:
             connector.sink_backend._resolved_directory(connector, location)
-        except (ValueError, NotImplementedError):
+        except ValueError:
             return False
         return True
     for kind, prefix in ((S3Connector, 's3://'), (GCSConnector, 'gs://'),

@@ -159,8 +159,8 @@ def _require_within_root(connector: Any, path: str) -> None:
                   if target is not None else 'target')
         name = type(connector).__name__
         raise ValueError(
-            f'artifact_root {path!r} is outside this {name}\'s {within} '
-            f'({error}); give it a connector that contains it.') from error
+            f'Invalid artifact_root {path!r} for {name} ({within}): '
+            f'{error}') from error
 
 
 def _require_writable(root: _Root) -> None:

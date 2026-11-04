@@ -330,3 +330,18 @@ def test_adls_root_aliases_require_a_full_directory_uri(coordinate):
     connector = ADLSConnector(root_dir=ROOT)
     with pytest.raises(ValueError, match='full root URI'):
         connector.sink_backend._resolved_directory(connector, coordinate)
+
+
+@pytest.mark.parametrize('coordinate', ['', '.', '/'])
+def test_mlops_invalid_adls_directory_preserves_the_validation_reason(
+        monkeypatch, coordinate):
+    from kumo.engine import MLOps
+
+    access = Mock(side_effect=AssertionError('storage accessed'))
+    monkeypatch.setattr('kumo_adls.backend.session_for', access)
+    with pytest.raises(ValueError, match='Invalid artifact_root') as caught:
+        MLOps((ADLSConnector(root_dir=ROOT), coordinate), store=False)
+    assert 'full root URI' in str(caught.value)
+    assert 'outside' not in str(caught.value)
+    assert isinstance(caught.value.__cause__, ValueError)
+    access.assert_not_called()
