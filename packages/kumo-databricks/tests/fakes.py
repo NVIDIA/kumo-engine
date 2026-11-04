@@ -11,7 +11,7 @@ from typing import Any, Callable, Mapping
 from urllib.parse import unquote
 
 import pyarrow as pa
-from databricks.sdk.errors import NotFound
+from databricks.sdk.errors import BadRequest, NotFound
 from databricks.sql.exc import DataError
 from sources.recording import RecordingConnection, RecordingCursor
 
@@ -223,6 +223,8 @@ class FakeVolume(FakeFiles):
         self.objects[path] = contents.read()
 
     def get_metadata(self, path: str) -> Any:
+        if path.endswith("/"):
+            raise BadRequest("Bad Request")
         if path not in self.objects:
             raise NotFound(f"No such file: {path}")
         return FakeMetadata(len(self.objects[path]))
