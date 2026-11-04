@@ -1187,7 +1187,8 @@ def _target_hint(reader: str, location: str) -> str:
 
 def _download(mlflow: Any, target: Any, model_uri: str,
               destination: Path) -> str:
-    if target.explicit and model_uri.startswith('models:/'):
+    if model_uri.startswith('models:/') and (target.explicit
+                                             or target.platform == 'mlflow'):
         client = target.client()
         source = model_uri
         reference = model_uri[len('models:/'):]
@@ -1198,10 +1199,12 @@ def _download(mlflow: Any, target: Any, model_uri: str,
             name, _, version = reference.partition('/')
             source = client.get_model_version(name, version).source
         if source.startswith('models:/') and '/' not in source[8:]:
-            location = client.get_logged_model(source[8:]).artifact_location
-            repository = target.artifact_repository(location)
+            source = client.get_logged_model(source[8:]).artifact_location
+            repository = target.artifact_repository(source)
             if repository is not None:
                 return repository.download_artifacts('', str(destination))
+        if not target.explicit:
+            model_uri = source
     return mlflow.artifacts.download_artifacts(
         artifact_uri=model_uri, dst_path=str(destination),
         tracking_uri=target.tracking_uri, registry_uri=target.registry_uri)
