@@ -493,7 +493,8 @@ impl OutputHandler for PyOutputHandler {
 #[pyclass]
 pub struct SamplerEngine {
     reader: Arc<diskgraph_index::graph::GraphIndexReader>,
-    time_hints: Arc<temporal_query::TimeHints>,
+    /// A config error is reported by temporal queries, not by sampling.
+    time_hints: Arc<Result<temporal_query::TimeHints, String>>,
     engine: Arc<DiskGraphEngine>,
     pool: StatePool,
     sample_count: Arc<std::sync::atomic::AtomicUsize>,
@@ -773,7 +774,7 @@ impl SamplerEngine {
             .detach(move || {
                 temporal_query::execute(
                     reader.as_ref(),
-                    time_hints.as_ref(),
+                    time_hints.as_ref().as_ref().map_err(Clone::clone)?,
                     &root_type,
                     &roots,
                     &cutoffs,
@@ -820,7 +821,7 @@ impl SamplerEngine {
             .detach(move || {
                 temporal_query::execute_lengths(
                     reader.as_ref(),
-                    time_hints.as_ref(),
+                    time_hints.as_ref().as_ref().map_err(Clone::clone)?,
                     &root_type,
                     &roots,
                     &cutoffs,

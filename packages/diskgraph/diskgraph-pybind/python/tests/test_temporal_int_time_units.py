@@ -35,7 +35,7 @@ def encode(seconds, hint):
     return seconds * scale[hint["timestamp_unit"]]
 
 
-def open_engine(tmp_path, event_times, hint, sort_key):
+def open_engine(tmp_path, event_times, hint, sort_key, dtype="int64"):
     """`event_times` are raw `event_time` values; `time` is their floored second."""
     seconds = [encode_seconds(value, hint) for value in event_times]
     pq.write_table(pa.table({"id": [1]}), tmp_path / "users.parquet")
@@ -45,7 +45,9 @@ def open_engine(tmp_path, event_times, hint, sort_key):
                 "id": list(range(1, len(event_times) + 1)),
                 "owner": [1] * len(event_times),
                 "time": pa.array(seconds, type=pa.timestamp("s")),
-                "event_time": pa.array(event_times, pa.int64()),
+                "event_time": pa.array(
+                    event_times, {"int64": pa.int64(), "u_int64": pa.uint64()}[dtype]
+                ),
             }
         ),
         tmp_path / "events.parquet",
@@ -71,7 +73,7 @@ def open_engine(tmp_path, event_times, hint, sort_key):
                     {"name": "id", "ingested_dtype": "int64"},
                     {"name": "owner", "ingested_dtype": "int64"},
                     {"name": "time", "ingested_dtype": "timestamp"},
-                    {"name": "event_time", "ingested_dtype": "int64", **hint},
+                    {"name": "event_time", "ingested_dtype": dtype, **hint},
                 ],
                 "fkeys": [
                     {
@@ -146,6 +148,7 @@ def run(engine, relation, aggregates=()):
     return result, lengths
 
 
+@pytest.mark.parametrize("dtype", ["int64", "u_int64"])
 @pytest.mark.parametrize("sort_key", [True, False], ids=["sort_key", "rowpack"])
 @pytest.mark.parametrize(
     "hint",
@@ -158,10 +161,10 @@ def run(engine, relation, aggregates=()):
     ],
     ids=["s", "ms", "us", "ns", "yyyymmdd"],
 )
-def test_integer_time_column_uses_declared_unit(tmp_path, hint, sort_key):
+def test_integer_time_column_uses_declared_unit(tmp_path, hint, sort_key, dtype):
     times = [CUTOFF - offset for offset in OFFSETS]
     engine, relation = open_engine(
-        tmp_path, [encode(t, hint) for t in times], hint, sort_key
+        tmp_path, [encode(t, hint) for t in times], hint, sort_key, dtype
     )
     recency = {"name": "r", "operation": "recency", "column": "event_time"}
     result, lengths = run(engine, relation, [recency])
@@ -261,3 +264,34 @@ def test_grouped_recency_uses_declared_unit(tmp_path):
         "overwritten_key": [float(CUTOFF - 1)],
         "max": [encode(CUTOFF, hint)],
     }
+
+
+def test_unreadable_config_fails_temporal_queries(tmp_path):
+    engine, relation = open_engine(
+        tmp_path, [CUTOFF], {"timestamp_unit": "seconds"}, sort_key=True
+    )
+    (tmp_path / "index" / "diskgraph_config.json").write_text("{")
+    engine = diskgraph.SamplerEngine(str(tmp_path / "index"))
+
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="diskgraph_config.json"):
+        run(engine, relation)
+
+
+def test_unknown_config_fields_outside_time_columns_are_ignored(tmp_path):
+    hint = {"timestamp_unit": "millis"}
+    times = [CUTOFF - offset for offset in OFFSETS]
+    engine, relation = open_engine(
+        tmp_path, [encode(t, hint) for t in times], hint, sort_key=False
+    )
+    path = tmp_path / "index" / "diskgraph_config.json"
+    config = json.loads(path.read_text())
+    config["future_option"] = 1
+    columns = config["tables"][1]["columns"]
+    columns[0]["ingested_dtype"] = "future_dtype"
+    columns[2].update(timestamp_format="%Y", semantic_type="future_stype")
+    columns[3]["semantic_type"] = "future_stype"
+    path.write_text(json.dumps(config))
+    engine = diskgraph.SamplerEngine(str(tmp_path / "index"))
+
+    result, _ = run(engine, relation)
+    assert result["sequences"][0]["batch"].column("id").to_pylist() == EXPECTED_IDS

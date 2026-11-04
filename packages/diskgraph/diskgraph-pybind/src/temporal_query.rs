@@ -27,9 +27,7 @@ use diskgraph_core::metadata::{EdgeRelationMetadata, EdgeSortKeyMetadata};
 use diskgraph_core::sortkey::SortKeyDecoder;
 use diskgraph_engine::edge_unpacker::EdgeUnpacker;
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
-use diskgraph_ingest::graph_config::{
-    read_persisted_config, IngestedType, DISKGRAPH_CONFIG_FILENAME,
-};
+use diskgraph_ingest::graph_config::{ColumnSpec, IngestedType, DISKGRAPH_CONFIG_FILENAME};
 use diskgraph_rowpack::{RowAccess, RowAccessHints, RowAccessStats};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -553,49 +551,73 @@ type ColumnHints = HashMap<String, RowAccessHints>;
 pub(crate) type TimeHints = HashMap<String, ColumnHints>;
 
 /// Reads [`TimeHints`] from the index's persisted graph config. Indexes without
-/// one read integer times as epoch seconds.
-pub(crate) fn time_hints(root: &Path) -> TimeHints {
-    if !root.join(DISKGRAPH_CONFIG_FILENAME).exists() {
-        return TimeHints::new();
+/// one read integer times as epoch seconds; an unreadable one is an error. Only
+/// the time fields of integer columns are parsed strictly, so config fields this
+/// version does not know fail nothing else.
+pub(crate) fn time_hints(root: &Path) -> Result<TimeHints, String> {
+    #[derive(Deserialize)]
+    struct Config {
+        tables: Vec<Table>,
     }
-    let config = match read_persisted_config(root) {
-        Ok(config) => config,
-        Err(error) => {
-            tracing::warn!("temporal queries read integer times as epoch seconds: {error:#}");
-            return TimeHints::new();
-        }
+    #[derive(Deserialize)]
+    struct Table {
+        name: String,
+        columns: Vec<serde_json::Map<String, serde_json::Value>>,
+    }
+    let path = root.join(DISKGRAPH_CONFIG_FILENAME);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(TimeHints::new()),
+        Err(error) => return Err(format!("read {}: {error}", path.display())),
     };
-    config
-        .tables
-        .iter()
-        .map(|table| {
-            let hints = table
-                .columns
-                .iter()
-                .filter(|column| {
-                    (column.timestamp_unit.is_some() || column.timestamp_format.is_some())
-                        && matches!(
-                            column.ingested_dtype,
-                            IngestedType::Int8
-                                | IngestedType::Int16
-                                | IngestedType::Int32
-                                | IngestedType::Int64
-                                | IngestedType::UInt8
-                                | IngestedType::UInt16
-                                | IngestedType::UInt32
-                                | IngestedType::UInt64
-                        )
-                })
-                .map(|column| {
-                    (
-                        column.name.clone(),
-                        crate::bp_col_stats::row_access_hints(column),
+    let config: Config = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("parse {}: {error}", path.display()))?;
+    let mut hints = TimeHints::new();
+    for table in config.tables {
+        let mut columns = ColumnHints::new();
+        for column in table.columns {
+            let Some(dtype) = column
+                .get("ingested_dtype")
+                .or_else(|| column.get("dtype"))
+                .filter(|dtype| {
+                    matches!(
+                        serde_json::from_value((*dtype).clone()),
+                        Ok(IngestedType::Int8
+                            | IngestedType::Int16
+                            | IngestedType::Int32
+                            | IngestedType::Int64
+                            | IngestedType::UInt8
+                            | IngestedType::UInt16
+                            | IngestedType::UInt32
+                            | IngestedType::UInt64)
                     )
                 })
-                .collect();
-            (table.name.clone(), hints)
-        })
-        .collect()
+            else {
+                continue;
+            };
+            let mut fields = serde_json::Map::from_iter([("ingested_dtype".into(), dtype.clone())]);
+            for key in ["name", "timestamp_unit", "timestamp_format"] {
+                if let Some(value) = column.get(key) {
+                    fields.insert(key.into(), value.clone());
+                }
+            }
+            let column: ColumnSpec = serde_json::from_value(serde_json::Value::Object(fields))
+                .map_err(|error| {
+                    format!(
+                        "parse {}: table {:?} column {}: {error}",
+                        path.display(),
+                        table.name,
+                        column.get("name").unwrap_or(&serde_json::Value::Null)
+                    )
+                })?;
+            if column.timestamp_unit.is_some() || column.timestamp_format.is_some() {
+                let hint = crate::bp_col_stats::row_access_hints(&column);
+                columns.insert(column.name, hint);
+            }
+        }
+        hints.insert(table.name, columns);
+    }
+    Ok(hints)
 }
 
 /// Epoch seconds of each value. A hinted integer column decodes exactly as
