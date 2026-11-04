@@ -13,6 +13,7 @@ import re
 import sys
 import threading
 import types
+import warnings
 from pathlib import Path
 
 import pytest
@@ -941,6 +942,21 @@ def test_stale_installs_are_found(home: Path, tmp_path: Path, monkeypatch: pytes
         skills.main(['--check'])
     assert exc.value.code == 1
     assert f'{codex}: older (stale; run' in capsys.readouterr().out
+
+
+def test_a_stale_install_never_fails_the_import(
+        home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # `import kumo.engine` runs the check; with warnings as errors it must still import.
+    package_skill.bundle(tmp_path / '_skills')
+    monkeypatch.setattr(skills, '_PACKAGER', tmp_path / 'missing.py')
+    monkeypatch.setattr(skills, '_BUNDLED', tmp_path / '_skills')
+    [target] = skills.install_skills('claude')
+    build(Path(target), 'older')
+    with pytest.warns(skills.SkillStaleWarning):
+        skills.warn_if_stale()
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        skills.warn_if_stale()
 
 
 def test_a_source_checkout_is_never_stale(home: Path) -> None:

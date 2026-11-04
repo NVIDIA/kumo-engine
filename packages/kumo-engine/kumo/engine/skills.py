@@ -225,9 +225,18 @@ def stale_skills() -> dict[str, Optional[str]]:
     return {d: b for d, b in installed_skills().items() if b != build}
 
 
+class SkillStaleWarning(UserWarning):
+    r"""A local install of the skill is from another build than this wheel's.
+    """
+
+
 def warn_if_stale() -> None:
     r"""Warns, once per import of ``kumo.engine``, about local installs of the
-    skill from another build than this wheel's."""
+    skill from another build than this wheel's.
+
+    The warning is a :class:`SkillStaleWarning`. Where warnings are errors, it
+    is dropped rather than raised, so it never fails the import.
+    """
     try:
         stale = stale_skills()
     except Exception:  # never let a check of skills break the import
@@ -243,10 +252,13 @@ def warn_if_stale() -> None:
                   'environment, so environments with different kumo-engine '
                   "builds replace each other's; give each project its own "
                   "with scope='project'." if user_dirs & stale.keys() else '')
-        warnings.warn(
-            f'The {SKILL} agent skill is not the one this kumo-engine '
-            f'({bundled_build()}) ships. To update it, run: {listed}.'
-            f'{shared}', stacklevel=2)
+        try:
+            warnings.warn(
+                f'The {SKILL} agent skill is not the one this kumo-engine '
+                f'({bundled_build()}) ships. To update it, run: {listed}.'
+                f'{shared}', SkillStaleWarning, stacklevel=2)
+        except SkillStaleWarning:  # promoted to an error, e.g. by -W error
+            pass
 
 
 def _copy(pkg: Path, skills_dir: Path) -> Path:
