@@ -393,6 +393,22 @@ def test_genie_on_databricks(home: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     assert ws.files[f'{GENIE}/tabular/SKILL.md'] == b'another skill'
 
 
+@pytest.mark.parametrize('argv', [['genie'], ['genie', '--profile', 'DEFAULT']])
+def test_genie_without_the_databricks_sdk_names_the_extra(
+        home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+        argv: list) -> None:
+    monkeypatch.setitem(sys.modules, 'databricks', None)
+    built: list = []
+    monkeypatch.setattr(skills, 'skill_package', lambda host: built.append(host))
+    with pytest.raises(ModuleNotFoundError, match=re.escape('kumo-engine[databricks]')):
+        skills.install_skills('genie')
+    with pytest.raises(SystemExit) as exc:
+        skills.main(argv)
+    assert exc.value.code == 1
+    assert 'kumo-engine[databricks]' in capsys.readouterr().err
+    assert built == []
+
+
 def test_genie_removes_nested_and_empty_stale_folders(
         home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     base = f'{GENIE}/kumo-data-science'

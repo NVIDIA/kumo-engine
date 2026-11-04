@@ -48,8 +48,8 @@ install is from another build, and ``python -m kumo.engine.skills --check``
 lists the local installs and exits 1 if any is stale.
 
 This module uses the standard library and ``filelock``, plus
-``databricks-sdk`` for Genie and a Snowpark session for the ``coco`` account
-scopes.
+``databricks-sdk`` (the ``kumo-engine[databricks]`` extra) for Genie and a
+Snowpark session for the ``coco`` account scopes.
 """
 from __future__ import annotations
 
@@ -411,6 +411,8 @@ def install_skills(
     if agent == 'genie' and scope != 'user':
         raise ValueError('genie installs to your workspace skills folder and '
                          f'takes no scope (got scope={scope!r}).')
+    if agent == 'genie':
+        _require_databricks_sdk()
     with skill_package(host) as pkg:
         if agent == 'genie':
             return [_install_genie(pkg, client)]
@@ -440,6 +442,18 @@ def _warn_coco_shadowed() -> None:
             f'and loads the Claude Code copy of {SKILL}, which lacks the '
             'Snowflake host guidance. For CoCo, install with '
             "scope='project' or scope='extension' instead.", stacklevel=3)
+
+
+def _require_databricks_sdk() -> None:
+    r"""Raises an error naming the extra a Genie install needs, if the
+    Databricks SDK is missing."""
+    try:
+        import databricks.sdk  # noqa: F401
+    except ImportError as e:
+        raise ModuleNotFoundError(
+            'Installing for genie needs the Databricks SDK, which the '
+            "kumo-engine[databricks] extra brings: pip install "
+            "'kumo-engine[databricks]'", name='databricks') from e
 
 
 def _install_genie(pkg: Path, client: Any = None) -> str:
@@ -819,6 +833,10 @@ def main(argv: Optional[list[str]] = None) -> None:
         ap.error('--scope workspace needs --workspace')
     client = None
     if args.profile:
+        try:
+            _require_databricks_sdk()
+        except ImportError as e:
+            ap.exit(1, f'{ap.prog}: error: {e}\n')
         from databricks.sdk import WorkspaceClient
         client = WorkspaceClient(profile=args.profile)
     try:
@@ -831,7 +849,8 @@ def main(argv: Optional[list[str]] = None) -> None:
                        extension=args.extension, stage=args.stage,
                        client=client)
     # OSError: e.g. a --path through a file, or a directory not writable.
-    except (ValueError, OSError, RuntimeError) as e:
+    # ImportError: genie without the Databricks SDK.
+    except (ValueError, OSError, RuntimeError, ImportError) as e:
         ap.exit(1, f'{ap.prog}: error: {e}\n')
     finally:
         if session is not None:
