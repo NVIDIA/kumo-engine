@@ -52,7 +52,10 @@ from kumo_core.summaries import Note, Scalar, Summary
 from kumo_core.train.artifact_manifest import PredictionSelectionRef
 from kumo_core.training.config import FitMode
 from kumo_core.training.explain_aggregation import aggregate_subgraph_features
-from kumo_core.training.workflow import MaterializedTrainingTask, TrainingWorkflowRequest
+from kumo_core.training.workflow import (
+    MaterializedTrainingTask,
+    TrainingWorkflowRequest,
+)
 from kumo_core.types import ExplainMethod, PredictionArtifactType
 from kumoapi.model_plan import ModelPlan, TrainingTableGenerationPlan
 from kumoapi.plugin import (

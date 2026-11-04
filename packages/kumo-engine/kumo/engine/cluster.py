@@ -12,9 +12,6 @@ from types import TracebackType
 from typing import Any, Literal, Self
 from uuid import uuid4
 
-from kumo.engine._mlops import MLOps
-from kumo.engine.graph import Graph, GraphSnapshot
-from kumo.engine.pquery import PredictiveQuery, TrainingTable
 from kumo_core.diskgraph.sampling_artifacts import (
     ArtifactBundle,
     ArtifactFile,
@@ -23,6 +20,10 @@ from kumo_core.diskgraph.sampling_artifacts import (
 )
 from kumo_core.model_plan import ModelPlan
 from kumo_core.training.workflow import MaterializedTrainingTask
+
+from kumo.engine._mlops import MLOps
+from kumo.engine.graph import Graph, GraphSnapshot
+from kumo.engine.pquery import PredictiveQuery, TrainingTable
 
 
 @dataclass(frozen=True)
@@ -70,7 +71,11 @@ class _TrainingTableRequest:
 
 class _Replicator:
     def __init__(
-        self, peers: list[Any], destination: str, publication: str, settings: MLOps
+        self,
+        peers: list[Any],
+        destination: str,
+        publication: str,
+        settings: MLOps,
     ) -> None:
         import ray
 
@@ -80,7 +85,9 @@ class _Replicator:
         self.publication = publication
         self.pending: list[Any] = []
         self.files: list[ArtifactFile] = []
-        self.ray.get([peer.begin.remote(publication, settings) for peer in peers])
+        self.ray.get(
+            [peer.begin.remote(publication, settings) for peer in peers]
+        )
 
     def uploaded(self, directory: str, entry: ArtifactFile) -> None:
         """Queue replica downloads after upload close, without waiting for them."""
@@ -100,7 +107,9 @@ class _Replicator:
         return tuple(
             self.ray.get(
                 [
-                    peer.commit.remote(self.publication, self.destination, bundle)
+                    peer.commit.remote(
+                        self.publication, self.destination, bundle
+                    )
                     for peer in self.peers
                 ]
             )
@@ -110,6 +119,7 @@ class _Replicator:
 class _ComputeWorker:
     def __init__(self, root: str) -> None:
         import ray
+
         from kumo.engine._scratch import set_scratch_dir
 
         self.root = Path(root) / uuid4().hex
@@ -130,7 +140,11 @@ class _ComputeWorker:
         self._stores[publication] = settings
 
     def receive(
-        self, publication: str, destination: str, directory: str, entry: ArtifactFile
+        self,
+        publication: str,
+        destination: str,
+        directory: str,
+        entry: ArtifactFile,
     ) -> None:
         """Verify a downloaded object before installing it in an unpublished root."""
         from kumo.engine.connector import file_store
@@ -158,7 +172,9 @@ class _ComputeWorker:
 
         inventory = {entry.name: entry for entry in bundle.files}
         if self.received.get(publication, {}) != inventory:
-            raise RuntimeError("Replica has an incomplete publication inventory")
+            raise RuntimeError(
+                "Replica has an incomplete publication inventory"
+            )
         root = (
             self.root / relative_artifact_path(destination)
             if destination
@@ -170,7 +186,11 @@ class _ComputeWorker:
         return ArtifactReplica(self.node_id, str(self.root), publication)
 
     def graph_snapshot(
-        self, graph: Graph, options: dict[str, Any], settings: MLOps, peers: list[Any]
+        self,
+        graph: Graph,
+        options: dict[str, Any],
+        settings: MLOps,
+        peers: list[Any],
     ) -> GraphSnapshot:
         """Build once and reuse the MLOps exporter to stream files to replicas."""
         from kumo.engine._snapshot_io import store
@@ -226,10 +246,14 @@ class _ComputeWorker:
         peers: list[Any],
     ) -> PreparedTrainingArtifacts:
         """Ingest generated rows once and replicate the complete fitted extension."""
-        from kumo.engine._training_table_io import store_prepared
         from kumo_core.training.preparation import prepare_training_task
         from kumo_core.training.table import GeneratedTrainTableResult
-        from kumo_core.training.workflow import PreparedGraph, TrainingWorkflowRequest
+        from kumo_core.training.workflow import (
+            PreparedGraph,
+            TrainingWorkflowRequest,
+        )
+
+        from kumo.engine._training_table_io import store_prepared
 
         snapshot_id, table_id, run_id = identity
         snapshot = self.snapshots[snapshot_id]
@@ -238,7 +262,9 @@ class _ComputeWorker:
         request = TrainingWorkflowRequest.from_spec(
             graph=snapshot.graph_config,
             predictive_query=table.query,
-            prepared_graph=PreparedGraph(snapshot_id, str(snapshot.index_path)),
+            prepared_graph=PreparedGraph(
+                snapshot_id, str(snapshot.index_path)
+            ),
             run_id=run_id,
             scratch_dir=str(output),
             artifact_dir=str(output),
@@ -312,9 +338,13 @@ class ComputeCluster:
             cpus_per_worker is not None
             and (not math.isfinite(cpus_per_worker) or cpus_per_worker <= 0)
         ):
-            raise ValueError("Worker count and CPUs per worker must be positive")
+            raise ValueError(
+                "Worker count and CPUs per worker must be positive"
+            )
         if not Path(worker_root).is_absolute() or "://" in worker_root:
-            raise ValueError("worker_root must be an absolute worker-local directory")
+            raise ValueError(
+                "worker_root must be an absolute worker-local directory"
+            )
         self.num_workers = num_workers
         self.worker_root = worker_root
         self.resources = dict(resources or {})
@@ -328,7 +358,9 @@ class ComputeCluster:
     def __enter__(self) -> Self:
         """Place workers on distinct live Ray nodes, excluding the driver node."""
         import ray
-        from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
+        from ray.util.scheduling_strategies import (
+            NodeAffinitySchedulingStrategy,
+        )
 
         if self._active:
             raise RuntimeError("ComputeCluster is already active")
@@ -345,7 +377,10 @@ class ComputeCluster:
                 self.cpus_per_worker is None
                 or node["Resources"]["CPU"] >= self.cpus_per_worker
             )
-            and all(node["Resources"].get(k, 0) >= v for k, v in self.resources.items())
+            and all(
+                node["Resources"].get(k, 0) >= v
+                for k, v in self.resources.items()
+            )
         ]
         if not nodes or (
             self.num_workers is not None and len(nodes) < self.num_workers
@@ -369,7 +404,9 @@ class ComputeCluster:
                         ),
                     ).remote(self.worker_root)
                 )
-            ray.get([actor.identity.remote() for actor in self._actors], timeout=60)
+            ray.get(
+                [actor.identity.remote() for actor in self._actors], timeout=60
+            )
         except BaseException:
             self.close()
             raise
@@ -399,7 +436,9 @@ class ComputeCluster:
 
     def _call(
         self,
-        method: Literal["graph_snapshot", "training_table_generate", "prepare"],
+        method: Literal[
+            "graph_snapshot", "training_table_generate", "prepare"
+        ],
         settings: MLOps | None,
         *args: Any,
     ) -> Any:
@@ -412,7 +451,9 @@ class ComputeCluster:
             )
         kind = "snapshot" if method == "graph_snapshot" else "training_table"
         if not settings.wants(kind):
-            raise ValueError(f"ComputeCluster {method} requires MLOps storing {kind}")
+            raise ValueError(
+                f"ComputeCluster {method} requires MLOps storing {kind}"
+            )
         if not self._actors or not self._active or self._failed:
             raise RuntimeError("ComputeCluster is closed, inactive, or failed")
         worker_settings = replace(
@@ -487,5 +528,8 @@ class ComputeCluster:
                 "Training table and snapshot must belong to this ComputeCluster"
             )
         return self._call(
-            "prepare", settings, (snapshot.id, table.id, uuid4().hex), model_plan
+            "prepare",
+            settings,
+            (snapshot.id, table.id, uuid4().hex),
+            model_plan,
         )

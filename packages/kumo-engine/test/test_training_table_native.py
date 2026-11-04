@@ -6,13 +6,14 @@
 from pathlib import Path
 from unittest.mock import Mock
 
-import kumo.engine as kumo
 import orjson
 import pytest
-from kumo.engine._scratch import scoped_scratch_dir
-from kumo.engine._training_table_io import load_native, store_native
 from kumo_core.diskgraph.sampling_artifacts import ArtifactFile
 from kumo_core.model_plan import TrainingTableGenerationPlan
+
+import kumo.engine as kumo
+from kumo.engine._scratch import scoped_scratch_dir
+from kumo.engine._training_table_io import load_native, store_native
 
 
 def _table(root: Path) -> kumo.TrainingTable:
@@ -73,7 +74,9 @@ def test_one_upload_supplies_replicas_and_reload(tmp_path: Path) -> None:
     assert len(objects) == 1
     assert (stored / "_SUCCESS").is_file()
     marker = orjson.loads((stored / "kumo_training_table.json").read_bytes())
-    assert {entry["name"] for entry in marker["files"]} == {e.name for e in seen}
+    assert {entry["name"] for entry in marker["files"]} == {
+        e.name for e in seen
+    }
 
 
 def test_replica_failure_does_not_commit_native_table(tmp_path: Path) -> None:
@@ -82,7 +85,10 @@ def test_replica_failure_does_not_commit_native_table(tmp_path: Path) -> None:
     settings = kumo.MLOps(str(tmp_path / "artifacts"))
     with pytest.raises(OSError, match="replica failed"):
         store_native(
-            table, settings, Mock(), Mock(side_effect=OSError("replica failed"))
+            table,
+            settings,
+            Mock(),
+            Mock(side_effect=OSError("replica failed")),
         )
     stored = tmp_path / "artifacts/training_tables/tt-native"
     assert not (stored / "kumo_training_table.json").exists()
@@ -108,9 +114,9 @@ def test_corrupt_native_rows_are_rejected(tmp_path: Path) -> None:
     settings = kumo.MLOps(str(tmp_path / "artifacts"))
     store_native(table, settings, Mock(), None)
     stored = tmp_path / "artifacts/training_tables/tt-native"
-    next(path for path in stored.rglob("*.parquet") if path.is_file()).write_bytes(
-        b"corrupt"
-    )
+    next(
+        path for path in stored.rglob("*.parquet") if path.is_file()
+    ).write_bytes(b"corrupt")
     with (
         scoped_scratch_dir(tmp_path / "scratch"),
         pytest.raises(ValueError, match="checksum"),
@@ -123,14 +129,19 @@ def test_corrupt_native_rows_are_rejected(tmp_path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize("field", ["file", "train_table_path", "manifest_path"])
-def test_native_marker_cannot_escape_restore_root(tmp_path: Path, field: str) -> None:
+@pytest.mark.parametrize(
+    "field", ["file", "train_table_path", "manifest_path"]
+)
+def test_native_marker_cannot_escape_restore_root(
+    tmp_path: Path, field: str
+) -> None:
     """All persisted relative names are validated before allocating restore space."""
     table = _table(tmp_path)
     settings = kumo.MLOps(str(tmp_path / "artifacts"))
     store_native(table, settings, Mock(), None)
     marker_path = (
-        tmp_path / "artifacts/training_tables/tt-native/kumo_training_table.json"
+        tmp_path
+        / "artifacts/training_tables/tt-native/kumo_training_table.json"
     )
     marker = orjson.loads(marker_path.read_bytes())
     if field == "file":
@@ -148,18 +159,24 @@ def test_native_marker_cannot_escape_restore_root(tmp_path: Path, field: str) ->
     assert not (tmp_path / "scratch").exists()
 
 
-def test_failed_republication_preserves_previous_native_table(tmp_path: Path) -> None:
+def test_failed_republication_preserves_previous_native_table(
+    tmp_path: Path,
+) -> None:
     """A failed new generation keeps the preceding canonical marker loadable."""
     table = _table(tmp_path)
     settings = kumo.MLOps(str(tmp_path / "artifacts"))
     store_native(table, settings, Mock(), None)
     marker_path = (
-        tmp_path / "artifacts/training_tables/tt-native/kumo_training_table.json"
+        tmp_path
+        / "artifacts/training_tables/tt-native/kumo_training_table.json"
     )
     previous = marker_path.read_bytes()
     with pytest.raises(OSError, match="replica failed"):
         store_native(
-            table, settings, Mock(), Mock(side_effect=OSError("replica failed"))
+            table,
+            settings,
+            Mock(),
+            Mock(side_effect=OSError("replica failed")),
         )
     assert marker_path.read_bytes() == previous
     with scoped_scratch_dir(tmp_path / "scratch"):
@@ -193,7 +210,9 @@ def test_prepared_publication_uploads_each_file_once(
     metadata.mkdir()
     (extension / "graph.bin").write_bytes(b"index")
     (metadata / "task.json").write_bytes(b"{}")
-    settings = kumo.MLOps(str(tmp_path / "artifacts"), store={"training_table"})
+    settings = kumo.MLOps(
+        str(tmp_path / "artifacts"), store={"training_table"}
+    )
     uploaded = Mock(wraps=_snapshot_io._open_output)
     monkeypatch.setattr(_snapshot_io, "_open_output", uploaded)
     seen = []
@@ -208,7 +227,9 @@ def test_prepared_publication_uploads_each_file_once(
         assert len(seen) == 2
         assert not list((tmp_path / "artifacts").rglob("manifest.json"))
 
-    store_prepared(source, (extension, metadata, extension), settings, notify, ready)
+    store_prepared(
+        source, (extension, metadata, extension), settings, notify, ready
+    )
 
     assert {entry.name for entry in seen} == {
         "extension/graph.bin",
@@ -236,7 +257,9 @@ def test_prepared_publication_rejects_invalid_directories(
     directory.mkdir()
     if outside:
         (directory / "file").write_bytes(b"data")
-    settings = kumo.MLOps(str(tmp_path / "artifacts"), store={"training_table"})
+    settings = kumo.MLOps(
+        str(tmp_path / "artifacts"), store={"training_table"}
+    )
     uploaded, ready = Mock(), Mock()
 
     with pytest.raises(ValueError):
