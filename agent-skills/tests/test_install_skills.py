@@ -198,6 +198,31 @@ def test_kumo_engine_imports_install_skills_on_first_use(
         namespace['__getattr__']('nothing')
 
 
+@pytest.mark.parametrize('argv, checked', [
+    (['python', '-m', 'kumo.engine.skills', '--check'], False),
+    (['python', '-W', 'error', '-m', 'kumo.engine.skills'], False),
+    (['python', 'train.py'], True),
+    (['python', '-m', 'kumo.engine.other', 'kumo.engine.skills'], True),
+])
+def test_the_import_check_skips_the_skills_command(
+        monkeypatch: pytest.MonkeyPatch, argv: list, checked: bool) -> None:
+    # Under `python -m kumo.engine.skills`, importing `kumo.engine` must not import the module a
+    # second time to check. Its `_warn_if_skill_stale` is run against a stand-in `sys` and module.
+    tree = ast.parse((ENGINE / '__init__.py').read_text())
+    [guard] = [n for n in tree.body
+               if isinstance(n, ast.FunctionDef) and n.name == '_warn_if_skill_stale']
+    namespace: dict = {'sys': types.SimpleNamespace(orig_argv=argv)}
+    exec(compile(ast.Module([guard], []), 'kumo/engine/__init__.py', 'exec'), namespace)
+    calls: list = []
+    stand_in = types.ModuleType('kumo.engine.skills')
+    stand_in.warn_if_stale = lambda: calls.append(1)
+    for name in ['kumo', 'kumo.engine']:
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, 'kumo.engine.skills', stand_in)
+    namespace['_warn_if_skill_stale']()
+    assert calls == ([1] if checked else [])
+
+
 def test_the_bundled_copy_is_used_outside_a_checkout(
         home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     package_skill.bundle(tmp_path / '_skills')
