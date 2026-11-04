@@ -256,7 +256,8 @@ class EvalFrames:
         self._chunks.append(_Chunk.of(frame, source))
 
     def __iter__(self) -> Iterator[pd.DataFrame]:
-        return (chunk.load() for chunk in self._chunks)
+        for chunk in self._chunks:
+            yield chunk.load()
 
     def to_frame(self) -> pd.DataFrame:
         frames = list(self)

@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import gc
 import json
 import os.path as osp
 import pathlib
@@ -52,6 +53,15 @@ def _spooled(frame: pd.DataFrame, chunk_rows: int) -> EvalFrames:
     for start in range(0, len(frame), chunk_rows):
         frames.append(frame.iloc[start:start + chunk_rows])
     return frames
+
+
+def test_iterator_keeps_spool_alive():
+    frames = _spooled(pd.DataFrame({'SCORE': [1.0, 2.0]}), 1)
+    it = iter(frames)
+    del frames
+    gc.collect()
+
+    assert pd.concat(it)['SCORE'].tolist() == [1.0, 2.0]
 
 
 def test_holdout_keeps_leading_rows_that_fit(tmp_path: pathlib.Path):
