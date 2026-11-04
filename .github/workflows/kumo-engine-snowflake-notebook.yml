@@ -1,0 +1,103 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Snowflake notebook engine lifecycle
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches: [egu/mlops-platform-integration]
+    paths:
+      - .github/workflows/kumo-engine-snowflake-notebook.yml
+      - packages/kumo-engine/test/snowflake_notebook/**
+      - packages/kumo-engine/test/wheel_mlops_*.py
+      - packages/kumo-engine/test/wheel_gpu_smoke.py
+      - packages/kumo-engine/test/mlops_platforms/snowflake.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: snowflake-notebook-engine-lifecycle
+  cancel-in-progress: false
+
+jobs:
+  configuration:
+    name: Check protected Snowflake environment
+    if: >-
+      github.repository == 'NVIDIA/kumo-engine' &&
+      github.ref == 'refs/heads/egu/mlops-platform-integration'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require an existing branch-restricted environment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 packages/kumo-engine/test/snowflake_notebook/check_environment.py
+  engine-lifecycle:
+    needs: configuration
+    name: Snowflake notebook engine checks (UI excluded)
+    if: >-
+      github.repository == 'NVIDIA/kumo-engine' &&
+      github.ref == 'refs/heads/egu/mlops-platform-integration'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 80
+    environment: snowflake-mlops-test
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Require the environment credentials
+        env:
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+        run: |
+          python - <<'PY'
+          import os
+          missing = [name for name in ('SNOWFLAKE_PRIVATE_KEY', 'SNOWFLAKE_PRIVATE_KEY_PASSPHRASE') if not os.environ.get(name)]
+          if missing:
+              raise SystemExit('Missing snowflake-mlops-test environment secrets: ' + ', '.join(missing))
+          PY
+      - name: Install the notebook submission client
+        run: python -m pip --isolated install snowflake-connector-python cryptography
+      - name: Prepare this revision's notebook tests
+        run: |
+          python packages/kumo-engine/test/snowflake_notebook/prepare.py \
+            --output-dir "$RUNNER_TEMP/snowflake-payload"
+      - name: Execute the installed-wheel notebook lifecycle
+        env:
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+        run: |
+          set +e
+          python packages/kumo-engine/test/snowflake_notebook/launch.py \
+            --payload-manifest "$RUNNER_TEMP/snowflake-payload/manifest.json" \
+            --preflight-payload "$RUNNER_TEMP/snowflake-payload/preflight" \
+            --lifecycle-payload "$RUNNER_TEMP/snowflake-payload/lifecycle" \
+            --output-dir "$RUNNER_TEMP/snowflake-result" --execute
+          launcher_exit=$?
+          set -e
+          test -f "$RUNNER_TEMP/snowflake-result/summary.json"
+          printf '%s\n' "$launcher_exit" > "$RUNNER_TEMP/snowflake-result/launcher-exitcode.txt"
+          python packages/kumo-engine/test/snowflake_notebook/verify.py \
+            --summary "$RUNNER_TEMP/snowflake-result/summary.json"
+      - name: Retain execution evidence and qualification gaps
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: snowflake-engine-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/snowflake-result/
+            ${{ runner.temp }}/snowflake-payload/manifest.json
+          if-no-files-found: warn
+          retention-days: 7

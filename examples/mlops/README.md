@@ -46,6 +46,12 @@ schedule. Both take their settings as command-line flags.
 
 ## Run locally
 
+For the two-version lifecycle, fresh-process recovery, monitoring and failure
+checks against a finished wheel, see
+[local MLOps validation](../../docs/development/mlops-validation.md).
+Live stage/volume/S3 lifecycle profiles are documented in
+[platform validation](../../docs/development/mlops-platform-validation.md).
+
 With `users.parquet`, `items.parquet` and `orders.parquet` in a directory:
 
 ```bash
