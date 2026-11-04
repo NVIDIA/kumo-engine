@@ -68,6 +68,7 @@ class VolumeHandler(ChunkedFileHandler):
         return 'databricks-volume'
 
     def _size(self, path: str) -> Optional[int]:
+        path = path.rstrip('/')
         with _translated(path):
             try:
                 return int(self._client.files.get_metadata(path).content_length)
