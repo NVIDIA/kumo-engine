@@ -206,6 +206,17 @@ def installed_skills() -> dict[str, Optional[str]]:
     return {d: _read_build(Path(d)) for d in sorted(dirs) if Path(d).is_dir()}
 
 
+def update_call(skill_dir: str) -> str:
+    r"""The ``install_skills`` call that updates the install at ``skill_dir``,
+    one of :func:`installed_skills`."""
+    for agent, (_, scopes) in AGENTS.items():
+        for scope, d in scopes.items():
+            if str(Path(d).expanduser().resolve() / SKILL) == skill_dir:
+                return (f"install_skills('{agent}')" if scope == 'user' else
+                        f"install_skills('{agent}', scope='{scope}')")
+    return f'install_skills(path={str(Path(skill_dir).parent)!r})'
+
+
 def stale_skills() -> dict[str, Optional[str]]:
     r"""The local installs whose build is not this wheel's."""
     build = bundled_build()
@@ -222,11 +233,12 @@ def warn_if_stale() -> None:
     except Exception:  # never let a check of skills break the import
         return
     if stale:
-        listed = ', '.join(f'{d} ({b})' for d, b in stale.items())
+        listed = '; '.join(f'{d} ({b}): kumo.engine.{update_call(d)}'
+                           for d, b in stale.items())
         warnings.warn(
-            f'The {SKILL} agent skill installed at {listed} is not the one '
-            f'this kumo-engine ({bundled_build()}) ships. Run '
-            'kumo.engine.install_skills() to update it.', stacklevel=2)
+            f'The {SKILL} agent skill is not the one this kumo-engine '
+            f'({bundled_build()}) ships. To update it, run: {listed}',
+            stacklevel=2)
 
 
 def _copy(pkg: Path, skills_dir: Path) -> Path:
@@ -310,7 +322,9 @@ def install_skills(
             ``None`` picks Genie on Databricks; elsewhere, every agent whose
             home directory exists (``~/.claude``, ``~/.codex`` or
             ``~/.agents``, ``~/.snowflake/cortex``, ``~/.genie``), or Claude
-            Code and Codex if none does.
+            Code and Codex if none does. With Claude Code present, CoCo's
+            ``user`` install is skipped, since Cortex Code would load the
+            Claude Code copy instead.
         scope: ``user`` (the agent's home skills directory) or ``project``
             (under the current directory). For ``coco`` also ``workspace``
             and ``extension``. ``genie`` takes only ``user``: its skills
@@ -345,11 +359,20 @@ def install_skills(
         # Only coco has account scopes, so they name it; detection would try
         # every local agent first, or refuse inside a Snowflake notebook.
         names = ['coco'] if scope in COCO_ACCOUNT_SCOPES else _detect()
-        return [
-            target for name in names for target in install_skills(
+        # Cortex Code would load the Claude Code copy instead.
+        shadowed = scope == 'user' and {'claude', 'coco'} <= set(names)
+        targets = [
+            target for name in names
+            if not (shadowed and name == 'coco') for target in install_skills(
                 name, scope=scope, session=session, workspace=workspace,
                 extension=extension, stage=stage, client=client)
         ]
+        if shadowed:
+            print(f'{SKILL} -> {AGENTS["coco"][1]["user"]} (skipped: Cortex '
+                  f'Code reads {AGENTS["claude"][1]["user"]} first; use '
+                  "install_skills('coco', scope='project') or "
+                  "scope='extension')")
+        return targets
     if agent not in AGENTS:
         raise ValueError(
             f'Unknown agent {agent!r}; expected one of {sorted(AGENTS)}, '
@@ -757,7 +780,8 @@ def main(argv: Optional[list[str]] = None) -> None:
     if args.check:
         stale = stale_skills()
         for d, b in installed_skills().items():
-            print(f'{d}: {b}' + (' (stale)' if d in stale else ''))
+            print(f'{d}: {b}' +
+                  (f' (stale; run {update_call(d)})' if d in stale else ''))
         print(f'this kumo-engine: {bundled_build() or "source checkout"}')
         ap.exit(1 if stale else 0)
     account = (args.path is None and args.agent in (None, 'coco')

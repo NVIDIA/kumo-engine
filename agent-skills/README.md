@@ -79,8 +79,9 @@ reads Codex's `.agents/skills`, so it gets the `generic` package there; a second
 `~/.genie/skills` would load as a competing skill.
 
 Cortex Code also reads `~/.claude/skills`, and a copy there wins over `~/.snowflake/cortex/skills`.
-With both agents installed, CoCo would run the `generic` package; `install_skills` warns, and
-`scope='project'` or `scope='extension'` gives CoCo its own.
+With both agents installed, CoCo would run the `generic` package, so `install_skills()` skips CoCo's
+user install and says so, `install_skills('coco')` warns, and `scope='project'` or
+`scope='extension'` gives CoCo its own.
 
 Each package is stamped `SKILL-BUILD: <date>-<sha>`. An install prints the build it installed and
 the one it replaced. `import kumo.engine` warns when a local install is from another build than the

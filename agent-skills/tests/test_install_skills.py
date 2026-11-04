@@ -883,16 +883,47 @@ def test_stale_installs_are_found(home: Path, tmp_path: Path, monkeypatch: pytes
     assert exc.value.code == 0
     build(Path(codex), 'older')
     assert skills.stale_skills() == {codex: 'older'}
-    with pytest.warns(UserWarning, match=f'installed at {re.escape(codex)} \\(older\\)'):
+    with pytest.warns(UserWarning, match=f'{re.escape(codex)} \\(older\\)'):
         skills.warn_if_stale()
     capsys.readouterr()
     with pytest.raises(SystemExit) as exc:
         skills.main(['--check'])
     assert exc.value.code == 1
-    assert f'{codex}: older (stale)' in capsys.readouterr().out
+    assert f'{codex}: older (stale; run' in capsys.readouterr().out
 
 
 def test_a_source_checkout_is_never_stale(home: Path) -> None:
     [target] = skills.install_skills('claude')
     build(Path(target), 'older')
     assert skills.bundled_build() is None and skills.stale_skills() == {}
+
+
+def test_the_stale_warning_names_the_call_that_updates_each_install(
+        home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    package_skill.bundle(tmp_path / '_skills')
+    monkeypatch.setattr(skills, '_PACKAGER', tmp_path / 'missing.py')
+    monkeypatch.setattr(skills, '_BUNDLED', tmp_path / '_skills')
+    (home / '.claude').mkdir()
+    [target] = skills.install_skills('claude', scope='project')
+    build(Path(target), 'older')
+    call = "install_skills('claude', scope='project')"
+    with pytest.warns(UserWarning, match=re.escape(call)):
+        skills.warn_if_stale()
+    with pytest.raises(SystemExit):
+        skills.main(['--check'])
+    assert call in capsys.readouterr().out
+    # Following the advice clears it.
+    skills.install_skills('claude', scope='project')
+    assert skills.stale_skills() == {}
+
+
+def test_detection_skips_the_coco_copy_claude_code_would_shadow(
+        home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (home / '.claude').mkdir()
+    (home / '.snowflake' / 'cortex').mkdir(parents=True)
+    targets = skills.install_skills()
+    assert [Path(t).parts[-3] for t in targets] == ['.claude']
+    assert not (home / '.snowflake' / 'cortex' / 'skills').exists()
+    out = capsys.readouterr().out.splitlines()
+    assert out[-1].endswith("scope='extension')") and 'skipped: Cortex Code reads' in out[-1]

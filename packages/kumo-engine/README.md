@@ -123,7 +123,7 @@ kumo.install_skills("claude")  # or "codex", "coco" (Snowflake Cortex Code), "ge
 
 `scope="project"` installs into the current project instead of your home directory. From a shell, run `python -m kumo.engine.skills`; for a Snowsight workspace or a Cortex Extension, name a Snowflake connection from `connections.toml`, as the `snow` CLI uses: `python -m kumo.engine.skills coco --scope workspace --workspace MY_WS --connection my_conn`.
 
-The skill is versioned with the wheel. After upgrading `kumo-engine`, run `install_skills()` again; `import kumo.engine` warns when a local install is out of date, and `python -m kumo.engine.skills --check` lists your installs.
+The skill is versioned with the wheel. After upgrading `kumo-engine`, run `install_skills()` again; `import kumo.engine` warns when a local install is out of date and names the call that updates it, and `python -m kumo.engine.skills --check` lists your installs.
 
 Without the wheel, download the skill from the GitHub release for your version: `kumo-data-science-generic.zip` (Claude Code, Codex, other agents), `kumo-data-science-coco.zip` (Snowflake Cortex Code) or `kumo-data-science-genie.zip` (Databricks Genie Code). Unzip it into your agent's skills directory.
 
