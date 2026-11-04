@@ -68,10 +68,14 @@ def test_iterator_keeps_spool_alive():
 def test_save_df_keeps_edits_to_materialized_df(tmp_path: pathlib.Path):
     out = EvalOutput({}, frames=_spooled(pd.DataFrame({'SCORE': [1., 2.]}), 1))
     out.df['SCORE'] = [3., 4.]
+    out.df['RANK'] = [2, 1]
+    out.df.drop(index=0, inplace=True)
     out.save_df(str(tmp_path), TrainingStage.TEST)
 
     saved = pd.read_parquet(tmp_path / 'test_df.parquet')
-    assert saved['SCORE'].tolist() == [3., 4.]
+    assert saved[['SCORE', 'RANK']].values.tolist() == [[4., 1.]]
+    meta = json.loads((tmp_path / 'test_df_meta.json').read_text())
+    assert meta == {'total_rows': 1, 'saved_rows': 1, 'truncated': False}
 
 
 def test_holdout_keeps_leading_rows_that_fit(tmp_path: pathlib.Path):

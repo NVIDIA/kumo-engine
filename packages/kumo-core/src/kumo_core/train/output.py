@@ -366,14 +366,19 @@ class EvalOutput:
         self.metrics = metrics
         self.embedding = embedding
         self.counts = counts
-        self.frames = EvalFrames.of(df) if df is not None else frames
+        self._frames = frames
         self._df = df
 
     @property
+    def frames(self) -> EvalFrames | None:
+        if self._df is not None:
+            return EvalFrames.of(self._df)
+        return self._frames
+
+    @property
     def df(self) -> pd.DataFrame | None:
-        if self._df is None and self.frames is not None:
-            self._df = self.frames.to_frame()
-            self.frames = EvalFrames.of(self._df)
+        if self._df is None and self._frames is not None:
+            self._df = self._frames.to_frame()
         return self._df
 
     def save_all(
@@ -420,20 +425,21 @@ class EvalOutput:
         """Save metrics and frames without executable pickle content."""
         path = self.get_output_path(root_dir, stage)
         logger.info(f'Saving {stage.value} output to {path}')
+        frames = self.frames
         metadata = {
             'format_version': _EVAL_OUTPUT_FORMAT_VERSION,
             'metrics': self.metrics,
-            'has_df': self.frames is not None,
+            'has_df': frames is not None,
             'has_embedding': self.embedding is not None,
         }
         makedirs(osp.dirname(path), exist_ok=True)
         with (filesystem.open_file(path, 'wb') as handle,
               zipfile.ZipFile(handle, 'w', zipfile.ZIP_DEFLATED) as archive):
             archive.writestr(_EVAL_OUTPUT_METADATA_FILE, json.dumps(metadata))
-            if self.frames is not None:
+            if frames is not None:
                 with archive.open(_EVAL_OUTPUT_DF_FILE, 'w',
                                   force_zip64=True) as entry:
-                    self.frames.write_parquet(entry, index=None)
+                    frames.write_parquet(entry, index=None)
             if self.embedding is not None:
                 with archive.open(_EVAL_OUTPUT_EMBEDDING_FILE, 'w',
                                   force_zip64=True) as entry:
@@ -446,19 +452,20 @@ class EvalOutput:
         stage: TrainingStage,
         max_size: int | None = None,
     ) -> None:
-        if self.frames is None:
+        frames = self.frames
+        if frames is None:
             return
 
         max_size = _HOLDOUT_MAX_BYTES if max_size is None else max_size
         path = self.get_df_path(root_dir, stage)
         makedirs(osp.dirname(path), exist_ok=True)
         with filesystem.open_file(path, 'wb') as handle:
-            saved_rows = self.frames.write_parquet(
+            saved_rows = frames.write_parquet(
                 handle,
                 index=True,
-                chunks=self.frames.head_chunks(max_size),
+                chunks=frames.head_chunks(max_size),
             )
-        total_rows = self.frames.num_rows
+        total_rows = frames.num_rows
         write_binary(
             self.get_df_meta_path(root_dir, stage),
             json.dumps({
@@ -713,8 +720,8 @@ class EvalOutput:
                     f"for regression heatmap to be unavailable.")
                 return
 
-            sampled_df = self.frames.sample(
-                min(self.frames.num_rows, _MAX_NUM_SAMPLES))
+            frames = self.frames
+            sampled_df = frames.sample(min(frames.num_rows, _MAX_NUM_SAMPLES))
             heatmap_dir = self.get_heatmap_dir_path(root_dir, stage)
             makedirs(heatmap_dir, exist_ok=True)
             sampled_df_path = osp.join(heatmap_dir, 'sampled_df.parquet')
