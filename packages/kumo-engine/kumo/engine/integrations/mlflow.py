@@ -1218,8 +1218,8 @@ def _registry_download_uri(client: Any, model_uri: str) -> str:
     MLflow resolves models:/ with the process-wide registry URI and ignores
     the one passed to download_artifacts.
     """
-    from mlflow.store.artifact.utils.models import get_model_name_and_version
-    resolved = get_model_name_and_version(client, model_uri)
+    models = import_provider('mlflow.store.artifact.utils.models', 'mlflow')
+    resolved = models.get_model_name_and_version(client, model_uri)
     if len(resolved) == 1:
         return client.get_logged_model(resolved[0]).artifact_location
     return client.get_model_version_download_uri(*resolved)
