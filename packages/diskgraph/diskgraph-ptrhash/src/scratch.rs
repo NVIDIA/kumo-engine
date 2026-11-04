@@ -13,7 +13,6 @@ pub struct PtrHashScratch<H: Hash> {
     pub bucket_len_cnt: Vec<usize>,
     pub slots: Vec<BucketIdx>,
     pub slots_tmp: Vec<usize>,
-    pub free_slots: Vec<u64>,
     pub stack: BinaryHeap<(usize, BucketIdx)>,
 }
 
@@ -36,7 +35,6 @@ impl<H: Hash> PtrHashScratch<H> {
             bucket_len_cnt: Vec::new(),
             slots: Vec::new(),
             slots_tmp: Vec::new(),
-            free_slots: Vec::new(),
             stack: BinaryHeap::new(),
         }
     }
