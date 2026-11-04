@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib.util
 import os
 import re
 import subprocess
@@ -24,6 +25,20 @@ if api_pyproject.exists():
     api_ver = match.group(1)
 
 kumo_api = f'kumo-api=={api_ver}'
+
+# The agent skills ship inside this wheel, one package per host, so
+# `kumo.engine.install_skills()` installs the skill written for this exact
+# SDK. A build from a checkout regenerates them from agent-skills/; a build
+# from an sdist has no agent-skills/ and keeps the copy the sdist carries.
+package_skill_py = (Path(__file__).resolve().parents[2] / 'agent-skills' /
+                    'scripts' / 'package_skill.py')
+if package_skill_py.exists():
+    spec = importlib.util.spec_from_file_location('package_skill',
+                                                  package_skill_py)
+    assert spec and spec.loader
+    package_skill = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(package_skill)
+    package_skill.bundle(Path(__file__).parent / 'kumo' / 'engine' / '_skills')
 
 
 def _build_commit():
@@ -64,8 +79,10 @@ setup(
         # FileLock is a real OS-level advisory lock (flock/LockFileEx), so
         # it's released by the kernel even if the process crashes mid-build
         # -- unlike its own SoftFileLock fallback, deliberately not used
-        # here.
-        "filelock>=3.0.0",
+        # here. 3.20.4 through 3.29.4 unlink the lock file on release, so
+        # two processes can each hold a lock on a different inode at one
+        # path; 3.29.5 keeps the file.
+        "filelock>=3.29.5",
         # Unlike kumo-sdk (where this is an optional extra behind
         # CloudBackend), this package has no non-training use case, so
         # kumo-core -- and the Torch/PyG/DiskGraph stack it pulls in -- is a

@@ -270,6 +270,7 @@ jobs:
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
@@ -396,6 +397,7 @@ jobs:
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
@@ -481,7 +483,7 @@ jobs:
 
       - name: Commit changes and Create Pull Request
         if: steps.openapi-changes.outputs.changed == 'true'
-        uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0  # v8.1.0
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v8.1.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: "Regenerated orval code based on OpenAPI spec files"

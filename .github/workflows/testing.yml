@@ -173,6 +173,7 @@ jobs:
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       # This enables us to skip the minimal python tests.
       # Note, it's not possible use the standard `on.pull_request` method to
@@ -313,7 +314,7 @@ jobs:
 
       - name: Upload coverage artifact
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ env.ARTIFACT_NAME_SAFE }}
           path: ${{ env.ARTIFACT_NAME_SAFE }}
@@ -321,7 +322,7 @@ jobs:
 
       - name: Upload flake diagnostics
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: flake-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
           path: ${{ env.ARTIFACTS_DIR }}
@@ -333,7 +334,7 @@ jobs:
         # The aggregate job's strict count check (below) turns a missed
         # upload into a loud workflow failure rather than a silent partial merge.
         if: success() && env.STORE_DURATIONS == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           # The `-of-<total>` suffix lets the aggregate job verify it received
           # every shard; total tracks the matrix size automatically.
@@ -367,7 +368,7 @@ jobs:
         timeout-minutes: 12
         with:
           packages: lld
-      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           # Pinned: a new stable clippy adds lints that fail unchanged code.
           toolchain: 1.98.1
@@ -403,7 +404,7 @@ jobs:
         timeout-minutes: 12
         with:
           packages: lld
-      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           # Pinned: a new stable clippy adds lints that fail unchanged code.
           toolchain: 1.98.1
@@ -443,6 +444,7 @@ jobs:
         with:
           python-version: '3.11'
           activate-environment: true
+          prune-cache: true
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: diskgraph-wheel
@@ -528,6 +530,7 @@ jobs:
         with:
           python-version: '3.12'
           activate-environment: true
+          prune-cache: true
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: diskgraph-wheel
@@ -631,7 +634,7 @@ jobs:
 
       - name: Upload Kumo-core CPU coverage
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: kumo-core-cpu-coverage
           path: |
@@ -815,7 +818,7 @@ jobs:
           PY
 
       - name: Upload merged durations
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: test-durations-merged
           path: .test_durations
@@ -843,6 +846,7 @@ jobs:
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       - name: Install dependencies
         run: uv pip install -q 'coverage[toml]'
@@ -884,7 +888,7 @@ jobs:
 
       - name: Upload coverage html
         if: steps.coverage.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: .coverage-${{ github.run_id }}-html
           path: htmlcov
@@ -915,6 +919,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           activate-environment: true
+          prune-cache: true
       - name: Build and install in-tree wheels
         run: |
           uv build --wheel --out-dir dist packages/kumo-api

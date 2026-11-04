@@ -7,10 +7,10 @@ set -euo pipefail
 
 readonly OUTPUT_FILE="${1:?usage: prepare-aws-rds-ca.sh OUTPUT_FILE}"
 readonly COMMERCIAL_URL="https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem"
-readonly COMMERCIAL_SHA256="fe45bbebf92ad3e27a583bbb2ddd1553c521ed4d49af5514dc0a40372ea5395c"
+readonly COMMERCIAL_SHA256="90a6f1a7978a1b1b096dca6c57511ca48d3b8cf052f8e704baf358f34ea2f21b"
 readonly GOVCLOUD_URL="https://truststore.pki.us-gov-west-1.rds.amazonaws.com/global/global-bundle.pem"
 readonly GOVCLOUD_SHA256="bae59f78f2e2ba789e734cdcac78c13a0f0e99aa3f7bd49f1f37477c815b9b33"
-readonly COMBINED_SHA256="3904eb87884e7f062f6634d4e52f30cca4f6ad0c10142a960184b60cc3852a60"
+readonly COMBINED_SHA256="76347a34b21546410e9c51cfebacf38d60853151b830cba0486a9d5b865cfcc2"
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then

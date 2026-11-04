@@ -13,6 +13,7 @@ from kumo_core.score_drift import holdout_shift, psi_shift
 from kumo_core.summaries import Note, Summary, Table
 
 from kumo.engine._prep_cost import PREP_TABLE
+from kumo.engine._run_names import version_label
 from kumo.engine._text import metric_key, number
 
 HEADLINE_CHARS = 140
@@ -328,7 +329,7 @@ def _notes(summaries: Sequence[Summary], section: str) -> List[str]:
 
 def _model(tags: Mapping[str, str]) -> Optional[str]:
     name, version = tags.get('kumo.model_name'), tags.get('kumo.model_version')
-    return f'`{name}` v{version}' if name and version else None
+    return f'`{name}` {version_label(version)}' if name and version else None
 
 
 def _tuned(tags: Mapping[str, str]) -> str:
