@@ -22,7 +22,7 @@ import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Iterator, Mapping
+from typing import TYPE_CHECKING, Any, Iterator, Mapping
 
 import pytorch_lightning as pl
 from kumo_core.diskgraph.runtime_adapter import (
@@ -32,6 +32,9 @@ from kumo_core.diskgraph.runtime_adapter import (
 )
 from kumo_core.task_dataset import DiskgraphTaskManifest
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
+
+if TYPE_CHECKING:
+    from diskgraph.runtime_batch_iterator import RuntimeIndex
 
 logger = logging.getLogger(__name__)
 
@@ -1352,6 +1355,8 @@ class DiskgraphTaskBatchIterable(IterableDataset):
         self.max_batches = max_batches
         self.replay = bool(replay)
         self.runtime_options = dict(runtime_options or {})
+        self._runtime_index_handle: RuntimeIndex | None = None
+        self._runtime_index_pid: int | None = None
         self.runtime_num_workers = max(1, int(runtime_num_workers))
         self.runtime_worker_id = int(runtime_worker_id)
         self.dataloader_num_workers = max(1, int(dataloader_num_workers))
@@ -1521,23 +1526,26 @@ class DiskgraphTaskBatchIterable(IterableDataset):
             local_targets[stage] = quotient + int(local_worker_id < remainder)
         return local_targets, stage_worker_counts
 
-    def _runtime_index(self) -> Any:
+    def _runtime_index(self) -> RuntimeIndex:
         """One opened index per worker process, reused for every epoch."""
-        cached = self.__dict__.get('_runtime_index_handle')
-        if cached is None:
-            from diskgraph import RuntimeIndex
+        cached = self._runtime_index_handle
+        pid = os.getpid()
+        if cached is None or self._runtime_index_pid != pid:
+            from diskgraph.runtime_batch_iterator import RuntimeIndex
             cached = RuntimeIndex(
                 self.manifest_path,
                 rnd_seed=self.base_seed,
                 num_threads=self.runtime_options.get('num_threads'),
             )
-            self.__dict__['_runtime_index_handle'] = cached
+            self._runtime_index_handle = cached
+            self._runtime_index_pid = pid
         return cached
 
     def __getstate__(self) -> dict:
         # Never pickle the handle; workers rebuild their own.
         state = dict(self.__dict__)
-        state.pop('_runtime_index_handle', None)
+        state['_runtime_index_handle'] = None
+        state['_runtime_index_pid'] = None
         return state
 
     def __iter__(self) -> Iterator[Mapping[str, Any]]:

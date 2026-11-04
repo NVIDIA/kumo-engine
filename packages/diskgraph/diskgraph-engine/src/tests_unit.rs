@@ -387,6 +387,29 @@ fn test_basic_sampling() {
 }
 
 #[test]
+fn capped_bfs_limits_distinct_neighbors_per_root() {
+    let mut graph = TestGraph::new();
+    graph.sampler.set_max_neighbors_per_seed(Some(5));
+    let mut state = crate::state::StatePool::new().acquire();
+    let mut output = MockOutput {
+        edges: vec![],
+        feature_batches: vec![],
+        schema: None,
+        fused_batches: vec![],
+    };
+    let request = make_sampling_request(vec![0], vec![20, 20]);
+
+    graph
+        .sampler
+        .sample(&request, &mut state, &mut output)
+        .unwrap();
+
+    assert_eq!(state.stats.total_nodes, 6, "seed plus five neighbors");
+    assert_eq!(state.stats.total_edges, 5);
+    assert!(state.type_states[&0].next_frontier.is_empty());
+}
+
+#[test]
 fn test_fused_sampling() {
     let graph = TestGraph::new();
     let mut state = crate::state::StatePool::new().acquire();
@@ -1403,7 +1426,7 @@ fn trivial_node_rowpack() -> (diskgraph_rowpack::RowPackContext, Vec<u8>) {
 }
 
 /// Writes one shard whose node `i` has the `(dst, sort_key)` entries in
-/// `adjacency[i]` (rel 0, 8-bit dst ids, at most 63 nodes).
+/// `adjacency[i]` (rel 0, 8-bit dst ids).
 fn write_adjacency_shard(
     dir: &std::path::Path,
     adjacency: &[Vec<(u8, u64)>],
@@ -1443,10 +1466,16 @@ fn write_adjacency_shard(
     let num_nodes = adjacency.len() as u64;
     let header = OffsetFileHeader::new(num_nodes, num_nodes + 1);
     let mut offsets = bincode::serialize(&header).unwrap();
-    offsets.extend_from_slice(&((num_nodes + 1) as u16).to_le_bytes());
-    offsets.extend_from_slice(&0u64.to_le_bytes()); // base offset
+    let mut positions = vec![0u64];
     for &len in &lens {
-        offsets.extend_from_slice(&(len as u16).to_le_bytes());
+        positions.push(positions.last().unwrap() + len);
+    }
+    for chunk in positions.chunks(diskgraph_index::layout::DELTA_CHUNK) {
+        offsets.extend_from_slice(&(chunk.len() as u16).to_le_bytes());
+        offsets.extend_from_slice(&chunk[0].to_le_bytes());
+        for pair in chunk.windows(2) {
+            offsets.extend_from_slice(&((pair[1] - pair[0]) as u16).to_le_bytes());
+        }
     }
     assert_eq!(
         lens.iter().sum::<u64>(),
@@ -2781,4 +2810,73 @@ fn repeated_runs_give_identical_output() {
         assert_eq!(runs[0].2.len(), if fused { 2 } else { 0 });
         assert!(runs.iter().all(|r| *r == runs[0]), "fused={fused}");
     }
+}
+
+/// Prefetch (`DG_PREFETCH=1`) must not change a single sampled edge, node, or
+/// feature value — it only asks the kernel to start reads earlier.
+///
+/// This is the gate the whole async-I/O line of work rests on: a read path that
+/// went faster by sampling different neighbours would be worthless. Covers all
+/// three prefetch call sites — the standalone and fused traversal paths, and
+/// the deduped feature fetch.
+#[test]
+fn test_prefetch_does_not_change_sampling_output() {
+    let graph = TestGraph::new_with_seed(Some(42));
+
+    let run = |fused: bool| {
+        let mut req = make_sampling_request(vec![0, 1, 2], vec![5, 3]);
+        req.flags.fused_feature_fetching = fused;
+        let mut state = crate::state::StatePool::new().acquire();
+        let mut output = MockOutput {
+            edges: vec![],
+            feature_batches: vec![],
+            schema: None,
+            fused_batches: vec![],
+        };
+        graph.sampler.sample(&req, &mut state, &mut output).unwrap();
+        let globals: Vec<u64> = state.type_states[&0].nodes.iter().map(|n| n.global_id).collect();
+        (globals, output.edges, output.fused_batches)
+    };
+
+    for fused in [false, true] {
+        diskgraph_index::prefetch::set_enabled(false);
+        let (base_globals, base_edges, base_fused) = run(fused);
+        diskgraph_index::prefetch::set_enabled(true);
+        let (pf_globals, pf_edges, pf_fused) = run(fused);
+
+        assert!(!base_edges.is_empty(), "fused={fused}: test sampled nothing to compare");
+        assert_eq!(base_globals, pf_globals, "fused={fused}: prefetch changed which nodes were visited");
+        assert_eq!(base_edges, pf_edges, "fused={fused}: prefetch changed the sampled edges");
+        assert_eq!(base_fused.len(), pf_fused.len(), "fused={fused}: fused batch count differs");
+        for ((bt, bb), (pt, pb)) in base_fused.iter().zip(pf_fused.iter()) {
+            assert_eq!(bt, pt, "fused={fused}: fused batch type id differs");
+            assert_eq!(bb, pb, "fused={fused}: prefetch changed fused feature values");
+        }
+    }
+
+    // Feature fetch by id (the deduped/sorted standalone path).
+    let fetch = || {
+        let mut output = MockOutput {
+            edges: vec![],
+            feature_batches: vec![],
+            schema: None,
+            fused_batches: vec![],
+        };
+        graph
+            .sampler
+            .fetch_features_for_type(
+                0,
+                &[0, 5, 5, 3, 9],
+                &["feat_0".to_string(), "feat_1".to_string()],
+                &mut output,
+            )
+            .unwrap();
+        output.feature_batches
+    };
+    diskgraph_index::prefetch::set_enabled(false);
+    let base = fetch();
+    diskgraph_index::prefetch::set_enabled(true);
+    assert_eq!(base, fetch(), "prefetch changed fetched feature values");
+
+    diskgraph_index::prefetch::set_enabled(false);
 }

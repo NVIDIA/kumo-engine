@@ -9,6 +9,7 @@ use arrow_array::{Array, Int64Array, RecordBatch, UInt32Array, UInt64Array};
 pub(crate) use diskgraph_runtime::PseudoTimeSeed;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use std::mem::ManuallyDrop;
 fn py_record_batch_list<'py>(
     py: Python<'py>,
     batches: &[RecordBatch],
@@ -253,13 +254,57 @@ fn raw_feature_bank_to_pydict<'py>(
     Ok(block)
 }
 
+/// Thread pools and channels must only be used or destroyed in their creator.
+struct ProcessOwned<T> {
+    pid: u32,
+    value: ManuallyDrop<T>,
+}
+
+impl<T> ProcessOwned<T> {
+    fn new(value: T) -> Self {
+        Self {
+            pid: std::process::id(),
+            value: ManuallyDrop::new(value),
+        }
+    }
+
+    fn check(&self) -> PyResult<()> {
+        if self.pid != std::process::id() {
+            return Err(DiskgraphSystemError::new_err(
+                "DiskGraph runtime handle belongs to another process; reopen RuntimeIndex after fork",
+            ));
+        }
+        Ok(())
+    }
+
+    fn get(&self) -> PyResult<&T> {
+        self.check()?;
+        Ok(&self.value)
+    }
+
+    fn get_mut(&mut self) -> PyResult<&mut T> {
+        self.check()?;
+        Ok(&mut self.value)
+    }
+}
+
+impl<T> Drop for ProcessOwned<T> {
+    fn drop(&mut self) {
+        if self.pid == std::process::id() {
+            // SAFETY: the creating process owns this value, and Drop runs once.
+            // An inherited owner deliberately leaves its thread state untouched.
+            unsafe { ManuallyDrop::drop(&mut self.value) };
+        }
+    }
+}
+
 #[pyclass]
 pub struct RuntimeIndex {
-    inner: diskgraph_runtime::RuntimeIndex,
+    inner: ProcessOwned<diskgraph_runtime::RuntimeIndex>,
 }
 #[pyclass]
 pub struct RuntimeBatchIterator {
-    inner: diskgraph_runtime::RuntimeBatchIterator,
+    inner: ProcessOwned<diskgraph_runtime::RuntimeBatchIterator>,
 }
 fn map_runtime_err(error: diskgraph_runtime::RuntimeError) -> PyErr {
     use diskgraph_runtime::RuntimeError;
@@ -283,8 +328,10 @@ impl RuntimeIndex {
         num_threads: Option<usize>,
     ) -> PyResult<Self> {
         Ok(Self {
-            inner: diskgraph_runtime::RuntimeIndex::new(parent_root, tt_id, rnd_seed, num_threads)
-                .map_err(map_runtime_err)?,
+            inner: ProcessOwned::new(
+                diskgraph_runtime::RuntimeIndex::new(parent_root, tt_id, rnd_seed, num_threads)
+                    .map_err(map_runtime_err)?,
+            ),
         })
     }
 
@@ -355,39 +402,41 @@ impl RuntimeIndex {
         projections: Option<std::collections::HashMap<String, Vec<String>>>,
     ) -> PyResult<RuntimeBatchIterator> {
         Ok(RuntimeBatchIterator {
-            inner: self
-                .inner
-                .iter(
-                    stage_table,
-                    sampling_plan_json,
-                    num_workers,
-                    worker_id,
-                    shuffle,
-                    rnd_seed,
-                    epoch,
-                    batch_size,
-                    drop_last,
-                    fused,
-                    swap_edge_direction,
-                    neg_rhs_node_type,
-                    neg_amount_m,
-                    neg_rnd_seed,
-                    replace,
-                    disjoint,
-                    adaptive,
-                    entity_node_type,
-                    target_node_type,
-                    rhs_seed_node_type,
-                    rhs_seed_time,
-                    group_by_timestamp,
-                    weighted_seed_sampling_json,
-                    selected_stage_node_ids,
-                    use_seed_timestamps,
-                    pseudo_seed_time,
-                    disable_pseudo_time,
-                    projections,
-                )
-                .map_err(map_runtime_err)?,
+            inner: ProcessOwned::new(
+                self.inner
+                    .get()?
+                    .iter(
+                        stage_table,
+                        sampling_plan_json,
+                        num_workers,
+                        worker_id,
+                        shuffle,
+                        rnd_seed,
+                        epoch,
+                        batch_size,
+                        drop_last,
+                        fused,
+                        swap_edge_direction,
+                        neg_rhs_node_type,
+                        neg_amount_m,
+                        neg_rnd_seed,
+                        replace,
+                        disjoint,
+                        adaptive,
+                        entity_node_type,
+                        target_node_type,
+                        rhs_seed_node_type,
+                        rhs_seed_time,
+                        group_by_timestamp,
+                        weighted_seed_sampling_json,
+                        selected_stage_node_ids,
+                        use_seed_timestamps,
+                        pseudo_seed_time,
+                        disable_pseudo_time,
+                        projections,
+                    )
+                    .map_err(map_runtime_err)?,
+            ),
         })
     }
 }
@@ -467,55 +516,56 @@ impl RuntimeBatchIterator {
         projections: Option<std::collections::HashMap<String, Vec<String>>>,
     ) -> PyResult<Self> {
         Ok(Self {
-            inner: diskgraph_runtime::RuntimeIndex::new(parent_root, tt_id, rnd_seed, num_threads)
-                .map_err(map_runtime_err)?
-                .iter(
-                    stage_table,
-                    sampling_plan_json,
-                    num_workers,
-                    worker_id,
-                    shuffle,
-                    rnd_seed,
-                    epoch,
-                    batch_size,
-                    drop_last,
-                    fused,
-                    swap_edge_direction,
-                    neg_rhs_node_type,
-                    neg_amount_m,
-                    neg_rnd_seed,
-                    replace,
-                    disjoint,
-                    adaptive,
-                    entity_node_type,
-                    target_node_type,
-                    rhs_seed_node_type,
-                    rhs_seed_time,
-                    group_by_timestamp,
-                    weighted_seed_sampling_json,
-                    selected_stage_node_ids,
-                    use_seed_timestamps,
-                    pseudo_seed_time,
-                    disable_pseudo_time,
-                    projections,
-                )
-                .map_err(map_runtime_err)?,
+            inner: ProcessOwned::new(
+                diskgraph_runtime::RuntimeIndex::new(parent_root, tt_id, rnd_seed, num_threads)
+                    .map_err(map_runtime_err)?
+                    .iter(
+                        stage_table,
+                        sampling_plan_json,
+                        num_workers,
+                        worker_id,
+                        shuffle,
+                        rnd_seed,
+                        epoch,
+                        batch_size,
+                        drop_last,
+                        fused,
+                        swap_edge_direction,
+                        neg_rhs_node_type,
+                        neg_amount_m,
+                        neg_rnd_seed,
+                        replace,
+                        disjoint,
+                        adaptive,
+                        entity_node_type,
+                        target_node_type,
+                        rhs_seed_node_type,
+                        rhs_seed_time,
+                        group_by_timestamp,
+                        weighted_seed_sampling_json,
+                        selected_stage_node_ids,
+                        use_seed_timestamps,
+                        pseudo_seed_time,
+                        disable_pseudo_time,
+                        projections,
+                    )
+                    .map_err(map_runtime_err)?,
+            ),
         })
     }
 
-    pub fn num_samples(&self) -> usize {
-        self.inner.num_samples()
+    pub fn num_samples(&self) -> PyResult<usize> {
+        Ok(self.inner.get()?.num_samples())
     }
-    pub fn worker_batch_count(&self) -> usize {
-        self.inner.worker_batch_count()
+    pub fn worker_batch_count(&self) -> PyResult<usize> {
+        Ok(self.inner.get()?.worker_batch_count())
     }
-    pub fn stage_size(&self) -> u64 {
-        self.inner.stage_size()
+    pub fn stage_size(&self) -> PyResult<u64> {
+        Ok(self.inner.get()?.stage_size())
     }
     pub fn next_batch(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        let batch = py
-            .detach(|| self.inner.next_batch())
-            .map_err(map_runtime_err)?;
+        let inner = self.inner.get_mut()?;
+        let batch = py.detach(|| inner.next_batch()).map_err(map_runtime_err)?;
         batch
             .map(|batch| runtime_batch_to_pydict(py, &batch).map(|d| d.into()))
             .transpose()
@@ -531,7 +581,7 @@ impl RuntimeBatchIterator {
     /// Number of batches this worker yields in one epoch. For the grouped path
     /// this is the count of owned global batch indices; for the flat path it is
     /// `ceil(num_samples / batch_size)` (or floor when `drop_last`).
-    fn __len__(&self) -> usize {
+    fn __len__(&self) -> PyResult<usize> {
         self.worker_batch_count()
     }
 }

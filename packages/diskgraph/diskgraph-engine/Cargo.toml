@@ -16,6 +16,8 @@ arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 parquet = { version = "59.3.2", features = ["arrow"] }
 anyhow = { workspace = true }
+jemallocator = { version = "0.5", optional = true }
+libc = "0.2"
 thiserror = { workspace = true }
 half = { workspace = true }
 serde = { workspace = true }
@@ -43,11 +45,19 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 arrow = "59.3.2"
 arrow-select = "59.3.2"
 
+[target.'cfg(unix)'.dependencies]
+pprof = { version = "0.14.1", features = ["prost-codec"] }
+
 [features]
 default = []
 # Build the interactive sampler explorer:
 #   cargo run -p diskgraph-engine --bin sampler_tui --features sampler-tui
 sampler-tui = ["dep:ratatui", "dep:crossterm"]
+
+jemalloc = ["dep:jemallocator"]
+# Diagnostic-only heap/cumulative-allocation call-site profiling. Normal
+# benchmark and production builds keep jemalloc profiling code disabled.
+jemalloc-profiling = ["jemalloc", "jemallocator/profiling"]
 
 [[bin]]
 name = "sampler_tui"

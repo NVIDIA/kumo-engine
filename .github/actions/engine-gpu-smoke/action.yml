@@ -98,6 +98,17 @@ runs:
         PYTHONDONTWRITEBYTECODE: '1'
       run: |
         set -euo pipefail
+        edge_backend="${DG_EDGE_BACKEND-mmap}"
+        case "$edge_backend" in
+          mmap|buffered|direct) ;;
+          *) echo "Unsupported DG_EDGE_BACKEND: $edge_backend" >&2; exit 2 ;;
+        esac
+        export DG_EDGE_BACKEND="$edge_backend"
+        if [[ "$edge_backend" == direct ]]; then
+          export DG_DIRECT_CACHE_GB=1
+        fi
+        printf 'Native edge backend: %s (direct cache GB: %s)\n' \
+          "$DG_EDGE_BACKEND" "${DG_DIRECT_CACHE_GB:-default}"
         for name in ${!PIP_@}; do unset "$name"; done
         export PIP_CONFIG_FILE=/dev/null
         mkdir -p "$RUNNER_TEMP/engine-gpu-smoke"
