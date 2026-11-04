@@ -11,6 +11,16 @@ this combined revision. Qualification of the integration requires fresh
 native and installed-wheel checks, all task/backend CPU and GPU runs, and
 platform build/runtime checks.
 
+The refresh exposed an inherited Windows build failure: snapshot checksums
+imported Unix `FileExt` unconditionally. [PR #198](https://github.com/NVIDIA/kumo-engine/pull/198)
+uses independent per-range seek/read handles while preserving checksum bytes,
+ordering and errors. [PR #197](https://github.com/NVIDIA/kumo-engine/pull/197)
+classifies 42 copied epserde files by exact path, retains upstream attribution,
+and completes the header of one NVIDIA-authored regression test; new owned
+files remain checked. The integrated prerequisite order is #197, #198, #196,
+then #169. These corrections require qualification of the combined revision;
+the earlier results below retain their recorded revision scope.
+
 The maintained [PR #169 change map](https://github.com/NVIDIA/kumo-engine/pull/169#issuecomment-6611981159)
 and PR description record the current revision and its completed CI evidence.
 [PR #196](https://github.com/NVIDIA/kumo-engine/pull/196) is a separate baseline
