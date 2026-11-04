@@ -597,7 +597,7 @@ pub fn snapshot_range_checksums(
     range_bytes: u64,
 ) -> std::result::Result<BTreeMap<String, Vec<u32>>, CorruptionError> {
     use rayon::prelude::*;
-    use std::os::unix::fs::FileExt;
+    use std::io::{Read, Seek, SeekFrom};
 
     const CHUNK: u64 = 1 << 20;
     if range_bytes == 0 {
@@ -631,15 +631,18 @@ pub fn snapshot_range_checksums(
                 path: path.clone(),
                 detail: e.to_string(),
             };
-            let file = std::fs::File::open(&path).map_err(io)?;
+            let mut file = std::fs::File::open(&path).map_err(io)?;
             let start = range * range_bytes;
             let end = entry.size_bytes.min(start + range_bytes);
             let mut hasher = crc32fast::Hasher::new();
             let mut buffer = vec![0u8; CHUNK.min(end - start) as usize];
+            if start < end {
+                file.seek(SeekFrom::Start(start)).map_err(io)?;
+            }
             let mut offset = start;
             while offset < end {
                 let length = CHUNK.min(end - offset) as usize;
-                file.read_exact_at(&mut buffer[..length], offset).map_err(io)?;
+                file.read_exact(&mut buffer[..length]).map_err(io)?;
                 hasher.update(&buffer[..length]);
                 offset += length as u64;
             }
@@ -1031,6 +1034,115 @@ mod tests {
         assert!(matches!(
             snapshot_range_checksums(tmp.path(), 16).unwrap_err(),
             CorruptionError::Io { .. }
+        ));
+    }
+
+    fn crc32_reference(bytes: &[u8]) -> u32 {
+        let mut crc = !0u32;
+        for &byte in bytes {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ if crc & 1 == 1 { 0xedb8_8320 } else { 0 };
+            }
+        }
+        !crc
+    }
+
+    #[test]
+    fn checksums_cover_parallel_ranges() {
+        let tmp = tempfile::tempdir().unwrap();
+        let span: usize = (1 << 20) + 37;
+        let first: Vec<u8> = (0..(span * 3 + 51))
+            .map(|i| (i.wrapping_mul(73) ^ (i >> 7) ^ 17) as u8)
+            .collect();
+        let second: Vec<u8> = (0..(span * 2 + 173))
+            .map(|i| (i.wrapping_mul(19) ^ (i >> 5) ^ 211) as u8)
+            .collect();
+        write_marker_files(
+            tmp.path(),
+            &[("z.bin", &first), ("a.bin", &second), ("empty", b"")],
+        );
+        let manifest = serde_json::to_vec(&Manifest {
+            schema_version: MANIFEST_SCHEMA_VERSION,
+            files: vec![
+                ManifestEntry {
+                    rel_path: "z.bin".into(),
+                    size_bytes: first.len() as u64,
+                },
+                ManifestEntry {
+                    rel_path: "empty".into(),
+                    size_bytes: 0,
+                },
+                ManifestEntry {
+                    rel_path: "a.bin".into(),
+                    size_bytes: second.len() as u64,
+                },
+            ],
+        })
+        .unwrap();
+        std::fs::write(tmp.path().join(MANIFEST_FILENAME), &manifest).unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        let actual = pool
+            .install(|| snapshot_range_checksums(tmp.path(), span as u64))
+            .unwrap();
+        assert_eq!(actual.len(), 4);
+        for (name, bytes) in [
+            ("z.bin", first.as_slice()),
+            ("a.bin", second.as_slice()),
+            (MANIFEST_FILENAME, manifest.as_slice()),
+        ] {
+            assert_eq!(
+                actual[name],
+                bytes.chunks(span).map(crc32_reference).collect::<Vec<_>>(),
+                "checksum order differs for {name}"
+            );
+        }
+        assert_eq!(actual["empty"], vec![0]);
+    }
+
+    #[test]
+    fn checksums_reject_invalid_inputs() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            snapshot_range_checksums(tmp.path(), 0).unwrap_err(),
+            CorruptionError::Io { path, detail }
+                if path == tmp.path() && detail == "range_bytes must be positive"
+        ));
+        assert!(matches!(
+            snapshot_range_checksums(tmp.path(), 16).unwrap_err(),
+            CorruptionError::MissingManifest(path)
+                if path == tmp.path().join(MANIFEST_FILENAME)
+        ));
+        write_manifest(
+            tmp.path(),
+            vec![ManifestEntry {
+                rel_path: "missing.bin".into(),
+                size_bytes: 0,
+            }],
+        );
+        assert!(matches!(
+            snapshot_range_checksums(tmp.path(), 16).unwrap_err(),
+            CorruptionError::Io { path, .. } if path == tmp.path().join("missing.bin")
+        ));
+    }
+
+    #[test]
+    fn checksums_reject_short_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_marker_files(tmp.path(), &[("short.bin", b"short")]);
+        write_manifest(
+            tmp.path(),
+            vec![ManifestEntry {
+                rel_path: "short.bin".into(),
+                size_bytes: (1 << 20) + 91,
+            }],
+        );
+        assert!(matches!(
+            snapshot_range_checksums(tmp.path(), (1 << 20) + 37).unwrap_err(),
+            CorruptionError::Io { path, .. } if path == tmp.path().join("short.bin")
         ));
     }
 }
