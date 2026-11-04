@@ -11,8 +11,9 @@ import hashlib
 import json
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "third_party" / "artifact-manifest.json"
@@ -20,7 +21,7 @@ TARGETS = (
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
 )
-ARTIFACTS = (
+ARTIFACTS: tuple[dict[str, Any], ...] = (
     {
         "id": "diskgraph-extension",
         "label": "diskgraph._c.abi3.so",
