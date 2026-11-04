@@ -176,10 +176,18 @@ def test_repository_generated_and_vendored_policy_is_applied() -> None:
     for path in (
             "helm/kumo-temporal/charts/temporal/templates/server-service.yaml",
             "packages/diskgraph/diskgraph-ptrhash/src/lib.rs",
+            "packages/diskgraph/third_party/epserde/src/lib.rs",
     ):
         exclusion = check_license_headers.matching_exclusion(path, POLICY)
         assert exclusion is not None
         assert exclusion["kind"] == "vendored"
+    for path in (
+            "packages/diskgraph/third_party/epserde/src/utils/alignment.rs",
+            "packages/diskgraph/third_party/epserde/tests/test_review_regressions.rs",
+    ):
+        assert check_license_headers.matching_exclusion(path, POLICY) is None
+        text = (REPOSITORY_ROOT / path).read_text(encoding="utf-8")
+        assert check_license_headers.validate_text(path, text, POLICY) is None
 
 
 def test_exclusions_are_exact_and_self_cleaning(tmp_path: Path) -> None:
@@ -242,6 +250,56 @@ def test_exclusions_are_exact_and_self_cleaning(tmp_path: Path) -> None:
     errors, _, _ = check_license_headers.check_paths(tmp_path, policy, [])
     assert errors == [
         "license-header exclusion is stale or unnecessary: generated/**"
+    ]
+
+
+def test_exclusion_exceptions_are_validated_and_self_cleaning(
+        tmp_path: Path) -> None:
+    policy = deepcopy(POLICY)
+    policy["license_scopes"] = []
+    policy["derived_sources"] = []
+    policy["exclusions"] = [{
+        "pattern":
+        "vendored/**",
+        "except": ["vendored/ours.py"],
+        "kind":
+        "vendored",
+        "license":
+        "MIT",
+        "reason":
+        "Vendored fixture with a first-party file.",
+    }]
+    vendored = tmp_path / "vendored"
+    vendored.mkdir()
+    (vendored / "upstream.py").write_text("print('upstream')\n",
+                                          encoding="utf-8")
+    (vendored / "ours.py").write_text(HASH_HEADER + "print('ours')\n",
+                                      encoding="utf-8")
+    paths = ["vendored/upstream.py", "vendored/ours.py"]
+    errors, scanned, excluded = check_license_headers.check_paths(
+        tmp_path, policy, paths)
+    assert errors == []
+    assert scanned == 1
+    assert [path for path, _ in excluded] == ["vendored/upstream.py"]
+
+    (vendored / "ours.py").write_text("print('ours')\n", encoding="utf-8")
+    errors, _, _ = check_license_headers.check_paths(tmp_path, policy, paths)
+    assert errors == [
+        "vendored/ours.py: missing a valid Apache-2.0 header at the required file start"
+    ]
+
+    errors, _, _ = check_license_headers.check_paths(tmp_path, policy,
+                                                     ["vendored/upstream.py"])
+    assert errors == [
+        "license-header exclusion exception is stale or not a candidate: vendored/ours.py"
+    ]
+
+    (vendored / "notes.txt").write_text("not a candidate\n", encoding="utf-8")
+    policy["exclusions"][0]["except"] = ["vendored/notes.txt"]
+    errors, _, _ = check_license_headers.check_paths(
+        tmp_path, policy, ["vendored/upstream.py", "vendored/notes.txt"])
+    assert errors == [
+        "license-header exclusion exception is stale or not a candidate: vendored/notes.txt"
     ]
 
 

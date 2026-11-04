@@ -47,6 +47,7 @@ def matching_exclusions(path: str, policy: dict[str,
     return [
         exclusion for exclusion in policy["exclusions"]
         if fnmatch.fnmatchcase(path, exclusion["pattern"])
+        and path not in exclusion.get("except", [])
     ]
 
 
@@ -327,6 +328,7 @@ def check_paths(
     used_exclusions: set[int] = set()
     encountered_derived_paths: set[str] = set()
     used_license_scopes: set[int] = set()
+    candidate_paths: set[str] = set()
     for relative_path in paths:
         absolute_path = root / relative_path
         if not absolute_path.is_file():
@@ -336,6 +338,7 @@ def check_paths(
         except UnicodeDecodeError:
             candidate_styles = styles_for(relative_path, "", policy)
             if candidate_styles:
+                candidate_paths.add(relative_path)
                 error = "candidate file is not valid UTF-8"
                 exclusions = matching_exclusions(relative_path, policy)
                 used_exclusions.update(map(id, exclusions))
@@ -354,6 +357,7 @@ def check_paths(
             continue
         if not styles_for(relative_path, text, policy):
             continue
+        candidate_paths.add(relative_path)
         license_scopes = matching_license_scopes(relative_path, policy)
         used_license_scopes.update(map(id, license_scopes))
         derived_sources = matching_derived_sources(relative_path, policy)
@@ -407,6 +411,16 @@ def check_paths(
             errors.append(
                 f"license-header exclusion is stale or unnecessary: {exclusion['pattern']}"
             )
+        for path in exclusion.get("except", []):
+            if (path not in candidate_paths
+                    or not fnmatch.fnmatchcase(path, exclusion["pattern"])):
+                errors.append(
+                    f"license-header exclusion exception is stale or not a candidate: {path}"
+                )
+            elif matching_exclusions(path, policy):
+                errors.append(
+                    f"license-header exclusion exception is matched by another exclusion: {path}"
+                )
     for source in policy.get("derived_sources", []):
         for path in source["paths"]:
             if path not in encountered_derived_paths:

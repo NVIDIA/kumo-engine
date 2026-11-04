@@ -215,6 +215,16 @@
       "kind": "vendored",
       "license": "MIT",
       "reason": "Vendored upstream PtrHash sources; preserve the upstream files and license."
+    },
+    {
+      "pattern": "packages/diskgraph/third_party/epserde/**",
+      "except": [
+        "packages/diskgraph/third_party/epserde/src/utils/alignment.rs",
+        "packages/diskgraph/third_party/epserde/tests/test_review_regressions.rs"
+      ],
+      "kind": "vendored",
+      "license": "Apache-2.0 AND (Apache-2.0 OR LGPL-2.1-or-later)",
+      "reason": "Locally patched epserde 0.8.0 sources; preserve upstream headers and license. Listed exceptions are NVIDIA-authored and carry the repository header."
     }
   ]
 }
