@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 from kumo_core.train import output
 from kumo_core.train.output import EvalFrames, EvalOutput
 from kumo_core.types import TaskType
@@ -100,13 +101,18 @@ def _save_peak(tmp_path: pathlib.Path, num_chunks: int) -> int:
     frames = EvalFrames()
     for _ in range(num_chunks):
         frames.append(chunk)
+    default_pool = pa.default_memory_pool()
+    pool = pa.proxy_memory_pool(default_pool)
+    pa.set_memory_pool(pool)
     tracemalloc.start()
-    output = EvalOutput({}, frames=frames)
-    output.save(str(tmp_path), TrainingStage.TEST)
-    output.save_df(str(tmp_path), TrainingStage.TEST)
-    peak = tracemalloc.get_traced_memory()[1]
-    tracemalloc.stop()
-    return peak
+    try:
+        out = EvalOutput({}, frames=frames)
+        out.save(str(tmp_path), TrainingStage.TEST)
+        out.save_df(str(tmp_path), TrainingStage.TEST)
+        return tracemalloc.get_traced_memory()[1] + pool.max_memory()
+    finally:
+        tracemalloc.stop()
+        pa.set_memory_pool(default_pool)
 
 
 def test_save_memory_does_not_grow_with_rows(tmp_path: pathlib.Path,
