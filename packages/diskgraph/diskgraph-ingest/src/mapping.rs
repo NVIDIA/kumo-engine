@@ -207,18 +207,20 @@ impl PkHashShard {
         }
         let entry_len = 4;
         let lookup_fn = lookup_id_only;
+        // File-backed mmap preserves the exact length; load_mmap zero-pads
+        // its allocation and can accept truncated hash payloads.
         // SAFETY: hash files are immutable artifacts produced by our typed
         // PtrHash serializer; their mappings outlive all borrowed views.
         let mphf = unsafe {
             match key_type {
                 KeyType::Int64 => {
                     let mphf: MphfInt =
-                        DefaultPtrHash::<PkPtrHash, u64>::load_mmap(hash_path, EpFlags::SEQUENTIAL)
+                        DefaultPtrHash::<PkPtrHash, u64>::mmap(hash_path, EpFlags::SEQUENTIAL)
                             .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                     PkHashMphf::Int(mphf)
                 }
                 KeyType::VarBytes => {
-                    let mphf: MphfBytes = DefaultPtrHash::<PkPtrHash, Vec<u8>>::load_mmap(
+                    let mphf: MphfBytes = DefaultPtrHash::<PkPtrHash, Vec<u8>>::mmap(
                         hash_path,
                         EpFlags::SEQUENTIAL,
                     )
@@ -226,7 +228,7 @@ impl PkHashShard {
                     PkHashMphf::Bytes(mphf)
                 }
                 KeyType::Uuid => {
-                    let mphf: MphfUuid = DefaultPtrHash::<PkPtrHash, [u8; 16]>::load_mmap(
+                    let mphf: MphfUuid = DefaultPtrHash::<PkPtrHash, [u8; 16]>::mmap(
                         hash_path,
                         EpFlags::SEQUENTIAL,
                     )
@@ -234,7 +236,7 @@ impl PkHashShard {
                     PkHashMphf::Uuid(mphf)
                 }
                 KeyType::Uuid256 => {
-                    let mphf: MphfUuid256 = DefaultPtrHash::<PkPtrHash, [u8; 32]>::load_mmap(
+                    let mphf: MphfUuid256 = DefaultPtrHash::<PkPtrHash, [u8; 32]>::mmap(
                         hash_path,
                         EpFlags::SEQUENTIAL,
                     )
@@ -242,7 +244,7 @@ impl PkHashShard {
                     PkHashMphf::Uuid256(mphf)
                 }
                 KeyType::Ip => {
-                    let mphf: MphfIp = DefaultPtrHash::<PkPtrHash, [u8; 16]>::load_mmap(
+                    let mphf: MphfIp = DefaultPtrHash::<PkPtrHash, [u8; 16]>::mmap(
                         hash_path,
                         EpFlags::SEQUENTIAL,
                     )

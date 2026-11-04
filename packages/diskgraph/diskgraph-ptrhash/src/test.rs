@@ -338,7 +338,7 @@ fn serialized_slots_round_trip_all_key_types() {
             // SAFETY: this test writes the typed hash and keeps the file
             // unchanged for the lifetime of the mapping.
             let mapped = unsafe {
-                DefaultPtrHash::<hash::PkHash, _>::load_mmap(
+                DefaultPtrHash::<hash::PkHash, _>::mmap(
                     &path, epserde::prelude::Flags::empty(),
                 ).unwrap()
             };

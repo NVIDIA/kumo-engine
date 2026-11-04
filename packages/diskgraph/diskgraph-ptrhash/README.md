@@ -39,6 +39,13 @@ Epserde 0.13.2 uses file format 2.0 with SHA-256 type and alignment hashes.
 The upgrade and removal of unused `MemSize` derives eliminate `maligned`
 without a local dependency patch.
 
+## Loading hash files
+
+Use epserde's file-backed `mmap()` for immutable hash files. The `load_mmap()`
+and `load_mem()` helpers round their buffers up and zero-fill the extra bytes,
+which can hide truncation of the pilots array. File-backed mapping preserves
+the actual file length, so incomplete payloads fail deserialization.
+
 ## Testing Notes
 
 Tests in `src/test.rs` were adapted to the scratch-based API, and several heavy tests are marked `#[ignore]` by default.

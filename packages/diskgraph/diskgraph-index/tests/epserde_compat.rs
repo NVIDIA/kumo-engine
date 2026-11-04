@@ -22,7 +22,7 @@ macro_rules! legacy_index {
             // must reject their version before interpreting the payload.
             let legacy = unsafe {
                 [
-                    Index::load_mmap(&path, Flags::empty()).err(),
+                    Index::mmap(&path, Flags::empty()).err(),
                     Index::load_mem(&path).err(),
                     Index::load_full(&path).err(),
                 ]
@@ -51,7 +51,7 @@ macro_rules! legacy_index {
             let (mapped, memory, full) = unsafe {
                 index.store(&output)?;
                 (
-                    Index::load_mmap(&output, Flags::empty())?,
+                    Index::mmap(&output, Flags::empty())?,
                     Index::load_mem(&output)?,
                     Index::load_full(&output)?,
                 )
@@ -61,6 +61,16 @@ macro_rules! legacy_index {
                 assert_eq!(mapped.uncase().index_no_remap(key), expected);
                 assert_eq!(memory.uncase().index_no_remap(key), expected);
                 assert_eq!(full.index_no_remap(key), expected);
+            }
+            let bytes = std::fs::read(&output)?;
+            for missing in 1..=32.min(bytes.len()) {
+                let truncated =
+                    output_dir.join(format!("{}-truncated-{missing}.bin", stringify!($name),));
+                std::fs::write(&truncated, &bytes[..bytes.len() - missing])?;
+                // SAFETY: the payload was serialized from valid fields and
+                // only shortened. Deserialization must reject missing bytes.
+                let result = unsafe { Index::mmap(&truncated, Flags::empty()) };
+                assert!(result.is_err(), "accepted {missing} missing bytes");
             }
             Ok(())
         }
