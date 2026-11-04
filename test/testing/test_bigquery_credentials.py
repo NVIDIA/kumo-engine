@@ -141,3 +141,90 @@ def test_connector_loads_external_account_and_impersonates(
         'provider': 'bigquery',
         'credential': target_credential,
     }
+
+
+@pytest.mark.parametrize('asynchronous', [False, True])
+@pytest.mark.parametrize('service_account_key', [
+    None,
+    testing_bigquery.FAIL_TABLE_PERMISSION_BIGQUERY_KEY,
+    testing_bigquery.FAIL_PROJECT_PERMISSION_BIGQUERY_KEY,
+])
+def test_disabled_bigquery_skips(
+    monkeypatch, tmp_path, asynchronous, service_account_key,
+):
+    from io_utils import fsutil
+
+    credentials_path = str(tmp_path / 'adc.json')
+    fsutil.write_text(credentials_path, '{"type": "external_account"}')
+    monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS', credentials_path)
+    monkeypatch.setenv('KUMO_RUN_GCP_TESTS', '0')
+    monkeypatch.delenv(
+        testing_bigquery.ENV_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT, raising=False)
+    monkeypatch.delenv(
+        testing_bigquery.ENV_BIGQUERY_NO_JOB_SERVICE_ACCOUNT, raising=False)
+    setup = mock.Mock(wraps=testing_bigquery.setup_bigquery_credentials)
+    monkeypatch.setattr(testing_bigquery, 'setup_bigquery_credentials', setup)
+    body = mock.Mock()
+
+    async def async_body():
+        body()
+
+    decorated = testing_bigquery.withBigQueryCredentials(
+        async_body if asynchronous else body,
+        service_account_key=service_account_key,
+    )
+    with pytest.raises(pytest.skip.Exception, match='KUMO_RUN_GCP_TESTS=0'):
+        if asynchronous:
+            import asyncio
+
+            asyncio.run(decorated())
+        else:
+            decorated()
+    setup.assert_not_called()
+    body.assert_not_called()
+
+
+@pytest.mark.parametrize('run_gcp', [None, '1'])
+@pytest.mark.parametrize('service_account_key, target_env', [
+    (testing_bigquery.FAIL_TABLE_PERMISSION_BIGQUERY_KEY,
+     testing_bigquery.ENV_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT),
+    (testing_bigquery.FAIL_PROJECT_PERMISSION_BIGQUERY_KEY,
+     testing_bigquery.ENV_BIGQUERY_NO_JOB_SERVICE_ACCOUNT),
+])
+def test_enabled_bigquery_requires_target(
+    monkeypatch, tmp_path, run_gcp, service_account_key, target_env,
+):
+    from io_utils import fsutil
+
+    credentials_path = str(tmp_path / 'adc.json')
+    fsutil.write_text(credentials_path, '{"type": "external_account"}')
+    monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS', credentials_path)
+    monkeypatch.delenv(target_env, raising=False)
+    if run_gcp is None:
+        monkeypatch.delenv('KUMO_RUN_GCP_TESTS', raising=False)
+    else:
+        monkeypatch.setenv('KUMO_RUN_GCP_TESTS', run_gcp)
+    body = mock.Mock()
+    decorated = testing_bigquery.withBigQueryCredentials(
+        body, service_account_key=service_account_key)
+
+    with pytest.raises(RuntimeError, match=target_env):
+        decorated()
+    body.assert_not_called()
+
+
+@pytest.mark.parametrize('run_gcp', [None, '1'])
+def test_enabled_bigquery_runs(monkeypatch, run_gcp):
+    if run_gcp is None:
+        monkeypatch.delenv('KUMO_RUN_GCP_TESTS', raising=False)
+    else:
+        monkeypatch.setenv('KUMO_RUN_GCP_TESTS', run_gcp)
+    monkeypatch.setenv(bigquery_connector.ENV_GOOGLE_CREDENTIALS_JSON,
+                       '/unused/mock-adc.json')
+    setup = mock.Mock()
+    monkeypatch.setattr(testing_bigquery, 'setup_bigquery_credentials', setup)
+    body = mock.Mock(return_value='ran')
+
+    assert testing_bigquery.withBigQueryCredentials(body)() == 'ran'
+    setup.assert_called_once_with(None)
+    body.assert_called_once_with()
