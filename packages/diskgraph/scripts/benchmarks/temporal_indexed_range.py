@@ -98,6 +98,9 @@ def worker(args):
                 native.append(result["timings_ns"]["total"])
                 phases.append(result["timings_ns"])
             output["cases"][name] = {"sha256": expected, "stats": result["stats"],
+                "selectivity": eligible / degree,
+                "spec": {"degree": degree, "anchors": 8, "eligible_per_anchor": eligible,
+                         "limit": limit, "unit": shape["unit"]},
                 "call_ns": calls, "native_ns": native, "phases_ns": phases,
                 "median_call_ns": statistics.median(calls),
                 "median_native_ns": statistics.median(native)}
