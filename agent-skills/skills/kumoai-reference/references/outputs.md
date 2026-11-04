@@ -23,7 +23,7 @@ self-links. Preserve the actual schema and task rather than assuming one row per
 
 Inputs: `output_connector` scoped to the confirmed destination database/schema, exact bare
 `OUTPUT_TABLE`, explicit `WRITE_MODE`, and task-specific `PREDICT_OPTIONS`. WriteMode has
-APPEND and OVERWRITE. Select the mode deliberately: File export OVERWRITE replaces existing data while retaining the table and grants when its schema matches;
+APPEND and OVERWRITE. Select the mode deliberately: File export OVERWRITE replaces existing data while retaining the table and grants when its schema matches, and fails on Snowflake when it does not (below);
 APPEND can duplicate outputs on retry and never changes the existing table's schema (below). Check destination
 existence and access first.
 
@@ -57,10 +57,22 @@ read its columns before generating the artifact and check every column the run e
 `PREDICTION_ID`, `BUNDLE_ID`, `JOB_TIMESTAMP`, and `ANCHOR_TIMESTAMP` when the query has a time
 window. What a missing one does depends on the destination. Snowflake loads by column name and
 drops a column the table lacks, silently: the rows land without it, and a row-count check still
-passes. Databricks fails the write, after scoring. Either way, say so at the gate and let the user
-pick: add the missing columns (`ALTER TABLE … ADD COLUMN`; the IDs are strings, `VARCHAR` on
-Snowflake and `STRING` on Databricks, the timestamps `TIMESTAMP_NTZ`; earlier rows hold nulls), a
-new table the first run creates, or OVERWRITE. Adding columns is a write, confirmed like any other.
+passes. Databricks and BigQuery fail the write, after scoring. Either way, say so at the gate and
+let the user pick: add the missing columns (`ALTER TABLE … ADD COLUMN`; earlier rows hold nulls),
+a new table the first run creates, or OVERWRITE. Adding columns is a write, confirmed like any
+other. Column types:
+
+| Destination | `PREDICTION_ID`, `BUNDLE_ID` | `JOB_TIMESTAMP`, `ANCHOR_TIMESTAMP` |
+|---|---|---|
+| Snowflake | `VARCHAR` | `TIMESTAMP_NTZ` |
+| Databricks | `STRING` | `TIMESTAMP_NTZ` |
+| BigQuery | `STRING` | `TIMESTAMP` |
+
+OVERWRITE onto an existing Snowflake table keeps the table and its grants, so the run's columns
+must be exactly the table's: an OVERWRITE run writes no run columns, so a table that earlier
+APPEND runs gave them fails, after scoring. Offer OVERWRITE there only when the columns match;
+otherwise offer a new table, or dropping the existing one first (a write, confirmed like any
+other). Databricks OVERWRITE replaces the table, columns included.
 
 The exact table name is used; no suffix is appended and its case is kept. Read back, with the
 session taken in the first cell (`kumoai-reference/references/kumo_finetuning_sdk.md` §3.3), using

@@ -106,8 +106,10 @@ not the ambient credential: build the Google credentials from the inputs the ide
 as the SDK does (`kumo_bigquery.auth`), and pass `bq_location(<dataset>, BQ_CREDENTIALS)`.
 
 ```python
-# BigQueryIdentity(service_account_key=SERVICE_ACCOUNT_KEY)
+# BigQueryIdentity(service_account_key=SERVICE_ACCOUNT_KEY), the key read as Credentials says
+import json, os
 from google.oauth2 import service_account
+SERVICE_ACCOUNT_KEY = json.loads(os.environ[BQ_KEY_VAR])
 BQ_CREDENTIALS = service_account.Credentials.from_service_account_info(SERVICE_ACCOUNT_KEY)
 
 # BigQueryIdentity(workload_service_account_email=SERVICE_ACCOUNT_EMAIL)
@@ -315,7 +317,8 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   from google.cloud import bigquery
 
   time_col = f', CAST({ENTITY_TIME} AS TIMESTAMP) AS `TIMESTAMP`' if ENTITY_TIME else ''
-  bigquery.Client(project=PROJECT_ID).query(
+  # With an explicit identity, credentials=BQ_CREDENTIALS here and in bq_location (§2).
+  bigquery.Client(project=PROJECT_ID, credentials=None).query(
       f'CREATE OR REPLACE TABLE `{PROJECT_ID}.{POP_DATASET}.{POP_TABLE}` AS '
       f'SELECT {ENTITY_KEY} AS ENTITY1{time_col} '
       f'FROM `{PROJECT_ID}.{DATASET_ID}.{ENTITY_TABLE}`').result()   # waits; raises on failure
