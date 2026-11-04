@@ -9,11 +9,20 @@ Engine's profiler with ingest's existing `pprof 0.14.1` removes that affected
 version while preserving Unix gating and protobuf output. This correction
 requires fresh candidate qualification; earlier runs do not qualify it.
 
-The candidate integrates Engine `main` at
-`502adef65ab0011545eeeb242610412c6ed8e7e3`. This adds Arrow/Parquet 59.3.2,
-PyO3 0.29.3, the saved-index-compatible epserde security backport and changes
-to training, prediction and model persistence. The November 3 results below
-qualify their recorded `88fd6042` or `d4088a12` revisions; they do not qualify
+The candidate integrates Engine `main` through
+`48a378dac42555748931167dae03bc7a93b6add0`. The earlier `502adef6`
+integration added Arrow/Parquet 59.3.2, PyO3 0.29.3 and changes to training,
+prediction and model persistence. Main's subsequent removal of PtrHash
+remapping and copied epserde upgrades serialization to epserde 0.13.2,
+format 2.0. **Existing indexes must be rebuilt from source data; resuming
+ingestion from an old primary-key-map checkpoint is unsupported.** Frozen
+epserde 0.8 fixtures now verify rejection rather than compatibility. This is
+an upstream migration requirement, separate from the I/O backend selection.
+Use freshly ingested candidate indexes for qualification. The obsolete
+copied-source header prerequisite was superseded by that removal.
+
+The November 3 results below qualify their recorded `88fd6042` or `d4088a12`
+revisions; they do not qualify
 this combined revision. Qualification of the integration requires fresh
 native and installed-wheel checks, all task/backend CPU and GPU runs, and
 platform build/runtime checks.
@@ -22,10 +31,10 @@ The refresh exposed an inherited Windows build failure: snapshot checksums
 imported Unix `FileExt` unconditionally. [PR #198](https://github.com/NVIDIA/kumo-engine/pull/198)
 uses independent per-range seek/read handles while preserving checksum bytes,
 ordering and errors. [PR #197](https://github.com/NVIDIA/kumo-engine/pull/197)
-classifies 42 copied epserde files by exact path, retains upstream attribution,
-and completes the header of one NVIDIA-authored regression test; new owned
-files remain checked. The integrated prerequisite order is #197, #198, #196,
-then #169. These corrections require qualification of the combined revision;
+corrected copied epserde header classification before main removed those
+sources; that PR is superseded, and its obsolete policy entries and boundary
+test are removed. The active prerequisite order is #198, #196, then #169.
+These corrections require qualification of the combined revision;
 the earlier results below retain their recorded revision scope.
 
 The maintained [PR #169 change map](https://github.com/NVIDIA/kumo-engine/pull/169#issuecomment-6611981159)

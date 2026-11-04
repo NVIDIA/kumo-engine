@@ -10286,7 +10286,8 @@ impl IngestContext {
             }
         }
         let mut hash_writer = BufWriter::with_capacity(4 * 1024 * 1024, target.sink(&hash_path)?);
-        mphf.serialize(&mut hash_writer)?;
+        // SAFETY: callers pass constructed PtrHash values with valid fields.
+        unsafe { mphf.serialize(&mut hash_writer)? };
         hash_writer.flush()?;
         let hash_sink = hash_writer
             .into_inner()
