@@ -414,6 +414,25 @@ def test_a_dataset_a_concurrent_run_logged_first_is_reused(monkeypatch):
             for item in _fit_run().inputs.dataset_inputs] == ['ents']
 
 
+def test_a_failed_dataset_input_is_not_retried(monkeypatch):
+    from mlflow.exceptions import MlflowException
+
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    calls = []
+
+    def fail(self, *args, **kwargs):
+        calls.append(True)
+        raise MlflowException('Run not found')
+
+    monkeypatch.setattr(mlflow.MlflowClient, 'log_inputs', fail)
+    with pytest.warns(UserWarning):
+        replay(MlflowTracking(log_system_metrics=False), summaries=[
+            Dataset('ents', INPUTS['ents'], {}, {}, 'source table')])
+
+    assert len(calls) == 1
+
+
 def _fit_manifest():
     from kumo.engine._manifest import (
         ModelManifest,

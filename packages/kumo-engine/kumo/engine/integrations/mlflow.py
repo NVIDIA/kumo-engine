@@ -97,6 +97,9 @@ _UC_FORBIDDEN = re.compile(r'[ /\x00-\x1f\x7f]')
 _HINTED: set = set()
 _BATCH_METRICS = 1000
 _SYSTEM_METRICS_FAILURES = 6
+# A concurrent run inserted the same dataset first (SQLite, Postgres, MySQL,
+# SQL Server).
+_DUPLICATE = re.compile(r'(?i)unique constraint|duplicate (entry|key)')
 _COLUMN_TYPES = {'int64': 'long', 'int32': 'integer', 'float64': 'double',
                  'float32': 'float', 'bool': 'boolean', 'date': 'datetime',
                  'time': 'datetime'}
@@ -792,7 +795,9 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
             with self.target.scope():
                 try:
                     self._client.log_inputs(run_id, datasets=datasets)
-                except self._mlflow.exceptions.MlflowException:
+                except self._mlflow.exceptions.MlflowException as e:
+                    if not _DUPLICATE.search(str(e)):
+                        raise
                     self._client.log_inputs(run_id, datasets=datasets)
 
     def _dataset_input(self, summary: Dataset) -> Any:
@@ -1230,10 +1235,14 @@ def _registry_download_uri(client: Any, model_uri: str) -> str:
     the one passed to download_artifacts.
     """
     models = import_provider('mlflow.store.artifact.utils.models', 'mlflow')
+    repository = import_provider('mlflow.store.artifact.models_artifact_repo',
+                                 'mlflow').ModelsArtifactRepository
+    model_uri, path = repository.split_models_uri(model_uri)
     resolved = models.get_model_name_and_version(client, model_uri)
-    if len(resolved) == 1:
-        return client.get_logged_model(resolved[0]).artifact_location
-    return client.get_model_version_download_uri(*resolved)
+    location = (client.get_logged_model(resolved[0]).artifact_location
+                if len(resolved) == 1 else
+                client.get_model_version_download_uri(*resolved))
+    return posixpath.join(location, path) if path else location
 
 
 def _logged_model_name(registered: Optional[str], manifest: Any) -> str:

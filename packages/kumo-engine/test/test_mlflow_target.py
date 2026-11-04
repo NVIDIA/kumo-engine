@@ -361,7 +361,7 @@ def test_a_registry_reference_downloads_from_the_target_registry(
 
     uri = f'sqlite:///{tmp_path / "target.db"}'
     mlflow.set_tracking_uri(uri)
-    client = mlflow.MlflowClient()
+    client = mlflow.MlflowClient(tracking_uri=uri, registry_uri=uri)
     experiment = client.create_experiment(
         'e', artifact_location=str(tmp_path / 'artifacts'))
     model = client.create_logged_model(experiment, name='m')
@@ -378,6 +378,9 @@ def test_a_registry_reference_downloads_from_the_target_registry(
         local = _download(mlflow, resolve(uri), f'models:/{reference}',
                           tmp_path / name)
         assert open(f'{local}/MLmodel').read() == 'kumo'
+    local = _download(mlflow, resolve(uri), 'models:/m@champion/MLmodel',
+                      tmp_path / 'file')
+    assert open(local).read() == 'kumo'
 
 
 @pytest.mark.parametrize('registry',

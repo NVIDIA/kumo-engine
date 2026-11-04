@@ -93,6 +93,7 @@ def test_a_directory_path_with_a_trailing_slash_is_a_directory():
     fs, _ = filesystem({f'{ROOT}/run/a': BODY})
     assert fs.get_file_info(f'{ROOT}/run/').type is FileType.Directory
     assert fs.get_file_info(f'{ROOT}/new/').type is FileType.NotFound
+    assert fs.get_file_info(f'{ROOT}/run/a/').type is FileType.NotFound
 
 
 def test_a_failed_upload_raises_without_the_signed_url():
