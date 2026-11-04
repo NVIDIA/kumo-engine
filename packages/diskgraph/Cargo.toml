@@ -21,11 +21,6 @@ members = [
     "diskgraph-pybind",
 ]
 resolver = "2"
-exclude = ["third_party/epserde"]
-
-[patch.crates-io]
-# Keep the 0.8 index format while removing the unused maligned allocator.
-epserde = { path = "third_party/epserde" }
 
 [workspace.package]
 edition = "2021"

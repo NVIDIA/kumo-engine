@@ -2,13 +2,13 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Read frozen indexes written with the release's unpatched epserde 0.8.0.
+//! Reject frozen epserde 0.8 indexes and round-trip the current format.
 
 mod common;
 
 use epserde::prelude::{Deserialize, Flags, Serialize};
 use ptr_hash::hash::{GxHash128, PkHash};
-use ptr_hash::DefaultPtrHash;
+use ptr_hash::{DefaultPtrHash, PtrHashParams, PtrHashScratch};
 use std::path::Path;
 
 macro_rules! legacy_index {
@@ -18,26 +18,50 @@ macro_rules! legacy_index {
             type Index = DefaultPtrHash<$hasher, $key>;
             let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/epserde-0.8");
             let path = root.join(concat!(stringify!($name), ".bin"));
-            let expected: Vec<usize> = serde_json::from_slice(&std::fs::read(
-                root.join(concat!(stringify!($name), ".json")),
-            )?)?;
-            let keys = $keys;
-            assert_eq!(expected.len(), keys.0.len());
-            let mapped = Index::load_mmap(&path, Flags::empty())?;
-            let memory = Index::load_mem(&path)?;
-            let full = Index::load_full(&path)?;
-            for (key, expected_index) in keys.0.iter().zip(expected) {
-                assert_eq!(mapped.index(key), expected_index, "mmap lookup: {key:?}");
-                assert_eq!(memory.index(key), expected_index, "heap lookup: {key:?}");
-                assert_eq!(full.index(key), expected_index, "full lookup: {key:?}");
+            // SAFETY: these are frozen, valid epserde 0.8 files. All loaders
+            // must reject their version before interpreting the payload.
+            let legacy = unsafe {
+                [
+                    Index::load_mmap(&path, Flags::empty()).err(),
+                    Index::load_mem(&path).err(),
+                    Index::load_full(&path).err(),
+                ]
+            };
+            for error in legacy {
+                let error = error.expect("legacy index must require rebuilding");
+                assert!(matches!(
+                    error.downcast_ref::<epserde::deser::Error>(),
+                    Some(epserde::deser::Error::MajorVersionMismatch(1))
+                ));
             }
-            let output = tempfile::NamedTempFile::new()?;
-            full.store(output.path())?;
-            assert_eq!(
-                std::fs::read(output.path())?,
-                std::fs::read(path)?,
-                "re-saving a legacy index changes its bytes"
-            );
+
+            let keys = $keys;
+            let index = Index::try_new_from_source_with_scratch(
+                &keys,
+                PtrHashParams::default(),
+                &mut PtrHashScratch::new(),
+            )
+            .expect("current index construction failed");
+            let output_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../target/test-artifacts/epserde-compat");
+            std::fs::create_dir_all(&output_dir)?;
+            let output = output_dir.join(concat!(stringify!($name), ".bin"));
+            // SAFETY: the index is constructed from valid keys. Its serialized
+            // file remains immutable for the lifetime of all mapped views.
+            let (mapped, memory, full) = unsafe {
+                index.store(&output)?;
+                (
+                    Index::load_mmap(&output, Flags::empty())?,
+                    Index::load_mem(&output)?,
+                    Index::load_full(&output)?,
+                )
+            };
+            for key in &keys.0 {
+                let expected = index.index_no_remap(key);
+                assert_eq!(mapped.uncase().index_no_remap(key), expected);
+                assert_eq!(memory.uncase().index_no_remap(key), expected);
+                assert_eq!(full.index_no_remap(key), expected);
+            }
             Ok(())
         }
     };
