@@ -355,6 +355,49 @@ def test_registering_a_registered_bundle_reuses_its_version(
                                                  'champion').version) == '2'
 
 
+def test_a_registry_reference_downloads_from_the_target_registry(
+        tracking_uri, tmp_path):
+    from kumo.engine.integrations.mlflow import _download
+
+    uri = f'sqlite:///{tmp_path / "target.db"}'
+    mlflow.set_tracking_uri(uri)
+    client = mlflow.MlflowClient(tracking_uri=uri, registry_uri=uri)
+    experiment = client.create_experiment(
+        'e', artifact_location=str(tmp_path / 'artifacts'))
+    model = client.create_logged_model(experiment, name='m')
+    (tmp_path / 'bundle').mkdir()
+    (tmp_path / 'bundle' / 'MLmodel').write_text('kumo')
+    client.log_model_artifacts(model.model_id, str(tmp_path / 'bundle'))
+    client.create_registered_model('m')
+    client.create_model_version('m', model.model_uri, model_id=model.model_id)
+    client.set_registered_model_alias('m', 'champion', '1')
+    mlflow.set_tracking_uri(tracking_uri)
+
+    for name, reference in (('alias', 'm@champion'), ('version', 'm/1'),
+                            ('latest', 'm/latest'), ('id', model.model_id)):
+        local = _download(mlflow, resolve(uri), f'models:/{reference}',
+                          tmp_path / name)
+        assert open(f'{local}/MLmodel').read() == 'kumo'
+    local = _download(mlflow, resolve(uri), 'models:/m@champion/MLmodel',
+                      tmp_path / 'file')
+    assert open(local).read() == 'kumo'
+
+
+@pytest.mark.parametrize('registry',
+                         ['databricks-uc', 'databricks', 'uc:http://uc:8080'])
+def test_a_databricks_or_unity_catalog_reference_stays_on_mlflow_path(
+        registry, tmp_path):
+    from kumo.engine.integrations.mlflow import _download
+
+    calls = []
+    fake = SimpleNamespace(artifacts=SimpleNamespace(
+        download_artifacts=lambda **kwargs: calls.append(kwargs) or ''))
+    target = target_module.Target('http://tracking:5000', registry)
+    _download(fake, target, 'models:/main.s.m@champion', tmp_path)
+
+    assert calls[0]['artifact_uri'] == 'models:/main.s.m@champion'
+
+
 def test_the_smoke_script_compiles(tmp_path):
     import py_compile
     from pathlib import Path

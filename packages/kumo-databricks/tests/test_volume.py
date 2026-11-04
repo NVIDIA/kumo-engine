@@ -89,6 +89,13 @@ def test_uploads_bound_the_sdk_part_buffers():
     assert volume.objects[f'{ROOT}/export.csv'] == BODY[:1000]
 
 
+def test_a_directory_path_with_a_trailing_slash_is_a_directory():
+    fs, _ = filesystem({f'{ROOT}/run/a': BODY})
+    assert fs.get_file_info(f'{ROOT}/run/').type is FileType.Directory
+    assert fs.get_file_info(f'{ROOT}/new/').type is FileType.NotFound
+    assert fs.get_file_info(f'{ROOT}/run/a/').type is FileType.NotFound
+
+
 def test_a_failed_upload_raises_without_the_signed_url():
     fs, volume = filesystem()
     signed = 'https://bucket.example/part?X-Amz-Signature=secret'

@@ -97,6 +97,9 @@ _UC_FORBIDDEN = re.compile(r'[ /\x00-\x1f\x7f]')
 _HINTED: set = set()
 _BATCH_METRICS = 1000
 _SYSTEM_METRICS_FAILURES = 6
+# A concurrent run inserted the same dataset first (SQLite, Postgres, MySQL,
+# SQL Server).
+_DUPLICATE = re.compile(r'(?i)unique constraint|duplicate (entry|key)')
 _COLUMN_TYPES = {'int64': 'long', 'int32': 'integer', 'float64': 'double',
                  'float32': 'float', 'bool': 'boolean', 'date': 'datetime',
                  'time': 'datetime'}
@@ -790,7 +793,12 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
         datasets = [d for d in map(self._dataset_input, summaries) if d]
         if datasets:
             with self.target.scope():
-                self._client.log_inputs(run_id, datasets=datasets)
+                try:
+                    self._client.log_inputs(run_id, datasets=datasets)
+                except self._mlflow.exceptions.MlflowException as e:
+                    if not _DUPLICATE.search(str(e)):
+                        raise
+                    self._client.log_inputs(run_id, datasets=datasets)
 
     def _dataset_input(self, summary: Dataset) -> Any:
         source = _dataset_source(summary.source)
@@ -1202,9 +1210,39 @@ def _download(mlflow: Any, target: Any, model_uri: str,
             repository = target.artifact_repository(location)
             if repository is not None:
                 return repository.download_artifacts('', str(destination))
+    elif (target.platform == 'mlflow' and model_uri.startswith('models:/')
+          and _plain_registry(target.registry_uri)):
+        model_uri = _registry_download_uri(target.client(), model_uri)
     return mlflow.artifacts.download_artifacts(
         artifact_uri=model_uri, dst_path=str(destination),
         tracking_uri=target.tracking_uri, registry_uri=target.registry_uri)
+
+
+def _plain_registry(registry_uri: Optional[str]) -> bool:
+    r"""Whether MLflow reads models:/ in this registry without a
+    registry-specific artifact repository (Databricks, Unity Catalog)."""
+    uri = import_provider('mlflow.utils.uri', 'mlflow')
+    registry = registry_uri or ''
+    return not (uri.is_databricks_uri(registry)
+                or uri.is_databricks_unity_catalog_uri(registry)
+                or uri.is_oss_unity_catalog_uri(registry))
+
+
+def _registry_download_uri(client: Any, model_uri: str) -> str:
+    r"""MLflow's own models:/ resolution, against the target's registry.
+
+    MLflow resolves models:/ with the process-wide registry URI and ignores
+    the one passed to download_artifacts.
+    """
+    models = import_provider('mlflow.store.artifact.utils.models', 'mlflow')
+    repository = import_provider('mlflow.store.artifact.models_artifact_repo',
+                                 'mlflow').ModelsArtifactRepository
+    model_uri, path = repository.split_models_uri(model_uri)
+    resolved = models.get_model_name_and_version(client, model_uri)
+    location = (client.get_logged_model(resolved[0]).artifact_location
+                if len(resolved) == 1 else
+                client.get_model_version_download_uri(*resolved))
+    return posixpath.join(location, path) if path else location
 
 
 def _logged_model_name(registered: Optional[str], manifest: Any) -> str:
