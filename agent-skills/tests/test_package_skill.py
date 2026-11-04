@@ -323,6 +323,14 @@ def test_archive_is_reproducible(tmp_path: Path) -> None:
     assert [z.read_bytes() for z in first] == [z.read_bytes() for z in second]
 
 
+def test_archive_is_the_same_built_on_windows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A zip entry records the system that wrote it, 0 on Windows unless set.
+    first = package_skill.archive(tmp_path / 'a')
+    monkeypatch.setattr(zipfile.sys, 'platform', 'win32')
+    second = package_skill.archive(tmp_path / 'b')
+    assert [z.read_bytes() for z in first] == [z.read_bytes() for z in second]
+
+
 def test_workspace_requires_https() -> None:
     assert package_skill.Workspace('dbc.example.com', 't').host == 'https://dbc.example.com'
     assert package_skill.Workspace('https://dbc.example.com/', 't').host == 'https://dbc.example.com'

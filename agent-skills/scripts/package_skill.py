@@ -34,7 +34,7 @@ package does not ship are reported, and deleted with `--prune` (only inside
 `kumo-data-science/` directory at its root: unzip it into an agent's skills directory, or upload it
 where an agent takes a skill zip. The release workflow attaches them to each `kumo-engine-v*`
 GitHub release, beside the wheel built from the same commit. Entries are sorted and carry a fixed
-timestamp, so one commit always yields the same bytes.
+timestamp and creating system, so one commit always yields the same bytes, on any OS.
 
 Every build is checked: each markdown link must resolve relative to the file that holds it, and
 each backticked path naming a package directory must resolve relative to the package root. A
@@ -250,6 +250,8 @@ def archive(out: Path) -> list[Path]:
                     info = zipfile.ZipInfo(p.relative_to(root).as_posix(), ZIP_EPOCH)
                     info.compress_type = zipfile.ZIP_DEFLATED
                     info.external_attr = 0o644 << 16
+                    # Each entry records the system that wrote it, 0 on Windows: fix it to Unix.
+                    info.create_system = 3
                     zf.writestr(info, p.read_bytes())
             zips.append(dest)
     return zips
