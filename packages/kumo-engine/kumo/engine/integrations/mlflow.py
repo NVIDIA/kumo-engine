@@ -1205,7 +1205,9 @@ def _download(mlflow: Any, target: Any, model_uri: str,
             repository = target.artifact_repository(location)
             if repository is not None:
                 return repository.download_artifacts('', str(destination))
-    elif target.platform == 'mlflow' and model_uri.startswith('models:/'):
+    elif (target.platform == 'mlflow' and model_uri.startswith('models:/')
+          and not import_provider('mlflow.utils.uri', 'mlflow')
+          .is_databricks_unity_catalog_uri(target.registry_uri)):
         model_uri = _registry_download_uri(target.client(), model_uri)
     return mlflow.artifacts.download_artifacts(
         artifact_uri=model_uri, dst_path=str(destination),

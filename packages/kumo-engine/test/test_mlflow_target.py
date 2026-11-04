@@ -380,6 +380,18 @@ def test_a_registry_reference_downloads_from_the_target_registry(
         assert open(f'{local}/MLmodel').read() == 'kumo'
 
 
+def test_a_unity_catalog_reference_stays_on_mlflow_registry_path(tmp_path):
+    from kumo.engine.integrations.mlflow import _download
+
+    calls = []
+    fake = SimpleNamespace(artifacts=SimpleNamespace(
+        download_artifacts=lambda **kwargs: calls.append(kwargs) or ''))
+    target = target_module.Target('http://tracking:5000', 'databricks-uc')
+    _download(fake, target, 'models:/main.s.m@champion', tmp_path)
+
+    assert calls[0]['artifact_uri'] == 'models:/main.s.m@champion'
+
+
 def test_the_smoke_script_compiles(tmp_path):
     import py_compile
     from pathlib import Path
