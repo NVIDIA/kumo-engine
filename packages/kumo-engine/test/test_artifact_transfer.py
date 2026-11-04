@@ -8,13 +8,16 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from kumo.engine._snapshot_io import upload_files
-from kumo.engine.connector import FileConnector
 from kumo_core.diskgraph.sampling_artifacts import ArtifactFile
 from pyarrow.fs import LocalFileSystem
 
+from kumo.engine._snapshot_io import upload_files
+from kumo.engine.connector import FileConnector
 
-def test_callback_runs_after_close_without_final_barrier(tmp_path: Path) -> None:
+
+def test_callback_runs_after_close_without_final_barrier(
+    tmp_path: Path,
+) -> None:
     """Callbacks can read each completed object before upload_files returns."""
     source = tmp_path / "source"
     source.mkdir()
@@ -28,7 +31,11 @@ def test_callback_runs_after_close_without_final_barrier(tmp_path: Path) -> None
         seen.append(entry)
 
     result = upload_files(
-        FileConnector(root_dir=str(tmp_path)), source, "remote", {"graph": 4}, completed
+        FileConnector(root_dir=str(tmp_path)),
+        source,
+        "remote",
+        {"graph": 4},
+        completed,
     )
 
     assert tuple(seen) == result
@@ -115,7 +122,11 @@ def test_empty_inventory_needs_no_storage_client(
     monkeypatch.setattr("kumo.engine._snapshot_io._location", location)
     assert (
         upload_files(
-            FileConnector(root_dir=str(tmp_path)), tmp_path, "remote", {}, callback
+            FileConnector(root_dir=str(tmp_path)),
+            tmp_path,
+            "remote",
+            {},
+            callback,
         )
         == ()
     )

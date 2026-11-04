@@ -9,12 +9,17 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-import kumo.engine as kumo
 import orjson
 import pytest
-from kumo.engine._mlops import resolve
-from kumo.engine.cluster import _ComputeWorker, _Replicator, _TrainingTableRequest
 from kumo_core.diskgraph.sampling_artifacts import ArtifactBundle, ArtifactFile
+
+import kumo.engine as kumo
+from kumo.engine._mlops import resolve
+from kumo.engine.cluster import (
+    _ComputeWorker,
+    _Replicator,
+    _TrainingTableRequest,
+)
 
 
 def _worker(tmp_path: Path) -> _ComputeWorker:
@@ -73,7 +78,9 @@ def test_cluster_validates_only_operation_artifact_kind(
     monkeypatch.setattr(ray, "get", Mock(return_value="result"))
     remote = getattr(actor, method).remote
     if kind not in settings.kinds:
-        with pytest.raises(ValueError, match=f"{method} requires MLOps storing {kind}"):
+        with pytest.raises(
+            ValueError, match=f"{method} requires MLOps storing {kind}"
+        ):
             cluster._call(method, settings)
         remote.assert_not_called()
         assert not cluster._failed
@@ -148,13 +155,17 @@ def test_table_operations_resolve_settings_at_call_time(
         (1, float("nan")),
     ],
 )
-def test_invalid_worker_configuration(workers: int | None, cpus: float | None) -> None:
+def test_invalid_worker_configuration(
+    workers: int | None, cpus: float | None
+) -> None:
     """Resource errors fail before connecting to Ray."""
     with pytest.raises(ValueError, match="positive"):
         kumo.ComputeCluster(num_workers=workers, cpus_per_worker=cpus)
 
 
-def test_receive_verifies_before_commit_and_relocates_metadata(tmp_path: Path) -> None:
+def test_receive_verifies_before_commit_and_relocates_metadata(
+    tmp_path: Path,
+) -> None:
     """Files arrive early but readiness requires the exact complete inventory."""
     worker = _worker(tmp_path)
     worker.begin("publication", kumo.MLOps(str(tmp_path / "store")))
@@ -162,7 +173,9 @@ def test_receive_verifies_before_commit_and_relocates_metadata(tmp_path: Path) -
     source.mkdir(parents=True)
     data = orjson.dumps({"path": "/producer/graph/index.bin"})
     (source / "metadata.json").write_bytes(data)
-    entry = ArtifactFile("metadata.json", len(data), hashlib.sha256(data).hexdigest())
+    entry = ArtifactFile(
+        "metadata.json", len(data), hashlib.sha256(data).hexdigest()
+    )
     bundle = ArtifactBundle("/producer", (entry,))
     with pytest.raises(RuntimeError, match="incomplete"):
         worker.commit("publication", "graph", bundle)
@@ -172,9 +185,9 @@ def test_receive_verifies_before_commit_and_relocates_metadata(tmp_path: Path) -
     assert replica.publication == "publication"
     assert "publication" not in worker.received
     assert "publication" not in worker._stores
-    assert orjson.loads((worker.root / "graph/metadata.json").read_bytes()) == {
-        "path": str(worker.root / "graph/index.bin")
-    }
+    assert orjson.loads(
+        (worker.root / "graph/metadata.json").read_bytes()
+    ) == {"path": str(worker.root / "graph/index.bin")}
 
 
 def test_receive_rejects_corruption_without_publishing(tmp_path: Path) -> None:
@@ -193,7 +206,9 @@ def test_receive_rejects_corruption_without_publishing(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("name", ["../escape", "/escape", "a/../../escape"])
-def test_receive_rejects_paths_outside_worker(tmp_path: Path, name: str) -> None:
+def test_receive_rejects_paths_outside_worker(
+    tmp_path: Path, name: str
+) -> None:
     """An inventory cannot install objects outside its worker root."""
     worker = _worker(tmp_path)
     with pytest.raises(ValueError):
@@ -210,10 +225,14 @@ def test_notifications_start_before_publication_finishes(
     peer.receive.remote = Mock(side_effect=["one", "two", "three"])
     peer.commit.remote = Mock(return_value="ready")
     get = Mock(
-        side_effect=lambda value: ["replica"] if isinstance(value, list) else None
+        side_effect=lambda value: (
+            ["replica"] if isinstance(value, list) else None
+        )
     )
     monkeypatch.setattr(ray, "get", get)
-    transfer = _Replicator([peer], "graph", "publication", Mock(spec=kumo.MLOps))
+    transfer = _Replicator(
+        [peer], "graph", "publication", Mock(spec=kumo.MLOps)
+    )
     get.reset_mock()
     first = ArtifactFile("first.bin", 1, "a")
     second = ArtifactFile("second.bin", 1, "b")
@@ -242,7 +261,9 @@ def test_cluster_failure_prevents_subsequent_work(
     actor = SimpleNamespace(graph_snapshot=Mock())
     actor.graph_snapshot.remote = Mock(return_value="operation")
     cluster._actors = [actor]
-    monkeypatch.setattr(ray, "get", Mock(side_effect=OSError("download failed")))
+    monkeypatch.setattr(
+        ray, "get", Mock(side_effect=OSError("download failed"))
+    )
     with pytest.raises(OSError, match="download failed"):
         cluster._call("graph_snapshot", kumo.MLOps(str(tmp_path)))
     with pytest.raises(RuntimeError, match="failed"):
@@ -260,7 +281,9 @@ def test_prepare_checks_table_snapshot_ownership(tmp_path: Path) -> None:
         cluster.prepare_training(table, snapshot, Mock(), None)
 
 
-def test_trainer_prepares_before_stopping_at_execution_boundary(tmp_path: Path) -> None:
+def test_trainer_prepares_before_stopping_at_execution_boundary(
+    tmp_path: Path,
+) -> None:
     """fit prepares remotely and exposes the handoff without reading local indexes."""
     cluster = Mock()
     prepared = Mock()
@@ -269,7 +292,9 @@ def test_trainer_prepares_before_stopping_at_execution_boundary(tmp_path: Path) 
     from kumoapi.model_plan import ModelPlan
 
     trainer = kumo.Trainer(ModelPlan())
-    with pytest.raises(NotImplementedError, match="Remote artifacts are ready"):
+    with pytest.raises(
+        NotImplementedError, match="Remote artifacts are ready"
+    ):
         trainer.fit(Mock(), snapshot=snapshot)
     assert trainer.prepared_artifacts is prepared
     cluster.prepare_training.assert_called_once()
@@ -282,8 +307,9 @@ def test_native_artifacts_are_produced_once_and_replicated(
     import pyarrow as pa
     import pyarrow.parquet as pq
     import ray
-    from kumo.engine._scratch import scoped_scratch_dir
     from kumo_core.model_plan import ModelPlan
+
+    from kumo.engine._scratch import scoped_scratch_dir
 
     source = tmp_path / "source"
     source.mkdir()
@@ -315,7 +341,10 @@ def test_native_artifacts_are_produced_once_and_replicated(
         snapshot = producer.graph_snapshot(graph, {}, settings, [peer])
         index = replica.root / snapshot.index_path.relative_to(producer.root)
         assert (index / "_SUCCESS").is_file()
-        assert str(producer.root) not in (index / "diskgraph_config.json").read_text()
+        assert (
+            str(producer.root)
+            not in (index / "diskgraph_config.json").read_text()
+        )
         for path in snapshot.index_path.rglob("*.bin"):
             copied = replica.root / path.relative_to(producer.root)
             assert copied.read_bytes() == path.read_bytes()
@@ -342,13 +371,17 @@ def test_native_artifacts_are_produced_once_and_replicated(
         assert (stored / "kumo_training_table.json").is_file()
         assert not list(stored.glob("part-*.parquet"))
         assert not (store / "compute").exists()
-        marker = orjson.loads((stored / "kumo_training_table.json").read_bytes())
-        generated_parts = [
-            path for path in table.staging_dir.rglob("*.parquet") if path.is_file()
-        ]
-        assert sum(path.is_file() for path in stored.rglob("*.parquet")) == len(
-            generated_parts
+        marker = orjson.loads(
+            (stored / "kumo_training_table.json").read_bytes()
         )
+        generated_parts = [
+            path
+            for path in table.staging_dir.rglob("*.parquet")
+            if path.is_file()
+        ]
+        assert sum(
+            path.is_file() for path in stored.rglob("*.parquet")
+        ) == len(generated_parts)
         for entry in marker["files"]:
             original = table.staging_dir / entry["name"]
             copied = replica.root / original.relative_to(producer.root)
@@ -366,16 +399,23 @@ def test_native_artifacts_are_produced_once_and_replicated(
         prepared = producer.prepare(
             (snapshot.id, table.id, "first-fit"), ModelPlan(), settings, [peer]
         )
-        first_extension = Path(prepared.materialized.train_table_extension_path)
+        first_extension = Path(
+            prepared.materialized.train_table_extension_path
+        )
         before = {
             path.relative_to(first_extension): path.read_bytes()
             for path in first_extension.rglob("*")
             if path.is_file()
         }
         next_fit = producer.prepare(
-            (snapshot.id, table.id, "second-fit"), ModelPlan(), settings, [peer]
+            (snapshot.id, table.id, "second-fit"),
+            ModelPlan(),
+            settings,
+            [peer],
         )
-        assert next_fit.materialized.train_table_extension_path != str(first_extension)
+        assert next_fit.materialized.train_table_extension_path != str(
+            first_extension
+        )
         assert before == {
             path.relative_to(first_extension): path.read_bytes()
             for path in first_extension.rglob("*")
@@ -386,7 +426,9 @@ def test_native_artifacts_are_produced_once_and_replicated(
     assert (remote_extension / "diskgraph_manifest.json").is_file()
     assert len(prepared.replicas) == 2
     assert prepared.replicas[0].publication == prepared.replicas[1].publication
-    assert prepared.snapshot_id == snapshot.id and prepared.table_id == table.id
+    assert (
+        prepared.snapshot_id == snapshot.id and prepared.table_id == table.id
+    )
     for path in extension.rglob("*.bin"):
         assert (
             replica.root / path.relative_to(producer.root)
@@ -442,7 +484,11 @@ def test_context_owns_only_remote_actors(
                 )
             ]
             + [
-                {"Alive": False, "NodeID": "dead", "Resources": {"CPU": 8, "disk": 1}},
+                {
+                    "Alive": False,
+                    "NodeID": "dead",
+                    "Resources": {"CPU": 8, "disk": 1},
+                },
                 {"Alive": True, "NodeID": "no-disk", "Resources": {"CPU": 8}},
             ]
         ),
@@ -462,11 +508,16 @@ def test_context_owns_only_remote_actors(
     with cluster as active:
         assert active is cluster and cluster._active
         placements = [
-            (call.kwargs["scheduling_strategy"].node_id, call.kwargs["num_cpus"])
+            (
+                call.kwargs["scheduling_strategy"].node_id,
+                call.kwargs["num_cpus"],
+            )
             for call in actor_type.options.call_args_list
         ]
         assert placements == expected
-        assert all(len(call.args) == 1 for call in actor_type.remote.call_args_list)
+        assert all(
+            len(call.args) == 1 for call in actor_type.remote.call_args_list
+        )
     assert not cluster._active and not cluster._actors
     assert kill.call_count == len(expected)
     shutdown.assert_not_called()
@@ -584,7 +635,9 @@ def test_real_ray_workers_replicate_artifacts(
             )
         ]
         actor_type = ray.remote(num_cpus=1)(_ComputeWorker)
-        actors = [actor_type.remote(str(tmp_path / "workers")) for _ in range(2)]
+        actors = [
+            actor_type.remote(str(tmp_path / "workers")) for _ in range(2)
+        ]
         cluster = kumo.ComputeCluster(num_workers=2)
         # This local runtime has one node; remote placement is tested separately.
         cluster._actors = actors
@@ -621,7 +674,10 @@ def test_real_ray_workers_replicate_artifacts(
             assert {path.name for path in root.iterdir()} == {kind}
         assert len(prepared.replicas) == 2
         assert prepared.replicas[0].root != prepared.replicas[1].root
-        assert prepared.replicas[0].publication == prepared.replicas[1].publication
+        assert (
+            prepared.replicas[0].publication
+            == prepared.replicas[1].publication
+        )
         assert prepared.table_id == table.id
         assert prepared.snapshot_id == snapshot.id
     finally:

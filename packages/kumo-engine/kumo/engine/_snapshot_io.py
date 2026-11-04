@@ -18,10 +18,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from kumo_core.artifacts import PROVENANCE_FILE
-from kumo_core.diskgraph.sampling_artifacts import ArtifactFile, relative_artifact_path
+from kumo_core.diskgraph.sampling_artifacts import (
+    ArtifactFile,
+    relative_artifact_path,
+)
+from pyarrow.fs import FileSystem
 
 from kumo.engine.connector.base import Connector
-from pyarrow.fs import FileSystem
 
 _FORMAT = 1
 _MANIFEST = 'kumo_snapshot.json'
@@ -342,6 +345,7 @@ def export(snapshot: Any, connector: Any, path: str, *,
         ValueError: If the snapshot identity or artifact inventory is invalid.
     """
     from diskgraph import snapshot_range_checksums
+
     from kumo.engine._provenance import environment
     source = Path(snapshot.index_path)
     graph_key, data_version = snapshot._graph_key, snapshot._data_version

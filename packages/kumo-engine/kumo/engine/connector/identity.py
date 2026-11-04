@@ -76,6 +76,7 @@ from kumoapi.data_source import (
 
 _RESTORE_LOCK = threading.Lock()
 
+
 class Identity:
     r"""Base class for per-provider identity objects.
 

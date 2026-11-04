@@ -20,9 +20,8 @@ def test_invalid_model_plan_fails_before_task_materialization(
     from dataclasses import replace
     from unittest.mock import Mock
 
-    from kumo_core.model_plan import TrainingTableGenerationPlan
-
     import kumo_core.training.preparation as preparation_module
+    from kumo_core.model_plan import TrainingTableGenerationPlan
 
     previous = get_scratch_dir()
     kumo.configure(scratch_dir=tmp_path / 'scratch')
@@ -69,9 +68,8 @@ def test_fit_warns_about_random_split_before_task_materialization(
         tmp_path, monkeypatch, caplog):
     from unittest.mock import Mock
 
-    from kumoapi.model_plan import TrainingTableGenerationPlan
-
     import kumo_core.training.preparation as preparation_module
+    from kumoapi.model_plan import TrainingTableGenerationPlan
 
     previous = get_scratch_dir()
     kumo.configure(scratch_dir=tmp_path / 'scratch')
@@ -119,10 +117,9 @@ def test_model_plan_uses_normalized_weight_schema(tmp_path, monkeypatch,
     from pathlib import Path
     from unittest.mock import Mock
 
+    import kumo_core.training.preparation as preparation_module
     import kumo_core.training.workflow as workflow
     from kumoapi.train import TrainingTableSpec
-
-    import kumo_core.training.preparation as preparation_module
 
     previous = get_scratch_dir()
     kumo.configure(scratch_dir=tmp_path / 'scratch')
