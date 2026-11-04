@@ -282,16 +282,12 @@ test_requires = [
     "moto==4.2.14",
     "pytest==9.0.3",
     "pytest-asyncio==1.3.0",
-    "pytest-benchmark==4.0.0",
     "pytest-cov",
     "pytest-env==0.6.2",
     "pytest-mock",
     "pytest-timeout",
     "pytest-split",
     "coverage",
-    "category_encoders",
-    "rocksdict",
-    "respx==0.22.0",
     "pytorch-frame==0.3.0",
     "pytorch-lightning==2.6.6",
     # Full mlflow, for its local SQLite store.
@@ -300,8 +296,6 @@ test_requires = [
 
 dev_requires = test_requires + [
     "pre-commit",
-    "enum-actions",
-    "pick",
     "packaging>=23",
     "kubernetes-stubs",
     # Editor/lint tooling; versions match CI and .pre-commit-config.yaml.
@@ -310,7 +304,6 @@ dev_requires = test_requires + [
     "pyright==1.1.283",
     "yapf==0.40.2",
     "autoflake==2.3.1",
-    "autopep8",
     "pip",
 ]
 

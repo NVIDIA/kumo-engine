@@ -103,6 +103,7 @@ jobs:
         with:
           python-version: '3.11'
           activate-environment: true
+          prune-cache: true
 
       - name: Verify import
         uses: ./packages/kumo-api/.github/actions/verify-import
