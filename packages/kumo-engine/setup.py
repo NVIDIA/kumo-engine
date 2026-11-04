@@ -86,6 +86,7 @@ setup(
         'sdist': _BundleSkillsSdist
     },
     install_requires=[
+        "orjson>=3.10",
         "pandas",
         "pyarrow>=8.0.0",
         "typing_extensions>=4.5.0",  # for override
