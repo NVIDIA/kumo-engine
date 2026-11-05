@@ -32,7 +32,7 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
-      - run: python -m pip --isolated install --index-url https://pypi.org/simple pytest pandas pyarrow boto3
+      - run: python -m pip --isolated install --index-url https://pypi.org/simple pytest pandas pyarrow boto3 scikit-learn
       - run: >-
           python -m pytest -q --noconftest
           packages/kumo-engine/test/test_nightly_configuration.py
