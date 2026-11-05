@@ -1,0 +1,165 @@
+{
+  "format": "kumo-engine-weekly-job-v2",
+  "min_free_bytes": 572183942397,
+  "reference_identity": {
+    "version": "1.0.0+13992f7c",
+    "wheel_sha256": "3a550d01a49c802bf00ff57e5b1c26eeeaf5b9ae02e76bebda60b3ebbe9d80b8"
+  },
+  "scales": {
+    "10B": {
+      "inputs": {
+        "manifest": {
+          "bucket": "kumo-unit-test",
+          "region": "us-west-2",
+          "key": "diskgraph-profiles/engine-weekly/10b/source-only-v1/manifests/0015da6dbae87c07f63f1116eb3ffa6b930824065b4a5333e5d36ee1f2da4f95/manifest.json",
+          "sha256": "0015da6dbae87c07f63f1116eb3ffa6b930824065b4a5333e5d36ee1f2da4f95"
+        },
+        "by_graph": {
+          "adtech": {
+            "bucket": "kumo-unit-test",
+            "region": "us-west-2",
+            "key": "diskgraph-profiles/engine-weekly/10b/source-only-v1/inputs/7199a08f61b5bcfbd9a33eaea986faf320e76304254a5f59d7e6ba9dc814fbaf/adtech/metadata.tar",
+            "sha256": "7199a08f61b5bcfbd9a33eaea986faf320e76304254a5f59d7e6ba9dc814fbaf"
+          },
+          "delivery": {
+            "bucket": "kumo-unit-test",
+            "region": "us-west-2",
+            "key": "diskgraph-profiles/engine-weekly/10b/source-only-v1/inputs/1f5c66a66ca5893a6b20ebd1b0345e77cab9ba482217ba6ae1fe1d73f2a4d451/delivery/metadata.tar",
+            "sha256": "1f5c66a66ca5893a6b20ebd1b0345e77cab9ba482217ba6ae1fe1d73f2a4d451"
+          },
+          "commerce": {
+            "bucket": "kumo-unit-test",
+            "region": "us-west-2",
+            "key": "diskgraph-profiles/engine-weekly/10b/source-only-v1/inputs/663d1766c9907e534171b2ea37c4abc6fe6d8a278862404ac0cebc046dc6809f/commerce/metadata.tar",
+            "sha256": "663d1766c9907e534171b2ea37c4abc6fe6d8a278862404ac0cebc046dc6809f"
+          },
+          "streaming": {
+            "bucket": "kumo-unit-test",
+            "region": "us-west-2",
+            "key": "diskgraph-profiles/engine-weekly/10b/source-only-v1/inputs/799bcd46a2b2929480a1415e5d73c8782136db6c3693eab0e68b388e90cf9878/streaming/metadata.tar",
+            "sha256": "799bcd46a2b2929480a1415e5d73c8782136db6c3693eab0e68b388e90cf9878"
+          },
+          "community": {
+            "bucket": "kumo-unit-test",
+            "region": "us-west-2",
+            "key": "diskgraph-profiles/engine-weekly/10b/source-only-v1/inputs/abc9639875d65720581e32a7607d2c999f821d8e36d879158c648c9c0a832efd/community/metadata.tar",
+            "sha256": "abc9639875d65720581e32a7607d2c999f821d8e36d879158c648c9c0a832efd"
+          },
+          "payments": {
+            "bucket": "kumo-unit-test",
+            "region": "us-west-2",
+            "key": "diskgraph-profiles/engine-weekly/10b/source-only-v1/inputs/bb360446374b62f0821f331e9fe23e9080f13aee0c2909bcdf7e59297914bd5a/payments/metadata.tar",
+            "sha256": "bb360446374b62f0821f331e9fe23e9080f13aee0c2909bcdf7e59297914bd5a"
+          },
+          "fraud": {
+            "bucket": "kumo-unit-test",
+            "region": "us-west-2",
+            "key": "diskgraph-profiles/engine-weekly/10b/source-only-v1/inputs/0f3101f1b69e27652dda5260ac5ac660d0d99339174b5cbe1601c24c0ec7b0dc/fraud/metadata.tar",
+            "sha256": "0f3101f1b69e27652dda5260ac5ac660d0d99339174b5cbe1601c24c0ec7b0dc"
+          }
+        }
+      },
+      "input_manifest_sha256": "0015da6dbae87c07f63f1116eb3ffa6b930824065b4a5333e5d36ee1f2da4f95"
+    },
+    "25B": {
+      "inputs": {
+        "manifest": {
+          "bucket": "kumo-unit-test",
+          "region": "us-west-2",
+          "key": "diskgraph-profiles/engine-weekly/25b/source-only-v1/manifests/b65f931fe36d9f2a8cb60f052f7b3527b07ef3ac6ec3a704ac1eae2b749aa3e1/manifest.json",
+          "sha256": "b65f931fe36d9f2a8cb60f052f7b3527b07ef3ac6ec3a704ac1eae2b749aa3e1"
+        },
+        "by_graph": {
+          "adtech": {
+            "bucket": "kumo-unit-test",
+            "region": "us-west-2",
+            "key": "diskgraph-profiles/engine-weekly/25b/source-only-v1/inputs/6638313bb23622ea8fdeb8fb755ac8ebd54dfa051edeee5152eb5a62664e65a5/adtech/metadata.tar",
+            "sha256": "6638313bb23622ea8fdeb8fb755ac8ebd54dfa051edeee5152eb5a62664e65a5"
+          },
+          "delivery": {
+            "bucket": "kumo-unit-test",
+            "region": "us-west-2",
+            "key": "diskgraph-profiles/engine-weekly/25b/source-only-v1/inputs/6a5af125dfda6d03708ae5e665e908a8c005f049de905f72a65d7fa8114a580e/delivery/metadata.tar",
+            "sha256": "6a5af125dfda6d03708ae5e665e908a8c005f049de905f72a65d7fa8114a580e"
+          },
+          "commerce": {
+            "bucket": "kumo-unit-test",
+            "region": "us-west-2",
+            "key": "diskgraph-profiles/engine-weekly/25b/source-only-v1/inputs/b8323b1b904ed2ee93d847158e3d311377c4390811dfb824eef85ed0269d9069/commerce/metadata.tar",
+            "sha256": "b8323b1b904ed2ee93d847158e3d311377c4390811dfb824eef85ed0269d9069"
+          },
+          "streaming": {
+            "bucket": "kumo-unit-test",
+            "region": "us-west-2",
+            "key": "diskgraph-profiles/engine-weekly/25b/source-only-v1/inputs/61da4507325375975276328282cb3a110ded84a141596f78360bb785bfe45514/streaming/metadata.tar",
+            "sha256": "61da4507325375975276328282cb3a110ded84a141596f78360bb785bfe45514"
+          },
+          "community": {
+            "bucket": "kumo-unit-test",
+            "region": "us-west-2",
+            "key": "diskgraph-profiles/engine-weekly/25b/source-only-v1/inputs/c1bb9d383bc0ff1fad8d77090f59b611b8a69df22745a33f74a9996fee979a3f/community/metadata.tar",
+            "sha256": "c1bb9d383bc0ff1fad8d77090f59b611b8a69df22745a33f74a9996fee979a3f"
+          },
+          "payments": {
+            "bucket": "kumo-unit-test",
+            "region": "us-west-2",
+            "key": "diskgraph-profiles/engine-weekly/25b/source-only-v1/inputs/2aaa6eb9b1825f84c62a5a21a7fbcc8134c8f50531953323e6d7925cd2d59e7e/payments/metadata.tar",
+            "sha256": "2aaa6eb9b1825f84c62a5a21a7fbcc8134c8f50531953323e6d7925cd2d59e7e"
+          },
+          "fraud": {
+            "bucket": "kumo-unit-test",
+            "region": "us-west-2",
+            "key": "diskgraph-profiles/engine-weekly/25b/source-only-v1/inputs/64ec8ae11a68ffb25a300e628dd4f513bb47ee636aeeee097a83ef37eb3a0387/fraud/metadata.tar",
+            "sha256": "64ec8ae11a68ffb25a300e628dd4f513bb47ee636aeeee097a83ef37eb3a0387"
+          }
+        }
+      },
+      "input_manifest_sha256": "b65f931fe36d9f2a8cb60f052f7b3527b07ef3ac6ec3a704ac1eae2b749aa3e1"
+    }
+  },
+  "reference": {
+    "path": "reference.json",
+    "sha256": "b492b2cec58879e7f5f35f5a84cd2898047c65af082a5edef0ae968938f20670"
+  },
+  "policy": {
+    "path": "policy.json",
+    "sha256": "580a99b9daff28a132cc6197ba1a9ee67a5516a45b2d2603e25e8010e1fbf1fd"
+  },
+  "requirements": {
+    "path": "requirements.json",
+    "sha256": "4239802ff773fa0e49a08e1846f8ab222fd1493bbdb1305c7606fd32e989d884"
+  },
+  "archive": null,
+  "variants": {
+    "streaming": {
+      "task": "temporal_link",
+      "graph": "streaming",
+      "metric": "recall@50",
+      "query": "PREDICT LIST_DISTINCT(sessions.title_id, 0, 7, days) RANK TOP 50 FOR EACH viewers.viewer_id",
+      "top_k": 50,
+      "raw_limit": 51
+    },
+    "community": {
+      "task": "regression",
+      "graph": "community",
+      "metric": "mae",
+      "query": "PREDICT COUNT(messages.*, 0, 30, days) FOR EACH accounts.account_id WHERE COUNT(logins.*, -30, 0, days) > 0"
+    },
+    "payments": {
+      "task": "binary",
+      "graph": "payments",
+      "metric": "auroc",
+      "query": "PREDICT COUNT(account_flags.*, 0, 14, days) > 0 FOR EACH accounts.account_id WHERE COUNT(account_flags.*, -INF, 0, days) = 0",
+      "min_hops": 4,
+      "max_hops": 6
+    },
+    "fraud": {
+      "task": "binary",
+      "graph": "fraud",
+      "metric": "auroc",
+      "query": "PREDICT COUNT(account_flags.*, 0, 28, days) > 0 FOR EACH accounts.account_id WHERE COUNT(account_flags.*, -INF, 0, days) = 0 AND COUNT(logins.*, -30, 0, days) > 0",
+      "min_hops": 4,
+      "max_hops": 6
+    }
+  }
+}

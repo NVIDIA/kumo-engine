@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Kumo Engine weekly CPU checks
+
+on:  # yamllint disable-line rule:truthy
+  pull_request:
+    paths:
+      - '.github/workflows/kumo-engine-weekly.yml'
+      - 'packages/kumo-engine/test/weekly/**'
+      - 'packages/kumo-engine/scripts/nightly_*.py'
+      - 'packages/kumo-engine/test/test_nightly_*.py'
+      - 'packages/kumo-engine/test/wheel_gpu_smoke.py'
+      - 'packages/kumo-engine/scripts/weekly_*.py'
+      - 'packages/kumo-engine/test/test_weekly_*.py'
+      - 'packages/kumo-engine/test/test_engine_wheel_build.py'
+      - 'docs/development/engine-weekly-ci.md'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kumo-engine-weekly.yml'
+      - 'packages/kumo-engine/test/weekly/**'
+      - 'packages/kumo-engine/scripts/nightly_*.py'
+      - 'packages/kumo-engine/test/test_nightly_*.py'
+      - 'packages/kumo-engine/test/wheel_gpu_smoke.py'
+      - 'packages/kumo-engine/scripts/weekly_*.py'
+      - 'packages/kumo-engine/test/test_weekly_*.py'
+      - 'packages/kumo-engine/test/test_engine_wheel_build.py'
+      - 'docs/development/engine-weekly-ci.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engine-weekly-cpu-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  cpu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip --isolated install --index-url https://pypi.org/simple pytest pandas pyarrow boto3
+      - run: >-
+          python -m pytest -q --noconftest
+          packages/kumo-engine/test/test_weekly_integration.py
+          packages/kumo-engine/test/test_nightly_configuration.py
+          packages/kumo-engine/test/test_nightly_combine.py
+      - run: python packages/kumo-engine/test/test_engine_wheel_build.py
