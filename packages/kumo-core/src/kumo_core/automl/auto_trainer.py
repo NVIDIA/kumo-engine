@@ -1118,13 +1118,12 @@ class AutoTrainer:
             if nan_trials > 0:
                 message += (f": '{self.val_tune_metric}' is NaN in all "
                             f"{nan_trials} completed trials.")
-            if nan_trials > 0 and self.tune_metric.split('_')[0] in (
-                    'auroc', 'ap', 'auprc'):
-                message += (" It is undefined when the validation rows "
-                            "contain a single class, for example when "
-                            "'max_val_steps' caps validation too low. "
-                            "Increase 'max_val_steps' or set 'tune_metric' "
-                            "to 'loss'.")
+                if self.tune_metric.split('_')[0] in ('auroc', 'ap', 'auprc'):
+                    message += (" It is undefined when the validation rows "
+                                "contain a single class, for example when "
+                                "'max_val_steps' caps validation too low. "
+                                "Increase 'max_val_steps' or set "
+                                "'tune_metric' to 'loss'.")
             raise RuntimeError(message)
         if len(trials) < k:
             logger.warning(f"Expected {k} valid trials (got {len(trials)})")

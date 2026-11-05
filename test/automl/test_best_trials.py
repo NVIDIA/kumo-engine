@@ -19,5 +19,6 @@ def test_all_nan_tune_metric(tmp_path, monkeypatch, metric, single_class_hint):
 
     with pytest.raises(RuntimeError) as error:
         trainer.get_best_trials(k=1)
-    assert f"'val_{metric}' is NaN in all 2 completed trials" in str(error.value)
-    assert ('single class' in str(error.value)) == single_class_hint
+    message = str(error.value)
+    assert f"'val_{metric}' is NaN in all 2 completed trials" in message
+    assert ('single class' in message) == single_class_hint
