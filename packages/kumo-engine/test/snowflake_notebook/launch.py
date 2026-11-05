@@ -1144,6 +1144,41 @@ def check_existing_history(previous, key_file, output):
     return result
 
 
+def boolean(value):
+    if value.lower() in ('true', 'false'):
+        return value.lower() == 'true'
+    raise argparse.ArgumentTypeError('Expected true or false')
+
+
+def wait_for_compute(key_file, timeout):
+    """Observe only the dedicated pool; never resume or alter cloud resources."""
+    deadline = time.monotonic() + timeout
+    with connect(key_file) as connection, connection.cursor() as cursor:
+        while True:
+            cursor.execute('DESCRIBE COMPUTE POOL KUMO_TEST_POOL')
+            rows = cursor.fetchall()
+            columns = [item[0].lower() for item in cursor.description]
+            if len(rows) != 1:
+                raise ValueError(
+                    'Expected exactly the dedicated test compute pool')
+            pool = dict(zip(columns, rows[0]))
+            if (pool['name'] != POOL
+                    or pool['instance_family'] != 'GEN_X64_G2_8'):
+                raise ValueError('Dedicated test pool identity differs')
+            if pool.get('error_code'):
+                raise RuntimeError('Dedicated test pool error: ' +
+                                   str(pool.get('status_message')))
+            if pool['state'] in ('ACTIVE', 'IDLE'):
+                return dict(pool=POOL, state=pool['state'])
+            if pool['state'] not in ('STARTING', 'RESIZING'):
+                raise RuntimeError('Dedicated test pool is not starting: ' +
+                                   pool['state'])
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    'Dedicated test pool startup deadline exceeded')
+            time.sleep(min(10, max(0, deadline - time.monotonic())))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--runtime', default='V2.9-CPU-PY3.12')
@@ -1162,6 +1197,8 @@ def main(argv=None):
     parser.add_argument('--timeout', type=int, default=1800,
                         help=('Notebook deadline in seconds; default 1800'))
     parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--wait-compute', action='store_true',
+                        help='Read-only wait for the dedicated pool startup')
     parser.add_argument(
         '--check-history', type=Path, help=(
             'Read metric history from an existing run without launching training'
@@ -1171,7 +1208,51 @@ def main(argv=None):
         help='Explain a saved run without authentication or another execution')
     parser.add_argument('--payload-manifest', type=Path,
                         help='Manifest produced by prepare.py')
+    parser.add_argument(
+        '--ui', nargs='?', const=True, default=False, type=boolean,
+        help='Only verify an existing run in Snowsight; never starts training')
+    parser.add_argument(
+        '--ui-run', type=Path,
+        help='Retained lifecycle directory; default latest valid receipt')
+    parser.add_argument('--ui-credentials', type=Path,
+                        help='Owner-only local Snowsight credential JSON')
+    parser.add_argument('--ui-timeout', type=int, default=60)
+    parser.add_argument(
+        '--ui-notebook', type=Path,
+        help='Prepared graph notebook configuration; requires --ui')
     args = parser.parse_args(argv)
+    if args.wait_compute:
+        if (args.execute or args.ui or args.show_result or args.check_history
+                or args.negative_only or args.payload_manifest
+                or args.ui_notebook or args.ui_run or args.ui_credentials):
+            parser.error(
+                '--wait-compute cannot be combined with execution modes')
+        if args.timeout <= 0:
+            parser.error('--timeout must be positive')
+        print(json.dumps(wait_for_compute(args.key_file, args.timeout)),
+              flush=True)
+        return 0
+    if args.ui:
+        if args.show_result or args.check_history or args.negative_only:
+            parser.error(
+                '--ui cannot be combined with another selected test mode')
+        if args.ui_timeout <= 0:
+            parser.error('--ui-timeout must be positive')
+        import ui as module
+        options = dict(source=args.ui_run, output=args.output_dir,
+                       execute=args.execute,
+                       credential_file=args.ui_credentials,
+                       timeout=args.ui_timeout)
+        if args.ui_notebook:
+            if args.ui_run:
+                parser.error('--ui-notebook cannot be combined with --ui-run')
+            options['notebook'] = args.ui_notebook
+            options['key_file'] = args.key_file
+        result = module.run(**options)
+        return result['status'] not in ('planned', 'passed')
+    if args.ui_run or args.ui_credentials or args.ui_notebook:
+        parser.error(
+            '--ui-run, --ui-notebook and --ui-credentials require --ui')
     if args.show_result is not None:
         if args.execute or args.negative_only or args.check_history:
             parser.error(

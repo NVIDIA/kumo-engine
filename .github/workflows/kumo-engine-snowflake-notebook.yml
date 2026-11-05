@@ -1,17 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-name: Snowflake notebook engine lifecycle
+name: Snowflake notebook platform checks
 
 on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Snowflake scenario
+        type: choice
+        default: graph-ui
+        options: [graph-ui, engine]
   push:
     branches: [egu/mlops-platform-integration]
     paths:
       - .github/workflows/kumo-engine-snowflake-notebook.yml
       - packages/kumo-engine/test/snowflake_notebook/**
-      - packages/kumo-engine/test/wheel_mlops_*.py
+      - packages/kumo-engine/test/pr172/inputs.json
       - packages/kumo-engine/test/wheel_gpu_smoke.py
-      - packages/kumo-engine/test/mlops_platforms/snowflake.json
+      - packages/kumo-engine/test/wheel_mlops_lifecycle.py
 
 permissions:
   contents: read
@@ -45,7 +52,8 @@ jobs:
     name: Snowflake notebook engine checks (UI excluded)
     if: >-
       github.repository == 'NVIDIA/kumo-engine' &&
-      github.ref == 'refs/heads/egu/mlops-platform-integration'
+      github.ref == 'refs/heads/egu/mlops-platform-integration' &&
+      github.event_name == 'workflow_dispatch' && inputs.mode == 'engine'
     runs-on: ubuntu-22.04
     timeout-minutes: 80
     environment: snowflake-mlops-test
@@ -99,5 +107,68 @@ jobs:
           path: |
             ${{ runner.temp }}/snowflake-result/
             ${{ runner.temp }}/snowflake-payload/manifest.json
+          if-no-files-found: warn
+          retention-days: 7
+  notebook-ui:
+    needs: configuration
+    name: Snowflake notebook graph UI
+    if: >-
+      github.repository == 'NVIDIA/kumo-engine' &&
+      github.ref == 'refs/heads/egu/mlops-platform-integration' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' && inputs.mode == 'graph-ui'))
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    environment: snowflake-mlops-test
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: '22'
+      - name: Require the protected test credentials
+        env:
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_UI_CREDENTIALS: ${{ secrets.SNOWFLAKE_UI_CREDENTIALS }}
+        run: |
+          python - <<'PY'
+          import os
+          names = ('SNOWFLAKE_PRIVATE_KEY', 'SNOWFLAKE_PRIVATE_KEY_PASSPHRASE', 'SNOWFLAKE_UI_CREDENTIALS')
+          if any(not os.environ.get(name) for name in names):
+              raise SystemExit('Configure all three protected Snowflake test secrets before running UI tests')
+          PY
+      - name: Install the existing Snowflake submission client
+        run: python -m pip --isolated install snowflake-connector-python cryptography
+      - name: Install the locked browser test tools
+        run: |
+          npm ci --prefix packages/kumo-engine/test/snowflake_notebook/browser
+          node packages/kumo-engine/test/snowflake_notebook/browser/node_modules/playwright/cli.js install --with-deps chromium
+      - name: Run the same graph notebook UI command as local testing
+        env:
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_UI_CREDENTIALS: ${{ secrets.SNOWFLAKE_UI_CREDENTIALS }}
+        run: |
+          python packages/kumo-engine/test/snowflake_notebook/graph_notebook.py \
+            --execute --source-ref "${{ github.sha }}" \
+            --output-dir "$RUNNER_TEMP/snowflake-graph"
+      - name: Retain UI assertions and exports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: snowflake-graph-ui-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/snowflake-graph/summary.json
+            ${{ runner.temp }}/snowflake-graph/notebook.json
+            ${{ runner.temp }}/snowflake-graph/*.ipynb
+            ${{ runner.temp }}/snowflake-graph/ui/
           if-no-files-found: warn
           retention-days: 7
