@@ -32,6 +32,24 @@ def load(name: str, path: Path) -> types.ModuleType:
 package_skill = load('package_skill', ROOT / 'agent-skills' / 'scripts' / 'package_skill.py')
 ENGINE = ROOT / 'packages' / 'kumo-engine' / 'kumo' / 'engine'
 skills = load('kumo_engine_skills', ENGINE / 'skills.py')
+extras = load('kumo_engine_extras', ENGINE / 'connector' / '_extras.py')
+
+
+@pytest.mark.parametrize('module,extra', [
+    ('databricks.sdk', 'databricks'),
+    ('snowflake.snowpark', 'snowflake'),
+])
+def test_missing_provider_names_extra(module: str, extra: str,
+                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, 'kumo.engine.connector._extras', extras)
+
+    def missing(name: str) -> None:
+        assert name == module
+        raise ModuleNotFoundError(name=name)
+
+    monkeypatch.setattr(extras.importlib, 'import_module', missing)
+    with pytest.raises(ImportError, match=rf'kumo-engine\[{extra}\]'):
+        skills._import_provider(module, extra)
 
 
 @pytest.fixture
@@ -316,6 +334,7 @@ class FakeDatabricks:
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mods = {
+            'kumo.engine.connector._extras': extras,
             'databricks': types.ModuleType('databricks'),
             'databricks.sdk': types.SimpleNamespace(WorkspaceClient=lambda: self),
             'databricks.sdk.errors': types.SimpleNamespace(NotFound=NotFound),
