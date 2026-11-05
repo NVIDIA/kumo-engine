@@ -691,9 +691,11 @@ def test_mismatched_key_dtypes_link_after_conversion(tmp_path):
 
 
 @pytest.mark.parametrize(
-    'layout', ['parquet', 'batches', 'compacted', 'csv', 'dictionary'])
+    'layout',
+    ['parquet', 'batches', 'compacted', 'csv', 'dictionary', 'binary'])
 @pytest.mark.parametrize('values, target, invalid, colliding', [
     (['7', 'x', '', ' ', '1e1', None, '7'], Dtype.int64, 2, 0),
+    (['\x1c7', '\u30007\u3000', '\x0b7'], Dtype.int64, 1, 2),
     (['7', '007', '+7', ' 7', '7.0', None], Dtype.int64, 0, 5),
     (['9223372036854775808', '-9223372036854775809', '7'], Dtype.int64, 2, 0),
     (['256', '-1', '-0', '255'], Dtype.byte, 3, 0),
@@ -714,18 +716,22 @@ def test_inexact_string_foreign_keys_are_refused_with_counts(
     keys = pa.array(values, pa.string())
     if layout == 'dictionary':
         keys = keys.dictionary_encode()
+    if layout == 'binary':
+        keys = keys.cast(pa.binary())
     orders = pa.table({'order_id': range(len(values)), 'user_id': keys})
     if layout == 'csv':
-        if any(len(value or '') > 18 for value in values):
-            pytest.skip('the CSV reader refuses an integer wider than 64 bits '
-                        'before staging, whatever dtype is declared')
+        if any(len(value or '') > 18 or not (value or '').isprintable()
+               for value in values):
+            pytest.skip('the CSV reader cannot stage this value as text, '
+                        'whatever dtype is declared')
         csv.write_csv(orders, root / 'orders.csv')
     else:
         pq.write_table(
             orders, root / 'orders.parquet',
             row_group_size=2 if layout in ('batches', 'compacted') else None)
-    graph = _keyed_graph(root, 'orders',
-                         Dtype.string if layout == 'csv' else None)
+    graph = _keyed_graph(
+        root, 'orders',
+        Dtype.string if layout in ('csv', 'binary') else None)
     graph = Graph(
         {
             'users': graph._named_tables['users'].with_column('user_id',
@@ -755,3 +761,31 @@ def test_inexact_string_foreign_keys_are_refused_with_counts(
     else:
         assert 'same integer' not in message
     assert message.endswith('before snapshot.')
+
+
+def test_declared_integer_key_over_text_is_refused_before_a_string_link(
+        tmp_path, monkeypatch):
+    from kumo.engine import configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(pa.table({'user_id': ['7', '10']}), root / 'users.parquet')
+    pq.write_table(pa.table({
+        'order_id': [1, 2],
+        'user_id': ['007', '10']
+    }), root / 'orders.parquet')
+    graph = _keyed_graph(root, 'orders', Dtype.int64)
+    monkeypatch.setattr(
+        'kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
+        lambda *args, **kwargs: pytest.fail('ingest started'))
+
+    with pytest.warns(UserWarning, match='Foreign key orders.user_id'):
+        with pytest.raises(ValueError) as error:
+            graph.snapshot()
+
+    assert str(error.value) == (
+        'Foreign key orders.user_id is declared int64 but stored as string in '
+        'the staged data; linking it to users.user_id, which is string, '
+        'would use the stored values as they are. Declare the column as '
+        'string, or store it as integers, before snapshot.')

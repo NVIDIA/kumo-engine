@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import Mock, PropertyMock, patch
 from xml.etree import ElementTree
 
+import pyarrow as pa
 import pytest
 from kumo_core.pquery import PredictiveQueryPlanError
 from kumoapi.graph import Edge
@@ -28,6 +29,7 @@ from matplotlib.text import Text
 
 from kumo.engine import FileConnector, Graph, S3Connector, Table
 from kumo.engine._portable import PortableGraphError
+from kumo.engine.graph import _integer_literals
 
 
 def _file_tables(root: Path) -> list[Table]:
@@ -255,6 +257,17 @@ def test_key_conversions_follow_chains_and_keep_cycles(cycle):
         for table in graph._graph_config['tables']
     }
     assert declared == {'a': 'int64', 'b': 'int64', 'c': 'int64'}
+
+
+def test_integer_literals_keep_large_string_offsets():
+    values = pa.array(['7', ' 007 ', '\x1c7', 'x', '-0'], pa.large_string())
+
+    valid, canonical = _integer_literals(values, -2**63, 2**63 - 1)
+
+    assert valid.to_pylist() == [True, True, False, False, True]
+    assert canonical.type == pa.large_string()
+    assert canonical.to_pylist()[:2] == ['7', '7']
+    assert canonical.to_pylist()[4] == '0'
 
 
 def test_graph_validation_rejects_destination_without_primary_key(tables):

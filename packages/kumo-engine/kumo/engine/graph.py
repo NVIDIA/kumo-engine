@@ -219,6 +219,12 @@ def _warn_ingest_data_loss(result: Any, graph_config: Dict[str, Any]) -> None:
 
 
 _INTEGER_LITERAL = r'^(?P<sign>[+-]?)(?P<digits>[0-9]+)(?:\.0+)?$'
+# Unicode White_Space, which is what DiskGraph trims around an integer.
+_WHITESPACE = ''.join(
+    map(chr, [
+        *range(0x9, 0xE), 0x20, 0x85, 0xA0, 0x1680, *range(0x2000, 0x200B),
+        0x2028, 0x2029, 0x202F, 0x205F, 0x3000
+    ]))
 _DISTINCT_COMPACTION_ROWS = 1_000_000
 
 
@@ -228,13 +234,16 @@ def _integer_literals(values: Any, low: int, high: int) -> tuple[Any, Any]:
     import pyarrow as pa
     import pyarrow.compute as pc
 
-    parts = pc.extract_regex(pc.utf8_trim_whitespace(values), _INTEGER_LITERAL)
+    text = pa.large_string()
+    parts = pc.extract_regex(pc.utf8_trim(values, characters=_WHITESPACE),
+                             _INTEGER_LITERAL)
     digits = pc.utf8_ltrim(pc.struct_field(parts, 'digits'), characters='0')
-    digits = pc.if_else(pc.equal(digits, ''), '0', digits)
+    digits = pc.if_else(pc.equal(digits, ''), pa.scalar('0', text), digits)
     negative = pc.equal(pc.struct_field(parts, 'sign'), '-')
     bounded = pc.fill_null(pc.less_equal(pc.utf8_length(digits), 38), False)
     decimal = pa.decimal128(38, 0)
-    magnitude = pc.cast(pc.if_else(bounded, digits, '0'), decimal)
+    magnitude = pc.cast(pc.if_else(bounded, digits, pa.scalar('0', text)),
+                        decimal)
     signed = pc.if_else(negative, pc.negate(magnitude), magnitude)
     in_range = pc.and_(
         pc.greater_equal(signed, pa.scalar(Decimal(low), decimal)),
@@ -242,8 +251,10 @@ def _integer_literals(values: Any, low: int, high: int) -> tuple[Any, Any]:
     if low == 0:
         in_range = pc.and_(in_range, pc.invert(negative))
     valid = pc.fill_null(pc.and_(bounded, in_range), False)
-    sign = pc.if_else(pc.and_(negative, pc.not_equal(digits, '0')), '-', '')
-    return valid, pc.binary_join_element_wise(sign, digits, '')
+    sign = pc.if_else(pc.and_(negative, pc.not_equal(digits, '0')),
+                      pa.scalar('-', text), pa.scalar('', text))
+    return valid, pc.binary_join_element_wise(sign, digits,
+                                              pa.scalar('', text))
 
 
 def _refuse_inexact_key_conversions(alias: str,
@@ -252,49 +263,71 @@ def _refuse_inexact_key_conversions(alias: str,
     r"""Raises when a string foreign key that `portable_graph_config`
     declared with its destination's integer dtype holds a value DiskGraph
     cannot convert exactly, or two distinct values that convert to the
-    same integer. DiskGraph reads an optional sign, ASCII digits and a
-    zero fraction inside Unicode whitespace, within the dtype's range
-    (`byte` is unsigned), and anything else as null, so such a row would
-    lose its link; an empty or blank value counts as missing, as DiskGraph
-    reads it. Reads that column of each staged parquet part one batch at a
-    time and keeps only the distinct convertible values, compacted as they
-    accumulate; a part staged under a non-string type is left to
+    same integer, and when an integer key declared over text or any other
+    non-integer storage is to link to a string key, since DiskGraph would
+    then use the stored values as they are. DiskGraph reads an optional
+    sign, ASCII digits and a zero fraction inside Unicode whitespace,
+    within the dtype's range (`byte` is unsigned), and anything else as
+    null, so such a row would lose its link; an empty or blank value
+    counts as missing, as DiskGraph reads it. Reads that column of each
+    staged parquet part one batch at a time and keeps only the distinct
+    convertible values, compacted as they accumulate; a part staged under
+    a type that is neither text nor valid UTF-8 binary is left to
     DiskGraph's own conversion.
     """
     import pyarrow as pa
     import pyarrow.compute as pc
     import pyarrow.parquet as pq
 
-    if all(conversion.bounds is None for conversion in conversions.values()):
+    if not conversions:
         return
     files = [
         file for path in paths for file in
         (sorted(Path(path).rglob('*.parquet')) if Path(path).is_dir() else
          [Path(path)])
     ]
+    text = pa.large_string()
     for name, conversion in conversions.items():
+        stored_types = {}
+        for file in files:
+            parquet = pq.ParquetFile(file)
+            if name in parquet.schema_arrow.names:
+                stored = parquet.schema_arrow.field(name).type
+                stored_types[file] = (stored.value_type if
+                                      pa.types.is_dictionary(stored) else stored)
         if conversion.bounds is None:
+            for stored in stored_types.values():
+                if not pa.types.is_integer(stored):
+                    raise ValueError(
+                        f"Foreign key {alias}.{name} is declared "
+                        f"{conversion.dtype.value} but stored as {stored} in "
+                        "the staged data; linking it to "
+                        f"{conversion.destination}, which is string, would "
+                        "use the stored values as they are. Declare the "
+                        "column as string, or store it as integers, before "
+                        "snapshot.")
             continue
         low, high = conversion.bounds
         invalid, example = 0, None
-        distinct, pending, pending_rows = pa.array([], pa.string()), [], 0
-        for file in files:
-            parquet = pq.ParquetFile(file)
-            if name not in parquet.schema_arrow.names:
-                continue
-            stored = parquet.schema_arrow.field(name).type
-            if pa.types.is_dictionary(stored):
-                stored = stored.value_type
+        distinct, pending, pending_rows = pa.array([], text), [], 0
+        for file, stored in stored_types.items():
             if not (pa.types.is_string(stored)
-                    or pa.types.is_large_string(stored)):
+                    or pa.types.is_large_string(stored)
+                    or pa.types.is_binary(stored)
+                    or pa.types.is_large_binary(stored)):
                 continue
-            for batch in parquet.iter_batches(columns=[name]):
+            for batch in pq.ParquetFile(file).iter_batches(columns=[name]):
                 values = batch.column(0)
                 if pa.types.is_dictionary(values.type):
                     values = values.dictionary_decode()
-                values = pc.drop_null(values).cast(pa.string())
+                try:
+                    values = pc.drop_null(values).cast(text)
+                except pa.ArrowInvalid:
+                    continue
                 values = pc.filter(
-                    values, pc.not_equal(pc.utf8_trim_whitespace(values), ''))
+                    values,
+                    pc.not_equal(pc.utf8_trim(values, characters=_WHITESPACE),
+                                 ''))
                 if not len(values):
                     continue
                 valid, _ = _integer_literals(values, low, high)
