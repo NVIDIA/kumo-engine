@@ -445,7 +445,7 @@ jobs:
           python-version: '3.11'
           activate-environment: true
           prune-cache: true
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: diskgraph-wheel
           path: dist
@@ -531,7 +531,7 @@ jobs:
           python-version: '3.12'
           activate-environment: true
           prune-cache: true
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: diskgraph-wheel
           path: dist
@@ -767,7 +767,7 @@ jobs:
     if: always() && needs.pytest.result != 'skipped' && needs.pytest.result != 'cancelled' && inputs.store_durations == true
     steps:
       - name: Download durations artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: durations-${{ github.run_id }}-*
           path: durations/
@@ -852,7 +852,7 @@ jobs:
         run: uv pip install -q 'coverage[toml]'
 
       - name: Download coverage data
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: .coverage-${{ github.run_id }}-*
           path: coverages/
