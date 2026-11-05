@@ -405,6 +405,7 @@ async function run(config) {
       result.detail = String(error.message);
       for (const value of Object.values(config.auth))
         result.detail = result.detail.split(value).join("[redacted]");
+      result.reason = `${phase}: ${error.name}: ${result.detail.split("\n")[0]}`;
     }
     event("error", { phase, type: error.name });
     if (

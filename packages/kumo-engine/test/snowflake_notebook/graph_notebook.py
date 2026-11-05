@@ -224,7 +224,10 @@ if installed.returncode:
     raise RuntimeError('Notebook package installation failed')
 print('KUMO_GRAPH_INSTALL_COMPLETE=' + setup_execution, flush=True)
 '''.replace('PAYLOAD', encoded)
-    execute = '''import hashlib, importlib.metadata, json, os, sys
+    execute = '''from uuid import uuid4
+execution = uuid4().hex[:12]
+print('KUMO_GRAPH_EXECUTION_STARTED=' + execution, flush=True)
+import hashlib, importlib.metadata, json, os, sys
 from pathlib import Path
 from IPython import get_ipython
 from IPython.display import display
@@ -248,9 +251,6 @@ for name, expected in source['modules'].items():
 candidate = json.loads((ROOT / 'candidate.json').read_text())
 assert importlib.metadata.version('kumo-engine') == candidate['candidate']['expected_version']
 from graph_fixture import exercise, retain
-from uuid import uuid4
-execution = uuid4().hex[:12]
-print('KUMO_GRAPH_EXECUTION_STARTED=' + execution, flush=True)
 RESULTS = ROOT / ('results-' + execution)
 from wheel_mlops_lifecycle import check_install
 installation = check_install(ROOT / candidate['candidate']['wheel_file'], candidate['candidate']['expected_version'], managed=True)

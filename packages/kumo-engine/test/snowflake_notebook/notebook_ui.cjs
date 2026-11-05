@@ -11,15 +11,18 @@ function requireThat(value, message) {
   if (!value) throw new Error(message);
 }
 
-async function until(page, predicate, timeout) {
+async function until(
+  page,
+  predicate,
+  timeout,
+  message = "Notebook did not reach the required state before its deadline",
+) {
   const deadline = Date.now() + timeout;
   do {
     if (await predicate()) return;
     await page.waitForTimeout(250);
   } while (Date.now() < deadline);
-  throw new Error(
-    "Notebook did not reach the required state before its deadline",
-  );
+  throw new Error(message);
 }
 
 async function workspace(page, event) {
@@ -199,10 +202,32 @@ async function runCell(frame, index) {
       exact: true,
     }),
   });
-  await cell
-    .getByRole("textbox", { name: "Code Editor", exact: true })
-    .click({ position: { x: 10, y: 10 } });
-  await cell.getByRole("button", { name: "Run cell", exact: true }).click();
+  const editor = cell.getByRole("textbox", {
+    name: "Code Editor",
+    exact: true,
+  });
+  const run = cell.getByRole("button", { name: "Run cell", exact: true });
+  await run.waitFor({ state: "visible" });
+  await until(
+    editor.page(),
+    () => run.isEnabled(),
+    60000,
+    "Notebook cell " + index + " is not ready for execution",
+  );
+  for (const number of [1, 2])
+    await frame
+      .getByRole("checkbox", { name: "Select cell " + number, exact: true })
+      .setChecked(number === index);
+  await editor.focus();
+  requireThat(
+    await editor.evaluate(
+      (element) =>
+        element === element.ownerDocument.activeElement ||
+        element.contains(element.ownerDocument.activeElement),
+    ),
+    "Notebook cell " + index + " editor did not receive keyboard focus",
+  );
+  await editor.press("Control+Enter");
 }
 
 async function selectTestService(frame, event) {
@@ -312,7 +337,7 @@ async function execute(page, frame, spec, event, output, config) {
       )[1]
     : null;
   await runCell(frame, 1);
-  event("notebook_install_started");
+  event("notebook_install_run_requested");
   let setup;
   await until(
     page,
@@ -324,7 +349,9 @@ async function execute(page, frame, spec, event, output, config) {
       return setup && setup !== previous;
     },
     120000,
+    "Notebook install cell 1 did not acknowledge the run request; inspect its saved cell output",
   );
+  event("notebook_install_started", { execution_id: setup });
   await Promise.race([
     frame
       .getByText(new RegExp("KUMO_GRAPH_INSTALL_COMPLETE=" + setup))
@@ -365,11 +392,27 @@ async function execute(page, frame, spec, event, output, config) {
       )[1]
     : null;
   await runCell(frame, 2);
-  event("notebook_graph_started");
+  event("notebook_graph_run_requested");
   let execution;
   await until(
     page,
     async () => {
+      const cell = frame
+        .getByRole("listitem")
+        .filter({
+          has: frame.getByRole("checkbox", {
+            name: "Select cell 2",
+            exact: true,
+          }),
+        });
+      if (await cell.getByText(/Traceback.*Cell In/s).isVisible())
+        throw new Error(
+          "Notebook graph cell failed before its execution acknowledgment; inspect the saved cell output",
+        );
+      if ((await status.innerText()).trim() !== "Connected")
+        throw new Error(
+          "Notebook service disconnected before graph execution acknowledgment",
+        );
       if (await graphStarted.count())
         execution = (await graphStarted.textContent()).match(
           /KUMO_GRAPH_EXECUTION_STARTED=([0-9a-f]{12})/,
@@ -377,7 +420,9 @@ async function execute(page, frame, spec, event, output, config) {
       return execution && execution !== prior;
     },
     120000,
+    "Notebook graph cell 2 did not acknowledge the run request; inspect its saved execution state and output",
   );
+  event("notebook_graph_started", { execution_id: execution });
   await until(
     page,
     async () => {

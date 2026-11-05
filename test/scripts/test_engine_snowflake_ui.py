@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """UI mode isolation and receipt binding; live qualification requires Snowsight."""
+import ast
 import hashlib
 import importlib
 import json
@@ -442,3 +443,18 @@ def test_trial_triggers_isolate_graph_ui_from_training(event, branch,
         condition = job['if'].replace('&&', ' and ').replace('||', ' or ')
         assert eval(condition, {'__builtins__': {}}, context) is expected
         assert job['environment'] == 'snowflake-mlops-test'
+
+
+def test_graph_execution_acknowledges_before_imports_or_sql(
+        graph_bundle, capsys):
+    _, root, config = graph_bundle
+    cell = json.loads((root / config['path']).read_text())['cells'][1]
+    code = ast.parse(''.join(cell['source']))
+    namespace = {}
+    exec(
+        compile(ast.Module(body=code.body[:3], type_ignores=[]),
+                '<graph-cell-acknowledgment>', 'exec'), namespace)
+    assert capsys.readouterr(
+    ).out == 'KUMO_GRAPH_EXECUTION_STARTED=' + namespace['execution'] + '\n'
+    assert len(namespace['execution']) == 12
+    int(namespace['execution'], 16)
