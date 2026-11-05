@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+from datetime import datetime
 from typing import Any
 
 import pandas as pd
@@ -43,8 +44,8 @@ def test_image_tensor_mapper(device: torch.device) -> None:
     mapper = ImageTensorMapper()
     assert str(mapper) == 'ImageTensorMapper()'
 
-    ser = pd.Series([1, 2, 3])
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([1, 2, 3], type=pa.int64())
+    out = mapper(array, device=device)
     assert isinstance(out, Tensor)
     assert out.device == device
     assert out.dtype == torch.float
@@ -56,8 +57,8 @@ def test_unsupported_tensor_mapper(device: torch.device) -> None:
     mapper = UnsupportedTensorMapper()
     assert str(mapper) == 'UnsupportedTensorMapper()'
 
-    ser = pd.Series([1, 2, 3])
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([1, 2, 3], type=pa.int64())
+    out = mapper(array, device=device)
     assert isinstance(out, Tensor)
     assert out.device == device
     assert out.dtype == torch.float
@@ -82,25 +83,25 @@ def test_numerical_tensor_mapper(device: torch.device) -> None:
     mapper = NumericalTensorMapper()
     assert str(mapper) == 'NumericalTensorMapper()'
 
-    ser = pd.Series([1, 2, 3])
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([1, 2, 3], type=pa.int64())
+    out = mapper(array, device=device)
     assert isinstance(out, Tensor)
     assert out.device == device
     assert out.dtype == torch.float
     assert out.equal(torch.tensor([[1.0], [2.0], [3.0]], device=device))
 
     out = mapper.backward(out)
-    pd.testing.assert_series_equal(ser, out, check_dtype=False)
+    pd.testing.assert_series_equal(array.to_pandas(), out, check_dtype=False)
 
-    ser = pd.Series([], dtype=float)
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([], type=pa.float64())
+    out = mapper(array, device=device)
     assert isinstance(out, Tensor)
     assert out.device == device
     assert out.dtype == torch.float
     assert out.size() == (0, 1)
 
     out = mapper.backward(out)
-    pd.testing.assert_series_equal(ser, out, check_dtype=False)
+    pd.testing.assert_series_equal(array.to_pandas(), out, check_dtype=False)
 
     # Numerical tensor mappers support multi-dimensional tensors in backward:
     tensor = torch.tensor([[1, 2], [3, 4]], device=device)
@@ -131,8 +132,8 @@ def test_numerical_tensor_post_mapper(device: torch.device) -> None:
 def test_numerical_tensor_mapper_na(device: torch.device) -> None:
     mapper = NumericalTensorMapper()
 
-    ser = pd.Series([1, float('NaN'), 3])
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([1, float('NaN'), 3], type=pa.float64())
+    out = mapper(array, device=device)
     assert isinstance(out, Tensor)
     assert out.device == device
     assert out.dtype == torch.float
@@ -140,8 +141,8 @@ def test_numerical_tensor_mapper_na(device: torch.device) -> None:
         torch.tensor([[False], [True], [False]], device=device))
     assert out[~out.isnan()].equal(torch.tensor([1.0, 3.0], device=device))
 
-    ser = pd.Series([1, None, 3], dtype=pd.Int64Dtype())
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([1, None, 3], type=pa.int64())
+    out = mapper(array, device=device)
     assert isinstance(out, Tensor)
     assert out.device == device
     assert out.dtype == torch.float
@@ -176,8 +177,8 @@ def test_categorical_tensor_mapper_str(
     mapper = CategoricalTensorMapper(category_counts=category_counts)
     assert str(mapper) == 'CategoricalTensorMapper()'
 
-    ser = pd.Series(['A', 'B', 'C', None])
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array(['A', 'B', 'C', None], type=pa.string())
+    out = mapper(array, device=device)
     assert isinstance(out, Tensor)
     assert out.device == device
     assert out.dtype == torch.long
@@ -186,15 +187,15 @@ def test_categorical_tensor_mapper_str(
     out = mapper.backward(out)
     pd.testing.assert_series_equal(pd.Series(['A', 'B', None, None]), out)
 
-    ser = pd.Series([], dtype=str)
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([], type=pa.string())
+    out = mapper(array, device=device)
     assert isinstance(out, Tensor)
     assert out.device == device
     assert out.dtype == torch.long
     assert out.size() == (0, 1)
 
     out = mapper.backward(out)
-    pd.testing.assert_series_equal(ser, out)
+    pd.testing.assert_series_equal(array.to_pandas(), out)
 
 
 @withCUDA
@@ -211,8 +212,8 @@ def test_categorical_tensor_mapper_number(
     mapper = CategoricalTensorMapper(category_counts=category_counts)
     assert str(mapper) == 'CategoricalTensorMapper()'
 
-    ser = pd.Series([0, 1, 2])
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([0, 1, 2], type=pa.int64())
+    out = mapper(array, device=device)
     assert isinstance(out, Tensor)
     assert out.device == device
     assert out.dtype == torch.long
@@ -221,8 +222,8 @@ def test_categorical_tensor_mapper_number(
     out = mapper.backward(out)
     pd.testing.assert_series_equal(pd.Series([0, 1, None]), out)
 
-    ser = pd.Series([0, 1, 2, None])
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([0, 1, 2, None], type=pa.float64())
+    out = mapper(array, device=device)
     assert isinstance(out, Tensor)
     assert out.device == device
     assert out.dtype == torch.long
@@ -231,8 +232,8 @@ def test_categorical_tensor_mapper_number(
     out = mapper.backward(out)
     pd.testing.assert_series_equal(pd.Series([0, 1, None, None]), out)
 
-    ser = pd.Series([0, 1, 2, None], dtype=pd.Int64Dtype())
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([0, 1, 2, None], type=pa.int64())
+    out = mapper(array, device=device)
     assert isinstance(out, Tensor)
     assert out.device == device
     assert out.dtype == torch.long
@@ -241,15 +242,15 @@ def test_categorical_tensor_mapper_number(
     out = mapper.backward(out)
     pd.testing.assert_series_equal(pd.Series([0, 1, None, None]), out)
 
-    ser = pd.Series([], dtype=mapper.mapping.dtype)
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([], type=pa.from_numpy_dtype(mapper.mapping.dtype))
+    out = mapper(array, device=device)
     assert isinstance(out, Tensor)
     assert out.device == device
     assert out.dtype == torch.long
     assert out.size() == (0, 1)
 
     out = mapper.backward(out)
-    pd.testing.assert_series_equal(ser, out)
+    pd.testing.assert_series_equal(array.to_pandas(), out)
 
 
 @withCUDA
@@ -264,8 +265,8 @@ def test_categorical_tensor_mapper_bool(
     mapper = CategoricalTensorMapper(category_counts=category_counts)
     assert str(mapper) == 'CategoricalTensorMapper()'
 
-    ser = pd.Series([True, False, None], dtype=pd.BooleanDtype())
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([True, False, None], type=pa.bool_())
+    out = mapper(array, device=device)
     assert isinstance(out, Tensor)
     assert out.device == device
     assert out.dtype == torch.long
@@ -275,23 +276,23 @@ def test_categorical_tensor_mapper_bool(
     pd.testing.assert_series_equal(
         pd.Series([True, False, None], dtype=pd.BooleanDtype()), out)
 
-    ser = pd.Series([], dtype=pd.BooleanDtype())
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([], type=pa.bool_())
+    out = mapper(array, device=device)
     assert isinstance(out, Tensor)
     assert out.device == device
     assert out.dtype == torch.long
     assert out.size() == (0, 1)
 
     out = mapper.backward(out)
-    pd.testing.assert_series_equal(ser, out)
+    pd.testing.assert_series_equal(pd.Series([], dtype=pd.BooleanDtype()), out)
 
 
 @withCUDA
 def test_categorical_tensor_mapper_empty(device: torch.device) -> None:
     mapper = CategoricalTensorMapper(category_counts=[])
 
-    ser = pd.Series(['a', None])
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array(['a', None], type=pa.string())
+    out = mapper(array, device=device)
     assert isinstance(out, Tensor)
     assert out.device == device
     assert out.dtype == torch.long
@@ -333,8 +334,8 @@ def test_multi_categorical_tensor_mapper_sep(
                                           sep='|')
     assert str(mapper) == 'MultiCategoricalTensorMapper(sep=|)'
 
-    ser = pd.Series([None, 'A|B', 'B|C|', 'A', '', None])
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([None, 'A|B', 'B|C|', 'A', '', None], type=pa.string())
+    out = mapper(array, device=device)
     assert isinstance(out, MultiNestedTensor)
     assert out.num_rows == 6
     assert out.num_cols == 1
@@ -350,8 +351,8 @@ def test_multi_categorical_tensor_mapper_sep(
         out,
     )
 
-    ser = pd.Series([], dtype=str)
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([], type=pa.string())
+    out = mapper(array, device=device)
     assert isinstance(out, MultiNestedTensor)
     assert out.num_rows == 0
     assert out.num_cols == 1
@@ -361,7 +362,7 @@ def test_multi_categorical_tensor_mapper_sep(
     assert out.offset.equal(torch.tensor([0], device=device))
 
     out = mapper.backward(out)
-    pd.testing.assert_series_equal(ser, out)
+    pd.testing.assert_series_equal(array.to_pandas(), out)
 
 
 @withCUDA
@@ -377,8 +378,8 @@ def test_multi_categorical_tensor_mapper_no_sep(
                                           sep=None)
     assert str(mapper) == 'MultiCategoricalTensorMapper(sep=None)'
 
-    ser = pd.Series([None, 'A', 'B', 'C', '', None])
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([None, 'A', 'B', 'C', '', None], type=pa.string())
+    out = mapper(array, device=device)
     assert isinstance(out, MultiNestedTensor)
     assert out.num_rows == 6
     assert out.num_cols == 1
@@ -390,8 +391,8 @@ def test_multi_categorical_tensor_mapper_no_sep(
     out = mapper.backward(out)
     pd.testing.assert_series_equal(pd.Series(['', 'A', 'B', '', '', '']), out)
 
-    ser = pd.Series([], dtype=str)
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([], type=pa.string())
+    out = mapper(array, device=device)
     assert isinstance(out, MultiNestedTensor)
     assert out.num_rows == 0
     assert out.num_cols == 1
@@ -401,7 +402,7 @@ def test_multi_categorical_tensor_mapper_no_sep(
     assert out.offset.equal(torch.tensor([0], device=device))
 
     out = mapper.backward(out)
-    pd.testing.assert_series_equal(ser, out)
+    pd.testing.assert_series_equal(array.to_pandas(), out)
 
 
 @withCUDA
@@ -417,7 +418,7 @@ def test_multi_categorical_tensor_mapper_list(
                                           sep=None)
     assert str(mapper) == 'MultiCategoricalTensorMapper(sep=None)'
 
-    ser = pd.Series([
+    array = pa.array([
         None,
         ['A', 'B'],
         ['B', 'C', '', None],
@@ -427,8 +428,8 @@ def test_multi_categorical_tensor_mapper_list(
         [],
         None,
         ['A', 'A'],
-    ])
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    ], type=pa.list_(pa.string()))
+    out = mapper(array, device=device)
     assert isinstance(out, MultiNestedTensor)
     assert out.num_rows == 9
     assert out.num_cols == 1
@@ -445,8 +446,8 @@ def test_multi_categorical_tensor_mapper_list(
         out,
     )
 
-    ser = pd.Series([], dtype=object)
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([], type=pa.list_(pa.string()))
+    out = mapper(array, device=device)
     assert isinstance(out, MultiNestedTensor)
     assert out.num_rows == 0
     assert out.num_cols == 1
@@ -456,7 +457,7 @@ def test_multi_categorical_tensor_mapper_list(
     assert out.offset.equal(torch.tensor([0], device=device))
 
     out = mapper.backward(out)
-    pd.testing.assert_series_equal(ser, out)
+    pd.testing.assert_series_equal(array.to_pandas(), out)
 
 
 @withCUDA
@@ -492,8 +493,8 @@ def test_multi_categorical_tensor_post_mapper(device: torch.device) -> None:
 def test_multi_categorical_tensor_mapper_empty(device: torch.device) -> None:
     mapper = MultiCategoricalTensorMapper(category_counts=[], sep='|')
 
-    ser = pd.Series(['a|b', None])
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array(['a|b', None], type=pa.string())
+    out = mapper(array, device=device)
     assert isinstance(out, MultiNestedTensor)
     assert out.num_rows == 2
     assert out.num_cols == 1
@@ -511,8 +512,8 @@ def test_sequence_tensor_mapper_list(device: torch.device) -> None:
     mapper = SequenceTensorMapper(min_length=2, max_length=2)
     assert str(mapper) == 'SequenceTensorMapper(min_length=2, max_length=2)'
 
-    ser = pd.Series([None, [1, 2], [2, 3]])
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([None, [1, 2], [2, 3]], type=pa.list_(pa.int64()))
+    out = mapper(array, device=device)
     assert isinstance(out, MultiEmbeddingTensor)
     assert out.num_rows == 3
     assert out.num_cols == 1
@@ -532,8 +533,8 @@ def test_sequence_tensor_mapper_list(device: torch.device) -> None:
         out,
     )
 
-    ser = pd.Series([], dtype=object)
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([], type=pa.list_(pa.int64()))
+    out = mapper(array, device=device)
     assert isinstance(out, MultiEmbeddingTensor)
     assert out.num_rows == 0
     assert out.num_cols == 1
@@ -543,7 +544,7 @@ def test_sequence_tensor_mapper_list(device: torch.device) -> None:
     assert out.offset.equal(torch.tensor([0, 2], device=device))
 
     out = mapper.backward(out)
-    pd.testing.assert_series_equal(ser, out)
+    pd.testing.assert_series_equal(array.to_pandas(), out)
 
 
 @withCUDA
@@ -551,8 +552,10 @@ def test_nested_sequence_tensor_mapper_list(device: torch.device) -> None:
     mapper = SequenceTensorMapper(min_length=0, max_length=3)
     assert str(mapper) == 'SequenceTensorMapper(min_length=0, max_length=3)'
 
-    ser = pd.Series([None, [1, 2, 3], [], [4, 5], [6, 7, 8, 9]])
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array(
+        [None, [1, 2, 3], [], [4, 5], [6, 7, 8, 9]], type=pa.list_(pa.int64())
+    )
+    out = mapper(array, device=device)
     assert isinstance(out, MultiEmbeddingTensor)
     assert out.num_rows == 5
     assert out.num_cols == 1
@@ -588,8 +591,8 @@ def test_sequence_tensor_mapper_str(device: torch.device) -> None:
     mapper = SequenceTensorMapper(min_length=2, max_length=2)
     assert str(mapper) == 'SequenceTensorMapper(min_length=2, max_length=2)'
 
-    ser = pd.Series([None, '[1, 2]', '[2, 3]'])
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([None, '[1, 2]', '[2, 3]'], type=pa.string())
+    out = mapper(array, device=device)
     assert isinstance(out, MultiEmbeddingTensor)
     assert out.num_rows == 3
     assert out.num_cols == 1
@@ -609,8 +612,8 @@ def test_sequence_tensor_mapper_str(device: torch.device) -> None:
         out,
     )
 
-    ser = pd.Series([], dtype=str)
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([], type=pa.string())
+    out = mapper(array, device=device)
     assert isinstance(out, MultiEmbeddingTensor)
     assert out.num_rows == 0
     assert out.num_cols == 1
@@ -620,7 +623,7 @@ def test_sequence_tensor_mapper_str(device: torch.device) -> None:
     assert out.offset.equal(torch.tensor([0, 2], device=device))
 
     out = mapper.backward(out)
-    pd.testing.assert_series_equal(ser, out)
+    pd.testing.assert_series_equal(array.to_pandas(), out)
 
 
 @withCUDA
@@ -628,8 +631,10 @@ def test_nested_sequence_tensor_mapper_str(device: torch.device) -> None:
     mapper = SequenceTensorMapper(min_length=0, max_length=3)
     assert str(mapper) == 'SequenceTensorMapper(min_length=0, max_length=3)'
 
-    ser = pd.Series([None, '[1, 2, 3]', '[]', '[4, 5]', '[6, 7, 8, 9]'])
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array(
+        [None, "[1, 2, 3]", "[]", "[4, 5]", "[6, 7, 8, 9]"], type=pa.string()
+    )
+    out = mapper(array, device=device)
     assert isinstance(out, MultiEmbeddingTensor)
     assert out.num_rows == 5
     assert out.num_cols == 1
@@ -711,13 +716,13 @@ def test_timestamp_tensor_mapper_datetime(device: torch.device) -> None:
     mapper = TimestampTensorMapper()
     assert str(mapper) == 'TimestampTensorMapper()'
 
-    ser = pd.Series([
-        pd.Timestamp('2018-01-05'),
+    array = pa.array([
+        datetime(2018, 1, 5),
         None,
-        pd.Timestamp.min,
-        pd.Timestamp.max,
-    ])
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+        pa.scalar(-(2**63) + 1, type=pa.timestamp("ns")),
+        pa.scalar(2**63 - 1, type=pa.timestamp("ns")),
+    ], type=pa.timestamp("ns"))
+    out = mapper(array, device=device)
     assert isinstance(out, Tensor)
     out = out[:, :mapper.index['unix']]
     assert out.device == device
@@ -736,10 +741,10 @@ def test_timestamp_tensor_mapper_datetime(device: torch.device) -> None:
 
     out = mapper.backward(out)
     # We don't mind if extreme values get mildly malformed
-    pd.testing.assert_series_equal(ser[:2], out[:2])
+    pd.testing.assert_series_equal(array.to_pandas()[:2], out[:2])
 
-    ser = pd.Series([], dtype='datetime64[ns]')
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([], type=pa.timestamp("ns"))
+    out = mapper(array, device=device)
     out = out[:, :mapper.index['unix']]
     assert isinstance(out, Tensor)
     assert out.device == device
@@ -747,7 +752,7 @@ def test_timestamp_tensor_mapper_datetime(device: torch.device) -> None:
     assert out.size() == (0, 15)
 
     out = mapper.backward(out)
-    pd.testing.assert_series_equal(ser, out)
+    pd.testing.assert_series_equal(array.to_pandas(), out)
 
 
 @withCUDA
@@ -755,8 +760,8 @@ def test_timestamp_tensor_mapper_str(device: torch.device) -> None:
     mapper = TimestampTensorMapper()
     assert str(mapper) == 'TimestampTensorMapper()'
 
-    ser = pd.Series(['2018-01-05', ''])
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array(['2018-01-05', ''], type=pa.string())
+    out = mapper(array, device=device)
     out = out[:, :mapper.index['unix']]
     assert isinstance(out, Tensor)
     assert out.device == device
@@ -778,23 +783,23 @@ def test_timestamp_tensor_mapper_str(device: torch.device) -> None:
 def test_timestamp_tensor_mapper_holidays(device: torch.device) -> None:
     mapper = TimestampTensorMapper()
 
-    ser = pd.Series([
-        pd.Timestamp('1960-01-01'),
-        pd.Timestamp('1969-12-31'),
-        pd.Timestamp('1970-01-01'),  # Holiday.
-        pd.Timestamp('1970-01-02'),
-        pd.Timestamp('2005-12-31'),
-        pd.Timestamp('2006-01-01'),
-        pd.Timestamp('2006-01-02'),  # Holiday falls on a Monday
-        pd.Timestamp('1970-11-09'),
-        pd.Timestamp('1970-11-11'),  # Holiday.
-        pd.Timestamp('1970-11-14'),
-        pd.Timestamp('2042-12-31'),
-        pd.Timestamp('2043-01-01'),  # Holiday.
-        pd.Timestamp('2043-01-03'),
-        pd.Timestamp('2055-01-01'),
-    ])
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([
+        datetime(1960, 1, 1),
+        datetime(1969, 12, 31),
+        datetime(1970, 1, 1),  # Holiday.
+        datetime(1970, 1, 2),
+        datetime(2005, 12, 31),
+        datetime(2006, 1, 1),
+        datetime(2006, 1, 2),  # Holiday falls on a Monday
+        datetime(1970, 11, 9),
+        datetime(1970, 11, 11),  # Holiday.
+        datetime(1970, 11, 14),
+        datetime(2042, 12, 31),
+        datetime(2043, 1, 1),  # Holiday.
+        datetime(2043, 1, 3),
+        datetime(2055, 1, 1),
+    ], type=pa.timestamp("ns"))
+    out = mapper(array, device=device)
     out = out[:, :mapper.index['unix']]
     assert out[:, -4:].tolist() == [
         [0, 0, 7, 7],
@@ -829,8 +834,8 @@ def test_timestamp_tensor_post_mapper_datetime(device: torch.device) -> None:
     assert out[0].tolist() == [0] * num_elems
     assert out[1].tolist() == [-1] * num_elems
 
-    ser = pd.Series([], dtype='datetime64[ns]')
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([], type=pa.timestamp("ns"))
+    out = mapper(array, device=device)
     assert isinstance(out, Tensor)
     assert out.device == device
     assert out.dtype == torch.long
@@ -843,9 +848,11 @@ def test_glove_tensor_mapper(device: torch.device) -> None:
     assert str(mapper) == 'TextTensorMapper()'
 
     # TODO Tokenizer cannot handle multi-line sentences for now.
-    ser = pd.Series(
-        ['invalid_token', 'get', 'Get old', 'get\nold', 'get,old', '', None])
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array(
+        ["invalid_token", "get", "Get old", "get\nold", "get,old", "", None],
+        type=pa.string(),
+    )
+    out = mapper(array, device=device)
     assert isinstance(out, MultiNestedTensor)
     assert out.num_rows == 7
     assert out.num_cols == 1
@@ -861,8 +868,8 @@ def test_glove_tensor_mapper(device: torch.device) -> None:
         pd.Series([None, 'get', 'get old', 'get old', 'get old', None, None]),
         out)
 
-    ser = pd.Series([], dtype=str)
-    out = mapper(pa.array(ser, from_pandas=True), device=device)
+    array = pa.array([], type=pa.string())
+    out = mapper(array, device=device)
     assert isinstance(out, MultiNestedTensor)
     assert out.num_rows == 0
     assert out.num_cols == 1
@@ -872,7 +879,7 @@ def test_glove_tensor_mapper(device: torch.device) -> None:
     assert out.offset.equal(torch.tensor([0], device=device))
 
     out = mapper.backward(out)
-    pd.testing.assert_series_equal(ser, out)
+    pd.testing.assert_series_equal(array.to_pandas(), out)
 
 
 @withCUDA
@@ -905,8 +912,9 @@ def test_glove_tensor_post_mapper(device: torch.device) -> None:
     texts = [
         'invalid_token', 'get', 'Get old', 'get\nold', 'get,old', '', None
     ]
-    out_post_forward = mapper.post_forward(pa.array(texts), device=device)
-    out_forward = mapper(pa.array(pd.Series(texts), from_pandas=True), device=device)
+    array = pa.array(texts, type=pa.string())
+    out_post_forward = mapper.post_forward(array, device=device)
+    out_forward = mapper(array, device=device)
     assert out_post_forward.values.equal(out_forward.values)
     assert out_post_forward.offset.equal(out_forward.offset)
 
