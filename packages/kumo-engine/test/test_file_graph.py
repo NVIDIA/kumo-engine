@@ -788,18 +788,16 @@ def test_slash_dates_without_one_order_are_refused(tmp_path, extension, values,
 
 
 @pytest.mark.parametrize('extension', ['csv', 'parquet'])
-@pytest.mark.parametrize('values, fmt', [
-    ([
-        '2024-01-16 10:00:00', '2024-01-15 10:00:00+02:00',
-        '2024-01-17 10:00:00Z'
-    ], '%Y-%m-%d %H:%M:%S%.f%#z'),
-    ([
+@pytest.mark.parametrize('values', [
+    ['2024-01-16 10:00:00', '2024-01-15 10:00:00+02:00', '2024-01-17 10:00:00Z'],
+    [
         '2024-01-16T10:00:00', '2024-01-15T10:00:00.250+0200',
         '2024-01-17T10:00:00Z'
-    ], '%Y-%m-%dT%H:%M:%S%.f%#z'),
+    ],
+    ['2024-01-16T10:00:00', '2024-01-15 10:00:00+02:00', '2024-01-17T10:00:00Z'],
 ])
-def test_mixed_timezones_keep_every_value_and_warn(tmp_path, extension, values,
-                                                   fmt):
+def test_mixed_timezones_keep_every_value_and_warn(tmp_path, extension,
+                                                   values):
     with pytest.warns(
             UserWarning,
             match=re.escape('Time column events.ts mixes 2 values with a '
@@ -810,7 +808,7 @@ def test_mixed_timezones_keep_every_value_and_warn(tmp_path, extension, values,
         column, stats, ingest = _time_snapshot(tmp_path, extension,
                                                pa.array(values, pa.string()))
     assert len(_user_warnings(caught)) == 1
-    assert column['timestamp_format'] == fmt
+    assert column['timestamp_format'] == '%Y-%m-%d %H:%M:%S%.f%#z'
     assert ingest['total_nodes'] == 3
     assert ingest['dropped_rows_counts'] == {}
     assert (stats['min_secs'],

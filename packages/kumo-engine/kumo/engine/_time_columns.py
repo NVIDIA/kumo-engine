@@ -12,7 +12,8 @@ calendar holds (`2024-02-30`, hour 25, `0000-00-00`) or that falls outside
 the nanosecond timestamp range (1677-09-21 to 2262-04-11) is made missing in
 the staged data and counted, never moved to a neighbouring date. Bare
 timestamps are read as UTC and zoned ones converted to UTC; a column mixing
-the two is reported and given a format that reads both.
+the two is reported, staged with one date-time separator and given a format
+that reads both.
 """
 
 import os
@@ -28,9 +29,10 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
-# Whole epoch seconds a nanosecond timestamp can hold.
-_MIN_SECS = -9_223_372_036
-_MAX_SECS = 9_223_372_036
+# The first and last instant a nanosecond timestamp can hold, as epoch
+# seconds and the nanoseconds past them.
+_MIN = (-9_223_372_037, 145_224_193)
+_MAX = (9_223_372_036, 854_775_807)
 _RANGE = '1677-09-21 to 2262-04-11'
 _EXAMPLES = 3
 
@@ -46,7 +48,7 @@ _READINGS = {
 }
 _ISO = (r'^(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})'
         r'(?:(?P<sep>[T ])(?P<H>\d{2}):(?P<M>\d{2})'
-        r'(?::(?P<S>\d{2})(?:\.\d+)?)?'
+        r'(?::(?P<S>\d{2})(?:\.(?P<f>\d+))?)?'
         r'(?: ?(?P<z>Z|[+-]\d{2}:?\d{2}))?)?$')
 _YEAR_SLASH = (r'^(?P<y>\d{4})/(?P<m>\d{1,2})/(?P<d>\d{1,2})'
                r'(?: (?P<H>\d{1,2}):(?P<M>\d{2})(?::(?P<S>\d{2}))?)?$')
@@ -86,11 +88,13 @@ class _Scan:
     bare: int = 0
     zoned_example: Any = None
     bare_example: Any = None
-    separators: Counter = field(default_factory=Counter)
+    t_parts: set = field(default_factory=set)
     slash_dm: _Tally = field(default_factory=_Tally)
     slash_md: _Tally = field(default_factory=_Tally)
     slash_both: _Tally = field(default_factory=_Tally)
-    shapes: Counter = field(default_factory=Counter)
+    shapes: Dict[str, Counter] = field(
+        default_factory=lambda: {k: Counter()
+                                 for k in ('md', 'dm')})
     impossible: Dict[str, _Tally] = field(
         default_factory=lambda: {k: _Tally()
                                  for k in ('fixed', 'md', 'dm')})
@@ -107,6 +111,7 @@ class _Decision:
     timestamp_format: Optional[str] = None
     order: str = 'fixed'
     reading: Optional[str] = None
+    one_separator: bool = False
 
 
 def _number(parts: pa.Array, name: str) -> pa.Array:
@@ -160,9 +165,34 @@ def _epoch_seconds(y: pa.Array, m: pa.Array, d: pa.Array, hour: pa.Array,
                                                second)))
 
 
-def _in_range(secs: pa.Array) -> pa.Array:
-    return pc.and_(pc.greater_equal(secs, _MIN_SECS),
-                   pc.less_equal(secs, _MAX_SECS))
+def _in_range(secs: pa.Array, nanos: Any = 0) -> pa.Array:
+    def past(bound: Tuple[int, int], before: bool) -> pa.Array:
+        compare = pc.less if before else pc.greater
+        return pc.or_(
+            compare(secs, bound[0]),
+            pc.and_(pc.equal(secs, bound[0]), compare(nanos, bound[1])))
+
+    return pc.invert(pc.or_(past(_MIN, True), past(_MAX, False)))
+
+
+def _split(values: pa.Array, ticks: int) -> Tuple[pa.Array, pa.Array]:
+    r"""Epoch seconds and the nanoseconds past them from a count of
+    `ticks` per second, flooring so an instant before 1970 keeps a
+    positive fraction.
+    """
+    secs = pc.divide(values, ticks)
+    rest = pc.subtract(values, pc.multiply(secs, ticks))
+    borrow = pc.cast(pc.less(rest, 0), pa.int64())
+    secs = pc.subtract(secs, borrow)
+    rest = pc.add(rest, pc.multiply(borrow, ticks))
+    return secs, pc.multiply(rest, 10**9 // ticks)
+
+
+def _fraction_nanos(parts: pa.Array) -> pa.Array:
+    digits = pc.utf8_slice_codeunits(
+        pc.utf8_rpad(pc.fill_null(pc.struct_field(parts, 'f'), ''), 9, '0'), 0,
+        9)
+    return pc.cast(digits, pa.int64())
 
 
 def _offset_seconds(zone: pa.Array) -> pa.Array:
@@ -181,8 +211,9 @@ def _digits_between(values: pa.Array, low: int, high: int) -> pa.Array:
     return pc.and_(pc.greater_equal(values, low), pc.less(values, high))
 
 
-def _int_readings(values: pa.Array) -> Tuple[pa.Array, pa.Array]:
-    r"""Each whole number's one reading and the epoch seconds under it.
+def _int_readings(values: pa.Array) -> Tuple[pa.Array, pa.Array, pa.Array]:
+    r"""Each whole number's one reading, with the epoch seconds and the
+    nanoseconds past them under it.
     Shapes come first: eight digits that are a calendar date, fourteen that
     are a date and a time. Then size: nine or ten digits are seconds, twelve
     or thirteen milliseconds, fifteen or sixteen microseconds, eighteen or
@@ -239,7 +270,11 @@ def _int_readings(values: pa.Array) -> Tuple[pa.Array, pa.Array]:
                 pc.subtract(values, pc.multiply(pc.divide(values, 100), 100)))),
         values, pc.divide(values, 10**3), pc.divide(values, 10**6),
         pc.divide(values, 10**9), pa.scalar(None, pa.int64()))
-    return pc.if_else(pc.is_null(values), None, reading), secs
+    nanos = pc.case_when(pc.make_struct(millis, micros, nanos),
+                         _split(values, 10**3)[1],
+                         _split(values, 10**6)[1],
+                         _split(values, 10**9)[1], pa.scalar(0, pa.int64()))
+    return pc.if_else(pc.is_null(values), None, reading), secs, nanos
 
 
 def _as_int64(values: pa.Array) -> Optional[pa.Array]:
@@ -265,15 +300,16 @@ def _as_int64(values: pa.Array) -> Optional[pa.Array]:
     return None
 
 
-def _native_seconds(values: pa.Array) -> Optional[pa.Array]:
+def _native_instants(values: pa.Array) -> Optional[Tuple[pa.Array, pa.Array]]:
     kind = values.type
     if pa.types.is_date32(kind):
-        return pc.multiply(values.cast(pa.int32()).cast(pa.int64()), 86400)
+        days = values.cast(pa.int32()).cast(pa.int64())
+        return pc.multiply(days, 86400), pc.multiply(days, 0)
     if pa.types.is_date64(kind):
-        return pc.divide(values.cast(pa.int64()), 1000)
+        return _split(values.cast(pa.int64()), 10**3)
     if pa.types.is_timestamp(kind):
         ticks = {'s': 1, 'ms': 10**3, 'us': 10**6, 'ns': 10**9}[kind.unit]
-        return pc.divide(values.cast(pa.int64()), ticks)
+        return _split(values.cast(pa.int64()), ticks)
     return None
 
 
@@ -318,10 +354,11 @@ class _Column:
         self.scan.values += len(present)
         if not len(present):
             return
-        secs = _native_seconds(values)
-        if secs is not None:
+        instants = _native_instants(values)
+        if instants is not None:
             self.scan.families['native'] += len(present)
-            self._tally('fixed', part, values, pc.invert(_in_range(secs)), None)
+            self._tally('fixed', part, values, pc.invert(_in_range(*instants)),
+                        None)
             return
         numbers = _as_int64(values)
         if numbers is not None:
@@ -339,7 +376,7 @@ class _Column:
         r"""Tallies the reading of each whole number; one too wide for
         `int64` arrives as null and has none.
         """
-        reading, secs = _int_readings(numbers)
+        reading, secs, nanos = _int_readings(numbers)
         reading = pc.if_else(pc.and_(present, pc.is_null(numbers)), 'none',
                              reading)
         for code, count in zip(*pc.value_counts(reading).flatten()):
@@ -350,7 +387,8 @@ class _Column:
             if code not in self.scan.reading_examples:
                 self.scan.reading_examples[code] = pc.filter(
                     values, pc.equal(reading, code))[0].as_py()
-        self._tally('fixed', part, values, pc.invert(_in_range(secs)), None)
+        self._tally('fixed', part, values, pc.invert(_in_range(secs, nanos)),
+                    None)
 
     def _observe_text(self, part: str, text: pa.Array) -> None:
         iso = pc.extract_regex(text, _ISO)
@@ -385,24 +423,22 @@ class _Column:
             valid = pc.and_(_valid_date(y, m, d),
                             _valid_time(hour, minute, second))
             secs = _epoch_seconds(y, m, d, hour, minute, second)
+            nanos = pa.scalar(0, pa.int64())
             if kind == 'iso':
                 zone = pc.fill_null(pc.struct_field(parts, 'z'), '')
                 secs = pc.subtract(secs, _offset_seconds(zone))
+                nanos = _fraction_nanos(parts)
                 zoned = pc.and_(matched, pc.not_equal(zone, ''))
                 bare = pc.and_(matched, pc.equal(zone, ''))
                 self._note_zones(text, zoned, bare)
-                for separator, count in zip(*pc.value_counts(
-                        pc.filter(pc.struct_field(parts, 'sep'),
-                                  matched)).flatten()):
-                    if separator.as_py():
-                        self.scan.separators[separator.as_py()] += (
-                            count.as_py())
+                if pc.any(pc.equal(pc.struct_field(parts, 'sep'), 'T')).as_py():
+                    self.scan.t_parts.add(part)
             self._tally('fixed', part, text, pc.and_(matched, pc.invert(valid)),
                         'impossible')
             self._tally(
                 'fixed', part, text,
-                pc.and_(pc.and_(matched, valid), pc.invert(_in_range(secs))),
-                'far')
+                pc.and_(pc.and_(matched, valid),
+                        pc.invert(_in_range(secs, nanos))), 'far')
 
         matched = pc.fill_null(pc.is_valid(slash), False)
         if pc.sum(matched).as_py():
@@ -428,9 +464,6 @@ class _Column:
         time_ok = _valid_time(hour, minute, second)
         shape = pc.add(pc.cast(pc.is_valid(_number(parts, 'H')), pa.int64()),
                        pc.cast(pc.is_valid(_number(parts, 'S')), pa.int64()))
-        for value, count in zip(
-                *pc.value_counts(pc.filter(shape, matched)).flatten()):
-            self.scan.shapes[value.as_py()] += count.as_py()
         orders = {
             'md': (_valid_date(y, a,
                                b), _epoch_seconds(y, a, b, hour, minute,
@@ -441,6 +474,10 @@ class _Column:
         }
         valid_md = pc.and_(matched, pc.and_(orders['md'][0], time_ok))
         valid_dm = pc.and_(matched, pc.and_(orders['dm'][0], time_ok))
+        for order, valid in (('md', valid_md), ('dm', valid_dm)):
+            for value, count in zip(
+                    *pc.value_counts(pc.filter(shape, valid)).flatten()):
+                self.scan.shapes[order][value.as_py()] += count.as_py()
         self.scan.slash_md.add(pc.and_(valid_md, pc.invert(valid_dm)), text)
         self.scan.slash_dm.add(pc.and_(valid_dm, pc.invert(valid_md)), text)
         self.scan.slash_both.add(pc.and_(valid_md, valid_dm), text)
@@ -474,9 +511,8 @@ class _Column:
         elif set(known) == {'slash'}:
             self._decide_slash()
         elif set(known) == {'iso'} and scan.zoned and scan.bare:
-            separator = (scan.separators
-                         or Counter({' ': 1})).most_common(1)[0][0]
-            self.decision = _Decision(f'%Y-%m-%d{separator}%H:%M:%S%.f%#z')
+            self.decision = _Decision('%Y-%m-%d %H:%M:%S%.f%#z',
+                                      one_separator=True)
             warnings.warn(
                 f"Time column {self.alias}.{self.name} mixes {scan.zoned} "
                 f"value{'s' if scan.zoned != 1 else ''} with a timezone, "
@@ -544,7 +580,7 @@ class _Column:
                 "both ways. Set timestamp_format on the column to "
                 "'%d/%m/%Y' or '%m/%d/%Y'.")
         order, settled = ('dm', dm) if dm.count else ('md', md)
-        shape = _SLASH_SHAPES[scan.shapes.most_common(1)[0][0]]
+        shape = _SLASH_SHAPES[scan.shapes[order].most_common(1)[0][0]]
         fmt = ('%d/%m/%Y' if order == 'dm' else '%m/%d/%Y') + shape
         self.decision = _Decision(fmt, order=order)
         warnings.warn(
@@ -587,23 +623,37 @@ class _Column:
             stacklevel=5,
         )
 
-    def invalid_parts(self) -> set:
+    def parts_to_rewrite(self) -> set:
         parts = set(self.scan.invalid_parts['fixed'])
         if self.decision.order != 'fixed':
             parts |= self.scan.invalid_parts[self.decision.order]
+        if self.decision.one_separator:
+            parts |= self.scan.t_parts
         return parts
+
+    def rewritten(self, values: pa.Array) -> pa.Array:
+        r"""The column as the decision stages it: invalid values null, and
+        ISO values on one date-time separator when the column mixes bare
+        and zoned ones, so one chrono format reads them all.
+        """
+        invalid = self.invalid(values)
+        if self.decision.one_separator:
+            values = pc.replace_substring_regex(values,
+                                                r'^(\d{4}-\d{2}-\d{2})T',
+                                                r'\1 ')
+        return pc.if_else(invalid, None, values)
 
     def invalid(self, values: pa.Array) -> pa.Array:
         r"""The values the decision makes missing: none when the column
         is left to DiskGraph's own reading.
         """
-        secs = _native_seconds(values)
-        if secs is not None:
-            return pc.fill_null(pc.invert(_in_range(secs)), False)
+        instants = _native_instants(values)
+        if instants is not None:
+            return pc.fill_null(pc.invert(_in_range(*instants)), False)
         numbers = _as_int64(values)
         if numbers is not None:
-            return pc.fill_null(pc.invert(_in_range(_int_readings(numbers)[1])),
-                                False)
+            return pc.fill_null(
+                pc.invert(_in_range(*_int_readings(numbers)[1:])), False)
         text = _strings(values)
         if text is None:
             return pa.array([False] * len(values), pa.bool_())
@@ -614,7 +664,7 @@ class _Column:
                 pc.fill_null(pc.match_substring_regex(text, _DIGITS), False))
             invalid = pc.or_(
                 invalid,
-                pc.fill_null(pc.invert(_in_range(_int_readings(numbers)[1])),
+                pc.fill_null(pc.invert(_in_range(*_int_readings(numbers)[1:])),
                              False))
         for pattern, kind in ((_ISO, 'iso'), (_YEAR_SLASH, 'year_slash'),
                               (_SLASH, 'slash')):
@@ -635,19 +685,21 @@ class _Column:
             valid = pc.and_(_valid_date(y, m, d),
                             _valid_time(hour, minute, second))
             secs = _epoch_seconds(y, m, d, hour, minute, second)
+            nanos = pa.scalar(0, pa.int64())
             if kind == 'iso':
                 secs = pc.subtract(
                     secs,
                     _offset_seconds(
                         pc.fill_null(pc.struct_field(parts, 'z'), '')))
-            bad = pc.or_(pc.invert(valid), pc.invert(_in_range(secs)))
+                nanos = _fraction_nanos(parts)
+            bad = pc.or_(pc.invert(valid), pc.invert(_in_range(secs, nanos)))
             invalid = pc.or_(invalid, pc.and_(matched, pc.fill_null(bad,
                                                                     False)))
         return pc.fill_null(invalid, False)
 
 
 def _render(secs: Optional[int]) -> str:
-    if secs is None or not _MIN_SECS <= secs <= _MAX_SECS:
+    if secs is None or not _MIN[0] < secs <= _MAX[0]:
         return f'outside {_RANGE}'
     return datetime.fromtimestamp(secs,
                                   timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
@@ -663,9 +715,10 @@ def _parquet_files(paths: Sequence[str]) -> List[Path]:
 
 def _rewrite(file: Path, columns: Dict[str, Callable[[pa.Array],
                                                      pa.Array]]) -> None:
-    r"""Rewrites one staged part with the given columns' invalid values set
-    to null, keeping every other byte of the schema and data. The part is
-    replaced atomically so a failure leaves the original in place.
+    r"""Rewrites one staged part with the given columns replaced by what
+    their callables return, keeping every other byte of the schema and
+    data. The part is replaced atomically so a failure leaves the original
+    in place.
     """
     parquet = pq.ParquetFile(file)
     schema = parquet.schema_arrow
@@ -684,7 +737,7 @@ def _rewrite(file: Path, columns: Dict[str, Callable[[pa.Array],
                 if field_.name in columns:
                     if pa.types.is_dictionary(array.type):
                         array = array.cast(field_.type)
-                    array = pc.if_else(columns[field_.name](array), None, array)
+                    array = columns[field_.name](array)
                 arrays.append(array)
             writer.write_batch(pa.RecordBatch.from_arrays(
                 arrays, schema=schema))
@@ -697,8 +750,10 @@ def resolve_time_columns(alias: str, definition: Any,
     value and returns the `timestamp_format` each one needs, by column
     name; a column DiskGraph already reads unambiguously, or whose format
     the table declares, gets none. Values no calendar or clock holds are
-    nulled in the staged parts. Raises when a column of whole numbers has
-    no single reading or a column of slash dates no single order.
+    nulled in the staged parts, and a column mixing bare and zoned ISO
+    values is staged on one date-time separator. Raises when a column of
+    whole numbers has no single reading or a column of slash dates no
+    single order.
     """
     declared = {
         column.name: column.timestamp_format
@@ -728,12 +783,12 @@ def resolve_time_columns(alias: str, definition: Any,
     for column in columns:
         column.decide()
     for file in files:
-        invalid = {
-            column.name: column.invalid
-            for column in columns if str(file) in column.invalid_parts()
+        rewritten = {
+            column.name: column.rewritten
+            for column in columns if str(file) in column.parts_to_rewrite()
         }
-        if invalid:
-            _rewrite(file, invalid)
+        if rewritten:
+            _rewrite(file, rewritten)
     return {
         column.name: column.decision.timestamp_format
         for column in columns if column.decision.timestamp_format is not None

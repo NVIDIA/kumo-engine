@@ -72,6 +72,16 @@ def test_every_integer_shape_shares_the_reading(tmp_path, values):
         '1677-09-21 00:12:44', '2262-04-11 23:47:16', '1677-09-21 00:12:43',
         '2262-04-11 23:47:17'
     ]), None, [2, 3]),
+    (pa.array([
+        '1677-09-21 00:12:43.145224193', '2262-04-11 23:47:16.854775807',
+        '1677-09-21 00:12:43.145224192', '2262-04-11 23:47:16.854775808'
+    ]), None, [2, 3]),
+    (pa.array([
+        datetime(2262, 4, 11, 23, 47, 16, 854775),
+        datetime(2262, 4, 11, 23, 47, 16, 854776)
+    ], pa.timestamp('us')), None, [1]),
+    (pa.array([1705276800854, 9223372036854, 9223372036855],
+              pa.int64()), 'ms', [2]),
 ])
 def test_values_outside_the_nanosecond_range_are_made_missing(
         tmp_path, values, fmt, missing):
@@ -97,7 +107,7 @@ def test_values_outside_the_nanosecond_range_are_made_missing(
     ]), [1, 2, 3, 4, 5, 7]),
     (pa.array([
         '2024-01-15 23:59:59.999999', '2024-01-15 24:00:00',
-        '2024-01-15 23:60:00', '2024-01-15 23:59:60', '2024-01-15T23:59:59Z'
+        '2024-01-15 23:60:00', '2024-01-15 23:59:60', '2024-01-15 23:59:59Z'
     ]), [1, 2, 3]),
     (pa.array(['1990/02/28', '1990/02/30', '1990/13/01']), [1, 2]),
     (pa.array(['28/02/1990', '30/02/1990', '13/01/1990']), [1]),
@@ -113,6 +123,37 @@ def test_dates_not_on_the_calendar_are_made_missing(tmp_path, values, missing):
     assert [i for i, v in enumerate(stored) if v is None] == missing
     assert [v for v in stored if v is not None] == [
         v for i, v in enumerate(values.to_pylist()) if i not in missing
+    ]
+
+
+def test_slash_shapes_are_voted_among_the_values_that_are_dates(tmp_path):
+    path = _part(tmp_path,
+                 pa.array(['13/01/2024 10:30:00', '30/02/2024', '31/02/2024']))
+    with pytest.warns(UserWarning) as caught:
+        formats = resolve_time_columns('events', _definition(), [str(path)])
+    assert formats == {'ts': '%d/%m/%Y %H:%M:%S'}
+    assert [str(w.message)[:60] for w in caught] == [
+        'Time column events.ts holds slash dates read day first (%d/%',
+        '2 values in time column events.ts are not dates on the calen',
+    ]
+    assert pq.read_table(path).column('ts').to_pylist() == [
+        '13/01/2024 10:30:00', None, None
+    ]
+
+
+def test_mixed_timezones_are_staged_with_one_separator(tmp_path):
+    path = _part(
+        tmp_path,
+        pa.array([
+            '2024-01-16T10:00:00', '2024-01-15 10:00:00+02:00',
+            '2024-01-17T10:00:00.250Z', 'not a time', None
+        ]))
+    with pytest.warns(UserWarning, match='mixes 2 values with a timezone'):
+        formats = resolve_time_columns('events', _definition(), [str(path)])
+    assert formats == {'ts': '%Y-%m-%d %H:%M:%S%.f%#z'}
+    assert pq.read_table(path).column('ts').to_pylist() == [
+        '2024-01-16 10:00:00', '2024-01-15 10:00:00+02:00',
+        '2024-01-17 10:00:00.250Z', 'not a time', None
     ]
 
 
