@@ -12,8 +12,8 @@ calendar holds (`2024-02-30`, hour 25, `0000-00-00`) or that falls outside
 the nanosecond timestamp range (1677-09-21 to 2262-04-11) is made missing in
 the staged data and counted, never moved to a neighbouring date. Bare
 timestamps are read as UTC and zoned ones converted to UTC; a column mixing
-the two is reported, staged with one date-time separator and given a format
-that reads both.
+the two is reported, staged in one shape (a space before a full time part)
+and given a format that reads both.
 """
 
 import os
@@ -55,6 +55,12 @@ _YEAR_SLASH = (r'^(?P<y>\d{4})/(?P<m>\d{1,2})/(?P<d>\d{1,2})'
 _SLASH = (r'^(?P<a>\d{1,2})/(?P<b>\d{1,2})/(?P<y>\d{4})'
           r'(?: (?P<H>\d{1,2}):(?P<M>\d{2})(?::(?P<S>\d{2}))?)?$')
 _DIGITS = r'^\d+$'
+_ONE_SHAPE = (
+    (r'^(\d{4}-\d{2}-\d{2})T', r'\1 '),
+    (r'^(\d{4}-\d{2}-\d{2})$', r'\1 00:00:00'),
+    (r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2})( ?(?:Z|[+-]\d{2}:?\d{2}))?$',
+     r'\1:00\2'),
+)
 _INT64_MAX = '9223372036854775807'
 _SLASH_SHAPES = {0: '', 1: ' %H:%M', 2: ' %H:%M:%S'}
 
@@ -68,9 +74,39 @@ class _Tally:
         hits = pc.sum(mask).as_py() or 0
         if hits:
             self.count += hits
-            for value in pc.filter(values, mask)[:_EXAMPLES].to_pylist():
+            for value in _examples(pc.filter(values, mask)[:_EXAMPLES]):
                 if len(self.examples) < _EXAMPLES:
                     self.examples.append(value)
+
+
+def _examples(values: pa.Array) -> List[Any]:
+    r"""The values as Python objects, or written out from their epoch
+    seconds when Python's datetime cannot hold them (an Arrow instant past
+    year 9999).
+    """
+    try:
+        return values.to_pylist()
+    except (OverflowError, ValueError):
+        return [
+            _civil(secs) for secs in _native_instants(values)[0].to_pylist()
+        ]
+
+
+def _civil(secs: int) -> str:
+    r"""`secs` since the epoch as `YYYY-MM-DD HH:MM:SS` for any year
+    (Howard Hinnant's civil-from-days)."""
+    days, rest = divmod(secs, 86400)
+    days += 719468
+    era = days // 146097
+    doe = days - era * 146097
+    yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
+    doy = doe - (365 * yoe + yoe // 4 - yoe // 100)
+    mp = (5 * doy + 2) // 153
+    day = doy - (153 * mp + 2) // 5 + 1
+    month = mp + 3 if mp < 10 else mp - 9
+    year = yoe + era * 400 + (month <= 2)
+    return (f'{year:04d}-{month:02d}-{day:02d} {rest // 3600:02d}:'
+            f'{rest % 3600 // 60:02d}:{rest % 60:02d}')
 
 
 @dataclass
@@ -88,7 +124,7 @@ class _Scan:
     bare: int = 0
     zoned_example: Any = None
     bare_example: Any = None
-    t_parts: set = field(default_factory=set)
+    reshape_parts: set = field(default_factory=set)
     slash_dm: _Tally = field(default_factory=_Tally)
     slash_md: _Tally = field(default_factory=_Tally)
     slash_both: _Tally = field(default_factory=_Tally)
@@ -111,7 +147,7 @@ class _Decision:
     timestamp_format: Optional[str] = None
     order: str = 'fixed'
     reading: Optional[str] = None
-    one_separator: bool = False
+    one_shape: bool = False
 
 
 def _number(parts: pa.Array, name: str) -> pa.Array:
@@ -431,8 +467,12 @@ class _Column:
                 zoned = pc.and_(matched, pc.not_equal(zone, ''))
                 bare = pc.and_(matched, pc.equal(zone, ''))
                 self._note_zones(text, zoned, bare)
-                if pc.any(pc.equal(pc.struct_field(parts, 'sep'), 'T')).as_py():
-                    self.scan.t_parts.add(part)
+                if pc.any(
+                        pc.and_(
+                            matched,
+                            pc.or_(pc.equal(pc.struct_field(parts, 'sep'), 'T'),
+                                   pc.is_null(_number(parts, 'S'))))).as_py():
+                    self.scan.reshape_parts.add(part)
             self._tally('fixed', part, text, pc.and_(matched, pc.invert(valid)),
                         'impossible')
             self._tally(
@@ -511,8 +551,7 @@ class _Column:
         elif set(known) == {'slash'}:
             self._decide_slash()
         elif set(known) == {'iso'} and scan.zoned and scan.bare:
-            self.decision = _Decision('%Y-%m-%d %H:%M:%S%.f%#z',
-                                      one_separator=True)
+            self.decision = _Decision('%Y-%m-%d %H:%M:%S%.f%#z', one_shape=True)
             warnings.warn(
                 f"Time column {self.alias}.{self.name} mixes {scan.zoned} "
                 f"value{'s' if scan.zoned != 1 else ''} with a timezone, "
@@ -627,20 +666,21 @@ class _Column:
         parts = set(self.scan.invalid_parts['fixed'])
         if self.decision.order != 'fixed':
             parts |= self.scan.invalid_parts[self.decision.order]
-        if self.decision.one_separator:
-            parts |= self.scan.t_parts
+        if self.decision.one_shape:
+            parts |= self.scan.reshape_parts
         return parts
 
     def rewritten(self, values: pa.Array) -> pa.Array:
         r"""The column as the decision stages it: invalid values null, and
-        ISO values on one date-time separator when the column mixes bare
-        and zoned ones, so one chrono format reads them all.
+        ISO values in one shape, a space before a full time part, when the
+        column mixes bare and zoned ones, so one chrono format reads them
+        all. A date alone is its midnight.
         """
         invalid = self.invalid(values)
-        if self.decision.one_separator:
-            values = pc.replace_substring_regex(values,
-                                                r'^(\d{4}-\d{2}-\d{2})T',
-                                                r'\1 ')
+        if self.decision.one_shape:
+            for pattern, replacement in _ONE_SHAPE:
+                values = pc.replace_substring_regex(values, pattern,
+                                                    replacement)
         return pc.if_else(invalid, None, values)
 
     def invalid(self, values: pa.Array) -> pa.Array:
@@ -657,15 +697,10 @@ class _Column:
         text = _strings(values)
         if text is None:
             return pa.array([False] * len(values), pa.bool_())
-        invalid = pa.array([False] * len(values), pa.bool_())
-        if self.decision.reading is not None:
-            numbers = _text_numbers(
-                text,
-                pc.fill_null(pc.match_substring_regex(text, _DIGITS), False))
-            invalid = pc.or_(
-                invalid,
-                pc.fill_null(pc.invert(_in_range(*_int_readings(numbers)[1:])),
-                             False))
+        digits = pc.fill_null(pc.match_substring_regex(text, _DIGITS), False)
+        numbers = _text_numbers(text, digits)
+        invalid = pc.fill_null(
+            pc.invert(_in_range(*_int_readings(numbers)[1:])), False)
         for pattern, kind in ((_ISO, 'iso'), (_YEAR_SLASH, 'year_slash'),
                               (_SLASH, 'slash')):
             parts = pc.extract_regex(text, pattern)
@@ -751,7 +786,7 @@ def resolve_time_columns(alias: str, definition: Any,
     name; a column DiskGraph already reads unambiguously, or whose format
     the table declares, gets none. Values no calendar or clock holds are
     nulled in the staged parts, and a column mixing bare and zoned ISO
-    values is staged on one date-time separator. Raises when a column of
+    values is staged in one shape. Raises when a column of
     whole numbers has no single reading or a column of slash dates no
     single order.
     """

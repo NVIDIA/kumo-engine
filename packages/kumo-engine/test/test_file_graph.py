@@ -795,16 +795,19 @@ def test_slash_dates_without_one_order_are_refused(tmp_path, extension, values,
         '2024-01-17T10:00:00Z'
     ],
     ['2024-01-16T10:00:00', '2024-01-15 10:00:00+02:00', '2024-01-17T10:00:00Z'],
+    ['2024-01-16', '2024-01-15 10:00:00+02:00', '2024-01-17 10:00'],
 ])
-def test_mixed_timezones_keep_every_value_and_warn(tmp_path, extension,
-                                                   values):
+def test_mixed_timezones_keep_every_value_and_warn(tmp_path, extension, values):
+    zoned = [v for v in values if v.endswith('Z') or '+' in v]
+    bare = [v for v in values if v not in zoned]
     with pytest.warns(
             UserWarning,
-            match=re.escape('Time column events.ts mixes 2 values with a '
-                            'timezone, converted to UTC, and 1 without one, '
-                            f'read as UTC (e.g. {values[1]} and {values[0]}). '
-                            'Declare one timezone at the source so the events '
-                            'line up.')) as caught:
+            match=re.escape(f'Time column events.ts mixes {len(zoned)} value'
+                            f"{'s' if len(zoned) != 1 else ''} with a "
+                            f'timezone, converted to UTC, and {len(bare)} '
+                            f'without one, read as UTC (e.g. {zoned[0]} and '
+                            f'{bare[0]}). Declare one timezone at the source '
+                            'so the events line up.')) as caught:
         column, stats, ingest = _time_snapshot(tmp_path, extension,
                                                pa.array(values, pa.string()))
     assert len(_user_warnings(caught)) == 1

@@ -157,6 +157,44 @@ def test_mixed_timezones_are_staged_with_one_separator(tmp_path):
     ]
 
 
+def test_mixed_timezones_are_staged_with_a_full_time_part(tmp_path):
+    path = _part(
+        tmp_path,
+        pa.array([
+            '2024-01-15', '2024-01-16T10:00', '2024-01-17 10:00+02:00',
+            '2024-01-18 10:00:00.5Z'
+        ]))
+    with pytest.warns(UserWarning, match='mixes 2 values with a timezone'):
+        formats = resolve_time_columns('events', _definition(), [str(path)])
+    assert formats == {'ts': '%Y-%m-%d %H:%M:%S%.f%#z'}
+    assert pq.read_table(path).column('ts').to_pylist() == [
+        '2024-01-15 00:00:00', '2024-01-16 10:00:00',
+        '2024-01-17 10:00:00+02:00', '2024-01-18 10:00:00.5Z'
+    ]
+
+
+def test_far_numbers_among_other_shapes_are_still_made_missing(tmp_path):
+    path = _part(tmp_path, pa.array(['99991231', '2024-01-16']))
+    with pytest.warns(UserWarning, match='1 value in time column events.ts '
+                      'falls outside'):
+        formats = resolve_time_columns('events', _definition(), [str(path)])
+    assert formats == {}
+    assert pq.read_table(path).column('ts').to_pylist() == [None, '2024-01-16']
+
+
+def test_a_native_instant_past_year_9999_is_made_missing(tmp_path):
+    path = _part(tmp_path,
+                 pa.array([1705276800, 253402300800], pa.timestamp('s')))
+    with pytest.warns(
+            UserWarning, match=re.escape(
+                '1 value in time column events.ts falls outside 1677-09-21 to '
+                '2262-04-11 (e.g. 10000-01-01 00:00:00)')):
+        resolve_time_columns('events', _definition(), [str(path)])
+    assert pq.read_table(path).column('ts').to_pylist() == [
+        datetime(2024, 1, 15), None
+    ]
+
+
 def test_an_end_time_column_is_made_missing_without_dropping_rows(tmp_path):
     path = _part(tmp_path, pa.array(['2024-01-15', '9999-12-31']))
     with pytest.warns(UserWarning) as caught:
