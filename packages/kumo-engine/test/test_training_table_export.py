@@ -15,6 +15,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from kumo_core.training.table import ingest_train_table
 from kumoapi.graph import Edge
 from kumoapi.model_plan import ModelPlan
 from kumoapi.train import TrainingTableSpec
@@ -175,6 +176,85 @@ def test_link_export_roundtrip(graph):
     assert again_counts == counts
     for key, seed in seeds.items():
         assert _rows(again[key], columns) == _rows(seed, columns)
+
+
+@pytest.fixture(scope='module')
+def future_target_export(graph):
+    base, _, connector, out = graph
+    created = pd.Timestamp('2024-03-01')
+    pd.DataFrame({
+        'IID':
+        np.arange(20),
+        'CREATED':
+        [created if i == 1 else pd.Timestamp('2024-01-01') for i in range(20)],
+    }).to_parquet(out / 'future_items.parquet')
+    future = kumo.Graph(
+        tables={
+            **base.tables, 'items':
+            kumo.Table.from_source_table(connector['future_items.parquet'],
+                                         primary_key='IID',
+                                         time_column='CREATED')
+        }, edges=base.edges)
+    snapshot = future.snapshot()
+    query, _, rows = _export(
+        (future, snapshot, connector, out),
+        'PREDICT LIST_DISTINCT(events.ITEM_ID, 0, 7, days) '
+        'RANK TOP 3 FOR EACH ents.ID', 'future_normal')
+    filtered = rows.to_pylist()
+    for row in filtered:
+        pairs = [(target, weight)
+                 for target, weight in zip(row['TARGET1'], row[FREQ])
+                 if target != 1 or row['TIMESTAMP'] >= created]
+        row['TARGET1'] = [target for target, _ in pairs]
+        row[FREQ] = [weight for _, weight in pairs]
+    filtered = pa.Table.from_pylist([row for row in filtered if row['TARGET1']],
+                                    schema=rows.schema)
+    assert _rows(filtered, rows.column_names) != _rows(rows, rows.column_names)
+    return query, snapshot, connector, out, rows, filtered
+
+
+@pytest.mark.parametrize('reload', [False, True])
+@pytest.mark.parametrize('preserve', [False, True])
+def test_future_target_export_roundtrip(future_target_export, reload, preserve):
+    query, snapshot, connector, out, rows, filtered = future_target_export
+    options = {'allow_new_target_entities': True} if preserve else {}
+    if reload:
+        table = kumo.TrainingTable.load_from_connector(connector,
+                                                       path='future_normal',
+                                                       pquery=query,
+                                                       snapshot=snapshot,
+                                                       **options)
+    else:
+        table = kumo.TrainingTable.from_source_table(
+            connector['future_normal'], TrainingTableSpec(split_col='SPLIT'),
+            pq=query, snapshot=snapshot, **options)
+    name = f'future_{reload}_{preserve}'
+    table.export(TrainingTableOutputConfig(connector, name))
+    assert _rows(pq.read_table(out / name),
+                 rows.column_names) == _rows(rows if preserve else filtered,
+                                             rows.column_names)
+
+
+def test_future_target_opt_in_still_resolves_unknown_keys(future_target_export):
+    query, snapshot, connector, out, rows, _ = future_target_export
+    bad = rows.to_pylist()
+    bad[0].update(TARGET1=[9999], **{FREQ: [1]})
+    pq.write_table(pa.Table.from_pylist(bad, schema=rows.schema),
+                   out / 'unknown.parquet')
+    table = kumo.TrainingTable.load_from_connector(
+        connector, path='unknown.parquet', pquery=query, snapshot=snapshot,
+        allow_new_target_entities=True)
+    ingested = ingest_train_table(staging_dir=str(table.staging_dir),
+                                  index_path=str(snapshot.index_path),
+                                  tt_id='unknown')
+    with open(os.path.join(ingested.extension_path,
+                           'diskgraph_manifest.json')) as handle:
+        manifest = json.load(handle)
+    assert sum(stage['row_count'] for stage in manifest['task_dataset']
+               ['stages'].values()) == rows.num_rows - 1
+    failures = manifest['key_failures']
+    assert failures['parse_failures'] == 0
+    assert failures['lookup_failures'] + failures['membership_failures'] == 1
 
 
 def test_forecasting_export_roundtrip(graph):
