@@ -39,7 +39,8 @@ error while other tasks remain available. On ARM64 Linux,
 use `pip install "kumo-engine[cpu]"` for CPU retrieval with a compatible backend
 wheel for your platform and Python version. For CUDA retrieval, install a
 compatible GPU Faiss build directly, building from source on ARM64 Linux if
-needed. The CPU extra retains the required platform backend on Linux x86_64
+needed; see [GPU Faiss on DGX Spark](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/dgx-spark.md#optional-build-gpu-faiss-for-cuda-link-prediction).
+The CPU extra retains the required platform backend on Linux x86_64
 and macOS; it does not configure PyTorch or select the execution device.
 Choose one backend per environment.
 
@@ -62,7 +63,10 @@ pip install "kumo-engine[text]"
 
 Extras combine, for example `pip install "kumo-engine[s3,text]"`.
 
-The wheels on PyPI are for Linux x86_64 and for macOS on Apple silicon. To build and install on Linux ARM64 (DGX Spark), follow the [DGX Spark guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/dgx-spark.md).
+Release wheel targets are Linux x86_64 and ARM64, and macOS on Apple silicon.
+Check the [PyPI files for your release](https://pypi.org/project/kumo-engine/#files)
+for published availability. For Linux ARM64 installation and optional GPU
+Faiss setup, follow the [DGX Spark guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/dgx-spark.md).
 
 ### Optional: faster training on NVIDIA GPUs
 
