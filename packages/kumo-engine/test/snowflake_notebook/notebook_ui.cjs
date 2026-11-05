@@ -214,10 +214,6 @@ async function runCell(frame, index) {
     60000,
     "Notebook cell " + index + " is not ready for execution",
   );
-  for (const number of [1, 2])
-    await frame
-      .getByRole("checkbox", { name: "Select cell " + number, exact: true })
-      .setChecked(number === index);
   await editor.focus();
   requireThat(
     await editor.evaluate(
