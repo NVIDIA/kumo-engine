@@ -171,19 +171,25 @@ PY
 }
 
 # CI wheel build settings; the wheel cache key covers them.
-WHEEL_RUST_TOOLCHAIN=1.98.1
 WHEEL_RUSTFLAGS='-C target-feature=+aes,+sse2 -C link-arg=-fuse-ld=lld -C debuginfo=line-tables-only'
 
+wheel_rust_toolchain() {
+    sed -n 's/^channel = "\(.*\)"$/\1/p' "${DISKGRAPH_SOURCE}/rust-toolchain.toml"
+}
+
 cmd_wheel_env() {
-    printf 'RUST_TOOLCHAIN=%s\nRUSTFLAGS=%s\n' "$WHEEL_RUST_TOOLCHAIN" "$WHEEL_RUSTFLAGS"
+    local toolchain
+    toolchain="$(wheel_rust_toolchain)"
+    printf 'RUST_TOOLCHAIN=%s\nRUSTFLAGS=%s\n' "$toolchain" "$WHEEL_RUSTFLAGS"
 }
 
 cmd_wheel_key() {
     require_source
-    local tree settings
+    local tree settings toolchain
     tree="$(git -C "$REPO_ROOT" rev-parse HEAD:packages/diskgraph)"
+    toolchain="$(wheel_rust_toolchain)"
     settings="$(cmd_wheel_env | sha256sum | cut -c1-12)"
-    echo "diskgraph-wheel-v2-${RUNNER_OS:-$(uname -s)}-${RUNNER_ARCH:-$(uname -m)}-${tree}-rust${WHEEL_RUST_TOOLCHAIN}-${settings}"
+    echo "diskgraph-wheel-v2-${RUNNER_OS:-$(uname -s)}-${RUNNER_ARCH:-$(uname -m)}-${tree}-rust${toolchain}-${settings}"
 }
 
 command="${1:-}"
