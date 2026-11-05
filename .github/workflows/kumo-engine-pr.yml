@@ -14,17 +14,23 @@ on:  # yamllint disable-line rule:truthy
         description: Pull request whose current head is tested
         required: true
         type: string
+  workflow_call:
+    inputs:
+      build_only:
+        description: Build main without candidate checks or GPU tests.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: engine-pr-${{ github.ref }}
+  group: ${{ inputs.build_only && 'engine-e2e-build' || 'engine-pr' }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'push' }}
 
 jobs:
   changes:
-    if: github.event_name == 'push'
+    if: ${{ !inputs.build_only && github.event_name == 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -61,6 +67,7 @@ jobs:
     needs: changes
     if: >-
       !cancelled() &&
+      (!inputs.build_only || github.ref == 'refs/heads/main') &&
       (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.gpu == 'true')
     runs-on: ubuntu-22.04
     timeout-minutes: 60
@@ -80,7 +87,7 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Require the current candidate
-        if: github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        if: ${{ !inputs.build_only && (github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch') }}
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_PR: ${{ inputs.pr_number }}
@@ -133,7 +140,7 @@ jobs:
   installer-cache:
     name: Seed the wheel installer cache on main
     needs: wheel
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: ${{ !inputs.build_only && github.ref == 'refs/heads/main' && github.event_name == 'push' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -165,7 +172,7 @@ jobs:
   gpu:
     name: kumo-engine-pr-gpu
     needs: wheel
-    if: ${{ !cancelled() && needs.wheel.result == 'success' && (github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ !inputs.build_only && !cancelled() && needs.wheel.result == 'success' && (github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch') }}
     runs-on:
       group: nv-gpu-amd64-rtxpro6000-1gpu
       labels: linux-amd64-gpu-rtxpro6000-latest-1
@@ -216,7 +223,7 @@ jobs:
   required:
     name: kumo-engine-pr-ci
     needs: [changes, wheel, gpu]
-    if: ${{ always() && (github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ !inputs.build_only && always() && (github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
