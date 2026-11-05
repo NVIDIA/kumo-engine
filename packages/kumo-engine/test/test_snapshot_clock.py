@@ -53,7 +53,8 @@ def _graph():
 
     table: Any = SimpleNamespace(
         table_name='events',
-        definition=SimpleNamespace(cols=[], source_table=None),
+        definition=SimpleNamespace(cols=[], source_table=None, time_col=None,
+                                   end_time_col=None),
         connector=SimpleNamespace(source_backend=Source(),
                                   validate_scratch_dir=lambda path: None))
     return Graph(tables=[table])
