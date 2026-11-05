@@ -38,7 +38,10 @@ Each VM prepares only its assigned family at the selected scale through
 `nightly_job.py prepare --case`. Source-only metadata packages bind raw S3 files.
 Preparation downloads those files and computes SHA256 while streaming the download.
 Measured case admission then reads each raw file once to make sure that its checksum
-matches the manifest. No separate answer-generation job is needed.
+matches the manifest. Both tiers require protected, read-only input files owned
+by a separate staging owner. Neither tier repeats the complete raw-file checksum
+scan after model work. A later dataset update uses a new input version.
+No separate answer-generation job is needed.
 Legacy family archives retain their declared payloads and parent manifests.
 A missing family binding fails preparation without downloading every family.
 

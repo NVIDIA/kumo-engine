@@ -252,3 +252,71 @@ def test_reference_worker_admits_sources_inside_resource_observation(
     else:
         assert 'control recipe' in result['error']
     assert result['resources']['errors'] == []
+
+
+@pytest.mark.parametrize('tier', ['nightly', 'weekly'])
+@pytest.mark.parametrize('corrupt', [False, True])
+def test_worker_verifies_raw_inputs_before_work_without_an_end_scan(
+        source_inputs, tmp_path, monkeypatch, tier, corrupt):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    root, configuration, manifest = source_inputs
+    configuration['scales']['100M'].update(
+        inputs={}, input_manifest_sha256=nightly.digest(root / 'manifest.json'))
+    configuration['reference_identity'] = dict(version='1.0.0',
+                                               wheel_sha256='a' * 64)
+    if corrupt:
+        (root / 'raw/adtech/part.parquet').write_bytes(b'Incorrect raw bytes')
+    wheel = tmp_path / 'reference.whl'
+    wheel.write_bytes(b'reference wheel')
+    output = tmp_path / 'output'
+    output.mkdir()
+    args = SimpleNamespace(scale='100M', case='binary-normal', mode='reference',
+                           tier=tier, input_root=root, output_dir=output,
+                           scratch=tmp_path / 'scratch', wheel=wheel,
+                           build_receipt=None, time_budget_seconds=60,
+                           reference_root=None)
+    initial = dict(scale='100M', task='binary', arm='normal', seed=0,
+                   status='RUNNING', mode='reference', bindings={})
+    resources = nightly.sibling('nightly_resources')
+    monkeypatch.setattr(resources, 'join_cgroup', lambda scope: None)
+    monkeypatch.setattr(
+        resources, 'track_resources',
+        lambda *a: nullcontext(dict(errors=[], status='MEASURED', peaks={})))
+    monkeypatch.setattr(resources, 'available_capacity', lambda *a: {})
+    monkeypatch.setattr(
+        nightly, 'verify_runtime', lambda *a, **k: dict(
+            version='1.0.0', wheel_sha256=nightly.digest(wheel)))
+    monkeypatch.setattr(nightly, 'verify_installed_files', lambda *a: 1)
+    monkeypatch.setattr(nightly, 'check_install', lambda *a, **k: {})
+    monkeypatch.setattr(nightly, 'runner_identity', lambda: 'b' * 64)
+    monkeypatch.setattr(nightly, 'build_graph', lambda *a, **k: (None, None))
+    monkeypatch.setattr(nightly, 'check_snapshot', lambda *a: {})
+    admitted, model_work = [], []
+    original = nightly.load_inputs
+
+    def admit(*a, **k):
+        assert model_work == [], 'Raw inputs were scanned again after model work'
+        admitted.append(True)
+        return original(*a, **k)
+
+    def complete_case(*a, **k):
+        model_work.append(True)
+        return dict(requested_plan_sha256='c' * 64, baseline=.5, score=.6,
+                    training_coverage=dict(status='PASS'),
+                    prediction_checks=dict(status='PASS'))
+
+    monkeypatch.setattr(nightly, 'load_inputs', admit)
+    monkeypatch.setattr(nightly.sibling('nightly_case'), 'run_case',
+                        complete_case)
+    policy = dict(
+        predictions={'100M': dict(binary={'atol': None})}, learning={
+            '100M':
+            dict(binary=dict(min_normal_gain=None, max_control_drift=None))
+        })
+    result = nightly._worker(args, configuration, dict(policy=policy), initial,
+                             tmp_path / 'cgroup')
+    assert result['status'] == ('FAIL' if corrupt else 'MEASURED')
+    assert admitted == [True]
+    assert model_work == ([] if corrupt else [True])
