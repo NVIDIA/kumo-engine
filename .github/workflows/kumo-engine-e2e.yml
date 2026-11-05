@@ -1,0 +1,305 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Kumo Engine shared E2E
+
+on:  # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      scales:
+        type: string
+        required: true
+      write_reference:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  DATA_S3: ${{ vars.ENGINE_E2E_DATA_S3 }}
+  INPUTS_S3: ${{ vars.ENGINE_E2E_INPUTS_S3 }}
+  REFERENCES_S3: ${{ vars.ENGINE_E2E_REFERENCES_S3 }}
+  RESULTS_S3: ${{ vars.ENGINE_E2E_RESULTS_S3 }}
+  CASE_SETTINGS: ${{ vars.ENGINE_E2E_CASE_SETTINGS_JSON }}
+  COMPAT_MODEL_S3: ${{ vars.ENGINE_E2E_COMPAT_MODEL_S3 }}
+  COMPAT_PREDICTIONS_S3: ${{ vars.ENGINE_E2E_COMPAT_PREDICTIONS_S3 }}
+  READ_ROLE: ${{ vars.ENGINE_E2E_READ_ROLE }}
+  WRITE_ROLE: ${{ vars.ENGINE_E2E_WRITE_ROLE }}
+
+jobs:
+  wheel:
+    if: github.ref == 'refs/heads/main' && vars.ENGINE_E2E_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: stable
+      - name: Build the main commit once in a detached copy
+        env:
+          CARGO_BUILD_JOBS: '4'
+          RUNNER_GROUP: ${{ vars.ENGINE_E2E_RUNNER_GROUP }}
+          RUNNER_LABEL: ${{ vars.ENGINE_E2E_RUNNER_LABEL }}
+        run: |
+          set -euo pipefail
+          for binding in RUNNER_GROUP RUNNER_LABEL DATA_S3 INPUTS_S3 REFERENCES_S3 RESULTS_S3 CASE_SETTINGS READ_ROLE WRITE_ROLE; do
+            test -n "${!binding}" || { echo "Missing $binding"; exit 1; }
+          done
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code
+          python -m pip --isolated install ziglang cargo-zigbuild
+          build_source="$RUNNER_TEMP/engine-e2e-build"
+          git worktree add --detach "$build_source" "$GITHUB_SHA"
+          trap 'git worktree remove --force "$build_source"' EXIT
+          "$build_source/packages/kumo-engine/scripts/build_wheel.sh" --output-dir "$RUNNER_TEMP/wheel"
+          git -C "$build_source" diff --exit-code
+          git diff --exit-code
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: engine-e2e-wheel-${{ github.sha }}
+          path: ${{ runner.temp }}/wheel/*.whl
+          if-no-files-found: error
+
+  cases:
+    needs: wheel
+    runs-on:
+      group: ${{ vars.ENGINE_E2E_RUNNER_GROUP }}
+      labels: ${{ vars.ENGINE_E2E_RUNNER_LABEL }}
+    environment:
+      name: gha-kumo-workflow-tests
+      deployment: false
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(vars.ENGINE_E2E_MAX_PARALLEL || '1') }}
+      matrix:
+        scale: ${{ fromJSON(inputs.scales) }}
+        case:
+          - adtech_binary
+          - delivery_multiclass
+          - delivery_multilabel
+          - delivery_multilabel_ranking
+          - delivery_regression
+          - delivery_forecasting
+          - commerce_static_link
+          - commerce_temporal_link
+          - streaming_temporal_link
+          - community_regression
+          - payments_binary
+          - fraud_binary
+    env:
+      CASE: ${{ matrix.case }}
+      SCALE: ${{ matrix.scale }}
+      WRITE_REFERENCE: ${{ inputs.write_reference }}
+      DISKGRAPH_DATA_ROOT: /mnt/localssd
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_CONFIG_FILE: /dev/null
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
+      PYTHONUNBUFFERED: '1'
+      PYTHONNOUSERSITE: '1'
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - name: Limit source reads and this case's uploads
+        id: bindings
+        run: |
+          python - <<'PY'
+          import json, os
+          from urllib.parse import urlparse
+          suffix = f"{os.environ['SCALE']}/{os.environ['CASE']}.json"
+          source = os.environ['DATA_S3'].rstrip('/') + '/'
+          binding = os.environ['INPUTS_S3'].rstrip('/') + '/' + suffix
+          result = os.environ['RESULTS_S3'].rstrip('/') + '/' + os.environ['GITHUB_RUN_ID'] + '/' + os.environ['GITHUB_RUN_ATTEMPT'] + '/' + suffix
+          reference = os.environ['REFERENCES_S3'].rstrip('/') + '/' + suffix
+          def location(uri):
+              parsed = urlparse(uri)
+              assert parsed.scheme == 's3' and parsed.netloc and parsed.path.strip('/') and not parsed.query and not parsed.fragment, uri
+              assert not any(character in uri for character in '*?[]'), uri
+              return parsed.netloc, parsed.path.lstrip('/')
+          reads = [(source, True), (binding, False)]
+          if os.environ['WRITE_REFERENCE'] != 'true':
+              reads.append((reference, False))
+          if os.environ['CASE'] == 'adtech_binary' and os.environ['SCALE'] == '100M':
+              reads += [(os.environ['COMPAT_MODEL_S3'].rstrip('/') + '/', True), (os.environ['COMPAT_PREDICTIONS_S3'], False)]
+          objects, lists = [], []
+          for uri, prefix in reads:
+              bucket, key = location(uri)
+              objects.append('arn:aws:s3:::' + bucket + '/' + key + ('*' if prefix else ''))
+              if prefix:
+                  lists.append({'Effect': 'Allow', 'Action': 's3:ListBucket', 'Resource': 'arn:aws:s3:::' + bucket,
+                                'Condition': {'StringLike': {'s3:prefix': key + '*'}}})
+          read = {'Version': '2012-10-17', 'Statement': [{'Effect': 'Allow', 'Action': ['s3:GetObject', 's3:GetObjectVersion'], 'Resource': objects}] + lists}
+          resources = ['arn:aws:s3:::' + '/'.join(location(uri)) for uri in [result] + ([reference] if os.environ['WRITE_REFERENCE'] == 'true' else [])]
+          write = {'Version': '2012-10-17', 'Statement': [{'Effect': 'Allow', 'Action': 's3:PutObject', 'Resource': resources}]}
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for name, policy in [('read_policy', read), ('write_policy', write)]:
+                  encoded = json.dumps(policy, separators=(',', ':'))
+                  assert len(encoded) <= 2048, 'The scoped S3 session policy exceeds the STS limit'
+                  output.write(name + '=' + encoded + '\n')
+          PY
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          name: engine-e2e-wheel-${{ github.sha }}
+          path: ${{ runner.temp }}/wheel
+      - name: Install the finished wheel outside the checkout
+        run: |
+          set -euo pipefail
+          test "$(id -u)" -ne 0
+          if command -v sudo >/dev/null && sudo -n -l >/dev/null 2>&1; then
+            echo 'The case runner must not have sudo access'
+            exit 1
+          fi
+          python -m venv "$RUNNER_TEMP/control-venv"
+          "$RUNNER_TEMP/control-venv/bin/pip" --isolated install boto3
+          python -m venv "$RUNNER_TEMP/candidate-venv"
+          wheels=("$RUNNER_TEMP"/wheel/*.whl)
+          test "${#wheels[@]}" = 1
+          "$RUNNER_TEMP/candidate-venv/bin/pip" --isolated install "${wheels[0]}[s3]"
+          "$RUNNER_TEMP/candidate-venv/bin/pip" --isolated check
+          mkdir -p "$RUNNER_TEMP/e2e"
+          cp -r packages/kumo-engine/test/cases "$RUNNER_TEMP/e2e/cases"
+      - name: Assume only dataset and reference read access
+        id: read
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6
+        with:
+          role-to-assume: ${{ env.READ_ROLE }}
+          role-duration-seconds: 21600
+          aws-region: us-west-2
+          output-env-credentials: false
+          output-credentials: true
+          unset-current-credentials: true
+          inline-session-policy: ${{ steps.bindings.outputs.read_policy }}
+      - name: Fetch small bindings and reference files
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.read.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.read.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.read.outputs.aws-session-token }}
+        run: |
+          "$RUNNER_TEMP/control-venv/bin/python" - <<'PY'
+          import os
+          from pathlib import Path
+          from urllib.parse import urlparse
+          import boto3
+          root = Path(os.environ['RUNNER_TEMP']) / 'e2e'
+          client = boto3.client('s3')
+          def location(uri):
+              parsed = urlparse(uri)
+              assert parsed.scheme == 's3' and parsed.netloc and parsed.path.strip('/'), uri
+              return parsed.netloc, parsed.path.lstrip('/')
+          suffix = f"{os.environ['SCALE']}/{os.environ['CASE']}.json"
+          client.download_file(*location(os.environ['INPUTS_S3'].rstrip('/') + '/' + suffix), str(root / 'input.json'))
+          if os.environ['WRITE_REFERENCE'] != 'true':
+              client.download_file(*location(os.environ['REFERENCES_S3'].rstrip('/') + '/' + suffix), str(root / 'reference.json'))
+          if os.environ['CASE'] == 'adtech_binary' and os.environ['SCALE'] == '100M':
+              bucket, prefix = location(os.environ['COMPAT_MODEL_S3'])
+              prefix = prefix.rstrip('/') + '/'
+              count = 0
+              for page in client.get_paginator('list_objects_v2').paginate(Bucket=bucket, Prefix=prefix):
+                  for item in page.get('Contents', []):
+                      target = (root / 'older-model' / item['Key'][len(prefix):]).resolve()
+                      assert target.is_relative_to((root / 'older-model').resolve())
+                      if item['Key'].endswith('/'):
+                          continue
+                      target.parent.mkdir(parents=True, exist_ok=True)
+                      client.download_file(bucket, item['Key'], str(target))
+                      count += 1
+              assert count, 'The compatibility model prefix is empty'
+              client.download_file(*location(os.environ['COMPAT_PREDICTIONS_S3']), str(root / 'older-predictions.parquet'))
+          PY
+      - name: Run one independent case with read-only source credentials
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.read.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.read.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.read.outputs.aws-session-token }}
+        run: |
+          unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
+          unset PYTHONPATH PYTHONHOME AWS_PROFILE AWS_DEFAULT_PROFILE
+          cd "$RUNNER_TEMP/e2e"
+          "$RUNNER_TEMP/control-venv/bin/python" - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          root = Path.cwd()
+          case, scale = os.environ['CASE'], os.environ['SCALE']
+          settings = json.loads(os.environ['CASE_SETTINGS'])[case][scale]
+          command = [str(root.parent / 'candidate-venv/bin/python'), str(root / 'cases' / f'{case}.py'),
+                     '--scale', scale, '--input', str(root / 'input.json'), '--reference', str(root / 'reference.json'),
+                     '--output', str(root / 'result.json'), '--source-sha', os.environ['GITHUB_SHA'],
+                     '--scratch', os.environ['DISKGRAPH_DATA_ROOT']]
+          for name in ('prediction_rows', 'metric_tolerance', 'performance_tolerance', 'prediction_tolerance'):
+              command += ['--' + name.replace('_', '-'), str(settings[name])]
+          if os.environ['WRITE_REFERENCE'] == 'true':
+              command.append('--write-reference')
+          if case == 'adtech_binary' and scale == '100M':
+              command += ['--compatibility', '--older-model', str(root / 'older-model'),
+                          '--older-predictions', str(root / 'older-predictions.parquet')]
+          raise SystemExit(subprocess.call(command))
+          PY
+      - name: Preserve a failure record when setup stops before the case
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path(os.environ['RUNNER_TEMP']) / 'e2e/result.json'
+          path.parent.mkdir(parents=True, exist_ok=True)
+          if not path.exists():
+              path.write_text(json.dumps({'status': 'failed', 'phase': 'setup', 'case': os.environ['CASE'],
+                                          'scale': os.environ['SCALE'], 'source_sha': os.environ['GITHUB_SHA']}))
+          PY
+      - name: Assume only results upload access
+        if: always() && steps.bindings.outcome == 'success'
+        id: write
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6
+        with:
+          role-to-assume: ${{ env.WRITE_ROLE }}
+          aws-region: us-west-2
+          output-env-credentials: false
+          output-credentials: true
+          unset-current-credentials: true
+          inline-session-policy: ${{ steps.bindings.outputs.write_policy }}
+      - name: Upload one result JSON and an explicitly requested reference
+        if: always() && steps.bindings.outcome == 'success' && steps.write.outcome == 'success'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.write.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.write.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.write.outputs.aws-session-token }}
+        run: |
+          "$RUNNER_TEMP/control-venv/bin/python" - <<'PY'
+          import json, os
+          from pathlib import Path
+          from urllib.parse import urlparse
+          import boto3
+          root = Path(os.environ['RUNNER_TEMP']) / 'e2e'
+          client = boto3.client('s3')
+          def upload(path, uri):
+              parsed = urlparse(uri)
+              assert parsed.scheme == 's3' and parsed.netloc and parsed.path.strip('/'), uri
+              client.upload_file(str(path), parsed.netloc, parsed.path.lstrip('/'))
+          suffix = f"{os.environ['SCALE']}/{os.environ['CASE']}.json"
+          result_uri = os.environ['RESULTS_S3'].rstrip('/') + '/' + os.environ['GITHUB_RUN_ID'] + '/' + os.environ['GITHUB_RUN_ATTEMPT'] + '/' + suffix
+          upload(root / 'result.json', result_uri)
+          if os.environ['WRITE_REFERENCE'] == 'true' and json.loads((root / 'result.json').read_text())['status'] == 'passed':
+              upload(root / 'reference.json', os.environ['REFERENCES_S3'].rstrip('/') + '/' + suffix)
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        if: always()
+        with:
+          name: engine-e2e-${{ matrix.case }}-${{ matrix.scale }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/e2e/result.json
+          if-no-files-found: error
