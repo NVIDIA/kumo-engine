@@ -68,13 +68,14 @@ class _UnpicklableBatches(IterableDataset):
             yield 0
 
 
-@pytest.mark.parametrize('message, endless, expected', [
+@pytest.mark.parametrize('message, endless, prefetch, expected', [
     ('could not unlink the shared memory file /torch_1_2_3 : '
-     'No such file or directory (2)', True, 'loginctl enable-linger'),
-    ('not picklable', False, 'not picklable'),
+     'No such file or directory (2)', True, 2, 'loginctl enable-linger'),
+    ('not picklable', False, 2, 'not picklable'),
+    ('not picklable', False, 1, 'not picklable'),
 ])
 def test_unsendable_batch_fails_instead_of_being_dropped(
-        message, endless, expected):
+        message, endless, prefetch, expected):
     def hung(signum, frame):
         raise TimeoutError('DataLoader waited forever for a dropped batch')
 
@@ -82,6 +83,7 @@ def test_unsendable_batch_fails_instead_of_being_dropped(
         _UnpicklableBatches(message, endless),
         batch_size=None,
         num_workers=1,
+        prefetch_factor=prefetch,
         multiprocessing_context='fork',
         worker_init_fn=lightning_data._init_diskgraph_worker,
         phase='predict',

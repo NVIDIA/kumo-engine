@@ -1782,6 +1782,7 @@ def _send_feeder_error(queue: Any, error: Exception, item: Any) -> None:
         (type(error), error, error.__traceback__),
         where=f'in DataLoader worker process {get_worker_info().id}')
     payload = ForkingPickler.dumps((item[0], wrapper))
+    queue._sem.acquire()
     with queue._wlock:
         queue._writer.send_bytes(payload)
 
