@@ -155,25 +155,38 @@ class PredictiveQuery:
                 f"snapshot {snapshot.id!r} was not materialized from "
                 f"this query's graph (id {graph_key!r}) -- pass a "
                 "snapshot of that graph.")
-        if isinstance(self.graph, GraphSnapshot):
+        bound = (set(self.graph._named_tables)
+                 if isinstance(self.graph, Graph) else {
+                     table['table_name']
+                     for table in self.graph.graph_config['tables']
+                 })
+        present = {
+            table['table_name']
+            for table in snapshot.graph_config['tables']
+        }
+        if bound == present:
             return
-        left_out = sorted(
-            set(self.graph._named_tables) -
-            {table['table_name']
-             for table in snapshot.graph_config['tables']})
-        if left_out:
+        parsed = self._parsed
+        added = sorted(present - bound)
+        if added:
             message = (
-                f"This query needs table(s) {', '.join(left_out)}, which "
-                f"have no rows and were left out of snapshot {snapshot.id}. "
-                "Add rows to them and take a new snapshot, or write a query "
-                "over the other tables.")
-            try:
-                reparsed = parse_and_validate_query(self.query,
-                                                    snapshot._native_graph)
-            except PredictiveQueryPlanError as error:
-                raise PredictiveQueryPlanError(message) from error
-            if reparsed != self._parsed:
-                raise PredictiveQueryPlanError(message)
+                f"Snapshot {snapshot.id} has table(s) {', '.join(added)} that "
+                "the snapshot this query was validated against left out, and "
+                "the query means something else with them. Validate it "
+                "against this snapshot: PredictiveQuery(snapshot, query).")
+        else:
+            message = (
+                f"This query needs table(s) {', '.join(sorted(bound - present))}"
+                f", which have no rows and were left out of snapshot "
+                f"{snapshot.id}. Add rows to them and take a new snapshot, or "
+                "write a query over the other tables.")
+        try:
+            reparsed = parse_and_validate_query(self.query,
+                                                snapshot._native_graph)
+        except PredictiveQueryPlanError as error:
+            raise PredictiveQueryPlanError(message) from error
+        if reparsed != parsed:
+            raise PredictiveQueryPlanError(message)
 
     def validate(self, verbose: bool = True) -> ValidationResponse:
         r"""Return validation warnings and information for a valid query.

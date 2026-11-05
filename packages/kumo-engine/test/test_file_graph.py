@@ -726,3 +726,29 @@ def test_a_table_with_no_rows_is_left_out_of_the_snapshot(tmp_path):
         Graph({'users': users, 'items': undeclared}).snapshot()
     with pytest.raises(ValueError, match=r'Every table .* no rows \(items\)'):
         Graph({'items': items}).snapshot()
+
+    pq.write_table(
+        pa.table({
+            'item_id': range(5),
+            'amount': [1.0, 2.0, 3.0, 4.0, 5.0]
+        }), root / 'items.parquet')
+    full = graph.snapshot()
+    assert [table['table_name'] for table in full.graph_config['tables']
+            ] == ['users', 'orders', 'items']
+    ranking = ('PREDICT LIST_DISTINCT(orders.item_id, 0, 30, days) '
+               'RANK TOP 2 FOR EACH users.id')
+    with pytest.raises(
+            PredictiveQueryPlanError,
+            match=rf'This query needs table\(s\) items, which have '
+            rf'no rows and were left out of snapshot {snapshot.id}'):
+        PredictiveQuery(full, ranking).suggest_model_plan(snapshot)
+    with pytest.raises(
+            PredictiveQueryPlanError,
+            match=rf'Snapshot {full.id} has table\(s\) items that the snapshot '
+            r'this query was validated against left out, and the query '
+            r'means something else with them\. Validate it against this '
+            r'snapshot: PredictiveQuery\(snapshot, query\)\.'):
+        PredictiveQuery(snapshot, ranking).suggest_model_plan(full)
+    assert PredictiveQuery(
+        snapshot,
+        'PREDICT users.age FOR EACH users.id').suggest_model_plan(full)
