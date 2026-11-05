@@ -2,17 +2,25 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 import pandas as pd
+import pyarrow as pa
 import pytest
 import torch
+from kumo_core.encoders.tensor_mapper import (
+    CategoricalTensorMapper,
+    MultiCategoricalTensorMapper,
+    NumericalTensorMapper,
+    SequenceTensorMapper,
+    TextTensorMapper,
+    TimestampTensorMapper,
+    UnsupportedTensorMapper,
+)
+from kumo_core.encoders.tensor_mappers import TensorMappers
 from kumoapi.typing import Stype
 from torch_frame.data import (
     MultiEmbeddingTensor,
     MultiNestedTensor,
     TensorFrame,
 )
-
-from kumo_core.encoders.tensor_mapper import CategoricalTensorMapper, MultiCategoricalTensorMapper, NumericalTensorMapper, SequenceTensorMapper, TextTensorMapper, TimestampTensorMapper, UnsupportedTensorMapper
-from kumo_core.encoders.tensor_mappers import TensorMappers
 
 
 def test_tensor_mappers_with_only_null_encoders() -> None:
@@ -492,7 +500,6 @@ def test_to_tf_vectorized_matches_to_tf() -> None:
 def test_to_tf_vectorized_empty_input() -> None:
     """``_to_tf_vectorized`` handles a zero-row NumPy batch without raising."""
     import numpy as np
-
     from kumo_core.encoders.tensor_mappers import _to_tf_vectorized
 
     store, _ = _build_multi_stype_store_and_df()
@@ -564,7 +571,6 @@ def test_mapper_map_numpy_matches_series(cats) -> None:
     (unknown values → ``-1``).
     """
     import numpy as np
-
     from kumo_core.encoders.index_mapping import Mapper
 
     m = Mapper(cats)
@@ -586,7 +592,29 @@ def test_mapper_map_numpy_matches_series(cats) -> None:
 ])
 def test_mapper_numpy_preserves_index_positions(index, expected) -> None:
     import numpy as np
-
     from kumo_core.encoders.index_mapping import Mapper
 
     assert Mapper(index).map(np.array([3, 1, 4])).tolist() == expected
+
+
+
+def test_raw_arrow_conversion_preserves_empty_lists() -> None:
+    """Raw Arrow inputs retain null numerics and empty multicategorical rows."""
+    store = TensorMappers({"table": {
+        "num": NumericalTensorMapper(),
+        "multi": MultiCategoricalTensorMapper([[1, 2], [2, 1]], sep=None),
+    }})
+    raw = {
+        "num": pa.array([1.0, 2.0, None]),
+        "multi": pa.array([[1], [], [2]], type=pa.list_(pa.int64())),
+    }
+
+    result = store.convert_raw_to_tensor_frame("table", raw)
+
+    assert result.num_rows == 3
+    assert result.feat_dict[Stype.numerical].flatten().tolist()[:2] == [1.0, 2.0]
+    assert result.feat_dict[Stype.numerical][2].isnan().all()
+    multi = result.feat_dict[Stype.multicategorical]
+    assert isinstance(multi, MultiNestedTensor)
+    assert multi.offset.tolist() == [0, 1, 1, 2]
+    assert multi.values.tolist() == [0, 1]
