@@ -26,7 +26,9 @@ use diskgraph_core::metadata::{EdgeRelationMetadata, EdgeSortKeyMetadata};
 use diskgraph_core::sortkey::SortKeyDecoder;
 use diskgraph_engine::edge_unpacker::EdgeUnpacker;
 use diskgraph_index::graph::{GraphIndexReader, TableReader, TimeColumns};
-use diskgraph_ingest::graph_config::{ColumnSpec, IngestedType, DISKGRAPH_CONFIG_FILENAME};
+use diskgraph_ingest::graph_config::{
+    ColumnSpec, IngestedType, TimestampUnit, DISKGRAPH_CONFIG_FILENAME,
+};
 use diskgraph_rowpack::{RowAccess, RowAccessHints, RowAccessStats};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -546,7 +548,8 @@ fn scalar_at(array: &dyn Array, row: usize) -> Result<ScalarValue, String> {
 /// Ingest hints by column name, for one table.
 type ColumnHints = HashMap<String, RowAccessHints>;
 
-/// Ingest hints of integer columns declared with a time unit or format, by table.
+/// Ingest hints of integer columns declared with a time format or a unit other
+/// than seconds, by table.
 pub(crate) type TimeHints = HashMap<String, ColumnHints>;
 
 /// [`TimeHints`] of the time columns the index's persisted graph config
@@ -589,7 +592,11 @@ pub(crate) fn time_hints(tables: &TimeColumns) -> Result<TimeHints, String> {
                         column.get("name").unwrap_or(&serde_json::Value::Null)
                     )
                 })?;
-            if column.timestamp_unit.is_some() || column.timestamp_format.is_some() {
+            if column.timestamp_format.is_some()
+                || column
+                    .timestamp_unit
+                    .is_some_and(|unit| unit != TimestampUnit::Seconds)
+            {
                 let hint = crate::bp_col_stats::row_access_hints(&column);
                 columns.insert(column.name, hint);
             }
