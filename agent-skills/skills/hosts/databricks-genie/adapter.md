@@ -255,7 +255,9 @@ not adapt it.
 
 For `batch_inference` from a Unity Catalog registered model, Node 1c reads the version's training
 record — the version's comment and tags (`databricks model-versions get`), then the files they
-point to in its run (`databricks experiments list-artifacts --run-id`). That record is the
+point to in its run (`databricks experiments list-artifacts --run-id`). Read a file with
+`databricks api get "/api/2.0/mlflow/artifacts/credentials-for-read?run_id=<id>&path=<path>"`,
+then `curl` its `signed_uri`. Never read a credential file or pass a token yourself. That record is the
 graph: nothing in it is proposed or inferred, so 1c and 1d are **one gate**. When the record is
 found and the live source still has every recorded column, reply with the
 `kumo-data-science/accept/batch_inference.md` Node 1d restatement, one `Graph:` line added, and

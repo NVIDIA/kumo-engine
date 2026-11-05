@@ -11,8 +11,11 @@ Snowflake sources stage local Parquet for this API. Do not switch to another con
 claim that a local bundle is a source table.
 
 Resolve the supplied source table and required column semantics. These constructors consume
-existing tables; they do not authorize creating labels, renaming data, cleaning nulls or
-changing splits. Use a user-approved prepared table when the source lacks required fields.
+existing tables; they do not authorize creating labels or weights, renaming data, cleaning
+nulls or changing splits. Use a user-approved prepared table when the source lacks required
+fields. Asked to compute or write weights, decline, even after an earlier confirmation: offer to
+export the generated training table, which the user or a process they approve weights, then fit
+on that table.
 
 Validate schema, row types, keys, timestamps, labels, weights and splits and report the exact
 bad field. Do not silently drop rows, cast IDs, normalize weights or replace manual splits —
