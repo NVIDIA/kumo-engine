@@ -2700,6 +2700,9 @@ impl<'p> RowAccess<'p> {
                 // a string and parse with the format. This handles date-encoded
                 // integers like YYYYMMDD (20240301) that are NOT epoch values.
                 if let Some(fmt) = format {
+                    if let Some(secs) = fast.and_then(|parser| parser.parse_compact_ymd_int(value)) {
+                        return Ok(Some(in_clock(floor_parts::<U>(secs, || 0))?));
+                    }
                     let text = value.to_string();
                     if let Some((secs, nanos)) = parse_timestamp_text_parts(&text, Some(fmt)) {
                         return Ok(Some(in_clock(floor_parts::<U>(secs, || nanos))?));

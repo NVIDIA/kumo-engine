@@ -1832,6 +1832,31 @@ fn int32_yyyymmdd_format_takes_priority_over_unit() {
     assert_eq!(secs, expected);
 }
 
+#[test]
+fn integer_yyyymmdd_matches_text_parse() {
+    let mut values = vec![i64::MIN, -20240301, 0, 2024031, 9_999_999, 100_000_000, i64::MAX];
+    for year in [1000, 1969, 2000, 2023, 2024, 9999] {
+        for month in 0..=13 {
+            for day in 0..=32 {
+                values.push(year * 10_000 + month * 100 + day);
+            }
+        }
+    }
+    for value in values {
+        let array = || Arc::new(arrow_array::Int64Array::from(vec![value])) as ArrayRef;
+        let expected = match parse_timestamp_text(&value.to_string(), Some("%Y%m%d")) {
+            Some(secs) => Ok(Some(secs)),
+            None => get_timestamp_from_array(array(), None, None),
+        };
+        let actual = get_timestamp_from_array(array(), Some("%Y%m%d"), None);
+        assert_eq!(
+            actual.map_err(|error| error.to_string()),
+            expected.map_err(|error| error.to_string()),
+            "{value}"
+        );
+    }
+}
+
 // ---- detect_encoded_int_format tests ----
 
 #[test]
