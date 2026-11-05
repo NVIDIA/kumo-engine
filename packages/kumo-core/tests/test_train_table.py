@@ -531,15 +531,18 @@ def test_apply_link_resolution_rejects_unresolved_entity_type() -> None:
             rhs_is_temporal=False,
         )
 
-    with pytest.raises(RuntimeError, match="exact unqualified"):
+    plan = json.loads(
         apply_reference_resolution(
             '{}',
             entity_node_type="main.features.users",
-            rhs_node_type="products",
+            rhs_node_type="sales.products",
             resolve_link_targets=True,
             is_static_link=False,
             rhs_is_temporal=False,
-        )
+        ))
+    assert [step["dst_table"] for step in plan["lp_resolution"]] == [
+        "main.features.users", "sales.products"
+    ]
 
 
 def test_generate_rejects_unknown_task_type(tmp_path) -> None:

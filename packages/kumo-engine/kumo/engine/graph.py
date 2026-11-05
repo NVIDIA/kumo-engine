@@ -264,15 +264,16 @@ def _refuse_inexact_key_conversions(alias: str,
     declared with its destination's integer dtype holds a value DiskGraph
     cannot convert exactly, or two distinct values that convert to the
     same integer, and when an integer key declared over text or any other
-    non-integer storage is to link to a string key, since DiskGraph would
-    then use the stored values as they are. DiskGraph reads an optional
-    sign, ASCII digits and a zero fraction inside Unicode whitespace,
-    within the dtype's range (`byte` is unsigned), and anything else as
-    null, so such a row would lose its link; an empty or blank value
-    counts as missing, as DiskGraph reads it. Reads that column of each
-    staged parquet part one batch at a time and keeps only the distinct
-    convertible values, compacted as they accumulate; a part staged under
-    a type that is neither text nor valid UTF-8 binary is left to
+    storage that is not an integer, a scale-zero decimal or all null is to
+    link to a string key, since DiskGraph would then use the stored values
+    as they are. DiskGraph reads an optional sign, ASCII digits and a zero
+    fraction inside Unicode whitespace, within the dtype's range (`byte`
+    is unsigned), and anything else, including a binary value that is not
+    UTF-8, as null, so such a row would lose its link; an empty or blank
+    value counts as missing, as DiskGraph reads it. Reads that column of
+    each staged parquet part one batch at a time and keeps only the
+    distinct convertible values, compacted as they accumulate; a part
+    staged under a type that is neither text nor binary is left to
     DiskGraph's own conversion.
     """
     import pyarrow as pa
@@ -297,7 +298,8 @@ def _refuse_inexact_key_conversions(alias: str,
                                       pa.types.is_dictionary(stored) else stored)
         if conversion.bounds is None:
             for stored in stored_types.values():
-                if not pa.types.is_integer(stored):
+                if not (pa.types.is_integer(stored) or pa.types.is_null(stored)
+                        or (pa.types.is_decimal(stored) and stored.scale == 0)):
                     raise ValueError(
                         f"Foreign key {alias}.{name} is declared "
                         f"{conversion.dtype.value} but stored as {stored} in "
@@ -320,10 +322,18 @@ def _refuse_inexact_key_conversions(alias: str,
                 values = batch.column(0)
                 if pa.types.is_dictionary(values.type):
                     values = values.dictionary_decode()
+                values = pc.drop_null(values)
                 try:
-                    values = pc.drop_null(values).cast(text)
+                    values = values.cast(text)
                 except pa.ArrowInvalid:
-                    continue
+                    decoded = []
+                    for value in values.to_pylist():
+                        try:
+                            decoded.append(value.decode('utf-8'))
+                        except UnicodeDecodeError:
+                            invalid += 1
+                            example = value if example is None else example
+                    values = pa.array(decoded, text)
                 values = pc.filter(
                     values,
                     pc.not_equal(pc.utf8_trim(values, characters=_WHITESPACE),

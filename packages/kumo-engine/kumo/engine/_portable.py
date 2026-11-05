@@ -73,8 +73,7 @@ class PortableGraphError(ValueError):
     `graph_config` -- e.g. a table has no resolved `definition`, or
     `kumo_core.portable_graph._project_portable_graph` itself rejects the
     result (a missing primary key on an edge's destination table, a dangling
-    edge, ...), or a table name contains a `.`, of which `kumo_core` and
-    DiskGraph keep only the part after the last one.
+    edge, ...).
     """
 
 
@@ -239,13 +238,6 @@ def portable_graph_config(
     conversions = key_conversions(tables, edges)
     definitions = {}
     for alias, table in tables.items():
-        if '.' in alias:
-            raise PortableGraphError(
-                f"Table name {alias!r} contains '.': Kumo keeps only the "
-                "part after the last '.', so the table would be looked up "
-                f"as {alias.rsplit('.', 1)[1]!r} and collide with any table "
-                "of that name. Name it without '.', for example "
-                f"Graph({{{alias.replace('.', '_')!r}: table}}).")
         if table.definition is None:
             raise PortableGraphError(
                 f"Table {alias!r} has no resolved `definition`; "

@@ -69,8 +69,8 @@ def test_source_table_inference_and_graph_acquisition(extension, tmp_path,
     ingested = []
 
     def ingest(graph_config, spec):
-        assert set(spec.source_paths) == {'events'}
-        local = Path(spec.source_paths['events'])
+        assert set(spec.source_paths) == {table.table_name}
+        local = Path(spec.source_paths[table.table_name])
         assert local.is_relative_to(tmp_path / 'scratch')
         actual = pq.ParquetDataset(local).read()
         assert actual.to_pydict() == expected.to_pydict()
@@ -80,7 +80,7 @@ def test_source_table_inference_and_graph_acquisition(extension, tmp_path,
 
     monkeypatch.setattr('kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
                         ingest)
-    graph = Graph(tables={'events': table})
+    graph = Graph(tables=[table])
     snapshot = graph.snapshot()
     assert len(ingested) == 1
     assert snapshot.graph_config == ingested[0]
@@ -644,11 +644,24 @@ def test_mismatched_key_dtypes_link_after_conversion(tmp_path):
         }), root / 'orders.parquet')
     pq.write_table(pa.table({'account_id': ['7', '10', '-1', '007']}),
                    root / 'accounts.parquet')
+    (root / 'payments').mkdir()
     pq.write_table(
         pa.table({
             'payment_id': range(6),
             'account_id': pa.array([7, 10, -1, 8, None, 7], pa.int64()),
-        }), root / 'payments.parquet')
+        }), root / 'payments' / 'part-0.parquet')
+    pq.write_table(
+        pa.table({
+            'payment_id': [6],
+            'account_id': pa.array([None], pa.int64())
+        }), root / 'payments' / 'part-1.parquet')
+    pq.write_table(pa.table({'code': ['7', '10']}), root / 'codes.parquet')
+    pq.write_table(
+        pa.table({
+            'event_id': [1, 2, 3],
+            'code': pa.array([Decimal(7), Decimal(10), None],
+                             pa.decimal128(38, 0)),
+        }), root / 'events.parquet')
     connector = FileConnector(root_dir=str(root))
 
     def table(name, key):
@@ -660,9 +673,12 @@ def test_mismatched_key_dtypes_link_after_conversion(tmp_path):
             'orders': table('orders', 'order_id'),
             'accounts': table('accounts', 'account_id'),
             'payments': table('payments', 'payment_id'),
+            'codes': table('codes', 'code'),
+            'events': table('events', 'event_id'),
         }, [
             Edge('orders', 'user_id', 'users'),
-            Edge('payments', 'account_id', 'accounts')
+            Edge('payments', 'account_id', 'accounts'),
+            Edge('events', 'code', 'codes'),
         ])
 
     with pytest.warns(UserWarning) as caught:
@@ -670,13 +686,14 @@ def test_mismatched_key_dtypes_link_after_conversion(tmp_path):
 
     messages = sorted(
         str(w.message) for w in caught if 'Foreign key' in str(w.message))
-    assert len(messages) == 2
-    assert messages[0].startswith(
+    assert [message.split(';')[0] for message in messages] == [
+        'Foreign key events.code is stored as int64 and links to codes.code, '
+        'which is string',
         'Foreign key orders.user_id is stored as string and links to '
-        'users.user_id, which is int64;')
-    assert messages[1].startswith(
+        'users.user_id, which is int64',
         'Foreign key payments.account_id is stored as int64 and links to '
-        'accounts.account_id, which is string;')
+        'accounts.account_id, which is string',
+    ]
     declared = {
         table['table_name']: {key['name']: key['dtype']
                               for key in table['fkeys']}
@@ -684,15 +701,18 @@ def test_mismatched_key_dtypes_link_after_conversion(tmp_path):
     }
     assert declared['orders'] == {'user_id': 'int64'}
     assert declared['payments'] == {'account_id': 'string'}
+    assert declared['events'] == {'code': 'string'}
     stats = json.loads((snapshot.index_path / 'ingest_stats.json').read_text())
     assert stats['stats']['edge_counts']['orders_user_id_to_users_user_id'] == 5
     assert stats['stats']['edge_counts'][
         'payments_account_id_to_accounts_account_id'] == 4
+    assert stats['stats']['edge_counts']['events_code_to_codes_code'] == 2
 
 
-@pytest.mark.parametrize(
-    'layout',
-    ['parquet', 'batches', 'compacted', 'csv', 'dictionary', 'binary'])
+@pytest.mark.parametrize('layout', [
+    'parquet', 'batches', 'compacted', 'csv', 'dictionary', 'binary',
+    'binary_invalid'
+])
 @pytest.mark.parametrize('values, target, invalid, colliding', [
     (['7', 'x', '', ' ', '1e1', None, '7'], Dtype.int64, 2, 0),
     (['\x1c7', '\u30007\u3000', '\x0b7'], Dtype.int64, 1, 2),
@@ -716,9 +736,12 @@ def test_inexact_string_foreign_keys_are_refused_with_counts(
     keys = pa.array(values, pa.string())
     if layout == 'dictionary':
         keys = keys.dictionary_encode()
-    if layout == 'binary':
+    if layout.startswith('binary'):
         keys = keys.cast(pa.binary())
-    orders = pa.table({'order_id': range(len(values)), 'user_id': keys})
+    if layout == 'binary_invalid':
+        keys = pa.concat_arrays([keys, pa.array([b'\xff7'], pa.binary())])
+        invalid += 1
+    orders = pa.table({'order_id': range(len(keys)), 'user_id': keys})
     if layout == 'csv':
         if any(len(value or '') > 18 or not (value or '').isprintable()
                for value in values):
@@ -731,7 +754,7 @@ def test_inexact_string_foreign_keys_are_refused_with_counts(
             row_group_size=2 if layout in ('batches', 'compacted') else None)
     graph = _keyed_graph(
         root, 'orders',
-        Dtype.string if layout in ('csv', 'binary') else None)
+        Dtype.string if layout == 'csv' or layout.startswith('binary') else None)
     graph = Graph(
         {
             'users': graph._named_tables['users'].with_column('user_id',
@@ -789,3 +812,34 @@ def test_declared_integer_key_over_text_is_refused_before_a_string_link(
         'the staged data; linking it to users.user_id, which is string, '
         'would use the stored values as they are. Declare the column as '
         'string, or store it as integers, before snapshot.')
+
+
+def test_dotted_table_names_survive_snapshot_and_training(tmp_path):
+    from kumo_core.pquery import PredictiveQueryPlanError
+
+    from kumo.engine import FileConnector, PredictiveQuery, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(pa.table({'id': [1, 2]}), root / 'users.v1.parquet')
+    pq.write_table(
+        pa.table({
+            'order_id': range(120),
+            'amount': [float(i) for i in range(120)],
+        }), root / 'orders.parquet')
+    connector = FileConnector(root_dir=str(root))
+    graph = Graph([
+        Table.from_source_table(connector['users.v1'], primary_key='id'),
+        Table.from_source_table(connector['orders'], primary_key='order_id'),
+    ])
+
+    snapshot = graph.snapshot()
+
+    assert [table.name for table in snapshot._native_graph.tables
+            ] == ['users.v1', 'orders']
+    query = PredictiveQuery(graph, 'PREDICT orders.amount FOR EACH orders.order_id')
+    assert pq.read_table(
+        query.generate_training_table(snapshot).train_table_path).num_rows == 120
+    with pytest.raises(PredictiveQueryPlanError, match="'users'"):
+        PredictiveQuery(graph, 'PREDICT v1.id FOR EACH users.id').validate()
