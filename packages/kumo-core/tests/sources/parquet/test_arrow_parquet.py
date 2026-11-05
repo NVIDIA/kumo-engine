@@ -434,3 +434,17 @@ def test_a_spread_read_fills_its_budget_from_the_longer_row_groups(tmp_path):
     assert read_bounded_dataset(dataset, ["id"], 10,
                                 spread=True).column("id").to_pylist() == list(
                                     range(10))
+
+
+def test_a_spread_read_smaller_than_its_row_groups_skips_the_unshared_ones(
+        tmp_path):
+    """A request for fewer rows than there are sampled row groups leaves some
+    groups no share; Arrow refuses a zero-sized batch, so they are not
+    read at all."""
+    path = tmp_path / "wide.parquet"
+    with pq.ParquetWriter(path, pa.schema([("id", pa.int64())])) as writer:
+        writer.write_table(pa.table({"id": pa.array(range(10), pa.int64())}))
+        writer.write_table(pa.table({"id": pa.array([10], pa.int64())}))
+    dataset = ds.dataset(str(path))
+    assert read_bounded_dataset(dataset, ["id"], 1,
+                                spread=True).column("id").to_pylist() == [10]

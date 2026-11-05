@@ -398,6 +398,8 @@ def read_bounded_dataset(
     for (fragment, group, _), quota in zip(plan, quotas):
         if not remaining:
             break
+        if not quota:
+            continue
         physical_columns = [
             column for column in requested_columns
             if column in fragment.physical_schema.names
