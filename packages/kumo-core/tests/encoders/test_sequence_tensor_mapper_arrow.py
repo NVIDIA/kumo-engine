@@ -2,90 +2,24 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import warnings
-
 import numpy as np
 import pyarrow as pa
 import pytest
 import torch
-from torch_frame.data import MultiEmbeddingTensor
-
 from kumo_core.encoders.tensor_mapper import (
     SequenceTensorMapper,
     _row_path,
-    _tiled_mask,
 )
+from tests.encoders.pandas_mapper_reference import _sequence_reference
+from torch_frame.data import MultiEmbeddingTensor
 
 
-# Verbatim master copy.
 def _ref_from_arrow(self, arr, *, device=None):
-    if isinstance(arr, pa.ChunkedArray):
-        arr = arr.combine_chunks()
-
-    is_list = isinstance(arr, (pa.ListArray, pa.LargeListArray))
-    if is_list and len(arr) > 0:
-        offsets_np = arr.offsets.to_numpy(zero_copy_only=False)
-        values_arr = arr.values
-        if offsets_np[0] == 0 and offsets_np[-1] == len(values_arr):
-            self._is_string_dtype = False
-            with warnings.catch_warnings():
-                warnings.filterwarnings('ignore', message=".*non-writable.*")
-                values = torch.from_numpy(
-                    values_arr.to_numpy(zero_copy_only=False)).to(
-                        device, torch.get_default_dtype())
-            offsets = torch.from_numpy(offsets_np.astype(np.int64)).to(device)
-            seq_len = offsets[1:] - offsets[:-1]
-            n_rows = len(seq_len)
-            drop_count = (seq_len - self.max_length).clamp(min=0)
-            seq_len = seq_len.clamp(max=self.max_length)
-            values = values[_tiled_mask(seq_len, drop_count)]
-            padding_len = self.max_length - seq_len
-            result = torch.full((n_rows * self.max_length, ), float('NaN'),
-                                device=device)
-            result[_tiled_mask(seq_len, padding_len)] = values
-            return MultiEmbeddingTensor(
-                num_rows=n_rows,
-                num_cols=1,
-                values=result.view(n_rows, self.max_length),
-                offset=torch.tensor([0, self.max_length], device=device),
-            )
-
-    return self._forward_pandas(arr.to_pandas(), device=device)
+    return _sequence_reference(self, arr.to_pandas(), device=device)
 
 
 def _ref_post_forward(self, array, device=None):
-    if len(array) == 0:
-        return MultiEmbeddingTensor(
-            num_rows=0,
-            num_cols=1,
-            values=torch.empty(0, self.max_length, device=device),
-            offset=torch.tensor([0, self.max_length], device=device),
-        )
-    assert isinstance(array, pa.ListArray)
-
-    with warnings.catch_warnings():
-        warnings.filterwarnings('ignore', message=".*non-writable.*")
-        values = torch.from_numpy(array.values.to_numpy()).to(
-            device, torch.get_default_dtype())
-
-    offsets = torch.from_numpy(array.offsets.to_numpy()).to(device)
-    seq_len = offsets[1:] - offsets[:-1]
-    n_rows = len(seq_len)
-
-    drop_count = (seq_len - self.max_length).clamp(min=0)
-    seq_len = seq_len.clamp(max=self.max_length)
-    values = values[_tiled_mask(seq_len, drop_count)]
-
-    padding_len = self.max_length - seq_len
-    result = torch.full((n_rows * self.max_length, ), float('NaN'),
-                        device=device)
-    result[_tiled_mask(seq_len, padding_len)] = values
-    return MultiEmbeddingTensor(
-        num_rows=n_rows,
-        num_cols=1,
-        values=result.view(n_rows, self.max_length),
-        offset=torch.tensor([0, self.max_length], device=device),
-    )
+    return _sequence_reference(self, array.to_pandas(), device=device)
 
 
 def _assert_identical(ref: MultiEmbeddingTensor,
@@ -177,12 +111,7 @@ POST_CASES = [c for c in CASES if isinstance(c[1], pa.ListArray)]
 def test_post_forward_matches_reference(arr, max_length,
                                         default_dtype) -> None:
     mapper = SequenceTensorMapper(min_length=0, max_length=max_length)
-    try:
-        ref = _ref_post_forward(mapper, arr)
-    except Exception as e:  # Master raises.
-        with pytest.raises(type(e)):
-            mapper.post_forward(arr)
-        return
+    ref = _ref_post_forward(mapper, arr)
     _assert_identical(ref, mapper.post_forward(arr))
 
 
@@ -239,7 +168,7 @@ def test_fixed_size_list_matches_pandas_path(name, value_type, max_length,
     for a in (arr, chunked, arr.slice(1)):
         ref_mapper = SequenceTensorMapper(min_length=0, max_length=max_length)
         mapper = SequenceTensorMapper(min_length=0, max_length=max_length)
-        ref = ref_mapper._forward_pandas(a.to_pandas())
+        ref = _sequence_reference(ref_mapper, a.to_pandas())
         _assert_identical(ref, mapper(a))
 
 

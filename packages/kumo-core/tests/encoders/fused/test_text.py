@@ -227,7 +227,7 @@ class _Model:
     def fingerprint(self) -> str:
         return embedding_models._fingerprint(self.words, self.array)
 
-    def tokenize(self, texts: pd.Series) -> tuple[torch.Tensor, torch.Tensor]:
+    def tokenize(self, texts: pa.Array | pd.Series) -> tuple[torch.Tensor, torch.Tensor]:
         return VocabularyIndex(self.words).tokenize(texts)
 
     def vectors(self) -> np.ndarray:

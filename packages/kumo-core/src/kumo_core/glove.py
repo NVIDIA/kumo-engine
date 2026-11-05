@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.compute as pc
 import torch
 from torch import Tensor
 
@@ -26,6 +28,7 @@ class VocabularyIndex:
         keep = words.notna() & ~words.duplicated(keep="last")
         self._mapper = Mapper(words[keep])
         self._rows = torch.from_numpy(np.flatnonzero(keep))
+        self._arrow_words = pa.array(words[keep].to_numpy())
 
     def __len__(self) -> int:
         return len(self.words)
@@ -36,7 +39,29 @@ class VocabularyIndex:
         rows = self._rows[codes[mask]]
         return (rows, mask) if return_mask else rows
 
-    def tokenize(self, values: pd.Series) -> tuple[Tensor, Tensor]:
+    def tokenize(self, values: pa.Array | pd.Series) -> tuple[Tensor, Tensor]:
+        """Tokenize Arrow or legacy statistics inputs into physical vocabulary rows.
+
+        Args:
+            values: Raw text or token lists, one entry per row.
+
+        Returns:
+            Row pointers and physical vocabulary rows, excluding unknown tokens.
+        """
+        if isinstance(values, pa.Array):
+            from kumo_core.encoders.text import normalize_text_arrow
+
+            lists = normalize_text_arrow(values)
+            words = pc.list_flatten(lists)
+            codes = pc.index_in(words, value_set=self._arrow_words)
+            keep = pc.and_(pc.is_valid(codes), pc.fill_null(pc.not_equal(words, ""), False))
+            parents = pc.filter(pc.list_parent_indices(lists), keep).to_numpy()
+            counts = np.bincount(parents, minlength=len(values))
+            offsets = np.empty(len(values) + 1, dtype=np.int64)
+            offsets[0] = 0
+            np.cumsum(counts, out=offsets[1:])
+            indices = pc.filter(codes, keep).to_numpy().astype(np.int64)
+            return torch.from_numpy(offsets), self._rows[torch.from_numpy(indices)]
         rowptr, codes = self._mapper.tokenize(values)
         return rowptr, self._rows[codes]
 

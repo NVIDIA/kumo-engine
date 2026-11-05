@@ -146,7 +146,7 @@ class _NumpyModel:
     def vectors(self) -> np.ndarray:
         return np.ones((self.rows, self.dim))  # float64
 
-    def tokenize(self, texts: pd.Series) -> tuple[np.ndarray, np.ndarray]:
+    def tokenize(self, texts: pa.Array | pd.Series) -> tuple[np.ndarray, np.ndarray]:
         rowptr = [0, 2] + [2] * (len(texts) - 1 + self.extra_pointer)
         return np.array(rowptr), np.array([0, 1])
 

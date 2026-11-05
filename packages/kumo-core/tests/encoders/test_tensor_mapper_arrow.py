@@ -7,6 +7,7 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 import torch
+from kumo_core.encoders.index_mapping import Mapper
 from kumo_core.encoders.tensor_mapper import (
     CategoricalTensorMapper,
     ImageTensorMapper,
@@ -19,6 +20,10 @@ from kumo_core.encoders.tensor_mapper import (
     UnsupportedTensorMapper,
 )
 from kumo_core.types.features import TensorData
+from tests.encoders.pandas_mapper_reference import (
+    _multi_categorical_reference,
+    _sequence_reference,
+)
 from torch import Tensor
 from torch_frame.data import MultiEmbeddingTensor, MultiNestedTensor
 
@@ -37,8 +42,10 @@ def _pandas_reference(
         dtype = str(torch.get_default_dtype()).split(".")[-1]
         return torch.from_numpy(series.to_numpy().astype(dtype)).view(-1, 1)
     if isinstance(mapper, CategoricalTensorMapper):
-        return mapper.mapper.map(series).view(-1, 1)
-    return mapper._forward_pandas(series)
+        return Mapper(mapper.mapping).map(series).view(-1, 1)
+    if isinstance(mapper, MultiCategoricalTensorMapper):
+        return _multi_categorical_reference(mapper, series)
+    return _sequence_reference(mapper, series)
 
 
 def _assert_same(pandas_out, arrow_out) -> None:
@@ -114,8 +121,7 @@ def test_multicategorical_list_arrow_matches_pandas() -> None:
     mapper = MultiCategoricalTensorMapper(
         category_counts=[[1, 2], [2, 1], [3, 1]], sep=None
     )
-    # No nulls and no empty lists, so this hits the native CSR fast path (a
-    # list-level null would defer to the pandas fallback).
+    # Duplicate categories and row order are preserved.
     ser = pd.Series([[1, 2], [2, 3], [1], [1, 1]])
     arr = pa.array([[1, 2], [2, 3], [1], [1, 1]], type=pa.list_(pa.int64()))
     assert arr.null_count == 0
@@ -126,7 +132,7 @@ def test_multicategorical_list_arrow_matches_pandas() -> None:
 
 
 def test_multicategorical_null_arrow_matches_pandas() -> None:
-    # A list-level null forces the pandas fallback; it must still match.
+    # List-level nulls retain the legacy unknown-category entry.
     mapper = MultiCategoricalTensorMapper(
         category_counts=[[1, 2], [2, 1], [3, 1]], sep=None
     )
@@ -145,9 +151,7 @@ def test_multicategorical_empty_list_arrow_matches_pandas() -> None:
 
 
 def test_multicategorical_sliced_list_arrow_matches_pandas() -> None:
-    # A head slice keeps offsets[0] == 0 but ``arr.values`` still spans the
-    # full child buffer; the native guard must defer this to the pandas
-    # fallback rather than build a mismatched tensor.
+    # A head slice retains a larger child buffer than the visible rows.
     mapper = MultiCategoricalTensorMapper(
         category_counts=[[1, 2], [2, 1], [3, 1]], sep=None
     )
@@ -176,8 +180,7 @@ def test_sequence_truncation_arrow_matches_pandas() -> None:
 
 
 def test_sequence_sliced_list_arrow_matches_pandas() -> None:
-    # Head slice: native guard must defer to the pandas fallback (see the
-    # multicategorical sliced test for the underlying pyarrow behavior).
+    # Slices must use only their visible child values.
     mapper = SequenceTensorMapper(min_length=2, max_length=2)
     arr = pa.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], type=pa.list_(pa.float64()))
     sliced = arr.slice(0, 2)
