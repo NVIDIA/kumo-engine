@@ -949,12 +949,20 @@ def _logind_removes_ipc(root: str = '/') -> bool:
         uid = os.geteuid()
         if uid < int((uid_min or ['1000'])[-1]):
             return False
-        confs = [
-            os.path.join(etc, 'systemd', 'logind.conf'),
-            *sorted(
-                glob.glob(os.path.join(etc, 'systemd', 'logind.conf.d',
-                                       '*.conf'))),
+        dirs = [
+            os.path.join(root, prefix, 'systemd')
+            for prefix in ('etc', 'run', 'usr/local/lib', 'usr/lib')
         ]
+        mains = [
+            os.path.join(d, 'logind.conf') for d in dirs
+            if os.path.exists(os.path.join(d, 'logind.conf'))
+        ]
+        drop_ins = {
+            os.path.basename(path): path
+            for d in reversed(dirs)
+            for path in glob.glob(os.path.join(d, 'logind.conf.d', '*.conf'))
+        }
+        confs = mains[:1] + [drop_ins[name] for name in sorted(drop_ins)]
         remove_ipc = [
             value for conf in confs
             for value in _config_values(conf, 'RemoveIPC')

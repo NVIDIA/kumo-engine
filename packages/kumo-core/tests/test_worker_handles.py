@@ -104,6 +104,8 @@ def test_unsendable_batch_fails_instead_of_being_dropped(
 _SYSTEMD = 'run/systemd/system/.keep'
 _LOGIND = 'etc/systemd/logind.conf'
 _DROP_IN = 'etc/systemd/logind.conf.d/50-ipc.conf'
+_VENDOR_LOGIND = 'usr/lib/systemd/logind.conf'
+_VENDOR_DROP_IN = 'usr/lib/systemd/logind.conf.d/50-ipc.conf'
 
 
 @pytest.mark.parametrize('files, uid, removes', [
@@ -114,7 +116,11 @@ _DROP_IN = 'etc/systemd/logind.conf.d/50-ipc.conf'
     ({'var/lib/systemd/linger/job': ''}, 1500, False),
     ({'etc/login.defs': 'UID_MIN\t\t2000\n'}, 1500, False),
     ({}, 0, False),
-    ({_LOGIND: None}, 1500, False),
+    ({_LOGIND: None}, 1500, True),
+    ({_LOGIND: None, _VENDOR_LOGIND: 'RemoveIPC=no\n'}, 1500, False),
+    ({_VENDOR_DROP_IN: 'RemoveIPC=no\n'}, 1500, False),
+    ({_VENDOR_DROP_IN: 'RemoveIPC=no\n', _DROP_IN: 'RemoveIPC=yes\n'}, 1500,
+     True),
     ({_SYSTEMD: None}, 1500, False),
 ])
 def test_logind_removes_ipc(tmp_path, monkeypatch, files, uid, removes):
