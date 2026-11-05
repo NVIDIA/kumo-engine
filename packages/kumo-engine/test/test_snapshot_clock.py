@@ -73,6 +73,25 @@ def test_seconds_snapshot_keeps_the_existing_cache_key(ingests):
     assert snapshot.id == f'graph-key@{data_version[:16]}'
 
 
+def test_a_settled_time_column_has_its_own_snapshot(ingests, monkeypatch):
+    import kumo.engine.graph as graph_module
+
+    outcomes = iter([({}, []), ({
+        'ts': 's'
+    }, []), ({}, ['ts']), ({
+        'ts': 's'
+    }, ['ts'])])
+    monkeypatch.setattr(graph_module, 'resolve_time_columns',
+                        lambda *args: next(outcomes))
+    ids = [_graph().snapshot().id for _ in range(4)]
+    assert len(set(ids)) == 4
+    data_version = fingerprint(
+        json.dumps({
+            'events': 'v1'
+        }, sort_keys=True).encode())
+    assert ids[0] == f'graph-key@{data_version[:16]}'
+
+
 def test_each_clock_has_its_own_snapshot(ingests):
     ids = {_graph().snapshot(timestamp_precision=clock).id for clock in CLOCKS}
     assert len(ids) == len(CLOCKS)

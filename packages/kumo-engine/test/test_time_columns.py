@@ -53,9 +53,10 @@ def test_every_integer_shape_shares_the_reading(tmp_path, values):
     path = _part(tmp_path, values)
     before = path.read_bytes()
     with pytest.warns(UserWarning, match='read as YYYYMMDD dates'):
-        formats = resolve_time_columns('events', _definition(Dtype.int64),
-                                       [str(path)])
-    assert formats == {'ts': '%Y%m%d'}
+        formats, rewritten = resolve_time_columns('events',
+                                                  _definition(Dtype.int64),
+                                                  [str(path)])
+    assert (formats, rewritten) == ({'ts': '%Y%m%d'}, [])
     assert path.read_bytes() == before
 
 
@@ -87,8 +88,9 @@ def test_values_outside_the_nanosecond_range_are_made_missing(
         tmp_path, values, fmt, missing):
     path = _part(tmp_path, values)
     with pytest.warns(UserWarning) as caught:
-        formats = resolve_time_columns('events', _definition(), [str(path)])
-    assert formats == ({'ts': fmt} if fmt else {})
+        formats, rewritten = resolve_time_columns('events', _definition(),
+                                                  [str(path)])
+    assert (formats, rewritten) == (({'ts': fmt} if fmt else {}), ['ts'])
     message = [
         str(w.message) for w in caught
         if 'falls outside' in str(w.message) or 'fall outside' in str(w.message)
@@ -130,8 +132,9 @@ def test_slash_shapes_are_voted_among_the_values_that_are_dates(tmp_path):
     path = _part(tmp_path,
                  pa.array(['13/01/2024 10:30:00', '30/02/2024', '31/02/2024']))
     with pytest.warns(UserWarning) as caught:
-        formats = resolve_time_columns('events', _definition(), [str(path)])
-    assert formats == {'ts': '%d/%m/%Y %H:%M:%S'}
+        formats, rewritten = resolve_time_columns('events', _definition(),
+                                                  [str(path)])
+    assert (formats, rewritten) == ({'ts': '%d/%m/%Y %H:%M:%S'}, ['ts'])
     assert [str(w.message)[:60] for w in caught] == [
         'Time column events.ts holds slash dates read day first (%d/%',
         '2 values in time column events.ts are not dates on the calen',
@@ -149,8 +152,9 @@ def test_mixed_timezones_are_staged_with_one_separator(tmp_path):
             '2024-01-17T10:00:00.250Z', 'not a time', None
         ]))
     with pytest.warns(UserWarning, match='mixes 2 values with a timezone'):
-        formats = resolve_time_columns('events', _definition(), [str(path)])
-    assert formats == {'ts': '%Y-%m-%d %H:%M:%S%.f%#z'}
+        formats, rewritten = resolve_time_columns('events', _definition(),
+                                                  [str(path)])
+    assert (formats, rewritten) == ({'ts': '%Y-%m-%d %H:%M:%S%.f%#z'}, ['ts'])
     assert pq.read_table(path).column('ts').to_pylist() == [
         '2024-01-16 10:00:00', '2024-01-15 10:00:00+02:00',
         '2024-01-17 10:00:00.250Z', 'not a time', None
@@ -165,8 +169,9 @@ def test_mixed_timezones_are_staged_with_a_full_time_part(tmp_path):
             '2024-01-18 10:00:00.5Z'
         ]))
     with pytest.warns(UserWarning, match='mixes 2 values with a timezone'):
-        formats = resolve_time_columns('events', _definition(), [str(path)])
-    assert formats == {'ts': '%Y-%m-%d %H:%M:%S%.f%#z'}
+        formats, rewritten = resolve_time_columns('events', _definition(),
+                                                  [str(path)])
+    assert (formats, rewritten) == ({'ts': '%Y-%m-%d %H:%M:%S%.f%#z'}, ['ts'])
     assert pq.read_table(path).column('ts').to_pylist() == [
         '2024-01-15 00:00:00', '2024-01-16 10:00:00',
         '2024-01-17 10:00:00+02:00', '2024-01-18 10:00:00.5Z'
@@ -177,8 +182,9 @@ def test_far_numbers_among_other_shapes_are_still_made_missing(tmp_path):
     path = _part(tmp_path, pa.array(['99991231', '2024-01-16']))
     with pytest.warns(UserWarning, match='1 value in time column events.ts '
                       'falls outside'):
-        formats = resolve_time_columns('events', _definition(), [str(path)])
-    assert formats == {}
+        formats, rewritten = resolve_time_columns('events', _definition(),
+                                                  [str(path)])
+    assert (formats, rewritten) == ({}, ['ts'])
     assert pq.read_table(path).column('ts').to_pylist() == [None, '2024-01-16']
 
 
@@ -257,15 +263,16 @@ def test_padded_digit_strings_count_as_numbers(tmp_path, values, outcome):
         return
     with pytest.warns(UserWarning, match='holds whole numbers'):
         assert resolve_time_columns('events', _definition(),
-                                    [str(path)]) == outcome
+                                    [str(path)]) == (outcome, [])
 
 
 def test_a_declared_format_is_left_alone(tmp_path):
     path = _part(tmp_path, pa.array(['05/03/1990', '30/02/1990']))
     before = path.read_bytes()
-    formats = resolve_time_columns('events', _definition(declared='%d/%m/%Y'),
-                                   [str(path)])
-    assert formats == {}
+    formats, rewritten = resolve_time_columns('events',
+                                              _definition(declared='%d/%m/%Y'),
+                                              [str(path)])
+    assert (formats, rewritten) == ({}, [])
     assert path.read_bytes() == before
 
 
@@ -296,6 +303,7 @@ def test_only_parts_holding_an_invalid_value_are_rewritten(tmp_path):
 def test_other_shapes_are_left_to_diskgraph(tmp_path, values):
     path = _part(tmp_path, values)
     before = path.read_bytes()
-    formats = resolve_time_columns('events', _definition(), [str(path)])
-    assert formats == {}
+    formats, rewritten = resolve_time_columns('events', _definition(),
+                                              [str(path)])
+    assert (formats, rewritten) == ({}, [])
     assert path.read_bytes() == before

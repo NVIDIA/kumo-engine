@@ -783,16 +783,18 @@ def _rewrite(file: Path, columns: Dict[str, Callable[[pa.Array],
     os.replace(temporary, file)
 
 
-def resolve_time_columns(alias: str, definition: Any,
-                         paths: Sequence[str]) -> Dict[str, str]:
+def resolve_time_columns(
+        alias: str, definition: Any,
+        paths: Sequence[str]) -> Tuple[Dict[str, str], List[str]]:
     r"""Settles the time and end-time columns of one staged table from every
     value and returns the `timestamp_format` each one needs, by column
-    name; a column DiskGraph already reads unambiguously, or whose format
-    the table declares, gets none. Values no calendar or clock holds are
-    nulled in the staged parts, and a column mixing bare and zoned ISO
-    values is staged in one shape. Raises when a column of
-    whole numbers has no single reading or a column of slash dates no
-    single order.
+    name, with the sorted names of the columns whose staged parts were
+    rewritten; a column DiskGraph already reads unambiguously, or whose
+    format the table declares, gets none. Values no calendar or clock
+    holds are nulled in the staged parts, and a column mixing bare and
+    zoned ISO values is staged in one shape. Raises when a column of whole
+    numbers has no single reading or a column of slash dates no single
+    order.
     """
     declared = {
         column.name: column.timestamp_format
@@ -805,7 +807,7 @@ def resolve_time_columns(alias: str, definition: Any,
         if name and declared.get(name) is None
     ]
     if not columns:
-        return {}
+        return {}, []
     files = _parquet_files(paths)
     for file in files:
         parquet = pq.ParquetFile(file)
@@ -821,14 +823,16 @@ def resolve_time_columns(alias: str, definition: Any,
                     column.observe(str(file), batch.column(column.name))
     for column in columns:
         column.decide()
+    rewritten = set()
     for file in files:
-        rewritten = {
+        touched = {
             column.name: column.rewritten
             for column in columns if str(file) in column.parts_to_rewrite()
         }
-        if rewritten:
-            _rewrite(file, rewritten)
+        if touched:
+            _rewrite(file, touched)
+            rewritten.update(touched)
     return {
         column.name: column.decision.timestamp_format
         for column in columns if column.decision.timestamp_format is not None
-    }
+    }, sorted(rewritten)

@@ -816,7 +816,9 @@ class Graph:
         (`kumo.engine._time_columns`): whole numbers and slash dates take
         the one reading every value allows, declared as the column's
         `timestamp_format`, or are refused; a value no calendar or clock
-        holds is made missing and counted.
+        holds is made missing and counted. What the scan settles is part
+        of the snapshot's data version, so an index built before it is
+        not reused; a graph whose time columns need nothing keeps its key.
 
         Args:
             mlops: also export the snapshot under this `kumo.MLOps` root.
@@ -905,7 +907,7 @@ class Graph:
         table_data_versions: Dict[str, str] = {}
         source_paths: Dict[str, str] = {}
         source_tables: Dict[str, SourceTableEntry] = {}
-        time_formats: Dict[str, Dict[str, str]] = {}
+        settled: Dict[str, Dict[str, Any]] = {}
 
         started = start() if timed else None
         try:
@@ -947,11 +949,14 @@ class Graph:
                     record_sources=record_sources)
 
                 paths = prepared.source.get('paths') or []
-                formats = resolve_time_columns(
+                formats, rewritten = resolve_time_columns(
                     alias, table.definition, paths
                     or [str(prepared.source.get('path') or dest_dir)])
-                if formats:
-                    time_formats[alias] = formats
+                if formats or rewritten:
+                    settled[alias] = {
+                        'formats': formats,
+                        'rewritten': rewritten
+                    }
                 if paths:
                     parents = {str(Path(path).parent) for path in paths}
                     if len(parents) != 1:
@@ -970,6 +975,9 @@ class Graph:
             ]
             if timestamp_precision != 'seconds':
                 version_parts.append(timestamp_precision.encode())
+            if settled:
+                version_parts.append(
+                    json.dumps(settled, sort_keys=True).encode())
             data_version = fingerprint(*version_parts)
             handle = DiskgraphSnapshotHandle(graph_key=graph_key,
                                              graph_data_version=data_version)
@@ -991,7 +999,12 @@ class Graph:
                 # `Trainer.fit()` without this.
                 predicted = DiskgraphIngestResult.for_index(output_dir)
                 result = execute_diskgraph_ingest(
-                    _with_time_formats(graph_config, time_formats),
+                    _with_time_formats(
+                        graph_config, {
+                            alias: entry['formats']
+                            for alias, entry in settled.items()
+                            if entry['formats']
+                        }),
                     DiskgraphIngestSpec(
                         data_persist_dir=str(persist_dir),
                         table_data_versions=table_data_versions,
