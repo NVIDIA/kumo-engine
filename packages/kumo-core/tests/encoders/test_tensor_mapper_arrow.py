@@ -214,3 +214,15 @@ def test_mapper_rejects_non_arrow_input(mapper: TensorMapper) -> None:
     for values in (series, series.to_numpy()):
         with pytest.raises(TypeError, match="Arrow array"):
             mapper(values)  # type: ignore[arg-type]
+
+
+def test_categorical_float_arrow_preserves_zero_and_unknown_categories() -> None:
+    """Float Arrow inputs retain signed-zero equivalence and unknown-value codes."""
+    mapper = CategoricalTensorMapper(
+        category_counts=[[0.0, 25], [1.5, 20], [2.5, 15], [3.5, 10]]
+    )
+    values = pa.array([0.0, -0.0, 1.5, 3.5, 4.5], type=pa.float64())
+
+    mapped = mapper(values)
+
+    assert mapped.view(-1).tolist() == [0, 0, 1, 3, -1]
