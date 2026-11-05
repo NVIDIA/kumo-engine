@@ -121,9 +121,10 @@ output_config = kumo.PredictionOutputConfig(
 ```
 
 The connector stages the rows through the volume `<OUTPUT_CATALOG>.<OUTPUT_SCHEMA>._kumo_staging`
-and creates it on first use (`adapter.md` §4 has the grants). When it does not exist yet, the
-Node 1d output line says so — `Output: <catalog.schema.table>; creates the staging volume
-<catalog.schema>._kumo_staging` — so the user confirms that write too.
+and creates it on first use (`adapter.md` §4 has the grants). The Node 1d `Output:` line names
+the destination verbatim and nothing else. When the volume does not exist yet, a separate line
+says so — `Staging volume: creates <catalog.schema>._kumo_staging` — so the user confirms that
+write too. An existing volume needs no line.
 
 `PredictionArtifactType` and `WriteMode` come from `kumoapi.jobs`. Then read the destination back
 and compare its row count to `prediction_result.num_rows` — the only proof the write worked. An

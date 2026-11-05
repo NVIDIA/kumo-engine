@@ -95,6 +95,7 @@ here; a CPU run has not been verified.
 | No cluster named; the interactive notebook is on a GPU cluster | Propose that one `[inferred]` |
 | No cluster named; other GPU clusters are visible (`clusters.list()`) | Propose one `[inferred]`, preferring one that is running |
 | No GPU cluster visible | Say so and stop. Providing one is for the user or an administrator |
+| The user asks for a new job cluster ("let it spin up a new cluster") | A job cluster is a cluster created for the run. Say that this skill runs jobs on an existing cluster, propose the GPU cluster from the rows above, and ask to confirm submitting there. Never submit a run that creates its own cluster |
 
 Report the cluster's `state`. A `TERMINATED` cluster starts when the run is submitted (§9).
 
@@ -194,8 +195,16 @@ a saved job's runs; a one-time run is found from its page or its id as printed a
 | `life_cycle_state` `PENDING` for minutes | The cluster is starting. Not a failure |
 | `INTERNAL_ERROR`, or a cluster that failed to start | Platform-side. Report the `state_message` |
 
-Propose the specific fix. Never resubmit on your own: every submission is a new GPU run. Never
-delete a run or a job, because that discards its output.
+Propose the specific fix: say what to change in the job notebook, offer to make that change,
+and ask whether to resubmit after it — two things the user confirms. Never edit the notebook or
+resubmit on your own: every submission is a new GPU run. Never delete a run or a job, because
+that discards its output.
+
+**"Does the cluster have Kumo? Do I need to add libraries?"** Kumo is present on the GPU cluster
+the notebook runs on (`adapter.md`); the job adds no libraries and no requirements. An empty
+cluster library list is expected: Kumo is part of the cluster's environment, not a job library.
+Answer that, and point to the `ModuleNotFoundError` row above for what a run on a cluster without
+it would show.
 
 ## 8. Recurring runs
 
@@ -232,6 +241,10 @@ the proposal before anything is created:
 - **Cost recurs.** Each run pays for cluster start-up, scoring and the cluster's idle time (§9).
 
 Pausing (`pause_status=PAUSED`) or deleting the job is the user's call.
+
+A saved job already in the workspace for this scoring — one you find, or one an earlier session
+created — gets the same proposal. Changing its schedule, unpausing it or editing its task is
+done only after the user confirms that proposal; finding the job is not that confirmation.
 
 > Not run in this workspace: a scheduled job of this skill's notebook. Say so when proposing it.
 

@@ -107,6 +107,22 @@ def test_genie_maps_every_snowflake_mechanism() -> None:
     assert not re.search(r'clusters\.create|new_cluster', job)
 
 
+def test_genie_gates_hold_for_routed_requests_jobs_and_saved_models() -> None:
+    """Live Genie Code skipped the adapter on job and population follow-ups and acted without
+    confirmation; the router sends every request through the adapter, which names those acts."""
+    router = (package_skill.SKILLS / 'kumo-data-science' / 'SKILL.md').read_text()
+    assert '## Read the host adapter first' in router
+    host = package_skill.SKILLS / 'hosts' / 'databricks-genie'
+    adapter, job, runtime = (' '.join((host / n).read_text().split())
+                             for n in ('adapter.md', 'job.md', 'runtime.md'))
+    gate = adapter[adapter.index('## 0.'):adapter.index('## 1.')]
+    for act in ('unpausing', 'submitting', 'capability skill', 'not confirmation'):
+        assert act in gate, act
+    assert 'one gate' in adapter and 'Never propose retraining' in adapter
+    assert 'creates its own cluster' in job and 'adds no libraries' in job
+    assert 'names the destination verbatim and nothing else' in runtime
+
+
 def test_genie_sql_quotes_identifiers_and_names_the_staging_volume() -> None:
     """Unity Catalog names may contain hyphens, and a write creates `_kumo_staging`."""
     host = package_skill.SKILLS / 'hosts' / 'databricks-genie'

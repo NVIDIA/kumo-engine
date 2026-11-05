@@ -15,6 +15,15 @@ it from this file, you have not loaded the skill — say so rather than guessing
 Targets Kumo bundle `20261007+2e1eb12` (import `kumo.engine`; kumo-ai/kumo#31382).
 One SDK, no variants.
 
+## Read the host adapter first
+
+Before you answer any request this skill covers — a new model, scoring, a request routed to a
+capability skill below, a follow-up in a session that already has a notebook, or a question
+about a job — read `hosts/<host>/adapter.md`, the one directory under `hosts/`. It says what
+you may do on this host before the user confirms, and that holds for every reply. A request
+about a job also reads the job file the adapter names before you act on any job, run or
+cluster.
+
 ## When to use
 
 Requests that mention any of: kumo, predict, churn, recommend, forecast, fraud, train a model, run

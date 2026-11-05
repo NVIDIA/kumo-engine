@@ -28,12 +28,31 @@ Preflight reads — the SQL in §2 and §3, reading clusters, registered models 
 writes and need no confirmation. A reply that reaches a gate ends with the proposal or the
 restatement and its confirmation question.
 
-This holds for a follow-up in a session that already has a notebook. A change to its population,
-labels, task or destination goes back through the gates: answer with the restatement, or the
-ask-back, never with edited code.
+Confirmation is the user's answer to a restatement you showed in an earlier reply of this
+conversation. "Looks good, build it" when no restatement has been shown is not confirmation:
+show the graph proposal, then the restatement, and stop at each.
+
+This holds for a follow-up in a session that already has a notebook, and for a request routed to
+a capability skill — custom labels, weights, splits or scoring rows; publishing, reloading or
+retaining a model; explanations; tuning. A change to the population, labels, weights, splits,
+task or destination goes back through the gates: answer with the restatement, or with the
+ask-back that names the offending field, never with new or edited code. A field the capability
+skill says not to transform — a split column holding strings, weights to normalize, a list
+target — is reported and asked about, not converted in a file you write.
+
+A job, a run or a cluster you find in the workspace is not a request to change it. Creating,
+editing, deploying, scheduling, unpausing or pausing a job, submitting or repairing a run, and
+starting a cluster are writes, each confirmed on its own (`job.md` §3, §7, §8). Reading a job's
+settings, a run's state and output, or a cluster's state is a read.
 
 After confirmation, Step 2 creates the one notebook (`runtime.md` §0). Running it, or submitting
 it as a job, is Step 3 and waits for its own explicit request (`job.md` §3).
+
+**Tools.** Preflight reads Unity Catalog through SQL on a warehouse (§2, §3) — Genie Code's own
+SQL, the SQL statement API (`WorkspaceClient().statement_execution`), or
+`databricks api post /api/2.0/sql/statements`. A minimum CLI version another skill asks for (for
+`genie ask`, say) is not needed for that: never stop intake to ask the user to upgrade or add a
+tool; use a SQL path that works.
 
 ---
 
@@ -192,8 +211,8 @@ through a `DatabricksConnector` on that catalog and schema
 volume `<catalog>.<schema>._kumo_staging` and creates that volume on first use. So writing needs,
 for the user who runs the notebook: `USE CATALOG`, `USE SCHEMA`, `CREATE TABLE`, and either
 `CREATE VOLUME` on the schema or `READ VOLUME` and `WRITE VOLUME` on an existing `_kumo_staging`.
-A new volume is a write the user confirms: name it on the restatement's output line
-(`runtime.md` §4). Not destinations for predictions here: a path in a volume, S3, GCS or local
+A new volume is a write the user confirms: name it on its own restatement line, after the
+verbatim `Output:` line (`runtime.md` §4). Not destinations for predictions here: a path in a volume, S3, GCS or local
 files, and any table outside Unity Catalog.
 
 A model is published to a Unity Catalog registered model (`runtime.md` §5), and retained run
@@ -228,6 +247,35 @@ substitutions, which `runtime.md` §4.1, §5 and §6 spell out:
 
 A step that has no row here and names a Snowflake object is not covered on this host: say so; do
 not adapt it.
+
+### 6.1 Scoring a registered model
+
+For `batch_inference` from a Unity Catalog registered model, Node 1c reads the version's training
+record — the version's comment and tags (`databricks model-versions get`), then the files they
+point to in its run (`databricks experiments list-artifacts --run-id`). That record is the
+graph: nothing in it is proposed or inferred, so 1c and 1d are **one gate**. When the record is
+found and the live source still has every recorded column, reply with the
+`kumo-data-science/accept/batch_inference.md` Node 1d restatement, one `Graph:` line added, and
+stop for confirmation:
+
+```
+- Model: <catalog.schema.model> version <N> — trained task reused unchanged
+- Source: <source in the record> [recorded]
+- Graph: rebuilt from the version's training record — <n> tables, the recorded column lists, keys and links [recorded]
+- Population: all <entity> as of latest snapshot timestamp [default]
+- Output: <catalog.schema.table, verbatim>
+- Scoring options: <as batch_inference.md gives them by task type>
+```
+
+Do not restate the task (entity, outcome, window) or list tables and columns beyond that line:
+the task is reused, not reconfirmed. A recorded column the live source lacks, or a record that
+names no source, is the 1c finding to report instead.
+
+When the version has **no** training record, say that no column selection or graph definition
+is recorded for that version, that scoring must use the columns it was trained on, and ask for
+the training-time graph definition — the graph-building code or the per-table column lists.
+Ask only for that: not the model, version, source or destination. Never propose retraining or
+publishing a new model in its place; that is a new request for the user to make.
 
 ---
 
