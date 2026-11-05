@@ -58,24 +58,28 @@ class _Unpicklable:
 
 
 class _UnpicklableBatches(IterableDataset):
-    def __init__(self, message):
+    def __init__(self, message, endless):
         self.message = message
+        self.endless = endless
 
     def __iter__(self):
         yield _Unpicklable(self.message)
+        while self.endless:
+            yield 0
 
 
-@pytest.mark.parametrize('message, expected', [
+@pytest.mark.parametrize('message, endless, expected', [
     ('could not unlink the shared memory file /torch_1_2_3 : '
-     'No such file or directory (2)', 'loginctl enable-linger'),
-    ('not picklable', 'not picklable'),
+     'No such file or directory (2)', True, 'loginctl enable-linger'),
+    ('not picklable', False, 'not picklable'),
 ])
-def test_unsendable_batch_fails_instead_of_being_dropped(message, expected):
+def test_unsendable_batch_fails_instead_of_being_dropped(
+        message, endless, expected):
     def hung(signum, frame):
         raise TimeoutError('DataLoader waited forever for a dropped batch')
 
     loader = lightning_data._WorkerPoolDataLoader(
-        _UnpicklableBatches(message),
+        _UnpicklableBatches(message, endless),
         batch_size=None,
         num_workers=1,
         multiprocessing_context='fork',
@@ -84,7 +88,7 @@ def test_unsendable_batch_fails_instead_of_being_dropped(message, expected):
         registry=lightning_data._WorkerPoolRegistry(),
     )
     previous = signal.signal(signal.SIGALRM, hung)
-    signal.alarm(60)
+    signal.alarm(30)
     try:
         with pytest.raises(RuntimeError, match=expected):
             next(iter(loader))
@@ -93,6 +97,7 @@ def test_unsendable_batch_fails_instead_of_being_dropped(message, expected):
         signal.signal(signal.SIGALRM, previous)
 
 
+_SYSTEMD = 'run/systemd/system/.keep'
 _LOGIND = 'etc/systemd/logind.conf'
 _DROP_IN = 'etc/systemd/logind.conf.d/50-ipc.conf'
 
@@ -106,13 +111,15 @@ _DROP_IN = 'etc/systemd/logind.conf.d/50-ipc.conf'
     ({'etc/login.defs': 'UID_MIN\t\t2000\n'}, 1500, False),
     ({}, 0, False),
     ({_LOGIND: None}, 1500, False),
+    ({_SYSTEMD: None}, 1500, False),
 ])
 def test_logind_removes_ipc(tmp_path, monkeypatch, files, uid, removes):
-    for name, text in {_LOGIND: '[Login]\n#RemoveIPC=yes\n', **files}.items():
+    base = {_SYSTEMD: '', _LOGIND: '[Login]\n#RemoveIPC=yes\n'}
+    for name, text in {**base, **files}.items():
         if text is not None:
             (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
             (tmp_path / name).write_text(text)
-    monkeypatch.setattr(os, 'getuid', lambda: uid)
+    monkeypatch.setattr(os, 'geteuid', lambda: uid)
     monkeypatch.setattr(lightning_data.pwd, 'getpwuid',
                         lambda uid: SimpleNamespace(pw_name='job'))
     assert lightning_data._logind_removes_ipc(str(tmp_path)) is removes

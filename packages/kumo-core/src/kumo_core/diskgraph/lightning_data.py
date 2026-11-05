@@ -938,14 +938,15 @@ def _config_values(path: str, key: str) -> list[str]:
 
 def _logind_removes_ipc(root: str = '/') -> bool:
     """Whether systemd-logind deletes this user's /dev/shm at last logout."""
-    if not sys.platform.startswith('linux'):
+    if not (sys.platform.startswith('linux')
+            and os.path.isdir(os.path.join(root, 'run', 'systemd', 'system'))):
         return False
     etc = os.path.join(root, 'etc')
     login_defs = os.path.join(etc, 'login.defs')
     try:
         uid_min = (_config_values(login_defs, 'UID_MIN')
                    if os.path.exists(login_defs) else [])
-        uid = os.getuid()
+        uid = os.geteuid()
         if uid < int((uid_min or ['1000'])[-1]):
             return False
         confs = [
@@ -1760,12 +1761,19 @@ _SHM_REMOVED_MESSAGE = (
     "/etc/systemd/logind.conf.")
 
 
+_python_feeder_error = mp_queues.Queue._on_queue_feeder_error
+
+
 def _send_feeder_error(queue: Any, error: Exception, item: Any) -> None:
     """Fail the batch a worker could not pickle instead of dropping it.
 
     Sent before anything queued after the batch, so a later end-of-stream
     marker cannot make the main process skip it.
     """
+    if not (isinstance(item, tuple) and len(item) == 2
+            and isinstance(item[0], int)):
+        _python_feeder_error(error, item)
+        return
     message = str(error)
     if 'shared memory' in message and os.strerror(errno.ENOENT) in message:
         cause, error = error, RuntimeError(_SHM_REMOVED_MESSAGE)
