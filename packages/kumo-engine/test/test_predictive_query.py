@@ -699,11 +699,12 @@ def test_generation_rejects_ignored_path_overrides(tmp_path, field):
             'id': pa.array(range(10), type=pa.int64()),
             'label': [True, False] * 5,
         }), tmp_path / 'users.parquet')
-    graph = Graph([
+    graph = Graph({
+        'users':
         Table.from_source_table(
             FileConnector(root_dir=str(tmp_path))['users.parquet'],
             primary_key='id')
-    ])
+    })
     query = PredictiveQuery(graph, 'PREDICT users.label FOR EACH users.id')
     snapshot = GraphSnapshot(f'{graph.id}@fixture', tmp_path / 'index',
                              graph._graph_config)

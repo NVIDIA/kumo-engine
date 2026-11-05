@@ -736,6 +736,35 @@ def test_a_column_type_kumo_cannot_read_is_refused_rather_than_copied(tmp_path):
             }, mode=ReadMode.STREAMED)
 
 
+@pytest.mark.parametrize("entry", ["dtypes", "source_types", "head", "prepare"])
+def test_two_columns_of_one_name_are_refused_at_every_read(tmp_path, entry):
+    """A schema is read into a mapping by name, so a second column of the
+    same name would silently replace the first wherever it is used."""
+    written = pa.Table.from_arrays([
+        pa.array([1, 2], pa.int64()),
+        pa.array([3, 4], pa.int64()),
+        pa.array(["a", "b"], pa.string()),
+    ], names=["id", "x", "x"])
+    write_parts(tmp_path / "twice", written)
+    reader = reader_over(tmp_path)
+    with pytest.raises(
+            PermanentSourceError,
+            match=r"twice/? has duplicate column names: x \(2 "
+            r"columns\)\. Rename or drop the extra columns at the "
+            r"source\."):
+        if entry == "dtypes":
+            reader.dtypes("twice")
+        elif entry == "source_types":
+            reader.source_types("twice")
+        elif entry == "head":
+            reader.head("twice", 2)
+        else:
+            reader.prepare("twice", str(tmp_path / "out"), columns={
+                "id": Dtype.int64,
+                "x": Dtype.int64
+            }, mode=ReadMode.STREAMED)
+
+
 @pytest.mark.parametrize("name", ["../secrets", "a/../../secrets", "a\\b"])
 def test_a_table_name_that_walks_out_of_the_root_is_refused(name, root):
     """The connector root is the only fence a local read has -- it runs under

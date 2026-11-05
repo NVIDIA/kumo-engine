@@ -140,6 +140,68 @@ def test_graph_validation_keeps_valid_edges(tables):
     assert portable_tables['events']['fkeys'][0]['dst_table'] == 'users'
 
 
+@pytest.mark.parametrize(
+    'aliases, as_sequence, message',
+    [
+        (('a.users', 'events'), False, r"alias 'a\.users' contains a dot"),
+        (('users.parquet', 'events.parquet'), True,
+         r"alias 'users\.parquet' contains a dot.*Graph\(\{'name': table\}\)"),
+        (('User', 'user'), False,
+         r"aliases 'User' and 'user' differ only by case"),
+    ],
+)
+def test_graph_aliases_that_break_downstream_names_are_refused(
+        tables, aliases, as_sequence, message):
+    renamed = [
+        replace(table, table_name=alias)
+        for alias, table in zip(aliases, tables)
+    ]
+    graph = Graph(renamed if as_sequence else dict(zip(aliases, renamed)))
+
+    with pytest.raises(ValueError, match=message):
+        graph.validate()
+
+
+def test_names_a_query_cannot_use_are_reported_once():
+    from unittest import mock
+
+    users, events = _s3_tables()
+    unusable = ['user id', 'a.b', 'first-name', '1st', 'say "hi"', '\u00fcber']
+    usable = ['MixedCase', '_x', 'a1', 'predict']
+    users = replace(
+        users, definition=replace(
+            users.definition, cols=[
+                *users.definition.cols,
+                *(Column(name, Stype.numerical, Dtype.int64)
+                  for name in unusable + usable),
+            ]))
+    graph = Graph({
+        'users': users,
+        'my events': events
+    }, [Edge('my events', 'user_id', 'users')])
+
+    with pytest.warns(UserWarning) as records:
+        graph.validate()
+        graph.native_graph
+        with mock.patch.object(Graph, '_snapshot_no_lock'):
+            graph.snapshot()
+
+    messages = [
+        str(record.message) for record in records
+        if 'predictive query' in str(record.message)
+    ]
+    assert len(messages) == 2
+    columns = next(message for message in messages
+                   if message.startswith('Table users has 6 column(s)'))
+    assert all(repr(name) in columns for name in unusable)
+    assert not any(repr(name) in columns for name in usable)
+    assert columns.endswith('Rename them at the source to use them as a '
+                            'target, entity or filter.')
+    assert any(
+        message.startswith("Graph alias 'my events' cannot be named")
+        for message in messages)
+
+
 def test_graph_validation_rejects_destination_without_primary_key(tables):
     users, events = tables
     users = replace(users, definition=replace(users.definition, pkey=None))

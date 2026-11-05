@@ -69,8 +69,8 @@ def test_source_table_inference_and_graph_acquisition(extension, tmp_path,
     ingested = []
 
     def ingest(graph_config, spec):
-        assert set(spec.source_paths) == {table.table_name}
-        local = Path(spec.source_paths[table.table_name])
+        assert set(spec.source_paths) == {'events'}
+        local = Path(spec.source_paths['events'])
         assert local.is_relative_to(tmp_path / 'scratch')
         actual = pq.ParquetDataset(local).read()
         assert actual.to_pydict() == expected.to_pydict()
@@ -80,7 +80,7 @@ def test_source_table_inference_and_graph_acquisition(extension, tmp_path,
 
     monkeypatch.setattr('kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
                         ingest)
-    graph = Graph(tables=[table])
+    graph = Graph(tables={'events': table})
     snapshot = graph.snapshot()
     assert len(ingested) == 1
     assert snapshot.graph_config == ingested[0]
@@ -607,3 +607,88 @@ def test_a_declared_dtype_resolves_an_unreadable_column(tmp_path):
         (snapshot.index_path / 'col_stats.json').read_text())['events']['big']
     assert dict(stats['category_counts']) == {0: 1, 2**63 - 1: 1}
     assert stats['null_count'] == 1
+
+
+@pytest.mark.parametrize('extension', ['parquet', 'csv'])
+def test_duplicate_column_names_are_refused_at_the_schema_read(
+        tmp_path, extension):
+    from kumo_core.sources.errors import PermanentSourceError
+
+    from kumo.engine import FileConnector
+
+    root = tmp_path / 'source'
+    root.mkdir()
+    if extension == 'csv':
+        (root / 'dups.csv').write_text('id,x,x\n1,10,a\n2,20,b\n')
+    else:
+        pq.write_table(
+            pa.Table.from_arrays(
+                [pa.array([1, 2]),
+                 pa.array([10, 20]),
+                 pa.array(['a', 'b'])], names=['id', 'x', 'x']),
+            root / 'dups.parquet')
+    connector = FileConnector(root_dir=str(root))
+
+    with pytest.raises(PermanentSourceError, match=r'[Dd]uplicate column.*x'):
+        Table.from_source_table(connector['dups'], primary_key='id')
+
+
+def test_a_table_with_no_rows_is_left_out_of_the_snapshot(tmp_path):
+    from kumo_core.pquery import PredictiveQueryPlanError
+    from kumoapi.graph import Edge
+
+    from kumo.engine import FileConnector, configure
+    from kumo.engine.pquery import PredictiveQuery
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            'id': range(20),
+            'age': [20 + i for i in range(20)]
+        }), root / 'users.parquet')
+    pq.write_table(
+        pa.table({
+            'eid': pa.array([], pa.int64()),
+            'uid': pa.array([], pa.int64()),
+            'amount': pa.array([], pa.float64()),
+            'ts': pa.array([], pa.timestamp('s')),
+        }), root / 'events.parquet')
+    connector = FileConnector(root_dir=str(root))
+    users = Table.from_source_table(connector['users'], primary_key='id')
+    with pytest.warns(UserWarning, match=r"Table 'events' has no rows"):
+        events = Table.from_source_table(connector['events'], primary_key='eid',
+                                         time_column='ts')
+    assert {
+        col.name: col.stype
+        for col in events.definition.cols
+    } == {
+        'eid': Stype.ID,
+        'uid': Stype.ID,
+        'amount': Stype.categorical,
+        'ts': Stype.timestamp,
+    }
+    graph = Graph({
+        'users': users,
+        'events': events
+    }, [Edge('events', 'uid', 'users')])
+    graph.validate()
+
+    with pytest.warns(
+            UserWarning,
+            match=r'Table events has no rows and is left out of the snapshot '
+            r'with 1 edge\(s\) \(events\.uid -> users\); a query that names '
+            r'it fails\.'):
+        snapshot = graph.snapshot()
+
+    assert [table['table_name']
+            for table in snapshot.graph_config['tables']] == ['users']
+    assert snapshot.graph_config['tables'][0]['fkeys'] == []
+    assert snapshot.index_path.is_dir()
+    query = PredictiveQuery(
+        graph, 'PREDICT COUNT(events.*, 0, 30, days) FOR EACH users.id')
+    with pytest.raises(PredictiveQueryPlanError, match='events'):
+        query.generate_training_table(snapshot)
+    with pytest.raises(ValueError, match=r'Every table .* no rows \(events\)'):
+        Graph({'events': events}).snapshot()

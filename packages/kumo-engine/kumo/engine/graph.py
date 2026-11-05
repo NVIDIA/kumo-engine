@@ -61,6 +61,7 @@ remote/durable cache, e.g. a Snowflake stage) -- out of scope for now.
 
 import json
 import logging
+import re
 import threading
 import time
 import warnings
@@ -130,6 +131,63 @@ def _warn_if_network_scratch(root: Path) -> None:
 
 
 _LOW_FK_MATCH_RATE = 0.5
+_PQL_NAME = re.compile(r'[_a-zA-Z][_a-zA-Z0-9]*')
+
+
+def _warn_unqueryable_names(tables: Mapping[str, Table]) -> None:
+    r"""The PQL grammar (`kumopql/grammar/PQLGrammar.g4`, rule `ID`) names a
+    table or column with letters, digits and underscores, not starting with
+    a digit, and has no quoting; any other name loads but cannot be written
+    in a query."""
+    for alias, table in tables.items():
+        if _PQL_NAME.fullmatch(alias) is None:
+            warnings.warn(
+                f"Graph alias {alias!r} cannot be named in a predictive "
+                "query, which accepts letters, digits and underscores not "
+                "starting with a digit; the table still loads and links "
+                "through its edges. Alias it differently to query it.",
+                UserWarning,
+                stacklevel=5,
+            )
+        names = [
+            col.name for col in table.definition.cols
+            if _PQL_NAME.fullmatch(col.name) is None
+        ]
+        if names:
+            warnings.warn(
+                f"Table {alias} has {len(names)} column(s) a predictive "
+                f"query cannot name: {', '.join(map(repr, names))}; they "
+                "still load as features. Rename them at the source to use "
+                "them as a target, entity or filter.",
+                UserWarning,
+                stacklevel=5,
+            )
+
+
+def _refuse_unusable_aliases(aliases: Sequence[str]) -> None:
+    r"""`kumo_core.pquery` reads the part of a table name after its last dot
+    and DiskGraph names tables in lowercase, so a dotted alias is renamed and
+    two aliases differing only by case collide. Both fail later with no
+    hint, so they are refused here."""
+    lowered: Dict[str, str] = {}
+    for alias in aliases:
+        if '.' in alias:
+            raise ValueError(
+                f"Graph alias {alias!r} contains a dot, which predictive "
+                "queries and the portable graph read as table.column; alias "
+                "the table without one, Graph({'name': table}).")
+        other = lowered.setdefault(alias.lower(), alias)
+        if other != alias:
+            raise ValueError(
+                f"Graph aliases {other!r} and {alias!r} differ only by case; "
+                "DiskGraph stores table names in lowercase. Use aliases that "
+                "differ in more than case.")
+
+
+def _has_no_rows(connector: Connector, name: str, sql: Optional[str]) -> bool:
+    from kumo.engine._infer import _sample
+
+    return _sample(connector.source_backend, connector, name, sql)[3]
 
 
 def _warn_low_fk_match_rates(stats: Dict[str, Any],
@@ -681,12 +739,51 @@ class Graph:
         from kumo.engine._infer import refuse_unsupported_columns
         from kumo.engine._portable import portable_graph_config
 
+        _refuse_unusable_aliases(list(self._named_tables))
         for table in self._named_tables.values():
             if table.definition is not None:
                 refuse_unsupported_columns(table.connector, table.table_name,
                                            table.definition.cols)
-        return portable_graph_config(self._named_tables, self.edges,
-                                     name=self.id)
+        config = portable_graph_config(self._named_tables, self.edges,
+                                       name=self.id)
+        _warn_unqueryable_names(self._named_tables)
+        return config
+
+    def _config_without(self, empty: Sequence[str],
+                        graph_key: str) -> Dict[str, Any]:
+        r"""The portable graph without the tables in `empty`, which have no
+        rows, and without the edges that touch them. Every table empty is an
+        error; each left-out table is reported once."""
+        from kumo.engine._portable import portable_graph_config
+
+        kept = {
+            alias: table
+            for alias, table in self._named_tables.items() if alias not in empty
+        }
+        if not kept:
+            raise ValueError(
+                f"Every table in the graph has no rows ({', '.join(empty)}); "
+                "a snapshot needs at least one row.")
+        for alias in empty:
+            dropped = [
+                f'{edge.src_table}.{edge.fkey} -> {edge.dst_table}'
+                for edge in self.edges
+                if alias in (edge.src_table, edge.dst_table)
+            ]
+            edges = (f" with {len(dropped)} edge(s) ({', '.join(dropped)})"
+                     if dropped else '')
+            warnings.warn(
+                f"Table {alias} has no rows and is left out of the snapshot"
+                f"{edges}; a query that names it fails. Add rows or remove "
+                "the table from the graph.",
+                UserWarning,
+                stacklevel=4,
+            )
+        edges = [
+            edge for edge in self.edges
+            if edge.src_table in kept and edge.dst_table in kept
+        ]
+        return portable_graph_config(kept, edges, name=graph_key)
 
     @cached_property
     def native_graph(self) -> NativeGraph:
@@ -863,6 +960,7 @@ class Graph:
             check_diskgraph_output,
         )
         from kumo_core.diskgraph.stores import diskgraph_index_size_bytes
+        from kumo_core.sources.errors import PermanentSourceError
         from kumo_core.sources.layout import staging_dir
         from kumo_core.sources.transfer import discard_destination
         from kumoapi.source_table import CustomSQLSourceTable
@@ -875,6 +973,7 @@ class Graph:
         table_data_versions: Dict[str, str] = {}
         source_paths: Dict[str, str] = {}
         source_tables: Dict[str, SourceTableEntry] = {}
+        empty: List[str] = []
 
         started = start() if timed else None
         try:
@@ -891,16 +990,22 @@ class Graph:
                 if isinstance(source, CustomSQLSourceTable):
                     checked = checked_sql(connector, source.sql)
                     name, sql = checked.table, checked.sql
-                prepared = source_backend.prepare_ingest(
-                    connector,
-                    name,
-                    str(dest_dir),
-                    dtypes={
-                        col.name: col.dtype
-                        for col in table.definition.cols
-                    },
-                    sql=sql,
-                )
+                try:
+                    prepared = source_backend.prepare_ingest(
+                        connector,
+                        name,
+                        str(dest_dir),
+                        dtypes={
+                            col.name: col.dtype
+                            for col in table.definition.cols
+                        },
+                        sql=sql,
+                    )
+                except PermanentSourceError:
+                    if not _has_no_rows(connector, name, sql):
+                        raise
+                    empty.append(alias)
+                    continue
                 if prepared.credentials is not None:
                     raise NotImplementedError(
                         "TODO(local-sdk): scoped per-table ingest credentials "
@@ -929,6 +1034,8 @@ class Graph:
                     source_paths[alias] = str(
                         prepared.source.get('path') or dest_dir)
 
+            if empty:
+                graph_config = self._config_without(empty, graph_key)
             version_parts = [
                 json.dumps(table_data_versions, sort_keys=True).encode()
             ]
