@@ -39,9 +39,12 @@ cheap pass left ambiguous):
   call.
 """
 
+import re
+import warnings
 from dataclasses import replace
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+from kumo_core.csv_rules import has_leading_zero, is_missing
 from kumo_core.stype_inference import infer_stype_from_name
 from kumoapi.plugin import SourceBackend
 from kumoapi.source_table import SourceColumn
@@ -53,6 +56,56 @@ from kumo.engine.connector.base import Connector
 #: Rows sampled for stats-based stype inference, matching the cloud SDK's
 #: `kumoai/backend/local/_common.py`'s `_SAMPLE_ROWS`.
 _SAMPLE_ROWS = 10_000
+
+_PLAIN_NUMBER = re.compile(r'[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?')
+_WHOLE_NUMBER = re.compile(r'[+-]?\d+')
+_NOT_NUMBERS = frozenset({Stype.ID, Stype.multicategorical, Stype.timestamp})
+_EXAMPLES = 3
+
+
+def _report_numbers_stored_as_text(
+    table_name: str,
+    frame: Any,
+    resolved: Mapping[str, Tuple[Optional[Dtype], Optional[Stype]]],
+) -> None:
+    r"""Warns for a text column whose sampled values are all numbers apart
+    from blanks and missing-like tokens, naming the call that reads it as a
+    number. A value with a leading zero is a code, not a number."""
+    for name, (dtype, stype) in resolved.items():
+        if (dtype != Dtype.string or stype in _NOT_NUMBERS
+                or name not in frame):
+            continue
+        column = frame[name]
+        values = [value for value in column if isinstance(value, str)]
+        numbers = [
+            value.strip() for value in values
+            if _PLAIN_NUMBER.fullmatch(value.strip())
+        ]
+        others = [
+            value for value in values
+            if not _PLAIN_NUMBER.fullmatch(value.strip())
+        ]
+        if (not numbers or any(has_leading_zero(value) for value in numbers)
+                or any(value.strip() and not is_missing(value.strip())
+                       for value in others)):
+            continue
+        missing = len(others) + len(column) - len(values)
+        examples = ', '.join(
+            repr(value) for value in sorted(set(others))[:_EXAMPLES])
+        detail = (f"; {missing} value(s) are blank or look like missing "
+                  f"(for example {examples})" if others else
+                  f"; {missing} value(s) are missing" if missing else '')
+        dtype = (Dtype.int64 if all(
+            _WHOLE_NUMBER.fullmatch(value)
+            for value in numbers) else Dtype.float64)
+        warnings.warn(
+            f"Column {name!r} in table {table_name!r} is read as text, but "
+            f"every non-blank value in the {len(column)} sampled rows is a "
+            f"number{detail}. To read it as a number call "
+            f"table.with_column({name!r}, "
+            f"dtype=Dtype.{dtype.name}, stype=Stype.numerical); values that "
+            "do not parse become missing and are counted at snapshot.",
+            UserWarning, stacklevel=4)
 
 
 def _stype_from_dtype(dtype: Dtype) -> Optional[Stype]:
@@ -303,6 +356,8 @@ def resolve_table_columns(
             if stype == Stype.multicategorical and dtype == Dtype.string:
                 delimiters[col.name] = delimiter
             resolved[col.name] = (dtype, stype)
+        if frame is not None:
+            _report_numbers_stored_as_text(table_name, frame, resolved)
         if is_empty and any(stype is None for _, stype in resolved.values()):
             from kumo_core.sources.errors import PermanentSourceError
             raise PermanentSourceError(

@@ -4,6 +4,7 @@
 
 import json
 import re
+import warnings
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -607,3 +608,171 @@ def test_a_declared_dtype_resolves_an_unreadable_column(tmp_path):
         (snapshot.index_path / 'col_stats.json').read_text())['events']['big']
     assert dict(stats['category_counts']) == {0: 1, 2**63 - 1: 1}
     assert stats['null_count'] == 1
+
+
+def _write(root, name, table):
+    if name.endswith('.csv'):
+        csv.write_csv(table, root / name)
+    else:
+        pq.write_table(table, root / name)
+
+
+@pytest.mark.parametrize('extension', ['parquet', 'csv'])
+def test_snapshot_reports_non_finite_and_missing_like_values(
+        extension, tmp_path):
+    from kumo.engine import FileConnector, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    table = pa.table({
+        'id':
+        range(7),
+        'value':
+        pa.array(
+            [1.5, float('inf'),
+             float('-inf'),
+             float('nan'), 2.5, 3.5, 4.5]),
+        'country':
+        pa.array(['NA', 'US', 'None', 'DE', 'N/A', 'DE', 'US']),
+        'amount':
+        pa.array(['1', '2', ' ', 'abc', None, '3.5', 'inf']),
+    })
+    _write(root, f't.{extension}', table)
+    source = Table.from_source_table(
+        FileConnector(root_dir=str(root))[f't.{extension}'], primary_key='id')
+    non_finite = 3 if extension == 'parquet' else 2
+    expected = {'t': {'value': non_finite}}
+    if extension == 'parquet':
+        source = source.with_column('amount', dtype=Dtype.float64,
+                                    stype=Stype.numerical)
+        expected['t']['amount'] = 3
+    with pytest.warns(UserWarning) as caught:
+        snapshot = Graph({'t': source}).snapshot()
+    messages = [str(warning.message) for warning in caught]
+    assert (f'{non_finite} non-finite value(s) (inf, -inf or NaN) found in '
+            't.value. They '
+            'are left out of the column statistics and treated as missing. '
+            'Infinity usually comes from a division by zero upstream; replace '
+            'non-finite values at the source.') in messages
+    assert ("t.country holds 3 value(s) that look like missing ('N/A', 'NA', "
+            "'None'); they are kept as text. If they mean missing, replace "
+            "them with nulls at the source; a number or date column reads "
+            "them as missing.") in messages
+    if extension == 'parquet':
+        assert (
+            '2 invalid values found in t.amount. Invalid values are '
+            'parsed as null. Please correct and retrain if needed.') in messages
+    assert snapshot.invalid_value_counts == expected
+
+
+def test_decimal_columns_beyond_float32_precision_are_reported(tmp_path):
+    from diskgraph import SamplerEngine
+
+    from kumo.engine import FileConnector, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            'id':
+            range(4),
+            'cents':
+            pa.array(
+                [Decimal('131072.01'), Decimal('0.25')] * 2,
+                pa.decimal128(10, 2)),
+            'small':
+            pa.array(
+                [Decimal('131071.99'), Decimal('0.25')] * 2,
+                pa.decimal128(10, 2)),
+            'whole':
+            pa.array([16777217.0, 1.0, 2.0, 3.0]),
+        }), root / 't.parquet')
+    source = Table.from_source_table(
+        FileConnector(root_dir=str(root))['t.parquet'],
+        primary_key='id').with_column('whole', dtype=Dtype.float32)
+    columns = {column.name: column.dtype for column in source.definition.cols}
+    assert columns['cents'] == columns['small'] == Dtype.float32
+    with pytest.warns(UserWarning) as caught:
+        Graph({'t': source}).snapshot()
+    assert sorted(str(warning.message) for warning in caught) == [
+        't.cents is stored as float32 but comes from decimal128(10, 2) and '
+        'reaches 131,072.02; from 131,072 on float32 no longer resolves steps '
+        'of 0.01, so values are rounded. Declare dtype=Dtype.float64 for the '
+        'column to keep full precision.',
+        't.whole is stored as float32 but comes from double and reaches '
+        '16,777,216; from 16,777,216 on float32 no longer resolves every '
+        'whole number, so values are rounded. Declare dtype=Dtype.float64 '
+        'for the column to keep full precision.',
+    ]
+    source = source.with_column('cents', dtype=Dtype.float64).with_column(
+        'whole', dtype=Dtype.float64)
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        snapshot = Graph({'t': source}).snapshot()
+    engine = SamplerEngine(str(snapshot.index_path))
+    batches = [
+        event['batch'] for event in engine.fetch_features([{
+            'node_type':
+            't',
+            'node_ids': [0, 1],
+            'feature_names': ['id', 'cents', 'whole'],
+        }]) if event['type'] == 'feature'
+    ]
+    fetched = pa.Table.from_batches(batches).sort_by('id')
+    assert fetched.column('cents').to_pylist() == [131072.01, 0.25]
+    assert fetched.column('whole').to_pylist() == [16777217.0, 1.0]
+
+
+@pytest.mark.parametrize('extension, values, expected', [
+    ('parquet', ['1', '2', ' ', 'N/A', None, '3.5'],
+     "Column 'amount' in table 't.parquet' is read as text, but every "
+     "non-blank value in the 6 sampled rows is a number; 3 value(s) are "
+     "blank or look like missing "
+     "(for example ' ', 'N/A'). To read it as a number call "
+     "table.with_column('amount', dtype=Dtype.float64, "
+     "stype=Stype.numerical); values that do not parse become missing and "
+     "are counted at snapshot."),
+    ('csv', ['1', '2', ' ', 'N/A', None, '3.5'],
+     "Column 'amount' in table 't.csv' is read as text, but every non-blank "
+     "value in the 6 sampled rows is a number; 3 value(s) are blank or look "
+     "like missing "
+     "(for example ' '). To read it as a number call "
+     "table.with_column('amount', dtype=Dtype.float64, "
+     "stype=Stype.numerical); values that do not parse become missing and "
+     "are counted at snapshot."),
+    ('parquet', ['7', '8', '9', '10', '11', '12'],
+     "Column 'amount' in table 't.parquet' is read as text, but every "
+     "non-blank value in the 6 sampled rows is a number. To read it as a "
+     "number call "
+     "table.with_column('amount', dtype=Dtype.int64, "
+     "stype=Stype.numerical); values that do not parse become missing and "
+     "are counted at snapshot."),
+    ('parquet', ['1', 'abc', '3', '4', '5', '6'], None),
+    ('parquet', ['01234', '00987', '01111', '1', '2', '3'], None),
+    ('csv', ['01234', '00987', '01111', '1', '2', '3'], None),
+    ('parquet', ['NA', 'US', 'DE', 'FR', 'IT', 'ES'], None),
+    ('parquet', ['1', '2', '3', 'inf', '5', '6'], None),
+])
+def test_numbers_stored_as_text_are_reported_at_inference(
+        extension, values, expected, tmp_path):
+    from kumo.engine import FileConnector
+
+    root = tmp_path / 'source'
+    root.mkdir()
+    _write(
+        root, f't.{extension}',
+        pa.table({
+            'id': range(len(values)),
+            'amount': pa.array(values, pa.string())
+        }))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        table = Table.from_source_table(
+            FileConnector(root_dir=str(root))[f't.{extension}'],
+            primary_key='id')
+    columns = {column.name: column for column in table.definition.cols}
+    assert columns['amount'].dtype == Dtype.string
+    messages = [str(warning.message) for warning in caught]
+    assert messages == ([expected] if expected else [])
