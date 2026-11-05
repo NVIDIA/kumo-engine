@@ -50,37 +50,39 @@ def test_other_pidfd_errors_still_fail(monkeypatch):
 
 
 class _Unpicklable:
-    def __init__(self, message):
-        self.message = message
+    def __init__(self, error):
+        self.error = error
 
     def __reduce__(self):
-        raise RuntimeError(self.message)
+        raise self.error
 
 
 class _UnpicklableBatches(IterableDataset):
-    def __init__(self, message, endless):
-        self.message = message
+    def __init__(self, error, endless):
+        self.error = error
         self.endless = endless
 
     def __iter__(self):
-        yield _Unpicklable(self.message)
+        yield _Unpicklable(self.error)
         while self.endless:
             yield 0
 
 
-@pytest.mark.parametrize('message, endless, prefetch, expected', [
-    ('could not unlink the shared memory file /torch_1_2_3 : '
-     'No such file or directory (2)', True, 2, 'loginctl enable-linger'),
-    ('not picklable', False, 2, 'not picklable'),
-    ('not picklable', False, 1, 'not picklable'),
+@pytest.mark.parametrize('error, endless, prefetch, expected', [
+    (RuntimeError('could not unlink the shared memory file /torch_1_2_3 : '
+                  'No such file or directory (2)'), True, 2,
+     'loginctl enable-linger'),
+    (RuntimeError('not picklable'), False, 2, 'not picklable'),
+    (RuntimeError('not picklable'), False, 1, 'not picklable'),
+    (type('LocalError', (Exception, ), {})('local'), True, 2, 'local'),
 ])
 def test_unsendable_batch_fails_instead_of_being_dropped(
-        message, endless, prefetch, expected):
+        error, endless, prefetch, expected):
     def hung(signum, frame):
         raise TimeoutError('DataLoader waited forever for a dropped batch')
 
     loader = lightning_data._WorkerPoolDataLoader(
-        _UnpicklableBatches(message, endless),
+        _UnpicklableBatches(error, endless),
         batch_size=None,
         num_workers=1,
         prefetch_factor=prefetch,
