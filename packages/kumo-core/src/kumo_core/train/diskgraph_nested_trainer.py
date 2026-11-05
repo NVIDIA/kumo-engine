@@ -787,6 +787,12 @@ class DiskgraphNestedTrainer(Trainer):
                 edge_type_to_rel_name[(src_type, name, dst_type)] = name
                 edge_type_to_rel_name[normalize_diskgraph_edge_type(
                     src_type, name, dst_type)] = name
+        stripped: dict[Any, set[str]] = {}
+        for key, name in edge_type_to_rel_name.items():
+            stripped.setdefault(_normalize_edge_type_key(key), set()).add(name)
+        for key, names in stripped.items():
+            if key is not None and len(names) == 1:
+                edge_type_to_rel_name.setdefault(key, next(iter(names)))
 
         rel_name_to_csc_counterpart = {}
         all_rel_names = {

@@ -6,7 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 from kumo_core.train import diskgraph_nested_trainer as trainer
+from kumo_core.train.trainer import _restore_num_neighbors_key
 from torch_geometric.sampler.base import NumNeighbors
+from torch_geometric.typing import EdgeTypeStr
 
 
 @pytest.mark.parametrize("source", ["sales.events", "catalog.sales.events"])
@@ -38,3 +40,44 @@ def test_sampling_plan_resolves_relations_of_a_dotted_source_table(
         layer["fanouts"][f"{relation}_reverse"]["fanout"]
         for layer in plan["layers"]
     ] == [10, 5]
+
+
+@pytest.mark.parametrize("sources, resolved", [
+    (["sales.events"], True),
+    (["sales.events", "crm.events"], False),
+])
+def test_sampling_plan_accepts_a_stripped_override_only_when_unambiguous(
+        monkeypatch, sources, resolved):
+    monkeypatch.setattr(
+        trainer, "_load_index_metadata", lambda metadata: {
+            "edge_relations": [{
+                "name": f"{source}_user_id_to_users_id",
+                "src_type": source,
+                "dst_type": "users",
+            } for source in sources]
+        })
+    fake = SimpleNamespace(sampler_kwargs=SimpleNamespace(
+        num_neighbors=NumNeighbors({("events", "user_id", "users"): [10]},
+                                   default=[3]),
+        temporal_strategy="last"))
+
+    plan = trainer.DiskgraphNestedTrainer._build_ttng_sampling_plan(
+        fake, SimpleNamespace(graph_runtime_metadata=None))
+
+    assert set(plan["layers"][0]["fanouts"]) == (
+        {"sales.events_user_id_to_users_id"} if resolved else set())
+
+
+def test_restored_sampler_keys_keep_matching_edge_types_exactly():
+    edge_types = {
+        str(EdgeTypeStr(*edge_type)): edge_type
+        for edge_type in [("sales.events", "user_id", "users")]
+    }
+
+    restore = lambda *key: _restore_num_neighbors_key(
+        EdgeTypeStr(*key), edge_types).to_tuple()
+
+    assert restore("sales.events", "user_id", "users") == (
+        "sales.events", "user_id", "users")
+    assert restore("legacy.orders", "user_id", "users") == (
+        "orders", "user_id", "users")

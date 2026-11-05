@@ -754,7 +754,7 @@ def test_inexact_string_foreign_keys_are_refused_with_counts(
             row_group_size=2 if layout in ('batches', 'compacted') else None)
     graph = _keyed_graph(
         root, 'orders',
-        Dtype.string if layout == 'csv' or layout.startswith('binary') else None)
+        Dtype.string if layout == 'csv' or 'binary' in layout else None)
     graph = Graph(
         {
             'users': graph._named_tables['users'].with_column('user_id',
