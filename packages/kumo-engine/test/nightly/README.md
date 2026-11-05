@@ -172,10 +172,14 @@ metadata. Download verification needs no extra disk read. Measured case admissio
 then reads each selected raw file once to make sure that its checksum matches
 the manifest. A missing workload binding fails without a full-bundle fallback.
 
-For weekly execution, the host owner freezes the input directory under a separate
-staging owner and mounts it read-only. The case user cannot write through another
-path to the same files. Weekly admission requires this immutable mount. It permits
-the runner to omit a second complete raw-data hash after the case.
+For both tiers, the host owner freezes the input directory under a separate
+staging owner and mounts it read-only before starting the unprivileged case user.
+Files use mode 0444 and directories use mode 0555. The case user must not own
+these paths or be able to replace their ancestors through a writable alias.
+Startup rejects a writable mount or unprotected input paths. Admission checks
+file contents against the pinned manifest once before ingest. Neither tier
+repeats the full raw-data checksum scan at the end. This freeze applies to the
+selected input version while it is in use. Later changes require a new version.
 
 Set `CONFIGURATION` to this directory's `inputs.json`. Set `RUNNER_TEMP` to an
 existing SSD directory outside case scratch and evidence. Set `GITHUB_ENV` to

@@ -1040,10 +1040,6 @@ def _worker(args, configuration, records, initial, scope):
             if row.get('reference_replay', {}).get('status') == 'FAIL':
                 raise ValueError('Reference replay failed')
             row['status'] = 'MEASURED' if args.mode == 'reference' else 'PASS'
-            if args.tier != 'weekly':
-                load_inputs(args.input_root, scale['input_manifest_sha256'],
-                            args.scale, configuration, selected_case=args.case,
-                            reference_only=args.mode == 'reference')
             save(args.output_dir / 'result.json', row)
     except BaseException as error:
         case_result = args.output_dir / 'case/result.json'
@@ -1112,10 +1108,8 @@ def run(args):
             raise ValueError(
                 'Select a case declared in the nightly configuration')
         scale_configuration(configuration, args.scale)
-        if args.tier == 'weekly' and not (args.input_root.is_dir()
-                                          and os.statvfs(args.input_root).f_flag
-                                          & os.ST_RDONLY):
-            raise ValueError('Weekly frozen inputs require a read-only mount')
+        row['frozen_inputs'] = sibling('nightly_host').require_frozen_inputs(
+            args.input_root)
         if getattr(args, 'require_local_ssd', False):
             row['storage'] = sibling('nightly_host').require_local_ssd(
                 args.scratch)

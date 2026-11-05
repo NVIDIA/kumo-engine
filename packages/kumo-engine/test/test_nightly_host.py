@@ -98,3 +98,93 @@ def test_unresolved_backing_branch_is_rejected(monkeypatch, tmp_path, has_ssd):
     storage(monkeypatch, module, tmp_path, '/dev/loop0', devices)
     with pytest.raises(ValueError, match='physical disk'):
         module.require_local_ssd(tmp_path)
+
+
+@pytest.fixture
+def frozen_inputs(tmp_path, monkeypatch):
+    import os
+    import stat
+
+    module = host()
+    root = tmp_path / 'inputs'
+    (root / 'rows').mkdir(parents=True)
+    (root / 'rows/part.parquet').write_bytes(b'Pinned source bytes')
+    overrides = {}
+
+    class FrozenPath(type(tmp_path)):
+        def lstat(self):
+            original = super().lstat()
+            mode = (stat.S_IFDIR |
+                    (0o555 if self.is_relative_to(root) else 0o755)
+                    ) if stat.S_ISDIR(original.st_mode) else original.st_mode
+            if stat.S_ISREG(original.st_mode):
+                mode = stat.S_IFREG | 0o444
+            values = list(original)
+            values[0], values[4] = overrides.get(str(self), (mode, 0))
+            return os.stat_result(values)
+
+        def open(self, *args, **kwargs):
+            raise AssertionError('Frozen input check read file contents')
+
+    monkeypatch.setattr(module, 'Path', FrozenPath)
+    monkeypatch.setattr(
+        module, 'os',
+        SimpleNamespace(geteuid=lambda: 1001, ST_RDONLY=1,
+                        statvfs=lambda path: SimpleNamespace(f_flag=1)),
+        raising=False)
+    return module, root, overrides
+
+
+def test_frozen_inputs_are_verified_without_opening_payloads(frozen_inputs):
+    module, root, _ = frozen_inputs
+    assert hasattr(module,
+                   'require_frozen_inputs'), 'Frozen input admission is missing'
+    result = module.require_frozen_inputs(root)
+    assert result['files'] == 1
+    assert result['worker_uid'] == 1001
+
+
+@pytest.mark.parametrize('case', [
+    'root-user', 'writable-mount', 'file-owner', 'directory-owner',
+    'file-write', 'directory-write', 'ancestor-owner', 'ancestor-write',
+    'symlink', 'special-file'
+])
+def test_mutable_input_handoffs_are_rejected(frozen_inputs, case):
+    import stat
+
+    module, root, overrides = frozen_inputs
+    assert hasattr(module,
+                   'require_frozen_inputs'), 'Frozen input admission is missing'
+    if case == 'root-user':
+        module.os.geteuid = lambda: 0
+    elif case == 'writable-mount':
+        module.os.statvfs = lambda path: SimpleNamespace(f_flag=0)
+    elif case == 'file-owner':
+        overrides[str(root / 'rows/part.parquet')] = (stat.S_IFREG | 0o444,
+                                                      1001)
+    elif case == 'directory-owner':
+        overrides[str(root / 'rows')] = (stat.S_IFDIR | 0o555, 1001)
+    elif case == 'file-write':
+        overrides[str(root / 'rows/part.parquet')] = (stat.S_IFREG | 0o644, 0)
+    elif case == 'directory-write':
+        overrides[str(root / 'rows')] = (stat.S_IFDIR | 0o755, 0)
+    elif case == 'ancestor-owner':
+        overrides[str(root.parent)] = (stat.S_IFDIR | 0o755, 1001)
+    elif case == 'ancestor-write':
+        overrides[str(root.parent)] = (stat.S_IFDIR | 0o777, 0)
+    elif case == 'symlink':
+        (root / 'linked').symlink_to(root / 'rows/part.parquet')
+    else:
+        overrides[str(root / 'rows/part.parquet')] = (stat.S_IFIFO | 0o444, 0)
+    with pytest.raises(ValueError):
+        module.require_frozen_inputs(root)
+
+
+def test_trusted_child_under_root_owned_sticky_parent_is_allowed(frozen_inputs):
+    import stat
+
+    module, root, overrides = frozen_inputs
+    assert hasattr(module,
+                   'require_frozen_inputs'), 'Frozen input admission is missing'
+    overrides[str(root.parent)] = (stat.S_IFDIR | stat.S_ISVTX | 0o777, 0)
+    assert module.require_frozen_inputs(root)['files'] == 1

@@ -661,6 +661,9 @@ def test_supervisor_retains_worker_failure_details(tmp_path, monkeypatch,
     gates = nightly.sibling('nightly_gates')
     monkeypatch.setattr(nightly.sibling('nightly_host'), 'require_local_ssd',
                         lambda path: dict(mount_target=str(tmp_path)))
+    monkeypatch.setattr(nightly.sibling('nightly_host'),
+                        'require_frozen_inputs',
+                        lambda path: dict(read_only=True))
     monkeypatch.setattr(gates, 'validate_policy', lambda *args: None)
 
     @contextmanager
@@ -703,3 +706,25 @@ def test_supervisor_retains_worker_failure_details(tmp_path, monkeypatch,
     assert result['traceback'] == 'worker trace'
     assert ('code 1' if failure == 'exit' else
             'TimeoutExpired') in result['supervisor_error']
+
+
+def test_nightly_rejects_writable_inputs_before_engine_work(tmp_path):
+    path, _ = configuration(tmp_path)
+    inputs = tmp_path / 'inputs'
+    inputs.mkdir()
+    output = tmp_path / 'output'
+    code = nightly.main([
+        'run', '--configuration',
+        str(path), '--scale', '100M', '--case', 'binary-normal', '--mode',
+        'reference', '--input-root',
+        str(inputs), '--wheel',
+        str(tmp_path / 'reference.whl'), '--scratch',
+        str(tmp_path / 'scratch'), '--output-dir',
+        str(output), '--cgroup-root',
+        str(tmp_path / 'groups'), '--time-budget-seconds', '60',
+        '--reference-output-s3', 's3://test-bucket/proposals'
+    ])
+    assert code == 1
+    result = nightly.read(output / 'result.json')
+    assert 'read-only' in result['error']
+    assert 'runtime' not in result
