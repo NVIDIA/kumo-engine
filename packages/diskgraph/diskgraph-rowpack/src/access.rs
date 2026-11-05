@@ -2699,8 +2699,10 @@ impl<'p> RowAccess<'p> {
                 // If a format hint is set (e.g., "%Y%m%d"), convert the integer to
                 // a string and parse with the format. This handles date-encoded
                 // integers like YYYYMMDD (20240301) that are NOT epoch values.
+                // Eight-digit "%Y%m%d" values skip the text round-trip.
                 if let Some(fmt) = format {
-                    if let Some(secs) = fast.and_then(|parser| parser.parse_compact_ymd_int(value)) {
+                    if let Some(secs) = fast.and_then(|parser| parser.parse_compact_ymd_int(value))
+                    {
                         return Ok(Some(in_clock(floor_parts::<U>(secs, || 0))?));
                     }
                     let text = value.to_string();

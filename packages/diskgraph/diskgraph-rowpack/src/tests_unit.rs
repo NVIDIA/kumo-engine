@@ -1834,7 +1834,15 @@ fn int32_yyyymmdd_format_takes_priority_over_unit() {
 
 #[test]
 fn integer_yyyymmdd_matches_text_parse() {
-    let mut values = vec![i64::MIN, -20240301, 0, 2024031, 9_999_999, 100_000_000, i64::MAX];
+    let mut values = vec![
+        i64::MIN,
+        -20240301,
+        0,
+        2024031,
+        9_999_999,
+        100_000_000,
+        i64::MAX,
+    ];
     for year in [1000, 1969, 2000, 2023, 2024, 9999] {
         for month in 0..=13 {
             for day in 0..=32 {
