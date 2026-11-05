@@ -6,12 +6,16 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import functools
+import glob
 import itertools
 import json
 import logging
 import math
 import multiprocessing as mp
 import os
+import pwd
+import re
 import select
 import signal
 import sys
@@ -926,10 +930,59 @@ class _WorkerPoolIterator(Iterator[Any]):
         self._raise_terminal_error()
 
 
+def _config_values(path: str, key: str) -> list[str]:
+    pattern = re.compile(rf'\s*{key}\s*[=\s]\s*(\S+)')
+    with open(path) as f:
+        return [match[1] for match in map(pattern.match, f) if match]
+
+
+def _logind_removes_ipc(root: str = '/') -> bool:
+    """Whether systemd-logind deletes this user's /dev/shm at last logout."""
+    if not sys.platform.startswith('linux'):
+        return False
+    etc = os.path.join(root, 'etc')
+    login_defs = os.path.join(etc, 'login.defs')
+    try:
+        uid_min = (_config_values(login_defs, 'UID_MIN')
+                   if os.path.exists(login_defs) else [])
+        uid = os.getuid()
+        if uid < int((uid_min or ['1000'])[-1]):
+            return False
+        confs = [
+            os.path.join(etc, 'systemd', 'logind.conf'),
+            *sorted(
+                glob.glob(os.path.join(etc, 'systemd', 'logind.conf.d',
+                                       '*.conf'))),
+        ]
+        remove_ipc = [
+            value for conf in confs
+            for value in _config_values(conf, 'RemoveIPC')
+        ]
+        if remove_ipc and remove_ipc[-1].lower() in ('0', 'n', 'no', 'f',
+                                                     'false', 'off'):
+            return False
+        linger = os.path.join(root, 'var', 'lib', 'systemd', 'linger',
+                              pwd.getpwuid(uid).pw_name)
+        return not os.path.exists(linger)
+    except (OSError, ValueError, KeyError):
+        return False
+
+
+@functools.cache
+def _warn_if_logind_removes_ipc() -> None:
+    if _logind_removes_ipc():
+        logger.warning(
+            "This job's shared memory in /dev/shm will be deleted when this "
+            "user's last login session ends (systemd-logind RemoveIPC), which "
+            "stops DataLoader workers. Run `sudo loginctl enable-linger $USER` "
+            "or set RemoveIPC=no in /etc/systemd/logind.conf.")
+
+
 class _WorkerPoolDataLoader(DataLoader):
     """DataLoader whose iterator has explicit worker-pool ownership."""
     def __init__(self, *args: Any, phase: str, registry: _WorkerPoolRegistry,
                  **kwargs: Any) -> None:
+        _warn_if_logind_removes_ipc()
         self._worker_pool_phase = phase
         self._worker_pool_registry = registry
         super().__init__(*args, **kwargs)
