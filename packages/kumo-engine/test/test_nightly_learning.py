@@ -88,7 +88,9 @@ def test_observer_retains_validation_and_multiple_stopping_callbacks(
         reloaded = pl.Trainer(accelerator='cpu', devices=1, logger=False,
                               enable_checkpointing=False)
     [proof] = [
-        c for c in actual.callbacks if type(c).__module__ == nightly.__name__
+        c for c in actual.callbacks
+        if (type(c).__name__ == 'Proof'
+            and type(c).__module__ != nightly.smoke.__name__)
     ]
     trainer = SimpleNamespace(current_epoch=0, global_step=2,
                               callbacks=actual.callbacks,
@@ -117,7 +119,9 @@ def test_observer_retains_validation_and_multiple_stopping_callbacks(
     assert observed['checkpoint_sha256'] == hashlib.sha256(
         path.read_bytes()).hexdigest()
     [other_proof] = [
-        c for c in reloaded.callbacks if type(c).__module__ == nightly.__name__
+        c for c in reloaded.callbacks
+        if (type(c).__name__ == 'Proof'
+            and type(c).__module__ != nightly.smoke.__name__)
     ]
     other_proof.on_validation_end(trainer, module)
     assert len(observed['validation']) == 2

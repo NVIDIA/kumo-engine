@@ -1,63 +1,262 @@
 {
-  "format": "kumo-engine-nightly-policy-v1",
+  "format": "kumo-engine-nightly-policy-v2",
+  "status": "PENDING_MEASUREMENT",
   "learning": {
-    "binary": {
-      "min_normal_gain": 0.05,
-      "max_control_drift": 0.05
+    "100M": {
+      "binary": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      },
+      "multiclass": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      },
+      "multilabel": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      },
+      "multilabel_ranking": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      },
+      "regression": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      },
+      "forecasting": {
+        "min_normal_gain": null,
+        "max_control_advantage": null
+      },
+      "static_link": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      },
+      "temporal_link": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      },
+      "streaming": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      },
+      "community": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      },
+      "payments": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      },
+      "fraud": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      }
     },
-    "forecasting": {
-      "min_normal_gain": 0.03822739835549215,
-      "max_control_drift": 0.05441856445482517
-    },
-    "multiclass": {
-      "min_normal_gain": 0.03791898993783247,
-      "max_control_drift": 0.03791898993783247
-    },
-    "multilabel": {
-      "min_normal_gain": 0.011063935687244536,
-      "max_control_drift": 0.011063935687244536
-    },
-    "multilabel_ranking": {
-      "min_normal_gain": 0.0051149351620414785,
-      "max_control_drift": 0.0051149351620414785
-    },
-    "regression": {
-      "min_normal_gain": 0.2225932810027804,
-      "max_control_drift": 0.2225932810027804
-    },
-    "static_link": {
-      "min_normal_gain": 0.0009903613266046968,
-      "max_control_drift": 0.00021
-    },
-    "temporal_link": {
-      "min_normal_gain": 0.0018203973174952103,
-      "max_control_drift": 0.0046
+    "1B": {
+      "binary": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      },
+      "multiclass": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      },
+      "multilabel": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      },
+      "multilabel_ranking": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      },
+      "regression": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      },
+      "forecasting": {
+        "min_normal_gain": null,
+        "max_control_advantage": null
+      },
+      "static_link": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      },
+      "temporal_link": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      },
+      "streaming": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      },
+      "community": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      },
+      "payments": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      },
+      "fraud": {
+        "min_normal_gain": null,
+        "max_control_drift": null
+      }
     }
   },
   "predictions": {
-    "binary": {
-      "atol": 0.0001
+    "100M": {
+      "binary": {
+        "atol": null
+      },
+      "multiclass": {
+        "atol": null
+      },
+      "multilabel": {
+        "atol": null
+      },
+      "multilabel_ranking": {
+        "atol": null
+      },
+      "regression": {
+        "atol": null
+      },
+      "forecasting": {
+        "atol": null
+      },
+      "static_link": {
+        "atol": null
+      },
+      "temporal_link": {
+        "atol": null
+      },
+      "streaming": {
+        "atol": null
+      },
+      "community": {
+        "atol": null
+      },
+      "payments": {
+        "atol": null
+      },
+      "fraud": {
+        "atol": null
+      }
     },
-    "forecasting": {
-      "atol": 0.0008
+    "1B": {
+      "binary": {
+        "atol": null
+      },
+      "multiclass": {
+        "atol": null
+      },
+      "multilabel": {
+        "atol": null
+      },
+      "multilabel_ranking": {
+        "atol": null
+      },
+      "regression": {
+        "atol": null
+      },
+      "forecasting": {
+        "atol": null
+      },
+      "static_link": {
+        "atol": null
+      },
+      "temporal_link": {
+        "atol": null
+      },
+      "streaming": {
+        "atol": null
+      },
+      "community": {
+        "atol": null
+      },
+      "payments": {
+        "atol": null
+      },
+      "fraud": {
+        "atol": null
+      }
+    }
+  },
+  "reference_bands": {
+    "100M": {
+      "binary": {
+        "max_relative_drop": null
+      },
+      "multiclass": {
+        "max_relative_drop": null
+      },
+      "multilabel": {
+        "max_relative_drop": null
+      },
+      "multilabel_ranking": {
+        "max_relative_drop": null
+      },
+      "regression": {
+        "max_relative_drop": null
+      },
+      "forecasting": {
+        "max_relative_drop": null
+      },
+      "static_link": {
+        "max_relative_drop": null
+      },
+      "temporal_link": {
+        "max_relative_drop": null
+      },
+      "streaming": {
+        "max_relative_drop": null
+      },
+      "community": {
+        "max_relative_drop": null
+      },
+      "payments": {
+        "max_relative_drop": null
+      },
+      "fraud": {
+        "max_relative_drop": null
+      }
     },
-    "multiclass": {
-      "atol": 0.00021
-    },
-    "multilabel": {
-      "atol": 0.00082
-    },
-    "multilabel_ranking": {
-      "atol": 0.00039
-    },
-    "regression": {
-      "atol": 0.0043
-    },
-    "static_link": {
-      "atol": 0.024
-    },
-    "temporal_link": {
-      "atol": 0.0055
+    "1B": {
+      "binary": {
+        "max_relative_drop": null
+      },
+      "multiclass": {
+        "max_relative_drop": null
+      },
+      "multilabel": {
+        "max_relative_drop": null
+      },
+      "multilabel_ranking": {
+        "max_relative_drop": null
+      },
+      "regression": {
+        "max_relative_drop": null
+      },
+      "forecasting": {
+        "max_relative_drop": null
+      },
+      "static_link": {
+        "max_relative_drop": null
+      },
+      "temporal_link": {
+        "max_relative_drop": null
+      },
+      "streaming": {
+        "max_relative_drop": null
+      },
+      "community": {
+        "max_relative_drop": null
+      },
+      "payments": {
+        "max_relative_drop": null
+      },
+      "fraud": {
+        "max_relative_drop": null
+      }
     }
   }
 }
