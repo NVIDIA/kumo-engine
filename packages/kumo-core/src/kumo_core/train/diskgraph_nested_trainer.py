@@ -52,6 +52,7 @@ from kumo_core.training.config import (
     FitMode,
     LinkPredModuleType,
     WeightMode,
+    _edge_type_triple,
     _normalize_edge_type_key,
 )
 from kumo_core.training.options import allow_array_targets
@@ -837,8 +838,9 @@ class DiskgraphNestedTrainer(Trainer):
                 # A 0 is emitted only to override a default.
                 if raw_fanout == 0 and default_fanout_val == 0:
                     continue
-                edge_type_key = _normalize_edge_type_key(edge_type)
-                rel_name = edge_type_to_rel_name.get(edge_type_key)
+                rel_name = edge_type_to_rel_name.get(
+                    _edge_type_triple(edge_type)) or edge_type_to_rel_name.get(
+                        _normalize_edge_type_key(edge_type))
                 if rel_name is None:
                     unresolved.add(str(edge_type))
                     continue
