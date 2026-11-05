@@ -228,10 +228,12 @@ its wire boundary; a tensor consumer can use numeric Arrow/NumPy buffers.
 Check nulls/dtypes and copy when mutable tensor storage is required. Python
 event dictionaries remain per batch, not per node or feature value.
 
-This supplies the native array-input/fused-call part of
-[RDL #102](https://github.com/kumo-ai/rdl-platform/issues/102). RDL must still
-wire its materialized anchors into these calls, vectorize its bit-identical
-permutation, and retain columnar topology/features through tensor assembly.
+For relational deep learning (RDL) loaders, this supplies the native boundary
+for passing anchor columns without Python scalar lists and combining key lookup,
+sampling and feature retrieval in one call. Loader integration also requires
+wiring materialized anchors into these calls, vectorizing permutations while
+preserving their exact order, and retaining columnar topology/features through
+tensor assembly.
 No task policy, model dependency, full-task materialization, native iterator,
 or FM-specific wire schema is added here.
 
