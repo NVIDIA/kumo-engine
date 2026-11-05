@@ -11,6 +11,87 @@ use std::collections::HashSet;
 
 use diskgraph_core::accumulators::WelfordAccumulator;
 use diskgraph_core::tt_builder::Value;
+use arrow_array::{Array, ArrayRef, Float32Array, Float64Array};
+use diskgraph_core::time::UnitSystem;
+use crate::ttgen_resolve::ResolvedAggregate;
+
+/// Update compatible PQL-resolved reductions from caller-ordered projected
+/// columns. Both frontends keep their selected row order and empty-SUM policy.
+/// False means the caller must use its existing general evaluator; no result
+/// from these partially updated states may then be published.
+pub fn accumulate_numeric_batch<U: UnitSystem>(
+    operations: &[&ResolvedAggregate<U>],
+    states: &mut [Accumulator],
+    observed: &mut [usize],
+    columns: &[(usize, ArrayRef)],
+    rows: std::ops::Range<usize>,
+    keep_first_equal: bool,
+) -> bool {
+    let arrays = columns
+        .iter()
+        .map(|(_, array)| {
+            (
+                array.as_any().downcast_ref::<Float32Array>(),
+                array.as_any().downcast_ref::<Float64Array>(),
+            )
+        })
+        .collect::<Vec<_>>();
+    if arrays
+        .iter()
+        .any(|(f32s, f64s)| f32s.is_none() && f64s.is_none())
+    {
+        return false;
+    }
+    let slots = operations
+        .iter()
+        .map(|operation| {
+            (operation.func != diskgraph_core::tt_builder::AggFunc::Count)
+                .then_some(operation.target_col_idx)
+                .flatten()
+                .map(|column| columns.iter().position(|(index, _)| *index == column))
+        })
+        .collect::<Vec<_>>();
+    if slots.iter().any(|slot| matches!(slot, Some(None))) {
+        return false;
+    }
+    let mut values = vec![None; columns.len()];
+    for row in rows {
+        for (slot, ((_, array), (f32s, f64s))) in columns.iter().zip(&arrays).enumerate() {
+            let value = if array.is_null(row) {
+                None
+            } else if let Some(array) = f32s {
+                Some(array.value(row) as f64)
+            } else {
+                Some(f64s.unwrap().value(row))
+            };
+            if value.is_some_and(|value| !value.is_finite()) {
+                return false;
+            }
+            values[slot] = value;
+        }
+        for (((state, count), slot), operation) in states
+            .iter_mut()
+            .zip(observed.iter_mut())
+            .zip(&slots)
+            .zip(operations)
+        {
+            if !matches!(
+                operation.func,
+                diskgraph_core::tt_builder::AggFunc::Count
+                    | diskgraph_core::tt_builder::AggFunc::Sum
+                    | diskgraph_core::tt_builder::AggFunc::Avg
+                    | diskgraph_core::tt_builder::AggFunc::Min
+                    | diskgraph_core::tt_builder::AggFunc::Max
+            ) {
+                return false;
+            }
+            let value = slot.flatten().and_then(|slot| values[slot]);
+            *count += usize::from(value.is_some());
+            state.observe_numeric_row(value, keep_first_equal);
+        }
+    }
+    true
+}
 
 /// Runtime accumulator for a single aggregation op.
 pub enum Accumulator {
@@ -31,6 +112,40 @@ pub enum Accumulator {
 }
 
 impl Accumulator {
+    /// Observe one selected row for scalar numeric reductions. A NULL value
+    /// still counts for COUNT(*); the other reductions skip it.
+    #[inline]
+    pub fn observe_numeric_row(&mut self, value: Option<f64>, keep_first_equal: bool) {
+        match self {
+            Self::Count(count) => *count += 1,
+            Self::Sum(sum) => {
+                if let Some(value) = value {
+                    *sum += value;
+                }
+            }
+            Self::Avg(state) => {
+                if let Some(value) = value {
+                    state.observe(value);
+                }
+            }
+            Self::Min(minimum) => {
+                if let Some(value) = value {
+                    if !keep_first_equal || value < *minimum {
+                        *minimum = minimum.min(value);
+                    }
+                }
+            }
+            Self::Max(maximum) => {
+                if let Some(value) = value {
+                    if !keep_first_equal || value > *maximum {
+                        *maximum = maximum.max(value);
+                    }
+                }
+            }
+            _ => unreachable!("numeric rows require a scalar numeric accumulator"),
+        }
+    }
+
     /// Create a fresh accumulator for the given function.
     pub fn new(func: diskgraph_core::tt_builder::AggFunc, limit: Option<u32>) -> Self {
         use diskgraph_core::tt_builder::AggFunc;

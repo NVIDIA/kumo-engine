@@ -1092,21 +1092,13 @@ fn resolve_op<U: UnitSystem>(
             let alias_idx = alias_to_idx[alias];
             let resolved_path = resolve_path(path, reader)?;
 
-            // Resolve target column on the destination table
-            let dst_table = &resolved_path.last().unwrap().dst_table;
-            let dst_ctx = dst_table.node_data_decoder().map(|d| d.context().clone());
-            let target_col_idx = target_col
-                .as_ref()
-                .map(|col| find_col_idx_in_context(&dst_ctx, col))
-                .transpose().map_err(|e| TTGenError::SchemaError(format!("resolving aggregate target column: {}", e)))?;
-
-            // The temporal window applies to the first hop (the reverse FK
-            // carrying timestamp sort keys).
-            let resolved_window = resolve_temporal_window::<U>(
-                window.as_ref(),
-                window_unit.as_ref(),
-                &resolved_path,
+            let mut aggregate = resolve_aggregate_input(
+                alias_idx, resolved_path, *func, target_col.as_deref(),
+                window.as_ref(), window_unit.as_ref(),
             )?;
+            let dst_table = &aggregate.path.last().unwrap().dst_table;
+            let dst_ctx = dst_table.node_data_decoder().map(|d| d.context().clone());
+            let target_col_idx = aggregate.target_col_idx;
 
             // Use plan-level entity_col_indices so positions match the pre-resolved
             // entity_cols array built in execute_entity.
@@ -1260,20 +1252,14 @@ fn resolve_op<U: UnitSystem>(
                 }
             }
 
-            Ok(ResolvedOp::Aggregate(ResolvedAggregate {
-                alias_idx,
-                path: resolved_path,
-                func: *func,
-                target_col_idx,
-                window: resolved_window,
-                row_filter: resolved_filter,
-                limit: *limit,
-                target_pk_table,
-                target_temporal_create_col_idx,
-                target_temporal_end_col_idx,
-                link_split_col_idx,
-                target_semantic_type: resolved_stype,
-            }))
+            aggregate.row_filter = resolved_filter;
+            aggregate.limit = *limit;
+            aggregate.target_pk_table = target_pk_table;
+            aggregate.target_temporal_create_col_idx = target_temporal_create_col_idx;
+            aggregate.target_temporal_end_col_idx = target_temporal_end_col_idx;
+            aggregate.link_split_col_idx = link_split_col_idx;
+            aggregate.target_semantic_type = resolved_stype;
+            Ok(ResolvedOp::Aggregate(aggregate))
         }
         Op::HasEdges {
             alias,
@@ -1508,6 +1494,103 @@ fn resolve_op<U: UnitSystem>(
     }
 }
 
+/// Resolve an aggregate's shared semantic IR independently of frontend syntax.
+/// PQL supplies column-based paths; storage adapters may supply exact names.
+pub fn resolve_aggregate_input<U: UnitSystem>(
+    alias_idx: usize,
+    path: Vec<ResolvedEdge>,
+    func: AggFunc,
+    target_col: Option<&str>,
+    window: Option<&(i64, i64)>,
+    window_unit: Option<&TimeUnit>,
+) -> TTGenResult<ResolvedAggregate<U>> {
+    let table = &path
+        .last()
+        .ok_or_else(|| TTGenError::InvalidPlan("aggregate path is empty".into()))?
+        .dst_table;
+    let context = table
+        .node_data_decoder()
+        .map(|decoder| decoder.context().clone());
+    let target_col_idx = target_col
+        .map(|column| find_col_idx_in_context(&context, column))
+        .transpose()
+        .map_err(|error| {
+            TTGenError::SchemaError(format!("resolving aggregate target column: {error}"))
+        })?;
+    let window = resolve_temporal_window(window, window_unit, &path)?;
+    Ok(ResolvedAggregate {
+        alias_idx,
+        path,
+        func,
+        target_col_idx,
+        window,
+        row_filter: None,
+        limit: None,
+        target_pk_table: None,
+        target_temporal_create_col_idx: None,
+        target_temporal_end_col_idx: None,
+        link_split_col_idx: None,
+        target_semantic_type: None,
+    })
+}
+
+fn resolved_edge(
+    source: Arc<TableReader>,
+    destination: Arc<TableReader>,
+    relation_idx: usize,
+) -> TTGenResult<ResolvedEdge> {
+    let layout = source.layouts().get(relation_idx).cloned().ok_or_else(|| {
+        TTGenError::SystemError(format!(
+            "layout not found for relation index {relation_idx}"
+        ))
+    })?;
+    let encoder = source.relations()[relation_idx]
+        .dest_sort_key
+        .as_ref()
+        .map(SortKeyEncoder::new);
+    Ok(ResolvedEdge {
+        src_table: source,
+        dst_table: destination,
+        relation_idx,
+        layout,
+        encoder,
+    })
+}
+
+/// Resolve storage-native relation names to the same handles used by PQL.
+pub fn resolve_named_path(
+    reader: &GraphIndexReader,
+    root: &str,
+    path: &[(&str, &str)],
+) -> TTGenResult<Vec<ResolvedEdge>> {
+    let mut source_name = root;
+    let mut result = Vec::with_capacity(path.len());
+    for &(name, destination_name) in path {
+        let source = reader.table(source_name).ok_or_else(|| {
+            TTGenError::SchemaError(format!("unknown source table {source_name:?}"))
+        })?;
+        let destination = reader.table(destination_name).ok_or_else(|| {
+            TTGenError::SchemaError(format!("unknown destination table {destination_name:?}"))
+        })?;
+        let index = source
+            .relations()
+            .iter()
+            .position(|relation| {
+                relation.name == name
+                    && relation.src_type == source_name
+                    && relation.dst_type == destination_name
+            })
+            .ok_or_else(|| {
+                TTGenError::InvalidPlan(format!(
+                    "relation {name:?} does not connect {source_name:?} to {destination_name:?}"
+                ))
+            })?;
+        result.push(resolved_edge(source, destination, index)?);
+        source_name = destination_name;
+    }
+    Ok(result)
+}
+
 pub(crate) fn resolve_path(
     path: &[EdgeRef],
     reader: &GraphIndexReader,
@@ -1526,26 +1609,8 @@ pub(crate) fn resolve_path(
         // orders.buyer_id→users and orders.seller_id→users. We disambiguate by
         // matching the relation name against the EdgeRef column names.
         let relations = src_table.relations();
-        let (relation_idx, relation_meta) = find_relation(relations, edge_ref)?;
-
-        let layouts = src_table.layouts();
-        let layout = layouts
-            .get(relation_idx)
-            .cloned()
-            .ok_or_else(|| TTGenError::SystemError(format!("layout not found for relation index {}", relation_idx)))?;
-
-        let encoder = relation_meta
-            .dest_sort_key
-            .as_ref()
-            .map(SortKeyEncoder::new);
-
-        resolved.push(ResolvedEdge {
-            src_table,
-            relation_idx,
-            layout,
-            encoder,
-            dst_table,
-        });
+        let (relation_idx, _) = find_relation(relations, edge_ref)?;
+        resolved.push(resolved_edge(src_table, dst_table, relation_idx)?);
     }
     Ok(resolved)
 }

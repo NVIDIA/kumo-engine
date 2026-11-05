@@ -2739,7 +2739,36 @@ fn execute_stages<U: UnitSystem>(
     link_split_values: &mut Vec<Value>,
 ) -> bool {
     for stage in &plan.stages {
-        for op in &stage.ops {
+        let mut position = 0;
+        while position < stage.ops.len() {
+            if let ResolvedOp::Aggregate(first) = &stage.ops[position] {
+                let group = stage.ops[position..].iter().map_while(|op| match op {
+                    ResolvedOp::Aggregate(aggregate) if same_numeric_input(first, aggregate) => Some(aggregate),
+                    _ => None,
+                }).collect::<Vec<_>>();
+                if group.len() > 1 {
+                    let cutoff = observation_ts.unwrap_or(Abs::from_raw(0));
+                    if let Ok(Some(values)) = execute_numeric_group(&group, &[entity_node], &[cutoff],
+                        NumericAggregatePolicy::Pql, |aggregate, root, timestamp| {
+                            let window = match &aggregate.window {
+                                Some(window) => Some(window.sort_keys(timestamp).ok_or_else(||
+                                    TTGenError::InvalidPlan("aggregate window exceeds the clock".into()))?),
+                                None => None,
+                            };
+                            let mut rows = Vec::new();
+                            traverse_and_accumulate(root, &aggregate.path, window, true,
+                                &mut |node, _| { rows.push(node); true });
+                            Ok(NumericRows::Nodes(rows))
+                        }) {
+                        for (aggregate, mut column) in group.iter().zip(values) {
+                            aliases[aggregate.alias_idx] = column.pop().unwrap();
+                        }
+                        position += group.len();
+                        continue;
+                    }
+                }
+            }
+            let op = &stage.ops[position];
             let result = match op {
                 ResolvedOp::Aggregate(agg) => execute_aggregate(
                     plan,
@@ -2899,6 +2928,7 @@ fn execute_stages<U: UnitSystem>(
                 }
             };
             aliases[op.alias_idx()] = result;
+            position += 1;
         }
 
         if let Some(ref filter) = stage.filter {
@@ -2955,6 +2985,190 @@ fn execute_has_edges<U: UnitSystem>(
 
 // ─── Aggregate execution (match-once monomorphization) ───────────────────────
 
+/// The callers retain their established empty-input and floating-zero rules.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum NumericAggregatePolicy {
+    Pql,
+    TemporalQuery,
+}
+
+/// Ordered inputs supplied by a caller, optionally already projected to Arrow.
+pub enum NumericRows {
+    Nodes(Vec<u64>),
+    Projected {
+        columns: Vec<(usize, arrow_array::ArrayRef)>,
+        rows: std::ops::Range<usize>,
+    },
+}
+
+pub fn same_numeric_input<U: UnitSystem>(
+    a: &ResolvedAggregate<U>,
+    b: &ResolvedAggregate<U>,
+) -> bool {
+    if a.path.len() != 1 || b.path.len() != 1 {
+        return false;
+    }
+    let left = &a.path[0];
+    let right = &b.path[0];
+    if left.src_table.node_type() != right.src_table.node_type()
+        || left.relation_idx != right.relation_idx
+    {
+        return false;
+    }
+    match (&a.window, &b.window) {
+        (None, None) => true,
+        (
+            Some(ResolvedWindow::Fixed {
+                offset_lo: al,
+                offset_hi: ah,
+                ..
+            }),
+            Some(ResolvedWindow::Fixed {
+                offset_lo: bl,
+                offset_hi: bh,
+                ..
+            }),
+        ) => al.map(|v| v.raw()) == bl.map(|v| v.raw()) && ah.raw() == bh.raw(),
+        _ => false,
+    }
+}
+
+/// Execute a compatible resolved group for explicit anchors. Row selection is
+/// caller-specific: PQL keeps its first-hop/index order; temporal row queries
+/// retain exact-time filtering and chronological/PK order. Projection and
+/// reduction execution are shared, with bounded decoded batches.
+pub fn execute_numeric_group<U: UnitSystem, F>(
+    operations: &[&ResolvedAggregate<U>],
+    roots: &[u64],
+    cutoffs: &[Abs<U>],
+    policy: NumericAggregatePolicy,
+    mut select_rows: F,
+) -> TTGenResult<Option<Vec<Vec<Option<Value>>>>>
+where
+    F: FnMut(&ResolvedAggregate<U>, u64, Abs<U>) -> TTGenResult<NumericRows>,
+{
+    use crate::ttgen_accumulator::accumulate_numeric_batch;
+    use diskgraph_rowpack::IngestedType;
+    let Some(first) = operations.first() else {
+        return Ok(None);
+    };
+    if operations.iter().any(|op| {
+        op.row_filter.is_some()
+            || op.limit.is_some()
+            || !same_numeric_input(first, op)
+            || !matches!(
+                op.func,
+                AggFunc::Count | AggFunc::Sum | AggFunc::Avg | AggFunc::Min | AggFunc::Max
+            )
+    }) {
+        return Ok(None);
+    }
+    let table = &first.path[0].dst_table;
+    let Some(decoder) = table.node_data_decoder() else {
+        return Ok(None);
+    };
+    let mut projection = Vec::new();
+    for operation in operations {
+        if operation.func == AggFunc::Count {
+            continue;
+        }
+        let Some(column) = operation.target_col_idx else {
+            return Ok(None);
+        };
+        if !matches!(
+            decoder.context().columns[column].logical_type,
+            IngestedType::Float32 | IngestedType::Float64
+        ) {
+            return Ok(None);
+        }
+        if !projection.contains(&column) {
+            projection.push(column);
+        }
+    }
+    let mut result = vec![Vec::with_capacity(roots.len()); operations.len()];
+    for (&root, &cutoff) in roots.iter().zip(cutoffs) {
+        let selected = select_rows(first, root, cutoff)?;
+        let row_count = match &selected {
+            NumericRows::Nodes(nodes) => nodes.len(),
+            NumericRows::Projected { rows, .. } => rows.len(),
+        };
+        let mut states = operations
+            .iter()
+            .map(|op| Accumulator::new(op.func, None))
+            .collect::<Vec<_>>();
+        let mut observed = vec![0; operations.len()];
+        match selected {
+            NumericRows::Projected { columns, rows } => {
+                if !accumulate_numeric_batch(
+                    operations,
+                    &mut states,
+                    &mut observed,
+                    &columns,
+                    rows,
+                    policy == NumericAggregatePolicy::TemporalQuery,
+                ) {
+                    return Ok(None);
+                }
+            }
+            NumericRows::Nodes(nodes) => {
+                for chunk in nodes.chunks(512) {
+                    let arrays = if projection.is_empty() {
+                        Vec::new()
+                    } else {
+                        let rows = chunk
+                            .iter()
+                            .map(|&node| {
+                                let view = table
+                                    .edges_for_node(node)
+                                    .map_err(|e| TTGenError::SystemError(e.to_string()))?;
+                                view.node_data()
+                                    .map_err(|e| TTGenError::SystemError(e.to_string()))?
+                                    .ok_or_else(|| {
+                                        TTGenError::SystemError("node has no rowpack data".into())
+                                    })
+                            })
+                            .collect::<TTGenResult<Vec<_>>>()?;
+                        let batch = decoder
+                            .decode_batch_to_arrow(&rows, &projection)
+                            .map_err(|e| TTGenError::SystemError(e.to_string()))?;
+                        projection
+                            .iter()
+                            .copied()
+                            .zip(batch.columns().iter().cloned())
+                            .collect()
+                    };
+                    if !accumulate_numeric_batch(
+                        operations,
+                        &mut states,
+                        &mut observed,
+                        &arrays,
+                        0..chunk.len(),
+                        policy == NumericAggregatePolicy::TemporalQuery,
+                    ) {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+        for (((column, state), op), count) in
+            result.iter_mut().zip(states).zip(operations).zip(observed)
+        {
+            column.push(
+                if policy == NumericAggregatePolicy::TemporalQuery
+                    && op.func == AggFunc::Sum
+                    && row_count > 0
+                    && count == 0
+                {
+                    None
+                } else {
+                    state.finalize()
+                },
+            );
+        }
+    }
+    Ok(Some(result))
+}
+
 fn execute_aggregate<U: UnitSystem>(
     _plan: &ResolvedPlan<U>,
     entity_node: u64,
@@ -2980,86 +3194,20 @@ fn execute_aggregate<U: UnitSystem>(
     let dst_table = &agg.path.last().unwrap().dst_table;
 
     match agg.func {
-        AggFunc::Count => {
-            let mut acc = 0u64;
+        AggFunc::Count | AggFunc::Sum | AggFunc::Avg | AggFunc::Min | AggFunc::Max => {
+            let mut state = Accumulator::new(agg.func, agg.limit);
             traverse_and_accumulate(entity_node, &agg.path, window, true, &mut |dst, _sk| {
-                if let Some(ref f) = agg.row_filter {
-                    if !eval_row_filter(f, dst, dst_table, entity_cols) {
-                        return true; // skip but continue
-                    }
+                if agg.row_filter.as_ref().is_some_and(|filter|
+                    !eval_row_filter(filter, dst, dst_table, entity_cols)) {
+                    return true;
                 }
-                acc += 1;
+                let value = if agg.func == AggFunc::Count { None } else {
+                    agg.target_col_idx.and_then(|column| read_column_f64(dst_table, dst, column))
+                };
+                state.observe_numeric_row(value, false);
                 true
             });
-            Some(Value::Int(acc as i64))
-        }
-        AggFunc::Sum => {
-            let mut acc = 0.0f64;
-            traverse_and_accumulate(entity_node, &agg.path, window, true, &mut |dst, _sk| {
-                if let Some(ref f) = agg.row_filter {
-                    if !eval_row_filter(f, dst, dst_table, entity_cols) {
-                        return true;
-                    }
-                }
-                if let Some(col_idx) = agg.target_col_idx {
-                    if let Some(v) = read_column_f64(dst_table, dst, col_idx) {
-                        acc += v;
-                    }
-                }
-                true
-            });
-            Some(Value::Float(acc))
-        }
-        AggFunc::Avg => {
-            let mut w = WelfordAccumulator::new();
-            traverse_and_accumulate(entity_node, &agg.path, window, true, &mut |dst, _sk| {
-                if let Some(ref f) = agg.row_filter {
-                    if !eval_row_filter(f, dst, dst_table, entity_cols) {
-                        return true;
-                    }
-                }
-                if let Some(col_idx) = agg.target_col_idx {
-                    if let Some(v) = read_column_f64(dst_table, dst, col_idx) {
-                        w.observe(v);
-                    }
-                }
-                true
-            });
-            Accumulator::Avg(w).finalize()
-        }
-        AggFunc::Min => {
-            let mut acc = f64::INFINITY;
-            traverse_and_accumulate(entity_node, &agg.path, window, true, &mut |dst, _sk| {
-                if let Some(ref f) = agg.row_filter {
-                    if !eval_row_filter(f, dst, dst_table, entity_cols) {
-                        return true;
-                    }
-                }
-                if let Some(col_idx) = agg.target_col_idx {
-                    if let Some(v) = read_column_f64(dst_table, dst, col_idx) {
-                        acc = acc.min(v);
-                    }
-                }
-                true
-            });
-            Accumulator::Min(acc).finalize()
-        }
-        AggFunc::Max => {
-            let mut acc = f64::NEG_INFINITY;
-            traverse_and_accumulate(entity_node, &agg.path, window, true, &mut |dst, _sk| {
-                if let Some(ref f) = agg.row_filter {
-                    if !eval_row_filter(f, dst, dst_table, entity_cols) {
-                        return true;
-                    }
-                }
-                if let Some(col_idx) = agg.target_col_idx {
-                    if let Some(v) = read_column_f64(dst_table, dst, col_idx) {
-                        acc = acc.max(v);
-                    }
-                }
-                true
-            });
-            Accumulator::Max(acc).finalize()
+            state.finalize()
         }
         AggFunc::CountDistinct => {
             // Multicat: hash per token (not per cell). Output is the count of
