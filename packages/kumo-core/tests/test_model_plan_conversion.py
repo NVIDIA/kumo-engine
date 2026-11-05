@@ -147,3 +147,20 @@ def test_query_defaults_preserve_the_public_boundary(task_type, forecast_length,
     assert to_json_dict(restored.training_table_generation) == to_json_dict(
         ModelPlan().training_table_generation)
     assert set(restored.training_job.metrics) == metrics
+
+
+@pytest.mark.parametrize('steps', [8001, 1_000_000, None])
+def test_large_evaluation_budget_round_trip(steps):
+    public = api.ModelPlan(optimization=api.OptimizationPlan(
+        max_val_steps=steps, max_test_steps=steps))
+    restored = public_model_plan_from_internal(
+        internal_model_plan_from_public(public))
+    assert restored.optimization.max_val_steps == steps
+    assert restored.optimization.max_test_steps == steps
+
+
+@pytest.mark.parametrize('field', ['max_val_steps', 'max_test_steps'])
+@pytest.mark.parametrize('steps', [0, -1])
+def test_evaluation_budget_requires_positive_steps(field, steps):
+    with pytest.raises(ValueError):
+        api.OptimizationPlan(**{field: steps})

@@ -695,8 +695,8 @@ class AutoTrainer:
                 max_epochs=self.max_epochs,
                 min_steps_per_epoch=self.min_steps_per_epoch,
                 max_steps_per_epoch=self.max_steps_per_epoch,
-                max_val_steps=self.max_val_steps,
-                max_test_steps=self.max_test_steps,
+                max_val_steps=cfg.optimization.max_val_steps,
+                max_test_steps=cfg.optimization.max_test_steps,
                 # General arguments:
                 metrics_client_job_name=metrics_client_job_name,
                 raise_fake_trial_error_msg=self._raise_fake_trial_error_msg,
@@ -1004,13 +1004,20 @@ class AutoTrainer:
                f"{try_idx + 1}/{self.max_tries} tries")
 
         if try_idx < self.max_tries:
-            batch_size = cfg.optimization.batch_size[0] // 2
+            previous_batch_size = cfg.optimization.batch_size[0]
+            batch_size = previous_batch_size // 2
             if batch_size < self.min_retry_batch_size:
                 logger.warning(f"{msg}. Cannot re-run by reducing the batch "
                                f"size to {batch_size}. The minimum retry "
                                f"batch size is {self.min_retry_batch_size}.")
                 return None
 
+            for field in ('max_val_steps', 'max_test_steps'):
+                steps = getattr(cfg.optimization, field)
+                if steps is not None and not isinstance(steps, MissingType):
+                    setattr(cfg.optimization, field,
+                            (steps * previous_batch_size + batch_size - 1) //
+                            batch_size)
             cfg.optimization.batch_size = [batch_size]
             logger.warning(f"{msg}. Trying to re-run by "
                            f"reducing the batch size by half.")
