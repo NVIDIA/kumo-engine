@@ -145,11 +145,14 @@ SELECT schema_name FROM <catalog>.information_schema.schemata WHERE schema_name 
 
 - A row back: you can read the scope. Name the tool in the proposal's `Source scope` line
   (`Genie Code SQL, as <user>`).
-- No row, or `CATALOG_NOT_FOUND` / `SCHEMA_NOT_FOUND`: the scope may not exist, or this user may
-  not see it — say both.
+- No row, or `CATALOG_NOT_FOUND` / `SCHEMA_NOT_FOUND`: name `source_scope` as not found and ask
+  for a valid catalog and schema, adding that the user may also lack access to it. Do not
+  suggest a similar name, and do not ask for its structure.
 - `PERMISSION_DENIED` or `INSUFFICIENT_PERMISSIONS`: the scope exists and this user cannot read it.
 
-When nothing reads the scope, send the preflight §0 ask-back. State what you ran and what came
+Run the scope query before any ask-back that names a source: a scope that does not resolve is
+listed in that same ask-back, with the other missing fields. When the scope exists but cannot
+be read (`PERMISSION_DENIED`), send the preflight §0 ask-back. State what you ran and what came
 back, quoting the error, then offer:
 
 1. **Access**: `USE CATALOG`, `USE SCHEMA` and `SELECT` on the tables for this user, granted by
@@ -267,7 +270,8 @@ stop for confirmation:
 - Scoring options: <as batch_inference.md gives them by task type>
 ```
 
-Do not restate the task (entity, outcome, window) or list tables and columns beyond that line:
+For a job, add the `job.md` §3 lines. Do not restate the task (entity, outcome, window) or list
+tables and columns beyond that line:
 the task is reused, not reconfirmed. A recorded column the live source lacks, or a record that
 names no source, is the 1c finding to report instead.
 

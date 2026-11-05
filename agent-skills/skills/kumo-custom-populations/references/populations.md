@@ -74,9 +74,10 @@ holding labels such as `'train'` / `'val'` / `'test'` is accepted as a string co
 as is, but no row matches a split. Ingestion skips every row it cannot read, so the build then
 fails with `custom-TT source kept no rows`. When only some labels are unreadable, those rows are
 skipped: the build succeeds on fewer rows and logs a warning with the skipped count per reason
-(also recorded in `row_failures`). Map the labels the user gave you, without inventing a
-mapping, in a read-only query; the result is a source table, so nothing is written. Look at the
-labels first, with the host's SQL tool, and map only after every value is accounted for:
+(also recorded in `row_failures`). So report the split column as the offending field, with its
+labels and counts (from the host's SQL tool), and ask: a prepared table holding 0/1/2, or the
+user's explicit approval of a mapping you show. Only after that approval, map in a read-only
+query; the result is a source table, so nothing is written:
 
 ```sql
 SELECT SPLIT_LABEL, COUNT(*) AS N FROM CURATED_LABELS GROUP BY SPLIT_LABEL;

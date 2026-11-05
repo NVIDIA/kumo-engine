@@ -95,7 +95,7 @@ here; a CPU run has not been verified.
 | No cluster named; the interactive notebook is on a GPU cluster | Propose that one `[inferred]` |
 | No cluster named; other GPU clusters are visible (`clusters.list()`) | Propose one `[inferred]`, preferring one that is running |
 | No GPU cluster visible | Say so and stop. Providing one is for the user or an administrator |
-| The user asks for a new job cluster ("let it spin up a new cluster") | A job cluster is a cluster created for the run. Say that this skill runs jobs on an existing cluster, propose the GPU cluster from the rows above, and ask to confirm submitting there. Never submit a run that creates its own cluster |
+| The user asks for a new job cluster ("let it spin up a new cluster") | A job cluster is a cluster created for the run, with a default runtime that has no GPU and no Kumo. Say that this skill runs jobs on an existing GPU cluster, which has both — a correction, not a refusal — propose the GPU cluster from the rows above, and ask to confirm submitting there. Never submit a run that creates its own cluster |
 
 Report the cluster's `state`. A `TERMINATED` cluster starts when the run is submitted (§9).
 
@@ -196,7 +196,8 @@ a saved job's runs; a one-time run is found from its page or its id as printed a
 | `INTERNAL_ERROR`, or a cluster that failed to start | Platform-side. Report the `state_message` |
 
 Propose the specific fix: say what to change in the job notebook, offer to make that change,
-and ask whether to resubmit after it — two things the user confirms. Never edit the notebook or
+and ask whether to resubmit after it — two things the user confirms. End with that question
+("Shall I set `MODEL_VERSION = 1` in the job notebook, then resubmit?"), never "then rerun". Never edit the notebook or
 resubmit on your own: every submission is a new GPU run. Never delete a run or a job, because
 that discards its output.
 
