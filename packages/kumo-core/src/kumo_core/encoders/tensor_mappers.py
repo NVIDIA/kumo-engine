@@ -1,10 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+import logging
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -17,9 +18,8 @@ from torch_frame.data import MultiEmbeddingTensor, MultiNestedTensor
 from torch_frame.typing import TensorData
 from torch_geometric.utils.mixin import CastMixin
 
-import logging
 from kumo_core.encoders.config import EncodersConfig
-from kumo_core.encoders.tensor_mapper import TensorMapper
+from kumo_core.encoders.tensor_mapper import CategoricalTensorMapper, TensorMapper
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +36,8 @@ def _to_tf(
 
     Args:
         df: The input data frame, dict of PyArrow arrays, or dict of numpy
-            arrays to convert. Encoders that have a numpy-aware ``forward``
-            consume the array directly, while the rest wrap it in
-            ``pd.Series`` internally.
+            arrays to convert. Raw columns are converted to Arrow before
+            invoking a tensor mapper.
         mappers: A dictionary mapping column names to their respective
             TensorMapper objects for tensor conversion.
         device: The torch device to place tensors on. If None, uses the
@@ -80,9 +79,9 @@ def _to_tf(
             )
         else:
             ser = df[col_name]
-            if isinstance(ser, pa.Array):
-                ser = ser.to_pandas()
-            x = mapper.forward(
+            if not isinstance(ser, (pa.Array, pa.ChunkedArray)):
+                ser = pa.array(ser, from_pandas=True)
+            x = mapper(
                 ser,
                 device=None,
             )
@@ -114,7 +113,7 @@ def _to_tf(
     if isinstance(df, pd.DataFrame):
         num_rows = len(df)
     else:
-        num_rows = len(list(df.values())[0]) if len(df) > 0 else 0
+        num_rows = len(next(iter(df.values()))) if len(df) > 0 else 0
     return TensorFrame(x_dict, col_names_dict, num_rows=num_rows)
 
 
@@ -160,9 +159,7 @@ def _to_tf_vectorized(
 
         if stype == Stype.numerical:
             # One stack + one torch.from_numpy for all numerical columns.
-            # NumericalTensorMapper.forward's numpy path is:
-            #   torch.from_numpy(arr.astype(dtype)).view(-1, 1)
-            # so column-stacking the cast numpy arrays produces an
+            # Column-stacking the cast numpy arrays produces an
             # equivalent (num_rows, num_cols) tensor.
             if num_rows == 0 or len(items) == 0:
                 stacked = torch.empty(
@@ -186,8 +183,8 @@ def _to_tf_vectorized(
             out = np.empty((num_rows, len(items)), dtype=np.int64)
             if num_rows > 0 and len(items) > 0:
                 for i, (name, mapper) in enumerate(items):
-                    # Mirrors CategoricalTensorMapper.forward's numpy
-                    # fast path: pd.Index.get_indexer returns -1 for
+                    assert isinstance(mapper, CategoricalTensorMapper)
+                    # The cached pandas index returns -1 for
                     # missing / unknown values, matching the
                     # categorical-encoder contract.
                     out[:, i] = mapper.mapper._index.get_indexer(df[name])
@@ -202,7 +199,7 @@ def _to_tf_vectorized(
             # identical to _to_tf for these stypes.
             xs: list[TensorData] = []
             for name, mapper in items:
-                xs.append(mapper.forward(df[name], device=None))
+                xs.append(mapper(pa.array(df[name], from_pandas=True), device=None))
 
             if stype in {Stype.multicategorical, Stype.text}:
                 stacked = MultiNestedTensor.cat(xs, dim=1)
@@ -311,20 +308,10 @@ class TensorMappers:
         *,
         device: torch.device | None = None,
     ) -> TensorFrame:
-        r"""Converts a dict of pyarrow arrays with raw data into a TensorFrame."""  # noqa: E501
-        # Convert from response (proto) to arrow to pandas (note that
-        # arrow -> pandas is zero-copy):
-        df_dict = {}
-        for col_name, arrow_array in df.items():
-            self[table_name].get(col_name)
-            if isinstance(arrow_array, pa.ListArray):
-                df_dict[col_name] = self.list2ser(arrow_array)
-            else:
-                df_dict[col_name] = arrow_array.to_pandas()
-        out_df = pd.DataFrame.from_dict(df_dict)
+        r"""Converts a dict of pyarrow arrays with raw data into a TensorFrame."""
         return self.convert_to_tensor_frame(
             table_name=table_name,
-            df=out_df,
+            df=df,
             device=device,
             post_forward_only=False,
             col_name_hook=None,
@@ -387,7 +374,7 @@ class TensorMappers:
         # We store all null-encoded values in a special hidden data structure,
         # so that we can restore specific columns in `SubgraphCollector`, e.g.,
         # image columns.
-        tf._unsupported_feat_dict: dict[str, Any] = {}
+        tf._unsupported_feat_dict = {}
         for col_name, mapper in self[table_name].items():
             if mapper.stype != Stype.image:
                 # We're only interested in including image columns in
