@@ -318,10 +318,10 @@ def _sampled_row_groups(fragments: Sequence[Any]) -> list[tuple[Any, int, int]]:
     count, evenly spaced over the fragments in order and within each chosen
     fragment, so a table sorted or split into parts on a column is sampled
     across that column rather than from its top. An empty part passes its
-    slot to the next part with rows; a single row group is read from its
-    head, as before."""
-    chosen: list[tuple[Any, int, int]] = []
-    taken: set[int] = set()
+    slot to the next part with rows, which gives one more row group for
+    each slot it takes in; a single row group is read from its head, as
+    before."""
+    slots: dict[int, int] = {}
     count = min(len(fragments), SAMPLE_ROW_GROUPS)
     each = -(-SAMPLE_ROW_GROUPS // count) if count else 0
     for index in range(count):
@@ -329,9 +329,10 @@ def _sampled_row_groups(fragments: Sequence[Any]) -> list[tuple[Any, int, int]]:
         while (position < len(fragments)
                and not fragments[position].metadata.num_rows):
             position += 1
-        if position >= len(fragments) or position in taken:
-            continue
-        taken.add(position)
+        if position < len(fragments):
+            slots[position] = slots.get(position, 0) + 1
+    chosen: list[tuple[Any, int, int]] = []
+    for position, received in slots.items():
         fragment = fragments[position]
         metadata = fragment.metadata
         sizes = [
@@ -339,7 +340,7 @@ def _sampled_row_groups(fragments: Sequence[Any]) -> list[tuple[Any, int, int]]:
             for group in range(metadata.num_row_groups)
         ]
         filled = [(group, rows) for group, rows in enumerate(sizes) if rows]
-        take = min(len(filled), each)
+        take = min(len(filled), each * received)
         chosen.extend((fragment, *filled[(slot * len(filled)) // take])
                       for slot in range(take))
     return chosen

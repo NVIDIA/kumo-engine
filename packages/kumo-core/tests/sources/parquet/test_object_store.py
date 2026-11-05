@@ -1698,15 +1698,26 @@ def _empty_first_row_groups(directory: Path) -> None:
                 }))
 
 
+def _empty_parts_then_two_row_groups(directory: Path) -> None:
+    empty = pa.table({"id": pa.array([], pa.int64())})
+    write_parts(directory, *([empty] * 9))
+    with pq.ParquetWriter(directory / "part-9.parquet",
+                          pa.schema([("id", pa.int64())])) as writer:
+        writer.write_table(pa.table({"id": pa.array(range(5), pa.int64())}))
+        writer.write_table(pa.table({"id": pa.array(range(5, 10), pa.int64())}))
+
+
 @pytest.mark.parametrize("write,expected", [
-    (_empty_parts_then_rows, [0, 1, 2, 3, 4]),
-    (_empty_first_row_groups, [0, 2, 4, 6, 8]),
+    (_empty_parts_then_rows, list(range(10))),
+    (_empty_first_row_groups, list(range(0, 20, 2))),
+    (_empty_parts_then_two_row_groups, list(range(10))),
 ])
 def test_a_head_passes_over_empty_parts_and_row_groups(write, expected,
                                                        tmp_path):
     """Evenly spaced slots land on the first parts, or the first row group
     of each part; if those are empty the sample must move on rather than
-    report the table empty."""
+    report the table empty, and a part that takes in several slots gives a
+    row group for each."""
     write(tmp_path / "late")
-    head = reader_over(tmp_path).head("late", 5)
+    head = reader_over(tmp_path).head("late", 10)
     assert head.column("id").to_pylist() == expected
