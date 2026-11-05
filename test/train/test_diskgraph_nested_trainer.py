@@ -1569,7 +1569,7 @@ def test_init_attaches_runtime_feature_store_for_rhs_feature_mode(
 
     def _fake_build_runtime_feature_store(**kwargs: Any) -> tuple[str, str]:
         captured.update(kwargs)
-        return "feature-store", "graph-store"
+        return "feature-store", "graph-schema"
 
     monkeypatch.setattr(
         dg_nested_mod,
@@ -1584,8 +1584,8 @@ def test_init_attaches_runtime_feature_store_for_rhs_feature_mode(
     assert captured["encoders"] is stub.encoders
     assert captured["entity_table_names"] == ["my_customers", "articles"]
     assert stub.feature_store == "feature-store"
-    assert stub.graph_store == "graph-store"
-    assert stub.datamodule._data == ("feature-store", "graph-store")
+    assert stub.graph_schema == "graph-schema"
+    assert stub.datamodule._data == ("feature-store", "graph-schema")
 
 
 def test_init_does_not_attach_runtime_feature_store_for_rhs_lookup_mode(
@@ -1615,7 +1615,7 @@ def test_init_does_not_attach_runtime_feature_store_for_rhs_lookup_mode(
     _run_init(stub, monkeypatch=monkeypatch, fake_manifest=manifest)
 
     assert not hasattr(stub, "feature_store")
-    assert not hasattr(stub, "graph_store")
+    assert not hasattr(stub, "graph_schema")
     assert not hasattr(stub.datamodule, "_data")
 
 

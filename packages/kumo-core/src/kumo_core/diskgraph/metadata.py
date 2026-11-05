@@ -45,6 +45,22 @@ class DiskgraphSchema:
     node_types: List[str] = field(default_factory=list)
     """Alias of *table_names* (for call-sites that expect this name)."""
 
+    def get_foreign_keys(self, table_name: str) -> list[tuple[str, str]]:
+        """Return forward foreign keys as column and destination-table pairs.
+
+        Args:
+            table_name: Source table whose outgoing foreign keys are requested.
+
+        Returns:
+            Normalized forward relations, excluding generated reverse edges.
+            Unknown tables return an empty list.
+        """
+        return [
+            (relation, destination)
+            for source, relation, destination in self.edge_types
+            if source == table_name and not relation.startswith("rev_")
+        ]
+
 
 def _parse_fk_relation(
     name: str,

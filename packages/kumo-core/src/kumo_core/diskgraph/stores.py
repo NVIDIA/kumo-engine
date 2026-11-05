@@ -1,33 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Service-free DiskGraph feature and graph stores for numerical training.
-
-Supports two backends:
-- **Arrow Flight** (remote): communicates with ``diskgraph-gateway`` over RPC.
-- **Pybind** (local/co-located): calls ``diskgraph-pybind`` native module
-  directly, eliminating RPC/serde overhead.
-
-"""
+"""DiskGraph indexed feature reads and training configuration."""
 
 import json
 import logging
 import multiprocessing
 import os
 import sys
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Iterator, Optional
 
 import numpy as np
 import orjson
 import pandas as pd
 import pyarrow as pa
-import pyarrow.flight as flight
 import torch
 from kumoapi.encoder import Datetime
 from torch_frame import TensorFrame
-from torch_geometric.sampler import NumNeighbors
-from torch_geometric.typing import EdgeType
 
 from kumo_core.diskgraph.metadata import load_diskgraph_schema
 from kumo_core.encoders.config import EncodersConfig
@@ -38,7 +27,6 @@ from kumo_core.features.stores.feature import (
     FeatureStoreAttr,
     FeatureStoreTableSchema,
 )
-from kumo_core.features.stores.graph import GraphStore, GraphStoreAttr
 from kumo_core.sources.cpu import cpu_budget
 from kumo_core.training.config import shm_safe_num_workers
 from kumo_core.types.features import FeatureStoreData
@@ -47,9 +35,6 @@ if TYPE_CHECKING:
     from diskgraph import SamplerEngine
 
 logger = logging.getLogger(__name__)
-
-NumNeighborsType = Union[NumNeighbors, List[int], Dict[EdgeType, List[int]]]
-
 
 def _datetime_series_to_ns(
     ser: pd.Series,
@@ -301,135 +286,6 @@ def iter_primary_key_batches(
                     f"'{table_name}': {canonical.shape}")
             yield (np.asarray(node_ids, dtype=np.uint64)[canonical],
                    batch.to_pandas().to_numpy(copy=False)[canonical])
-
-
-_DISKGRAPH_STRICT_HOP_VALIDATION = os.getenv(
-    "DISKGRAPH_STRICT_HOP_VALIDATION",
-    "").lower() in {"1", "true", "yes", "on"}
-
-
-def _types_from_schema_mapping(
-        mapping: dict) -> Tuple[List[str], List[EdgeType]]:
-    node_types = list(mapping.get("node_types", []))
-    edge_types = [(rel["src_type"], rel["name"], rel["dst_type"])
-                  for rel in mapping.get("edge_relations", [])
-                  if rel.get("name")]
-    return node_types, edge_types
-
-
-def _fetch_flight_schema_mapping(server_address: str) -> dict:
-    client = flight.connect(server_address)
-    action = flight.Action("get_type_name_mapping", b"")
-    results = list(client.do_action(action))
-    if not results:
-        raise RuntimeError("Gateway returned no schema mapping payload")
-    return json.loads(results[0].body.to_pybytes())
-
-
-@dataclass
-class ResolvedSchema:
-    """Result of auto-deriving edge_types/node_types/edge_type_remap."""
-
-    edge_types: List[Tuple[str, str, str]]
-    node_types: List[str]
-    edge_type_remap: Optional[Dict[Tuple[str, str, str], Tuple[str, str, str]]]
-    schema_mapping: Optional[dict]  # non-None when fetched from flight gateway
-
-
-def resolve_schema(
-    edge_types: Optional[List[Tuple[str, str, str]]],
-    node_types: Optional[List[str]],
-    edge_type_remap: Optional[Dict[Tuple[str, str, str], Tuple[str, str, str]]],
-    index_path: Optional[str],
-    server_address: Optional[str],
-) -> ResolvedSchema:
-    """Derive missing edge_types/node_types from index metadata or gateway."""
-    schema_mapping = None
-
-    if index_path is not None and (edge_types is None or node_types is None):
-        schema = load_diskgraph_schema(index_path)
-        if edge_types is None:
-            edge_types = schema.edge_types
-        if node_types is None:
-            node_types = schema.node_types
-        if edge_type_remap is None:
-            edge_type_remap = schema.edge_type_remap
-
-    if edge_types is None or node_types is None:
-        if server_address is None:
-            raise ValueError(
-                "edge_types/node_types missing and no schema source")
-        schema_mapping = _fetch_flight_schema_mapping(server_address)
-        mapped_node_types, mapped_edge_types = _types_from_schema_mapping(
-            schema_mapping)
-        if node_types is None:
-            node_types = mapped_node_types
-        if edge_types is None:
-            edge_types = mapped_edge_types
-
-    return ResolvedSchema(
-        edge_types=edge_types,
-        node_types=node_types,
-        edge_type_remap=edge_type_remap,
-        schema_mapping=schema_mapping,
-    )
-
-
-class DiskgraphGraphStore(GraphStore):
-    """GraphStore adapter for a diskgraph backend.
-
-    This store exposes edge metadata (edge types) needed by
-    ``filter_custom_hetero_store`` to assemble ``edge_index`` from sampler
-    output. Edge indices themselves are not fetched via GraphStore in this
-    path; they come directly from the sampler.
-
-    Supports two modes:
-    - ``server_address``: remote Arrow Flight gateway.
-    - ``index_path``: local pybind engine (co-located mode).
-
-    In either mode, ``edge_types`` / ``node_types`` may be omitted and will be
-    derived from local index metadata (preferred when ``index_path`` is
-    available) or from the gateway schema mapping action.
-    """
-    def __init__(
-        self,
-        edge_types: Optional[List[Tuple[str, str, str]]] = None,
-        node_types: Optional[List[str]] = None,
-        server_address: Optional[str] = None,
-        index_path: Optional[str] = None,
-        edge_type_remap: Optional[Dict[Tuple[str, str, str],
-                                       Tuple[str, str, str]]] = None,
-    ):
-        super().__init__()
-        if server_address is None and index_path is None:
-            raise ValueError(
-                "DiskgraphGraphStore requires either server_address or index_path"
-            )
-
-        schema = resolve_schema(edge_types, node_types, edge_type_remap,
-                                index_path, server_address)
-
-        self.server_address = server_address
-        self.index_path = index_path
-        self.node_types = schema.node_types
-        self.edge_type_remap = schema.edge_type_remap
-        self._edge_attrs = [
-            GraphStoreAttr(edge_type=et) for et in schema.edge_types
-        ]
-
-    def get_all_edge_attrs(self) -> List[GraphStoreAttr]:
-        return [
-            GraphStoreAttr(edge_type=attr.edge_type, size=attr.size)
-            for attr in self._edge_attrs
-        ]
-
-    def _get_edge_index(
-        self,
-        _edge_attr: GraphStoreAttr,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        raise NotImplementedError(
-            "DiskgraphGraphStore does not hold edge indices locally. "
-            "Edge indices are returned by the sampler.")
 
 
 class DiskgraphFeatureStore(FeatureStore):

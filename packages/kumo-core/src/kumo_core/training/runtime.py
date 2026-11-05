@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Protocol, Tuple
 
 import psutil
 
+from kumo_core.diskgraph.metadata import DiskgraphSchema, load_diskgraph_schema
 from kumo_core.diskgraph.stores import (
     DiskgraphFeatureStore,
-    DiskgraphGraphStore,
     diskgraph_auto_config,
     diskgraph_index_size_bytes,
 )
@@ -49,19 +49,19 @@ class DiskgraphTrainingRuntime(Protocol):
     ) -> dict[str, Any]:
         ...
 
-    def create_feature_and_graph_stores(
+    def create_feature_store_and_schema(
         self,
         *,
         index_path: str,
         encoders: Any,
         entity_table_names: list[str],
         time_col_dict: dict[str, str],
-    ) -> tuple[Any, Any]:
+    ) -> tuple[DiskgraphFeatureStore, DiskgraphSchema]:
         ...
 
 
 class LocalDiskgraphTrainingRuntime:
-    """Construct core DiskGraph stores for a driver-local snapshot."""
+    """Construct feature access and schema metadata for a local snapshot."""
     def auto_config(
         self,
         *,
@@ -75,22 +75,21 @@ class LocalDiskgraphTrainingRuntime:
             estimated_edges=estimated_edges,
         )
 
-    def create_feature_and_graph_stores(
+    def create_feature_store_and_schema(
         self,
         *,
         index_path: str,
         encoders: Any,
         entity_table_names: list[str],
         time_col_dict: dict[str, str],
-    ) -> tuple[Any, Any]:
+    ) -> tuple[DiskgraphFeatureStore, DiskgraphSchema]:
         feature_store = DiskgraphFeatureStore.for_explain(
             index_path=index_path,
             encoders=encoders,
             entity_table_names=entity_table_names,
             time_col_dict=time_col_dict,
         )
-        graph_store = DiskgraphGraphStore(index_path=index_path)
-        return feature_store, graph_store
+        return feature_store, load_diskgraph_schema(index_path)
 
 
 class LocalTrainingArtifactRuntime:

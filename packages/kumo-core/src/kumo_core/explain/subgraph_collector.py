@@ -50,6 +50,7 @@ from kumo_core.explain.schemas import (
 from kumo_core.explain.schemas import Subgraph as OldSubgraph
 
 if TYPE_CHECKING:
+    from kumo_core.diskgraph.metadata import DiskgraphSchema
     from kumo_core.features.stores.feature import FeatureStore
     from kumo_core.features.stores.graph import GraphStore
 
@@ -143,7 +144,7 @@ class SubgraphCollector(Explainer):
         df_dict: dict[str, pd.DataFrame] = {}
         grad_dict: dict[str, dict[str, Tensor]] = {}
         feature_store: FeatureStore = datamodule.data[0]
-        graph_store: GraphStore = datamodule.data[1]
+        graph_store: DiskgraphSchema | GraphStore = datamodule.data[1]
 
         # Gradients ###########################################################
         if requires_grad(step_output):
@@ -346,7 +347,7 @@ class SubgraphCollector(Explainer):
         grad_dict: dict[str, dict[str, Tensor]],
         stage: TrainingStage,
         feature_store: FeatureStore,
-        graph_store: GraphStore,
+        graph_store: DiskgraphSchema | GraphStore,
         module: torch.nn.Module,
         rhs_index_map: pd.DataFrame | None = None,
         pred: Tensor | None = None,
