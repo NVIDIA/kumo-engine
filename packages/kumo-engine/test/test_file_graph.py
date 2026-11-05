@@ -69,8 +69,8 @@ def test_source_table_inference_and_graph_acquisition(extension, tmp_path,
     ingested = []
 
     def ingest(graph_config, spec):
-        assert set(spec.source_paths) == {table.table_name}
-        local = Path(spec.source_paths[table.table_name])
+        assert set(spec.source_paths) == {'events'}
+        local = Path(spec.source_paths['events'])
         assert local.is_relative_to(tmp_path / 'scratch')
         actual = pq.ParquetDataset(local).read()
         assert actual.to_pydict() == expected.to_pydict()
@@ -80,7 +80,7 @@ def test_source_table_inference_and_graph_acquisition(extension, tmp_path,
 
     monkeypatch.setattr('kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
                         ingest)
-    graph = Graph(tables=[table])
+    graph = Graph(tables={'events': table})
     snapshot = graph.snapshot()
     assert len(ingested) == 1
     assert snapshot.graph_config == ingested[0]
@@ -607,3 +607,147 @@ def test_a_declared_dtype_resolves_an_unreadable_column(tmp_path):
         (snapshot.index_path / 'col_stats.json').read_text())['events']['big']
     assert dict(stats['category_counts']) == {0: 1, 2**63 - 1: 1}
     assert stats['null_count'] == 1
+
+
+def _keyed_graph(root, orders, order_key_dtype=None):
+    from kumoapi.graph import Edge
+
+    from kumo.engine import FileConnector
+
+    connector = FileConnector(root_dir=str(root))
+    users = Table.from_source_table(connector['users'], primary_key='user_id')
+    orders = Table.from_source_table(
+        connector[orders], primary_key='order_id',
+        dtypes=None if order_key_dtype is None else {
+            'user_id': order_key_dtype
+        })
+    return Graph({'users': users, 'orders': orders},
+                 [Edge('orders', 'user_id', 'users')])
+
+
+def test_mismatched_key_dtypes_link_after_conversion(tmp_path):
+    from kumoapi.graph import Edge
+
+    from kumo.engine import FileConnector, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({'user_id': pa.array([7, 0, 10, -1, 2**63 - 1], pa.int64())}),
+        root / 'users.parquet')
+    pq.write_table(
+        pa.table({
+            'order_id': range(7),
+            'user_id': ['007', ' 10 ', '-1.0', '+0', '9223372036854775807',
+                        None, '8'],
+        }), root / 'orders.parquet')
+    pq.write_table(pa.table({'account_id': ['7', '10', '-1', '007']}),
+                   root / 'accounts.parquet')
+    pq.write_table(
+        pa.table({
+            'payment_id': range(6),
+            'account_id': pa.array([7, 10, -1, 8, None, 7], pa.int64()),
+        }), root / 'payments.parquet')
+    connector = FileConnector(root_dir=str(root))
+
+    def table(name, key):
+        return Table.from_source_table(connector[name], primary_key=key)
+
+    graph = Graph(
+        {
+            'users': table('users', 'user_id'),
+            'orders': table('orders', 'order_id'),
+            'accounts': table('accounts', 'account_id'),
+            'payments': table('payments', 'payment_id'),
+        }, [
+            Edge('orders', 'user_id', 'users'),
+            Edge('payments', 'account_id', 'accounts')
+        ])
+
+    with pytest.warns(UserWarning) as caught:
+        snapshot = graph.snapshot()
+
+    messages = sorted(
+        str(w.message) for w in caught if 'Foreign key' in str(w.message))
+    assert len(messages) == 2
+    assert messages[0].startswith(
+        'Foreign key orders.user_id is stored as string and links to '
+        'users.user_id, which is int64;')
+    assert messages[1].startswith(
+        'Foreign key payments.account_id is stored as int64 and links to '
+        'accounts.account_id, which is string;')
+    declared = {
+        table['table_name']: {key['name']: key['dtype']
+                              for key in table['fkeys']}
+        for table in snapshot.graph_config['tables']
+    }
+    assert declared['orders'] == {'user_id': 'int64'}
+    assert declared['payments'] == {'account_id': 'string'}
+    stats = json.loads((snapshot.index_path / 'ingest_stats.json').read_text())
+    assert stats['stats']['edge_counts']['orders_user_id_to_users_user_id'] == 5
+    assert stats['stats']['edge_counts'][
+        'payments_account_id_to_accounts_account_id'] == 4
+
+
+@pytest.mark.parametrize('layout', ['parquet', 'batches', 'csv', 'dictionary'])
+@pytest.mark.parametrize('values, target, invalid, colliding', [
+    (['7', 'x', '', ' ', '1e1', None, '7'], Dtype.int64, 2, 0),
+    (['7', '007', '+7', ' 7', '7.0', None], Dtype.int64, 0, 5),
+    (['9223372036854775808', '-9223372036854775809', '7'], Dtype.int64, 2, 0),
+    (['256', '-1', '-0', '255'], Dtype.byte, 3, 0),
+    (['2147483648', '2147483647.0', '2147483647', '10'], Dtype.int32, 1, 2),
+])
+def test_inexact_string_foreign_keys_are_refused_with_counts(
+        tmp_path, monkeypatch, layout, values, target, invalid, colliding):
+    from kumo.engine import configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({'user_id': pa.array([7, 10, 255], pa.int64())}).cast(
+            pa.schema([('user_id', pa.int64())])), root / 'users.parquet')
+    keys = pa.array(values, pa.string())
+    if layout == 'dictionary':
+        keys = keys.dictionary_encode()
+    orders = pa.table({'order_id': range(len(values)), 'user_id': keys})
+    if layout == 'csv':
+        if any(len(value or '') > 18 for value in values):
+            pytest.skip('the CSV reader refuses an integer wider than 64 bits '
+                        'before staging, whatever dtype is declared')
+        csv.write_csv(orders, root / 'orders.csv')
+    else:
+        pq.write_table(orders, root / 'orders.parquet',
+                       row_group_size=2 if layout == 'batches' else None)
+    graph = _keyed_graph(root, 'orders',
+                         Dtype.string if layout == 'csv' else None)
+    graph = Graph(
+        {
+            'users': graph._named_tables['users'].with_column('user_id',
+                                                              dtype=target),
+            'orders': graph._named_tables['orders'],
+        }, graph.edges)
+    monkeypatch.setattr(
+        'kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
+        lambda *args, **kwargs: pytest.fail('ingest started'))
+
+    with pytest.warns(UserWarning, match='Foreign key orders.user_id'):
+        with pytest.raises(ValueError) as error:
+            graph.snapshot()
+
+    message = str(error.value)
+    assert message.startswith(
+        f'Foreign key orders.user_id is stored as string and links to '
+        f'users.user_id, which is {target.value}:')
+    if invalid:
+        assert (f'{invalid} of its non-null values cannot be converted to '
+                f'{target.value} (for example ') in message
+        assert 'would lose their link' in message
+    else:
+        assert 'lose their link' not in message
+    if colliding:
+        assert f'{colliding} distinct values convert to the same integer' in message
+    else:
+        assert 'same integer' not in message
+    assert message.endswith('before snapshot.')

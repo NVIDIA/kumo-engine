@@ -45,7 +45,7 @@ an actual `locate`-based connector lookup this package has no equivalent of.
 """
 
 import warnings
-from typing import Any, Dict, Mapping, Sequence
+from typing import Any, Dict, Mapping, NamedTuple, Optional, Sequence
 
 from kumoapi.graph import Edge, graph_definition_from_edges
 from kumoapi.source_table import (
@@ -61,6 +61,7 @@ from kumoapi.source_table import (
     S3SourceTable,
     SnowflakeSourceTable,
 )
+from kumoapi.typing import Dtype
 
 from kumo.engine._local_schema import GraphDefinition, LocalSourceTableType
 from kumo.engine._scratch import fingerprint
@@ -72,9 +73,66 @@ class PortableGraphError(ValueError):
     `graph_config` -- e.g. a table has no resolved `definition`, or
     `kumo_core.portable_graph._project_portable_graph` itself rejects the
     result (a missing primary key on an edge's destination table, a dangling
-    edge, ...), or a table name contains a `.`, which `kumo_core` and
-    DiskGraph read as a schema prefix.
+    edge, ...), or a table name contains a `.`, of which `kumo_core` and
+    DiskGraph keep only the part after the last one.
     """
+
+
+_INTEGER_RANGES = {
+    Dtype.byte: (0, 2**8 - 1),
+    Dtype.int16: (-2**15, 2**15 - 1),
+    Dtype.int32: (-2**31, 2**31 - 1),
+    Dtype.int: (-2**63, 2**63 - 1),
+    Dtype.int64: (-2**63, 2**63 - 1),
+}
+
+
+class KeyConversion(NamedTuple):
+    dtype: Dtype
+    target: Dtype
+    destination: str
+    bounds: Optional[tuple[int, int]]
+
+
+def key_conversions(
+        tables: Mapping[str, Table],
+        edges: Sequence[Edge]) -> Dict[str, Dict[str, KeyConversion]]:
+    r"""Foreign keys the portable config declares with their destination
+    key's dtype: a string key linking to an integer key, or an integer key
+    linking to a string key. DiskGraph converts the values at ingest and
+    the source column stays as it is; `Graph.snapshot()` first refuses a
+    string key whose values do not all convert exactly to distinct
+    integers. A key linked to keys of different dtypes, a float key and an
+    integer key linking to a narrower integer keep the hosted dtype rule.
+    """
+    targets: Dict[tuple[str, str], list] = {}
+    for edge in edges:
+        source, destination = tables.get(edge.src_table), tables.get(
+            edge.dst_table)
+        if (edge.src_table == edge.dst_table or source is None
+                or destination is None or source.definition is None
+                or destination.definition is None):
+            continue
+        fkey = next((column for column in source.definition.cols
+                     if column.name == edge.fkey), None)
+        pkey = next((column for column in destination.definition.cols
+                     if column.name == destination.definition.pkey), None)
+        if fkey is not None and pkey is not None:
+            targets.setdefault((edge.src_table, edge.fkey), []).append(
+                (fkey, pkey, f'{edge.dst_table}.{pkey.name}'))
+    result: Dict[str, Dict[str, KeyConversion]] = {}
+    for (alias, name), linked in targets.items():
+        fkey, pkey, destination = linked[0]
+        if (len({pkey.dtype for _, pkey, _ in linked}) != 1
+                or fkey.dtype.can_link_to_dtype(pkey.dtype)
+                or {fkey.dtype == Dtype.string,
+                    pkey.dtype == Dtype.string} != {True, False}
+                or not (fkey.dtype.is_int() or pkey.dtype.is_int())):
+            continue
+        result.setdefault(alias, {})[name] = KeyConversion(
+            fkey.dtype, pkey.dtype, destination,
+            _INTEGER_RANGES.get(pkey.dtype))
+    return result
 
 
 def _escape_dots(value: str) -> str:
@@ -153,19 +211,33 @@ def portable_graph_config(
             portable dict; the caller (`Graph._graph_config`) passes its own
             `Graph.id`.
     """
+    conversions = key_conversions(tables, edges)
     definitions = {}
     for alias, table in tables.items():
         if '.' in alias:
             raise PortableGraphError(
-                f"Table name {alias!r} contains '.', which Kumo reads as a "
-                "schema prefix: the table would be looked up as "
-                f"{alias.rsplit('.', 1)[1]!r} and collide with any table of "
-                "that name. Name it without '.', for example "
+                f"Table name {alias!r} contains '.': Kumo keeps only the "
+                "part after the last '.', so the table would be looked up "
+                f"as {alias.rsplit('.', 1)[1]!r} and collide with any table "
+                "of that name. Name it without '.', for example "
                 f"Graph({{{alias.replace('.', '_')!r}: table}}).")
         if table.definition is None:
             raise PortableGraphError(
                 f"Table {alias!r} has no resolved `definition`; "
                 "call infer_metadata() or provide a definition.")
+        for name, conversion in conversions.get(alias, {}).items():
+            warnings.warn(
+                f"Foreign key {alias}.{name} is stored as "
+                f"{conversion.dtype.value} and links to "
+                f"{conversion.destination}, which is "
+                f"{conversion.target.value}; its values are converted to "
+                f"{conversion.target.value} for the link at snapshot time "
+                "and the source column is unchanged. Store both keys with "
+                "the same type to avoid this.",
+                UserWarning,
+                stacklevel=2,
+            )
+            table = table.with_column(name, dtype=conversion.target)
         definitions[alias] = table.definition
     try:
         definition = graph_definition_from_edges(

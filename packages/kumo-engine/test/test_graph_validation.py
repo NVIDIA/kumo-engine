@@ -11,6 +11,7 @@ from unittest.mock import Mock, PropertyMock, patch
 from xml.etree import ElementTree
 
 import pytest
+from kumo_core.pquery import PredictiveQueryPlanError
 from kumoapi.graph import Edge
 from kumoapi.source_table import (
     CustomSQLSourceTable,
@@ -165,6 +166,52 @@ def test_graph_validation_rejects_table_names_with_a_schema_prefix(
             side_effect=AssertionError('snapshot materialization started')):
         with pytest.raises(PortableGraphError, match=message):
             graph.snapshot()
+
+
+@pytest.mark.parametrize('fkey_dtype, pkey_dtypes, declared', [
+    (Dtype.string, (Dtype.int64, ), Dtype.int64),
+    (Dtype.string, (Dtype.int32, ), Dtype.int32),
+    (Dtype.string, (Dtype.byte, ), Dtype.byte),
+    (Dtype.int64, (Dtype.string, ), Dtype.string),
+    (Dtype.int16, (Dtype.string, ), Dtype.string),
+    (Dtype.string, (Dtype.int64, Dtype.int64), Dtype.int64),
+    (Dtype.string, (Dtype.int64, Dtype.string), None),
+    (Dtype.int64, (Dtype.int32, ), None),
+])
+def test_mismatched_key_dtypes_convert_the_foreign_key(
+        tables, fkey_dtype, pkey_dtypes, declared):
+    users, events = tables
+    events = events.with_column('user_id', dtype=fkey_dtype)
+    keyed = {
+        f'users_{i}': users.with_column('id', dtype=dtype)
+        for i, dtype in enumerate(pkey_dtypes)
+    }
+    graph = Graph(keyed | {'events': events},
+                  [Edge('events', 'user_id', alias) for alias in keyed])
+    if declared is None:
+        with pytest.raises(PredictiveQueryPlanError, match='cannot link'):
+            graph.validate()
+        return
+
+    with pytest.warns(
+            UserWarning,
+            match=rf"Foreign key events\.user_id is stored as {fkey_dtype.value}"
+            rf" and links to users_0\.id, which is {declared.value}; .* "
+            rf"converted to {declared.value} .* source column is unchanged"
+    ) as caught:
+        graph.validate()
+        with patch.object(Graph, '_snapshot_no_lock'):
+            graph.snapshot()
+
+    assert sum('Foreign key events.user_id' in str(w.message)
+               for w in caught) == 1
+    projected = next(table for table in graph._graph_config['tables']
+                     if table['table_name'] == 'events')
+    assert {key['dtype'] for key in projected['fkeys']} == {declared.value}
+    assert next(col for col in projected['cols']
+                if col['name'] == 'user_id')['dtype'] == declared.value
+    assert next(col for col in events.definition.cols
+                if col.name == 'user_id').dtype == fkey_dtype
 
 
 def test_graph_validation_rejects_destination_without_primary_key(tables):

@@ -605,13 +605,13 @@ def test_prediction_generation_accepts_restored_training_plan(
 def test_mismatched_graph_keys_fail_before_staging(graph_snapshot, monkeypatch,
                                                    operation):
     graph, _ = graph_snapshot
-    orders = graph.tables[2].with_column('user_id', dtype=Dtype.string)
-    invalid = Graph([*graph.tables[:2], orders], graph.edges)
+    users = graph.tables[0].with_column('id', dtype=Dtype.int32)
+    invalid = Graph([users, *graph.tables[1:]], graph.edges)
 
     def unexpected_staging(*args, **kwargs):
         pytest.fail('invalid graph reached connector staging')
 
-    monkeypatch.setattr(type(orders.connector.source_backend), 'prepare_ingest',
+    monkeypatch.setattr(type(users.connector.source_backend), 'prepare_ingest',
                         unexpected_staging)
     with pytest.raises(ValueError, match='orders.user_id.*users.id'):
         getattr(invalid, operation)()
@@ -699,11 +699,12 @@ def test_generation_rejects_ignored_path_overrides(tmp_path, field):
             'id': pa.array(range(10), type=pa.int64()),
             'label': [True, False] * 5,
         }), tmp_path / 'users.parquet')
-    graph = Graph([
+    graph = Graph({
+        'users':
         Table.from_source_table(
             FileConnector(root_dir=str(tmp_path))['users.parquet'],
             primary_key='id')
-    ])
+    })
     query = PredictiveQuery(graph, 'PREDICT users.label FOR EACH users.id')
     snapshot = GraphSnapshot(f'{graph.id}@fixture', tmp_path / 'index',
                              graph._graph_config)
