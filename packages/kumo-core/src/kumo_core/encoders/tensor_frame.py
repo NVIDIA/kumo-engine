@@ -46,13 +46,13 @@ def combine_feats(feats_dict: dict[Stype, list[TensorData]]) -> dict[Stype, Tens
 
 
 def get_tf(
-    df: pa.RecordBatch | pa.Table,
+    table: pa.RecordBatch | pa.Table,
     mapper_dict: dict[str, TensorMapper],
 ) -> TensorFrame:
     """Encode Arrow columns into a tensor frame.
 
     Args:
-        df: Raw Arrow data, with one row per example.
+        table: Raw Arrow data, with one row per example.
         mapper_dict: Column encoders; unsupported columns are skipped.
 
     Returns:
@@ -68,9 +68,9 @@ def get_tf(
         if mapper.stype == Stype.unsupported:
             continue
 
-        col = df.column(col_name)
+        col = table.column(col_name)
         feats_dict[mapper.stype].append(mapper(col))
         col_names_dict[mapper.stype].append(col_name)
 
     feat_dict = combine_feats(feats_dict)
-    return TensorFrame(feat_dict, col_names_dict, num_rows=df.num_rows)
+    return TensorFrame(feat_dict, col_names_dict, num_rows=table.num_rows)
