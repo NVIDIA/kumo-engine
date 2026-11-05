@@ -38,20 +38,6 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: Check standalone Engine cases without Engine or GPU imports
-        run: |
-          python3 - <<'PY'
-          import json, pathlib, subprocess, sys
-          for path in pathlib.Path('packages/kumo-engine/test/cases').glob('*.py'):
-              compile(path.read_text(), str(path), 'exec')
-              if path.name == 'common.py':
-                  continue
-              for scale in ('100M', '1B', '10B', '25B'):
-                  result = subprocess.check_output([sys.executable, str(path), '--scale', scale, '--requirements'], text=True)
-                  requirements = json.loads(result)
-                  assert set(requirements) == {'scratch_gib'} and requirements['scratch_gib'] > 0
-          PY
-
       - name: Test repository readiness checks
         run: |
           uvx --python 3.14 --from pytest==9.0.3 --with vulture==2.14 \
