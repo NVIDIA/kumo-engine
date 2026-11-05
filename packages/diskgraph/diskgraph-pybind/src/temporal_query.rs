@@ -620,25 +620,37 @@ pub(crate) fn time_hints(root: &Path) -> Result<TimeHints, String> {
     Ok(hints)
 }
 
-/// Epoch seconds of each value. A hinted integer column decodes exactly as
-/// ingestion and its edge sort keys read it.
+/// Reads a hinted integer time column exactly as ingestion and its edge sort
+/// keys read it.
+struct TimeReader(RowAccess<'static>);
+
+impl TimeReader {
+    fn new(hint: &RowAccessHints) -> Self {
+        Self(RowAccess::new(vec![hint.clone()], RowAccessStats::new(None)))
+    }
+
+    fn epoch_seconds(&mut self, array: &ArrayRef) -> Result<Vec<Option<i64>>, String> {
+        self.0.set_cols(std::slice::from_ref(array));
+        (0..array.len())
+            .map(|row| {
+                self.0.set_row(row);
+                self.0.get_timestamp(0).map_err(|error| error.to_string())
+            })
+            .collect()
+    }
+}
+
+/// Epoch seconds of each value.
 fn epoch_seconds(
     array: &ArrayRef,
     hint: Option<&RowAccessHints>,
 ) -> Result<Vec<Option<i64>>, String> {
-    let Some(hint) = hint else {
-        return (0..array.len())
+    match hint {
+        Some(hint) => TimeReader::new(hint).epoch_seconds(array),
+        None => (0..array.len())
             .map(|row| scalar_at(array.as_ref(), row)?.epoch_seconds())
-            .collect();
-    };
-    let mut access = RowAccess::new(vec![hint.clone()], RowAccessStats::new(None));
-    access.set_cols(std::slice::from_ref(array));
-    (0..array.len())
-        .map(|row| {
-            access.set_row(row);
-            access.get_timestamp(0).map_err(|error| error.to_string())
-        })
-        .collect()
+            .collect(),
+    }
 }
 
 fn relation_columns(
@@ -1252,7 +1264,7 @@ fn reduce(
     column: Option<&str>,
     cutoff: i64,
     sum_type: Option<SumType>,
-    hint: Option<&RowAccessHints>,
+    time: Option<&mut TimeReader>,
 ) -> Result<ScalarValue, String> {
     validate_reduction(operation, column)?;
     if sum_type.is_some() && operation != "sum" {
@@ -1316,8 +1328,8 @@ fn reduce(
             .iter()
             .map(ScalarValue::epoch_seconds)
             .collect::<Result<Vec<_>, _>>()?;
-        if hint.is_some() {
-            seconds = epoch_seconds(&(Arc::new(Int64Array::from(seconds)) as ArrayRef), hint)?;
+        if let Some(time) = time {
+            seconds = time.epoch_seconds(&(Arc::new(Int64Array::from(seconds)) as ArrayRef))?;
         }
         let latest = seconds
             .into_iter()
@@ -1387,12 +1399,12 @@ fn reduce(
     })
 }
 
-/// `hints` describe the input columns.
+/// `times[i]` reads the time column of `plan.values[i]`.
 fn group_rows(
     rows: RowsView<'_>,
     plan: &GroupPlan,
     cutoff: i64,
-    hints: Option<&ColumnHints>,
+    times: &mut [Option<TimeReader>],
 ) -> Result<Vec<OwnedRow>, String> {
     if plan.keys.is_empty() || plan.values.is_empty() {
         return Err("group_by requires keys and values".into());
@@ -1460,7 +1472,7 @@ fn group_rows(
                     reduction.column.as_deref(),
                     cutoff,
                     reduction.sum_type,
-                    column_hint(hints, reduction.column.as_deref()),
+                    times[reduction_index].as_mut(),
                 )?,
             );
         }
@@ -1489,6 +1501,17 @@ fn group_output_hints(plan: &GroupPlan, hints: Option<&ColumnHints>) -> ColumnHi
     output
 }
 
+/// Reader of a `recency`'s hinted time column.
+fn time_reader(
+    hints: Option<&ColumnHints>,
+    operation: &str,
+    column: Option<&str>,
+) -> Option<TimeReader> {
+    column_hint(hints, column)
+        .filter(|_| operation == "recency")
+        .map(TimeReader::new)
+}
+
 fn aggregate_result(
     frame: &MaterializedFrame,
     hints: Option<&ColumnHints>,
@@ -1497,10 +1520,24 @@ fn aggregate_result(
 ) -> Result<AggregateResult, String> {
     validate_reduction(&plan.operation, plan.column.as_deref())?;
     let mut stage_hints = Vec::with_capacity(plan.groups.len());
+    let mut stage_times = Vec::with_capacity(plan.groups.len());
     for group in &plan.groups {
-        let output = group_output_hints(group, stage_hints.last().or(hints));
+        let input = stage_hints.last().or(hints);
+        stage_times.push(
+            group
+                .values
+                .iter()
+                .map(|value| time_reader(input, &value.operation, value.column.as_deref()))
+                .collect::<Vec<_>>(),
+        );
+        let output = group_output_hints(group, input);
         stage_hints.push(output);
     }
+    let mut time = time_reader(
+        stage_hints.last().or(hints),
+        &plan.operation,
+        plan.column.as_deref(),
+    );
     let mut values = Vec::with_capacity(cutoffs.len());
     for (anchor, cutoff) in cutoffs.iter().copied().enumerate() {
         let frame_view = RowsView::Frame {
@@ -1508,10 +1545,11 @@ fn aggregate_result(
             start: frame.offsets[anchor],
             stop: frame.offsets[anchor + 1],
         };
-        let value = if let Some((first, remaining)) = plan.groups.split_first() {
-            let mut grouped = group_rows(frame_view, first, cutoff, hints)?;
-            for (group, hints) in remaining.iter().zip(&stage_hints) {
-                grouped = group_rows(RowsView::Owned(&grouped), group, cutoff, Some(hints))?;
+        let mut stages = plan.groups.iter().zip(&mut stage_times);
+        let value = if let Some((first, times)) = stages.next() {
+            let mut grouped = group_rows(frame_view, first, cutoff, times)?;
+            for (group, times) in stages {
+                grouped = group_rows(RowsView::Owned(&grouped), group, cutoff, times)?;
             }
             reduce(
                 RowsView::Owned(&grouped),
@@ -1519,7 +1557,7 @@ fn aggregate_result(
                 plan.column.as_deref(),
                 cutoff,
                 plan.sum_type,
-                column_hint(stage_hints.last(), plan.column.as_deref()),
+                time.as_mut(),
             )?
         } else {
             reduce(
@@ -1528,7 +1566,7 @@ fn aggregate_result(
                 plan.column.as_deref(),
                 cutoff,
                 plan.sum_type,
-                column_hint(hints, plan.column.as_deref()),
+                time.as_mut(),
             )?
         };
         values.push(value);
