@@ -43,10 +43,6 @@ for variant, package in packages.items():
 if len(set(native_hashes.values())) != 2:
     raise ValueError("Baseline and candidate native libraries are identical; check build isolation")
 worker_script = args.worker.resolve()
-output = args.output.resolve()
-output.mkdir(parents=True, exist_ok=False)
-raw_output = output / "raw"
-raw_output.mkdir()
 cpu = None
 if hasattr(os, "sched_getaffinity"):
     cpu = sorted(os.sched_getaffinity(0))[0]
@@ -80,6 +76,10 @@ summary = {
     "baseline_revision": args.baseline_revision, "candidate_revision": args.candidate_revision,
     "packages": {variant: str(path) for variant, path in packages.items()}, "units": {},
 }
+output = args.output.resolve()
+output.mkdir(parents=True, exist_ok=False)
+raw_output = output / "raw"
+raw_output.mkdir()
 for unit in args.units:
     records = {case: [] for case in cases}
     for cycle in range(cycles):
