@@ -149,7 +149,7 @@ def test_mixed_timezones_are_staged_with_one_separator(tmp_path):
         tmp_path,
         pa.array([
             '2024-01-16T10:00:00', '2024-01-15 10:00:00+02:00',
-            '2024-01-17T10:00:00.250Z', 'not a time', None
+            '2024-01-17T10:00:00.250z', 'not a time', None
         ]))
     with pytest.warns(UserWarning, match='mixes 2 values with a timezone'):
         formats, rewritten = resolve_time_columns('events', _definition(),
@@ -254,6 +254,9 @@ def test_a_non_nullable_staged_column_still_takes_the_nulls(tmp_path):
     (pa.array([' 20240115', '20240116 ']), {
         'ts': '%Y%m%d'
     }),
+    (pa.array(['1705276800.0', '1705363200.0']), {
+        'ts': 's'
+    }),
 ])
 def test_padded_digit_strings_count_as_numbers(tmp_path, values, outcome):
     path = _part(tmp_path, values)
@@ -298,6 +301,7 @@ def test_only_parts_holding_an_invalid_value_are_rewritten(tmp_path):
     pa.array(['15 Jan 2024', '16 Jan 2024']),
     pa.array([1705276800.0, 1705363200.0], pa.float64()),
     pa.array(['2024-01-15', '15/01/2024']),
+    pa.array(['13/01/2024', '2024-01-16T10:00:00z', '2024-01-17T10:00:00z']),
     pa.array([None, None], pa.string()),
 ])
 def test_other_shapes_are_left_to_diskgraph(tmp_path, values):
@@ -307,3 +311,36 @@ def test_other_shapes_are_left_to_diskgraph(tmp_path, values):
                                               [str(path)])
     assert (formats, rewritten) == ({}, [])
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize('values', [
+    pa.array(['13/01/2024', '14/01/2024', 'unknown']),
+    pa.array(['1705276800', '2023', 'unknown']),
+])
+def test_a_shape_the_scan_does_not_read_leaves_the_column_to_diskgraph(
+        tmp_path, values):
+    path = _part(tmp_path, values)
+    before = path.read_bytes()
+    with pytest.warns(
+            UserWarning, match=re.escape(
+                'Time column events.ts holds 1 value in a shape the scan does '
+                'not read (e.g. unknown), so its format is left to DiskGraph')):
+        formats, rewritten = resolve_time_columns('events', _definition(),
+                                                  [str(path)])
+    assert (formats, rewritten) == ({}, [])
+    assert path.read_bytes() == before
+
+
+def test_slash_dates_invalid_under_both_orders_are_made_missing(tmp_path):
+    path = _part(tmp_path, pa.array(['00/00/0000', '30/02/2024']))
+    with pytest.warns(UserWarning) as caught:
+        formats, rewritten = resolve_time_columns('events',
+                                                  _definition(end=True),
+                                                  [str(path)])
+    assert (formats, rewritten) == ({}, ['ts'])
+    assert [str(w.message) for w in caught] == [
+        '2 values in end time column events.ts are not dates on the calendar '
+        '(e.g. 00/00/0000, 30/02/2024); they are treated as missing. Correct '
+        'them at the source to keep the values.'
+    ]
+    assert pq.read_table(path).column('ts').to_pylist() == [None, None]

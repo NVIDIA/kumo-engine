@@ -49,7 +49,7 @@ _READINGS = {
 _ISO = (r'^(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})'
         r'(?:(?P<sep>[T ])(?P<H>\d{2}):(?P<M>\d{2})'
         r'(?::(?P<S>\d{2})(?:\.(?P<f>\d+))?)?'
-        r'(?: ?(?P<z>Z|[+-]\d{2}:?\d{2}))?)?$')
+        r'(?: ?(?P<z>[Zz]|[+-]\d{2}:?\d{2}))?)?$')
 _YEAR_SLASH = (r'^(?P<y>\d{4})/(?P<m>\d{1,2})/(?P<d>\d{1,2})'
                r'(?: (?P<H>\d{1,2}):(?P<M>\d{2})(?::(?P<S>\d{2}))?)?$')
 _SLASH = (r'^(?P<a>\d{1,2})/(?P<b>\d{1,2})/(?P<y>\d{4})'
@@ -58,8 +58,9 @@ _DIGITS = r'^\s*(?P<n>\d+)(?:\.0+)?\s*$'
 _ONE_SHAPE = (
     (r'^(\d{4}-\d{2}-\d{2})T', r'\1 '),
     (r'^(\d{4}-\d{2}-\d{2})$', r'\1 00:00:00'),
-    (r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2})( ?(?:Z|[+-]\d{2}:?\d{2}))?$',
+    (r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2})( ?(?:[Zz]|[+-]\d{2}:?\d{2}))?$',
      r'\1:00\2'),
+    (r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?) ?z$', r'\1Z'),
 )
 _INT64_MAX = '9223372036854775807'
 _SLASH_SHAPES = {0: '', 1: ' %H:%M', 2: ' %H:%M:%S'}
@@ -120,6 +121,7 @@ class _Scan:
     families: Counter = field(default_factory=Counter)
     readings: Counter = field(default_factory=Counter)
     reading_examples: Dict[str, Any] = field(default_factory=dict)
+    other_example: Any = None
     zoned: int = 0
     bare: int = 0
     zoned_example: Any = None
@@ -232,7 +234,7 @@ def _fraction_nanos(parts: pa.Array) -> pa.Array:
 
 
 def _offset_seconds(zone: pa.Array) -> pa.Array:
-    utc = pc.or_(pc.equal(zone, ''), pc.equal(zone, 'Z'))
+    utc = pc.or_(pc.equal(zone, ''), pc.equal(pc.utf8_upper(zone), 'Z'))
     digits = pc.replace_substring(pc.if_else(utc, '+0000', zone), ':', '')
     offset = pc.add(
         pc.multiply(pc.cast(pc.utf8_slice_codeunits(digits, 1, 3), pa.int64()),
@@ -425,8 +427,10 @@ class _Column:
                 continue
             self.scan.readings[code] += count.as_py()
             if code not in self.scan.reading_examples:
-                self.scan.reading_examples[code] = pc.filter(
-                    values, pc.equal(reading, code))[0].as_py()
+                matches = pc.equal(reading, code)
+                self.scan.reading_examples[code] = (pc.filter(
+                    values, matches)[0].as_py(), pc.filter(numbers,
+                                                           matches)[0].as_py())
         self._tally('fixed', part, values, pc.invert(_in_range(secs, nanos)),
                     None)
 
@@ -447,6 +451,8 @@ class _Column:
                             pc.or_(families['slash'], families['digits']))
         other = pc.and_(pc.is_valid(text), pc.invert(recognized))
         self.scan.families['other'] += pc.sum(other).as_py() or 0
+        if self.scan.other_example is None and pc.sum(other).as_py():
+            self.scan.other_example = pc.filter(text, other)[0].as_py()
 
         if pc.sum(families['digits']).as_py():
             self._observe_numbers(part, text, families['digits'],
@@ -550,7 +556,18 @@ class _Column:
         if not scan.values:
             return
         known = {k: v for k, v in scan.families.items() if v and k != 'other'}
-        if set(known) == {'digits'}:
+        other = scan.families.get('other', 0)
+        if other and set(known) in ({'digits'}, {'slash'}):
+            warnings.warn(
+                f"Time column {self.alias}.{self.name} holds {other} "
+                f"value{'s' if other != 1 else ''} in a shape the scan does "
+                f"not read (e.g. {scan.other_example}), so its format is "
+                "left to DiskGraph's own reading. Set timestamp_format on "
+                "the column to decide it.",
+                UserWarning,
+                stacklevel=5,
+            )
+        elif set(known) == {'digits'}:
             self._decide_numbers()
         elif set(known) == {'slash'}:
             self._decide_slash()
@@ -575,11 +592,11 @@ class _Column:
         scan = self.scan
         readings = [code for code in _READINGS if scan.readings.get(code)]
         if readings == ['none'] or len(readings) != 1:
-            parts = ', '.join(
-                f"{scan.readings[code]} "
-                f"{'is' if scan.readings[code] == 1 else 'are'} "
-                f"{_READINGS[code][2]} (e.g. {scan.reading_examples[code]})"
-                for code in readings)
+            parts = ', '.join(f"{scan.readings[code]} "
+                              f"{'is' if scan.readings[code] == 1 else 'are'} "
+                              f"{_READINGS[code][2]} (e.g. "
+                              f"{scan.reading_examples[code][0]})"
+                              for code in readings)
             raise ValueError(
                 f"Time column {self.alias}.{self.name} holds whole numbers "
                 f"with no single reading: {parts}. Set timestamp_format on "
@@ -588,9 +605,9 @@ class _Column:
                 "source.")
         code = readings[0]
         hint, description, _ = _READINGS[code]
-        example = scan.reading_examples[code]
+        example, number = scan.reading_examples[code]
         rendered = _render(
-            _int_readings(pa.array([int(example)], pa.int64()))[1][0].as_py())
+            _int_readings(pa.array([number], pa.int64()))[1][0].as_py())
         self.decision = _Decision(hint, reading=code)
         warnings.warn(
             f"Time column {self.alias}.{self.name} holds whole numbers; its "
@@ -614,8 +631,10 @@ class _Column:
                 "timestamp_format on the column to the order you want and "
                 "the other values become missing.")
         if not dm.count and not md.count:
-            example = (scan.slash_both.examples
-                       or scan.impossible['md'].examples)[0]
+            if not scan.slash_both.count:
+                self.decision = _Decision(order='md')
+                return
+            example = scan.slash_both.examples[0]
             raise ValueError(
                 f"Time column {self.alias}.{self.name} holds slash dates "
                 "whose day and month order the data does not settle: every "
