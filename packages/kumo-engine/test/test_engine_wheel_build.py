@@ -4,13 +4,15 @@
 """Exercise the shared builder with a small fake native build boundary."""
 import importlib.util
 import json
+import os
 import subprocess
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
-SCRIPT = Path(
-    __file__).parents[3] / '.github/actions/build-engine-wheel/build.py'
+SCRIPT = Path(__file__).parents[1] / 'scripts/nightly_build.py'
 
 
 class WheelBuildChecks(unittest.TestCase):
@@ -35,23 +37,34 @@ class WheelBuildChecks(unittest.TestCase):
             script = product / 'packages/kumo-engine/scripts/build_wheel.sh'
             script.parent.mkdir(parents=True)
             script.write_text('''#!/bin/sh
-exec python3 - "$2" <<'BUILD'
-import pathlib,subprocess,sys,zipfile
-p=pathlib.Path(sys.argv[1]);p.mkdir(exist_ok=True)
-v='1.2.3+'+subprocess.check_output(['git','rev-parse','--short','HEAD'],text=True).strip()
+exec python3 - "$@" <<'BUILD'
+import argparse,os,pathlib,subprocess,zipfile
+parser=argparse.ArgumentParser()
+parser.add_argument('--output-dir')
+parser.add_argument('--kumo-repo',default=os.environ.get('KUMO_REPO',os.getcwd()))
+parser.add_argument('--version',default=os.environ.get('BUNDLE_VERSION'))
+args=parser.parse_args()
+p=pathlib.Path(args.output_dir);p.mkdir(exist_ok=True)
+v=args.version or '1.2.3+'+subprocess.check_output(['git','rev-parse','--short','HEAD'],text=True).strip()
 with zipfile.ZipFile(p/'candidate.whl','w') as z:
  z.writestr('kumo_engine.dist-info/METADATA','Name: kumo-engine\\nVersion: '+v+'\\n')
+ z.writestr('selected-source.txt',args.kumo_repo)
 BUILD
 ''')
             script.chmod(0o755)
             git('add', '.')
             git('commit', '-m', 'fixture')
-            result = builder.build(product, root / 'output')
+            with patch.dict(os.environ, KUMO_REPO='wrong-source',
+                            BUNDLE_VERSION='9.9.9'):
+                result = builder.build(product, root / 'output')
             self.assertEqual(result['revision'], git('rev-parse', 'HEAD'))
             self.assertEqual(result['version'],
                              '1.2.3+' + git('rev-parse', '--short', 'HEAD'))
             self.assertEqual(
                 json.loads((root / 'output/build.json').read_text()), result)
+            with zipfile.ZipFile(root / 'output/candidate.whl') as archive:
+                self.assertEqual(
+                    archive.read('selected-source.txt').decode(), str(product))
             (product / 'VERSION').write_text('changed')
             with self.assertRaises(ValueError):
                 builder.build(product, root / 'rejected')

@@ -74,6 +74,7 @@ class TrainingTable:
         pq: "PredictiveQuery",  # noqa: F821
         snapshot: GraphSnapshot,
         plan: Optional[PublicGenerationPlan] = None,
+        allow_new_target_entities: bool = False,
     ) -> "TrainingTable":
         r"""Materialize caller-supplied labeled rows as a training table.
 
@@ -87,6 +88,13 @@ class TrainingTable:
         rows. The returned object retains only the materialized rows and
         generation metadata; :meth:`Trainer.fit` independently selects its
         graph through its own required ``snapshot=`` argument.
+
+        ``allow_new_target_entities=True`` retains supplied target labels
+        without filtering their visibility at the prediction timestamp. Use it
+        for labels that include targets created within a future label window.
+        The caller must ensure that the label times are valid. Target keys
+        still resolve against the snapshot when the training table is ingested.
+        The default keeps the prediction-time visibility filter.
         """
         # Local imports keep the immutable descriptor cheap to import and
         # avoid pquery -> trainer -> pquery cycles.
@@ -163,6 +171,7 @@ class TrainingTable:
                 parquet_path=str(rows_path),
                 weight_column=spec.weight_col,
                 timestamp_unit=spec.timestamp_unit,
+                allow_new_target_entities=allow_new_target_entities,
             ),
         )
         if workflow.query.query_type == "temporal":
@@ -180,8 +189,9 @@ class TrainingTable:
                 generation_plan,
                 forecast_length=workflow.query.forecast_length,
                 lag_timesteps=task_plan.train_table.lag_timesteps,
-                year_over_year=("yoy_offsets_secs" in
-                                (task_plan.train_table.compiler_options or {})),
+                year_over_year=("yoy_offsets_secs"
+                                in (task_plan.train_table.compiler_options
+                                    or {})),
             )
         return cls(
             query=pq.query,

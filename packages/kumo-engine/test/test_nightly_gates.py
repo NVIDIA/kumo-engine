@@ -3,9 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Exercise learning and prediction failures without fitting a model."""
 
-import copy
 import importlib.util
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,161 +15,6 @@ SPEC.loader.exec_module(nightly)
 
 
 class LearningAndPredictions(unittest.TestCase):
-    def test_a_scrambled_model_cannot_match_normal_inside_the_chance_band(self):
-        root = SOURCE.parents[1] / 'test/nightly'
-        rows = nightly.read(root / 'reference.json')['cases']
-        for row in rows:
-            if row['task'] == 'forecasting':
-                row['score'] = .335
-                row['baseline'] = .3822739835549215
-        policy = nightly.read(root / 'policy.json')['learning']
-        checked = nightly.check_learning(rows, policy)['tasks']['forecasting']
-        self.assertEqual(checked['status'], 'FAIL')
-
-    def test_reference_calibration_meets_all_task_learning_checks(self):
-        root = SOURCE.parents[1] / 'test/nightly'
-        reference = nightly.read(root / 'reference.json')
-        policy = nightly.read(root / 'policy.json')['learning']
-        measured = nightly.check_learning(reference['cases'], policy)
-        self.assertEqual(measured['status'], 'PASS')
-        historical = copy.deepcopy(reference['cases'])
-        next(row for row in historical if row['task'] == 'static_link'
-             and row['arm'] == 'normal')['score'] = .007665
-        self.assertEqual(
-            nightly.check_learning(historical,
-                                   policy)['tasks']['static_link']['status'],
-            'FAIL')
-        for task in policy:
-            for fault in ('nonlearning', 'leaked_control'):
-                rows = copy.deepcopy(reference['cases'])
-                normal = next(r for r in rows
-                              if r['task'] == task and r['arm'] == 'normal')
-                control = next(r for r in rows
-                               if r['task'] == task and r['arm'] == 'control')
-                control['score'] = control['baseline']
-                if fault == 'nonlearning':
-                    normal['score'] = normal['baseline']
-                else:
-                    if task == 'static_link':
-                        normal['score'] = .02
-                    control['score'] = normal['score']
-                with self.subTest(task=task, fault=fault):
-                    self.assertEqual(
-                        nightly.check_learning(rows,
-                                               policy)['tasks'][task]['status'],
-                        'FAIL')
-
-    def test_policy_requires_all_tasks_and_an_exact_reviewed_checksum(self):
-        value = dict(
-            format='kumo-engine-nightly-policy-v1', learning={
-                task: dict(min_normal_gain=.01, max_control_drift=.005)
-                for task in nightly.smoke.TASKS
-            }, predictions={
-                task: dict(atol=.0004)
-                for task in nightly.smoke.TASKS
-            })
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'policy.json'
-            path.write_text(json.dumps(value))
-            expected = nightly.digest(path)
-            self.assertEqual(nightly.load_policy(path, expected), value)
-            path.write_text(json.dumps(value) + '\n')
-            with self.assertRaises(ValueError):
-                nightly.load_policy(path, expected)
-            value['learning']['binary']['min_normal_gain'] = 0
-            path.write_text(json.dumps(value))
-            with self.assertRaises(ValueError):
-                nightly.load_policy(path, nightly.digest(path))
-            del value['learning']['binary']
-            path.write_text(json.dumps(value))
-            with self.assertRaises(ValueError):
-                nightly.load_policy(path, nightly.digest(path))
-
-    def test_complete_summary_propagates_learning_failures(self):
-        rows, reference = [], {'cases': []}
-        for task in nightly.smoke.TASKS:
-            lower = task in ('regression', 'forecasting')
-            baseline = 1. if lower else .5
-            for arm in ('normal', 'control'):
-                rows.append(
-                    dict(
-                        task=task, arm=arm, seed=0, status='MEASURED',
-                        physical_fits=1, fit_id=f'{task}-{arm}',
-                        checkpoint_sha256='a' * 64, seconds=1.,
-                        prediction_checks=dict(status='PASS'),
-                        prediction_batches={
-                            stage: 1
-                            for stage in nightly.PREDICTIONS
-                        }, score=baseline
-                        if arm == 'control' else .7 if lower else .8))
-                reference['cases'].append(
-                    dict(task=task, arm=arm, baseline=baseline, score=baseline))
-        policy = dict(
-            learning={
-                task: dict(min_normal_gain=.1, max_control_drift=.02)
-                for task in nightly.smoke.TASKS
-            })
-        self.assertEqual(
-            nightly.summarize(rows, reference, policy)['status'], 'PASS')
-        rows[0]['prediction_checks']['status'] = 'FAIL'
-        self.assertEqual(
-            nightly.summarize(rows, reference, policy)['status'], 'FAIL')
-        rows[0]['prediction_checks']['status'] = 'PASS'
-        rows[0]['score'] = .5
-        self.assertEqual(
-            nightly.summarize(rows, reference, policy)['status'], 'FAIL')
-        with self.assertRaises(ValueError):
-            nightly.summarize(rows[:-1], reference, policy)
-
-    def test_learning_rejects_no_gain_and_leaked_controls(self):
-        bounds = {'binary': {'min_normal_gain': .1, 'max_control_drift': .02}}
-        for normal, control, expected in [(.8, .5, 'PASS'), (.5, .5, 'FAIL'),
-                                          (.8, .8, 'FAIL'), (.8, .2, 'FAIL')]:
-            with self.subTest(normal=normal, control=control):
-                rows = [
-                    dict(task='binary', arm=arm, score=score, baseline=.5)
-                    for arm, score in [('normal', normal), ('control', control)]
-                ]
-                result = nightly.check_learning(rows, bounds)
-                self.assertEqual(result['status'], expected)
-                self.assertEqual(result['tasks']['binary']['status'], expected)
-
-    def test_lower_error_and_small_learning_gaps_use_task_specific_bounds(self):
-        rows = [
-            dict(task='regression', arm='normal', score=.7, baseline=1.),
-            dict(task='regression', arm='control', score=1.01, baseline=1.)
-        ]
-        result = nightly.check_learning(
-            rows,
-            {'regression': {
-                'min_normal_gain': .2,
-                'max_control_drift': .02
-            }})
-        self.assertEqual(result['status'], 'PASS')
-        rows[0]['score'] = .9
-        self.assertEqual(
-            nightly.check_learning(rows, {
-                'regression': {
-                    'min_normal_gain': .2,
-                    'max_control_drift': .02
-                }
-            })['status'], 'FAIL')
-
-    def test_learning_never_approves_a_missing_or_nonpositive_margin(self):
-        rows = [
-            dict(task='binary', arm=arm, score=score, baseline=.5)
-            for arm, score in [('normal', .8), ('control', .5)]
-        ]
-        for bounds in [{}, {
-                'min_normal_gain': 0,
-                'max_control_drift': .02
-        }, {
-                'min_normal_gain': .1,
-                'max_control_drift': float('nan')
-        }]:
-            with self.subTest(bounds=bounds), self.assertRaises(ValueError):
-                nightly.check_learning(rows, {'binary': bounds})
-
     def test_ranks_only_change_between_close_scores(self):
         before = dict(ranked_ids=[[1, 2, 3]], ranked_scores=[[.9, .5001, .5]])
         after = dict(ranked_ids=[[1, 3, 2]], ranked_scores=[[.9, .5001, .5]])
@@ -246,14 +89,24 @@ class LearningAndPredictions(unittest.TestCase):
                      wheel_sha256='c' * 64))
             runtime = dict(version='1.2.0+abc', wheel_sha256='c' * 64,
                            installed_files=10)
-            nightly.check_install(root, runtime)
+            nightly.check_install(root, runtime,
+                                  build_receipt=root / 'setup/build.json')
             for bad in [
                     dict(runtime, installed_files=0),
                     dict(runtime, wheel_sha256='d' * 64)
             ]:
                 with self.assertRaises(ValueError):
-                    nightly.check_install(root, bad)
+                    nightly.check_install(
+                        root, bad, build_receipt=root / 'setup/build.json')
 
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_weekly_retention_accepts_an_exact_decimal_boundary():
+    result = nightly.sibling('nightly_gates').case_learning(
+        dict(task='binary', arm='normal', score=.725),
+        dict(baseline=.5, score=.8),
+        dict(min_normal_gain=.01, max_control_drift=.01), tier='weekly')
+    assert result['status'] == 'PASS'

@@ -28,7 +28,8 @@ def build(product, output):
     subprocess.run([
         str(product / 'packages/kumo-engine/scripts/build_wheel.sh'),
         '--output-dir',
-        str(output)
+        str(output), '--kumo-repo',
+        str(product), '--version', expected
     ], cwd=product, check=True)
     if git('status', '--porcelain') or git(
             'rev-parse', 'HEAD',
