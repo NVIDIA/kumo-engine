@@ -119,8 +119,7 @@ _VENDOR_DROP_IN = 'usr/lib/systemd/logind.conf.d/50-ipc.conf'
     ({_LOGIND: None}, 1500, True),
     ({_LOGIND: None, _VENDOR_LOGIND: 'RemoveIPC=no\n'}, 1500, False),
     ({_VENDOR_DROP_IN: 'RemoveIPC=no\n'}, 1500, False),
-    ({_VENDOR_DROP_IN: 'RemoveIPC=no\n', _DROP_IN: 'RemoveIPC=yes\n'}, 1500,
-     True),
+    ({_VENDOR_DROP_IN: 'RemoveIPC=no\n', _DROP_IN: ''}, 1500, True),
     ({_SYSTEMD: None}, 1500, False),
 ])
 def test_logind_removes_ipc(tmp_path, monkeypatch, files, uid, removes):
