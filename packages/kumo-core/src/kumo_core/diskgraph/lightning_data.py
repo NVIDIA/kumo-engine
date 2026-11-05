@@ -22,6 +22,8 @@ import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
+from multiprocessing import queues as mp_queues
+from multiprocessing.reduction import ForkingPickler
 from typing import Any, Iterator, Mapping
 
 import pytorch_lightning as pl
@@ -31,6 +33,7 @@ from kumo_core.diskgraph.runtime_adapter import (
     runtime_batch_to_hetero,
 )
 from kumo_core.task_dataset import DiskgraphTaskManifest
+from torch._utils import ExceptionWrapper
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
 logger = logging.getLogger(__name__)
@@ -1697,8 +1700,34 @@ def _exit_when_parent_exits() -> None:
     os._exit(0)
 
 
+_SHM_REMOVED_MESSAGE = (
+    "DataLoader shared memory files in /dev/shm were removed, likely by "
+    "systemd-logind RemoveIPC when this user's last login session ended. Run "
+    "`sudo loginctl enable-linger $USER` or set RemoveIPC=no in "
+    "/etc/systemd/logind.conf.")
+
+
+def _send_feeder_error(queue: Any, error: Exception, item: Any) -> None:
+    """Fail the batch a worker could not pickle instead of dropping it.
+
+    Sent before anything queued after the batch, so a later end-of-stream
+    marker cannot make the main process skip it.
+    """
+    message = str(error)
+    if 'shared memory' in message and os.strerror(errno.ENOENT) in message:
+        cause, error = error, RuntimeError(_SHM_REMOVED_MESSAGE)
+        error.__cause__ = cause
+    wrapper = ExceptionWrapper(
+        (type(error), error, error.__traceback__),
+        where=f'in DataLoader worker process {get_worker_info().id}')
+    payload = ForkingPickler.dumps((item[0], wrapper))
+    with queue._wlock:
+        queue._writer.send_bytes(payload)
+
+
 def _init_diskgraph_worker(_worker_id: int) -> None:
-    """Start logical-parent death detection in a DataLoader worker."""
+    """Start parent-death detection and fail unsendable batches loudly."""
+    mp_queues.Queue._on_queue_feeder_error = _send_feeder_error
     threading.Thread(
         target=_exit_when_parent_exits,
         daemon=True,
