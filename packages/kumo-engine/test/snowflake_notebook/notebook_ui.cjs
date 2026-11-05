@@ -214,6 +214,7 @@ async function runCell(frame, index) {
     60000,
     "Notebook cell " + index + " is not ready for execution",
   );
+  await cell.getByText(index + ".", { exact: true }).click();
   await editor.focus();
   requireThat(
     await editor.evaluate(
@@ -258,6 +259,35 @@ async function selectTestService(frame, event) {
     service: "EGU_GRAPH_UI_SERVICE",
     pool: "KUMO_TEST_POOL",
   });
+}
+
+async function restartKernel(frame, event) {
+  const status = frame.getByRole("button", {
+    name: "Connection status",
+    exact: true,
+  });
+  await frame
+    .getByRole("button", { name: "Service List dropdown button", exact: true })
+    .click();
+  await frame
+    .getByRole("button", {
+      name: "Restart kernel Clear variables but keep packages",
+      exact: true,
+    })
+    .click();
+  const dialog = frame.getByRole("dialog", {
+    name: "Restart kernel",
+    exact: true,
+  });
+  await dialog.waitFor();
+  event("kernel_restart_requested");
+  await Promise.all([
+    status.filter({ hasNotText: /^Connected$/ }).waitFor({ timeout: 60000 }),
+    dialog.getByRole("button", { name: "Restart", exact: true }).click(),
+  ]);
+  await dialog.waitFor({ state: "hidden" });
+  await status.filter({ hasText: /^Connected$/ }).waitFor({ timeout: 180000 });
+  event("kernel_restarted");
 }
 
 async function execute(page, frame, spec, event, output, config) {
@@ -359,24 +389,7 @@ async function execute(page, frame, spec, event, output, config) {
         throw new Error("Notebook setup failed; inspect its cell output");
       }),
   ]);
-  await frame
-    .getByRole("button", { name: "Service List dropdown button", exact: true })
-    .click();
-  await frame
-    .getByRole("button", {
-      name: "Restart kernel Clear variables but keep packages",
-      exact: true,
-    })
-    .click();
-  const dialog = frame.getByRole("dialog", {
-    name: "Restart kernel",
-    exact: true,
-  });
-  await dialog.waitFor();
-  await dialog.getByRole("button", { name: "Restart", exact: true }).click();
-  await dialog.waitFor({ state: "hidden" });
-  event("kernel_restarted");
-  await status.filter({ hasText: "Connected" }).waitFor({ timeout: 180000 });
+  await restartKernel(frame, event);
   await profile(frame, event);
   const priorOutput = frame.getByText(/KUMO_GRAPH_RESULT=\{/);
   const graphStarted = frame.getByText(
@@ -393,14 +406,12 @@ async function execute(page, frame, spec, event, output, config) {
   await until(
     page,
     async () => {
-      const cell = frame
-        .getByRole("listitem")
-        .filter({
-          has: frame.getByRole("checkbox", {
-            name: "Select cell 2",
-            exact: true,
-          }),
-        });
+      const cell = frame.getByRole("listitem").filter({
+        has: frame.getByRole("checkbox", {
+          name: "Select cell 2",
+          exact: true,
+        }),
+      });
       if (await cell.getByText(/Traceback.*Cell In/s).isVisible())
         throw new Error(
           "Notebook graph cell failed before its execution acknowledgment; inspect the saved cell output",
