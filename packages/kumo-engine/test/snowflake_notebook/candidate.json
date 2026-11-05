@@ -1,20 +1,20 @@
 {
   "candidate": {
-    "wheel_file": "kumo_engine-1.0.0.dev0+egu.mlops.83d87f7.stagefix1-cp311-abi3-manylinux_2_35_x86_64.whl",
-    "wheel_sha256": "46ef9cc96b86cc0d7b8c2a3e1aa35f76388cbcf79aec89675e545395fbd309f3",
-    "expected_version": "1.0.0.dev0+egu.mlops.83d87f7.stagefix1"
+    "wheel_file": "kumo_engine-1.0.0.dev0+egu.mlops.83d87f7.timeout1-cp311-abi3-manylinux_2_35_x86_64.whl",
+    "wheel_sha256": "142637a8f3e87cbd983894bcc4e48bad1a5a5429d5d33bae490f04ec218d5582",
+    "expected_version": "1.0.0.dev0+egu.mlops.83d87f7.timeout1"
   },
   "assets": {
-    "kumo_engine-1.0.0.dev0+egu.mlops.83d87f7.stagefix1-cp311-abi3-manylinux_2_35_x86_64.whl": {
-      "name": "kumo_engine-1.0.0.dev0+egu.mlops.83d87f7.stagefix1-cp311-abi3-manylinux_2_35_x86_64.whl",
-      "sha256": "46ef9cc96b86cc0d7b8c2a3e1aa35f76388cbcf79aec89675e545395fbd309f3",
-      "size": 40563535,
-      "location": "@KUMO_TEST_DB.KUMO_TEST.TEST_STAGE/mlops-validation/payload-cache/46ef9cc96b86cc0d7b8c2a3e1aa35f76388cbcf79aec89675e545395fbd309f3/kumo_engine-1.0.0.dev0+egu.mlops.83d87f7.stagefix1-cp311-abi3-manylinux_2_35_x86_64.whl/objects/5835133080f1/kumo_engine-1.0.0.dev0+egu.mlops.83d87f7.stagefix1-cp311-abi3-manylinux_2_35_x86_64.whl",
+    "kumo_engine-1.0.0.dev0+egu.mlops.83d87f7.timeout1-cp311-abi3-manylinux_2_35_x86_64.whl": {
+      "name": "kumo_engine-1.0.0.dev0+egu.mlops.83d87f7.timeout1-cp311-abi3-manylinux_2_35_x86_64.whl",
+      "sha256": "142637a8f3e87cbd983894bcc4e48bad1a5a5429d5d33bae490f04ec218d5582",
+      "size": 40563857,
+      "location": "@KUMO_TEST_DB.KUMO_TEST.TEST_STAGE/mlops-validation/payload-cache/142637a8f3e87cbd983894bcc4e48bad1a5a5429d5d33bae490f04ec218d5582/kumo_engine-1.0.0.dev0+egu.mlops.83d87f7.timeout1-cp311-abi3-manylinux_2_35_x86_64.whl/objects/91143843e796/kumo_engine-1.0.0.dev0+egu.mlops.83d87f7.timeout1-cp311-abi3-manylinux_2_35_x86_64.whl",
       "remote": {
-        "name": "test_stage/mlops-validation/payload-cache/46ef9cc96b86cc0d7b8c2a3e1aa35f76388cbcf79aec89675e545395fbd309f3/kumo_engine-1.0.0.dev0+egu.mlops.83d87f7.stagefix1-cp311-abi3-manylinux_2_35_x86_64.whl/objects/5835133080f1/kumo_engine-1.0.0.dev0+egu.mlops.83d87f7.stagefix1-cp311-abi3-manylinux_2_35_x86_64.whl",
-        "size": 40563535,
-        "md5": "4fe56815ea7b98505d06869f02c3c341",
-        "last_modified": "Wed, 4 Nov 2026 18:34:51 GMT"
+        "name": "test_stage/mlops-validation/payload-cache/142637a8f3e87cbd983894bcc4e48bad1a5a5429d5d33bae490f04ec218d5582/kumo_engine-1.0.0.dev0+egu.mlops.83d87f7.timeout1-cp311-abi3-manylinux_2_35_x86_64.whl/objects/91143843e796/kumo_engine-1.0.0.dev0+egu.mlops.83d87f7.timeout1-cp311-abi3-manylinux_2_35_x86_64.whl",
+        "size": 40563857,
+        "md5": "33f3f19cc018b0c8a2175033e3808b19",
+        "last_modified": "Thu, 5 Nov 2026 23:10:15 GMT"
       }
     },
     "wheelhouse.tar": {
