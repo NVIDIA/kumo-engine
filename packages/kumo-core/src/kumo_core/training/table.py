@@ -158,8 +158,6 @@ class PreparedCustomTrainingTable:
     validates the option and reports skipped rows in the staging manifest.
     ``timestamp_unit`` declares integer timestamp units. Typed Arrow timestamps
     use their encoded unit.
-    ``allow_new_target_entities`` retains target labels without prediction-time
-    visibility filtering. Target keys still resolve against the graph at ingest.
     """
 
     parquet_path: str
@@ -167,7 +165,6 @@ class PreparedCustomTrainingTable:
     time_column: str = "TIMESTAMP"
     ingest_on_error: str = "skip_row_on_error"
     timestamp_unit: str = "nanoseconds"
-    allow_new_target_entities: bool = False
 
     def __post_init__(self) -> None:
         if not self.parquet_path:
@@ -603,7 +600,6 @@ def generate_custom_train_table(
         lp_rhs_is_temporal=request.rhs_is_temporal,
         fact_pseudo_time=_fact_pseudo_time(request),
         ingest_on_error=custom_table.ingest_on_error,
-        allow_new_target_entities=custom_table.allow_new_target_entities,
         allow_negative_weight=(
             request.task_type.lower() == "temporal_link_prediction"),
     )
