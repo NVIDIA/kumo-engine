@@ -964,8 +964,9 @@ impl<'a> crate::builder::ProgressSink for ShardProgressAdapter<'a> {
     }
 }
 
-/// Persisted graph config column objects, by table.
-pub type TimeColumns = HashMap<String, Vec<serde_json::Map<String, serde_json::Value>>>;
+/// Raw graph config objects of the columns that declare a `timestamp_unit` or
+/// `timestamp_format`, by table in file order.
+pub type TimeColumns = Vec<(String, Vec<serde_json::Map<String, serde_json::Value>>)>;
 
 pub struct GraphIndexReader {
     metadata: DatasetMetadata,
@@ -1410,7 +1411,7 @@ fn load_graph_config(
             return (HashMap::new(), Err(format!("parse {}: {err}", path.display())));
         }
     };
-    let time_columns = time_columns(&value)
+    let time_columns = parse_time_columns(&value)
         .ok_or_else(|| format!("parse {}: unexpected tables layout", path.display()));
     let mut out = HashMap::new();
     let Some(tables) = value.get("tables").and_then(|t| t.as_array()) else {
@@ -1439,7 +1440,8 @@ fn load_graph_config(
     (out, time_columns)
 }
 
-fn time_columns(config: &serde_json::Value) -> Option<TimeColumns> {
+/// Strict about the layout, unlike the semantic types walk.
+fn parse_time_columns(config: &serde_json::Value) -> Option<TimeColumns> {
     let mut out = TimeColumns::new();
     for table in config.get("tables")?.as_array()? {
         let mut columns = Vec::new();
@@ -1449,7 +1451,7 @@ fn time_columns(config: &serde_json::Value) -> Option<TimeColumns> {
                 columns.push(column.clone());
             }
         }
-        out.insert(table.get("name")?.as_str()?.to_string(), columns);
+        out.push((table.get("name")?.as_str()?.to_string(), columns));
     }
     Some(out)
 }
