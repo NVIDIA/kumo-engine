@@ -143,6 +143,24 @@ def test_numbers_too_wide_for_int64_have_no_reading(tmp_path, values, example):
         resolve_time_columns('events', _definition(), [str(path)])
 
 
+def test_a_non_nullable_staged_column_still_takes_the_nulls(tmp_path):
+    path = tmp_path / 'part-0.parquet'
+    schema = pa.schema([
+        pa.field('id', pa.int64(), nullable=False),
+        pa.field('ts', pa.string(), nullable=False),
+    ])
+    pq.write_table(
+        pa.table({
+            'id': [0, 1],
+            'ts': ['2024-02-30', '2024-01-17']
+        }, schema=schema), path)
+    with pytest.warns(UserWarning, match='1 value in time column'):
+        resolve_time_columns('events', _definition(), [str(path)])
+    stored = pq.read_table(path)
+    assert stored.column('ts').to_pylist() == [None, '2024-01-17']
+    assert not stored.schema.field('id').nullable
+
+
 def test_a_declared_format_is_left_alone(tmp_path):
     path = _part(tmp_path, pa.array(['05/03/1990', '30/02/1990']))
     before = path.read_bytes()

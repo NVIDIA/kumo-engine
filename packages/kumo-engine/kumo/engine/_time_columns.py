@@ -671,10 +671,10 @@ def _rewrite(file: Path, columns: Dict[str, Callable[[pa.Array],
     schema = parquet.schema_arrow
     for name in columns:
         index = schema.get_field_index(name)
-        kind = schema.field(index).type
-        if pa.types.is_dictionary(kind):
-            schema = schema.set(index,
-                                schema.field(index).with_type(kind.value_type))
+        field_ = schema.field(index).with_nullable(True)
+        if pa.types.is_dictionary(field_.type):
+            field_ = field_.with_type(field_.type.value_type)
+        schema = schema.set(index, field_)
     temporary = file.with_name(f'.{file.name}.rewrite')
     with pq.ParquetWriter(temporary, schema) as writer:
         for batch in parquet.iter_batches():
