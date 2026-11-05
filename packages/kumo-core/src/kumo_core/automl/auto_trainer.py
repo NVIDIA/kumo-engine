@@ -1083,6 +1083,7 @@ class AutoTrainer:
         r"""Obtains the top-k trials from an experiment analysis."""
         run_dirs = filesystem.listdir(self.log_dir)
         trials = []
+        nan_trials = 0
         for run_dir in run_dirs:
             ckpt_dir = osp.join(run_dir, 'checkpoint')
             if not filesystem.exists(ckpt_dir):
@@ -1097,6 +1098,7 @@ class AutoTrainer:
 
                 result = df[self.val_tune_metric].values[0]
                 if pd.isna(result):
+                    nan_trials += 1
                     continue
 
                 path = osp.join(run_dir, 'model_plan.json')
@@ -1111,6 +1113,14 @@ class AutoTrainer:
         reverse = MetricStore.tune_mode(self.tune_metric) == 'max'
         trials = sorted(trials, key=lambda d: d.result, reverse=reverse)
 
+        if len(trials) == 0 and nan_trials > 0:
+            raise RuntimeError(
+                f"No valid trials found: '{self.val_tune_metric}' is NaN in "
+                f"all {nan_trials} completed trials. Ranking metrics such as "
+                "AUROC are undefined when the validation rows contain a "
+                "single class, for example when 'max_val_steps' caps "
+                "validation below the first positive. Increase "
+                "'max_val_steps' or set 'tune_metric' to 'loss'.")
         if len(trials) == 0:
             raise RuntimeError("No valid trials found")
         elif len(trials) < k:
