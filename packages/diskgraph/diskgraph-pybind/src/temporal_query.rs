@@ -11,7 +11,6 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
 use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 
@@ -26,7 +25,7 @@ use arrow_array::RecordBatch;
 use diskgraph_core::metadata::{EdgeRelationMetadata, EdgeSortKeyMetadata};
 use diskgraph_core::sortkey::SortKeyDecoder;
 use diskgraph_engine::edge_unpacker::EdgeUnpacker;
-use diskgraph_index::graph::{GraphIndexReader, TableReader};
+use diskgraph_index::graph::{GraphIndexReader, TableReader, TimeColumns};
 use diskgraph_ingest::graph_config::{ColumnSpec, IngestedType, DISKGRAPH_CONFIG_FILENAME};
 use diskgraph_rowpack::{RowAccess, RowAccessHints, RowAccessStats};
 use pyo3::prelude::*;
@@ -550,32 +549,14 @@ type ColumnHints = HashMap<String, RowAccessHints>;
 /// Ingest hints of integer columns declared with a time unit or format, by table.
 pub(crate) type TimeHints = HashMap<String, ColumnHints>;
 
-/// Reads [`TimeHints`] from the index's persisted graph config. Indexes without
-/// one read integer times as epoch seconds; an unreadable one is an error. Only
-/// the time fields of integer columns are parsed strictly, so config fields this
-/// version does not know fail nothing else.
-pub(crate) fn time_hints(root: &Path) -> Result<TimeHints, String> {
-    #[derive(Deserialize)]
-    struct Config {
-        tables: Vec<Table>,
-    }
-    #[derive(Deserialize)]
-    struct Table {
-        name: String,
-        columns: Vec<serde_json::Map<String, serde_json::Value>>,
-    }
-    let path = root.join(DISKGRAPH_CONFIG_FILENAME);
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(TimeHints::new()),
-        Err(error) => return Err(format!("read {}: {error}", path.display())),
-    };
-    let config: Config = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("parse {}: {error}", path.display()))?;
+/// [`TimeHints`] of the time columns the index's persisted graph config
+/// declares. Only the time fields of integer columns are parsed strictly, so
+/// config fields this version does not know fail nothing else.
+pub(crate) fn time_hints(tables: &TimeColumns) -> Result<TimeHints, String> {
     let mut hints = TimeHints::new();
-    for table in config.tables {
+    for (table, table_columns) in tables {
         let mut columns = ColumnHints::new();
-        for column in table.columns {
+        for column in table_columns {
             let Some(dtype) = column
                 .get("ingested_dtype")
                 .or_else(|| column.get("dtype"))
@@ -604,9 +585,7 @@ pub(crate) fn time_hints(root: &Path) -> Result<TimeHints, String> {
             let column: ColumnSpec = serde_json::from_value(serde_json::Value::Object(fields))
                 .map_err(|error| {
                     format!(
-                        "parse {}: table {:?} column {}: {error}",
-                        path.display(),
-                        table.name,
+                        "parse {DISKGRAPH_CONFIG_FILENAME}: table {table:?} column {}: {error}",
                         column.get("name").unwrap_or(&serde_json::Value::Null)
                     )
                 })?;
@@ -615,7 +594,7 @@ pub(crate) fn time_hints(root: &Path) -> Result<TimeHints, String> {
                 columns.insert(column.name, hint);
             }
         }
-        hints.insert(table.name, columns);
+        hints.insert(table.clone(), columns);
     }
     Ok(hints)
 }

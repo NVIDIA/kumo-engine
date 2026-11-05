@@ -693,10 +693,14 @@ impl SamplerEngine {
         );
         let engine = DiskGraphEngine::from_reader(Arc::clone(&reader), random_seed, num_threads)
             .map_err(map_engine_err)?;
+        let time_hints = reader
+            .time_columns()
+            .map_err(str::to_string)
+            .and_then(temporal_query::time_hints);
         info!("SamplerEngine initialized successfully");
         Ok(Self {
             reader,
-            time_hints: Arc::new(temporal_query::time_hints(root)),
+            time_hints: Arc::new(time_hints),
             engine: Arc::new(engine),
             pool: StatePool::new(),
             sample_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),

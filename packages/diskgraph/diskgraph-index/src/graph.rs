@@ -964,6 +964,9 @@ impl<'a> crate::builder::ProgressSink for ShardProgressAdapter<'a> {
     }
 }
 
+/// Persisted graph config column objects, by table.
+pub type TimeColumns = HashMap<String, Vec<serde_json::Map<String, serde_json::Value>>>;
+
 pub struct GraphIndexReader {
     metadata: DatasetMetadata,
     tables: HashMap<String, Arc<TableReader>>,
@@ -972,6 +975,10 @@ pub struct GraphIndexReader {
     /// follow-up). Used by TT-gen resolver to dispatch per-token observation
     /// for multicategorical sources without per-query plan-JSON plumbing.
     column_semantic_types: HashMap<(String, String), String>,
+    /// Columns of `diskgraph_config.json` that declare a `timestamp_unit` or
+    /// `timestamp_format`. Empty when the file is absent, an error when it is
+    /// unreadable.
+    time_columns: Result<TimeColumns, String>,
     /// Unified view of edge relations across parent + every loaded extension.
     /// Extension relations have their `src_type` rewritten to the namespaced
     /// `<tt_id>/<src_type>` form so a consumer (e.g. the sampler engine)
@@ -1126,7 +1133,7 @@ impl GraphIndexReader {
             )?;
             tables.insert(node_type.name.clone(), Arc::new(table));
         }
-        let column_semantic_types = load_column_semantic_types(root);
+        let (column_semantic_types, time_columns) = load_graph_config(root);
         let merged_edge_relations = metadata.edge_relations.clone();
         tracing::info!(
             tables = tables.len(),
@@ -1137,6 +1144,7 @@ impl GraphIndexReader {
             metadata,
             tables,
             column_semantic_types,
+            time_columns,
             merged_edge_relations,
             // `open` / `open_with_external_node_types` produce a reader over
             // a single index. `open_with_tt` overwrites this after
@@ -1189,6 +1197,12 @@ impl GraphIndexReader {
         self.column_semantic_types
             .get(&(table.to_string(), column.to_string()))
             .map(String::as_str)
+    }
+
+    /// Columns of the persisted graph config that declare a `timestamp_unit`
+    /// or `timestamp_format`, by table.
+    pub fn time_columns(&self) -> Result<&TimeColumns, &str> {
+        self.time_columns.as_ref().map_err(String::as_str)
     }
 
     /// Open the parent DG index together with exactly one seed-table
@@ -1370,14 +1384,21 @@ fn merge_extension_into(
     Ok(())
 }
 
-/// Best-effort load of `{root}/diskgraph_config.json`. Returns an empty map
-/// when the file is missing or malformed; the resolver treats absence as
-/// "stype unknown" and falls back to the legacy whole-cell observe path.
-fn load_column_semantic_types(root: &Path) -> HashMap<(String, String), String> {
+/// Loads `{root}/diskgraph_config.json` once. Semantic types are best-effort:
+/// an empty map when the file is missing or malformed; the resolver treats
+/// absence as "stype unknown" and falls back to the legacy whole-cell observe
+/// path. Time columns are empty when the file is missing and an error when it
+/// is unreadable.
+fn load_graph_config(
+    root: &Path,
+) -> (HashMap<(String, String), String>, Result<TimeColumns, String>) {
     let path = root.join("diskgraph_config.json");
     let bytes = match fs::read(&path) {
         Ok(b) => b,
-        Err(_) => return HashMap::new(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return (HashMap::new(), Ok(TimeColumns::new()));
+        }
+        Err(err) => return (HashMap::new(), Err(format!("read {}: {err}", path.display()))),
     };
     let value: serde_json::Value = match serde_json::from_slice(&bytes) {
         Ok(v) => v,
@@ -1386,12 +1407,14 @@ fn load_column_semantic_types(root: &Path) -> HashMap<(String, String), String> 
                 "diskgraph_config.json present but unparseable: {err}; \
                  multicat dispatch will fall back to whole-cell"
             );
-            return HashMap::new();
+            return (HashMap::new(), Err(format!("parse {}: {err}", path.display())));
         }
     };
+    let time_columns = time_columns(&value)
+        .ok_or_else(|| format!("parse {}: unexpected tables layout", path.display()));
     let mut out = HashMap::new();
     let Some(tables) = value.get("tables").and_then(|t| t.as_array()) else {
-        return out;
+        return (out, time_columns);
     };
     for table in tables {
         let Some(table_name) = table.get("name").and_then(|n| n.as_str()) else {
@@ -1413,7 +1436,22 @@ fn load_column_semantic_types(root: &Path) -> HashMap<(String, String), String> 
             );
         }
     }
-    out
+    (out, time_columns)
+}
+
+fn time_columns(config: &serde_json::Value) -> Option<TimeColumns> {
+    let mut out = TimeColumns::new();
+    for table in config.get("tables")?.as_array()? {
+        let mut columns = Vec::new();
+        for column in table.get("columns")?.as_array()? {
+            let column = column.as_object()?;
+            if column.contains_key("timestamp_unit") || column.contains_key("timestamp_format") {
+                columns.push(column.clone());
+            }
+        }
+        out.insert(table.get("name")?.as_str()?.to_string(), columns);
+    }
+    Some(out)
 }
 
 pub struct TableReader {
