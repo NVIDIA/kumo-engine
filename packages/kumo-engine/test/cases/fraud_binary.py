@@ -8,6 +8,7 @@ from common import parse_args, run, sources, table
 SCALES = {"100M": 100, "1B": 300, "10B": 1600, "25B": 3200}
 LIMITS = dict(prediction_rows=20, metric_tolerance=0.25,
               prediction_tolerance=0.005)
+MIN_EVAL_CLASS_ROWS = 64
 QUERY = ('PREDICT COUNT(account_flags.*, 0, 28, days) > 0 FOR EACH '
          'accounts.account_id WHERE COUNT(account_flags.*, -INF, 0, days) = 0 '
          'AND COUNT(logins.*, -30, 0, days) > 0 ')
@@ -125,12 +126,13 @@ def main():
             'training_job.metrics': ['auroc'],
             'training_job.tune_metric':
             'auroc',
+            'optimization.batch_size': [64],
             'neighbor_sampling.num_neighbors': [
                 NumNeighborsConfig(hop1={'default': 8}, hop2={'default': 8},
                                    hop3={'default': 8}, hop4={'default': 8},
                                    hop5={'default': 8}, hop6={'default': 8})
             ]
-        }, args=args)
+        }, args=args, min_eval_class_rows=MIN_EVAL_CLASS_ROWS)
 
 
 if __name__ == "__main__":
