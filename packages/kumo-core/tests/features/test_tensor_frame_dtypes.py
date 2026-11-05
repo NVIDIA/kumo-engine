@@ -6,6 +6,7 @@ from collections import defaultdict
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 from kumo_core.encoders.config import EncodersConfig
 from kumo_core.encoders.selection import compute_missing_stats_
 from kumo_core.encoders.tensor_frame import get_tf
@@ -82,5 +83,12 @@ def test_all_dtypes() -> None:
         )
         for name, encoder in encoders["test"].items()
     }
-    frame = get_tf(df_dict["test"], mappers)
+    table = pa.table(
+        {
+            name: pa.array(df_dict["test"][name], from_pandas=True)
+            for name, mapper in mappers.items()
+            if mapper.stype != Stype.unsupported
+        }
+    )
+    frame = get_tf(table, mappers)
     assert frame.num_rows == 3
