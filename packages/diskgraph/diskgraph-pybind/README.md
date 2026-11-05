@@ -140,12 +140,6 @@ sort key, bounded frames discard out-of-window edges before decoding their row
 attributes; other relations retain the rowpack timestamp path. This API does
 not build training tables, fit encoders, tokenize values, or choose model layouts.
 
-Destination tables may omit a primary key. Separate source rows retain separate
-native node IDs, including identical rows; `distinct` removes repeated visits to
-one node. Temporal ties use the declared primary key when present, otherwise the
-native node ID. These IDs are local to the index and are returned in sequence
-`node_ids`; no synthetic column is added to the source or result batch.
-
 For a one-hop, time-windowed frame with one bounded sequence and no aggregate
 consumer, a matching lossless indexed clock allows selection before feature decoding.
 The timestamp boundary retains all ties; the existing primary-key ordering and
