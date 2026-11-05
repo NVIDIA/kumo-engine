@@ -459,3 +459,30 @@ def test_a_mlops_block_stores_each_table_once_under_the_root(graph, tmp_path):
         snapshot, mlops=kumo.MLOps(artifact_root=str(tmp_path / 'other'),
                                    store={'model'}))
     assert off.id == table.id and not (tmp_path / 'other').exists()
+
+
+def test_a_table_stored_on_a_volume_loads_back(graph, tmp_path):
+    from types import SimpleNamespace
+
+    from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
+
+    (tmp_path / 'volume').mkdir()
+    files = SubTreeFileSystem(str(tmp_path / 'volume'), LocalFileSystem())
+    volume = SimpleNamespace(
+        source_type='databricks', sink_backend=SimpleNamespace(
+            holds_files=lambda connector, path: path.startswith('/Volumes/'),
+            filesystem=lambda connector, path: (files, path.lstrip('/'))))
+    cfg = kumo.MLOps((volume, '/Volumes/c/s/v/kumo'))
+    with kumo.mlops(cfg):
+        pquery, table = _generate(graph)
+    path = f'training_tables/{table.id}'
+
+    def load():
+        return kumo.TrainingTable.load_from_connector(
+            cfg, path=path, pquery=pquery, snapshot=graph[1])
+
+    reloaded = load()
+    assert _seeds(reloaded)[1] == _seeds(table)[1]
+    assert reloaded.manifest.parents.source_table.location == (
+        f'/Volumes/c/s/v/kumo/{path}')
+    assert load().id == reloaded.id

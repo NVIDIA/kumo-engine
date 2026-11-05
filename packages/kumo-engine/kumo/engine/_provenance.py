@@ -103,6 +103,15 @@ def source_table(connector: Any, table_name: str, sql: Optional[str],
     )
 
 
+def stored_table(connector: Any, location: str,
+                 version: Any) -> SourceTableEntry:
+    from kumo_core.sources.identity import version_kind
+
+    return SourceTableEntry(connector=_connector_kind(connector),
+                            location=location, version=str(version),
+                            version_kind=version_kind(version))
+
+
 def _location_fingerprint(kind: str, connector: Any,
                           table_name: str) -> Optional[str]:
     try:
