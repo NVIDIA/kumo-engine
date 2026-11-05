@@ -9,7 +9,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 import pyarrow as pa
 import pyarrow.dataset as ds
@@ -309,6 +309,25 @@ def _write_shard(shard: pa.Table, directory: Path, name: str) -> str:
 
 
 _PARQUET_PREVIEW_BUFFER_SIZE = 1 << 20
+#: Row groups a preview is spread over, evenly spaced across the fragments.
+SAMPLE_ROW_GROUPS = 10
+
+
+def _sampled_row_groups(fragments: Sequence[Any]) -> list[tuple[Any, int]]:
+    """Up to ``SAMPLE_ROW_GROUPS`` row groups, evenly spaced over the
+    fragments in order and within each chosen fragment, so a table sorted or
+    split into parts on a column is sampled across that column rather than
+    from its top. A single row group is read from its head, as before."""
+    chosen = []
+    count = min(len(fragments), SAMPLE_ROW_GROUPS)
+    each = -(-SAMPLE_ROW_GROUPS // count) if count else 0
+    for index in range(count):
+        fragment = fragments[(index * len(fragments)) // count]
+        groups = fragment.metadata.num_row_groups
+        take = min(groups, each)
+        chosen.extend(
+            (fragment, (group * groups) // take) for group in range(take))
+    return chosen
 
 
 def read_bounded_dataset(
@@ -316,7 +335,9 @@ def read_bounded_dataset(
     columns: Sequence[str] | None,
     num_rows: int,
 ) -> pa.Table:
-    """Read a bounded preview without prefetching complete column chunks."""
+    """Read a bounded preview spread across the dataset's row groups
+    (:func:`_sampled_row_groups`), each contributing an equal share of its
+    first rows, without prefetching complete column chunks."""
     fragments = (dataset.fragments if isinstance(dataset, pq.ParquetDataset)
                  else list(dataset.get_fragments()))
     partition_columns = {
@@ -335,9 +356,11 @@ def read_bounded_dataset(
     ], metadata=dataset.schema.metadata)
     requested_columns = schema.names
     remaining = max(num_rows, 0)
+    groups = _sampled_row_groups(fragments)
+    share = -(-remaining // len(groups)) if groups else 0
     tables: list[pa.Table] = []
     merged = schema
-    for fragment in fragments:
+    for fragment, group in groups:
         if not remaining:
             break
         physical_columns = [
@@ -345,33 +368,33 @@ def read_bounded_dataset(
             if column in fragment.physical_schema.names
         ]
         partition_keys = ds.get_partition_keys(fragment.partition_expression)
-        part: list[pa.RecordBatch] = []
+        rows = min(share, remaining)
         with fragment.open() as source:
             parquet_file = pq.ParquetFile(
                 source,
+                metadata=fragment.metadata,
                 pre_buffer=False,
                 buffer_size=_PARQUET_PREVIEW_BUFFER_SIZE,
             )
-            for batch in parquet_file.iter_batches(batch_size=remaining,
-                                                   columns=physical_columns,
-                                                   use_threads=False):
-                batch = batch.slice(0, remaining)
-                arrays = [
-                    batch.column(field.name)
-                    if field.name in batch.schema.names else pa.repeat(
-                        pa.scalar(partition_keys.get(field.name)),
-                        batch.num_rows,
-                    ).cast(field.type) for field in schema
-                ]
-                part.append(
-                    pa.RecordBatch.from_arrays(arrays, names=schema.names
-                                               ) if arrays else batch)
-                remaining -= batch.num_rows
-                if not remaining:
-                    break
-        if not part:
+            batch = next(
+                parquet_file.iter_batches(batch_size=rows, row_groups=[group],
+                                          columns=physical_columns,
+                                          use_threads=False), None)
+        if batch is None or not batch.num_rows:
             continue
-        table = pa.Table.from_batches(part)
+        batch = batch.slice(0, rows)
+        arrays = [
+            batch.column(field.name)
+            if field.name in batch.schema.names else pa.repeat(
+                pa.scalar(partition_keys.get(field.name)),
+                batch.num_rows,
+            ).cast(field.type) for field in schema
+        ]
+        remaining -= batch.num_rows
+        table = pa.Table.from_batches([
+            pa.RecordBatch.from_arrays(arrays, names=schema.names)
+            if arrays else batch
+        ])
         try:
             merged = pa.unify_schemas(
                 [merged, table.schema],

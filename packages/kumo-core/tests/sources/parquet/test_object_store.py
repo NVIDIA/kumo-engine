@@ -1614,3 +1614,66 @@ def test_failed_identity_recheck_discards_staged_output(
                        mode=ReadMode.STREAMED)
     assert not destination.exists()
     assert (parts / "part-0.parquet").exists()
+
+
+@pytest.mark.parametrize("unreadable", [
+    pa.array([{
+        "a": 1
+    }, {
+        "a": 2
+    }], pa.struct([("a", pa.int64())])),
+    pa.array([[("k", 1)], [("k", 2)]], pa.map_(pa.string(), pa.int64())),
+])
+def test_a_column_type_kumo_cannot_read_leaves_the_other_columns_readable(
+        unreadable, tmp_path):
+    """The catalog, the sample and a staging that did not select the column
+    all refused the whole table over it, so no other column of the table
+    could be typed or ingested either."""
+    write_parts(
+        tmp_path / "nested",
+        pa.table({
+            "id": pa.array([1, 2], pa.int64()),
+            "payload": unreadable,
+            "amount": pa.array([1.5, 2.5], pa.float64()),
+        }))
+    reader = reader_over(tmp_path)
+    assert reader.dtypes("nested") == {
+        "id": Dtype.int64,
+        "payload": Dtype.unsupported,
+        "amount": Dtype.float64,
+    }
+    assert reader.source_types("nested")["payload"] == unreadable.type
+    assert reader.head("nested", 2).to_pydict() == {
+        "id": [1, 2],
+        "amount": [1.5, 2.5]
+    }
+    staged = reader.prepare(
+        "nested", str(tmp_path / "out"), columns={
+            "id": Dtype.int64,
+            "amount": Dtype.float64
+        }, mode=ReadMode.STREAMED)
+    assert staged_frame(staged).to_pydict() == {
+        "id": [1, 2],
+        "amount": [1.5, 2.5]
+    }
+
+
+@pytest.mark.parametrize("parts,row_group_size", [(1, 25), (4, None)])
+def test_a_head_is_spread_across_row_groups_and_parts(parts, row_group_size,
+                                                      tmp_path):
+    """A table sorted on a column, or split into parts by it, was sampled
+    from its first rows alone, so a type inferred from the sample saw one
+    value of that column."""
+    rows = 100
+    table = pa.table({"id": pa.array(range(rows), pa.int64())})
+    directory = tmp_path / "sorted"
+    directory.mkdir()
+    size = rows // parts
+    for index in range(parts):
+        pq.write_table(table.slice(index * size,
+                                   size), directory / f"part-{index}.parquet",
+                       row_group_size=row_group_size)
+    ids = reader_over(tmp_path).head("sorted", 8).column("id").to_pylist()
+    assert len(ids) == 8
+    assert ids == sorted(ids)
+    assert {value // 25 for value in ids} == {0, 1, 2, 3}

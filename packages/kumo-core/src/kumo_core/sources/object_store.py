@@ -206,13 +206,13 @@ class ObjectStoreSourceReader:
                 name: _dtype_of(arrow_type)
                 for name, arrow_type in self._csv_catalog(table, path).items()
             }
-        return column_dtypes(self.dataset(table).schema)
+        return column_dtypes(self.dataset(table, validate=False).schema)
 
     def source_types(self, table: str) -> dict[str, pa.DataType]:
         path, kind = self.resolve(table)
         if kind == layout.CSV:
             return self._csv_catalog(table, path)
-        schema = self.dataset(table).schema
+        schema = self.dataset(table, validate=False).schema
         return dict(zip(schema.names, schema.types))
 
     def _csv_catalog(self, table: str, path: str) -> dict[str, pa.DataType]:
@@ -261,21 +261,26 @@ class ObjectStoreSourceReader:
                     table=table)
 
     def head(self, table: str, rows: int) -> pa.Table:
-        """The first rows, under the types and the columns this reader
-        reports rather than the ones the dataset carries: a CSV dataset is
-        text until the projection converts it, and a Parquet dataset still
-        holds the pandas index column that :meth:`dtypes` drops.
+        """Sample rows under the types and the columns this reader reports
+        rather than the ones the dataset carries: a CSV dataset is text until
+        the projection converts it, and a Parquet dataset still holds the
+        pandas index column that :meth:`dtypes` drops, and may hold columns
+        Kumo cannot read, left out so the others can be sampled. Parquet rows
+        are spread across the table's row groups and parts
+        (:func:`read_bounded_dataset`); CSV, with no row index to seek by,
+        gives its first rows.
         """
         path, kind = self.resolve(table)
         found = self._objects(table, path)
         if kind != layout.CSV:
             dataset = self._dataset(table, path, kind, found)
-            _refuse_unsupported(table, dataset.schema)
+            unreadable = {name for name, _ in _unreadable(dataset.schema)}
             with _arrow_errors(table):
                 from .arrow_parquet import read_bounded_dataset
-                return read_bounded_dataset(dataset,
-                                            list(column_dtypes(dataset.schema)),
-                                            rows)
+                return read_bounded_dataset(dataset, [
+                    name for name in column_dtypes(dataset.schema)
+                    if name not in unreadable
+                ], rows)
         from . import csv_format, csv_preview
         parts = self._csv_parts(table, found)
         with _arrow_errors(table, "CSV"):
@@ -416,7 +421,7 @@ class ObjectStoreSourceReader:
                 return ReadOutput(paths=copied, num_rows=count_rows(copied))
         dataset = self._dataset(table, path, kind, found)
         if columns is not None:
-            _refuse_unsupported(table, dataset.schema)
+            _refuse_unsupported(table, _selected(dataset.schema, columns))
         with _arrow_errors(table):
             written = self._stream(table, dataset, dest, columns, aliases,
                                    worker_ceiling)
@@ -590,6 +595,9 @@ class ObjectStoreSourceReader:
                     # nulls; materialize the partition value type instead.
                     projection[field.name] = pc.field(field.name).cast(
                         field.type.value_type)
+        flags = ({} if not normalize or columns is None else _narrowing(
+            columns, null_values))
+        narrowed = _Narrowed(flags)
         sources = dataset.schema.names if columns is None else list(columns)
         fragments = list(dataset.get_fragments())
         streams = [
@@ -597,9 +605,6 @@ class ObjectStoreSourceReader:
                 **projection,
                 **narrowed.flags
             }, sources, own_types=self.ingest_converts, narrowed=narrowed)
-        flags = ({} if not normalize or columns is None else _narrowing(
-            columns, null_values))
-        narrowed = _Narrowed(flags)
             for fragment in fragments
         ]
         prebuffered, largest = _prebuffered_bytes(fragments, sources,
@@ -623,13 +628,13 @@ class ObjectStoreSourceReader:
             written = materialize_arrow_streams(
                 streams, dest, worker_ceiling=workers,
                 uniform=not self.ingest_converts)
+        narrowed.report(table, columns or {})
+        return written
 
     def _verbatim(
         self,
         path: str,
         found: Sequence[Any],
-        narrowed.report(table, columns or {})
-        return written
         columns: Mapping[str, Dtype],
         aliases: Mapping[str, str],
         worker_ceiling: int | None,
@@ -645,7 +650,7 @@ class ObjectStoreSourceReader:
             return False
         declared = list(columns)
         for schema in self._footers(found, worker_ceiling):
-            _refuse_unsupported(path, schema)
+            _refuse_unsupported(path, _selected(schema, declared))
             if list(schema.names) != declared:
                 return False
             for name, dtype in columns.items():
@@ -742,12 +747,6 @@ def require_no_sql(sql: str | None) -> None:
             "connector (Snowflake, Databricks or BigQuery).")
 
 
-def _fragment_batches(fragment: Any, schema: pa.Schema,
-                      projection: Mapping[str, Any], sources: Sequence[str], *,
-                      own_types: bool = False,
-                      narrowed: _Narrowed | None = None) -> Iterator[Any]:
-    """A generator, so the scan starts when a worker reaches this fragment.
-    Building the scanners up front starts every one: 580MB of Arrow buffers at
 _NARROWED = "\x00narrowed:"
 
 
@@ -793,6 +792,12 @@ def _narrowing(columns: Mapping[str, Dtype],
     }
 
 
+def _fragment_batches(fragment: Any, schema: pa.Schema,
+                      projection: Mapping[str, Any], sources: Sequence[str], *,
+                      own_types: bool = False,
+                      narrowed: _Narrowed | None = None) -> Iterator[Any]:
+    """A generator, so the scan starts when a worker reaches this fragment.
+    Building the scanners up front starts every one: 580MB of Arrow buffers at
     60 fragments, before a single row is read.
 
     A Parquet fragment is not scanned: a scan decodes a whole row group at a
@@ -961,18 +966,30 @@ def _repeated(value: Any, dtype: pa.DataType, rows: int) -> pa.Array:
     return pa.repeat(pa.scalar(value, dtype), rows)
 
 
-def _refuse_unsupported(table: str, schema: pa.Schema) -> None:
+def _unreadable(schema: pa.Schema) -> list[tuple[str, pa.DataType]]:
     decoded = pa.schema([
         field.with_type(field.type.value_type)
         if pa.types.is_dictionary(field.type) else field for field in schema
     ])
-    offending = unsupported_columns(decoded)
+    return unsupported_columns(decoded)
+
+
+def _refuse_unsupported(table: str, schema: pa.Schema) -> None:
+    offending = _unreadable(schema)
     if not offending:
         return
     named = ", ".join(f"{name} ({dtype})" for name, dtype in offending)
     raise PermanentSourceError(
         f"{table} has columns Kumo cannot read: {named}. "
         f"{UNSUPPORTED_ADVICE}", table=table)
+
+
+def _selected(schema: pa.Schema, names: Sequence[str]) -> pa.Schema:
+    """The declared columns of ``schema``: one the file lacks is the
+    projection's to report, and one not declared is not read, whatever its
+    type."""
+    return pa.schema(
+        [schema.field(name) for name in names if name in schema.names])
 
 
 def column_dtypes(schema: pa.Schema) -> dict[str, Dtype]:
