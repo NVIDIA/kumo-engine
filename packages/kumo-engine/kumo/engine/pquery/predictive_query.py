@@ -59,6 +59,7 @@ from kumo_core.model_plan import (
 from kumo_core.model_plan_conversion import public_model_plan_from_internal
 from kumo_core.pquery import (
     NativeGraph,
+    PredictiveQueryPlanError,
     ValidatedNativeQuery,
     parse_and_validate_query,
     query_is_temporal,
@@ -154,6 +155,21 @@ class PredictiveQuery:
                 f"snapshot {snapshot.id!r} was not materialized from "
                 f"this query's graph (id {graph_key!r}) -- pass a "
                 "snapshot of that graph.")
+        left_out = sorted(
+            set(self.graph._named_tables) -
+            {table['table_name']
+             for table in snapshot.graph_config['tables']})
+        if left_out:
+            self._parsed
+            try:
+                parse_and_validate_query(self.query, snapshot._native_graph)
+            except PredictiveQueryPlanError as error:
+                raise PredictiveQueryPlanError(
+                    f"This query needs table(s) {', '.join(left_out)}, which "
+                    f"have no rows and were left out of snapshot "
+                    f"{snapshot.id}. Add rows to them and take a new "
+                    "snapshot, or write a query over the other tables."
+                ) from error
 
     def validate(self, verbose: bool = True) -> ValidationResponse:
         r"""Return validation warnings and information for a valid query.

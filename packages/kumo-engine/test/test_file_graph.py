@@ -688,7 +688,18 @@ def test_a_table_with_no_rows_is_left_out_of_the_snapshot(tmp_path):
     assert snapshot.index_path.is_dir()
     query = PredictiveQuery(
         graph, 'PREDICT COUNT(events.*, 0, 30, days) FOR EACH users.id')
-    with pytest.raises(PredictiveQueryPlanError, match='events'):
+    assert query.validate(verbose=False).empty()
+    with pytest.raises(
+            PredictiveQueryPlanError,
+            match=rf'This query needs table\(s\) events, which have no rows '
+            rf'and were left out of snapshot {snapshot.id}\. Add rows to '
+            r'them and take a new snapshot, or write a query over the '
+            r'other tables\.') as error:
         query.generate_training_table(snapshot)
+    assert "Table 'events' does not exist" in str(error.value.__cause__)
+    with pytest.warns(UserWarning, match='left out of the snapshot'):
+        assert PredictiveQuery(
+            graph, 'PREDICT users.age FOR EACH users.id').suggest_model_plan(
+                graph.snapshot())
     with pytest.raises(ValueError, match=r'Every table .* no rows \(events\)'):
         Graph({'events': events}).snapshot()
