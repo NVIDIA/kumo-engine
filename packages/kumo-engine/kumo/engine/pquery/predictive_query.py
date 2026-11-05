@@ -155,6 +155,8 @@ class PredictiveQuery:
                 f"snapshot {snapshot.id!r} was not materialized from "
                 f"this query's graph (id {graph_key!r}) -- pass a "
                 "snapshot of that graph.")
+        if isinstance(self.graph, GraphSnapshot):
+            return
         left_out = sorted(
             set(self.graph._named_tables) -
             {table['table_name']

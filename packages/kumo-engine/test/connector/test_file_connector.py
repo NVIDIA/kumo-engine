@@ -19,7 +19,7 @@ from kumoapi.jobs import WriteMode
 from kumoapi.model_plan import ModelPlan
 from kumoapi.source_table import LocalFileSourceTable
 from kumoapi.table import TableDefinition as HostedTableDefinition
-from kumoapi.typing import Dtype
+from kumoapi.typing import Dtype, Stype
 from pydantic import TypeAdapter, ValidationError
 
 from kumo.engine import (
@@ -117,7 +117,7 @@ def test_empty_source_and_unknown_column(local, tmp_path):
         Table.from_source_table(connector['users'], column_names=['missing'])
 
 
-def test_empty_parquet_table_names_the_diskgraph_row_requirement(
+def test_empty_parquet_table_is_typed_from_its_schema_with_a_warning(
         local, tmp_path):
     connector, root = local
     pq.write_table(
@@ -127,8 +127,17 @@ def test_empty_parquet_table_names_the_diskgraph_row_requirement(
             'amount': pa.array([], type=pa.float64()),
             'active': pa.array([], type=pa.bool_()),
         }), root / 'empty_table.parquet')
-    with pytest.raises(PermanentSourceError, match='at least one row'):
-        Table.from_source_table(connector['empty_table'])
+    with pytest.warns(UserWarning, match="'empty_table' has no rows"):
+        table = Table.from_source_table(connector['empty_table'])
+    assert {
+        col.name: col.stype
+        for col in table.definition.cols
+    } == {
+        'id': Stype.ID,
+        'name': Stype.categorical,
+        'amount': Stype.categorical,
+        'active': Stype.categorical,
+    }
 
 
 def test_read_symlinks_and_overlap(local, tmp_path):
@@ -277,7 +286,7 @@ def test_dot_names_metadata_stamp_and_permissions(local, tmp_path):
     dotted = root / 'users.v1.csv'
     dotted.write_text('id,name\n1,Alice\n')
     table = Table.from_source_table(connector['users.v1'], primary_key='id')
-    Graph(tables=[table], edges=[]).validate()
+    Graph(tables={'users': table}, edges=[]).validate()
     version = connector.source_backend.get_data_version(connector, 'users.v1')
     stat = dotted.stat()
     dotted.write_text('id,name\n1,Other\n')

@@ -227,6 +227,8 @@ def test_suggestions_require_matching_snapshot_and_resolved_metadata(
     with pytest.raises(ValueError, match='definition|infer_metadata'):
         PredictiveQuery(unresolved, query).suggest_model_plan(
             replace(snapshot, id=f'{unresolved.id}@fixture'))
+    assert PredictiveQuery(snapshot, query).suggest_model_plan(
+        replace(snapshot, id=f'{graph.id}@other'))
 
 
 @pytest.mark.parametrize('connector_kind', ['file', 's3'])
