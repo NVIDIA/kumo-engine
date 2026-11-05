@@ -128,16 +128,28 @@ class TrainingTable:
             return {}
 
     @classmethod
-    def load_from_connector(cls, connector: Any, *, path: str,
-                            pquery: "PredictiveQuery",  # noqa: F821
-                            snapshot: GraphSnapshot) -> "TrainingTable":
-        r"""Load a table written by :meth:`export` against ``snapshot``."""
+    def load_from_connector(
+        cls,
+        connector: Any,
+        *,
+        path: str,
+        pquery: "PredictiveQuery",  # noqa: F821
+        snapshot: GraphSnapshot,
+        allow_new_target_entities: bool = False,
+    ) -> "TrainingTable":
+        r"""Load a table written by :meth:`export` against ``snapshot``.
+
+        Set ``allow_new_target_entities=True`` to retain future-window target
+        labels as described in :meth:`from_source_table`. Target keys still
+        resolve against the snapshot when the training table is ingested.
+        """
         from kumo.engine._mlops import on_root
 
         connector, path = on_root(connector, path)
-        return cls.from_source_table(connector[path],
-                                     TrainingTableSpec(split_col='SPLIT'),
-                                     pq=pquery, snapshot=snapshot)
+        return cls.from_source_table(
+            connector[path], TrainingTableSpec(split_col='SPLIT'), pq=pquery,
+            snapshot=snapshot,
+            allow_new_target_entities=allow_new_target_entities)
 
     def _store(self, settings: Any) -> None:
         from pyarrow.fs import FileType
@@ -190,6 +202,7 @@ class TrainingTable:
         snapshot: GraphSnapshot,
         plan: Optional[PublicGenerationPlan] = None,
         mlops: Optional[Any] = None,
+        allow_new_target_entities: bool = False,
     ) -> "TrainingTable":
         r"""Materialize caller-supplied labeled rows as a training table.
 
@@ -205,6 +218,13 @@ class TrainingTable:
         graph through its own required ``snapshot=`` argument. With MLOps on
         (``mlops=`` or a ``kumo.mlops`` block), the table is also stored
         under the artifact root.
+
+        ``allow_new_target_entities=True`` retains supplied target labels
+        without filtering their visibility at the prediction timestamp. Use it
+        for labels that include targets created within a future label window.
+        The caller must ensure that the label times are valid. Target keys
+        still resolve against the snapshot when the training table is ingested.
+        The default keeps the prediction-time visibility filter.
         """
         # Local imports keep the immutable descriptor cheap to import and
         # avoid pquery -> trainer -> pquery cycles.
@@ -283,6 +303,7 @@ class TrainingTable:
                 parquet_path=str(rows_path),
                 weight_column=spec.weight_col,
                 timestamp_unit=spec.timestamp_unit,
+                allow_new_target_entities=allow_new_target_entities,
             ),
         )
         if workflow.query.query_type == "temporal":
