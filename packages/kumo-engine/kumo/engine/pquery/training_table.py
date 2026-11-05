@@ -129,20 +129,14 @@ class TrainingTable:
 
     @classmethod
     def load_from_connector(
-        cls,
-        connector: Any,
-        *,
-        path: str,
-        pquery: "PredictiveQuery",  # noqa: F821
-        snapshot: GraphSnapshot,
-        allow_new_target_entities: bool = False,
-    ) -> "TrainingTable":
-        r"""Load a table written by :meth:`export` against ``snapshot``.
-
-        Set ``allow_new_target_entities=True`` to retain future-window target
-        labels as described in :meth:`from_source_table`. Target keys still
-        resolve against the snapshot when the training table is ingested.
-        """
+            cls,
+            connector: Any,
+            *,
+            path: str,
+            pquery: "PredictiveQuery",  # noqa: F821
+            snapshot: GraphSnapshot,
+            allow_new_target_entities: bool = False) -> "TrainingTable":
+        r"""Load a table written by :meth:`export` against ``snapshot``."""
         from kumo.engine._mlops import on_root
 
         connector, path = on_root(connector, path)
@@ -219,12 +213,8 @@ class TrainingTable:
         (``mlops=`` or a ``kumo.mlops`` block), the table is also stored
         under the artifact root.
 
-        ``allow_new_target_entities=True`` retains supplied target labels
-        without filtering their visibility at the prediction timestamp. Use it
-        for labels that include targets created within a future label window.
-        The caller must ensure that the label times are valid. Target keys
-        still resolve against the snapshot when the training table is ingested.
-        The default keeps the prediction-time visibility filter.
+        ``allow_new_target_entities=True`` skips prediction-time label filtering.
+        The caller owns label times. Target keys must exist in the snapshot.
         """
         # Local imports keep the immutable descriptor cheap to import and
         # avoid pquery -> trainer -> pquery cycles.

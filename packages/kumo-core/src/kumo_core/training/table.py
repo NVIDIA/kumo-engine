@@ -158,8 +158,6 @@ class PreparedCustomTrainingTable:
     validates the option and reports skipped rows in the staging manifest.
     ``timestamp_unit`` declares integer timestamp units. Typed Arrow timestamps
     use their encoded unit.
-    ``allow_new_target_entities`` retains target labels without prediction-time
-    visibility filtering. Target keys still resolve against the graph at ingest.
     """
 
     parquet_path: str
