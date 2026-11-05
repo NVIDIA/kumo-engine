@@ -531,9 +531,23 @@ class CaseRun:
                     raise ValueError(
                         "Repeated ranking score vectors exceed the chosen absolute tolerance"
                     )
-                joined = frames[0][columns + [score]].merge(
-                    frame[columns + [score]], on=columns, how="outer",
-                    suffixes=("_before", "_after"), indicator=True)
+                outputs = [
+                    source[columns +
+                           [score]].assign(_order=source["RANK"] if "RANK" in
+                                           source else -source[score])
+                    for source in (frames[0], frame)
+                ]
+                joined = outputs[0].merge(outputs[1], on=columns, how="outer",
+                                          suffixes=("_before", "_after"),
+                                          indicator=True)
+                shared = joined[joined["_merge"].eq("both")]
+                for order, values in (("before", "after"), ("after", "before")):
+                    ordered = shared.sort_values(keys + [f"_order_{order}"])
+                    scores = ordered[f"{score}_{values}"]
+                    if (scores -
+                            ordered.groupby(keys)[f"{score}_{values}"].cummin()
+                            > self.args.prediction_tolerance).any():
+                        raise ValueError("A ranking changed outside a near tie")
                 for suffix, side, source in (("before", "left_only", frames[0]),
                                              ("after", "right_only", frame)):
                     missing = joined[joined["_merge"].eq(side)]
