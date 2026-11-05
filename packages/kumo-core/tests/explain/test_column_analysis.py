@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 import pytest
 import torch
+from kumo_core.diskgraph.metadata import DiskgraphSchema
 from kumo_core.diskgraph.stores import DiskgraphFeatureStore
 from kumo_core.encoders.target.categorical import CategoricalTargetEncoder
 from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
@@ -20,7 +21,6 @@ from kumoapi.task import TaskType
 from kumoapi.train import TrainingStage
 from kumoapi.typing import Stype
 from tests.support.fixtures import user_store_batch
-from tests.support.in_memory_graph import InMemoryGraphStore
 from torch import Tensor
 from torch_geometric.testing import withCUDA
 
@@ -30,7 +30,7 @@ def test_column_analysis(
     tmp_path: pathlib.Path,
     user_store_graph: tuple[
         DiskgraphFeatureStore,
-        InMemoryGraphStore,
+        DiskgraphSchema,
         dict[str, dict[str, Encoder]],
     ],
     device: torch.device,

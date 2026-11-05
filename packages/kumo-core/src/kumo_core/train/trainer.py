@@ -23,6 +23,15 @@ import pandas as pd
 import pyarrow as pa
 import pytorch_lightning as pl
 import torch
+from kumoapi.encoder import TextEmbedding
+from kumoapi.model_plan import WeightMode
+from kumoapi.train import TrainingStage
+from pytorch_lightning.profilers import AdvancedProfiler, SimpleProfiler
+from torch import Tensor
+from torch_frame.data import MultiEmbeddingTensor, MultiNestedTensor
+from torch_geometric.sampler.base import NumNeighbors, SubgraphType
+from torch_geometric.typing import EdgeType, EdgeTypeStr
+
 from kumo_core.callbacks import (
     CudaOOMHandler,
     EarlyStopping,
@@ -30,13 +39,29 @@ from kumo_core.callbacks import (
     TrainerProgress,
     TrainingProgressLogger,
 )
-from kumo_core.errors import TrainingValidationError
-from kumo_core.explain import ExplainRuntime
+from kumo_core.diskgraph.metadata import DiskgraphSchema
 from kumo_core.embedding_models import (
     EmbeddingModelStore,
     require_encoder_models,
     resolve_encoder,
 )
+from kumo_core.encoders.config import EncodersConfig
+from kumo_core.encoders.sequence.base import SequenceEncoder
+from kumo_core.encoders.sequence.decomposed import DecomposedSequenceEncoder
+from kumo_core.encoders.sequence.mlp import MLPSequenceEncoder
+from kumo_core.encoders.sequence.normalized import NormalizedSequenceEncoder
+from kumo_core.encoders.sequence.transformer import TransformerSequenceEncoder
+from kumo_core.encoders.target.base import TargetEncoder
+from kumo_core.encoders.target.multicategorical import MultiCategoricalTargetEncoder
+from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
+from kumo_core.encoders.time import TimeEncoder
+from kumo_core.errors import TrainingValidationError
+from kumo_core.evaluation.suite import MetricStore
+from kumo_core.explain import ExplainRuntime
+from kumo_core.explain.column_analysis import ColumnAnalysis
+from kumo_core.explain.gradient_explainer import GradientExplainer
+from kumo_core.explain.subgraph_collector import SubgraphCollector
+from kumo_core.features.stores.feature import FeatureStore
 from kumo_core.instrumentation import set_metrics_job_name, timing, trace
 from kumo_core.io import filesystem as fsutil
 from kumo_core.io.csv import save_csv
@@ -48,8 +73,14 @@ from kumo_core.job_config import (
     TextEmbeddingSize,
     TrialStatus,
 )
-from kumo_core.public_error import PublicTrainingError
+from kumo_core.modeling.gnn.hetero import HeteroGNN
+from kumo_core.modeling.gnn.transformer import GraphTransformer
+from kumo_core.modeling.heads.forecasting import ForecastingHead
+from kumo_core.modeling.heads.link_prediction import LinkPredHead
+from kumo_core.modeling.heads.node_prediction import NodePredHead
+from kumo_core.modeling.heads.year_over_year import YearOverYearEncoder
 from kumo_core.modeling.retrieval.mips import require_faiss
+from kumo_core.public_error import PublicTrainingError
 from kumo_core.resolved_task import ResolvedNumericalTask
 from kumo_core.train.checkpoint import KumoCheckpointIO
 from kumo_core.train.formatting import format_embeddings, format_prediction
@@ -87,36 +118,6 @@ from kumo_core.utils.names import get_table_name
 from kumo_core.utils.registry import register
 from kumo_core.utils.time import MAX_PSEUDO_TIME
 from kumo_core.version import get_kumo_version
-from kumoapi.encoder import TextEmbedding
-from kumoapi.model_plan import WeightMode
-from kumoapi.train import TrainingStage
-from kumo_core.encoders.config import EncodersConfig
-from kumo_core.features.stores.feature import FeatureStore
-from kumo_core.features.stores.graph import GraphStore
-from kumo_core.explain.column_analysis import ColumnAnalysis
-from kumo_core.evaluation.suite import MetricStore
-from kumo_core.modeling.gnn.hetero import HeteroGNN
-from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
-from kumo_core.encoders.time import TimeEncoder
-from kumo_core.encoders.target.multicategorical import MultiCategoricalTargetEncoder
-from kumo_core.encoders.target.base import TargetEncoder
-from kumo_core.explain.gradient_explainer import GradientExplainer
-from kumo_core.explain.subgraph_collector import SubgraphCollector
-from kumo_core.encoders.sequence.decomposed import DecomposedSequenceEncoder
-from kumo_core.modeling.heads.forecasting import ForecastingHead
-from kumo_core.modeling.gnn.transformer import GraphTransformer
-from kumo_core.modeling.heads.link_prediction import LinkPredHead
-from kumo_core.encoders.sequence.mlp import MLPSequenceEncoder
-from kumo_core.modeling.heads.node_prediction import NodePredHead
-from kumo_core.encoders.sequence.normalized import NormalizedSequenceEncoder
-from kumo_core.encoders.sequence.base import SequenceEncoder
-from kumo_core.encoders.sequence.transformer import TransformerSequenceEncoder
-from kumo_core.modeling.heads.year_over_year import YearOverYearEncoder
-from pytorch_lightning.profilers import AdvancedProfiler, SimpleProfiler
-from torch import Tensor
-from torch_frame.data import MultiEmbeddingTensor, MultiNestedTensor
-from torch_geometric.sampler.base import NumNeighbors, SubgraphType
-from torch_geometric.typing import EdgeType, EdgeTypeStr
 
 from .forecasting_gnn_module import ForecastingGNNLightningModule
 from .shallow_rhs_link_gnn_module import ShallowRHSLinkGNNLightningModule
@@ -463,9 +464,9 @@ class Trainer(PortableConfigMixin):
         random_state_seed: int | None = None,
         enable_compile: bool = False,
         is_reverse_edge_enabled: bool = True,
-        # `FeatureStore`/`GraphStore` interface:
+        # Feature access and graph metadata:
         feature_store: FeatureStore | None = None,
-        graph_store: GraphStore | None = None,
+        graph_store: DiskgraphSchema | None = None,
         encoders: EncodersConfig | None = None,
         explain_runtime: ExplainRuntime | None = None,
         data_runtime: TrainingDataRuntime | None = None,
@@ -1597,7 +1598,7 @@ class Trainer(PortableConfigMixin):
         version: int | None = -1,
         infer_config_path: bool = True,
         feature_store: FeatureStore | None = None,
-        graph_store: GraphStore | None = None,
+        graph_store: DiskgraphSchema | None = None,
         encoders: EncodersConfig | None = None,
         **kwargs,
     ) -> 'Trainer':

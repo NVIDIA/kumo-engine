@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 import pytest
 import torch
+from kumo_core.diskgraph.metadata import DiskgraphSchema
 from kumo_core.diskgraph.stores import DiskgraphFeatureStore
 from kumo_core.encoders.selection import compute_missing_stats_
 from kumo_core.encoders.tensor_mapper import TensorMapper
@@ -17,7 +18,6 @@ from torch_geometric.data import HeteroData
 
 from tests.support.diskgraph_feature_store import make_diskgraph_feature_store
 from tests.support.encoders import get_encoder
-from tests.support.in_memory_graph import InMemoryGraphStore
 
 
 @dataclass
@@ -34,7 +34,7 @@ def create_graph_data(
     schema_dict: dict[str, TestTableSchema],
 ) -> tuple[
         DiskgraphFeatureStore,
-        InMemoryGraphStore,
+        DiskgraphSchema,
         dict[str, dict[str, Encoder]],
 ]:
     # Convert time columns to `pd.Datetime` ###################################
@@ -78,7 +78,7 @@ def create_graph_data(
         table_schema_dict=fs_table_schema_dict,
     )
 
-    # Create `GraphStore` #####################################################
+    # Graph metadata for explanation:
     fkeys = []
     for table_name, schema in schema_dict.items():
         for fkey, dst_table in schema.fkeys:
@@ -87,25 +87,36 @@ def create_graph_data(
                 f'{dst_table}.{schema_dict[dst_table].pkey_name}',
             ))
 
-    time_col_dict = {
-        table_name: schema.time_col
+    edge_types = [
+        edge_type
         for table_name, schema in schema_dict.items()
-        if schema.time_col is not None
-    }
-
-    graph_store = InMemoryGraphStore(
-        df_dict=df_dict,
-        fkeys=fkeys,
-        time_col_dict=time_col_dict,
+        for column_name, destination in schema.fkeys
+        for edge_type in (
+            (table_name, column_name, destination),
+            (destination, f'rev_{column_name}', table_name),
+        )
+    ]
+    graph_schema = DiskgraphSchema(
+        table_names=list(schema_dict),
+        pkey_dict={
+            name: schema.pkey_name
+            for name, schema in schema_dict.items()
+            if schema.pkey_name is not None
+        },
+        fk_specs=fkeys,
+        raw_edge_types=list(edge_types),
+        edge_types=edge_types,
+        edge_type_remap={},
+        node_types=list(schema_dict),
     )
 
-    return feature_store, graph_store, table_encoder_dict
+    return feature_store, graph_schema, table_encoder_dict
 
 
 @pytest.fixture()
 def user_store_graph() -> tuple[
     DiskgraphFeatureStore,
-    InMemoryGraphStore,
+    DiskgraphSchema,
     dict[str, dict[str, Encoder]],
 ]:
     df_dict: dict[str, pd.DataFrame] = {}
@@ -181,7 +192,7 @@ def user_store_graph() -> tuple[
 @pytest.fixture()
 def large_user_store_graph() -> tuple[
     DiskgraphFeatureStore,
-    InMemoryGraphStore,
+    DiskgraphSchema,
     dict[str, dict[str, Encoder]],
 ]:
     df_dict: dict[str, pd.DataFrame] = {}

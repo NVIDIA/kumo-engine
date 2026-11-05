@@ -121,7 +121,12 @@ def test_wheel_contains_migrated_runtime_but_not_test_support(
     assert expected_modules <= names
     assert "kumo_core/pyg_lib_trace.py" not in names
     assert "kumo_core/sampling/metapath.py" not in names
-    assert "kumo_core/features/stores/in_memory_graph.py" not in names
+    retired_stores = {
+        "kumo_core/features/stores/graph.py",
+        "kumo_core/features/stores/in_memory_feature.py",
+        "kumo_core/features/stores/in_memory_graph.py",
+    }
+    assert retired_stores.isdisjoint(names)
     assert not any(name.startswith("kumo_core/online_serving/") for name in names)
     assert not any(name.startswith("kumo" + "ml/") for name in names)
     assert not any(name.startswith("tests/") for name in names)

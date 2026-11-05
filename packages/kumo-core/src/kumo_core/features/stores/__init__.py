@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Feature and graph store contracts."""
+"""Feature store contracts."""
 
 from .feature import (
     FeatureStore,
@@ -9,6 +9,10 @@ from .feature import (
     FeatureStoreTableSchema,
     FeatureStoreTrainingTableSchema,
 )
-from .graph import GraphStore, GraphStoreAttr
 
-__all__ = ["FeatureStore", "FeatureStoreAttr", "FeatureStoreTableSchema", "FeatureStoreTrainingTableSchema", "GraphStore", "GraphStoreAttr"]
+__all__ = [
+    "FeatureStore",
+    "FeatureStoreAttr",
+    "FeatureStoreTableSchema",
+    "FeatureStoreTrainingTableSchema",
+]

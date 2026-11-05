@@ -5,10 +5,10 @@ from typing import Any
 
 import pytest
 import torch
+from kumo_core.diskgraph.metadata import DiskgraphSchema
 from kumo_core.diskgraph.stores import DiskgraphFeatureStore
 from kumo_core.sampling.edge_exclusion import drop_edge_index, drop_edge_label_index
 from tests.support.fixtures import user_store_batch
-from tests.support.in_memory_graph import InMemoryGraphStore
 from torch_geometric.testing import withCUDA
 
 
@@ -56,7 +56,7 @@ def test_drop_edge_index(
     num_hops: int,
     user_store_graph: tuple[
         DiskgraphFeatureStore,
-        InMemoryGraphStore,
+        DiskgraphSchema,
         Any,
     ],
     device: torch.device,
