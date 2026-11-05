@@ -6,6 +6,7 @@ r"""Platform-neutral run records and the `Tracking` protocol."""
 import dataclasses
 import json
 import logging
+import math
 import os
 import queue
 import threading
@@ -490,6 +491,7 @@ class TrackingBase(Tracking):
     log_monitoring: Optional[Callable[[RunRecord], None]] = None
     sample_system_metrics: Optional[Callable[[], ContextManager[None]]] = None
     serving_options: Optional[Mapping[str, str]] = None
+    finish_timeout_seconds: Optional[float] = None
 
     @property
     def platform(self) -> str:
@@ -778,7 +780,8 @@ class TrackingSession:
                     self._fail(failure)
                     raise
 
-        deadline = time.monotonic() + FINISH_SECONDS
+        timeout = _finish_seconds(self._tracker)
+        deadline = time.monotonic() + timeout
         try:
             for job in (finish_tracker, None):
                 self._jobs.put(job, timeout=max(0.0,
@@ -789,7 +792,7 @@ class TrackingSession:
         if worker.is_alive():
             self._fail(TimeoutError(
                 f'experiment tracking did not finish within '
-                f'{FINISH_SECONDS:g}s; it goes on in the background'))
+                f'{timeout:g}s; it goes on in the background'))
 
     def _submit(self, job: Callable[[], Any]) -> bool:
         if self._behind:
@@ -846,6 +849,15 @@ def tracking_ref(tracking: Any) -> Optional['TrackingRef']:
         run_name=tracker.logged_run_name)
 
 
+def _finish_seconds(tracker: Optional[TrackingBase]) -> float:
+    seconds = None if tracker is None else tracker.finish_timeout_seconds
+    if seconds is None:
+        return FINISH_SECONDS
+    if isinstance(seconds, bool) or not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError('finish_timeout_seconds must be finite and positive')
+    return seconds
+
+
 def log_run(tracker: TrackingBase,
             method: Optional[Callable[[RunRecord], None]],
             record: RunRecord) -> Optional[Exception]:
@@ -866,12 +878,13 @@ def log_run(tracker: TrackingBase,
     except Exception as error:
         _untracked(error, record.tags.get('kumo.kind'))
         return error
+    timeout = _finish_seconds(tracker)
     worker = threading.Thread(target=log, name='kumo-tracking', daemon=True)
     worker.start()
-    worker.join(FINISH_SECONDS)
+    worker.join(timeout)
     if worker.is_alive():
         return TimeoutError(
-            f'experiment tracking did not finish within {FINISH_SECONDS:g}s; '
+            f'experiment tracking did not finish within {timeout:g}s; '
             f'it goes on in the background')
     return failed[0] if failed else None
 

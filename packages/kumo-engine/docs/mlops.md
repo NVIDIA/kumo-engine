@@ -194,11 +194,12 @@ Jobs that load `alias="champion"` pick up the new version on their next run.
 - `log_model=True` logs the model on the fit run without registering it; `MLOps(registry=)` implies it.
 - Building `kumo.MLOps` creates a missing experiment; if MLflow refuses (on Databricks, the experiment's folder must exist), it raises and says so.
 
-`SnowflakeTracking(source, *, experiment_name, database=None, schema_name=None, run_name=None, tags=None, native_model_lineage=False, serving_options=None)`:
+`SnowflakeTracking(source, *, experiment_name, database=None, schema_name=None, run_name=None, tags=None, native_model_lineage=False, serving_options=None, finish_timeout_seconds=300)`:
 - `source` is a `SnowflakeConnector`, whose identity opens the session and whose Snowflake Model Registry `MLOps(registry=)` registers in, or a Snowpark session, which tracks only.
 - `database` and `schema_name` default to the session's (`PUBLIC` when only `database` is given). The fit is in Snowsight under AI & ML » Experiments.
 - The registered version carries the bundle; load it with `Trainer.load_from_connector`.
 - It needs `CREATE EXPERIMENT` on the schema, or `MODIFY` on an existing experiment.
+- `finish_timeout_seconds` bounds the wait for fit tracking finalization or an entire prediction/monitoring tracking call. It must be finite and positive. A timeout still follows `MLOps(on_error=...)`; tracking may continue in the background.
 - `serving_options` sets how a registered version runs in Snowflake (see [Batch inference in Snowflake](#batch-inference-in-snowflake)).
 
 ### What you'll see in MLflow and Snowsight
