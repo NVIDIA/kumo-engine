@@ -203,3 +203,12 @@ service `EGU_GRAPH_UI_SERVICE`, with CPU Python 3.12 runtime and
 `KUMO_TEST_POOL (GEN_X64_G2_8)`. The runner selects that exact service in the UI
 and verifies its pool before connection. It does not create a notebook service
 or use Snowsight’s remembered default service.
+
+A high-memory warning on the dedicated service blocks the run immediately; the
+runner does not choose Continue anyway. Failed executing attempts retain UI
+evidence before stopping their own connected test kernel. Read-only saved-output
+checks never stop kernels, including when their assertions fail.
+
+After successful installation, the notebook removes its temporary dependency
+archive and extracted wheelhouse. The candidate wheel, pinned fixture, helper
+files, and evidence remain available for verification. Staged assets are retained.

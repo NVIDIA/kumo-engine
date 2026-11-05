@@ -222,6 +222,9 @@ with (ROOT / 'install.log').open('w') as log:
 if installed.returncode:
     print((ROOT / 'install.log').read_text()[-12000:])
     raise RuntimeError('Notebook package installation failed')
+import shutil
+shutil.rmtree(wheelhouse)
+(ROOT / 'wheelhouse.tar').unlink()
 print('KUMO_GRAPH_INSTALL_COMPLETE=' + setup_execution, flush=True)
 '''.replace('PAYLOAD', encoded)
     execute = '''from uuid import uuid4

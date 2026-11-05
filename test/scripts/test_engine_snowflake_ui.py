@@ -471,3 +471,72 @@ def test_graph_cell_rejects_setup_state_retained_after_reset(
                        match='retained setup state after reset'):
         exec(prefix, dict(setup_execution='previous-kernel'))
     assert capsys.readouterr().out.startswith('KUMO_GRAPH_EXECUTION_STARTED=')
+
+
+@pytest.mark.parametrize('action', ['verify', 'unknown'])
+def test_failed_read_only_inspection_never_stops_a_kernel(action):
+    node = shutil.which('node')
+    if node is None:
+        pytest.skip('Node.js is unavailable')
+    program = """
+const assert = require('node:assert/strict');
+const {cleanupAfterFailure} = require(process.argv[1]);
+const forbidden = () => {throw new Error('Read-only cleanup touched the browser')};
+cleanupAfterFailure(new Proxy({}, {get:forbidden}), {action:process.argv[2]}, forbidden)
+  .then(result => assert.equal(result.status, 'skipped'))
+  .catch(error => {console.error(error);process.exitCode=1});
+"""
+    subprocess.run(
+        [node, '-e', program,
+         str(DIRECTORY / 'notebook_ui.cjs'), action], check=True)
+
+
+@pytest.mark.parametrize('phase', ['before', 'after'])
+def test_capacity_warning_cannot_pass_as_connected(phase):
+    node = shutil.which('node')
+    if node is None:
+        pytest.skip('Node.js is unavailable')
+    program = """
+const assert=require('node:assert/strict');
+const {connectionOutcome}=require(process.argv[1]);
+let checks=0;
+const memory={isVisible:async()=>process.argv[2]==='before'||++checks>1,
+              waitFor:()=>new Promise(()=>{})};
+const frame={getByRole:(role,options)=>{
+  if(options.name==='High memory usage')return memory;
+  if(options.name==='Connection status')return{filter:()=>({waitFor:async()=>{}})};
+  if(role==='alertdialog')return{waitFor:()=>new Promise(()=>{})};
+  throw new Error('Unexpected UI action or forced connection');
+}};
+connectionOutcome(frame,1000).then(()=>{throw new Error('Memory warning incorrectly passed')})
+ .catch(error=>{assert.equal(error.name,'NotebookBlocked');assert.match(error.message,/80% memory/)});
+"""
+    subprocess.run(
+        [node, '-e', program,
+         str(DIRECTORY / 'notebook_ui.cjs'), phase], check=True)
+
+
+def test_successful_notebook_install_removes_only_large_install_cache(
+        graph_bundle):
+    _, root, config = graph_bundle
+    cell = json.loads((root / config['path']).read_text())['cells'][0]
+    body = ast.parse(''.join(cell['source'])).body
+    start = next(
+        index for index, node in enumerate(body)
+        if isinstance(node, ast.Import) and any(alias.name == 'shutil'
+                                                for alias in node.names))
+    cache = root / 'wheelhouse'
+    cache.mkdir()
+    (cache / 'dependency.whl').write_bytes(b'cached dependency')
+    (root / 'wheelhouse.tar').write_bytes(b'archive')
+    kept = root / 'candidate.whl'
+    kept.write_bytes(b'identified candidate')
+    fixture = root / 'fixture.tar.gz'
+    fixture.write_bytes(b'pinned fixture')
+    exec(
+        compile(ast.Module(body=body[start:start + 3], type_ignores=[]),
+                '<notebook-install-cache-cleanup>', 'exec'),
+        dict(ROOT=root, wheelhouse=cache))
+    assert not cache.exists() and not (root / 'wheelhouse.tar').exists()
+    assert kept.read_bytes() == b'identified candidate'
+    assert fixture.read_bytes() == b'pinned fixture'

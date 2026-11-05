@@ -399,7 +399,8 @@ async function run(config) {
       "Exact run statuses, metrics and tracking identities, fit epoch tooltips, and registered model versions";
     event("ui_verified");
   } catch (error) {
-    result.status = authenticated ? "failed" : "blocked";
+    result.status =
+      authenticated && error.name !== "NotebookBlocked" ? "failed" : "blocked";
     result.reason = `${phase}: ${error.name}. No credentials or authentication-page artifacts were retained.`;
     if (authenticated) {
       result.detail = String(error.message);
@@ -425,6 +426,21 @@ async function run(config) {
             await frame.locator("body").ariaSnapshot(),
           );
         } catch {}
+      }
+      if (config.notebook) {
+        try {
+          result.notebook_cleanup =
+            await require("./notebook_ui.cjs").cleanupAfterFailure(
+              page,
+              config.notebook,
+              event,
+            );
+        } catch (cleanupError) {
+          result.notebook_cleanup = {
+            status: "failed",
+            type: cleanupError.name,
+          };
+        }
       }
     }
   } finally {

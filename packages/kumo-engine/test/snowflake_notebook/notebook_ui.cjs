@@ -261,6 +261,38 @@ async function selectTestService(frame, event) {
   });
 }
 
+function capacityBlocked() {
+  const error = new Error(
+    "EGU_GRAPH_UI_SERVICE on KUMO_TEST_POOL exceeds 80% memory. Shut down unused test kernels before retrying; the connection was not forced and no graph cell was submitted.",
+  );
+  error.name = "NotebookBlocked";
+  return error;
+}
+
+async function connectionOutcome(frame, timeout) {
+  const memory = frame.getByRole("dialog", {
+    name: "High memory usage",
+    exact: true,
+  });
+  if (await memory.isVisible()) throw capacityBlocked();
+  const connected = await Promise.race([
+    frame
+      .getByRole("button", { name: "Connection status", exact: true })
+      .filter({ hasText: /^Connected$/ })
+      .waitFor({ timeout })
+      .then(() => true),
+    frame
+      .getByRole("alertdialog", { name: /Error on creating service:/ })
+      .waitFor({ timeout })
+      .then(() => false),
+    memory.waitFor({ timeout }).then(() => {
+      throw capacityBlocked();
+    }),
+  ]);
+  if (await memory.isVisible()) throw capacityBlocked();
+  return connected;
+}
+
 async function shutdownKernel(frame, event, stage) {
   await frame
     .getByRole("button", { name: "Service List dropdown button", exact: true })
@@ -297,6 +329,8 @@ async function resetKernel(frame, event) {
     name: "Notebook service management",
     exact: true,
   });
+  await service.getByText(/Connect to resume/).waitFor();
+  await service.getByText(/Compute pool:/).waitFor();
   const text = await service.innerText();
   requireThat(
     /Connect to resume\s+EGU_GRAPH_UI_SERVICE(?:\s|$)/.test(text),
@@ -309,10 +343,10 @@ async function resetKernel(frame, event) {
   await service
     .getByRole("button", { name: "Connect kernel", exact: true })
     .click();
-  await frame
-    .getByRole("button", { name: "Connection status", exact: true })
-    .filter({ hasText: /^Connected$/ })
-    .waitFor({ timeout: 180000 });
+  requireThat(
+    await connectionOutcome(frame, 180000),
+    "Snowflake could not reconnect the dedicated notebook kernel",
+  );
   if (await service.isVisible()) await service.press("Escape");
   event("kernel_reset_completed");
 }
@@ -335,16 +369,7 @@ async function execute(page, frame, spec, event, output, config) {
     { mode: 0o600 },
   );
   event("waiting_for_notebook_compute");
-  let connected = await Promise.race([
-    status
-      .filter({ hasText: "Connected" })
-      .waitFor({ timeout: 1200000 })
-      .then(() => true),
-    frame
-      .getByRole("alertdialog", { name: /Error on creating service:/ })
-      .waitFor({ timeout: 1200000 })
-      .then(() => false),
-  ]);
+  let connected = await connectionOutcome(frame, 1200000);
   if (!connected) {
     const error = await frame
       .getByRole("alertdialog", { name: /Error on creating service:/ })
@@ -371,9 +396,10 @@ async function execute(page, frame, spec, event, output, config) {
         .waitFor({ timeout: 90000 });
       await status.filter({ hasText: /^Connect$/ }).waitFor();
       await selectTestService(frame, event);
-      await status
-        .filter({ hasText: "Connected" })
-        .waitFor({ timeout: 180000 });
+      requireThat(
+        await connectionOutcome(frame, 180000),
+        "Snowflake could not reconnect the dedicated notebook service after startup",
+      );
       connected = true;
       event("notebook_connection_retried_once");
     }
@@ -639,4 +665,38 @@ async function verify(page, config, evidence, event) {
   };
 }
 
-module.exports = { verify, readReceipt };
+async function cleanupAfterFailure(page, spec, event) {
+  if (!["create", "run"].includes(spec.action))
+    return { status: "skipped", reason: "Read-only or unknown notebook mode" };
+  const name = path.basename(spec.path);
+  if (!/^egu-graph-[0-9a-f]{12}\.ipynb$/.test(name))
+    return { status: "skipped", reason: "Not a generated graph test notebook" };
+  const frame = page.frameLocator("iframe");
+  const current = frame
+    .getByRole("list", { name: "Document breadcrumbs", exact: true })
+    .getByRole("button", { name, exact: true });
+  if (!(await current.isVisible()))
+    return { status: "skipped", reason: "Expected test notebook is not open" };
+  const memory = frame.getByRole("dialog", {
+    name: "High memory usage",
+    exact: true,
+  });
+  if (await memory.isVisible())
+    await memory.getByRole("button", { name: "Cancel", exact: true }).click();
+  const status = frame.getByRole("button", {
+    name: "Connection status",
+    exact: true,
+  });
+  if ((await status.innerText()).trim() !== "Connected")
+    return { status: "not_connected" };
+  await profile(frame, event);
+  await shutdownKernel(frame, event, "failure_cleanup");
+  return { status: "stopped", notebook: name };
+}
+
+module.exports = {
+  verify,
+  readReceipt,
+  cleanupAfterFailure,
+  connectionOutcome,
+};
