@@ -261,12 +261,17 @@ def _warn_missing_like_text(table: str, column: Mapping[str, Any],
     }
     if not found:
         return
+    listed = sum(entry[1] for entry in counts if isinstance(entry, list)
+                 and len(entry) == 2 and type(entry[1]) is int)
+    present = _count(stat, 'COUNT') - _count(stat, 'NUM_NA')
+    bound = 'at least ' if listed < present else ''
     tokens = ', '.join(repr(value) for value in sorted(found))
     warnings.warn(
-        f"{table}.{column['name']} holds {sum(found.values())} value(s) that "
-        f"look like missing ({tokens}); they are kept as text. If they mean "
-        "missing, replace them with nulls at the source; a number or date "
-        "column reads them as missing.", UserWarning, stacklevel=3)
+        f"{table}.{column['name']} holds {bound}{sum(found.values())} "
+        f"value(s) that look like missing ({tokens}); they are kept as text. "
+        "If they mean missing, replace them with nulls at the source; a "
+        "number or date column reads them as missing.", UserWarning,
+        stacklevel=3)
 
 
 def _magnitude(stat: Mapping[str, Any]) -> Optional[float]:

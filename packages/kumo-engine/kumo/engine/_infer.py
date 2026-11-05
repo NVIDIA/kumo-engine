@@ -39,6 +39,7 @@ cheap pass left ambiguous):
   call.
 """
 
+import math
 import re
 import warnings
 from dataclasses import replace
@@ -57,11 +58,16 @@ from kumo.engine.connector.base import Connector
 #: `kumoai/backend/local/_common.py`'s `_SAMPLE_ROWS`.
 _SAMPLE_ROWS = 10_000
 
-_PLAIN_NUMBER = re.compile(r'[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?')
-_WHOLE_NUMBER = re.compile(r'[+-]?\d+')
+_PLAIN_NUMBER = re.compile(r'[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?')
+_WHOLE_NUMBER = re.compile(r'[+-]?\d{1,19}')
 _INT64 = range(-2**63, 2**63)
 _NOT_NUMBERS = frozenset({Stype.ID, Stype.multicategorical, Stype.timestamp})
 _EXAMPLES = 3
+
+
+def _is_number(value: str) -> bool:
+    return (_PLAIN_NUMBER.fullmatch(value) is not None
+            and math.isfinite(float(value)))
 
 
 def _report_numbers_stored_as_text(
@@ -78,14 +84,9 @@ def _report_numbers_stored_as_text(
             continue
         column = frame[name]
         values = [value for value in column if isinstance(value, str)]
-        numbers = [
-            value.strip() for value in values
-            if _PLAIN_NUMBER.fullmatch(value.strip())
-        ]
-        others = [
-            value for value in values
-            if not _PLAIN_NUMBER.fullmatch(value.strip())
-        ]
+        judged = [(value, _is_number(value.strip())) for value in values]
+        numbers = [value.strip() for value, number in judged if number]
+        others = [value for value, number in judged if not number]
         if (not numbers or any(has_leading_zero(value) for value in numbers)
                 or any(value.strip() and not is_missing(value.strip())
                        for value in others)):

@@ -213,6 +213,30 @@ def test_snapshot_reports_text_that_looks_like_missing(tmp_path, column, counts,
     assert messages == ([expected] if expected else [])
 
 
+def test_missing_like_count_is_a_lower_bound_past_the_kept_categories(tmp_path):
+    result = _min_stats(
+        tmp_path, 'events', {
+            'country': {
+                'COUNT': 100,
+                'NUM_NA': 5,
+                'CATEGORY_COUNTS': [['US', 50], ['NA', 10]]
+            }
+        })
+    config = {
+        'tables': [{
+            'table_name':
+            'events',
+            'cols': [{
+                'name': 'country',
+                'dtype': 'string',
+                'stype': 'categorical'
+            }]
+        }]
+    }
+    with pytest.warns(UserWarning, match='holds at least 10 value'):
+        _warn_ingest_data_loss(result, config)
+
+
 @pytest.mark.parametrize('narrowed, stats, expected', [
     ({
         ('events', 'amount'): ('double', 0)

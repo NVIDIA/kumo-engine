@@ -756,6 +756,8 @@ def test_decimal_columns_beyond_float32_precision_are_reported(tmp_path):
      "stype=Stype.numerical); values that do not parse become missing and "
      "are counted at snapshot."),
     ('parquet', ['1', 'abc', '3', '4', '5', '6'], None),
+    ('parquet', ['9' * 5000, '1', '2', '3', '4', '5'], None),
+    ('parquet', ['1', '9' * 10000 + 'x', '3', '4', '5', '6'], None),
     ('parquet', ['01234', '00987', '01111', '1', '2', '3'], None),
     ('csv', ['01234', '00987', '01111', '1', '2', '3'], None),
     ('parquet', ['NA', 'US', 'DE', 'FR', 'IT', 'ES'], None),
