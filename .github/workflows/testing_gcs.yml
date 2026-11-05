@@ -126,7 +126,7 @@ jobs:
           service_account: ${{ vars.GCP_TEST_SERVICE_ACCOUNT }}
 
       - name: Run E2E tests
-        if: steps.gcs-files-changed.outputs.any_changed == 'true'
+        if: steps.gcs-files-changed.outputs.any_changed == 'true' && env.KUMO_RUN_GCP_TESTS == '1'
         timeout-minutes: 60
         run: |
           set -o pipefail

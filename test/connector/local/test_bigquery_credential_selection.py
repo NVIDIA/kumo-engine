@@ -137,3 +137,16 @@ def test_keyless_tests_impersonate_configured_identity(
     assert (
         os.environ[credentials_module.ENV_GOOGLE_CREDENTIALS_JSON] == "/mock-adc.json"
     )
+
+
+def test_cloud_e2e_tests_require_google_authentication() -> None:
+    """Live cloud tests use the same eligibility condition as their credentials."""
+    import yaml
+
+    path = Path(__file__).parents[3] / ".github/workflows/testing_gcs.yml"
+    workflow = yaml.safe_load(path.read_text())
+    job = workflow["jobs"]["pytest-gcs"]
+    steps = {step["name"]: step for step in job["steps"]}
+    authentication = steps["Authenticate to Google Cloud with GitHub OIDC"]["if"]
+    assert "env.KUMO_RUN_GCP_TESTS == '1'" in authentication
+    assert steps["Run E2E tests"]["if"] == authentication
