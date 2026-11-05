@@ -147,7 +147,7 @@ def _warn_unqueryable_names(tables: Mapping[str, Table]) -> None:
                 "starting with a digit; the table still loads and links "
                 "through its edges. Alias it differently to query it.",
                 UserWarning,
-                stacklevel=5,
+                stacklevel=7,
             )
         names = [
             col.name for col in table.definition.cols
@@ -160,7 +160,7 @@ def _warn_unqueryable_names(tables: Mapping[str, Table]) -> None:
                 "still load as features. Rename them at the source to use "
                 "them as a target, entity or filter.",
                 UserWarning,
-                stacklevel=5,
+                stacklevel=7,
             )
 
 
