@@ -420,3 +420,17 @@ def test_a_bounded_read_is_the_head_unless_spread(tmp_path):
     assert read_bounded_dataset(
         dataset, ["id"], 4,
         spread=True).column("id").to_pylist() == [0, 1, 4, 5]
+
+
+def test_a_spread_read_fills_its_budget_from_the_longer_row_groups(tmp_path):
+    """A row group shorter than its share must not leave rows unread that the
+    budget had room for: a feature held only in the longer group would
+    otherwise look empty to type inference."""
+    path = tmp_path / "uneven.parquet"
+    with pq.ParquetWriter(path, pa.schema([("id", pa.int64())])) as writer:
+        writer.write_table(pa.table({"id": pa.array([0], pa.int64())}))
+        writer.write_table(pa.table({"id": pa.array(range(1, 10), pa.int64())}))
+    dataset = ds.dataset(str(path))
+    assert read_bounded_dataset(dataset, ["id"], 10,
+                                spread=True).column("id").to_pylist() == list(
+                                    range(10))
