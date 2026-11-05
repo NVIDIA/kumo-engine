@@ -41,7 +41,7 @@ def _predict(trainer, snapshot, monkeypatch, **kwargs):
 
 def test_predict_says_what_differs_from_the_training_graph(
         fitted, monkeypatch, tmp_path):
-    trainer, _, snapshot = fitted
+    trainer, table, snapshot = fitted
     assert kumo.Trainer.load(trainer.result.bundle_dir)._graph_config == (
         snapshot.graph_config)
 
@@ -83,6 +83,22 @@ def test_predict_says_what_differs_from_the_training_graph(
             r'removed; declare the same'):
         trainer.predict(left_out(snapshot), mlops=strict,
                         binary_classification_threshold=.5)
+    with pytest.raises(
+            ValueError, match=r'Schema changes: table events '
+            r'removed; declare the same'):
+        trainer.predict(left_out(snapshot), prediction_table=table,
+                        mlops=strict, binary_classification_threshold=.5)
+
+    def stop(*args, **kwargs):
+        raise _Stop
+
+    monkeypatch.setattr(trainer, '_predict', stop)
+    with pytest.warns(
+            UserWarning, match='differs from the snapshot this '
+            'model was trained on'):
+        with pytest.raises(_Stop):
+            trainer.predict(left_out(snapshot), prediction_table=table,
+                            binary_classification_threshold=.5)
 
     monkeypatch.setattr(trainer, '_graph_config', None)
     with pytest.warns(UserWarning, match='does not record its training graph'):

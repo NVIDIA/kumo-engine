@@ -726,12 +726,14 @@ def test_a_table_with_no_rows_is_left_out_of_the_snapshot(tmp_path):
         Graph({'users': users, 'items': undeclared}).snapshot()
     with pytest.raises(ValueError, match=r'Every table .* no rows \(items\)'):
         Graph({'items': items}).snapshot()
+    assert snapshot.source_changes(graph)['items']['status'] == 'unchanged'
 
     pq.write_table(
         pa.table({
             'item_id': range(5),
             'amount': [1.0, 2.0, 3.0, 4.0, 5.0]
         }), root / 'items.parquet')
+    assert snapshot.source_changes(graph)['items']['status'] == 'changed'
     full = graph.snapshot()
     assert [table['table_name'] for table in full.graph_config['tables']
             ] == ['users', 'orders', 'items']

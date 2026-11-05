@@ -1588,11 +1588,13 @@ class Trainer:
         check_prediction_precision(
             self._timestamp_precision,
             index_timestamp_precision(snapshot.index_path))
-        table = (prediction_table if prediction_table is not None else
-                 self._prediction_table(
-                     snapshot, entities, prediction_time, strict=(
-                         settings is not None
-                         and settings.on_error == 'raise')))
+        strict = settings is not None and settings.on_error == 'raise'
+        if prediction_table is not None:
+            self._report_snapshot_drift(snapshot, strict, stacklevel=3)
+            table = prediction_table
+        else:
+            table = self._prediction_table(snapshot, entities, prediction_time,
+                                           strict=strict)
         with system_metrics(None if settings is None else settings.tracking):
             return self._predict(
                 table, snapshot=snapshot, output_config=output_config,
@@ -1615,25 +1617,29 @@ class Trainer:
         if entities is not None and prediction_time is not None:
             raise ValueError("Pass prediction_time or entities, not both; "
                              "put anchor times in the entities' TIMESTAMP.")
-        trained = (self._snapshot_id or '').partition('@')[0]
-        if trained and snapshot._graph_key != trained:
-            report_other_graph(
-                f"Snapshot {snapshot.id} was taken of graph "
-                f"{snapshot._graph_key}, but this model was trained on a "
-                f"snapshot of graph {trained}.", self._graph_config,
-                snapshot.graph_config, stacklevel=3, strict=strict)
-        elif trained and self._graph_config is not None and schema_changes(
-                self._graph_config, snapshot.graph_config):
-            report_other_graph(
-                f"Snapshot {snapshot.id} differs from the snapshot this "
-                "model was trained on.", self._graph_config,
-                snapshot.graph_config, stacklevel=3, strict=strict)
+        self._report_snapshot_drift(snapshot, strict, stacklevel=4)
         query = PredictiveQuery._from_snapshot(snapshot, self._training_query)
         plan = self._training_table_generation_plan
         return (query.generate_prediction_table(
             snapshot, prediction_time=prediction_time, plan=plan)
                 if entities is None else PredictionTable.from_source_table(
                     entities, pq=query, snapshot=snapshot, plan=plan))
+
+    def _report_snapshot_drift(self, snapshot: GraphSnapshot, strict: bool,
+                               stacklevel: int) -> None:
+        trained = (self._snapshot_id or '').partition('@')[0]
+        if trained and snapshot._graph_key != trained:
+            report_other_graph(
+                f"Snapshot {snapshot.id} was taken of graph "
+                f"{snapshot._graph_key}, but this model was trained on a "
+                f"snapshot of graph {trained}.", self._graph_config,
+                snapshot.graph_config, stacklevel=stacklevel, strict=strict)
+        elif trained and self._graph_config is not None and schema_changes(
+                self._graph_config, snapshot.graph_config):
+            report_other_graph(
+                f"Snapshot {snapshot.id} differs from the snapshot this "
+                "model was trained on.", self._graph_config,
+                snapshot.graph_config, stacklevel=stacklevel, strict=strict)
 
     def _predict(
         self,

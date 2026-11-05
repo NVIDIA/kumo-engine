@@ -997,6 +997,14 @@ class Graph:
                     )
                 except EmptySourceError:
                     empty.append(alias)
+                    try:
+                        version = source_backend.get_data_version(
+                            connector, name)
+                    except Exception:
+                        continue
+                    source_tables[alias] = source_table(
+                        connector, name, sql, version,
+                        record_sources=record_sources)
                     continue
                 if prepared.credentials is not None:
                     raise NotImplementedError(
