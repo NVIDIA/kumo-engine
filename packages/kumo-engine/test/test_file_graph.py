@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import os
 import re
 from dataclasses import replace
 from datetime import datetime
@@ -728,11 +729,13 @@ def test_a_table_with_no_rows_is_left_out_of_the_snapshot(tmp_path):
         Graph({'items': items}).snapshot()
     assert snapshot.source_changes(graph)['items']['status'] == 'unchanged'
 
+    written = (root / 'items.parquet').stat().st_mtime
     pq.write_table(
         pa.table({
             'item_id': range(5),
             'amount': [1.0, 2.0, 3.0, 4.0, 5.0]
         }), root / 'items.parquet')
+    os.utime(root / 'items.parquet', (written + 2, written + 2))
     assert snapshot.source_changes(graph)['items']['status'] == 'changed'
     full = graph.snapshot()
     assert [table['table_name'] for table in full.graph_config['tables']
