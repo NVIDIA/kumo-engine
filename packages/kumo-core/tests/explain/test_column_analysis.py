@@ -8,29 +8,28 @@ from typing import Any, Literal
 
 import pytest
 import torch
+from kumo_core.diskgraph.stores import DiskgraphFeatureStore
+from kumo_core.encoders.target.categorical import CategoricalTargetEncoder
+from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
+from kumo_core.encoders.tensor_mapper import CategoricalTensorMapper
+from kumo_core.explain.column_analysis import ColumnAnalysis
+from kumo_core.io.json import load_json
 from kumoapi.encoder import Encoder
 from kumoapi.explain import ColumnAnalysisOutput
 from kumoapi.task import TaskType
 from kumoapi.train import TrainingStage
 from kumoapi.typing import Stype
+from tests.support.fixtures import user_store_batch
+from tests.support.in_memory_graph import InMemoryGraphStore
 from torch import Tensor
 from torch_geometric.testing import withCUDA
-
-from kumo_core.io.json import load_json
-from kumo_core.encoders.tensor_mapper import CategoricalTensorMapper
-from kumo_core.features.stores.in_memory_feature import InMemoryFeatureStore
-from tests.support.in_memory_graph import InMemoryGraphStore
-from tests.support.fixtures import user_store_batch
-from kumo_core.explain.column_analysis import ColumnAnalysis
-from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
-from kumo_core.encoders.target.categorical import CategoricalTargetEncoder
 
 
 @withCUDA
 def test_column_analysis(
     tmp_path: pathlib.Path,
     user_store_graph: tuple[
-        InMemoryFeatureStore,
+        DiskgraphFeatureStore,
         InMemoryGraphStore,
         dict[str, dict[str, Encoder]],
     ],

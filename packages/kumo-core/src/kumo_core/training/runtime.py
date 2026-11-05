@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, Protocol, Tuple
 
 import psutil
-from diskgraph import SamplerEngine
+
 from kumo_core.diskgraph.stores import (
     DiskgraphFeatureStore,
     DiskgraphGraphStore,
@@ -90,7 +90,6 @@ class LocalDiskgraphTrainingRuntime:
             time_col_dict=time_col_dict,
         )
         graph_store = DiskgraphGraphStore(index_path=index_path)
-        feature_store.set_sampler_engine(SamplerEngine(index_path))
         return feature_store, graph_store
 
 

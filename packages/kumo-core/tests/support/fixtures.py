@@ -6,17 +6,18 @@ from dataclasses import dataclass, field
 import pandas as pd
 import pytest
 import torch
-from torch_geometric.data import HeteroData
+from kumo_core.diskgraph.stores import DiskgraphFeatureStore
+from kumo_core.encoders.selection import compute_missing_stats_
+from kumo_core.encoders.tensor_mapper import TensorMapper
+from kumo_core.features.stores.feature import FeatureStoreTableSchema
+from kumo_core.features.time import to_datetime
 from kumoapi.encoder import Encoder
 from kumoapi.typing import Stype
+from torch_geometric.data import HeteroData
 
-from kumo_core.features.stores.feature import FeatureStoreTableSchema
-from kumo_core.features.stores.in_memory_feature import InMemoryFeatureStore
-from tests.support.in_memory_graph import InMemoryGraphStore
-from kumo_core.encoders.tensor_mapper import TensorMapper
-from kumo_core.encoders.selection import compute_missing_stats_
+from tests.support.diskgraph_feature_store import make_diskgraph_feature_store
 from tests.support.encoders import get_encoder
-from kumo_core.features.time import to_datetime
+from tests.support.in_memory_graph import InMemoryGraphStore
 
 
 @dataclass
@@ -32,7 +33,7 @@ def create_graph_data(
     df_dict: dict[str, pd.DataFrame],
     schema_dict: dict[str, TestTableSchema],
 ) -> tuple[
-        InMemoryFeatureStore,
+        DiskgraphFeatureStore,
         InMemoryGraphStore,
         dict[str, dict[str, Encoder]],
 ]:
@@ -72,10 +73,9 @@ def create_graph_data(
         for table_name, schema in schema_dict.items()
     }
 
-    feature_store = InMemoryFeatureStore(
+    feature_store = make_diskgraph_feature_store(
         df_dict=df_dict,
         table_schema_dict=fs_table_schema_dict,
-        train_table_schema=None,
     )
 
     # Create `GraphStore` #####################################################
@@ -104,7 +104,7 @@ def create_graph_data(
 
 @pytest.fixture()
 def user_store_graph() -> tuple[
-    InMemoryFeatureStore,
+    DiskgraphFeatureStore,
     InMemoryGraphStore,
     dict[str, dict[str, Encoder]],
 ]:
@@ -180,7 +180,7 @@ def user_store_graph() -> tuple[
 
 @pytest.fixture()
 def large_user_store_graph() -> tuple[
-    InMemoryFeatureStore,
+    DiskgraphFeatureStore,
     InMemoryGraphStore,
     dict[str, dict[str, Encoder]],
 ]:
@@ -256,7 +256,7 @@ def large_user_store_graph() -> tuple[
 
 
 def user_store_batch(
-    feature_store: InMemoryFeatureStore,
+    feature_store: DiskgraphFeatureStore,
     num_hops: int = 2,
 ) -> HeteroData:
     """Fixed temporal batch for explanation and edge-exclusion tests.

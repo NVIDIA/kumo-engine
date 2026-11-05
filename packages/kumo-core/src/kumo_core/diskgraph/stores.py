@@ -16,27 +16,35 @@ import multiprocessing
 import os
 import sys
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple, Union
 
 import numpy as np
+import orjson
 import pandas as pd
 import pyarrow as pa
 import pyarrow.flight as flight
 import torch
-from kumo_core.diskgraph.metadata import load_diskgraph_schema
-from kumo_core.encoders.config import EncodersConfig
-from kumo_core.encoders.tensor_mapper import TensorMapper
-from kumo_core.features.stores.feature import FeatureStoreTableSchema
-from kumo_core.features.stores.graph import GraphStore, GraphStoreAttr
-from kumo_core.features.stores.in_memory_feature import (
-    InMemoryFeatureStore,
-    get_tf,
-)
-from kumo_core.sources.cpu import cpu_budget
-from kumo_core.training.config import shm_safe_num_workers
 from kumoapi.encoder import Datetime
+from torch_frame import TensorFrame
 from torch_geometric.sampler import NumNeighbors
 from torch_geometric.typing import EdgeType
+
+from kumo_core.diskgraph.metadata import load_diskgraph_schema
+from kumo_core.encoders.config import EncodersConfig
+from kumo_core.encoders.tensor_frame import get_tf
+from kumo_core.encoders.tensor_mapper import TensorMapper
+from kumo_core.features.stores.feature import (
+    FeatureStore,
+    FeatureStoreAttr,
+    FeatureStoreTableSchema,
+)
+from kumo_core.features.stores.graph import GraphStore, GraphStoreAttr
+from kumo_core.sources.cpu import cpu_budget
+from kumo_core.training.config import shm_safe_num_workers
+from kumo_core.types.features import FeatureStoreData
+
+if TYPE_CHECKING:
+    from diskgraph import SamplerEngine
 
 logger = logging.getLogger(__name__)
 
@@ -93,9 +101,8 @@ def diskgraph_auto_config(
     # On non-Linux platforms (macOS, Windows) multiprocessing uses 'spawn',
     # where re-importing the whole module graph per worker makes worker startup
     # expensive enough that single-process loading is the better default. The
-    # SamplerEngine / Flight handles themselves are now safe to ship across any
-    # start method (see DiskgraphFeatureStore.__getstate__), so this is a
-    # cost heuristic, not a correctness guard.
+    # Native handles are recreated in workers, so this is a cost heuristic,
+    # not a correctness guard.
     if multiprocessing.get_start_method(allow_none=True) in (None, 'spawn') \
             and sys.platform != 'linux':
         return {"mode": "fused", "num_workers": 0, "rayon_threads": 1}
@@ -425,69 +432,105 @@ class DiskgraphGraphStore(GraphStore):
             "Edge indices are returned by the sampler.")
 
 
-class DiskgraphFeatureStore(InMemoryFeatureStore):
-    """Feature store that overlays fused Arrow Flight features on top of
-    in-memory data.
+class DiskgraphFeatureStore(FeatureStore):
+    """Serve metadata and indexed features for RHS embeddings and explanation.
 
-    During each sampling batch, the Rust engine can stream node features
-    via side-channel Arrow Flight streams (fused feature fetching).  This
-    store caches those Arrow tables and returns them as ``TensorFrame``
-    for ``attr_name='tf'`` queries on graph tables, while still serving the
-    training table from in-memory tensors.
-
-    Use :meth:`for_explain` to initialize without loading full graph-table
-    parquets into pandas.
+    Sampled features live on runtime batches. This store supplies RHS feature
+    prefetching and additional primary keys and features for explanation.
     """
+
     def __init__(
         self,
-        *args,
-        diskgraph_num_nodes: Optional[Dict[str, int]] = None,
-        strict_fused_graph_tf: bool = False,
-        index_path: Optional[str] = None,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        # Fused feature cache: maps table_name -> (ArrowTable, global_node_ids).
-        # Populated by the sampler after each sample call, consumed by
-        # _get_tensor.  The node_ids allow validation that the cached data
-        # matches what the caller requested.
-        self._fused_cache: Dict[str, tuple[pa.Table, torch.Tensor]] = {}
-        self._diskgraph_num_nodes = diskgraph_num_nodes or {}
-        self._strict_fused_graph_tf = strict_fused_graph_tf
-        self._index_path = index_path
-        self._engine = None
-        # Set by the training runtime after construction (see
-        # ``set_sampler_engine``) to enable random-access feature reads
-        # (e.g. for RHS fusion fetch_feats).
-        self._sampler_engine = None
+        index_path: str,
+        table_schema_dict: dict[str, FeatureStoreTableSchema],
+        diskgraph_num_nodes: dict[str, int],
+        entity_table_names: list[str],
+    ) -> None:
+        """Initialize metadata without materializing graph-table data.
 
-    def __getstate__(self) -> Dict[str, Any]:
-        # The pybind SamplerEngine handles (``_engine`` for out-of-core reads
-        # and ``_sampler_engine``, a back-reference set by the sampler) are
-        # native objects that cannot be pickled. Drop them so the feature store
-        # can be shipped to DataLoader workers under non-``fork`` start methods
-        # (``forkserver`` is the Linux default on Python 3.14). ``_engine`` is
-        # lazily re-created on cache miss; ``_sampler_engine`` is re-attached by
-        # the worker's sampler via ``set_sampler_engine`` / ``_get_engine``.
+        Args:
+            index_path: Local snapshot directory for lazy feature reads.
+            table_schema_dict: Graph table column schemas and tensor mappers.
+            diskgraph_num_nodes: Graph table sizes from snapshot metadata.
+            entity_table_names: Entity tables in task order.
+        """
+        super().__init__()
+        self._table_schema_dict = table_schema_dict
+        self._diskgraph_num_nodes = diskgraph_num_nodes
+        self._entity_table_names = list(entity_table_names)
+        self._index_path = index_path
+        self._engine: SamplerEngine | None = None
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Return picklable state; workers recreate the native engine lazily."""
         state = self.__dict__.copy()
         state["_engine"] = None
-        state["_sampler_engine"] = None
         return state
 
-    def __setstate__(self, state: Dict[str, Any]) -> None:
-        self.__dict__.update(state)
-        self._engine = None
-        self._sampler_engine = None
+    @property
+    def table_names(self) -> list[str]:
+        """Return graph table names."""
+        return list(self._table_schema_dict)
 
     @property
-    def entity_table_names(self) -> List[str]:
-        # Parent ``InMemoryFeatureStore.entity_table_names`` reads
-        # ``self._train_table_schema.fkeys`` and crashes when the
-        # schema is ``None`` (the TT-NG ``for_explain`` path). Return
-        # the explicit list stashed by ``for_explain`` when present.
-        if getattr(self, '_explain_entity_table_names', None) is not None:
-            return list(self._explain_entity_table_names)
-        return super().entity_table_names
+    def entity_table_names(self) -> list[str]:
+        """Return entity tables in task order."""
+        return list(self._entity_table_names)
+
+    @property
+    def train_table_name(self) -> None:
+        """Return None; training tables belong to the native runtime."""
+        return None
+
+    @property
+    def train_fkey_names(self) -> list[str]:
+        """Return no training foreign keys; these belong to the native runtime."""
+        return []
+
+    @property
+    def has_train_table_test_mask(self) -> bool:
+        """Return False; this store contains only graph tables."""
+        return False
+
+    @property
+    def has_train_table_target_col(self) -> bool:
+        """Return False; targets belong to the native runtime."""
+        return False
+
+    @property
+    def has_train_table_weight_col(self) -> bool:
+        """Return False; training weights belong to the native runtime."""
+        return False
+
+    def get_pkey_name(self, table_name: str) -> str | None:
+        """Return a table's primary key column, or None if it has none."""
+        return self._table_schema_dict[table_name].pkey_name
+
+    def get_time_col_name(self, table_name: str) -> str | None:
+        """Return a table's creation-time column, or None if absent."""
+        schema = self._table_schema_dict.get(table_name)
+        return schema.time_col_name if schema is not None else None
+
+    def get_end_time_col_name(self, table_name: str) -> str | None:
+        """Return a table's expiration-time column, or None if absent."""
+        schema = self._table_schema_dict.get(table_name)
+        return schema.end_time_col_name if schema is not None else None
+
+    def get_target_tensor_mapper(self) -> TensorMapper | None:
+        """Return None; target encoding belongs to the native runtime."""
+        return None
+
+    def get_node_id(self, table_name: str, pkey: np.ndarray) -> torch.Tensor:
+        """Reject key resolution, which belongs to the native runtime.
+
+        Args:
+            table_name: Graph table name.
+            pkey: Primary keys to resolve.
+
+        Raises:
+            NotImplementedError: This store accepts resolved DiskGraph node IDs.
+        """
+        raise NotImplementedError("Resolve primary keys through the DiskGraph runtime")
 
     @classmethod
     def for_explain(
@@ -495,42 +538,39 @@ class DiskgraphFeatureStore(InMemoryFeatureStore):
         *,
         index_path: str,
         encoders: EncodersConfig,
-        entity_table_names: List[str],
-        time_col_dict: Optional[Dict[str, str]] = None,
-        end_time_col_dict: Optional[Dict[str, str]] = None,
+        entity_table_names: list[str],
+        time_col_dict: dict[str, str] | None = None,
+        end_time_col_dict: dict[str, str] | None = None,
     ) -> "DiskgraphFeatureStore":
-        """Streaming-only ``DiskgraphFeatureStore`` for
-        ``Trainer.explain()`` on the TT-NG path.
+        """Build a store for RHS reads and explanation without loading graph tables.
 
-        No ``train_table_df`` / ``train_fkeys`` / ``train_mask_names`` /
-        ``diskgraph_train_table_data`` — those were legacy train-loop
-        concepts TT-NG doesn't use. ``train_table_schema=None`` is passed
-        through so ``InMemoryFeatureStore.__init__`` skips
-        ``set_train_table(...)`` and entity-table-mapping setup.
+        Args:
+            index_path: Local DiskGraph snapshot directory.
+            encoders: Encoders defining the model's graph-table features.
+            entity_table_names: Entity tables in task order.
+            time_col_dict: Table creation-time columns.
+            end_time_col_dict: Table expiration-time columns.
 
-        ``SubgraphCollector`` consumes
-        ``feature_store[ns, 'pkey'|'tf', node_ids]``; both go through
-        ``SamplerEngine.fetch_features``.
+        Returns:
+            A store with metadata and lazy indexed feature reads.
+
+        Raises:
+            OSError: If snapshot metadata cannot be read.
         """
-        time_col_dict = dict(time_col_dict or {})
-        end_time_col_dict = dict(end_time_col_dict or {})
+        time_col_dict = time_col_dict or {}
+        end_time_col_dict = end_time_col_dict or {}
 
         schema = load_diskgraph_schema(index_path)
 
-        table_schema_dict: Dict[str, FeatureStoreTableSchema] = {}
-        df_dict: Dict[str, pd.DataFrame] = {}
-        diskgraph_num_nodes: Dict[str, int] = {}
+        table_schema_dict: dict[str, FeatureStoreTableSchema] = {}
+        diskgraph_num_nodes: dict[str, int] = {}
 
-        with open(os.path.join(index_path, "index_metadata.json")) as f:
-            index_meta = json.load(f)
-        node_type_to_meta = {
-            nt["name"]: nt
-            for nt in index_meta.get("node_types", [])
-        }
+        with open(os.path.join(index_path, "index_metadata.json"), "rb") as file:
+            index_meta = orjson.loads(file.read())
+        node_type_to_meta = {nt["name"]: nt for nt in index_meta.get("node_types", [])}
 
         for table_name in schema.table_names:
-            encoder_dict = encoders[
-                table_name] if table_name in encoders else {}
+            encoder_dict = encoders.encoders.get(table_name, {})
             mapper_dict = {
                 col_name: TensorMapper.from_encoder(encoder)
                 for col_name, encoder in encoder_dict.items()
@@ -541,443 +581,120 @@ class DiskgraphFeatureStore(InMemoryFeatureStore):
                 time_col_name=time_col_dict.get(table_name),
                 end_time_col_name=end_time_col_dict.get(table_name),
             )
-            # FS expects a per-table entry in df_dict, but row reads
-            # for graph tables go through fetch_features.
-            cols = set(mapper_dict.keys())
-            if table_name in schema.pkey_dict:
-                cols.add(schema.pkey_dict[table_name])
-            if table_name in time_col_dict:
-                cols.add(time_col_dict[table_name])
-            if table_name in end_time_col_dict:
-                cols.add(end_time_col_dict[table_name])
-            df_dict[table_name] = pd.DataFrame(
-                {col: pd.Series([], dtype="float64")
-                 for col in cols})
-
             nt_meta = node_type_to_meta.get(table_name, {})
             max_id = nt_meta.get("max_id")
-            if isinstance(max_id, int) and max_id >= 0:
-                diskgraph_num_nodes[table_name] = max_id + 1
+            diskgraph_num_nodes[table_name] = (
+                max_id + 1 if isinstance(max_id, int) and max_id >= 0 else 0
+            )
 
-        instance = cls(
-            df_dict=df_dict,
-            table_schema_dict=table_schema_dict,
-            train_table_schema=None,
-            diskgraph_num_nodes=diskgraph_num_nodes,
-            strict_fused_graph_tf=False,
+        return cls(
             index_path=index_path,
+            table_schema_dict=table_schema_dict,
+            diskgraph_num_nodes=diskgraph_num_nodes,
+            entity_table_names=entity_table_names,
         )
-        # Stash entity_table_names so the overridden property can
-        # return it without going through ``_train_table_schema.fkeys``
-        # (which is ``None`` on this construction path).
-        instance._explain_entity_table_names = list(entity_table_names)
-        return instance
-
-    def set_sampler_engine(self, engine) -> None:
-        """Set the Rust sampler engine for random-access feature reads."""
-        self._sampler_engine = engine
 
     def get_tensor_mapper(self, table_name: str, col_name: str) -> TensorMapper:
+        """Return the feature mapper, including unencoded temporal metadata.
+
+        Args:
+            table_name: Graph table name.
+            col_name: Feature or temporal column name.
+
+        Returns:
+            The configured mapper or a datetime mapper for temporal metadata.
+
+        Raises:
+            KeyError: If the table or column is unknown.
+        """
         schema = self._table_schema_dict.get(table_name)
-        if (schema is not None and col_name not in schema.mapper_dict and
-                col_name in (schema.time_col_name, schema.end_time_col_name)):
+        if (
+            schema is not None
+            and col_name not in schema.mapper_dict
+            and col_name in (schema.time_col_name, schema.end_time_col_name)
+        ):
             # Temporal columns are exposed to explanation without being
             # ordinary encoded features. Keep the model's TensorFrame schema
             # unchanged while supplying the collector's timestamp metadata.
             return TensorMapper.from_encoder(Datetime())
-        return super().get_tensor_mapper(table_name, col_name)
+        return self._table_schema_dict[table_name].mapper_dict[col_name]
 
-    def _cache_fused_features(self, type_name: str, arrow_table: pa.Table,
-                              node_ids: torch.Tensor) -> None:
-        self._fused_cache[type_name] = (arrow_table, node_ids)
-
-    def _clear_fused_cache(self) -> None:
-        self._fused_cache.clear()
-
-    def _read_features_by_ids(self, table_name: str, node_ids: torch.Tensor):
-        """Read features for specific node IDs from the diskgraph index
-        via the ``fetch_features`` pybind API.
-
-        Used as the cache-miss fallback when callers like
-        ``RHSEmbedding.fetch_feats`` request features outside the
-        sampling context.
-        """
-        if self._sampler_engine is None:
-            raise RuntimeError(
-                "DiskgraphFeatureStore has no sampler engine reference. "
-                "Call set_sampler_engine() after sampler creation.")
-
-        engine = self._sampler_engine
-        mapper_dict = self._table_schema_dict[table_name].mapper_dict
-        feature_names = list(mapper_dict.keys())
-        ids_list = node_ids.cpu().tolist()
-
-        # Batch large requests to avoid overwhelming the engine
-        BATCH = 50_000
-        all_feature_batches = []
-        for start in range(0, len(ids_list), BATCH):
-            chunk = ids_list[start:start + BATCH]
-            request = [{
-                "node_type": table_name,
-                "node_ids": chunk,
-                "feature_names": feature_names,
-            }]
-            for event in engine.fetch_features(request):
-                if event["type"] == "feature":
-                    all_feature_batches.append(event["batch"])
-
-        if not all_feature_batches:
-            return self._get_fused_tf_empty(table_name)
-
-        table = pa.Table.from_batches(all_feature_batches)
-        mapper_dict = self._table_schema_dict[table_name].mapper_dict
-        relevant = {
-            k: v
-            for k, v in mapper_dict.items() if k in table.column_names
-        }
-
-        if not relevant:
-            return super()._get_tf(table_name, None)
-        return get_tf(table.select(list(relevant.keys())), relevant)
-
-    def _get_fused_tf_empty(self, table_name):
-        """Return an empty TensorFrame for a table with zero sampled nodes.
-
-        Used when a schema type is included in the batch with an empty
-        node tensor (zero nodes sampled) — no features to look up, but
-        the caller expects a TensorFrame with the correct schema.
-        """
-        schema = self._table_schema_dict.get(table_name)
-        mapper_dict = schema.mapper_dict if schema else {}
-        df = pd.DataFrame(
-            {col: pd.Series(dtype="object")
-             for col in mapper_dict})
-        return get_tf(df, mapper_dict)
-
-    def _get_tensor(self, attr):
-        # Router: check fused cache first for tf/time/pkey, then handle
-        # empty indices, then fall back to out-of-core fetch for non-train
-        # tables.
-
-        # --- tf (TensorFrame features) ---
+    def _get_tensor(self, attr: FeatureStoreAttr) -> FeatureStoreData | None:
+        table_name = attr.table_name
+        assert isinstance(table_name, str)
+        schema = self._table_schema_dict[table_name]
         if attr.attr_name == "tf":
-            # Fused cache hit
-            if attr.table_name in self._fused_cache:
-                _, cached_ids = self._fused_cache[attr.table_name]
-                requested = (attr.index if hasattr(attr, "index")
-                             and attr.index is not None else None)
-                # Validate that the cached data matches the requested nodes.
-                # A mismatch means stale data from a previous sample — evict
-                # and fall through to the cache-miss path.
-                if requested is not None and not (
-                        requested.shape == cached_ids.shape
-                        and torch.equal(requested.long(), cached_ids.long())):
-                    logger.warning(
-                        "Fused cache eviction for '%s': "
-                        "requested.shape=%s, cached.shape=%s, "
-                        "requested[:5]=%s, cached[:5]=%s",
-                        attr.table_name,
-                        requested.shape,
-                        cached_ids.shape,
-                        requested[:5].tolist(),
-                        cached_ids[:5].tolist(),
-                    )
-                    self._fused_cache.pop(attr.table_name)
-                else:
-                    return self._get_fused_tf(attr.table_name)
+            feature_names = list(schema.mapper_dict)
+        elif attr.attr_name in {"pkey", "time", "end_time"}:
+            column_name = {
+                "pkey": schema.pkey_name,
+                "time": schema.time_col_name,
+                "end_time": schema.end_time_col_name,
+            }[attr.attr_name]
+            if column_name is None:
+                return None
+            feature_names = [column_name]
+        else:
+            raise KeyError(f"Unsupported DiskGraph attribute '{attr.attr_name}'")
 
-            # Empty index → empty TensorFrame (unsampled schema type)
-            if (hasattr(attr, "index") and attr.index is not None
-                    and len(attr.index) == 0):
-                return self._get_fused_tf_empty(attr.table_name)
+        node_ids = self._get_index(attr)
+        if attr.attr_name == "tf" and not feature_names:
+            return TensorFrame({}, {}, num_rows=len(node_ids))
+        if len(node_ids) == 0:
+            if attr.attr_name == "tf":
+                return get_tf(
+                    pa.table({name: [] for name in feature_names}), schema.mapper_dict
+                )
+            if attr.attr_name == "pkey":
+                return np.empty(0, dtype=object)
+            return torch.empty(0, dtype=torch.long)
 
-            # Cache miss for graph table — fall through to out-of-core fetch.
-
-            # Non-strict cache miss → out-of-core fetch.
-            if attr.table_name != self.train_table_name:
-                if (hasattr(attr, "index") and attr.index is not None
-                        and len(attr.index) > 0):
-                    return self._fetch_out_of_core_feature(
-                        attr.table_name, attr.index)
-
-        # --- time / end_time ---
-        if attr.attr_name in ("time", "end_time"):
-            if attr.table_name in self._fused_cache:
-                if attr.attr_name == "time":
-                    return self._get_fused_time(attr)
-                # end_time from fused cache
-                return self._get_fused_end_time(attr)
-            # Cache miss — fetch from DG index directly.
-            if attr.table_name != self.train_table_name:
-                idx = getattr(attr, "index", None)
-                if idx is None or (isinstance(idx, slice)
-                                   and idx == slice(None)):
-                    # Full table request — get all node IDs
-                    num_nodes = self._diskgraph_num_nodes.get(
-                        attr.table_name, 0)
-                    if num_nodes > 0:
-                        node_ids = torch.arange(num_nodes, dtype=torch.long)
-                        schema = self._table_schema_dict[attr.table_name]
-                        col_name = (schema.time_col_name if attr.attr_name
-                                    == "time" else schema.end_time_col_name)
-                        if col_name:
-                            return self._fetch_out_of_core_time_col(
-                                attr.table_name, node_ids, col_name)
-                elif hasattr(idx, '__len__') and len(idx) > 0:
-                    col_name = (
-                        self._table_schema_dict[attr.table_name].time_col_name
-                        if attr.attr_name == "time" else self.
-                        _table_schema_dict[attr.table_name].end_time_col_name)
-                    if col_name:
-                        return self._fetch_out_of_core_time_col(
-                            attr.table_name, idx, col_name)
-
-        # --- pkey ---
+        table = self._fetch_features(table_name, node_ids, feature_names)
+        if attr.attr_name == "tf":
+            mappers = {
+                name: mapper
+                for name, mapper in schema.mapper_dict.items()
+                if name in table.column_names
+            }
+            return get_tf(table, mappers)
+        column = table.column(feature_names[0])
         if attr.attr_name == "pkey":
-            idx = getattr(attr, "index", None)
-            if idx is not None and attr.table_name in self._fused_cache:
-                return DiskgraphFeatureStore._get_fused_pkey(self, attr)
-            # Cache miss — fetch pkey from DG index directly.
-            if attr.table_name != self.train_table_name:
-                schema = self._table_schema_dict.get(attr.table_name)
-                pkey_name = schema.pkey_name if schema else None
-                if pkey_name:
-                    if idx is None or (isinstance(idx, slice)
-                                       and idx == slice(None)):
-                        num_nodes = self._diskgraph_num_nodes.get(
-                            attr.table_name, 0)
-                        if num_nodes > 0:
-                            node_ids = torch.arange(num_nodes, dtype=torch.long)
-                            return self._fetch_out_of_core_pkey(
-                                attr.table_name, node_ids, pkey_name)
-                    elif hasattr(idx, '__len__') and len(idx) > 0:
-                        return self._fetch_out_of_core_pkey(
-                            attr.table_name, idx, pkey_name)
+            return column.to_numpy(zero_copy_only=False).copy()
+        timestamps = pd.to_datetime(column.to_pandas(), errors="coerce")
+        return torch.from_numpy(_datetime_series_to_ns(timestamps))
 
-        return super()._get_tensor(attr)
-
-    def _get_tensor_size(self, attr):
-        if (attr.table_name != self.train_table_name
-                and attr.table_name in self._diskgraph_num_nodes):
-            return (self._diskgraph_num_nodes[attr.table_name], )
-        return super()._get_tensor_size(attr)
-
-    def _get_fused_pkey(self, attr):
-        """Return primary key values for sampled nodes.
-
-        If the fused cache contains an Arrow table with the pkey column,
-        read the string PK from it (with ``.copy()`` to detach from the
-        Arrow buffer).  Otherwise fall back to exposing the integer
-        global node IDs directly.
-        """
+    def _get_tensor_size(self, attr: FeatureStoreAttr) -> tuple[int, ...] | None:
         table_name = attr.table_name
-        idx = attr.index
+        if isinstance(table_name, str) and table_name in self._diskgraph_num_nodes:
+            return (self._diskgraph_num_nodes[table_name],)
+        raise KeyError(f"Unknown DiskGraph table '{table_name}'")
 
-        if table_name in self._fused_cache:
-            arrow_table, _ = self._fused_cache[table_name]
-            schema = self._table_schema_dict.get(table_name)
-            pkey_name = schema.pkey_name if schema else None
-            if pkey_name and pkey_name in arrow_table.column_names:
-                col = arrow_table.column(pkey_name)
-                return col.to_pandas().values.copy()
-
-        # Fallback: sampled node ids are already global node ids.
-        if isinstance(idx, torch.Tensor):
-            return idx.numpy()
-        return idx
-
-    def _fetch_out_of_core_feature(self, table_name: str,
-                                   node_ids: torch.Tensor):
-        """Lazily create an engine and fetch features via fetch_features API.
-
-        Used for non-train table cache misses (e.g. side lookups in
-        RHSEmbedding.fetch_feats).  Falls back to the sampler engine if
-        available, otherwise creates a dedicated engine from index_path.
-        """
-        if self._sampler_engine is not None:
-            return self._read_features_by_ids(table_name, node_ids)
-
-        if self._index_path is None:
-            raise KeyError("DiskgraphFeatureStore expected fused features for "
-                           f"table '{table_name}', but none were cached for "
-                           "this batch and no index_path is available for "
-                           "out-of-core reads.")
-
+    def _fetch_features(
+        self,
+        table_name: str,
+        node_ids: torch.Tensor,
+        feature_names: list[str],
+    ) -> pa.Table:
+        """Fetch requested rows in bounded chunks through one lazy engine."""
         if self._engine is None:
             from diskgraph import SamplerEngine
 
             self._engine = SamplerEngine(self._index_path)
 
-        engine = self._engine
-        mapper_dict = self._table_schema_dict[table_name].mapper_dict
-        feature_names = list(mapper_dict.keys())
-        ids_list = node_ids.cpu().tolist()
-
-        BATCH = 50_000
-        all_feature_batches = []
-        for start in range(0, len(ids_list), BATCH):
-            chunk = ids_list[start:start + BATCH]
-            request = [{
-                "node_type": table_name,
-                "node_ids": chunk,
-                "feature_names": feature_names,
-            }]
-            for event in engine.fetch_features(request):
-                if event["type"] == "feature":
-                    all_feature_batches.append(event["batch"])
-
-        if not all_feature_batches:
-            return self._get_fused_tf_empty(table_name)
-
-        table = pa.Table.from_batches(all_feature_batches)
-        relevant = {
-            k: v
-            for k, v in mapper_dict.items() if k in table.column_names
-        }
-
-        if not relevant:
-            return super()._get_tf(table_name, None)
-        return get_tf(table.select(list(relevant.keys())), relevant)
-
-    def _get_fused_tf(self, table_name):
-        """Convert cached Arrow table to TensorFrame.
-
-        Fused features arrive in local_id order from the engine — row i
-        corresponds to local_id i, which matches the ``node_dict``
-        ordering from ``HeteroSamplerOutput``.  The caller
-        (``_get_tensor``) validates that the cached node IDs match
-        the requested index before calling this method.
-        """
-        arrow_table, _ = self._fused_cache[table_name]
-        mapper_dict = self._table_schema_dict[table_name].mapper_dict
-        relevant = {
-            k: v
-            for k, v in mapper_dict.items() if k in arrow_table.column_names
-        }
-        if not relevant:
-            logger.warning(
-                "Fused features for '%s' have no columns matching mapper_dict "
-                "(fused_cols=%s, mapper_cols=%s). Falling back to in-memory.",
-                table_name,
-                list(arrow_table.column_names),
-                list(mapper_dict.keys()),
-            )
-            return super()._get_tf(table_name, None)
-        return get_tf(arrow_table.select(list(relevant.keys())), relevant)
-
-    def _get_fused_time(self, attr):
-        """Return fused time tensor aligned with sampled subgraph rows."""
-        table_name = attr.table_name
-        arrow_table, _ = self._fused_cache[table_name]
-        time_col = self._table_schema_dict[table_name].time_col_name
-        if not time_col or time_col not in arrow_table.column_names:
-            return super()._get_tensor(attr)
-
-        ser = pd.to_datetime(
-            arrow_table.column(time_col).to_pandas(), errors="coerce")
-        vals = _datetime_series_to_ns(ser)
-        return torch.from_numpy(vals)
-
-    def _get_fused_end_time(self, attr):
-        """Return fused end_time tensor from cached Arrow table."""
-        table_name = attr.table_name
-        arrow_table, _ = self._fused_cache[table_name]
-        end_time_col = self._table_schema_dict[table_name].end_time_col_name
-        if not end_time_col or end_time_col not in arrow_table.column_names:
-            return super()._get_tensor(attr)
-        ser = pd.to_datetime(
-            arrow_table.column(end_time_col).to_pandas(), errors="coerce")
-        vals = _datetime_series_to_ns(ser)
-        return torch.from_numpy(vals)
-
-    def _fetch_out_of_core_time_col(self, table_name: str,
-                                    node_ids: torch.Tensor,
-                                    col_name: str) -> torch.Tensor:
-        """Fetch a time/end_time column for specific node IDs from the DG index.
-
-        Used when time attributes are requested outside of a sampling context
-        (e.g. explain step, create_datamodule for link prediction).
-        """
-        if self._index_path is None:
-            raise KeyError(f"DiskgraphFeatureStore: '{col_name}' requested for "
-                           f"'{table_name}' but fused cache is empty and no "
-                           "index_path available.")
-
-        if self._engine is None:
-            from diskgraph import SamplerEngine
-            self._engine = SamplerEngine(self._index_path)
-
-        ids_list = node_ids.cpu().tolist()
-
-        BATCH = 50_000
-        all_batches = []
-        for start in range(0, len(ids_list), BATCH):
-            chunk = ids_list[start:start + BATCH]
-            request = [{
-                "node_type": table_name,
-                "node_ids": chunk,
-                "feature_names": [col_name],
-            }]
+        batches = []
+        batch_size = 50_000
+        for chunk in node_ids.split(batch_size):
+            request = [
+                {
+                    "node_type": table_name,
+                    "node_ids": chunk.cpu().tolist(),
+                    "feature_names": feature_names,
+                }
+            ]
             for event in self._engine.fetch_features(request):
                 if event["type"] == "feature":
-                    all_batches.append(event["batch"])
+                    batches.append(event["batch"])
 
-        if not all_batches:
-            return torch.zeros(len(ids_list), dtype=torch.long)
-
-        table = pa.Table.from_batches(all_batches)
-        if col_name not in table.column_names:
-            return torch.zeros(len(ids_list), dtype=torch.long)
-
-        ser = pd.to_datetime(
-            table.column(col_name).to_pandas(), errors="coerce")
-        vals = _datetime_series_to_ns(ser)
-        return torch.from_numpy(vals)
-
-    def _fetch_out_of_core_pkey(self, table_name: str, node_ids: torch.Tensor,
-                                pkey_name: str) -> np.ndarray:
-        """Fetch primary key column for specific node IDs from the DG index."""
-        if self._index_path is None:
-            raise KeyError(
-                f"DiskgraphFeatureStore: pkey requested for '{table_name}' "
-                "but fused cache is empty and no index_path available.")
-
-        if self._engine is None:
-            from diskgraph import SamplerEngine
-            self._engine = SamplerEngine(self._index_path)
-
-        ids_list = node_ids.cpu().tolist()
-
-        BATCH = 50_000
-        all_batches = []
-        for start in range(0, len(ids_list), BATCH):
-            chunk = ids_list[start:start + BATCH]
-            request = [{
-                "node_type": table_name,
-                "node_ids": chunk,
-                "feature_names": [pkey_name],
-            }]
-            for event in self._engine.fetch_features(request):
-                if event["type"] == "feature":
-                    all_batches.append(event["batch"])
-
-        if not all_batches:
-            return np.arange(len(ids_list))
-
-        table = pa.Table.from_batches(all_batches)
-        if pkey_name not in table.column_names:
-            return np.arange(len(ids_list))
-
-        return table.column(pkey_name).to_pandas().values.copy()
-
-    def _multi_get_tensor(self, attrs):
-        """Override to eagerly clean up fused cache after all attrs are read.
-
-        The fused cache holds large Arrow tables from the sampling engine.
-        Cleaning up in a finally block ensures memory is released even if
-        one of the ``_get_tensor`` calls raises.
-        """
-        try:
-            return [self._get_tensor(attr) for attr in attrs]
-        finally:
-            self._clear_fused_cache()
+        if not batches:
+            raise RuntimeError(f"DiskGraph returned no features for '{table_name}'")
+        return pa.Table.from_batches(batches)
