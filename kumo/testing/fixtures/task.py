@@ -11,9 +11,10 @@ from functools import partial
 
 import pandas as pd
 import pytest
+from kumo.testing.fixtures.in_memory_graph import InMemoryGraphStore
 from kumo_core.encoders.config import EncodersConfig, TargetEncoderConfig
 from kumo_core.encoders.selection import compute_missing_stats_
-from kumo_core.encoders.tensor_mappers import TensorMappers
+from kumo_core.encoders.tensor_mapper import TensorMapper
 from kumo_core.features.stores.feature import (
     FeatureStore,
     FeatureStoreTableSchema,
@@ -39,7 +40,6 @@ from kumoapi.encoder import (
 from kumoapi.typing import Stype
 
 from kumo.stats import Stats
-from kumo.testing.fixtures.in_memory_graph import InMemoryGraphStore
 
 
 @dataclass
@@ -167,12 +167,18 @@ def create_task_data(
 
     # Create `FeatureStore` ###################################################
 
-    mappers = TensorMappers.from_encoders(encoders)
+    table_mapper_dict = {
+        table_name: {
+            col_name: TensorMapper.from_encoder(encoder)
+            for col_name, encoder in table_encoders.items()
+        }
+        for table_name, table_encoders in encoders.items()
+    }
 
     fs_table_schema_dict = {
         table_name:
         FeatureStoreTableSchema(
-            mapper_dict=mappers[table_name],
+            mapper_dict=table_mapper_dict[table_name],
             pkey_name=schema.pkey_name,
             time_col_name=schema.time_col,
             end_time_col_name=schema.end_time_col,
@@ -194,9 +200,11 @@ def create_task_data(
         train_mask_name='TRAIN_MASK',
         val_mask_name='VAL_MASK',
         test_mask_name='TEST_MASK' if 'TEST_MASK' in train_table_df else None,
-        mapper_dict=mappers['TRAIN_TABLE'],
-        target_mapper=('TARGET', mappers.target.mapper)
-        if target_encoder is not None else None,
+        mapper_dict=table_mapper_dict['TRAIN_TABLE'],
+        target_mapper=(
+            encoders.target.col_name,
+            TensorMapper.from_encoder(encoders.target.encoder),
+        ) if encoders.target is not None else None,
         time_col_name='TIME' if 'TIME' in train_table_df else None,
         weight_col_name=weight_col,
     )
