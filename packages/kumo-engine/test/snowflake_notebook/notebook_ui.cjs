@@ -261,33 +261,60 @@ async function selectTestService(frame, event) {
   });
 }
 
-async function restartKernel(frame, event) {
-  const status = frame.getByRole("button", {
-    name: "Connection status",
-    exact: true,
-  });
+async function shutdownKernel(frame, event, stage) {
   await frame
     .getByRole("button", { name: "Service List dropdown button", exact: true })
     .click();
   await frame
-    .getByRole("button", {
-      name: "Restart kernel Clear variables but keep packages",
-      exact: true,
-    })
+    .getByRole("dialog", { name: "Notebook service management", exact: true })
+    .getByRole("button", { name: "Shut down kernel", exact: true })
     .click();
-  const dialog = frame.getByRole("dialog", {
-    name: "Restart kernel",
+  const shutdown = frame.getByRole("dialog", {
+    name: /^Shut down(?: kernel)?$/,
+  });
+  try {
+    await shutdown.waitFor({ timeout: 3000 });
+  } catch {}
+  if (await shutdown.isVisible()) {
+    await shutdown
+      .getByRole("button", { name: /^Shut down(?: kernel)?$/ })
+      .click();
+    await shutdown.waitFor({ state: "hidden" });
+  }
+  await frame
+    .getByRole("button", { name: "Connection status", exact: true })
+    .filter({ hasText: /^(Connect|Disconnected)$/ })
+    .waitFor({ timeout: 180000 });
+  event("test_notebook_kernel_stopped", { stage });
+}
+
+async function resetKernel(frame, event) {
+  await shutdownKernel(frame, event, "after_install");
+  await frame
+    .getByRole("button", { name: "Service List dropdown button", exact: true })
+    .click();
+  const service = frame.getByRole("dialog", {
+    name: "Notebook service management",
     exact: true,
   });
-  await dialog.waitFor();
-  event("kernel_restart_requested");
-  await Promise.all([
-    status.filter({ hasNotText: /^Connected$/ }).waitFor({ timeout: 60000 }),
-    dialog.getByRole("button", { name: "Restart", exact: true }).click(),
-  ]);
-  await dialog.waitFor({ state: "hidden" });
-  await status.filter({ hasText: /^Connected$/ }).waitFor({ timeout: 180000 });
-  event("kernel_restarted");
+  const text = await service.innerText();
+  requireThat(
+    /Connect to resume\s+EGU_GRAPH_UI_SERVICE(?:\s|$)/.test(text),
+    "Reconnect only the dedicated EGU_GRAPH_UI_SERVICE",
+  );
+  requireThat(
+    /Compute pool:\s*KUMO_TEST_POOL \(GEN_X64_G2_8\)(?:\s|$)/.test(text),
+    "Disconnected notebook service uses a different compute pool",
+  );
+  await service
+    .getByRole("button", { name: "Connect kernel", exact: true })
+    .click();
+  await frame
+    .getByRole("button", { name: "Connection status", exact: true })
+    .filter({ hasText: /^Connected$/ })
+    .waitFor({ timeout: 180000 });
+  if (await service.isVisible()) await service.press("Escape");
+  event("kernel_reset_completed");
 }
 
 async function execute(page, frame, spec, event, output, config) {
@@ -389,7 +416,7 @@ async function execute(page, frame, spec, event, output, config) {
         throw new Error("Notebook setup failed; inspect its cell output");
       }),
   ]);
-  await restartKernel(frame, event);
+  await resetKernel(frame, event);
   await profile(frame, event);
   const priorOutput = frame.getByText(/KUMO_GRAPH_RESULT=\{/);
   const graphStarted = frame.getByText(
@@ -564,30 +591,7 @@ async function verify(page, config, evidence, event) {
     { mode: 0o600 },
   );
 
-  await frame
-    .getByRole("button", { name: "Service List dropdown button", exact: true })
-    .click();
-  await frame
-    .getByRole("dialog", { name: "Notebook service management", exact: true })
-    .getByRole("button", { name: "Shut down kernel", exact: true })
-    .click();
-  const shutdown = frame.getByRole("dialog", {
-    name: /^Shut down(?: kernel)?$/,
-  });
-  try {
-    await shutdown.waitFor({ timeout: 3000 });
-  } catch {}
-  if (await shutdown.isVisible()) {
-    await shutdown
-      .getByRole("button", { name: /^Shut down(?: kernel)?$/ })
-      .click();
-    await shutdown.waitFor({ state: "hidden" });
-  }
-  await frame
-    .getByRole("button", { name: "Connection status", exact: true })
-    .filter({ hasText: /^(Connect|Disconnected)$/ })
-    .waitFor();
-  event("test_notebook_kernel_stopped");
+  await shutdownKernel(frame, event, "after_graph");
 
   const url = page.url();
   await page.goto("about:blank");

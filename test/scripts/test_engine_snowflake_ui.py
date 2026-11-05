@@ -460,7 +460,7 @@ def test_graph_execution_acknowledges_before_imports_or_sql(
     int(namespace['execution'], 16)
 
 
-def test_graph_cell_rejects_setup_state_retained_after_restart(
+def test_graph_cell_rejects_setup_state_retained_after_reset(
         graph_bundle, capsys):
     _, root, config = graph_bundle
     cell = json.loads((root / config['path']).read_text())['cells'][1]
@@ -468,6 +468,6 @@ def test_graph_cell_rejects_setup_state_retained_after_restart(
     prefix = compile(ast.Module(body=code.body[:4], type_ignores=[]),
                      '<graph-cell-restart-guard>', 'exec')
     with pytest.raises(AssertionError,
-                       match='retained setup state after restart'):
+                       match='retained setup state after reset'):
         exec(prefix, dict(setup_execution='previous-kernel'))
     assert capsys.readouterr().out.startswith('KUMO_GRAPH_EXECUTION_STARTED=')

@@ -158,8 +158,9 @@ validating that revision, and retain its exact commit in the report.
 The notebook uses the unchanged adtech graph from An's checksum-pinned PR172
 fixture: 9 tables, 52 columns, and 10 relationships. `graph-assets.json` pins
 already staged fixture and PDF test-tool assets. Normal runs need no AWS access
-or large upload. The notebook verifies and installs the staged wheel, restarts
-its kernel, and executes graph assertions. Before executing cells, the browser
+or large upload. The notebook verifies and installs the staged wheel, shuts down its kernel,
+reconnects to the same dedicated service, and verifies setup variables were
+cleared before executing graph assertions. Installed packages survive this reset. Before executing cells, the browser
 checks `KUMO_TEST_POOL`, `KUMO_TEST_WH`, and the dedicated role. Only a known
 service-startup timeout permits one connection retry after read-only polling
 of the same test pool; no notebook cell or training job is retried.

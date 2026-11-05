@@ -227,7 +227,7 @@ print('KUMO_GRAPH_INSTALL_COMPLETE=' + setup_execution, flush=True)
     execute = '''from uuid import uuid4
 execution = uuid4().hex[:12]
 print('KUMO_GRAPH_EXECUTION_STARTED=' + execution, flush=True)
-assert 'setup_execution' not in globals(), 'Notebook kernel retained setup state after restart'
+assert 'setup_execution' not in globals(), 'Notebook kernel retained setup state after reset'
 import hashlib, importlib.metadata, json, os, sys
 from pathlib import Path
 from IPython import get_ipython
