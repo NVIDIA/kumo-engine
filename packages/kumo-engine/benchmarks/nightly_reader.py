@@ -95,9 +95,9 @@ def run(output, rows):
         rows=count, reader_seconds=seconds,
         microseconds_per_row=seconds * 1000000 / rows,
         generation_seconds=generation_seconds,
-        peak_process_rss_bytes=resource.getrusage(
-            resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == 'darwin'
-                                             else 1024),
+        peak_process_rss_bytes=(
+            resource.getrusage(resource.RUSAGE_SELF).ru_maxrss *
+            (1 if sys.platform == 'darwin' else 1024)),
         peak_owned_disk_bytes=peak_disk_bytes,
         input_bytes=inputs.stat().st_size, source_sha256=source_sha256,
         pyarrow=pa.__version__,

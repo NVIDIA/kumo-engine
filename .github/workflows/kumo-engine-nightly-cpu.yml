@@ -4,6 +4,8 @@
 name: Kumo Engine shared runner CPU checks
 
 on:  # yamllint disable-line rule:truthy
+  push:
+    branches: ['codex/engine-nightly-ci', 'codex/engine-weekly-ci']
   pull_request:
     paths:
       - '.github/workflows/kumo-engine-nightly-cpu.yml'
