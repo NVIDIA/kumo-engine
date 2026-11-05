@@ -240,6 +240,26 @@ def test_a_non_nullable_staged_column_still_takes_the_nulls(tmp_path):
     assert not stored.schema.field('id').nullable
 
 
+@pytest.mark.parametrize('values, outcome', [
+    (pa.array([' 1705276800 ', '1705363200']), {
+        'ts': 's'
+    }),
+    (pa.array([' 1705276800 ', '1705276800000']), ValueError),
+    (pa.array([' 20240115', '20240116 ']), {
+        'ts': '%Y%m%d'
+    }),
+])
+def test_padded_digit_strings_count_as_numbers(tmp_path, values, outcome):
+    path = _part(tmp_path, values)
+    if outcome is ValueError:
+        with pytest.raises(ValueError, match='no single reading'):
+            resolve_time_columns('events', _definition(), [str(path)])
+        return
+    with pytest.warns(UserWarning, match='holds whole numbers'):
+        assert resolve_time_columns('events', _definition(),
+                                    [str(path)]) == outcome
+
+
 def test_a_declared_format_is_left_alone(tmp_path):
     path = _part(tmp_path, pa.array(['05/03/1990', '30/02/1990']))
     before = path.read_bytes()

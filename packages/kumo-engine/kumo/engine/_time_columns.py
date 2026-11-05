@@ -54,7 +54,7 @@ _YEAR_SLASH = (r'^(?P<y>\d{4})/(?P<m>\d{1,2})/(?P<d>\d{1,2})'
                r'(?: (?P<H>\d{1,2}):(?P<M>\d{2})(?::(?P<S>\d{2}))?)?$')
 _SLASH = (r'^(?P<a>\d{1,2})/(?P<b>\d{1,2})/(?P<y>\d{4})'
           r'(?: (?P<H>\d{1,2}):(?P<M>\d{2})(?::(?P<S>\d{2}))?)?$')
-_DIGITS = r'^\d+$'
+_DIGITS = r'^\s*(?P<n>\d+)(?:\.0+)?\s*$'
 _ONE_SHAPE = (
     (r'^(\d{4}-\d{2}-\d{2})T', r'\1 '),
     (r'^(\d{4}-\d{2}-\d{2})$', r'\1 00:00:00'),
@@ -350,15 +350,19 @@ def _native_instants(values: pa.Array) -> Optional[Tuple[pa.Array, pa.Array]]:
 
 
 def _text_numbers(text: pa.Array, digits: pa.Array) -> pa.Array:
-    r"""The digit-only strings as `int64`, null where too wide for it."""
-    length = pc.utf8_length(text)
+    r"""The whole numbers spelled in text, as `int64`: the spellings
+    DiskGraph's integer parser accepts (padding, a zero fraction), null
+    where too wide for `int64`.
+    """
+    plain = pc.struct_field(pc.extract_regex(text, _DIGITS), 'n')
+    length = pc.utf8_length(plain)
     fits = pc.and_(
         digits,
         pc.or_(
             pc.less(length, len(_INT64_MAX)),
             pc.and_(pc.equal(length, len(_INT64_MAX)),
-                    pc.less_equal(text, _INT64_MAX))))
-    return pc.cast(pc.if_else(fits, text, None), pa.int64())
+                    pc.less_equal(plain, _INT64_MAX))))
+    return pc.cast(pc.if_else(fits, plain, None), pa.int64())
 
 
 def _strings(values: pa.Array) -> Optional[pa.Array]:
