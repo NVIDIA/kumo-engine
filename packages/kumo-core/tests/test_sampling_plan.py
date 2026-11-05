@@ -81,3 +81,6 @@ def test_restored_sampler_keys_keep_matching_edge_types_exactly():
         "sales.events", "user_id", "users")
     assert restore("legacy.orders", "user_id", "users") == (
         "orders", "user_id", "users")
+    assert _restore_num_neighbors_key(
+        EdgeTypeStr("crm.events", "user_id", "users"), {}).to_tuple() == (
+            "crm.events", "user_id", "users")

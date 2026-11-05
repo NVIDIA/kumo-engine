@@ -3401,12 +3401,15 @@ def _restore_num_neighbors_key(
     old_key: EdgeTypeStr,
     edge_type_by_serialized: dict[str, EdgeType],
 ) -> EdgeTypeStr:
-    r"""A saved sampler key as the graph names it; a key the graph does not
-    hold is a legacy fully qualified name and loses its data-source
-    prefix."""
+    r"""A saved sampler key as the graph names it. Only when the graph's edge
+    types are known and do not hold the key is it a legacy fully qualified
+    name that loses its data-source prefix; without a graph the key is
+    kept as saved."""
     matching_edge_type = edge_type_by_serialized.get(str(old_key))
     if matching_edge_type is not None:
         return EdgeTypeStr(*matching_edge_type)
+    if not edge_type_by_serialized:
+        return old_key
     src, rel, dst = old_key.to_tuple()
     return EdgeTypeStr(get_table_name(src), rel, get_table_name(dst))
 
