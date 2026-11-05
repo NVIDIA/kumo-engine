@@ -967,7 +967,7 @@ class Graph:
         table_data_versions: Dict[str, str] = {}
         source_paths: Dict[str, str] = {}
         source_tables: Dict[str, SourceTableEntry] = {}
-        empty: List[str] = []
+        left_out: Dict[str, Optional[str]] = {}
 
         started = start() if timed else None
         try:
@@ -995,16 +995,12 @@ class Graph:
                         },
                         sql=sql,
                     )
-                except EmptySourceError:
-                    empty.append(alias)
-                    try:
-                        version = source_backend.get_data_version(
-                            connector, name)
-                    except Exception:
-                        continue
-                    source_tables[alias] = source_table(
-                        connector, name, sql, version,
-                        record_sources=record_sources)
+                except EmptySourceError as error:
+                    left_out[alias] = error.version
+                    if error.version is not None:
+                        source_tables[alias] = source_table(
+                            connector, name, sql, error.version,
+                            record_sources=record_sources)
                     continue
                 if prepared.credentials is not None:
                     raise NotImplementedError(
@@ -1034,11 +1030,13 @@ class Graph:
                     source_paths[alias] = str(
                         prepared.source.get('path') or dest_dir)
 
-            if empty:
-                graph_config = self._config_without(empty, graph_key)
             version_parts = [
                 json.dumps(table_data_versions, sort_keys=True).encode()
             ]
+            if left_out:
+                graph_config = self._config_without(list(left_out), graph_key)
+                version_parts.append(
+                    json.dumps(left_out, sort_keys=True).encode())
             if timestamp_precision != 'seconds':
                 version_parts.append(timestamp_precision.encode())
             data_version = fingerprint(*version_parts)

@@ -728,15 +728,31 @@ def test_a_table_with_no_rows_is_left_out_of_the_snapshot(tmp_path):
     with pytest.raises(ValueError, match=r'Every table .* no rows \(items\)'):
         Graph({'items': items}).snapshot()
     assert snapshot.source_changes(graph)['items']['status'] == 'unchanged'
+    recorded = snapshot.manifest.parents.source_tables['items'].version
+    assert recorded == connector.source_backend.get_data_version(
+        connector, 'items')
 
-    written = (root / 'items.parquet').stat().st_mtime
-    pq.write_table(
+    def rewrite(table):
+        written = (root / 'items.parquet').stat().st_mtime
+        pq.write_table(table, root / 'items.parquet')
+        os.utime(root / 'items.parquet', (written + 2, written + 2))
+
+    rewrite(
         pa.table({
-            'item_id': range(5),
-            'amount': [1.0, 2.0, 3.0, 4.0, 5.0]
-        }), root / 'items.parquet')
-    os.utime(root / 'items.parquet', (written + 2, written + 2))
+            'item_id': pa.array([], pa.int64()),
+            'amount': pa.array([], pa.float64()),
+        }))
     assert snapshot.source_changes(graph)['items']['status'] == 'changed'
+    with pytest.warns(UserWarning, match='left out of the snapshot'):
+        rewritten = graph.snapshot()
+    assert rewritten.id != snapshot.id
+    assert rewritten.source_changes(graph)['items']['status'] == 'unchanged'
+
+    rewrite(pa.table({
+        'item_id': range(5),
+        'amount': [1.0, 2.0, 3.0, 4.0, 5.0]
+    }))
+    assert rewritten.source_changes(graph)['items']['status'] == 'changed'
     full = graph.snapshot()
     assert [table['table_name'] for table in full.graph_config['tables']
             ] == ['users', 'orders', 'items']

@@ -34,5 +34,6 @@ def test_zero_row_read_is_an_empty_source(rows, tmp_path, monkeypatch):
     if rows:
         assert prepare().source["paths"] == [str(part)]
     else:
-        with pytest.raises(EmptySourceError, match="no rows"):
+        with pytest.raises(EmptySourceError, match="no rows") as error:
             prepare()
+        assert error.value.version == "v1"

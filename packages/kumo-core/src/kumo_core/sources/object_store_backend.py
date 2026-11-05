@@ -162,6 +162,6 @@ class ObjectStoreSourceBackend(ABC):
             raise EmptySourceError(
                 f'Reading {table_name} produced no rows. An empty source '
                 f'table cannot be ingested; DiskGraph needs at least one row '
-                f'to infer an encoding.')
+                f'to infer an encoding.', version=staged.version)
 
         return ingest_result(staged)

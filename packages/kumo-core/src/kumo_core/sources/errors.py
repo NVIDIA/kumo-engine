@@ -35,7 +35,12 @@ class SourceNotFoundError(PermanentSourceError):
 
 class EmptySourceError(PermanentSourceError):
     """The table has no rows; DiskGraph needs at least one to infer an
-    encoding, so a graph can leave the table out."""
+    encoding, so a graph can leave the table out. ``version`` is the source
+    version the empty read attested, for the graph to record."""
+    def __init__(self, message: str, *, table: str | None = None,
+                 version: str | None = None) -> None:
+        super().__init__(message, table=table)
+        self.version = version
 
 
 class SourceAccessDeniedError(PermanentSourceError):

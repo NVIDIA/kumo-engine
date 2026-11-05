@@ -253,7 +253,7 @@ class DatabricksSourceBackend(_DatabricksSessions):
             raise EmptySourceError(
                 f'Reading {bare} returned no rows. An empty source '
                 f'table cannot be ingested; DiskGraph needs at least one row '
-                f'to infer an encoding.')
+                f'to infer an encoding.', version=staged.version)
 
         return ingest_result(staged)
 
