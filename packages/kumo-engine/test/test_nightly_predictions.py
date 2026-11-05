@@ -93,7 +93,7 @@ def test_training_keys_sort_exact_timestamp_without_prediction_columns(
 def test_sparse_extreme_keys_and_maximum_sample_split_are_exact(
         tmp_path, monkeypatch, keys, dtype):
     frame = pd.DataFrame(
-        dict(ENTITY=pd.Series(np.repeat(keys, 3), dtype=dtype),
+        dict(ENTITY=pd.Series(np.repeat(np.asarray(keys, dtype=dtype), 3)),
              VALUE=np.arange(15)))
     paths = write_shards(frame, tmp_path, 3)
     monkeypatch.setattr(predictions, '_SORT_ROWS', 4)
