@@ -4,7 +4,6 @@
 from typing import Literal
 
 import numpy as np
-import pandas as pd
 import torch_frame
 from kumoapi.typing import Stype
 from torch import Tensor
@@ -12,7 +11,7 @@ from torch_frame import TensorFrame
 from torch_frame.data import MultiEmbeddingTensor, MultiNestedTensor
 
 TensorData = Tensor | MultiNestedTensor | MultiEmbeddingTensor
-FeatureStoreData = Tensor | TensorFrame | np.ndarray | pd.DataFrame
+FeatureStoreData = Tensor | TensorFrame | np.ndarray
 
 TimeUnit = Literal['seconds', 'minutes', 'hours', 'days', 'weeks', 'months']
 

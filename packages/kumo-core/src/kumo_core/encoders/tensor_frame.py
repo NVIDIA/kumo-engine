@@ -4,7 +4,6 @@
 from collections import defaultdict
 from typing import cast
 
-import pandas as pd
 import pyarrow as pa
 import torch
 from kumoapi.typing import Stype
@@ -16,8 +15,7 @@ from kumo_core.encoders.tensor_mapper import TensorMapper
 from kumo_core.types.features import TensorData
 
 
-def combine_feats(
-        feats_dict: dict[Stype, list[TensorData]]) -> dict[Stype, TensorData]:
+def combine_feats(feats_dict: dict[Stype, list[TensorData]]) -> dict[Stype, TensorData]:
     """Combine per-column tensors into stype-wise tensors for TensorFrame."""
     feat_dict: dict[Stype, TensorData] = {}
 
@@ -48,23 +46,31 @@ def combine_feats(
 
 
 def get_tf(
-    df: pd.DataFrame | pa.RecordBatch | pa.Table,
+    df: pa.RecordBatch | pa.Table,
     mapper_dict: dict[str, TensorMapper],
 ) -> TensorFrame:
+    """Encode Arrow columns into a tensor frame.
 
+    Args:
+        df: Raw Arrow data, with one row per example.
+        mapper_dict: Column encoders; unsupported columns are skipped.
+
+    Returns:
+        Encoded features with the input row count and mapper column order.
+
+    Raises:
+        KeyError: If a supported mapper column is missing from the input.
+    """
     feats_dict: dict[Stype, list[TensorData]] = defaultdict(list)
     col_names_dict: dict[Stype, list[str]] = defaultdict(list)
-
-    is_arrow = isinstance(df, (pa.RecordBatch, pa.Table))
 
     for col_name, mapper in mapper_dict.items():
         if mapper.stype == Stype.unsupported:
             continue
 
-        col = df.column(col_name) if is_arrow else df[col_name]
+        col = df.column(col_name)
         feats_dict[mapper.stype].append(mapper(col))
         col_names_dict[mapper.stype].append(col_name)
 
     feat_dict = combine_feats(feats_dict)
-    num_rows = df.num_rows if is_arrow else len(df)
-    return TensorFrame(feat_dict, col_names_dict, num_rows=num_rows)
+    return TensorFrame(feat_dict, col_names_dict, num_rows=df.num_rows)
