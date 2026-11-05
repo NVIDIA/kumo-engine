@@ -40,6 +40,7 @@ dependencies = [
   "pyarrow>=15,<25",
   "pydantic>=2.11",
   "pydantic-core",
+  "python-dateutil>=2.8.2,<3",
   # Needed by `OptunaSearcher.analyze`; optuna only declares it as an extra.
   "scikit-learn>=1.6.1",
   # Custom SQL Table identity and gates (kumo_core/custom_sql.py). One minor,

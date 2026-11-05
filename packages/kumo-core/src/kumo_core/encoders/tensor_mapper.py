@@ -3,15 +3,19 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import re
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any, ClassVar, Generic, NamedTuple, TypeVar
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pyarrow.compute as pc
 import torch
+from dateutil.parser import parse as parse_datetime
 from kumoapi.encoder import (
     Datetime,
     Encoder,
@@ -32,11 +36,130 @@ from torch_frame.data import MultiEmbeddingTensor, MultiNestedTensor
 from torch_geometric.index import index2ptr, ptr2index
 
 from kumo_core.embedding_models import TokenEmbeddingModel, resolve_encoder
-from kumo_core.encoders.index_mapping import Mapper
-from kumo_core.features.time import TimestampHelper, to_datetime
+from kumo_core.features.time import TimestampHelper
 from kumo_core.types.features import SECONDS_IN_DAY
 
 T = TypeVar("T", Tensor, MultiNestedTensor, MultiEmbeddingTensor)
+
+
+def _canonical_categories(array: pa.Array) -> pa.Array:
+    """Give signed floating zeros a single hash representation."""
+    if pa.types.is_floating(array.type):
+        return pc.if_else(pc.equal(array, 0), pa.scalar(0, array.type), array)
+    return array
+
+
+def _category_codes(array: pa.Array, vocabulary: pa.Array) -> np.ndarray:
+    """Look up Arrow categories without coercing strings into numeric values."""
+    if pa.types.is_dictionary(array.type):
+        codes = pa.array(_category_codes(array.dictionary, vocabulary))
+        return pc.take(codes, array.indices).fill_null(-1).to_numpy().copy()
+    if not len(vocabulary) or array.null_count == len(array):
+        return np.full(len(array), -1, dtype=np.int64)
+    array = _canonical_categories(array)
+    try:
+        codes = pc.index_in(array, value_set=vocabulary)
+    except (pa.ArrowTypeError, pa.ArrowNotImplementedError):
+        return np.full(len(array), -1, dtype=np.int64)
+    return pc.cast(codes.fill_null(-1), pa.int64()).to_numpy().copy()
+
+
+def _is_list(array: pa.Array) -> bool:
+    """Recognize variable- and fixed-width Arrow list columns."""
+    return isinstance(array, (pa.ListArray, pa.LargeListArray, pa.FixedSizeListArray))
+
+
+def _list_values_offsets(array: pa.Array) -> tuple[pa.Array, np.ndarray]:
+    """Flatten visible list rows and normalize offsets, discarding null slots."""
+    if isinstance(array, (pa.ListArray, pa.LargeListArray)) and not array.null_count:
+        offsets = array.offsets.to_numpy().astype(np.int64)
+        start = int(offsets[0])
+        values = array.values.slice(start, int(offsets[-1]) - start)
+        offsets -= start
+        return pc.dictionary_decode(values), offsets
+    lengths = pc.fill_null(pc.list_value_length(array), 0).to_numpy()
+    offsets = np.empty(len(array) + 1, dtype=np.int64)
+    offsets[0] = 0
+    np.cumsum(lengths, out=offsets[1:])
+    return pc.dictionary_decode(pc.list_flatten(array)), offsets
+
+
+def _nested_from_arrow(
+    array: pa.Array, device: torch.device | None
+) -> MultiNestedTensor:
+    """Decode visible serialized integer lists into an owned nested tensor."""
+    if pa.types.is_null(array.type):
+        array = pa.array([None] * len(array), type=pa.list_(pa.int64()))
+    values, offsets = _list_values_offsets(array)
+    indices = pc.cast(values, pa.int64()).fill_null(-1).to_numpy().copy()
+    return MultiNestedTensor(
+        num_cols=1,
+        num_rows=len(array),
+        offset=torch.from_numpy(offsets).to(device),
+        values=torch.from_numpy(indices).to(device),
+    )
+
+
+def _timestamp_nanoseconds(array: pa.Array, format: str | None) -> np.ndarray:
+    """Normalize typed timestamps or parsed text to writable nanoseconds."""
+    array = pc.dictionary_decode(array)
+    if pa.types.is_string(array.type) or pa.types.is_large_string(array.type):
+        if format is not None and "%f" not in format:
+            array = pc.strptime(array, format=format, unit="ns", error_is_null=True)
+        elif format is not None:
+            array = pa.array(
+                [_parse_timestamp(value, format) for value in array.to_pylist()],
+                type=pa.int64(),
+            ).cast(pa.timestamp("ns"))
+        else:
+            first = next((value.as_py() for value in array if value.is_valid), "")
+            tz = "UTC" if re.search(r"(?:Z|[+-]\d{2}:?\d{2})$", first) else None
+            try:
+                array = pc.cast(array, pa.timestamp("ns", tz=tz))
+            except pa.ArrowInvalid:
+                parsed = [
+                    _parse_timestamp(value, format) for value in array.to_pylist()
+                ]
+                array = pa.array(parsed, type=pa.int64()).cast(pa.timestamp("ns"))
+    elif pa.types.is_null(array.type) or pa.types.is_time(array.type):
+        return np.full(len(array), np.iinfo(np.int64).min, dtype=np.int64)
+    elif pa.types.is_floating(array.type):
+        array = pc.if_else(
+            pc.is_finite(array), pc.cast(array, pa.int64(), safe=False), None
+        )
+    else:
+        array = pc.cast(array, pa.timestamp("ns"))
+    return (
+        pc.cast(array, pa.int64()).fill_null(np.iinfo(np.int64).min).to_numpy().copy()
+    )
+
+
+def _parse_timestamp(value: str | None, format: str | None) -> int | None:
+    """Parse irregular strings without losing fractional nanoseconds."""
+    if not value:
+        return None
+    if format is None:
+        for arrow_type in (pa.timestamp("ns"), pa.timestamp("ns", tz="UTC")):
+            try:
+                return pa.scalar(value).cast(arrow_type).cast(pa.int64()).as_py()
+            except pa.ArrowInvalid:
+                pass
+    remainder = 0
+    text = value
+    fraction = re.search(r"([.,])(\d{6})(\d{1,3})(?=\D|$)", text)
+    if fraction is not None:
+        remainder = int(fraction[3].ljust(3, "0"))
+        text = text[: fraction.start(3)] + text[fraction.end(3) :]
+    try:
+        parsed = (
+            datetime.strptime(text, format)
+            if format is not None
+            else parse_datetime(text, default=datetime(1, 1, 1))
+        )
+        timestamp = pa.scalar(parsed)
+        return timestamp.cast(pa.timestamp("ns")).cast(pa.int64()).as_py() + remainder
+    except (ValueError, OverflowError, pa.ArrowInvalid):
+        return None
 
 
 class ClosestHoliday(NamedTuple):
@@ -61,6 +184,13 @@ class TensorMapper(ABC, Generic[T]):
         device: torch.device | None = None,
     ) -> T:
         """Encode raw Arrow values, combining chunks before conversion.
+
+        Args:
+            array: Raw column values.
+            device: Destination device, or the default device when omitted.
+
+        Returns:
+            The column's compact tensor representation.
 
         Raises:
             TypeError: If the input is not an Arrow array or chunked array.
@@ -203,7 +333,15 @@ class UnsupportedTensorMapper(TensorMapper[Tensor]):
         *,
         device: torch.device | None = None,
     ) -> Tensor:
-        """Return an empty feature tensor with the Arrow input's row count."""
+        """Return an empty feature tensor with the Arrow input's row count.
+
+        Args:
+            array: Raw values as a single Arrow array.
+            device: Destination device, or the default device when omitted.
+
+        Returns:
+            The column's compact tensor representation.
+        """
         return torch.empty((len(array), 0), device=device)
 
     def backward(self, tensor: Tensor) -> pd.Series:
@@ -232,7 +370,15 @@ class ImageTensorMapper(TensorMapper[Tensor]):
         *,
         device: torch.device | None = None,
     ) -> Tensor:
-        """Return an empty feature tensor with the Arrow input's row count."""
+        """Return an empty feature tensor with the Arrow input's row count.
+
+        Args:
+            array: Raw values as a single Arrow array.
+            device: Destination device, or the default device when omitted.
+
+        Returns:
+            The column's compact tensor representation.
+        """
         return torch.empty((len(array), 0), device=device)
 
     def backward(self, tensor: Tensor) -> pd.Series:
@@ -267,12 +413,22 @@ class NumericalTensorMapper(TensorMapper[Tensor]):
         *,
         device: torch.device | None = None,
     ) -> Tensor:
-        """Encode numerical Arrow values, normalizing durations to seconds."""
-        values = (
-            array.to_pandas().dt.total_seconds().to_numpy()
-            if pa.types.is_duration(array.type)
-            else array.to_numpy(zero_copy_only=False)
-        )
+        """Encode numerical Arrow values, normalizing durations to seconds.
+
+        Args:
+            array: Raw values as a single Arrow array.
+            device: Destination device, or the default device when omitted.
+
+        Returns:
+            The column's compact tensor representation.
+        """
+        array = pc.dictionary_decode(array)
+        if pa.types.is_duration(array.type):
+            scale = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}
+            values = pc.cast(array, pa.int64()).to_numpy(zero_copy_only=False)
+            values = values / scale[array.type.unit]
+        else:
+            values = array.to_numpy(zero_copy_only=False)
         dtype = str(torch.get_default_dtype()).split(".")[-1]
         value = torch.from_numpy(values.astype(dtype))
         return value.to(device).view(-1, 1)
@@ -282,14 +438,9 @@ class NumericalTensorMapper(TensorMapper[Tensor]):
         array: pa.Array,
         device: torch.device | None = None,
     ) -> Tensor:
-        # TODO (vid) recent versions of pyarrow support DLPack direct
-        # conversions from PyArrow to Torch without numpy/pandas intermediates.
-
-        # Convert PyTorch default dtype to numpy format.
-        # We cast dtype in numpy to turn an immutable array into a mutable one.
         dtype = str(torch.get_default_dtype()).split(".")[-1]
         return (
-            torch.from_numpy(array.to_pandas().to_numpy().astype(dtype))
+            torch.from_numpy(array.to_numpy(zero_copy_only=False).astype(dtype))
             .to(device)
             .view(-1, 1)
         )
@@ -308,7 +459,9 @@ class CategoricalTensorMapper(TensorMapper[Tensor]):
     def __init__(self, category_counts: Sequence[Sequence[Any]]) -> None:
         category_counts = _sort_category_counts(category_counts)
         self.mapping = _create_mapping_from_category_counts(category_counts)
-        self.mapper = Mapper(self.mapping)
+        self._vocabulary = _canonical_categories(
+            pa.array([value for value, _ in category_counts])
+        )
 
     def backward(self, tensor: Tensor) -> pd.Series:
         if len(self.mapping) == 0:
@@ -325,30 +478,16 @@ class CategoricalTensorMapper(TensorMapper[Tensor]):
         *,
         device: torch.device | None = None,
     ) -> Tensor:
-        """Map Arrow categories to cached vocabulary indices; unknowns become -1."""
-        if pa.types.is_dictionary(array.type):
-            # Dictionary columns store integer codes into a small dictionary of
-            # unique values; hash only the K unique values, then gather.
-            dict_codes = self.mapping.get_indexer(array.dictionary.to_pandas()).astype(
-                np.int64
-            )
-            indices = array.indices
-            null_mask = None
-            if indices.null_count > 0:
-                null_mask = indices.is_null().to_numpy(zero_copy_only=False)
-                indices = indices.fill_null(0)
-            codes = dict_codes[indices.to_numpy(zero_copy_only=False)]
-            if null_mask is not None:
-                codes[null_mask] = -1
-            index = torch.from_numpy(codes).to(torch.long)
-            return index.to(device).view(-1, 1)
+        """Map Arrow categories to cached vocabulary indices; unknowns become -1.
 
-        if array.null_count == len(array):  # Avoid errors due to poor typing.
-            return torch.full(
-                (len(array), 1), fill_value=-1, dtype=torch.long, device=device
-            )
+        Args:
+            array: Raw values as a single Arrow array.
+            device: Destination device, or the default device when omitted.
 
-        index = self.mapper.map(array.to_numpy(zero_copy_only=False))
+        Returns:
+            The column's compact tensor representation.
+        """
+        index = torch.from_numpy(_category_codes(array, self._vocabulary))
         return index.to(device).view(-1, 1)
 
     def post_forward(
@@ -356,9 +495,8 @@ class CategoricalTensorMapper(TensorMapper[Tensor]):
         array: pa.Array,
         device: torch.device | None = None,
     ) -> Tensor:
-        # See comments in Numerical post_forward on casting and mutability
         return (
-            torch.from_numpy(array.to_pandas().to_numpy().astype(np.int64))
+            torch.from_numpy(array.to_numpy(zero_copy_only=False).astype(np.int64))
             .to(device)
             .view(-1, 1)
         )
@@ -383,31 +521,11 @@ class MultiCategoricalTensorMapper(TensorMapper[MultiNestedTensor]):
     ) -> None:
         category_counts = _sort_category_counts(category_counts)
         self.mapping = _create_mapping_from_category_counts(category_counts)
-        self.mapper = Mapper(self.mapping)
+        self._vocabulary = _canonical_categories(
+            pa.array([value for value, _ in category_counts])
+        )
         self.sep = sep
         self._is_string_dtype: bool | None = None
-
-    def _forward_pandas(
-        self,
-        ser: pd.Series,
-        *,
-        device: torch.device | None = None,
-    ) -> MultiNestedTensor:
-        """Handle split/explode cases outside the native Arrow path."""
-        # Support for both string-based and list-like input data:
-        if self._is_string_dtype is None and len(ser) > 0:
-            index = ser.first_valid_index()
-            self._is_string_dtype = index is not None and not pd.api.types.is_list_like(
-                ser[index]
-            )
-
-        rowptr, index = self.mapper.map_multi(ser, self.sep)
-        return MultiNestedTensor(
-            num_rows=rowptr.numel() - 1,
-            num_cols=1,
-            values=index.to(device),
-            offset=rowptr.to(device),
-        )
 
     def backward(self, tensor: MultiNestedTensor) -> pd.Series:
         assert tensor.num_cols == 1
@@ -441,57 +559,57 @@ class MultiCategoricalTensorMapper(TensorMapper[MultiNestedTensor]):
         *,
         device: torch.device | None = None,
     ) -> MultiNestedTensor:
-        """Encode Arrow lists directly, retaining parsing fallbacks."""
-        # An Arrow ``list<int>`` column is already the ``(rowptr, index)`` CSR
-        # layout of ``MultiNestedTensor``: map the flat values and reuse the
-        # offsets, skipping the explode / index2ptr machinery.
-        is_list = isinstance(array, (pa.ListArray, pa.LargeListArray))
-        if is_list and pa.types.is_integer(array.type.value_type):
-            offsets_np = array.offsets.to_numpy(zero_copy_only=False)
-            values = array.values
-            # The pandas fallback preserves the legacy -1 token for empty lists.
-            no_empty_rows = bool((offsets_np[1:] > offsets_np[:-1]).all())
-            if (
-                array.null_count == 0
-                and offsets_np[0] == 0
-                and offsets_np[-1] == len(values)
-                and no_empty_rows
-            ):
-                self._is_string_dtype = False
-                if values.null_count == 0:
-                    index = self.mapper.map(values.to_numpy(zero_copy_only=False))
-                else:
-                    index = self.mapper.map(values.to_pandas())
-                offsets = torch.from_numpy(offsets_np.astype(np.int64))
-                return MultiNestedTensor(
-                    num_rows=len(array),
-                    num_cols=1,
-                    values=index.to(device),
-                    offset=offsets.to(device),
-                )
+        """Encode Arrow lists and strings without constructing pandas objects.
 
-        # Fallback (string lists, nested nulls, sliced offsets, ...).
-        return self._forward_pandas(array.to_pandas(), device=device)
+        Args:
+            array: Raw values as a single Arrow array.
+            device: Destination device, or the default device when omitted.
+
+        Returns:
+            The column's compact tensor representation.
+        """
+        array = pc.dictionary_decode(array)
+        is_list = _is_list(array)
+        if self._is_string_dtype is None and len(array):
+            self._is_string_dtype = not is_list and array.null_count < len(array)
+        if is_list:
+            if isinstance(array, pa.FixedSizeListArray):
+                array = pc.cast(array, pa.list_(array.type.value_type))
+            if array.null_count:
+                array = pc.if_else(
+                    pc.is_null(array), pa.scalar([None], type=array.type), array
+                )
+            values, offsets = _list_values_offsets(array)
+        elif self.sep is not None:
+            strings = pc.fill_null(pc.cast(array, pa.string()), "__None__")
+            split = pc.split_pattern if len(self.sep) == 1 else pc.split_pattern_regex
+            values, offsets = _list_values_offsets(split(strings, pattern=self.sep))
+        else:
+            values = array
+            offsets = np.arange(len(array) + 1, dtype=np.int64)
+
+        if pa.types.is_string(values.type) or pa.types.is_large_string(values.type):
+            keep = pc.fill_null(pc.not_equal(values, ""), True)
+            prefix = np.empty(len(values) + 1, dtype=np.int64)
+            prefix[0] = 0
+            np.cumsum(keep.to_numpy(zero_copy_only=False), out=prefix[1:])
+            offsets = prefix[offsets]
+            values = pc.filter(values, keep)
+        return MultiNestedTensor(
+            num_rows=len(array),
+            num_cols=1,
+            values=torch.from_numpy(_category_codes(values, self._vocabulary)).to(
+                device
+            ),
+            offset=torch.from_numpy(offsets).to(device),
+        )
 
     def post_forward(
         self,
         array: pa.Array,
         device: torch.device | None = None,
     ) -> MultiNestedTensor:
-        if isinstance(array, pa.ListArray):
-            offsets = torch.from_numpy(array.offsets.to_numpy().astype(np.int64)).to(
-                device
-            )
-            values = torch.from_numpy(array.values.to_numpy().astype(np.int64)).to(
-                device
-            )
-        else:
-            assert len(array) == 0
-            offsets = torch.tensor([0], device=device, dtype=torch.int64)
-            values = torch.tensor([], device=device, dtype=torch.int64)
-        return MultiNestedTensor(
-            num_cols=1, num_rows=len(array), offset=offsets, values=values
-        )
+        return _nested_from_arrow(array, device)
 
 
 def _row_path(
@@ -545,54 +663,6 @@ class SequenceTensorMapper(TensorMapper[MultiEmbeddingTensor]):
             )
         return ser
 
-    def _forward_pandas(
-        self,
-        ser: pd.Series,
-        *,
-        device: torch.device | None = None,
-    ) -> MultiEmbeddingTensor:
-        """Parse and pad inputs outside the native Arrow list path."""
-        if len(ser) == 0:
-            return MultiEmbeddingTensor(
-                num_rows=0,
-                num_cols=1,
-                values=torch.empty(0, self.max_length, device=device),
-                offset=torch.tensor([0, self.max_length], device=device),
-            )
-
-        # Support for both string-based and list-like input data:
-        if self._is_string_dtype is None and len(ser) > 0:
-            index = ser.first_valid_index()
-            self._is_string_dtype = index is not None and not pd.api.types.is_list_like(
-                ser[index]
-            )
-
-        ser = self.to_list_like(ser)
-        dtype = str(torch.get_default_dtype()).split(".")[-1]
-
-        def pad_with_nan(row: list[float] | None) -> np.ndarray | list[float]:
-            if row is None or len(row) == 0:
-                return np.full(self.max_length, np.nan, dtype=dtype)
-
-            if len(row) < self.max_length:
-                return np.concatenate(
-                    [
-                        np.array(row, dtype=dtype),
-                        np.full(self.max_length - len(row), np.nan, dtype=dtype),
-                    ]
-                )
-
-            return row[: self.max_length]
-
-        tensor = torch.from_numpy(np.stack(ser.apply(pad_with_nan)))  # type: ignore
-
-        return MultiEmbeddingTensor(
-            num_rows=tensor.size(0),
-            num_cols=1,
-            values=tensor.to(device, torch.get_default_dtype()),
-            offset=torch.tensor([0, self.max_length], device=device),
-        )
-
     def backward(self, tensor: MultiEmbeddingTensor) -> pd.Series:
         assert tensor.num_cols == 1
         ser = pd.Series(tensor.values.tolist(), dtype=object)
@@ -606,35 +676,35 @@ class SequenceTensorMapper(TensorMapper[MultiEmbeddingTensor]):
         *,
         device: torch.device | None = None,
     ) -> MultiEmbeddingTensor:
-        """Encode Arrow lists directly, retaining parsing fallbacks."""
-        is_list = isinstance(array, (pa.ListArray, pa.LargeListArray))
-        if is_list and len(array) > 0:
-            offsets_np = array.offsets.to_numpy(zero_copy_only=False)
-            values_arr = array.values
-            # Defer sliced offsets to the pandas fallback (``array.values``
-            # ignores the slice, so require the full span); empty/null rows
-            # already map to all-NaN rows in both paths.
-            if offsets_np[0] == 0 and offsets_np[-1] == len(values_arr):
-                self._is_string_dtype = False
-                return self._pad_or_truncate(
-                    values_arr.to_numpy(zero_copy_only=False), offsets_np, device
-                )
+        """Encode Arrow lists and strings without constructing pandas objects.
 
-        if (
-            isinstance(array, pa.FixedSizeListArray)
-            and len(array) > 0
-            and array.null_count == 0
-        ):
-            width = array.type.list_size
-            self._is_string_dtype = False
-            return self._pad_or_truncate(
-                array.flatten().to_numpy(zero_copy_only=False),
-                np.arange(len(array) + 1, dtype=np.int64) * width,
-                device,
+        Args:
+            array: Raw values as a single Arrow array.
+            device: Destination device, or the default device when omitted.
+
+        Returns:
+            The column's compact tensor representation.
+        """
+        array = pc.dictionary_decode(array)
+        if self._is_string_dtype is None and len(array):
+            self._is_string_dtype = not _is_list(array) and array.null_count < len(
+                array
             )
-
-        # Fallback (string-encoded "[1,2,3]" sequences, sliced offsets, ...).
-        return self._forward_pandas(array.to_pandas(), device=device)
+        if pa.types.is_string(array.type) or pa.types.is_large_string(array.type):
+            dtype = str(torch.get_default_dtype()).split(".")[-1]
+            rows = [
+                np.fromstring(row.strip("[]"), sep=",", dtype=dtype)
+                if row is not None
+                else None
+                for row in array.to_pylist()
+            ]
+            array = pa.array(rows, type=pa.list_(pa.from_numpy_dtype(dtype)))
+        if pa.types.is_null(array.type):
+            array = pa.array([None] * len(array), type=pa.list_(pa.float64()))
+        values, offsets = _list_values_offsets(array)
+        return self._pad_or_truncate(
+            values.to_numpy(zero_copy_only=False), offsets, device
+        )
 
     def post_forward(
         self,
@@ -644,16 +714,11 @@ class SequenceTensorMapper(TensorMapper[MultiEmbeddingTensor]):
         r"""Pad the possibly uneven array of floats with NaNs and turn it into
         a tensor.
         """
-        if len(array) == 0:
-            return MultiEmbeddingTensor(
-                num_rows=0,
-                num_cols=1,
-                values=torch.empty(0, self.max_length, device=device),
-                offset=torch.tensor([0, self.max_length], device=device),
-            )
-        assert isinstance(array, pa.ListArray)
+        if pa.types.is_null(array.type):
+            array = pa.array([None] * len(array), type=pa.list_(pa.float64()))
+        values, offsets = _list_values_offsets(array)
         return self._pad_or_truncate(
-            array.values.to_numpy(), array.offsets.to_numpy(), device
+            values.to_numpy(zero_copy_only=False), offsets, device
         )
 
     def _pad_or_truncate(
@@ -662,6 +727,9 @@ class SequenceTensorMapper(TensorMapper[MultiEmbeddingTensor]):
         offsets_np: np.ndarray,
         device: torch.device | None,
     ) -> MultiEmbeddingTensor:
+        if values_np.dtype.kind == "O":
+            dtype = str(torch.get_default_dtype()).split(".")[-1]
+            values_np = values_np.astype(dtype)
         L = self.max_length
         seq_len_np = np.diff(offsets_np)
         n_rows = len(seq_len_np)
@@ -750,13 +818,19 @@ class TimestampTensorMapper(TensorMapper[Tensor]):
         *,
         device: torch.device | None = None,
     ) -> Tensor:
-        """Encode Arrow timestamps as calendar, holiday, and UNIX features."""
-        ser = to_datetime(array.to_pandas(), format=self.format)
+        """Encode Arrow timestamps as calendar, holiday, and UNIX features.
 
-        unix = torch.from_numpy(ser.astype("int64").to_numpy()).to(device)
+        Args:
+            array: Raw values as a single Arrow array.
+            device: Destination device, or the default device when omitted.
+
+        Returns:
+            The column's compact tensor representation.
+        """
+        unix = torch.from_numpy(_timestamp_nanoseconds(array, self.format)).to(device)
         na_mask = unix == torch.iinfo(torch.int64).min
         unix[na_mask] = 0
-        min_date = pd.Timestamp(f"{pd.Timestamp.min.year + 1}-01-01").value
+        min_date = np.datetime64("1678-01-01", "ns").astype(np.int64).item()
         unix = unix.clamp(min=min_date)
 
         unix = unix // 10**9  # Convert to seconds.
@@ -770,7 +844,7 @@ class TimestampTensorMapper(TensorMapper[Tensor]):
             )
             - 1
         )
-        year = year_index + pd.Timestamp.min.year + 1
+        year = year_index + 1678
 
         is_leap_year = (year % 4 == 0) & ((year % 100 != 0) | (year % 400 == 0))
 
@@ -887,8 +961,18 @@ class TimestampTensorMapper(TensorMapper[Tensor]):
         array: pa.Array,
         device: torch.device | None = None,
     ) -> Tensor:
-        out = torch.from_numpy(array.values.to_numpy()).to(device)
-        return out.view((len(array), len(self.index)))
+        if len(array) == 0:
+            return torch.empty((0, len(self.index)), dtype=torch.long, device=device)
+        values, offsets = _list_values_offsets(array)
+        if not np.all(np.diff(offsets) == len(self.index)):
+            raise ValueError(
+                "Serialized timestamps must contain all timestamp features"
+            )
+        return (
+            torch.from_numpy(values.to_numpy().copy())
+            .to(device)
+            .view(len(array), len(self.index))
+        )
 
 
 class TextTensorMapper(TensorMapper[MultiNestedTensor]):
@@ -913,17 +997,23 @@ class TextTensorMapper(TensorMapper[MultiNestedTensor]):
     ) -> MultiNestedTensor:
         """Tokenize Arrow text through the configured embedding model.
 
+        Args:
+            array: Raw text values as a single Arrow array.
+            device: Destination device, or the default device when omitted.
+
+        Returns:
+            Token indices and row offsets as a nested tensor.
+
         Raises:
             ValueError: If tokenization returns an invalid row-pointer count.
         """
-        ser = array.to_pandas()
         rowptr, index = (
-            torch.as_tensor(x, dtype=torch.long) for x in self.model.tokenize(ser)
+            torch.as_tensor(x, dtype=torch.long) for x in self.model.tokenize(array)
         )
-        if rowptr.numel() != len(ser) + 1:
+        if rowptr.numel() != len(array) + 1:
             raise ValueError(
                 f"{self.model!r}.tokenize() returned {rowptr.numel()} row "
-                f"pointers for {len(ser)} texts; it must return "
+                f"pointers for {len(array)} texts; it must return "
                 f"len(texts) + 1."
             )
         return MultiNestedTensor(
@@ -952,22 +1042,9 @@ class TextTensorMapper(TensorMapper[MultiNestedTensor]):
         # If the default `Null` encoder was manually overriden to
         # TextEmbedding, PMM didn't take place. In that case, we run a
         # regular `forward`.
-        if isinstance(array, pa.StringArray):
+        if pa.types.is_string(array.type) or pa.types.is_large_string(array.type):
             return self.forward(array, device=device)
-        if isinstance(array, pa.ListArray):
-            offsets = torch.from_numpy(array.offsets.to_numpy().astype(np.int64)).to(
-                device
-            )
-            values = torch.from_numpy(array.values.to_numpy().astype(np.int64)).to(
-                device
-            )
-        else:
-            assert len(array) == 0
-            offsets = torch.tensor([0], device=device, dtype=torch.int64)
-            values = torch.tensor([], device=device, dtype=torch.int64)
-        return MultiNestedTensor(
-            num_cols=1, num_rows=len(array), offset=offsets, values=values
-        )
+        return _nested_from_arrow(array, device)
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}()"
@@ -986,9 +1063,13 @@ def _create_mapping_from_category_counts(
     # When mapping contains boolean values, pd.Index directly assigns object
     # data-type. Explicitly check for this case and correct the dtype.
     mapping = [cc[0] for cc in category_counts]
-    if len(mapping) > 0 and isinstance(mapping[0], bool):
-        return pd.Index(mapping, dtype=pd.BooleanDtype())
-    return pd.Index(mapping)
+    dtype = pd.BooleanDtype() if mapping and isinstance(mapping[0], bool) else None
+    index = pd.Index(mapping, dtype=dtype)
+    if index.hasnans:
+        raise ValueError("Categorical categories cannot be null")
+    if not index.is_unique:
+        raise ValueError("Categorical categories must be unique")
+    return index
 
 
 def _tiled_mask(
