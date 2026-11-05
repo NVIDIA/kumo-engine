@@ -165,7 +165,6 @@ def _warn_low_fk_match_rates(stats: Dict[str, Any],
 
 _FLOAT32_EXACT_BITS = 24
 _FLOAT32_DTYPES = frozenset({Dtype.float, Dtype.float32})
-_TEXT_STYPES = frozenset({'categorical', 'text'})
 
 
 def _read_column_stats(kumo_stats_dir: Any, table: str) -> Dict[str, Any]:
@@ -248,7 +247,7 @@ def _narrowed_float_columns(
 def _warn_missing_like_text(table: str, column: Mapping[str, Any],
                             stat: Mapping[str, Any]) -> None:
     if (column.get('dtype') != 'string'
-            or column.get('stype') not in _TEXT_STYPES):
+            or column.get('stype') != 'categorical'):
         return
     counts = stat.get('CATEGORY_COUNTS')
     if not isinstance(counts, list):

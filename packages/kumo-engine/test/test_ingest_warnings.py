@@ -174,6 +174,11 @@ def test_snapshot_reports_non_finite_values_per_column(tmp_path):
         'stype': 'ID'
     }, [['NA', 5]], None),
     ({
+        'name': 'notes',
+        'dtype': 'string',
+        'stype': 'text'
+    }, [['NA', 5]], None),
+    ({
         'name': 'tags',
         'dtype': 'string',
         'stype': 'multicategorical'

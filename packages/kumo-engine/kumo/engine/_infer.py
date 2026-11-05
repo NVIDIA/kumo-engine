@@ -58,8 +58,8 @@ from kumo.engine.connector.base import Connector
 #: `kumoai/backend/local/_common.py`'s `_SAMPLE_ROWS`.
 _SAMPLE_ROWS = 10_000
 
-_PLAIN_NUMBER = re.compile(r'[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?')
-_WHOLE_NUMBER = re.compile(r'[+-]?\d{1,19}')
+_PLAIN_NUMBER = re.compile(r'[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?', re.ASCII)
+_WHOLE_NUMBER = re.compile(r'[+-]?\d{1,19}', re.ASCII)
 _INT64 = range(-2**63, 2**63)
 _NOT_NUMBERS = frozenset({Stype.ID, Stype.multicategorical, Stype.timestamp})
 _EXAMPLES = 3

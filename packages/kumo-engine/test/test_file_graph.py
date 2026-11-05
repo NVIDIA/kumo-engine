@@ -761,6 +761,8 @@ def test_decimal_columns_beyond_float32_precision_are_reported(tmp_path):
     ('parquet', ['01234', '00987', '01111', '1', '2', '3'], None),
     ('csv', ['01234', '00987', '01111', '1', '2', '3'], None),
     ('parquet', ['NA', 'US', 'DE', 'FR', 'IT', 'ES'], None),
+    ('parquet', ['\u0661', '\u0662', '\u0663', '\u0664', '\u0665', '\u0666'
+                 ], None),
     ('parquet', ['1', '2', '3', 'inf', '5', '6'], None),
 ])
 def test_numbers_stored_as_text_are_reported_at_inference(
