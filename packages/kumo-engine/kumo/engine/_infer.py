@@ -59,6 +59,7 @@ _SAMPLE_ROWS = 10_000
 
 _PLAIN_NUMBER = re.compile(r'[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?')
 _WHOLE_NUMBER = re.compile(r'[+-]?\d+')
+_INT64 = range(-2**63, 2**63)
 _NOT_NUMBERS = frozenset({Stype.ID, Stype.multicategorical, Stype.timestamp})
 _EXAMPLES = 3
 
@@ -96,7 +97,7 @@ def _report_numbers_stored_as_text(
                   f"(for example {examples})" if others else
                   f"; {missing} value(s) are missing" if missing else '')
         dtype = (Dtype.int64 if all(
-            _WHOLE_NUMBER.fullmatch(value)
+            _WHOLE_NUMBER.fullmatch(value) and int(value) in _INT64
             for value in numbers) else Dtype.float64)
         warnings.warn(
             f"Column {name!r} in table {table_name!r} is read as text, but "

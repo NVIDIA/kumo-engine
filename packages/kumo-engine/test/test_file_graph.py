@@ -749,6 +749,12 @@ def test_decimal_columns_beyond_float32_precision_are_reported(tmp_path):
      "table.with_column('amount', dtype=Dtype.int64, "
      "stype=Stype.numerical); values that do not parse become missing and "
      "are counted at snapshot."),
+    ('parquet', ['9223372036854775808', '1', '2', '3', '4', '5'],
+     "Column 'amount' in table 't.parquet' is read as text, but every "
+     "non-blank value in the 6 sampled rows is a number. To read it as a "
+     "number call table.with_column('amount', dtype=Dtype.float64, "
+     "stype=Stype.numerical); values that do not parse become missing and "
+     "are counted at snapshot."),
     ('parquet', ['1', 'abc', '3', '4', '5', '6'], None),
     ('parquet', ['01234', '00987', '01111', '1', '2', '3'], None),
     ('csv', ['01234', '00987', '01111', '1', '2', '3'], None),

@@ -168,20 +168,23 @@ _FLOAT32_DTYPES = frozenset({Dtype.float, Dtype.float32})
 _TEXT_STYPES = frozenset({'categorical', 'text'})
 
 
-def _column_stats(path: Any) -> Dict[str, Dict[str, Dict[str, Any]]]:
+def _read_column_stats(kumo_stats_dir: Any, table: str) -> Dict[str, Any]:
     try:
-        stats = json.loads(Path(path).read_text())
+        path = Path(kumo_stats_dir) / 'col_stats_min' / f'{table}.json'
+        column_stats = json.loads(path.read_text())
     except (OSError, TypeError, ValueError):
         return {}
-    if not isinstance(stats, dict):
-        return {}
-    return {
-        table: {
-            column: stat
-            for column, stat in columns.items() if isinstance(stat, dict)
-        }
-        for table, columns in stats.items() if isinstance(columns, dict)
-    }
+    return column_stats if isinstance(column_stats, dict) else {}
+
+
+def _by_column(column_stats: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
+    r"""The ``__False`` statistics of each column, keyed by statistic name."""
+    stats: Dict[str, Dict[str, Any]] = {}
+    for key, entry in column_stats.items():
+        parts = key.rsplit('__', 3)
+        if isinstance(entry, dict) and len(parts) == 4 and parts[3] == 'False':
+            stats.setdefault(parts[0], {})[parts[2]] = entry.get('value')
+    return stats
 
 
 def _count(stat: Mapping[str, Any], key: str) -> int:
@@ -189,14 +192,22 @@ def _count(stat: Mapping[str, Any], key: str) -> int:
     return value if type(value) is int and value > 0 else 0
 
 
-def invalid_value_counts(col_stats_path: Any) -> Dict[str, Dict[str, int]]:
+def _non_finite(stat: Mapping[str, Any]) -> int:
+    fraction = stat.get('INVALID_FRACTION')
+    if isinstance(fraction, bool) or not isinstance(fraction, (int, float)):
+        return 0
+    return round(fraction * _count(stat, 'COUNT')) if fraction > 0 else 0
+
+
+def invalid_value_counts(kumo_stats_dir: Any,
+                         tables: Sequence[str]) -> Dict[str, Dict[str, int]]:
     r"""Per table and column, how many values became missing at ingest
     because the declared type could not read them or they were not finite."""
     counts: Dict[str, Dict[str, int]] = {}
-    for table, columns in sorted(_column_stats(col_stats_path).items()):
-        for column, stat in sorted(columns.items()):
-            count = _count(stat, 'parse_fail_count') + _count(
-                stat, 'invalid_count')
+    for table in sorted(tables):
+        stats = _by_column(_read_column_stats(kumo_stats_dir, table))
+        for column, stat in sorted(stats.items()):
+            count = _count(stat, 'NUM_PARSE_FAILURES') + _non_finite(stat)
             if count:
                 counts.setdefault(table, {})[column] = count
     return counts
@@ -239,7 +250,7 @@ def _warn_missing_like_text(table: str, column: Mapping[str, Any],
     if (column.get('dtype') != 'string'
             or column.get('stype') not in _TEXT_STYPES):
         return
-    counts = stat.get('category_counts')
+    counts = stat.get('CATEGORY_COUNTS')
     if not isinstance(counts, list):
         return
     found = {
@@ -250,19 +261,17 @@ def _warn_missing_like_text(table: str, column: Mapping[str, Any],
     }
     if not found:
         return
-    bound = 'at least ' if stat.get('category_counts_capped') is True else ''
     tokens = ', '.join(repr(value) for value in sorted(found))
     warnings.warn(
-        f"{table}.{column['name']} holds {bound}{sum(found.values())} "
-        f"value(s) that look like missing ({tokens}); they are kept as text. "
-        "If they mean missing, replace them with nulls at the source; a "
-        "number or date column reads them as missing.", UserWarning,
-        stacklevel=4)
+        f"{table}.{column['name']} holds {sum(found.values())} value(s) that "
+        f"look like missing ({tokens}); they are kept as text. If they mean "
+        "missing, replace them with nulls at the source; a number or date "
+        "column reads them as missing.", UserWarning, stacklevel=3)
 
 
 def _magnitude(stat: Mapping[str, Any]) -> Optional[float]:
-    values = [stat.get('min'), stat.get('max')]
-    counts = stat.get('category_counts')
+    values = [stat.get('MIN'), stat.get('MAX')]
+    counts = stat.get('CATEGORY_COUNTS')
     if isinstance(counts, list):
         values += [
             entry[0] for entry in counts if isinstance(entry, list) and entry
@@ -296,7 +305,7 @@ def _warn_float32_narrowing(table: str, column: Mapping[str, Any],
         f"{physical} and reaches {magnitude:,.{scale}f}; from {limit:,.0f} on "
         f"float32 no longer resolves {step}, so values are rounded. Declare "
         "dtype=Dtype.float64 for the column to keep full precision.",
-        UserWarning, stacklevel=4)
+        UserWarning, stacklevel=3)
 
 
 def _warn_ingest_data_loss(
@@ -325,13 +334,9 @@ def _warn_ingest_data_loss(
                 column = key.rsplit('__', 3)[0]
                 warnings.warn(parse_failure_warning(name, column, count),
                               UserWarning, stacklevel=3)
-
-    column_stats = _column_stats(getattr(result, 'col_stats_path', None))
-    for table in graph_config.get('tables', []):
-        name = table['table_name']
-        stats = column_stats.get(name, {})
+        stats = _by_column(column_stats)
         for column, stat in sorted(stats.items()):
-            count = _count(stat, 'invalid_count')
+            count = _non_finite(stat)
             if count:
                 warnings.warn(
                     f"{count} non-finite value(s) (inf, -inf or NaN) found "
@@ -709,7 +714,9 @@ class GraphSnapshot:
         r"""Per table and column, the number of values that became missing at
         ingest: values the declared type could not read, and non-finite
         numbers. Columns with none are left out."""
-        return invalid_value_counts(Path(self.index_path) / 'col_stats.json')
+        return invalid_value_counts(
+            Path(self.index_path) / 'kumo_col_stats',
+            [table['table_name'] for table in self.graph_config['tables']])
 
 
 def _write_snapshot_manifest(result: Any, snapshot_id: str,
