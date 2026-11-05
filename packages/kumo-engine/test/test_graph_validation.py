@@ -140,6 +140,33 @@ def test_graph_validation_keeps_valid_edges(tables):
     assert portable_tables['events']['fkeys'][0]['dst_table'] == 'users'
 
 
+@pytest.mark.parametrize('aliases', [
+    ('crm.users', ),
+    ('crm.users', 'sales.users'),
+    ('crm.users', 'users'),
+    ('catalog.crm.users', ),
+    ('users.csv', ),
+])
+@pytest.mark.parametrize('linked', [False, True])
+def test_graph_validation_rejects_table_names_with_a_schema_prefix(
+        tables, aliases, linked):
+    users, events = tables
+    graph = Graph({alias: users for alias in aliases} | {'events': events},
+                  [Edge('events', 'user_id', aliases[0])] if linked else [])
+    message = (f"Table name {aliases[0]!r} contains '.'.*looked up as "
+               f"{aliases[0].rsplit('.', 1)[1]!r}.*"
+               f"{aliases[0].replace('.', '_')!r}")
+
+    with pytest.raises(PortableGraphError, match=message):
+        graph.validate()
+
+    with patch.object(
+            Graph, '_snapshot_no_lock',
+            side_effect=AssertionError('snapshot materialization started')):
+        with pytest.raises(PortableGraphError, match=message):
+            graph.snapshot()
+
+
 def test_graph_validation_rejects_destination_without_primary_key(tables):
     users, events = tables
     users = replace(users, definition=replace(users.definition, pkey=None))
