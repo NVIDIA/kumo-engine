@@ -7,8 +7,11 @@ name: Kitmaker Portal via Charon
 on:  # yamllint disable-line rule:truthy
   workflow_call:
     secrets:
+      # The token is a secret of the kumo-engine-release environment. A caller
+      # cannot read environment secrets, so it passes nothing here; the portal
+      # job below runs in that environment and reads the secret itself.
       KITMAKER_API_TOKEN:
-        required: true
+        required: false
     inputs:
       project:
         type: string
