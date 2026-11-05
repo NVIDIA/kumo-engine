@@ -1,7 +1,7 @@
 //! # PtrHash: Minimal Perfect Hashing at RAM Throughput
 //!
-//! PtrHash builds a _minimal perfect hash function_, that is,
-//! a hash function that maps a fixed set of keys to `{0, ..., n-1}`.
+//! This fork builds a perfect hash function without remapping: keys map to
+//! unique slots in `0..max_index()`, with a small amount of unused space.
 //!
 //! PtrHash was developed for large key sets of at least 1 million keys, and has been tested up to 10^11 keys.
 //! It only uses 2.4 bits per key.
@@ -28,8 +28,6 @@
 
 /// Customizable Hasher trait.
 pub mod hash;
-/// Extendable backing storage trait and types.
-pub mod pack;
 /// Internal utilities used by ptrhash.
 pub mod util;
 pub use scratch::PtrHashScratch;
@@ -46,17 +44,14 @@ mod test;
 #[cfg(test)]
 mod test_on_disk_hashes;
 
-use bitvec::{bitvec, vec::BitVec};
+use bitvec::bitvec;
 use bucket_fn::BucketFn;
 use bucket_fn::CubicEps;
-use cacheline_ef::CachelineEfVec;
+use std::{borrow::Borrow, default::Default, marker::PhantomData};
 use tracing::trace;
 use tracing::warn;
-use mem_dbg::MemSize;
-use pack::MutPacked;
-use std::{borrow::Borrow, default::Default, marker::PhantomData};
 
-use crate::{hash::*, pack::Packed, reduce::*};
+use crate::{hash::*, reduce::*};
 
 /// Longest key for which gxhash's compression is injective, given UTF-8; with
 /// a length prefix any collision is seed-dependent. Above it, collisions are
@@ -72,12 +67,10 @@ pub(crate) enum SortPartsError {
 /// Parameters for PtrHash construction.
 ///
 /// While all fields are public, prefer [`PtrHashParams::default()`].
-#[derive(Clone, Copy, Debug, MemSize)]
+#[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "epserde", derive(epserde::prelude::Epserde))]
-#[cfg_attr(feature = "epserde", deep_copy)]
+#[cfg_attr(feature = "epserde", epserde(deep_copy, full_copy(BF)))]
 pub struct PtrHashParams<BF> {
-    /// Set to false to disable remapping to a minimal PHF.
-    pub remap: bool,
     /// Use `n/alpha` slots approximately.
     pub alpha: f64,
     /// Use average bucket size lambda.
@@ -100,7 +93,6 @@ impl PtrHashParams<CubicEps> {
     #[allow(clippy::should_implement_trait)]
     pub fn default() -> Self {
         Self {
-            remap: true,
             alpha: 0.99,
             lambda: 3.5,
             bucket_fn: CubicEps,
@@ -123,7 +115,7 @@ impl Default for PtrHashParams<CubicEps> {
 ///
 /// Use this as [`DefaultPtrHash::try_new_from_source_with_scratch()`].
 pub type DefaultPtrHash<Hx = hash::PkHash, Key = u64, BF = bucket_fn::CubicEps> =
-    PtrHash<Key, BF, CachelineEfVec, Hx, Vec<u8>>;
+    PtrHash<Key, BF, Hx, Vec<u8>>;
 
 /// Trait that keys must satisfy.
 pub trait KeyT: Send + Sync + std::hash::Hash {}
@@ -172,15 +164,14 @@ type PilotHash = u64;
 ///
 /// - `Key`: The type of keys to hash.
 /// - `BF`: The bucket function to use. Inferred from `PtrHashParams` when calling `PtrHash::new()`.
-/// - `F`: The packing to use for remapping free slots, default `CachelineEf`.
 /// - `Hx`: The hasher to use for keys, default `PkHash`.
 /// - `V`: The pilots type. Usually `Vec<u8>`, or `&[u8]` for Epserde.
 #[cfg_attr(feature = "epserde", derive(epserde::prelude::Epserde))]
-#[derive(Clone, MemSize)]
+#[cfg_attr(feature = "epserde", epserde(phantom(Key, Hx), full_copy(BF)))]
+#[derive(Clone)]
 pub struct PtrHash<
     Key: KeyT + ?Sized = u64,
     BF: BucketFn = bucket_fn::CubicEps,
-    F: Packed = CachelineEfVec,
     Hx: Hasher<Key> = hash::PkHash,
     V: AsRef<[u8]> = Vec<u8>,
 > {
@@ -218,15 +209,12 @@ pub struct PtrHash<
     seed: u64,
     /// The pilots.
     pilots: V,
-    /// Remap the out-of-bound slots to free slots.
-    remap: F,
     _key: PhantomData<Key>,
     _hx: PhantomData<Hx>,
 }
 
 /// An empty PtrHash instance. Mostly useless, but may be convenient.
-impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> Default
-    for PtrHash<Key, BF, F, Hx, Vec<u8>>
+impl<Key: KeyT, BF: BucketFn, Hx: Hasher<Key>> Default for PtrHash<Key, BF, Hx, Vec<u8>>
 where
     PtrHashParams<BF>: Default,
 {
@@ -247,7 +235,6 @@ where
             rem_slots: RemSlots::new(1),
             seed: 0,
             pilots: vec![],
-            remap: F::default(),
             _key: PhantomData,
             _hx: PhantomData,
         }
@@ -255,7 +242,7 @@ where
 }
 
 /// Construction methods.
-impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx, Vec<u8>> {
+impl<Key: KeyT, BF: BucketFn, Hx: Hasher<Key>> PtrHash<Key, BF, Hx, Vec<u8>> {
     /// Build from a restartable key source.
     pub fn try_new_from_source_with_scratch<S: KeySource<Key>>(
         source: &S,
@@ -358,7 +345,6 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
             rem_slots: RemSlots::new(slots_per_part),
             seed: 0,
             pilots: Default::default(),
-            remap: F::default(),
             _key: PhantomData,
             _hx: PhantomData,
         }
@@ -446,12 +432,6 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
                 continue 's;
             }
 
-            let remap = self.remap_free_slots_with_scratch(&scratch.taken, &mut scratch.free_slots);
-            if remap.is_err() {
-                trace!("Failed to construct CachelineEF");
-                continue 's;
-            }
-
             break 's;
         }
 
@@ -460,51 +440,10 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
 
         Some(())
     }
-
-    fn remap_free_slots_with_scratch(
-        &mut self,
-        taken: &Vec<BitVec>,
-        free_slots: &mut Vec<u64>,
-    ) -> Result<(), ()> {
-        assert_eq!(
-            taken.iter().map(|t| t.count_zeros()).sum::<usize>(),
-            self.slots_total - self.n,
-            "Not the right number of free slots left!\n total slots {} - n {}",
-            self.slots_total,
-            self.n
-        );
-
-        if !self.params.remap || self.slots_total == self.n {
-            return Ok(());
-        }
-
-        // Compute the free spots.
-        free_slots.clear();
-        free_slots.reserve(self.slots_total - self.n);
-        let get = |t: &Vec<BitVec>, idx: usize| t[idx / self.slots][idx % self.slots];
-        for i in taken
-            .iter()
-            .enumerate()
-            .flat_map(|(p, t)| {
-                let offset = p * self.slots;
-                t.iter_zeros().map(move |i| offset + i)
-            })
-            .take_while(|&i| i < self.n)
-        {
-            while !get(taken, self.n + free_slots.len()) {
-                free_slots.push(i as u64);
-            }
-            free_slots.push(i as u64);
-        }
-        self.remap = MutPacked::try_new(free_slots.clone()).ok_or(())?;
-        Ok(())
-    }
 }
 
 /// Indexing methods.
-impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>, V: AsRef<[u8]>>
-    PtrHash<Key, BF, F, Hx, V>
-{
+impl<Key: KeyT, BF: BucketFn, Hx: Hasher<Key>, V: AsRef<[u8]>> PtrHash<Key, BF, Hx, V> {
     #[inline]
     fn hash_key(&self, key: &Key) -> Hx::H {
         Hx::hash(key, self.seed, self.params.prefer_fallback_hash)
@@ -535,34 +474,21 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>, V: AsRef<[u8]>>
         self.n
     }
 
-    /// `self.index()` always returns below this bound.
+    /// Upper bound for `index_no_remap()` on keys used during construction.
     /// Should be around `n/alpha ~ 1.01*n`.
     pub fn max_index(&self) -> usize {
         self.slots_total
     }
 
     /// Get a non-minimal index of the given key, in `[0, n/alpha)`.
-    /// Use `index` to get a key in `[0, n)`.
     #[inline]
     pub fn index_no_remap(&self, key: &Key) -> usize {
         let hx = self.hash_key(key);
         let b = self.bucket(hx);
-        let pilot = self.pilots.as_ref().index(b);
+        // SAFETY: bucket() returns a valid bucket, and construction stores
+        // exactly one pilot per bucket.
+        let pilot = u64::from(unsafe { *self.pilots.as_ref().get_unchecked(b) });
         self.slot(hx, pilot)
-    }
-
-    /// Get the index for `key` in `[0, n)`.
-    #[inline]
-    pub fn index(&self, key: &Key) -> usize {
-        let hx = self.hash_key(key);
-        let b = self.bucket(hx);
-        let p = self.pilots.as_ref().index(b);
-        let slot = self.slot(hx, p);
-        if slot < self.n {
-            slot
-        } else {
-            self.remap.index(slot - self.n) as usize
-        }
     }
 
     /// See bucket.rs for additional implementations.

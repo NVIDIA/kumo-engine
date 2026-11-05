@@ -127,7 +127,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run_app<B: ratatui::backend::Backend>(
+async fn run_app<B: ratatui::backend::Backend<Error = std::io::Error>>(
     terminal: &mut Terminal<B>,
     args: Args,
     sampler: Arc<DiskGraphEngine>,
@@ -252,7 +252,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                 .direction(Direction::Vertical)
                 .margin(1)
                 .constraints([Constraint::Length(7), Constraint::Min(0)].as_ref())
-                .split(f.size());
+                .split(f.area());
 
             let text = vec![
                 ratatui::text::Line::from(format!(

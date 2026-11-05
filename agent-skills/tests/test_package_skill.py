@@ -4,7 +4,9 @@
 import ast
 import importlib.util
 import re
+import shutil
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -21,6 +23,8 @@ spec.loader.exec_module(package_skill)
 def test_every_reference_resolves(tmp_path: Path, host: str) -> None:
     pkg = package_skill.build(host, tmp_path)
     assert (pkg / 'SKILL.md').is_file()
+    for name in package_skill.CAPABILITY:
+        assert (pkg / name / 'SKILL.md').is_file()
     assert package_skill.unresolved(pkg) == []
 
 
@@ -39,7 +43,26 @@ def test_build_stamps_the_marker(tmp_path: Path) -> None:
     built = (package_skill.build('coco', tmp_path) / 'SKILL.md').read_text()
     marker = package_skill.MARKER.findall(built)
     assert marker == [f'SKILL-BUILD: {package_skill.build_id()}']
-    assert re.fullmatch(r'SKILL-BUILD: (\d{4}-\d{2}-\d{2}-[0-9a-f]+(-dirty)?|unknown)', marker[0])
+    assert re.fullmatch(r'SKILL-BUILD: (\d{4}-\d{2}-\d{2}-[0-9a-f]{8}(-dirty)?|unknown-[0-9a-f]{12})',
+                        marker[0])
+
+
+def test_a_build_without_git_is_named_by_its_content(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Two archives built without git must not share a stamp, or `--check` takes one for the other.
+    def no_git(*args, **kwargs):
+        raise FileNotFoundError('git')
+
+    skills = tmp_path / 'skills'
+    shutil.copytree(package_skill.SKILLS, skills)
+    monkeypatch.setattr(package_skill, 'SKILLS', skills)
+    monkeypatch.setattr(package_skill.subprocess, 'run', no_git)
+    first = package_skill.build_id()
+    assert re.fullmatch(r'unknown-[0-9a-f]{12}', first)
+    assert package_skill.build_id() == first
+    router = skills / 'kumo-data-science' / 'SKILL.md'
+    router.write_text(router.read_text() + '\n', encoding='utf-8')
+    assert package_skill.build_id() != first
 
 
 def test_broken_references_are_reported(tmp_path: Path) -> None:
@@ -277,3 +300,54 @@ def test_adapter_covers_what_the_core_defers(host: str) -> None:
 def test_every_host_ships_a_runtime(host: str) -> None:
     """The router reads `hosts/<host>/runtime.md` at Step 2."""
     assert any(rel.endswith('/runtime.md') for rel in package_skill.HOSTS[host]['hosts'])
+
+
+def test_archive_zips_each_host_as_its_bundle(tmp_path: Path) -> None:
+    """A download zip is the directory install_skills() installs, at the zip's root."""
+    zips = package_skill.archive(tmp_path / 'zips')
+    assert [z.name for z in zips] == [f'kumo-data-science-{h}.zip' for h in sorted(package_skill.HOSTS)]
+    package_skill.bundle(tmp_path / 'bundle')
+    for host, z in zip(sorted(package_skill.HOSTS), zips):
+        root = tmp_path / 'bundle' / host
+        shipped = sorted(p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file())
+        with zipfile.ZipFile(z) as zf:
+            assert sorted(zf.namelist()) == shipped
+            assert {n.split('/')[0] for n in zf.namelist()} == {'kumo-data-science'}
+            for name in shipped:
+                assert zf.read(name) == (root / name).read_bytes()
+        hosts = {n.split('/')[2] for n in shipped if n.startswith('kumo-data-science/hosts/')}
+        assert len(hosts) == 1, f'{host} zip carries {sorted(hosts)}'
+
+
+def test_archive_is_reproducible(tmp_path: Path) -> None:
+    first = package_skill.archive(tmp_path / 'a')
+    second = package_skill.archive(tmp_path / 'b')
+    assert [z.read_bytes() for z in first] == [z.read_bytes() for z in second]
+
+
+def test_archive_is_the_same_built_on_windows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A zip entry records the system that wrote it, 0 on Windows unless set.
+    first = package_skill.archive(tmp_path / 'a')
+    monkeypatch.setattr(zipfile.sys, 'platform', 'win32')
+    second = package_skill.archive(tmp_path / 'b')
+    assert [z.read_bytes() for z in first] == [z.read_bytes() for z in second]
+
+
+def test_workspace_requires_https() -> None:
+    assert package_skill.Workspace('dbc.example.com', 't').host == 'https://dbc.example.com'
+    assert package_skill.Workspace('https://dbc.example.com/', 't').host == 'https://dbc.example.com'
+    with pytest.raises(SystemExit):
+        package_skill.Workspace('http://dbc.example.com', 't')
+
+
+def test_text_io_names_its_encoding() -> None:
+    """The skill holds non-ASCII text; Windows' default (cp1252) cannot decode it."""
+    sources = [SCRIPT, SCRIPT.parents[2] / 'packages' / 'kumo-engine' / 'kumo' / 'engine' / 'skills.py']
+    unnamed = [
+        f'{src.name}:{node.lineno}' for src in sources
+        for node in ast.walk(ast.parse(src.read_text(encoding='utf-8')))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr in ('read_text', 'write_text')
+        and not any(k.arg == 'encoding' for k in node.keywords)
+    ]
+    assert not unnamed, unnamed

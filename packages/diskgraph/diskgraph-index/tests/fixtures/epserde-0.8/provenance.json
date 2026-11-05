@@ -1,0 +1,31 @@
+{
+  "release_engine_revision": "7d65608b8b697d3865dbbaacc1bc1f26b7760a2a",
+  "recorded_diskgraph_revision": "79b6b9dfd2c80dce281a70c6d4e6b9bcd901f506",
+  "epserde_version": "0.8.0",
+  "epserde_crate_sha256": "c40d342ff20a2ce62d9a85ce406e672dfa137f902ac9670034533184f1533976",
+  "cargo_lock_before_followup_sha256": "7b40c5c6524cb5cbe6992964f4b9802c6127a3e22bce8839478ff4eefec50e1a",
+  "native_source_hashes": {
+    "diskgraph-ptrhash/src/lib.rs": "264e69ca1b661aba21858acf83bb678144177bb19189ea6eb2b0a464c54a7d99",
+    "diskgraph-ptrhash/src/hash.rs": "7d009d3b4503c0378500504883d865cf36c76d3683ecb3c7758185dd350cc39e",
+    "diskgraph-index/src/pkmap.rs": "6a9291c8a428520054634e13a9e909ece2c44833855053afaebcc1e74a889a85"
+  },
+  "fixtures": {
+    "gx_bytes.bin": "51a446e2bdbd32237fed45b254181430ddbbfd506664ba6da36a2030eb6ce093",
+    "gx_bytes.json": "1747b621c0922b6bf95155b1cc6c4effce51c44e2a924b39858c3ddfa6761db9",
+    "gx_fixed16.bin": "2c4a4a0254b947f9f90b4207e51a7b107b4644ad35c6c8d52366ef9444cba7d4",
+    "gx_fixed16.json": "dd05d0d531932d709d41b0ea066561bdcffc9e2cbb1aae26ffae754cb60f9d7f",
+    "gx_fixed32.bin": "35a5716f67cb9d1647da8b73a65d42a5667997aadecc7ba65dc627a38b442541",
+    "gx_fixed32.json": "cffada3d1afcd61bdf1fea34ae8b73e8d5008708e500f888c1438360eff945bd",
+    "gx_int64.bin": "341d2de722b7c89d68d5159a82ab5d19296908f52340017e76c64a255bcf1ffd",
+    "gx_int64.json": "407ddce430d605f595bd2b1ce00a403f4331a43a4f381fa4b8bcd1a529f197fd",
+    "pk_bytes.bin": "4e2b36c765e0d1fbbae832befcdba87f79b4d3b15346e199d1ab3a50adce082b",
+    "pk_bytes.json": "0deb911186206e864fb26d51cc85edcaef74efee69e80c973441376beb9f97de",
+    "pk_fixed16.bin": "6389b11225b60d82a915a610ae76e89a96db27ef497273edd6d0cecf3523aac6",
+    "pk_fixed16.json": "be83464a8298e612a9ec083267b2d9a5964fbdefd7d4f3a5849c0db44621009e",
+    "pk_fixed32.bin": "6b19d823b123cd99b2e1d386999e123770a9776684a6b51c6b7f7dd980e36627",
+    "pk_fixed32.json": "f0812f784b814dc22442495d16cdc92ed21d739d3bbaa32e7cb022ba835f7396",
+    "pk_int64.bin": "58b465b6a75ada5a18fea0277c2c9a7ccddc5829d23d5a1aadde3e86651b7518",
+    "pk_int64.json": "00be393330b8e4be032f4b6f26f6e31a35095e099d03e331387c7b15d32fbb2b"
+  },
+  "architecture": "aarch64"
+}

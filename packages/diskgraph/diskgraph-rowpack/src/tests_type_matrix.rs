@@ -261,13 +261,25 @@ fn all_arrow_test_data() -> Vec<ArrowTestData> {
         // FixedSizeBinary for UUID (16 bytes)
         ArrowTestData {
             name: "FixedSizeBinary16",
-            array: Arc::new(FixedSizeBinaryArray::from(vec![Some(&[0u8; 16][..])])),
+            array: Arc::new(
+                FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                    [Some(&[0u8; 16][..])].into_iter(),
+                    16,
+                )
+                .unwrap(),
+            ),
             hints: default_hints(),
         },
         // FixedSizeBinary for UUID256 (32 bytes)
         ArrowTestData {
             name: "FixedSizeBinary32",
-            array: Arc::new(FixedSizeBinaryArray::from(vec![Some(&[0u8; 32][..])])),
+            array: Arc::new(
+                FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                    [Some(&[0u8; 32][..])].into_iter(),
+                    32,
+                )
+                .unwrap(),
+            ),
             hints: default_hints(),
         },
         // Date
@@ -747,7 +759,13 @@ fn test_temporal_conversions() {
 fn test_uuid_from_fixed_binary() {
     // FixedSizeBinary(16) → UUID
     let uuid_bytes = [0u8; 16];
-    let array: ArrayRef = Arc::new(FixedSizeBinaryArray::from(vec![Some(&uuid_bytes[..])]));
+    let array: ArrayRef = Arc::new(
+        FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+            [Some(&uuid_bytes[..])].into_iter(),
+            16,
+        )
+        .unwrap(),
+    );
     let (mut access, arrays) = make_access(&array, default_hints());
     access.set_cols(&arrays);
     access.set_row(0);
@@ -755,7 +773,13 @@ fn test_uuid_from_fixed_binary() {
 
     // FixedSizeBinary(32) → UUID256
     let uuid256_bytes = [0u8; 32];
-    let array: ArrayRef = Arc::new(FixedSizeBinaryArray::from(vec![Some(&uuid256_bytes[..])]));
+    let array: ArrayRef = Arc::new(
+        FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+            [Some(&uuid256_bytes[..])].into_iter(),
+            32,
+        )
+        .unwrap(),
+    );
     let (mut access, arrays) = make_access(&array, default_hints());
     access.set_cols(&arrays);
     access.set_row(0);
@@ -1102,12 +1126,19 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
             name: "Uuid",
             logical_type: IngestedType::Uuid,
             encoding: ColumnEncoding::Uuid,
-            array: Arc::new(FixedSizeBinaryArray::from(vec![Some(
-                &[
-                    0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4, 0xa7, 0x16, 0x44, 0x66, 0x55,
-                    0x44, 0x00, 0x00,
-                ][..],
-            )])),
+            array: Arc::new(
+                FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                    [Some(
+                        &[
+                            0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4, 0xa7, 0x16, 0x44, 0x66,
+                            0x55, 0x44, 0x00, 0x00,
+                        ][..],
+                    )]
+                    .into_iter(),
+                    16,
+                )
+                .unwrap(),
+            ),
             hints: default_hints(),
             verify: |v| {
                 v["val"]
@@ -1121,7 +1152,13 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
             name: "Uuid256",
             logical_type: IngestedType::Uuid256,
             encoding: ColumnEncoding::Uuid256,
-            array: Arc::new(FixedSizeBinaryArray::from(vec![Some(&[0xAAu8; 32][..])])),
+            array: Arc::new(
+                FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                    [Some(&[0xAAu8; 32][..])].into_iter(),
+                    32,
+                )
+                .unwrap(),
+            ),
             hints: default_hints(),
             verify: |v| {
                 v["val"]
@@ -1135,7 +1172,13 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
             name: "Ip_v6",
             logical_type: IngestedType::Ip,
             encoding: ColumnEncoding::Ip,
-            array: Arc::new(FixedSizeBinaryArray::from(vec![Some(&[0u8; 16][..])])),
+            array: Arc::new(
+                FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                    [Some(&[0u8; 16][..])].into_iter(),
+                    16,
+                )
+                .unwrap(),
+            ),
             hints: default_hints(),
             verify: |v| v["val"].as_str().is_some(),
         },

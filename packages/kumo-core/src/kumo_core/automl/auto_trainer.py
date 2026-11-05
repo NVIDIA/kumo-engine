@@ -12,6 +12,7 @@ import logging
 import math
 import os
 import os.path as osp
+import time
 import traceback
 import warnings
 from dataclasses import asdict, dataclass, fields, is_dataclass
@@ -39,7 +40,7 @@ from kumo_core.callbacks.train_progress_logger import (
     AutoTrainerProgress,
     AutoTrainingProgressLogger,
 )
-from kumo_core.instrumentation import TrainingInstrumentation
+from kumo_core.instrumentation import TrainingInstrumentation, format_error
 from kumo_core.io import filesystem
 from kumo_core.io.json import load_json, save_json
 from kumo_core.job_config import JobConfig, TrainStatus
@@ -460,6 +461,7 @@ class AutoTrainer:
         metrics_client_job_name: str,
         pruning: Callback | None = None,
         status: TrainStatus | None = None,
+        trial: int | None = None,
     ) -> list[float]:
         r"""Config-driven training function.
 
@@ -715,7 +717,7 @@ class AutoTrainer:
             trainer.pl_trainer.callbacks.append(pruning)
 
         # Add progress logging callback:
-        self.training_progress_logger.set_current_trainer(trainer)
+        self.training_progress_logger.set_current_trainer(trainer, trial)
         trainer.pl_trainer.callbacks.append(self.training_progress_logger)
 
         # Save AutoTrainer YAML (Trainer YAML will be saved within
@@ -849,7 +851,7 @@ class AutoTrainer:
         logger.info(f"Initialized '{self.searcher}'")
 
         self.training_progress_logger = AutoTrainingProgressLogger(
-            self.log_dir, self.num_experiments)
+            self.log_dir, self.num_experiments, on_event=self._emit)
 
         tune_mode = MetricStore.tune_mode(self.tune_metric)
         metrics_job_name = self.runtime.metrics_job_name()
@@ -874,12 +876,17 @@ class AutoTrainer:
                     logger.info(f"Starting AutoML experiment "
                                 f"{i + 1}/{self.num_experiments}")
 
+                    self._emit('trial_started', trial=i + 1, params={
+                        **self.searcher.sampled_params,
+                        'attempt': j + 1,
+                    })
                     batch_size = cfg.optimization.batch_size[0]
                     with self.instrumentation.timing(
                             "auto_trainer.run.status_add_trial", trial=i + 1):
                         status.add_trial(batch_size)
                         status.save(self.home_dir)
 
+                    trial_start = time.monotonic()
                     with self.instrumentation.timing(
                             "auto_trainer.run.train_trial", trial=i + 1):
                         val_performance = self._train(
@@ -887,7 +894,9 @@ class AutoTrainer:
                             metrics_client_job_name=metrics_job_name,
                             pruning=pruning,
                             status=status,
+                            trial=i + 1,
                         )
+                    trial_seconds = time.monotonic() - trial_start
                     best_performance = _eval_fn[tune_mode](val_performance)
                     logger.info(f"AutoML experiment "
                                 f"{i + 1}/{self.num_experiments} finished "
@@ -904,9 +913,21 @@ class AutoTrainer:
                             "auto_trainer.run.status_save_success",
                             trial=i + 1):
                         status.save(self.home_dir)
+                    self._emit('trial_ended', trial=i + 1, metrics={
+                        self.val_tune_metric: best_performance,
+                        'seconds': trial_seconds,
+                    }, params={
+                        'status': 'succeeded',
+                        'attempt': j + 1,
+                    })
                     break
 
                 except RuntimeError as e:
+                    self._emit('trial_ended', trial=i + 1, params={
+                        'status': 'failed',
+                        'attempt': j + 1,
+                        'error': format_error(e),
+                    })
                     stacktrace = ''.join(
                         traceback.format_exception(e, e, e.__traceback__))
                     logger.warning(stacktrace)
@@ -958,6 +979,16 @@ class AutoTrainer:
         with self.instrumentation.timing("auto_trainer.run.get_best_trainer",
                                          should_init=init_best_trainer):
             return self.get_best_trainer(should_init=init_best_trainer)
+
+    def _emit(self, name: str, **fields: Any) -> None:
+        event = getattr(self.instrumentation, 'event', None)
+        if event is None:
+            return
+        try:
+            event(name, **fields)
+        except Exception:
+            logger.warning(f"Could not report progress event '{name}'",
+                           exc_info=True)
 
     def _handle_oom_retry(
         self,
@@ -1052,6 +1083,7 @@ class AutoTrainer:
         r"""Obtains the top-k trials from an experiment analysis."""
         run_dirs = filesystem.listdir(self.log_dir)
         trials = []
+        nan_trials = 0
         for run_dir in run_dirs:
             ckpt_dir = osp.join(run_dir, 'checkpoint')
             if not filesystem.exists(ckpt_dir):
@@ -1066,6 +1098,7 @@ class AutoTrainer:
 
                 result = df[self.val_tune_metric].values[0]
                 if pd.isna(result):
+                    nan_trials += 1
                     continue
 
                 path = osp.join(run_dir, 'model_plan.json')
@@ -1081,8 +1114,18 @@ class AutoTrainer:
         trials = sorted(trials, key=lambda d: d.result, reverse=reverse)
 
         if len(trials) == 0:
-            raise RuntimeError("No valid trials found")
-        elif len(trials) < k:
+            message = "No valid trials found"
+            if nan_trials > 0:
+                message += (f": '{self.val_tune_metric}' is NaN in all "
+                            f"{nan_trials} completed trials.")
+                if self.tune_metric.split('_')[0] in ('auroc', 'ap', 'auprc'):
+                    message += (" It is undefined when the validation rows "
+                                "contain a single class, for example when "
+                                "'max_val_steps' caps validation too low. "
+                                "Increase 'max_val_steps' or set "
+                                "'tune_metric' to 'loss'.")
+            raise RuntimeError(message)
+        if len(trials) < k:
             logger.warning(f"Expected {k} valid trials (got {len(trials)})")
 
         return trials[:k]

@@ -91,6 +91,38 @@ class ThirdPartyNoticeTest(unittest.TestCase):
         self.assertNotIn("backend container", glove)
         self.assertNotIn("fat wheels", glove)
 
+    def test_windows_inventory_cannot_reuse_linux_graph(self) -> None:
+        inventory = copy.deepcopy(self.inventory)
+        artifacts = {item["id"]: item for item in inventory["artifacts"]}
+        artifacts["diskgraph-extension-windows"]["components"] = artifacts[
+            "diskgraph-extension"]["components"]
+        errors = notice._diskgraph_manifest_errors(inventory, notice.REPO_ROOT)
+        self.assertTrue(any("diskgraph-extension-windows" in error
+                            for error in errors), errors)
+
+    def test_windows_notices_use_target_specific_graphs(self) -> None:
+        linux = notice.render(
+            self.inventory, self.policy,
+            artifact_ids=["diskgraph-extension", "diskgraph-ingest"])
+        windows = notice.render(
+            self.inventory, self.policy,
+            artifact_ids=["diskgraph-extension-windows",
+                          "diskgraph-ingest-windows"])
+        self.assertIn(b"clipboard-win 4.5.0", windows)
+        self.assertIn(b"Boost Software License", windows)
+        self.assertNotIn(b"clipboard-win 4.5.0", linux)
+        self.assertIn(b"pprof 0.14.1", linux)
+        self.assertNotIn(b"pprof 0.14.1", windows)
+        components = {item["id"]: item
+                      for item in self.inventory["components"]}
+        for component_id in ("rust:clipboard-win@4.5.0",
+                             "rust:error-code@2.3.1", "rust:str-buf@1.0.6"):
+            license_file, = components[component_id]["files"]
+            self.assertEqual(license_file["source"], "spdx-backfill")
+            self.assertEqual(license_file["provenance"]["license_id"], "BSL-1.0")
+            text = self.inventory["texts"][license_file["sha256"]]
+            self.assertEqual(notice.sha256_text(text), license_file["sha256"])
+
     def test_committed_inventory_closes_artifacts_policy_and_provenance(
             self) -> None:
         self.assertEqual(notice.validate(self.inventory, self.policy), [])

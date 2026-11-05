@@ -8,6 +8,7 @@ import json
 from typing import Literal
 
 from kumo_core.sources.csv_format import CsvOptions
+from kumo_core.sources.identity import SourceVersion
 from kumo_core.sources.object_store import ObjectStoreSourceReader
 from kumo_core.types.enums import ConnectorType
 from kumoapi.adls import (
@@ -48,8 +49,12 @@ class ADLSSourceReader(ObjectStoreSourceReader):
             zip((entry.path for entry in ordered),
                 self._identities(ordered, None)))
         # Discovery and preparation spell the same directory with/without '/'.
-        return hashlib.sha256(
-            json.dumps((path.rstrip('/'), metadata)).encode()).hexdigest()
+        single = (len(ordered) == 1
+                  and ordered[0].path.rstrip('/') == path.rstrip('/'))
+        return SourceVersion(
+            hashlib.sha256(
+                json.dumps((path.rstrip('/'), metadata)).encode()).hexdigest(),
+            'exact' if single else 'listing')
 
 
 def source_reader(client, account: str, suffix: str = 'dfs.core.windows.net', *,

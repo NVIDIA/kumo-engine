@@ -7,7 +7,11 @@ from __future__ import annotations
 from typing import Any, Iterable, Mapping
 
 from kumo_core.sources.errors import PermanentSourceError, SourceNotFoundError
-from kumo_core.sources.identity import epoch_second, hour_version
+from kumo_core.sources.identity import (
+    SourceVersion,
+    epoch_second,
+    hour_version,
+)
 from kumo_core.sources.sql import resolve_snowflake_identifier
 from kumo_snowflake.sql import placeholder, quote_identifier
 
@@ -95,7 +99,8 @@ def data_version(
     altered = {str(row[0]): row[1] for row in cursor.fetchall()}
     if table not in altered:
         return hour_version()
-    return epoch_second(pd.to_datetime(altered[table]))
+    return SourceVersion(epoch_second(pd.to_datetime(altered[table])),
+                         "timestamp")
 
 
 class MissingColumnTypesError(PermanentSourceError):

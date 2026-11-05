@@ -23,6 +23,14 @@ Run from the repository root unless a component guide says otherwise.
 Python package test suites have different roots and fixtures; inspect the
 package's configuration before invoking pytest over multiple packages.
 
+kumo-engine and kumo-core tests load the DiskGraph native module
+(`diskgraph/_c.abi3.so`) and its `bin/ingest` binary from the installed
+`diskgraph` package. Both must be built from the same tree as the Python code
+under test: a build from an older checkout fails with missing attributes or
+arguments (for example `RuntimeIndex.iter(projections=...)` or
+`compute_col_stats_for_parquet(percentiles=...)`). After pulling DiskGraph
+changes, rebuild with `make install-diskgraph`, which builds and installs both.
+
 For connector changes, start with the [public test command](public-tests.md).
 It builds its prerequisites and runs without cloud credentials. The
 [test matrix](../connector-test-matrix.md) lists coverage and CI limits.
