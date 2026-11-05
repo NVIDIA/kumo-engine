@@ -690,7 +690,8 @@ def test_mismatched_key_dtypes_link_after_conversion(tmp_path):
         'payments_account_id_to_accounts_account_id'] == 4
 
 
-@pytest.mark.parametrize('layout', ['parquet', 'batches', 'csv', 'dictionary'])
+@pytest.mark.parametrize(
+    'layout', ['parquet', 'batches', 'compacted', 'csv', 'dictionary'])
 @pytest.mark.parametrize('values, target, invalid, colliding', [
     (['7', 'x', '', ' ', '1e1', None, '7'], Dtype.int64, 2, 0),
     (['7', '007', '+7', ' 7', '7.0', None], Dtype.int64, 0, 5),
@@ -701,13 +702,15 @@ def test_mismatched_key_dtypes_link_after_conversion(tmp_path):
 def test_inexact_string_foreign_keys_are_refused_with_counts(
         tmp_path, monkeypatch, layout, values, target, invalid, colliding):
     from kumo.engine import configure
+    from kumo.engine import graph as graph_module
 
     configure(scratch_dir=str(tmp_path / 'scratch'))
     root = tmp_path / 'source'
     root.mkdir()
-    pq.write_table(
-        pa.table({'user_id': pa.array([7, 10, 255], pa.int64())}).cast(
-            pa.schema([('user_id', pa.int64())])), root / 'users.parquet')
+    pq.write_table(pa.table({'user_id': pa.array([7, 10, 255], pa.int64())}),
+                   root / 'users.parquet')
+    if layout == 'compacted':
+        monkeypatch.setattr(graph_module, '_DISTINCT_COMPACTION_ROWS', 1)
     keys = pa.array(values, pa.string())
     if layout == 'dictionary':
         keys = keys.dictionary_encode()
@@ -718,8 +721,9 @@ def test_inexact_string_foreign_keys_are_refused_with_counts(
                         'before staging, whatever dtype is declared')
         csv.write_csv(orders, root / 'orders.csv')
     else:
-        pq.write_table(orders, root / 'orders.parquet',
-                       row_group_size=2 if layout == 'batches' else None)
+        pq.write_table(
+            orders, root / 'orders.parquet',
+            row_group_size=2 if layout in ('batches', 'compacted') else None)
     graph = _keyed_graph(root, 'orders',
                          Dtype.string if layout == 'csv' else None)
     graph = Graph(

@@ -219,6 +219,7 @@ def _warn_ingest_data_loss(result: Any, graph_config: Dict[str, Any]) -> None:
 
 
 _INTEGER_LITERAL = r'^(?P<sign>[+-]?)(?P<digits>[0-9]+)(?:\.0+)?$'
+_DISTINCT_COMPACTION_ROWS = 1_000_000
 
 
 def _integer_literals(values: Any, low: int, high: int) -> tuple[Any, Any]:
@@ -256,8 +257,9 @@ def _refuse_inexact_key_conversions(alias: str,
     (`byte` is unsigned), and anything else as null, so such a row would
     lose its link; an empty or blank value counts as missing, as DiskGraph
     reads it. Reads that column of each staged parquet part one batch at a
-    time; a part staged under a non-string type is left to DiskGraph's own
-    conversion.
+    time and keeps only the distinct convertible values, compacted as they
+    accumulate; a part staged under a non-string type is left to
+    DiskGraph's own conversion.
     """
     import pyarrow as pa
     import pyarrow.compute as pc
@@ -274,7 +276,8 @@ def _refuse_inexact_key_conversions(alias: str,
         if conversion.bounds is None:
             continue
         low, high = conversion.bounds
-        invalid, example, distinct = 0, None, []
+        invalid, example = 0, None
+        distinct, pending, pending_rows = pa.array([], pa.string()), [], 0
         for file in files:
             parquet = pq.ParquetFile(file)
             if name not in parquet.schema_arrow.names:
@@ -299,10 +302,14 @@ def _refuse_inexact_key_conversions(alias: str,
                 invalid += len(failures)
                 if example is None and len(failures):
                     example = failures[0].as_py()
-                distinct.append(pc.unique(pc.filter(values, valid)))
+                pending.append(pc.unique(pc.filter(values, valid)))
+                pending_rows += len(pending[-1])
+                if pending_rows > max(len(distinct), _DISTINCT_COMPACTION_ROWS):
+                    distinct = pc.unique(pa.concat_arrays([distinct, *pending]))
+                    pending, pending_rows = [], 0
         colliding, pair = 0, []
-        if distinct:
-            values = pc.unique(pa.concat_arrays(distinct))
+        values = pc.unique(pa.concat_arrays([distinct, *pending]))
+        if len(values):
             _, canonical = _integer_literals(values, low, high)
             counts = pc.value_counts(canonical)
             repeated = pc.greater(counts.field('counts'), 1)

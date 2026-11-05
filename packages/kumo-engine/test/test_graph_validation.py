@@ -205,6 +205,7 @@ def test_mismatched_key_dtypes_convert_the_foreign_key(
 
     assert sum('Foreign key events.user_id' in str(w.message)
                for w in caught) == 1
+    assert graph._graph_config['name'] == graph.id
     projected = next(table for table in graph._graph_config['tables']
                      if table['table_name'] == 'events')
     assert {key['dtype'] for key in projected['fkeys']} == {declared.value}
@@ -212,6 +213,48 @@ def test_mismatched_key_dtypes_convert_the_foreign_key(
                 if col['name'] == 'user_id')['dtype'] == declared.value
     assert next(col for col in events.definition.cols
                 if col.name == 'user_id').dtype == fkey_dtype
+
+
+@pytest.mark.parametrize('cycle', [False, True])
+def test_key_conversions_follow_chains_and_keep_cycles(cycle):
+    users, events = _s3_tables()
+    keyed = lambda dtype: replace(
+        users, definition=replace(users.definition,
+                                  cols=[Column('id', Stype.ID, dtype)]))
+    tables = {
+        'a': keyed(Dtype.string),
+        'b': keyed(Dtype.int64),
+        'c': replace(events, definition=replace(
+            events.definition, cols=[
+                events.definition.cols[0],
+                Column('a_id', Stype.ID, Dtype.string)
+            ]))
+    }
+    edges = [Edge('a', 'id', 'b'), Edge('c', 'a_id', 'a')]
+    if cycle:
+        edges.append(Edge('b', 'id', 'a'))
+    graph = Graph(tables, edges)
+
+    if cycle:
+        with pytest.raises(PredictiveQueryPlanError, match='cannot link'):
+            graph.validate()
+        return
+    with pytest.warns(UserWarning) as caught:
+        graph.validate()
+
+    messages = sorted(
+        str(w.message) for w in caught if 'Foreign key' in str(w.message))
+    assert [message.split(';')[0] for message in messages] == [
+        'Foreign key a.id is stored as string and links to b.id, which is '
+        'int64',
+        'Foreign key c.a_id is stored as string and links to a.id, which is '
+        'int64',
+    ]
+    declared = {
+        table['table_name']: table.get('pkey', {}).get('dtype')
+        for table in graph._graph_config['tables']
+    }
+    assert declared == {'a': 'int64', 'b': 'int64', 'c': 'int64'}
 
 
 def test_graph_validation_rejects_destination_without_primary_key(tables):
