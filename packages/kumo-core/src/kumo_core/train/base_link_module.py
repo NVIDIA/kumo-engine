@@ -261,6 +261,17 @@ class BaseLinkLightningModule(BaseLightningModule, ABC):
             torch.cuda.empty_cache()
         gc.collect()
 
+    def holdout_top_scores(self, stage: TrainingStage, batch: HeteroData,
+                           score: Tensor | None) -> dict[str, Tensor]:
+        r"""Spills each test entity's top score; no step outputs."""
+        spill = getattr(self, 'top_score_spill', None)
+        if (stage == TrainingStage.TEST and score is not None
+                and spill is not None):
+            size = batch[self.lhs_name].batch_size
+            spill.write(batch[self.lhs_name].n_id[:size].cpu().numpy(),
+                        score.max(dim=-1).values.detach().cpu().numpy())
+        return {}
+
     def get_rhs_pred_index_mat(
         self,
         logits: Tensor | None,

@@ -96,6 +96,7 @@ jobs:
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       - name: Configure AWS credentials
         if: steps.gcs-files-changed.outputs.any_changed == 'true'

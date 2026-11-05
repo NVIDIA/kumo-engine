@@ -134,7 +134,8 @@ impl DiskManager {
     }
 }
 
-/// Available bytes on the filesystem containing `path` (via statvfs).
+/// Available bytes on the filesystem containing `path`.
+#[cfg(unix)]
 pub fn available_space(path: &Path) -> std::io::Result<u64> {
     let stat = statvfs(path)?;
     // statvfs field widths are platform-dependent (u32 on aarch64-apple-darwin,
@@ -143,12 +144,14 @@ pub fn available_space(path: &Path) -> std::io::Result<u64> {
     Ok((stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64))
 }
 
-/// Total bytes on the filesystem containing `path` (via statvfs).
+/// Total bytes on the filesystem containing `path`.
+#[cfg(unix)]
 pub fn total_space(path: &Path) -> std::io::Result<u64> {
     let stat = statvfs(path)?;
     Ok((stat.f_blocks as u64).saturating_mul(stat.f_frsize as u64))
 }
 
+#[cfg(unix)]
 fn statvfs(path: &Path) -> std::io::Result<libc::statvfs> {
     let c_path = std::ffi::CString::new(path.to_string_lossy().as_bytes())
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
@@ -160,11 +163,66 @@ fn statvfs(path: &Path) -> std::io::Result<libc::statvfs> {
     Ok(stat)
 }
 
+#[cfg(windows)]
+pub fn available_space(path: &Path) -> std::io::Result<u64> {
+    disk_capacity(path).map(|(available, _)| available)
+}
+
+#[cfg(windows)]
+pub fn total_space(path: &Path) -> std::io::Result<u64> {
+    disk_capacity(path).map(|(_, total)| total)
+}
+
+#[cfg(windows)]
+fn disk_capacity(path: &Path) -> std::io::Result<(u64, u64)> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if wide.contains(&0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "disk capacity path contains a null character",
+        ));
+    }
+    // GetDiskFreeSpaceExW requires a trailing separator for UNC share roots.
+    if !matches!(wide.last(), Some(47 | 92)) {
+        wide.push(92);
+    }
+    wide.push(0);
+    let (mut available, mut total) = (0, 0);
+    // The terminated UTF-16 path and writable outputs live through the call.
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut available,
+            &mut total,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok((available, total))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
     use std::fs;
+
+    #[test]
+    fn capacity_handles_unicode_and_missing_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capacity-\u{00e9}");
+        fs::create_dir(&path).unwrap();
+        let total = total_space(&path).unwrap();
+        assert!(total > 0);
+        assert!(available_space(&path).unwrap() <= total);
+        assert!(available_space(&path.join("missing")).is_err());
+        assert!(total_space(&path.join("missing")).is_err());
+    }
 
     fn create_index(root: &Path, key: &str, ver: &str, data_size: usize, mtime_secs: i64) {
         let dir = root.join(key).join(ver);

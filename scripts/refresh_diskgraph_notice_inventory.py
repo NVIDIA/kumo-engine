@@ -54,7 +54,8 @@ else:
         sha256_text,
     )
 
-DISKGRAPH_ARTIFACTS = ("diskgraph-extension", "diskgraph-ingest")
+DISKGRAPH_ARTIFACTS = ("diskgraph-extension", "diskgraph-ingest",
+                       "diskgraph-extension-windows", "diskgraph-ingest-windows")
 RESOLVED_ARTIFACT_FIELDS = ("root", "targets", "features", "default_features",
                             "dependency_kinds")
 # Preferred elections among allowed choices of a Cargo OR expression; the

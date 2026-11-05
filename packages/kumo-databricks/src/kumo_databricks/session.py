@@ -91,10 +91,12 @@ def _client_for(principal: Principal) -> WorkspaceClient:
             f"Identity {principal.name!r} holds "
             f"{type(credentials).__name__} credentials; Databricks "
             f"authenticates a service principal with an OAuth secret.")
+    # Explicit, so a DATABRICKS_TOKEN set for MLflow cannot leak in.
     return WorkspaceClient(
         host=config.host,
         client_id=config.client_id,
         client_secret=_secret(credentials.client_secret),
+        auth_type='oauth-m2m',
     )
 
 
@@ -193,6 +195,10 @@ class _DatabricksSessions:
             fallback=(f'A default for sources that name none is also '
                       f'accepted, as {self._default_hint}.'),
         )
+
+    def table_location(self, connector: SourceConnector,
+                       table_name: str) -> str:
+        return self._qualified(connector, self._bare(connector, table_name))
 
     @staticmethod
     def _qualified(connector: SourceConnector,

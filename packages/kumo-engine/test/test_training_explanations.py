@@ -14,6 +14,8 @@ from kumoapi.model_plan import ModelPlan
 
 from kumo.engine import Trainer, TrainingTable
 
+_SPLIT = SimpleNamespace(stage_counts={'test': 1})
+
 
 @pytest.mark.parametrize('disabled,explain_fails,aggregate_fails', [
     (False, False, False),
@@ -74,6 +76,7 @@ def test_fit_runs_shared_explanations_after_training(tmp_path, snapshot,
             explain_disabled=training_input.model_plan.training_job.
             disable_explain,
             best_trainer=best_trainer,
+            published_counts=None,
         )
 
     core_plan = CoreModelPlan()
@@ -84,7 +87,7 @@ def test_fit_runs_shared_explanations_after_training(tmp_path, snapshot,
     monkeypatch.setattr(
         'kumo_core.training.workflow.materialize_generated_training_task',
         lambda *args, **kwargs: SimpleNamespace(
-            task=Mock(spec=ResolvedNumericalTask), model_plan=core_plan,
+            task=Mock(spec=ResolvedNumericalTask, split=_SPLIT), model_plan=core_plan,
             bundle_dir=str(tmp_path)))
     monkeypatch.setattr(
         'kumo_core.training.orchestration.run_callable_training', train)

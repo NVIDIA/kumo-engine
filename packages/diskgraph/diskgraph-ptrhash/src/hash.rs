@@ -1,11 +1,10 @@
 //! Implementations of the `Hash` trait that abstracts over 64 and 128-bit hashes.
-use mem_dbg::MemSize;
 
 use crate::KeyT;
 use gxhash::GxHasher;
-use xxhash_rust::xxh3::xxh3_64_with_seed;
 use std::fmt::Debug;
 use std::hash::Hasher as StdHasher;
+use xxhash_rust::xxh3::xxh3_64_with_seed;
 
 /// The `Hash` trait returns a 64 or 128-bit `Hash`. From this, two `u64` values are extracted.
 ///
@@ -59,11 +58,11 @@ pub(crate) struct MulHash;
 
 /// Fast 64-bit hash with gxhash.
 #[cfg_attr(feature = "epserde", derive(epserde::prelude::Epserde))]
-#[derive(Clone, MemSize)]
+#[derive(Clone)]
 pub struct PkHash;
 /// 128-bit gxhash output.
 #[cfg_attr(feature = "epserde", derive(epserde::prelude::Epserde))]
-#[derive(Clone, MemSize)]
+#[derive(Clone)]
 pub struct GxHash128;
 
 impl MulHash {
@@ -168,7 +167,11 @@ struct KeyBytes {
 
 impl Default for KeyBytes {
     fn default() -> Self {
-        Self { inline: [0u8; 64], len: 0, spill: Vec::new() }
+        Self {
+            inline: [0u8; 64],
+            len: 0,
+            spill: Vec::new(),
+        }
     }
 }
 

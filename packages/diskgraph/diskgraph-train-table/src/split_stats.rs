@@ -55,6 +55,59 @@ pub(crate) struct KumoStageStats {
     target_false_count: u64,
     timestamp_min: Option<i64>,
     timestamp_max: Option<i64>,
+    target_histogram: Option<TargetHistogram>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct TargetHistogram {
+    min: f64,
+    width: f64,
+    counts: [u64; NUM_HISTOGRAM_BINS],
+}
+
+impl TargetHistogram {
+    pub(crate) fn new(min: f64, max: f64) -> Self {
+        Self {
+            min,
+            width: range_bin_width(min, max),
+            counts: [0; NUM_HISTOGRAM_BINS],
+        }
+    }
+
+    fn observe(&mut self, value: f64) {
+        let raw = ((value - self.min) / self.width).floor() as isize;
+        self.counts[raw.clamp(0, NUM_HISTOGRAM_BINS as isize - 1) as usize] += 1;
+    }
+
+    fn merge(&mut self, other: &TargetHistogram) {
+        for (count, other) in self.counts.iter_mut().zip(other.counts) {
+            *count += other;
+        }
+    }
+
+    fn summary(&self, target_count: u64) -> (f64, f64, u64, JsonValue) {
+        let (mode_bin, mode_count) = self
+            .counts
+            .iter()
+            .copied()
+            .enumerate()
+            .max_by_key(|&(_, count)| count)
+            .unwrap_or_default();
+        let bins: Vec<f64> = (0..=NUM_HISTOGRAM_BINS)
+            .map(|i| self.min + self.width * i as f64)
+            .collect();
+        (
+            self.min + self.width * (mode_bin as f64 + 0.5),
+            mode_count as f64 / target_count as f64,
+            mode_count,
+            json!({
+                "bins": bins,
+                "counts": self.counts.as_slice(),
+                "bin_width": self.width,
+                "num_bins": NUM_HISTOGRAM_BINS,
+            }),
+        )
+    }
 }
 
 impl Default for KumoStageStats {
@@ -70,6 +123,7 @@ impl Default for KumoStageStats {
             target_false_count: 0,
             timestamp_min: None,
             timestamp_max: None,
+            target_histogram: None,
         }
     }
 }
@@ -90,6 +144,13 @@ impl std::fmt::Debug for KumoStageStats {
 }
 
 impl KumoStageStats {
+    pub(crate) fn new(target_histogram: Option<TargetHistogram>) -> Self {
+        Self {
+            target_histogram,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn merge(&mut self, other: KumoStageStats) {
         let KumoStageStats {
             row_count,
@@ -102,6 +163,7 @@ impl KumoStageStats {
             target_false_count,
             timestamp_min,
             timestamp_max,
+            target_histogram,
         } = other;
         self.row_count += row_count;
         self.entity_hll.merge(&entity_hll);
@@ -117,6 +179,12 @@ impl KumoStageStats {
         if let Some(value) = timestamp_max {
             self.timestamp_max = Some(self.timestamp_max.map_or(value, |v| v.max(value)));
         }
+        if let Some(other) = target_histogram {
+            match &mut self.target_histogram {
+                Some(histogram) => histogram.merge(&other),
+                None => self.target_histogram = Some(other),
+            }
+        }
     }
 
     fn observe_target(&mut self, value: f64) {
@@ -127,6 +195,13 @@ impl KumoStageStats {
         self.target_welford.observe(value);
         self.target_tdigest.observe(value);
         self.target_hll.observe_f64(value);
+        self.observe_target_histogram(value);
+    }
+
+    fn observe_target_histogram(&mut self, value: f64) {
+        if let Some(histogram) = &mut self.target_histogram {
+            histogram.observe(value);
+        }
     }
 
     fn observe_timestamp(&mut self, value: i64) {
@@ -170,24 +245,19 @@ pub fn write_kumo_split_stats_artifact(
     }
 
     let target_kind = target_stats_kind(prediction_type, target_stype);
+    let forecast = match prediction_type {
+        PredictionType::Forecasting => forecast_histograms(output_dir, stage_parts)?,
+        _ => [None; 3],
+    };
+    let stage = |i: usize| {
+        stage_to_kumo_json_for_kind(&stage_parts[i].split_stats, i == 0, target_kind, forecast[i])
+    };
     let payload = json!({
         "version": 1,
         "kind": "tt_split_stats",
-        "train_table_stats": stage_to_kumo_json_for_kind(
-            &stage_parts[0].split_stats,
-            true,
-            target_kind,
-        ),
-        "val_table_stats": stage_to_kumo_json_for_kind(
-            &stage_parts[1].split_stats,
-            false,
-            target_kind,
-        ),
-        "test_table_stats": stage_to_kumo_json_for_kind(
-            &stage_parts[2].split_stats,
-            false,
-            target_kind,
-        ),
+        "train_table_stats": stage(0),
+        "val_table_stats": stage(1),
+        "test_table_stats": stage(2),
     });
     let path = output_dir.join("split_stats.json");
     let json = serde_json::to_string_pretty(&payload)
@@ -242,6 +312,7 @@ fn observe_target_array(arr: &dyn Array, stats: &mut KumoStageStats) -> TTGenRes
                 stats.observe_i64_target(value);
                 stats.target_welford.observe(value as f64);
                 stats.target_tdigest.observe(value as f64);
+                stats.observe_target_histogram(value as f64);
             }
         }
         return Ok(());
@@ -281,6 +352,7 @@ fn stage_to_kumo_json_for_kind(
     stats: &KumoStageStats,
     required: bool,
     target_kind: TargetStatsKind,
+    histogram: Option<TargetHistogram>,
 ) -> JsonValue {
     if stats.row_count == 0 && !required {
         return JsonValue::Null;
@@ -288,7 +360,7 @@ fn stage_to_kumo_json_for_kind(
     let target_distribution = match target_kind {
         TargetStatsKind::None => JsonValue::Null,
         TargetStatsKind::Numerical if stats.target_welford.count > 0 => {
-            numerical_target_distribution(stats)
+            numerical_target_distribution(stats, histogram.or(stats.target_histogram))
         }
         TargetStatsKind::Numerical | TargetStatsKind::Categorical => {
             binary_target_distribution(stats).unwrap_or_else(|| json!({}))
@@ -329,13 +401,25 @@ fn binary_target_distribution(stats: &KumoStageStats) -> Option<JsonValue> {
     }))
 }
 
-fn numerical_target_distribution(stats: &KumoStageStats) -> JsonValue {
+fn numerical_target_distribution(
+    stats: &KumoStageStats,
+    histogram: Option<TargetHistogram>,
+) -> JsonValue {
     let mut td = stats.target_tdigest.clone();
     let p25 = td.quantile_at(0.25);
     let p50 = td.quantile_at(0.50);
     let p75 = td.quantile_at(0.75);
     let min = stats.target_welford.min;
     let max = stats.target_welford.max;
+    let (mode, mode_percentage, mode_count, histogram) = match histogram {
+        Some(h) => h.summary(stats.target_welford.count),
+        None => (
+            min,
+            0.0,
+            0,
+            json!({"bins": [], "counts": [], "bin_width": 0.0, "num_bins": 0}),
+        ),
+    };
     json!({
         "target_mean": stats.target_welford.mean(),
         "target_min": min,
@@ -343,92 +427,10 @@ fn numerical_target_distribution(stats: &KumoStageStats) -> JsonValue {
         "target_percentile_25": p25,
         "target_percentile_75": p75,
         "target_median": p50,
-        "target_mode": min,
-        "target_mode_percentage": 0.0,
-        "target_mode_count": 0,
-        "histogram": {
-            "bins": JsonValue::Array(Vec::new()),
-            "counts": JsonValue::Array(Vec::new()),
-            "bin_width": 0.0,
-            "num_bins": 0,
-        },
-    })
-}
-
-pub fn write_forecasting_split_stats_artifact(
-    output_dir: &Path,
-    stage_parts: &[StagePartsOut; 3],
-) -> TTGenResult<Option<(PathBuf, String)>> {
-    let mut stages = [
-        KumoStageStats::default(),
-        KumoStageStats::default(),
-        KumoStageStats::default(),
-    ];
-    for (stage, parts) in stage_parts.iter().enumerate() {
-        observe_stage(output_dir, parts, &mut stages[stage])?;
-    }
-    if stages.iter().all(|s| s.row_count == 0) {
-        return Ok(None);
-    }
-
-    let histograms = [
-        build_stage_histogram(output_dir, &stage_parts[0], &stages[0])?,
-        build_stage_histogram(output_dir, &stage_parts[1], &stages[1])?,
-        build_stage_histogram(output_dir, &stage_parts[2], &stages[2])?,
-    ];
-    let payload = json!({
-        "version": 1,
-        "kind": "tt_split_stats",
-        "train_table_stats": stage_to_kumo_json(&stages[0], &histograms[0], true),
-        "val_table_stats": stage_to_kumo_json(&stages[1], &histograms[1], false),
-        "test_table_stats": stage_to_kumo_json(&stages[2], &histograms[2], false),
-    });
-    let path = output_dir.join("split_stats.json");
-    let json = serde_json::to_string_pretty(&payload)
-        .map_err(|e| TTGenError::SystemError(format!("split-stats serialize: {e}")))?;
-    std::fs::write(&path, json)?;
-    let sha = sha256_file(&path)?;
-    Ok(Some((path, sha)))
-}
-
-fn observe_stage(
-    output_dir: &Path,
-    parts: &StagePartsOut,
-    stats: &mut KumoStageStats,
-) -> TTGenResult<()> {
-    if parts.row_count == 0 {
-        return Ok(());
-    }
-    for part in &parts.parts {
-        let path = output_dir.join(part);
-        let reader = projected_reader(
-            &path,
-            &[ENTITY_COL, TIMESTAMP_COL, FUTURE_LABELS_OUTPUT_ALIAS],
-        )?;
-        for batch in reader {
-            observe_batch(
-                &batch.map_err(|e| TTGenError::Parquet(e.to_string()))?,
-                stats,
-            )?;
-        }
-    }
-    Ok(())
-}
-
-fn observe_batch(batch: &RecordBatch, stats: &mut KumoStageStats) -> TTGenResult<()> {
-    stats.row_count += batch.num_rows() as u64;
-    observe_entities(batch, stats)?;
-    observe_timestamps(batch, stats)?;
-    let label_idx = batch
-        .schema()
-        .index_of(FUTURE_LABELS_OUTPUT_ALIAS)
-        .map_err(|_| {
-            TTGenError::SchemaError(format!(
-                "forecasting split stats require {FUTURE_LABELS_OUTPUT_ALIAS}"
-            ))
-        })?;
-    for_each_label(batch.column(label_idx).as_ref(), |value| {
-        stats.observe_target(value)
+        "target_mode": mode,
+        "target_mode_percentage": mode_percentage,
+        "target_mode_count": mode_count,
+        "histogram": histogram,
     })
 }
 
@@ -482,76 +484,62 @@ fn observe_timestamps(batch: &RecordBatch, stats: &mut KumoStageStats) -> TTGenR
     Ok(())
 }
 
-fn for_each_label<F>(arr: &dyn Array, mut f: F) -> TTGenResult<()>
-where
-    F: FnMut(f64),
-{
-    let list = arr.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
-        TTGenError::SchemaError(format!(
-            "{FUTURE_LABELS_OUTPUT_ALIAS} must be List for split stats"
-        ))
-    })?;
-    for row in 0..list.len() {
-        if list.is_null(row) {
-            continue;
+fn for_each_label(arr: &dyn Array, f: &mut impl FnMut(f64)) -> TTGenResult<()> {
+    if let Some(list) = arr.as_any().downcast_ref::<ListArray>() {
+        for row in (0..list.len()).filter(|row| !list.is_null(*row)) {
+            for_each_label(list.value(row).as_ref(), f)?;
         }
-        let values = list.value(row);
-        if let Some(a) = values.as_any().downcast_ref::<Float64Array>() {
-            for i in 0..a.len() {
-                if !a.is_null(i) {
-                    f(a.value(i));
-                }
-            }
-        } else if let Some(a) = values.as_any().downcast_ref::<Int64Array>() {
-            for i in 0..a.len() {
-                if !a.is_null(i) {
-                    f(a.value(i) as f64);
-                }
-            }
-        } else {
-            return Err(TTGenError::SchemaError(format!(
-                "unsupported {FUTURE_LABELS_OUTPUT_ALIAS} value dtype: {:?}",
-                values.data_type()
-            )));
-        }
+    } else if let Some(a) = arr.as_any().downcast_ref::<Float64Array>() {
+        a.iter().flatten().for_each(f);
+    } else if let Some(a) = arr.as_any().downcast_ref::<Int64Array>() {
+        a.iter().flatten().for_each(|value| f(value as f64));
+    } else {
+        return Err(TTGenError::SchemaError(format!(
+            "unsupported forecast target dtype: {:?}",
+            arr.data_type()
+        )));
     }
     Ok(())
 }
 
-fn build_stage_histogram(
+/// Bins over all stages' range, known only after pass B.
+fn forecast_histograms(
     output_dir: &Path,
-    parts: &StagePartsOut,
-    stats: &KumoStageStats,
-) -> TTGenResult<Vec<u64>> {
-    let count = stats.target_welford.count as usize;
-    let mut counts = vec![0u64; NUM_HISTOGRAM_BINS];
-    if count == 0 || parts.row_count == 0 {
-        return Ok(counts);
-    }
-    let min = stats.target_welford.min;
-    let width = histogram_bin_width(stats);
-    for part in &parts.parts {
-        let reader = projected_reader(&output_dir.join(part), &[FUTURE_LABELS_OUTPUT_ALIAS])?;
-        for batch in reader {
-            let batch = batch.map_err(|e| TTGenError::Parquet(e.to_string()))?;
-            let idx = batch
+    stage_parts: &[StagePartsOut; 3],
+) -> TTGenResult<[Option<TargetHistogram>; 3]> {
+    let seen = stage_parts
+        .iter()
+        .map(|parts| &parts.split_stats.target_welford)
+        .filter(|welford| welford.count > 0);
+    let min = seen.clone().map(|welford| welford.min).reduce(f64::min);
+    let max = seen.map(|welford| welford.max).reduce(f64::max);
+    let (Some(min), Some(max)) = (min, max) else {
+        return Ok([None; 3]);
+    };
+    let mut histograms = [None; 3];
+    for (parts, slot) in stage_parts.iter().zip(&mut histograms) {
+        let mut histogram = TargetHistogram::new(min, max);
+        for part in &parts.parts {
+            let path = output_dir.join(part);
+            let schema = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(&path)?)?
                 .schema()
-                .index_of(FUTURE_LABELS_OUTPUT_ALIAS)
-                .map_err(|_| {
-                    TTGenError::SchemaError(format!(
-                        "forecasting split stats require {FUTURE_LABELS_OUTPUT_ALIAS}"
-                    ))
+                .clone();
+            let column = [TARGET_COL, FUTURE_LABELS_OUTPUT_ALIAS]
+                .into_iter()
+                .find(|name| schema.column_with_name(name).is_some())
+                .unwrap_or(FUTURE_LABELS_OUTPUT_ALIAS);
+            for batch in projected_reader(&path, &[column])? {
+                let batch = batch.map_err(|e| TTGenError::Parquet(e.to_string()))?;
+                for_each_label(batch.column(0).as_ref(), &mut |value| {
+                    if value.is_finite() {
+                        histogram.observe(value);
+                    }
                 })?;
-            for_each_label(batch.column(idx).as_ref(), |value| {
-                if value.is_finite() {
-                    let raw = ((value - min) / width).floor() as isize;
-                    let idx = raw.clamp(0, NUM_HISTOGRAM_BINS as isize - 1) as usize;
-                    counts[idx] += 1;
-                }
-            })?;
+            }
         }
+        *slot = Some(histogram);
     }
-    Ok(counts)
+    Ok(histograms)
 }
 
 fn projected_reader(path: &Path, columns: &[&str]) -> TTGenResult<ParquetRecordBatchReader> {
@@ -568,88 +556,8 @@ fn projected_reader(path: &Path, columns: &[&str]) -> TTGenResult<ParquetRecordB
     Ok(builder.with_projection(mask).build()?)
 }
 
-fn stage_to_kumo_json(
-    stats: &KumoStageStats,
-    histogram_counts: &[u64],
-    required: bool,
-) -> JsonValue {
-    if stats.row_count == 0 && !required {
-        return JsonValue::Null;
-    }
-    let target_count = stats.target_welford.count;
-    let mut td = stats.target_tdigest.clone();
-    let p25 = if target_count > 0 {
-        td.quantile_at(0.25)
-    } else {
-        0.0
-    };
-    let p50 = if target_count > 0 {
-        td.quantile_at(0.50)
-    } else {
-        0.0
-    };
-    let p75 = if target_count > 0 {
-        td.quantile_at(0.75)
-    } else {
-        0.0
-    };
-    let min = if target_count > 0 {
-        stats.target_welford.min
-    } else {
-        0.0
-    };
-    let max = if target_count > 0 {
-        stats.target_welford.max
-    } else {
-        0.0
-    };
-    let width = histogram_bin_width(stats);
-    let bins: Vec<f64> = (0..=NUM_HISTOGRAM_BINS)
-        .map(|i| min + width * i as f64)
-        .collect();
-    let (mode_bin, mode_count) = histogram_counts
-        .iter()
-        .enumerate()
-        .max_by_key(|(_, count)| *count)
-        .map(|(idx, count)| (idx, *count))
-        .unwrap_or((0, 0));
-    let mode = min + width * (mode_bin as f64 + 0.5);
-    json!({
-        "num_train_rows": stats.row_count,
-        "num_entities": stats.entity_hll.estimate() as u64,
-        "num_targets": stats.target_hll.estimate() as u64,
-        "min_date": stats.timestamp_min.map(ns_to_iso),
-        "max_date": stats.timestamp_max.map(ns_to_iso),
-        "anchor_date": stats.timestamp_min.map(ns_to_iso),
-        "target_distribution": {
-            "target_mean": if target_count > 0 { stats.target_welford.mean() } else { 0.0 },
-            "target_min": min,
-            "target_max": max,
-            "target_percentile_25": p25,
-            "target_percentile_75": p75,
-            "target_median": p50,
-            "target_mode": mode,
-            "target_mode_percentage": if target_count > 0 {
-                mode_count as f64 / target_count as f64
-            } else {
-                0.0
-            },
-            "target_mode_count": mode_count,
-            "histogram": {
-                "bins": bins,
-                "counts": histogram_counts,
-                "bin_width": width,
-                "num_bins": NUM_HISTOGRAM_BINS,
-            },
-        },
-    })
-}
-
-fn histogram_bin_width(stats: &KumoStageStats) -> f64 {
-    if stats.target_welford.count == 0 {
-        return 1.0 / NUM_HISTOGRAM_BINS as f64;
-    }
-    let range = stats.target_welford.max - stats.target_welford.min;
+fn range_bin_width(min: f64, max: f64) -> f64 {
+    let range = max - min;
     if range.is_finite() && range > 0.0 {
         range / NUM_HISTOGRAM_BINS as f64
     } else {
@@ -1130,6 +1038,74 @@ mod tests {
             train["target_distribution"]["histogram"]["num_bins"].as_u64(),
             Some(0)
         );
+    }
+
+    fn forecast_split_stats(labels: &[&[f64]]) -> serde_json::Value {
+        let dir = tempfile::tempdir().unwrap();
+        let mut builder = ListBuilder::new(arrow_array::builder::Float64Builder::new());
+        for row in labels {
+            builder.values().append_slice(row);
+            builder.append(true);
+        }
+        let rows = labels.len() as i64;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(ENTITY_COL, DataType::Int64, false),
+            Field::new(TIMESTAMP_COL, DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+            Field::new(
+                FUTURE_LABELS_OUTPUT_ALIAS,
+                DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
+                true,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from_iter_values(0..rows)),
+                Arc::new(TimestampNanosecondArray::from_iter_values(0..rows)),
+                Arc::new(builder.finish()),
+            ],
+        )
+        .unwrap();
+        let mut stats = KumoStageStats::default();
+        observe_pass_b_stage_batch(&batch, &mut stats).unwrap();
+        let parts = one_stage_parts(stats);
+        std::fs::create_dir_all(dir.path().join("train_seeds")).unwrap();
+        let file = std::fs::File::create(dir.path().join(&parts[0].parts[0])).unwrap();
+        let mut writer = parquet::arrow::ArrowWriter::try_new(file, schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let (path, _) = write_kumo_split_stats_artifact(
+            dir.path(),
+            &parts,
+            &PredictionType::Forecasting,
+            "numerical",
+        )
+        .unwrap()
+        .expect("split stats written");
+        let payload: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        payload["train_table_stats"]["target_distribution"]["histogram"].clone()
+    }
+
+    #[test]
+    fn forecast_split_stats_bin_every_label() {
+        let histogram = forecast_split_stats(&[&[1.0, 2.0], &[3.0, f64::NAN], &[1.5]]);
+        let mut expected = [0u64; NUM_HISTOGRAM_BINS];
+        for bin in [0, 12, 25, 49] {
+            expected[bin] += 1;
+        }
+        assert_eq!(histogram["counts"], serde_json::json!(expected.as_slice()));
+        let bins = histogram["bins"].as_array().unwrap();
+        assert_eq!((bins.len(), bins[0].as_f64(), bins[50].as_f64()), (51, Some(1.0), Some(3.0)));
+    }
+
+    #[test]
+    fn forecast_split_stats_bin_a_constant_target() {
+        let histogram = forecast_split_stats(&[&[2.0, 2.0], &[2.0]]);
+        let bins: Vec<f64> = serde_json::from_value(histogram["bins"].clone()).unwrap();
+        assert_eq!(bins.len(), 51);
+        assert!(bins.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(histogram["counts"][0], 3);
     }
 
     #[test]

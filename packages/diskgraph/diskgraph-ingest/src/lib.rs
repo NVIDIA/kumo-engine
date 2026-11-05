@@ -110,7 +110,9 @@ use parquet::basic::{Encoding, PageType, Type as PhysicalType};
 use parquet::column::page::{Page, PageReader};
 use parquet::file::metadata::ColumnChunkMetaData;
 use parquet::file::reader::{ChunkReader, Length, SerializedPageReader};
+#[cfg(unix)]
 use pprof::protos::Message;
+#[cfg(unix)]
 use pprof::ProfilerGuard;
 use ptr_hash::DefaultPtrHash;
 use ptr_hash::PtrHashScratch;
@@ -635,6 +637,7 @@ pub fn ingest_with_stats(
     dest: Dest,
     options: IngestOptions,
 ) -> Result<(DatasetMetadata, IngestStats)> {
+    validate_profile_dir(options.profile_dir.as_deref())?;
     let metadata_bytes = fs::read(graph_config_path)
         .with_context(|| format!("read {}", graph_config_path.display()))?;
     let source: GraphConfig = serde_json::from_slice(&metadata_bytes)?;
@@ -741,6 +744,7 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     success_marker_content: Option<&str>,
     stage_sidecars: HashMap<String, StageSidecarColumns>,
 ) -> Result<(DatasetMetadata, IngestStats)> {
+    validate_profile_dir(options.profile_dir.as_deref())?;
     // Validate the exact graph-feature statistics contract at the common
     // public-ingest boundary, before source normalization or output writes.
     validate_exact_category_count_options(&options)?;
@@ -10247,7 +10251,8 @@ impl IngestContext {
             }
         }
         let mut hash_writer = BufWriter::with_capacity(4 * 1024 * 1024, target.sink(&hash_path)?);
-        mphf.serialize(&mut hash_writer)?;
+        // SAFETY: callers pass constructed PtrHash values with valid fields.
+        unsafe { mphf.serialize(&mut hash_writer)? };
         hash_writer.flush()?;
         let hash_sink = hash_writer
             .into_inner()
@@ -12306,10 +12311,10 @@ fn compact_record_batch_prefix(batch: &RecordBatch, rows: usize) -> Result<Recor
         .map(|array| {
             let data = array.to_data();
             let mut compact = MutableArrayData::new(vec![&data], false, rows);
-            compact.extend(0, 0, rows);
-            make_array(compact.freeze())
+            compact.try_extend(0, 0, rows)?;
+            Ok(make_array(compact.freeze()))
         })
-        .collect();
+        .collect::<std::result::Result<Vec<_>, arrow_schema::ArrowError>>()?;
     Ok(RecordBatch::try_new(batch.schema(), arrays)?)
 }
 
@@ -12794,6 +12799,7 @@ fn text_stats_from_prefix(
     Ok(result)
 }
 
+#[cfg(unix)]
 fn profile_phase<T>(dir: &Path, name: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
     let guard = ProfilerGuard::new(500).context("start profiler")?;
     let result = f();
@@ -12804,6 +12810,71 @@ fn profile_phase<T>(dir: &Path, name: &str, f: impl FnOnce() -> Result<T>) -> Re
     let bytes = profile.encode_to_vec();
     file.write_all(&bytes).context("write pprof profile")?;
     result
+}
+
+fn validate_profile_dir(profile_dir: Option<&Path>) -> Result<()> {
+    ensure!(
+        !cfg!(windows) || profile_dir.is_none(),
+        "CPU profiling is not supported on Windows"
+    );
+    Ok(())
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn rejects_windows_profiling_before_output_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join("published");
+    fs::create_dir(&output).unwrap();
+    for name in ["_SUCCESS", "_MANIFEST.json", "sentinel"] {
+        fs::write(output.join(name), name).unwrap();
+    }
+    let profile = directory.path().join("profiles");
+    let options = || IngestOptions {
+        profile_dir: Some(profile.clone()),
+        ..IngestOptions::default()
+    };
+    let source = || GraphConfig {
+        dataset_name: "profiling_rejected".to_owned(),
+        timestamp_unit: Default::default(),
+        tables: Vec::new(),
+        rowpack: None,
+        num_shards: None,
+        edge_format: None,
+        coercion_mode: Default::default(),
+    };
+    for target in [&output, &directory.path().join("new-output")] {
+        let error = ingest_with_stats_from_source(
+            source(),
+            None,
+            target.to_str().unwrap(),
+            Dest::Local,
+            options(),
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("CPU profiling is not supported on Windows"));
+        // The profiling error must precede even reading the missing config.
+        let error = ingest_with_stats(
+            &directory.path().join("missing-config.json"),
+            target.to_str().unwrap(),
+            Dest::Local,
+            options(),
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("CPU profiling is not supported on Windows"));
+    }
+    for name in ["_SUCCESS", "_MANIFEST.json", "sentinel"] {
+        assert_eq!(fs::read_to_string(output.join(name)).unwrap(), name);
+    }
+    assert_eq!(fs::read_dir(&output).unwrap().count(), 3);
+    assert!(!directory.path().join("new-output").exists());
+    assert!(!profile.exists());
 }
 
 /// Path of the marker file that proves a phase ran to completion.
@@ -13058,6 +13129,7 @@ fn run_phase_with_marker_payload(
     marker_payload: &[u8],
     f: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
+    validate_profile_dir(profile_dir)?;
     // Any phase rerun invalidates publication first. This also protects
     // explicit later-phase resumes from leaving a stale success marker while
     // index artifacts are being replaced.
@@ -13074,11 +13146,14 @@ fn run_phase_with_marker_payload(
     if wipe_on_entry {
         wipe_phase_outputs(root, name)?;
     }
+    #[cfg(unix)]
     if let Some(dir) = profile_dir {
         profile_phase(dir, name, f)?;
     } else {
         f()?;
     }
+    #[cfg(not(unix))]
+    f()?;
     write_phase_marker_payload(root, name, marker_payload)?;
     Ok(())
 }
@@ -13539,6 +13614,7 @@ fn load_sort_key_component_shards(
     Ok(shards)
 }
 
+#[cfg(unix)]
 fn advise_willneed(map: &Mmap) {
     let ret = unsafe {
         libc::madvise(
@@ -13552,6 +13628,7 @@ fn advise_willneed(map: &Mmap) {
     }
 }
 
+#[cfg(unix)]
 fn advise_sequential(map: &Mmap) {
     let ret = unsafe {
         libc::madvise(
@@ -13564,6 +13641,12 @@ fn advise_sequential(map: &Mmap) {
         let _ = std_io::Error::last_os_error();
     }
 }
+
+#[cfg(windows)]
+fn advise_willneed(_map: &Mmap) {}
+
+#[cfg(windows)]
+fn advise_sequential(_map: &Mmap) {}
 
 #[cfg(target_os = "linux")]
 fn advise_file_willneed(file: &fs::File) {

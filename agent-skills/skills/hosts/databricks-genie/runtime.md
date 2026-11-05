@@ -66,9 +66,11 @@ assert connector.table_names(), 'Connector reached no tables.'
 
 **A service principal** only when the user asks for one: `DatabricksIdentity(host=...,
 client_id=..., client_secret=...)`, with the id and secret read at run time by
-`dbutils.secrets.get(scope=SECRET_SCOPE, key=...)` and the scope and key names as config-cell
-constants the user confirmed. Never a literal, never a value asked for in chat, and never call
-`dbutils.secrets.get` yourself during intake.
+`dbutils.secrets.get(scope=SECRET_SCOPE, key=...)` and the workspace URL, scope and key names as
+config-cell constants the user confirmed. Never a literal, never a value asked for in chat, and
+never call `dbutils.secrets.get` yourself during intake. Read the three values once, in this cell,
+into one dict `SP` (`host`, `client_id`, `client_secret`), and build
+`identity = kumo.DatabricksIdentity(**SP)`; §3 reuses `SP`.
 
 ---
 
@@ -77,14 +79,16 @@ constants the user confirmed. Never a literal, never a value asked for in chat, 
 Population staging and read-back run SQL on the confirmed warehouse with the statement API, which
 the cluster's Databricks SDK provides. Define the helper once, after the config cell.
 `wait_timeout` is at most `'50s'` — Databricks rejects more — so it polls until the statement
-finishes. Every identifier in a statement goes through `q`; never interpolate a bare name:
+finishes. Every identifier in a statement goes through `q`; never interpolate a bare name.
+`ws` runs as the connectors' identity: the notebook's own by default, the §2 service principal
+when there is one, so that one identity makes every read, write and statement in the run:
 
 ```python
 import time
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementState
 
-ws = WorkspaceClient()
+ws = WorkspaceClient()        # with a service principal (§2): WorkspaceClient(**SP)
 
 def q(*parts):
     """`catalog`.`schema`.`table`: Unity Catalog names may contain hyphens."""
@@ -116,21 +120,42 @@ output_config = kumo.PredictionOutputConfig(
     connector=output_connector,
     artifact_type=PredictionArtifactType.PREDICTIONS,
     table_name=f'{OUTPUT_SCHEMA}__kumo__{OUTPUT_TABLE}',
-    write_mode=WriteMode.OVERWRITE)
+    write_mode=WRITE_MODE,   # the write mode confirmed at the gate (job.md §3)
+    extra_fields=([MetadataField.JOB_TIMESTAMP, MetadataField.ANCHOR_TIMESTAMP]   # JOB_TIMESTAMP alone for a
+                  if WRITE_MODE == WriteMode.APPEND else []))                # query with no time window
 ```
+
+An APPEND run writes the run's columns, and an existing destination must already have them:
+`kumoai-reference/references/outputs.md` *Write predictions* has the rule and the gate question.
 
 The connector stages the rows through the volume `<OUTPUT_CATALOG>.<OUTPUT_SCHEMA>._kumo_staging`
 and creates it on first use (`adapter.md` §4 has the grants). When it does not exist yet, the
 Node 1d output line says so — `Output: <catalog.schema.table>; creates the staging volume
 <catalog.schema>._kumo_staging` — so the user confirms that write too.
 
-`PredictionArtifactType` and `WriteMode` come from `kumoapi.jobs`. Then read the destination back
-and compare its row count to `prediction_result.num_rows` — the only proof the write worked:
+`PredictionArtifactType`, `WriteMode` and `MetadataField` come from `kumoapi.jobs`. Then read the destination back
+and compare its row count to `prediction_result.num_rows` — the only proof the write worked. An
+OVERWRITE run compares the table total; an APPEND run compares the delta against a count taken
+before the write, as `kumoai-reference/references/outputs.md` says. A first APPEND run finds no
+table yet (the write creates it), so a missing table counts as 0:
 
 ```python
-written = int(run_sql(f'SELECT COUNT(*) FROM {q(OUTPUT_CATALOG, OUTPUT_SCHEMA, OUTPUT_TABLE)}')[0][0])
+def count_output():
+    exists = run_sql(f"SELECT 1 FROM {q(OUTPUT_CATALOG)}.information_schema.tables "
+                     f"WHERE table_schema = lower('{OUTPUT_SCHEMA}') "
+                     f"AND table_name = lower('{OUTPUT_TABLE}')")
+    if not exists:
+        return 0
+    return int(run_sql(f'SELECT COUNT(*) FROM {q(OUTPUT_CATALOG, OUTPUT_SCHEMA, OUTPUT_TABLE)}')[0][0])
+
+before = count_output() if WRITE_MODE == WriteMode.APPEND else 0   # before the predict call
+# ... predict ...
+written = count_output() - before
 assert written == prediction_result.num_rows, (written, prediction_result.num_rows)
 ```
+
+The APPEND delta holds only when nothing else writes to the destination during the run. When the
+user says the table is shared with other jobs, confirm a run-specific destination instead.
 
 Report the destination as `catalog.schema.table`, unchanged.
 
@@ -250,7 +275,11 @@ target = Path(VOLUME_PREFIX) / Path(ARCHIVE_PATH).name
 target.parent.mkdir(parents=True, exist_ok=True)
 with open(ARCHIVE_PATH, 'rb') as src, open(target, 'xb') as dst:   # FileExistsError: new run prefix
     shutil.copyfileobj(src, dst)
-copied = hashlib.sha256(target.read_bytes()).hexdigest()
+h = hashlib.sha256()
+with open(target, 'rb') as f:
+    for chunk in iter(lambda: f.read(1 << 20), b''):
+        h.update(chunk)
+copied = h.hexdigest()
 if copied != digest:
     raise RuntimeError(f'Retained archive digest mismatch: {copied} != {digest}')
 print('retained:', target, digest)
@@ -277,3 +306,11 @@ Run only on explicit request (router Step 3).
   the notebook's own check.
 
 > **Not verified:** how long a Genie Code session stays attached through a long training run.
+
+## Graph visualization
+
+> **Not verified:** interactive HTML rendering and saved-output behavior have not been tested in Databricks notebooks.
+The SDK supplies an HTML view; rerun the cell if saved output is static.
+Exports are saved on the notebook runtime; use the workspace's file tools to retrieve them.
+
+Source: shipped package (`kumo.engine.graph.Graph.visualize`, `kumo.engine._visualization.SVG`)
