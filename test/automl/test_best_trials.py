@@ -2,20 +2,22 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from types import SimpleNamespace
-
 import pytest
 from kumo_core.automl.auto_trainer import AutoTrainer
 
 
-def test_all_nan_tune_metric_names_the_cause(tmp_path):
+@pytest.mark.parametrize('metric, single_class_hint', [('auroc', True),
+                                                       ('mae', False)])
+def test_all_nan_tune_metric(tmp_path, monkeypatch, metric, single_class_hint):
     for trial in ('trial_0', 'trial_1'):
         (tmp_path / trial / 'checkpoint').mkdir(parents=True)
         (tmp_path / trial / 'checkpoint' / 'best.ckpt').touch()
-        (tmp_path / trial / 'val_result.csv').write_text(
-            'val_auroc,val_loss\nnan,0.0345\n')
-    trainer = SimpleNamespace(log_dir=str(tmp_path), tune_metric='auroc',
-                              val_tune_metric='val_auroc')
+        (tmp_path / trial / 'val_result.csv').write_text(f'val_{metric}\nnan\n')
+    monkeypatch.setattr(AutoTrainer, 'log_dir', str(tmp_path))
+    trainer = AutoTrainer.__new__(AutoTrainer)
+    trainer.tune_metric = metric
 
-    with pytest.raises(RuntimeError, match="'val_auroc' is NaN in all 2"):
-        AutoTrainer.get_best_trials(trainer, k=1)
+    with pytest.raises(RuntimeError) as error:
+        trainer.get_best_trials(k=1)
+    assert f"'val_{metric}' is NaN in all 2 completed trials" in str(error.value)
+    assert ('single class' in str(error.value)) == single_class_hint
