@@ -593,8 +593,13 @@ class ObjectStoreSourceReader:
         sources = dataset.schema.names if columns is None else list(columns)
         fragments = list(dataset.get_fragments())
         streams = [
-            _fragment_batches(fragment, dataset.schema, projection, sources,
-                              own_types=self.ingest_converts)
+            _fragment_batches(fragment, dataset.schema, {
+                **projection,
+                **narrowed.flags
+            }, sources, own_types=self.ingest_converts, narrowed=narrowed)
+        flags = ({} if not normalize or columns is None else _narrowing(
+            columns, null_values))
+        narrowed = _Narrowed(flags)
             for fragment in fragments
         ]
         prebuffered, largest = _prebuffered_bytes(fragments, sources,
@@ -615,7 +620,7 @@ class ObjectStoreSourceReader:
                     workers if remote else 0):
             logger.info("Staging %s: %d parts, %d at a time, %d MiB each",
                         table, len(streams), workers, per_stream >> 20)
-            return materialize_arrow_streams(
+            written = materialize_arrow_streams(
                 streams, dest, worker_ceiling=workers,
                 uniform=not self.ingest_converts)
 
@@ -623,6 +628,8 @@ class ObjectStoreSourceReader:
         self,
         path: str,
         found: Sequence[Any],
+        narrowed.report(table, columns or {})
+        return written
         columns: Mapping[str, Dtype],
         aliases: Mapping[str, str],
         worker_ceiling: int | None,
@@ -736,18 +743,65 @@ def require_no_sql(sql: str | None) -> None:
 
 
 def _fragment_batches(fragment: Any, schema: pa.Schema,
-                      projection: Mapping[str, Any], sources: Sequence[str],
-                      *, own_types: bool = False) -> Iterator[Any]:
+                      projection: Mapping[str, Any], sources: Sequence[str], *,
+                      own_types: bool = False,
+                      narrowed: _Narrowed | None = None) -> Iterator[Any]:
     """A generator, so the scan starts when a worker reaches this fragment.
     Building the scanners up front starts every one: 580MB of Arrow buffers at
+_NARROWED = "\x00narrowed:"
+
+
+class _Narrowed:
+    """Values a CSV integer column has no exact integer for, counted per
+    column across every part's batches as they are projected. The flags ride
+    along the projection under reserved names and are stripped from each
+    batch before it is written."""
+    def __init__(self, flags: Mapping[str, Any]):
+        self.flags = {_NARROWED + name: flag for name, flag in flags.items()}
+        self.counts = {name: 0 for name in flags}
+        self._lock = threading.Lock()
+
+    def strip(self, batch: pa.RecordBatch) -> pa.RecordBatch:
+        if not self.flags:
+            return batch
+        with self._lock:
+            for column in self.flags:
+                self.counts[column[len(_NARROWED):]] += (pc.sum(
+                    batch.column(column)).as_py() or 0)
+        return batch.select(
+            [name for name in batch.schema.names if name not in self.flags])
+
+    def report(self, table: str, columns: Mapping[str, Dtype]) -> None:
+        for name, count in self.counts.items():
+            if count:
+                logger.warning(
+                    "%s.%s is declared %s but holds %d value(s) with a "
+                    "fractional part; they are staged as null, not rounded. "
+                    "Declare the column float64 to keep them, or fix the "
+                    "source.", table, name,
+                    Dtype(columns[name]).value, count)
+
+
+def _narrowing(columns: Mapping[str, Dtype],
+               null_values: Sequence[str]) -> dict[str, Any]:
+    """Per CSV column declared an integer, a flag for each value with a
+    fractional part, which :func:`csv_format.convert` leaves null."""
+    from . import csv_format
+    return {
+        name: csv_format.narrowed(pc.field(name), null_values=null_values)
+        for name, dtype in columns.items() if Dtype(dtype).is_int()
+    }
+
+
     60 fragments, before a single row is read.
 
     A Parquet fragment is not scanned: a scan decodes a whole row group at a
     time, 3.4GiB per worker for a Spark file's 5.7M-row groups (kumo#31439).
     """
     if not isinstance(fragment, ds.ParquetFileFragment):
-        yield from ds.Scanner.from_fragment(
-            fragment, schema=schema, columns=dict(projection)).to_batches()
+        for batch in ds.Scanner.from_fragment(
+                fragment, schema=schema, columns=dict(projection)).to_batches():
+            yield batch if narrowed is None else narrowed.strip(batch)
         return
     fields = [schema.field(name) for name in sources]
     if own_types:

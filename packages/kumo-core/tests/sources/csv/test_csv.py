@@ -11,6 +11,7 @@ divergence is a real one rather than a guess about pandas.
 from __future__ import annotations
 
 import gzip
+import logging
 from pathlib import Path
 
 import pyarrow as pa
@@ -346,3 +347,40 @@ def test_a_delimiter_the_platform_denies_is_not_used(tmp_path):
     """
     write(tmp_path, "t", t="a b\n1 2\n3 4\n")
     assert list(reader_over(tmp_path).dtypes("t")) == ["a b"]
+
+
+def test_a_decimal_column_is_a_float_however_large_its_values(tmp_path):
+    """The whole-number test was relative, so from 50,000 up any decimal
+    passed it and the column was pinned to an integer with every value
+    rounded."""
+    write(tmp_path, "t", t="a\n50000.5\n60000.25\n70000.75\n")
+    assert reader_over(tmp_path).dtypes("t") == {"a": Dtype.float64}
+    written = pq.read_table(sorted(staged(tmp_path, "t", tmp_path).paths))
+    assert written.column("a").to_pylist() == [50000.5, 60000.25, 70000.75]
+
+
+@pytest.mark.parametrize("body,columns,expected", [
+    ("a\n1\n2.5\n3\n", {
+        "a": Dtype.int64
+    }, [1, None, 3]),
+    ("a\n" + "1\n" * 100100 + "12.7\n2\n", None, [1, None, 2]),
+])
+def test_a_decimal_in_an_integer_column_is_null_rather_than_rounded(
+        body, columns, expected, tmp_path, caplog):
+    """A declared integer, or one inferred from a sample the decimal sits
+    below: either way ``2.5`` has no integer, and ``2`` would be a value the
+    source never held."""
+    write(tmp_path, "t", t=body)
+    with caplog.at_level(logging.WARNING, logger="kumo_core.sources"):
+        table = staged(tmp_path, "t", tmp_path, columns=columns)
+    written = pq.read_table(sorted(table.paths))
+    assert written.schema.field("a").type == pa.int64()
+    assert written.column("a").to_pylist()[-3:] == expected
+    assert [
+        record.getMessage() for record in caplog.records
+        if record.levelno >= logging.WARNING
+    ] == [
+        "t.a is declared int64 but holds 1 value(s) with a fractional part; "
+        "they are staged as null, not rounded. Declare the column float64 to "
+        "keep them, or fix the source."
+    ]

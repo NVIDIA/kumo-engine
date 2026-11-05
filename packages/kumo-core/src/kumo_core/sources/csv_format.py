@@ -167,10 +167,6 @@ def numeric(expression: Any) -> Any:
     return pc.replace_substring_regex(expression, f'^[{NUMERIC_SIGN}]', '')
 
 
-def rounded(expression: Any) -> Any:
-    return pc.round(expression.cast(pa.float64()))
-
-
 #: What Arrow's own integer parser accepts.
 _INTEGER_TEXT = r'^[+-]?[0-9]+$'
 
@@ -182,6 +178,13 @@ def _without_na(expression: Any, null_values: Sequence[str]) -> Any:
                       pa.scalar(None, pa.string()), expression)
 
 
+def _doubles(text: Any) -> tuple[Any, Any]:
+    """Whether each value is integer-shaped, and every other value as a
+    double."""
+    exact = pc.match_substring_regex(text, _INTEGER_TEXT)
+    return exact, pc.if_else(exact, '0', text).cast(pa.float64())
+
+
 def convert(expression: Any, target: pa.DataType, *,
             null_values: Sequence[str] = ARROW_NA_TOKENS) -> Any:
     """Text to the declared type, reaching the value the hosted export reaches
@@ -189,15 +192,27 @@ def convert(expression: Any, target: pa.DataType, *,
 
     Integer-shaped text is cast directly, since routing it through a double
     would round an ID above 2**53; every other spelling takes the double,
-    which is what makes ``10.0`` a 10 rather than a gap.
+    which is what makes ``10.0`` a 10 rather than a gap. A double with a
+    fractional part has no integer and becomes null, never a rounded one.
     """
     expression = _without_na(expression, null_values)
     if pa.types.is_integer(target):
         text = numeric(expression)
-        exact = pc.match_substring_regex(text, _INTEGER_TEXT)
+        exact, doubles = _doubles(text)
+        whole = pc.if_else(pc.equal(doubles, pc.floor(doubles)), doubles,
+                           pa.scalar(None, pa.float64()))
         return pc.coalesce(
             pc.if_else(exact, text, pa.scalar(None, pa.string())).cast(target),
-            rounded(pc.if_else(exact, '0', text)).cast(target))
+            whole.cast(target))
     if pa.types.is_floating(target):
         return numeric(expression).cast(target)
     return expression.cast(target)
+
+
+def narrowed(expression: Any, *,
+             null_values: Sequence[str] = ARROW_NA_TOKENS) -> Any:
+    """Whether a value is present and has a fractional part, which
+    :func:`convert` leaves null in an integer column."""
+    _, doubles = _doubles(numeric(_without_na(expression, null_values)))
+    return pc.coalesce(pc.not_equal(doubles, pc.floor(doubles)),
+                       pa.scalar(False, pa.bool_()))
