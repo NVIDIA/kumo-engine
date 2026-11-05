@@ -160,3 +160,27 @@ def test_zero_column_sequence_is_refused(events_graph, method):
         match='sequence "s" must project at least one column',
     ):
         getattr(engine, method)({"users": ids}, {"users": [20]}, json.dumps(plan))
+
+
+@pytest.mark.parametrize("clock", [
+    "nanoseconds", "microseconds", "milliseconds", "hours", "days",
+    "minutes", "weeks", "months", "years",
+])
+@pytest.mark.parametrize("method", ["query_temporal", "query_temporal_lengths"])
+def test_temporal_queries_require_seconds_index(tmp_path, clock, method):
+    source = tmp_path / "users.parquet"
+    pq.write_table(pa.table({"id": [1]}), source)
+    index = tmp_path / "index"
+    diskgraph.ingest(json.dumps({"dataset_name": "clock_guard", "tables": [{
+        "name": "users", "primary_key": "id",
+        "columns": [{"name": "id", "ingested_dtype": "int64"}],
+        "source": {"type": "parquet", "paths": [str(source)]},
+    }]}), str(index), col_stats=False)
+    # Integer-only storage lets each metadata clock open without timestamp decoding.
+    metadata_path = index / "index_metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["timestamp_unit"] = clock
+    metadata_path.write_text(json.dumps(metadata))
+    engine = diskgraph.SamplerEngine(str(index))
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="support only seconds indexes"):
+        getattr(engine, method)({"users": [0]}, {"users": [0]}, '{"frames": []}')

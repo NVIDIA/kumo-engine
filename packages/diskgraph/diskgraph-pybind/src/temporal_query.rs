@@ -24,6 +24,7 @@ use arrow::pyarrow::ToPyArrow;
 use arrow_array::RecordBatch;
 use diskgraph_core::metadata::{EdgeRelationMetadata, EdgeSortKeyMetadata};
 use diskgraph_core::sortkey::SortKeyDecoder;
+use diskgraph_core::time::TimeUnit;
 use diskgraph_engine::edge_unpacker::EdgeUnpacker;
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use pyo3::prelude::*;
@@ -1546,6 +1547,16 @@ fn count_frame(
     Ok(lengths)
 }
 
+fn require_seconds_index(reader: &GraphIndexReader) -> Result<(), String> {
+    let clock = reader.metadata().timestamp_unit;
+    if clock != TimeUnit::Seconds {
+        return Err(format!(
+            "temporal queries currently support only seconds indexes; this index uses {clock:?}"
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn execute_lengths(
     reader: &GraphIndexReader,
     root_type: &str,
@@ -1553,6 +1564,7 @@ pub(crate) fn execute_lengths(
     cutoffs: &[i64],
     plan_json: &str,
 ) -> Result<LengthResult, String> {
+    require_seconds_index(reader)?;
     let total_started = Instant::now();
     if roots.len() != cutoffs.len() {
         return Err(format!(
@@ -1620,6 +1632,7 @@ pub(crate) fn execute(
     cutoffs: &[i64],
     plan_json: &str,
 ) -> Result<QueryResult, String> {
+    require_seconds_index(reader)?;
     let total_started = Instant::now();
     if roots.len() != cutoffs.len() {
         return Err(format!(
