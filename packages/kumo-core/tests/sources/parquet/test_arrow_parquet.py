@@ -9,11 +9,13 @@ from datetime import datetime, timedelta
 from io import BytesIO
 
 import pyarrow as pa
+import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 import pytest
 from kumo_core.sources.arrow_parquet import (
     count_rows,
     materialize_arrow_streams,
+    read_bounded_dataset,
     write_parquet_file,
 )
 from kumo_core.sources.errors import SchemaChangedError
@@ -404,3 +406,17 @@ def test_single_file_finalizes_writer_without_owning_output(failure):
     assert pq.read_table(pa.BufferReader(output.getvalue())).to_pydict() == {
         "id": [1, 2]
     }
+
+
+def test_a_bounded_read_is_the_head_unless_spread(tmp_path):
+    """``ParquetConnector.read_table(num_rows=)`` reads the head through
+    this; only the inference sample asks for rows from across the table."""
+    path = tmp_path / "rows.parquet"
+    pq.write_table(pa.table({"id": pa.array(range(8), pa.int64())}), path,
+                   row_group_size=4)
+    dataset = ds.dataset(str(path))
+    assert read_bounded_dataset(dataset, ["id"],
+                                4).column("id").to_pylist() == [0, 1, 2, 3]
+    assert read_bounded_dataset(
+        dataset, ["id"], 4,
+        spread=True).column("id").to_pylist() == [0, 1, 4, 5]

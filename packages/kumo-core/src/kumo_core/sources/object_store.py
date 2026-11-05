@@ -280,7 +280,7 @@ class ObjectStoreSourceReader:
                 return read_bounded_dataset(dataset, [
                     name for name in column_dtypes(dataset.schema)
                     if name not in unreadable
-                ], rows)
+                ], rows, spread=True)
         from . import csv_format, csv_preview
         parts = self._csv_parts(table, found)
         with _arrow_errors(table, "CSV"):

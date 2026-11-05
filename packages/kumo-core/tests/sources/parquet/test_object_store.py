@@ -1677,3 +1677,13 @@ def test_a_head_is_spread_across_row_groups_and_parts(parts, row_group_size,
     assert len(ids) == 8
     assert ids == sorted(ids)
     assert {value // 25 for value in ids} == {0, 1, 2, 3}
+
+
+def test_a_head_passes_over_empty_parts(tmp_path):
+    """Evenly spaced slots over eleven parts land on the first ten; if those
+    are empty the sample must move on rather than report the table empty."""
+    empty = pa.table({"id": pa.array([], pa.int64())})
+    write_parts(tmp_path / "late", *([empty] * 10),
+                pa.table({"id": pa.array(range(20), pa.int64())}))
+    head = reader_over(tmp_path).head("late", 5)
+    assert head.column("id").to_pylist() == [0, 1, 2, 3, 4]
