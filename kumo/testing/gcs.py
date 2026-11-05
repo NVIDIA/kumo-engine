@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import base64
-import inspect
 import json
 import os
 from collections.abc import Callable
@@ -42,6 +41,12 @@ def setup_gcs_credentials():
 
     if ENV_GCS_TEST_BUCKET not in os.environ:
         os.environ[ENV_GCS_TEST_BUCKET] = 'kumo-test-bucket'
+    # CI supplies short-lived ADC. Never replace it with a stored key, and
+    # reuse the selected credentials when another test requests this setup.
+    credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+    if credentials_path:
+        os.environ[ENV_GOOGLE_CREDENTIALS_JSON] = credentials_path
+        return
     google_creds = os.getenv("GOOGLE_CREDENTIALS_STR_JSON")
     if google_creds:
         logger.info("Using GOOGLE_CREDENTIALS_STR_JSON environment variable")
@@ -108,31 +113,17 @@ def _check_gcs_credentials() -> bool:
 
 
 def withGCSCredentials(func: Callable):
-    """Decorator that sets up GCS credentials and skips tests if unavailable.
+    """Declare credentials without performing IO during pytest collection.
 
-    This decorator:
-    1. Calls setup_gcs_credentials() to fetch and configure credentials
-    2. Skips the test if credentials are not available
-    3. Allows tests to run in CI with credentials but skip locally without them
-
-    Args:
-        func: The test function to decorate
-
-    Example:
-        @withGCSCredentials
-        def test_gcs_operation():
-            # Test code here
-            pass
+    The test setup hook resolves this prerequisite after skip selection and
+    before resource fixtures, including session workers, are initialized.
     """
-    # A collection-time mark prevents live GCS fixtures from being resolved
-    # when credentials are absent. A runtime wrapper skips too late: pytest
-    # sets up fixtures before invoking the wrapped test.
-    credentials_missing = not _check_gcs_credentials()
-    reason = "No GCS credentials found"
-    if inspect.isgeneratorfunction(func):
-        from kumo.testing._skip import skip_if
-        return skip_if(credentials_missing, reason, func)
-    return pytest.mark.skipif(credentials_missing, reason=reason)(func)
+    return pytest.mark.gcs_credentials(func)
+
+
+def require_gcs_credentials() -> None:
+    if not _check_gcs_credentials():
+        pytest.skip('No GCS credentials found')
 
 
 def withMockedGCSFilesystem(func: Callable):

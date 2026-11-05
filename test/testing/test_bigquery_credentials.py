@@ -2,12 +2,14 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import os
 from unittest import mock
 
 import kumoapi.data_source as data_source_api
 import pytest
 
+from io_utils import fsutil
 from kumo.connector import bigquery_connector
 from kumo.connector.bigquery_connector import BigQueryConnector
 from kumo.testing import bigquery as testing_bigquery
@@ -141,3 +143,24 @@ def test_connector_loads_external_account_and_impersonates(
         'provider': 'bigquery',
         'credential': target_credential,
     }
+
+
+@pytest.mark.parametrize('credential_type', [
+    None, 'service_account', 'authorized_user', 'impersonated_service_account',
+])
+def test_workload_mode_requires_federation(monkeypatch, tmp_path,
+                                           credential_type):
+    monkeypatch.setenv('KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED', 'true')
+    monkeypatch.delenv('GOOGLE_APPLICATION_CREDENTIALS', raising=False)
+    monkeypatch.setenv(bigquery_connector.ENV_GCS_KUMO_BUCKET.name, 'test-bucket')
+    if credential_type is not None:
+        adc = str(tmp_path / 'adc.json')
+        fsutil.write_text(adc, json.dumps({'type': credential_type}))
+        monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS', adc)
+    get_secrets = mock.Mock(side_effect=AssertionError('No stored-key fallback'))
+    monkeypatch.setattr(testing_bigquery, 'get_secrets', get_secrets)
+
+    with pytest.raises(RuntimeError, match='require'):
+        testing_bigquery.setup_bigquery_credentials()
+
+    get_secrets.assert_not_called()
