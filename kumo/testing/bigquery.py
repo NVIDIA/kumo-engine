@@ -9,6 +9,8 @@ import os
 from collections.abc import Callable
 from typing import Optional
 
+import orjson
+
 from io_utils import logging
 from io_utils.secrets import get_secrets
 from kumo.connector.bigquery_connector import (
@@ -59,6 +61,11 @@ def _configure_application_default_credentials(
     else:
         target = os.getenv(impersonation_env)
         if not target:
+            with open(credentials_path, 'rb') as file:
+                credentials_type = orjson.loads(file.read()).get('type')
+            if credentials_type == 'service_account':
+                # A prior test's key cannot substitute for the restricted key.
+                return False
             raise RuntimeError(
                 f"{impersonation_env} must be configured for the restricted "
                 "BigQuery permission test identity")

@@ -6,21 +6,19 @@ from __future__ import annotations
 
 import random
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from functools import partial
+from unittest.mock import MagicMock
 
+import numpy as np
 import pandas as pd
 import pytest
+from kumo_core.diskgraph.metadata import DiskgraphSchema
 from kumo_core.encoders.config import EncodersConfig, TargetEncoderConfig
 from kumo_core.encoders.selection import compute_missing_stats_
 from kumo_core.encoders.tensor_mappers import TensorMappers
-from kumo_core.features.stores.feature import (
-    FeatureStore,
-    FeatureStoreTableSchema,
-    FeatureStoreTrainingTableSchema,
-)
-from kumo_core.features.stores.graph import GraphStore
-from kumo_core.features.stores.in_memory_feature import InMemoryFeatureStore
+from kumo_core.features.stores.feature import FeatureStore
 from kumo_core.training.options import allow_array_targets
 from kumo_core.types import ColStatType, TaskType
 from kumoapi.encoder import (
@@ -37,9 +35,7 @@ from kumoapi.encoder import (
     TextEmbedding,
 )
 from kumoapi.typing import Stype
-
-from kumo.stats import Stats
-from kumo.testing.fixtures.in_memory_graph import InMemoryGraphStore
+from torch import Tensor
 
 
 @dataclass
@@ -79,7 +75,12 @@ def sample_numerical_encoder() -> Encoder:
 def sample_multicategorical_encoder(sep: str | None = None) -> Encoder:
     na_strategy = random.choice(['zero', 'separate', 'most_frequent'])
     encoder = MultiCategorical(na_strategy=na_strategy)
-    value = Stats(value=sep, approx=False) if sep is not None else "|"
+    if sep is None:
+        value = "|"
+    else:
+        from kumo.stats import Stats
+
+        value = Stats(value=sep, approx=False)
     encoder._stats[ColStatType.MULTI_CATEGORIES_SEPARATOR] = value
     return encoder
 
@@ -128,7 +129,23 @@ def create_task_data(
     train_table_df: pd.DataFrame,
     encoder_overrides: dict[str, Encoder] | None = None,
     weight_col: str | None = None,
-) -> tuple[FeatureStore, GraphStore, EncodersConfig]:
+) -> tuple[FeatureStore, DiskgraphSchema, EncodersConfig]:
+    """Build model-configuration fixtures with mocked feature-store metadata.
+
+    Args:
+        df_dict: Graph-table data used for encoder statistics and primary keys.
+        schema_dict: Graph column and relation metadata.
+        task_type: Task type selecting the target encoder.
+        train_table_df: Training metadata and target values.
+        encoder_overrides: Explicit encoders keyed by table and column.
+        weight_col: Optional training-weight column name.
+
+    Returns:
+        Mocked feature metadata, graph schema, and computed encoder configuration.
+
+    Raises:
+        AssertionError: If the training table has no valid entity keys.
+    """
 
     encoder_overrides = encoder_overrides or {}
 
@@ -165,51 +182,54 @@ def create_task_data(
         compute_missing_stats_(target_encoder, train_table_df['TARGET'])
         encoders.target = TargetEncoderConfig('TARGET', target_encoder)
 
-    # Create `FeatureStore` ###################################################
-
     mappers = TensorMappers.from_encoders(encoders)
-
-    fs_table_schema_dict = {
-        table_name:
-        FeatureStoreTableSchema(
-            mapper_dict=mappers[table_name],
-            pkey_name=schema.pkey_name,
-            time_col_name=schema.time_col,
-            end_time_col_name=schema.end_time_col,
-        )
+    train_fkeys = [
+        (column, table_name)
+        for column in train_table_df.columns
         for table_name, schema in schema_dict.items()
-    }
-
-    # Check if any primary key shares a column name in the training table.
-    train_fkeys = []
-    for col_name in train_table_df.columns:
-        for table_name, schema in schema_dict.items():
-            if col_name == schema.pkey_name:
-                train_fkeys.append((col_name, table_name))
+        if column == schema.pkey_name
+    ]
     assert len(train_fkeys) in {1, 2}
-
-    fs_train_table_schema = FeatureStoreTrainingTableSchema(
-        table_name='TRAIN_TABLE',
-        fkeys=train_fkeys,
-        train_mask_name='TRAIN_MASK',
-        val_mask_name='VAL_MASK',
-        test_mask_name='TEST_MASK' if 'TEST_MASK' in train_table_df else None,
-        mapper_dict=mappers['TRAIN_TABLE'],
-        target_mapper=('TARGET', mappers.target.mapper)
-        if target_encoder is not None else None,
-        time_col_name='TIME' if 'TIME' in train_table_df else None,
-        weight_col_name=weight_col,
+    time_columns = {
+        name: schema.time_col
+        for name, schema in schema_dict.items()
+        if schema.time_col is not None
+    }
+    feature_store = MagicMock(
+        spec=FeatureStore,
+        table_names=list(schema_dict),
+        train_table_name='TRAIN_TABLE',
+        entity_table_names=[name for _, name in train_fkeys],
+        train_fkey_names=[column for column, _ in train_fkeys],
+        time_col_dict=time_columns,
+        has_train_table_time_col='TIME' in train_table_df,
+        has_train_table_target_col=encoders.target is not None,
+        has_train_table_weight_col=weight_col is not None,
+        has_train_table_test_mask='TEST_MASK' in train_table_df,
     )
+    feature_store.get_target_tensor_mapper.return_value = (
+        mappers.target.mapper if mappers.target is not None else None)
+    feature_store.get_tensor_mapper.side_effect = (
+        lambda table, column: mappers[table][column])
+    feature_store.get_pkey_name.side_effect = (
+        lambda table: schema_dict[table].pkey_name)
+    feature_store.safe_batch_mode.side_effect = lambda **_: nullcontext()
 
-    df_dict = df_dict | {'TRAIN_TABLE': train_table_df}
+    def read_primary_keys(
+        query: tuple[str, str, Tensor | slice | None],
+    ) -> np.ndarray:
+        table_name, attribute, index = query
+        if attribute != 'pkey':
+            raise KeyError(f'This fixture only reads primary keys, got {attribute!r}')
+        pkey_name = schema_dict[table_name].pkey_name
+        assert pkey_name is not None
+        values = df_dict[table_name][pkey_name].to_numpy()
+        selected = index.cpu().numpy() if isinstance(index, Tensor) else index
+        return values if selected is None else values[selected]
 
-    feature_store = InMemoryFeatureStore(
-        df_dict=df_dict,
-        table_schema_dict=fs_table_schema_dict,
-        train_table_schema=fs_train_table_schema,
-    )
+    feature_store.__getitem__.side_effect = read_primary_keys
 
-    # Create `GraphStore` #####################################################
+    # Create `DiskgraphSchema` #####################################################
 
     fkeys = []
     for table_name, schema in schema_dict.items():
@@ -219,16 +239,25 @@ def create_task_data(
                 f'{dst_table}.{schema_dict[dst_table].pkey_name}',
             ))
 
-    time_col_dict = {
-        table_name: schema.time_col
+    edge_types = [
+        edge_type
         for table_name, schema in schema_dict.items()
-        if schema.time_col is not None
-    }
-
-    graph_store = InMemoryGraphStore(
-        df_dict=df_dict,
-        fkeys=fkeys,
-        time_col_dict=time_col_dict,
+        for column, destination in schema.fkeys
+        for edge_type in (
+            (table_name, column, destination),
+            (destination, f'rev_{column}', table_name),
+        )
+    ]
+    graph_store = DiskgraphSchema(
+        table_names=list(schema_dict),
+        pkey_dict={name: schema.pkey_name
+                   for name, schema in schema_dict.items()
+                   if schema.pkey_name is not None},
+        fk_specs=fkeys,
+        raw_edge_types=list(edge_types),
+        edge_types=edge_types,
+        edge_type_remap={},
+        node_types=list(schema_dict),
     )
 
     return feature_store, graph_store, encoders
@@ -293,9 +322,9 @@ def user_store_graph(
     return df_dict, schema_dict
 
 
-def _temporal_task(user_store_graph, task_type) -> tuple[  #
+def _temporal_task(user_store_graph, task_type) -> tuple[
         FeatureStore,
-        GraphStore,
+        DiskgraphSchema,
         EncodersConfig,
 ]:
     train_table_df = pd.DataFrame({
@@ -368,9 +397,9 @@ def _temporal_task(user_store_graph, task_type) -> tuple[  #
 
 
 @pytest.fixture()
-def temporal_task(user_store_graph, task_type) -> tuple[  #
+def temporal_task(user_store_graph, task_type) -> tuple[
         FeatureStore,
-        GraphStore,
+        DiskgraphSchema,
         EncodersConfig,
 ]:
     return _temporal_task(user_store_graph, task_type)
@@ -382,9 +411,9 @@ def get_temporal_task(user_store_graph) -> Callable:
 
 
 @pytest.fixture()
-def static_task(user_store_graph, task_type) -> tuple[  #
+def static_task(user_store_graph, task_type) -> tuple[
         FeatureStore,
-        GraphStore,
+        DiskgraphSchema,
         EncodersConfig,
 ]:
     df_dict, schema_dict = user_store_graph
@@ -420,9 +449,9 @@ def static_task(user_store_graph, task_type) -> tuple[  #
 
 
 @pytest.fixture()
-def static_order_classification_task(user_store_graph) -> tuple[  #
+def static_order_classification_task(user_store_graph) -> tuple[
         FeatureStore,
-        GraphStore,
+        DiskgraphSchema,
         EncodersConfig,
 ]:
     """Static order classification task where ORDER.ID is
@@ -507,9 +536,9 @@ def user_item_marketplace_graph(
 
 
 @pytest.fixture()
-def temporal_marketplace_task(user_item_marketplace_graph) -> tuple[  #
+def temporal_marketplace_task(user_item_marketplace_graph) -> tuple[
         FeatureStore,
-        GraphStore,
+        DiskgraphSchema,
         EncodersConfig,
 ]:
     train_table_df = pd.DataFrame({
@@ -530,7 +559,7 @@ def temporal_marketplace_task(user_item_marketplace_graph) -> tuple[  #
 
 
 @pytest.fixture()
-def forecasting_task() -> tuple[FeatureStore, GraphStore, EncodersConfig]:
+def forecasting_task() -> tuple[FeatureStore, DiskgraphSchema, EncodersConfig]:
     df_dict: dict[str, pd.DataFrame] = {}
     schema_dict: dict[str, TestTableSchema] = {}
     df_dict['USERS'] = pd.DataFrame({
@@ -606,9 +635,9 @@ def forecasting_task() -> tuple[FeatureStore, GraphStore, EncodersConfig]:
 
 
 @pytest.fixture()
-def temporal_hyperedge_task(user_store_graph, task_type) -> tuple[  #
+def temporal_hyperedge_task(user_store_graph, task_type) -> tuple[
         FeatureStore,
-        GraphStore,
+        DiskgraphSchema,
         EncodersConfig,
 ]:
     train_table_df = pd.DataFrame({
@@ -638,9 +667,9 @@ def temporal_hyperedge_task(user_store_graph, task_type) -> tuple[  #
 
 
 @pytest.fixture()
-def temporal_explain_task(task_type: TaskType) -> tuple[  #
+def temporal_explain_task(task_type: TaskType) -> tuple[
         FeatureStore,
-        GraphStore,
+        DiskgraphSchema,
         EncodersConfig,
 ]:
     df_dict: dict[str, pd.DataFrame] = {}
