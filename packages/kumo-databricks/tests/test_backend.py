@@ -6,7 +6,7 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
-from kumo_core.sources.errors import PermanentSourceError
+from kumo_core.sources.errors import EmptySourceError
 from kumo_core.sources.types import ReadMode, StagedTable
 from kumo_databricks.backend import DatabricksSourceBackend
 
@@ -35,5 +35,5 @@ def test_zero_row_read_is_an_empty_source(rows, tmp_path, monkeypatch):
     if rows:
         assert prepare().source["paths"] == [str(part)]
     else:
-        with pytest.raises(PermanentSourceError, match="no rows"):
+        with pytest.raises(EmptySourceError, match="no rows"):
             prepare()

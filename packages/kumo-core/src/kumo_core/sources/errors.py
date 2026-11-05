@@ -33,6 +33,11 @@ class SourceNotFoundError(PermanentSourceError):
     """
 
 
+class EmptySourceError(PermanentSourceError):
+    """The table has no rows; DiskGraph needs at least one to infer an
+    encoding, so a graph can leave the table out."""
+
+
 class SourceAccessDeniedError(PermanentSourceError):
     """A grant the chosen read mode needs is missing. Narrow on purpose:
     this alone selects the streamed fallback."""

@@ -112,6 +112,7 @@ from kumo.engine.graph import (
     GraphSnapshot,
     index_timestamp_precision,
     report_other_graph,
+    schema_changes,
 )
 from kumo.engine.pquery.prediction_table import PredictionTable
 from kumo.engine.pquery.training_table import TrainingTable
@@ -1620,6 +1621,12 @@ class Trainer:
                 f"Snapshot {snapshot.id} was taken of graph "
                 f"{snapshot._graph_key}, but this model was trained on a "
                 f"snapshot of graph {trained}.", self._graph_config,
+                snapshot.graph_config, stacklevel=3, strict=strict)
+        elif trained and self._graph_config is not None and schema_changes(
+                self._graph_config, snapshot.graph_config):
+            report_other_graph(
+                f"Snapshot {snapshot.id} differs from the snapshot this "
+                "model was trained on.", self._graph_config,
                 snapshot.graph_config, stacklevel=3, strict=strict)
         query = PredictiveQuery._from_snapshot(snapshot, self._training_query)
         plan = self._training_table_generation_plan

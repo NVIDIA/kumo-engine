@@ -35,7 +35,7 @@ from kumo_core.sources.backend import (
     select_columns,
     source_columns,
 )
-from kumo_core.sources.errors import PermanentSourceError, SourceNotFoundError
+from kumo_core.sources.errors import EmptySourceError, SourceNotFoundError
 from kumo_core.sources.layout import staging_dir
 from kumo_core.sources.principals import IdentityRef
 from kumo_core.sources.types import ReadMode
@@ -260,7 +260,7 @@ class BigQuerySourceBackend(_BigQuerySessions):
             columns=self._declared(connector, table_name, dtypes, query),
             mode=self.mode, sql=query, version=data_version)
         if not staged.num_rows:
-            raise PermanentSourceError(
+            raise EmptySourceError(
                 f'Reading {table_name} returned no rows. An empty source '
                 f'table cannot be ingested; DiskGraph needs at least one row '
                 f'to infer an encoding.')

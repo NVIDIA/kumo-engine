@@ -4,6 +4,7 @@
 
 import json
 import re
+from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -635,7 +636,9 @@ def test_duplicate_column_names_are_refused_at_the_schema_read(
 
 def test_a_table_with_no_rows_is_left_out_of_the_snapshot(tmp_path):
     from kumo_core.pquery import PredictiveQueryPlanError
+    from kumo_core.sources.errors import SourceNotFoundError
     from kumoapi.graph import Edge
+    from kumoapi.table import Column
 
     from kumo.engine import FileConnector, configure
     from kumo.engine.pquery import PredictiveQuery
@@ -650,56 +653,76 @@ def test_a_table_with_no_rows_is_left_out_of_the_snapshot(tmp_path):
         }), root / 'users.parquet')
     pq.write_table(
         pa.table({
-            'eid': pa.array([], pa.int64()),
-            'uid': pa.array([], pa.int64()),
+            'oid': range(40),
+            'uid': [i % 20 for i in range(40)],
+            'item_id': [i % 5 for i in range(40)],
+            'ts': [datetime(2024, 1, 1 + i % 28) for i in range(40)],
+        }), root / 'orders.parquet')
+    pq.write_table(
+        pa.table({
+            'item_id': pa.array([], pa.int64()),
             'amount': pa.array([], pa.float64()),
-            'ts': pa.array([], pa.timestamp('s')),
-        }), root / 'events.parquet')
+        }), root / 'items.parquet')
     connector = FileConnector(root_dir=str(root))
     users = Table.from_source_table(connector['users'], primary_key='id')
-    with pytest.warns(UserWarning, match=r"Table 'events' has no rows"):
-        events = Table.from_source_table(connector['events'], primary_key='eid',
-                                         time_column='ts')
+    orders = Table.from_source_table(connector['orders'], primary_key='oid',
+                                     time_column='ts')
+    with pytest.warns(UserWarning, match=r"Table 'items' has no rows"):
+        items = Table.from_source_table(connector['items'],
+                                        primary_key='item_id')
     assert {
         col.name: col.stype
-        for col in events.definition.cols
+        for col in items.definition.cols
     } == {
-        'eid': Stype.ID,
-        'uid': Stype.ID,
+        'item_id': Stype.ID,
         'amount': Stype.categorical,
-        'ts': Stype.timestamp,
     }
     graph = Graph({
         'users': users,
-        'events': events
-    }, [Edge('events', 'uid', 'users')])
+        'orders': orders,
+        'items': items
+    }, [Edge('orders', 'uid', 'users'),
+        Edge('orders', 'item_id', 'items')])
     graph.validate()
 
     with pytest.warns(
             UserWarning,
-            match=r'Table events has no rows and is left out of the snapshot '
-            r'with 1 edge\(s\) \(events\.uid -> users\); a query that names '
-            r'it fails\.'):
+            match=r'Table items has no rows and is left out of the snapshot '
+            r'with 1 edge\(s\) \(orders\.item_id -> items\); a query that '
+            r'names it fails\.'):
         snapshot = graph.snapshot()
 
-    assert [table['table_name']
-            for table in snapshot.graph_config['tables']] == ['users']
-    assert snapshot.graph_config['tables'][0]['fkeys'] == []
+    assert [table['table_name'] for table in snapshot.graph_config['tables']
+            ] == ['users', 'orders']
+    assert [
+        fkey['dst_table'] for table in snapshot.graph_config['tables']
+        for fkey in table['fkeys']
+    ] == ['users']
     assert snapshot.index_path.is_dir()
-    query = PredictiveQuery(
-        graph, 'PREDICT COUNT(events.*, 0, 30, days) FOR EACH users.id')
-    assert query.validate(verbose=False).empty()
-    with pytest.raises(
-            PredictiveQueryPlanError,
-            match=rf'This query needs table\(s\) events, which have no rows '
-            rf'and were left out of snapshot {snapshot.id}\. Add rows to '
-            r'them and take a new snapshot, or write a query over the '
-            r'other tables\.') as error:
-        query.generate_training_table(snapshot)
-    assert "Table 'events' does not exist" in str(error.value.__cause__)
+    for text in ('PREDICT items.amount FOR EACH items.item_id',
+                 'PREDICT LIST_DISTINCT(orders.item_id, 0, 30, days) '
+                 'RANK TOP 2 FOR EACH users.id'):
+        query = PredictiveQuery(graph, text)
+        query.validate(verbose=False)
+        with pytest.raises(
+                PredictiveQueryPlanError,
+                match=rf'This query needs table\(s\) items, which have no '
+                rf'rows and were left out of snapshot {snapshot.id}\. Add '
+                r'rows to them and take a new snapshot, or write a query '
+                r'over the other tables\.'):
+            query.generate_training_table(snapshot)
     with pytest.warns(UserWarning, match='left out of the snapshot'):
         assert PredictiveQuery(
-            graph, 'PREDICT users.age FOR EACH users.id').suggest_model_plan(
-                graph.snapshot())
-    with pytest.raises(ValueError, match=r'Every table .* no rows \(events\)'):
-        Graph({'events': events}).snapshot()
+            graph, 'PREDICT COUNT(orders.*, 0, 30, days) FOR EACH users.id'
+        ).suggest_model_plan(graph.snapshot())
+    undeclared = replace(
+        items, definition=replace(
+            items.definition, cols=[
+                *items.definition.cols,
+                Column('missing', Stype.numerical, Dtype.int64)
+            ]))
+    with pytest.raises(SourceNotFoundError,
+                       match='items has no column missing'):
+        Graph({'users': users, 'items': undeclared}).snapshot()
+    with pytest.raises(ValueError, match=r'Every table .* no rows \(items\)'):
+        Graph({'items': items}).snapshot()

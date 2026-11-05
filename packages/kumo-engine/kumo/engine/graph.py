@@ -184,12 +184,6 @@ def _refuse_unusable_aliases(aliases: Sequence[str]) -> None:
                 "differ in more than case.")
 
 
-def _has_no_rows(connector: Connector, name: str, sql: Optional[str]) -> bool:
-    from kumo.engine._infer import _sample
-
-    return _sample(connector.source_backend, connector, name, sql)[3]
-
-
 def _warn_low_fk_match_rates(stats: Dict[str, Any],
                              tables: Dict[str, Any]) -> None:
     edges = stats.get('edge_counts', {})
@@ -960,7 +954,7 @@ class Graph:
             check_diskgraph_output,
         )
         from kumo_core.diskgraph.stores import diskgraph_index_size_bytes
-        from kumo_core.sources.errors import PermanentSourceError
+        from kumo_core.sources.errors import EmptySourceError
         from kumo_core.sources.layout import staging_dir
         from kumo_core.sources.transfer import discard_destination
         from kumoapi.source_table import CustomSQLSourceTable
@@ -1001,9 +995,7 @@ class Graph:
                         },
                         sql=sql,
                     )
-                except PermanentSourceError:
-                    if not _has_no_rows(connector, name, sql):
-                        raise
+                except EmptySourceError:
                     empty.append(alias)
                     continue
                 if prepared.credentials is not None:

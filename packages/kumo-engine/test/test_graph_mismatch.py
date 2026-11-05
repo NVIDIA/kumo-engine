@@ -65,9 +65,29 @@ def test_predict_says_what_differs_from_the_training_graph(
     with pytest.warns(UserWarning, match='The schema is the same'):
         _predict(trainer, _other(snapshot, _moved), monkeypatch, mlops=strict)
 
+    def left_out(snapshot):
+        config = copy.deepcopy(snapshot.graph_config)
+        config['tables'] = [
+            table for table in config['tables']
+            if table['table_name'] != 'events'
+        ]
+        return replace(snapshot, graph_config=config)
+
+    with pytest.warns(
+            UserWarning, match=r'differs from the snapshot this '
+            r'model was trained on\. Schema changes: table events '
+            r'removed\.$'):
+        _predict(trainer, left_out(snapshot), monkeypatch)
+    with pytest.raises(
+            ValueError, match=r'Schema changes: table events '
+            r'removed; declare the same'):
+        trainer.predict(left_out(snapshot), mlops=strict,
+                        binary_classification_threshold=.5)
+
     monkeypatch.setattr(trainer, '_graph_config', None)
     with pytest.warns(UserWarning, match='does not record its training graph'):
         _predict(trainer, _other(snapshot, _moved), monkeypatch)
+    _predict(trainer, left_out(snapshot), monkeypatch)
 
 
 def test_schema_changes_ignore_connectors_and_locations():
