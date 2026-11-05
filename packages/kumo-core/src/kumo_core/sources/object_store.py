@@ -789,9 +789,7 @@ def _parquet_batches(fragment: Any,
         width = probe.nbytes / probe.num_rows if probe else 0.0
         del probe
         chunks = _chunks(parquet.metadata, columns)
-        groups = fragment.row_groups
-        group_ids = (item.id for item in groups) if groups is not None else range(parquet.num_row_groups)
-        for group in group_ids:
+        for group in range(parquet.num_row_groups):
             metadata = parquet.metadata.row_group(group)
             encoded = sum(
                 metadata.column(index).total_uncompressed_size

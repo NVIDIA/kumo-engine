@@ -90,21 +90,6 @@ impl<'a> EdgeListView<'a> {
         Ok(self.parse()?.0)
     }
 
-    pub fn with_node_data(mut self, features: &[u8]) -> std::io::Result<Self> {
-        let (segments, old) = self.parse()?;
-        let old = old.ok_or(std::io::ErrorKind::InvalidData)?;
-        let edge_bytes: usize = segments.iter().map(|s| s.data.len()).sum();
-        let header = self.raw.len() - old.len() - edge_bytes - self.node_data_len_bytes as usize;
-        let mut raw = self.raw[..header].to_vec();
-        let length = u32::try_from(features.len()).map_err(|_| std::io::ErrorKind::InvalidData)?;
-        raw.extend_from_slice(&length.to_le_bytes());
-        for segment in segments { raw.extend_from_slice(segment.data); }
-        raw.extend_from_slice(features);
-        self.raw = std::borrow::Cow::Owned(raw);
-        self.node_data_len_bytes = 4;
-        Ok(self)
-    }
-
     pub fn node_data(&self) -> Result<Option<&[u8]>, std::io::Error> {
         Ok(self.parse()?.1)
     }

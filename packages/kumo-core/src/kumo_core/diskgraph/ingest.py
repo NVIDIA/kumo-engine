@@ -233,8 +233,6 @@ class DiskgraphIngestSpec:
     source_paths: Mapping[str, str]
     execution: IngestExecutionConfig = field(
         default_factory=IngestExecutionConfig)
-    # Original native metadata for tables proven unchanged by the caller.
-    reused_config: Mapping[str, Any] | None = None
 
 
 IngestRunner = Callable[
@@ -258,25 +256,12 @@ def execute_diskgraph_ingest(
     output_path = Path(spec.output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     converter_config = prepare_diskgraph_converter_config(graph_config_json)
-    reused_config = spec.reused_config or {}
-    reused = {table["name"]: table
-              for table in reused_config.get("tables", [])}
-    # Reused encodings need no source inference. Keep their normalized sizes
-    # for shard sizing; restore their original schemas before native validation.
-    source_specs = {name: {"source": {"type": "parquet", "paths": []},
-                           "source_size": table.get("source_size") or 0}
-                    for name, table in reused.items()}
     ingest_config = DiskgraphConfigConverter(
         converter_config,
         spec.data_persist_dir,
         dict(spec.table_data_versions),
         source_paths=dict(spec.source_paths),
-        **({"source_specs": source_specs} if reused else {}),
     ).convert()
-    if reused:
-        ingest_config["tables"] = [reused.get(table["name"], table)
-                                   for table in ingest_config["tables"]]
-        ingest_config["num_shards"] = reused_config["num_shards"]
     validate_diskgraph_ingest_config(ingest_config)
 
     run_result = runner(ingest_config, output_path, spec.execution)

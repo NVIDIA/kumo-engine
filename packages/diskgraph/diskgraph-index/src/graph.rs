@@ -1074,11 +1074,8 @@ impl GraphIndexReader {
                 crate::delta::DeltaLog::open(&root.join(path)).map(Arc::new))
                 .collect::<Result<Vec<_>>>()).transpose()?.unwrap_or_default();
             if let Some(delta) = delta {
-                ensure!(delta.shard_layouts.len() == node_type.shards.len()
-                    && delta.base_shards <= node_type.shards.len(), "invalid delta shards");
+                ensure!(delta.shard_layouts.len() == node_type.shards.len(), "invalid delta shards");
             }
-            let features = delta.filter(|d| d.feature_file.is_some())
-                .map(|d| crate::delta::load_features(root, d).map(Arc::new)).transpose()?;
             let mut shard_readers: Vec<Arc<ShardReader>> = Vec::new();
             for (shard_idx, shard_meta) in node_type.shards.iter().enumerate() {
                 let dir = root
@@ -1088,15 +1085,12 @@ impl GraphIndexReader {
                 let shard_layouts = delta.map(|d| Arc::new(d.shard_layouts[shard_idx].clone()))
                     .unwrap_or_else(|| layouts.clone());
                 let reader = ShardReader::open(&dir, shard_layouts, node_type.has_node_data)?
-                    .with_deltas(shard_meta.min_id, logs.clone(), layouts.clone())
-                    .with_features(features.clone());
+                    .with_deltas(shard_meta.min_id, logs.clone(), layouts.clone());
                 shard_readers.push(Arc::new(reader));
             }
             let pk_map = match &node_type.primary_key_map {
                 Some(pk) if pk.mapping_kind == "ptrhash" => {
-                    let mut base = node_type.clone();
-                    if let Some(delta) = delta { base.shards.truncate(delta.base_shards); }
-                    Some(load_pk_hash_table(root, &base, pk)?)
+                    Some(load_pk_hash_table(root, node_type, pk)?)
                 }
                 Some(pk) => {
                     tracing::warn!(
@@ -1108,7 +1102,7 @@ impl GraphIndexReader {
                 }
                 None => None,
             };
-            let mut table = TableReader::new(
+            let table = TableReader::new(
                 node_type,
                 relations,
                 Arc::clone(&layouts),
@@ -1118,13 +1112,6 @@ impl GraphIndexReader {
                 node_type.primary_key_map.clone(),
                 pk_map,
             )?;
-            if let Some(delta) = delta {
-                table.base_shards = delta.base_shards;
-                for path in &delta.primary_key_logs {
-                    let keys = crate::delta::PrimaryKeyLog::open(&root.join(path), |id| table.shard_for_node(id).is_some())?;
-                    table.appended_keys.push(keys);
-                }
-            }
             tables.insert(node_type.name.clone(), Arc::new(table));
         }
         let column_semantic_types = load_column_semantic_types(root);
@@ -1434,8 +1421,6 @@ pub struct TableReader {
     node_data_decoder: Option<diskgraph_rowpack::RowPackDecoder>,
     primary_key_map: Option<PrimaryKeyMap>,
     pk_map: Option<PkHashTable>,
-    base_shards: usize,
-    appended_keys: Vec<crate::delta::PrimaryKeyLog>,
     create_time_col: Option<String>,
     end_time_col: Option<String>,
 }
@@ -1472,8 +1457,6 @@ impl TableReader {
             node_data_decoder,
             primary_key_map,
             pk_map,
-            base_shards: node_type.shards.len(),
-            appended_keys: Vec::new(),
             create_time_col: node_type.create_time_col.clone(),
             end_time_col: node_type.end_time_col.clone(),
         })
@@ -1554,11 +1537,6 @@ impl TableReader {
         reader.edges_for_node(local_idx)
     }
 
-    fn base_for_node(&self, node_id: u64) -> Result<crate::layout::EdgeListView<'_>> {
-        let (shard, local) = self.shard_for_node(node_id).context("node id out of range")?;
-        self.shards[shard].base_for_node(local)
-    }
-
     pub fn decode_node_data(
         &self,
         view: &crate::layout::EdgeListView<'_>,
@@ -1610,12 +1588,6 @@ impl TableReader {
     }
 
     pub fn node_id_from_pk(&self, key: &Key) -> Result<Option<u64>> {
-        for log in &self.appended_keys {
-            if let Some(id) = log.get(key)? {
-                ensure!(self.validate_pk_at_node(id, key)? == Some(true), "invalid delta primary key");
-                return Ok(Some(id));
-            }
-        }
         let pk_map = match &self.pk_map {
             Some(map) => map,
             None => return Ok(None),
@@ -1623,7 +1595,7 @@ impl TableReader {
         if key.key_type() != pk_map.key_type() {
             return Ok(None);
         }
-        let shard_idx = pkmap::shard_for_key(key, self.base_shards);
+        let shard_idx = pkmap::shard_for_key(key, self.shards.len());
         let shard = pk_map
             .shard(shard_idx)
             .ok_or_else(|| anyhow!("missing pk shard {}", shard_idx))?;
@@ -1659,14 +1631,7 @@ impl TableReader {
             Some(k) => k,
             None => return true, // can't convert → assume valid
         };
-        for log in &self.appended_keys {
-            match log.get(&key) {
-                Ok(Some(id)) => return id == node_id,
-                Ok(None) => (),
-                Err(_) => return false,
-            }
-        }
-        let shard_idx = pkmap::shard_for_key(&key, self.base_shards);
+        let shard_idx = pkmap::shard_for_key(&key, self.shards.len());
         let shard = match pk_map.shard(shard_idx) {
             Some(s) => s,
             None => return true,
@@ -1759,7 +1724,7 @@ impl TableReader {
         let Some(decoder) = self.node_data_decoder.as_ref() else {
             return Ok(None);
         };
-        let view = self.base_for_node(node_id)?;
+        let view = self.edges_for_node(node_id)?;
         view.pk_matches(pk, decoder, key)
             .map_err(|e| anyhow!("node lookup failed: {e}"))
     }
@@ -1828,7 +1793,7 @@ impl TableReader {
         if create_col_idx.is_none() && end_col_idx.is_none() {
             return Ok(true);
         }
-        let view = self.base_for_node(node_id)?;
+        let view = self.edges_for_node(node_id)?;
         let Some(raw) = view.node_data()? else {
             // No node data → can't check → conservatively include
             return Ok(true);

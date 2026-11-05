@@ -36,7 +36,7 @@ pub enum KeyType {
     Ip,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Key {
     Int(u64),
     Bytes(Vec<u8>),

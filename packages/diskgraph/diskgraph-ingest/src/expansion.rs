@@ -3,12 +3,46 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Add tables and relationships without replacing existing node records.
 use super::*;
-use crate::append::{index_key, AppendRequest};
+
 use diskgraph_index::delta::{DeltaLog, DeltaManifest, DeltaTable, EdgeDelta, MANIFEST};
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use diskgraph_index::pkmap::{self, Key as IndexKey};
 use parquet::arrow::ProjectionMask;
 use serde_json::Value;
+
+fn index_key(
+    access: &mut RowAccess<'_>,
+    table: &TableSpec,
+    column: &str,
+    dtype: &IngestedType,
+) -> Result<IndexKey> {
+    let index = column_index(table, column)?;
+    let mut bytes = Vec::new();
+    key_from_access_into_buf(access, index, &table.columns[index], dtype, &mut bytes)
+        .map_err(|e| anyhow!("expansion key {}.{} requires full table encoding: {e:?}", table.name, column))?;
+    let key = read_key_from_buf_for_type(&mut bytes.as_slice(), dtype)?;
+    Ok(mapping::to_index_key(&key))
+}
+
+
+fn clone_tree(source: &Path, destination: &Path) -> Result<()> {
+    if source.is_dir() {
+        fs::create_dir_all(destination)?;
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            if entry.file_name() != "_SUCCESS" {
+                clone_tree(&entry.path(), &destination.join(entry.file_name()))?;
+            }
+        }
+    } else {
+        fs::create_dir_all(destination.parent().context("missing output parent")?)?;
+        if source.extension().is_some_and(|ext| ext == "json")
+            || fs::hard_link(source, destination).is_err() {
+            fs::copy(source, destination)?;
+        }
+    }
+    Ok(())
+}
 
 fn read(root: &Path, name: &str) -> Result<Value> {
     Ok(serde_json::from_slice(&fs::read(root.join(name))?)?)
@@ -25,10 +59,7 @@ fn write(root: &Path, name: &str, value: &impl serde::Serialize) -> Result<()> {
 
 // Only used for PKs read from the exact retained source of a snapshot with no
 // dropped/duplicate rows. Arbitrary FK membership is checked in an exact map.
-fn known_id(table: &TableReader, appended: &HashMap<IndexKey, u64>, key: &IndexKey) -> Result<u64> {
-    if let Some(id) = appended.get(key) {
-        return Ok(*id);
-    }
+fn known_id(table: &TableReader, key: &IndexKey) -> Result<u64> {
     let map = table.pk_map().context("expansion requires primary keys")?;
     let shard = pkmap::shard_for_key(key, map.shard_count());
     let local = map
@@ -79,19 +110,40 @@ fn visit(
     Ok(())
 }
 
-pub(super) fn expand(
-    request: &AppendRequest,
-    source: &GraphConfig,
-    old: &EncodeState,
-    original: &GraphIndexReader,
-    mut metadata: DatasetMetadata,
-    mut deltas: DeltaManifest,
-) -> Result<()> {
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct ExpansionState {
+    pub source: GraphConfig,
+    pub num_shards: usize,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ExpansionRequest {
+    pub parent: PathBuf,
+    pub output: PathBuf,
+    pub expansion: GraphConfig,
+}
+
+pub fn expand(request: &ExpansionRequest) -> Result<()> {
     let started = std::time::Instant::now();
-    ensure!(
-        request.tables.is_empty() && request.replacements.is_empty(),
-        "expansion cannot also append rows"
-    );
+    let parent = request.parent.canonicalize()?;
+    ensure!(!request.output.exists(), "expansion output already exists");
+    let output = std::env::current_dir()?.join(&request.output);
+    let ancestor = output.ancestors().find(|p| p.exists())
+        .context("expansion output has no existing ancestor")?.canonicalize()?;
+    ensure!(!ancestor.starts_with(&parent), "expansion output must not be inside its parent");
+    let original = GraphIndexReader::open(&parent.join("index_metadata.json"), &parent)?;
+    let old: ExpansionState = serde_json::from_value(read(&parent, "_expansion/state.json")?)?;
+    let source = &request.expansion;
+    let mut metadata = original.metadata().clone();
+    let mut deltas = DeltaManifest::load(&parent)?.unwrap_or_default();
+    for node in &metadata.node_types {
+        let reader = original.table(&node.name).unwrap();
+        deltas.tables.entry(node.name.clone()).or_insert_with(|| DeltaTable {
+            shard_layouts: vec![reader.layouts().as_ref().clone(); node.shards.len()],
+            edge_logs: vec![],
+        });
+    }
+    clone_tree(&parent, &request.output)?;
     let existing: HashSet<_> = old.source.tables.iter().map(|t| t.name.clone()).collect();
     let declared = source;
     let mut source = source.clone();
@@ -103,7 +155,7 @@ pub(super) fn expand(
         };
         let retained = request
             .parent
-            .join("_incremental/sources")
+            .join("_expansion/sources")
             .join(&table.name);
         let expected: HashSet<_> = fs::read_dir(retained)?
             .map(|p| p?.path().canonicalize())
@@ -117,11 +169,7 @@ pub(super) fn expand(
             "expansion requires exact retained sources"
         );
     }
-    source.num_shards = Some(
-        read(&request.parent, "_incremental/manifest.json")?["num_shards"]
-            .as_u64()
-            .context("missing shard count")? as usize,
-    );
+    source.num_shards = Some(old.num_shards);
     let mut relationships = Vec::new();
     for table in &mut source.tables {
         ensure!(
@@ -178,15 +226,7 @@ pub(super) fn expand(
     let options = IngestOptions {
         col_stats: true,
         cat_count_strategy: col_stats::CategoryCountStrategy::Hybrid,
-        incremental: Some(incremental::IncrementalConfig {
-            parent: None,
-            force_tables: vec![],
-            require_reuse: vec![],
-            reuse_encoders: true,
-            source_fingerprints: None,
-            snapshot_id: None,
-            parent_snapshot_id: None,
-        }),
+        enable_expansion: true,
         ..Default::default()
     };
     let (added_meta, added_stats) = ingest_with_stats_from_source(
@@ -215,18 +255,14 @@ pub(super) fn expand(
             format!("kumo_col_stats/col_stats_full/{}.json", node.name),
             format!("kumo_col_stats/col_stats_min/{}.json", node.name),
         ] {
-            incremental::clone_tree(&fragment.join(&path), &request.output.join(path))?;
+            clone_tree(&fragment.join(&path), &request.output.join(path))?;
         }
         let reader = added_graph.table(&node.name).unwrap();
         deltas.tables.insert(
             node.name.clone(),
             DeltaTable {
-                base_shards: node.shards.len(),
                 shard_layouts: vec![vec![]; node.shards.len()],
                 edge_logs: vec![],
-                primary_key_logs: vec![],
-                feature_file: None,
-                edge_counts: BTreeMap::new(),
             },
         );
         ensure!(
@@ -234,13 +270,9 @@ pub(super) fn expand(
             "new table unexpectedly contains relationships"
         );
     }
-    incremental::clone_tree(
-        &fragment.join("_incremental/encode"),
-        &request.output.join("_incremental/encode"),
-    )?;
     metadata.node_types.extend(added_meta.node_types.clone());
-    let added_state: EncodeState =
-        serde_json::from_value(read(&fragment, "_incremental/encode_state.json")?)?;
+    let added_state: ExpansionState =
+        serde_json::from_value(read(&fragment, "_expansion/state.json")?)?;
     for table in &mut source.tables {
         if let Some(added) = added_state
             .source
@@ -249,16 +281,6 @@ pub(super) fn expand(
             .find(|t| t.name == table.name)
         {
             table.columns.clone_from(&added.columns);
-        }
-    }
-    let mut appended = BTreeMap::new();
-    for (name, delta) in &deltas.tables {
-        let keys = appended.entry(name.clone()).or_insert_with(HashMap::new);
-        for path in &delta.primary_key_logs {
-            diskgraph_index::delta::visit_primary_keys(&request.output.join(path), |key, id| {
-                keys.insert(key, id);
-                Ok(())
-            })?;
         }
     }
     let table_reader = |name: &str| {
@@ -337,7 +359,7 @@ pub(super) fn expand(
         let mut destinations = HashMap::new();
         visit(target, &target_columns, |spec, access, _, _| {
             let key = index_key(access, spec, dst_pk, dtype)?;
-            let id = known_id(&target_reader, &appended[&fk.dst_table], &key)?;
+            let id = known_id(&target_reader, &key)?;
             for (column, values) in &mut times {
                 values[id as usize] = access.get_timestamp(column_index(spec, column)?)?;
             }
@@ -354,7 +376,7 @@ pub(super) fn expand(
                 pk,
                 &table.columns[column_index(table, pk)?].ingested_dtype,
             )?;
-            let id = known_id(&source_reader, &appended[&name], &src_key)?;
+            let id = known_id(&source_reader, &src_key)?;
             // Null FK is not a failed membership lookup.
             if cols[column_index(spec, &fk.src_column)?].is_null(row) {
                 return Ok(());
@@ -406,7 +428,7 @@ pub(super) fn expand(
             if entries.is_empty() { continue; }
             let delta = deltas.tables.get_mut(owner).unwrap();
             let path = format!(
-                "_incremental/edges-{}-{}.bin",
+                "_expansion/edges-{}-{}.bin",
                 owner.to_lowercase(),
                 delta.edge_logs.len()
             );
@@ -435,58 +457,21 @@ pub(super) fn expand(
         );
         write(&request.output, path, &stats)?;
     }
-    deltas.version = 3;
+    deltas.version = 1;
     write(&request.output, "index_metadata.json", &metadata)?;
     write(&request.output, MANIFEST, &deltas)?;
     write(&request.output, "diskgraph_config.json", declared)?;
-    for (path, fields) in [
-        (
-            "_incremental/manifest.json",
-            vec!["schemas", "versions", "trimmed_strings"],
-        ),
-        (
-            "_incremental/encode_state.json",
-            vec![
-                "pk_sampled_max_key_len",
-                "dropped_rows_counts",
-                "logical_source_rows_by_table",
-                "logical_arrow_source_bytes_by_table",
-            ],
-        ),
-        ("col_stats.json", vec![]),
-        ("_incremental/col_stats.json", vec![]),
-    ] {
-        let mut value = read(&request.output, path)?;
-        let new = read(&fragment, path)?;
-        if fields.is_empty() {
-            value
-                .as_object_mut()
-                .unwrap()
-                .extend(new.as_object().unwrap().clone());
-        }
-        for field in fields {
-            value[field]
-                .as_object_mut()
-                .unwrap()
-                .extend(new[field].as_object().unwrap().clone());
-        }
-        if path.ends_with("manifest.json") {
-            // Staging may be skipped only when the retained encoding includes
-            // every FK and sort-key stream required by the expanded schema.
-            for table in &declared.tables {
-                if value["schemas"][&table.name] != incremental::schema(table, declared)? {
-                    value["versions"][&table.name] = Value::Null;
-                }
-            }
-        }
-        if path.ends_with("encode_state.json") {
-            value["source"] = serde_json::to_value(&source)?;
-        }
-        write(&request.output, path, &value)?;
-    }
+    write(&request.output, "_expansion/state.json", &ExpansionState {
+        source, num_shards: old.num_shards,
+    })?;
+    let path = "col_stats.json";
+    let mut stats = read(&request.output, path)?;
+    stats.as_object_mut().context("invalid column statistics")?.extend(
+        read(&fragment, path)?.as_object().context("invalid new column statistics")?.clone());
+    write(&request.output, path, &stats)?;
     write(
         &request.output,
-        "_incremental/expansion_stats.json",
+        "_expansion/stats.json",
         &serde_json::json!({
             "added": added_stats, "edge_counts": stats_counts, "key_lookup_failures": missing, "seconds": started.elapsed().as_secs_f64(),
         }),

@@ -26,7 +26,6 @@ pub struct ShardReader {
     deltas: Vec<Arc<crate::delta::DeltaLog>>,
     delta_layouts: Arc<Vec<RelationLayout>>,
     first_node: u64,
-    features: Option<Arc<crate::delta::FeatureReplacements>>,
 }
 
 impl ShardReader {
@@ -80,7 +79,6 @@ impl ShardReader {
             has_node_data,
             deltas: Vec::new(),
             first_node: 0,
-            features: None,
         })
     }
 
@@ -90,11 +88,6 @@ impl ShardReader {
         self.first_node = first_node;
         self.deltas = logs;
         self.delta_layouts = layouts;
-        self
-    }
-
-    pub fn with_features(mut self, features: Option<Arc<crate::delta::FeatureReplacements>>) -> Self {
-        self.features = features;
         self
     }
 
@@ -148,16 +141,8 @@ impl ShardReader {
         Ok(view)
     }
 
-    pub fn features_for_node(&self, node_idx: u64) -> Result<EdgeListView<'_>> {
-        let mut view = self.base_for_node(node_idx)?;
-        if let Some(features) = self.features.as_ref().and_then(|map| map.get(&(self.first_node + node_idx))) {
-            view = view.with_node_data(features)?;
-        }
-        Ok(view)
-    }
-
     pub fn edges_for_node(&self, node_idx: u64) -> Result<EdgeListView<'_>> {
-        let view = self.features_for_node(node_idx)?;
+        let view = self.base_for_node(node_idx)?;
         if self.deltas.is_empty() && self.layouts.len() == self.delta_layouts.len() { return Ok(view); }
         let node = self.first_node.checked_add(node_idx)
             .ok_or_else(|| DiskgraphError::InvalidMetadata("node id overflow".into()))?;

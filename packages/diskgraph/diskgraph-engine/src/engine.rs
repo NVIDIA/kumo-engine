@@ -2494,7 +2494,7 @@ impl DiskGraphEngine {
                     let local_id = global_id - shard.min_id;
                     let edges_view = shard
                         .reader
-                        .features_for_node(local_id)
+                        .base_for_node(local_id)
                         .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
 
                     views.push(edges_view);

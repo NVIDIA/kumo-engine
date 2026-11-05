@@ -150,7 +150,8 @@ pub struct ResolveColumnSpec {
 
 #[derive(Clone)]
 pub struct IngestOptions {
-    pub incremental: Option<crate::incremental::IncrementalConfig>,
+    /// Retain the fitted schema for additive table expansion.
+    pub enable_expansion: bool,
     pub profile_dir: Option<PathBuf>,
     pub progress: Option<ProgressCallback>,
     pub parallel: bool,
@@ -187,7 +188,7 @@ pub struct IngestOptions {
 impl Default for IngestOptions {
     fn default() -> Self {
         Self {
-            incremental: None,
+            enable_expansion: false,
             profile_dir: None,
             progress: None,
             parallel: true,

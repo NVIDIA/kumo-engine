@@ -60,9 +60,8 @@ remote/durable cache, e.g. a Snowflake stage) -- out of scope for now.
 """
 
 import json
-import time
 import warnings
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
@@ -192,7 +191,9 @@ class GraphSnapshot:
     cloud pipeline. Immutable -- re-running `snapshot()` produces a new
     `GraphSnapshot`, never mutates this one.
 
-    Retains its source graph so `update()` can preserve table declarations.
+    Deliberately does not hold a back-reference to the `Graph` it came from
+    (that would make this class and `Graph` mutually referential); a caller
+    that needs both already holds its own `Graph` object directly.
 
     Args:
         id: `f'{graph.id}@{data_version[:16]}'` -- `graph.id` is `Graph.id`
@@ -214,74 +215,6 @@ class GraphSnapshot:
     id: str
     index_path: Path
     graph_config: Dict[str, Any]
-    _graph: 'Graph | None' = field(default=None, repr=False, compare=False)
-
-    def update(self, connector=None, *, mode='auto', compact=False,
-               reuse_encoders=True) -> 'GraphSnapshot':
-        """Return an immutable snapshot using proven appends where possible.
-
-        `mode='append'` rejects historical edits; `mode='full'` rebuilds.
-        Omitting `connector` keeps each table's original connector.
-        """
-        from kumo.engine.incremental import update_snapshot
-
-        return update_snapshot(self, connector, mode=mode, compact=compact,
-                               reuse_encoders=reuse_encoders)
-
-    def compact(self) -> 'GraphSnapshot':
-        """Return a compacted copy; this snapshot remains immutable."""
-        from kumo.engine.incremental import compact_snapshot
-
-        return compact_snapshot(self)
-
-    def validate(self):
-        """Scan merged nodes/edges and verify referential integrity."""
-        from diskgraph import validate_incremental_snapshot
-
-        return json.loads(validate_incremental_snapshot(str(self.index_path)))
-
-    @property
-    def update_history(self):
-        """Return lineage records from the original build to this snapshot."""
-        records, root = [], self.index_path
-        while root is not None:
-            path = root / '_incremental/update.json'
-            if not path.is_file():
-                break
-            record = json.loads(path.read_text())
-            records.append(record)
-            root = Path(record['parent']) if record.get('parent') else None
-        return list(reversed(records))
-
-    @property
-    def _latest_update(self):
-        return json.loads((self.index_path / '_incremental/update.json').read_text())
-
-    @property
-    def tables_rebuilt(self) -> list[str]:
-        """Tables re-encoded by the latest update."""
-        record = self._latest_update
-        return [name for name, table in record['tables'].items()
-                if table['status'] == 'rebuilt']
-
-    @property
-    def rows_appended(self) -> int:
-        """Rows appended by the latest update."""
-        return sum(table.get('rows_added', 0)
-                   for table in self._latest_update['tables'].values()
-                   if table['status'] == 'appended')
-
-    @property
-    def duration_seconds(self) -> float:
-        """Wall time recorded for the latest snapshot operation."""
-        return self._latest_update.get('duration_seconds', 0.0)
-
-    @property
-    def fragmentation(self):
-        """Per-relation delta count divided by the compacted base count."""
-        from kumo.engine.incremental import fragmentation
-
-        return fragmentation(self)
 
 
 @dataclass(frozen=True)
@@ -470,11 +403,8 @@ class Graph:
                 destination.write_text(svg, encoding='utf-8')
         return svg
 
-    def snapshot(self, *, enable_updates: bool = False, previous_snapshot: GraphSnapshot | None = None,
-                 reuse_encoders: bool = True,
-                 force_tables: Sequence[str] = (),
-                 force_full_rebuild: bool = False,
-                 _deferred_fingerprints: Mapping[str, Any] | None = None) -> GraphSnapshot:
+    def snapshot(self, *, enable_expansion: bool = False,
+                 previous_snapshot: GraphSnapshot | None = None) -> GraphSnapshot:
         r"""Materialize this graph: read each table's connector, run the
         result through `kumo-core` to build column stats and the on-disk
         index. The index is stored under a directory keyed by both `self.id`
@@ -482,20 +412,15 @@ class Graph:
         see the module docstring for why `self.id` alone isn't a safe key,
         and `GraphSnapshot`'s docstring for the resulting `id` shape. If a
         valid build already exists for that exact key, ingest is skipped and
-        it's reused as is. For local files, exact content hashes are checked
-        before staging, so unchanged snapshots also skip source copying.
-        ``enable_updates=True`` retains encoding caches for later updates.
-        With ``previous_snapshot``, reuse unchanged encoded tables and edges.
-        ``force_tables`` re-encodes named tables; ``reuse_encoders=False`` fits
-        fresh encoders for rebuilt tables.
-        ``force_full_rebuild=True`` ignores the parent and all cached outputs.
+        it's reused as is.
+
+        Set ``enable_expansion=True`` to retain local sources for later table
+        additions. Pass that snapshot as ``previous_snapshot`` on an expanded
+        graph to reuse unchanged nodes and relationships. Incompatible changes
+        use ordinary ingestion. Existing snapshots remain immutable.
         """
         from filelock import FileLock
 
-        enable_updates = enable_updates or previous_snapshot is not None or bool(force_tables)
-        if force_full_rebuild:
-            previous_snapshot = None
-            force_tables = tuple(self._named_tables)
         self.validate()
         for table in self._named_tables.values():
             table.connector.validate_scratch_dir(get_scratch_dir())
@@ -522,26 +447,21 @@ class Graph:
         # processes, and a lock-file-existence mutex would leave a stale
         # lock behind after a crash.
         with FileLock(f'{persist_dir}.lock'):
-            return self._snapshot_no_lock(graph_key, persist_dir,
-                                          previous_snapshot, reuse_encoders,
-                                          force_tables, _deferred_fingerprints, enable_updates)
+            if enable_expansion or previous_snapshot is not None:
+                return self._snapshot_no_lock(graph_key, persist_dir,
+                                              enable_expansion=True,
+                                              previous_snapshot=previous_snapshot)
+            return self._snapshot_no_lock(graph_key, persist_dir)
 
-    def _snapshot_no_lock(self, graph_key: str, persist_dir: Path,
-                          previous_snapshot: GraphSnapshot | None = None,
-                          reuse_encoders: bool = True,
-                          force_tables: Sequence[str] = (),
-                          deferred_fingerprints: Mapping[str, Any] | None = None,
-                          enable_updates: bool = False,
-                          stage_all: bool = False) \
-            -> GraphSnapshot:
+    def _snapshot_no_lock(self, graph_key: str, persist_dir: Path, *,
+                          enable_expansion: bool = False,
+                          previous_snapshot: GraphSnapshot | None = None) -> GraphSnapshot:
         r"""`snapshot()`'s body, run under its `FileLock`. Not meant to be
         called on its own -- `persist_dir`, unlike everything else here,
         isn't a pure function of `self` alone (it's `snapshot()`'s lock key,
         computed once there and threaded through), so calling this directly
         would skip the lock that makes it safe to stage into.
         """
-        started = time.perf_counter()
-        from kumo_core.diskgraph.incremental import fingerprint_files
         from kumo_core.diskgraph.ingest import (
             DiskgraphIngestSpec,
             execute_diskgraph_ingest,
@@ -558,7 +478,6 @@ class Graph:
         from kumo_core.sources.transfer import discard_destination
         from kumoapi.source_table import CustomSQLSourceTable
 
-        from kumo.engine.connector.file import FileConnector
         from kumo.engine.connector.source_table import checked_sql
 
         graph_config = self._graph_config
@@ -568,77 +487,29 @@ class Graph:
 
         table_data_versions: Dict[str, str] = {}
         source_paths: Dict[str, str] = {}
-        source_fingerprints = {}
-        unknown = set(force_tables) - self._named_tables.keys()
-        if unknown:
-            raise ValueError(f'Unknown force_tables: {sorted(unknown)}')
-        if previous_snapshot is not None:
-            if not (previous_snapshot.index_path / '_incremental' /
-                    'manifest.json').is_file():
-                raise ValueError('Previous snapshot has no incremental cache; '
-                                 'create a new full snapshot first.')
 
-        # Local file versions hash the exact source bytes. An unchanged graph
-        # can reuse its completed index before copying or decoding any table.
-        # Other providers' metadata tokens do not promise exact content identity.
-        if all(isinstance(table.connector, FileConnector)
-               for table in self._named_tables.values()):
-            source_fingerprints = {
-                alias: table.connector.source_backend.get_source_fingerprint(
-                    table.connector, table.table_name, include_row_groups=enable_updates)
-                for alias, table in self._named_tables.items()
-            }
-            table_data_versions = {name: fp.content_hash
-                                   for name, fp in source_fingerprints.items()}
-            data_version = fingerprint(
-                json.dumps({'tables': table_data_versions,
-                            'format': 'incremental-v1' if enable_updates else 'exact-v1'}, sort_keys=True).encode())
-            handle = DiskgraphSnapshotHandle(graph_key=graph_key,
-                                             graph_data_version=data_version)
-            existing = check_diskgraph_output(store.path(handle))
-            if existing is not None and previous_snapshot is None and not force_tables:
-                _warn_ingest_data_loss(existing, graph_config)
-                return GraphSnapshot(f'{graph_key}@{data_version[:16]}',
-                                     Path(existing.index_path), graph_config, self)
+        fingerprints = {}
+        if enable_expansion:
+            from kumo.engine.expansion import (
+                retain_sources,
+                source_fingerprints,
+                try_expansion,
+            )
 
-        if (previous_snapshot is not None and reuse_encoders and not force_tables
-                and not deferred_fingerprints and not stage_all and source_fingerprints
-                and graph_key != previous_snapshot.id.split('@')[0]):
-            from kumo.engine.expansion import try_expansion
-
-            expanded = try_expansion(self, previous_snapshot, source_fingerprints)
-            if expanded is not None:
-                return expanded
-
-        if (previous_snapshot is not None and reuse_encoders and not force_tables
-                and not deferred_fingerprints and not stage_all and source_fingerprints
-                and graph_key == previous_snapshot.id.split('@')[0]):
-            from kumo.engine.feature_updates import try_feature_update
-
-            updated = try_feature_update(self, previous_snapshot, source_fingerprints)
-            if updated is not None:
-                return updated
-
-        reusable_versions, skipped = {}, []
-        if (previous_snapshot is not None and not stage_all
-                and graph_key == previous_snapshot.id.split('@')[0]):
-            reusable_versions = json.loads(
-                (previous_snapshot.index_path / '_incremental/manifest.json').read_text())['versions']
+            if previous_snapshot is not None and not (previous_snapshot.index_path / '_expansion/state.json').is_file():
+                raise ValueError('Create the parent with enable_expansion=True')
+            fingerprints = source_fingerprints(self)
+            if previous_snapshot is not None:
+                expanded = try_expansion(self, previous_snapshot, fingerprints)
+                if expanded is not None:
+                    return expanded
 
         try:
-            persist_dir.mkdir(parents=True, exist_ok=True)
             for alias, table in self._named_tables.items():
                 assert table.definition is not None  # portable_graph_config
                 # already required this.
                 connector = table.connector
                 source_backend = connector.source_backend
-                candidate = (deferred_fingerprints or {}).get(alias, source_fingerprints.get(alias))
-                if (candidate is not None and alias not in force_tables
-                        and reusable_versions.get(alias) == candidate.content_hash):
-                    reader, name = source_backend._reader(connector, table.table_name)
-                    source_paths[alias] = str(reader.resolve(name)[0])
-                    skipped.append(alias)
-                    continue
                 dest_dir = staging_dir(persist_dir, alias)
                 dest_dir.mkdir(parents=True, exist_ok=True)
 
@@ -656,7 +527,6 @@ class Graph:
                         for col in table.definition.cols
                     },
                     sql=sql,
-                    data_version=table_data_versions.get(alias),
                 )
                 if prepared.credentials is not None:
                     raise NotImplementedError(
@@ -681,44 +551,13 @@ class Graph:
                     source_paths[alias] = str(
                         prepared.source.get('path') or dest_dir)
 
-                if not isinstance(connector, FileConnector):
-                    # Warehouse metadata and object mtimes can miss edits.
-                    # Hash the exported bytes actually consumed by ingest.
-                    source_fingerprints[alias] = fingerprint_files(
-                        alias, Path(source_paths[alias]))
-                    table_data_versions[alias] = source_fingerprints[alias].content_hash
-                elif alias not in source_fingerprints:
-                    source_fingerprints[alias] = connector.source_backend.get_source_fingerprint(
-                        connector, name, include_row_groups=enable_updates)
-                    if source_fingerprints[alias].content_hash != prepared.version:
-                        raise RuntimeError(f'Source changed while staging {alias}')
-
-            for alias in skipped:
-                table = self._named_tables[alias]
-                current = table.connector.source_backend.get_source_fingerprint(
-                    table.connector, table.table_name, include_row_groups=False)
-                if current.content_hash != source_fingerprints[alias].content_hash:
-                    raise RuntimeError(f'Source changed while staging {alias}')
-
-            # Mixed updates rebuild edited tables against cached history;
-            # proven additions are applied to the resulting index next.
-            for name, old in (deferred_fingerprints or {}).items():
-                source_fingerprints[name] = old
-                table_data_versions[name] = old.content_hash
-            data_version = fingerprint(
-                json.dumps({'tables': table_data_versions,
-                            'format': 'incremental-v1' if enable_updates else 'exact-v1'}, sort_keys=True).encode())
-            if previous_snapshot is not None or force_tables:
-                # Encoder lineage affects the bytes even for identical sources.
-                # A forced rebuild gets a new location, never its parent's.
-                from uuid import uuid4
-                data_version = fingerprint(json.dumps({
-                    'sources': table_data_versions,
-                    'parent': previous_snapshot.id if previous_snapshot else None,
-                    'reuse_encoders': reuse_encoders,
-                    'force': sorted(force_tables),
-                    'run': uuid4().hex if force_tables else None,
-                }, sort_keys=True).encode())
+            if enable_expansion:
+                if source_fingerprints(self) != fingerprints:
+                    raise RuntimeError('Source changed while staging graph')
+                table_data_versions = fingerprints
+            version_key = ({'tables': table_data_versions, 'expansion': 1}
+                           if enable_expansion else table_data_versions)
+            data_version = fingerprint(json.dumps(version_key, sort_keys=True).encode())
             handle = DiskgraphSnapshotHandle(graph_key=graph_key,
                                              graph_data_version=data_version)
             output_dir = Path(store.path(handle))
@@ -738,27 +577,6 @@ class Graph:
                 # `FileNotFoundError` on `_MANIFEST.json` from a real
                 # `Trainer.fit()` without this.
                 predicted = DiskgraphIngestResult.for_index(output_dir)
-                reused_config = None
-                if skipped:
-                    reused_config = json.loads(
-                        (previous_snapshot.index_path / 'diskgraph_config.json').read_text())
-                    reused_config['tables'] = [table for table in reused_config['tables']
-                                               if table['name'] in skipped]
-                incremental_config = persist_dir / 'incremental.json'
-                if enable_updates:
-                    incremental_config.write_text(json.dumps({
-                        'parent': str(previous_snapshot.index_path.resolve())
-                        if previous_snapshot else None,
-                        'reuse_encoders': reuse_encoders,
-                        'require_reuse': skipped,
-                        'force_tables': list(force_tables),
-                        'snapshot_id': f'{graph_key}@{data_version[:16]}',
-                        'parent_snapshot_id': previous_snapshot.id if previous_snapshot else None,
-                        'source_fingerprints': {
-                            name: {**asdict(fp), 'table_name': name}
-                            for name, fp in source_fingerprints.items()
-                        },
-                    }))
                 result = execute_diskgraph_ingest(
                     graph_config,
                     DiskgraphIngestSpec(
@@ -766,60 +584,30 @@ class Graph:
                         table_data_versions=table_data_versions,
                         output_dir=str(output_dir),
                         source_paths=source_paths,
-                        reused_config=reused_config,
                         execution=IngestExecutionConfig(
                             success_marker_content=predicted.to_json(),
-                            extra_args=('--incremental-config',
-                                        str(incremental_config)) if enable_updates else ()),
+                            extra_args=('--enable-expansion',) if enable_expansion else ()),
                     ),
                 )
 
-                if enable_updates:
-                    record_path = output_dir / '_incremental/update.json'
-                    record = json.loads(record_path.read_text())
-                    record['duration_seconds'] = time.perf_counter() - started
-                    native_metadata = json.loads((output_dir / 'index_metadata.json').read_text())
-                    record['edges'] = {
-                        edge['name']: {'status': 'reused' if edge['name'] in record['reused_edges'] else 'rebuilt',
-                                       'delta_entries': 0, 'fragmentation': 0.0}
-                        for edge in native_metadata['edge_relations']
-                    }
-                    record['total_fragmentation'] = 0.0
-                    if record['update_chain_length'] >= 30:
-                        warnings.warn('Snapshot has at least 30 updates; rebuild or compact it.', UserWarning)
-                    record_path.write_text(json.dumps(record))
-                    from kumo.engine.feature_updates import retain_sources
-
-                    for name in self._named_tables:
-                        source = (previous_snapshot.index_path / '_incremental/sources' / name
-                                  if name in skipped else Path(source_paths[name]))
-                        paths = [source] if source.is_file() else sorted(source.rglob('*.parquet'))
+            if enable_expansion and existing is None:
+                try:
+                    for name, source in source_paths.items():
+                        path = Path(source)
+                        paths = [path] if path.is_file() else sorted(path.rglob('*.parquet'))
                         retain_sources(output_dir, name, paths)
+                    if source_fingerprints(self) != fingerprints:
+                        raise RuntimeError('Source changed while building graph')
+                    (output_dir / '_expansion/source_fingerprints.json').write_text(json.dumps(fingerprints))
+                except Exception:
+                    discard_destination(str(output_dir))
+                    raise
 
-            if previous_snapshot is not None and reuse_encoders:
-                from kumo_core.diskgraph.incremental import warn_encoder_drift
-
-                for name in self._named_tables:
-                    relative = Path('kumo_col_stats/col_stats_full') / f'{name}.json'
-                    old_stats = previous_snapshot.index_path / relative
-                    new_stats = Path(result.index_path) / relative
-                    if old_stats.is_file() and new_stats.is_file():
-                        warn_encoder_drift(name, json.loads(old_stats.read_text()),
-                                           json.loads(new_stats.read_text()))
             _warn_ingest_data_loss(result, graph_config)
             return GraphSnapshot(
                 id=f'{graph_key}@{data_version[:16]}',
                 index_path=Path(result.index_path),
                 graph_config=graph_config,
-                _graph=self,
             )
-        except Exception as error:
-            if skipped and 'unstaged table requires encoding' in getattr(
-                    error, 'private_output_tail', ''):
-                discard_destination(str(persist_dir))
-                return self._snapshot_no_lock(
-                    graph_key, persist_dir, previous_snapshot, reuse_encoders,
-                    force_tables, deferred_fingerprints, enable_updates, stage_all=True)
-            raise
         finally:
             discard_destination(str(persist_dir))

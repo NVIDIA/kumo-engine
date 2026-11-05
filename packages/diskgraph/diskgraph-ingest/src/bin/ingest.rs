@@ -96,9 +96,6 @@ struct Args {
     /// (fresh ingest, run all phases from scratch).
     #[arg(long, value_enum, value_name = "PHASE")]
     resume_from_phase: Option<PhaseArg>,
-    /// Retain encoded tables and optionally reuse a previous snapshot.
-    #[arg(long)]
-    incremental_config: Option<PathBuf>,
     /// Override concurrent source loaders/downloads during Encode.
     /// Default: four loaders per cgroup-aware worker, capped at 512.
     #[arg(long)]
@@ -136,6 +133,9 @@ struct Args {
     /// error otherwise — markerless mirror state is unverifiable).
     #[arg(long, value_name = "STRING")]
     success_marker_content: Option<String>,
+    /// Retain state for adding tables to this snapshot later.
+    #[arg(long)]
+    enable_expansion: bool,
     /// Path to a parent DG index. Required when the source declares
     /// resolution columns that resolve into the parent's primary keys
     /// (e.g. seed-table extensions whose ENTITY1 resolves to parent.entity
@@ -213,13 +213,6 @@ fn main() -> Result<()> {
         println!("{}", diskgraph_ingest::default_worker_threads());
         return Ok(());
     }
-    let incremental: Option<diskgraph_ingest::incremental::IncrementalConfig> =
-        args.incremental_config.as_ref().map(|path| {
-            serde_json::from_slice(&std::fs::read(path)?).map_err(anyhow::Error::from)
-        }).transpose()?;
-    if let Some(config) = &incremental {
-        config.validate_output(std::path::Path::new(args.output.as_deref().unwrap()))?;
-    }
     tracing_subscriber::fmt()
         .with_env_filter("info,pprof=warn")
         .init();
@@ -261,7 +254,7 @@ fn main() -> Result<()> {
         remove_diagnostic(path);
     }
     let worker_output = args.output.as_deref().map(PathBuf::from);
-    match run_worker(args, incremental) {
+    match run_worker(args) {
         Ok(()) => {
             if let Some(path) = &worker_diagnostic_path {
                 remove_diagnostic(path);
@@ -290,7 +283,7 @@ fn main() -> Result<()> {
     }
 }
 
-fn run_worker(args: Args, incremental: Option<diskgraph_ingest::incremental::IncrementalConfig>) -> Result<()> {
+fn run_worker(args: Args) -> Result<()> {
     // `source`/`output` are required unless --print-resolved-threads (handled above).
     let source = args.source.clone().expect("source is required");
     let output = args.output.clone().expect("output is required");
@@ -334,7 +327,7 @@ fn run_worker(args: Args, incremental: Option<diskgraph_ingest::incremental::Inc
     };
     let peak_tracker = PeakMemTracker::start();
     let options = IngestOptions {
-        incremental,
+        enable_expansion: args.enable_expansion,
         profile_dir: args.profile.clone(),
         progress: build_progress(),
         parallel: args.parallel,

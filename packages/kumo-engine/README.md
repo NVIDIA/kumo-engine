@@ -101,69 +101,6 @@ To use your own data, point `FileConnector` at a directory of CSV or Parquet fil
 
 `graph.snapshot()` ingests the tables into an on-disk graph index under the scratch directory, which also holds training runs, model bundles, and predictions. It defaults to `~/.cache/kumo-engine`; to put it on a large local disk, call `kumo.engine.configure(scratch_dir=...)` first.
 
-### Updating snapshots
-
-```python
-snapshot = graph.snapshot(enable_updates=True)
-updated = snapshot.update()  # Uses the original connectors and table definitions.
-print(updated.tables_rebuilt, updated.rows_appended, updated.duration_seconds)
-updated.validate()
-compacted = updated.compact()  # Returns a new immutable snapshot when needed.
-```
-
-Updates compare exact SHA-256 content hashes. Unchanged tables and relationships
-reuse immutable files. Local CSV prefixes and Parquet row groups must match
-exactly before new rows can be appended; late-arriving timestamps are allowed.
-Existing rows retain their IDs, and both edge directions include the additions.
-`mode="append"` rejects changes that cannot be proven safe to append;
-`mode="auto"` replaces only edited rows' features when exact comparison with
-retained normalized input proves keys, timestamps, relationships, row membership,
-and schema unchanged. Both `snapshot.update()` and
-`graph.snapshot(previous_snapshot=snapshot)` support this path for local files.
-It preserves node IDs, key maps, and adjacency; structural changes fall back to
-table rebuilds. Warehouse and S3 updates use exact
-exported content hashes and table rebuilds. `mode="full"` re-encodes every table while honoring `reuse_encoders`.
-
-Encoders remain frozen by default. Set `reuse_encoders=False` to refit explicitly;
-this may change model inputs. Drift warnings recommend refitting without doing
-it automatically. Changed encoding schemas require a refit. For changed graph
-definitions, use `graph.snapshot(previous_snapshot=snapshot)`; `force_tables=`
-can select tables to rebuild.
-
-Adding local tables through `expanded_graph.snapshot(previous_snapshot=snapshot)`
-can preserve all existing node/index files and IDs while encoding the new tables
-and building their relationships from retained key/time columns. Existing table
-contents, declarations, and links must remain unchanged. Unsupported additions
-(including weighted or self relationships and duplicate keys) use table rebuilds.
-Initial edges of new relationships form their baseline for fragmentation;
-explicit compaction materializes them into node records. A heterogeneous GNN
-trained without a new table needs retraining to use that table; snapshot
-expansion does not create model encoders.
-
-`update_history` records lineage and `fragmentation` reports delta/base edge
-ratios. Above 10%, compaction is recommended; above 25%, it runs automatically.
-Compaction also runs after 30 updates to consolidate appended key logs and shards. Keep parent directories to retain
-complete lineage. Legacy snapshots remain readable but require a fresh snapshot
-with `enable_updates=True` before using updates. This opt-in retains intermediate
-ingest data and normalized source Parquet, shared between generations through
-immutable hardlinks where supported. Snapshots without retained input use table
-rebuilds for existing-row edits. Compaction also materializes feature replacements.
-Ordinary snapshots do not retain this update cache. All operations return snapshots without modifying their
-parents.
-
-### Predicting with an updated graph
-
-```python
-snapshot = snapshot.update()
-population = pquery.generate_prediction_table(snapshot)
-result = trainer.predict(population, snapshot=snapshot,
-                         binary_classification_threshold=0.5)
-```
-
-The updated snapshot reuses unchanged graph data. New prediction queries use
-that snapshot through the existing prediction API. Earlier snapshots and saved
-prediction results remain unchanged; updates do not re-score earlier queries.
-
 ## Visualize table relationships
 
 Display declared tables and relationships in a notebook, or export SVG, PDF, or Markdown:
@@ -293,6 +230,20 @@ Disposed views must be rendered again.
 ## Support
 
 Report bugs and request features in [GitHub Issues](https://github.com/NVIDIA/kumo-engine/issues). To report a security vulnerability, follow [SECURITY.md](https://github.com/NVIDIA/kumo-engine/blob/main/SECURITY.md) instead of opening an issue.
+
+## Add tables to an existing snapshot
+
+Create a parent with `graph.snapshot(enable_expansion=True)`, then use
+`expanded_graph.snapshot(previous_snapshot=parent)` after declaring the new
+tables and relationships. For supported local CSV/Parquet graphs, this retains
+existing node/index files and builds the added tables and relationships. Exact
+source hashes verify that existing tables are unchanged; relationship building
+may scan their key/time columns. The parent remains immutable.
+
+The fast path requires primary keys, retained sources, unchanged existing table
+definitions, and preserved existing links. Unsupported changes use ordinary
+ingestion. Existing-table row/feature changes are picked up by a normal
+`graph.snapshot()` call.
 
 ## License
 

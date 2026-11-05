@@ -1245,7 +1245,7 @@ pub fn ingest(
         .transpose()?;
 
     let options = diskgraph_ingest::IngestOptions {
-        incremental: None,
+        enable_expansion: false,
         profile_dir: None,
         progress: diskgraph_ingest::progress::build_progress(),
         parallel: true,
@@ -1306,24 +1306,11 @@ pub fn ingest(
 // ---------------------------------------------------------------------------
 
 #[pyfunction]
-fn append_snapshot(py: Python<'_>, request_json: &str) -> PyResult<()> {
+fn expand_snapshot(py: Python<'_>, request_json: &str) -> PyResult<()> {
     let request = serde_json::from_str(request_json)
-        .map_err(|e| DiskgraphConfigError::new_err(format!("Invalid append request: {e}")))?;
-    py.detach(|| diskgraph_ingest::append::append(&request))
-        .map_err(|e| DiskgraphSystemError::new_err(format!("Append failed: {e:#}")))
-}
-
-#[pyfunction]
-fn compact_snapshot(py: Python<'_>, parent: &str, output: &str) -> PyResult<()> {
-    py.detach(|| diskgraph_ingest::append::compact(std::path::Path::new(parent), std::path::Path::new(output)))
-        .map_err(|e| DiskgraphSystemError::new_err(format!("Compaction failed: {e:#}")))
-}
-
-#[pyfunction]
-fn validate_incremental_snapshot(py: Python<'_>, path: &str) -> PyResult<String> {
-    py.detach(|| diskgraph_index::delta::validate(std::path::Path::new(path)))
-        .map(|value| value.to_string())
-        .map_err(|e| DiskgraphCorruptionError::new_err(format!("Snapshot validation failed: {e:#}")))
+        .map_err(|e| DiskgraphConfigError::new_err(format!("Invalid expansion request: {e}")))?;
+    py.detach(|| diskgraph_ingest::expansion::expand(&request))
+        .map_err(|e| DiskgraphSystemError::new_err(format!("Expansion failed: {e:#}")))
 }
 
 #[pyclass]
@@ -1618,9 +1605,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(export_tt_artifacts, m)?)?;
     m.add_function(wrap_pyfunction!(convert_kumo_config, m)?)?;
     m.add_function(wrap_pyfunction!(ingest, m)?)?;
-    m.add_function(wrap_pyfunction!(append_snapshot, m)?)?;
-    m.add_function(wrap_pyfunction!(compact_snapshot, m)?)?;
-    m.add_function(wrap_pyfunction!(validate_incremental_snapshot, m)?)?;
+    m.add_function(wrap_pyfunction!(expand_snapshot, m)?)?;
     m.add_class::<ExportConfig>()?;
     m.add_class::<FkeyConfig>()?;
     m.add_class::<PyTimeUnit>()?;

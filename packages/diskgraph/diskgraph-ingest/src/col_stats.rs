@@ -1570,7 +1570,7 @@ impl ColumnStatsCollector {
 
 /// Format an epoch-second timestamp to kumo timestamp string.
 /// Sentinels (i64::MAX/MIN) and unparseable values → "kumo_timestamp_NaT".
-pub(crate) fn format_kumo_timestamp(epoch_secs: i64) -> String {
+fn format_kumo_timestamp(epoch_secs: i64) -> String {
     if epoch_secs == i64::MAX || epoch_secs == i64::MIN {
         return "kumo_timestamp_NaT".to_string();
     }

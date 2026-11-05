@@ -5,7 +5,6 @@
 //! Diskgraph ingest: convert raw CSV/Parquet sources into index-ready artifacts.
 
 pub mod binary_label;
-pub mod append;
 pub mod coercion;
 pub mod col_stats;
 pub mod col_stats_export;
@@ -15,10 +14,9 @@ pub mod config_converter;
 pub mod consts;
 pub mod diagnostics;
 pub mod disk_manager;
+pub mod expansion;
 pub mod errors;
-mod expansion;
 pub mod graph_config;
-pub mod incremental;
 pub mod index_metadata;
 pub mod io;
 pub mod mapping;
@@ -737,9 +735,7 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     // Validate the exact graph-feature statistics contract at the common
     // public-ingest boundary, before source normalization or output writes.
     validate_exact_category_count_options(&options)?;
-    if let Some(config) = &options.incremental {
-        config.validate_output(Path::new(output))?;
-    }
+    let enable_expansion = options.enable_expansion;
     let wall_start = std::time::Instant::now();
     // Reject the markerless-mirror config at the API boundary.
     // `output_dataplane_dir.is_some() + success_marker_content.is_none()`
@@ -950,7 +946,6 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     if let Some(rfp) = resume_from_phase {
         if rfp > IngestPhase::Encode {
             ctx.restore_encode_state()?;
-            ctx.restore_incremental_plan()?;
             ctx.repopulate_table_contexts_from_source()?;
             ctx.repopulate_node_stats_from_meta()?;
         }
@@ -1086,7 +1081,6 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
             },
         )?;
         drop(edge_ctx);
-        ctx.save_edge_cache()?;
         edges_map_wall = edges_map_start.elapsed();
         tracing::info!(
             stage = "edges_map",
@@ -1131,9 +1125,13 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
         tracing::info!(stage = "index", "resume: skipped (marker present)");
     }
     ctx.set_peak_stage(Some(5));
-    ctx.save_index_commits()?;
     let finalize_start = std::time::Instant::now();
     let (index_metadata, source_config) = ctx.finalize_metadata(index_metadata)?;
+    if enable_expansion {
+        ctx.target.write_bytes("_expansion/state.json", serde_json::to_vec(&expansion::ExpansionState {
+            source: ctx.source.clone(), num_shards: ctx.num_shards,
+        })?)?;
+    }
     // TT-NG timestamp grouping: merge the per-shard spills into per-stage
     // `bucket_index.bin` (final node-ids grouped by TIMESTAMP). Runs after
     // `finalize_metadata` (shard offsets / min-ids known) and BEFORE
@@ -1858,11 +1856,6 @@ mod tests_repopulate_helpers {
         num_shards: usize,
     ) -> IngestContext {
         IngestContext {
-            incremental: None,
-            cache_manifest: None,
-            reused_tables: HashSet::new(),
-            reused_relations: HashSet::new(),
-            inherited_encoders: HashMap::new(),
             source,
             target,
             profile_dir: None,
@@ -2660,11 +2653,6 @@ mod dst_degree_bitmap_budget_tests {
 }
 
 struct IngestContext {
-    incremental: Option<incremental::IncrementalConfig>,
-    cache_manifest: Option<incremental::CacheManifest>,
-    reused_tables: HashSet<String>,
-    reused_relations: HashSet<String>,
-    inherited_encoders: HashMap<String, Vec<u8>>,
     source: GraphConfig,
     target: std::sync::Arc<OutputTarget>,
     profile_dir: Option<PathBuf>,
@@ -7316,11 +7304,6 @@ impl IngestContext {
             row_subsample: options.row_subsample,
             text_sample_stats: HashMap::new(),
             parent_index_path: options.parent_index_path,
-            incremental: options.incremental,
-            cache_manifest: None,
-            reused_tables: HashSet::new(),
-            reused_relations: HashSet::new(),
-            inherited_encoders: HashMap::new(),
             resolve_columns: options.resolve_columns,
         })
     }
@@ -7333,10 +7316,7 @@ impl IngestContext {
 
     /// Resolve every physical schema before the Encode marker/timer begins.
     fn prepare_input_schemas(&mut self) -> Result<()> {
-        self.prepare_incremental()?;
-        let mut source = self.source.clone();
-        source.tables.retain(|table| !self.reused_tables.contains(&table.name));
-        visit_source_schemas(&source, |table, schema| {
+        visit_source_schemas(&self.source, |table, schema| {
             let synthetic_columns = self
                 .resolve_columns
                 .iter()
@@ -7436,12 +7416,7 @@ impl IngestContext {
         // replay and all later batches may be encoded by any worker.
         {
             for table in &mut tables {
-                if self.reused_tables.contains(&table.name) {
-                    tracing::info!(phase = "encode", table = %table.name, "reused encoded table");
-                    continue;
-                }
                 let table_encode_start = std::time::Instant::now();
-                let trimmed_before = self.trimmed_strings.load(Ordering::Relaxed);
                 tracing::info!(phase = "encode", table = %table.name, "table started");
                 let synthetic_columns = resolve_columns
                     .iter()
@@ -7696,10 +7671,7 @@ impl IngestContext {
                         self.pk_sampled_max_key_len
                             .insert(table.name.clone(), pk_max_key_len);
                     }
-                    let node_context = match self.inherited_encoders.get(&table.name) {
-                        Some(bytes) => diskgraph_rowpack::RowPackContext::from_bytes(bytes)?,
-                        None => context_builder.finish()?,
-                    };
+                    let node_context = context_builder.finish()?;
                     let context_bytes = node_context.to_bytes()?;
                     self.target
                         .write_bytes(&temp_node_context_path(&table.name), context_bytes.clone())?;
@@ -7826,10 +7798,6 @@ impl IngestContext {
                     }
                 }
                 validation.finish()?;
-                if let Some(manifest) = &mut self.cache_manifest {
-                    manifest.trimmed_strings.insert(table.name.clone(),
-                        self.trimmed_strings.load(Ordering::Relaxed) - trimmed_before);
-                }
                 let source_rows = validation.rows_seen();
                 if source_rows == 0 && self.parent_index_path.is_none() {
                     return Err(anyhow!(
@@ -7926,12 +7894,10 @@ impl IngestContext {
         self.write_consolidated_meta(&node_stats, &edge_stats, &dest_key_stats)?;
         self.refresh_shard_rows_from_stats(&node_stats);
         self.table_rows = table_rows;
-        self.restore_incremental_counts()?;
         // High-water tracks the source working set only; category-map memory is
         // bounded by the per-column unique cap and not metered here.
         self.encode_memory_high_water_bytes = source_budget.high_water_bytes();
         self.persist_encode_state()?;
-        self.save_encode_cache()?;
         Ok(())
     }
 
@@ -8270,9 +8236,6 @@ impl IngestContext {
         dest_key_stats: &DestKeyWriterStats,
     ) -> Result<()> {
         for table in &self.source.tables {
-            if self.reused_tables.contains(&table.name) {
-                continue;
-            }
             if table.edge_table.is_some() {
                 continue;
             }
@@ -10499,7 +10462,6 @@ impl IngestContext {
         self.edge_dst_nonzero_counts.clear();
         self.pk_duplicate_drops.clear();
         self.edge_null_timestamp_drops.clear();
-        self.restore_cached_edges()?;
 
         let pool = self.make_pool::<EdgeMapScratch>(self.edges_map_threads);
         {
@@ -10564,10 +10526,6 @@ impl IngestContext {
             let mut totals = HashMap::new();
 
             for rel in &self.relationships {
-                if self.reused_relations.contains(&rel.name_forward) {
-                    tracing::info!(relation = %rel.name_forward, "reused forward and reverse edges");
-                    continue;
-                }
                 let rel = rel.clone();
                 let progress = progress.clone();
                 let shard_offsets = shard_offsets.clone();
@@ -11830,7 +11788,6 @@ impl IngestContext {
         let mut metadata_writer = BufWriter::new(metadata_file);
         serde_json::to_writer_pretty(&mut metadata_writer, builder.metadata())?;
         metadata_writer.flush()?;
-        self.restore_cached_index_shards()?;
         let prepared = builder.prepare_resumable_jobs_with_pool(edge_buffer_pool)?;
         let adapter = self
             .progress
