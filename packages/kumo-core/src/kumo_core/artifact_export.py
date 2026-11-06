@@ -13,6 +13,7 @@ what they write with and how they classify a refusal; they must not differ in
 from __future__ import annotations
 
 import hashlib
+import warnings
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -199,18 +200,22 @@ def publish_export_destination(output_path, *, fs):
 
 def export_selected_files(files, output_path, *, fs, identity,
                           file_type='parquet', convert_csv=None,
-                          copy_parquet=None, temporary_directory=None):
+                          copy_parquet=None, temporary_directory=None,
+                          sidecars={}):
     """Publish the hosted selected-file layout and success marker last.
 
     Filesystem/authentication and retry wrappers stay with the caller. The
     directory ownership, output names and CSV retry decisions are shared.
+    ``sidecars`` (name to bytes) land in a directory destination before
+    ``_SUCCESS``.
     """
     import os.path as osp
     import tempfile
 
+    output_is_dir = output_path.endswith('/') or len(files) > 1
     output_path, _ = prepare_export_destination(
-        output_path, output_is_dir=output_path.endswith('/') or len(files) > 1,
-        file_type=file_type, fs=fs, identity=identity)
+        output_path, output_is_dir=output_is_dir, file_type=file_type, fs=fs,
+        identity=identity)
 
     if file_type == 'parquet':
         if copy_parquet is None:
@@ -230,6 +235,13 @@ def export_selected_files(files, output_path, *, fs, identity,
     else:
         raise ValueError(f'Unsupported artifact file type: {file_type}')
 
+    if output_is_dir:
+        for name, payload in sidecars.items():
+            try:
+                fs.write_bytes(osp.join(output_path, name), payload)
+            except Exception as error:
+                warnings.warn(f'Exporting without {name}: {error}',
+                              UserWarning, stacklevel=2)
     return publish_export_destination(output_path, fs=fs)
 
 
@@ -292,10 +304,14 @@ def prepared_artifact_file(path, extra_columns=None, *, parquet_options=None,
         writer = None
         try:
             for batch in local_parquet_batches(path):
-                frame = batch.to_pandas()
+                # Pandas turns all-null bool columns into Arrow nulls.
+                table = pa.Table.from_batches([batch])
                 for name, value in (extra_columns or {}).items():
-                    frame[name] = value
-                table = pa.Table.from_pandas(frame, preserve_index=False)
+                    column = pa.repeat(pa.scalar(value), table.num_rows)
+                    table = (table.set_column(
+                        table.column_names.index(name), name, column)
+                             if name in table.column_names else
+                             table.append_column(name, column))
                 if writer is None:
                     writer = pq.ParquetWriter(staged, table.schema,
                                               **(parquet_options or {}))

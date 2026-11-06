@@ -34,6 +34,7 @@ classifiers=[
 ]
 
 [project.optional-dependencies]
+plots=["matplotlib>=3.10.0"]
 # Keep the required backend on Linux x86_64/macOS; both distributions own
 # the same import namespace. This extra does not select Torch or its device.
 cpu=["faiss-cpu==1.14.3; sys_platform != 'linux' or platform_machine != 'x86_64'"]
@@ -55,8 +56,10 @@ test=[
 snowflake=[
     "kumo-snowflake[sdk]>=0.1.0.dev1",
 ]
+# databricks-sdk 0.68 added the data_quality API the monitor recipe uses.
 databricks=[
     "kumo-databricks>=0.1.0.dev1",
+    "databricks-sdk>=0.68",
 ]
 bigquery=[
     "kumo-bigquery>=0.1.0.dev1",
@@ -74,12 +77,27 @@ adls=[
 gcs=[
     "kumo-gcs>=0.1.0.dev1",
 ]
+# mlflow-skinny 3.5 added download_artifacts(registry_uri=), which loading
+# by alias uses; nvidia-ml-py adds GPU system metrics.
+mlflow=[
+    "mlflow-skinny>=3.5,<4",
+    "nvidia-ml-py",
+]
+# SageMaker managed MLflow: 0.5.0 added the per-thread boto3 session
+# (sagemaker_mlflow.session.use_session) that explicit AWS identities use.
+sagemaker=[
+    "kumo-engine[mlflow,s3]",
+    "sagemaker-mlflow>=0.5.0",
+]
 
 # Reports this wheel's release version as the Kumo version. The provider is a
 # top-level module (see `[tool.setuptools] py-modules`) because importing
 # anything under `kumo.engine` would import the whole engine.
 [project.entry-points."kumo_core.version_providers"]
 kumo-engine = "kumo_engine_version:installed_version"
+
+[project.entry-points."kumo_snowflake.registry_models"]
+kumo-engine = "kumo.engine.integrations._snowflake_model:log_model_args"
 
 [project.urls]
 homepage="https://github.com/NVIDIA/kumo-engine"
@@ -106,10 +124,14 @@ py-modules=["kumo_engine_version"]
 [tool.setuptools.packages.find]
 where=["."]
 include=["kumo*"]
+# Skill files, not Python packages; shipped as package data below.
+exclude=["kumo.engine._skills*"]
 namespaces=true
 
 [tool.setuptools.package-data]
 "kumo.engine.datasets" = ["shop/*.parquet"]
+# The agent skills, built by setup.py; see kumo.engine.skills.
+"kumo.engine" = ["_skills/**/*"]
 
 # The version is the root VERSION file, stamped into this module by
 # scripts/stamp_version.py (shared with kumo-sdk, the platform and the charts).

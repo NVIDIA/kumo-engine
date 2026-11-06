@@ -7,7 +7,7 @@ import pyarrow.parquet as pq
 import pytest
 from kumo_adls.native_output import NativeOutputHandler
 from kumo_adls.sdk_filesystem import ADLSFileSystem
-from kumo_core.object_store_sink import ObjectStoreSinkBackend
+from kumo_core.object_store_sink import upload_file
 from pyarrow.fs import (
     FileSelector,
     FileType,
@@ -84,8 +84,7 @@ def test_shared_sink_copies_prepared_file_through_native_stream(
     payload = bytes(range(256)) * ((8 << 20) // 256) + b'last chunk'
     source = tmp_path / 'prepared.bin'
     source.write_bytes(payload)
-    ObjectStoreSinkBackend._upload_file(None, arrow, str(source),
-                                        AUTHORITY + '/orders/copied.bin')
+    upload_file(arrow, str(source), AUTHORITY + '/orders/copied.bin')
     with native.open_input_file('curated/orders/copied.bin') as reader:
         assert reader.read() == payload
 
@@ -204,8 +203,7 @@ def test_sink_integrates_real_local_native_stream_and_shared_copy(
     filesystem, destination = backend._destination(connector(), 'native.bin')
     source = tmp_path / 'prepared.bin'
     source.write_bytes(b'native output')
-    assert ADLSSinkBackend._upload_file is ObjectStoreSinkBackend._upload_file
-    backend._upload_file(filesystem, str(source), destination)
+    upload_file(filesystem, str(source), destination)
     with native.open_input_file('curated/orders/native.bin') as stream:
         assert stream.read() == b'native output'
     assert 'curated/orders/native.bin' not in service.files

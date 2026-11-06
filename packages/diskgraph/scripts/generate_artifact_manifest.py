@@ -11,8 +11,9 @@ import hashlib
 import json
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "third_party" / "artifact-manifest.json"
@@ -20,13 +21,14 @@ TARGETS = (
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
 )
-ARTIFACTS = (
+ARTIFACTS: tuple[dict[str, Any], ...] = (
     {
         "id": "diskgraph-extension",
         "label": "diskgraph._c.abi3.so",
         "package": "diskgraph-pybind",
         "manifest": "diskgraph-pybind/Cargo.toml",
         "features": ["extension-module", "pyo3/abi3-py311"],
+        "targets": TARGETS,
     },
     {
         "id": "diskgraph-ingest",
@@ -34,7 +36,14 @@ ARTIFACTS = (
         "package": "diskgraph-ingest",
         "manifest": "diskgraph-ingest/Cargo.toml",
         "features": [],
+        "targets": TARGETS,
     },
+)
+ARTIFACTS += tuple(
+    dict(artifact, id=artifact["id"] + "-windows",
+         label=("diskgraph._c.pyd" if artifact["package"] == "diskgraph-pybind"
+                else "bin/ingest.exe"), targets=("x86_64-pc-windows-msvc", ))
+    for artifact in ARTIFACTS
 )
 
 
@@ -131,7 +140,7 @@ def generate(root: Path = ROOT) -> bytes:
     artifacts = []
     for definition in ARTIFACTS:
         artifact_packages = None
-        for target in TARGETS:
+        for target in definition["targets"]:
             metadata = cargo_metadata(definition, target, root)
             by_name_version: dict[tuple[str, str], list[dict[str, Any]]] = {}
             for package in metadata["packages"]:
@@ -161,7 +170,7 @@ def generate(root: Path = ROOT) -> bytes:
             "id": definition["id"],
             "label": definition["label"],
             "root": definition["package"],
-            "targets": list(TARGETS),
+            "targets": list(definition["targets"]),
             "default_features": True,
             "features": definition["features"],
             "dependency_kinds": ["normal"],

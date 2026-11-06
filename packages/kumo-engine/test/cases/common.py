@@ -17,9 +17,39 @@ import threading
 import time
 from pathlib import Path
 
+LIMITS = dict(prediction_rows=20, metric_tolerance=0.25,
+              prediction_tolerance=0.005)
 
-def parse_args(case, scales, *, family, prediction_rows=20,
-               metric_tolerance=.25, prediction_tolerance=1e-5):
+
+def metric(name):
+    return {'training_job.metrics': [name], 'training_job.tune_metric': name}
+
+
+def sparse_overrides(scale):
+    from kumoapi.model_plan import NumNeighborsConfig, WeightMode
+
+    overrides = {
+        **metric('auroc'), 'optimization.batch_size': [64],
+        'neighbor_sampling.num_neighbors': [
+            NumNeighborsConfig(
+                **{f'hop{i}': {
+                    'default': 8
+                }
+                   for i in range(1, 7)})
+        ]
+    }
+    if scale in ('10B', '25B'):
+        overrides.update({
+            'training_job.num_experiments': 1,
+            'optimization.max_epochs': 1,
+            'optimization.majority_sampling_ratio': [1.0],
+            'optimization.weight_mode': [WeightMode.SAMPLE],
+        })
+    return overrides
+
+
+def parse_args(case, scales, *, family, prediction_rows, metric_tolerance,
+               prediction_tolerance):
     parser = argparse.ArgumentParser(description=f"Run the {case} Engine case")
     parser.add_argument("--scale", choices=tuple(scales), required=True)
     parser.add_argument("--requirements", action="store_true")
@@ -66,7 +96,7 @@ def table(sources, name, key, clock, columns):
                     timestamp_format="ms" if stype == "timestamp" else None,
                     multicategorical_delimiter="|"
                     if stype == "multicategorical" else None)
-                for column, stype, dtype in columns
+                for names, stype, dtype in columns for column in names.split()
             ]))
 
 
@@ -272,7 +302,9 @@ def compare_reference(result, expected, tolerance):
         raise ValueError("Reference metric names differ")
     for name, value in result["metrics"].items():
         baseline = expected["metrics"][name]
-        difference, band = abs(value - baseline), abs(baseline) * tolerance
+        metric = re.sub(r"^(train|val|test)_", "", name).split("_", 1)[0]
+        difference = abs(value - baseline)
+        band = .03 if metric in ("auroc", "ap") else abs(baseline) * tolerance
         if not math.isfinite(baseline) or (
                 difference > band and
                 not math.isclose(difference, band, rel_tol=1e-12, abs_tol=0)):

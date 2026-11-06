@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import ctypes
+import errno
 import itertools
 import json
 import logging
@@ -157,8 +158,17 @@ _WORKER_SHUTDOWN_DEADLINE_SECONDS = 90.0
 _WORKER_SHUTDOWN_POLL_SECONDS = 0.05
 _PIDFD_SEND_SIGNAL_SYSCALL = 424
 _PIDFD_OPEN_SYSCALL = 434
-_LIBC = ctypes.CDLL(None, use_errno=True)
-_LIBC.syscall.restype = ctypes.c_long
+
+
+def _load_pidfd_libc() -> ctypes.CDLL | None:
+    if not sys.platform.startswith('linux'):
+        return None
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.syscall.restype = ctypes.c_long
+    return libc
+
+
+_LIBC = _load_pidfd_libc()
 
 
 def _raise_pidfd_error() -> None:
@@ -173,6 +183,7 @@ def _pidfd_open(pid: int) -> int | None:
     native = getattr(os, 'pidfd_open', None)
     if native is not None:
         return native(pid)
+    assert _LIBC is not None
     result = _LIBC.syscall(
         ctypes.c_long(_PIDFD_OPEN_SYSCALL),
         ctypes.c_int(pid),
@@ -189,6 +200,7 @@ def _pidfd_send_signal(pidfd: int, sig: int) -> None:
     if native is not None:
         native(pidfd, sig)
         return
+    assert _LIBC is not None
     result = _LIBC.syscall(
         ctypes.c_long(_PIDFD_SEND_SIGNAL_SYSCALL),
         ctypes.c_int(pidfd),
@@ -235,6 +247,11 @@ class _WorkerHandle:
             # The duplicated sentinel still gives an authoritative exit
             # observation for a worker that won the startup/exit race.
             pass
+        except OSError as error:
+            # SageMaker hosting refuses pidfd_open.
+            if error.errno not in (errno.ENOSYS, errno.EPERM):
+                os.close(sentinel_fd)
+                raise
         except BaseException:
             try:
                 os.close(sentinel_fd)
@@ -261,9 +278,7 @@ class _WorkerHandle:
         try:
             if self.pidfd is not None:
                 _pidfd_send_signal(self.pidfd, sig)
-            elif not sys.platform.startswith('linux'):
-                # Non-Linux development fallback. Production Linux/Python 3.14
-                # uses pidfds, avoiding numeric-PID reuse entirely.
+            else:
                 os.kill(self.pid, sig)
         except ProcessLookupError:
             pass
@@ -1873,7 +1888,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             'batch_size': self.eval_batch_size,
         }
 
-        # (feature_store, graph_store) for the explainer; populated only during
+        # Feature access and graph schema for the explainer; populated only during
         # DiskgraphNestedTrainer.explain.
         self._data: tuple[Any, Any] | None = None
 
@@ -2103,7 +2118,10 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         return self._make_rhs_dataloader(self.predict_time, "predict")
 
     def _pseudo_time_options(self, stage: str) -> dict[str, Any]:
-        from kumo_core.training.splits import pseudo_seed_time, uses_pseudo_time
+        from kumo_core.training.splits import (
+            pseudo_seed_time,
+            uses_pseudo_time,
+        )
         if uses_pseudo_time(self._task_type) and stage in ('pred', 'predict'):
             return {'pseudo_seed_time': None, 'disable_pseudo_time': True}
         seed_time = pseudo_seed_time(self._task_type, stage)
@@ -2648,12 +2666,12 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
 
     @property
     def data(self) -> tuple[Any, Any]:
-        """``(feature_store, graph_store)``, populated only during
+        """Feature access and graph schema, populated only during
         RHS feature reads or ``Trainer.explain``; raises otherwise."""
         if self._data is None:
             raise RuntimeError(
                 "DiskgraphLightningDataModule.data is only populated "
-                "when a runtime feature/graph store is attached.")
+                "when runtime feature access and graph metadata are attached.")
         return self._data
 
     @property
@@ -2661,7 +2679,8 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         return self.data[0]
 
     @property
-    def graph_store(self) -> Any:
+    def graph_schema(self) -> Any:
+        """Return graph metadata attached for RHS feature reads or explanation."""
         return self.data[1]
 
     @property

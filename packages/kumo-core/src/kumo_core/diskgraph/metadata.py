@@ -45,6 +45,27 @@ class DiskgraphSchema:
     node_types: List[str] = field(default_factory=list)
     """Alias of *table_names* (for call-sites that expect this name)."""
 
+    num_nodes_dict: dict[str, int] = field(default_factory=dict)
+    """Physical node counts by table, including sparse node-ID ranges."""
+
+    def get_foreign_keys(self, table_name: str) -> list[tuple[str, str]]:
+        """Return forward foreign keys as column and destination-table pairs.
+
+        Args:
+            table_name: Source table whose outgoing foreign keys are requested.
+
+        Returns:
+            Parsed forward keys, excluding generated reverse edges and
+            unrecognized relations.
+            Unknown tables return an empty list.
+        """
+        foreign_keys = []
+        for foreign_key, primary_key in self.fk_specs:
+            source_table, column = foreign_key.rsplit(".", 1)
+            if source_table == table_name:
+                foreign_keys.append((column, primary_key.rsplit(".", 1)[0]))
+        return foreign_keys
+
 
 def _parse_fk_relation(
     name: str,
@@ -121,9 +142,14 @@ def load_diskgraph_schema(index_path: str) -> DiskgraphSchema:
     # -- node types / primary keys -----------------------------------------
     table_names: List[str] = []
     pkey_dict: Dict[str, str] = {}
+    num_nodes_dict: dict[str, int] = {}
     for nt in meta.get("node_types", []):
         name = nt["name"]
         table_names.append(name)
+        max_id = nt.get("max_id")
+        num_nodes_dict[name] = (
+            max_id + 1 if isinstance(max_id, int) and max_id >= 0 else 0
+        )
         pk_map = nt.get("primary_key_map")
         if pk_map:
             pkey_dict[name] = pk_map["column"]
@@ -174,4 +200,5 @@ def load_diskgraph_schema(index_path: str) -> DiskgraphSchema:
         edge_types=edge_types,
         edge_type_remap=edge_type_remap,
         node_types=list(table_names),
+        num_nodes_dict=num_nodes_dict,
     )

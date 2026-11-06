@@ -8,9 +8,10 @@ from __future__ import annotations
 import io
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
+from urllib.parse import unquote
 
 import pyarrow as pa
-from databricks.sdk.errors import NotFound
+from databricks.sdk.errors import BadRequest, NotFound
 from databricks.sql.exc import DataError
 from sources.recording import RecordingConnection, RecordingCursor
 
@@ -197,7 +198,68 @@ class FakeFiles:
         return None
 
 
+class FakeVolume(FakeFiles):
+    """A volume with uploads and ranged downloads."""
+    def __init__(self, objects: Mapping[str, bytes] | None = None) -> None:
+        super().__init__(objects)
+        self.ignore_range = False
+
+    def list_directory_contents(self, path: str) -> list[FakeEntry]:
+        path = path.rstrip("/")
+        children: dict[str, FakeEntry] = {}
+        for name in sorted(self.objects):
+            if not name.startswith(path + "/"):
+                continue
+            child = f"{path}/{name[len(path) + 1:].split('/')[0]}"
+            children[child] = (FakeEntry(child, len(self.objects[child]))
+                               if child in self.objects else FakeEntry(
+                                   child + "/", 0, is_directory=True))
+        if not children:
+            raise NotFound(f"No such directory: {path}")
+        return list(children.values())
+
+    def upload(self, path: str, contents: Any, *, overwrite: bool) -> None:
+        assert overwrite
+        self.objects[path] = contents.read()
+
+    def get_metadata(self, path: str) -> Any:
+        if path.endswith("/"):
+            raise BadRequest("Bad Request")
+        if path not in self.objects:
+            raise NotFound(f"No such file: {path}")
+        return FakeMetadata(len(self.objects[path]))
+
+    def do(self, method: str, path: str, *, raw: bool,
+           response_headers: list[str], headers: Mapping[str, str]) -> dict:
+        assert method == "GET" and raw
+        remote = unquote(path.removeprefix("/api/2.0/fs/files"))
+        if remote not in self.objects:
+            raise NotFound(f"No such file: {remote}")
+        if self.ignore_range:
+            return {"contents": FakeStreamingResponse(self.objects[remote])}
+        first, last = headers["Range"].removeprefix("bytes=").split("-")
+        size = len(self.objects[remote])
+        last = last or str(size - 1)
+        stream = FakeStreamingResponse(
+            self.objects[remote][int(first):int(last) + 1])
+        return {
+            "contents": stream,
+            "content-range": f"bytes {first}-{last}/{size}"
+        }
+
+
+@dataclass
+class FakeMetadata:
+    content_length: int
+
+
+class FakeStreamingResponse(TrackedStream):
+    def set_chunk_size(self, size: int) -> None:
+        pass
+
+
 class FakeWorkspaceClient:
     """Exposes only the files API the reader uses."""
     def __init__(self, files: FakeFiles) -> None:
         self.files = files
+        self.api_client = files

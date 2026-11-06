@@ -138,6 +138,46 @@ def test_file_metadata_uses_hosted_batch_bound_and_preserves_source(tmp_path):
     assert source.read_bytes() == before
 
 
+def test_stamped_columns_keep_the_source_types(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from kumo_core.artifact_export import prepared_artifact_file
+
+    source = tmp_path / 'scores.parquet'
+    schema = pa.schema([('ENTITY', pa.int64()), ('TARGET_PRED', pa.bool_()),
+                        ('ANCHOR', pa.timestamp('ns', tz='UTC'))])
+    pq.write_table(pa.table([[1, 2], [None, None], [None, 0]], schema=schema),
+                   source)
+    with prepared_artifact_file(str(source), {'BUNDLE_ID': 'b'}) as staged:
+        assert pq.read_schema(staged) == schema.append(
+            pa.field('BUNDLE_ID', pa.string()))
+
+
+def test_stamping_builds_arrow_columns_not_python_lists(tmp_path, monkeypatch):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from kumo_core.artifact_export import prepared_artifact_file
+
+    source = tmp_path / 'scores.parquet'
+    pq.write_table(pa.table({'ENTITY': np.arange(200000, dtype=np.int64)}),
+                   source)
+    real_array = pa.array
+
+    def guarded(values, *args, **kwargs):
+        assert not isinstance(values, list) or len(values) < 1000
+        return real_array(values, *args, **kwargs)
+
+    monkeypatch.setattr(pa, 'array', guarded)
+    extra = {'BUNDLE_ID': 'b', 'RANK': 7, 'FLAG': True}
+    with prepared_artifact_file(str(source), extra) as staged:
+        got = pq.read_table(staged)
+    assert got.schema.types[1:] == [pa.string(), pa.int64(), pa.bool_()]
+    assert got.num_rows == 200000
+    assert got['BUNDLE_ID'].unique().to_pylist() == ['b']
+    assert got['RANK'].unique().to_pylist() == [7]
+    assert got['FLAG'].unique().to_pylist() == [True]
+
+
 @pytest.mark.parametrize('existing_empty', [False, True])
 def test_multipart_failure_and_failed_recopy_remain_retryable(
         tmp_path, monkeypatch, existing_empty):
@@ -221,4 +261,36 @@ def test_csv_retry_replaces_partially_uploaded_part(tmp_path, monkeypatch):
     export()
     pd.testing.assert_frame_equal(pd.read_csv(target / 'part-00000.csv'),
                                   expected)
+    assert (target / '_SUCCESS').exists()
+
+
+
+def test_sidecars_are_best_effort_and_precede_success(tmp_path):
+    import pyarrow.parquet as pq
+    from kumo_core.artifact_export import export_selected_files
+    from kumo_core.object_store_sink import _ArrowExportFiles
+    from pyarrow.fs import LocalFileSystem
+
+    source = tmp_path / 'part-0.parquet'
+    pq.write_table(pa.table({'id': [1]}), source)
+    target = tmp_path / 'output'
+    fs = _ArrowExportFiles(LocalFileSystem(), None)
+    write_bytes, touch = fs.write_bytes, fs.touch
+
+    def denied(path, value):
+        if path.endswith('bad.json'):
+            raise PermissionError('denied')
+        write_bytes(path, value)
+
+    def checked_touch(path):
+        assert (target / 'meta.json').read_bytes() == b'{}'
+        touch(path)
+
+    fs.write_bytes, fs.touch = denied, checked_touch
+    with pytest.warns(UserWarning, match='denied'):
+        export_selected_files([str(source)], f'{target}/', fs=fs,
+                              identity='job-1', sidecars={
+                                  'meta.json': b'{}',
+                                  'bad.json': b'{}'
+                              })
     assert (target / '_SUCCESS').exists()
