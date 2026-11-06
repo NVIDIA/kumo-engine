@@ -61,17 +61,17 @@ def _open_uc_storage(kind):
                                         lambda: token)
 
 
-@pytest.mark.parametrize('module,kind,cloud,extra', [
-    ('boto3', 'aws_temp_credentials', 'AWS', 's3'),
-    ('azure.core.credentials', 'azure_user_delegation_sas', 'Azure', 'adls'),
-    ('google.cloud.storage', 'gcp_oauth_token', 'GCP', 'gcs')])
+@pytest.mark.parametrize('module,kind,extra', [
+    ('boto3', 'aws_temp_credentials', 's3'),
+    ('azure.core.credentials', 'azure_user_delegation_sas', 'adls'),
+    ('google.cloud.storage', 'gcp_oauth_token', 'gcs')])
 def test_unity_catalog_names_the_extra_its_storage_needs(
-        monkeypatch, module, kind, cloud, extra):
+        monkeypatch, module, kind, extra):
     monkeypatch.setitem(sys.modules, module, None)
     with pytest.raises(ImportError, match=(
-            rf"on {cloud}, and MLflow reaches them with '{module}[\w.]*', "
-            rf"which is not installed. Install it with: pip install "
-            rf"'kumo-engine\[{extra}\]'")):
+            rf"MLflow needs '{module}[\w.]*' to reach this model's files in "
+            rf"Unity Catalog, and it is not installed. Install it with: pip "
+            rf"install 'kumo-engine\[{extra}\]'")):
         with target_module.Target('databricks', 'databricks-uc').scope():
             _open_uc_storage(kind)
 
@@ -91,11 +91,18 @@ def test_other_missing_modules_pass_through(monkeypatch):
         with target_module.Target('databricks', 'databricks-uc').scope():
             raise RuntimeError() from ModuleNotFoundError(name='snowflake')
     for registry, module in (('databricks-uc', 'snowflake'),
+                             ('databricks-uc', 'google.protobuf'),
                              ('databricks', 'boto3')):
         with pytest.raises(ModuleNotFoundError) as raised:
             with target_module.Target('databricks', registry).scope():
                 raise ModuleNotFoundError(name=module)
         assert type(raised.value) is ModuleNotFoundError
+    nested = RuntimeError()
+    nested.__cause__ = ModuleNotFoundError(name='boto3')
+    for cause in (None, nested):
+        with pytest.raises(RuntimeError):
+            with target_module.Target('databricks', 'databricks-uc').scope():
+                raise RuntimeError() from cause
 
 
 def test_ambient_identities_set_no_credentials(monkeypatch, tracking_uri):

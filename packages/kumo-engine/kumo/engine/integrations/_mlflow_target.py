@@ -20,8 +20,8 @@ _NO_LINKS = 'MLFLOW_SUPPRESS_PRINTING_URL_TO_STDOUT'
 _HEADERS = logging.getLogger('mlflow.tracking.request_header.registry')
 _quiet = 0
 _QUIET_LOCK = threading.Lock()
-_UC_STORAGE = {'boto3': ('AWS', 's3'), 'botocore': ('AWS', 's3'),
-               'azure': ('Azure', 'adls'), 'google': ('GCP', 'gcs')}
+_UC_STORAGE = {'boto3': 's3', 'botocore': 's3', 'azure.core': 'adls',
+               'azure.storage': 'adls', 'google.cloud': 'gcs'}
 
 
 def _no_header_error(record: logging.LogRecord) -> bool:
@@ -119,19 +119,20 @@ class Target:
                        error.__cause__)
             if not isinstance(missing, ModuleNotFoundError):
                 raise
-            client = (missing.name or '').partition('.')[0]
-            if client not in _UC_STORAGE:
+            name = missing.name or ''
+            extra = next((extra for client, extra in _UC_STORAGE.items()
+                          if f'{name}.'.startswith(f'{client}.')
+                          or client.startswith(f'{name}.')), None)
+            if extra is None:
                 raise
             uri = import_provider('mlflow.utils.uri', 'mlflow')
             registry = self.registry_uri or ''
             if not uri.is_databricks_unity_catalog_uri(registry):
                 raise
-            cloud, extra = _UC_STORAGE[client]
             raise ImportError(
-                f"Unity Catalog stores this model's files on {cloud}, and "
-                f"MLflow reaches them with {missing.name!r}, which is not "
-                f"installed. Install it with: pip install "
-                f"'kumo-engine[{extra}]'") from missing
+                f"MLflow needs {name!r} to reach this model's files in Unity "
+                f"Catalog, and it is not installed. Install it with: pip "
+                f"install 'kumo-engine[{extra}]'") from missing
 
     def client(self) -> Any:
         mlflow = import_provider('mlflow', 'mlflow')
