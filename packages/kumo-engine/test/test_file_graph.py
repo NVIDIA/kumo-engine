@@ -714,8 +714,7 @@ def test_a_query_may_use_a_foreign_key_with_no_sampled_values(tmp_path):
     pq.write_table(pa.table({'id': range(3)}), root / 'users.parquet')
     connector = FileConnector(root_dir=str(root))
     with pytest.warns(UserWarning, match='has no values'):
-        orders = Table.from_source_table(connector['orders'],
-                                         primary_key='id')
+        orders = Table.from_source_table(connector['orders'], primary_key='id')
     graph = Graph(
         {
             'orders': orders,
