@@ -47,8 +47,11 @@ skill says not to transform — a split column holding strings, weights to norma
 target — is reported and asked about, not converted in a file you write.
 
 A job, a run or a cluster you find in the workspace is not a request to change it. Creating,
-editing, deploying, scheduling, unpausing or pausing a job, submitting or repairing a run, and
-starting a cluster are writes, each confirmed on its own (`job.md` §3, §7, §8). Reading a job's
+editing, deploying, scheduling or unpausing a job, submitting, cancelling or repairing a run, and
+starting a cluster are writes, each confirmed on its own (`job.md` §3, §7, §8). The one exception
+is a pause the user asks for in plain words, when the request names the job or exactly one job
+matches: pause it at once and report the job, its previous state and how to unpause (`job.md` §8
+*Pausing*). Reading a job's
 settings, a run's state and output, or a cluster's state is a read.
 
 After confirmation, Step 2 creates the one notebook (`runtime.md` §0). Running it, or submitting

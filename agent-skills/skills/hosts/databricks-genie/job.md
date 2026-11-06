@@ -163,7 +163,7 @@ print(run.run_page_url, run.state.life_cycle_state, run.state.result_state)
 ```
 
 - A run still going at the deadline is **not** cancelled: report its id and page, and that it is
-  still running. Cancel (`ws.jobs.cancel_run(run_id)`) only when the user asks.
+  still running. Cancel (`ws.jobs.cancel_run(run_id)`) only after the user confirms.
 - `result_state` `SUCCESS` is the only success. On any other, read the error (§7) before saying
   anything about the cause.
 - `timeout_seconds` is the run's own limit, enforced by Databricks: it must cover cluster start-up
@@ -245,11 +245,33 @@ the proposal before anything is created:
   the notebook uses.
 - **Cost recurs.** Each run pays for cluster start-up, scoring and the cluster's idle time (§9).
 
-Pausing (`pause_status=PAUSED`) or deleting the job is the user's call.
+Deleting the job is the user's call.
 
 A saved job already in the workspace for this scoring — one you find, or one an earlier session
 created — gets the same proposal. Changing its schedule, unpausing it or editing its task is
 done only after the user confirms that proposal; finding the job is not that confirmation.
+
+### Pausing
+
+A pause the user asks for in plain words ("pause the nightly scoring job") runs at once, with no
+confirmation turn, when the request names the job or exactly one job matches. Pausing only stops
+future triggers; nothing is lost and unpausing restores it. Set `pause_status=PAUSED` on the
+job's existing schedule (or trigger), leaving the rest of it as it is:
+
+```python
+j = ws.jobs.get(job_id)                             # a trigger-based job: same, on settings.trigger
+prev = j.settings.schedule.pause_status            # UNPAUSED, or already PAUSED
+sched = j.settings.schedule
+sched.pause_status = jobs.PauseStatus.PAUSED
+ws.jobs.update(job_id, new_settings=jobs.JobSettings(schedule=sched))
+```
+
+Then report: the job's name and id, its previous state, that it is now paused, and that unpausing
+it needs the user's confirmation. If more than one job matches, or none does, list the candidates
+and ask; pause nothing. A job you merely find is not a pause request. Everything else about a job
+stays confirmed: unpausing, scheduling, editing, repairing a run. Cancelling an active run
+discards work, so it is not part of a pause: if the user also asks to stop a running run, pause
+the schedule now and ask to confirm cancelling the run.
 
 > Not run in this workspace: a scheduled job of this skill's notebook. Say so when proposing it.
 

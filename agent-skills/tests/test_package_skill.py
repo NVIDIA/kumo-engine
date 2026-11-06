@@ -146,6 +146,30 @@ def test_genie_gates_hold_for_routed_requests_jobs_and_saved_models() -> None:
     assert 'names the destination verbatim and nothing else' in runtime
 
 
+def test_genie_pause_runs_at_once_and_everything_else_stays_confirmed() -> None:
+    """A plain-words pause of a named (or the only matching) job runs without a confirmation turn
+    and is reported after; unpausing and cancelling a run still need confirmation, and job.md and
+    adapter.md say the same."""
+    host = package_skill.SKILLS / 'hosts' / 'databricks-genie'
+    adapter, job = (' '.join((host / n).read_text().split()) for n in ('adapter.md', 'job.md'))
+    section = job[job.index('### Pausing'):job.index('## 9.')]
+    for text in (section, adapter[adapter.index('## 0.'):adapter.index('## 1.')]):
+        assert 'plain words' in text and 'exactly one job' in text
+        assert 'at once' in text and 'previous state' in text
+        assert 'unpaus' in text
+    assert 'no confirmation turn' in section and 'pause_status=PAUSED' in section
+    assert 'list the candidates and ask; pause nothing' in section
+    assert 'unpausing it needs the user\'s confirmation' in section
+    assert 'Cancelling an active run discards work' in section
+    assert 'ask to confirm cancelling the run' in section
+    assert 'only after the user confirms' in job   # cancel_run at the deadline
+    assert 'scheduling or unpausing a job' in adapter and 'unpausing or pausing' not in adapter
+    # no other skill file says a pause needs confirmation
+    for path in package_skill.SKILLS.rglob('*.md'):
+        if path.name not in ('job.md', 'adapter.md'):
+            assert 'unpausing or pausing' not in ' '.join(path.read_text().split()), path
+
+
 def test_genie_saved_model_template_carries_every_line_other_files_require() -> None:
     """The §6.1 template is the one the agent copies for scoring; a line other files rely on
     (a confirmed staging volume, embeddings) must be in it, and its tags must be defined."""
