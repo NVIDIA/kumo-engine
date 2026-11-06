@@ -19,10 +19,11 @@ common = SimpleNamespace(**runpy.run_path(str(CASES / "common.py")))
 
 
 @pytest.mark.parametrize("tier", ["nightly", "weekly"])
-def test_new_dispatch_preserves_active_reference_generation(tier):
+def test_new_dispatch_preserves_reference_generation(tier):
     workflow = yaml.safe_load(
         (ROOT / f".github/workflows/kumo-engine-{tier}.yml").read_text())
     assert workflow["concurrency"]["cancel-in-progress"] is False
+    assert workflow["concurrency"].get("queue") == "max"
 
 
 @pytest.mark.parametrize(
