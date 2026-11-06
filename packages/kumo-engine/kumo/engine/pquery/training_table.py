@@ -364,6 +364,7 @@ def _stored_parts(connector: Any,
     from pyarrow.fs import FileSelector, FileType
 
     from kumo.engine.connector import file_store
+    from kumo.engine.trainer.trainer import _require_success
 
     store = file_store(connector, path)
     if store is None or store[0].type_name == 'local':
@@ -371,15 +372,12 @@ def _stored_parts(connector: Any,
     filesystem, root = store[0], store[1].rstrip('/')
     if filesystem.get_file_info(root).type is not FileType.Directory:
         return None
-    files = [
-        info for info in filesystem.get_file_info(
-            FileSelector(root, allow_not_found=True))
-        if info.type == FileType.File
+    _require_success(filesystem, root, path)
+    parts = [
+        info for info in filesystem.get_file_info(FileSelector(root))
+        if info.type == FileType.File and info.path.endswith('.parquet')
     ]
-    parts = [info for info in files if info.path.endswith('.parquet')]
-    if not parts or '_SUCCESS' not in {info.base_name for info in files}:
-        return None
-    return filesystem, root, parts
+    return (filesystem, root, parts) if parts else None
 
 
 def _move_each(filesystem: Any, parts: Iterator[str], output: str) -> None:

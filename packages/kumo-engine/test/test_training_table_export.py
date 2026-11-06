@@ -524,3 +524,15 @@ def test_a_string_root_records_the_full_uri(graph, tmp_path, monkeypatch):
         cfg, path=path, pquery=pquery, snapshot=graph[1])
     assert reloaded.manifest.parents.source_table.location == (
         f's3://bucket/kumo/{path}')
+
+
+def test_an_incomplete_stored_table_says_so(graph, tmp_path):
+    cfg = _volume_root(tmp_path)
+    with kumo.mlops(cfg):
+        pquery, table = _generate(graph)
+    stored = tmp_path / 'volume' / 'Volumes/c/s/v/kumo/training_tables'
+    (stored / table.id / '_SUCCESS').unlink()
+    with pytest.raises(FileNotFoundError, match='has no _SUCCESS marker'):
+        kumo.TrainingTable.load_from_connector(
+            cfg, path=f'training_tables/{table.id}', pquery=pquery,
+            snapshot=graph[1])
