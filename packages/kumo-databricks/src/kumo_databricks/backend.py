@@ -40,6 +40,7 @@ from kumo_databricks.catalog import table_names
 from kumo_databricks.session import _DatabricksSessions, _target_config
 from kumo_databricks.source import DatabricksSourceReader
 from kumo_databricks.types import dtype_for
+from kumo_databricks.volume import is_volume_path, volume_filesystem
 from kumoapi.data_source import DataSourceType
 from kumoapi.plugin import PrepareIngestResult, SourceConnector
 from kumoapi.source_table import (
@@ -214,6 +215,8 @@ class DatabricksSourceBackend(_DatabricksSessions):
         paying for the read that would otherwise establish it.
         """
         del project_id  # a local runtime has no projects
+        if is_volume_path(table_name):
+            return self._volume_reader(connector, table_name).data_version('')
         bare = self._bare(connector, table_name)
         with self._connected(connector) as connection:
             return self._reader(connector, connection).data_version(bare)
@@ -238,6 +241,16 @@ class DatabricksSourceBackend(_DatabricksSessions):
         del project_id  # a local runtime has no projects
         from kumo_core.sources.prepare import read_table
 
+        if is_volume_path(table_name):
+            from kumo_core.sources.object_store import require_no_sql
+
+            require_no_sql(sql)
+            staged = self._volume_reader(connector, table_name).prepare(
+                '', str(staging_dir(dest_dir, table_name)), columns=dtypes,
+                mode=(ReadMode.STREAMED if self.mode is None else
+                      ReadMode(self.mode)), sql=sql,
+                version=data_version)
+            return ingest_result(staged)
         bare = self._bare(connector, table_name)
         # One directory per table: a read empties what it is handed, so two
         # tables sharing a `dest_dir` would leave the second holding only its
@@ -256,6 +269,16 @@ class DatabricksSourceBackend(_DatabricksSessions):
                 f'to infer an encoding.')
 
         return ingest_result(staged)
+
+    def _volume_reader(self, connector: SourceConnector, path: str):
+        from kumo_core.sources.object_store import ObjectStoreSourceReader
+        from kumo_core.types import ConnectorType
+
+        return ObjectStoreSourceReader(
+            volume_filesystem(self._client(connector)), root=path.rstrip('/'),
+            file_format='parquet', file_suffix='.parquet',
+            source_type=ConnectorType.DATABRICKS,
+            ingest_converts=True)
 
     def _declared(
         self,

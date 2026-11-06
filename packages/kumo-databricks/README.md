@@ -86,6 +86,12 @@ trainer.predict(prediction_table, snapshot=snapshot, output_config=PredictionOut
 
 For an MLOps artifact root on a volume, see `packages/kumo-engine/docs/mlops.md`.
 
+`TrainingTable.load_from_connector` restores immutable Parquet exports from a
+Volume through the Files API and the shared object-store reader, preserving split
+columns and Parquet metadata. It does not require a SQL table for the export.
+Volume file listings currently expose sizes without modification timestamps in
+this adapter; their version tokens do not establish detection of same-size rewrites.
+
 A file written with a known size (bundle files, exported Parquet parts) is one
 object up to 4 GiB, readable directly by Spark and other tools. A larger one
 streams into `<name>.chunks/<generation>/00000`, `00001`, ... (4 GiB each,
