@@ -187,6 +187,31 @@ def test_genie_saved_model_template_carries_every_line_other_files_require() -> 
     assert 'refines `batch_inference.md` Node 1c and 1d' in section
 
 
+def test_genie_gate_blocks_every_mutation_and_scoring_keeps_what_the_user_named() -> None:
+    """Before confirmation every workspace or local mutation is blocked (read-only preflight is
+    the exception); the §6.1 template restates a user-named source, subset or date first and the
+    recorded or default value only otherwise."""
+    host = package_skill.SKILLS / 'hosts' / 'databricks-genie'
+    adapter = ' '.join((host / 'adapter.md').read_text().split())
+    gate = adapter[adapter.index('## 0.'):adapter.index('## 1.')]
+    for verb in ('create, update, edit, rename, move, upload, import or delete',
+                 'cluster, warehouse, table, volume or model'):
+        assert verb in gate, verb
+    assert 'Preflight reads' in gate and 'need no confirmation' in gate
+    assert 'plain words' in gate and 'that has a Node 1d gate' in gate
+    assert 'any field the Node 1d restatement lists' in gate
+    section = adapter[adapter.index('### 6.1'):adapter.index('## 7.')]
+    template = section[section.index('```'):section.index('```', section.index('```') + 3)]
+    assert 'the user\'s source, columns checked against the recorded graph [supplied]' in template
+    assert 'the recorded source [recorded], only when none was named' in template
+    assert 'the user\'s subset/date [supplied]' in template
+    assert '[default], only when none was given' in template
+    assert 'each table\'s columns with its keys, time column and links' in section
+    batch = ' '.join((package_skill.SKILLS / 'kumo-data-science' / 'accept'
+                      / 'batch_inference.md').read_text().split())
+    assert 'a source the user named' in batch and 'If the user names a subset' in batch
+
+
 def test_genie_training_record_is_written_where_scoring_reads_it() -> None:
     """Publishing writes no record (kumo_databricks.registry), so the training notebook writes one
     to the staging volume and points the version's comment at it; §6.1 follows that pointer."""

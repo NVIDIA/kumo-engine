@@ -21,8 +21,9 @@ Genie Code can act on the workspace, and a request that names a deliverable — 
 not: it starts intake. For a request that has a Node 1d gate — a new model, batch scoring, a job —
 until the user has confirmed the restatement, in a later turn:
 
-- do not create, import, upload or edit a notebook or any file, in the workspace or on local disk;
-- do not submit a run, create a job, or create a table, volume or model;
+- do not create, update, edit, rename, move, upload, import or delete anything in the workspace or
+  on local disk — a notebook, file, job, run, cluster, warehouse, table, volume or model;
+- do not submit or execute a run or job;
 - do not put the code in your reply.
 
 An inspection request has no Node 1d — explanations, training diagnostics, graph visualization.
@@ -40,8 +41,8 @@ show the gates the operation has — for a new model the graph proposal, then th
 
 This holds for a follow-up in a session that already has a notebook, and for a request routed to
 a capability skill — custom labels, weights, splits or scoring rows; publishing, reloading or
-retaining a model; tuning. A change to the population, labels, weights, splits,
-task or destination goes back through the gates: answer with the restatement, or with the
+retaining a model; tuning. A change to any field the Node 1d restatement lists, or to weights or
+splits, goes back through the gates: answer with the restatement, or with the
 ask-back that names the offending field, never with new or edited code. A field the capability
 skill says not to transform — a split column holding strings, weights to normalize, a list
 target — is reported and asked about, not converted in a file you write.
@@ -310,9 +311,9 @@ stop for confirmation:
 
 ```
 - Model: <catalog.schema.model> version <N> — trained task reused unchanged
-- Source: <source in the record> [recorded]
+- Source: <the user's source, columns checked against the recorded graph [supplied] | the recorded source [recorded], only when none was named>
 - Graph: rebuilt from the version's training record — <n> tables, the recorded column lists, keys and links [recorded]
-- Population: all <entity> as of latest snapshot timestamp [default]
+- Population: <the user's subset/date [supplied] | all <entity> as of latest snapshot timestamp [default], only when none was given>
 - Output: <catalog.schema.table, verbatim>
 - Staging volume: creates <catalog.schema>._kumo_staging   (only when it does not exist)
 - Embeddings: <included, if explicitly requested>
@@ -329,8 +330,9 @@ names no source, is the 1c finding to report instead.
 When the version has **no** training record — no `kumo training record:` line, as on versions
 published before the notebook wrote one, or no file there — say that no column selection or graph
 definition is recorded for that version, that scoring must use the columns it was trained on, and ask for
-the training-time graph definition — the graph-building code or the per-table column lists.
-Ask only for that: not the model, version, source or destination. Never propose retraining or
+the training-time graph definition — the graph-building code, or each table's columns with its keys,
+time column and links. Ask only for that, and for the source if the request named none: not the
+model, version or destination. Never propose retraining or
 publishing a new model in its place; that is a new request for the user to make.
 
 ---
