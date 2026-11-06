@@ -4,7 +4,6 @@
 """Failure detection in the standalone runner; no product qualification."""
 
 import importlib.util
-import json
 import subprocess
 import sys
 import zipfile
@@ -136,64 +135,29 @@ def test_worker_access_blocker_stays_blocked(tmp_path, monkeypatch):
     assert summary['phases']['score']['status'] == 'blocked'
 
 
-@pytest.mark.parametrize(
-    'fault',
-    ['changed_core', 'foreign_core', 'changed_native', 'changed_ingest'])
-def test_installed_components_must_be_supplied_by_exact_wheel(
-        tmp_path, monkeypatch, fault):
-    from types import ModuleType
-
-    prefix = tmp_path / 'venv'
-    location = prefix / 'site-packages'
-    prefix.mkdir()
-    (prefix / 'pyvenv.cfg').write_text('include-system-site-packages = false\n')
-    names = {
-        'kumo.engine': 'kumo/engine/__init__.py',
-        'kumo_core': 'kumo_core/__init__.py',
-        'diskgraph': 'diskgraph/__init__.py',
-        'diskgraph._c': 'diskgraph/_c.abi3.so'
-    }
-    modules = {}
-    files = list(names.values()) + ['diskgraph/bin/ingest']
+def test_installed_native_bytes_must_match_candidate_archive(tmp_path):
+    location = tmp_path / 'site-packages'
+    native = location / 'diskgraph' / '_c.abi3.so'
+    native.parent.mkdir(parents=True)
+    native.write_bytes(b'selected native build')
     wheel = tmp_path / 'candidate.whl'
     with zipfile.ZipFile(wheel, 'w') as archive:
-        for name in files:
-            path = location / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(name.encode())
-            archive.write(path, name)
-    for name, relative in names.items():
-        module = ModuleType(name)
-        module.__file__ = str(location / relative)
-        modules[name] = module
-    modules['kumo.engine'].__version__ = '1'
-    parent = ModuleType('kumo')
-    parent.engine = modules['kumo.engine']
-    modules['kumo'] = parent
-    modules['diskgraph']._c = modules['diskgraph._c']
-    for name, module in modules.items():
-        monkeypatch.setitem(sys.modules, name, module)
-    direct = {'archive_info': {'hashes': {'sha256': runner.digest(wheel)}}}
-    dist = SimpleNamespace(version='1', files=files,
-                           read_text=lambda _: json.dumps(direct),
-                           locate_file=lambda name: location / name)
-    monkeypatch.setattr(runner.importlib.metadata, 'distribution',
-                        lambda _: dist)
-    monkeypatch.setattr(runner.sys, 'prefix', str(prefix))
-    runner.check_install(wheel, '1')
-    if fault == 'foreign_core':
-        dist.files = [name for name in files if name != names['kumo_core']]
-        message = 'not supplied by the candidate wheel'
-    else:
-        target = {
-            'changed_core': names['kumo_core'],
-            'changed_native': names['diskgraph._c'],
-            'changed_ingest': 'diskgraph/bin/ingest'
-        }[fault]
-        (location / target).write_bytes(b'other installed build')
-        message = 'differs from the selected wheel'
-    with pytest.raises(AssertionError, match=message):
-        runner.check_install(wheel, '1')
+        archive.write(native, 'diskgraph/_c.abi3.so')
+    runner.verify_wheel_file(wheel, location, native)
+    native.write_bytes(b'stale native build')
+    with pytest.raises(AssertionError, match='differs from the selected wheel'):
+        runner.verify_wheel_file(wheel, location, native)
+
+
+def test_internal_platform_entry_requires_explicit_execution(tmp_path):
+    with pytest.raises(SystemExit) as error:
+        runner.main([
+            '--platform-config',
+            str(tmp_path / 'profile.json'), '--wheel', 'unused.whl',
+            '--expected-version', '1', '--output-dir',
+            str(tmp_path / 'attempt')
+        ])
+    assert error.value.code == 2
 
 
 def test_cleanup_failure_is_failed_not_blocked(tmp_path, monkeypatch):
@@ -218,3 +182,32 @@ def test_cleanup_failure_is_failed_not_blocked(tmp_path, monkeypatch):
     assert report['status'] == 'failed'
     assert 'Cannot remove producer scratch' in report['error']
     assert report['phases']['score']['status'] == 'blocked'
+
+
+def test_platform_permission_prerequisite_runs_before_any_fit(
+        tmp_path, monkeypatch):
+    root = tmp_path / 'attempt'
+    profile = SimpleNamespace(config=dict(
+        environment='managed', execution_context='snowflake_notebook'))
+    monkeypatch.setattr(runner, 'platform_backend', lambda _: profile)
+    monkeypatch.setattr(runner, 'check_install', lambda *args, **kwargs: {})
+    monkeypatch.setattr(runner.subprocess, 'run', lambda *args, **kwargs: None)
+    phases = []
+
+    def blocked(command, cwd, log, timeout):
+        phase = command[command.index('--phase') + 1]
+        phases.append(phase)
+        runner.write(cwd / (phase + '.json'),
+                     dict(status='blocked', error='Denied stage not ready'))
+        return 1
+
+    monkeypatch.setattr(runner, 'execute', blocked)
+    args = SimpleNamespace(output_dir=root, wheel=tmp_path / 'x',
+                           expected_version='1', phase_timeout=1)
+    assert runner.run(args) == 1
+    report = runner.read(root / 'summary.json')
+    assert phases == ['negative']
+    assert report['phases']['negative']['status'] == 'blocked'
+    assert report['phases']['fit']['status'] == 'blocked'
+    assert report['required_gaps']['exported_epoch_history'][
+        'status'] == 'not implemented'

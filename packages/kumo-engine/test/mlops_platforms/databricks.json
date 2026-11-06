@@ -1,0 +1,13 @@
+{
+  "platform": "databricks",
+  "catalog": "YOUR_TEST_CATALOG",
+  "schema": "YOUR_TEST_SCHEMA",
+  "artifact_root": "/Volumes/YOUR_TEST_CATALOG/YOUR_TEST_SCHEMA/YOUR_TEST_VOLUME/mlops-validation",
+  "experiment": "/Shared/egu-mlops-validation",
+  "model_prefix": "egu_mlops",
+  "identity": "ambient",
+  "accelerator": "cpu",
+  "execution_context": "databricks",
+  "environment": "managed",
+  "cluster_id": "YOUR_TEST_CLUSTER_ID"
+}
