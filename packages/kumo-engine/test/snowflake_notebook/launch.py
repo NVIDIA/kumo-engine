@@ -317,6 +317,9 @@ def prepare_payload(root, runtime, source, approved=None):
 
 
 def connection_parameters(key_file):
+    from resources import require
+
+    target = require()
     logging.getLogger('snowflake.connector').setLevel(logging.ERROR)
     pem = os.environ.get('SNOWFLAKE_PRIVATE_KEY')
     if pem:
@@ -332,6 +335,8 @@ def connection_parameters(key_file):
         der = key.private_bytes(Encoding.DER, PrivateFormat.PKCS8,
                                 NoEncryption())
     else:
+        if os.environ.get('GITHUB_ACTIONS') == 'true':
+            raise ValueError('GitHub runs require the environment RSA secrets')
         if key_file is None:
             raise ValueError(
                 'Set SNOWFLAKE_PRIVATE_KEY or supply --key-file for the local memory cache'
@@ -339,10 +344,11 @@ def connection_parameters(key_file):
         from key_cache import load_der
         der = load_der(key_file)
     parameters = dict(
-        account=ACCOUNT, user=USER, role=ROLE, database=DATABASE, schema=SCHEMA,
-        warehouse=WAREHOUSE, authenticator='SNOWFLAKE_JWT', private_key=der,
-        login_timeout=30, network_timeout=300, socket_timeout=120,
-        client_session_keep_alive=False,
+        account=target['account'], user=target['user'], role=target['role'],
+        database=target['database'], schema=target['schema'],
+        warehouse=target['warehouse'], authenticator='SNOWFLAKE_JWT',
+        private_key=der, login_timeout=30, network_timeout=300,
+        socket_timeout=120, client_session_keep_alive=False,
         session_parameters={'QUERY_TAG': 'kumo_notebook_output_probe'})
     return parameters
 

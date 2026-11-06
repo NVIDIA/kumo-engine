@@ -11,14 +11,6 @@ on:  # yamllint disable-line rule:truthy
         type: choice
         default: graph-ui
         options: [graph-ui, engine]
-  push:
-    branches: [egu/mlops-platform-integration]
-    paths:
-      - .github/workflows/kumo-engine-snowflake-notebook.yml
-      - packages/kumo-engine/test/snowflake_notebook/**
-      - packages/kumo-engine/test/pr172/inputs.json
-      - packages/kumo-engine/test/wheel_gpu_smoke.py
-      - packages/kumo-engine/test/wheel_mlops_lifecycle.py
 
 permissions:
   contents: read
@@ -32,14 +24,15 @@ jobs:
     name: Check protected Snowflake environment
     if: >-
       github.repository == 'NVIDIA/kumo-engine' &&
-      github.ref == 'refs/heads/egu/mlops-platform-integration'
+      github.ref == 'refs/heads/egu/mlops-platform-integration' &&
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     permissions:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -58,21 +51,70 @@ jobs:
     timeout-minutes: 80
     environment: snowflake-mlops-test
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - &authorize-maintainer
+        name: Require current maintainer membership and environment secrets
+        env:
+          TEAM_READ_TOKEN: ${{ secrets.KUMO_ENGINE_TEAM_READ_TOKEN }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, re, urllib.error, urllib.request
+          token = os.environ.get('TEAM_READ_TOKEN')
+          if not token:
+              raise SystemExit('Missing environment secret KUMO_ENGINE_TEAM_READ_TOKEN; org Members:read and repository Actions:read/Environments:read are required')
+          def get(path):
+              request = urllib.request.Request('https://api.github.com' + path, headers={
+                  'Authorization': 'Bearer ' + token,
+                  'Accept': 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+              })
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      return json.load(response)
+              except urllib.error.HTTPError as error:
+                  raise SystemExit('Maintainer authorization unavailable or denied (HTTP ' + str(error.code) + ')') from None
+          for name in ('GITHUB_ACTOR', 'GITHUB_TRIGGERING_ACTOR'):
+              actor = os.environ.get(name, '')
+              if not re.fullmatch(r'[A-Za-z0-9-]+', actor):
+                  raise SystemExit('A human maintainer must initiate and rerun this workflow')
+              membership = get('/organizations/1728152/team/19956283/memberships/' + actor)
+              if membership.get('state') != 'active':
+                  raise SystemExit('Only active NVIDIA/kumo-engineers members may initiate or rerun Snowflake tests')
+          base = '/repos/NVIDIA/kumo-engine/environments/snowflake-mlops-test'
+          environment = get(base)
+          reviewers = [rule for rule in environment.get('protection_rules', []) if rule.get('type') == 'required_reviewers']
+          if (environment.get('can_admins_bypass') is not False or len(reviewers) != 1 or
+                  [(item.get('type'), item.get('reviewer', {}).get('id')) for item in reviewers[0].get('reviewers', [])] != [('Team', 19956283)]):
+              raise SystemExit('Protected environment must require NVIDIA/kumo-engineers approval with administrator bypass disabled')
+          if environment.get('deployment_branch_policy') != dict(protected_branches=False, custom_branch_policies=True):
+              raise SystemExit('Protected environment must use selected branches')
+          policies = get(base + '/deployment-branch-policies?per_page=100').get('branch_policies', [])
+          if len(policies) != 1 or (policies[0].get('name'), policies[0].get('type')) != ('egu/mlops-platform-integration', 'branch'):
+              raise SystemExit('Protected environment must allow only the test branch')
+          names = {item['name'] for item in get(base + '/secrets?per_page=100').get('secrets', [])}
+          required = {'KUMO_ENGINE_TEAM_READ_TOKEN', 'SNOWFLAKE_TEST_CONFIG', 'SNOWFLAKE_PRIVATE_KEY', 'SNOWFLAKE_PRIVATE_KEY_PASSPHRASE', 'SNOWFLAKE_UI_CREDENTIALS'}
+          if not required <= names:
+              raise SystemExit('Required secrets must exist in snowflake-mlops-test itself; repository/organization fallback is not accepted')
+          print('Authorized: current maintainer actors and protected environment secrets')
+          PYTHON
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: '3.12'
       - name: Require the environment credentials
         env:
+          SNOWFLAKE_TEST_CONFIG: ${{ secrets.SNOWFLAKE_TEST_CONFIG }}
           SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
           SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
         run: |
           python - <<'PY'
-          import os
-          missing = [name for name in ('SNOWFLAKE_PRIVATE_KEY', 'SNOWFLAKE_PRIVATE_KEY_PASSPHRASE') if not os.environ.get(name)]
+          import os, sys
+          sys.path.insert(0, 'packages/kumo-engine/test/snowflake_notebook')
+          from resources import require
+          require()
+          missing = [name for name in ('SNOWFLAKE_TEST_CONFIG', 'SNOWFLAKE_PRIVATE_KEY', 'SNOWFLAKE_PRIVATE_KEY_PASSPHRASE') if not os.environ.get(name)]
           if missing:
               raise SystemExit('Missing snowflake-mlops-test environment secrets: ' + ', '.join(missing))
           PY
@@ -84,6 +126,7 @@ jobs:
             --output-dir "$RUNNER_TEMP/snowflake-payload"
       - name: Execute the installed-wheel notebook lifecycle
         env:
+          SNOWFLAKE_TEST_CONFIG: ${{ secrets.SNOWFLAKE_TEST_CONFIG }}
           SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
           SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
         run: |
@@ -101,7 +144,7 @@ jobs:
             --summary "$RUNNER_TEMP/snowflake-result/summary.json"
       - name: Retain execution evidence and qualification gaps
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: snowflake-engine-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -115,35 +158,39 @@ jobs:
     if: >-
       github.repository == 'NVIDIA/kumo-engine' &&
       github.ref == 'refs/heads/egu/mlops-platform-integration' &&
-      (github.event_name == 'push' ||
-       (github.event_name == 'workflow_dispatch' && inputs.mode == 'graph-ui'))
+      github.event_name == 'workflow_dispatch' && inputs.mode == 'graph-ui'
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     environment: snowflake-mlops-test
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - *authorize-maintainer
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: '3.12'
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
         with:
           node-version: '22'
       - name: Require the protected test credentials
         env:
+          SNOWFLAKE_TEST_CONFIG: ${{ secrets.SNOWFLAKE_TEST_CONFIG }}
           SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
           SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
           SNOWFLAKE_UI_CREDENTIALS: ${{ secrets.SNOWFLAKE_UI_CREDENTIALS }}
         run: |
           python - <<'PY'
-          import os
-          names = ('SNOWFLAKE_PRIVATE_KEY', 'SNOWFLAKE_PRIVATE_KEY_PASSPHRASE', 'SNOWFLAKE_UI_CREDENTIALS')
+          import os, sys
+          sys.path.insert(0, 'packages/kumo-engine/test/snowflake_notebook')
+          from resources import require
+          require()
+          names = ('SNOWFLAKE_TEST_CONFIG', 'SNOWFLAKE_PRIVATE_KEY', 'SNOWFLAKE_PRIVATE_KEY_PASSPHRASE', 'SNOWFLAKE_UI_CREDENTIALS')
           if any(not os.environ.get(name) for name in names):
-              raise SystemExit('Configure all three protected Snowflake test secrets before running UI tests')
+              raise SystemExit('Configure the required protected Snowflake environment secrets before running UI tests')
           PY
       - name: Install the existing Snowflake submission client
         run: python -m pip --isolated install snowflake-connector-python cryptography
@@ -153,6 +200,7 @@ jobs:
           node packages/kumo-engine/test/snowflake_notebook/browser/node_modules/playwright/cli.js install --with-deps chromium
       - name: Run the same graph notebook UI command as local testing
         env:
+          SNOWFLAKE_TEST_CONFIG: ${{ secrets.SNOWFLAKE_TEST_CONFIG }}
           SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
           SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
           SNOWFLAKE_UI_CREDENTIALS: ${{ secrets.SNOWFLAKE_UI_CREDENTIALS }}
@@ -162,7 +210,7 @@ jobs:
             --output-dir "$RUNNER_TEMP/snowflake-graph"
       - name: Retain UI assertions and exports
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: snowflake-graph-ui-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

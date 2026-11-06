@@ -1,9 +1,14 @@
 # Snowflake notebook platform checks
 
-The trial workflow runs graph UI checks on relevant pushes to
-`egu/mlops-platform-integration` in `NVIDIA/kumo-engine`. It does not run on
-`main`, `master`, or pull requests. No default-branch change or draft PR is
-needed for this push trigger. Pushes do not start engine lifecycle training.
+The trial workflow runs only through manual dispatch on
+`egu/mlops-platform-integration` in `NVIDIA/kumo-engine`. It has no push, PR,
+schedule, or comment trigger. Choose `graph-ui` for notebook rendering or
+`engine` for training and lifecycle execution.
+
+Both the original caller and any rerun caller must currently belong to
+`NVIDIA/kumo-engineers`, the repository's maintainer team. Every cloud job
+checks membership before checkout, including when only failed jobs are rerun.
+GitHub can record a rejected dispatch attempt; it cannot proceed to Snowflake.
 
 The separate engine job covers notebook preflight and the four engine lifecycle
 phases: fit/register, fresh-process prediction and alias moves, monitoring and
@@ -19,18 +24,40 @@ Under **Deployment branches and tags**, select **Selected branches and tags**
 and allow only the branch `egu/mlops-platform-integration`.
 The workflow checks this restriction before opening a deployment job; a missing
 or differently restricted environment fails before any Snowflake connection.
-A repository admin is required to create the environment. Add these environment
-secrets:
+Require `NVIDIA/kumo-engineers` as the only environment reviewer and disable
+administrator bypass. A maintainer can approve their own manually requested run.
+The workflow verifies these settings before execution and rechecks them inside
+each cloud job.
 
+Add all five secrets to this environment itself:
+
+- `KUMO_ENGINE_TEAM_READ_TOKEN`: a dedicated read-only GitHub credential with
+  organization **Members: read** and this repository's **Actions: read** and
+  **Environments: read** permissions. It must be able to inspect this team and
+  environment. Do not use a broad administrator token. Missing or denied access
+  blocks execution.
+- `SNOWFLAKE_TEST_CONFIG`: the JSON returned by `resources.expected()` from
+  `packages/kumo-engine/test/snowflake_notebook/resources.py`. It authorizes the
+  dedicated account, users, role, database, schema, warehouse, pool, service,
+  stages, and exact candidate/asset manifests. Update it after an intentional
+  change to either manifest.
 - `SNOWFLAKE_PRIVATE_KEY`: the complete encrypted PEM private key, including
   its BEGIN/END lines, for `KUMO_SNOWFLAKE_CI`.
 - `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE`: its passphrase.
+- `SNOWFLAKE_UI_CREDENTIALS`: the browser credential JSON described below.
 
 The local memory cache is not transferred to GitHub. The connector decrypts
 these CI secrets in process; neither the key nor passphrase enters the notebook
-payload or evidence. No browser credentials are needed for the engine check. The graph UI job also
-requires `SNOWFLAKE_UI_CREDENTIALS`, containing the browser credential JSON
-described below.
+payload or evidence. Only the graph UI job reads the browser credential values.
+All five secrets must exist in the environment;
+repository or organization secret fallback is rejected. GitHub runs also reject
+local RSA-cache and browser-credential-file fallback.
+
+Resource names remain visible as test-only constraints and in retained evidence.
+The protection restricts access to those resources; it does not make their
+identifiers confidential. Before local live execution, explicitly supply the
+same `SNOWFLAKE_TEST_CONFIG` JSON through the environment. Planning remains
+credential-free.
 
 ## Candidate and payload
 
@@ -149,7 +176,7 @@ python packages/kumo-engine/test/snowflake_notebook/graph_notebook.py \
 ```
 
 Omit `--execute` to inspect the plan without credentials or cloud access. On a
-runner, supply the three credential secrets and omit the local file arguments.
+runner, supply the protected environment secrets and omit local file arguments.
 `candidate.json` selects the wheel. `--source-ref` defaults to HEAD and selects
 seven graph/table/widget source hashes that must match that installed wheel;
 it does not build a new wheel. Select another revision only when deliberately
@@ -180,18 +207,11 @@ its `.ipynb` together when relocating artifacts. This mode covers saved outputs
 and exports, not live controls or kernel shutdown. Explanations unavailable on
 main are outside this scenario.
 
-The branch push trigger runs the graph UI job and skips engine training. It
-uses the same three protected environment secrets as local execution's
-credential inputs. Publish a signed commit to the feature branch to start the
-trial; inspect the resulting **Snowflake notebook graph UI** check and its
-retained artifact. Required files, credential validation, and branch restriction
-are checked before notebook access.
-
-Manual `graph-ui` and `engine` modes remain defined. GitHub requires a
-dispatchable workflow to exist on the default branch, so those manual modes
-are unavailable until that separate prerequisite is met. The feature-branch
-push trigger does not require that change. Local validation and configured
-secrets alone do not qualify a GitHub-hosted execution.
+Dispatch the registered workflow with `mode: graph-ui` or `mode: engine`,
+then approve the protected environment as a member of `NVIDIA/kumo-engineers`.
+No push starts a test. GitHub-hosted execution requires all environment secrets,
+current maintainer membership, and the verified environment restrictions.
+Local results do not qualify a different GitHub-hosted revision.
 
 Saved outputs can render as cached widgets or static SVG fallback images. Both
 paths verify all tables, columns, keys, and relationships. Cached widgets also

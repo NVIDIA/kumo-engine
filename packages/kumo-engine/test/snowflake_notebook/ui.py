@@ -131,6 +131,9 @@ def credentials(path=None):
     if path is None and os.environ.get('SNOWFLAKE_UI_CREDENTIALS'):
         value = json.loads(os.environ['SNOWFLAKE_UI_CREDENTIALS'])
     else:
+        if os.environ.get('GITHUB_ACTIONS') == 'true':
+            raise UIBlocked(
+                'GitHub runs require the environment browser secret')
         path = Path(
             path or Path.home() / '.config/kumo/snowflake-ui/credentials.json')
         with path.open() as stream:
@@ -191,7 +194,18 @@ def run(source=None, output=None, execute=False, credential_file=None,
                 reason='UI plan only; no credentials loaded or browser launched'
             )
         else:
+            from resources import require
+
+            try:
+                target = require()
+            except ValueError as error:
+                raise UIBlocked(str(error)) from None
             auth = credentials(credential_file)
+            if (auth['account_url'] != target['account_url']
+                    or auth['user'] != target['browser_user']):
+                raise UIBlocked(
+                    'Browser identity differs from the protected test configuration'
+                )
             node = shutil.which('node')
             if node is None and (Path.cwd() / '.nodeenv/bin/node').is_file():
                 node = str(Path.cwd() / '.nodeenv/bin/node')

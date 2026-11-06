@@ -409,7 +409,7 @@ def test_graph_collection_rejects_empty_retained_receipt(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize('event,branch,repository,mode,graph,engine', [
-    ('push', 'egu/mlops-platform-integration', 'NVIDIA/kumo-engine', '', True,
+    ('push', 'egu/mlops-platform-integration', 'NVIDIA/kumo-engine', '', False,
      False),
     ('push', 'main', 'NVIDIA/kumo-engine', '', False, False),
     ('push', 'master', 'NVIDIA/kumo-engine', '', False, False),
@@ -430,9 +430,7 @@ def test_trial_triggers_isolate_graph_ui_from_training(event, branch,
                                                        engine):
     workflow = yaml.safe_load(DIRECTORY.parents[3].joinpath(
         '.github/workflows/kumo-engine-snowflake-notebook.yml').read_text())
-    assert workflow[True]['push']['branches'] == [
-        'egu/mlops-platform-integration'
-    ]
+    assert set(workflow[True]) == {'workflow_dispatch'}
     context = dict(
         github=SimpleNamespace(repository=repository,
                                ref='refs/heads/' + branch, event_name=event),
@@ -443,6 +441,11 @@ def test_trial_triggers_isolate_graph_ui_from_training(event, branch,
         condition = job['if'].replace('&&', ' and ').replace('||', ' or ')
         assert eval(condition, {'__builtins__': {}}, context) is expected
         assert job['environment'] == 'snowflake-mlops-test'
+        assert job['steps'][0][
+            'name'] == 'Require current maintainer membership and environment secrets'
+        assert 'KUMO_ENGINE_TEAM_READ_TOKEN' in job['steps'][0]['env'][
+            'TEAM_READ_TOKEN']
+        assert 'uses' in job['steps'][1]
 
 
 def test_graph_execution_acknowledges_before_imports_or_sql(

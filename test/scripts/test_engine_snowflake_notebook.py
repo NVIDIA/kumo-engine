@@ -140,6 +140,9 @@ def test_ci_authentication_uses_encrypted_secret_without_local_cache(
     monkeypatch.setenv('SNOWFLAKE_PRIVATE_KEY', pem.decode())
     monkeypatch.setenv('SNOWFLAKE_PRIVATE_KEY_PASSPHRASE',
                        'synthetic-ci-passphrase')
+    resources = importlib.import_module('resources')
+    monkeypatch.setenv('SNOWFLAKE_TEST_CONFIG',
+                       json.dumps(resources.expected()))
     config = launch.connection_parameters(None)
     actual = load_der_private_key(config['private_key'], password=None)
     assert actual.public_key().public_numbers() == key.public_key(
@@ -193,6 +196,18 @@ def test_collector_accepts_only_expected_gap_exit_after_validating_receipts(
 def test_environment_guard_rejects_unrestricted_or_other_branches(modules):
     guard = importlib.import_module('check_environment')
     environment = {
+        'can_admins_bypass':
+        False,
+        'protection_rules': [{
+            'type':
+            'required_reviewers',
+            'reviewers': [{
+                'type': 'Team',
+                'reviewer': {
+                    'id': guard.TEAM_ID
+                }
+            }]
+        }],
         'deployment_branch_policy': {
             'protected_branches': False,
             'custom_branch_policies': True

@@ -10,9 +10,22 @@ import urllib.request
 REPOSITORY = 'NVIDIA/kumo-engine'
 ENVIRONMENT = 'snowflake-mlops-test'
 BRANCH = 'egu/mlops-platform-integration'
+TEAM_ID = 19956283
 
 
 def validate(environment, policies):
+    if environment.get('can_admins_bypass') is not False:
+        raise ValueError('Administrator bypass must be disabled')
+    rules = [
+        rule for rule in environment.get('protection_rules', [])
+        if rule.get('type') == 'required_reviewers'
+    ]
+    if len(rules) != 1 or [
+        (item.get('type'), item.get('reviewer', {}).get('id'))
+            for item in rules[0].get('reviewers', [])
+    ] != [('Team', TEAM_ID)]:
+        raise ValueError(
+            'Environment must require NVIDIA/kumo-engineers approval')
     if environment.get('deployment_branch_policy') != dict(
             protected_branches=False, custom_branch_policies=True):
         raise ValueError('Environment must use selected deployment branches')
@@ -24,8 +37,10 @@ def validate(environment, policies):
 
 def main():
     if os.environ['GITHUB_REPOSITORY'] != REPOSITORY or os.environ[
-            'GITHUB_REF'] != 'refs/heads/' + BRANCH:
-        raise SystemExit('This trial only runs on its feature branch')
+            'GITHUB_REF'] != 'refs/heads/' + BRANCH or os.environ.get(
+                'GITHUB_EVENT_NAME') != 'workflow_dispatch':
+        raise SystemExit(
+            'This trial requires manual dispatch on its feature branch')
     base = f'https://api.github.com/repos/{REPOSITORY}/environments/{ENVIRONMENT}'
 
     def get(suffix=''):
@@ -42,11 +57,13 @@ def main():
             raise SystemExit(
                 f'Cannot inspect {ENVIRONMENT} (HTTP {error.code}). '
                 'A repository admin must create it, restrict it to ' + BRANCH +
-                ', and add the two RSA environment secrets.') from None
+                ', require the maintainer team reviewer, disable administrator bypass, and add the environment secrets.'
+            ) from None
 
     validate(get(), get('/deployment-branch-policies?per_page=100'))
     print(
-        'Confirmed: existing environment permits only the trial feature branch')
+        'Confirmed: maintainer approval, no administrator bypass, and trial branch restriction'
+    )
 
 
 if __name__ == '__main__':
