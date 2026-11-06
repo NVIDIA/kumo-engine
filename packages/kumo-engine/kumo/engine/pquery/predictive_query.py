@@ -99,6 +99,10 @@ from kumo.engine.pquery.training_table import TrainingTable, finish_generated
 
 logger = logging.getLogger(__name__)
 
+#: The validator's wording for a column the graph does not have.
+_UNKNOWN_COLUMN = re.compile(
+    r"Column '([^']+)' does not exist in table '([^']+)'")
+
 
 @dataclass(frozen=True)
 class PredictiveQuery:
@@ -130,9 +134,9 @@ class PredictiveQuery:
         Raises (an unspecified `kumo_core` exception, typically a
         `PredictiveQueryPlanError`) on an invalid query -- unknown table/
         column, malformed PQL, a dangling `FOR EACH` entity, and so on. A
-        query naming a column the graph left out because its source type
-        cannot be read, outside a quoted literal, is refused with that
-        reason. The failure itself is not cached; a later access re-parses.
+        query the validator rejects for a column the graph left out because
+        its source type cannot be read is refused with that reason. The
+        failure itself is not cached; a later access re-parses.
 
         `task_type`/`task_family`/`query_type` on the returned
         `ValidatedNativeQuery` are all plain `str`; `get_task_type` below
@@ -143,20 +147,19 @@ class PredictiveQuery:
         except PredictiveQueryPlanError as error:
             if not isinstance(self.graph, Graph):
                 raise
-            unquoted = re.sub(r"'[^']*'|\"[^\"]*\"", "", self.query)
-            for alias, columns in self.graph._left_out.items():
-                for name, source_type in columns.items():
-                    named = rf"\b{re.escape(alias)}\.{re.escape(name)}\b"
-                    if not re.search(named, unquoted):
-                        continue
-                    described = (f"its source type {source_type}" if source_type
-                                 is not None else "its source type")
-                    raise PredictiveQueryPlanError(
-                        f"Column {alias}.{name} is named in the query but was "
-                        f"left out of the graph: {described} cannot be read. "
-                        f"Declare a dtype for it (`dtypes=` or "
-                        f"`with_column({name!r}, dtype=...)`) or cast it at "
-                        f"the source, then build the graph again.") from error
+            for name, alias in _UNKNOWN_COLUMN.findall(str(error)):
+                left_out = self.graph._left_out.get(alias, {})
+                if name not in left_out:
+                    continue
+                source_type = left_out[name]
+                described = (f"its source type {source_type}"
+                             if source_type is not None else "its source type")
+                raise PredictiveQueryPlanError(
+                    f"Column {alias}.{name} is named in the query but was "
+                    f"left out of the graph: {described} cannot be read. "
+                    f"Declare a dtype for it (`dtypes=` or "
+                    f"`with_column({name!r}, dtype=...)`) or cast it at "
+                    f"the source, then build the graph again.") from error
             raise
 
     @property

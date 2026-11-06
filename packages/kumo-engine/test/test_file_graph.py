@@ -655,6 +655,11 @@ LEFT_OUT = ("Column events.bad is named in the query but was left out of "
     ('PREDICT events.amount FOR EACH events.pk WHERE events.bad = 1', LEFT_OUT),
     ("PREDICT events.nope FOR EACH events.pk WHERE events.kind = 'events.bad'",
      "Column 'nope' does not exist in table 'events'"),
+    ("PREDICT events.nope FOR EACH events.pk "
+     "WHERE events.kind = 'don\\'t name events.bad'",
+     "Column 'nope' does not exist in table 'events'"),
+    ("PREDICT events.nope FOR EACH events.pk  # not events.bad",
+     "Column 'nope' does not exist in table 'events'"),
 ])
 def test_a_query_naming_a_left_out_column_says_why_it_is_missing(
         query, expected, tmp_path):
