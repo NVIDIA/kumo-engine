@@ -23,14 +23,6 @@ if TYPE_CHECKING:
     from kumo_core.instrumentation import TrainingInstrumentation
 
 
-class TrainingDataRuntime(Protocol):
-    def create_graph_sampler(self, *args: Any, **kwargs: Any) -> Any:
-        ...
-
-    def create_datamodule(self, *args: Any, **kwargs: Any) -> Any:
-        ...
-
-
 class TrainingArtifactRuntime(Protocol):
     def default_model_root(self) -> str:
         ...
@@ -83,13 +75,15 @@ class LocalDiskgraphTrainingRuntime:
         entity_table_names: list[str],
         time_col_dict: dict[str, str],
     ) -> tuple[DiskgraphFeatureStore, DiskgraphSchema]:
+        schema = load_diskgraph_schema(index_path)
         feature_store = DiskgraphFeatureStore.for_explain(
             index_path=index_path,
             encoders=encoders,
             entity_table_names=entity_table_names,
             time_col_dict=time_col_dict,
+            schema=schema,
         )
-        return feature_store, load_diskgraph_schema(index_path)
+        return feature_store, schema
 
 
 class LocalTrainingArtifactRuntime:

@@ -58,9 +58,48 @@ def test_foreign_keys_from_snapshot_metadata(
     assert ("users", "rev_user_id", "orders") in schema.edge_types
 
 
+@pytest.mark.parametrize(
+    "source_table, column, destination_table",
+    [
+        ("orders", "user_id", "users"),
+        ("orders", "rev_user_id", "users"),
+        ("catalog.orders", "rev_user_id", "catalog.users"),
+    ],
+)
+def test_foreign_keys_use_parsed_forward_specs(
+    source_table: str,
+    column: str,
+    destination_table: str,
+) -> None:
+    """Keep rev_-prefixed forward keys and exclude unparsed and reverse edges."""
+    forward_relation = f"{source_table}_{column}_to_{destination_table}_id"
+    relations = [
+        (source_table, forward_relation, destination_table),
+        (destination_table, f"{forward_relation}_reverse", source_table),
+        (source_table, "unparsed_relation", destination_table),
+        (destination_table, "unparsed_relation_reverse", source_table),
+    ]
+    metadata = orjson.dumps(
+        {
+            "edge_relations": [
+                {"src_type": source, "name": relation, "dst_type": destination}
+                for source, relation, destination in relations
+            ],
+        }
+    )
+
+    with patch("builtins.open", mock_open(read_data=metadata)):
+        schema = load_diskgraph_schema("/snapshot")
+
+    assert schema.get_foreign_keys(source_table) == [(column, destination_table)]
+    assert schema.get_foreign_keys(destination_table) == []
+    assert schema.get_foreign_keys("missing") == []
+    assert (source_table, "unparsed_relation", destination_table) in schema.edge_types
+
+
 def test_runtime_builds_feature_access_and_schema(metadata: bytes) -> None:
     """RHS/explanation setup returns usable schema metadata without a sampler."""
-    with patch("builtins.open", mock_open(read_data=metadata)):
+    with patch("builtins.open", mock_open(read_data=metadata)) as open_metadata:
         feature_store, schema = (
             LocalDiskgraphTrainingRuntime().create_feature_store_and_schema(
                 index_path="/snapshot",
@@ -69,6 +108,8 @@ def test_runtime_builds_feature_access_and_schema(metadata: bytes) -> None:
                 time_col_dict={},
             )
         )
+    open_metadata.assert_called_once()
+    assert schema.num_nodes_dict == {"orders": 3, "users": 3, "products": 3}
     assert isinstance(feature_store, DiskgraphFeatureStore)
     assert isinstance(schema, DiskgraphSchema)
     assert feature_store._engine is None

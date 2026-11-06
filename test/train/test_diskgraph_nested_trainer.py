@@ -1041,7 +1041,7 @@ def test_load_rebinds_class_and_sets_bundle_dir(
     assert type(out) is DiskgraphNestedTrainer
     # Bundle dir was stamped on.
     assert out.diskgraph_task_dataset_bundle_dir == "/mnt/localssd/foo/bundle"
-    # Omitted stores use the None defaults in Trainer.load.
+    # Store setup belongs to the trainer's runtime initialization.
     assert "feature_store" not in captured["kwargs"]
     assert "graph_store" not in captured["kwargs"]
     # encoders + version passed through.

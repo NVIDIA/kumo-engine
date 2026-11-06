@@ -7,26 +7,12 @@ import logging
 import pytest
 
 from kumo.testing.fixtures.task import (
-    forecasting_task,
-    get_temporal_task,
-    static_order_classification_task,
-    static_task,
-    temporal_hyperedge_task,
-    temporal_marketplace_task,
     temporal_task,
-    user_item_marketplace_graph,
     user_store_graph,
 )
 
 __all__ = [
-    'forecasting_task',
-    'get_temporal_task',
-    'static_order_classification_task',
-    'static_task',
-    'temporal_hyperedge_task',
-    'temporal_marketplace_task',
     'temporal_task',
-    'user_item_marketplace_graph',
     'user_store_graph',
 ]
 
