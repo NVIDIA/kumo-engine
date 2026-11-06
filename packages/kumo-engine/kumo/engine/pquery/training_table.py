@@ -131,7 +131,11 @@ class TrainingTable:
     def load_from_connector(cls, connector: Any, *, path: str,
                             pquery: "PredictiveQuery",  # noqa: F821
                             snapshot: GraphSnapshot) -> "TrainingTable":
-        r"""Load a table written by :meth:`export` against ``snapshot``."""
+        r"""Load a table written by :meth:`export` against ``snapshot``.
+
+        A folder must be a complete export (with ``_SUCCESS``); load other
+        folders with :meth:`from_source_table`.
+        """
         import shutil
 
         from kumo_core.sources.object_store import _source_version
@@ -148,11 +152,15 @@ class TrainingTable:
         if stored is None:
             return cls.from_source_table(connector[path], spec, pq=pquery,
                                          snapshot=snapshot)
-        filesystem, root, parts = stored
+        filesystem, root, files = stored
+        parts = [info for info in files if info.path.endswith('.parquet')]
         version = _source_version(root, parts)
         local = _fetch_dir('fetched-training-table-')
         try:
             fetch_parquet(filesystem, root, local / 'rows', parts)
+            if _signature(_listed(filesystem, root)) != _signature(files):
+                raise RuntimeError(f'Training table at {location} changed '
+                                   f'while it was being loaded; retry.')
             return cls._from_rows(
                 FileConnector(root_dir=str(local))['rows'], spec, pq=pquery,
                 snapshot=snapshot, version=version,
@@ -361,23 +369,38 @@ class TrainingTable:
 
 def _stored_parts(connector: Any,
                   path: str) -> Optional[Tuple[Any, str, List[Any]]]:
-    from pyarrow.fs import FileSelector, FileType
+    from pyarrow.fs import FileType
 
     from kumo.engine.connector import file_store
     from kumo.engine.trainer.trainer import _require_success
 
     store = file_store(connector, path)
-    if store is None or store[0].type_name == 'local':
+    if store is None:
         return None
     filesystem, root = store[0], store[1].rstrip('/')
     if filesystem.get_file_info(root).type is not FileType.Directory:
         return None
+    files = _listed(filesystem, root)
     _require_success(filesystem, root, path)
-    parts = [
+    if filesystem.type_name == 'local' or not any(
+            info.path.endswith('.parquet') for info in files):
+        return None
+    return filesystem, root, files
+
+
+def _listed(filesystem: Any, root: str) -> List[Any]:
+    from pyarrow.fs import FileSelector, FileType
+
+    return [
         info for info in filesystem.get_file_info(FileSelector(root))
-        if info.type == FileType.File and info.path.endswith('.parquet')
+        if info.type == FileType.File
     ]
-    return (filesystem, root, parts) if parts else None
+
+
+def _signature(files: List[Any]) -> List[Tuple[str, int, Any]]:
+    return sorted((info.path, info.size, info.mtime) for info in files
+                  if info.path.endswith('.parquet')
+                  or info.base_name == '_SUCCESS')
 
 
 def _move_each(filesystem: Any, parts: Iterator[str], output: str) -> None:

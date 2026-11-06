@@ -526,13 +526,43 @@ def test_a_string_root_records_the_full_uri(graph, tmp_path, monkeypatch):
         f's3://bucket/kumo/{path}')
 
 
-def test_an_incomplete_stored_table_says_so(graph, tmp_path):
+@pytest.mark.parametrize('remote', [True, False])
+def test_an_incomplete_stored_table_says_so(graph, tmp_path, remote):
+    cfg = (_volume_root(tmp_path) if remote else
+           kumo.MLOps(str(tmp_path / 'kumo')))
+    with kumo.mlops(cfg):
+        pquery, table = _generate(graph)
+    stored = (tmp_path / 'volume/Volumes/c/s/v/kumo' if remote else
+              tmp_path / 'kumo')
+    (stored / 'training_tables' / table.id / '_SUCCESS').unlink()
+    with pytest.raises(FileNotFoundError, match='has no _SUCCESS marker'):
+        kumo.TrainingTable.load_from_connector(
+            cfg, path=f'training_tables/{table.id}', pquery=pquery,
+            snapshot=graph[1])
+
+
+@pytest.mark.parametrize('rewrite', [
+    lambda stored: (stored / 'part-new.parquet').write_bytes(
+        next(stored.glob('*.parquet')).read_bytes()),
+    lambda stored: (stored / '_SUCCESS').unlink()])
+def test_a_table_rewritten_while_loading_says_so(graph, tmp_path,
+                                                 monkeypatch, rewrite):
+    from kumo.engine.trainer import trainer
+
     cfg = _volume_root(tmp_path)
     with kumo.mlops(cfg):
         pquery, table = _generate(graph)
-    stored = tmp_path / 'volume' / 'Volumes/c/s/v/kumo/training_tables'
-    (stored / table.id / '_SUCCESS').unlink()
-    with pytest.raises(FileNotFoundError, match='has no _SUCCESS marker'):
+    stored = (tmp_path / 'volume/Volumes/c/s/v/kumo/training_tables' /
+              table.id)
+    fetch = trainer.fetch_parquet
+
+    def rewrite_after(*args):
+        fetch(*args)
+        rewrite(stored)
+
+    monkeypatch.setattr(trainer, 'fetch_parquet', rewrite_after)
+    with pytest.raises(RuntimeError, match='changed while it was being '
+                       'loaded; retry'):
         kumo.TrainingTable.load_from_connector(
             cfg, path=f'training_tables/{table.id}', pquery=pquery,
             snapshot=graph[1])
