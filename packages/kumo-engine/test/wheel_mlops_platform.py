@@ -88,11 +88,11 @@ def denied_access(error, *, provider_only=False):
             response, dict) else None
         if (getattr(error, 'sqlstate', None) == '42501'
                 or getattr(error, 'status_code', None) == 403
-                or getattr(response, 'status_code', None) == 403 or
-            (not provider_only and
-             (getattr(error, 'errno', None) in (errno.EACCES, errno.EPERM)
-              or code in ('AccessDenied', 'AccessDeniedException')
-              or type(error).__name__ == 'PermissionDenied'))):
+                or getattr(response, 'status_code', None) == 403
+                or code in ('AccessDenied', 'AccessDeniedException')
+                or type(error).__name__ == 'PermissionDenied' or
+            (not provider_only
+             and getattr(error, 'errno', None) in (errno.EACCES, errno.EPERM))):
             return True
         error = error.__cause__ or error.__context__
     return False
@@ -310,9 +310,7 @@ class Backend:
                 (self.connector, denied.rstrip('/') + '/' + self.attempt),
                 on_error='raise')
         except PermissionError as error:
-            if denied_access(
-                    error,
-                    provider_only=self.config['platform'] == 'snowflake'):
+            if denied_access(error, provider_only=True):
                 return dict(denied_artifact_access='passed',
                             diagnostic=str(error))
             raise PlatformUnavailable(

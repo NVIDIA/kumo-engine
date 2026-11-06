@@ -394,12 +394,17 @@ def test_denied_snowflake_root_must_use_another_stage(denied):
 
 @pytest.mark.parametrize(
     'case', ['denied', 'local-spool', 'missing', 'timeout', 'writable'])
-def test_negative_requires_real_permission_denial(case, monkeypatch):
+@pytest.mark.parametrize('name', platform.PLATFORMS)
+def test_negative_requires_real_permission_denial(case, name, monkeypatch):
     import sys
 
-    denied = '@KUMO_TEST_DB.YOUR_TEST_SCHEMA.DENIED_STAGE/mlops-validation'
-    instance = platform.Snowflake({
-        **config(), 'denied_artifact_root': denied
+    denied = {
+        'snowflake': '@KUMO_TEST_DB.YOUR_TEST_SCHEMA.DENIED_STAGE/mlops-validation',
+        'databricks': '/Volumes/kumo_test_catalogue/kumo_test/test_denied/mlops-validation',
+        'sagemaker': 's3://kumo-test-denied/mlops-validation',
+    }[name]
+    instance = platform.Backend({
+        **config(name), 'denied_artifact_root': denied
     }, 'abcdef123456')
     instance.connector = object()
 
@@ -414,7 +419,16 @@ def test_negative_requires_real_permission_denial(case, monkeypatch):
             class ProviderDenied(RuntimeError):
                 sqlstate = '42501'
 
-            error.__cause__ = ProviderDenied('Snowflake stage write denied')
+            if name == 'snowflake':
+                error.__cause__ = ProviderDenied('Snowflake stage write denied')
+            elif name == 'databricks':
+                class PermissionDenied(RuntimeError):
+                    pass
+                error.__cause__ = PermissionDenied('Volume write denied')
+            else:
+                error.__cause__ = RuntimeError('S3 write denied')
+                error.__cause__.response = {
+                    'Error': {'Code': 'AccessDenied'}}
         elif case == 'missing':
             error.__cause__ = FileNotFoundError('stage missing')
         elif case == 'timeout':

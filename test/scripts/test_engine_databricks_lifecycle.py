@@ -170,3 +170,65 @@ def test_notebook_keeps_committed_kernel_after_working_source_changes(
                             kernel_source='COMMITTED_KERNEL_SENTINEL = True')
     code = ''.join(value['cells'][-1]['source'])
     assert 'COMMITTED_KERNEL_SENTINEL = True' in code
+
+
+@pytest.mark.parametrize('http', [403, 404])
+def test_denied_volume_setup_is_not_permission_denial_evidence(runner, http):
+    class Client:
+        def api(self, path):
+            raise RuntimeError(f'Databricks API HTTP {http}')
+
+    result = runner.denied_storage(Client(), runner.configuration())
+    assert result['status'] == 'blocked'
+    assert 'artifact_root' not in result
+    assert result['reason']
+
+
+def test_empty_readable_denied_volume_is_admitted_for_the_real_probe(runner):
+    calls = []
+
+    class Client:
+        def api(self, path):
+            calls.append(path)
+            if '/unity-catalog/' in path:
+                return dict(
+                    full_name='kumo_test_catalogue.kumo_test.test_denied')
+            return dict(contents=[])
+
+    result = runner.denied_storage(Client(), runner.configuration())
+    assert result['status'] == 'ready'
+    assert calls[-1] == (
+        '/api/2.0/fs/directories/Volumes/kumo_test_catalogue/kumo_test/test_denied'
+    )
+    assert result['artifact_root'].endswith(
+        '/test_denied/mlops-validation/lifecycle')
+
+
+def test_denied_volume_preflight_does_not_hide_service_failures(runner):
+    class Client:
+        def api(self, path):
+            raise RuntimeError('Databricks API HTTP 500')
+
+    with pytest.raises(RuntimeError, match='HTTP 500'):
+        runner.denied_storage(Client(), runner.configuration())
+
+
+def test_denied_volume_metadata_cannot_substitute_another_resource(runner):
+    class Client:
+        def api(self, path):
+            return dict(full_name='another.schema.volume')
+
+    with pytest.raises(ValueError, match='another Volume'):
+        runner.denied_storage(Client(), runner.configuration())
+
+
+def test_denied_storage_setup_cannot_be_substituted_in_collected_report(evidence):
+    runner, spec, report, receipt, content, submitted, commands, root = evidence
+    report['denied_storage'] = dict(status='ready', volume='/another/volume')
+    content = json.dumps(report).encode()
+    receipt['files']['lifecycle-result.json'] = runner.digest(content)
+    commands[-1]['results']['data'][0]['data'] = (
+        'KUMO_DATABRICKS_LIFECYCLE_RECEIPT=' + json.dumps(receipt))
+    mutated = (runner, spec, report, receipt, content, submitted, commands, root)
+    with pytest.raises(ValueError, match='identity differs'):
+        collect(mutated)

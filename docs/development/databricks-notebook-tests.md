@@ -134,6 +134,22 @@ python packages/kumo-engine/test/databricks_notebook/lifecycle_notebook.py \
 | Native notebook editor, kernel shutdown/reopening, experiment and registry UI | Not qualified by PAT/API or exported HTML evidence. |
 | Full exported epoch history, independently nonzero drift, interrupted remote writer | Existing shared qualification gaps remain explicit. |
 
+The permission-negative target is fixed at
+`/Volumes/kumo_test_catalogue/kumo_test/test_denied/mlops-validation/lifecycle`.
+The runner reads the `TEST_DENIED` Volume metadata and lists its root before
+submitting the notebook. Missing or unreadable resources are recorded as setup
+blocks, while the positive lifecycle still runs. An empty readable Volume is
+valid; the notebook appends its own attempt prefix and must receive an actual
+provider write denial. A writable target fails the negative test.
+
+A catalog administrator must create `kumo_test_catalogue.kumo_test.test_denied`
+with a different owner and grant the test identity `USE CATALOG`, `USE SCHEMA`
+and `READ VOLUME`, without effective `WRITE VOLUME` or ownership. Check inherited
+catalog/schema grants as well as direct Volume grants. The current catalog grants
+`WRITE VOLUME` to `account users`, which includes the test identity; a child-level
+revoke alone cannot make this Volume read-only. The runner never edits grants.
+No additional secret or configuration argument is needed after provisioning.
+
 Native Databricks web pages require a separate browser session; the workspace
 redirects PAT-authenticated page requests to login. Under PAT-only authentication,
 these native UI checks remain blocked. Do not replace them with a custom test dashboard

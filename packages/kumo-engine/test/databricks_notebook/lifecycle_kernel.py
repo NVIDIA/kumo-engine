@@ -27,6 +27,7 @@ def execute(config, dbutils):
         status='failed', attempt=config['attempt'],
         source_commit=config['source_commit'],
         wheel_sha256=config['candidate']['wheel_sha256'], identity=None,
+        denied_storage=config.get('denied_storage'),
         execution_id=uuid4().hex[:12],
         runtime=os.environ.get('DATABRICKS_RUNTIME_VERSION'),
         notebook_path=config['notebook_path'], payload=config['assets'],

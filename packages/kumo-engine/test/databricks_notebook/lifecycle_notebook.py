@@ -82,6 +82,7 @@ def collect(client, run, spec, submitted, root):
             or report.get('wheel_sha256') != spec['candidate']['wheel_sha256']
             or report.get('payload') != spec['assets']
             or report.get('test_sources') != spec['test_sources']
+            or report.get('denied_storage') != spec.get('denied_storage')
             or report.get('notebook_path') != spec['notebook_path']
             or report.get('identity') != 'kumo-databricks@nvidia.com'
             or report.get('execution_id') != receipt['execution_id']):
@@ -123,6 +124,28 @@ def engine_verdict(report):
                 remaining_requirements=report.get('required_gaps', {}))
 
 
+def denied_storage(client, config):
+    volume = config['denied_volume']
+    name = '.'.join(volume.split('/')[2:])
+    try:
+        metadata = client.api('/api/2.1/unity-catalog/volumes/' + name)
+        if metadata.get('full_name') != name:
+            raise ValueError('Denied-storage metadata names another Volume')
+        client.api('/api/2.0/fs/directories' + volume)
+    except RuntimeError as error:
+        if str(error) == 'Databricks API HTTP 404':
+            return dict(
+                status='blocked', volume=volume,
+                reason='Create TEST_DENIED and grant read access')
+        if str(error) == 'Databricks API HTTP 403':
+            return dict(
+                status='blocked', volume=volume,
+                reason='The test identity cannot read the TEST_DENIED Volume')
+        raise
+    return dict(status='ready', volume=volume,
+                artifact_root=volume + '/mlops-validation/lifecycle')
+
+
 def execute(args, root):
     repo = HERE.parents[3]
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo,
@@ -150,6 +173,7 @@ def execute(args, root):
         sources[relative] = digest(content)
     config = configuration(args.cluster_id)
     client = Client(config)
+    storage = denied_storage(client, config)
     candidate = json.loads(committed['candidate.json'])['candidate']
     assets = {}
     assets[candidate['wheel_file']], _ = asset(client, config['volume'],
@@ -165,13 +189,15 @@ def execute(args, root):
     folder = '/Shared/kumo_test_catalogue/KUMO_TEST/lifecycle'
     spec = dict(
         attempt=attempt, candidate=candidate, assets=assets,
-        source_commit=commit, test_sources=sources,
+        denied_storage=storage, source_commit=commit, test_sources=sources,
         cluster_id=config['cluster_id'],
         notebook_path=folder + '/egu-lifecycle-' + attempt,
         experiment=folder + '/KUMO_TEST_MLOPS',
         artifact_root=config['volume'].removesuffix('/notebook-ui') +
         '/lifecycle',
         output=config['volume'] + '/lifecycle/runs/' + attempt + '/outputs')
+    if storage['status'] == 'ready':
+        spec['denied_artifact_root'] = storage['artifact_root']
     save(root / 'scenario.json', spec)
     submitted = notebook(spec, committed['lifecycle_kernel.py'].decode())
     save(root / 'notebook.ipynb', submitted)

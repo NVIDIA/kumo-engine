@@ -17,6 +17,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 HOST = 'https://dbc-117b701d-939a.cloud.databricks.com'
 VOLUME = '/Volumes/kumo_test_catalogue/kumo_test/test_stage/mlops-validation/notebook-ui'
 WORKSPACE_DIR = '/Shared/kumo_test_catalogue/KUMO_TEST/notebook-ui'
+DENIED_VOLUME = '/Volumes/kumo_test_catalogue/kumo_test/test_denied'
 
 
 def configuration(cluster_id=None):
@@ -25,7 +26,7 @@ def configuration(cluster_id=None):
         raise ValueError(
             'cluster_id must identify dedicated test compute or be omitted')
     return dict(host=HOST, volume=VOLUME, workspace_dir=WORKSPACE_DIR,
-                cluster_id=cluster_id)
+                cluster_id=cluster_id, denied_volume=DENIED_VOLUME)
 
 
 class Client:
