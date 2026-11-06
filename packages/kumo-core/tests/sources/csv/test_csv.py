@@ -11,7 +11,7 @@ divergence is a real one rather than a guess about pandas.
 from __future__ import annotations
 
 import gzip
-import logging
+import re
 from pathlib import Path
 
 import pyarrow as pa
@@ -359,28 +359,33 @@ def test_a_decimal_column_is_a_float_however_large_its_values(tmp_path):
     assert written.column("a").to_pylist() == [50000.5, 60000.25, 70000.75]
 
 
-@pytest.mark.parametrize("body,columns,expected", [
-    ("a\n1\n2.5\n3\n", {
-        "a": Dtype.int64
-    }, [1, None, 3]),
-    ("a\n" + "1\n" * 100100 + "12.7\n2\n", None, [1, None, 2]),
-])
-def test_a_decimal_in_an_integer_column_is_null_rather_than_rounded(
-        body, columns, expected, tmp_path, caplog):
-    """A declared integer, or one inferred from a sample the decimal sits
-    below: either way ``2.5`` has no integer, and ``2`` would be a value the
-    source never held."""
-    write(tmp_path, "t", t=body)
-    with caplog.at_level(logging.WARNING, logger="kumo_core.sources"):
-        table = staged(tmp_path, "t", tmp_path, columns=columns)
+def test_a_decimal_in_a_declared_integer_column_is_null_with_a_warning(
+        tmp_path):
+    """The sample shows the decimal, so the integer type is the caller's
+    choice: ``2.5`` has no integer, and ``2`` would be a value the source
+    never held."""
+    write(tmp_path, "t", t="a\n1\n2.5\n3\n")
+    with pytest.warns(
+            UserWarning, match=re.escape(
+                "t.a is declared int64 but holds 1 value(s) with a fractional "
+                "part; they are staged as null, not rounded. Declare the "
+                "column float64 to keep them, or fix the source.")):
+        table = staged(tmp_path, "t", tmp_path, columns={"a": Dtype.int64})
     written = pq.read_table(sorted(table.paths))
     assert written.schema.field("a").type == pa.int64()
-    assert written.column("a").to_pylist()[-3:] == expected
-    assert [
-        record.getMessage() for record in caplog.records
-        if record.levelno >= logging.WARNING
-    ] == [
-        "t.a is declared int64 but holds 1 value(s) with a fractional part; "
-        "they are staged as null, not rounded. Declare the column float64 to "
-        "keep them, or fix the source."
-    ]
+    assert written.column("a").to_pylist() == [1, None, 3]
+
+
+def test_a_decimal_past_the_sampled_rows_of_an_integer_column_is_refused(
+        tmp_path):
+    """Every sampled value was whole, so the integer type came from the
+    sample, or matched it; a decimal further down says the type is wrong,
+    and staging it as null would lose a value nobody chose to lose."""
+    write(tmp_path, "t", t="a\n" + "1\n" * 100100 + "12.7\n2\n")
+    with pytest.raises(
+            PermanentSourceError, match=re.escape(
+                "t.a holds 1 value(s) with a fractional part past the sampled "
+                "rows, which were all whole numbers, so int64 is the wrong "
+                "type for it. Declare the column float64 to keep them, or fix "
+                "the source.")):
+        staged(tmp_path, "t", tmp_path)

@@ -40,6 +40,7 @@ Not supported (yet): `suggest_prediction_table_plan` (explicitly deferred).
 """
 
 import logging
+import re
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -59,6 +60,7 @@ from kumo_core.model_plan import (
 from kumo_core.model_plan_conversion import public_model_plan_from_internal
 from kumo_core.pquery import (
     NativeGraph,
+    PredictiveQueryPlanError,
     ValidatedNativeQuery,
     parse_and_validate_query,
     query_is_temporal,
@@ -127,14 +129,34 @@ class PredictiveQuery:
 
         Raises (an unspecified `kumo_core` exception, typically a
         `PredictiveQueryPlanError`) on an invalid query -- unknown table/
-        column, malformed PQL, a dangling `FOR EACH` entity, and so on. The
-        failure itself is not cached; a later access re-parses.
+        column, malformed PQL, a dangling `FOR EACH` entity, and so on. A
+        query naming a column the graph left out because its source type
+        cannot be read is refused with that reason. The failure itself is
+        not cached; a later access re-parses.
 
         `task_type`/`task_family`/`query_type` on the returned
         `ValidatedNativeQuery` are all plain `str`; `get_task_type` below
         wraps `task_type` into the shared, public `kumoapi.task.TaskType`.
         """
-        return parse_and_validate_query(self.query, self._native_graph)
+        try:
+            return parse_and_validate_query(self.query, self._native_graph)
+        except PredictiveQueryPlanError as error:
+            if not isinstance(self.graph, Graph):
+                raise
+            for alias, columns in self.graph._left_out.items():
+                for name, source_type in columns.items():
+                    named = rf"\b{re.escape(alias)}\.{re.escape(name)}\b"
+                    if not re.search(named, self.query):
+                        continue
+                    described = (f"its source type {source_type}" if source_type
+                                 is not None else "its source type")
+                    raise PredictiveQueryPlanError(
+                        f"Column {alias}.{name} is named in the query but was "
+                        f"left out of the graph: {described} cannot be read. "
+                        f"Declare a dtype for it (`dtypes=` or "
+                        f"`with_column({name!r}, dtype=...)`) or cast it at "
+                        f"the source, then build the graph again.") from error
+            raise
 
     @property
     def _native_graph(self) -> NativeGraph:

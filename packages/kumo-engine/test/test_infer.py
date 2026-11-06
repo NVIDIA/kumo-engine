@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
-import logging
 import re
 from types import SimpleNamespace
 
@@ -328,7 +327,7 @@ def test_named_types_resolve_without_sampling(name, dtype, expected):
     (Dtype.string, pd.Series([None] * 4, dtype='string')),
 ])
 def test_a_column_with_no_sampled_values_is_left_untyped_with_a_warning(
-        dtype, values, caplog):
+        dtype, values):
     column = SourceColumn(name='later', dtype=dtype, stype=None,
                           is_primary=False)
     seen = SourceColumn(name='seen', dtype=Dtype.int64, stype=None,
@@ -341,8 +340,8 @@ def test_a_column_with_no_sampled_values_is_left_untyped_with_a_warning(
                 table_name=table_name, cols=[column, seen],
                 sample_rows=frame.to_json(orient='table'))
 
-    with caplog.at_level(logging.INFO, logger='kumo.engine._infer'), \
-            pytest.warns(UserWarning, match=re.escape(
+    with pytest.warns(
+            UserWarning, match=re.escape(
                 "Column 'later' in table 'events' has no values in the 4 "
                 "sampled rows, so its semantic type could not be inferred. "
                 "It is left untyped and out of the model's features; set a "
@@ -359,6 +358,3 @@ def test_a_column_with_no_sampled_values_is_left_untyped_with_a_warning(
         ('seen', Dtype.int64, Stype.numerical),
     ]
     assert len([w for w in caught if issubclass(w.category, UserWarning)]) == 1
-    assert caplog.messages == [
-        "Table 'events': semantic types inferred from 4 sampled rows."
-    ]

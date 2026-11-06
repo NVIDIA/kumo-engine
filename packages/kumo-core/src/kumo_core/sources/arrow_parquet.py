@@ -9,7 +9,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import BinaryIO
 
 import pyarrow as pa
 import pyarrow.dataset as ds
@@ -309,67 +309,14 @@ def _write_shard(shard: pa.Table, directory: Path, name: str) -> str:
 
 
 _PARQUET_PREVIEW_BUFFER_SIZE = 1 << 20
-#: Row groups a preview is spread over, evenly spaced across the fragments.
-SAMPLE_ROW_GROUPS = 10
-
-
-def _sampled_row_groups(fragments: Sequence[Any]) -> list[tuple[Any, int, int]]:
-    """Up to ``SAMPLE_ROW_GROUPS`` row groups with rows, each with its row
-    count, evenly spaced over the fragments in order and within each chosen
-    fragment, so a table sorted or split into parts on a column is sampled
-    across that column rather than from its top. An empty part passes its
-    slot to the next part with rows, which gives one more row group for
-    each slot it takes in; a single row group is read from its head, as
-    before."""
-    slots: dict[int, int] = {}
-    count = min(len(fragments), SAMPLE_ROW_GROUPS)
-    each = -(-SAMPLE_ROW_GROUPS // count) if count else 0
-    for index in range(count):
-        position = (index * len(fragments)) // count
-        while (position < len(fragments)
-               and not fragments[position].metadata.num_rows):
-            position += 1
-        if position < len(fragments):
-            slots[position] = slots.get(position, 0) + 1
-    chosen: list[tuple[Any, int, int]] = []
-    for position, received in slots.items():
-        fragment = fragments[position]
-        metadata = fragment.metadata
-        sizes = [
-            metadata.row_group(group).num_rows
-            for group in range(metadata.num_row_groups)
-        ]
-        filled = [(group, rows) for group, rows in enumerate(sizes) if rows]
-        take = min(len(filled), each * received)
-        chosen.extend((fragment, *filled[(slot * len(filled)) // take])
-                      for slot in range(take))
-    return chosen
-
-
-def _quotas(sizes: Sequence[int], total: int) -> list[int]:
-    """An equal share of ``total`` rows per row group, a group shorter than
-    its share passing the rest on, so the sample is as large as the groups
-    allow."""
-    quotas = [0] * len(sizes)
-    left = total
-    order = sorted(range(len(sizes)), key=sizes.__getitem__)
-    for rank, index in enumerate(order):
-        quotas[index] = min(sizes[index], -(-left // (len(sizes) - rank)))
-        left -= quotas[index]
-    return quotas
 
 
 def read_bounded_dataset(
     dataset: pq.ParquetDataset | ds.Dataset,
     columns: Sequence[str] | None,
     num_rows: int,
-    *,
-    spread: bool = False,
 ) -> pa.Table:
-    """Read a bounded preview without prefetching complete column chunks:
-    the first rows in fragment order, or with ``spread`` an equal share of
-    the first rows of row groups spaced across the dataset
-    (:func:`_sampled_row_groups`), which is what type inference samples."""
+    """Read a bounded preview without prefetching complete column chunks."""
     fragments = (dataset.fragments if isinstance(dataset, pq.ParquetDataset)
                  else list(dataset.get_fragments()))
     partition_columns = {
@@ -388,38 +335,27 @@ def read_bounded_dataset(
     ], metadata=dataset.schema.metadata)
     requested_columns = schema.names
     remaining = max(num_rows, 0)
-    if spread:
-        plan = _sampled_row_groups(fragments)
-        quotas = _quotas([rows for _, _, rows in plan], remaining)
-    else:
-        plan = [(fragment, None, None) for fragment in fragments]
-        quotas = [remaining] * len(plan)
     tables: list[pa.Table] = []
     merged = schema
-    for (fragment, group, _), quota in zip(plan, quotas):
+    for fragment in fragments:
         if not remaining:
             break
-        if not quota:
-            continue
         physical_columns = [
             column for column in requested_columns
             if column in fragment.physical_schema.names
         ]
         partition_keys = ds.get_partition_keys(fragment.partition_expression)
-        rows = min(quota, remaining)
         part: list[pa.RecordBatch] = []
         with fragment.open() as source:
             parquet_file = pq.ParquetFile(
                 source,
-                metadata=fragment.metadata,
                 pre_buffer=False,
                 buffer_size=_PARQUET_PREVIEW_BUFFER_SIZE,
             )
-            for batch in parquet_file.iter_batches(
-                    batch_size=rows,
-                    row_groups=None if group is None else [group],
-                    columns=physical_columns, use_threads=False):
-                batch = batch.slice(0, rows)
+            for batch in parquet_file.iter_batches(batch_size=remaining,
+                                                   columns=physical_columns,
+                                                   use_threads=False):
+                batch = batch.slice(0, remaining)
                 arrays = [
                     batch.column(field.name)
                     if field.name in batch.schema.names else pa.repeat(
@@ -430,9 +366,8 @@ def read_bounded_dataset(
                 part.append(
                     pa.RecordBatch.from_arrays(arrays, names=schema.names
                                                ) if arrays else batch)
-                rows -= batch.num_rows
                 remaining -= batch.num_rows
-                if not rows:
+                if not remaining:
                     break
         if not part:
             continue

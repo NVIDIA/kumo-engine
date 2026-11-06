@@ -684,13 +684,13 @@ class Graph:
                                      name=self.id)
 
     @cached_property
-    def _readable_tables(self) -> Dict[str, Table]:
-        r"""`_named_tables` without the feature columns whose source type has
-        no Kumo dtype and that no declared dtype resolved. Each is left out
-        with one warning, on first access; a primary key, time column or
-        foreign key of that kind is refused instead, since the graph cannot
-        do without it. `Graph.id` keeps the declared schema, so declaring a
-        dtype later changes the id the way any schema change does.
+    def _left_out(self) -> Dict[str, Dict[str, Optional[str]]]:
+        r"""Per table alias, the feature columns whose source type has no
+        Kumo dtype and that no declared dtype resolved, each with that
+        source type (`None` where the source reports none). Each is warned
+        about once, on first access; a primary key, time column or foreign
+        key of that kind is refused instead, since the graph cannot do
+        without it. A query that names one is refused by `PredictiveQuery`.
         """
         from kumo.engine._infer import (
             refuse_unsupported_columns,
@@ -700,7 +700,7 @@ class Graph:
         linked: Dict[str, set] = {}
         for edge in self.edges:
             linked.setdefault(edge.src_table, set()).add(edge.fkey)
-        tables = dict(self._named_tables)
+        left_out: Dict[str, Dict[str, Optional[str]]] = {}
         for alias, table in self._named_tables.items():
             definition = table.definition
             if definition is None:
@@ -726,12 +726,25 @@ class Graph:
                     stacklevel=3,
                 )
             if unreadable:
-                tables[alias] = replace(
-                    table, definition=replace(
-                        definition, cols=[
-                            col for col in definition.cols
-                            if col.name not in unreadable
-                        ]))
+                left_out[alias] = unreadable
+        return left_out
+
+    @cached_property
+    def _readable_tables(self) -> Dict[str, Table]:
+        r"""`_named_tables` without the columns in `_left_out`. `Graph.id`
+        keeps the declared schema, so declaring a dtype later changes the id
+        the way any schema change does.
+        """
+        tables = dict(self._named_tables)
+        for alias, unreadable in self._left_out.items():
+            table = tables[alias]
+            assert table.definition is not None
+            tables[alias] = replace(
+                table, definition=replace(
+                    table.definition, cols=[
+                        col for col in table.definition.cols
+                        if col.name not in unreadable
+                    ]))
         return tables
 
     @cached_property
@@ -754,7 +767,7 @@ class Graph:
         graphs raise before snapshot ingestion starts, as does a key or time
         column whose source type has no Kumo dtype and that no declared
         dtype resolved; any other such column is left out of the graph with
-        a warning.
+        a warning, and a query that names it is refused with the reason.
         """
         self.native_graph
 

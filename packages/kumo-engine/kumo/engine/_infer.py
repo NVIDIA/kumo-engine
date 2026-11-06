@@ -39,7 +39,6 @@ cheap pass left ambiguous):
   call.
 """
 
-import logging
 import warnings
 from dataclasses import replace
 from typing import Any, Dict, List, Mapping, Optional, Tuple
@@ -51,8 +50,6 @@ from kumoapi.table import Column
 from kumoapi.typing import Dtype, Stype
 
 from kumo.engine.connector.base import Connector
-
-logger = logging.getLogger(__name__)
 
 #: Rows sampled for stats-based stype inference, matching the cloud SDK's
 #: `kumoai/backend/local/_common.py`'s `_SAMPLE_ROWS`.
@@ -294,10 +291,6 @@ def resolve_table_columns(
         sampled, statistics, frame, is_empty = _sample(source_backend,
                                                        connector, table_name,
                                                        sql)
-        if frame is not None:
-            logger.info(
-                "Table %r: semantic types inferred from %d sampled rows.",
-                table_name, len(frame))
         for col in selected:
             dtype, stype = resolved[col.name]
             dtype = dtype or sampled.get(col.name)

@@ -13,12 +13,21 @@ import posixpath
 import re
 import shutil
 import threading
+import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import KW_ONLY, dataclass, replace
 from functools import partial
 from tempfile import TemporaryDirectory
-from typing import Any, Iterator, Literal, Mapping, NamedTuple, Sequence
+from typing import (
+    Any,
+    Callable,
+    Iterator,
+    Literal,
+    Mapping,
+    NamedTuple,
+    Sequence,
+)
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -265,10 +274,7 @@ class ObjectStoreSourceReader:
         rather than the ones the dataset carries: a CSV dataset is text until
         the projection converts it, and a Parquet dataset still holds the
         pandas index column that :meth:`dtypes` drops, and may hold columns
-        Kumo cannot read, left out so the others can be sampled. Parquet rows
-        are spread across the table's row groups and parts
-        (:func:`read_bounded_dataset`); CSV, with no row index to seek by,
-        gives its first rows.
+        Kumo cannot read, left out so the others can be sampled.
         """
         path, kind = self.resolve(table)
         found = self._objects(table, path)
@@ -280,7 +286,7 @@ class ObjectStoreSourceReader:
                 return read_bounded_dataset(dataset, [
                     name for name in column_dtypes(dataset.schema)
                     if name not in unreadable
-                ], rows, spread=True)
+                ], rows)
         from . import csv_format, csv_preview
         parts = self._csv_parts(table, found)
         with _arrow_errors(table, "CSV"):
@@ -628,7 +634,10 @@ class ObjectStoreSourceReader:
             written = materialize_arrow_streams(
                 streams, dest, worker_ceiling=workers,
                 uniform=not self.ingest_converts)
-        narrowed.report(table, columns or {})
+        narrowed.report(
+            table, columns or {},
+            lambda: self._csv_catalog(table,
+                                      self.resolve(table)[0]))
         return written
 
     def _verbatim(
@@ -770,15 +779,34 @@ class _Narrowed:
         return batch.select(
             [name for name in batch.schema.names if name not in self.flags])
 
-    def report(self, table: str, columns: Mapping[str, Dtype]) -> None:
-        for name, count in self.counts.items():
-            if count:
-                logger.warning(
-                    "%s.%s is declared %s but holds %d value(s) with a "
-                    "fractional part; they are staged as null, not rounded. "
-                    "Declare the column float64 to keep them, or fix the "
-                    "source.", table, name,
-                    Dtype(columns[name]).value, count)
+    def report(self, table: str, columns: Mapping[str, Dtype],
+               sampled: Callable[[], Mapping[str, pa.DataType]]) -> None:
+        """A column the sample showed decimals in was declared an integer
+        knowingly: its values are staged as null with a warning. One the
+        sample showed only whole numbers in got its integer type from the
+        sample, or matching it, so the type is wrong for the column and the
+        read is refused rather than losing values nobody chose to lose."""
+        counted = {name: count for name, count in self.counts.items() if count}
+        if not counted:
+            return
+        catalog = sampled()
+        refused = []
+        for name, count in counted.items():
+            dtype = Dtype(columns[name]).value
+            if pa.types.is_integer(catalog.get(name, pa.null())):
+                refused.append(
+                    f"{table}.{name} holds {count} value(s) with a fractional "
+                    f"part past the sampled rows, which were all whole "
+                    f"numbers, so {dtype} is the wrong type for it. Declare "
+                    f"the column float64 to keep them, or fix the source.")
+                continue
+            warnings.warn(
+                f"{table}.{name} is declared {dtype} but holds {count} "
+                f"value(s) with a fractional part; they are staged as null, "
+                f"not rounded. Declare the column float64 to keep them, or "
+                f"fix the source.", UserWarning, stacklevel=2)
+        if refused:
+            raise PermanentSourceError(" ".join(refused), table=table)
 
 
 def _narrowing(columns: Mapping[str, Dtype],

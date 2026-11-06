@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
-import logging
 import re
 from datetime import datetime
 from decimal import Decimal
@@ -644,36 +643,41 @@ def test_an_unreadable_column_is_left_out_unless_the_graph_needs_it(
         graph.validate()
 
 
-def test_types_are_inferred_from_rows_spread_across_the_file(tmp_path, caplog):
-    from kumo.engine import FileConnector
+@pytest.mark.parametrize('query', [
+    'PREDICT events.bad FOR EACH events.pk',
+    'PREDICT events.amount FOR EACH events.pk WHERE events.bad = 1',
+])
+def test_a_query_naming_a_left_out_column_says_why_it_is_missing(
+        query, tmp_path):
+    from kumo.engine import FileConnector, PredictiveQuery
 
     root = tmp_path / 'source'
     root.mkdir()
-    rows = 20_000
     pq.write_table(
         pa.table({
-            'id':
-            range(rows),
-            'kind':
-            [index % 2 for index in range(10_000)] + list(range(10_000, rows)),
-            'later':
-            pa.array([None] * 10_000 +
-                     [float(index) for index in range(10_000)], pa.float64()),
-        }), root / 'events.parquet', row_group_size=10_000)
-    with caplog.at_level(logging.INFO, logger='kumo.engine._infer'):
-        table = Table.from_source_table(
-            FileConnector(root_dir=str(root))['events'], primary_key='id')
-    assert {
-        col.name: col.stype
-        for col in table.definition.cols
-    } == {
-        'id': Stype.ID,
-        'kind': Stype.numerical,
-        'later': Stype.numerical,
-    }
-    assert caplog.messages == [
-        "Table 'events': semantic types inferred from 10000 sampled rows."
-    ]
+            'pk': range(3),
+            'bad': pa.array([{
+                'a': 1
+            }, {
+                'a': 2
+            }, {
+                'a': 3
+            }]),
+            'amount': [1.5, 2.5, 3.5]
+        }), root / 'events.parquet')
+    graph = Graph({
+        'events':
+        Table.from_source_table(
+            FileConnector(root_dir=str(root))['events'], primary_key='pk')
+    })
+    with pytest.warns(UserWarning, match='left out of the graph'), \
+            pytest.raises(ValueError, match=re.escape(
+                "Column events.bad is named in the query but was left out of "
+                "the graph: its source type struct<a: int64> cannot be read. "
+                "Declare a dtype for it (`dtypes=` or `with_column('bad', "
+                "dtype=...)`) or cast it at the source, then build the graph "
+                "again.")):
+        PredictiveQuery(graph, query).validate()
 
 
 def test_a_column_with_no_values_snapshots_untyped_and_can_be_typed_later(
