@@ -1906,9 +1906,11 @@ class Trainer:
 
     def _from_registry(self, model: PublishedModel,
                        alias: Optional[str]) -> None:
-        self._training_result = replace(self._fitted('predict'),
-                                        registered_model=model,
-                                        registered_alias=alias)
+        result = self._fitted('predict')
+        self._training_result = replace(
+            result,
+            registered_model=replace(model, metrics=registry_metrics(result)),
+            registered_alias=alias)
 
     @classmethod
     def _load_bundle(
