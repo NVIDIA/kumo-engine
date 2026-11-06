@@ -50,8 +50,7 @@ test=[
 # on Linux x86_64 and macOS; other platforms opt in -- see setup.py.
 # Unlike kumo-sdk, where the equivalent `core` extra is optional because
 # CloudBackend is the default path, this package has no non-training use
-# case. These per-vendor extras only need to add their own plugin package on
-# top of that.
+# case. Vendor extras add their provider and platform dependencies.
 snowflake=[
     "kumo-snowflake[sdk]>=0.1.0.dev1",
 ]
@@ -59,6 +58,8 @@ snowflake=[
 databricks=[
     "kumo-databricks>=0.1.0.dev1",
     "databricks-sdk>=0.68",
+    # Unity Catalog model artifacts require MLflow's cloud storage clients.
+    "mlflow-skinny[databricks]>=3.5,<4",
 ]
 bigquery=[
     "kumo-bigquery>=0.1.0.dev1",

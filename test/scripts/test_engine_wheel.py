@@ -8,7 +8,6 @@ import runpy
 import subprocess
 import sys
 import tomllib
-import types
 import zipfile
 from email.parser import BytesParser
 from pathlib import Path
@@ -275,11 +274,12 @@ def test_merged_module_reports_bundle_version(tmp_path, monkeypatch):
 @pytest.mark.parametrize('extra', ['', 'cpu'])
 def test_engine_faiss_platform_selection_survives_merge(
         tmp_path, monkeypatch, platform, machine, expected, extra):
+    import setuptools
     from packaging.requirements import Requirement
 
     setup_kwargs = {}
-    monkeypatch.setitem(sys.modules, 'setuptools', types.SimpleNamespace(
-        setup=lambda **kwargs: setup_kwargs.update(kwargs)))
+    monkeypatch.setattr(setuptools, 'setup',
+                        lambda **kwargs: setup_kwargs.update(kwargs))
     runpy.run_path(str(REPO_ROOT / 'packages/kumo-engine/setup.py'))
     engine = COMPONENTS['kumo-engine']
     provider_requirements = [
@@ -770,3 +770,37 @@ for source in (args[-1:] if args[2] == 'wheel' else args[-2:]):
         assert 'Requires-Dist: torch-scatter' not in metadata
     assert next(output.glob('*.whl')).name == (
         f'kumo_engine-{version}-{native_tag}.whl')
+
+
+def test_databricks_registry_dependencies_survive_merge(tmp_path, monkeypatch):
+    from packaging.requirements import Requirement
+
+    project = tomllib.loads(
+        read_text(str(REPO_ROOT /
+                      'packages/kumo-engine/pyproject.toml')))['project']
+    engine = COMPONENTS['kumo-engine']
+    requirements = list(engine['requires'])
+    for extra in ('databricks', 'mlflow'):
+        for value in project['optional-dependencies'][extra]:
+            requirements.append(f'{value}; extra == "{extra}"')
+    monkeypatch.setitem(
+        COMPONENTS, 'kumo-engine', {
+            **engine,
+            'requires': requirements,
+            'extras': [*engine['extras'], 'mlflow'],
+        })
+    result = _merge(tmp_path, list(COMPONENTS))
+    assert result.returncode == 0, result.stderr
+    metadata, _, _ = _read_wheel(tmp_path)
+    mlflow = [
+        Requirement(value) for value in metadata.get_all('Requires-Dist')
+        if Requirement(value).name == 'mlflow-skinny'
+    ]
+    assert any(requirement.extras == {'databricks'}
+               and requirement.marker.evaluate({'extra': 'databricks'})
+               for requirement in mlflow)
+    assert all(requirement.marker is not None for requirement in mlflow)
+    assert not any(
+        requirement.marker.evaluate({'extra': ''}) for requirement in mlflow)
+    generic = [r for r in mlflow if r.marker.evaluate({'extra': 'mlflow'})]
+    assert generic and all(not r.extras for r in generic)
