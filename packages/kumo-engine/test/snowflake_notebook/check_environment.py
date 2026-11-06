@@ -13,7 +13,7 @@ BRANCH = 'egu/mlops-platform-integration'
 TEAM_ID = 19956283
 
 
-def validate(environment, policies):
+def validate(environment, policies, branch=BRANCH):
     if environment.get('can_admins_bypass') is not False:
         raise ValueError('Administrator bypass must be disabled')
     rules = [
@@ -31,17 +31,17 @@ def validate(environment, policies):
         raise ValueError('Environment must use selected deployment branches')
     branches = policies.get('branch_policies', [])
     if len(branches) != 1 or branches[0].get(
-            'name') != BRANCH or branches[0].get('type') != 'branch':
-        raise ValueError('Environment must allow only branch ' + BRANCH)
+            'name') != branch or branches[0].get('type') != 'branch':
+        raise ValueError('Environment must allow only branch ' + branch)
 
 
-def main():
+def main(environment=ENVIRONMENT, branch=BRANCH):
     if os.environ['GITHUB_REPOSITORY'] != REPOSITORY or os.environ[
-            'GITHUB_REF'] != 'refs/heads/' + BRANCH or os.environ.get(
+            'GITHUB_REF'] != 'refs/heads/' + branch or os.environ.get(
                 'GITHUB_EVENT_NAME') != 'workflow_dispatch':
         raise SystemExit(
             'This trial requires manual dispatch on its feature branch')
-    base = f'https://api.github.com/repos/{REPOSITORY}/environments/{ENVIRONMENT}'
+    base = f'https://api.github.com/repos/{REPOSITORY}/environments/{environment}'
 
     def get(suffix=''):
         request = urllib.request.Request(
@@ -55,12 +55,12 @@ def main():
                 return json.load(response)
         except urllib.error.HTTPError as error:
             raise SystemExit(
-                f'Cannot inspect {ENVIRONMENT} (HTTP {error.code}). '
-                'A repository admin must create it, restrict it to ' + BRANCH +
+                f'Cannot inspect {environment} (HTTP {error.code}). '
+                'A repository admin must create it, restrict it to ' + branch +
                 ', require the maintainer team reviewer, disable administrator bypass, and add the environment secrets.'
             ) from None
 
-    validate(get(), get('/deployment-branch-policies?per_page=100'))
+    validate(get(), get('/deployment-branch-policies?per_page=100'), branch)
     print(
         'Confirmed: maintainer approval, no administrator bypass, and trial branch restriction'
     )

@@ -1,0 +1,89 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Databricks notebook graph UI
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: databricks-notebook-ui
+  cancel-in-progress: false
+
+jobs:
+  configuration:
+    name: Check protected Databricks environment
+    if: >-
+      github.repository == 'NVIDIA/kumo-engine' &&
+      github.ref == 'refs/heads/egu/databricks-ui-validation' &&
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - &check-environment
+        name: Verify maintainer-protected environment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 packages/kumo-engine/test/databricks_notebook/check_environment.py
+  notebook-ui:
+    needs: configuration
+    if: >-
+      github.repository == 'NVIDIA/kumo-engine' &&
+      github.ref == 'refs/heads/egu/databricks-ui-validation' &&
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    environment: databricks-mlops-test
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - *check-environment
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
+        with:
+          node-version: '22'
+      - name: Require dedicated test configuration and PAT
+        env:
+          KUMO_DATABRICKS_TEST_PAT: ${{ secrets.KUMO_DATABRICKS_TEST_PAT }}
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, 'packages/kumo-engine/test/databricks_notebook')
+          from client import Client, configuration
+          Client(configuration())
+          PY
+      - name: Install the shared locked browser tools
+        run: |
+          npm ci --prefix packages/kumo-engine/test/snowflake_notebook/browser
+          node packages/kumo-engine/test/snowflake_notebook/browser/node_modules/playwright/cli.js install --with-deps chromium
+      - name: Run the same notebook and export checks as local testing
+        env:
+          KUMO_DATABRICKS_TEST_PAT: ${{ secrets.KUMO_DATABRICKS_TEST_PAT }}
+        run: |
+          python packages/kumo-engine/test/databricks_notebook/run.py \
+            --execute --output-dir "$RUNNER_TEMP/databricks-graph"
+      - name: Retain notebook execution and browser evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: databricks-graph-ui-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/databricks-graph/
+          if-no-files-found: warn
+          retention-days: 7
