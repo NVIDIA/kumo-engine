@@ -197,3 +197,12 @@ Two further facts: the target destination must be writable by the identity's pri
 6. Write results to a durable Snowflake destination before the session ends (§3.1, §7).
 
 ---
+
+## Graph visualization
+
+> **Not verified:** interactive rendering has not been tested in Snowflake Workspace notebooks.
+The SDK selects a widget in Workspace, requiring `anywidget>=0.9,<1` and `ipywidgets`; if these dependencies cannot be imported, it displays a static SVG instead.
+Other notebook hosts use HTML.
+Retrieve exported diagrams from the notebook filesystem through the Workspace file browser.
+
+Source: shipped package (`kumo.engine.graph.Graph.visualize`, `kumo.engine._visualization.SVG`)

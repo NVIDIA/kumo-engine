@@ -368,10 +368,7 @@ jobs:
         timeout-minutes: 12
         with:
           packages: lld
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
-        with:
-          # Pinned: a new stable clippy adds lints that fail unchanged code.
-          toolchain: 1.98.1
+      - uses: ./.github/actions/rust-toolchain
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: '3.11'
@@ -404,10 +401,8 @@ jobs:
         timeout-minutes: 12
         with:
           packages: lld
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+      - uses: ./.github/actions/rust-toolchain
         with:
-          # Pinned: a new stable clippy adds lints that fail unchanged code.
-          toolchain: 1.98.1
           components: clippy
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:

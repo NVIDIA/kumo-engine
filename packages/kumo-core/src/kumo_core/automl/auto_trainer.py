@@ -1083,6 +1083,7 @@ class AutoTrainer:
         r"""Obtains the top-k trials from an experiment analysis."""
         run_dirs = filesystem.listdir(self.log_dir)
         trials = []
+        nan_trials = 0
         for run_dir in run_dirs:
             ckpt_dir = osp.join(run_dir, 'checkpoint')
             if not filesystem.exists(ckpt_dir):
@@ -1097,6 +1098,7 @@ class AutoTrainer:
 
                 result = df[self.val_tune_metric].values[0]
                 if pd.isna(result):
+                    nan_trials += 1
                     continue
 
                 path = osp.join(run_dir, 'model_plan.json')
@@ -1112,8 +1114,18 @@ class AutoTrainer:
         trials = sorted(trials, key=lambda d: d.result, reverse=reverse)
 
         if len(trials) == 0:
-            raise RuntimeError("No valid trials found")
-        elif len(trials) < k:
+            message = "No valid trials found"
+            if nan_trials > 0:
+                message += (f": '{self.val_tune_metric}' is NaN in all "
+                            f"{nan_trials} completed trials.")
+                if self.tune_metric.split('_')[0] in ('auroc', 'ap', 'auprc'):
+                    message += (" It is undefined when the validation rows "
+                                "contain a single class, for example when "
+                                "'max_val_steps' caps validation too low. "
+                                "Increase 'max_val_steps' or set "
+                                "'tune_metric' to 'loss'.")
+            raise RuntimeError(message)
+        if len(trials) < k:
             logger.warning(f"Expected {k} valid trials (got {len(trials)})")
 
         return trials[:k]
