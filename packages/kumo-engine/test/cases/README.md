@@ -54,3 +54,72 @@ The workflow reuses the existing wheel builder and `gha-kumo-workflow-tests` AWS
 Both callers require `main` and `ENGINE_E2E_ENABLED=true`. They use prepared runners and run only by manual dispatch.
 Nightly and weekly define no schedule yet. They do not run automatically until scheduling lands.
 Configure the runner and reference locations before enabling a run. These workflows do not provision or schedule VMs.
+
+## Run older-model compatibility manually
+
+Use the installed candidate wheel to load saved older models and compare predictions with approved fixtures.
+This test performs no training. Full manual coverage is twelve cases at four scales: 48 case/scale pairs.
+The cases already cover all seven graph families.
+The nightly scales, 100M and 1B, contain 24 pairs. The weekly scales, 10B and 25B, contain 24 pairs.
+
+Prepare a GPU host, Python 3.12, pytest, the candidate wheel's S3 extra and AWS read access.
+Size the host for the full selected source. Each check builds a fresh graph snapshot despite predicting at most twenty inputs.
+The existing case `--requirements` output gives scratch guidance.
+Measured compatibility resource requirements and GPU execution across all scales remain unqualified.
+
+Choose approved source, model and fixture bindings for every pair before running.
+Use a trusted S3 model root or an absolute local directory.
+Put each saved model under `<model-root>/<scale>/<case>/`.
+Put `population.parquet` and `expected.parquet` under `<fixture-root>/<scale>/<case>/` on the host.
+Keep models and fixtures outside the disposable work directory. Record their producer wheel and checksums before approval.
+These paths are a directory convention, not a supplied or approved set of 48 models.
+
+Run this block in Bash from the repository root, after replacing the three example roots:
+
+```bash
+(
+  set -euo pipefail
+  compat_source_root='s3://APPROVED_DATA_ROOT'
+  compat_model_root='s3://APPROVED_MODELS'
+  compat_fixture_root='/absolute/path/approved-fixtures'
+  compat_scales=(100M 1B 10B 25B)
+  compat_cases=(
+    adtech_binary delivery_multiclass delivery_multilabel
+    delivery_multilabel_ranking delivery_regression delivery_forecasting
+    commerce_static_link commerce_temporal_link streaming_temporal_link
+    community_regression payments_binary fraud_binary
+  )
+  compat_work=$(mktemp -d "${DISKGRAPH_DATA_ROOT:-/mnt/localssd}/model-compat.XXXXXXXX")
+  cp -R packages/kumo-engine/test/cases "$compat_work/cases"
+  cd "$compat_work"
+  compat_status=0
+  for compat_scale in "${compat_scales[@]}"; do
+    mkdir -p "reports/$compat_scale" "scratch/$compat_scale"
+    for compat_case in "${compat_cases[@]}"; do
+      export ENGINE_COMPAT_CASE="$compat_case"
+      export ENGINE_COMPAT_SOURCE="${compat_source_root%/}/${compat_case%%_*}/$compat_scale/"
+      export ENGINE_COMPAT_MODEL="${compat_model_root%/}/$compat_scale/$compat_case/"
+      export ENGINE_COMPAT_FIXTURE="${compat_fixture_root%/}/$compat_scale/$compat_case"
+      if python -E -s -m pytest -c /dev/null -p no:cacheprovider \
+          --confcutdir=cases cases/model_compatibility.py \
+          --basetemp "$compat_work/scratch/$compat_scale/$compat_case" \
+          --junitxml "$compat_work/reports/$compat_scale/$compat_case.xml" \
+          2>&1 | tee "$compat_work/reports/$compat_scale/$compat_case.log"; then
+        printf 'PASS %s/%s\n' "$compat_scale" "$compat_case"
+      else
+        compat_status=1
+        printf 'FAIL %s/%s\n' "$compat_scale" "$compat_case"
+      fi
+      rm -rf -- "$compat_work/scratch/$compat_scale/$compat_case"
+    done
+  done
+  printf 'Reports: %s/reports\n' "$compat_work"
+  exit "$compat_status"
+)
+```
+
+The loop runs pairs sequentially and continues after failures. Any failed pair makes the final exit status nonzero.
+It removes only each pair's generated scratch after execution. Logs and JUnit reports remain outside scratch.
+For smaller hosts, select `compat_scales=(100M 1B)` or `compat_scales=(10B 25B)` and retain both groups' reports.
+Count full coverage only after all 48 approved pairs pass. Model selection, reference preparation and approval remain separate work.
+This command runs manually and adds no nightly, weekly, scheduler or cron trigger.
