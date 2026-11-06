@@ -6,10 +6,7 @@ import logging
 
 import pytest
 
-from kumo.testing.fixtures.task import (
-    temporal_task,
-    user_store_graph,
-)
+from kumo.testing.fixtures.task import temporal_task, user_store_graph
 
 __all__ = [
     'temporal_task',

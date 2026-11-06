@@ -2,13 +2,13 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import pickle
 import sys
 from types import SimpleNamespace
 from unittest.mock import Mock, mock_open, patch
 
 import numpy as np
-import orjson
 import pyarrow as pa
 import pytest
 import torch
@@ -30,7 +30,7 @@ def mock_native_sampler(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def store() -> DiskgraphFeatureStore:
     """Return a metadata-only store with mocked snapshot files."""
-    metadata = orjson.dumps(
+    metadata = json.dumps(
         {
             "node_types": [
                 {
@@ -66,7 +66,7 @@ def test_metadata_and_lazy_engine(store: DiskgraphFeatureStore) -> None:
 @pytest.mark.parametrize("max_id", [None, -1])
 def test_empty_table_metadata(max_id: int | None) -> None:
     """Empty tables keep their size without an in-memory fallback."""
-    metadata = orjson.dumps(
+    metadata = json.dumps(
         {
             "node_types": [
                 {
