@@ -140,23 +140,25 @@ class PredictiveQuery:
         `ValidatedNativeQuery` are all plain `str`; `get_task_type` below
         wraps `task_type` into the shared, public `kumoapi.task.TaskType`.
         """
-        if isinstance(self.graph, Graph):
-            self._refuse_columns_the_graph_cannot_use(self.graph)
+        self._refuse_columns_the_graph_cannot_use()
         return parse_and_validate_query(self.query, self._native_graph)
 
-    def _refuse_columns_the_graph_cannot_use(self, graph: Graph) -> None:
+    def _refuse_columns_the_graph_cannot_use(self) -> None:
         r"""A column the graph left out for a source type it cannot read, or
         kept without a semantic type, is refused by name with the fix. The
         validator alone would call the first merely unknown and, for the
-        second in a condition, fail an assertion. The type is the graph's
-        effective one: a foreign key is an ID whatever its sample held.
+        second in a condition, fail an assertion. Only a `Graph` knows what
+        it left out; a snapshot's graph still says which columns have no
+        type, the graph's effective one: a foreign key is an ID whatever its
+        sample held.
         """
-        native = graph.native_graph
+        left_out = (self.graph._left_out
+                    if isinstance(self.graph, Graph) else {})
+        native = self._native_graph
         for qualified in query_column_names(self.query):
             alias, _, name = qualified.partition('.')
-            left_out = graph._left_out.get(alias, {})
-            if name in left_out:
-                source_type = left_out[name]
+            if name in left_out.get(alias, {}):
+                source_type = left_out[alias][name]
                 described = (f"its source type {source_type}"
                              if source_type is not None else "its source type")
                 raise PredictiveQueryPlanError(

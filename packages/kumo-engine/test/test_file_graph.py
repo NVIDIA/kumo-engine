@@ -696,6 +696,30 @@ def test_a_query_naming_a_left_out_column_says_why_it_is_missing(
         PredictiveQuery(graph, query).validate()
 
 
+def test_a_snapshot_bound_query_over_an_untyped_column_is_refused(tmp_path):
+    """A query bound to a snapshot has no `Graph` to ask what was left out,
+    but the snapshot's own graph still says which columns have no type."""
+    from kumo.engine import FileConnector, PredictiveQuery, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            'pk': range(3),
+            'empty': pa.array([None] * 3, pa.float64()),
+            'amount': [1.5, 2.5, 3.5],
+        }), root / 'events.parquet')
+    with pytest.warns(UserWarning, match='has no values'):
+        table = Table.from_source_table(
+            FileConnector(root_dir=str(root))['events'], primary_key='pk')
+    snapshot = Graph({'events': table}).snapshot()
+    with pytest.raises(ValueError, match=re.escape(UNTYPED)):
+        PredictiveQuery(
+            snapshot, 'PREDICT events.amount FOR EACH events.pk '
+            'WHERE events.empty IS NULL').validate()
+
+
 def test_a_query_may_use_a_foreign_key_with_no_sampled_values(tmp_path):
     """The graph types a foreign key as an ID whatever its sample held, so
     a query over one is not a query over an untyped column."""
