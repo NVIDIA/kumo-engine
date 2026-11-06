@@ -18,7 +18,7 @@ from kumo_core.resolved_task import (
 )
 from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
 from kumo_core.train.trainer import Trainer
-from kumo_core.training.config import FitMode, TrainerConfig
+from kumo_core.training.config import TrainerConfig
 from kumo_core.training.task_config import TaskConfig
 from kumo_core.types import TaskType
 
@@ -167,21 +167,13 @@ def test_explain_creates_feature_store_and_schema_together(
     )
 
 
-def test_base_trainer_rejects_legacy_initialization() -> None:
+@pytest.mark.parametrize("initialized", [False, True])
+def test_base_trainer_rejects_legacy_initialization(initialized: bool) -> None:
     """The retired base path cannot try to sample graphs or read train tensors."""
     trainer = Trainer.__new__(Trainer)
-    trainer._fully_initialized = False
+    trainer._fully_initialized = initialized
     with pytest.raises(NotImplementedError, match="Use DiskgraphNestedTrainer"):
         trainer.init()
-
-
-def test_initialized_base_trainer_does_not_reinitialize() -> None:
-    """Hand-built trainers retain the idempotent initialization contract."""
-    trainer = Trainer.__new__(Trainer)
-    trainer._fully_initialized = True
-    trainer.fit_mode = FitMode.fit
-
-    assert trainer.init() is trainer
 
 
 def test_load_accepts_task_config_without_graph(

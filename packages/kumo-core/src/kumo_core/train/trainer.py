@@ -723,16 +723,11 @@ class Trainer(PortableConfigMixin):
             self.head = torch.compile(self.head, dynamic=True)
 
     def init(self) -> 'Trainer':
-        """Return an initialized trainer or require runtime-specific setup.
-
-        Returns:
-            This trainer if it is already initialized and does not need refitting.
+        """Require a runtime-specific trainer implementation.
 
         Raises:
             NotImplementedError: The legacy store-based training path is retired.
         """
-        if self._fully_initialized and not self.fit_mode.is_refit:
-            return self
         raise NotImplementedError("Use DiskgraphNestedTrainer for training")
 
     def initialize_model(

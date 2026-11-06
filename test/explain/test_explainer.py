@@ -12,9 +12,9 @@ The legacy version of this test drove ``Trainer.explain()`` through
 ``pl_model``/``pl_trainer``, and a ``datamodule`` exposing
 ``val_dataloader``/``test_dataloader`` and ``eval_loader_kwargs`` -- none
 of that is DiskGraph-specific either. This builds the model the same way
-as ``test_gradient.py`` (bypassing ``Trainer.init()``'s DiskGraph/legacy-
-datamodule split via ``initialize_model()``/``create_pl_model()``
-directly) and wires a minimal fake ``LightningDataModule`` serving a
+as ``test_gradient.py`` (bypassing runtime-specific initialization via
+``initialize_model()``/``create_pl_model()`` directly) and wires a minimal
+fake ``LightningDataModule`` serving a
 couple of hand-built ``HeteroData`` batches, then runs a real (tiny)
 ``Trainer.fit()`` so ``Trainer.explain()``'s checkpoint load has
 something real to load. Prediction-stage explain is out of scope here:
@@ -24,6 +24,7 @@ interface being tested.
 """
 
 import os.path as osp
+from unittest.mock import patch
 
 import pandas as pd
 import pyarrow as pa
@@ -193,7 +194,8 @@ def _build_trainer(root_dir: str) -> Trainer:
     trainer.create_pl_trainer()
     trainer.datamodule = _FakeDataModule()
     trainer._fully_initialized = True
-    trainer.fit()
+    with patch.object(trainer, 'init', return_value=trainer):
+        trainer.fit()
     return trainer
 
 
