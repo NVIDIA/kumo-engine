@@ -80,18 +80,22 @@ with patch.object(io_utils.secrets, 'get_secrets',
     assert expected in result.stdout
 
 
-def test_environment_credentials_work_without_secret_access(monkeypatch):
+@pytest.mark.parametrize('secret_access', [False, True])
+def test_environment_credentials_take_precedence(monkeypatch, secret_access):
     from kumo.testing import snowflake
 
     monkeypatch.setenv('SNOWFLAKE_USER', 'supplied-user')
     monkeypatch.setenv('SNOWFLAKE_PRIVATE_KEY', 'supplied-key')
-    monkeypatch.setattr(snowflake, 'get_secrets',
-                        Mock(side_effect=RuntimeError('no secret access')))
+    load = (Mock(return_value={'kumo_user_secretkey': 'shared-key'})
+            if secret_access else Mock(
+                side_effect=RuntimeError('no secret access')))
+    monkeypatch.setattr(snowflake, 'get_secrets', load)
 
     snowflake.setup_snowflake_credentials()
 
     assert os.environ['SNOWFLAKE_USER'] == 'supplied-user'
     assert os.environ['SNOWFLAKE_PRIVATE_KEY'] == 'supplied-key'
+    load.assert_not_called()
 
 
 @pytest.mark.parametrize('supply_connector', [False, True])
