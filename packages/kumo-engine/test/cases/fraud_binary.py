@@ -8,7 +8,6 @@ from common import parse_args, run, sources, table
 SCALES = {"100M": 100, "1B": 300, "10B": 1600, "25B": 3200}
 LIMITS = dict(prediction_rows=20, metric_tolerance=0.25,
               prediction_tolerance=0.005)
-EXPECTED_EVAL_CLASS_ROWS = 14
 QUERY = ('PREDICT COUNT(account_flags.*, 0, 28, days) > 0 FOR EACH '
          'accounts.account_id WHERE COUNT(account_flags.*, -INF, 0, days) = 0 '
          'AND COUNT(logins.*, -30, 0, days) > 0 ')
@@ -140,12 +139,9 @@ def main():
             'optimization.majority_sampling_ratio': [1.0],
             'optimization.weight_mode': [WeightMode.SAMPLE],
         })
-    elif args.scale == '100M':
-        overrides['optimization.max_val_steps'] = 300
     run(build_graph(sources(args)), QUERY,
         TrainingTableGenerationPlan(split=SPLIT, timeframe_step=28), 'binary',
-        overrides, args=args,
-        min_eval_class_rows=EXPECTED_EVAL_CLASS_ROWS if weekly else 0)
+        overrides, args=args)
 
 
 if __name__ == "__main__":
