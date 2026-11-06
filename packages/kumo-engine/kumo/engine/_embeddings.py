@@ -2,33 +2,13 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import logging
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Collection, Dict, Iterator, List, Optional
+from typing import Any, Dict, List, Optional
 
-from kumo_core import embedding_models
+from kumo_core import embedding_models, encoder_selection
 from kumo_core.embedding_models import EmbeddingModelStore
 
-
-@contextmanager
-def no_encoder_inference_warnings(
-        overridden: Optional[Collection[str]] = None) -> Iterator[None]:
-    # Only fit reports what inference chose: training tables do not use it,
-    # and a trained model encodes columns as it was trained to.
-    def drop(record: logging.LogRecord) -> bool:
-        if overridden is None:
-            return record.levelno < logging.WARNING
-        return (record.levelno < logging.WARNING
-                or not isinstance(record.args, tuple) or not record.args
-                or record.args[0] not in overridden)
-
-    inference = logging.getLogger('kumo_core.encoder_selection')
-    inference.addFilter(drop)
-    try:
-        yield
-    finally:
-        inference.removeFilter(drop)
+no_encoder_inference_warnings = encoder_selection.no_encoder_inference_warnings
 
 
 def require_embedding_models(store: EmbeddingModelStore,
