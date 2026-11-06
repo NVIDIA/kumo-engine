@@ -1,0 +1,145 @@
+{
+  "training_job": {
+    "num_experiments": 1,
+    "metrics": [
+      "auroc",
+      "ap",
+      "auprc"
+    ],
+    "tune_metric": "auroc",
+    "pruning": {
+      "min_epochs": 2,
+      "k": 3,
+      "min_delta": 0.0,
+      "patience": 1
+    },
+    "disable_compilation": true,
+    "refit_trainval": false,
+    "refit_full": false,
+    "disable_explain": true,
+    "manual_seed": null
+  },
+  "column_processing": {
+    "encoder_overrides": null,
+    "na_strategy": null
+  },
+  "neighbor_sampling": {
+    "max_target_neighbors_per_entity": "???",
+    "num_neighbors": [
+      {
+        "hop1": {
+          "default": 0,
+          "customers.customer_id->transactions.customer_id": 16
+        },
+        "hop2": {
+          "default": 0,
+          "transactions.article_id->articles.article_id": 1
+        },
+        "hop3": null,
+        "hop4": null,
+        "hop5": null,
+        "hop6": null
+      }
+    ],
+    "sample_from_entity_table": "???",
+    "adaptive_sampling": false
+  },
+  "optimization": {
+    "max_epochs": 10,
+    "min_steps_per_epoch": 30,
+    "max_steps_per_epoch": 64,
+    "max_val_steps": 2000,
+    "max_test_steps": 4000,
+    "loss": [
+      "binary_cross_entropy"
+    ],
+    "optimizer": [
+      "Adam"
+    ],
+    "base_lr": [
+      0.0005
+    ],
+    "weight_decay": [
+      5e-07
+    ],
+    "batch_size": [
+      512
+    ],
+    "lookup_optimization": "???",
+    "early_stopping": [
+      {
+        "min_delta": 0.0,
+        "patience": 3
+      }
+    ],
+    "lr_scheduler": [
+      {
+        "name": "constant_with_warmup",
+        "interval": "step",
+        "kwargs": {
+          "warmup_ratio_or_steps": 0.1
+        }
+      }
+    ],
+    "majority_sampling_ratio": [
+      null
+    ],
+    "weight_mode": [
+      null
+    ],
+    "target_fraction": "???",
+    "overlap_ratio": "???"
+  },
+  "model_architecture": {
+    "model": [
+      {
+        "name": "GNN",
+        "channels": [
+          128
+        ],
+        "aggregation": [
+          [
+            "sum",
+            "mean",
+            "min",
+            "max",
+            "std"
+          ]
+        ],
+        "dropout": [
+          0.0
+        ]
+      }
+    ],
+    "channels": "???",
+    "num_pre_message_passing_layers": [
+      0
+    ],
+    "num_post_message_passing_layers": [
+      2
+    ],
+    "aggregation": "???",
+    "activation": [
+      "leaky_relu"
+    ],
+    "normalization": [
+      "layer_norm"
+    ],
+    "module": "???",
+    "handle_new_target_entities": "???",
+    "target_embedding_mode": "???",
+    "output_embedding_dim": "???",
+    "ranking_embedding_loss_coeff": "???",
+    "embedding_norm_reg_coeff": "???",
+    "distance_measure": "???",
+    "use_seq_id": [
+      false
+    ],
+    "prediction_time_encodings": [
+      false
+    ],
+    "past_encoder": "???",
+    "handle_new_entities": "???",
+    "forecast_type": "???"
+  }
+}
