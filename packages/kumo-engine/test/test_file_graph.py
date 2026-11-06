@@ -652,8 +652,7 @@ LEFT_OUT = ("Column events.bad is named in the query but was left out of "
 
 @pytest.mark.parametrize('query, expected', [
     ('PREDICT events.bad FOR EACH events.pk', LEFT_OUT),
-    ('PREDICT events.amount FOR EACH events.pk WHERE events.bad = 1',
-     LEFT_OUT),
+    ('PREDICT events.amount FOR EACH events.pk WHERE events.bad = 1', LEFT_OUT),
     ("PREDICT events.nope FOR EACH events.pk WHERE events.kind = 'events.bad'",
      "Column 'nope' does not exist in table 'events'"),
 ])
