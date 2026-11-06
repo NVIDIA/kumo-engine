@@ -7,6 +7,10 @@ name: Kumo Engine weekly
 on:  # yamllint disable-line rule:truthy
   workflow_dispatch:
     inputs:
+      run_controls:
+        description: Also run shuffled-target control cases
+        type: boolean
+        default: false
       write_reference:
         description: Explicitly replace the stored reference after review
         type: boolean
@@ -27,4 +31,5 @@ jobs:
     uses: ./.github/workflows/kumo-engine-e2e.yml
     with:
       scales: '["10B", "25B"]'
+      run_controls: ${{ inputs.run_controls }}
       write_reference: ${{ inputs.write_reference }}
