@@ -9,6 +9,9 @@ on:  # yamllint disable-line rule:truthy
       scales:
         type: string
         required: true
+      run_controls:
+        type: boolean
+        default: false
       write_reference:
         type: boolean
         default: false
@@ -38,11 +41,12 @@ jobs:
       max-parallel: ${{ fromJSON(vars.ENGINE_E2E_MAX_PARALLEL || '1') }}
       matrix:
         scale: ${{ fromJSON(inputs.scales) }}
+        control: ${{ inputs.run_controls && fromJSON('[false, true]') || fromJSON('[false]') }}
         case: [adtech_binary, delivery_multiclass, delivery_multilabel, delivery_multilabel_ranking,
                delivery_regression, delivery_forecasting, commerce_static_link, commerce_temporal_link,
                streaming_temporal_link, community_regression, payments_binary, fraud_binary]
     env:
-      CASE: ${{ matrix.case }}
+      CASE: ${{ format('{0}{1}', matrix.case, matrix.control && '-control' || '') }}
       SCALE: ${{ matrix.scale }}
       WRITE_REFERENCE: ${{ inputs.write_reference }}
       ENGINE_E2E_DATA_S3: ${{ vars.ENGINE_E2E_DATA_S3 }}
@@ -79,10 +83,11 @@ jobs:
           cp -r packages/kumo-engine/test/cases "$RUNNER_TEMP/e2e/"
           cd "$RUNNER_TEMP/e2e"
           mode=()
+          if [[ "$CASE" == *-control ]]; then mode+=(--control); fi
           if [[ "$WRITE_REFERENCE" == true ]]; then mode+=(--write-reference); else
             aws s3 cp "${REFERENCES_S3%/}/$SCALE/$CASE.json" reference.json
           fi
-          "$RUNNER_TEMP/e2e-venv/bin/python" -E -s "cases/$CASE.py" --scale "$SCALE" \
+          "$RUNNER_TEMP/e2e-venv/bin/python" -E -s "cases/${CASE%-control}.py" --scale "$SCALE" \
             --scratch "$DISKGRAPH_DATA_ROOT" --source-sha "$GITHUB_SHA" \
             --reference reference.json --output result.json "${mode[@]}"
       - name: Preserve results and an explicitly requested reference
@@ -90,7 +95,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/e2e"
           cd "$RUNNER_TEMP/e2e"
-          test -f result.json || printf '{"status":"failed","phase":"setup"}\n' > result.json
+          test -f result.json || python3 -c 'import json,os; print(json.dumps(dict(status="failed", phase="setup", case=os.environ["CASE"].removesuffix("-control"), control=os.environ["CASE"].endswith("-control"))))' > result.json
           aws s3 cp result.json "${RESULTS_S3%/}/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/$SCALE/$CASE.json"
           if [[ "$WRITE_REFERENCE" == true && '${{ steps.case.outcome }}' == success ]]; then
             aws s3 cp reference.json "${REFERENCES_S3%/}/$SCALE/$CASE.json"
@@ -98,6 +103,6 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         if: always()
         with:
-          name: engine-e2e-${{ matrix.case }}-${{ matrix.scale }}-${{ github.run_attempt }}
+          name: engine-e2e-${{ env.CASE }}-${{ matrix.scale }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/e2e/result.json
           if-no-files-found: error
