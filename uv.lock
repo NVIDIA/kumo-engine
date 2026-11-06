@@ -3224,7 +3224,7 @@ requires-dist = [
     { name = "fsspec" },
     { name = "kumo-api", editable = "packages/kumo-api" },
     { name = "kumo-core", editable = "packages/kumo-core" },
-    { name = "pyarrow", specifier = ">=24,<25" },
+    { name = "pyarrow", specifier = ">=16,<25" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=7.4" },
     { name = "requests", specifier = ">=2.31,<3" },
 ]
