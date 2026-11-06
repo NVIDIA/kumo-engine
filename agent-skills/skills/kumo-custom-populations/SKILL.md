@@ -11,15 +11,18 @@ Snowflake sources stage local Parquet for this API. Do not switch to another con
 claim that a local bundle is a source table.
 
 Resolve the supplied source table and required column semantics. These constructors consume
-existing tables; they do not authorize creating labels or weights, renaming data, cleaning
-nulls or changing splits. Use a user-approved prepared table when the source lacks required
-fields. Asked to compute or write weights, decline, even after an earlier confirmation: offer to
-export the generated training table, which the user or a process they approve weights, then fit
-on that table.
+existing tables; they do not authorize creating labels, renaming data, cleaning nulls or
+changing splits or weights. Use a user-approved prepared table when the source lacks required
+fields.
 
 Validate schema, row types, keys, timestamps, labels, weights and splits and report the exact
-bad field. Do not silently drop rows, cast IDs, normalize weights or replace manual splits —
-not in a read-only query either: a field that needs changing is reported and asked about.
+bad field. Do not silently drop rows, cast IDs, normalize weights or replace manual splits: a
+field that needs changing is reported and asked about. Split labels and weight derivations follow
+the same rule: show the mapping or the exact formula, the columns it reads and the resulting
+distribution from a read-only query, and stop for the user's explicit approval. An approval given
+before that is shown is not approval. Only then apply it in a read-only `connector.sql(...)`
+source, never as a write to the source table, an UPDATE, a CREATE TABLE AS or a derived table
+(`references/populations.md`). Validation still applies to the result.
 
 Before any code, reply with the plan and stop for confirmation: the table and its fields, the
 weight and split columns, what you validated, the constructor and that it reuses the confirmed

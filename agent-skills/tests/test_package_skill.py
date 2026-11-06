@@ -179,6 +179,24 @@ def test_genie_no_code_rule_names_its_scope_and_agrees_with_inspection_skills() 
     assert 'the plotting code in the reply' in explanations
 
 
+def test_custom_populations_treat_weights_like_splits() -> None:
+    """Weights and splits share one rule: show, approve, apply read-only. Neither file may
+    still say to decline weights or forbid a read-only transform outright."""
+    base = package_skill.SKILLS / 'kumo-custom-populations'
+    skill = ' '.join((base / 'SKILL.md').read_text().split())
+    reference = ' '.join((base / 'references' / 'populations.md').read_text().split())
+    for text in (skill, reference):
+        assert 'decline' not in text and 'even after an earlier confirmation' not in text
+        assert 'not in a read-only query either' not in text
+        assert 'exact formula' in text and 'explicit approval' in text
+        assert 'read-only `connector.sql(...)`' in text
+        assert 'before' in text and 'is not approval' in text
+        assert 'CREATE TABLE AS' in text and 'UPDATE' in text
+    assert 'Weights follow the same rule as splits' in reference
+    assert 'resulting weight distribution' in reference
+    assert 'Validation still applies to the result' in skill
+
+
 def test_genie_job_fix_offer_does_not_bundle_a_resubmit() -> None:
     """One yes must not approve a notebook edit and a new GPU run."""
     job = ' '.join((package_skill.SKILLS / 'hosts' / 'databricks-genie' / 'job.md')

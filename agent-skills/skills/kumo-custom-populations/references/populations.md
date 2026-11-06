@@ -100,6 +100,18 @@ row is skipped: ask the user how to map it before building the training table, a
 out unreported. List the labels you mapped with their counts. Create a mapped copy of the table only
 when the user approves writing one.
 
+## Derived or normalized weights
+
+Weights follow the same rule as splits. Asked to derive, scale or normalize weights (for example
+positives x10, or `WEIGHT / mean(WEIGHT)`), report the request, then show the exact formula, the
+columns it reads and the resulting weight distribution (min, mean, max, and counts per distinct
+weight or per label) from a read-only query, and stop for the user's explicit approval. An
+approval given before the formula and distribution were shown is not approval. Unapproved, report
+and ask; do not transform. Only after approval, apply it in a read-only `connector.sql(...)`
+source, as for approved split mappings above; keep the table's `SPLIT` (or the generated
+training table's, if exported), and write nothing back: no UPDATE, no CREATE TABLE AS, no
+derived table. The result must still be finite and nonnegative with at least one positive weight.
+
 ## Export a generated training table
 
 `TrainingTable.export` writes the rows of a table Kumo generated, with a `SPLIT` column
