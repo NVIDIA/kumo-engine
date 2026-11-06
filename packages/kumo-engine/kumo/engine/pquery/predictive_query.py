@@ -148,8 +148,10 @@ class PredictiveQuery:
         r"""A column the graph left out for a source type it cannot read, or
         kept without a semantic type, is refused by name with the fix. The
         validator alone would call the first merely unknown and, for the
-        second in a condition, fail an assertion.
+        second in a condition, fail an assertion. The type is the graph's
+        effective one: a foreign key is an ID whatever its sample held.
         """
+        native = graph.native_graph
         for qualified in query_column_names(self.query):
             alias, _, name = qualified.partition('.')
             left_out = graph._left_out.get(alias, {})
@@ -163,11 +165,11 @@ class PredictiveQuery:
                     f"Declare a dtype for it (`dtypes=` or "
                     f"`with_column({name!r}, dtype=...)`) or cast it at "
                     f"the source, then build the graph again.")
-            table = graph._readable_tables.get(alias)
-            if table is None or table.definition is None:
+            try:
+                column = native.table(alias).column(name)
+            except PredictiveQueryPlanError:
                 continue
-            if any(col.name == name and col.stype == Stype.unsupported
-                   for col in table.definition.cols):
+            if column.stype == Stype.unsupported.value:
                 raise PredictiveQueryPlanError(
                     f"Column {alias}.{name} is named in the query but has no "
                     f"semantic type, so it is not one of the graph's "

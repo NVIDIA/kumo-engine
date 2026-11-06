@@ -696,6 +696,37 @@ def test_a_query_naming_a_left_out_column_says_why_it_is_missing(
         PredictiveQuery(graph, query).validate()
 
 
+def test_a_query_may_use_a_foreign_key_with_no_sampled_values(tmp_path):
+    """The graph types a foreign key as an ID whatever its sample held, so
+    a query over one is not a query over an untyped column."""
+    from kumoapi.graph import Edge
+
+    from kumo.engine import FileConnector, PredictiveQuery
+
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            'id': range(3),
+            'customer': pa.array([None] * 3, pa.int64()),
+            'amount': [1.5, 2.5, 3.5],
+        }), root / 'orders.parquet')
+    pq.write_table(pa.table({'id': range(3)}), root / 'users.parquet')
+    connector = FileConnector(root_dir=str(root))
+    with pytest.warns(UserWarning, match='has no values'):
+        orders = Table.from_source_table(connector['orders'],
+                                         primary_key='id')
+    graph = Graph(
+        {
+            'orders': orders,
+            'users': Table.from_source_table(connector['users'],
+                                             primary_key='id'),
+        }, [Edge('orders', 'customer', 'users')])
+    PredictiveQuery(
+        graph, 'PREDICT orders.amount FOR EACH orders.id '
+        'WHERE orders.customer IS NOT NULL').validate()
+
+
 def test_a_column_with_no_values_snapshots_untyped_and_can_be_typed_later(
         tmp_path):
     from kumo.engine import FileConnector, configure
