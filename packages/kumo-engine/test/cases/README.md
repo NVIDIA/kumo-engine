@@ -1,7 +1,7 @@
 # Engine end-to-end cases
 
 Twelve cases cover seven graph families. Nightly uses 100M and 1B. Weekly uses the same cases at 10B and 25B.
-Each case defines its graph, query, split, plan overrides and scratch budget. `common.LIMITS` supplies shared prediction caps and comparison tolerances.
+Each case defines its graph, query, split, plan overrides and scratch budget. `common.LIMITS` supplies the prediction cap, prediction tolerance and relative metric tolerance.
 `common.run` builds a fresh snapshot, generates training rows, trains, predicts twice and reloads that run's model.
 Cases use Engine-generated answers. Older-model compatibility runs separately.
 `--control` exports those answers, shuffles them with seed zero and imports the supplied rows through Engine.
@@ -36,7 +36,8 @@ References compare node and edge counts, training-table checks and metric bands.
 At 100M and 1B, an order-independent pandas hash covers all exported training rows.
 At 10B and 25B, native metadata supplies total rows, per-split rows and binary positive counts without a full export.
 Repeat and reload predictions need identical coordinates and score differences within the case tolerance.
-Metric bands use `abs(current - reference) <= abs(reference) * tolerance`.
+AUROC and AP, including their variants, use an absolute band of 0.03.
+Other metrics, including MAE and RMSE, use `abs(current - reference) <= abs(reference) * tolerance`, with a relative tolerance of 25%.
 At 10B and 25B, payments and fraud use one experiment, one epoch and balanced training sampling at batch 64.
 `majority_sampling_ratio=[1.0]` and `weight_mode=[WeightMode.SAMPLE]` affect training only.
 Every case and scale uses fixed validation and test budgets of 1,000 steps each.
@@ -51,4 +52,5 @@ References use `<scale>/<case>.json`. Results use `<run>/<attempt>/<scale>/<case
 Set `run_controls=true` to add control jobs. They use `<case>-control` in reference, result and artifact paths.
 The workflow reuses the existing wheel builder and `gha-kumo-workflow-tests` AWS role. The role needs source/reference reads and result writes.
 Both callers require `main` and `ENGINE_E2E_ENABLED=true`. They use prepared runners and run only by manual dispatch.
+Nightly and weekly define no schedule yet. They do not run automatically until scheduling lands.
 Configure the runner and reference locations before enabling a run. These workflows do not provision or schedule VMs.

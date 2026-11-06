@@ -48,8 +48,8 @@ def sparse_overrides(scale):
     return overrides
 
 
-def parse_args(case, scales, *, family, prediction_rows=20,
-               metric_tolerance=.25, prediction_tolerance=1e-5):
+def parse_args(case, scales, *, family, prediction_rows, metric_tolerance,
+               prediction_tolerance):
     parser = argparse.ArgumentParser(description=f"Run the {case} Engine case")
     parser.add_argument("--scale", choices=tuple(scales), required=True)
     parser.add_argument("--requirements", action="store_true")
@@ -302,7 +302,9 @@ def compare_reference(result, expected, tolerance):
         raise ValueError("Reference metric names differ")
     for name, value in result["metrics"].items():
         baseline = expected["metrics"][name]
-        difference, band = abs(value - baseline), abs(baseline) * tolerance
+        metric = re.sub(r"^(train|val|test)_", "", name).split("_", 1)[0]
+        difference = abs(value - baseline)
+        band = .03 if metric in ("auroc", "ap") else abs(baseline) * tolerance
         if not math.isfinite(baseline) or (
                 difference > band and
                 not math.isclose(difference, band, rel_tol=1e-12, abs_tol=0)):
