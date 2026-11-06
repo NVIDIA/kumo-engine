@@ -46,7 +46,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
 
@@ -65,7 +65,7 @@ jobs:
         run: tools/glove-6b-50d/build_wheel.sh dist
 
       - name: Upload wheel
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: kumo-glove-6b-50d-wheel-${{ github.sha }}
           path: dist/*.whl
@@ -79,7 +79,7 @@ jobs:
       contents: write
     steps:
       - name: Download wheel
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: kumo-glove-6b-50d-wheel-${{ github.sha }}
           path: dist
@@ -94,31 +94,16 @@ jobs:
   kitmaker:
     needs: [attach-to-release]
     if: ${{ github.event_name == 'release' }}
-    runs-on: linux-amd64-cpu8
-    timeout-minutes: 180
-    environment: kumo-engine-release
     permissions:
       contents: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-
-      - name: Download wheel
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: kumo-glove-6b-50d-wheel-${{ github.sha }}
-          path: dist
-
-      - name: Publish through Kitmaker
-        env:
-          KITMAKER_API_TOKEN: ${{ secrets.KITMAKER_API_TOKEN }}
-          KITMAKER_PIC: ${{ vars.KITMAKER_PIC }}
-          GITHUB_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: >-
-          python3 scripts/kitmaker_release.py --project-id 6904
-          --project kumo-glove-6b-50d --platform any
-          --repo "${REPO}" --tag "${RELEASE_TAG}" dist/kumo_glove_6b_50d-*.whl
+      id-token: write
+    uses: ./.github/workflows/kitmaker-portal.yml
+    secrets:
+      KITMAKER_API_TOKEN: ${{ secrets.KITMAKER_API_TOKEN }}
+    with:
+      project: kumo-glove-6b-50d
+      project_id: 6904
+      platform: any
+      artifact: kumo-glove-6b-50d-wheel-${{ github.sha }}
+      release_tag: ${{ github.event.release.tag_name }}
+      upload: true

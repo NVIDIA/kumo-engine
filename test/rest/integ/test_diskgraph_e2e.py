@@ -501,12 +501,8 @@ def _check_no_legacy_edge_persist(training_job_id: TrainingJobID) -> None:
 def _check_job_config_diskgraph(training_job_id: TrainingJobID) -> None:
     """Assert JobConfig has diskgraph backend settings.
 
-    The JobConfig is written by generate_training_config and read by
-    kumo-auto.  If graph_backend == DISKGRAPH and diskgraph_index_path is
-    set, kumo-auto initializes with diskgraph backend, which causes
-    auto_trainer._initialize_engine_clients() to create
-    DiskgraphFeatureStore and DiskgraphGraphStore (validated by isinstance
-    checks in auto_trainer.py:904-916 — training would fail otherwise).
+    Validate the generated configuration selects DiskGraph and identifies
+    its snapshot. Runtime behavior is covered separately by prediction checks.
     """
     from kumo_core.job_config import JobConfig
 
@@ -897,9 +893,7 @@ async def test_diskgraph_e2e_training(
     _check_no_legacy_edge_persist(training_job_id)
 
     # -----------------------------------------------------------------------
-    # 3. Validate JobConfig has diskgraph backend settings (proves kumo-auto
-    #    initialized with DISKGRAPH backend → DiskgraphFeatureStore and
-    #    DiskgraphGraphStore were instantiated for training)
+    # 3. Validate JobConfig selects the DiskGraph backend and snapshot.
     # -----------------------------------------------------------------------
     _check_job_config_diskgraph(training_job_id)
 

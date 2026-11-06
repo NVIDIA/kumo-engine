@@ -108,20 +108,11 @@ pub type PkPtrHash = PkHash;
 pub type PkPtrHash = GxHash128;
 pub type PkPtrHashOutput = <PkPtrHash as PtrHasher<u64>>::H;
 
-type MphfInt =
-    epserde::prelude::MemCase<epserde::prelude::DeserType<'static, DefaultPtrHash<PkPtrHash, u64>>>;
-type MphfBytes = epserde::prelude::MemCase<
-    epserde::prelude::DeserType<'static, DefaultPtrHash<PkPtrHash, Vec<u8>>>,
->;
-type MphfUuid = epserde::prelude::MemCase<
-    epserde::prelude::DeserType<'static, DefaultPtrHash<PkPtrHash, [u8; 16]>>,
->;
-type MphfUuid256 = epserde::prelude::MemCase<
-    epserde::prelude::DeserType<'static, DefaultPtrHash<PkPtrHash, [u8; 32]>>,
->;
-type MphfIp = epserde::prelude::MemCase<
-    epserde::prelude::DeserType<'static, DefaultPtrHash<PkPtrHash, [u8; 16]>>,
->;
+type MphfInt = epserde::prelude::MemCase<DefaultPtrHash<PkPtrHash, u64>>;
+type MphfBytes = epserde::prelude::MemCase<DefaultPtrHash<PkPtrHash, Vec<u8>>>;
+type MphfUuid = epserde::prelude::MemCase<DefaultPtrHash<PkPtrHash, [u8; 16]>>;
+type MphfUuid256 = epserde::prelude::MemCase<DefaultPtrHash<PkPtrHash, [u8; 32]>>;
+type MphfIp = epserde::prelude::MemCase<DefaultPtrHash<PkPtrHash, [u8; 16]>>;
 
 enum PkHashMphf {
     Int(MphfInt),
@@ -135,40 +126,40 @@ impl PkHashMphf {
     fn index(&self, key: &Key) -> Option<usize> {
         match (self, key) {
             (PkHashMphf::Int(mphf), Key::Int(value)) => {
-                let slot = mphf.index_no_remap(value);
-                if slot >= mphf.max_index() {
+                let slot = mphf.uncase().index_no_remap(value);
+                if slot >= mphf.uncase().max_index() {
                     None
                 } else {
                     Some(slot)
                 }
             }
             (PkHashMphf::Bytes(mphf), Key::Bytes(bytes)) => {
-                let slot = mphf.index_no_remap(bytes);
-                if slot >= mphf.max_index() {
+                let slot = mphf.uncase().index_no_remap(bytes);
+                if slot >= mphf.uncase().max_index() {
                     None
                 } else {
                     Some(slot)
                 }
             }
             (PkHashMphf::Uuid(mphf), Key::Uuid(value)) => {
-                let slot = mphf.index_no_remap(value);
-                if slot >= mphf.max_index() {
+                let slot = mphf.uncase().index_no_remap(value);
+                if slot >= mphf.uncase().max_index() {
                     None
                 } else {
                     Some(slot)
                 }
             }
             (PkHashMphf::Uuid256(mphf), Key::Uuid256(value)) => {
-                let slot = mphf.index_no_remap(value);
-                if slot >= mphf.max_index() {
+                let slot = mphf.uncase().index_no_remap(value);
+                if slot >= mphf.uncase().max_index() {
                     None
                 } else {
                     Some(slot)
                 }
             }
             (PkHashMphf::Ip(mphf), Key::Ip(value)) => {
-                let slot = mphf.index_no_remap(value);
-                if slot >= mphf.max_index() {
+                let slot = mphf.uncase().index_no_remap(value);
+                if slot >= mphf.uncase().max_index() {
                     None
                 } else {
                     Some(slot)
@@ -216,42 +207,50 @@ impl PkHashShard {
         }
         let entry_len = 4;
         let lookup_fn = lookup_id_only;
-        let mphf = match key_type {
-            KeyType::Int64 => {
-                let mphf: MphfInt =
-                    DefaultPtrHash::<PkPtrHash, u64>::load_mmap(hash_path, EpFlags::SEQUENTIAL)
-                        .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
-                PkHashMphf::Int(mphf)
-            }
-            KeyType::VarBytes => {
-                let mphf: MphfBytes =
-                    DefaultPtrHash::<PkPtrHash, Vec<u8>>::load_mmap(hash_path, EpFlags::SEQUENTIAL)
-                        .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
-                PkHashMphf::Bytes(mphf)
-            }
-            KeyType::Uuid => {
-                let mphf: MphfUuid = DefaultPtrHash::<PkPtrHash, [u8; 16]>::load_mmap(
-                    hash_path,
-                    EpFlags::SEQUENTIAL,
-                )
-                .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
-                PkHashMphf::Uuid(mphf)
-            }
-            KeyType::Uuid256 => {
-                let mphf: MphfUuid256 = DefaultPtrHash::<PkPtrHash, [u8; 32]>::load_mmap(
-                    hash_path,
-                    EpFlags::SEQUENTIAL,
-                )
-                .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
-                PkHashMphf::Uuid256(mphf)
-            }
-            KeyType::Ip => {
-                let mphf: MphfIp = DefaultPtrHash::<PkPtrHash, [u8; 16]>::load_mmap(
-                    hash_path,
-                    EpFlags::SEQUENTIAL,
-                )
-                .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
-                PkHashMphf::Ip(mphf)
+        // File-backed mmap preserves the exact length; load_mmap zero-pads
+        // its allocation and can accept truncated hash payloads.
+        // SAFETY: hash files are immutable artifacts produced by our typed
+        // PtrHash serializer; their mappings outlive all borrowed views.
+        let mphf = unsafe {
+            match key_type {
+                KeyType::Int64 => {
+                    let mphf: MphfInt =
+                        DefaultPtrHash::<PkPtrHash, u64>::mmap(hash_path, EpFlags::SEQUENTIAL)
+                            .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                    PkHashMphf::Int(mphf)
+                }
+                KeyType::VarBytes => {
+                    let mphf: MphfBytes = DefaultPtrHash::<PkPtrHash, Vec<u8>>::mmap(
+                        hash_path,
+                        EpFlags::SEQUENTIAL,
+                    )
+                    .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                    PkHashMphf::Bytes(mphf)
+                }
+                KeyType::Uuid => {
+                    let mphf: MphfUuid = DefaultPtrHash::<PkPtrHash, [u8; 16]>::mmap(
+                        hash_path,
+                        EpFlags::SEQUENTIAL,
+                    )
+                    .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                    PkHashMphf::Uuid(mphf)
+                }
+                KeyType::Uuid256 => {
+                    let mphf: MphfUuid256 = DefaultPtrHash::<PkPtrHash, [u8; 32]>::mmap(
+                        hash_path,
+                        EpFlags::SEQUENTIAL,
+                    )
+                    .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                    PkHashMphf::Uuid256(mphf)
+                }
+                KeyType::Ip => {
+                    let mphf: MphfIp = DefaultPtrHash::<PkPtrHash, [u8; 16]>::mmap(
+                        hash_path,
+                        EpFlags::SEQUENTIAL,
+                    )
+                    .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                    PkHashMphf::Ip(mphf)
+                }
             }
         };
         Ok(Self {
@@ -345,6 +344,7 @@ fn lookup_id_only(shard: &PkHashShard, key: &Key) -> Option<u32> {
     Some(value)
 }
 
+#[cfg(unix)]
 fn advise_willneed(map: &Mmap) {
     let ret = unsafe {
         libc::madvise(
@@ -358,6 +358,7 @@ fn advise_willneed(map: &Mmap) {
     }
 }
 
+#[cfg(unix)]
 fn advise_data(map: &Mmap, advice: PkDataAdvice) {
     match advice {
         PkDataAdvice::WillNeed => advise_willneed(map),
@@ -375,6 +376,13 @@ fn advise_data(map: &Mmap, advice: PkDataAdvice) {
         }
     }
 }
+
+// Memory advice is an optional optimization, not a mapping requirement.
+#[cfg(windows)]
+fn advise_willneed(_map: &Mmap) {}
+
+#[cfg(windows)]
+fn advise_data(_map: &Mmap, _advice: PkDataAdvice) {}
 
 // ---------------------------------------------------------------------------
 // External pkmap loader (Phase 1, subtask #2).

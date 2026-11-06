@@ -96,7 +96,7 @@ class RefreshDiskgraphNoticeInventoryTest(unittest.TestCase):
         old_text = MIT.replace("2024", "2023")
         old = {
             "artifact_ids":
-            list(refresher.DISKGRAPH_ARTIFACTS),
+            sorted(refresher.DISKGRAPH_ARTIFACTS),
             "copyright": ["Copyright (c) 2023 Example Authors"],
             "declared_expression":
             "MIT",
@@ -138,8 +138,8 @@ class RefreshDiskgraphNoticeInventoryTest(unittest.TestCase):
             _package("kept_crate", "2.0.0", "MIT"),
             _package("sample", "1.1.0", "MIT/Apache-2.0"),
         ])
-        manifest["artifacts"][1]["packages"] = manifest["artifacts"][1][
-            "packages"][:1]
+        for artifact in manifest["artifacts"][1:]:
+            artifact["packages"] = artifact["packages"][:1]
 
         with tempfile.TemporaryDirectory() as directory:
             crate = Path(directory) / "index.crates.io-test" / "sample-1.1.0"
@@ -207,7 +207,7 @@ class RefreshDiskgraphNoticeInventoryTest(unittest.TestCase):
     def test_crate_without_license_file_reuses_reviewed_spdx_text(self) -> None:
         backfilled = {
             "artifact_ids":
-            list(refresher.DISKGRAPH_ARTIFACTS),
+            sorted(refresher.DISKGRAPH_ARTIFACTS),
             "files": [{
                 "path": "SPDX-MIT.txt",
                 "provenance": {

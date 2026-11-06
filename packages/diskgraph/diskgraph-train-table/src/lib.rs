@@ -17,6 +17,7 @@ pub mod parquet_dataset;
 pub mod split_decider;
 pub mod custom_tt_chunk_processor;
 pub mod custom_tt_row_errors;
+pub mod skipped_rows;
 pub mod route;
 pub mod manifest;
 pub mod pseudo_time;

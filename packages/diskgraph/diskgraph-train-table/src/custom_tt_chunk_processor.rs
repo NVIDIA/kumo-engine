@@ -57,6 +57,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ProjectionMask;
 
 use crate::custom_tt_row_errors::{RowFailureKind, RowLocation};
+use crate::skipped_rows::SkippedRowsWriter;
 use crate::errors::{TTGenError, TTGenResult};
 use crate::split_decider::{value_to_string_key, SplitDecider};
 use crate::ttgen_accumulator::hash_value;
@@ -613,6 +614,7 @@ pub(crate) fn custom_tt_chunk_processor<U: UnitSystem, D: SplitDecider<U> + Clon
     decider_template: &D,
     shared_target_counts: Option<Arc<SharedColumnCounts>>,
     source: &CustomTtSource,
+    skipped_dir: Option<&Path>,
 ) -> TTGenResult<(u64, RowProcessor<U, D>)> {
     // Build OutputMode from the customer parquet's *schema* (not the
     // plan's). The plan declares the prediction kind; the parquet
@@ -760,6 +762,14 @@ pub(crate) fn custom_tt_chunk_processor<U: UnitSystem, D: SplitDecider<U> + Clon
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| custom_tt_parquet.display().to_string());
+        let mut skipped = skipped_dir.map(|dir| {
+            processor.stats.source_rows.failures.keep_skips();
+            let stem = Path::new(&part_name).file_stem().unwrap_or_default();
+            SkippedRowsWriter::new(
+                dir,
+                &format!("{}-rg{}", stem.to_string_lossy(), row_groups[0]),
+            )
+        });
         let mut row_base = 0u64;
         for batch_res in reader {
             let batch = batch_res.map_err(|e| TTGenError::Parquet(format!("{e}")))?;
@@ -780,7 +790,14 @@ pub(crate) fn custom_tt_chunk_processor<U: UnitSystem, D: SplitDecider<U> + Clon
                 row_groups[0],
                 row_base,
             )?;
+            if let Some(skipped) = &mut skipped {
+                let skips = processor.stats.source_rows.failures.take_skips();
+                skipped.write(&batch, row_base, &skips)?;
+            }
             row_base += batch_rows;
+        }
+        if let Some(skipped) = skipped {
+            skipped.finish()?;
         }
     }
 

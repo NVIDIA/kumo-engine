@@ -591,6 +591,13 @@ fn build_bundle_for_existing_table<U: UnitSystem>(
     result.set_item("row_count", pass_output_rows)?;
     result.set_item("output_path", output_path)?;
     result.set_item("artifacts_dir", &artifacts_dir_path)?;
+    let skipped_dir = Path::new(&tt_parquet_path)
+        .parent()
+        .map(|dir| dir.join(diskgraph_train_table::skipped_rows::SKIPPED_ROWS_DIR))
+        .filter(|dir| dir.is_dir());
+    if let Some(dir) = skipped_dir {
+        result.set_item("skipped_rows_dir", dir.to_string_lossy().as_ref())?;
+    }
 
     // split_counts: dict[int,int] mapping stage byte -> count. Derived from the
     // gen-produced per-stage seed parquets (0=train, 1=val, 2=test).

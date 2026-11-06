@@ -15,6 +15,7 @@ from kumo_core.pquery import (
     _column_stats,
     _default_split,
     _split_options,
+    _target_maximum,
     _temporal_timestamps,
     build_generated_training_task_dataset,
     build_native_pquery_task_plan,
@@ -795,7 +796,7 @@ def test_latest_temporal_timestamp_keeps_subsecond_statistics(
     ("first", "second"),
     ("second", "first"),
 ])
-def test_latest_temporal_timestamp_is_order_independent(monkeypatch, order):
+def test_target_maxima_are_order_independent(monkeypatch, order):
     maxima = {
         "first": 1_700_000_000_000_000_000,
         "second": 1_800_000_000_000_000_000,
@@ -823,6 +824,7 @@ def test_latest_temporal_timestamp_is_order_independent(monkeypatch, order):
 
     assert latest_temporal_timestamp(query, "/index") == maxima["second"]
     assert calls == list(order)
+    assert _target_maximum(query, "/index", min) == maxima["first"]
 
 
 def test_generation_plan_keeps_earliest_anchor_needed_for_filter_history(
@@ -1043,6 +1045,7 @@ def test_generation_plan_forecast_horizon(tmp_path, monkeypatch, pql_horizon,
         scratch_dir=request.scratch_dir, artifact_dir=request.artifact_dir,
         timestamps=request.timestamps)
     assert plan.train_table.forecast_length == expected
+    assert plan.train_table.split_config["flexible_boundaries"] is False
     assert plan.train_table.compiler_options["future_offsets_secs"] == tuple(
         index * 86_400 for index in range(expected))
     assert plan.task_dataset.task_type == "forecasting"

@@ -6,7 +6,7 @@ import posixpath
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Tuple
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from kumoapi.plugin import SourceConnector
 from pyarrow.fs import FileSystem
@@ -15,6 +15,8 @@ from .layout import within_root
 from .object_store import ObjectStoreSourceReader
 from .object_store_access import ObjectStoreAccess
 from .principals import IdentityRef, Principal, resolve
+
+_KEY_SAFE = "/-._~!$&'()*+,;=:@"
 
 
 @dataclass(frozen=True)
@@ -104,6 +106,15 @@ class ObjectStoreSessions(ABC):
                                        fetch=access.fetch,
                                        object_identity=access.object_identity)
 
+    def table_location(self, connector: SourceConnector,
+                       table_name: str) -> str:
+        """Full ``scheme://bucket/key`` of ``table_name``, without credentials."""
+        root = self._root_for(connector)
+        if root is None:
+            return self.paths.source_uri(table_name).rstrip('/')
+        key = quote(posixpath.join(root.prefix, table_name), safe=_KEY_SAFE)
+        return f'{self.scheme}://{root.bucket}/{key}'.rstrip('/')
+
     def _placement(self, connector: SourceConnector,
                    table_name: str) -> Tuple[str, str, str, Optional[str]]:
         root = self._root_for(connector)
@@ -120,6 +131,11 @@ class ObjectStoreSessions(ABC):
         parsed = urlsplit(canonical)
         return (parsed.netloc, parsed.netloc, unquote(parsed.path).lstrip('/'),
                 None)
+
+    def _resolved_directory(self, connector: SourceConnector,
+                            coordinate: str) -> Tuple[str, str, Optional[str]]:
+        """Resolve an artifact directory without creating storage clients."""
+        return self._resolved(connector, coordinate)
 
     def _resolved(self, connector: SourceConnector,
                   coordinate: str) -> Tuple[str, str, Optional[str]]:

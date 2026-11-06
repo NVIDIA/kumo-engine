@@ -1,0 +1,281 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+import contextlib
+import contextvars
+import os
+import posixpath
+import re
+import warnings
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import (
+    Any,
+    FrozenSet,
+    Iterable,
+    Iterator,
+    Literal,
+    Optional,
+    Tuple,
+    Type,
+    Union,
+)
+
+from kumoapi.plugin import ModelRegistryLocation, check_model_alias
+
+from kumo.engine._manifest import KINDS, M, read_manifest, write_manifest
+
+
+@dataclass(frozen=True)
+class _Root:
+    connector: Any
+    path: str
+    _uri: str
+
+    def location(self, relative: str) -> str:
+        base = self.path.rstrip('/')
+        return f'{base}/{relative}' if base else relative
+
+    def uri(self, relative: str) -> str:
+        return f"{self._uri.rstrip('/')}/{relative}"
+
+
+@dataclass(frozen=True)
+class MLOps:
+    r"""MLOps settings.
+
+    Args:
+        artifact_root: a URI, local path or ``(connector, path)`` pair.
+        registry: where each fit registers its model, through the tracker.
+        store: artifact kinds to store; ``True`` for all, ``False`` none.
+        on_error: ``'warn'`` or ``'raise'`` when MLOps fails.
+    """
+
+    artifact_root: Union[str, Tuple[Any, str]]
+    tracking: Any = field(default=None, kw_only=True)
+    registry: Any = field(default=None, kw_only=True)
+    store: Union[bool, Iterable[str]] = field(default=True, kw_only=True)
+    on_error: Literal['warn', 'raise'] = field(default='warn', kw_only=True)
+    root: _Root = field(init=False, repr=False, compare=False)
+    kinds: FrozenSet[str] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        from kumo.engine.connector import (
+            connector_for_root,
+            is_file_destination,
+        )
+
+        if not self.artifact_root:
+            raise ValueError('MLOps needs an artifact_root.')
+        if self.on_error not in ('warn', 'raise'):
+            raise ValueError(f"on_error must be 'warn' or 'raise', not "
+                             f"{self.on_error!r}.")
+        if isinstance(self.artifact_root, str):
+            if self.artifact_root.startswith('@'):
+                raise ValueError(
+                    'A stage artifact_root needs its connector: pass '
+                    f'(SnowflakeConnector(...), {self.artifact_root!r}).')
+            root = _Root(connector_for_root(self.artifact_root), '',
+                         self.artifact_root)
+        else:
+            connector, path = self.artifact_root
+            if not is_file_destination(connector, path):
+                raise ValueError(
+                    f'{type(connector).__name__} cannot hold files at '
+                    f'{path!r}; artifact_root needs a file location.')
+            _require_within_root(connector, path)
+            root = _Root(connector, path, path)
+        kinds = (frozenset(KINDS) if self.store is True else
+                 frozenset() if self.store is False else frozenset(self.store))
+        unknown = sorted(kinds - set(KINDS))
+        if unknown:
+            raise ValueError(f'Unknown store kinds {unknown}; choose from '
+                             f'{list(KINDS)}.')
+        if kinds:
+            _require_writable(root)
+        from kumo.engine._tracking import as_tracking
+
+        tracker = as_tracking(self.tracking)
+        if self.registry is not None:
+            self._check_registry(tracker)
+        if tracker is not None:
+            tracker.check(self.registry)
+        object.__setattr__(self, 'root', root)
+        object.__setattr__(self, 'kinds', kinds)
+
+    def _check_registry(self, tracker: Any) -> None:
+        from kumo.engine.trainer.output_config import (
+            ModelOutputConfig,
+            check_model_location,
+        )
+
+        registry = self.registry
+        if not isinstance(registry, ModelRegistryLocation):
+            raise TypeError(
+                f'registry takes a ModelRegistryLocation, not '
+                f'{type(registry).__name__}; the tracker registers it.')
+        if registry.alias is not None:
+            check_model_alias(registry.alias)
+        if tracker is not None and tracker.log_model is not None:
+            if registry.version is not None:
+                raise ValueError('the tracker assigns registered model '
+                                 'versions; leave ModelRegistryLocation.version unset.')
+            return
+        connector = None if tracker is None else tracker.connector
+        if connector is None:
+            raise ValueError(
+                'registry= needs tracking=MlflowTracking(...) or '
+                'SnowflakeTracking(connector, ...).')
+        check_model_location(ModelOutputConfig(connector, location=registry))
+
+    def snapshot_uri(self, snapshot: Any) -> str:
+        r"""Where a `GraphSnapshot`, or a snapshot id, is stored."""
+        return self.root.uri(snapshot_path(snapshot))
+
+    def wants(self, kind: str) -> bool:
+        return kind in self.kinds
+
+    def locate(self, path: Path, kind: Type[M], relative: str) -> Optional[M]:
+        r"""Sets the manifest at ``path`` to say it is at ``relative``."""
+        location = self.root.uri(relative)
+        manifest = read_manifest(path, kind)
+        if manifest is not None and manifest.location != location:
+            manifest = replace(manifest, location=location)
+            write_manifest(path, manifest)
+        return manifest
+
+
+def _require_within_root(connector: Any, path: str) -> None:
+    from kumo_core.sources.object_store_sessions import ObjectStoreSessions
+
+    sink = connector.sink_backend
+    if not isinstance(sink, ObjectStoreSessions):
+        return
+    try:
+        sink._resolved_directory(connector, path)
+    except ValueError as error:
+        target = sink._root_for(connector)
+        within = (f'root_dir {sink.scheme}://{target.path}'
+                  if target is not None else 'target')
+        name = type(connector).__name__
+        raise ValueError(
+            f'Invalid artifact_root {path!r} for {name} ({within}): '
+            f'{error}') from error
+
+
+def _require_writable(root: _Root) -> None:
+    from uuid import uuid4
+
+    from kumo.engine.connector import file_store
+
+    store = file_store(root.connector,
+                       root.location(f'.kumo-write-check-{uuid4().hex}'))
+    if store is None:
+        return
+    filesystem, probe = store
+    try:
+        if filesystem.type_name == 'local':
+            _require_local_writable(probe)
+        else:
+            _write_and_delete(filesystem, root.connector, probe)
+    except Exception as error:
+        raise PermissionError(
+            f'kumo.MLOps cannot write under artifact_root {root.uri("")!r} '
+            f'({type(error).__name__}: {error}); grant write and delete '
+            f'rights or pick another root.') from error
+
+
+def _require_local_writable(probe: str) -> None:
+    existing = posixpath.dirname(probe)
+    while not os.path.exists(existing):
+        existing = posixpath.dirname(existing)
+    if not os.access(existing, os.W_OK | os.X_OK):
+        raise PermissionError(f'{existing} is not writable')
+
+
+def _write_and_delete(filesystem: Any, connector: Any, probe: str) -> None:
+    try:
+        filesystem.open_output_stream(probe).close()
+    except FileNotFoundError:
+        filesystem.create_dir(posixpath.dirname(probe), recursive=True)
+        filesystem.open_output_stream(probe).close()
+    delete = getattr(connector.sink_backend, 'delete_file', None)
+    if delete is None:
+        filesystem.delete_file(probe)
+    else:
+        delete(connector, probe)
+
+
+_CURRENT: contextvars.ContextVar[Optional[MLOps]] = contextvars.ContextVar(
+    'kumo_mlops', default=None)
+
+
+@contextlib.contextmanager
+def mlops(settings: MLOps) -> Iterator[MLOps]:
+    r"""Turns MLOps on, as ``settings`` says, for the calls in the block."""
+    if not isinstance(settings, MLOps):
+        raise TypeError('kumo.mlops() takes a kumo.MLOps')
+    token = _CURRENT.set(settings)
+    try:
+        yield settings
+    finally:
+        _CURRENT.reset(token)
+
+
+def resolve(settings: Optional[MLOps] = None) -> Optional[MLOps]:
+    return settings if settings is not None else _CURRENT.get()
+
+
+def raise_on_error(settings: Optional[MLOps], error: Optional[BaseException],
+                   call: str, stacklevel: int = 2) -> None:
+    if error is None or settings is None:
+        return
+    message = f'{call} finished, but MLOps failed: {full_error(error)}'
+    if settings.on_error == 'raise':
+        raise RuntimeError(message) from error
+    warn_failure(message, error, stacklevel + 1)
+
+
+def full_error(error: BaseException) -> str:
+    return f'{type(error).__name__}: {error}'
+
+
+def warn_failure(message: str, error: BaseException, stacklevel: int = 2,
+                 also: Optional[BaseException] = None) -> None:
+    r"""Warns ``message`` once per ``error`` (and ``also``)."""
+    if getattr(error, '_kumo_warned', False):
+        return
+    warnings.warn(message, UserWarning, stacklevel=stacklevel + 1)
+    for reported in (error, also):
+        try:
+            setattr(reported, '_kumo_warned', True)
+        except AttributeError:
+            pass
+
+
+def on_root(source: Any, path: str) -> Tuple[Any, str]:
+    if isinstance(source, MLOps):
+        return source.root.connector, source.root.location(path.lstrip('/'))
+    return source, path
+
+
+def snapshot_path(snapshot: Any) -> str:
+    snapshot_id = snapshot if isinstance(snapshot, str) else snapshot.id
+    return 'snapshots/' + snapshot_id.replace('@', '/')
+
+
+_SNAPSHOT_ID = re.compile(r'[0-9a-f]+@[0-9a-f]+')
+
+
+def snapshot_uri(snapshot: Any,
+                 settings: Optional[MLOps] = None) -> Optional[str]:
+    r"""A snapshot location; an object or id is read from the root."""
+    if snapshot is None or (isinstance(snapshot, str)
+                            and not _SNAPSHOT_ID.fullmatch(snapshot)):
+        return snapshot
+    settings = resolve(settings)
+    if settings is None:
+        raise ValueError(
+            'A snapshot object or id needs a kumo.mlops block; otherwise '
+            'pass the URI snapshot.export(...) returned.')
+    return settings.snapshot_uri(snapshot)

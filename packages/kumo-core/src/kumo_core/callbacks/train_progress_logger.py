@@ -5,7 +5,7 @@
 import logging
 import os.path as osp
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 import kumoapi.jobs as jobs_api
 from kumo_core.io.json import load_json, save_json
@@ -140,17 +140,22 @@ class AutoTrainingProgressLogger(MonitoringCallback):  # pragma: no cover
     # Constant to account for overhead not captured in trial estimation:
     OVERHEAD_CONSTANT = 1.30
 
-    def __init__(self, log_dir: str, num_experiments: int):
+    def __init__(self, log_dir: str, num_experiments: int,
+                 on_event: Callable[..., None] | None = None):
         super().__init__()
         self.path = osp.join(log_dir, self.FILE_NAME)
+        self.on_event = on_event
+        self.trial: int | None = None
 
         self.progress = load_json(self.path, AutoTrainerProgress,
                                   raise_on_missing=False)
         if self.progress is None:
             self.progress = AutoTrainerProgress(total_trials=num_experiments)
 
-    def set_current_trainer(self, trainer: Any | None):
+    def set_current_trainer(self, trainer: Any | None,
+                            trial: int | None = None):
         self.trainer = trainer
+        self.trial = trial
 
     def on_train_start(self, pl_trainer, pl_module):
         if self.progress.start_time is None:
@@ -183,6 +188,21 @@ class AutoTrainingProgressLogger(MonitoringCallback):  # pragma: no cover
                 (self.progress.total_trials / self.progress.completed_trials))
 
         save_json(self.progress, self.path)
+
+        if self.on_event is not None and self.trial is not None:
+            try:
+                progress = self.trainer.training_progress_logger.progress
+                epoch = progress.num_epochs_completed
+                metrics = progress.metrics[epoch - 1]
+                self.on_event('epoch_ended', trial=self.trial, epoch=epoch,
+                              metrics={
+                                  **metrics.train_metrics,
+                                  **metrics.validation_metrics,
+                                  'train_epoch_seconds': metrics.time_taken,
+                              })
+            except Exception:
+                logger.warning('Could not report epoch_ended',
+                               exc_info=True)
 
     def on_validation_end(self, pl_trainer, pl_module):
         if pl_trainer.state.fn == TrainerFn.VALIDATING:

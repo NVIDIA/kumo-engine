@@ -20,6 +20,25 @@ logger = logging.getLogger(__name__)
 CUSTOM_SQL_MAX_STALENESS_HOURS = 24
 
 
+class SourceVersion(str):
+    """A version string tagged with its evidence ``kind``."""
+
+    kind: str
+    dependencies: Mapping[str, str] | None
+
+    def __new__(cls, value: str, kind: str = "unknown",
+                dependencies: Mapping[str, str] | None = None
+                ) -> "SourceVersion":
+        version = super().__new__(cls, value)
+        version.kind = kind
+        version.dependencies = dependencies
+        return version
+
+
+def version_kind(version: object) -> str:
+    return version.kind if isinstance(version, SourceVersion) else "unknown"
+
+
 def epoch_second(moment: datetime) -> str:
     """Truncated by string rather than through ``int``: the two disagree
     just below the epoch, and this value is a raw path segment."""
@@ -29,8 +48,10 @@ def epoch_second(moment: datetime) -> str:
 def hour_version() -> str:
     """Fallback for a source with no readable version; it expires itself
     rather than needing invalidation."""
-    return epoch_second(
-        datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0))
+    return SourceVersion(
+        epoch_second(
+            datetime.now(timezone.utc).replace(minute=0, second=0,
+                                               microsecond=0)), "hour_bucket")
 
 
 def sql_data_version(
@@ -83,10 +104,11 @@ def sql_data_version(
             versions[leaf] = _indeterminate()
         else:
             versions[leaf] = str(stamped)
-    return custom_sql_data_version(
-        sql, connector_type, versions, cols or {},
-        max_staleness_bucket=int(time()) //
-        (CUSTOM_SQL_MAX_STALENESS_HOURS * 3600))
+    return SourceVersion(
+        custom_sql_data_version(
+            sql, connector_type, versions, cols or {},
+            max_staleness_bucket=int(time()) //
+            (CUSTOM_SQL_MAX_STALENESS_HOURS * 3600)), "hour_bucket", versions)
 
 
 #: The prefix every sentinel carries, so one can be recognized without being

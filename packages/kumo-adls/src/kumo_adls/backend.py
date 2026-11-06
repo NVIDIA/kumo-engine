@@ -64,8 +64,10 @@ class ADLSSessions(ObjectStoreSessions):
         return ObjectStoreRoot(authority, target.prefix)
 
     @staticmethod
-    def _contained_key(root, uri, *, purpose):
-        parsed = urlsplit(normalize_adls_source_uri(uri))
+    def _contained_key(root, uri, *, purpose, directory=False):
+        normalize = (normalize_adls_root_uri if directory else
+                     normalize_adls_source_uri)
+        parsed = urlsplit(normalize(uri))
         key = unquote(parsed.path).lstrip('/')
         prefix = root.prefix.rstrip('/')
         outside_prefix = (bool(prefix) and key != prefix
@@ -106,6 +108,21 @@ class ADLSSessions(ObjectStoreSessions):
     def _filesystem(self, connector, bucket, region):
         return self._source_access(connector, bucket, region).filesystem
 
+    def _resolved_directory(self, connector, coordinate):
+        root = self._root_for(connector)
+        if root is None:
+            return self._resolved(connector, coordinate)
+        if coordinate in ('', '.', '/'):
+            raise ValueError(
+                'ADLS artifact directories require the full root URI or a '
+                'nonempty child path')
+        if '://' in coordinate:
+            key = self._contained_key(root, coordinate,
+                                      purpose='destination', directory=True)
+            if key.rstrip('/') == root.prefix:
+                return root.bucket, root.path, root.region
+        return self._resolved(connector, coordinate)
+
     def _resolved(self, connector, coordinate):
         root = self._root_for(connector)
         if root is None:
@@ -133,3 +150,7 @@ class ADLSSourceBackend(ADLSSessions, ObjectStoreSourceBackend):
         del project_id
         reader, name = self._reader(connector, table_name)
         return [canonical_uri(path) for path in reader.object_paths(name)]
+
+    def table_location(self, connector, table_name):
+        _, root, name, _ = self._placement(connector, table_name)
+        return canonical_uri(f'{root.rstrip("/")}/{name}').rstrip('/')

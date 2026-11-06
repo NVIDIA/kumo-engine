@@ -15,7 +15,11 @@ from kumo_core.artifacts import (
     FilesystemVitalArtifactPublisher,
     VitalArtifactPublicationPolicy,
     VitalArtifactSources,
+    add_bundle_file,
+    bundle_id_from_manifest,
+    bundle_task_type,
     resolve_vital_artifact_sources,
+    verify_model_bundle,
 )
 from kumo_core.config import NativeRuntimeConfig
 from kumo_core.manifest import RunManifest, RunPaths
@@ -237,3 +241,33 @@ def test_vital_source_resolution_is_core_owned(tmp_path: Path, refit) -> None:
     assert sources.selected_checkpoint == checkpoints[selected_mode]
     assert sources.graph_manifest == bundle / "graph.json"
     assert json.loads(sources.metrics.read_text()) == {"test_accuracy": 0.8}
+
+
+def test_bundle_id_ignores_provenance_only(tmp_path: Path) -> None:
+    sources, _ = _vital_sources(tmp_path)
+    bundle = tmp_path / "bundle"
+    VitalArtifactPublicationPolicy().publish(sources, bundle)
+    bundle_id = verify_model_bundle(bundle)
+
+    for name, payload in (("_provenance.json", '{"a": 1}'),
+                          ("_provenance.json", '{"a": 2}')):
+        (bundle / name).write_text(payload)
+        add_bundle_file(bundle, "provenance", name)
+        assert verify_model_bundle(bundle) == bundle_id
+        assert bundle_id_from_manifest(bundle) == bundle_id
+    roles = [
+        entry["role"] for entry in json.loads(
+            (bundle / "publication-manifest.json").read_text())["artifacts"]
+    ]
+    assert roles.count("provenance") == 1
+
+    (bundle / "metrics.json").write_text('{"auc": 0}')
+    add_bundle_file(bundle, "metrics", "metrics.json")
+    assert verify_model_bundle(bundle) != bundle_id
+
+
+def test_bundle_task_type_reads_the_prediction_schema(tmp_path: Path) -> None:
+    schema = tmp_path / "prediction-schema.json"
+    schema.write_text('{"task_type": "regression"}')
+    assert bundle_task_type({"prediction_schema": str(schema)}).value == (
+        "regression")

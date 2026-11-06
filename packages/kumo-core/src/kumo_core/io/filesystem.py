@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 from collections.abc import Callable
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 import fsspec
 from fsspec.implementations.local import LocalFileSystem
+from fsspec.spec import AbstractFileSystem
 
 # gcsfs >=2026.3 otherwise maps gs:// to ExtendedGcsFileSystem, whose per-bucket
 # gRPC layout lookup stalls when it fails. Kumo uses no zonal/HNS buckets.
@@ -67,7 +69,7 @@ def copy(src: str, dst: str, overwrite: bool = False) -> None:
         return
     for source_path in src_fs.find(src_path):
         relative = PurePosixPath(source_path).relative_to(src_path)
-        source_uri = src_fs.unstrip_protocol(source_path)
+        source_uri = _path_uri(src_fs, source_path)
         target_uri = f"{dst.rstrip('/')}/{relative.as_posix()}"
         copy_file(source_uri, target_uri, overwrite=overwrite)
 
@@ -85,9 +87,49 @@ def local_path(path: str) -> Path:
     return Path(fs_path)
 
 
+def fsync_directory(directory: str | Path) -> None:
+    if not hasattr(os, "O_DIRECTORY"):
+        return
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def atomic_write_bytes(path: str | Path, payload: bytes) -> None:
+    path = Path(path)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent,
+                                         prefix=f".{path.name}.",
+                                         suffix=".tmp",
+                                         delete=False) as out:
+            temporary = Path(out.name)
+            out.write(payload)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        fsync_directory(path.parent)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def listdir(path: str) -> list[str]:
     fs, fs_path = _resolve(path)
-    return [fs.unstrip_protocol(item) for item in fs.ls(fs_path, detail=False)]
+    return [_path_uri(fs, item) for item in fs.ls(fs_path, detail=False)]
+
+
+def _path_uri(fs: AbstractFileSystem, path: str) -> str:
+    if isinstance(fs, LocalFileSystem):
+        windows_path = PureWindowsPath(path)
+        if windows_path.is_absolute() and len(windows_path.drive) == 2:
+            # fsspec emits file://C:/..., which urllib reads as host C:.
+            # Keep fsspec's unescaped path convention and an empty authority.
+            return f"file:///{windows_path.as_posix()}"
+    return fs.unstrip_protocol(path)
 
 
 def torch_save(value: Any, path: str, **kwargs: Any) -> None:

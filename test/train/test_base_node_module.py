@@ -15,6 +15,7 @@ from kumo_core.train.base_node_module import BaseNodeLightningModule
 from kumo_core.train.loss import loss_resolver
 from kumo_core.types import TaskType
 from kumoapi.train import TrainingStage
+from pytorch_lightning.trainer.states import TrainerFn
 
 
 @pytest.mark.parametrize('task_type', [
@@ -120,3 +121,47 @@ def test_calibration_uses_registered_filesystem_for_adls_checkpoint(
     assert calibrator.reliability_diagram.call_args.args[-1] == (
         'abfss://data@account.dfs.core.windows.net/jobs/version_0/'
         'calibration/reliability_diagram_test.png')
+
+
+class _StubExplainer:
+    requires_grad = False
+
+    def explain_pre_step(self, **kwargs):
+        pass
+
+    def explain_post_step(self, **kwargs):
+        pass
+
+    def explain_end(self, **kwargs):
+        pass
+
+
+@pytest.mark.parametrize('fn, explainers, kept', [
+    (TrainerFn.FITTING, [], 0),
+    (TrainerFn.FITTING, [_StubExplainer()], 1),
+    (TrainerFn.VALIDATING, [], 1),
+])
+def test_validation_keeps_step_outputs_unless_fitting_unexplained(
+        monkeypatch, fn, explainers, kept):
+    monkeypatch.setattr(BaseNodeLightningModule, '__abstractmethods__', set())
+    module = BaseNodeLightningModule(TaskType.BINARY_CLASSIFICATION)
+    module._trainer = SimpleNamespace(
+        ckpt_path=None,
+        sanity_checking=False,
+        state=SimpleNamespace(fn=fn),
+        datamodule=None,
+    )
+    module.explainers = explainers
+    module.is_explaining = Mock(return_value=False)
+    module.evaluation_step = Mock(return_value={
+        'logits': torch.tensor([[1.0]]),
+        'target': torch.tensor([[1.0]]),
+    })
+
+    module.validation_step(SimpleNamespace(), 0)
+    assert len(module._validation_step_outputs) == kept
+
+    with patch.object(BaseLightningModule, 'compute_metrics'):
+        module.on_validation_epoch_end()
+    assert bool(module.outputs) == bool(kept)
+    assert ('pred' in module.outputs) == bool(kept)

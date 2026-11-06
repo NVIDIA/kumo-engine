@@ -11,11 +11,20 @@ Kumo Engine (`kumo.engine`) trains graph neural networks on relational data, in-
 
 ## Requirements
 
-- Linux x86_64 with glibc 2.34 or newer, or macOS 14 or newer on Apple silicon
+- Linux x86_64 or ARM64 with glibc 2.34 or newer, or macOS 14 or newer on Apple silicon
+- On Windows, use WSL2 x86_64 with a Linux distribution meeting that glibc requirement
 - CPython 3.11 or newer
 - For production workloads, an NVIDIA GPU with a compatible driver; see [prerequisites](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/prerequisites) and [GPU sizing](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/gpu-sizing)
 
 Kumo Engine uses a GPU when one is available: an NVIDIA GPU through CUDA, or an Apple silicon GPU through PyTorch's MPS backend. Without one, training and prediction run on CPU, which is enough for small jobs such as the quickstart below. To choose the device, pass `accelerator=` (`"auto"`, `"cpu"`, `"gpu"`, or `"mps"`) to `Trainer`.
+
+The bundled native engine requires CPU AES instructions: AES and SSE2 on
+x86-64, or AES and NEON on ARM64. Check that your host or virtual machine
+exposes these features before installing a wheel.
+
+Windows support for this release is limited to WSL2 using the Linux x86_64
+wheel. Run installation and Python commands inside WSL. Native Windows is not
+supported, and native Windows wheels are not published in this release.
 
 ## Installation
 
@@ -25,8 +34,8 @@ pip install kumo-engine
 
 Linux x86_64 requires GPU Faiss, which also handles CPU retrieval. macOS keeps
 CPU Faiss and its existing Metal retrieval support. Faiss is optional on ARM64
-Linux and native Windows: without it, affected link-prediction retrieval raises
-an installation error while other tasks remain available. On those platforms,
+Linux: without it, affected link-prediction retrieval raises an installation
+error while other tasks remain available. On ARM64 Linux,
 use `pip install "kumo-engine[cpu]"` for CPU retrieval with a compatible backend
 wheel for your platform and Python version. For CUDA retrieval, install a
 compatible GPU Faiss build directly, building from source on ARM64 Linux if
@@ -86,7 +95,8 @@ snapshot = graph.snapshot()
 pquery = PredictiveQuery(
     graph, "PREDICT COUNT(orders.*, 0, 30, days) > 0 FOR EACH users.user_id")
 trainer = Trainer(pquery.suggest_model_plan(snapshot))
-trainer.fit(pquery.generate_training_table(snapshot), snapshot=snapshot)
+training_result = trainer.fit(pquery.generate_training_table(snapshot),
+                              snapshot=snapshot)
 
 result = trainer.predict(pquery.generate_prediction_table(snapshot),
                          snapshot=snapshot, binary_classification_threshold=0.5)
@@ -100,6 +110,23 @@ To use your own data, point `FileConnector` at a directory of CSV or Parquet fil
 `generate_prediction_table(snapshot)` predicts as of the latest `order_time` in the snapshot, so the 30 days start there. To predict from another time, pass `prediction_time=` a timezone-naive `datetime`, read as UTC.
 
 `graph.snapshot()` ingests the tables into an on-disk graph index under the scratch directory, which also holds training runs, model bundles, and predictions. It defaults to `~/.cache/kumo-engine`; to put it on a large local disk, call `kumo.engine.configure(scratch_dir=...)` first.
+
+## Agent skills
+
+Kumo Engine ships an agent skill, `kumo-data-science`, that teaches a coding agent to build, train, and run Kumo models with this version of the SDK. Install it for your agent:
+
+```python
+import kumo.engine as kumo
+
+kumo.install_skills()          # every agent found locally, or Genie Code on Databricks
+kumo.install_skills("claude")  # or "codex", "coco" (Snowflake Cortex Code), "genie" (Databricks Genie Code), "genie-cli" (Genie Code CLI)
+```
+
+`scope="project"` installs into the current project instead of your home directory. From a shell, run `python -m kumo.engine.skills`; for a Snowsight workspace or a Cortex Extension, name a Snowflake connection from `connections.toml`, as the `snow` CLI uses: `python -m kumo.engine.skills coco --scope workspace --workspace MY_WS --connection my_conn`.
+
+The skill is versioned with the wheel. After upgrading `kumo-engine`, run `install_skills()` again; `import kumo.engine` warns when a local install is out of date and names the call that updates it, and `python -m kumo.engine.skills --check` lists your installs.
+
+Without the wheel, download the skill from the GitHub release for your version: `kumo-data-science-generic.zip` (Claude Code, Codex, other agents), `kumo-data-science-coco.zip` (Snowflake Cortex Code) or `kumo-data-science-genie.zip` (Databricks Genie Code). Unzip it into your agent's skills directory.
 
 ## Visualize table relationships
 
@@ -221,10 +248,29 @@ The specification is a snapshot; updating Python dictionaries does not update ex
 AFM initializes once attached; temporary host detachment preserves the view until the host calls its disposer.
 Disposed views must be rendered again.
 
+## Training explanations
+
+`training_result.explanations` reads existing training gradient scores, column
+cohorts, and sampled graphs. For example, after checking availability:
+
+```python
+explanations = training_result.explanations
+if explanations.availability["gradient"].available:
+    print(explanations.gradient_scores().to_pandas())
+    figure, axis = explanations.plot_gradient(top_k=20)
+    figure.savefig("training-importance.png", bbox_inches="tight")
+```
+
+Retain the training run separately from its published model bundle. See the
+[training explanation guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/explainability.md)
+for reopening a run, choosing cohort classes, loading sampled graphs, and
+interpreting availability and scores.
+
 ## Documentation
 
 - [ADLS connector guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-adls/README.md): setup, authentication, supported reads and exports.
 - [Kumo Engine documentation](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/overview): prerequisites, GPU sizing, installation, and end-to-end workflows. Its User Code Guide covers connecting data, tables and graphs, training, and prediction.
+- [MLOps](docs/mlops.md): lineage manifests, the artifact root, tracking and registries.
 - [Predictive query examples](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/workflows-and-solutions/predictive-query-examples): common prediction tasks written as predictive queries.
 
 ## Support

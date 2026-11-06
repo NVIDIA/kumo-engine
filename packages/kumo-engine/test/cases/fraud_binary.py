@@ -1,13 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Fraud binary through the installed Engine wheel."""
 
-from common import parse_args, run, sources, table
+from common import LIMITS, parse_args, run, sources, sparse_overrides, table
 
 SCALES = {"100M": 100, "1B": 300, "10B": 1600, "25B": 3200}
-LIMITS = dict(prediction_rows=20, metric_tolerance=0.25,
-              prediction_tolerance=0.005)
 QUERY = ('PREDICT COUNT(account_flags.*, 0, 28, days) > 0 FOR EACH '
          'accounts.account_id WHERE COUNT(account_flags.*, -INF, 0, days) = 0 '
          'AND COUNT(logins.*, -30, 0, days) > 0 ')
@@ -23,82 +20,54 @@ def build_graph(connector):
     import kumo.engine as kumo
 
     return kumo.Graph(
-        tables={
-            'account_flags':
+        tables=[
             table(connector, 'account_flags', None, 'flag_time',
                   [('flag_time', 'timestamp', 'time'),
                    ('account_id', 'ID', 'int64')]),
-            'accounts':
             table(connector, 'accounts', 'account_id', 'created_time',
                   [('account_id', 'ID', 'int64'),
                    ('created_time', 'timestamp', 'time'),
-                   ('email_domain', 'categorical', 'string'),
-                   ('country', 'categorical', 'string'),
-                   ('account_type', 'categorical', 'string'),
-                   ('loyalty_tier', 'categorical', 'string'),
+                   ('email_domain country account_type loyalty_tier',
+                    'categorical', 'string'),
                    ('is_verified', 'categorical', 'bool')]),
-            'devices':
             table(connector, 'devices', 'device_id', 'first_seen_time',
                   [('device_id', 'ID', 'int64'),
                    ('first_seen_time', 'timestamp', 'time'),
-                   ('os', 'categorical', 'string'),
-                   ('browser', 'categorical', 'string'),
-                   ('device_type', 'categorical', 'string'),
-                   ('language', 'categorical', 'string'),
-                   ('timezone', 'categorical', 'string')]),
-            'ip_addresses':
+                   ('os browser device_type language timezone', 'categorical',
+                    'string')]),
             table(connector, 'ip_addresses', 'ip_id', None,
-                  [('ip_id', 'ID', 'int64'), ('isp', 'categorical', 'string'),
-                   ('country', 'categorical', 'string'),
-                   ('region', 'categorical', 'string'),
-                   ('is_proxy', 'categorical', 'bool'),
-                   ('is_datacenter', 'categorical', 'bool')]),
-            'logins':
+                  [('ip_id', 'ID', 'int64'),
+                   ('isp country region', 'categorical', 'string'),
+                   ('is_proxy is_datacenter', 'categorical', 'bool')]),
             table(connector, 'logins', 'login_id', 'login_time',
                   [('login_id', 'ID', 'int64'),
                    ('login_time', 'timestamp', 'time'),
-                   ('account_id', 'ID', 'int64'), ('device_id', 'ID', 'int64'),
-                   ('ip_id', 'ID', 'int64')]),
-            'merchants':
+                   ('account_id device_id ip_id', 'ID', 'int64')]),
             table(connector, 'merchants', 'merchant_id', None,
                   [('merchant_id', 'ID', 'int64'),
-                   ('category', 'categorical', 'string'),
-                   ('country', 'categorical', 'string'),
-                   ('city', 'categorical', 'string'),
-                   ('channel', 'categorical', 'string')]),
-            'payment_methods':
+                   ('category country city channel', 'categorical', 'string')]),
             table(connector, 'payment_methods', 'payment_method_id', None,
                   [('payment_method_id', 'ID', 'int64'),
-                   ('card_network', 'categorical', 'string'),
-                   ('card_type', 'categorical', 'string'),
-                   ('issuing_country', 'categorical', 'string'),
-                   ('payer_name', 'multicategorical', 'string')]),
-            'transactions':
-            table(connector, 'transactions', 'transaction_id',
-                  'transaction_time',
-                  [('transaction_id', 'ID', 'int64'),
-                   ('transaction_time', 'timestamp', 'time'),
-                   ('account_id', 'ID', 'int64'),
-                   ('payment_method_id', 'ID', 'int64'),
-                   ('merchant_id', 'ID', 'int64'),
-                   ('amount_usd', 'numerical', 'float64'),
-                   ('quantity', 'numerical', 'int64'),
-                   ('currency', 'categorical', 'string'),
-                   ('channel', 'categorical', 'string'),
-                   ('billing_country', 'categorical', 'string'),
-                   ('billing_postal_codes', 'multicategorical', 'string'),
-                   ('risk_rule_hits', 'multicategorical', 'string'),
-                   ('email_matches_payer', 'categorical', 'bool'),
-                   ('installments', 'numerical', 'int64'),
-                   ('traveler_name', 'categorical', 'string')]),
-            'transfers':
+                   ('card_network card_type issuing_country', 'categorical',
+                    'string'), ('payer_name', 'multicategorical', 'string')]),
+            table(
+                connector, 'transactions', 'transaction_id', 'transaction_time',
+                [('transaction_id', 'ID', 'int64'),
+                 ('transaction_time', 'timestamp', 'time'),
+                 ('account_id payment_method_id merchant_id', 'ID', 'int64'),
+                 ('amount_usd', 'numerical', 'float64'),
+                 ('quantity', 'numerical', 'int64'),
+                 ('currency channel billing_country', 'categorical', 'string'),
+                 ('billing_postal_codes risk_rule_hits', 'multicategorical',
+                  'string'), ('email_matches_payer', 'categorical', 'bool'),
+                 ('installments', 'numerical', 'int64'),
+                 ('traveler_name', 'categorical', 'string')]),
             table(connector, 'transfers', 'transfer_id', 'transfer_time',
                   [('transfer_id', 'ID', 'int64'),
                    ('transfer_time', 'timestamp', 'time'),
-                   ('account_id', 'ID', 'int64'), ('payee_id', 'ID', 'int64'),
-                   ('login_id', 'ID', 'int64'),
+                   ('account_id payee_id login_id', 'ID', 'int64'),
                    ('amount_usd', 'numerical', 'float64')])
-        }, edges=[
+        ], edges=[
             Edge('logins', 'account_id', 'accounts'),
             Edge('logins', 'device_id', 'devices'),
             Edge('logins', 'ip_id', 'ip_addresses'),
@@ -114,31 +83,9 @@ def build_graph(connector):
 
 def main():
     args = parse_args('fraud_binary', SCALES, family='fraud', **LIMITS)
-    from kumoapi.model_plan import (
-        NumNeighborsConfig,
-        TrainingTableGenerationPlan,
-        WeightMode,
-    )
+    from kumoapi.model_plan import TrainingTableGenerationPlan
 
-    weekly = args.scale in ('10B', '25B')
-    overrides = {
-        'training_job.metrics': ['auroc'],
-        'training_job.tune_metric':
-        'auroc',
-        'optimization.batch_size': [64],
-        'neighbor_sampling.num_neighbors': [
-            NumNeighborsConfig(hop1={'default': 8}, hop2={'default': 8},
-                               hop3={'default': 8}, hop4={'default': 8},
-                               hop5={'default': 8}, hop6={'default': 8})
-        ]
-    }
-    if weekly:
-        overrides.update({
-            'training_job.num_experiments': 1,
-            'optimization.max_epochs': 1,
-            'optimization.majority_sampling_ratio': [1.0],
-            'optimization.weight_mode': [WeightMode.SAMPLE],
-        })
+    overrides = sparse_overrides(args.scale)
     run(build_graph(sources(args)), QUERY,
         TrainingTableGenerationPlan(split=SPLIT, timeframe_step=28), 'binary',
         overrides, args=args)

@@ -279,3 +279,30 @@ def test_a_warehouse_value_error_is_not_restated_as_a_refusal(artifact):
     with pytest.raises(ValueError) as raised:
         load(warehouse, str(artifact), files=[artifact])
     assert not isinstance(raised.value, write.ArtifactValidationError)
+
+
+def test_sink_appends_files_stamped_with_extra_columns(artifact, monkeypatch):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from kumo_databricks.sink import DatabricksSinkBackend
+    from kumoapi.data_source import DatabricksConnectorResourceConfig
+    from kumoapi.jobs import WriteMode
+
+    sink = DatabricksSinkBackend()
+    monkeypatch.setattr(sink, "_connected",
+                        contextmanager(lambda *a, **k: (yield None)))
+    loads = []
+
+    def load(**kwargs):
+        with kwargs["prepare_file"](str(artifact)) as staged:
+            loads.append((kwargs["replace"], pq.read_table(staged).to_pydict()))
+
+    monkeypatch.setattr(write, "load", load)
+    connector = SimpleNamespace(id="dbx", config=DatabricksConnectorResourceConfig(
+        catalog="main", schema_name="features", warehouse_id="w"))
+    sink.write_files(connector, "features__kumo__churn", [str(artifact)],
+                     WriteMode.APPEND, extra_columns={"PREDICTION_ID": "p1"})
+
+    assert loads == [(False, {"ENTITY": ["a"], "SCORE": [1.0],
+                              "PREDICTION_ID": ["p1"]})]

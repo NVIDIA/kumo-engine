@@ -1,0 +1,1090 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+r"""Realized performance and score drift of prediction runs."""
+
+import copy
+import dataclasses
+import json
+import math
+import shutil
+import time
+import warnings
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
+from fractions import Fraction
+from pathlib import Path
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+)
+from uuid import uuid4
+
+import numpy as np
+import pandas as pd
+from kumo_core.score_counts import Counts
+from kumo_core.score_drift import PSI_SHIFTS, drift_column, holdout_shift
+from kumo_core.score_drift import psi as decile_psi
+from kumo_core.score_drift import psi_shift
+from kumo_core.score_drift import score_drift as exact_drift
+from kumo_core.summaries import Dataset, Note, Scalar, Summary, Table, Tag
+
+from kumo.engine._manifest import PredictionManifest, TrackingRef
+from kumo.engine._text import number
+from kumo.engine._tracking import (
+    as_tracking,
+    log_run,
+    logged_names,
+    metric_name,
+)
+
+_EVALUATION_FILE = '_evaluation.json'
+
+
+@dataclass(frozen=True)
+class EvaluationResult:
+    """Metrics of a prediction run against labels from a newer snapshot."""
+
+    prediction_id: str
+    bundle_id: Optional[str]
+    snapshot_id: str
+    task_type: Optional[str]
+    anchors: Tuple[str, ...]
+    metrics: Mapping[str, Optional[float]]
+    rows: int
+    labelled: int
+    labelled_fraction: Optional[float]
+    matured: Optional[bool]
+    bundle_matches: Optional[bool]
+    reasons: Mapping[str, str] = field(default_factory=dict)
+    actuals: Optional[str] = None
+    tracking: Optional[TrackingRef] = None
+
+    def export(self, output_config: Any) -> None:
+        r"""Copy the evaluated rows to a predictions destination."""
+        import tempfile
+
+        from kumo.engine._scratch import get_scratch_dir
+
+        if self.actuals is None:
+            raise ValueError(f'No evaluated rows: {dict(self.reasons)}')
+        destination = output_config.destinations()['predictions']
+        files = sorted(str(path) for path in Path(self.actuals).glob('*.parquet'))
+        written = max(Path(path).stat().st_mtime_ns for path in files)
+        fields = dataclasses.asdict(self)
+        for name in ('actuals', 'tracking'):
+            fields.pop(name)
+        get_scratch_dir().mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=get_scratch_dir()) as typed:
+            files = output_config.connector._monitored_files(
+                destination, files, Path(typed))
+            output_config._write(
+                destination, files, export_id=f'{self.prediction_id}-'
+                f'evaluation-{Path(self.actuals).name}-{written}',
+                ids=(self.prediction_id, self.bundle_id),
+                sidecars={_EVALUATION_FILE: json.dumps(
+                    fields, sort_keys=True).encode()})
+
+    @classmethod
+    def load_from_connector(cls, connector: Any, *,
+                            path: str) -> 'EvaluationResult':
+        r"""Load an evaluation that export wrote to a Parquet directory."""
+        import weakref
+
+        from kumo.engine.trainer.trainer import (
+            _export_root,
+            _fetch_dir,
+            _require_success,
+            fetch_parquet,
+        )
+
+        filesystem, root = _export_root(connector, path)
+        try:
+            with filesystem.open_input_stream(
+                    f'{root}/{_EVALUATION_FILE}') as reader:
+                fields = json.loads(reader.read())
+        except OSError as error:
+            raise FileNotFoundError(
+                f'{path} has no {_EVALUATION_FILE}: not an evaluation export'
+            ) from error
+        _require_success(filesystem, root, path)
+        local = _fetch_dir('fetched-evaluation-')
+        fetch_parquet(filesystem, root, local / 'actuals')
+        fields['anchors'] = tuple(fields['anchors'])
+        result = cls(**fields, actuals=str(local / 'actuals'))
+        weakref.finalize(result, shutil.rmtree, str(local), True)
+        return result
+
+
+@dataclass(frozen=True)
+class DriftReport:
+    """Score and input drift of a prediction run; reasons explains Nones."""
+
+    prediction_id: Optional[str]
+    bundle_id: Optional[str]
+    score: Optional[str]
+    psi: Optional[float]
+    ks: Optional[float]
+    wasserstein: Optional[float]
+    holdout_truncated: Optional[bool]
+    bundle_matches: Optional[bool]
+    previous_prediction_id: Optional[str]
+    previous_psi: Optional[float]
+    previous_ks: Optional[float]
+    previous_wasserstein: Optional[float]
+    input_changes: Optional[Mapping[str, Tuple[Any, Any]]]
+    reasons: Mapping[str, str]
+    features: Mapping[str, Mapping[str, Mapping[str, Any]]] = field(
+        default_factory=dict)
+    tracking: Optional[TrackingRef] = None
+
+
+def evaluate(trainer: Any, run: Any,
+             snapshot: Any) -> Tuple[EvaluationResult, Tuple[Table, ...]]:
+    r"""The run's evaluation, and its tables for the tracker."""
+    query = trainer._training_query
+    if query is None:
+        raise RuntimeError('Fit or load the Trainer before evaluate()')
+    reasons: Dict[str, str] = {}
+    out: Dict[str, Any] = dict(task_type=None, anchors=(), metrics={},
+                               rows=0, labelled=0, matured=None,
+                               reasons=reasons, actuals=None,
+                               tables=(), step='importing')
+    try:
+        _evaluate(out, trainer, run, snapshot, query)
+    except Exception as error:
+        reasons['metrics'] = f"{out['step']} failed: {error}"
+    out.pop('step')
+    tables = out.pop('tables')
+    if out['matured'] is False:
+        warnings.warn(
+            f'Prediction run {run.id}: labels are not mature yet, so the '
+            'metrics cover only the outcomes observed so far.', UserWarning,
+            stacklevel=3)
+    return EvaluationResult(
+        prediction_id=run.id,
+        bundle_id=run.bundle_id,
+        snapshot_id=snapshot.id,
+        labelled_fraction=(out['labelled'] /
+                           out['rows'] if out['rows'] else None),
+        bundle_matches=_same(run.bundle_id, _bundle_id(trainer)),
+        **out,
+    ), tables
+
+
+_TASKS = {
+    'binary_classification': 'binary',
+    'regression': 'regression',
+    'forecasting': 'forecasting',
+    'multiclass_classification': 'multiclass',
+    'multilabel_classification': 'multilabel',
+    'multilabel_ranking': 'ranking',
+    'link_prediction': 'ranking',
+    'temporal_link_prediction': 'ranking',
+    'static_link_prediction': 'ranking',
+}
+
+
+def _evaluate(out: Dict[str, Any], trainer: Any, run: Any, snapshot: Any,
+              query: str) -> None:
+    from pyarrow import parquet
+
+    reasons = out['reasons']
+    out['step'] = 'parsing the query'
+    pquery = _unfiltered_query(snapshot, query)
+    parsed = pquery._parsed
+    static = parsed.query_type == 'static'
+    out['task_type'] = parsed.task_type
+
+    out['step'] = 'reading the predictions'
+    files = _prediction_files(run)
+    columns = parquet.read_schema(files[0]).names
+    manifest = run.manifest
+    anchors = () if static or manifest is None else tuple(
+        sorted({_ns(value) for value in manifest.prediction_table.anchors}))
+    keys = ['ENTITY']
+    if len(anchors) > 1:
+        keys.append('ANCHOR_TIMESTAMP')
+    out['anchors'] = tuple(
+        pd.Timestamp(anchor, tz='UTC').isoformat() for anchor in anchors)
+    if anchors:
+        _check_maturity(out, parsed, snapshot, anchors)
+    task = _TASKS[parsed.task_type]
+    unsupported = _unsupported(static, anchors, keys, columns)
+    if unsupported is not None:
+        reasons['metrics'] = unsupported
+        return
+
+    out['step'] = 'generating labels'
+    actuals = _actuals_dir(run, snapshot)
+    joined = _join_labels(out, trainer, pquery, snapshot, manifest, files,
+                          columns, anchors, keys, task, actuals)
+    if joined is None:
+        reasons['metrics'] = 'no entity has a label at these anchors'
+        return
+    _record_metrics(out, joined, actuals)
+    if 'by_horizon' in joined:
+        from kumo.engine.trainer.trainer import _target_window
+
+        out['tables'] = (_by_horizon(joined['by_horizon'], _target_window(
+            parsed, trainer.training_table_generation_plan)), )
+
+
+def _unfiltered_query(snapshot: Any, query: str) -> Any:
+    from kumoapi.pquery.AST import Filter
+
+    from kumo.engine.pquery.predictive_query import PredictiveQuery
+
+    pquery = PredictiveQuery._from_snapshot(snapshot, query)
+    if not isinstance(pquery._parsed.query.entity_ast, Filter):
+        return pquery
+    unfiltered = copy.copy(pquery._parsed.query)
+    unfiltered.entity_ast = unfiltered.entity_ast.target
+    return PredictiveQuery._from_snapshot(snapshot, unfiltered.to_string())
+
+
+def _prediction_files(run: Any) -> List[str]:
+    from kumo_core.types import PredictionArtifactType
+
+    return [
+        str(path) for path in replace(
+            run, artifact_type=PredictionArtifactType.PREDICTIONS).files
+    ]
+
+
+def _check_maturity(out: Dict[str, Any], parsed: Any, snapshot: Any,
+                    anchors: Tuple[int, ...]) -> None:
+    from kumo_core.pquery import _target_maximum
+
+    frame = parsed.query.get_combined_date_offset_range()
+    try:
+        latest = _target_maximum(parsed, str(snapshot.index_path), min)
+        window_end = (pd.Timestamp(max(anchors)) + frame.end_date_offset +
+                      (parsed.forecast_length - 1) * frame.timeframe)
+        out['matured'] = bool(window_end <= pd.Timestamp(latest))
+    except Exception as error:
+        out['reasons']['matured'] = str(error)
+
+
+def _unsupported(static: bool, anchors: Tuple[int, ...], keys: List[str],
+                 columns: List[str]) -> Optional[str]:
+    if not static and not anchors:
+        return 'the run records no anchor timestamps'
+    if 'ANCHOR_TIMESTAMP' in keys and 'ANCHOR_TIMESTAMP' not in columns:
+        return ('the run has several anchors but its predictions have no '
+                'ANCHOR_TIMESTAMP column')
+    return None
+
+
+def _join_labels(out: Dict[str, Any], trainer: Any, pquery: Any,
+                 snapshot: Any, manifest: Optional[PredictionManifest],
+                 files: List[str], columns: List[str],
+                 anchors: Tuple[int, ...], keys: List[str], task: str,
+                 actuals: Path) -> Optional[Dict[str, Any]]:
+    import diskgraph
+    from kumo_core.training import custom_table
+    from pyarrow import parquet
+
+    labels = (custom_table.entity_column(), custom_table.timestamp_column(),
+              custom_table.target_column())
+    spill = actuals.parent / f'.spill-{uuid4().hex}'
+    try:
+        with pquery._label_parts(
+                snapshot, anchors,
+                trainer.training_table_generation_plan) as parts:
+            out['step'] = 'joining labels with predictions'
+            label_columns = parquet.read_schema(parts[0]).names
+            shutil.rmtree(actuals, ignore_errors=True)
+            spec = _join_spec(task, keys, labels, label_columns, columns,
+                              pquery._parsed.query_type == 'static',
+                              manifest, actuals, spill)
+            if task == 'ranking':
+                spec['ks'] = _ks(trainer, pquery._parsed.task_type)
+            return json.loads(
+                diskgraph.evaluate_prediction_parquet(files, parts,
+                                                      json.dumps(spec)))
+    except Exception as error:
+        if (out['step'] != 'generating labels'
+                or 'empty training table' not in str(error)):
+            raise
+        return None
+    finally:
+        shutil.rmtree(spill, ignore_errors=True)
+
+
+def _join_spec(task: str, keys: List[str], labels: Tuple[str, str, str],
+               label_columns: List[str], columns: List[str], static: bool,
+               manifest: Optional[PredictionManifest], actuals: Path,
+               spill: Path) -> Dict[str, Any]:
+    from kumo_core.train.autoregression import FUTURE_LABELS_COL
+
+    entity, timestamp, target = labels
+    if task == 'forecasting':
+        target = FUTURE_LABELS_COL
+    emitted = [name for name in _EMITTED[task] if name in columns]
+    return {
+        'task': task,
+        'prediction_keys': keys,
+        'label_keys': [entity, timestamp][:len(keys)],
+        'label_target': target,
+        'actuals_dir': str(actuals),
+        'actual_columns': [[entity, 'ENTITY']] +
+        ([[timestamp, 'ANCHOR_TIMESTAMP']]
+         if timestamp in label_columns and not static else []) +
+        [[target, 'TARGET']],
+        'prediction_columns': [[name, name] for name in emitted],
+        'constant_timestamps': ([[
+            'ANCHOR_TIMESTAMP', _prediction_time(manifest)
+        ]] if static and manifest is not None else []) +
+        [['EVALUATED_AT', time.time_ns()]],
+        'spill_dir': str(spill),
+    }
+
+
+def _record_metrics(out: Dict[str, Any], joined: Mapping[str, Any],
+                    actuals: Path) -> None:
+    reasons = out['reasons']
+    out.update(rows=joined['rows'], labelled=joined['labelled'],
+               actuals=str(actuals) if joined['labelled'] else None)
+    if out['labelled'] == 0:
+        reasons['metrics'] = 'no prediction has a label'
+        return
+    metrics = out['metrics'] = {
+        name: _finite(value)
+        for name, value in joined['metrics'].items()
+    }
+    if None in metrics.values():
+        reasons['metrics'] = 'a metric is undefined for these labels'
+
+
+_EMITTED = {
+    'binary': ('True_PROB', 'TARGET_PRED'),
+    'regression': ('TARGET_PRED', ),
+    'forecasting': ('TIMESTAMP', 'TARGET_PRED'),
+    'multiclass': ('CLASS', 'SCORE'),
+    'multilabel': ('PREDICTED', 'CLASS', 'SCORE'),
+    'ranking': (),
+}
+
+
+def _ks(trainer: Any, task_type: str) -> List[int]:
+    from kumo_core.resolved_task import default_metrics
+    from kumo_core.types import TaskType
+
+    names = (getattr(getattr(trainer, 'result', None), 'metrics', None)
+             or default_metrics(TaskType(task_type)))
+    return sorted({int(name.rpartition('@')[2]) for name in names
+                   if '@' in name})
+
+
+def _by_horizon(sums: Mapping[str, List[float]], timeframe: Any) -> Table:
+    from kumo_core.evaluation_counts import horizon_table
+
+    return horizon_table('realized/by_horizon', {
+        name: np.asarray(values) for name, values in sums.items()}, timeframe)
+
+
+def _prediction_time(manifest: PredictionManifest) -> int:
+    anchors = manifest.prediction_table.anchors
+    return _ns(anchors[0] if anchors else manifest.timings.started_at)
+
+
+def _bundle_id(trainer: Any) -> Optional[str]:
+    result = getattr(trainer, 'result', None)
+    return None if result is None else result.id
+
+
+def _actuals_dir(run: Any, snapshot: Any) -> Path:
+    from kumo.engine._scratch import get_scratch_dir
+
+    selection = getattr(run, 'selection', None)
+    root = (Path(selection.pointer_path).parent if selection is not None
+            else get_scratch_dir() / 'evaluations' / str(run.id))
+    return root / 'actuals' / str(snapshot.id).replace('/', '_')
+
+
+def score_drift(trainer: Any, run: Any, *, previous: Any, snapshot: Any,
+                training_snapshot: Any, root: Any = None) -> DriftReport:
+    from kumo.engine.trainer._provenance import holdout_counts
+
+    reasons: Dict[str, str] = {}
+    counts = _score_counts(run)
+    model = getattr(getattr(trainer, 'result', None), 'manifest', None)
+    holdout = getattr(model, 'holdout', None)
+    references = {'holdout': holdout_counts(model)}
+    if previous is not None:
+        references['previous'] = _score_counts(previous)
+    drifts = {side: _drift(counts, reference, side, reasons)
+              for side, reference in references.items()}
+
+    sides = _snapshot_stats(trainer, run, snapshot, training_snapshot, root)
+    totals = [side['counts'] for side in sides.values()]
+    input_changes = None
+    if all(isinstance(total, dict) for total in totals):
+        input_changes = _count_changes(*totals, {
+            **sides['training']['links'], **sides['scoring']['links']})
+    else:
+        reasons['input_changes'] = _missing('ingest statistics', sides,
+                                            'counts')
+    run_bundle = getattr(run, 'bundle_id', None)
+    return DriftReport(
+        prediction_id=getattr(run, 'id', None),
+        bundle_id=run_bundle,
+        score=None if counts is None else drift_column(counts),
+        holdout_truncated=None if holdout is None else holdout.truncated,
+        bundle_matches=_same(run_bundle, _bundle_id(trainer)),
+        previous_prediction_id=getattr(previous, 'id', None),
+        **_drift_fields(drifts),
+        input_changes=input_changes,
+        reasons=reasons,
+        features=_features(trainer, sides, reasons),
+    )
+
+
+def _score_counts(run: Any) -> Optional[Counts]:
+    stats = (getattr(getattr(run, 'manifest', None), 'stats', None)
+             or {}).get('predictions')
+    counts = getattr(stats, 'counts', None)
+    return None if counts is None else Counts.from_dict(counts)
+
+
+class _Reference(NamedTuple):
+    prefix: str
+    name: str
+    label: str
+
+
+_REFERENCES = {
+    'holdout': _Reference('', "the model's holdout",
+                          'holdout scores at training'),
+    'previous': _Reference('previous_', 'the previous run', 'previous run'),
+}
+_STATISTICS = ('psi', 'ks', 'wasserstein')
+
+
+def _drift(counts: Optional[Counts], reference: Optional[Counts], side: str,
+           reasons: Dict[str, str]) -> Dict[str, float]:
+    name = _REFERENCES[side].name
+    if counts is None:
+        reasons[side] = 'the run records no score counts'
+    elif reference is None:
+        reasons[side] = f'{name} records no score counts'
+    else:
+        drift = exact_drift(counts, reference)
+        if drift is not None:
+            return drift
+        reasons[side] = (f'the run and {name} did not count the same score '
+                         f'on the same bins')
+    return {}
+
+
+def _drift_fields(drifts: Mapping[str, Mapping[str, float]]
+                  ) -> Dict[str, Optional[float]]:
+    return {reference.prefix + statistic: drifts.get(side, {}).get(statistic)
+            for side, reference in _REFERENCES.items()
+            for statistic in _STATISTICS}
+
+
+def _comparisons(report: 'DriftReport'
+                 ) -> Dict[str, Dict[str, Optional[float]]]:
+    return {side: {statistic: getattr(report, reference.prefix + statistic)
+                   for statistic in _STATISTICS}
+            for side, reference in _REFERENCES.items()}
+
+
+def track(report: Any, run: Any, settings: Any, trainer: Any,
+          started: datetime, labels: Any = None, previous: Any = None,
+          tables: Sequence[Table] = ()) -> Any:
+    r"""Tracks a monitoring call, following on_error on failure."""
+    tracker = as_tracking(None if settings is None else settings.tracking)
+    if tracker is None:
+        return report
+
+    from kumo.engine._mlops import full_error, raise_on_error, warn_failure
+
+    try:
+        record = _record(report, run, tracker, trainer, started, labels,
+                         previous, tables)
+    except Exception as error:
+        if settings.on_error == 'warn':
+            warn_failure(
+                f'Could not track the monitoring run: {full_error(error)}',
+                error, 3)
+        failure: Optional[BaseException] = error
+    else:
+        failure = log_run(tracker, tracker.log_monitoring, record)
+    raise_on_error(settings, failure, f'Monitoring of prediction run '
+                   f'{getattr(run, "id", None)}', stacklevel=3)
+    if failure is not None or not tracker.run_id:
+        return report
+    return replace(report, tracking=TrackingRef(
+        platform=str(tracker.platform), run_id=str(tracker.run_id),
+        url=tracker.run_url, run_name=tracker.logged_run_name))
+
+
+_IDENTITY = ('kumo.prediction_id', 'kumo.bundle_id', 'kumo.as_of',
+             'kumo.model_name', 'kumo.model_version')
+
+
+def _record(report: Any, run: Any, tracking: Any, trainer: Any,
+            started: datetime, labels: Any, previous: Any,
+            tables: Sequence[Table]) -> Any:
+    from kumo.engine._tracking import RunSpec, prediction_record, run_record
+
+    evaluating = isinstance(report, EvaluationResult)
+    manifest = getattr(run, 'manifest', None)
+    model = (None if report.bundle_matches is False else
+             getattr(trainer, 'result', None))
+    identity: Mapping[str, Optional[str]] = {
+        'kumo.prediction_id': getattr(run, 'id', None),
+        'kumo.bundle_id': getattr(run, 'bundle_id', None)}
+    label = None
+    if manifest is not None:
+        prediction = prediction_record(manifest, model=model)
+        identity, label = prediction.tags, prediction.model_label
+    platform = tracking.platform
+    ref = getattr(run, 'tracking', None)
+    tracked = ref is not None and ref.platform == platform
+    earlier = getattr(previous, 'tracking', None)
+    record = run_record(RunSpec(
+        kind='monitoring',
+        parents={'monitor': 'evaluate' if evaluating else 'drift'},
+        summaries=(_evaluation_summaries(report, labels, model, tables)
+                   if evaluating else _drift_summaries(report, (
+                       earlier.run_name if earlier is not None
+                       and earlier.platform == platform else None),
+                       shift=holdout_shift(identity.get('kumo.task_type'))))))
+    return replace(
+        record, tags={**record.tags, **{
+            name: value for name, value in identity.items()
+            if name in _IDENTITY and value}},
+        model_label=label, started=started,
+        finished=datetime.now(timezone.utc),
+        prediction_run=ref.run_id if tracked else None)
+
+
+def _drift_summaries(report: 'DriftReport', previous_name: Optional[str],
+                     shift: bool) -> List[Summary]:
+    summaries: List[Summary] = []
+    reasons = report.reasons
+    comparisons = _comparisons(report)
+    holdout, previous = comparisons['holdout'], comparisons['previous']
+    if report.previous_prediction_id:
+        summaries.append(Tag('kumo.drift_previous',
+                             report.previous_prediction_id))
+    if previous['psi'] is not None:
+        summaries += [Scalar(f'drift/{name}_vs_prev', value)
+                      for name, value in previous.items()]
+    if report.bundle_matches is False:
+        comparisons.pop('holdout')
+    rows = tuple((_REFERENCES[side].label, values['psi'],
+                  '' if side == 'holdout' and not shift
+                  else _shift(values['psi']),
+                  *(values[name] for name in _STATISTICS[1:]))
+                 for side, values in comparisons.items()
+                 if values['psi'] is not None)
+    if rows:
+        summaries.append(Table('drift/score', ('compared with', 'psi',
+                                               'shift', *_STATISTICS[1:]),
+                               rows, brief=True))
+    if previous['psi'] is not None:
+        name = previous_name or report.previous_prediction_id
+        summaries.append(Note('notes', f'Previous run: {name}.'))
+    if report.bundle_matches is False:
+        summaries.append(Note('notes', (
+            "This trainer's model did not score this run, so its drift vs "
+            'holdout scores is not logged'
+            + (f"; against this trainer's holdout scores: {_values(holdout)}"
+               if holdout['psi'] is not None else '') + '.')))
+        reasons = {name: reason for name, reason in reasons.items()
+                   if name == 'previous'}
+    else:
+        summaries += _input_changes(report.input_changes or {})
+        summaries += _input_drift(report.features)
+        if report.holdout_truncated:
+            summaries.append(Note('notes', "The model's holdout file was "
+                                  'truncated to fit its size limit.'))
+    return summaries + _reason_notes(reasons)
+
+
+def _evaluation_summaries(result: EvaluationResult, labels: Any,
+                          model: Any = None,
+                          tables: Sequence[Table] = ()) -> List[Summary]:
+    from kumo.engine._manifest import artifact_summaries
+
+    manifest = getattr(labels, 'manifest', None)
+    name = None if manifest is None else manifest.as_artifact('labels').label
+    datasets = [] if manifest is None else [
+        summary for summary in artifact_summaries(
+            manifest, {manifest.kind: 'labels'})
+        if isinstance(summary, Dataset)
+        and summary.name == (name or manifest.id)]
+    tune = _tune_metric(model)
+    metrics = dict(sorted(((metric_name(metric), value) for metric, value
+                           in result.metrics.items() if value is not None),
+                          key=lambda item: item[0] != tune))
+    holdout = _holdout(model)
+    summaries: List[Summary] = [
+        Tag('kumo.labels_snapshot_id', result.snapshot_id), *datasets,
+        *(Scalar(f'realized/{metric}', value)
+          for metric, value in metrics.items()),
+    ]
+    if result.labelled_fraction is not None:
+        summaries.append(Scalar('realized/labelled_share',
+                                result.labelled_fraction))
+        if metrics:
+            summaries.append(Table(
+                'realized/metrics', ('metric', 'realized', 'holdout'),
+                tuple((metric, value, holdout.get(metric))
+                      for metric, value in metrics.items()), brief=True))
+        summaries += tables
+        summaries.append(Note('notes', (
+            f'{number(result.labelled_fraction * 100)} % labelled '
+            f'({result.labelled:,} of {result.rows:,} scored rows)'
+            + (f', with labels from {name}' if name else '') + '.')))
+    if result.matured is False:
+        summaries.append(Note('notes', 'Labels are not mature yet: the '
+                              'label window ends after the snapshot data.'))
+    return summaries + _reason_notes(result.reasons)
+
+
+def _tune_metric(model: Any) -> Optional[str]:
+    path = (getattr(model, 'artifact_paths', None)
+            or {}).get('resolved_model_plan')
+    if not path or not Path(path).is_file():
+        return None
+    plan = json.loads(Path(path).read_text())
+    tune = (plan.get('training_job') or {}).get('tune_metric')
+    return tune and metric_name(tune)
+
+
+def _holdout(model: Any) -> Dict[str, float]:
+    refit_full = getattr(getattr(model, 'manifest', None), 'fit_mode',
+                         None) == 'refit_full'
+    named = logged_names(getattr(model, 'metrics', None) or {}, refit_full)
+    return {name.removeprefix('test/'): value
+            for name, value in named.items() if name.startswith('test/')}
+
+
+_REASONS = {'holdout': 'Score drift vs holdout', 'previous':
+            'Score drift vs the previous run', 'input_changes':
+            'Input changes', 'features': 'Input columns vs training data',
+            'metrics': 'Realized metrics', 'matured': 'Label maturity'}
+_TOP_FEATURES = 3
+
+
+def _reason_notes(reasons: Mapping[str, str]) -> List[Summary]:
+    return [Note('notes', f'{_REASONS.get(name, name)}: {reason}.')
+            for name, reason in reasons.items()]
+
+
+def _shift(psi: float) -> str:
+    shift = psi_shift(psi)
+    return f'{shift} ({PSI_SHIFTS[shift]})'
+
+
+def _values(values: Mapping[str, Optional[float]]) -> str:
+    return ' · '.join(f'{name} {number(value)}'
+                      for name, value in values.items() if value is not None)
+
+
+def _input_changes(changes: Mapping[str, Tuple[Any, Any]]) -> List[Summary]:
+    summaries: List[Summary] = []
+    for name, unit, links in (('drift/table_rows', 'rows', False),
+                              ('drift/link_edges', 'edges', True)):
+        rows = tuple(
+            (source, before, after,
+             (after - before) / before * 100 if before and after is not None
+             else None)
+            for source, (before, after) in changes.items()
+            if (' → ' in source) == links)
+        if not rows:
+            continue
+        brief = len(rows) <= 12
+        summaries.append(Table(
+            name, ('link' if links else 'table', f'training {unit}',
+                   f'{unit} now', 'change (%)'), rows, brief=brief))
+        if not brief:
+            summaries.append(Note('notes', f'{len(rows)} '
+                                  f"{'links' if links else 'tables'} changed "
+                                  f'size: `{name}.json`.'))
+    return summaries
+
+
+def _input_drift(features: Mapping[str, Mapping[str, Mapping[str, Any]]]
+                 ) -> List[Summary]:
+    summaries: List[Summary] = []
+    shifted = []
+    for table, columns in sorted(features.items()):
+        rows = sorted((_input_row(column, change)
+                       for column, change in columns.items()),
+                      key=lambda row: (row[2] == '', -(row[2] or 0),
+                                       -abs(row[5] or 0), row[0]))
+        filled = [i for i in range(len(_INPUT_HEADER))
+                  if i < 2 or any(row[i] != '' for row in rows)]
+        summaries.append(Table(
+            f'drift/inputs/{table}', tuple(_INPUT_HEADER[i] for i in filled),
+            tuple(tuple(row[i] for i in filled) for row in rows)))
+        shifted += [(row[2], f'{table}.{row[0]}') for row in rows
+                    if row[2] != '']
+    if not summaries:
+        return []
+    shifted.sort(key=lambda item: -item[0])
+    if shifted:
+        summaries.insert(0, Scalar('drift/inputs_max_psi', shifted[0][0]))
+    top = ', '.join(f'`{column}` (psi {number(psi)}, {psi_shift(psi)})'
+                    for psi, column in shifted[:_TOP_FEATURES] if psi > 0)
+    files = ', '.join(f'`drift/inputs/{table}.json`'
+                      for table in sorted(features))
+    summaries.append(Note('notes', 'Input columns vs training data: '
+                          + (f'most shifted {top}' if top else
+                             'no shift' if shifted else 'no psi')
+                          + f'; per table: {files}.'))
+    return summaries
+
+
+_INPUT_HEADER = ('column', 'type', 'psi', 'shift', 'mean Δ sd', 'null Δ pp',
+                 'distinct Δ≈ %', 'newest Δ days', 'tokens Δ≈ %')
+
+
+def _input_row(column: str, change: Mapping[str, Any]) -> Tuple[Any, ...]:
+    if 'type_changed' in change:
+        return (column, ' → '.join(map(str, change['type_changed'])),
+                *[''] * (len(_INPUT_HEADER) - 2))
+    delta, relative = change['delta'], change['relative']
+
+    def blank(value: Optional[float], scale: float = 1) -> Any:
+        return '' if value is None else value * scale
+
+    psi = change.get('psi')
+    shift = '' if psi is None else (
+        '≈ ' if change.get('category_counts_capped') else '') + _shift(psi)
+    return (column, change['type'], blank(psi), shift,
+            blank(change.get('standardized_mean_shift')),
+            blank(delta.get('null_rate'), 100),
+            blank(relative.get('num_unique'), 100),
+            blank(delta.get('max_secs'), 1 / 86400),
+            blank(relative.get('avg_tokens'), 100))
+
+
+def _count_changes(before: Mapping[str, Mapping[str, int]],
+                   after: Mapping[str, Mapping[str, int]],
+                   links: Mapping[str, str]) -> Dict[str, Tuple[Any, Any]]:
+    changes = {}
+    for kind in ('rows', 'edges'):
+        old, new = before.get(kind) or {}, after.get(kind) or {}
+        for name in sorted(set(old) | set(new)):
+            if not name.endswith('_reverse') and old.get(name) != new.get(name):
+                changes[links.get(name, name)] = (old.get(name), new.get(name))
+    return changes
+
+
+def _links(config: Any) -> Dict[str, str]:
+    tables = (config.get('tables') if isinstance(config, dict) else None) or ()
+    keys = {table.get('name'): table.get('primary_key') for table in tables}
+    return {
+        f"{table.get('name')}_{fkey.get('src_column')}_to_"
+        f"{fkey.get('dst_table')}_{keys.get(fkey.get('dst_table'))}":
+        f"{table.get('name')}.{fkey.get('src_column')} → "
+        f"{fkey.get('dst_table')}"
+        for table in tables for fkey in table.get('fkeys') or ()
+    }
+
+
+def _ns(value: Any) -> int:
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is not None:
+        timestamp = timestamp.tz_convert(None)
+    return timestamp.value
+
+
+def _same(a: Optional[str], b: Optional[str]) -> Optional[bool]:
+    return None if a is None or b is None else a == b
+
+
+def _finite(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    value = float(value)
+    return value if math.isfinite(value) else None
+
+
+_NUMERIC_STATS = ('mean', 'std', 'min', 'max', 'q25', 'q50', 'q75',
+                  'skewness', 'kurtosis', 'null_rate', 'num_unique')
+_CATEGORY_STATS = ('null_rate', 'num_unique')
+_TIME_STATS = ('min_secs', 'max_secs')
+_SECONDS_PER_TICK = {'ns': Fraction(1, 10**9), 'us': Fraction(1, 10**6),
+                     'ms': Fraction(1, 1000), 'secs': 1, 'hours': 3600,
+                     'days': 86400}
+_TEXT_STATS = ('null_rate', 'num_unique', 'avg_tokens', 'max_tokens',
+               'glove_overlap')
+_SMOOTHING = 1e-6
+
+
+def _features(trainer: Any, sides: Mapping[str, Mapping[str, Any]],
+              reasons: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
+    try:
+        before, after = (side['col_stats'] for side in sides.values())
+        if not (isinstance(before, dict) and isinstance(after, dict)):
+            reasons['features'] = _missing('column statistics', sides,
+                                           'col_stats')
+            return {}
+        used = _used_columns(getattr(trainer, 'result', None))
+        if used is None:
+            reasons['features'] = 'the model records no encoded columns'
+            return {}
+        features: Dict[str, Dict[str, Any]] = {}
+        absent, uncompared, unbinned = [], [], []
+        for table, columns in sorted(used.items()):
+            if table not in before and table not in after:
+                continue
+            for column in sorted(columns):
+                old = (before.get(table) or {}).get(column)
+                new = (after.get(table) or {}).get(column)
+                if old is None or new is None:
+                    absent.append(f'{table}.{column}')
+                    continue
+                change = _column_change(old, new)
+                if change is None:
+                    uncompared.append(
+                        f"{table}.{column} ({new.get('semantic_type')})")
+                else:
+                    features.setdefault(table, {})[column] = change
+                    if change['type'] == 'numerical' and change['psi'] is None:
+                        unbinned.append(f'{table}.{column}')
+        notes = []
+        if absent:
+            notes.append('column statistics missing on a side for ' +
+                         ', '.join(absent))
+        if uncompared:
+            notes.append('no drift statistics for the type of ' +
+                         ', '.join(uncompared))
+        if unbinned:
+            notes.append('no psi for ' + ', '.join(unbinned) + ', since a '
+                         "snapshot's statistics have no value bins; rebuild "
+                         'it to count them')
+        if notes:
+            reasons['features'] = '; '.join(notes)
+        return features
+    except Exception as error:
+        reasons['features'] = f'feature statistics failed: {error}'
+        return {}
+
+
+def _parent_snapshot_id(manifest: Any) -> Optional[str]:
+    parents = getattr(manifest, 'parents', None)
+    if getattr(parents, 'derived_from', None) is not None:
+        return _parent_snapshot_id(parents.derived_from)
+    table = getattr(parents, 'training_table', None)
+    snapshot = getattr(getattr(table, 'parents', None), 'snapshot', None)
+    if snapshot is None:
+        snapshot = getattr(parents, 'snapshot', None)
+    return getattr(snapshot, 'id', None)
+
+
+_ARGUMENTS = {'training': 'training_snapshot', 'scoring': 'snapshot'}
+_NAMED_BY = {'training': "the model's manifest", 'scoring': "the run's manifest"}
+
+
+def _snapshot_stats(trainer: Any, run: Any, snapshot: Any,
+                    training_snapshot: Any,
+                    root: Any) -> Dict[str, Dict[str, Any]]:
+    model = getattr(getattr(trainer, 'result', None), 'manifest', None)
+    sides = {}
+    for side, passed, manifest in (
+        ('training', training_snapshot, model),
+        ('scoring', snapshot, getattr(run, 'manifest', None)),
+    ):
+        snapshot_id = _parent_snapshot_id(manifest)
+        read = _reader(passed, snapshot_id, root)
+        ingest = read('ingest_stats.json')
+        stats = ingest.get('stats') if isinstance(ingest, dict) else None
+        sides[side] = {
+            'named': passed is not None or snapshot_id is not None,
+            'col_stats': read('col_stats.json'),
+            'links': _links(read('diskgraph_config.json')),
+            'counts': {
+                'rows': dict(stats.get('source_rows_by_table', {})),
+                'edges': dict(stats.get('edge_counts', {})),
+            } if isinstance(stats, dict) else None,
+        }
+    return sides
+
+
+def _reader(snapshot: Any, snapshot_id: Optional[str],
+            root: Any) -> Callable[[str], Optional[Any]]:
+    index = getattr(snapshot, 'index_path', None)
+    if index is None and snapshot_id:
+        index = _local_index(snapshot_id)
+    if index is not None:
+        def local(name: str) -> Optional[Any]:
+            try:
+                return json.loads((Path(index) / name).read_text())
+            except (OSError, ValueError):
+                return None
+        return local
+    if root is None or not snapshot_id:
+        return lambda name: None
+    from kumo.engine import _snapshot_io
+
+    try:
+        path = root.location('snapshots/' + snapshot_id.replace('@', '/'))
+        generation, _ = _snapshot_io.read(root.connector, path)
+        filesystem, _ = _snapshot_io._location(root.connector, path)
+    except Exception:
+        return lambda name: None
+
+    def stored(name: str) -> Optional[Any]:
+        try:
+            return _snapshot_io._read_json(filesystem,
+                                           f'{generation}/index/{name}')
+        except Exception:
+            return None
+    return stored
+
+
+def _missing(what: str, sides: Mapping[str, Mapping[str, Any]],
+             name: str) -> str:
+    missing = [side for side, stats in sides.items()
+               if not isinstance(stats[name], dict)]
+    passes = ', '.join(
+        f'{_ARGUMENTS[side]}=GraphSnapshot.load_from_connector(store, '
+        f'path=...)' for side in missing)
+    unnamed = [_NAMED_BY[side] for side in missing if not sides[side]['named']]
+    if unnamed:
+        return (f"no {what} for the {' and '.join(missing)} snapshot: "
+                f"{' and '.join(unnamed)} name{'s' * (len(unnamed) == 1)} "
+                f"no snapshot; pass {passes}")
+    return (f"no {what} for the {' and '.join(missing)} snapshot: pass "
+            f"{passes}, or turn MLOps on with the artifact root that stores "
+            f"{'them' if len(missing) > 1 else 'it'}")
+
+
+def _local_index(snapshot_id: str) -> Optional[Path]:
+    from kumo.engine._scratch import get_scratch_dir
+
+    graph_key, _, version = snapshot_id.partition('@')
+    if not graph_key or not version:
+        return None
+    root = get_scratch_dir() / 'snapshots' / graph_key
+    found = sorted(path for path in root.glob(f'{version}*')
+                   if (path / 'col_stats.json').is_file())
+    return found[0] if len(found) == 1 else None
+
+
+def _used_columns(result: Any) -> Optional[Dict[str, set]]:
+    from kumo_core.encoders.config import EncodersConfig
+    from kumo_core.io.json import load_json
+
+    path = (getattr(result, 'artifact_paths', None) or {}).get('encoders')
+    if not path or not Path(path).is_file():
+        return None
+    config = load_json(path, EncodersConfig)
+    if config is None:
+        return None
+    return {table: set(columns) for table, columns in config.encoders.items()}
+
+
+def _column_change(old: Mapping[str, Any],
+                   new: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    kind = new.get('semantic_type')
+    if old.get('semantic_type') != kind:
+        return {'type': kind, 'type_changed': [old.get('semantic_type'), kind]}
+    if kind == 'numerical':
+        change = _deltas(old, new, _NUMERIC_STATS)
+        std = old.get('std')
+        shift = change['delta'].get('mean')
+        change['standardized_mean_shift'] = (
+            shift / std if shift is not None and std else None)
+        change['psi'] = _binned_psi(old.get('value_bins'),
+                                    new.get('value_bins'))
+    elif kind in ('categorical', 'multicategorical'):
+        change = _deltas(old, new, _CATEGORY_STATS)
+        change['psi'] = _category_psi(_distribution(old), _distribution(new))
+        change['category_counts_capped'] = bool(
+            old.get('category_counts_capped')
+            or new.get('category_counts_capped'))
+    elif kind == 'timestamp':
+        change = _deltas(_in_seconds(old), _in_seconds(new), _TIME_STATS)
+    elif kind == 'text':
+        change = _deltas(old, new, _TEXT_STATS)
+    else:
+        return None
+    return {'type': kind, **change}
+
+
+def _in_seconds(stats: Mapping[str, Any]) -> Dict[str, Any]:
+    out = dict(stats)
+    for bound in ('min', 'max'):
+        for unit, seconds in _SECONDS_PER_TICK.items():
+            ticks = stats.get(f'{bound}_{unit}')
+            if isinstance(ticks, int):
+                out[f'{bound}_secs'] = float(ticks * seconds)
+    return out
+
+
+def _binned_psi(training: Optional[List[List[float]]],
+                scoring: Optional[List[List[float]]]) -> Optional[float]:
+    if not training or not scoring:
+        return None
+    starts = {start: i for i, start in enumerate(
+        sorted({start for start, _ in training + scoring}))}
+    expected, actual = np.zeros(len(starts)), np.zeros(len(starts))
+    for counts, side in ((expected, training), (actual, scoring)):
+        for start, count in side:
+            counts[starts[start]] = count
+    return decile_psi(actual, expected)
+
+
+def _stat(stats: Mapping[str, Any], name: str) -> Optional[float]:
+    if name == 'null_rate':
+        count = stats.get('count')
+        return stats.get('null_count', 0) / count if count else None
+    if name == 'num_unique':
+        value = stats.get('num_unique', stats.get('num_unique_multi'))
+    else:
+        value = stats.get(name)
+    return float(value) if isinstance(value, (int, float)) and not isinstance(
+        value, bool) and math.isfinite(value) else None
+
+
+def _deltas(old: Mapping[str, Any], new: Mapping[str, Any],
+            names: Tuple[str, ...]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {'training': {}, 'scoring': {}, 'delta': {},
+                           'relative': {}}
+    for name in names:
+        before, after = _stat(old, name), _stat(new, name)
+        out['training'][name], out['scoring'][name] = before, after
+        if before is None or after is None:
+            continue
+        out['delta'][name] = after - before
+        if before:
+            out['relative'][name] = (after - before) / abs(before)
+    return out
+
+
+def _distribution(stats: Mapping[str, Any]) -> Dict[str, float]:
+    counts: Dict[str, float] = {}
+    for value, count in stats.get('category_counts') or ():
+        counts[str(value)] = counts.get(str(value), 0.0) + float(count)
+    total = sum(counts.values())
+    return {key: count / total for key, count in counts.items()} if total \
+        else {}
+
+
+def _category_psi(p: Mapping[str, float],
+                  q: Mapping[str, float]) -> Optional[float]:
+    if not p or not q:
+        return None
+    keys = sorted(set(p) | set(q))
+    a = np.array([p.get(k, 0.0) for k in keys]) + _SMOOTHING
+    b = np.array([q.get(k, 0.0) for k in keys]) + _SMOOTHING
+    a, b = a / a.sum(), b / b.sum()
+    return float(np.sum((b - a) * np.log(b / a)))

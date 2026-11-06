@@ -42,7 +42,7 @@ jobs:
           node-version: '22'
 
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be   #  v1.3.1
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6   #  v2.0.0
 
       - name: Install fuse-overlayfs (upstream)
         timeout-minutes: 15
@@ -109,7 +109,7 @@ jobs:
 
       - name: Push To AWS ECR
         id: push-to-ecr
-        uses: redhat-actions/push-to-registry@5ed88d269cf581ea9ef6dd6806d01562096bee9c   #  v2.8
+        uses: redhat-actions/push-to-registry@94ade333c38ecc0e60e94785125d9a52ca423b37   #  v3.0.0
         with:
           image: ${{ env.INPUT_IMAGE }}  # env var set by previous Build Image step
           tags: ${{ env.INPUT_TAGS }}  # env var set by previous Build Image step

@@ -29,10 +29,12 @@ uses by default to encode text columns; without it, a text column cannot be
 encoded and the error asks for `pip install "kumo-engine[text]"`.
 `torch-geometric>=2.8.1,<3` is also resolved separately at install time.
 
-Faiss is selected at install time: `faiss-gpu==1.14.3` on Linux and
+Faiss is selected at install time: `faiss-gpu==1.14.3` on Linux x86-64 and
 `faiss-cpu==1.14.3` on macOS. These markers live on the engine's direct
 dependencies so merging bundled packages preserves them. This dependency
-selection does not establish macOS wheel or runtime support.
+selection does not establish wheel or runtime support. Faiss is optional on
+Linux ARM64 and experimental native Windows builds; the `cpu` extra opts into
+CPU Faiss there. Windows support for this release is WSL2 only.
 
 Releases are cut from `NVIDIA/kumo-engine`: its GitHub releases trigger the
 workflows below, which attach the wheels to the release. Their `kitmaker` job
@@ -40,9 +42,17 @@ then has Kitmaker, NVIDIA's release service, fetch the attached wheels and
 publish them to PyPI and pypi.nvidia.com. No workflow here uploads to PyPI or
 holds PyPI credentials.
 
-The wheels are `cp311-abi3-manylinux_2_34_x86_64` for Linux x86_64 with glibc
->= 2.34 and `cp311-abi3-macosx_14_0_arm64` for Apple Silicon with macOS >= 14.0.
-Both require CPython >= 3.11 (DiskGraph's stable-ABI floor). The merger reads
+The build matrix targets `cp311-abi3-manylinux_2_34_x86_64` and
+`cp311-abi3-manylinux_2_34_aarch64` for Linux with glibc >= 2.34,
+`cp311-abi3-win_amd64` for native Windows x86-64, and
+`cp311-abi3-macosx_14_0_arm64` for Apple Silicon with macOS >= 14.0.
+WSL uses the Linux x86-64 wheel. All require CPython >= 3.11
+(DiskGraph's stable-ABI floor), with classifiers for 3.11–3.14. Adding build
+targets does not establish published availability or installed-wheel runtime
+qualification. Native Windows builds and tests are experimental: their wheels
+remain CI artifacts and are excluded from public release attachments and
+Kitmaker publication. The supported Windows route for this release is WSL2.
+The merger reads
 every bundled wheel's `Requires-Python` and writes their intersection into the
 final wheel.
 Stricter minimums, upper bounds, and exclusions are retained; incompatible
@@ -115,16 +125,18 @@ platform's `release-version`.
      Labels and ranks can change only when their scores justify the change
      within that bound. The macOS wheel has no GPU smoke
      check. See the [test criteria](testing.md#finished-kumo-engine-wheel).
-   - attaches the Linux x86_64 and macOS ARM64 wheels to the GitHub release.
+   - attaches the Linux x86_64/ARM64 and macOS ARM64 wheels to the GitHub
+     release; the Linux x86_64 wheel also serves WSL2. Native Windows upload
+     routes remain disabled despite experimental build/test coverage.
 5. **Publish through Kitmaker.** The `kitmaker` job runs in the
    `kumo-engine-release` environment and waits for approval from
    `kumo-engineers`. The person who starts the run cannot approve it.
    It checks that the Portal project
    has the expected name and owner and that the attached wheel is the one this
    run built, has Kitmaker dry-run it, and only then publishes it to PyPI and
-   pypi.nvidia.com, where it confirms both serve exactly those bytes. Both
-   platform wheels are published. A publication cannot be recalled, and PyPI never
-   accepts the same file name twice.
+   pypi.nvidia.com, where it confirms both serve exactly those bytes. All
+   enabled platform wheels are published. A publication cannot be recalled,
+   and PyPI never accepts the same file name twice.
 6. **Smoke-test the published wheel** in a clean virtualenv:
 
    ```bash
@@ -159,6 +171,14 @@ as a workflow artifact for 30 days. It never
 attaches or publishes anything: attaching runs only for release events, and PyPI
 rejects local versions anyway.
 
+## Native CPU baseline
+
+DiskGraph builds retain the fixed CPU baseline in `.cargo/config.toml` and
+the native build backend: AES plus SSE2 on x86-64; AES plus NEON on ARM64.
+There is no `target-cpu=native` setting or AVX2 requirement. Qualification
+runners and deployment CPUs must expose that baseline, including through
+virtualization.
+
 ## Build locally
 
 ```bash
@@ -179,6 +199,40 @@ and takes the final platform tag from the built DiskGraph wheel. Rust, Xcode
 Command Line Tools, and CMake are required. The release workflow builds this
 wheel on a macOS ARM64 runner with the same deployment target.
 
+### Experimental native Windows builds
+
+These instructions are for development and CI qualification, not a supported
+installation route for this release. Use WSL2 and the Linux x86-64 wheel on
+Windows. Native Windows release uploads are disabled.
+
+Experimental native Windows x64 installations require a Microsoft Visual C++ v14 runtime
+at least as recent as the build tools used for the wheel. If the runtime is
+missing or too old, install the
+[latest supported x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
+This runtime prerequisite is separate from the MSVC build tools required to
+build from source; the engine wheel does not bundle the redistributable.
+
+On native Windows, run the builder in Git Bash with native Windows Python,
+the Rust MSVC toolchain, CMake, and an activated Visual Studio x64 C++/Windows
+SDK environment. Set `PYTHON=python` if `python3` is not available. Zig and
+ELF/glibc checks are disabled; the builder requires DiskGraph's `win_amd64`
+tag. `--verify-image` is not supported for Windows: qualify the installed
+wheel natively. The workflow activates the image's existing MSVC tools;
+it does not install system toolchains.
+The checkout must preserve committed LF line endings: notice and Cargo lock
+hashes verify exact source bytes. For a fresh local clone, use
+`git -c core.autocrlf=false clone <repository-url>`. CI applies this setting
+only to the checkout action's Git processes, without changing repository or
+user Git configuration files or weakening the integrity checks.
+
+### Linux ARM64 builds
+
+Linux ARM64 uses the same Zig build and glibc checks as Linux x86-64,
+with `--platform-tag manylinux_2_34_aarch64`. The workflow validates the
+assembled native payload before uploading it. Clean installed-wheel CPU
+ingestion, training, and prediction are a separate qualification requirement;
+GPU execution is not required for these platform wheels.
+
 ## PyPI projects
 
 `kumo-engine` and `kumo-glove-6b-50d` belong to NVIDIA's PyPI organization
@@ -193,3 +247,61 @@ needs:
 - the variable `KITMAKER_PIC`, that owner's email address.
 
 Review the license metadata: the wheel carries the `License-Expression` derived by `scripts/gen_third_party.py` and ships `LICENSE` and `THIRD-PARTY.txt`.
+
+## Charon connectivity and validation
+
+The engine and GloVe release jobs call
+[Kitmaker Portal via Charon](../../.github/workflows/kitmaker-portal.yml).
+It runs on GitHub-hosted Ubuntu, opens a Teleport application tunnel to Charon
+Ferry, and authenticates each Portal request with a fresh GitHub OIDC token
+plus the Kitmaker bearer token. Both release callers explicitly forward
+`KITMAKER_API_TOKEN`, which the reusable workflow declares as required.
+Portal credentials stay in the `kumo-engine-release` environment. Charon/Teleport must authorize this repository,
+workflow, and ref; authorization for cuOpt does not grant access to Kumo.
+The tunnel uses `ext-nv-prd-apps.teleport.sh:443`. The original cuOpt PR
+used an older staging proxy; its replacement is documented in
+[cuOpt PR #2161](https://github.com/NVIDIA/cuopt/pull/2161).
+
+After this workflow is merged, run the connectivity check from `main`:
+
+```bash
+gh workflow run kitmaker-portal.yml --repo NVIDIA/kumo-engine --ref main
+```
+
+A job-level condition rejects manual runs from refs other than
+`refs/heads/main` before the job enters the release environment or checks out
+code. Release-event calls remain enabled.
+
+The check reads project 6903 and verifies its name and owner. It does not build
+wheels, create a Kitmaker release, or publish packages. Success confirms
+connectivity and project-read access; release submission and wheel fetching
+still require a release dry run.
+
+The Charon grant allows `refs/heads/main`, `refs/tags/kumo-engine-v*`, and
+`refs/tags/kumo-glove-6b-50d-v*`. Feature branches are not authorized. The grant
+must be synced to production before checking access through the production
+proxy; merging the grant alone does not confirm that sync has completed.
+
+The reusable workflow defaults `upload` to false. Release callers explicitly
+set it to true after the release environment permits the job. For a standalone
+Kitmaker validation without publication, run the script with `--dry-run` and
+its usual release arguments. Add `--ferry` and the local tunnel Portal URL when
+using Charon; this needs GitHub Actions OIDC variables and `id-token: write`.
+The script requires `orjson`, already declared through the root project's
+dynamic dependencies in `setup.py`; the workflow installs it in an isolated
+`uv run` environment.
+
+### Connectivity failures
+
+`token expired or not found` from the original `nv-stg-ps` proxy can indicate
+an outdated proxy, rather than an expired Kitmaker API token. Use the current
+Teleport proxy before investigating Portal credentials.
+
+A successful Teleport tunnel does not establish Charon backend authorization.
+For HTTP 403, ask the Charon owner to check this repository's tenant grant
+against the run's actual ref and requested routes. The connectivity check needs
+`refs/heads/main` and `GET /api/v0/projects/6903`. Release jobs also need
+project reads for 6903 and 6904, POST access to each project's `/releases`, and
+the corresponding release tag refs. Preserve the error response's request ID
+for tracing. A denied read alone does not establish whether Portal credentials
+are valid.

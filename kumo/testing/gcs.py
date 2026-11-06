@@ -2,137 +2,35 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import base64
-import inspect
-import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from unittest import mock
 
 import pytest
 from google.cloud import storage
 
-from io_utils import logging
 from io_utils.fsutil import impl_gcs
-from kumo.connector.bigquery_connector import (
-    ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH,
-    ENV_GOOGLE_CREDENTIALS_JSON,
-)
+from kumo.testing.bigquery import setup_bigquery_credentials
 
-logger = logging.getLogger(__name__)
-
-# Environment variable for GCS test bucket
-ENV_GCS_TEST_BUCKET = "GCS_TEST_BUCKET"
-
-# Default Application Default Credentials path
-ADC_DEFAULT_PATH = os.path.join(os.path.expanduser("~"), ".config", "gcloud",
-                                "application_default_credentials.json")
+ENV_GCS_TEST_BUCKET = 'GCS_TEST_BUCKET'
 
 
-def setup_gcs_credentials():
-    """Set up GCS credentials for testing.
-
-    This function fetches Google Cloud credentials from the
-    GOOGLE_CREDENTIALS_STR_JSON environment variable and sets up the necessary
-    environment variables for GCS testing.
-
-    The credentials should be base64 encoded to avoid issues with special
-    characters in the JSON string.
-    """
-
-    if ENV_GCS_TEST_BUCKET not in os.environ:
-        os.environ[ENV_GCS_TEST_BUCKET] = 'kumo-test-bucket'
-    google_creds = os.getenv("GOOGLE_CREDENTIALS_STR_JSON")
-    if google_creds:
-        logger.info("Using GOOGLE_CREDENTIALS_STR_JSON environment variable")
-        google_creds = base64.b64decode(google_creds)
-        google_creds = google_creds.decode('utf-8')
-
-        file_path = os.path.join(os.getcwd(), ".google_credential.json")
-        # Parse the JSON string to a dictionary first
-        try:
-            google_creds_dict = json.loads(google_creds)
-            with open(file_path, 'w') as f:
-                json.dump(google_creds_dict, f)
-
-            with open(ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH, 'w') as f:
-                json.dump(google_creds_dict, f)
-
-            # Extract and set GCP_PROJECT_ID from service account credentials
-            # This is needed for GCPSecretProvider initialization
-            if 'project_id' in google_creds_dict:
-                os.environ['GCP_PROJECT_ID'] = google_creds_dict['project_id']
-                logger.info(f"Set GCP_PROJECT_ID from credentials: "
-                            f"{google_creds_dict['project_id']}")
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse GOOGLE_CREDENTIALS_STR_JSON: {e}")
-            raise
-        os.environ[ENV_GOOGLE_CREDENTIALS_JSON] = file_path
-        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = file_path
-    else:
-        logger.warning(
-            "GOOGLE_CREDENTIALS_STR_JSON environment variable not set. "
-            "Relying on existing GOOGLE_APPLICATION_CREDENTIALS.")
-
-
-def _check_gcs_credentials() -> bool:
-    """Check if GCS credentials are available.
-
-    Checks for credentials in the following order:
-    1. GOOGLE_APPLICATION_CREDENTIALS env var
-    2. ~/.google_credentials.json (ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH)
-    3. ~/.config/gcloud/application_default_credentials.json (ADC default)
-
-    If ADC exists but GOOGLE_APPLICATION_CREDENTIALS is not set, it will be
-    set automatically for the google-cloud libraries to use.
-
-    Returns:
-        bool: True if credentials are available, False otherwise
-    """
-    setup_gcs_credentials()
-
-    # Check if credentials are already set
-    if os.getenv('GOOGLE_APPLICATION_CREDENTIALS') is not None:
-        return True
-
-    if os.path.exists(ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH):
-        return True
-
-    # Check for ADC default path and set env var if found
-    if os.path.exists(ADC_DEFAULT_PATH):
-        logger.info(f"Using ADC credentials from {ADC_DEFAULT_PATH}")
-        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = ADC_DEFAULT_PATH
-        return True
-
-    return False
+@contextmanager
+def setup_gcs_credentials() -> Generator[None, None, None]:
+    """Scope explicit ADC without discovering or writing credential files."""
+    with setup_bigquery_credentials(), pytest.MonkeyPatch.context() as environment:
+        environment.setenv(ENV_GCS_TEST_BUCKET,
+                           os.environ.get(ENV_GCS_TEST_BUCKET) or 'kumo-test-bucket')
+        # Cached clients otherwise retain an identity from an earlier scope.
+        environment.setattr(impl_gcs, 'threadsafe_gcs',
+                            impl_gcs.ThreadLocalGCSClient())
+        yield
 
 
 def withGCSCredentials(func: Callable):
-    """Decorator that sets up GCS credentials and skips tests if unavailable.
-
-    This decorator:
-    1. Calls setup_gcs_credentials() to fetch and configure credentials
-    2. Skips the test if credentials are not available
-    3. Allows tests to run in CI with credentials but skip locally without them
-
-    Args:
-        func: The test function to decorate
-
-    Example:
-        @withGCSCredentials
-        def test_gcs_operation():
-            # Test code here
-            pass
-    """
-    # A collection-time mark prevents live GCS fixtures from being resolved
-    # when credentials are absent. A runtime wrapper skips too late: pytest
-    # sets up fixtures before invoking the wrapped test.
-    credentials_missing = not _check_gcs_credentials()
-    reason = "No GCS credentials found"
-    if inspect.isgeneratorfunction(func):
-        from kumo.testing._skip import skip_if
-        return skip_if(credentials_missing, reason, func)
-    return pytest.mark.skipif(credentials_missing, reason=reason)(func)
+    """Declare credentials without performing IO during pytest collection."""
+    return pytest.mark.gcs_credentials(func)
 
 
 def withMockedGCSFilesystem(func: Callable):

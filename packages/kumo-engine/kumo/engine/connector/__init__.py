@@ -17,6 +17,10 @@ minus the server-registry-only fields (`name`, `description`, `project_id`,
 `_response`) and the `_bind_connector` round-trip. See `kumo.engine.connector.base`.
 """
 
+from typing import Any, Optional, Tuple
+
+from kumoapi.plugin import FileStoreSink
+
 from kumo.engine.connector.adls import ADLSConnector
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.bigquery import BigQueryConnector
@@ -36,6 +40,46 @@ from kumo.engine.connector.s3 import S3Connector
 from kumo.engine.connector.snowflake import SnowflakeConnector
 from kumo.engine.connector.source_table import SourceTable, SQLSourceTable
 
+
+def connector_for_root(uri: str) -> Connector:
+    r"""A connector rooted at ``uri``."""
+    from urllib.parse import urlparse
+    from urllib.request import url2pathname
+
+    parsed = urlparse(uri)
+    if parsed.scheme == 's3':
+        return S3Connector(root_dir=uri)
+    if parsed.scheme == 'gs':
+        return GCSConnector(root_dir=uri)
+    if parsed.scheme == 'abfss':
+        return ADLSConnector(root_dir=uri)
+    if parsed.scheme not in ('', 'file'):
+        raise ValueError(
+            f'{uri!r} is not s3://, gs://, abfss://, file:// or a local '
+            f'path.')
+    return FileConnector(
+        root_dir=url2pathname(parsed.path) if parsed.scheme else uri)
+
+
+def _file_sink(connector: Connector, path: str) -> Optional[FileStoreSink]:
+    try:
+        sink = connector.sink_backend
+    except NotImplementedError:
+        return None
+    return sink if isinstance(sink, FileStoreSink) and sink.holds_files(
+        connector, path) else None
+
+
+def is_file_destination(connector: Connector, path: str) -> bool:
+    return _file_sink(connector, path) is not None
+
+
+def file_store(connector: Connector, path: str) -> Optional[Tuple[Any, str]]:
+    r"""The ``(filesystem, path)`` of a file destination; None for a table."""
+    sink = _file_sink(connector, path)
+    return None if sink is None else sink.filesystem(connector, path)
+
+
 __all__ = [
     "ADLSConnector",
     "ADLSIdentity",
@@ -54,4 +98,5 @@ __all__ = [
     "GCSIdentity",
     "BigQueryIdentity",
     "DatabricksIdentity",
+    "connector_for_root",
 ]
