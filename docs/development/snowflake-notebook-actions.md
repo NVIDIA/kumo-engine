@@ -1,138 +1,86 @@
-# Snowflake notebook platform checks
+# Snowflake notebook tests
 
-The trial workflow runs only through manual dispatch on
-`egu/mlops-platform-integration` in `NVIDIA/kumo-engine`. It has no push, PR,
-schedule, or comment trigger. Choose `graph-ui` for notebook rendering or
-`engine` for training and lifecycle execution.
+Run the Snowflake scenarios from the
+[product testing plan](https://docs.google.com/document/d/18Jt8Y_rvfpuCrWbwArtEyPdpQu6AiDLn3I-_HqNLyHA/edit)
+locally or through GitHub Actions. Both use the same test scripts and installed
+candidate wheel.
 
-GitHub's repository permissions control who can request a manual run. The
-protected environment requires approval from `NVIDIA/kumo-engineers`, the
-repository's maintainer team, before Snowflake credentials become available.
-Each cloud job rechecks the environment restrictions with its built-in
-`GITHUB_TOKEN`, including reruns. No separate team-read credential is required.
+## What it tests
 
-The separate engine job covers notebook preflight and the four engine lifecycle
-phases: fit/register, fresh-process prediction and alias moves, monitoring and
-late-label evaluation, and permission denial. It uses the identified installed
-wheel. UI verification is excluded. Full epoch-history export remains a separate
-unimplemented requirement; a successful engine check is not full qualification.
-Both results are retained in `summary.json` and `ci-verdict.json`.
-
-## Coverage and limits
-
-These tests implement the Snowflake portions of the
-[product-validation assignment](https://docs.google.com/document/d/18Jt8Y_rvfpuCrWbwArtEyPdpQu6AiDLn3I-_HqNLyHA/edit).
-The [shared lifecycle guide](mlops-validation.md) describes the small fixture,
-reused test code, and local-process execution. The Snowflake executor uses that
-same lifecycle with live internal-stage storage, experiment tracking and model
-registry; training and prediction run inside Container Runtime notebooks.
-
-| Assignment requirement | Snowflake check |
+| Scenario | Checks |
 | --- | --- |
-| Two model versions and multi-epoch tracking | Two small fits; exact run, metric history, bundle and registry-version readback. |
-| Fresh-session recovery, version/alias resolution | Separate phase workers restore durable artifacts; explicit versions and alias promotion record the intended model. |
-| Lineage, population, ordinary prediction schema | Training/scoring snapshot identities, full expected IDs, and prediction without MLOps. |
-| Drift and evaluation after labels arrive | Saved-prediction/model identity, zero self-comparison drift, independent label join and recomputed AUROC. |
-| Focused failure cases | Unknown IDs, genuine denied-stage writes, incomplete model and prediction artifacts. |
-| Expected runs, metrics and model versions in UI | Separate Snowsight check against retained lifecycle receipts; no additional fits. |
-| Notebook graph rendering, saved/reopened outputs and exports | Existing PR172 graph fixture; live rendering, saved output after kernel shutdown, and SVG/PDF/Markdown artifacts. |
-| Sample-data safeguards | Zero source reads by default, real samples only with explicit opt-in, and no sample values in diagram exports. |
-| Repeatable installed-product evidence | Candidate and helper hashes, runtime/identity, phase receipts, logs, UI assertions and export checksums. |
+| Engine lifecycle | Train/register two versions; reload in fresh processes; predict by version and alias; move the alias; verify tracking, lineage, prediction IDs/schema, drift and evaluation after labels arrive. Includes denied artifact access and incomplete artifacts. |
+| Lifecycle UI | Open the retained lifecycle's runs and model versions in Snowsight; verify status, metrics and epoch history. Reuses existing results without training again. |
+| Notebook graph UI | Render An's PR172 adtech fixture in a Snowflake notebook; verify schema, relationships, tooltips and controls; reopen saved outputs after kernel shutdown; verify SVG/PDF/Markdown exports. Default display must read no source data, and exports must exclude sample values. |
 
-The runs/metrics/model-version UI check uses Snowsight's experiment and registry
-pages. That is this test's interpretation of the assignment's platform UI row;
-the assignment does not name those pages or mandate a browser tool. Notebook
-graph checks verify Kumo's rendered output inside Snowsight. Navigation, login,
-resource selection and kernel controls support reaching and retaining that
-output; they are not a general regression suite for Snowsight.
+The lifecycle uses 60 users, 1,500 events and two fits of two epochs each. See
+[local lifecycle testing](mlops-validation.md) for the shared fixture and runner.
+The graph scenario runs without training.
 
-Full epoch history in model exports remains unimplemented. Drift checks verify
-identity, recorded values and self-comparison; they do not independently prove
-sensitivity to a controlled nonzero distribution shift. Incomplete-artifact
-checks do not simulate interruption of a live remote writer. Separate notebook
-jobs are stronger isolation than the assignment's fresh-process requirement;
-they support durable recovery without adding fits. Explanations unavailable on
-main are outside the graph scenario. These limits must remain visible when
-reporting coverage; an engine-only or graph-only pass is not full qualification.
+Current gaps: full epoch history in model exports, independently verified
+nonzero drift sensitivity, and interruption of an active remote writer.
+Explanations unavailable on main are outside the graph scenario. A successful
+engine or graph check alone does not establish full qualification.
 
-## Existing test resources
+## Setup
 
-Live runs require the existing dedicated database/schema, `KUMO_TEST_WH`,
-`KUMO_TEST_POOL`, writable internal stage, and a separate denied stage. The
-exact allowlist is in
-[resources.py](../../packages/kumo-engine/test/snowflake_notebook/resources.py).
-The launcher creates only attempt-specific notebook/Code Bundle, experiment,
-model and artifact objects within those resources. It does not provision a
-warehouse, compute pool, database, schema or stage.
+Use Python 3.12. Submission needs `snowflake-connector-python` and
+`cryptography`. UI checks also need Node.js 22, Playwright and Chromium:
 
-The submission identity needs key-pair access, usage of the dedicated warehouse
-and pool, the required schema object-creation privileges, and read/write access
-to the writable stage. The denied stage must allow reads without writes; see
-[setup-denied-stage.sql](../../examples/mlops/snowflake/setup-denied-stage.sql).
-Notebook workers reconstruct runtime-provided identity and verify it before
-MLOps writes; the runner's private key is not forwarded to them. The browser
-uses its separate dedicated identity described below.
+```sh
+python -m pip --isolated install snowflake-connector-python cryptography
+npm ci --prefix packages/kumo-engine/test/snowflake_notebook/browser
+node packages/kumo-engine/test/snowflake_notebook/browser/node_modules/playwright/cli.js install chromium
+```
 
-## GitHub setup
+Chromium's system libraries must already be available locally. GitHub Actions
+installs them with Playwright's `install --with-deps chromium` command.
 
-In repository **Settings → Environments**, create `snowflake-mlops-test`.
-Under **Deployment branches and tags**, select **Selected branches and tags**
-and allow only the branch `egu/mlops-platform-integration`.
-The workflow checks this restriction before opening a deployment job; a missing
-or differently restricted environment fails before any Snowflake connection.
-Require `NVIDIA/kumo-engineers` as the only environment reviewer and disable
-administrator bypass. A maintainer can approve their own manually requested run.
-The workflow verifies these settings before execution and rechecks them inside
-each cloud job.
+The tests use existing dedicated resources in the test Snowflake account:
 
-Add these four secrets to this environment itself:
+- `KUMO_TEST_DB.KUMO_TEST`, `KUMO_TEST_WH`, and `KUMO_TEST_POOL`.
+- A writable internal stage and a separate read-only
+  [denied stage](../../examples/mlops/snowflake/setup-denied-stage.sql).
+- `KUMO_SNOWFLAKE_CI` with key-pair authentication and
+  `KUMO_SNOWFLAKE_TEST_ROLE`, including access to the resources above and
+  privileges to create test Code Bundles, experiments and models.
+- `KUMO_SNOWFLAKE_UI_TEST` with password/TOTP login and access to the test
+  runs, models and notebook service.
 
-- `SNOWFLAKE_TEST_CONFIG`: the JSON returned by `resources.expected()` from
-  `packages/kumo-engine/test/snowflake_notebook/resources.py`. It authorizes the
-  dedicated account, users, role, database, schema, warehouse, pool, service,
-  stages, and exact candidate/asset manifests. Update it after an intentional
-  change to either manifest.
-- `SNOWFLAKE_PRIVATE_KEY`: the complete encrypted PEM private key, including
-  its BEGIN/END lines, for `KUMO_SNOWFLAKE_CI`.
-- `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE`: its passphrase.
-- `SNOWFLAKE_UI_CREDENTIALS`: the browser credential JSON described below.
+The graph runner currently selects the existing service `EGU_GRAPH_UI_SERVICE`
+on `KUMO_TEST_POOL (GEN_X64_G2_8)`, using CPU Python 3.12. This name is a fixed
+test-resource setting in the current implementation, not a Snowflake requirement
+or a CLI option. Selecting it explicitly prevents use of a shared service.
 
-The local memory cache is not transferred to GitHub. The connector decrypts
-these CI secrets in process; neither the key nor passphrase enters the notebook
-payload or evidence. Only the graph UI job reads the browser credential values.
-Configure all four secrets in this environment, rather than at repository or
-organization scope. GitHub runs also reject
-local RSA-cache and browser-credential-file fallback.
+[resources.py](../../packages/kumo-engine/test/snowflake_notebook/resources.py)
+defines the exact resource allowlist. Set `SNOWFLAKE_TEST_CONFIG` to the JSON
+returned by its `expected()` function before live execution:
 
-Resource names remain visible as test-only constraints and in retained evidence.
-The protection restricts access to those resources; it does not make their
-identifiers confidential. Before local live execution, explicitly supply the
-same `SNOWFLAKE_TEST_CONFIG` JSON through the environment. Planning remains
-credential-free.
+```sh
+export SNOWFLAKE_TEST_CONFIG="$(python -c 'import json, sys; sys.path.insert(0, "packages/kumo-engine/test/snowflake_notebook"); import resources; print(json.dumps(resources.expected()))')"
+```
 
-## Candidate and payload
+It includes hashes of the [candidate](../../packages/kumo-engine/test/snowflake_notebook/candidate.json)
+and [graph assets](../../packages/kumo-engine/test/snowflake_notebook/graph-assets.json)
+manifests. The tests use that staged wheel and reuse unchanged uploads; they do
+not build a wheel from the current checkout.
 
-[candidate.json](../../packages/kumo-engine/test/snowflake_notebook/candidate.json)
-identifies the existing development wheel and dependency archive by SHA-256,
-size, stage location, and observed object metadata. This trial tests that supplied
-wheel; it does not build a wheel from the workflow commit. A future PR candidate
-build must provide a corresponding manifest rather than reuse this candidate.
+For local authentication, keep the encrypted key outside Git and unlock it once:
 
-The runner submits the current checkout's test helpers. It checks that staged
-assets retain their pinned metadata without downloading or uploading the large
-archive. Inside the notebook, every referenced file is downloaded and checked
-against its SHA-256 before installation or import. Offline pip resolves the
-candidate's `snowflake` extra from the recorded dependency archive.
+```sh
+python packages/kumo-engine/test/snowflake_notebook/key_cache.py --key-file /path/to/key.p8
+```
 
-Changed or missing pinned assets fail rather than silently selecting another
-wheel. Upload caching for the small helper files also uses content hashes.
-Preflight runs before training. Attempts use unique model/experiment, stage
-prefixes, and Code Bundles. Existing test resources are required; the runner
-neither provisions infrastructure nor deletes retained evidence.
+The key cache lasts eight hours. Browser credentials go in an owner-only JSON
+file, supplied with `--ui-credentials`, containing `account_url`, `user`,
+`password` and `totp_secret`. The TOTP secret is the Base32 enrollment secret.
+Alternatively, supply this JSON through `SNOWFLAKE_UI_CREDENTIALS`.
 
-## Local validation and execution
+## Run locally
 
-Prepare and inspect without credentials or service calls:
+Run commands from the repository root. Use a new output directory each time.
+
+**Engine lifecycle:** prepare the payload, then execute it inside Snowflake notebooks.
 
 ```sh
 python packages/kumo-engine/test/snowflake_notebook/prepare.py \
@@ -141,145 +89,67 @@ python packages/kumo-engine/test/snowflake_notebook/launch.py \
   --payload-manifest /tmp/snowflake-payload-001/manifest.json \
   --preflight-payload /tmp/snowflake-payload-001/preflight \
   --lifecycle-payload /tmp/snowflake-payload-001/lifecycle \
+  --key-file /path/to/key.p8 --execute \
   --output-dir /tmp/snowflake-result-001
 ```
 
-For local RSA execution, unlock the key once with
-`python packages/kumo-engine/test/snowflake_notebook/key_cache.py --key-file KEY`.
-Use a new output directory, add `--key-file KEY --execute` to the launch command,
-and keep the encrypted key outside Git. The Linux user-keyring cache expires
-after eight hours and writes no decrypted key file. An expired/missing cache
-fails without another implicit passphrase prompt.
-
-The GitHub runner uses Python 3.12 and installs the Snowflake connector and
-cryptography submission dependencies. Notebook dependencies are installed in a
-fresh virtual environment. Each notebook has a 30-minute client deadline and
-session SQL timeout with cancellation grace. Runs serialize; they do not cancel
-an older run or automatically retry training. A runner interruption attempts
-remote query cancellation, but a forced runner termination can still require
-operator inspection using the saved execution query ID.
-
-The Actions artifact retains receipts, hashes, query IDs, phase logs, the exact
-payload manifest, and full qualification gaps. Review the reported wheel identity
-and both engine/full-qualification verdicts. Missing secrets or access are
-prerequisite failures, never passes.
-
-## Local Snowsight UI verification
-
-Use `--ui` to select only browser verification. It returns before notebook
-preparation, RSA authentication, or training. Without `--execute` it only
-validates saved receipts and writes the UI expectations. With `--execute`, it
-signs in through Snowsight using password and TOTP, with one MFA submission and
-no automatic login retries.
+**Lifecycle UI only:** verify an existing lifecycle's rendered runs and versions.
 
 ```sh
 python packages/kumo-engine/test/snowflake_notebook/launch.py \
-  --execute --ui --ui-run /path/to/retained-snowflake-run
+  --execute --ui --ui-run /tmp/snowflake-result-001 \
+  --ui-credentials /path/to/browser-credentials.json
 ```
 
-`--ui-run` selects the lifecycle directory containing
-`lifecycle/download/lifecycle-result.json`; omitting it selects the newest valid
-local `/tmp/egu-snowflake-e2e-*` lifecycle. The selected path and candidate hash
-are retained in the UI report. Assertions use exact checksummed run references,
-not the latest visible Snowsight row. `--ui true` and `--ui=true` also work.
-UI mode cannot be combined with negative-only, history-readback, or saved-result
-modes.
-
-Provide an owner-only regular JSON file at
-`~/.config/kumo/snowflake-ui/credentials.json`, or use `--ui-credentials FILE`.
-Alternatively, supply the same JSON through `SNOWFLAKE_UI_CREDENTIALS`.
-Its fields are `account_url`, `user`, `password`, and `totp_secret`. The account
-URL must identify the configured test account. `totp_secret` is the Base32
-manual-entry secret saved during enrollment, not a current six-digit code.
-The browser identity needs visibility into the same test experiment and models.
-SQL/RSA authentication is not used for browser login.
-
-Node.js, Playwright, Chromium, and its shared libraries must be available.
-Install the locked browser package with
-`npm ci --prefix packages/kumo-engine/test/snowflake_notebook/browser`, then
-run its `node_modules/playwright/cli.js install chromium` with Node.js. On a
-provisioned runner, use `install --with-deps chromium` to include browser libraries. `KUMO_PLAYWRIGHT_MODULE` can select an existing Playwright
-installation; `PLAYWRIGHT_BROWSERS_PATH` selects its browser cache. Missing
-browser prerequisites or incomplete authentication produce a blocked result.
-
-The browser verifies finished status for the ten retained runs, all recorded
-metric values at Snowsight's five-decimal display precision, bundle/version/kind
-tracking parameters, both epochs of train/loss and validation AUROC for both fit
-runs, and V1/V2 under the exact model/database/schema. Registry bundle metadata,
-alias controls, notebook graph/explanation widgets, and epoch-history exports
-have separate checks; this browser result does not qualify those surfaces.
-
-Each UI attempt retains `expectations.json`, `summary.json`, screenshots, rendered
-accessibility snapshots, and an interaction journal. Credentials are delivered
-to the browser worker through stdin. Authentication-page screenshots, browser
-storage state, and network traces containing session credentials are not saved.
-The result always records that no training was submitted.
-
-## Notebook graph UI
-
-The graph scenario uses the same checked-in command locally and on a runner:
+**Notebook graph UI:** create and execute a graph notebook, then verify its saved output.
 
 ```sh
 python packages/kumo-engine/test/snowflake_notebook/graph_notebook.py \
-  --execute --key-file /path/to/encrypted-key.p8 \
+  --execute --key-file /path/to/key.p8 \
   --ui-credentials /path/to/browser-credentials.json \
-  --output-dir /path/to/new-result-directory
+  --output-dir /tmp/snowflake-graph-001
 ```
 
-Omit `--execute` to inspect the plan without credentials or cloud access. On a
-runner, supply the protected environment secrets and omit local file arguments.
-`candidate.json` selects the wheel. `--source-ref` defaults to HEAD and selects
-seven graph/table/widget source hashes that must match that installed wheel;
-it does not build a new wheel. Select another revision only when deliberately
-validating that revision, and retain its exact commit in the report.
+| Option | Purpose |
+| --- | --- |
+| Omit `--execute` | Write a plan without cloud execution. Lifecycle UI mode validates retained receipts. |
+| `--output-dir DIR` | Save results to a new directory. |
+| `--key-file FILE` | Select the locally cached encrypted RSA key. |
+| `--ui-credentials FILE` | Select the browser credential file. |
+| `launch.py --timeout SECONDS` | Notebook deadline; default 1,800 seconds. |
+| `launch.py --ui --ui-run DIR` | Verify only the selected retained lifecycle in Snowsight. |
+| `launch.py --ui-timeout SECONDS` | Browser wait setting; default 60 seconds. |
+| `launch.py --show-result DIR` | Explain a saved result without authentication or execution. |
+| `graph_notebook.py --verify-notebook FILE` | With `--execute`, recheck a retained `notebook.json` without running cells. Keep its `.ipynb` beside it. |
+| `graph_notebook.py --source-ref REF` | Source revision whose graph modules must match the installed wheel; default `HEAD`. |
 
-The notebook uses the unchanged adtech graph from An's checksum-pinned PR172
-fixture: 9 tables, 52 columns, and 10 relationships. `graph-assets.json` pins
-already staged fixture and PDF test-tool assets. Normal runs need no AWS access
-or large upload. The notebook verifies and installs the staged wheel, shuts down its kernel,
-reconnects to the same dedicated service, and verifies setup variables were
-cleared before executing graph assertions. Installed packages survive this reset. Before executing cells, the browser
-checks `KUMO_TEST_POOL`, `KUMO_TEST_WH`, and the dedicated role. Only a known
-service-startup timeout permits one connection retry after read-only polling
-of the same test pool; no notebook cell or training job is retried.
+Use each script's `--help` for diagnostic and asset-preparation options.
+Saved-output rechecks cover retained rendering and exports, not live controls.
 
-Kernel checks verify that default display performs no source reads, explicit
-previews use actual fixture rows, and SVG/PDF/Markdown exports exclude sample
-values. Browser checks cover both graphs' schema, relationships, key and sample
-tooltips, zoom/fit/layout controls, and visible export commands. The browser
-stops only the dedicated notebook kernel and opens a fresh page to verify the
-same saved execution's diagrams and retained data without rerunning cells.
-Inactive cached widgets are checked without requiring live interactions.
-Finally, RSA collection downloads and verifies all six small evidence files.
+## Run through GitHub Actions
 
-For a read-only recheck, replace execution preparation with
-`--verify-notebook /path/to/previous-result/notebook.json`. Keep that file and
-its `.ipynb` together when relocating artifacts. This mode covers saved outputs
-and exports, not live controls or kernel shutdown. Explanations unavailable on
-main are outside this scenario.
+In repository **Settings → Environments**, configure `snowflake-mlops-test`:
 
-Dispatch the registered workflow with `mode: graph-ui` or `mode: engine`,
-then approve the protected environment as a member of `NVIDIA/kumo-engineers`.
-No push starts a test. GitHub-hosted execution requires all environment secrets,
-maintainer environment approval, and the verified environment restrictions.
-Local results do not qualify a different GitHub-hosted revision.
+1. Allow only `egu/mlops-platform-integration` under deployment branch rules.
+2. Require `NVIDIA/kumo-engineers` as the only reviewer; disable admin bypass.
+3. Add these environment secrets:
 
-Saved outputs can render as cached widgets or static SVG fallback images. Both
-paths verify all tables, columns, keys, and relationships. Cached widgets also
-retain the explicitly requested sample metadata. Static fallback diagrams omit
-samples and live controls by design; the report labels that narrower coverage.
+| Secret | Value |
+| --- | --- |
+| `SNOWFLAKE_TEST_CONFIG` | The resource/configuration JSON described above. |
+| `SNOWFLAKE_PRIVATE_KEY` | Complete encrypted PEM private key. |
+| `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` | Key passphrase. |
+| `SNOWFLAKE_UI_CREDENTIALS` | Browser credential JSON. |
 
-The graph UI scenario requires the dedicated browser user’s existing notebook
-service `EGU_GRAPH_UI_SERVICE`, with CPU Python 3.12 runtime and
-`KUMO_TEST_POOL (GEN_X64_G2_8)`. The runner selects that exact service in the UI
-and verifies its pool before connection. It does not create a notebook service
-or use Snowsight’s remembered default service.
+Open **Actions → Snowflake notebook platform checks → Run workflow**, select
+`egu/mlops-platform-integration`, and choose `engine` or `graph-ui`. A maintainer
+must approve the environment before credentials are available. The workflow is
+manual-only. Lifecycle UI verification is currently a separate local command.
 
-A high-memory warning on the dedicated service blocks the run immediately; the
-runner does not choose Continue anyway. Failed executing attempts retain UI
-evidence before stopping their own connected test kernel. Read-only saved-output
-checks never stop kernels, including when their assertions fail.
+## Results
 
-After successful installation, the notebook removes its temporary dependency
-archive and extracted wheelhouse. The candidate wheel, pinned fixture, helper
-files, and evidence remain available for verification. Staged assets are retained.
+Read `summary.json` and the retained phase/UI evidence. Engine Actions runs also
+write `ci-verdict.json`, separating the engine result from full qualification.
+Missing prerequisites are blocked; assertion failures are failed. Evidence
+includes wheel/helper hashes, execution IDs, logs, receipts, screenshots and
+exports. UI rechecks reuse retained results instead of retraining.

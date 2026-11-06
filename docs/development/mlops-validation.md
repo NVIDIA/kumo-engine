@@ -1,52 +1,35 @@
-# Local MLOps lifecycle validation
+# Local MLOps lifecycle test
 
-Run a small Linux CPU lifecycle against an installed candidate wheel using a
-local SQLite MLflow tracker and registry. The fixture has 60 users and 1,500
-events; it trains two versions for two epochs each, with two steps per epoch.
-Each worker sets both ambient MLflow URIs to the attempt's SQLite database.
+Run a small Linux CPU lifecycle against an installed candidate wheel, using
+SQLite MLflow tracking and registry. For Snowflake execution and UI checks, see
+[Snowflake notebook tests](snowflake-notebook-actions.md).
 
-## Scenario
+## What it tests
 
-The [runner](../../packages/kumo-engine/test/wheel_mlops_lifecycle.py) executes
-four separate processes:
+The [runner](../../packages/kumo-engine/test/wheel_mlops_lifecycle.py) uses four
+separate processes:
 
-1. **Fit:** export the training snapshot/table, train and register two versions,
-   verify multi-epoch tracking, and point `champion` to the first version.
-2. **Score:** restore models, snapshots and the training table from durable
-   artifacts. Predict by each explicit version and by alias before and after
-   promotion. Verify resolved model identity, tracking, complete prediction IDs,
-   distinct training/scoring lineage and the ordinary prediction schema without
-   MLOps. Check explicit accounting for an unknown prediction ID.
-3. **Evaluate:** restore saved predictions after the alias has moved, ingest
-   later events, and evaluate the original predictions. Verify drift identities,
-   label coverage, an independent event-window label join and recomputed AUROC.
-4. **Negative cases:** reject an incomplete model, an unwritable artifact root
-   and a prediction export without completion markers.
+1. **Fit:** export the training snapshot/table, train/register two versions,
+   verify multi-epoch tracking and set `champion` to the first version.
+2. **Score:** restore durable artifacts; predict by version and alias before
+   and after promotion; verify model identity, tracking, lineage, complete
+   prediction IDs and the ordinary schema without MLOps. Account for unknown IDs.
+3. **Evaluate:** reload saved predictions after alias movement, add later labels,
+   and verify drift identity, label coverage and independently recomputed AUROC.
+4. **Negative cases:** reject incomplete models, unwritable artifact storage
+   and prediction exports without completion markers.
 
-Successful producer scratch and original source files are removed before
-recovery. Failed attempts retain their scratch, logs and receipts. Each attempt
-needs a new output directory. Worker timeouts terminate the process group.
+The fixture has 60 users and 1,500 events. It reuses
+`wheel_gpu_smoke.py::make_plan('binary')`, with two fits of two epochs and two
+steps per epoch. Successful producer scratch and source files are removed
+before recovery. Prediction-value consistency is covered by the existing task
+runner; this test checks which model was selected and recorded.
 
-## Reused coverage
+## Setup and run
 
-| Existing test code | Use in this scenario |
-| --- | --- |
-| `wheel_gpu_smoke.py::make_plan('binary')` | The existing binary model recipe, with smaller epoch/step/batch budgets and two seeds. |
-| `test_mlflow_model.py`, `test_mlflow_target.py` | Extend registry/version coverage across process restarts and alias promotion. |
-| `test_snapshot_export.py`, `test_training_table_export.py` | Extend export/reload coverage after removing original source and scratch files. |
-| `test_monitoring.py` | Reuse the temporal fixture pattern and independent label/AUROC assertions on durable predictions. |
-| `test_query_from_snapshot.py`, `test_mlops.py` | Reuse unknown-ID accounting and local permission-failure scenarios. |
-
-Numerical reload consistency remains covered by the eight-task runner. This
-scenario checks which model was resolved and recorded, rather than comparing
-prediction values from explicit-version and alias loads.
-
-## Run
-
-Prerequisites: a candidate wheel containing the MLOps APIs, a supported Linux
-Python, a non-root user, and enough local disk for the environment and artifacts.
-Use a fresh environment. Full MLflow supplies the local SQL tracking dependencies.
-Build the wheel using the [release guide](releasing-kumo-engine.md).
+Use a supported Linux Python, a non-root user, a fresh environment and an
+identified candidate wheel containing the MLOps APIs. Build the wheel using the
+[release guide](releasing-kumo-engine.md). Run from the repository root:
 
 ```sh
 python3 -m venv /tmp/mlops-venv
@@ -61,23 +44,26 @@ cp packages/kumo-engine/test/wheel_mlops_lifecycle.py \
   --output-dir /tmp/mlops-attempt-001
 ```
 
-The runner verifies the installed wheel checksum, version, import locations,
-environment isolation and `pip check`. Each phase writes a log and JSON receipt.
-`summary.json` records the wheel identity, command, runner/helper hashes, statuses
-and runtime. Worker receipts record CPU threads and Linux process and terminated
-child RSS maxima separately, not simultaneous process-tree memory.
+| Option | Purpose |
+| --- | --- |
+| `--wheel FILE` | Required candidate wheel; installed files are checked against it. |
+| `--expected-version VERSION` | Required installed version. |
+| `--output-dir DIR` | Required new directory for results and artifacts. |
+| `--phase-timeout SECONDS` | Deadline per worker; default 600 seconds. |
 
-Full epoch history is currently unavailable in model exports. Tracker curves
-alone do not satisfy that artifact requirement: the summary records it as
-`not implemented`, leaves overall qualification `blocked` and exits nonzero.
-Installation/access prerequisites are `blocked`; incorrect behavior is `failed`.
-Unreached phases remain `blocked`.
+## Results
 
-Removing completion markers checks incomplete-artifact rejection. Active-writer
-interruption/retry remains covered by the existing snapshot-export tests.
-Local execution does not qualify Databricks, Snowflake or SageMaker.
+`summary.json`, phase receipts and logs record assertions, wheel/helper hashes,
+runtime and process memory measurements. Failed attempts retain their scratch.
+Use a new output directory for each attempt.
 
-Run the harness checks and existing shared-runner checks without training:
+Full epoch history in model exports remains unimplemented: overall qualification
+is blocked and the command exits nonzero even if the implemented phases pass.
+Drift checks include identity and zero self-comparison, not independent nonzero
+sensitivity. Incomplete-artifact checks do not simulate an active writer's
+interruption. Local execution does not qualify a cloud platform or its UI.
+
+To check the harness without training or cloud access:
 
 ```sh
 .venv/bin/python -m pytest -q -c /dev/null --confcutdir=test/scripts \
