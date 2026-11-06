@@ -114,19 +114,23 @@ class Target:
                 else:
                     with _LOCK, self._swap():
                         yield
-        except ModuleNotFoundError as e:
-            client = (e.name or '').partition('.')[0]
+        except Exception as error:
+            missing = error.__cause__
+            if not isinstance(missing, ModuleNotFoundError):
+                raise
+            client = (missing.name or '').partition('.')[0]
+            if client not in _UC_STORAGE:
+                raise
             uri = import_provider('mlflow.utils.uri', 'mlflow')
-            registry = self.registry_uri or ''
-            if (client not in _UC_STORAGE
-                    or not uri.is_databricks_unity_catalog_uri(registry)):
+            if not uri.is_databricks_unity_catalog_uri(self.registry_uri
+                                                       or ''):
                 raise
             cloud, extra = _UC_STORAGE[client]
             raise ImportError(
                 f"Unity Catalog stores this model's files on {cloud}, and "
-                f"MLflow reaches them with {e.name!r}, which is not "
+                f"MLflow reaches them with {missing.name!r}, which is not "
                 f"installed. Install it with: pip install "
-                f"'kumo-engine[{extra}]'") from e
+                f"'kumo-engine[{extra}]'") from missing
 
     def client(self) -> Any:
         mlflow = import_provider('mlflow', 'mlflow')
