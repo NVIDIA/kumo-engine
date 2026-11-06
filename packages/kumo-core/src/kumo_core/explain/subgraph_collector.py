@@ -50,8 +50,8 @@ from kumo_core.explain.schemas import (
 from kumo_core.explain.schemas import Subgraph as OldSubgraph
 
 if TYPE_CHECKING:
+    from kumo_core.diskgraph.metadata import DiskgraphSchema
     from kumo_core.features.stores.feature import FeatureStore
-    from kumo_core.features.stores.graph import GraphStore
 
 FORMAT = Literal['csv', 'nested_json', 'output', 'historical_items', 'rfm']
 
@@ -143,7 +143,7 @@ class SubgraphCollector(Explainer):
         df_dict: dict[str, pd.DataFrame] = {}
         grad_dict: dict[str, dict[str, Tensor]] = {}
         feature_store: FeatureStore = datamodule.data[0]
-        graph_store: GraphStore = datamodule.data[1]
+        graph_schema: DiskgraphSchema = datamodule.data[1]
 
         # Gradients ###########################################################
         if requires_grad(step_output):
@@ -160,7 +160,7 @@ class SubgraphCollector(Explainer):
             if pkey_name := feature_store.get_pkey_name(table_name):
                 df[pkey_name] = batch[table_name].pkey
 
-            fkeys = graph_store.get_foreign_keys(table_name)
+            fkeys = graph_schema.get_foreign_keys(table_name)
             for fkey_name, dst_table_name in fkeys:
                 df[fkey_name] = torch.full(  # Fill with dummy values.
                     (batch[table_name].num_nodes, ),
@@ -267,7 +267,7 @@ class SubgraphCollector(Explainer):
             elif value == 'nested_json':
                 self.format_subgraph_json(  #
                     batch, seed_entities, df_dict, grad_dict, stage,
-                    feature_store, graph_store, module, rhs_index_map, pred,
+                    feature_store, graph_schema, module, rhs_index_map, pred,
                     pred_df)
             elif value == 'output':
                 self.format_output(  #
@@ -346,7 +346,7 @@ class SubgraphCollector(Explainer):
         grad_dict: dict[str, dict[str, Tensor]],
         stage: TrainingStage,
         feature_store: FeatureStore,
-        graph_store: GraphStore,
+        graph_schema: DiskgraphSchema,
         module: torch.nn.Module,
         rhs_index_map: pd.DataFrame | None = None,
         pred: Tensor | None = None,
@@ -427,7 +427,7 @@ class SubgraphCollector(Explainer):
             pkey_name = feature_store.get_pkey_name(table_name)
             fkey_names = {
                 fkey[0]
-                for fkey in graph_store.get_foreign_keys(table_name)
+                for fkey in graph_schema.get_foreign_keys(table_name)
             }
             for col_name in col_names:
                 if col_name == pkey_name:
@@ -532,7 +532,7 @@ class SubgraphCollector(Explainer):
                 fkeys = fkeys.flip(0)
                 fkey_names = {
                     fkey[0]
-                    for fkey in graph_store.get_foreign_keys(dst_table_name)
+                    for fkey in graph_schema.get_foreign_keys(dst_table_name)
                 }
                 fkey_ids: list[Any] | None = None
                 if fkey_name in fkey_names:

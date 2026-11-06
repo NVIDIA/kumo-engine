@@ -81,7 +81,7 @@ jobs:
     runs-on: ubuntu-24.04
     continue-on-error: true
     environment:
-      name: azure-adls-tests
+      name: ${{ github.repository == 'NVIDIA/kumo-engine' && (contains(matrix.test_dir, 'test/io_utils/') || contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/rest/test_*.py')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'gha-kumo-workflow-tests' || 'azure-adls-tests' }}
       # This job uses environment-scoped credentials for tests; it does not
       # deploy an application. Avoid one deployment record per matrix shard.
       deployment: false
@@ -90,7 +90,7 @@ jobs:
       id-token: write
     env:
       KUMO_RUN_ADLS_TESTS: ${{ github.repository == 'kumo-ai/kumo' && contains(matrix.test_dir, 'test/io_utils/') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
-      KUMO_RUN_GCP_TESTS: ${{ github.repository == 'kumo-ai/kumo' && (contains(matrix.test_dir, 'test/io_utils/') || contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/rest/test_*.py')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
+      KUMO_RUN_GCP_TESTS: ${{ github.repository == 'NVIDIA/kumo-engine' && (contains(matrix.test_dir, 'test/io_utils/') || contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/rest/test_*.py')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
       AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
       AZURE_CONTAINER_NAME: ${{ vars.AZURE_CONTAINER_NAME }}
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -169,7 +169,7 @@ jobs:
           fetch-depth: 40
 
       - name: Set up Python
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           python-version: "3.14"
           activate-environment: true
@@ -190,10 +190,9 @@ jobs:
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
-            ui/**
+            docs/**/*.md
+            README.md
             CHANGELOG.md
-            tools/**
-            benchmark/**
 
       - name: Configure AWS credentials
         if: env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true'
@@ -369,7 +368,7 @@ jobs:
         with:
           packages: lld
       - uses: ./.github/actions/rust-toolchain
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: '3.11'
           activate-environment: true
@@ -404,7 +403,7 @@ jobs:
       - uses: ./.github/actions/rust-toolchain
         with:
           components: clippy
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: '3.11'
           activate-environment: true
@@ -435,7 +434,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: '3.11'
           activate-environment: true
@@ -521,7 +520,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: '3.12'
           activate-environment: true
@@ -837,7 +836,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Setup Python
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           python-version: "3.14"
           activate-environment: true
@@ -910,7 +909,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: ${{ matrix.python }}
           activate-environment: true

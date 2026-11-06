@@ -51,9 +51,12 @@ def connector_for_root(uri: str) -> Connector:
         return S3Connector(root_dir=uri)
     if parsed.scheme == 'gs':
         return GCSConnector(root_dir=uri)
+    if parsed.scheme == 'abfss':
+        return ADLSConnector(root_dir=uri)
     if parsed.scheme not in ('', 'file'):
-        raise ValueError(f'{uri!r} is not s3://, gs://, file:// or a local '
-                         f'path.')
+        raise ValueError(
+            f'{uri!r} is not s3://, gs://, abfss://, file:// or a local '
+            f'path.')
     return FileConnector(
         root_dir=url2pathname(parsed.path) if parsed.scheme else uri)
 

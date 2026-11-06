@@ -3477,6 +3477,9 @@ mlflow = [
     { name = "mlflow-skinny" },
     { name = "nvidia-ml-py" },
 ]
+plots = [
+    { name = "matplotlib" },
+]
 s3 = [
     { name = "kumo-s3" },
 ]
@@ -3529,6 +3532,7 @@ requires-dist = [
     { name = "kumo-glove-6b-50d", marker = "extra == 'text'", editable = "tools/glove-6b-50d" },
     { name = "kumo-s3", marker = "extra == 's3'", editable = "packages/kumo-s3" },
     { name = "kumo-snowflake", extras = ["sdk"], marker = "extra == 'snowflake'", editable = "packages/kumo-snowflake" },
+    { name = "matplotlib", marker = "extra == 'plots'", specifier = ">=3.10.0" },
     { name = "mlflow-skinny", marker = "extra == 'mlflow'", specifier = ">=3.5,<4" },
     { name = "numpy", marker = "extra == 'test'", specifier = ">=1.26,<3" },
     { name = "nvidia-ml-py", marker = "extra == 'mlflow'" },
@@ -3541,7 +3545,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'test'", specifier = ">=2.9,<2.13" },
     { name = "typing-extensions", specifier = ">=4.5.0" },
 ]
-provides-extras = ["cpu", "test", "snowflake", "databricks", "bigquery", "s3", "text", "adls", "gcs", "mlflow", "sagemaker"]
+provides-extras = ["plots", "cpu", "test", "snowflake", "databricks", "bigquery", "s3", "text", "adls", "gcs", "mlflow", "sagemaker"]
 
 [[package]]
 name = "kumo-gcs"

@@ -11,13 +11,11 @@ import pyarrow as pa
 import pytest
 import torch
 from kumo_core.diskgraph.runtime_adapter import _attach_graph_topology
-from kumo_core.diskgraph.stores import DiskgraphFeatureStore
 from kumo_core.encoders import TensorMapper
 from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
 from kumo_core.explain import SubgraphCollector
 from kumo_core.explain.subgraph_collector import get_target_rhs_id
 from kumo_core.features.stores import FeatureStoreTableSchema
-from kumo_core.features.stores.feature import FeatureStoreTrainingTableSchema
 from kumo_core.modeling.gnn.hetero import HeteroGNN
 from kumo_core.modeling.heads.link_prediction import LinkPredHead
 from kumo_core.train.shallow_rhs_link_gnn_module import (
@@ -30,6 +28,8 @@ from kumoapi.typing import Stype
 from torch_frame import TensorFrame
 from torch_geometric.data import HeteroData
 
+from tests.support.diskgraph_feature_store import make_diskgraph_feature_store
+
 
 def test_collector_serializes_unencoded_temporal_columns(tmp_path):
     frame = pd.DataFrame({
@@ -40,8 +40,7 @@ def test_collector_serializes_unencoded_temporal_columns(tmp_path):
     schema = FeatureStoreTableSchema(mapper_dict={}, pkey_name='id',
                                      time_col_name='created_at',
                                      end_time_col_name='ended_at')
-    store = DiskgraphFeatureStore({'events': frame}, {'events': schema},
-                                  pmm=False)
+    store = make_diskgraph_feature_store({'events': frame}, {'events': schema})
     batch = HeteroData()
     batch['events'].num_nodes = 1
     batch['events'].batch_size = 1
@@ -76,8 +75,8 @@ def test_collector_tolerates_unreached_temporal_table(tmp_path):
         for name in ('lots', 'bids')
     }
     frame = pd.DataFrame({'id': [], 'created_at': pd.to_datetime([])})
-    store = DiskgraphFeatureStore({name: frame
-                                   for name in schemas}, schemas, pmm=False)
+    store = make_diskgraph_feature_store({name: frame
+                                   for name in schemas}, schemas)
     batch = HeteroData()
     batch['lots'].pkey = np.array(['lot-1'], dtype=object)
     batch['lots'].tf = TensorFrame({}, {}, num_rows=1)
@@ -110,9 +109,9 @@ def test_explicit_temporal_mapper_is_preserved():
     mapper = TensorMapper.from_encoder(Datetime())
     schema = FeatureStoreTableSchema(mapper_dict={'created_at': mapper},
                                      time_col_name='created_at')
-    store = DiskgraphFeatureStore(
+    store = make_diskgraph_feature_store(
         {'events': pd.DataFrame({'created_at': pd.to_datetime([])})},
-        {'events': schema}, pmm=False)
+        {'events': schema})
     assert store.get_tensor_mapper('events', 'created_at') is mapper
 
 
@@ -174,25 +173,16 @@ def _format_rfm(tmp_path, batch, pred, y_idx, y_batch,
         num_rhs_nodes=10,
         rhs_emb_mode='lookup',
     )
-    store = DiskgraphFeatureStore(
+    store = make_diskgraph_feature_store(
         {
             'lots': pd.DataFrame({'id': ['lot-a', 'lot-b']}),
             'users': pd.DataFrame({'id': [7, 8, 9]}),
-            'TRAIN_TABLE': pd.DataFrame({
-                'ENTITY': ['lot-a'],
-                'TARGET': [7],
-                'train': [True],
-                'val': [False],
-            }),
         },
         {
             name: FeatureStoreTableSchema(mapper_dict={}, pkey_name='id')
             for name in ('lots', 'users')
         },
-        train_table_schema=FeatureStoreTrainingTableSchema(
-            table_name='TRAIN_TABLE', fkeys=[('ENTITY', 'lots'),
-                                             ('TARGET', 'users')],
-            train_mask_name='train', val_mask_name='val'), pmm=False)
+        entity_table_names=['lots', 'users'])
     collector = SubgraphCollector(
         TaskType.TEMPORAL_LINK_PREDICTION, str(tmp_path), formats=['rfm'],
         target_to_entity_paths=[
@@ -333,10 +323,9 @@ def test_historical_items_interleaved_seeds(tmp_path):
             [('transactions', 'SALE_LOT_KEY', 'lots')],
             [('transactions', 'PARTY_ID_MAIN_CLIENT', 'users')],
         ])
-    store = DiskgraphFeatureStore(
+    store = make_diskgraph_feature_store(
         {'users': pd.DataFrame({'id': []})},
-        {'users': FeatureStoreTableSchema(mapper_dict={}, pkey_name='id')},
-        pmm=False)
+        {'users': FeatureStoreTableSchema(mapper_dict={}, pkey_name='id')})
     collector.format_historical_items(batch, ['lot-a', 'lot-b'],
                                       {'users': pd.DataFrame({'id': [7, 8, 9]})},
                                       TrainingStage.TEST, store)

@@ -1888,7 +1888,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             'batch_size': self.eval_batch_size,
         }
 
-        # (feature_store, graph_store) for the explainer; populated only during
+        # Feature access and graph schema for the explainer; populated only during
         # DiskgraphNestedTrainer.explain.
         self._data: tuple[Any, Any] | None = None
 
@@ -2666,12 +2666,12 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
 
     @property
     def data(self) -> tuple[Any, Any]:
-        """``(feature_store, graph_store)``, populated only during
+        """Feature access and graph schema, populated only during
         RHS feature reads or ``Trainer.explain``; raises otherwise."""
         if self._data is None:
             raise RuntimeError(
                 "DiskgraphLightningDataModule.data is only populated "
-                "when a runtime feature/graph store is attached.")
+                "when runtime feature access and graph metadata are attached.")
         return self._data
 
     @property
@@ -2679,7 +2679,8 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         return self.data[0]
 
     @property
-    def graph_store(self) -> Any:
+    def graph_schema(self) -> Any:
+        """Return graph metadata attached for RHS feature reads or explanation."""
         return self.data[1]
 
     @property
