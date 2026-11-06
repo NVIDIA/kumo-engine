@@ -5,6 +5,7 @@ import json
 import os
 import re
 import runpy
+import select
 import subprocess
 import sys
 from pathlib import Path
@@ -113,40 +114,59 @@ def test_runner_registers_with_repository_scope(tmp_path, tier):
 
 
 @pytest.mark.parametrize("status", [0, 37])
-def test_formatter_gets_a_terminal_and_preserves_its_exit_status(
-        tmp_path, status):
+def test_formatter_download_retries_without_rerunning_it(tmp_path, status):
     formatter = ROOT / "packages/diskgraph/scripts/localssd-raid0-xfs-tui.sh"
     functions = "\n".join(
         re.search(rf"^{name}\(\) \{{\n.*?^\}}", formatter.read_text(),
                   re.MULTILINE | re.DOTALL).group()
         for name in ("tty_out", "choose_disks"))
     fixture = tmp_path / "formatter.sh"
-    fixture.write_text(
-        "set -euo pipefail\nASSUME_YES=true\n" + functions + "\n"
-        "disk_info() { printf 'fixture disk\\n'; }\n"
-        "[[ $1 == --yes && $DISKGRAPH_DATA_ROOT == /mnt/localssd ]]\n"
-        "mapfile -t selected < <(choose_disks /dev/fixture)\n"
-        "[[ ${#selected[@]} == 1 && ${selected[0]} == /dev/fixture ]]\n"
-        "exit \"$FORMATTER_EXIT\"\n")
+    content = ("set -euo pipefail\nASSUME_YES=true\n" + functions + "\n"
+               "printf formatter >> \"$FORMATTER_LOG\"\n"
+               "disk_info() { printf 'fixture disk\\n'; }\n"
+               "[[ $1 == --yes && $DISKGRAPH_DATA_ROOT == /mnt/localssd ]]\n"
+               "mapfile -t selected < <(choose_disks /dev/fixture)\n"
+               "[[ ${#selected[@]} == 1 && ${selected[0]} == /dev/fixture ]]\n"
+               "exit \"$FORMATTER_EXIT\"\n")
     runner = ROOT / ".github/scripts/engine-e2e-runner.sh"
-    command = next(line for line in runner.read_text().splitlines()
-                   if line.startswith("DISKGRAPH_DATA_ROOT="))
-    result = subprocess.run([
-        "/bin/bash", "-c",
-        command.replace("/run/engine-e2e-localssd.sh", str(fixture))
-    ], env=dict(os.environ, PATH="/usr/bin:/bin", FORMATTER_EXIT=str(status)),
-                            stdin=subprocess.DEVNULL, capture_output=True,
-                            text=True, start_new_session=True, timeout=10)
-    assert result.returncode == status, result.stdout + result.stderr
+    command = runner.read_text().split("boot_check='local SSD setup'\n",
+                                       1)[1].split("mountpoint -q", 1)[0]
+    command = command.replace(
+        "https://raw.githubusercontent.com/$REPOSITORY/$SOURCE_SHA/packages/diskgraph/scripts/localssd-raid0-xfs-tui.sh",
+        fixture.as_uri()).replace("/run/engine-e2e-localssd.sh",
+                                  str(tmp_path / "downloaded.sh"))
+    log = tmp_path / "formatter.log"
+    result = subprocess.Popen(
+        ["/bin/bash", "-c", "set -euo pipefail\n" + command],
+        env=dict(os.environ, PATH="/usr/bin:/bin", FORMATTER_EXIT=str(status),
+                 FORMATTER_LOG=str(log)), stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        start_new_session=True)
+    try:
+        assert select.select([result.stderr], [], [], 10)[0]
+        first_error = result.stderr.readline()
+        fixture.write_text(content)
+        stdout, stderr = result.communicate(timeout=10)
+    finally:
+        if result.poll() is None:
+            result.kill()
+            result.wait()
+    assert first_error
+    assert result.returncode == status, stdout + first_error + stderr
+    assert log.read_text() == "formatter"
 
 
-@pytest.mark.parametrize("mode,status", [("failure", 1), ("report-failure", 1),
-                                         ("drained", 0), ("job-exit", 7),
-                                         ("registration-transport", 31),
-                                         ("registration-function", 1),
-                                         ("configuration", 7)])
+@pytest.mark.parametrize("mode,status,attempts",
+                         [("failure", 1, 0), ("report-failure", 1, 0),
+                          ("drained", 0, 1), ("job-exit", 7, 1),
+                          ("registration-transport", 31, 3),
+                          ("registration-function", 1, 3),
+                          ("configuration", 7, 1), ("transport-recovery", 0, 3),
+                          ("function-recovery", 0, 3),
+                          ("drained-recovery", 0, 2),
+                          ("registration-deadline", 31, 1)])
 def test_bootstrap_reports_its_failed_check_and_always_shuts_down(
-        tmp_path, mode, status):
+        tmp_path, mode, status, attempts):
     source = (ROOT / ".github/scripts/engine-e2e-runner.sh").read_text()
     functions = "\n".join(
         re.findall(r"^[a-z_]+\(\) \{\n.*?^\}", source,
@@ -158,11 +178,15 @@ def test_bootstrap_reports_its_failed_check_and_always_shuts_down(
         body = source.split("and local SSD'\n",
                             1)[1].replace("cd /opt/actions-runner",
                                           'cd "$TEST_DIR"')
+    clock = (
+        'if [[ $TEST_MODE == registration-deadline ]]; then echo 1999999999; '
+        'else echo 1000000000; fi')
     commands = dict(
-        mktemp='exec /usr/bin/mktemp "$TEST_DIR/token.XXXXXX"',
+        date=clock, mktemp='exec /usr/bin/mktemp "$TEST_DIR/token.XXXXXX"',
         shutdown='printf shutdown >> "$TEST_DIR/shutdown.log"', chown="exit 0",
         runuser='[[ $TEST_MODE != configuration && '
-        '" $* " != *" ./run.sh "* ]] || exit 7')
+        '( $TEST_MODE != job-exit || " $* " != *" ./run.sh "* ) ]] || exit 7',
+        sleep='(( $1 == 0 )) || printf "%s\\n" "$1" >> "$TEST_DIR/sleeps"')
     for name, command in commands.items():
         (tmp_path / name).write_text("#!/bin/bash\n" + command + "\n")
         (tmp_path / name).chmod(0o755)
@@ -173,10 +197,12 @@ payload = json.loads(sys.argv[sys.argv.index('--payload') + 1])
 with (Path(os.environ['TEST_DIR']) / 'events').open('a') as output:
     output.write(json.dumps(payload) + '\\n')
 mode = os.environ['TEST_MODE']
-if mode in ('report-failure', 'registration-transport'):
+attempt = len((Path(os.environ['TEST_DIR']) / 'events').read_text().splitlines())
+if mode in ('report-failure', 'registration-transport', 'registration-deadline') or (
+        mode == 'transport-recovery' and attempt < 3) or (mode == 'drained-recovery' and attempt < 2):
     raise SystemExit(31)
-Path(sys.argv[-1]).write_text(json.dumps(None if mode == 'drained' else 'fixture-token'))
-print('Unhandled' if mode == 'registration-function' else 'None')
+Path(sys.argv[-1]).write_text(json.dumps(None if mode in ('drained', 'drained-recovery') else 'fixture-token'))
+print('Unhandled' if mode == 'registration-function' or (mode == 'function-recovery' and attempt < 3) else 'None')
 """)
     (tmp_path / "aws").chmod(0o755)
     (tmp_path / "events").touch()
@@ -200,7 +226,12 @@ print('Unhandled' if mode == 'registration-function' else 'None')
     events = [json.loads(line) for line in lines]
     assert [
         event["kind"] for event in events
-    ] == (["bootstrap"] if mode.endswith("failure") else ["registration"])
+    ] == (["bootstrap"] if mode.endswith("failure") else ["registration"] *
+          attempts)
+    sleeps = tmp_path / "sleeps"
+    assert (sleeps.read_text().splitlines() if sleeps.exists() else []) == [
+        "5", "10"
+    ][:max(0, attempts - 1)]
     if events:
         assert events[0]["cases"] == cases
     if mode.endswith("failure"):

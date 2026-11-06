@@ -43,12 +43,12 @@ trap finish EXIT
 boot_check='capacity deadline'
 (( $(date +%s) < CAPACITY_DEADLINE ))
 boot_check='instance type'
-metadata_token=$(curl --fail --silent --show-error --max-time 10 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token)
-actual_instance=$(curl --fail --silent --show-error --max-time 10 -H "X-aws-ec2-metadata-token: $metadata_token" http://169.254.169.254/latest/meta-data/instance-type)
+metadata_token=$(curl --retry 5 --retry-all-errors --retry-max-time 30 --fail --silent --show-error --max-time 10 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token)
+actual_instance=$(curl --retry 5 --retry-all-errors --retry-max-time 30 --fail --silent --show-error --max-time 10 -H "X-aws-ec2-metadata-token: $metadata_token" http://169.254.169.254/latest/meta-data/instance-type)
 [[ $actual_instance == "$INSTANCE_TYPE" ]]
 unset metadata_token
 boot_check='local SSD setup'
-curl --fail --silent --show-error --location "https://raw.githubusercontent.com/$REPOSITORY/$SOURCE_SHA/packages/diskgraph/scripts/localssd-raid0-xfs-tui.sh" -o /run/engine-e2e-localssd.sh
+curl --retry 5 --retry-all-errors --retry-max-time 120 --connect-timeout 10 --max-time 30 --fail --silent --show-error --location "https://raw.githubusercontent.com/$REPOSITORY/$SOURCE_SHA/packages/diskgraph/scripts/localssd-raid0-xfs-tui.sh" -o /run/engine-e2e-localssd.sh
 # The formatter writes to /dev/tty even with --yes.
 DISKGRAPH_DATA_ROOT=/mnt/localssd script --quiet --return --command 'bash /run/engine-e2e-localssd.sh --yes' /dev/null </dev/null
 rm -f /run/engine-e2e-localssd.sh
@@ -76,7 +76,14 @@ boot_check='scratch write access'
 runuser -u engine-e2e -- test -w /mnt/localssd/engine-e2e
 echo 'engine-e2e boot prerequisites ready: GPU, Python 3.12, and local SSD'
 bootstrapping=0 boot_check='runner registration'
-invoke registration
+registration_status=1
+for delay in 0 5 10; do
+  (( $(date +%s) + delay < CAPACITY_DEADLINE )) || break
+  (( delay == 0 )) || sleep "$delay"
+  (( $(date +%s) < CAPACITY_DEADLINE )) || break
+  if invoke registration; then registration_status=0; break; else registration_status=$?; fi
+done
+(( registration_status == 0 )) || exit "$registration_status"
 RUNNER_TOKEN=$(python3 -c 'import json,sys; token=json.load(open(sys.argv[1])); assert token is None or (isinstance(token,str) and token); print(token or "")' "$token_file")
 rm -f "$token_file"
 unset token_file

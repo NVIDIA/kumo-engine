@@ -134,6 +134,42 @@ test('capacity requests return without waiting and pin the same type across subn
     assert.deepEqual(c.input.InstanceMaintenancePolicy, {MinHealthyPercentage: 0, MaxHealthyPercentage: 100});
   }
 });
+for (const [name, tier, event, newest, allowed] of [
+  ['superseded scheduled nightly', 'nightly', 'schedule', 42, false],
+  ['latest scheduled nightly', 'nightly', 'schedule', 41, true],
+  ['nightly newer than the listing', 'nightly', 'schedule', 40, true],
+  ['manual reference run', 'nightly', 'workflow_dispatch', 42, true],
+  ['scheduled weekly', 'weekly', 'schedule', 42, true],
+  ['untrusted scheduled nightly', 'nightly', 'schedule', 42, null]
+]) test('controller admission: ' + name, async () => {
+  const f = fixture(tier), outputs = [], requests = [], writes = [];
+  f.run.event = event;
+  if (allowed === null) f.run.head_branch = 'other';
+  const env = {...f.io.env, TIER: tier, SCALES: JSON.stringify([tier === 'nightly' ? '100M' : '25B']),
+    ENGINE_E2E_TEMPLATES_JSON: JSON.stringify(templates), ENGINE_E2E_ENABLED: 'true', ENGINE_E2E_SCHEDULER_ENABLED: 'true', GITHUB_OUTPUT: 'fixture-output'};
+  const execution = runInNewContext(readFileSync(join(__dirname, '../../.github/scripts/engine-e2e-pool.cjs'), 'utf8') + '\nmain();', {
+    module: {exports: {}}, process: {env, argv: ['node', 'controller', 'start']}, Buffer,
+    __dirname: join(__dirname, '../../.github/scripts'),
+    require: name => name === 'node:fs' ? {readFileSync, appendFileSync: (path, value) => outputs.push(value)} :
+      name === 'node:child_process' ? {execFileSync: (file, args) => {
+        if (file === 'python') return JSON.stringify(requirement(args[0].split('/').at(-1).slice(0, -3)));
+        if (file === 'gh') {
+          requests.push(args[1]);
+          if (args[1] === 'repos/NVIDIA/kumo-engine/actions/runs/41') return JSON.stringify(f.run);
+          assert.equal(args[1], 'repos/NVIDIA/kumo-engine/actions/workflows/kumo-engine-nightly.yml/runs?branch=main&event=schedule&per_page=1');
+          return JSON.stringify({workflow_runs: [{id: newest}]});
+        }
+        assert.equal(file, 'aws'); writes.push(args);
+        return JSON.stringify({LaunchTemplateVersion: {VersionNumber: 3}});
+      }} : require(name)
+  });
+  if (allowed === null) await assert.rejects(execution, /Expected the current main-branch Engine run/);
+  else await execution;
+  assert.equal(writes.length > 0, allowed === true);
+  assert.equal(outputs.length, allowed === true ? 1 : 0);
+  if (allowed === true) assert.match(outputs[0], /^plan=.*\nattempt=2\n$/);
+  assert.equal(requests.length, tier === 'nightly' && event === 'schedule' && allowed !== null ? 2 : 1);
+});
 test('expiry is armed before allocation, and failure prevents VM capacity', async () => {
   const f = fixture(), aws = f.io.aws;
   f.io.aws = async (...args) => { if (args[0] === 'scheduler') throw Error('expiry unavailable'); return aws(...args); };

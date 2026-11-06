@@ -52,6 +52,7 @@ The workflow reuses the wheel builder and `gha-kumo-workflow-tests` for source/r
 Pool and lifecycle controllers use the `engine-e2e-pool` environment, restricted to `main`, with the cleanup App key stored there.
 `run_controls=true` adds control jobs with `<case>-control` reference, result and artifact keys. Normal cases remain the default.
 The callers support manual dispatch and schedules. Scheduled jobs require the enable flags below.
+A scheduled nightly skips pool creation if a newer scheduled nightly exists on `main`. Manual runs bypass this check.
 Before the first candidate run at each scale, create references with `write_reference=true` on the declared instance type.
 Older references without `hardware.instance_type` fail the hardware check.
 If controls are enabled, create their separate references with `run_controls=true`.
@@ -87,6 +88,8 @@ Deletion is scheduled at the capacity deadline plus the case job timeout and a 3
 These safeguards use minute precision and are best effort.
 Conditional S3 claims protect admitted cases. From the wait limit, EventBridge checks unstarted cases every ten minutes. Runs completed before that limit are skipped.
 Local prerequisite failures send their check and exit status to the registration Lambda. Registration and configuration failures shut down only that VM.
+Network reads retry up to five times. Registration makes up to three attempts, with backoff, before the capacity deadline.
+Retries never repeat the SSD formatter. Hardware checks still fail immediately.
 The Lambda validates the live run and owned group, suspends launches, and reports unadmitted cases through lifecycle jobs with `phase=bootstrap`.
 Stored claims retain the failure reason and protect admitted cases.
 Capacity failures appear in a separate lifecycle run and preserve requested hardware.

@@ -82,6 +82,9 @@ async function start(selected, io) {
   const source = await io.api('repos/' + repo + '/actions/runs/' + run);
   assert(trusted(source, repo) && source.name === 'Kumo Engine ' + selected.tier && source.run_attempt === Number(attempt) &&
     source.head_sha === env.GITHUB_SHA && /^[a-f0-9]{40}$/.test(env.GITHUB_SHA) && source.status === 'in_progress', 'Expected the current main-branch Engine run');
+  if (selected.tier === 'nightly' && source.event === 'schedule' &&
+    (await io.api('repos/' + repo + '/actions/workflows/kumo-engine-nightly.yml/runs?branch=main&event=schedule&per_page=1'))
+      .workflow_runs.some(newer => newer.id > Number(run))) return false;
   assert(selected.pools.length && selected.pools.every(p => Number.isSafeInteger(p.count) && p.count > 0 && p.label === label + '-' + p.instance) &&
     selected.pools.reduce((n, p) => n + p.count, 0) <= Number(env.ENGINE_E2E_MAX_PARALLEL || 2), 'Invalid pool size');
   const deadline = Math.floor(io.now()) + (selected.tier === 'nightly' ? 4 : 24) * 3600;
@@ -245,7 +248,7 @@ async function main() {
       Number(env.ENGINE_E2E_MAX_PARALLEL || 2), (name, scale) => command('python',
         [join(__dirname, '../../packages/kumo-engine/test/cases', name.replace(/-control$/, '') + '.py'),
           '--scale', scale, '--requirements']), env);
-    await start(selected, io);
+    if (await start(selected, io) === false) return;
     appendFileSync(env.GITHUB_OUTPUT, 'plan=' + JSON.stringify(selected) + '\nattempt=' + env.GITHUB_RUN_ATTEMPT + '\n');
   }
 }
