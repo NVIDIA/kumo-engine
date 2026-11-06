@@ -56,6 +56,7 @@ members = [
   "packages/kumo-s3",
   "packages/kumo-engine",
   "packages/kumo-sdk",
+  "packages/experimental/kumo-pytorch",
   "tools/glove-6b-50d",
 ]
 
