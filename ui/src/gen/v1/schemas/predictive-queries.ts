@@ -1067,9 +1067,9 @@ export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanO
 
 export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationMaxStepsPerEpochOneExclusiveMin = 0;
 
-export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationMaxValStepsOneMax = 8000;
+export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationMaxValStepsOneExclusiveMin = 0;
 
-export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationMaxTestStepsOneMax = 8000;
+export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationMaxTestStepsOneExclusiveMin = 0;
 
 export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationLossOneItemTwoAlphaDefault = 0.25;
 export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationLossOneItemTwoAlphaExclusiveMin = 0;
@@ -2051,26 +2051,26 @@ export const GetV1PredictiveQueriesModelPlanResponse = zod
                             .union([
                                 zod
                                     .int()
-                                    .min(1)
-                                    .max(
-                                        getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationMaxValStepsOneMax
+                                    .gt(
+                                        getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationMaxValStepsOneExclusiveMin
                                     ),
                                 zod.enum({
                                     "???": "???"
-                                })
+                                }),
+                                zod.null()
                             ])
                             .optional(),
                         "max_test_steps": zod
                             .union([
                                 zod
                                     .int()
-                                    .min(1)
-                                    .max(
-                                        getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationMaxTestStepsOneMax
+                                    .gt(
+                                        getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationMaxTestStepsOneExclusiveMin
                                     ),
                                 zod.enum({
                                     "???": "???"
-                                })
+                                }),
+                                zod.null()
                             ])
                             .optional(),
                         "loss": zod

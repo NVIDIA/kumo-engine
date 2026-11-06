@@ -165,6 +165,7 @@ class PreparedCustomTrainingTable:
     time_column: str = "TIMESTAMP"
     ingest_on_error: str = "skip_row_on_error"
     timestamp_unit: str = "nanoseconds"
+    allow_new_target_entities: bool = False
 
     def __post_init__(self) -> None:
         if not self.parquet_path:
@@ -602,6 +603,7 @@ def generate_custom_train_table(
         lp_rhs_is_temporal=request.rhs_is_temporal,
         fact_pseudo_time=_fact_pseudo_time(request),
         ingest_on_error=custom_table.ingest_on_error,
+        allow_new_target_entities=custom_table.allow_new_target_entities,
         allow_negative_weight=(
             request.task_type.lower() == "temporal_link_prediction"),
     )

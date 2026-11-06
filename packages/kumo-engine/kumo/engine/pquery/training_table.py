@@ -128,16 +128,22 @@ class TrainingTable:
             return {}
 
     @classmethod
-    def load_from_connector(cls, connector: Any, *, path: str,
-                            pquery: "PredictiveQuery",  # noqa: F821
-                            snapshot: GraphSnapshot) -> "TrainingTable":
+    def load_from_connector(
+            cls,
+            connector: Any,
+            *,
+            path: str,
+            pquery: "PredictiveQuery",  # noqa: F821
+            snapshot: GraphSnapshot,
+            allow_new_target_entities: bool = False) -> "TrainingTable":
         r"""Load a table written by :meth:`export` against ``snapshot``."""
         from kumo.engine._mlops import on_root
 
         connector, path = on_root(connector, path)
-        return cls.from_source_table(connector[path],
-                                     TrainingTableSpec(split_col='SPLIT'),
-                                     pq=pquery, snapshot=snapshot)
+        return cls.from_source_table(
+            connector[path], TrainingTableSpec(split_col='SPLIT'), pq=pquery,
+            snapshot=snapshot,
+            allow_new_target_entities=allow_new_target_entities)
 
     def _store(self, settings: Any) -> None:
         from pyarrow.fs import FileType
@@ -190,6 +196,7 @@ class TrainingTable:
         snapshot: GraphSnapshot,
         plan: Optional[PublicGenerationPlan] = None,
         mlops: Optional[Any] = None,
+        allow_new_target_entities: bool = False,
     ) -> "TrainingTable":
         r"""Materialize caller-supplied labeled rows as a training table.
 
@@ -205,6 +212,9 @@ class TrainingTable:
         graph through its own required ``snapshot=`` argument. With MLOps on
         (``mlops=`` or a ``kumo.mlops`` block), the table is also stored
         under the artifact root.
+
+        ``allow_new_target_entities=True`` skips prediction-time label filtering.
+        The caller owns label times. Target keys must exist in the snapshot.
         """
         # Local imports keep the immutable descriptor cheap to import and
         # avoid pquery -> trainer -> pquery cycles.
@@ -283,6 +293,7 @@ class TrainingTable:
                 parquet_path=str(rows_path),
                 weight_column=spec.weight_col,
                 timestamp_unit=spec.timestamp_unit,
+                allow_new_target_entities=allow_new_target_entities,
             ),
         )
         if workflow.query.query_type == "temporal":

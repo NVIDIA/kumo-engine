@@ -207,9 +207,11 @@ def handle_gpu_oom(func):
     @functools.wraps(func)
     def wrapper(self, *args, **kwargs):
         orig_batch_size = batch_size = None
+        orig_test_steps = None
 
         max_retries = 3
         for i in range(max_retries + 1):
+            retrying = False
             try:
                 out = func(self, *args, **kwargs)
                 if orig_batch_size is not None:
@@ -220,6 +222,8 @@ def handle_gpu_oom(func):
                 eval_loader_kwargs = self.datamodule.eval_loader_kwargs
                 if i == 0:
                     orig_batch_size = eval_loader_kwargs['batch_size']
+                    if func.__name__ == 'test':
+                        orig_test_steps = self.datamodule.max_test_steps
 
                 if i == max_retries:
                     raise e
@@ -229,6 +233,11 @@ def handle_gpu_oom(func):
                 gc.collect()
                 batch_size = math.ceil(eval_loader_kwargs['batch_size'] / 2)
                 eval_loader_kwargs['batch_size'] = batch_size
+                if func.__name__ == 'test' and orig_test_steps is not None:
+                    self.datamodule.max_test_steps = (
+                        orig_test_steps * orig_batch_size + batch_size -
+                        1) // batch_size
+                retrying = True
                 logger.warning(f"{e}. Temporarily decreasing the batch size "
                                f"from '{orig_batch_size}' to '{batch_size}'")
             except RuntimeError as e:
@@ -250,6 +259,11 @@ def handle_gpu_oom(func):
                     f"For tables over 5 million rows, we recommend setting "
                     f"'output_embedding_dim' to {rhs_dim_limit} or "
                     f"lower.") from e
+            finally:
+                if func.__name__ == 'test' and orig_batch_size is not None and not retrying:
+                    self.datamodule.eval_loader_kwargs[
+                        'batch_size'] = orig_batch_size
+                    self.datamodule.max_test_steps = orig_test_steps
 
     return wrapper
 

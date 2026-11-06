@@ -152,11 +152,16 @@ def test_node_export_roundtrip(graph, name, query):
     kumo.Trainer(model_plan=plan).fit(reimported, snapshot=snapshot)
 
 
-def test_link_export_roundtrip(graph):
-    _, snapshot, connector, out = graph
+@pytest.mark.parametrize('reload', [False, True])
+@pytest.mark.parametrize('preserve', [False, True])
+def test_link_export_roundtrip(graph, reload, preserve):
+    base, _, connector, out = graph
+    base = replace(base, tables=dict(base.tables, items=base.tables['events']))
+    snapshot = base.snapshot()
     query = ('PREDICT LIST_DISTINCT(events.ITEM_ID, 0, 7, days) '
              'RANK TOP 3 FOR EACH ents.ID')
-    pquery, table, exported = _export(graph, query, 'link')
+    pquery, table, exported = _export((base, snapshot, connector, out), query,
+                                      f'link_{reload}_{preserve}')
     seeds, counts = _seeds(table)
     assert exported.schema.names == [
         'ENTITY1', 'TIMESTAMP', 'TARGET1', FREQ, 'SPLIT'
@@ -168,13 +173,32 @@ def test_link_export_roundtrip(graph):
 
     frame = exported.to_pandas()
     frame.to_parquet(out / 'link_w.parquet')
-    reimported = kumo.TrainingTable.from_source_table(
-        connector['link_w.parquet'], TrainingTableSpec(split_col='SPLIT'),
-        pq=pquery, snapshot=snapshot)
+    if reload:
+        load = partial(kumo.TrainingTable.load_from_connector, connector,
+                       path='link_w.parquet', pquery=pquery)
+    else:
+        load = partial(kumo.TrainingTable.from_source_table,
+                       connector['link_w.parquet'],
+                       TrainingTableSpec(split_col='SPLIT'), pq=pquery)
+    options = {'allow_new_target_entities': True} if preserve else {}
+    reimported = load(snapshot=snapshot, **options)
     again, again_counts = _seeds(reimported)
-    assert again_counts == counts
+    assert (again_counts == counts) == preserve
+    created = pd.read_parquet(out.parent /
+                              'data/events.parquet').set_index('EID')['TS']
     for key, seed in seeds.items():
-        assert _rows(again[key], columns) == _rows(seed, columns)
+        expected = seed.to_pylist()
+        if not preserve:
+            for row in expected:
+                visible = [
+                    i for i, target in enumerate(row['TARGET1'])
+                    if created[target] <= row['TIMESTAMP']
+                ]
+                for column in ('TARGET1', FREQ):
+                    row[column] = [row[column][i] for i in visible]
+            expected = [row for row in expected if row['TARGET1']]
+        assert _rows(again[key], columns) == _rows(
+            pa.Table.from_pylist(expected, schema=seed.schema), columns)
 
 
 def test_forecasting_export_roundtrip(graph):
