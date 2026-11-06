@@ -154,7 +154,7 @@ def test_node_export_roundtrip(graph, name, query):
 
 @pytest.mark.parametrize('reload', [False, True])
 @pytest.mark.parametrize('preserve', [False, True])
-def test_link_export_roundtrip(graph, reload, preserve):
+def test_link_export_roundtrip(graph, reload, preserve, tmp_path):
     base, _, connector, out = graph
     base = replace(base, tables=dict(base.tables, items=base.tables['events']))
     snapshot = base.snapshot()
@@ -181,7 +181,20 @@ def test_link_export_roundtrip(graph, reload, preserve):
                        connector['link_w.parquet'],
                        TrainingTableSpec(split_col='SPLIT'), pq=pquery)
     options = {'allow_new_target_entities': True} if preserve else {}
-    reimported = load(snapshot=snapshot, **options)
+    cfg = _volume_root(tmp_path)
+    with kumo.mlops(cfg):
+        reimported = load(snapshot=snapshot, **options)
+        other = load(snapshot=snapshot,
+                     allow_new_target_entities=not preserve)
+        assert reimported.id != other.id
+        assert reimported.manifest.parents.source_table.version
+        assert load(snapshot=snapshot,
+                    allow_new_target_entities=preserve).id == reimported.id
+    for enabled, imported in [(preserve, reimported), (not preserve, other)]:
+        stored = kumo.TrainingTable.load_from_connector(
+            cfg, path=f'training_tables/{imported.id}', pquery=pquery,
+            snapshot=snapshot, allow_new_target_entities=enabled)
+        assert _seeds(stored) == _seeds(imported)
     again, again_counts = _seeds(reimported)
     assert (again_counts == counts) == preserve
     created = pd.read_parquet(out.parent /
@@ -483,3 +496,110 @@ def test_a_mlops_block_stores_each_table_once_under_the_root(graph, tmp_path):
         snapshot, mlops=kumo.MLOps(artifact_root=str(tmp_path / 'other'),
                                    store={'model'}))
     assert off.id == table.id and not (tmp_path / 'other').exists()
+
+
+def _volume_root(tmp_path):
+    from types import SimpleNamespace
+
+    from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
+
+    (tmp_path / 'volume').mkdir()
+    files = SubTreeFileSystem(str(tmp_path / 'volume'), LocalFileSystem())
+    volume = SimpleNamespace(
+        source_type='databricks', sink_backend=SimpleNamespace(
+            holds_files=lambda connector, path: path.startswith('/Volumes/'),
+            filesystem=lambda connector, path: (files, path.lstrip('/'))))
+    return kumo.MLOps((volume, '/Volumes/c/s/v/kumo'))
+
+
+def test_a_table_stored_on_a_volume_loads_back(graph, tmp_path):
+    cfg = _volume_root(tmp_path)
+    with kumo.mlops(cfg):
+        pquery, table = _generate(graph)
+    path = f'training_tables/{table.id}'
+
+    def load():
+        return kumo.TrainingTable.load_from_connector(
+            cfg, path=path, pquery=pquery, snapshot=graph[1])
+
+    reloaded = load()
+    assert _seeds(reloaded)[1] == _seeds(table)[1]
+    assert reloaded.manifest.parents.source_table.location == (
+        f'/Volumes/c/s/v/kumo/{path}')
+    assert load().id == reloaded.id
+
+
+def test_a_reloaded_table_keeps_unrecorded_sources_unrecorded(graph, tmp_path):
+    cfg = _volume_root(tmp_path)
+    snapshot = graph[0].snapshot(record_sources=False)
+    pquery = kumo.PredictiveQuery(graph=graph[0], query=LABEL)
+    with kumo.mlops(cfg):
+        table = pquery.generate_training_table(snapshot)
+    reloaded = kumo.TrainingTable.load_from_connector(
+        cfg, path=f'training_tables/{table.id}', pquery=pquery,
+        snapshot=snapshot)
+    assert reloaded.manifest.parents.source_table.location == table.id
+    assert '/Volumes' not in json.dumps(reloaded.manifest.to_dict())
+
+
+def test_a_string_root_records_the_full_uri(graph, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
+
+    files = SubTreeFileSystem(str(tmp_path), LocalFileSystem())
+    store = SimpleNamespace(source_type='s3', sink_backend=SimpleNamespace(
+        holds_files=lambda connector, path: True,
+        filesystem=lambda connector, path: (files, path)))
+    monkeypatch.setattr('kumo.engine.connector.connector_for_root',
+                        lambda uri: store)
+    cfg = kumo.MLOps('s3://bucket/kumo')
+    with kumo.mlops(cfg):
+        pquery, table = _generate(graph)
+    path = f'training_tables/{table.id}'
+    reloaded = kumo.TrainingTable.load_from_connector(
+        cfg, path=path, pquery=pquery, snapshot=graph[1])
+    assert reloaded.manifest.parents.source_table.location == (
+        f's3://bucket/kumo/{path}')
+
+
+@pytest.mark.parametrize('remote', [True, False])
+def test_an_incomplete_stored_table_says_so(graph, tmp_path, remote):
+    cfg = (_volume_root(tmp_path) if remote else
+           kumo.MLOps(str(tmp_path / 'kumo')))
+    with kumo.mlops(cfg):
+        pquery, table = _generate(graph)
+    stored = (tmp_path / 'volume/Volumes/c/s/v/kumo' if remote else
+              tmp_path / 'kumo')
+    (stored / 'training_tables' / table.id / '_SUCCESS').unlink()
+    with pytest.raises(FileNotFoundError, match='has no _SUCCESS marker'):
+        kumo.TrainingTable.load_from_connector(
+            cfg, path=f'training_tables/{table.id}', pquery=pquery,
+            snapshot=graph[1])
+
+
+@pytest.mark.parametrize('rewrite', [
+    lambda stored: (stored / 'part-new.parquet').write_bytes(
+        next(stored.glob('*.parquet')).read_bytes()),
+    lambda stored: (stored / '_SUCCESS').unlink()])
+def test_a_table_rewritten_while_loading_says_so(graph, tmp_path,
+                                                 monkeypatch, rewrite):
+    from kumo.engine.trainer import trainer
+
+    cfg = _volume_root(tmp_path)
+    with kumo.mlops(cfg):
+        pquery, table = _generate(graph)
+    stored = (tmp_path / 'volume/Volumes/c/s/v/kumo/training_tables' /
+              table.id)
+    fetch = trainer.fetch_parquet
+
+    def rewrite_after(*args):
+        fetch(*args)
+        rewrite(stored)
+
+    monkeypatch.setattr(trainer, 'fetch_parquet', rewrite_after)
+    with pytest.raises(RuntimeError, match='changed while it was being '
+                       'loaded; retry'):
+        kumo.TrainingTable.load_from_connector(
+            cfg, path=f'training_tables/{table.id}', pquery=pquery,
+            snapshot=graph[1])

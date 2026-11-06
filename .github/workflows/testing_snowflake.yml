@@ -187,7 +187,9 @@ jobs:
           configure_pytest_ci_output
           GLOG_logtostdout=1 python -m coverage run -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=30 --runsnowflake ${{ matrix.test_dir }}
         env:
-          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
+          # Least-privilege CI service user; takes precedence over the AWS key.
+          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_CI_USER }}
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_CI_PRIVATE_KEY }}
           AWS_DEFAULT_REGION: "us-west-2"
           DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
 
@@ -201,6 +203,8 @@ jobs:
           configure_pytest_ci_output
           FULL_TEST=1 GLOG_logtostdout=1 python -m coverage run -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=30 --runsnowflake ${{ matrix.test_dir }}
         env:
-          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
+          # Least-privilege CI service user; takes precedence over the AWS key.
+          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_CI_USER }}
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_CI_PRIVATE_KEY }}
           AWS_DEFAULT_REGION: "us-west-2"
           DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}

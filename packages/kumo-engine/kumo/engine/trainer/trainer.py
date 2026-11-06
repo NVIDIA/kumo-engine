@@ -527,8 +527,10 @@ def _fetch_dir(prefix: str) -> Path:
     return Path(tempfile.mkdtemp(prefix=prefix, dir=scratch))
 
 
-def fetch_parquet(filesystem: Any, root: str, target: Path) -> None:
-    r"""Download the Parquet files under ``root`` into ``target``."""
+def fetch_parquet(filesystem: Any, root: str, target: Path,
+                  parts: Optional[Sequence[Any]] = None) -> None:
+    r"""Download the Parquet files under ``root``, or ``parts``, into
+    ``target``."""
     from kumo_core.sources.transfer import StagedFile, fetch_all
     from pyarrow.fs import FileSelector, FileType
 
@@ -537,11 +539,13 @@ def fetch_parquet(filesystem: Any, root: str, target: Path) -> None:
                 open(local, 'wb') as writer:
             shutil.copyfileobj(reader, writer, 1 << 20)
 
-    fetch_all([
-        StagedFile(info.path, info.size)
-        for info in filesystem.get_file_info(FileSelector(root))
-        if info.type == FileType.File and info.path.endswith('.parquet')
-    ], str(target), fetch=fetch)
+    if parts is None:
+        parts = [
+            info for info in filesystem.get_file_info(FileSelector(root))
+            if info.type == FileType.File and info.path.endswith('.parquet')
+        ]
+    fetch_all([StagedFile(info.path, info.size) for info in parts],
+              str(target), fetch=fetch)
 
 
 def _sidecar_bytes(manifest: Optional[PredictionManifest]) -> Optional[bytes]:
