@@ -59,7 +59,7 @@ class Client:
         from botocore.exceptions import ClientError
 
         cfg = self.config
-        if (not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]*', name)
+        if (not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.+-]*', name)
                 or not re.fullmatch(r'[a-f0-9]{64}', expected)):
             raise ValueError('Invalid content-addressed asset')
         key = f'{cfg["root"]}/payload-cache/{expected}/{name}'
@@ -73,7 +73,7 @@ class Client:
                 raise ValueError('Seed the missing pinned asset: ' +
                                  name) from None
             content = Path(local).read_bytes()
-            if Path(local).name != name or digest(content) != expected:
+            if digest(content) != expected:
                 raise ValueError('Local asset differs from pinned input: ' +
                                  name)
             try:

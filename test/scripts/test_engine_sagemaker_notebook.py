@@ -137,6 +137,76 @@ def test_cleanup_failure_preserves_original_error(modules, tmp_path):
         client.wait(execution, tmp_path, 1)
 
 
+def test_aliased_payload_is_uploaded_once_then_verified_from_cache(
+        modules, tmp_path):
+    import base64
+
+    from botocore.exceptions import ClientError
+
+    client = modules.client.Client.__new__(modules.client.Client)
+    client.config = modules.config.configuration()
+    client.s3 = Mock()
+    content = b'actual runtime helper bytes'
+    original = tmp_path / 'runtime.py'
+    original.write_bytes(content)
+    sha = modules.evidence.digest(content)
+    checksum = base64.b64encode(bytes.fromhex(sha)).decode()
+    head = dict(ContentLength=len(content), ChecksumSHA256=checksum)
+    missing = ClientError({'Error': {'Code': '404'}}, 'HeadObject')
+    client.s3.head_object.side_effect = [missing, head, head]
+    first = client.asset('sagemaker_runtime.py', sha, original)
+    second = client.asset('sagemaker_runtime.py', sha)
+    assert first == second
+    assert first['key'].endswith('/' + sha + '/sagemaker_runtime.py')
+    assert client.s3.put_object.call_count == 1
+    assert client.s3.put_object.call_args.kwargs['Body'] == content
+    client.s3.get_object.assert_not_called()
+
+
+def test_wrong_bytes_cannot_seed_payload_cache(modules, tmp_path):
+    from botocore.exceptions import ClientError
+
+    client = modules.client.Client.__new__(modules.client.Client)
+    client.config = modules.config.configuration()
+    client.s3 = Mock()
+    client.s3.head_object.side_effect = ClientError({'Error': {
+        'Code': '404'
+    }}, 'HeadObject')
+    path = tmp_path / 'runtime.py'
+    path.write_bytes(b'changed bytes')
+    with pytest.raises(ValueError, match='differs from pinned input'):
+        client.asset('sagemaker_runtime.py', 'a' * 64, path)
+    client.s3.put_object.assert_not_called()
+
+
+def test_candidate_wheel_local_version_is_a_safe_cache_name(modules):
+    import base64
+
+    client = modules.client.Client.__new__(modules.client.Client)
+    client.config = modules.config.configuration()
+    client.s3 = Mock()
+    sha = 'a' * 64
+    client.s3.head_object.return_value = dict(
+        ContentLength=1,
+        ChecksumSHA256=base64.b64encode(bytes.fromhex(sha)).decode())
+    candidate = json.loads((HERE / 'candidate.json').read_text())['candidate']
+    assert '+' in candidate['wheel_file']
+    assert client.asset(candidate['wheel_file'], sha)['sha256'] == sha
+    client.s3.put_object.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    'name',
+    ['..', '../wheel.whl', '/wheel.whl', 'wheel?token=x', 'wheel\n.whl'])
+def test_unsafe_cache_names_are_rejected_before_aws(modules, name):
+    client = modules.client.Client.__new__(modules.client.Client)
+    client.config = modules.config.configuration()
+    client.s3 = Mock()
+    with pytest.raises(ValueError, match='Invalid content-addressed asset'):
+        client.asset(name, 'a' * 64)
+    client.s3.head_object.assert_not_called()
+
+
 def test_sdk_compiles_actual_scoped_notebook_training_job(
         modules, monkeypatch, tmp_path):
     boto3 = pytest.importorskip('boto3')
