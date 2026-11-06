@@ -643,12 +643,22 @@ def test_an_unreadable_column_is_left_out_unless_the_graph_needs_it(
         graph.validate()
 
 
-@pytest.mark.parametrize('query', [
-    'PREDICT events.bad FOR EACH events.pk',
-    'PREDICT events.amount FOR EACH events.pk WHERE events.bad = 1',
+LEFT_OUT = ("Column events.bad is named in the query but was left out of "
+            "the graph: its source type struct<a: int64> cannot be read. "
+            "Declare a dtype for it (`dtypes=` or `with_column('bad', "
+            "dtype=...)`) or cast it at the source, then build the graph "
+            "again.")
+
+
+@pytest.mark.parametrize('query, expected', [
+    ('PREDICT events.bad FOR EACH events.pk', LEFT_OUT),
+    ('PREDICT events.amount FOR EACH events.pk WHERE events.bad = 1',
+     LEFT_OUT),
+    ("PREDICT events.nope FOR EACH events.pk WHERE events.kind = 'events.bad'",
+     "Column 'nope' does not exist in table 'events'"),
 ])
 def test_a_query_naming_a_left_out_column_says_why_it_is_missing(
-        query, tmp_path):
+        query, expected, tmp_path):
     from kumo.engine import FileConnector, PredictiveQuery
 
     root = tmp_path / 'source'
@@ -663,7 +673,8 @@ def test_a_query_naming_a_left_out_column_says_why_it_is_missing(
             }, {
                 'a': 3
             }]),
-            'amount': [1.5, 2.5, 3.5]
+            'amount': [1.5, 2.5, 3.5],
+            'kind': ['x', 'y', 'x'],
         }), root / 'events.parquet')
     graph = Graph({
         'events':
@@ -671,12 +682,7 @@ def test_a_query_naming_a_left_out_column_says_why_it_is_missing(
             FileConnector(root_dir=str(root))['events'], primary_key='pk')
     })
     with pytest.warns(UserWarning, match='left out of the graph'), \
-            pytest.raises(ValueError, match=re.escape(
-                "Column events.bad is named in the query but was left out of "
-                "the graph: its source type struct<a: int64> cannot be read. "
-                "Declare a dtype for it (`dtypes=` or `with_column('bad', "
-                "dtype=...)`) or cast it at the source, then build the graph "
-                "again.")):
+            pytest.raises(ValueError, match=re.escape(expected)):
         PredictiveQuery(graph, query).validate()
 
 
