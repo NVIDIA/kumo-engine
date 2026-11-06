@@ -1,0 +1,364 @@
+{
+  "provenance": {
+    "anchor_time": "2024-12-01T00:00:00",
+    "partition": "part-000000.parquet",
+    "selection": "users 2 and 3; 8 and 5 recent card transactions respectively before 2024-12-01, plus all card transactions in [2024-12-01, 2024-12-08)",
+    "source": "synthetic subset of the PRAGMA-shaped banking dataset",
+    "target_window_stop": "2024-12-08T00:00:00"
+  },
+  "tables": {
+    "accounts": [
+      {
+        "account_id": 4,
+        "account_type": "checking",
+        "closed_at": null,
+        "opened_at": "2021-06-26T00:44:06",
+        "user_id": 2
+      },
+      {
+        "account_id": 5,
+        "account_type": "credit_card",
+        "closed_at": null,
+        "opened_at": "2022-05-03T16:55:27",
+        "user_id": 2
+      },
+      {
+        "account_id": 6,
+        "account_type": "brokerage",
+        "closed_at": null,
+        "opened_at": "2023-08-06T15:00:16",
+        "user_id": 2
+      },
+      {
+        "account_id": 7,
+        "account_type": "savings",
+        "closed_at": null,
+        "opened_at": "2023-03-21T08:45:09",
+        "user_id": 2
+      },
+      {
+        "account_id": 8,
+        "account_type": "brokerage",
+        "closed_at": null,
+        "opened_at": "2024-06-22T03:54:05",
+        "user_id": 2
+      },
+      {
+        "account_id": 9,
+        "account_type": "retirement",
+        "closed_at": null,
+        "opened_at": "2023-04-26T00:51:47",
+        "user_id": 2
+      },
+      {
+        "account_id": 10,
+        "account_type": "checking",
+        "closed_at": "2025-01-17T19:46:13",
+        "opened_at": "2024-11-25T22:13:46",
+        "user_id": 3
+      },
+      {
+        "account_id": 11,
+        "account_type": "savings",
+        "closed_at": null,
+        "opened_at": "2023-10-27T13:03:53",
+        "user_id": 3
+      },
+      {
+        "account_id": 12,
+        "account_type": "credit_card",
+        "closed_at": null,
+        "opened_at": "2024-05-13T04:56:10",
+        "user_id": 3
+      }
+    ],
+    "card_transactions": [
+      {
+        "account_id": 5,
+        "amount": 22.010000228881836,
+        "card_transaction_id": 80,
+        "channel": "card_present",
+        "description": "utilities merchant 0069134",
+        "merchant_id": 69134,
+        "occurred_at": "2024-11-21T16:00:00",
+        "user_id": 2
+      },
+      {
+        "account_id": 5,
+        "amount": 49.150001525878906,
+        "card_transaction_id": 160,
+        "channel": "card_not_present",
+        "description": "subscription merchant 0152250",
+        "merchant_id": 152250,
+        "occurred_at": "2024-11-21T21:00:00",
+        "user_id": 2
+      },
+      {
+        "account_id": 5,
+        "amount": 25.110000610351562,
+        "card_transaction_id": 18,
+        "channel": "card_present",
+        "description": "grocery merchant 0172891",
+        "merchant_id": 172891,
+        "occurred_at": "2024-11-22T03:00:00",
+        "user_id": 2
+      },
+      {
+        "account_id": 5,
+        "amount": 23.219999313354492,
+        "card_transaction_id": 39,
+        "channel": "card_not_present",
+        "description": "subscription merchant 0125482",
+        "merchant_id": 125482,
+        "occurred_at": "2024-11-23T09:00:00",
+        "user_id": 2
+      },
+      {
+        "account_id": 5,
+        "amount": 49.209999084472656,
+        "card_transaction_id": 61,
+        "channel": "card_not_present",
+        "description": "digital_goods merchant 0165505",
+        "merchant_id": 165505,
+        "occurred_at": "2024-11-23T14:00:00",
+        "user_id": 2
+      },
+      {
+        "account_id": 5,
+        "amount": 22.09000015258789,
+        "card_transaction_id": 102,
+        "channel": "card_present",
+        "description": "subscription merchant 0154998",
+        "merchant_id": 154998,
+        "occurred_at": "2024-11-24T09:00:00",
+        "user_id": 2
+      },
+      {
+        "account_id": 5,
+        "amount": 38.79999923706055,
+        "card_transaction_id": 141,
+        "channel": "card_not_present",
+        "description": "digital_goods merchant 0139849",
+        "merchant_id": 139849,
+        "occurred_at": "2024-11-24T19:00:00",
+        "user_id": 2
+      },
+      {
+        "account_id": 5,
+        "amount": 70.05999755859375,
+        "card_transaction_id": 387,
+        "channel": "recurring",
+        "description": "online_marketplace merchant 0171729",
+        "merchant_id": 171729,
+        "occurred_at": "2024-11-28T20:11:57",
+        "user_id": 2
+      },
+      {
+        "account_id": 5,
+        "amount": 21.18000030517578,
+        "card_transaction_id": 351,
+        "channel": "card_not_present",
+        "description": "electronics merchant 0082132",
+        "merchant_id": 82132,
+        "occurred_at": "2024-12-01T12:01:05",
+        "user_id": 2
+      },
+      {
+        "account_id": 5,
+        "amount": 116.7699966430664,
+        "card_transaction_id": 467,
+        "channel": "card_not_present",
+        "description": "utilities merchant 0033639",
+        "merchant_id": 33639,
+        "occurred_at": "2024-12-03T17:25:10",
+        "user_id": 2
+      },
+      {
+        "account_id": 5,
+        "amount": 37.540000915527344,
+        "card_transaction_id": 243,
+        "channel": "card_not_present",
+        "description": "fuel merchant 0023695",
+        "merchant_id": 23695,
+        "occurred_at": "2024-12-06T12:54:43",
+        "user_id": 2
+      },
+      {
+        "account_id": 12,
+        "amount": 14.880000114440918,
+        "card_transaction_id": 776,
+        "channel": "card_not_present",
+        "description": "electronics merchant 0164248",
+        "merchant_id": 164248,
+        "occurred_at": "2024-11-25T07:14:46",
+        "user_id": 3
+      },
+      {
+        "account_id": 12,
+        "amount": 76.08000183105469,
+        "card_transaction_id": 774,
+        "channel": "card_present",
+        "description": "travel merchant 0176321",
+        "merchant_id": 176321,
+        "occurred_at": "2024-11-26T03:39:32",
+        "user_id": 3
+      },
+      {
+        "account_id": 12,
+        "amount": 15.859999656677246,
+        "card_transaction_id": 713,
+        "channel": "recurring",
+        "description": "subscription merchant 0131369",
+        "merchant_id": 131369,
+        "occurred_at": "2024-11-26T07:44:55",
+        "user_id": 3
+      },
+      {
+        "account_id": 12,
+        "amount": 225.08999633789062,
+        "card_transaction_id": 732,
+        "channel": "recurring",
+        "description": "utilities merchant 0139442",
+        "merchant_id": 139442,
+        "occurred_at": "2024-11-29T02:24:05",
+        "user_id": 3
+      },
+      {
+        "account_id": 12,
+        "amount": 95.0,
+        "card_transaction_id": 826,
+        "channel": "card_present",
+        "description": "digital_goods merchant 0191912",
+        "merchant_id": 191912,
+        "occurred_at": "2024-11-29T03:01:07",
+        "user_id": 3
+      },
+      {
+        "account_id": 12,
+        "amount": 20.770000457763672,
+        "card_transaction_id": 734,
+        "channel": "card_present",
+        "description": "subscription merchant 0030558",
+        "merchant_id": 30558,
+        "occurred_at": "2024-12-01T20:24:12",
+        "user_id": 3
+      },
+      {
+        "account_id": 12,
+        "amount": 7.739999771118164,
+        "card_transaction_id": 831,
+        "channel": "card_not_present",
+        "description": "fuel merchant 0099620",
+        "merchant_id": 99620,
+        "occurred_at": "2024-12-04T21:45:26",
+        "user_id": 3
+      }
+    ],
+    "merchants": [
+      {
+        "merchant_category": "fuel",
+        "merchant_id": 23695,
+        "risk_score": 0.06719999760389328
+      },
+      {
+        "merchant_category": "subscription",
+        "merchant_id": 30558,
+        "risk_score": 0.31859999895095825
+      },
+      {
+        "merchant_category": "utilities",
+        "merchant_id": 33639,
+        "risk_score": 0.24240000545978546
+      },
+      {
+        "merchant_category": "utilities",
+        "merchant_id": 69134,
+        "risk_score": 0.18299999833106995
+      },
+      {
+        "merchant_category": "electronics",
+        "merchant_id": 82132,
+        "risk_score": 0.1868000030517578
+      },
+      {
+        "merchant_category": "fuel",
+        "merchant_id": 99620,
+        "risk_score": 0.09709999710321426
+      },
+      {
+        "merchant_category": "subscription",
+        "merchant_id": 125482,
+        "risk_score": 0.14339999854564667
+      },
+      {
+        "merchant_category": "subscription",
+        "merchant_id": 131369,
+        "risk_score": 0.20029999315738678
+      },
+      {
+        "merchant_category": "utilities",
+        "merchant_id": 139442,
+        "risk_score": 0.10159999877214432
+      },
+      {
+        "merchant_category": "digital_goods",
+        "merchant_id": 139849,
+        "risk_score": 0.2061000019311905
+      },
+      {
+        "merchant_category": "subscription",
+        "merchant_id": 152250,
+        "risk_score": 0.065700002014637
+      },
+      {
+        "merchant_category": "subscription",
+        "merchant_id": 154998,
+        "risk_score": 0.05920000001788139
+      },
+      {
+        "merchant_category": "electronics",
+        "merchant_id": 164248,
+        "risk_score": 0.2581999897956848
+      },
+      {
+        "merchant_category": "digital_goods",
+        "merchant_id": 165505,
+        "risk_score": 0.39089998602867126
+      },
+      {
+        "merchant_category": "online_marketplace",
+        "merchant_id": 171729,
+        "risk_score": 0.09239999949932098
+      },
+      {
+        "merchant_category": "grocery",
+        "merchant_id": 172891,
+        "risk_score": 0.1720999926328659
+      },
+      {
+        "merchant_category": "travel",
+        "merchant_id": 176321,
+        "risk_score": 0.20810000598430634
+      },
+      {
+        "merchant_category": "digital_goods",
+        "merchant_id": 191912,
+        "risk_score": 0.36230000853538513
+      }
+    ],
+    "users": [
+      {
+        "country": "C021",
+        "risk_segment": "low",
+        "signup_at": "2020-11-12T11:55:17",
+        "user_id": 2
+      },
+      {
+        "country": "C002",
+        "risk_segment": "low",
+        "signup_at": "2023-05-02T13:13:13",
+        "user_id": 3
+      }
+    ]
+  }
+}

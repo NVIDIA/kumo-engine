@@ -1,0 +1,176 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: kumo-pytorch nightly end-to-end
+
+# The nightly tier: the end-to-end flows at M, and conformance properties on
+# more generated seed batches, on both engines. Not a required check. Pull
+# requests run it only when they change this workflow or the tiers'
+# configuration. Exported from kumo-pytorch's development repository; change
+# it there, not here.
+on:  # yamllint disable-line rule:truthy
+  schedule:
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+    inputs:
+      seed_start:
+        description: First extra conformance seed batch (default derived from the date)
+        required: false
+  pull_request:
+    paths:
+      - 'packages/experimental/kumo-pytorch/tests/e2e/tiers.py'
+      - 'packages/experimental/kumo-pytorch/tests/e2e/runs.py'
+      - '.github/actions/kumo-pytorch-setup/**'
+      - '.github/workflows/kumo-pytorch-t2b.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+    working-directory: packages/experimental/kumo-pytorch
+
+jobs:
+  diskgraph-wheel:
+    uses: ./.github/workflows/_diskgraph-wheel.yml
+
+  plan:
+    name: Plan the nightly end-to-end runs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - id: matrix
+        run: echo "matrix=$(python3 tests/e2e/tiers.py t2b)" >> "$GITHUB_OUTPUT"
+
+  run:
+    name: Nightly end-to-end ${{ matrix.flow }} seed ${{ matrix.seed }} (size M)
+    needs: [diskgraph-wheel, plan]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+      - name: Train, persist, infer and serve
+        env:
+          FLOW: ${{ matrix.flow }}
+          SEED: ${{ matrix.seed }}
+        run: python -m tests.e2e.runs t2b "$FLOW" "$SEED" --e2e-dir "$RUNNER_TEMP/e2e"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: kumo-pytorch-t2b-${{ matrix.flow }}-seed${{ matrix.seed }}
+          path: |
+            ${{ runner.temp }}/e2e/t2b/${{ matrix.flow }}-seed${{ matrix.seed }}/
+            !${{ runner.temp }}/e2e/t2b/**/index/**
+          retention-days: 14
+
+  checks:
+    name: kumo-pytorch-t2b
+    needs: [diskgraph-wheel, run]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: kumo-pytorch-t2b-*-seed*
+          path: ${{ runner.temp }}/e2e-runs
+      - name: Place the runs where the checks read them
+        run: |
+          mkdir -p "$RUNNER_TEMP/e2e/t2b"
+          for run in "$RUNNER_TEMP"/e2e-runs/kumo-pytorch-t2b-*; do
+            mv "$run" "$RUNNER_TEMP/e2e/t2b/${run##*/kumo-pytorch-t2b-}"
+          done
+      - name: Check the runs
+        env:
+          KUMO_PYTORCH_E2E_REUSE_ONLY: '1'
+        run: |
+          python -m pytest -q --t2b --e2e-dir "$RUNNER_TEMP/e2e" --durations=0 \
+            tests/e2e/test_lifecycle.py
+      - name: Summarize metrics and run times
+        if: ${{ always() }}
+        run: |
+          if [ -f "$RUNNER_TEMP/e2e/t2b/metrics.json" ]; then
+            {
+              echo '### T2b metrics'
+              echo '```json'
+              cat "$RUNNER_TEMP/e2e/t2b/metrics.json"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() }}
+        with:
+          name: kumo-pytorch-t2b-predictions-and-metrics
+          path: |
+            ${{ runner.temp }}/e2e/t2b/metrics.json
+            ${{ runner.temp }}/e2e/t2b/*/*.json
+            ${{ runner.temp }}/e2e/t2b/*/*.parquet
+            ${{ runner.temp }}/e2e/t2b/*/*-predictions/*
+            !${{ runner.temp }}/e2e/t2b/hm-m/**
+            !${{ runner.temp }}/e2e/t2b/sampled/**
+            !${{ runner.temp }}/e2e/t2b/**/index/**
+          retention-days: 14
+
+  conformance:
+    name: kumo-pytorch-t2b-conformance
+    needs: diskgraph-wheel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Pick today's seed batches
+        id: seeds
+        working-directory: .
+        env:
+          REQUESTED: ${{ github.event.inputs.seed_start }}
+        run: |
+          # 12 new batches a day; the required ones always run as well.
+          start=${REQUESTED:-$(( $(date -u +%s) / 86400 * 12 ))}
+          if ! [[ $start =~ ^[0-9]+$ ]]; then
+            echo "::error::seed_start must be a non-negative integer, not '$start'"
+            exit 1
+          fi
+          echo "start=$start" >> "$GITHUB_OUTPUT"
+          echo "Conformance seed batches $start-$((start + 11)) plus the required ones;" \
+            "reproduce with \`python -m conformance --engine all --seeds 12 --seed-start $start\`" \
+            >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+      - name: Check every property on the day's seed batches
+        env:
+          CONFORMANCE_REPROS: ${{ runner.temp }}/conformance-repros
+          START: ${{ steps.seeds.outputs.start }}
+        run: python -m conformance --engine all --seeds 12 --seed-start "$START"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ failure() }}
+        with:
+          name: kumo-pytorch-t2b-conformance-repros
+          path: ${{ runner.temp }}/conformance-repros
+          if-no-files-found: ignore
+          retention-days: 14
