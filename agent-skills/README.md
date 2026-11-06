@@ -125,3 +125,26 @@ The skills cite Kumo code by module path, as the agent sees it in a notebook
 resolves each one against `packages/`, and checks every `kumo.<name>` against `kumo.engine.__all__`,
 so the workflow also runs on changes to `kumo-engine`, `kumo-core`, `kumo-api` and `kumo-snowflake`.
 `kumoml.*` lives outside this repository and is not checked.
+
+## Publishing to the NVIDIA skills catalog
+
+[NVIDIA/skills](https://github.com/NVIDIA/skills) pulls every product's skills from its source repo
+once an hour. It accepts only content that NVSkills CI has evaluated and signed. NVSkills CI runs
+only on PRs that change a root-level `skills/` directory. So the catalog reads a built copy,
+`skills/kumo-data-science/` at the repository root, not `agent-skills/skills/`:
+
+| Path | Written by |
+|---|---|
+| `skills/kumo-data-science/` (everything else) | `agent-skills/scripts/publish_nvskills.py`: the `generic` package |
+| `skills/kumo-data-science/skill-card.md`, `evals/` | copied from `agent-skills/nvskills/kumo-data-science/` |
+| `skills/kumo-data-science/BENCHMARK.md`, `skill.oms.sig` | NVSkills CI, in the publish PR; never by hand |
+
+Do not edit `skills/` directly. Change `agent-skills/` and merge. The `nvskills-publish` workflow
+rebuilds the copy and opens or updates one PR from `nvskills/kumo-data-science`. A maintainer
+comments `/nvskills-ci` on that PR. NVSkills CI runs the evals and pushes the signature commit, and
+then the PR can merge. `python3 agent-skills/scripts/publish_nvskills.py --check` reports whether
+the copy on your branch is out of date. It ignores the `SKILL-BUILD` stamp.
+
+The catalog side is `components.d/kumo-engine.yml` in NVIDIA/skills, which points at
+`skills/kumo-data-science`. Its `verify-source-onboarding` check fails until a signed copy with
+`skill-card.md`, `BENCHMARK.md` and an eval dataset is on `main` here.

@@ -1,0 +1,89 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Publish skill to NVIDIA/skills
+
+# The NVIDIA/skills catalog syncs skills/kumo-data-science/ from main every hour, but only
+# content that NVSkills CI has signed. When the skill source changes on main, this workflow
+# rebuilds the published copy and opens or updates one PR on a bot branch. A maintainer then
+# comments `/nvskills-ci` on that PR. NVSkills CI runs the evals and pushes BENCHMARK.md and
+# skill.oms.sig. Once that commit is on the PR, it can merge.
+#
+# A PR opened with GITHUB_TOKEN does not trigger other workflows, so this repository's own CI
+# does not run on it. The `/nvskills-ci` comment and the signing push do trigger
+# request-nvskills-ci.yml, because a person and nv-skills-ci[bot] make them. The PR changes
+# only skills/, which is generated output that the Agent Skills workflow already tested on main.
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches: [main]
+    paths:
+      - "agent-skills/skills/**"
+      - "agent-skills/nvskills/**"
+      - "agent-skills/scripts/package_skill.py"
+      - "agent-skills/scripts/publish_nvskills.py"
+      - ".github/workflows/nvskills-publish.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nvskills-publish
+  cancel-in-progress: false
+
+jobs:
+  open-pr:
+    if: github.ref_name == 'main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BRANCH: nvskills/kumo-data-science
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+
+      - name: Rebuild skills/kumo-data-science/
+        run: python3 agent-skills/scripts/publish_nvskills.py | tee /tmp/publish.txt
+
+      - name: Commit and open or update the PR
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain -- skills/)" ]; then
+            echo "skills/kumo-data-science/ already matches main; nothing to publish."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          short="$(git rev-parse --short=8 HEAD)"
+          git checkout -B "$BRANCH"
+          git add skills/
+          git commit -q -m "Publish kumo-data-science skill from ${short}"
+          # The branch is owned by this workflow. Content built from a newer main replaces it. Any
+          # signatures already on the branch covered the older content, so NVSkills CI re-runs.
+          git push --force origin "$BRANCH"
+
+          {
+            echo "Rebuilds \`skills/kumo-data-science/\` from \`agent-skills/\` at ${GITHUB_SHA}."
+            echo "The NVIDIA/skills catalog syncs this directory every hour."
+            echo
+            echo "**To publish:** a maintainer comments \`/nvskills-ci\` here. NVSkills CI runs the"
+            echo "skill's evals and pushes \`BENCHMARK.md\` and \`skill.oms.sig\`. Merge once that"
+            echo "commit lands. If this PR merges without it, the catalog keeps the last signed version."
+            echo
+            echo '```'
+            cat /tmp/publish.txt
+            echo '```'
+          } > /tmp/body.md
+
+          if [ "$(gh pr view "$BRANCH" --json state --jq .state 2>/dev/null)" = "OPEN" ]; then
+            gh pr edit "$BRANCH" --body-file /tmp/body.md
+          else
+            gh pr create --base main --head "$BRANCH" \
+              --title "Publish kumo-data-science skill to NVIDIA/skills" \
+              --body-file /tmp/body.md
+          fi
