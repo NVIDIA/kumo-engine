@@ -127,9 +127,9 @@ python packages/kumo-engine/test/databricks_notebook/lifecycle_notebook.py \
 
 | Scenario | Databricks coverage |
 | --- | --- |
-| Graph schema, tooltips, controls, samples and exports | Passed in GitHub Actions [42185727637](https://github.com/NVIDIA/kumo-engine/actions/runs/42185727637). |
+| Graph schema, tooltips, controls, samples and exports | Passed in GitHub Actions [42198152316](https://github.com/NVIDIA/kumo-engine/actions/runs/42198152316). |
 | Exported notebook reopened in a fresh browser context | Passed in the same run; does not establish native editor reopening. |
-| Fit/register two versions; reload, predict, aliases, lineage, drift and delayed labels | Shared lifecycle entrypoint implemented; live validation pending. |
+| Fit/register two versions; reload, predict, aliases, lineage, drift and delayed labels | Passed in live notebook run `7236256940191` with the pinned candidate; fit, score and evaluate each exited zero. |
 | Real provider-denied artifact access | Requires a deliberately read-only test root; never inferred from a missing path. |
 | Native notebook editor, kernel shutdown/reopening, experiment and registry UI | Not qualified by PAT/API or exported HTML evidence. |
 | Full exported epoch history, independently nonzero drift, interrupted remote writer | Existing shared qualification gaps remain explicit. |
@@ -154,5 +154,6 @@ The candidate manifest records the base wheel hash, committed Engine/provider so
 and changed modules. The normal component and merged-wheel builders produce a new
 version/hash with current Engine and Databricks Python code; native payload bytes
 remain unchanged.
-Snowflake's candidate pin is separate. Graph evidence from an earlier candidate does
-not qualify the new candidate until rerun.
+Snowflake's candidate pin is separate. Training-table recovery also uses the Files
+API and shared Parquet reader for immutable Volume exports. Graph evidence from
+an earlier candidate does not qualify a new candidate until rerun.
