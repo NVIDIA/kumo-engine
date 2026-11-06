@@ -43,7 +43,7 @@ repos:
     hooks:
       - id: autoflake
         name: Remove unused imports and variables
-        exclude: ^(kumo/pquery/grammar/|packages/(diskgraph/|kumo-(api|core|sdk)/))
+        exclude: ^(kumo/pquery/grammar/|packages/(diskgraph/|experimental/kumo-pytorch/|kumo-(api|core|sdk)/))
         args: [
           --remove-all-unused-imports,
           --remove-unused-variables,
@@ -56,7 +56,7 @@ repos:
     hooks:
       - id: yapf
         name: Format code
-        exclude: ^(kumo/pquery/grammar/|packages/(diskgraph/|kumo-(api|core|sdk)/))
+        exclude: ^(kumo/pquery/grammar/|packages/(diskgraph/|experimental/kumo-pytorch/|kumo-(api|core|sdk)/))
         additional_dependencies: ["toml>=0.10.2"]
 
   - repo: https://github.com/pycqa/isort
@@ -64,14 +64,14 @@ repos:
     hooks:
       - id: isort
         name: Sort imports
-        exclude: ^(kumo/pquery/grammar/|packages/(diskgraph/|kumo-(api|core|sdk)/))
+        exclude: ^(kumo/pquery/grammar/|packages/(diskgraph/|experimental/kumo-pytorch/|kumo-(api|core|sdk)/))
 
   - repo: https://github.com/PyCQA/flake8
     rev: 6.1.0
     hooks:
       - id: flake8
         name: Check PEP8
-        exclude: ^(kumo/pquery/grammar/|packages/(diskgraph/|kumo-(api|core|sdk)/))
+        exclude: ^(kumo/pquery/grammar/|packages/(diskgraph/|experimental/kumo-pytorch/|kumo-(api|core|sdk)/))
 
   - repo: https://github.com/RobertCraigie/pyright-python
     rev: v1.1.283
