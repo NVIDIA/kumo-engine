@@ -165,7 +165,6 @@ def _build_trainer(root_dir: str) -> Trainer:
         model=HeteroGNN(channels=8, num_mp_layers=0),
         head=NodePredHead(),
         encoders=encoders,
-        feature_store=_FakeFeatureStore(),
         root_dir=root_dir,
         max_epochs=1,
         max_steps_per_epoch=1,
@@ -174,6 +173,7 @@ def _build_trainer(root_dir: str) -> Trainer:
         early_stopping=False,
         explain_runtime=MonolithExplainRuntime(),
     )
+    trainer.feature_store = _FakeFeatureStore()
     trainer.initialize_model(
         node_types=[USER],
         edge_types=[],

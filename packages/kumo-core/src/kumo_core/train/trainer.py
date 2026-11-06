@@ -111,6 +111,7 @@ from kumo_core.training.runtime import (
     DiskgraphTrainingRuntime,
     TrainingArtifactRuntime,
 )
+from kumo_core.training.task_config import TaskConfig
 from kumo_core.types import ExplainMethod, TaskType
 from kumo_core.utils.config_mixin import PortableConfigMixin
 from kumo_core.utils.names import get_table_name
@@ -722,11 +723,16 @@ class Trainer(PortableConfigMixin):
             self.head = torch.compile(self.head, dynamic=True)
 
     def init(self) -> 'Trainer':
-        """Require a runtime-specific trainer implementation.
+        """Return an initialized trainer or require runtime-specific setup.
+
+        Returns:
+            This trainer if it is already initialized and does not need refitting.
 
         Raises:
             NotImplementedError: The legacy store-based training path is retired.
         """
+        if self._fully_initialized and not self.fit_mode.is_refit:
+            return self
         raise NotImplementedError("Use DiskgraphNestedTrainer for training")
 
     def initialize_model(
@@ -1385,7 +1391,7 @@ class Trainer(PortableConfigMixin):
     @classmethod
     def load(
         cls,
-        task: ResolvedNumericalTask,
+        task: ResolvedNumericalTask | TaskConfig,
         root_dir: str,
         version: int | None = -1,
         infer_config_path: bool = True,
@@ -1397,6 +1403,7 @@ class Trainer(PortableConfigMixin):
 
         `**kwargs` are passed along to the constructor of Trainer.
         Args:
+            task: Resolved task or lightweight task metadata used to load results.
             version (int, optional): If :obj:`version` is specified to be
                 negative, versions will be index from the end, *i.e.*
                 :obj:`version == -1` will load the checkpoint of the latest
@@ -1437,9 +1444,10 @@ class Trainer(PortableConfigMixin):
             old_num_neighbors = cfg.sampler_kwargs.num_neighbors
 
             if isinstance(old_num_neighbors.values, dict):
+                graph = getattr(task, 'graph', None)
                 edge_type_by_serialized = {
                     str(EdgeTypeStr(*edge_type)): edge_type
-                    for edge_type in task.graph.edge_types
+                    for edge_type in (graph.edge_types if graph is not None else ())
                 }
 
                 def _convert_key(old_key: EdgeTypeStr) -> EdgeTypeStr:
