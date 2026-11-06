@@ -76,10 +76,13 @@ def test_unity_catalog_names_the_extra_its_storage_needs(
             _open_uc_storage(kind)
 
 
-def test_an_unwrapped_missing_client_names_its_extra_too():
-    with pytest.raises(ImportError, match=r"pip install 'kumo-engine\[s3\]'"):
+@pytest.mark.parametrize('module,extra', [
+    ('boto3', 's3'), ('azure', 'adls'), ('google', 'gcs')])
+def test_an_unwrapped_missing_client_names_its_extra_too(module, extra):
+    with pytest.raises(ImportError,
+                       match=rf"pip install 'kumo-engine\[{extra}\]'"):
         with target_module.Target('databricks', 'databricks-uc').scope():
-            raise ModuleNotFoundError(name='boto3')
+            raise ModuleNotFoundError(name=module)
 
 
 def test_other_missing_modules_pass_through(monkeypatch):

@@ -120,9 +120,7 @@ class Target:
             if not isinstance(missing, ModuleNotFoundError):
                 raise
             name = missing.name or ''
-            extra = next((extra for client, extra in _UC_STORAGE.items()
-                          if f'{name}.'.startswith(f'{client}.')
-                          or client.startswith(f'{name}.')), None)
+            extra = _uc_extra(name)
             if extra is None:
                 raise
             uri = import_provider('mlflow.utils.uri', 'mlflow')
@@ -148,6 +146,14 @@ class Target:
         return s3.S3ArtifactRepository(uri, access_key_id=frozen.access_key,
                                        secret_access_key=frozen.secret_key,
                                        session_token=frozen.token)
+
+
+def _uc_extra(name: str) -> Optional[str]:
+    for client, extra in _UC_STORAGE.items():
+        if (name == client or name.startswith(f'{client}.')
+                or client.startswith(f'{name}.')):
+            return extra
+    return None
 
 
 def resolve(target: Any) -> Target:
