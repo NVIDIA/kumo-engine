@@ -14,6 +14,10 @@ name: Publish skill to NVIDIA/skills
 # does not run on it. The `/nvskills-ci` comment and the signing push do trigger
 # request-nvskills-ci.yml, because a person and nv-skills-ci[bot] make them. The PR changes
 # only skills/, which is generated output that the Agent Skills workflow already tested on main.
+#
+# The required kumo-core-gpu-ci check runs through copy-pr-bot. It does not trust this
+# workflow's unsigned commit, so a maintainer also comments `/ok to test <sha>`. The
+# change-map comment that the PR change table check reads is posted here.
 
 on:  # yamllint disable-line rule:truthy
   push:
@@ -67,13 +71,15 @@ jobs:
           # signatures already on the branch covered the older content, so NVSkills CI re-runs.
           git push --force origin "$BRANCH"
 
+          head="$(git rev-parse HEAD)"
           {
             echo "Rebuilds \`skills/kumo-data-science/\` from \`agent-skills/\` at ${GITHUB_SHA}."
             echo "The NVIDIA/skills catalog syncs this directory every hour."
             echo
-            echo "**To publish:** a maintainer comments \`/nvskills-ci\` here. NVSkills CI runs the"
-            echo "skill's evals and pushes \`BENCHMARK.md\` and \`skill.oms.sig\`. Merge once that"
-            echo "commit lands. If this PR merges without it, the catalog keeps the last signed version."
+            echo "**To publish:** a maintainer comments \`/ok to test ${head}\` to run the required"
+            echo "GPU check, and \`/nvskills-ci\` to have NVSkills CI run the skill's evals and push"
+            echo "\`BENCHMARK.md\` and \`skill.oms.sig\`. Merge once that commit lands. If this PR"
+            echo "merges without it, the catalog keeps the last signed version."
             echo
             echo '```'
             cat /tmp/publish.txt
@@ -86,4 +92,26 @@ jobs:
             gh pr create --base main --head "$BRANCH" \
               --title "Publish kumo-data-science skill to NVIDIA/skills" \
               --body-file /tmp/body.md
+          fi
+
+          # The change map the PR change table check reads: one comment, edited on each push.
+          marker='<!-- kumo-pr-change-map -->'
+          {
+            echo "$marker"
+            echo "## Change map"
+            echo
+            echo "| File | What changed | Why | Function / scope |"
+            echo "| --- | --- | --- | --- |"
+            git diff --name-status HEAD~1 HEAD | while IFS=$'\t' read -r status path; do
+              case "$status" in A) what=Added ;; D) what=Deleted ;; *) what=Rebuilt ;; esac
+              echo "| \`$path\` | $what | Published package of \`agent-skills/\` at ${short} | kumo-data-science skill for NVIDIA/skills |"
+            done
+          } > /tmp/map.md
+          number="$(gh pr view "$BRANCH" --json number --jq .number)"
+          comment="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${number}/comments" --paginate \
+            --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\")))][0].id // empty")"
+          if [ -n "$comment" ]; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${comment}" -F body=@/tmp/map.md >/dev/null
+          else
+            gh pr comment "$number" --body-file /tmp/map.md
           fi
