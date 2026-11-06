@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import gzip
 import re
+import shutil
 from pathlib import Path
 
 import pyarrow as pa
@@ -21,7 +22,7 @@ from kumo_core.sources.errors import PermanentSourceError
 from kumo_core.sources.object_store import ObjectStoreSourceReader
 from kumo_core.sources.types import ReadMode
 from kumoapi.typing import Dtype
-from pyarrow.fs import LocalFileSystem
+from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
 
 
 @pytest.mark.parametrize('compressed', [False, True])
@@ -359,18 +360,30 @@ def test_a_decimal_column_is_a_float_however_large_its_values(tmp_path):
     assert written.column("a").to_pylist() == [50000.5, 60000.25, 70000.75]
 
 
+@pytest.mark.parametrize("downloaded", [False, True])
 def test_a_decimal_in_a_declared_integer_column_is_null_with_a_warning(
-        tmp_path):
+        downloaded, tmp_path):
     """The sample shows the decimal, so the integer type is the caller's
     choice: ``2.5`` has no integer, and ``2`` would be a value the source
-    never held."""
-    write(tmp_path, "t", t="a\n1\n2.5\n3\n")
+    never held. A read that downloads the parts first samples those parts,
+    not the table under the remote root, which the local reader cannot
+    reach."""
+    write(tmp_path / "remote", "t", t="a\n1\n2.5\n3\n")
+
+    def fetch(path, target):
+        shutil.copyfile(tmp_path / path, target)
+
+    reader = (ObjectStoreSourceReader(
+        SubTreeFileSystem(str(tmp_path), LocalFileSystem()), root="remote",
+        fetch=fetch) if downloaded else reader_over(tmp_path / "remote"))
+    declared = {"a": Dtype.int64}
     with pytest.warns(
             UserWarning, match=re.escape(
                 "t.a is declared int64 but holds 1 value(s) with a fractional "
                 "part; they are staged as null, not rounded. Declare the "
                 "column float64 to keep them, or fix the source.")):
-        table = staged(tmp_path, "t", tmp_path, columns={"a": Dtype.int64})
+        table = reader.prepare("t", str(tmp_path / "out"), columns=declared,
+                               mode=ReadMode.STREAMED)
     written = pq.read_table(sorted(table.paths))
     assert written.schema.field("a").type == pa.int64()
     assert written.column("a").to_pylist() == [1, None, 3]
