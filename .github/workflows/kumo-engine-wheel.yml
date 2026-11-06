@@ -105,11 +105,7 @@ jobs:
           python scripts/stamp_version.py --check
 
       - name: Set up Rust
-        # This org's Actions allowlist only permits dtolnay/rust-toolchain at
-        # @master or a pinned SHA, not @stable.
-        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88  # master, allowlisted
-        with:
-          toolchain: stable
+        uses: ./.github/actions/rust-toolchain
 
       - name: Activate installed MSVC build tools
         if: ${{ runner.os == 'Windows' }}
@@ -186,7 +182,7 @@ jobs:
       # GitHub-hosted artifact storage, not S3: no AWS role to provision.
       # Native Windows wheels are experimental internal CI artifacts only.
       - name: Upload wheel
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: kumo-engine-wheel-${{ matrix.arch }}-${{ github.sha }}
           path: packages/kumo-engine/dist/*.whl
@@ -216,7 +212,7 @@ jobs:
         run: python3 agent-skills/scripts/package_skill.py --zip dist
 
       - name: Upload skill zips
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: kumo-data-science-zips-${{ github.sha }}
           path: dist/*.zip

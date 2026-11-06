@@ -74,6 +74,8 @@ pub struct DatasetStatus {
 /// Contract for dataset lifecycle management. Implementations may keep their
 /// state purely in-memory or persist it on disk alongside the graph data.
 #[async_trait]
+// async-trait's generated #[must_use]; fixed in clippy 1.100.
+#[allow(clippy::double_must_use)]
 pub trait DatasetRegistry: Send + Sync {
     /// Insert or update a dataset handle. Typically invoked at the beginning of
     /// ingestion after parsing index_metadata.json.

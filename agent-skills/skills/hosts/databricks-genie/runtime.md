@@ -306,3 +306,11 @@ Run only on explicit request (router Step 3).
   the notebook's own check.
 
 > **Not verified:** how long a Genie Code session stays attached through a long training run.
+
+## Graph visualization
+
+> **Not verified:** interactive HTML rendering and saved-output behavior have not been tested in Databricks notebooks.
+The SDK supplies an HTML view; rerun the cell if saved output is static.
+Exports are saved on the notebook runtime; use the workspace's file tools to retrieve them.
+
+Source: shipped package (`kumo.engine.graph.Graph.visualize`, `kumo.engine._visualization.SVG`)

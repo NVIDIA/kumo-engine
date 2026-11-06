@@ -453,7 +453,7 @@ jobs:
 
       - name: Upload diagnostics
         if: always() && steps.ui-changes.outputs.any_changed == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playwright-diagnostics
           path: ${{ runner.temp }}/kumo-playwright/logs/
@@ -464,7 +464,7 @@ jobs:
       # step is killed by its timeout mid-run.
       - name: Upload test results
         if: failure() && steps.ui-changes.outputs.any_changed == 'true' && steps.playwright.outcome == 'failure'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playwright-test-results
           path: ui/test-results/
@@ -473,7 +473,7 @@ jobs:
 
       - name: Upload HTML report
         if: failure() && steps.ui-changes.outputs.any_changed == 'true' && steps.playwright.outcome == 'failure' && hashFiles('ui/playwright-report/index.html') != ''
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playwright-html-report
           path: ui/playwright-report/

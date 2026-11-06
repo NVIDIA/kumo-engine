@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Pinned: a new stable clippy adds lints that fail unchanged code.
+[toolchain]
+channel = "1.99.1"
