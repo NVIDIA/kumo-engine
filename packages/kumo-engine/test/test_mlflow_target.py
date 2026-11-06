@@ -63,7 +63,7 @@ def _open_uc_storage(kind):
 
 @pytest.mark.parametrize('module,kind,cloud,extra', [
     ('boto3', 'aws_temp_credentials', 'AWS', 's3'),
-    ('azure', 'azure_user_delegation_sas', 'Azure', 'adls'),
+    ('azure.core.credentials', 'azure_user_delegation_sas', 'Azure', 'adls'),
     ('google.cloud.storage', 'gcp_oauth_token', 'GCP', 'gcs')])
 def test_unity_catalog_names_the_extra_its_storage_needs(
         monkeypatch, module, kind, cloud, extra):

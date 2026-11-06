@@ -122,8 +122,8 @@ class Target:
             if client not in _UC_STORAGE:
                 raise
             uri = import_provider('mlflow.utils.uri', 'mlflow')
-            if not uri.is_databricks_unity_catalog_uri(self.registry_uri
-                                                       or ''):
+            registry = self.registry_uri or ''
+            if not uri.is_databricks_unity_catalog_uri(registry):
                 raise
             cloud, extra = _UC_STORAGE[client]
             raise ImportError(
