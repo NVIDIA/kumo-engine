@@ -23,6 +23,8 @@ spec.loader.exec_module(package_skill)
 def test_every_reference_resolves(tmp_path: Path, host: str) -> None:
     pkg = package_skill.build(host, tmp_path)
     assert (pkg / 'SKILL.md').is_file()
+    for name in package_skill.CAPABILITY:
+        assert (pkg / name / 'SKILL.md').is_file()
     assert package_skill.unresolved(pkg) == []
 
 

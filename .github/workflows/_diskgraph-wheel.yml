@@ -47,9 +47,7 @@ jobs:
         with:
           packages: lld
       - if: steps.cache.outputs.cache-hit != 'true'
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
-        with:
-          toolchain: ${{ steps.settings.outputs.RUST_TOOLCHAIN }}
+        uses: ./.github/actions/rust-toolchain
       - if: steps.cache.outputs.cache-hit != 'true'
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:

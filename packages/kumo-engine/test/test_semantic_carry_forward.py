@@ -49,7 +49,9 @@ def _stub_generated_task_dataset_builder(monkeypatch):
 
 def _best_trainer(log_dir):
     return SimpleNamespace(get_log_dir=lambda fit_mode: str(log_dir),
-                           published_fit_mode=lambda: None)
+                           published_fit_mode=lambda: None,
+                           original_log_dir=str(log_dir),
+                           refit_cfg=SimpleNamespace(refitted_trainval=False))
 
 
 def _write_prediction_shard(options, frame):
