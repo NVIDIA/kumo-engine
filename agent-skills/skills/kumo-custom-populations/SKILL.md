@@ -23,7 +23,9 @@ not in a read-only query either: a field that needs changing is reported and ask
 
 Before any code, reply with the plan and stop for confirmation: the table and its fields, the
 weight and split columns, what you validated, the constructor and that it reuses the confirmed
-`pq` and `snapshot`, and any shape the host adapter says is unverified there. A bad field gets
-the ask-back instead.
+`pq` and `snapshot`, and any shape the host adapter says is unverified there. For scoring, add
+that validation does not guarantee every row is scored, that no id is dropped, cast or remapped,
+and that the output's entity and anchor coverage will be compared with the population. A bad
+field gets the ask-back instead.
 Confirm the snapshot used to create the population and the snapshot passed to fit/predict
 belong to the intended graph. Rebuild populations after incompatible graph changes.

@@ -30,12 +30,13 @@ Exact forecast prediction still needs enabled lag and year-over-year sequences.
 
 A prediction population must not contain numbered target columns (`TARGET1`, `TARGET2`, etc.).
 Keep evaluation labels separately rather than leaking them into the scoring population.
-If the supplied table carries a target column, keep the entity column, the `TIMESTAMP` where the
+If the supplied table carries a target column, say that the scoring population must not carry it
+and that evaluation labels stay separate, joined to the scores afterwards. Never pass the table as
+is. Propose, for the user's approval, a read-only `connector.sql(...)` source (Snowflake,
+Databricks and BigQuery only) that keeps only the entity column, the `TIMESTAMP` where the
 task needs one (a temporal task, or a static task, node or link, on an entity table with a time
 column), and any sequence columns the task requires
-(`autoregression_labels`, `year_over_year_labels`). Drop the numbered target columns
-(`TARGET1`, ...) in a read-only `connector.sql(...)` source (Snowflake, Databricks and BigQuery
-only), and say you left the target out. A temporal prediction population with no
+(`autoregression_labels`, `year_over_year_labels`), or ask for a table without the target. A temporal prediction population with no
 `TIMESTAMP` per row cannot be built from the table as it stands: ask for the anchors, and do not
 substitute a generated population with one `prediction_time`.
 No public column-renaming map exists on these constructors. Fields need their contract names.
