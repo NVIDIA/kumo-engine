@@ -19,6 +19,12 @@
       "kumo/engine/integrations/mlflow.py",
       "kumo/engine/pquery/_custom_source.py",
       "kumo_databricks/volume.py"
+    ],
+    "added_modules": [
+      "kumo/engine/_skills/coco/kumo-data-science/kumo-model-persistence/scripts/retain_artifacts.py",
+      "kumo/engine/_skills/generic/kumo-data-science/kumo-model-persistence/scripts/retain_artifacts.py",
+      "kumo/engine/_skills/genie/kumo-data-science/kumo-model-persistence/scripts/retain_artifacts.py",
+      "kumo/engine/skills.py"
     ]
   }
 }
