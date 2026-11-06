@@ -4,6 +4,9 @@
 name: Kumo Engine nightly
 
 on:  # yamllint disable-line rule:truthy
+  schedule:
+    - cron: '17 0 * * *'
+      timezone: America/Los_Angeles
   workflow_dispatch:
     inputs:
       run_controls:

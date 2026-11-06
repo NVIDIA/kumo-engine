@@ -51,7 +51,7 @@ Outside CI, the declared instance type does not restrict the host. Local compari
 The workflow reuses the wheel builder and `gha-kumo-workflow-tests` for source/reference reads, admission object reads and result writes.
 Pool and lifecycle controllers use the `engine-e2e-pool` environment, restricted to `main`, with the cleanup App key stored there.
 `run_controls=true` adds control jobs with `<case>-control` reference, result and artifact keys. Normal cases remain the default.
-Nightly and weekly callers use manual dispatch only. They define no schedule yet and do not run automatically.
+The callers support manual dispatch and schedules. Scheduled jobs require the enable flags below.
 Before the first candidate run at each scale, create references with `write_reference=true` on the declared instance type.
 Older references without `hardware.instance_type` fail the hardware check.
 If controls are enabled, create their separate references with `run_controls=true`.
@@ -61,7 +61,7 @@ After reviewing the references, keep `write_reference=false` for candidate runs 
 | --- | --- |
 | `ENGINE_E2E_DATA_S3`, `ENGINE_E2E_REFERENCES_S3`, `ENGINE_E2E_RESULTS_S3` | Raw sources, `<scale>/<case>.json` references and `<run>/<attempt>/<scale>/<case>.json` results. |
 | `ENGINE_E2E_ENABLED`, `ENGINE_E2E_SCHEDULER_ENABLED` | Both `true`, on `main` only. |
-| `ENGINE_E2E_SCHEDULE_ENABLED` | Scheduling also requires `true`. Planned times are 00:17 daily and 00:47 Sunday, `America/Los_Angeles`. Triggers remain disabled. |
+| `ENGINE_E2E_SCHEDULE_ENABLED` | Scheduling also requires `true`. Nightly runs at 00:17 daily and weekly at 00:47 Sunday, in `America/Los_Angeles`. The timezone follows daylight saving time. |
 | `ENGINE_E2E_MAX_PARALLEL` | Total VM limit, default `2`, with at least one worker per selected type. |
 | `ENGINE_E2E_TEMPLATES_JSON` | Pinned template/version and subnets per type: `{"g7e.24xlarge":{"template":"lt-example","version":"1","subnets":["subnet-example"]}}`. Keep mappings fixed until cleanup finishes. |
 | `ENGINE_E2E_POOL_ROLE` | Main-only OIDC access to owned groups, derived template versions and schedules. |
