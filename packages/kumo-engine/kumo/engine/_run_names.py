@@ -30,9 +30,13 @@ def run_name(kind: str, core: str, suffix: Optional[str] = None) -> str:
     return (core if named else f'{word}-{core}') + (suffix or '')
 
 
+def version_label(version: str) -> str:
+    r"""v<version>, or the name itself for a named version such as V1."""
+    return f'v{version}' if version.isdigit() else version
+
+
 def versioned(model: str, version: str) -> str:
-    r"""<model>-v<version>, or <model>-<version> for a named version."""
-    return f'{model}-v{version}' if version.isdigit() else f'{model}-{version}'
+    return f'{model}-{version_label(version)}'
 
 
 def scored_model(model: str, version: Optional[str], bundle_id: str) -> str:

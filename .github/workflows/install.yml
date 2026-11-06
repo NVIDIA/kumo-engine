@@ -48,6 +48,7 @@ jobs:
         with:
           python-version: '3.14'
           activate-environment: true
+          prune-cache: true
 
       - name: Configure AWS credentials
         if: steps.ui-changes.outputs.only_changed != 'true'

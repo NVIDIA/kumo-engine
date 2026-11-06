@@ -136,7 +136,7 @@ jobs:
       selected_repos: ${{ steps.plan.outputs.selected_repos }}
     steps:
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7  # v6.0.0
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
         with:
           role-to-assume: arn:aws:iam::926922431314:role/gha-kumo3-image-set-ecr-read
           aws-region: us-west-2
@@ -324,7 +324,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7  # v6.0.0
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
         with:
           role-to-assume: arn:aws:iam::926922431314:role/gha-kumo3-image-set-promote
           aws-region: us-west-2
@@ -414,7 +414,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7  # v6.0.0
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
         with:
           role-to-assume: arn:aws:iam::926922431314:role/gha-kumo3-image-set-ecr-read
           aws-region: us-west-2

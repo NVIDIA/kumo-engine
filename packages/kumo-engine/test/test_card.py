@@ -170,6 +170,8 @@ def test_a_prediction_names_the_model_and_its_fit_run():
                              'kumo.monitor': 'drift',
                              'kumo.bundle_id': 'b' * 64}) == (
         'Drift check of the scores of bundle `bbbbbbbb`.')
+    named = {'kumo.model_name': 'CHURN_GNN', 'kumo.model_version': 'V1'}
+    assert _card.model_line(named) == 'Scores of `CHURN_GNN` V1.'
 
 
 def test_a_version_headline_leads_with_the_tuned_metric_then_logloss():

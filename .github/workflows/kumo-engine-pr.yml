@@ -92,9 +92,7 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
-      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
-        with:
-          toolchain: stable
+      - uses: ./.github/actions/rust-toolchain
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: packages/diskgraph -> target
@@ -122,7 +120,7 @@ jobs:
           chmod +x "$compiler_dir"/*
           packages/kumo-engine/scripts/build_wheel.sh --output-dir "$RUNNER_TEMP/pr-wheel"
       - name: Retain the candidate wheel
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: engine-pr-wheel-${{ github.sha }}
           path: ${{ runner.temp }}/pr-wheel/*.whl
@@ -205,7 +203,7 @@ jobs:
           reload-atol: '0.005'
       - name: Retain the task results
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: engine-pr-gpu-${{ github.sha }}
           path: ${{ runner.temp }}/engine-gpu-smoke/summary.json

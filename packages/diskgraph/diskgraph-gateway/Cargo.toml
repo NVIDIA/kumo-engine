@@ -13,10 +13,10 @@ diskgraph-core = { path = "../diskgraph-core" }
 diskgraph-engine = { path = "../diskgraph-engine" }
 diskgraph-index = { path = "../diskgraph-index" }
 diskgraph-rowpack = { path = "../diskgraph-rowpack" }
-arrow-flight = "59.3.2"
+arrow-flight = "60.1.0"
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
-arrow-ipc = "59.3.2"
+arrow-ipc = "60.1.0"
 tonic = "0.14"
 tokio = { workspace = true }
 tokio-stream = "0.1"

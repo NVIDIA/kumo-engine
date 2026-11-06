@@ -1152,7 +1152,7 @@ aligned-vec 0.6.4
     SOFTWARE.
 
 ------------------------------------------------------------------------------
-alloc-no-stdlib 2.0.4
+alloc-no-stdlib 3.0.0
 ------------------------------------------------------------------------------
   License       : BSD-3-Clause
   Distributed in: bin/ingest.exe, diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
@@ -1174,7 +1174,7 @@ alloc-no-stdlib 2.0.4
     THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ------------------------------------------------------------------------------
-alloc-stdlib 0.2.2
+alloc-stdlib 0.3.0
 ------------------------------------------------------------------------------
   License       : BSD-3-Clause
   Distributed in: bin/ingest.exe, diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
@@ -1693,7 +1693,7 @@ arc-swap 1.9.1
     DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------------
-arrow 59.3.2
+arrow 60.1.0
 ------------------------------------------------------------------------------
   License       : Apache-2.0
   Distributed in: diskgraph._c.abi3.so, diskgraph._c.pyd
@@ -1930,7 +1930,7 @@ arrow 59.3.2
      * https://github.com/jhorstmann/compact-thrift
 
 ------------------------------------------------------------------------------
-arrow-arith 59.3.2
+arrow-arith 60.1.0
 ------------------------------------------------------------------------------
   License       : Apache-2.0
   Distributed in: diskgraph._c.abi3.so, diskgraph._c.pyd
@@ -1941,7 +1941,7 @@ arrow-arith 59.3.2
   Legal text 03548525ec37: LICENSE.txt
   Legal text e5b198d7f809: NOTICE.txt
 ------------------------------------------------------------------------------
-arrow-array 59.3.2
+arrow-array 60.1.0
 ------------------------------------------------------------------------------
   License       : Apache-2.0 AND MIT
   Distributed in: bin/ingest.exe, diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
@@ -1976,7 +1976,7 @@ arrow-array 59.3.2
   Legal text 03548525ec37: LICENSE.txt
   Legal text e5b198d7f809: NOTICE.txt
 ------------------------------------------------------------------------------
-arrow-buffer 59.3.2
+arrow-buffer 60.1.0
 ------------------------------------------------------------------------------
   License       : Apache-2.0
   Distributed in: bin/ingest.exe, diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
@@ -1987,7 +1987,7 @@ arrow-buffer 59.3.2
   Legal text 03548525ec37: LICENSE.txt
   Legal text e5b198d7f809: NOTICE.txt
 ------------------------------------------------------------------------------
-arrow-cast 59.3.2
+arrow-cast 60.1.0
 ------------------------------------------------------------------------------
   License       : Apache-2.0
   Distributed in: bin/ingest.exe, diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
@@ -1998,7 +1998,7 @@ arrow-cast 59.3.2
   Legal text 03548525ec37: LICENSE.txt
   Legal text e5b198d7f809: NOTICE.txt
 ------------------------------------------------------------------------------
-arrow-csv 59.3.2
+arrow-cmp 60.1.0
 ------------------------------------------------------------------------------
   License       : Apache-2.0
   Distributed in: bin/ingest.exe, diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
@@ -2009,7 +2009,7 @@ arrow-csv 59.3.2
   Legal text 03548525ec37: LICENSE.txt
   Legal text e5b198d7f809: NOTICE.txt
 ------------------------------------------------------------------------------
-arrow-data 59.3.2
+arrow-csv 60.1.0
 ------------------------------------------------------------------------------
   License       : Apache-2.0
   Distributed in: bin/ingest.exe, diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
@@ -2020,7 +2020,7 @@ arrow-data 59.3.2
   Legal text 03548525ec37: LICENSE.txt
   Legal text e5b198d7f809: NOTICE.txt
 ------------------------------------------------------------------------------
-arrow-ipc 59.3.2
+arrow-data 60.1.0
 ------------------------------------------------------------------------------
   License       : Apache-2.0
   Distributed in: bin/ingest.exe, diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
@@ -2031,7 +2031,18 @@ arrow-ipc 59.3.2
   Legal text 03548525ec37: LICENSE.txt
   Legal text e5b198d7f809: NOTICE.txt
 ------------------------------------------------------------------------------
-arrow-json 59.3.2
+arrow-ipc 60.1.0
+------------------------------------------------------------------------------
+  License       : Apache-2.0
+  Distributed in: bin/ingest.exe, diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
+  Copyright     : Copyright 2016-2026 The Apache Software Foundation
+                  Copyright (c) 2020-2022 Oliver Margetts
+                  Copyright Jörn Horstmann
+
+  Legal text 03548525ec37: LICENSE.txt
+  Legal text e5b198d7f809: NOTICE.txt
+------------------------------------------------------------------------------
+arrow-json 60.1.0
 ------------------------------------------------------------------------------
   License       : Apache-2.0
   Distributed in: diskgraph._c.abi3.so, diskgraph._c.pyd
@@ -2042,7 +2053,7 @@ arrow-json 59.3.2
   Legal text 03548525ec37: LICENSE.txt
   Legal text e5b198d7f809: NOTICE.txt
 ------------------------------------------------------------------------------
-arrow-ord 59.3.2
+arrow-ord 60.1.0
 ------------------------------------------------------------------------------
   License       : Apache-2.0
   Distributed in: bin/ingest.exe, diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
@@ -2053,7 +2064,7 @@ arrow-ord 59.3.2
   Legal text 03548525ec37: LICENSE.txt
   Legal text e5b198d7f809: NOTICE.txt
 ------------------------------------------------------------------------------
-arrow-pyarrow 59.3.2
+arrow-pyarrow 60.1.0
 ------------------------------------------------------------------------------
   License       : Apache-2.0
   Distributed in: diskgraph._c.abi3.so, diskgraph._c.pyd
@@ -2064,7 +2075,7 @@ arrow-pyarrow 59.3.2
   Legal text 03548525ec37: LICENSE.txt
   Legal text e5b198d7f809: NOTICE.txt
 ------------------------------------------------------------------------------
-arrow-row 59.3.2
+arrow-row 60.1.0
 ------------------------------------------------------------------------------
   License       : Apache-2.0
   Distributed in: diskgraph._c.abi3.so, diskgraph._c.pyd
@@ -2075,7 +2086,7 @@ arrow-row 59.3.2
   Legal text 03548525ec37: LICENSE.txt
   Legal text e5b198d7f809: NOTICE.txt
 ------------------------------------------------------------------------------
-arrow-schema 59.3.2
+arrow-schema 60.1.0
 ------------------------------------------------------------------------------
   License       : Apache-2.0
   Distributed in: bin/ingest.exe, diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
@@ -2086,7 +2097,7 @@ arrow-schema 59.3.2
   Legal text 03548525ec37: LICENSE.txt
   Legal text e5b198d7f809: NOTICE.txt
 ------------------------------------------------------------------------------
-arrow-select 59.3.2
+arrow-select 60.1.0
 ------------------------------------------------------------------------------
   License       : Apache-2.0
   Distributed in: bin/ingest.exe, diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
@@ -2097,7 +2108,7 @@ arrow-select 59.3.2
   Legal text 03548525ec37: LICENSE.txt
   Legal text e5b198d7f809: NOTICE.txt
 ------------------------------------------------------------------------------
-arrow-string 59.3.2
+arrow-string 60.1.0
 ------------------------------------------------------------------------------
   License       : Apache-2.0
   Distributed in: diskgraph._c.abi3.so, diskgraph._c.pyd
@@ -2116,7 +2127,7 @@ async-trait 0.1.89
   Legal text 62c7a1e35f56: LICENSE-APACHE
   Legal text 23f18e03dc49: LICENSE-MIT
 ------------------------------------------------------------------------------
-atoi 2.0.0
+atoi 3.1.1
 ------------------------------------------------------------------------------
   License       : MIT
   Distributed in: bin/ingest.exe, diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
@@ -3794,7 +3805,7 @@ block-buffer 0.12.1
     DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------------
-brotli 8.0.3
+brotli 9.1.1
 ------------------------------------------------------------------------------
   License       : BSD-3-Clause AND MIT
   Distributed in: bin/ingest.exe, diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
@@ -3825,7 +3836,7 @@ brotli 8.0.3
     THE SOFTWARE.
 
 ------------------------------------------------------------------------------
-brotli-decompressor 5.0.1
+brotli-decompressor 6.2.0
 ------------------------------------------------------------------------------
   License       : BSD-3-Clause OR MIT
   Distributed in: bin/ingest.exe, diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
@@ -12538,7 +12549,7 @@ parking_lot_core 0.9.12
   Legal text a60eea817514: LICENSE-APACHE
   Legal text c9a75f18b9ab: LICENSE-MIT
 ------------------------------------------------------------------------------
-parquet 59.3.2
+parquet 60.1.0
 ------------------------------------------------------------------------------
   License       : Apache-2.0
   Distributed in: bin/ingest.exe, diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
@@ -18833,47 +18844,61 @@ zmij 1.0.21
 
   Legal text 23f18e03dc49: LICENSE-MIT
 ------------------------------------------------------------------------------
-zstd 0.13.3
+zstd 0.14.3
 ------------------------------------------------------------------------------
-  License       : MIT
+  License       : BSD-3-Clause
   Distributed in: bin/ingest.exe, diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
-  Copyright     : Copyright (c) 2016 Alexandre Bury
+  Copyright     : Copyright (c) 2026, Alexandre Bury
 
-  Legal text 129e8edef29e: LICENSE
+  Legal text ce4868c8e4eb: LICENSE
 
-    The MIT License (MIT)
-    Copyright (c) 2016 Alexandre Bury
+    BSD 3-Clause License
 
-    Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+    Copyright (c) 2026, Alexandre Bury
 
-    The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions are met:
 
-    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+    1. Redistributions of source code must retain the above copyright notice, this
+       list of conditions and the following disclaimer.
+
+    2. Redistributions in binary form must reproduce the above copyright notice,
+       this list of conditions and the following disclaimer in the documentation
+       and/or other materials provided with the distribution.
+
+    3. Neither the name of the copyright holder nor the names of its
+       contributors may be used to endorse or promote products derived from
+       this software without specific prior written permission.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+    AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+    IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+    DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+    FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+    DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+    SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+    CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+    OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ------------------------------------------------------------------------------
-zstd-safe 7.2.4
+zstd-safe 8.2.0
 ------------------------------------------------------------------------------
-  License       : MIT OR Apache-2.0
+  License       : BSD-3-Clause
   Distributed in: bin/ingest.exe, diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
-  Copyright     : Copyright (c) 2016 Alexandre Bury
+  Copyright     : Copyright (c) 2026, Alexandre Bury
 
-  Legal text a77b7cfeaf91: LICENSE
-
-    MIT or Apache-2.0
-
-  Legal text 0d542e0c8804: LICENSE.Apache-2.0
-  Legal text 129e8edef29e: LICENSE.Mit
+  Legal text ce4868c8e4eb: LICENSE
 ------------------------------------------------------------------------------
-zstd-sys 2.0.16+zstd.1.5.7
+zstd-sys 2.1.2+zstd.1.5.7
 ------------------------------------------------------------------------------
-  License       : MIT OR Apache-2.0
+  License       : BSD-3-Clause
   Distributed in: bin/ingest.exe, diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
-  Copyright     : Copyright (c) 2016-present, Facebook, Inc. All rights reserved
-                  Copyright (c) 2016 Alexandre Bury
+  Copyright     : Copyright (c) 2026, Alexandre Bury
+                  Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved
 
-  Legal text a77b7cfeaf91: LICENSE
-  Legal text 0d542e0c8804: LICENSE.Apache-2.0
-  Legal text 48341f685c87: LICENSE.BSD-3-Clause
+  Legal text ce4868c8e4eb: LICENSE
+  Legal text bf7017a73a95: LICENSE.BSD-3-Clause
 
     The auto-generated bindings are under the 3-clause BSD license:
 
@@ -18881,7 +18906,7 @@ zstd-sys 2.0.16+zstd.1.5.7
 
     For Zstandard software
 
-    Copyright (c) 2016-present, Facebook, Inc. All rights reserved.
+    Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 
     Redistribution and use in source and binary forms, with or without modification,
     are permitted provided that the following conditions are met:
@@ -18893,9 +18918,9 @@ zstd-sys 2.0.16+zstd.1.5.7
        this list of conditions and the following disclaimer in the documentation
        and/or other materials provided with the distribution.
 
-     * Neither the name Facebook nor the names of its contributors may be used to
-       endorse or promote products derived from this software without specific
-       prior written permission.
+     * Neither the name Facebook, nor Meta, nor the names of its contributors may
+       be used to endorse or promote products derived from this software without
+       specific prior written permission.
 
     THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
     ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
@@ -18908,7 +18933,6 @@ zstd-sys 2.0.16+zstd.1.5.7
     (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
     SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-  Legal text 129e8edef29e: LICENSE.Mit
 ------------------------------------------------------------------------------
 Fabric Toolbox execution-plan visualizer 58212be03380d45c9798ee610d61f2808776941b
 ------------------------------------------------------------------------------
