@@ -43,8 +43,10 @@ closes the page, and opens it again. Managed MLflow UI checks use a one-use
 presigned URL supplied over stdin to Playwright. They inspect the two fit runs,
 four prediction runs, and two model versions. Drift and evaluation update the
 two alias prediction runs; the checker compares their final updated metrics.
-Training history checks use rendered point coordinates, axis labels, and
-hover values. Authentication URLs, browser sessions, and traces are
+Training history checks open each metric in a fresh page, compare its UI CSV
+download with recorded epochs, and inspect visible hover values and positions
+against rendered axis labels. This works with managed MLflow's WebGL charts.
+Authentication URLs, browser sessions, and traces are
 not retained. This covers the managed MLflow registry; automatic synchronization
 to SageMaker Model Registry is disabled on the existing server and is not
 claimed by this test.

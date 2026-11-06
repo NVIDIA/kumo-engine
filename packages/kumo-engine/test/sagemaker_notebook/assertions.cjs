@@ -1,6 +1,24 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+class VerificationError extends Error {}
+
+function verificationMessage(error) {
+  return error instanceof VerificationError ? error.message :
+    'Browser verification failed; inspect the completed check records.';
+}
+
+function captureAllowed(actualUrl, expectedUrl, identityVisible) {
+  try {
+    const actual = new URL(actualUrl), expected = new URL(expectedUrl);
+    return identityVisible && actual.protocol === 'https:' && actual.search === '' &&
+      expected.search === '' && actual.origin === expected.origin &&
+      actual.pathname === expected.pathname && actual.hash === expected.hash;
+  } catch {
+    return false;
+  }
+}
+
 function numericLabels(labels) {
   return labels.map(text => text.trim())
     .filter(text => /^[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?$/i.test(text))
@@ -9,33 +27,80 @@ function numericLabels(labels) {
 
 function historyPoint(rendered, step, expectedValue, labels) {
   const tolerance = 1e-5 * Math.max(1, Math.abs(expectedValue));
-  if (!Number.isFinite(rendered.step) || Math.abs(rendered.step - step) > 1e-3 ||
+  const stepTolerance = rendered.step_tolerance ?? 1e-3;
+  if (!Number.isFinite(stepTolerance) || stepTolerance > 0.02 || stepTolerance <= 0 ||
+      !Number.isFinite(rendered.step) || Math.abs(rendered.step - step) > stepTolerance ||
       !Number.isFinite(rendered.value) || Math.abs(rendered.value - expectedValue) > tolerance ||
       !numericLabels(labels).some(value => Math.abs(value - expectedValue) <= tolerance)) {
-    throw new Error('Rendered epoch coordinates or tooltip differ from tracked history');
+    throw new VerificationError('Rendered epoch coordinates or tooltip differ from tracked history');
   }
   return { step: rendered.step, value: rendered.value, expected_step: step,
     expected_value: expectedValue, displayed: labels };
 }
 
-function renderedCoordinates(point) {
-  const plot = point.closest('.js-plotly-plot');
+function renderedGeometry(element) {
+  const plot = element.closest('.js-plotly-plot');
   function screen(element) {
     const coordinate = element.ownerSVGElement.createSVGPoint();
-    return coordinate.matrixTransform(element.getScreenCTM());
+    const point = coordinate.matrixTransform(element.getScreenCTM());
+    return { x: point.x, y: point.y };
   }
-  const center = screen(point);
-  function interpolate(axis, selector) {
+  function ticksFor(axis, selector) {
     const ticks = [...plot.querySelectorAll(selector)]
       .map(tick => ({ value: Number(tick.textContent.trim().replace('−', '-')), pixel: screen(tick)[axis] }))
       .filter(tick => Number.isFinite(tick.value));
     if (ticks.length < 2) throw new Error('Missing rendered axis ticks');
-    const a = ticks[0], b = ticks.find(tick => tick.value !== a.value && tick.pixel !== a.pixel);
+    const a = ticks[0], b = ticks.reverse().find(tick => tick.value !== a.value && tick.pixel !== a.pixel);
     if (!b) throw new Error('Missing distinct rendered axis ticks');
-    return a.value + (center[axis] - a.pixel) * (b.value - a.value) / (b.pixel - a.pixel);
+    return [a, b];
   }
-  return { step: interpolate('x', '.xaxislayer-above .xtick text'),
-    value: interpolate('y', '.yaxislayer-above .ytick text') };
+  return { x: ticksFor('x', '.xaxislayer-above .xtick text'),
+    y: ticksFor('y', '.yaxislayer-above .ytick text'),
+    origin: element.ownerSVGElement ? screen(element) : null };
 }
 
-module.exports = { numericLabels, historyPoint, renderedCoordinates };
+function targetPosition(axes, step, value) {
+  function pixel([a, b], value) {
+    return a.pixel + (value - a.value) * (b.pixel - a.pixel) / (b.value - a.value);
+  }
+  return { x: pixel(axes.x, step), y: pixel(axes.y, value) };
+}
+
+function observedCoordinates(geometry) {
+  function value([a, b], pixel) {
+    return a.value + (pixel - a.pixel) * (b.value - a.value) / (b.pixel - a.pixel);
+  }
+  const [a, b] = geometry.x;
+  return { step: value(geometry.x, geometry.origin.x),
+    value: value(geometry.y, geometry.origin.y),
+    step_tolerance: Math.min(0.02, 2 * Math.abs((b.value - a.value) / (b.pixel - a.pixel))) };
+}
+
+function historyCsv(content, run, metric, expected) {
+  const [header, ...lines] = content.trim().split(/\r?\n/).map(line => line.split(','));
+  const columns = Object.fromEntries(header.map((name, index) => [name, index]));
+  if (!['run_id', 'key', 'step', 'value'].every(name => Object.hasOwn(columns, name))) {
+    throw new VerificationError('UI history download has an unexpected schema');
+  }
+  const actual = lines.map(row => {
+    if (row.length !== header.length ||
+        numericLabels([row[columns.step], row[columns.value]]).length !== 2) {
+      throw new VerificationError('UI history download has an invalid numeric row');
+    }
+    if (row[columns.run_id] !== run || row[columns.key] !== metric) {
+      throw new VerificationError('UI history download identifies another run or metric');
+    }
+    return [Number(row[columns.step]), Number(row[columns.value])];
+  });
+  const ordered = values => [...values].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const wanted = ordered(expected), got = ordered(actual);
+  if (got.length !== wanted.length || got.some(([step, value], index) =>
+    !Number.isFinite(step) || !Number.isFinite(value) || step !== wanted[index][0] ||
+    Math.abs(value - wanted[index][1]) > 1e-9 * Math.max(1, Math.abs(wanted[index][1])))) {
+    throw new VerificationError('UI history download differs from recorded epochs');
+  }
+  return actual;
+}
+
+module.exports = { numericLabels, historyPoint, renderedGeometry, targetPosition,
+  observedCoordinates, historyCsv, VerificationError, verificationMessage, captureAllowed };

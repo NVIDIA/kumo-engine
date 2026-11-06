@@ -430,13 +430,35 @@ def test_browser_history_assertions_bind_both_axes_and_numeric_tooltip():
         pytest.skip('Browser assertion regression needs Node.js')
     script = '''
 const assert = require('node:assert/strict');
-const { numericLabels, historyPoint } = require(process.argv[1]);
+const { numericLabels, historyPoint, targetPosition, observedCoordinates, historyCsv,
+  VerificationError, verificationMessage, captureAllowed } = require(process.argv[1]);
 assert.deepEqual(numericLabels(['0', ' -0.25 ', '1.5e-3', '.75', 'NaN', '', 'step 1']),
   [0, -0.25, 0.0015, 0.75]);
 historyPoint({step: 1, value: 0.75}, 1, 0.75, ['0.75']);
 assert.throws(() => historyPoint({step: 1, value: 0.8}, 1, 1, ['1', '0.8']));
 assert.throws(() => historyPoint({step: 2, value: 0.75}, 1, 0.75, ['0.75']));
 assert.throws(() => historyPoint({step: 1, value: 0.75}, 1, 0.75, ['0.8']));
+const geometry = { x: [{value:1,pixel:100},{value:2,pixel:200}],
+  y: [{value:0.5,pixel:300},{value:0.75,pixel:200}], origin:{x:151,y:260} };
+assert.deepEqual(targetPosition(geometry,1.5,0.6),{x:150,y:260});
+historyPoint(observedCoordinates(geometry),1.5,0.6,['0.6']);
+assert.throws(() => historyPoint(observedCoordinates({...geometry,origin:{x:154,y:260}}),1.5,0.6,['0.6']));
+const csv = 'run_id,key,value,step,timestamp\\nr,train/loss,0.75,1,0\\nr,train/loss,0.6,2,1';
+assert.deepEqual(historyCsv(csv,'r','train/loss',[[1,0.75],[2,0.6]]),[[1,0.75],[2,0.6]]);
+assert.throws(() => historyCsv(csv,'wrong','train/loss',[[1,0.75],[2,0.6]]));
+assert.throws(() => historyCsv(csv,'r','val/auroc',[[1,0.75],[2,0.6]]));
+assert.throws(() => historyCsv(csv,'r','train/loss',[[1,0.75]]));
+assert.throws(() => historyCsv(csv.replace('0.6,2','0.7,2'),'r','train/loss',[[1,0.75],[2,0.6]]));
+assert.throws(() => historyCsv(csv.replace('0.6,2',',2'),'r','train/loss',[[1,0.75],[2,0]]));
+assert.equal(verificationMessage(new VerificationError('Metric value mismatch')), 'Metric value mismatch');
+assert(!verificationMessage(new Error('https://example.invalid/?token=private')).includes('private'));
+const owned = 'https://mlflow.example/#/experiments/1/runs/x';
+assert(captureAllowed(owned,owned,true));
+assert(!captureAllowed(owned,owned,false));
+assert(!captureAllowed('https://login.example/',owned,true));
+assert(!captureAllowed('https://mlflow.example/?token=private#/experiments/1/runs/x',owned,true));
+assert(!captureAllowed('https://mlflow.example/#/models/x',owned,true));
+assert(!captureAllowed('invalid URL',owned,true));
 '''
     result = subprocess.run(
         [node, '-e', script, str(HERE / 'assertions.cjs')], capture_output=True,
