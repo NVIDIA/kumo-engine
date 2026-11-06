@@ -121,7 +121,7 @@ shared runner stops timed-out workers and their descendants.
 
 ```sh
 python packages/kumo-engine/test/databricks_notebook/lifecycle_notebook.py \
-  --execute --cluster-id DEDICATED_TEST_CLUSTER_ID \
+  --execute --engine-checks-only --cluster-id DEDICATED_TEST_CLUSTER_ID \
   --output-dir /tmp/databricks-lifecycle-001
 ```
 
@@ -129,10 +129,17 @@ python packages/kumo-engine/test/databricks_notebook/lifecycle_notebook.py \
 | --- | --- |
 | Graph schema, tooltips, controls, samples and exports | Passed in GitHub Actions [42198152316](https://github.com/NVIDIA/kumo-engine/actions/runs/42198152316). |
 | Exported notebook reopened in a fresh browser context | Passed in the same run; does not establish native editor reopening. |
-| Fit/register two versions; reload, predict, aliases, lineage, drift and delayed labels | Passed in live notebook run `7236256940191` with the pinned candidate; fit, score and evaluate each exited zero. |
-| Real provider-denied artifact access | Requires a deliberately read-only test root; never inferred from a missing path. |
+| Fit/register two versions; reload, predict, aliases, lineage, drift and delayed labels | Passed in live notebook run `1113860167461311` with the pinned candidate; all four engine phases exited zero. |
+| Real provider-denied artifact access | Passed in the same notebook run: actual `WRITE VOLUME` denial on the isolated test Volume. |
 | Native notebook editor, kernel shutdown/reopening, experiment and registry UI | Not qualified by PAT/API or exported HTML evidence. |
 | Full exported epoch history, independently nonzero drift, interrupted remote writer | Existing shared qualification gaps remain explicit. |
+
+The same four-phase check also passed in
+[GitHub Actions 42266049415](https://github.com/NVIDIA/kumo-engine/actions/runs/42266049415).
+
+`--engine-checks-only` requires all four engine phases and returns zero when they
+pass. The summary's `verdict.engine_checks` records that result; its top-level
+status retains the separate full-qualification gaps listed above.
 
 The permission-negative target is fixed at
 `/Volumes/kumo_test_denied/kumo_test/test_denied/mlops-validation/lifecycle`.
