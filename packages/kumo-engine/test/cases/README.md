@@ -40,8 +40,8 @@ Metric bands use `abs(current - reference) <= abs(reference) * tolerance`.
 At 10B and 25B, payments and fraud use one experiment, one epoch and balanced training sampling at batch 64.
 `majority_sampling_ratio=[1.0]` and `weight_mode=[WeightMode.SAMPLE]` affect training only.
 Every case and scale uses fixed validation and test budgets of 1,000 steps each.
-Payments and fraud remain in every scale. A run without enough positive labels fails instead of expanding the evaluation budget.
-Correct that failure in the dataset, then regenerate its reference after review.
+Payments and fraud remain at every scale. Non-finite metrics fail the run. Evaluation budgets stay fixed.
+Correct inadequate label support in the dataset, then regenerate its reference after review.
 Results and references retain full-split positive counts under `training_table.splits.<split>.positive_rows`.
 These counts describe the whole split, not measured positives in the capped evaluation prefix.
 Results also record hardware, elapsed time and sampled peak RAM, GPU memory and scratch growth. Hardware and timings do not gate results.
@@ -51,5 +51,5 @@ Results also record hardware, elapsed time and sampled peak RAM, GPU memory and 
 Set `ENGINE_E2E_RUNNER_GROUP`, `ENGINE_E2E_RUNNER_LABEL`, `ENGINE_E2E_MAX_PARALLEL`, `ENGINE_E2E_DATA_S3`, `ENGINE_E2E_REFERENCES_S3` and `ENGINE_E2E_RESULTS_S3`.
 References use `<scale>/<case>.json`. Results use `<run>/<attempt>/<scale>/<case>.json`.
 The workflow reuses the existing wheel builder and `gha-kumo-workflow-tests` AWS role. The role needs source/reference reads and result writes.
-Both callers require `main` and `ENGINE_E2E_ENABLED=true`. No scheduler or VM lifecycle code is included.
-Keep activation off under the test-fleet stop. Runner sizing, live permissions, actual class support, GPU launch and large-data runtime remain unqualified.
+Both callers require `main` and `ENGINE_E2E_ENABLED=true`. They use prepared runners and run only by manual dispatch.
+Configure the runner and reference locations before enabling a run. These workflows do not provision or schedule VMs.
