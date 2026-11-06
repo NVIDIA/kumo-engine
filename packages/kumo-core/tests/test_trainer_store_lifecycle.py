@@ -213,6 +213,7 @@ def test_load_accepts_task_config_without_graph(
 
     assert loaded.task is task_config
     assert loaded.graph_schema is None
+    assert not isinstance(loaded.sampler_kwargs, dict)
     assert {edge.to_tuple() for edge in loaded.sampler_kwargs.num_neighbors.values} == {
         ("orders", "user_id", "users")
     }
