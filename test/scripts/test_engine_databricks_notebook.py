@@ -220,7 +220,9 @@ def test_workflow_secrets_are_available_only_after_native_environment_approval(
         (ROOT /
          '.github/workflows/kumo-engine-databricks-notebook.yml').read_text())
     assert set(workflow[True]) == {'workflow_dispatch', 'push'}
-    assert workflow[True]['push']['branches'] == ['egu/databricks-ui-validation']
+    assert workflow[True]['push']['branches'] == [
+        'egu/databricks-ui-validation'
+    ]
     gate = workflow['jobs']['configuration']['steps'][1]
     job = workflow['jobs']['notebook-ui']
     assert job['environment'] == 'databricks-mlops-test'
@@ -257,3 +259,26 @@ def test_invalid_pat_cannot_enter_request_error_output(modules, config,
     with pytest.raises(ValueError) as error:
         client.Client(config)
     assert token not in str(error.value)
+
+
+@pytest.mark.parametrize('job_name', ['configuration', 'notebook-ui'])
+@pytest.mark.parametrize('event,branch,repository,expected', [
+    ('push', 'egu/databricks-ui-validation', 'NVIDIA/kumo-engine', False),
+    ('workflow_dispatch', 'egu/databricks-ui-validation', 'NVIDIA/kumo-engine',
+     True),
+    ('workflow_dispatch', 'main', 'NVIDIA/kumo-engine', False),
+    ('workflow_dispatch', 'egu/databricks-ui-validation', 'other/repository',
+     False),
+])
+def test_cloud_jobs_require_manual_feature_dispatch(job_name, event, branch,
+                                                    repository, expected):
+    workflow = yaml.safe_load(
+        (ROOT /
+         '.github/workflows/kumo-engine-databricks-notebook.yml').read_text())
+    condition = workflow['jobs'][job_name]['if']
+    expression = condition.replace('&&', ' and ')
+    for name, value in [('github.event_name', event),
+                        ('github.ref', 'refs/heads/' + branch),
+                        ('github.repository', repository)]:
+        expression = expression.replace(name, repr(value))
+    assert eval(expression, {'__builtins__': {}}) is expected
