@@ -25,7 +25,11 @@ use arrow_array::RecordBatch;
 use diskgraph_core::metadata::{EdgeRelationMetadata, EdgeSortKeyMetadata};
 use diskgraph_core::sortkey::SortKeyDecoder;
 use diskgraph_engine::edge_unpacker::EdgeUnpacker;
-use diskgraph_index::graph::{GraphIndexReader, TableReader};
+use diskgraph_index::graph::{GraphIndexReader, TableReader, TimeColumns};
+use diskgraph_ingest::graph_config::{
+    ColumnSpec, IngestedType, TimestampUnit, DISKGRAPH_CONFIG_FILENAME,
+};
+use diskgraph_rowpack::{RowAccess, RowAccessHints, RowAccessStats};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use regex::Regex;
@@ -541,6 +545,88 @@ fn scalar_at(array: &dyn Array, row: usize) -> Result<ScalarValue, String> {
     ))
 }
 
+/// Ingest hints by column name, for one table.
+type ColumnHints = HashMap<String, RowAccessHints>;
+
+/// Ingest hints of integer columns declared with a time format or a unit other
+/// than seconds, by table.
+pub(crate) type TimeHints = HashMap<String, ColumnHints>;
+
+/// [`TimeHints`] of the time columns the index's persisted graph config
+/// declares. Only the time fields of integer columns are parsed strictly, so
+/// config fields this version does not know fail nothing else.
+pub(crate) fn time_hints(tables: &TimeColumns) -> Result<TimeHints, String> {
+    let mut hints = TimeHints::new();
+    for (table, table_columns) in tables {
+        let mut columns = ColumnHints::new();
+        for column in table_columns {
+            let Some(dtype) = column
+                .get("ingested_dtype")
+                .or_else(|| column.get("dtype"))
+                .filter(|dtype| {
+                    matches!(
+                        serde_json::from_value((*dtype).clone()),
+                        Ok(IngestedType::Int8
+                            | IngestedType::Int16
+                            | IngestedType::Int32
+                            | IngestedType::Int64
+                            | IngestedType::UInt8
+                            | IngestedType::UInt16
+                            | IngestedType::UInt32
+                            | IngestedType::UInt64)
+                    )
+                })
+            else {
+                continue;
+            };
+            let mut fields = serde_json::Map::from_iter([("ingested_dtype".into(), dtype.clone())]);
+            for key in ["name", "timestamp_unit", "timestamp_format"] {
+                if let Some(value) = column.get(key) {
+                    fields.insert(key.into(), value.clone());
+                }
+            }
+            let column: ColumnSpec = serde_json::from_value(serde_json::Value::Object(fields))
+                .map_err(|error| {
+                    format!(
+                        "parse {DISKGRAPH_CONFIG_FILENAME}: table {table:?} column {}: {error}",
+                        column.get("name").unwrap_or(&serde_json::Value::Null)
+                    )
+                })?;
+            if column.timestamp_format.is_some()
+                || column
+                    .timestamp_unit
+                    .is_some_and(|unit| unit != TimestampUnit::Seconds)
+            {
+                let hint = crate::bp_col_stats::row_access_hints(&column);
+                columns.insert(column.name, hint);
+            }
+        }
+        hints.insert(table.clone(), columns);
+    }
+    Ok(hints)
+}
+
+/// Epoch seconds of each value. A hinted integer column decodes exactly as
+/// ingestion and its edge sort keys read it.
+fn epoch_seconds(
+    array: &ArrayRef,
+    hint: Option<&RowAccessHints>,
+) -> Result<Vec<Option<i64>>, String> {
+    let Some(hint) = hint else {
+        return (0..array.len())
+            .map(|row| scalar_at(array.as_ref(), row)?.epoch_seconds())
+            .collect();
+    };
+    let mut access = RowAccess::new(vec![hint.clone()], RowAccessStats::new(None));
+    access.set_cols(std::slice::from_ref(array));
+    (0..array.len())
+        .map(|row| {
+            access.set_row(row);
+            access.get_timestamp(0).map_err(|error| error.to_string())
+        })
+        .collect()
+}
+
 fn relation_columns(
     table: &TableReader,
     relation_name: &str,
@@ -797,6 +883,7 @@ fn sort_frame_rows(rows: &mut [(usize, Option<i64>, ScalarValue)]) {
 
 fn materialize_frame(
     reader: &GraphIndexReader,
+    hints: &TimeHints,
     plan: &FramePlan,
     root_type: &str,
     roots: &[u64],
@@ -925,7 +1012,14 @@ fn materialize_frame(
         input_offsets.push(input_offsets.last().copied().unwrap_or(0) + rows.len());
     }
     let primary_key_position = positions[&primary_key];
-    let time_position = plan.time_column.as_ref().map(|column| positions[column]);
+    let times = plan
+        .time_column
+        .as_ref()
+        .map(|column| {
+            let hint = column_hint(hints.get(&destination), Some(column));
+            epoch_seconds(decoded.column(positions[column]), hint)
+        })
+        .transpose()?;
     let mut selected_rows = Vec::<u64>::new();
     let mut node_ids = Vec::new();
     let mut timestamps = Vec::new();
@@ -940,16 +1034,13 @@ fn materialize_frame(
             .map(|value| cutoffs[anchor].saturating_add(value));
         let mut anchor_rows = Vec::<(usize, Option<i64>, ScalarValue)>::new();
         for row in input_offsets[anchor]..input_offsets[anchor + 1] {
-            let timestamp = match time_position {
-                Some(position) => Some(
-                    scalar_at(decoded.column(position).as_ref(), row)?
-                        .epoch_seconds()?
-                        .ok_or_else(|| {
-                            format!("frame {:?} contains a null timestamp", plan.name)
-                        })?,
-                ),
-                None => None,
-            };
+            let timestamp = times
+                .as_ref()
+                .map(|times| {
+                    times[row]
+                        .ok_or_else(|| format!("frame {:?} contains a null timestamp", plan.name))
+                })
+                .transpose()?;
             if timestamp.is_some_and(|value| {
                 lower.is_some_and(|bound| value <= bound)
                     || upper.is_some_and(|bound| value > bound)
@@ -1124,6 +1215,13 @@ impl RowsView<'_> {
     }
 }
 
+fn column_hint<'a>(
+    hints: Option<&'a ColumnHints>,
+    column: Option<&str>,
+) -> Option<&'a RowAccessHints> {
+    hints?.get(column?)
+}
+
 fn validate_reduction(operation: &str, column: Option<&str>) -> Result<(), String> {
     if !REDUCTIONS.contains(&operation) {
         return Err(format!("unsupported temporal reduction {operation:?}"));
@@ -1140,6 +1238,7 @@ fn reduce(
     column: Option<&str>,
     cutoff: i64,
     sum_type: Option<SumType>,
+    hint: Option<&RowAccessHints>,
 ) -> Result<ScalarValue, String> {
     validate_reduction(operation, column)?;
     if sum_type.is_some() && operation != "sum" {
@@ -1199,10 +1298,14 @@ fn reduce(
         }
     }
     if operation == "recency" {
-        let latest = values
+        let mut seconds = values
             .iter()
             .map(ScalarValue::epoch_seconds)
-            .collect::<Result<Vec<_>, _>>()?
+            .collect::<Result<Vec<_>, _>>()?;
+        if hint.is_some() {
+            seconds = epoch_seconds(&(Arc::new(Int64Array::from(seconds)) as ArrayRef), hint)?;
+        }
+        let latest = seconds
             .into_iter()
             .flatten()
             .max()
@@ -1270,7 +1373,13 @@ fn reduce(
     })
 }
 
-fn group_rows(rows: RowsView<'_>, plan: &GroupPlan, cutoff: i64) -> Result<Vec<OwnedRow>, String> {
+/// `hints` describe the input columns.
+fn group_rows(
+    rows: RowsView<'_>,
+    plan: &GroupPlan,
+    cutoff: i64,
+    hints: Option<&ColumnHints>,
+) -> Result<Vec<OwnedRow>, String> {
     if plan.keys.is_empty() || plan.values.is_empty() {
         return Err("group_by requires keys and values".into());
     }
@@ -1337,6 +1446,7 @@ fn group_rows(rows: RowsView<'_>, plan: &GroupPlan, cutoff: i64) -> Result<Vec<O
                     reduction.column.as_deref(),
                     cutoff,
                     reduction.sum_type,
+                    column_hint(hints, reduction.column.as_deref()),
                 )?,
             );
         }
@@ -1345,12 +1455,38 @@ fn group_rows(rows: RowsView<'_>, plan: &GroupPlan, cutoff: i64) -> Result<Vec<O
     Ok(output)
 }
 
+/// Hints of a group stage's outputs: keys, and min, max and mode, which keep
+/// their input's stored values.
+fn group_output_hints(plan: &GroupPlan, hints: Option<&ColumnHints>) -> ColumnHints {
+    let mut output = ColumnHints::new();
+    for key in &plan.keys {
+        if let Some(hint) = column_hint(hints, Some(key)) {
+            output.insert(key.clone(), hint.clone());
+        }
+    }
+    for value in &plan.values {
+        match column_hint(hints, value.column.as_deref())
+            .filter(|_| matches!(value.operation.as_str(), "min" | "max" | "mode"))
+        {
+            Some(hint) => output.insert(value.name.clone(), hint.clone()),
+            None => output.remove(&value.name),
+        };
+    }
+    output
+}
+
 fn aggregate_result(
     frame: &MaterializedFrame,
+    hints: Option<&ColumnHints>,
     plan: &AggregatePlan,
     cutoffs: &[i64],
 ) -> Result<AggregateResult, String> {
     validate_reduction(&plan.operation, plan.column.as_deref())?;
+    let mut stage_hints = Vec::with_capacity(plan.groups.len());
+    for group in &plan.groups {
+        let output = group_output_hints(group, stage_hints.last().or(hints));
+        stage_hints.push(output);
+    }
     let mut values = Vec::with_capacity(cutoffs.len());
     for (anchor, cutoff) in cutoffs.iter().copied().enumerate() {
         let frame_view = RowsView::Frame {
@@ -1359,9 +1495,9 @@ fn aggregate_result(
             stop: frame.offsets[anchor + 1],
         };
         let value = if let Some((first, remaining)) = plan.groups.split_first() {
-            let mut grouped = group_rows(frame_view, first, cutoff)?;
-            for group in remaining {
-                grouped = group_rows(RowsView::Owned(&grouped), group, cutoff)?;
+            let mut grouped = group_rows(frame_view, first, cutoff, hints)?;
+            for (group, hints) in remaining.iter().zip(&stage_hints) {
+                grouped = group_rows(RowsView::Owned(&grouped), group, cutoff, Some(hints))?;
             }
             reduce(
                 RowsView::Owned(&grouped),
@@ -1369,6 +1505,7 @@ fn aggregate_result(
                 plan.column.as_deref(),
                 cutoff,
                 plan.sum_type,
+                column_hint(stage_hints.last(), plan.column.as_deref()),
             )?
         } else {
             reduce(
@@ -1377,6 +1514,7 @@ fn aggregate_result(
                 plan.column.as_deref(),
                 cutoff,
                 plan.sum_type,
+                column_hint(hints, plan.column.as_deref()),
             )?
         };
         values.push(value);
@@ -1421,6 +1559,7 @@ fn aggregate_kind(frame: &MaterializedFrame, plan: &AggregatePlan) -> Option<Sca
 
 fn count_frame(
     reader: &GraphIndexReader,
+    hints: &TimeHints,
     plan: &FramePlan,
     root_type: &str,
     roots: &[u64],
@@ -1512,6 +1651,8 @@ fn count_frame(
                 .map(|(node_id, _)| *node_id)
                 .collect::<Vec<_>>();
             let decoded = table_rows(table.as_ref(), &flat_nodes, &projection_indices)?;
+            let hint = column_hint(hints.get(&destination), Some(time_column));
+            let times = epoch_seconds(decoded.column(0), hint)?;
             let mut row = 0;
             for (anchor, rows) in rows_by_anchor.iter().enumerate() {
                 let lower = plan
@@ -1522,11 +1663,9 @@ fn count_frame(
                     .map(|value| cutoffs[anchor].saturating_add(value));
                 let mut selected = 0;
                 for _ in rows {
-                    let timestamp = scalar_at(decoded.column(0).as_ref(), row)?
-                        .epoch_seconds()?
-                        .ok_or_else(|| {
-                            format!("frame {:?} contains a null timestamp", plan.name)
-                        })?;
+                    let timestamp = times[row].ok_or_else(|| {
+                        format!("frame {:?} contains a null timestamp", plan.name)
+                    })?;
                     row += 1;
                     stats.rowpack_timestamps += 1;
                     if lower.is_none_or(|bound| timestamp > bound)
@@ -1548,6 +1687,7 @@ fn count_frame(
 
 pub(crate) fn execute_lengths(
     reader: &GraphIndexReader,
+    hints: &TimeHints,
     root_type: &str,
     roots: &[u64],
     cutoffs: &[i64],
@@ -1584,6 +1724,7 @@ pub(crate) fn execute_lengths(
             })?;
             let lengths = count_frame(
                 reader,
+                hints,
                 frame,
                 root_type,
                 roots,
@@ -1615,6 +1756,7 @@ pub(crate) fn execute_lengths(
 
 pub(crate) fn execute(
     reader: &GraphIndexReader,
+    hints: &TimeHints,
     root_type: &str,
     roots: &[u64],
     cutoffs: &[i64],
@@ -1679,6 +1821,7 @@ pub(crate) fn execute(
         });
         let frame = materialize_frame(
             reader,
+            hints,
             frame_plan,
             root_type,
             roots,
@@ -1720,7 +1863,7 @@ pub(crate) fn execute(
                     aggregate.name, aggregate.frame
                 )
             })?;
-            aggregate_result(frame, aggregate, cutoffs)
+            aggregate_result(frame, hints.get(&frame.destination), aggregate, cutoffs)
         })
         .collect::<Result<Vec<_>, String>>()?;
     timings.aggregation = elapsed_ns(aggregate_started);
@@ -1961,7 +2104,7 @@ mod tests {
     fn reduction_empty_and_null_semantics_are_distinct() {
         let empty = Vec::<OwnedRow>::new();
         assert!(matches!(
-            reduce(RowsView::Owned(&empty), "sum", Some("value"), 0, None).unwrap(),
+            reduce(RowsView::Owned(&empty), "sum", Some("value"), 0, None, None).unwrap(),
             ScalarValue::F64(0.0)
         ));
         assert!(matches!(
@@ -1970,7 +2113,8 @@ mod tests {
                 "sum",
                 Some("value"),
                 0,
-                Some(SumType::Int64)
+                Some(SumType::Int64),
+                None
             )
             .unwrap(),
             ScalarValue::I64(0)
@@ -1981,7 +2125,8 @@ mod tests {
                 "sum",
                 Some("value"),
                 0,
-                Some(SumType::Int64)
+                Some(SumType::Int64),
+                None
             )
             .unwrap(),
             ScalarValue::Null
@@ -1992,6 +2137,7 @@ mod tests {
                 "count_distinct",
                 Some("value"),
                 0,
+                None,
                 None
             )
             .unwrap(),
@@ -2006,7 +2152,15 @@ mod tests {
             row(Some(ScalarValue::I64(1))),
         ];
         assert!(matches!(
-            reduce(RowsView::Owned(&rows), "sum", Some("value"), 0, Some(SumType::Int64)).unwrap(),
+            reduce(
+                RowsView::Owned(&rows),
+                "sum",
+                Some("value"),
+                0,
+                Some(SumType::Int64),
+                None
+            )
+            .unwrap(),
             ScalarValue::I64(value) if value == (1 << 53) + 1
         ));
         let output = scalar_values_to_array(
@@ -2043,7 +2197,8 @@ mod tests {
             "sum",
             Some("value"),
             0,
-            Some(SumType::Int64)
+            Some(SumType::Int64),
+            None
         )
         .is_err());
         let unsigned = [row(Some(ScalarValue::U64(u64::MAX)))];
@@ -2053,7 +2208,8 @@ mod tests {
                 "sum",
                 Some("value"),
                 0,
-                Some(SumType::Uint64)
+                Some(SumType::Uint64),
+                None
             )
             .unwrap(),
             ScalarValue::U64(u64::MAX)
@@ -2063,7 +2219,15 @@ mod tests {
             row(Some(ScalarValue::F64(2.5))),
         ];
         assert!(matches!(
-            reduce(RowsView::Owned(&floats), "sum", Some("value"), 0, None).unwrap(),
+            reduce(
+                RowsView::Owned(&floats),
+                "sum",
+                Some("value"),
+                0,
+                None,
+                None
+            )
+            .unwrap(),
             ScalarValue::F64(3.75)
         ));
     }
@@ -2076,11 +2240,11 @@ mod tests {
             row(Some(ScalarValue::F64(30.0))),
         ];
         assert!(matches!(
-            reduce(RowsView::Owned(&rows), "var_population", Some("value"), 0, None).unwrap(),
+            reduce(RowsView::Owned(&rows), "var_population", Some("value"), 0, None, None).unwrap(),
             ScalarValue::F64(value) if (value - 66.66666666666667).abs() < 1e-10
         ));
         assert!(matches!(
-            reduce(RowsView::Owned(&rows), "std_sample", Some("value"), 0, None).unwrap(),
+            reduce(RowsView::Owned(&rows), "std_sample", Some("value"), 0, None, None).unwrap(),
             ScalarValue::F64(value) if (value - 10.0).abs() < 1e-10
         ));
         let tied = vec![
@@ -2088,7 +2252,7 @@ mod tests {
             row(Some(ScalarValue::String("a".into()))),
         ];
         assert!(matches!(
-            reduce(RowsView::Owned(&tied), "mode", Some("value"), 0, None).unwrap(),
+            reduce(RowsView::Owned(&tied), "mode", Some("value"), 0, None, None).unwrap(),
             ScalarValue::String(value) if value == "a"
         ));
     }

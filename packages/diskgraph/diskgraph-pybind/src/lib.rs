@@ -493,6 +493,8 @@ impl OutputHandler for PyOutputHandler {
 #[pyclass]
 pub struct SamplerEngine {
     reader: Arc<diskgraph_index::graph::GraphIndexReader>,
+    /// A config error is reported by temporal queries, not by sampling.
+    time_hints: Arc<Result<temporal_query::TimeHints, String>>,
     engine: Arc<DiskGraphEngine>,
     pool: StatePool,
     sample_count: Arc<std::sync::atomic::AtomicUsize>,
@@ -691,9 +693,14 @@ impl SamplerEngine {
         );
         let engine = DiskGraphEngine::from_reader(Arc::clone(&reader), random_seed, num_threads)
             .map_err(map_engine_err)?;
+        let time_hints = reader
+            .time_columns()
+            .map_err(str::to_string)
+            .and_then(temporal_query::time_hints);
         info!("SamplerEngine initialized successfully");
         Ok(Self {
             reader,
+            time_hints: Arc::new(time_hints),
             engine: Arc::new(engine),
             pool: StatePool::new(),
             sample_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -766,10 +773,12 @@ impl SamplerEngine {
         })?;
         let cutoffs: Vec<i64> = cutoff_values.extract()?;
         let reader = Arc::clone(&self.reader);
+        let time_hints = Arc::clone(&self.time_hints);
         let result = py
             .detach(move || {
                 temporal_query::execute(
                     reader.as_ref(),
+                    time_hints.as_ref().as_ref().map_err(Clone::clone)?,
                     &root_type,
                     &roots,
                     &cutoffs,
@@ -811,10 +820,12 @@ impl SamplerEngine {
         })?;
         let cutoffs: Vec<i64> = cutoff_values.extract()?;
         let reader = Arc::clone(&self.reader);
+        let time_hints = Arc::clone(&self.time_hints);
         let result = py
             .detach(move || {
                 temporal_query::execute_lengths(
                     reader.as_ref(),
+                    time_hints.as_ref().as_ref().map_err(Clone::clone)?,
                     &root_type,
                     &roots,
                     &cutoffs,

@@ -263,8 +263,12 @@ result = engine.query_temporal(
 
 Windows are half-open relative to each aligned cutoff:
 `(cutoff + start_seconds, cutoff + stop_seconds]`. Either bound may be null;
-bounds require `time_column`. Selected rows are sorted by timestamp and then
-primary key before a sequence optionally reverses and truncates them.
+bounds require `time_column`. An integer time column is read in the
+`timestamp_unit` or `timestamp_format` it was ingested with. `recency` reads
+such a column, or a group key or `min`/`max`/`mode` of it, the same way;
+other reductions and projections return the stored values. An unreadable
+`diskgraph_config.json` fails the query. Selected rows are sorted by timestamp
+and then primary key before a sequence optionally reverses and truncates them.
 `distinct` deduplicates destination dense IDs per root.
 
 Available reductions are `count`, `count_distinct`, `sum`, `mean`, `min`,
