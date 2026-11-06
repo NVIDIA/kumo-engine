@@ -648,6 +648,9 @@ LEFT_OUT = ("Column events.bad is named in the query but was left out of "
             "Declare a dtype for it (`dtypes=` or `with_column('bad', "
             "dtype=...)`) or cast it at the source, then build the graph "
             "again.")
+UNTYPED = ("Column events.empty is named in the query but has no semantic "
+           "type, so it is not one of the graph's features. Set one with "
+           "`with_column('empty', stype=...)` to use it.")
 
 
 @pytest.mark.parametrize('query, expected', [
@@ -660,6 +663,9 @@ LEFT_OUT = ("Column events.bad is named in the query but was left out of "
      "Column 'nope' does not exist in table 'events'"),
     ("PREDICT events.nope FOR EACH events.pk  # not events.bad",
      "Column 'nope' does not exist in table 'events'"),
+    ('PREDICT events.empty FOR EACH events.pk', UNTYPED),
+    ('PREDICT events.amount FOR EACH events.pk WHERE events.empty IS NULL',
+     UNTYPED),
 ])
 def test_a_query_naming_a_left_out_column_says_why_it_is_missing(
         query, expected, tmp_path):
@@ -679,12 +685,12 @@ def test_a_query_naming_a_left_out_column_says_why_it_is_missing(
             }]),
             'amount': [1.5, 2.5, 3.5],
             'kind': ['x', 'y', 'x'],
+            'empty': pa.array([None] * 3, pa.float64()),
         }), root / 'events.parquet')
-    graph = Graph({
-        'events':
-        Table.from_source_table(
+    with pytest.warns(UserWarning, match='has no values'):
+        table = Table.from_source_table(
             FileConnector(root_dir=str(root))['events'], primary_key='pk')
-    })
+    graph = Graph({'events': table})
     with pytest.warns(UserWarning, match='left out of the graph'), \
             pytest.raises(ValueError, match=re.escape(expected)):
         PredictiveQuery(graph, query).validate()
