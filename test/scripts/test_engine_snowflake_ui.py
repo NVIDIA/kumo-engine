@@ -441,11 +441,10 @@ def test_trial_triggers_isolate_graph_ui_from_training(event, branch,
         condition = job['if'].replace('&&', ' and ').replace('||', ' or ')
         assert eval(condition, {'__builtins__': {}}, context) is expected
         assert job['environment'] == 'snowflake-mlops-test'
-        assert job['steps'][0][
-            'name'] == 'Require current maintainer membership and environment secrets'
-        assert 'KUMO_ENGINE_TEAM_READ_TOKEN' in job['steps'][0]['env'][
-            'TEAM_READ_TOKEN']
-        assert 'uses' in job['steps'][1]
+        assert 'uses' in job['steps'][0]
+        assert job['steps'][1][
+            'name'] == 'Verify maintainer-protected environment'
+        assert job['steps'][1]['env'] == {'GITHUB_TOKEN': '${{ github.token }}'}
 
 
 def test_graph_execution_acknowledges_before_imports_or_sql(

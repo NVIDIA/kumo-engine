@@ -1,13 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Exercise the actual pre-checkout workflow gate without cloud credentials."""
+"""Verify native environment protection and explicit test-resource admission."""
 import copy
 import importlib
-import io
 import json
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 import pytest
@@ -16,107 +13,56 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 DIRECTORY = ROOT / 'packages/kumo-engine/test/snowflake_notebook'
 WORKFLOW = ROOT / '.github/workflows/kumo-engine-snowflake-notebook.yml'
-SECRETS = {
-    'KUMO_ENGINE_TEAM_READ_TOKEN', 'SNOWFLAKE_TEST_CONFIG',
-    'SNOWFLAKE_PRIVATE_KEY', 'SNOWFLAKE_PRIVATE_KEY_PASSPHRASE',
-    'SNOWFLAKE_UI_CREDENTIALS'
-}
 
 
 @pytest.fixture
-def gate(monkeypatch):
-    workflow = yaml.safe_load(WORKFLOW.read_text())
-    step = workflow['jobs']['engine-lifecycle']['steps'][0]
-    assert step == workflow['jobs']['notebook-ui']['steps'][0]
-    script = '\n'.join(step['run'].splitlines()[1:-1])
-    for name, value in dict(TEAM_READ_TOKEN='synthetic-token',
-                            GITHUB_ACTOR='maintainer',
-                            GITHUB_TRIGGERING_ACTOR='maintainer').items():
-        monkeypatch.setenv(name, value)
+def environment_guard(monkeypatch):
+    monkeypatch.syspath_prepend(str(DIRECTORY))
+    guard = importlib.import_module('check_environment')
     environment = dict(
         can_admins_bypass=False, protection_rules=[
             dict(type='required_reviewers',
-                 reviewers=[dict(type='Team', reviewer=dict(id=19956283))])
+                 reviewers=[dict(type='Team', reviewer=dict(id=guard.TEAM_ID))])
         ], deployment_branch_policy=dict(protected_branches=False,
                                          custom_branch_policies=True))
-    state = dict(
-        environment=environment, names=set(SECRETS), actors={}, calls=[],
-        policies=[dict(name='egu/mlops-platform-integration', type='branch')])
-
-    def get(request, timeout):
-        assert request.full_url.startswith('https://api.github.com/')
-        assert request.get_header('Authorization') == 'Bearer synthetic-token'
-        state['calls'].append(request.full_url)
-        if '/memberships/' in request.full_url:
-            actor = request.full_url.rsplit('/', 1)[1]
-            value = state['actors'].get(actor, dict(state='active'))
-            if isinstance(value, int):
-                raise urllib.error.HTTPError(request.full_url, value, 'denied',
-                                             {}, None)
-        elif '/secrets?' in request.full_url:
-            value = dict(secrets=[dict(name=name) for name in state['names']])
-        elif '/deployment-branch-policies?' in request.full_url:
-            value = dict(branch_policies=state['policies'])
-        else:
-            value = state['environment']
-        return io.BytesIO(json.dumps(value).encode())
-
-    monkeypatch.setattr(urllib.request, 'urlopen', get)
-
-    def run():
-        namespace = {}
-        exec(compile(script, '<workflow-authorization>', 'exec'), namespace)
-
-    return state, run
+    policies = dict(branch_policies=[dict(name=guard.BRANCH, type='branch')])
+    return guard, environment, policies
 
 
-def test_maintainer_gate_passes_only_after_all_checks(gate):
-    state, run = gate
-    run()
-    assert len(state['calls']) == 5
-    assert state['calls'][-1].endswith('/secrets?per_page=100')
+def test_existing_maintainer_environment_is_sufficient(environment_guard):
+    guard, environment, policies = environment_guard
+    guard.validate(environment, policies)
 
 
-@pytest.mark.parametrize('who', ['GITHUB_ACTOR', 'GITHUB_TRIGGERING_ACTOR'])
-@pytest.mark.parametrize('membership', [403, 404, dict(state='pending')])
-def test_nonmember_or_unverifiable_actor_is_denied(gate, monkeypatch, who,
-                                                   membership):
-    state, run = gate
-    monkeypatch.setenv(who, 'outsider')
-    state['actors']['outsider'] = membership
-    with pytest.raises(SystemExit):
-        run()
-    assert not any('/environments/' in url for url in state['calls'])
-
-
-def test_missing_membership_credential_makes_no_requests(gate, monkeypatch):
-    state, run = gate
-    monkeypatch.delenv('TEAM_READ_TOKEN')
-    with pytest.raises(SystemExit, match='Missing environment secret'):
-        run()
-    assert not state['calls']
-
-
-@pytest.mark.parametrize('missing', sorted(SECRETS))
-def test_repository_secret_fallback_cannot_satisfy_gate(gate, missing):
-    state, run = gate
-    state['names'].remove(missing)
-    with pytest.raises(SystemExit, match='must exist in snowflake-mlops-test'):
-        run()
-
-
-@pytest.mark.parametrize('change', ['bypass', 'reviewer', 'branch'])
-def test_removed_protection_is_rechecked_in_the_cloud_job(gate, change):
-    state, run = gate
+@pytest.mark.parametrize('change',
+                         ['bypass', 'reviewer', 'branch', 'no-reviewer'])
+def test_unprotected_environment_is_rejected(environment_guard, change):
+    guard, environment, policies = environment_guard
     if change == 'bypass':
-        state['environment']['can_admins_bypass'] = True
+        environment['can_admins_bypass'] = True
     elif change == 'reviewer':
-        state['environment']['protection_rules'][0]['reviewers'][0]['reviewer'][
+        environment['protection_rules'][0]['reviewers'][0]['reviewer'][
             'id'] = 123
+    elif change == 'no-reviewer':
+        environment['protection_rules'] = []
     else:
-        state['policies'][0]['name'] = 'main'
-    with pytest.raises(SystemExit):
-        run()
+        policies['branch_policies'][0]['name'] = 'main'
+    with pytest.raises(ValueError):
+        guard.validate(environment, policies)
+
+
+def test_every_cloud_job_rechecks_protection_with_builtin_token():
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    gate = workflow['jobs']['configuration']['steps'][1]
+    assert gate['env'] == {'GITHUB_TOKEN': '${{ github.token }}'}
+    for name in ('engine-lifecycle', 'notebook-ui'):
+        job = workflow['jobs'][name]
+        assert job['environment'] == 'snowflake-mlops-test'
+        assert job['permissions'] == {'contents': 'read', 'actions': 'read'}
+        assert job['steps'][1] == gate
+        assert 'secrets.' not in json.dumps(job['steps'][:2])
+    assert set(workflow[True]) == {'workflow_dispatch'}
+    assert 'KUMO_ENGINE_TEAM_READ_TOKEN' not in WORKFLOW.read_text()
 
 
 @pytest.fixture

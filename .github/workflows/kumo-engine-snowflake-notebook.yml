@@ -36,7 +36,8 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Require an existing branch-restricted environment
+      - &check-environment
+        name: Verify maintainer-protected environment
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 packages/kumo-engine/test/snowflake_notebook/check_environment.py
@@ -50,56 +51,15 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 80
     environment: snowflake-mlops-test
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - &authorize-maintainer
-        name: Require current maintainer membership and environment secrets
-        env:
-          TEAM_READ_TOKEN: ${{ secrets.KUMO_ENGINE_TEAM_READ_TOKEN }}
-        run: |
-          python3 - <<'PYTHON'
-          import json, os, re, urllib.error, urllib.request
-          token = os.environ.get('TEAM_READ_TOKEN')
-          if not token:
-              raise SystemExit('Missing environment secret KUMO_ENGINE_TEAM_READ_TOKEN; org Members:read and repository Actions:read/Environments:read are required')
-          def get(path):
-              request = urllib.request.Request('https://api.github.com' + path, headers={
-                  'Authorization': 'Bearer ' + token,
-                  'Accept': 'application/vnd.github+json',
-                  'X-GitHub-Api-Version': '2022-11-28',
-              })
-              try:
-                  with urllib.request.urlopen(request, timeout=30) as response:
-                      return json.load(response)
-              except urllib.error.HTTPError as error:
-                  raise SystemExit('Maintainer authorization unavailable or denied (HTTP ' + str(error.code) + ')') from None
-          for name in ('GITHUB_ACTOR', 'GITHUB_TRIGGERING_ACTOR'):
-              actor = os.environ.get(name, '')
-              if not re.fullmatch(r'[A-Za-z0-9-]+', actor):
-                  raise SystemExit('A human maintainer must initiate and rerun this workflow')
-              membership = get('/organizations/1728152/team/19956283/memberships/' + actor)
-              if membership.get('state') != 'active':
-                  raise SystemExit('Only active NVIDIA/kumo-engineers members may initiate or rerun Snowflake tests')
-          base = '/repos/NVIDIA/kumo-engine/environments/snowflake-mlops-test'
-          environment = get(base)
-          reviewers = [rule for rule in environment.get('protection_rules', []) if rule.get('type') == 'required_reviewers']
-          if (environment.get('can_admins_bypass') is not False or len(reviewers) != 1 or
-                  [(item.get('type'), item.get('reviewer', {}).get('id')) for item in reviewers[0].get('reviewers', [])] != [('Team', 19956283)]):
-              raise SystemExit('Protected environment must require NVIDIA/kumo-engineers approval with administrator bypass disabled')
-          if environment.get('deployment_branch_policy') != dict(protected_branches=False, custom_branch_policies=True):
-              raise SystemExit('Protected environment must use selected branches')
-          policies = get(base + '/deployment-branch-policies?per_page=100').get('branch_policies', [])
-          if len(policies) != 1 or (policies[0].get('name'), policies[0].get('type')) != ('egu/mlops-platform-integration', 'branch'):
-              raise SystemExit('Protected environment must allow only the test branch')
-          names = {item['name'] for item in get(base + '/secrets?per_page=100').get('secrets', [])}
-          required = {'KUMO_ENGINE_TEAM_READ_TOKEN', 'SNOWFLAKE_TEST_CONFIG', 'SNOWFLAKE_PRIVATE_KEY', 'SNOWFLAKE_PRIVATE_KEY_PASSPHRASE', 'SNOWFLAKE_UI_CREDENTIALS'}
-          if not required <= names:
-              raise SystemExit('Required secrets must exist in snowflake-mlops-test itself; repository/organization fallback is not accepted')
-          print('Authorized: current maintainer actors and protected environment secrets')
-          PYTHON
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - *check-environment
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: '3.12'
@@ -164,12 +124,13 @@ jobs:
     environment: snowflake-mlops-test
     permissions:
       contents: read
+      actions: read
     steps:
-      - *authorize-maintainer
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - *check-environment
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: '3.12'

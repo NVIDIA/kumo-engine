@@ -5,10 +5,11 @@ The trial workflow runs only through manual dispatch on
 schedule, or comment trigger. Choose `graph-ui` for notebook rendering or
 `engine` for training and lifecycle execution.
 
-Both the original caller and any rerun caller must currently belong to
-`NVIDIA/kumo-engineers`, the repository's maintainer team. Every cloud job
-checks membership before checkout, including when only failed jobs are rerun.
-GitHub can record a rejected dispatch attempt; it cannot proceed to Snowflake.
+GitHub's repository permissions control who can request a manual run. The
+protected environment requires approval from `NVIDIA/kumo-engineers`, the
+repository's maintainer team, before Snowflake credentials become available.
+Each cloud job rechecks the environment restrictions with its built-in
+`GITHUB_TOKEN`, including reruns. No separate team-read credential is required.
 
 The separate engine job covers notebook preflight and the four engine lifecycle
 phases: fit/register, fresh-process prediction and alias moves, monitoring and
@@ -29,13 +30,8 @@ administrator bypass. A maintainer can approve their own manually requested run.
 The workflow verifies these settings before execution and rechecks them inside
 each cloud job.
 
-Add all five secrets to this environment itself:
+Add these four secrets to this environment itself:
 
-- `KUMO_ENGINE_TEAM_READ_TOKEN`: a dedicated read-only GitHub credential with
-  organization **Members: read** and this repository's **Actions: read** and
-  **Environments: read** permissions. It must be able to inspect this team and
-  environment. Do not use a broad administrator token. Missing or denied access
-  blocks execution.
 - `SNOWFLAKE_TEST_CONFIG`: the JSON returned by `resources.expected()` from
   `packages/kumo-engine/test/snowflake_notebook/resources.py`. It authorizes the
   dedicated account, users, role, database, schema, warehouse, pool, service,
@@ -49,8 +45,8 @@ Add all five secrets to this environment itself:
 The local memory cache is not transferred to GitHub. The connector decrypts
 these CI secrets in process; neither the key nor passphrase enters the notebook
 payload or evidence. Only the graph UI job reads the browser credential values.
-All five secrets must exist in the environment;
-repository or organization secret fallback is rejected. GitHub runs also reject
+Configure all four secrets in this environment, rather than at repository or
+organization scope. GitHub runs also reject
 local RSA-cache and browser-credential-file fallback.
 
 Resource names remain visible as test-only constraints and in retained evidence.
@@ -210,7 +206,7 @@ main are outside this scenario.
 Dispatch the registered workflow with `mode: graph-ui` or `mode: engine`,
 then approve the protected environment as a member of `NVIDIA/kumo-engineers`.
 No push starts a test. GitHub-hosted execution requires all environment secrets,
-current maintainer membership, and the verified environment restrictions.
+maintainer environment approval, and the verified environment restrictions.
 Local results do not qualify a different GitHub-hosted revision.
 
 Saved outputs can render as cached widgets or static SVG fallback images. Both
