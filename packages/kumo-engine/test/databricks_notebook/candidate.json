@@ -1,13 +1,13 @@
 {
   "candidate": {
-    "wheel_file": "kumo_engine-1.0.0.dev0+egu.mlops.databricks3-cp311-abi3-manylinux_2_35_x86_64.whl",
-    "wheel_sha256": "802f949817f23ccec224c14eddaf35c75981669426155859c24b4c0b352a6c52",
-    "expected_version": "1.0.0.dev0+egu.mlops.databricks3"
+    "wheel_file": "kumo_engine-1.0.0.dev0+egu.mlops.databricks4-cp311-abi3-manylinux_2_35_x86_64.whl",
+    "wheel_sha256": "8ad494c071fe31c23785bbef75f553dc15c09d1121c683f9c1b9ded0c441870d",
+    "expected_version": "1.0.0.dev0+egu.mlops.databricks4"
   },
   "build": {
     "base_candidate_sha256": "142637a8f3e87cbd983894bcc4e48bad1a5a5429d5d33bae490f04ec218d5582",
-    "engine_source_commit": "fcac295c4bfbbcd3236ad6caa470453a3f54220e",
-    "provider_source_commit": "fcac295c4bfbbcd3236ad6caa470453a3f54220e",
+    "engine_source_commit": "3622a2ca6218d405a55ec6a1542049f0854736db",
+    "provider_source_commit": "3622a2ca6218d405a55ec6a1542049f0854736db",
     "fix_commit": "20110186505aac909f385088c9bd2a4e39823e1c",
     "native_payload": "unchanged from identified base candidate",
     "module_changes": [
@@ -18,6 +18,7 @@
       "kumo/engine/_version.py",
       "kumo/engine/integrations/mlflow.py",
       "kumo/engine/pquery/_custom_source.py",
+      "kumo_databricks/backend.py",
       "kumo_databricks/volume.py"
     ],
     "added_modules": [
