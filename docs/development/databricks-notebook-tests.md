@@ -112,7 +112,8 @@ Each lifecycle attempt uses a new experiment, fully qualified Unity Catalog mode
 and Volume artifact prefix. The notebook creates a clean virtual environment,
 uses `venv --without-pip` and pip’s [target-interpreter option](https://pip.pypa.io/en/stable/topics/python-option/)
 to install the pinned candidate with its Databricks and MLflow extras, and requires
-`pip check` to pass. Each phase runs in a fresh process using runtime-derived
+`pip check` to pass. The Databricks extra includes MLflow’s Unity Catalog artifact
+storage dependencies. Each phase runs in a fresh process using runtime-derived
 credentials, verifies its effective Databricks identity, and checks its installed wheel.
 The runner PAT is never copied into the notebook. Producer scratch and source data
 are removed before recovery phases. The same process-group deadline handling as the
