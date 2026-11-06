@@ -141,14 +141,13 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
-          version: '0.11.28'
           enable-cache: true
           cache-suffix: engine-smoke-py312
           cache-dependency-glob: 'packages/**/pyproject.toml'
           prune-cache: true
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: engine-pr-wheel-${{ github.sha }}
           path: ${{ runner.temp }}/pr-wheel
@@ -193,7 +192,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Download the candidate wheel
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: engine-pr-wheel-${{ github.sha }}
           path: ${{ runner.temp }}/pr-wheel

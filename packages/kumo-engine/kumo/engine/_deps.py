@@ -38,7 +38,8 @@ from kumo.engine._manifest import (
 Location = Union[str, Tuple[Any, str]]
 Hint = Callable[[str, str], str]
 _READERS = (('@', 'SnowflakeConnector'), ('/Volumes/', 'DatabricksConnector'),
-            ('s3://', 'S3Connector'), ('gs://', 'GCSConnector'))
+            ('s3://', 'S3Connector'), ('gs://', 'GCSConnector'),
+            ('abfss://', 'ADLSConnector'))
 
 _LOCATIONS: ContextVar[Tuple[Location, ...]] = ContextVar(
     'kumo_asset_locations', default=())
@@ -192,8 +193,11 @@ class Dependencies:
             if directory is not None and _verified(directory, record):
                 return directory
         location = record.location or ''
-        reader = next((name for prefix, name in _READERS
-                       if location.startswith(prefix)), None)
+        reader = next(
+            (name
+             for prefix, name in _READERS if location.startswith(prefix) or (
+                 prefix == 'abfss://' and location.lower().startswith(prefix))),
+            None)
         if reader is not None and self._hint is not None:
             raise MissingDependencyError(
                 f"Cannot read {asset_kind} {name!r} (sha256 {record.sha256}) "
@@ -234,12 +238,21 @@ class Dependencies:
 def reads(connector: Any, location: str) -> bool:
     r"""Whether ``connector`` reads the stored ``location`` itself."""
     from kumo.engine.connector import (
+        ADLSConnector,
         FileConnector,
         GCSConnector,
         S3Connector,
         is_file_destination,
     )
 
+    if isinstance(connector, ADLSConnector):
+        if not location.lower().startswith('abfss://'):
+            return False
+        try:
+            connector.sink_backend._resolved_directory(connector, location)
+        except ValueError:
+            return False
+        return True
     for kind, prefix in ((S3Connector, 's3://'), (GCSConnector, 'gs://'),
                          (FileConnector, None)):
         if isinstance(connector, kind):

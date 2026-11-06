@@ -618,14 +618,14 @@ def _build_runtime_feature_store(
     encoders: Any,
     entity_table_names: list[str],
 ) -> tuple[Any, Any]:
-    """Build the lightweight DiskGraph FS/GS used for RHS feature reads."""
+    """Build indexed feature access and schema metadata for RHS feature reads."""
     index_path = (tm.graph_runtime_metadata or {}).get("graph_index_path")
     if not index_path:
         raise RuntimeError(
             "[TT-NG] RHS feature mode requires graph_runtime_metadata."
             "graph_index_path; got None")
 
-    return runtime.create_feature_and_graph_stores(
+    return runtime.create_feature_store_and_schema(
         index_path=index_path,
         encoders=encoders,
         entity_table_names=entity_table_names,
@@ -1067,13 +1067,13 @@ class DiskgraphNestedTrainer(Trainer):
             if self.diskgraph_runtime is None:
                 raise RuntimeError(
                     "diskgraph_runtime is required for RHS feature mode")
-            self.feature_store, self.graph_store = _build_runtime_feature_store(
+            self.feature_store, self.graph_schema = _build_runtime_feature_store(
                 runtime=self.diskgraph_runtime,
                 tm=tm,
                 encoders=self.encoders,
                 entity_table_names=entity_table_names,
             )
-            self.datamodule._data = (self.feature_store, self.graph_store)
+            self.datamodule._data = (self.feature_store, self.graph_schema)
 
         # Lookup embeddings must be keyed by raw primary key in checkpoints.
         # DiskGraph node IDs can change between graph snapshots, so an identity
@@ -1137,9 +1137,7 @@ class DiskgraphNestedTrainer(Trainer):
         return self
 
     def explain(self, *args: Any, **kwargs: Any) -> None:
-        """Lazily wire wheel-backed FS/GS into the legacy ``Trainer.explain``
-        flow for the duration of the call (TT-NG wires none of them otherwise).
-        """
+        """Attach feature access and schema metadata for ``Trainer.explain``."""
         # Idempotent across repeat ``explain()`` calls on the same
         # trainer instance.
         if getattr(self, 'feature_store', None) is None:
@@ -1158,17 +1156,17 @@ class DiskgraphNestedTrainer(Trainer):
             if self.diskgraph_runtime is None:
                 raise RuntimeError(
                     "diskgraph_runtime is required for DiskGraph explain")
-            self.feature_store, self.graph_store = (
-                self.diskgraph_runtime.create_feature_and_graph_stores(
+            self.feature_store, self.graph_schema = (
+                self.diskgraph_runtime.create_feature_store_and_schema(
                     index_path=index_path,
                     encoders=self.encoders,
                     entity_table_names=[entity_table_name],
                     time_col_dict=time_col_dict,
                 ))
 
-        # Expose (fs, gs) on the datamodule (SubgraphCollector reads .data).
+        # The collector reads feature access and foreign-key metadata from .data.
         prev_data = self.datamodule._data
-        self.datamodule._data = (self.feature_store, self.graph_store)
+        self.datamodule._data = (self.feature_store, self.graph_schema)
         try:
             return super().explain(*args, **kwargs)
         finally:

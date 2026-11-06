@@ -244,7 +244,9 @@ USER root
 # buildah-compatible because the custom image workflows build with buildah.
 COPY --from=faiss-builder /tmp/faiss-wheel /tmp/faiss-wheel
 
-RUN python3 -m pip install uv
+# Install the uv version that pyproject.toml pins with required-version.
+RUN uv_spec="$(grep '^required-version = ' pyproject.toml | cut -d'"' -f2)" \
+ && python3 -m pip install "uv${uv_spec}"
 
 # DiskGraph is the internal native wheel built from the staged source.
 # Install it before resolving kumo-core so uv uses this artifact.

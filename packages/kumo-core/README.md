@@ -74,6 +74,17 @@ support for the full training pipeline on MPS.
 
 ## Development and validation
 
+The legacy in-memory feature stores and graph-store abstractions are retired.
+`Trainer` construction and loading no longer accept `feature_store` or
+`graph_store`; `DiskgraphNestedTrainer` initializes feature access and
+`graph_schema` from the native runtime. The base `Trainer.init()` no longer
+implements store-based training.
+
+Indexed reads preserve the legacy missing-data fallbacks: an empty feature frame,
+sequential placeholder primary keys, or zero timestamps. Partial responses retain
+the returned rows and available feature columns. Empty node selections return
+empty results without accessing the engine.
+
 Run commands from the repository worktree after installing the normal Kumo development environment with `make install-venv`. `make test-kumo-core` runs the complete package-owned CPU suite, and `make check-kumo-core` runs Flake8's Pyflakes rules across the full package, ty across the migrated capability tree, and package metadata validation. The package remains temporarily excluded from the root YAPF/isort/full-Flake8 formatting policy pending the planned repository-wide Ruff migration.
 
 `make test-kumo-core-consumers` exercises the focused Kumo and Kumo Studio integration surface affected by the package cutover, including training and AutoML, evaluation and explanation, worker/image entry points, and retained application consumers.
