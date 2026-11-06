@@ -68,3 +68,16 @@ def test_catalog_files_cannot_supply_signed_files(tmp_path: Path, catalog: Path)
     (catalog / 'skill.oms.sig').write_text('forged\n')
     with pytest.raises(SystemExit, match='written by NVSkills CI'):
         publish_nvskills.publish(tmp_path / 'kumo-data-science', catalog)
+
+
+def test_the_published_copy_matches_the_source() -> None:
+    """The copy NVIDIA/skills syncs from main is rebuilt in the same PR as the change.
+
+    A PR that edits agent-skills/ without refreshing skills/kumo-data-science/ would merge a
+    published copy that no longer matches its source, so it fails here instead.
+    """
+    changes = publish_nvskills.stale()
+    assert changes == [], (
+        'skills/kumo-data-science/ is out of date; run '
+        f'python3 agent-skills/scripts/publish_nvskills.py and commit the result: {changes}'
+    )

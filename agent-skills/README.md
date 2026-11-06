@@ -137,13 +137,18 @@ only on PRs that change a root-level `skills/` directory. So the catalog reads a
 |---|---|
 | `skills/kumo-data-science/` (everything else) | `agent-skills/scripts/publish_nvskills.py`: the `generic` package |
 | `skills/kumo-data-science/skill-card.md`, `evals/` | copied from `agent-skills/nvskills/kumo-data-science/` |
-| `skills/kumo-data-science/BENCHMARK.md`, `skill.oms.sig` | NVSkills CI, in the publish PR; never by hand |
+| `skills/kumo-data-science/BENCHMARK.md`, `skill.oms.sig` | NVSkills CI, in your PR; never by hand |
 
-Do not edit `skills/` directly. Change `agent-skills/` and merge. The `nvskills-publish` workflow
-rebuilds the copy and opens or updates one PR from `nvskills/kumo-data-science`. A maintainer
-comments `/nvskills-ci` on that PR. NVSkills CI runs the evals and pushes the signature commit, and
-then the PR can merge. `python3 agent-skills/scripts/publish_nvskills.py --check` reports whether
-the copy on your branch is out of date. It ignores the `SKILL-BUILD` stamp.
+Whatever is on `main` is what the catalog publishes. To change the skill:
+
+1. Edit `agent-skills/`, never `skills/`.
+2. Run `python3 agent-skills/scripts/publish_nvskills.py` and commit `skills/` with your change.
+   `tests/test_publish_nvskills.py` fails the PR if you forget. It ignores the `SKILL-BUILD`
+   stamp, so a rebuild on an unrelated commit is not required.
+3. A maintainer comments `/nvskills-ci` on the PR. NVSkills CI runs the evals and pushes
+   `BENCHMARK.md` and `skill.oms.sig`. A later push to the PR needs another `/nvskills-ci`.
+4. Merge. The catalog picks the change up within the hour. A PR merged without step 3 leaves the
+   catalog on the last signed version.
 
 The catalog side is `components.d/kumo-engine.yml` in NVIDIA/skills, which points at
 `skills/kumo-data-science`. Its `verify-source-onboarding` check fails until a signed copy with

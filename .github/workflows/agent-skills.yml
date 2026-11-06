@@ -10,6 +10,8 @@ on:  # yamllint disable-line rule:truthy
       - main
     paths:
       - "agent-skills/**"
+      # The copy NVIDIA/skills publishes; it must match agent-skills/ (publish_nvskills.py).
+      - "skills/**"
       # The skills cite modules and names from these packages; a rename must fail here.
       - "packages/kumo-engine/**"
       - "packages/kumo-core/**"
@@ -20,6 +22,8 @@ on:  # yamllint disable-line rule:truthy
   pull_request:
     paths:
       - "agent-skills/**"
+      # The copy NVIDIA/skills publishes; it must match agent-skills/ (publish_nvskills.py).
+      - "skills/**"
       # The skills cite modules and names from these packages; a rename must fail here.
       - "packages/kumo-engine/**"
       - "packages/kumo-core/**"

@@ -13,9 +13,9 @@ directory in this repository. It accepts a skill only if the skill's files match
 that NVSkills CI writes. NVSkills CI runs only on pull requests that change `skills/` or
 `team-skills/` at the repository root. `agent-skills/skills/` is the source layout, not a
 package, so the catalog cannot read it directly. This script writes the `generic` package (the one
-for Claude Code, Codex and other coding agents) to `skills/kumo-data-science/`. The
-`nvskills-publish` workflow runs it on every change to `main` and opens a pull request with
-the result. NVSkills CI then signs that pull request.
+for Claude Code, Codex and other coding agents) to `skills/kumo-data-science/`. A PR that changes
+the skill runs it and commits the result, and `tests/test_publish_nvskills.py` fails the PR when
+it did not. NVSkills CI signs that same PR, so merging it to `main` is what publishes.
 
 Three kinds of file sit in the published directory:
 
