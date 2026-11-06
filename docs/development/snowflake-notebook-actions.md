@@ -18,6 +18,61 @@ wheel. UI verification is excluded. Full epoch-history export remains a separate
 unimplemented requirement; a successful engine check is not full qualification.
 Both results are retained in `summary.json` and `ci-verdict.json`.
 
+## Coverage and limits
+
+These tests implement the Snowflake portions of the
+[product-validation assignment](https://docs.google.com/document/d/18Jt8Y_rvfpuCrWbwArtEyPdpQu6AiDLn3I-_HqNLyHA/edit).
+The [shared lifecycle guide](mlops-validation.md) describes the small fixture,
+reused test code, and local-process execution. The Snowflake executor uses that
+same lifecycle with live internal-stage storage, experiment tracking and model
+registry; training and prediction run inside Container Runtime notebooks.
+
+| Assignment requirement | Snowflake check |
+| --- | --- |
+| Two model versions and multi-epoch tracking | Two small fits; exact run, metric history, bundle and registry-version readback. |
+| Fresh-session recovery, version/alias resolution | Separate phase workers restore durable artifacts; explicit versions and alias promotion record the intended model. |
+| Lineage, population, ordinary prediction schema | Training/scoring snapshot identities, full expected IDs, and prediction without MLOps. |
+| Drift and evaluation after labels arrive | Saved-prediction/model identity, zero self-comparison drift, independent label join and recomputed AUROC. |
+| Focused failure cases | Unknown IDs, genuine denied-stage writes, incomplete model and prediction artifacts. |
+| Expected runs, metrics and model versions in UI | Separate Snowsight check against retained lifecycle receipts; no additional fits. |
+| Notebook graph rendering, saved/reopened outputs and exports | Existing PR172 graph fixture; live rendering, saved output after kernel shutdown, and SVG/PDF/Markdown artifacts. |
+| Sample-data safeguards | Zero source reads by default, real samples only with explicit opt-in, and no sample values in diagram exports. |
+| Repeatable installed-product evidence | Candidate and helper hashes, runtime/identity, phase receipts, logs, UI assertions and export checksums. |
+
+The runs/metrics/model-version UI check uses Snowsight's experiment and registry
+pages. That is this test's interpretation of the assignment's platform UI row;
+the assignment does not name those pages or mandate a browser tool. Notebook
+graph checks verify Kumo's rendered output inside Snowsight. Navigation, login,
+resource selection and kernel controls support reaching and retaining that
+output; they are not a general regression suite for Snowsight.
+
+Full epoch history in model exports remains unimplemented. Drift checks verify
+identity, recorded values and self-comparison; they do not independently prove
+sensitivity to a controlled nonzero distribution shift. Incomplete-artifact
+checks do not simulate interruption of a live remote writer. Separate notebook
+jobs are stronger isolation than the assignment's fresh-process requirement;
+they support durable recovery without adding fits. Explanations unavailable on
+main are outside the graph scenario. These limits must remain visible when
+reporting coverage; an engine-only or graph-only pass is not full qualification.
+
+## Existing test resources
+
+Live runs require the existing dedicated database/schema, `KUMO_TEST_WH`,
+`KUMO_TEST_POOL`, writable internal stage, and a separate denied stage. The
+exact allowlist is in
+[resources.py](../../packages/kumo-engine/test/snowflake_notebook/resources.py).
+The launcher creates only attempt-specific notebook/Code Bundle, experiment,
+model and artifact objects within those resources. It does not provision a
+warehouse, compute pool, database, schema or stage.
+
+The submission identity needs key-pair access, usage of the dedicated warehouse
+and pool, the required schema object-creation privileges, and read/write access
+to the writable stage. The denied stage must allow reads without writes; see
+[setup-denied-stage.sql](../../examples/mlops/snowflake/setup-denied-stage.sql).
+Notebook workers reconstruct runtime-provided identity and verify it before
+MLOps writes; the runner's private key is not forwarded to them. The browser
+uses its separate dedicated identity described below.
+
 ## GitHub setup
 
 In repository **Settings → Environments**, create `snowflake-mlops-test`.

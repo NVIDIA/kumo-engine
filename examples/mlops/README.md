@@ -49,8 +49,8 @@ schedule. Both take their settings as command-line flags.
 For the two-version lifecycle, fresh-process recovery, monitoring and failure
 checks against a finished wheel, see
 [local MLOps validation](../../docs/development/mlops-validation.md).
-Live stage/volume/S3 lifecycle profiles are documented in
-[platform validation](../../docs/development/mlops-platform-validation.md).
+For notebook execution, retained lifecycle UI checks and graph rendering, see
+[Snowflake platform checks](../../docs/development/snowflake-notebook-actions.md).
 
 With `users.parquet`, `items.parquet` and `orders.parquet` in a directory:
 
