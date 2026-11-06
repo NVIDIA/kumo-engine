@@ -258,12 +258,6 @@ class AutoTrainer:
         self.diskgraph_task_dataset_bundle_dir: str | None = kwargs.pop(
             'diskgraph_task_dataset_bundle_dir', None)
 
-        # Seed fs/gs as None: TT-NG always seeds them so consumers that
-        # forward them as kwargs don't AttributeError. The ``hasattr``
-        # guards in ``fit()`` / ``get_best_trainer`` then see them present.
-        self.feature_store = None
-        self.graph_store = None
-
         # AutoTune-related variables:
         self.tune_metric = space.training_job.tune_metric
         self.num_experiments = space.training_job.num_experiments
@@ -700,8 +694,6 @@ class AutoTrainer:
                 # General arguments:
                 metrics_client_job_name=metrics_client_job_name,
                 raise_fake_trial_error_msg=self._raise_fake_trial_error_msg,
-                feature_store=self.feature_store,
-                graph_store=self.graph_store,
                 encoders=self.encoders,
                 enable_compile=not self.disable_compilation,
                 trial=status.trials[-1] if status is not None else None,
