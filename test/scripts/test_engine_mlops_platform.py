@@ -446,3 +446,24 @@ def test_negative_requires_real_permission_denial(case, name, monkeypatch):
         with pytest.raises(platform.PlatformUnavailable,
                            match='without permission-denial'):
             instance.negative()
+
+
+def test_denied_databricks_root_can_use_an_isolated_catalog():
+    profile = config('databricks')
+    denied = '/Volumes/kumo_test_denied/kumo_test/test_denied/mlops-validation'
+    result = platform.validate({**profile, 'denied_artifact_root': denied})
+    assert result['catalog'] == profile['catalog']
+    assert result['schema'] == profile['schema']
+    assert result['artifact_root'] == profile['artifact_root']
+    assert result['denied_artifact_root'] == denied
+
+
+@pytest.mark.parametrize('denied', [
+    '/Volumes/readonly/schema/volume/../other',
+    '/Volumes/readonly/schema/volume/path?query=invalid',
+    '/Volumes/readonly/schema/volume//path',
+    '/Volumes/readonly/schema/volume',
+])
+def test_denied_databricks_root_rejects_unsafe_paths(denied):
+    with pytest.raises(ValueError, match='Volume test-prefix'):
+        platform.validate({**config('databricks'), 'denied_artifact_root': denied})

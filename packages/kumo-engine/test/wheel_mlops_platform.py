@@ -182,6 +182,14 @@ def validate(config):
     if denied:
         other = dict(config, artifact_root=denied)
         other.pop('denied_artifact_root')
+        if platform == 'databricks':
+            match = re.fullmatch(
+                r'/Volumes/([A-Za-z][A-Za-z0-9_]*)/([A-Za-z][A-Za-z0-9_]*)/'
+                r'[A-Za-z][A-Za-z0-9_]*/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*',
+                denied.rstrip('/'))
+            if match is None:
+                raise ValueError('Use an explicit Volume test-prefix for denied access')
+            other.update(catalog=match[1], schema=match[2])
         validate(other)
         if denied.rstrip('/') == root.rstrip('/'):
             raise ValueError(

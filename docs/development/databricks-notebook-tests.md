@@ -135,20 +135,43 @@ python packages/kumo-engine/test/databricks_notebook/lifecycle_notebook.py \
 | Full exported epoch history, independently nonzero drift, interrupted remote writer | Existing shared qualification gaps remain explicit. |
 
 The permission-negative target is fixed at
-`/Volumes/kumo_test_catalogue/kumo_test/test_denied/mlops-validation/lifecycle`.
+`/Volumes/kumo_test_denied/kumo_test/test_denied/mlops-validation/lifecycle`.
 The runner reads the `TEST_DENIED` Volume metadata and lists its root before
 submitting the notebook. Missing or unreadable resources are recorded as setup
 blocks, while the positive lifecycle still runs. An empty readable Volume is
 valid; the notebook appends its own attempt prefix and must receive an actual
 provider write denial. A writable target fails the negative test.
 
-A catalog administrator must create `kumo_test_catalogue.kumo_test.test_denied`
-with a different owner and grant the test identity `USE CATALOG`, `USE SCHEMA`
-and `READ VOLUME`, without effective `WRITE VOLUME` or ownership. Check inherited
-catalog/schema grants as well as direct Volume grants. The current catalog grants
-`WRITE VOLUME` to `account users`, which includes the test identity; a child-level
-revoke alone cannot make this Volume read-only. The runner never edits grants.
-No additional secret or configuration argument is needed after provisioning.
+Use a separate `kumo_test_denied` catalog for this target. The training catalog
+`kumo_test_catalogue` is shared and grants `WRITE VOLUME` to `account users`;
+its inherited write access would defeat a read-only Volume in that catalog.
+The runner keeps the existing training resources and grants separate.
+
+In the workspace SQL editor, use an administrator identity other than
+`kumo-databricks@nvidia.com`, with `CREATE CATALOG` on the metastore. Run once:
+
+```sql
+CREATE CATALOG kumo_test_denied;
+CREATE SCHEMA kumo_test_denied.kumo_test;
+CREATE VOLUME kumo_test_denied.kumo_test.test_denied;
+
+GRANT USE CATALOG ON CATALOG kumo_test_denied
+TO `kumo-databricks@nvidia.com`;
+GRANT USE SCHEMA ON SCHEMA kumo_test_denied.kumo_test
+TO `kumo-databricks@nvidia.com`;
+GRANT READ VOLUME ON VOLUME kumo_test_denied.kumo_test.test_denied
+TO `kumo-databricks@nvidia.com`;
+
+SHOW GRANTS ON CATALOG kumo_test_denied;
+SHOW GRANTS ON SCHEMA kumo_test_denied.kumo_test;
+SHOW GRANTS ON VOLUME kumo_test_denied.kumo_test.test_denied;
+```
+
+The administrator retains ownership; the test identity receives usage/read access
+without effective `WRITE VOLUME` or Volume ownership. The metastore has default
+managed storage, so these objects require no new storage location. Existing
+`kumo_test_catalogue` permissions stay in place. No additional secret or runner
+configuration argument is needed after provisioning.
 
 Native Databricks web pages require a separate browser session; the workspace
 redirects PAT-authenticated page requests to login. Under PAT-only authentication,

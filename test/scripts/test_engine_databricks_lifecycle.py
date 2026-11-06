@@ -192,13 +192,13 @@ def test_empty_readable_denied_volume_is_admitted_for_the_real_probe(runner):
             calls.append(path)
             if '/unity-catalog/' in path:
                 return dict(
-                    full_name='kumo_test_catalogue.kumo_test.test_denied')
+                    full_name='kumo_test_denied.kumo_test.test_denied')
             return dict(contents=[])
 
     result = runner.denied_storage(Client(), runner.configuration())
     assert result['status'] == 'ready'
     assert calls[-1] == (
-        '/api/2.0/fs/directories/Volumes/kumo_test_catalogue/kumo_test/test_denied'
+        '/api/2.0/fs/directories/Volumes/kumo_test_denied/kumo_test/test_denied'
     )
     assert result['artifact_root'].endswith(
         '/test_denied/mlops-validation/lifecycle')
