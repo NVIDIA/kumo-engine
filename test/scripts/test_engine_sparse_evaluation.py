@@ -41,7 +41,8 @@ def case_options(name, scale):
 
 
 class SparseEvaluationTest(unittest.TestCase):
-    def test_weekly_cases_use_one_balanced_trial_and_expected_support(self):
+    def test_weekly_cases_use_one_balanced_trial_and_shared_evaluation_budget(
+            self):
         for name in ('payments_binary', 'fraud_binary'):
             for scale in ('10B', '25B'):
                 with self.subTest(case=name, scale=scale):
@@ -57,9 +58,12 @@ class SparseEvaluationTest(unittest.TestCase):
                         [1.0])
                     self.assertEqual(overrides.get('optimization.weight_mode'),
                                      ['sample'])
-                    self.assertEqual(options['min_eval_class_rows'], 14)
+                    self.assertNotIn('min_eval_class_rows', options)
+                    self.assertNotIn('optimization.max_val_steps', overrides)
+                    self.assertNotIn('optimization.max_test_steps', overrides)
 
-    def test_small_cases_preserve_budgets_with_more_100m_validation(self):
+    def test_small_cases_keep_training_budgets_and_use_shared_evaluation_budget(
+            self):
         weekly_fields = ('training_job.num_experiments',
                          'optimization.max_epochs',
                          'optimization.majority_sampling_ratio',
@@ -68,33 +72,11 @@ class SparseEvaluationTest(unittest.TestCase):
             for scale in ('100M', '1B'):
                 with self.subTest(case=name, scale=scale):
                     overrides, options = case_options(name, scale)
-                    self.assertEqual(options.get('min_eval_class_rows', 0), 0)
+                    self.assertNotIn('min_eval_class_rows', options)
                     self.assertTrue(
                         all(key not in overrides for key in weekly_fields))
-                    self.assertEqual(
-                        overrides.get('optimization.max_val_steps'),
-                        300 if scale == '100M' else None)
+                    self.assertNotIn('optimization.max_val_steps', overrides)
                     self.assertNotIn('optimization.max_test_steps', overrides)
-
-    def test_each_split_uses_its_own_class_rate_and_small_splits_use_all_rows(
-            self):
-        examples = [(440000000, 3787, 25416), (1000000, 100, 2188),
-                    (1000000, 200, 1094), (10000, 1, 157)]
-        for rows, positives, expected in examples:
-            with self.subTest(rows=rows, positives=positives):
-                self.assertEqual(
-                    COMMON.evaluation_steps(
-                        {
-                            'rows': rows,
-                            'positive_rows': positives
-                        }, 64, 14), expected)
-        for positives in (0, 100):
-            with self.assertRaises(ValueError):
-                COMMON.evaluation_steps(
-                    {
-                        'rows': 100,
-                        'positive_rows': positives
-                    }, 64, 14)
 
     def test_native_counts_include_positives_for_each_split(self):
         with tempfile.TemporaryDirectory() as directory:
