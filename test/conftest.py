@@ -70,6 +70,7 @@ from kumo.graph.graph import Graph  # noqa: E402
 from kumo.graph.table import Table  # noqa: E402
 from kumo.task.task import Task  # noqa: E402
 from kumo.testing import withDatabricksCredentials  # noqa: E402
+from kumo.testing.gcs import require_gcs_credentials  # noqa: E402
 from kumo.testing.generator import EdgeSpec, GraphSpec, TableSpec  # noqa: E402
 from kumo.testing.snowflake import setup_snowflake_credentials  # noqa: E402
 from kumo.utils.embedding_models import embedding_model_store  # noqa: E402
@@ -190,7 +191,21 @@ def pytest_runtest_makereport(item, call):
         _flake_diagnostics.run_on_failure(item.nodeid, tc)
 
 
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    # Pytest's tryfirst skip hook runs before this normal setup hook; its
+    # fixture setup runs afterward. Skipped Snowflake targets never load GCP
+    # credentials, and selected GCS tests configure them before session workers.
+    if item.get_closest_marker('gcs_credentials') is not None:
+        require_gcs_credentials()
+
+
+@pytest.fixture
+def gcs_credentials() -> None:
+    require_gcs_credentials()
+
+
 def pytest_configure(config):
+    config.addinivalue_line('markers', 'gcs_credentials: live GCS prerequisite')
     # register nightly marker
     config.addinivalue_line("markers",
                             ("nightly(name): Used to mark long-running"
