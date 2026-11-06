@@ -112,22 +112,44 @@ def successful_task(run):
     return tasks[0]['run_id']
 
 
+def notebook_export(client, task, root, timeout=120):
+    deadline = time.monotonic() + timeout
+    attempts = 0
+    while True:
+        export = client.api('/api/2.2/jobs/runs/export?run_id=' + str(task) +
+                            '&views_to_export=ALL')
+        save(root / 'export.json', export)
+        views = [v for v in export.get('views', []) if v['type'] == 'NOTEBOOK']
+        if len(views) != 1:
+            raise ValueError('Expected the actual notebook HTML export')
+        html = views[0]['content']
+        (root / 'notebook.html').write_text(html)
+        match = re.search(r"var __DATABRICKS_NOTEBOOK_MODEL = '([^']+)'", html)
+        if not match:
+            raise ValueError('Databricks export model is unavailable')
+        model = json.loads(
+            urllib.parse.unquote(base64.b64decode(match[1]).decode()))
+        save(root / 'notebook-model.json', model)
+        attempts += 1
+        pending = [
+            c.get('position') for c in model['commands']
+            if c.get('resultDbfsStatus') == 'WRITING_TO_DBFS'
+            and c.get('results') is None
+        ]
+        save(root / 'export-status.json',
+             dict(attempts=attempts, pending_cells=pending))
+        if not pending:
+            return model
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                'Databricks notebook cell outputs are still being persisted')
+        print('Waiting for persisted notebook outputs', flush=True)
+        time.sleep(5)
+
+
 def collect(client, run, config, root, submitted):
     task = successful_task(run)
-    export = client.api('/api/2.2/jobs/runs/export?run_id=' + str(task) +
-                        '&views_to_export=ALL')
-    save(root / 'export.json', export)
-    views = [v for v in export.get('views', []) if v['type'] == 'NOTEBOOK']
-    if len(views) != 1:
-        raise ValueError('Expected the actual notebook HTML export')
-    html = views[0]['content']
-    (root / 'notebook.html').write_text(html)
-    match = re.search(r"var __DATABRICKS_NOTEBOOK_MODEL = '([^']+)'", html)
-    if not match:
-        raise ValueError('Databricks export model is unavailable')
-    model = json.loads(urllib.parse.unquote(
-        base64.b64decode(match[1]).decode()))
-    save(root / 'notebook-model.json', model)
+    model = notebook_export(client, task, root)
     actual = [''.join(c['command']) for c in model['commands']]
     submitted = [''.join(c['source']) for c in submitted['cells']]
     if actual != submitted or any(c['state'] != 'finished'

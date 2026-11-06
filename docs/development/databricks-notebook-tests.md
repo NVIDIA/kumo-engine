@@ -12,7 +12,8 @@ code, and calls the shared `graph_fixture.exercise()` with `IPython.display.disp
 The kernel checks all nine tables, 52 columns and ten relationships. Default display
 must read no source data; explicit previews must use bounded real fixture samples.
 SVG, PDF and Markdown exports must exclude sample values. The runner verifies each
-output against the receipt printed by the successful notebook execution.
+output against the receipt printed by the successful notebook execution. After job
+success, it waits up to 120 seconds if Databricks is still persisting cell outputs.
 
 Playwright opens the actual Jobs HTML export without a Databricks browser login.
 It reuses Snowflake's assertions for graph geometry, PK/FK tooltips, preview values,

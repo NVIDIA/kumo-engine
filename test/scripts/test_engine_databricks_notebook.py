@@ -282,3 +282,41 @@ def test_cloud_jobs_require_manual_feature_dispatch(job_name, event, branch,
                         ('github.repository', repository)]:
         expression = expression.replace(name, repr(value))
     assert eval(expression, {'__builtins__': {}}) is expected
+
+
+def export_reply(commands):
+    encoded = base64.b64encode(
+        quote(json.dumps(dict(commands=commands))).encode()).decode()
+    html = "<script>var __DATABRICKS_NOTEBOOK_MODEL = '" + encoded + "';</script>"
+    return dict(views=[dict(type='NOTEBOOK', content=html)])
+
+
+def test_export_waits_for_persisted_cell_outputs(modules, tmp_path,
+                                                 monkeypatch):
+    _, runner = modules
+    pending = dict(position=4, state='finished',
+                   resultDbfsStatus='WRITING_TO_DBFS', results=None)
+    ready = dict(position=4, state='finished', resultDbfsStatus='FINISHED',
+                 results=dict(data=[]))
+    replies = iter([export_reply([pending]), export_reply([ready])])
+
+    class ExportClient:
+        def api(self, path):
+            assert 'run_id=2&' in path
+            return next(replies)
+
+    monkeypatch.setattr(runner.time, 'sleep', lambda seconds: None)
+    model = runner.notebook_export(ExportClient(), 2, tmp_path)
+    assert model['commands'] == [ready]
+    assert json.loads(
+        (tmp_path / 'export-status.json').read_text())['attempts'] == 2
+
+
+def test_unpersisted_outputs_cannot_pass_after_deadline(modules, tmp_path):
+    _, runner = modules
+    pending = dict(position=4, state='finished',
+                   resultDbfsStatus='WRITING_TO_DBFS', results=None)
+    path = '/api/2.2/jobs/runs/export?run_id=2&views_to_export=ALL'
+    with pytest.raises(TimeoutError, match='still being persisted'):
+        runner.notebook_export(FakeClient({path: export_reply([pending])}), 2,
+                               tmp_path, timeout=0)
