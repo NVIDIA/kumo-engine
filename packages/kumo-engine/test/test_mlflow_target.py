@@ -46,6 +46,31 @@ def test_no_target_reads_mlflows_own_uris_once(tracking_uri):
     assert resolve(server) is server
 
 
+@pytest.mark.parametrize('module,cloud,extra', [
+    ('boto3', 'AWS', 's3'), ('botocore.session', 'AWS', 's3'),
+    ('azure.storage.filedatalake', 'Azure', 'adls'),
+    ('google.cloud.storage', 'GCP', 'gcs')])
+def test_unity_catalog_names_the_extra_its_storage_needs(module, cloud, extra):
+    target = target_module.Target('databricks', 'databricks-uc')
+    with pytest.raises(ImportError, match=(
+            rf"on {cloud}, and MLflow reaches them with '{module}', which is "
+            rf"not installed. Install it with: pip install "
+            rf"'kumo-engine\[{extra}\]'")) as raised:
+        with target.scope():
+            raise ModuleNotFoundError(name=module)
+    assert raised.value.__cause__.name == module
+
+
+@pytest.mark.parametrize('registry,module', [
+    ('http://mlflow:5000', 'boto3'), ('databricks-uc', 'snowflake')])
+def test_other_missing_modules_pass_through(registry, module):
+    target = target_module.Target('databricks', registry)
+    with pytest.raises(ModuleNotFoundError) as raised:
+        with target.scope():
+            raise ModuleNotFoundError(name=module)
+    assert type(raised.value) is ModuleNotFoundError
+
+
 def test_ambient_identities_set_no_credentials(monkeypatch, tracking_uri):
     monkeypatch.setenv('DATABRICKS_TOKEN', 'mine')
     monkeypatch.setenv('MLFLOW_TRACKING_URI', tracking_uri)

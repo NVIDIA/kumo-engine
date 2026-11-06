@@ -20,6 +20,8 @@ _NO_LINKS = 'MLFLOW_SUPPRESS_PRINTING_URL_TO_STDOUT'
 _HEADERS = logging.getLogger('mlflow.tracking.request_header.registry')
 _quiet = 0
 _QUIET_LOCK = threading.Lock()
+_UC_STORAGE = {'boto3': ('AWS', 's3'), 'botocore': ('AWS', 's3'),
+               'azure': ('Azure', 'adls'), 'google': ('GCP', 'gcs')}
 
 
 def _no_header_error(record: logging.LogRecord) -> bool:
@@ -105,12 +107,26 @@ class Target:
     def scope(self) -> Iterator[None]:
         r"""Runs the block with this target's credentials."""
         links = {_NO_LINKS: 'true'} if self.platform == 'sagemaker' else {}
-        with _without_header_warnings(), environ(links):
-            if self._swap is None:
-                yield
-            else:
-                with _LOCK, self._swap():
+        try:
+            with _without_header_warnings(), environ(links):
+                if self._swap is None:
                     yield
+                else:
+                    with _LOCK, self._swap():
+                        yield
+        except ModuleNotFoundError as e:
+            client = (e.name or '').partition('.')[0]
+            uri = import_provider('mlflow.utils.uri', 'mlflow')
+            registry = self.registry_uri or ''
+            if (client not in _UC_STORAGE
+                    or not uri.is_databricks_unity_catalog_uri(registry)):
+                raise
+            cloud, extra = _UC_STORAGE[client]
+            raise ImportError(
+                f"Unity Catalog stores this model's files on {cloud}, and "
+                f"MLflow reaches them with {e.name!r}, which is not "
+                f"installed. Install it with: pip install "
+                f"'kumo-engine[{extra}]'") from e
 
     def client(self) -> Any:
         mlflow = import_provider('mlflow', 'mlflow')
