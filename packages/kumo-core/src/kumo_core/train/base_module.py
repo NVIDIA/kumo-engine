@@ -66,6 +66,13 @@ def _config_hparams(value: Any) -> Any:
     return copy.deepcopy(value)
 
 
+def _to_cpu(out: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value.detach().cpu() if isinstance(value, Tensor) else value
+        for key, value in out.items()
+    }
+
+
 class BaseLightningModule(pl.LightningModule, ABC):
     r"""A PyTorch Lightning :class:`LightningModule` that handles the execution
     of training, validation, testing and prediction routines.
@@ -936,11 +943,8 @@ class BaseLightningModule(pl.LightningModule, ABC):
                 batch_idx=batch_idx,
             )
 
-        self._validation_step_outputs.append({
-            key:
-            value.detach().cpu() if isinstance(value, Tensor) else value
-            for key, value in out.items()
-        })
+        if self.explainers or not self.is_fitting:
+            self._validation_step_outputs.append(_to_cpu(out))
 
     def on_validation_epoch_end(self):
         outputs = self.evaluation_epoch_end(
@@ -1021,11 +1025,7 @@ class BaseLightningModule(pl.LightningModule, ABC):
                 batch_idx=batch_idx,
             )
 
-        self._test_step_outputs.append({
-            key:
-            value.detach().cpu() if isinstance(value, Tensor) else value
-            for key, value in out.items()
-        })
+        self._test_step_outputs.append(_to_cpu(out))
 
     def on_test_epoch_end(self):
         outputs = self.evaluation_epoch_end(

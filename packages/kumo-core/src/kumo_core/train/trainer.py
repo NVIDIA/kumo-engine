@@ -95,7 +95,7 @@ from kumo_core.train.loss import (
 )
 from kumo_core.train.mapping import NODE_INDEX_COLUMN
 from kumo_core.train.node_gnn_module import NodeGNNLightningModule
-from kumo_core.train.output import EvalOutput, PredOutput
+from kumo_core.train.output import EvalFrames, EvalOutput, PredOutput
 from kumo_core.training.config import (
     RHS_NUM_EMB_SIZE_LIMIT,
     FitMode,
@@ -1898,12 +1898,12 @@ class Trainer(PortableConfigMixin):
 
         counts = None
         if stage == TrainingStage.TEST and df is not None:
-            counts = self._test_counts(outputs, df,
+            counts = self._test_counts(outputs, EvalFrames.of(df),
                                        binary_classification_threshold,
                                        target_edges)
         return EvalOutput(metrics, df, embedding, counts)
 
-    def _test_counts(self, outputs: dict[str, Any], df: pd.DataFrame,
+    def _test_counts(self, outputs: dict[str, Any], frames: EvalFrames,
                      threshold: float | None,
                      edges: Sequence[float]) -> Any:
         from kumo_core.evaluation_counts import evaluation_counts
@@ -1921,11 +1921,12 @@ class Trainer(PortableConfigMixin):
                            'target bins.')
             return None
         column = self.encoders.target.col_name
-        horizon = (len(df) // len(outputs['target'])
+        horizon = (frames.num_rows // len(outputs['target'])
                    if task_type == TaskType.FORECASTING else None)
-        return evaluation_counts(task_type, pred=df[f'{column}_PRED'],
-                                 target=df[column], target_edges=edges,
-                                 horizon=horizon)
+        pred = frames.column(f'{column}_PRED')[f'{column}_PRED'].to_numpy()
+        target = frames.column(column)[column].to_numpy()
+        return evaluation_counts(task_type, pred=pred, target=target,
+                                 target_edges=edges, horizon=horizon)
 
     def _top_score_counts(self, prob: Any) -> Any:
         prob = np.asarray(prob)
