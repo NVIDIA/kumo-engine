@@ -86,16 +86,6 @@ def table_counts(training_table):
     }
 
 
-def evaluation_steps(split, batch_size, min_class_rows):
-    """Size a prefix for expected support in the less common class."""
-    rows, positives = split["rows"], split.get("positive_rows", 0)
-    minority = min(positives, rows - positives)
-    if minority <= 0:
-        raise ValueError("Binary evaluation needs both classes in each split")
-    population = min(rows, math.ceil(min_class_rows * rows / minority))
-    return math.ceil(population / batch_size)
-
-
 def table_fingerprint(training_table, scratch):
     import pandas as pd
     import pyarrow as pa
@@ -268,7 +258,7 @@ def _observe(result, scratch, stopped):
 
 
 def run(graph, query, split, task, overrides=None, *, args,
-        prediction_kwargs=None, min_eval_class_rows=0):
+        prediction_kwargs=None):
     import psutil
     from kumoapi.jobs import MetadataField
 
@@ -350,27 +340,12 @@ def run(graph, query, split, task, overrides=None, *, args,
                 "optimization.max_epochs": 3,
                 "optimization.min_steps_per_epoch": 200,
                 "optimization.max_steps_per_epoch": 200,
-                "optimization.max_val_steps": 100,
-                "optimization.max_test_steps": 200,
+                "optimization.max_val_steps": 1000,
+                "optimization.max_test_steps": 1000,
                 **(overrides or {})
         }.items():
             section, field = key.split(".", 1)
             setattr(getattr(plan, section), field, value)
-        if min_eval_class_rows:
-            batch_size = min(plan.optimization.batch_size)
-            result["evaluation"] = {}
-            for stage in ("val", "test"):
-                field = f"max_{stage}_steps"
-                steps = max(
-                    getattr(plan.optimization, field),
-                    evaluation_steps(result["training_table"]["splits"][stage],
-                                     batch_size, min_eval_class_rows))
-                setattr(plan.optimization, field, steps)
-                result["evaluation"][stage] = {
-                    "initial_batch_size": batch_size,
-                    "max_steps": steps,
-                    "min_class_rows": min_eval_class_rows
-                }
         trainer = kumo.Trainer(plan, accelerator="gpu")
         fitted = trainer.fit(training_table, snapshot=snapshot)
         result["metrics"] = {

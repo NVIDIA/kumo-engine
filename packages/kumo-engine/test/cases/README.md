@@ -37,9 +37,13 @@ At 100M and 1B, an order-independent pandas hash covers all exported training ro
 At 10B and 25B, native metadata supplies total rows, per-split rows and binary positive counts without a full export.
 Repeat and reload predictions need identical coordinates and score differences within the case tolerance.
 Metric bands use `abs(current - reference) <= abs(reference) * tolerance`.
-Payments and fraud use batch 64 and size validation/test prefixes for 64 expected examples of the less common class.
-They use the whole split when it contains fewer examples. Splits without both classes fail before training.
-This requires the [Engine evaluation-budget fix](https://github.com/NVIDIA/kumo-engine/pull/234). A rate-based prefix does not guarantee exact class counts.
+At 10B and 25B, payments and fraud use one experiment, one epoch and balanced training sampling at batch 64.
+`majority_sampling_ratio=[1.0]` and `weight_mode=[WeightMode.SAMPLE]` affect training only.
+Every case and scale uses fixed validation and test budgets of 1,000 steps each.
+Payments and fraud remain in every scale. A run without enough positive labels fails instead of expanding the evaluation budget.
+Correct that failure in the dataset, then regenerate its reference after review.
+Results and references retain full-split positive counts under `training_table.splits.<split>.positive_rows`.
+These counts describe the whole split, not measured positives in the capped evaluation prefix.
 Results also record hardware, elapsed time and sampled peak RAM, GPU memory and scratch growth. Hardware and timings do not gate results.
 
 ## Configure workflows

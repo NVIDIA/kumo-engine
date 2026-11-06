@@ -8,7 +8,6 @@ from common import parse_args, run, sources, table
 SCALES = {"100M": 100, "1B": 300, "10B": 1600, "25B": 3200}
 LIMITS = dict(prediction_rows=20, metric_tolerance=0.25,
               prediction_tolerance=0.005)
-MIN_EVAL_CLASS_ROWS = 64
 QUERY = ('PREDICT COUNT(account_flags.*, 0, 14, days) > 0 FOR EACH '
          'accounts.account_id WHERE COUNT(account_flags.*, -INF, 0, days) = 0 '
          '')
@@ -103,21 +102,31 @@ def main():
     from kumoapi.model_plan import (
         NumNeighborsConfig,
         TrainingTableGenerationPlan,
+        WeightMode,
     )
 
-    run(
-        build_graph(sources(args)), QUERY,
-        TrainingTableGenerationPlan(split=SPLIT, timeframe_step=14), 'binary', {
-            'training_job.metrics': ['auroc'],
-            'training_job.tune_metric':
-            'auroc',
-            'optimization.batch_size': [64],
-            'neighbor_sampling.num_neighbors': [
-                NumNeighborsConfig(hop1={'default': 8}, hop2={'default': 8},
-                                   hop3={'default': 8}, hop4={'default': 8},
-                                   hop5={'default': 8}, hop6={'default': 8})
-            ]
-        }, args=args, min_eval_class_rows=MIN_EVAL_CLASS_ROWS)
+    weekly = args.scale in ('10B', '25B')
+    overrides = {
+        'training_job.metrics': ['auroc'],
+        'training_job.tune_metric':
+        'auroc',
+        'optimization.batch_size': [64],
+        'neighbor_sampling.num_neighbors': [
+            NumNeighborsConfig(hop1={'default': 8}, hop2={'default': 8},
+                               hop3={'default': 8}, hop4={'default': 8},
+                               hop5={'default': 8}, hop6={'default': 8})
+        ]
+    }
+    if weekly:
+        overrides.update({
+            'training_job.num_experiments': 1,
+            'optimization.max_epochs': 1,
+            'optimization.majority_sampling_ratio': [1.0],
+            'optimization.weight_mode': [WeightMode.SAMPLE],
+        })
+    run(build_graph(sources(args)), QUERY,
+        TrainingTableGenerationPlan(split=SPLIT, timeframe_step=14), 'binary',
+        overrides, args=args)
 
 
 if __name__ == "__main__":
