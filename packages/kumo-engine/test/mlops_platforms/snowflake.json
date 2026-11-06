@@ -1,0 +1,13 @@
+{
+  "platform": "snowflake",
+  "database": "KUMO_TEST_DB",
+  "schema": "YOUR_TEST_SCHEMA",
+  "warehouse": "KUMO_TEST_WH",
+  "artifact_root": "@KUMO_TEST_DB.YOUR_TEST_SCHEMA.YOUR_TEST_STAGE/mlops-validation",
+  "experiment": "EGU_MLOPS",
+  "model_prefix": "EGU_MLOPS",
+  "identity": "notebook",
+  "accelerator": "cpu",
+  "execution_context": "snowflake_notebook",
+  "environment": "managed"
+}

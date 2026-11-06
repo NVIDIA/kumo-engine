@@ -46,6 +46,12 @@ schedule. Both take their settings as command-line flags.
 
 ## Run locally
 
+For the two-version lifecycle, fresh-process recovery, monitoring and failure
+checks against a finished wheel, see
+[local MLOps validation](../../docs/development/mlops-validation.md).
+For notebook execution, retained lifecycle UI checks and graph rendering, see
+[Snowflake platform checks](../../docs/development/snowflake-notebook-actions.md).
+
 With `users.parquet`, `items.parquet` and `orders.parquet` in a directory:
 
 ```bash

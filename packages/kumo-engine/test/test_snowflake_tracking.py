@@ -483,3 +483,22 @@ def test_each_monitoring_call_is_a_run_named_like_its_prediction(fake):
         '| orders | 100 | 104 |', '', '**Notes**', '',
         '- Labels mature 2026-11-05.', '',
         'Full lineage: `_provenance.json`. Tables: `drift/inputs/orders.json`.'])
+
+
+@pytest.mark.parametrize('seconds', [0, -1, float('nan'), float('inf'), True])
+def test_invalid_tracking_timeout_fails_before_provider_import(
+        monkeypatch, seconds):
+    import kumo.engine.integrations.snowflake as module
+
+    def unexpected(*args):
+        raise AssertionError('Provider import must follow timeout validation')
+
+    monkeypatch.setattr(module, 'import_provider', unexpected)
+    with pytest.raises(ValueError, match='finite and positive'):
+        module.SnowflakeTracking(None, experiment_name='test',
+                                 finish_timeout_seconds=seconds)
+
+
+def test_snowflake_tracking_finish_budget(fake):
+    assert _tracking().finish_timeout_seconds == 300.0
+    assert _tracking(finish_timeout_seconds=90.0).finish_timeout_seconds == 90.0
