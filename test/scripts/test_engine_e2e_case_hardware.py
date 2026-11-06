@@ -133,7 +133,10 @@ def test_formatter_gets_a_terminal_and_preserves_its_exit_status(
 
 
 @pytest.mark.parametrize("mode,status", [("failure", 1), ("report-failure", 1),
-                                         ("drained", 0), ("job-exit", 7)])
+                                         ("drained", 0), ("job-exit", 7),
+                                         ("registration-transport", 31),
+                                         ("registration-function", 1),
+                                         ("configuration", 7)])
 def test_bootstrap_reports_its_failed_check_and_always_shuts_down(
         tmp_path, mode, status):
     source = (ROOT / ".github/scripts/engine-e2e-runner.sh").read_text()
@@ -143,14 +146,15 @@ def test_bootstrap_reports_its_failed_check_and_always_shuts_down(
     trap = next(line for line in source.splitlines()
                 if line.startswith("trap ") and line.endswith(" EXIT"))
     body = "boot_check=GPU\nfalse\n"
-    if mode == "drained":
+    if not mode.endswith("failure"):
         body = source.split("and local SSD'\n",
-                            1)[1].split("cd /opt/actions-runner", 1)[0]
-    elif mode == "job-exit":
-        body = source[source.index("printf 'ENGINE_E2E_INSTANCE_TYPE="):]
-    commands = dict(mktemp='exec /usr/bin/mktemp "$TEST_DIR/token.XXXXXX"',
-                    shutdown='printf shutdown >> "$TEST_DIR/shutdown.log"',
-                    chown="exit 0", runuser="exit 7")
+                            1)[1].replace("cd /opt/actions-runner",
+                                          'cd "$TEST_DIR"')
+    commands = dict(
+        mktemp='exec /usr/bin/mktemp "$TEST_DIR/token.XXXXXX"',
+        shutdown='printf shutdown >> "$TEST_DIR/shutdown.log"', chown="exit 0",
+        runuser='[[ $TEST_MODE != configuration && '
+        '" $* " != *" ./run.sh "* ]] || exit 7')
     for name, command in commands.items():
         (tmp_path / name).write_text("#!/bin/bash\n" + command + "\n")
         (tmp_path / name).chmod(0o755)
@@ -160,10 +164,11 @@ from pathlib import Path
 payload = json.loads(sys.argv[sys.argv.index('--payload') + 1])
 with (Path(os.environ['TEST_DIR']) / 'events').open('a') as output:
     output.write(json.dumps(payload) + '\\n')
-if os.environ['TEST_MODE'] == 'report-failure':
+mode = os.environ['TEST_MODE']
+if mode in ('report-failure', 'registration-transport'):
     raise SystemExit(31)
-Path(sys.argv[-1]).write_text('null')
-print('None')
+Path(sys.argv[-1]).write_text(json.dumps(None if mode == 'drained' else 'fixture-token'))
+print('Unhandled' if mode == 'registration-function' else 'None')
 """)
     (tmp_path / "aws").chmod(0o755)
     (tmp_path / "events").touch()
@@ -180,14 +185,14 @@ print('None')
         POOL_ATTEMPT="2", SOURCE_SHA="a" * 40, CAPACITY_DEADLINE="2000000000",
         INSTANCE_TYPE="g7e.8xlarge", LABEL=cases[0]["label"],
         POOL_CASES=json.dumps(cases), CAPACITY_FUNCTION="fixture",
-        AWS_REGION="us-west-2", actual_instance="g7e.8xlarge"),
+        AWS_REGION="us-west-2", actual_instance="g7e.8xlarge", TIER="weekly"),
                             capture_output=True, text=True, timeout=10)
     assert result.returncode == status, result.stdout + result.stderr
     lines = (tmp_path / "events").read_text().splitlines()
     events = [json.loads(line) for line in lines]
-    assert [event["kind"] for event in events
-            ] == (["bootstrap"] if mode.endswith("failure") else
-                  ["registration"] if mode == "drained" else [])
+    assert [
+        event["kind"] for event in events
+    ] == (["bootstrap"] if mode.endswith("failure") else ["registration"])
     if events:
         assert events[0]["cases"] == cases
     if mode.endswith("failure"):

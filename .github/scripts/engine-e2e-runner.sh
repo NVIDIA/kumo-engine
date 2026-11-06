@@ -75,7 +75,7 @@ runuser -u engine-e2e -- python3.12 -c 'import sys, venv; assert sys.version_inf
 boot_check='scratch write access'
 runuser -u engine-e2e -- test -w /mnt/localssd/engine-e2e
 echo 'engine-e2e boot prerequisites ready: GPU, Python 3.12, and local SSD'
-boot_check='runner registration'
+bootstrapping=0 boot_check='runner registration'
 invoke registration
 RUNNER_TOKEN=$(python3 -c 'import json,sys; token=json.load(open(sys.argv[1])); assert token is None or (isinstance(token,str) and token); print(token or "")' "$token_file")
 rm -f "$token_file"
@@ -89,5 +89,4 @@ runuser -u engine-e2e -- env -i HOME=/home/engine-e2e PATH=/usr/local/bin:/usr/b
 unset RUNNER_TOKEN
 printf 'ENGINE_E2E_INSTANCE_TYPE=%s\nENGINE_E2E_CAPACITY_DEADLINE=%s\n' "$actual_instance" "$CAPACITY_DEADLINE" >> .env
 chown engine-e2e:engine-e2e .env
-bootstrapping=0
 runuser -u engine-e2e -- env -i HOME=/home/engine-e2e PATH=/usr/local/bin:/usr/bin:/bin ./run.sh

@@ -64,7 +64,7 @@ After reviewing the references, keep `write_reference=false` for candidate runs 
 | `ENGINE_E2E_SCHEDULE_ENABLED` | Scheduling also requires `true`. Nightly runs at 00:17 daily and weekly at 00:47 Sunday, in `America/Los_Angeles`. The timezone follows daylight saving time. |
 | `ENGINE_E2E_MAX_PARALLEL` | Total VM limit, default `2`, with at least one worker per selected type. |
 | `ENGINE_E2E_TEMPLATES_JSON` | Pinned template/version and subnets per type: `{"g7e.24xlarge":{"template":"lt-example","version":"1","subnets":["subnet-example"]}}`. Keep mappings fixed until cleanup finishes. |
-| `ENGINE_E2E_POOL_ROLE` | Main-only OIDC access to owned groups, derived template versions and schedules. |
+| `ENGINE_E2E_POOL_ROLE` | Main-only OIDC access to owned groups, derived template versions and schedules, and `s3:GetObject` for admission objects under `ENGINE_E2E_RESULTS_S3`. |
 | `ENGINE_E2E_AWS_REGION` | Default `us-west-2`. |
 | `ENGINE_E2E_RUNNER_APP_ID`, `ENGINE_E2E_RUNNER_APP_KEY` | Cleanup App credentials. |
 | Lambda `RUNNER_SECRET` | Secrets Manager secret containing `app_id`, `installation_id` and `private_key`. |
@@ -86,8 +86,8 @@ Before allocation, AWS schedules suspend launches at the capacity deadline.
 Deletion is scheduled at the capacity deadline plus the case job timeout and a 30-minute cleanup buffer.
 These safeguards use minute precision and are best effort.
 Conditional S3 claims protect admitted cases. From the wait limit, EventBridge checks unstarted cases every ten minutes. Runs completed before that limit are skipped.
-Bootstrap failures send their check and exit status to the registration Lambda.
-It validates the live run and owned group, suspends launches, and reports unadmitted cases through lifecycle jobs with `phase=bootstrap`.
+Local prerequisite failures send their check and exit status to the registration Lambda. Registration and configuration failures shut down only that VM.
+The Lambda validates the live run and owned group, suspends launches, and reports unadmitted cases through lifecycle jobs with `phase=bootstrap`.
 Stored claims retain the failure reason and protect admitted cases.
 Capacity failures appear in a separate lifecycle run and preserve requested hardware.
 After a four-hour capacity failure, the original nightly job can remain queued until GitHub's 24-hour queue expiry.
