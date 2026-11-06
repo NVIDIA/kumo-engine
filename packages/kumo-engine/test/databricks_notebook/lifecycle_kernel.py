@@ -77,15 +77,20 @@ def execute(config, dbutils):
         wheel = payload / config['candidate']['wheel_file']
         python = root / 'venv/bin/python'
         with (evidence / 'venv.log').open('w') as log:
-            subprocess.run([sys.executable, '-m', 'venv',
-                            str(root / 'venv')], check=True, stdout=log,
-                           stderr=subprocess.STDOUT, timeout=120)
-        with (evidence / 'install.log').open('w') as log:
             subprocess.run([
-                str(python), '-I', '-m', 'pip', '--isolated', 'install',
-                '--index-url', 'https://pypi.org/simple',
+                sys.executable, '-m', 'venv', '--without-pip',
+                str(root / 'venv')
+            ], check=True, stdout=log, stderr=subprocess.STDOUT, timeout=120)
+        with (evidence / 'install.log').open('w') as log:
+            install = [
+                sys.executable, '-I', '-m', 'pip', '--isolated', '--python',
+                str(python), 'install', '--index-url',
+                'https://pypi.org/simple', 'pip',
                 str(wheel) + '[databricks,mlflow]'
-            ], check=True, stdout=log, stderr=subprocess.STDOUT, timeout=900)
+            ]
+            if helpers.execute(install, root, log, 900):
+                raise RuntimeError(
+                    'Clean environment installation failed; see install.log')
         with (evidence / 'pip-check.log').open('w') as log:
             subprocess.run(
                 [str(python), '-I', '-m', 'pip', '--isolated', 'check'],

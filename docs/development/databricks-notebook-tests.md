@@ -110,7 +110,8 @@ and two two-epoch binary fits. The graph scenario separately uses An's PR172 dat
 
 Each lifecycle attempt uses a new experiment, fully qualified Unity Catalog model,
 and Volume artifact prefix. The notebook creates a clean virtual environment,
-installs the pinned candidate with its Databricks and MLflow extras, and requires
+uses `venv --without-pip` and pip’s [target-interpreter option](https://pip.pypa.io/en/stable/topics/python-option/)
+to install the pinned candidate with its Databricks and MLflow extras, and requires
 `pip check` to pass. Each phase runs in a fresh process using runtime-derived
 credentials, verifies its effective Databricks identity, and checks its installed wheel.
 The runner PAT is never copied into the notebook. Producer scratch and source data
