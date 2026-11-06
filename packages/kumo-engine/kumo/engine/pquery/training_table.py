@@ -136,10 +136,12 @@ class TrainingTable:
 
         from kumo_core.sources.object_store import _source_version
 
-        from kumo.engine._mlops import on_root
+        from kumo.engine._mlops import MLOps, on_root
         from kumo.engine.connector import FileConnector
         from kumo.engine.trainer.trainer import _fetch_dir, fetch_parquet
 
+        location = (connector.root.uri(path.lstrip('/'))
+                    if isinstance(connector, MLOps) else path)
         connector, path = on_root(connector, path)
         spec = TrainingTableSpec(split_col='SPLIT')
         stored = _stored_parts(connector, path)
@@ -150,12 +152,12 @@ class TrainingTable:
         version = _source_version(root, parts)
         local = _fetch_dir('fetched-training-table-')
         try:
-            fetch_parquet(filesystem, root, local / 'rows')
+            fetch_parquet(filesystem, root, local / 'rows', parts)
             return cls._from_rows(
                 FileConnector(root_dir=str(local))['rows'], spec, pq=pquery,
                 snapshot=snapshot, version=version,
                 source=provenance.stored_table(
-                    connector, path, version,
+                    connector, location, version,
                     record_sources=_record_sources(snapshot)))
         finally:
             shutil.rmtree(local, ignore_errors=True)

@@ -503,3 +503,24 @@ def test_a_reloaded_table_keeps_unrecorded_sources_unrecorded(graph, tmp_path):
         snapshot=snapshot)
     assert reloaded.manifest.parents.source_table.location == table.id
     assert '/Volumes' not in json.dumps(reloaded.manifest.to_dict())
+
+
+def test_a_string_root_records_the_full_uri(graph, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
+
+    files = SubTreeFileSystem(str(tmp_path), LocalFileSystem())
+    store = SimpleNamespace(source_type='s3', sink_backend=SimpleNamespace(
+        holds_files=lambda connector, path: True,
+        filesystem=lambda connector, path: (files, path)))
+    monkeypatch.setattr('kumo.engine.connector.connector_for_root',
+                        lambda uri: store)
+    cfg = kumo.MLOps('s3://bucket/kumo')
+    with kumo.mlops(cfg):
+        pquery, table = _generate(graph)
+    path = f'training_tables/{table.id}'
+    reloaded = kumo.TrainingTable.load_from_connector(
+        cfg, path=path, pquery=pquery, snapshot=graph[1])
+    assert reloaded.manifest.parents.source_table.location == (
+        f's3://bucket/kumo/{path}')
