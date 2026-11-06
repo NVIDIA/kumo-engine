@@ -269,6 +269,14 @@ jobs:
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
           GCS_TEST_BUCKET: 'kumo-test-bucket'
           KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: ${{ env.KUMO_RUN_GCP_TESTS == '1' && 'true' || 'false' }}
+          # Connector shard: Databricks OAuth; io_utils shards: PAT. Never both:
+          # DatabricksConnectionInfo.from_environment() then ignores OAuth.
+          DATABRICKS_HOST: ${{ (contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/io_utils/')) && vars.DATABRICKS_HOST || '' }}
+          DATABRICKS_CLUSTER_ID: ${{ (contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/io_utils/')) && vars.DATABRICKS_CLUSTER_ID || '' }}
+          DATABRICKS_WAREHOUSE_ID: ${{ (contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/io_utils/')) && vars.DATABRICKS_WAREHOUSE_ID || '' }}
+          DATABRICKS_CLIENT_ID: ${{ contains(matrix.test_dir, 'test/connector/') && vars.DATABRICKS_CLIENT_ID || '' }}
+          DATABRICKS_CLIENT_SECRET: ${{ contains(matrix.test_dir, 'test/connector/') && secrets.DATABRICKS_CLIENT_SECRET || '' }}
+          DATABRICKS_TOKEN: ${{ contains(matrix.test_dir, 'test/io_utils/') && secrets.DATABRICKS_TOKEN || '' }}
           AWS_DEFAULT_REGION: "us-west-2"
           DEPLOY_STAGE: "test"
           TEMPORAL_SERVER: "localhost"
@@ -301,6 +309,14 @@ jobs:
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
           GCS_TEST_BUCKET: 'kumo-test-bucket'
           KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: ${{ env.KUMO_RUN_GCP_TESTS == '1' && 'true' || 'false' }}
+          # Connector shard: Databricks OAuth; io_utils shards: PAT. Never both:
+          # DatabricksConnectionInfo.from_environment() then ignores OAuth.
+          DATABRICKS_HOST: ${{ (contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/io_utils/')) && vars.DATABRICKS_HOST || '' }}
+          DATABRICKS_CLUSTER_ID: ${{ (contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/io_utils/')) && vars.DATABRICKS_CLUSTER_ID || '' }}
+          DATABRICKS_WAREHOUSE_ID: ${{ (contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/io_utils/')) && vars.DATABRICKS_WAREHOUSE_ID || '' }}
+          DATABRICKS_CLIENT_ID: ${{ contains(matrix.test_dir, 'test/connector/') && vars.DATABRICKS_CLIENT_ID || '' }}
+          DATABRICKS_CLIENT_SECRET: ${{ contains(matrix.test_dir, 'test/connector/') && secrets.DATABRICKS_CLIENT_SECRET || '' }}
+          DATABRICKS_TOKEN: ${{ contains(matrix.test_dir, 'test/io_utils/') && secrets.DATABRICKS_TOKEN || '' }}
           AWS_DEFAULT_REGION: "us-west-2"
           DEPLOY_STAGE: "test"
           TEMPORAL_SERVER: "localhost"
