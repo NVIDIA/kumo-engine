@@ -14,7 +14,8 @@ execution has neither a GPU nor Kumo: it serves intake, never the notebook.
 
 Only after the user has confirmed the Node 1d restatement (`adapter.md` §0), create **one new
 notebook**, named after the task (`kumo_churn_30d`), next to the notebook the user is in, else in
-their home folder. Never overwrite or append to an existing notebook. Each step is
+their home folder. Never overwrite or append to an existing notebook, apart from the one edit
+`job.md` §7 allows: the job notebook this skill generated, after the user's yes to a named fix. Each step is
 its own code cell. Show the user where the notebook is. Creating it is not running it: Step 3
 still waits for an explicit request.
 

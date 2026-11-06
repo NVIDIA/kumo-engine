@@ -97,8 +97,8 @@ training_table = kumo.TrainingTable.from_source_table(
 
 Any value in that result that matches no branch (including NULL) becomes a NULL `SPLIT` and the
 row is skipped: ask the user how to map it before building the training table, and never leave it
-out unreported. List the labels you mapped with their counts. Create a mapped copy of the table only
-when the user approves writing one.
+out unreported. List the labels you mapped with their counts. The mapping stays in the read-only
+`connector.sql(...)` source: write nothing back, and create no mapped copy or derived table.
 
 ## Derived or normalized weights
 

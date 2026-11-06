@@ -199,6 +199,11 @@ Propose the specific fix: say what to change in the job notebook and ask only wh
 that change ("Shall I set `MODEL_VERSION = 1` in the job notebook?"). A yes edits that job
 notebook, which this skill generated; it is the one edit of an existing notebook the user can
 approve here. Resubmitting is a separate confirmation, asked after the edit; never "then rerun".
+Tell a repair from a change first. Correcting `MODEL_VERSION` to the version the user already
+confirmed (a typo, a stale value) is a repair: the edit above, then the resubmission ask. Moving
+it to a different version is a new scoring request: re-read that version's metadata and training
+record (`adapter.md` §6.1), show the `adapter.md` §0 restatement for it, and resubmit only after
+the user confirms that restatement.
 Never edit the notebook or resubmit on your own: every submission is a new GPU run. Never delete a run or a job, because
 that discards its output.
 

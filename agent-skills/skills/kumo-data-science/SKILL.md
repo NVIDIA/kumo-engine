@@ -20,10 +20,10 @@ One SDK, no variants.
 
 Before you answer any request this skill covers — a new model, scoring, a request routed to a
 capability skill below, a follow-up in a session that already has a notebook, or a question
-about a job — read `hosts/<host>/adapter.md`, the one directory under `hosts/`. It says what
-you may do on this host before the user confirms, and that holds for every reply. A request
-about a job also reads the job file the adapter names before you act on any job, run or
-cluster.
+about a job — read `hosts/<host>/adapter.md`, the one directory under `hosts/`. Where it has a
+section on what you may do before the user confirms (the Databricks Genie adapter's §0), that
+holds for every reply. Where the adapter names a job file, a request about a job reads it before
+you act on any job, run or cluster.
 
 ## When to use
 

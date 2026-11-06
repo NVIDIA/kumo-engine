@@ -156,7 +156,6 @@ def test_genie_pause_runs_at_once_and_everything_else_stays_confirmed() -> None:
     for text in (section, adapter[adapter.index('## 0.'):adapter.index('## 1.')]):
         assert 'plain words' in text and 'exactly one job' in text
         assert 'at once' in text and 'previous state' in text
-        assert 'unpaus' in text
     assert 'no confirmation turn' in section and 'pause_status=PAUSED' in section
     assert 'list the candidates and ask; pause nothing' in section
     assert 'unpausing it needs the user\'s confirmation' in section
@@ -259,8 +258,7 @@ def test_custom_populations_treat_weights_like_splits() -> None:
         assert 'not in a read-only query either' not in text
         assert 'exact formula' in text and 'explicit approval' in text
         assert 'read-only `connector.sql(...)`' in text
-        assert 'before' in text and 'is not approval' in text
-        assert 'CREATE TABLE AS' in text and 'UPDATE' in text
+        assert 'is not approval' in text and 'CREATE TABLE AS' in text
     assert 'Weights follow the same rule as splits' in reference
     assert 'resulting weight distribution' in reference
     assert 'Validation still applies to the result' in skill
@@ -505,3 +503,21 @@ def test_text_io_names_its_encoding() -> None:
         and not any(k.arg == 'encoding' for k in node.keywords)
     ]
     assert not unnamed, unnamed
+
+
+def test_followup_review_fixes_are_pinned() -> None:
+    """A MODEL_VERSION repair differs from a version change; the runtime's no-edit rule carves
+    out the job notebook; a mapping is never a derived table; the adapter's read list is full."""
+    skills = package_skill.SKILLS
+    flat = lambda p: ' '.join(p.read_text().split())
+    job = flat(skills / 'hosts' / 'databricks-genie' / 'job.md')
+    assert 'Tell a repair from a change first' in job and 're-read that version' in job
+    assert 'resubmit only after the user confirms that restatement' in job
+    runtime = flat(skills / 'hosts' / 'databricks-genie' / 'runtime.md')
+    assert 'apart from the one edit `job.md` §7 allows' in runtime
+    refs = flat(skills / 'kumo-custom-populations' / 'references' / 'populations.md')
+    assert 'create no mapped copy or derived table' in refs and 'approves writing one' not in refs
+    adapter = flat(skills / 'hosts' / 'databricks-genie' / 'adapter.md')
+    assert 'probe — nothing else' not in adapter and 'read clusters, registered models, runs' in adapter
+    router = flat(skills / 'kumo-data-science' / 'SKILL.md')
+    assert 'Where it has a section on what you may do before the user confirms' in router

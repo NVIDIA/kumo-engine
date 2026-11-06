@@ -193,7 +193,8 @@ the graph. A warehouse the user names is `[supplied]`. If none is visible, say s
 then carries the placeholder in `runtime.md` §1.
 
 **What a check may do.** Read catalog metadata, run the read probe above and the preflight §3
-probe — nothing else.
+probe, and read clusters, registered models, runs, and a model version's comment and record
+files (§0, §6.1).
 Never create, alter, drop or write anything during intake, and never change compute, permissions
 or workspace settings.
 
