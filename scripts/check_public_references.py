@@ -173,7 +173,6 @@ IDENTIFIER_RULE_EXEMPT_PREFIXES = (
     "docker/",
     "kumo/testing/rest.py",
     "kumo/testing/snowflake.py",
-    "packages/kumo-api/tools/schema_compat/config.py",
     "packages/kumo-bigquery/tests/live/test_live_conformance.py",
     "packages/kumo-databricks/tests/live/test_live_conformance.py",
     "packages/kumo-snowflake/tests/live/test_live_conformance.py",
