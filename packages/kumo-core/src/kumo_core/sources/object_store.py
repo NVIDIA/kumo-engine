@@ -129,6 +129,8 @@ def _source_version(path: str, entries: Sequence[Any],
 class _CsvSource(NamedTuple):
     dataset: ds.Dataset
     dtypes: dict
+    parts: list
+    sep: str
 
 
 @dataclass
@@ -567,10 +569,9 @@ class ObjectStoreSourceReader:
         if columns is None:
             columns = source.dtypes
         with _arrow_errors(table, "CSV"):
-            written = self._stream(
-                table, source.dataset, dest, columns, aliases, worker_ceiling,
-                normalize=True,
-                sampled=lambda: self._csv_source(table, found).dtypes)
+            written = self._stream(table, source.dataset, dest, columns,
+                                   aliases, worker_ceiling, normalize=True,
+                                   sampled=partial(self._csv_sampled, source))
         return ReadOutput(paths=written.paths, num_rows=written.rows)
 
     def _stream(
@@ -582,7 +583,7 @@ class ObjectStoreSourceReader:
         aliases: Mapping[str, str],
         worker_ceiling: int | None,
         normalize: bool = False,
-        sampled: Callable[[], Mapping[str, Dtype]] | None = None,
+        sampled: Callable[[Sequence[str]], Mapping[str, Dtype]] | None = None,
     ) -> Any:
         null_values = (self.csv_options.null_values if self.csv_options
                        and self.csv_options.null_values is not None else
@@ -746,7 +747,19 @@ class ObjectStoreSourceReader:
                     format=csv_format.text_format(sep, list(columns),
                                                   _unpinned(columns),
                                                   self.csv_options)),
-                dict(columns))
+                dict(columns), parts, sep)
+
+    def _csv_sampled(self, source: _CsvSource,
+                     names: Sequence[str]) -> dict[str, Dtype]:
+        """The sampled types of ``names`` over the parts ``source`` reads,
+        for the narrowing judgement. Only those columns are typed, so an
+        unselected column Kumo cannot type does not fail the read."""
+        from . import csv_format
+        with _arrow_errors(source.parts[0], "CSV"):
+            sampled = csv_format.sampled(self.filesystem, source.parts,
+                                         source.sep, self.csv_options,
+                                         names=names)
+        return {name: _dtype_of(dtype) for name, dtype in sampled.items()}
 
 
 def require_no_sql(sql: str | None) -> None:
@@ -779,19 +792,21 @@ class _Narrowed:
         return batch.select(
             [name for name in batch.schema.names if name not in self.flags])
 
-    def report(self, table: str, columns: Mapping[str, Dtype],
-               sampled: Callable[[], Mapping[str, Dtype]] | None) -> None:
+    def report(
+            self, table: str, columns: Mapping[str, Dtype],
+            sampled: Callable[[Sequence[str]], Mapping[str, Dtype]] | None
+    ) -> None:
         """A column the sample showed decimals in was declared an integer
         knowingly: its values are staged as null with a warning. One the
         sample showed only whole numbers in got its integer type from the
         sample, or matching it, so the type is wrong for the column and the
         read is refused rather than losing values nobody chose to lose.
-        ``sampled`` types the parts this read used, so it is taken only when
-        a column was narrowed."""
+        ``sampled`` types the narrowed columns over the parts this read used,
+        so it is taken only when a column was narrowed."""
         counted = {name: count for name, count in self.counts.items() if count}
         if not counted:
             return
-        catalog = sampled() if sampled is not None else {}
+        catalog = sampled(list(counted)) if sampled is not None else {}
         refused = []
         for name, count in counted.items():
             dtype = Dtype(columns[name]).value

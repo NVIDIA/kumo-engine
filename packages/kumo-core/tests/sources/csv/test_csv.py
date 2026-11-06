@@ -367,8 +367,10 @@ def test_a_decimal_in_a_declared_integer_column_is_null_with_a_warning(
     choice: ``2.5`` has no integer, and ``2`` would be a value the source
     never held. A read that downloads the parts first samples those parts,
     not the table under the remote root, which the local reader cannot
-    reach."""
-    write(tmp_path / "remote", "t", t="a\n1\n2.5\n3\n")
+    reach; and it types only the narrowed columns, so an unselected column
+    Kumo cannot type does not fail the read."""
+    write(tmp_path / "remote", "t",
+          t="a,b\n1,99999999999999999999\n2.5,1\n3,1\n")
 
     def fetch(path, target):
         shutil.copyfile(tmp_path / path, target)

@@ -129,16 +129,19 @@ def batches(
 
 
 def sampled(filesystem: Any, paths: Sequence[str], sep: str,
-            options: CsvOptions | None = None) -> dict[str, pa.DataType]:
-    """Per column, the type the platform reports for it, sampled across parts
-    on one shared budget the way the platform spends its own."""
+            options: CsvOptions | None = None,
+            names: Sequence[str] | None = None) -> dict[str, pa.DataType]:
+    """Per column, or per column in ``names``, the type the platform reports
+    for it, sampled across parts on one shared budget the way the platform
+    spends its own."""
     from ..types.conversions import to_pyarrow_type
     from .csv_preview import column_dtypes, read_files
 
     frame = read_files(filesystem, list(paths[:MAX_SAMPLE_FILES]), sep=sep,
                        rows=SAMPLE_ROWS,
                        null_values=options.null_values if options else None,
-                       escape_char=options.escape_char if options else False)
+                       escape_char=options.escape_char if options else False,
+                       names=None if names is None else list(names))
     if frame.empty:
         raise SourceNotFoundError("This table has a header and no rows.")
     return {
