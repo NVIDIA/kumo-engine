@@ -660,8 +660,10 @@ jobs:
       - name: Build and test the isolated kumo-engine wheel
         if: matrix.suite != 'core'
         env:
-          ENGINE_SHARD: ${{ matrix.suite == 'engine-0' && '0' || '1' }}
+          SUITE: ${{ matrix.suite }}
+          ENGINE_SHARD_COUNT: '2'
         run: |
+          export ENGINE_SHARD="${SUITE#engine-}"
           python -c "import importlib.util; assert importlib.util.find_spec('kumo.engine') is None"
           uv build --wheel packages/kumo-engine \
             --out-dir "$RUNNER_TEMP/kumo-engine-dist"
@@ -689,11 +691,12 @@ jobs:
 
           def pytest_collection_modifyitems(config, items):
               shard = int(os.environ['ENGINE_SHARD'])
-              if shard not in (0, 1):
-                  raise ValueError('ENGINE_SHARD must be 0 or 1')
+              shard_count = int(os.environ['ENGINE_SHARD_COUNT'])
+              if not 0 <= shard < shard_count:
+                  raise ValueError('Require 0 <= ENGINE_SHARD < ENGINE_SHARD_COUNT')
               selected, deselected = [], []
               for item in items:
-                  group = zlib.crc32(item.path.name.encode()) % 2
+                  group = zlib.crc32(item.path.name.encode()) % shard_count
                   (selected if group == shard else deselected).append(item)
               config.hook.pytest_deselected(items=deselected)
               items[:] = selected
