@@ -37,6 +37,10 @@ def test_wheel_builds_all_first_party_packages_from_monorepo(
         package = repo / 'packages' / name
         package.mkdir(parents=True)
         (package / 'pyproject.toml').touch()
+    # Experimental packages are workspace members but are not bundled.
+    experimental = repo / 'packages/experimental/kumo-pytorch'
+    experimental.mkdir(parents=True)
+    (experimental / 'pyproject.toml').touch()
     diskgraph = repo / 'packages/diskgraph'
     (diskgraph / 'diskgraph-pybind').mkdir()
     (diskgraph / 'diskgraph-pybind/Cargo.toml').touch()
