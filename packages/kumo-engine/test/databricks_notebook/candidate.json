@@ -1,0 +1,24 @@
+{
+  "candidate": {
+    "wheel_file": "kumo_engine-1.0.0.dev0+egu.mlops.databricks2-cp311-abi3-manylinux_2_35_x86_64.whl",
+    "wheel_sha256": "89041db201ac55eece7d11f2fb0f53a076d1851e7ad19fea34670d1840030056",
+    "expected_version": "1.0.0.dev0+egu.mlops.databricks2"
+  },
+  "build": {
+    "base_candidate_sha256": "142637a8f3e87cbd983894bcc4e48bad1a5a5429d5d33bae490f04ec218d5582",
+    "engine_source_commit": "df28aed1e68ca3c7efc72272b2026a95df311547",
+    "provider_source_commit": "df28aed1e68ca3c7efc72272b2026a95df311547",
+    "fix_commit": "20110186505aac909f385088c9bd2a4e39823e1c",
+    "native_payload": "unchanged from identified base candidate",
+    "module_changes": [
+      "kumo/engine/__init__.py",
+      "kumo/engine/_card.py",
+      "kumo/engine/_provenance.py",
+      "kumo/engine/_run_names.py",
+      "kumo/engine/_version.py",
+      "kumo/engine/integrations/mlflow.py",
+      "kumo/engine/pquery/_custom_source.py",
+      "kumo_databricks/volume.py"
+    ]
+  }
+}

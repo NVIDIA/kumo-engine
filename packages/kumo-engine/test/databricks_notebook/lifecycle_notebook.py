@@ -12,8 +12,8 @@ from pathlib import Path
 
 from client import Client, configuration
 from run import (
+    CANDIDATE,
     HERE,
-    SHARED,
     asset,
     digest,
     notebook_export,
@@ -136,7 +136,7 @@ def execute(args, root):
         for n in ('wheel_mlops_lifecycle.py', 'wheel_mlops_platform.py',
                   'wheel_gpu_smoke.py')
     ]
-    paths.append(SHARED / 'candidate.json')
+    paths.append(CANDIDATE)
     committed, sources = {}, {}
     for path in paths:
         relative = path.relative_to(repo).as_posix()

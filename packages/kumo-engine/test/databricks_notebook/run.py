@@ -20,6 +20,7 @@ from client import Client, configuration
 
 HERE = Path(__file__).resolve().parent
 SHARED = HERE.parent / 'snowflake_notebook'
+CANDIDATE = HERE / 'candidate.json'
 FILES = {
     'graph.svg', 'graph.pdf', 'graph.md', 'default.html', 'sampled.html',
     'graph-result.json'
@@ -232,7 +233,7 @@ def submit_and_wait(client, config, spec, content, root, timeout,
 def execute(args, root):
     config = configuration(args.cluster_id)
     client = Client(config)
-    candidate = json.loads((SHARED / 'candidate.json').read_text())['candidate']
+    candidate = json.loads(CANDIDATE.read_text())['candidate']
     fixture = json.loads((HERE.parent / 'pr172/inputs.json').read_text())
     assets = {}
     wheel = None

@@ -2,7 +2,7 @@
 
 These tests run the same graph scenario as the
 [Snowflake notebook tests](snowflake-notebook-actions.md), using An's unchanged
-PR172 adtech fixture and the same pinned candidate wheel. Graph checks do not train
+PR172 adtech fixture and an identified candidate wheel. Graph checks do not train
 a model; the separate lifecycle scenario performs two small fits.
 
 The runner stages checksum-addressed assets in a dedicated test volume, imports a
@@ -91,7 +91,7 @@ polling fails or times out.
 The candidate wheel and fixture must already be in the configured volume's
 `payload-cache/<sha256>/<filename>` paths. To seed missing assets, pass `--wheel`
 and `--fixture` pointing to the exact files pinned by
-[the candidate manifest](../../packages/kumo-engine/test/snowflake_notebook/candidate.json)
+[the Databricks candidate manifest](../../packages/kumo-engine/test/databricks_notebook/candidate.json)
 and [An's input manifest](../../packages/kumo-engine/test/pr172/inputs.json).
 Existing assets are hash-verified and reused without upload. The test helpers are
 uploaded only when their contents change. Asset bytes are checked before installation
@@ -144,3 +144,14 @@ the ID of a running dedicated `KUMO_TEST_` x86 cluster. The engine job requires 
 four API phases, including real denied access; it preserves native-UI and export
 qualification gaps even when those selected engine checks pass. No email login is
 part of the PAT notebook runner.
+
+
+The Databricks candidate includes the committed Volume directory-path fix from
+`20110186505aac909f385088c9bd2a4e39823e1c`. The original Snowflake candidate failed
+training-table export on Databricks with `Bad Request`; that failure remains retained.
+The candidate manifest records the base wheel hash, committed Engine/provider sources,
+and changed modules. The normal component and merged-wheel builders produce a new
+version/hash with current Engine and Databricks Python code; native payload bytes
+remain unchanged.
+Snowflake's candidate pin is separate. Graph evidence from an earlier candidate does
+not qualify the new candidate until rerun.
