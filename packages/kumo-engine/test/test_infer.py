@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import re
 from types import SimpleNamespace
 
 import pandas as pd
@@ -318,3 +319,42 @@ def test_named_types_resolve_without_sampling(name, dtype, expected):
                                     column_names=None, primary_key=None,
                                     time_column=None, end_time_column=None)
     assert columns[0].stype == expected
+
+
+@pytest.mark.parametrize('dtype,values', [
+    (Dtype.int64, pd.Series([None] * 4, dtype='Int64')),
+    (Dtype.float64, pd.Series([None] * 4, dtype='float64')),
+    (Dtype.string, pd.Series([None] * 4, dtype='string')),
+])
+def test_a_column_with_no_sampled_values_is_left_untyped_with_a_warning(
+        dtype, values):
+    column = SourceColumn(name='later', dtype=dtype, stype=None,
+                          is_primary=False)
+    seen = SourceColumn(name='seen', dtype=Dtype.int64, stype=None,
+                        is_primary=False)
+    frame = pd.DataFrame({'later': values, 'seen': [1, 2, 3, 4]})
+
+    class Source:
+        def get_sample(self, connector, table_name, sample_rows, sql=None):
+            return SourceTableDataResponse(
+                table_name=table_name, cols=[column, seen],
+                sample_rows=frame.to_json(orient='table'))
+
+    with pytest.warns(
+            UserWarning, match=re.escape(
+                "Column 'later' in table 'events' has no values in the 4 "
+                "sampled rows, so its semantic type could not be inferred. "
+                "It is left untyped and out of the model's features; set a "
+                "type with `Table.with_column('later', stype=...)` to "
+                "include it.")) as caught:
+        columns = resolve_table_columns(
+            SimpleNamespace(source_backend=Source()), 'events', {
+                'later': column,
+                'seen': seen
+            }, column_names=None, primary_key=None, time_column=None,
+            end_time_column=None)
+    assert [(col.name, col.dtype, col.stype) for col in columns] == [
+        ('later', dtype, Stype.unsupported),
+        ('seen', Dtype.int64, Stype.numerical),
+    ]
+    assert len([w for w in caught if issubclass(w.category, UserWarning)]) == 1

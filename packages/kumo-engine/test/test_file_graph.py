@@ -555,24 +555,229 @@ def test_unsigned_parquet_columns_snapshot_with_exact_values(tmp_path):
     (pa.nulls(3), 'null'),
     (pa.array([1, 2, 2**64 - 1], pa.uint64()), 'uint64'),
     (pa.array([[True], [False], []]), 'list<element: bool>'),
+    (pa.array([{
+        'a': 1
+    }, {
+        'a': 2
+    }, {
+        'a': 3
+    }]), 'struct<a: int64>'),
 ])
-def test_an_undeclared_unreadable_column_is_refused_before_ingest(
+def test_an_undeclared_unreadable_feature_column_is_left_out_with_a_warning(
         column, source_type, tmp_path):
     from kumo.engine import FileConnector, configure
 
     configure(scratch_dir=str(tmp_path / 'scratch'))
     root = tmp_path / 'source'
     root.mkdir()
-    pq.write_table(pa.table({'pk': range(3), 'bad': column}),
-                   root / 'events.parquet')
+    pq.write_table(
+        pa.table({
+            'pk': range(3),
+            'bad': column,
+            'amount': [1.5, 2.5, 3.5]
+        }), root / 'events.parquet')
     table = Table.from_source_table(
         FileConnector(root_dir=str(root))['events'], primary_key='pk')
+    assert {
+        col.name: col.dtype
+        for col in table.definition.cols
+    } == {
+        'pk': Dtype.int64,
+        'bad': Dtype.unsupported,
+        'amount': Dtype.float64,
+    }
+    graph = Graph({'events': table})
+    with pytest.warns(
+            UserWarning, match=re.escape(
+                f"Column events.bad has source type {source_type}, which "
+                f"Kumo cannot read; it is left out of the graph. Declare a "
+                f"dtype for it (`dtypes=` or `with_column('bad', "
+                f"dtype=...)`) or cast it at the source to keep it.")
+    ) as caught:
+        graph.validate()
+        snapshot = graph.snapshot()
+    assert len([w for w in caught if issubclass(w.category, UserWarning)]) == 1
+    assert [col['name'] for col in snapshot.graph_config['tables'][0]['cols']
+            ] == ['amount']
+    native = json.loads(
+        (snapshot.index_path / 'diskgraph_config.json').read_text())
+    assert [col['name']
+            for col in native['tables'][0]['columns']] == ['pk', 'amount']
+
+
+@pytest.mark.parametrize('role', [None, 'primary_key', 'time_column', 'fkey'])
+def test_an_unreadable_column_is_left_out_unless_the_graph_needs_it(
+        role, tmp_path):
+    from kumoapi.graph import Edge
+
+    from kumo.engine import FileConnector, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            'pk': range(3),
+            'bad': pa.array([1, 2, 3], pa.uint64())
+        }), root / 'events.parquet')
+    pq.write_table(pa.table({'id': range(3)}), root / 'users.parquet')
+    connector = FileConnector(root_dir=str(root))
+    roles = {'primary_key': 'bad' if role == 'primary_key' else 'pk'}
+    if role == 'time_column':
+        roles['time_column'] = 'bad'
+    edges = [Edge('events', 'bad', 'users')] if role == 'fkey' else []
+    graph = Graph(
+        {
+            'events': Table.from_source_table(connector['events'], **roles),
+            'users': Table.from_source_table(connector['users'],
+                                             primary_key='id'),
+        }, edges)
+    if role is None:
+        with pytest.warns(UserWarning, match='Column events.bad'):
+            graph.validate()
+        return
     with pytest.raises(
             ValueError,
-            match=re.escape(f"Table 'events' has columns whose source type "
-                            f"Kumo cannot read: 'bad' ({source_type})")):
-        Graph({'events': table}).snapshot()
-    assert not (tmp_path / 'scratch' / 'snapshots').exists()
+            match=re.escape("Table 'events' has columns whose source type "
+                            "Kumo cannot read: 'bad' (uint64)")):
+        graph.validate()
+
+
+LEFT_OUT = ("Column events.bad is named in the query but was left out of "
+            "the graph: its source type struct<a: int64> cannot be read. "
+            "Declare a dtype for it (`dtypes=` or `with_column('bad', "
+            "dtype=...)`) or cast it at the source, then build the graph "
+            "again.")
+UNTYPED = ("Column events.empty is named in the query but has no semantic "
+           "type, so it is not one of the graph's features. Set one with "
+           "`with_column('empty', stype=...)` to use it.")
+
+
+@pytest.mark.parametrize('query, expected', [
+    ('PREDICT events.bad FOR EACH events.pk', LEFT_OUT),
+    ('PREDICT events.amount FOR EACH events.pk WHERE events.bad = 1', LEFT_OUT),
+    ("PREDICT events.nope FOR EACH events.pk WHERE events.kind = 'events.bad'",
+     "Column 'nope' does not exist in table 'events'"),
+    ("PREDICT events.nope FOR EACH events.pk "
+     "WHERE events.kind = 'don\\'t name events.bad'",
+     "Column 'nope' does not exist in table 'events'"),
+    ("PREDICT events.nope FOR EACH events.pk  # not events.bad",
+     "Column 'nope' does not exist in table 'events'"),
+    ('PREDICT events.empty FOR EACH events.pk', UNTYPED),
+    ('PREDICT events.amount FOR EACH events.pk WHERE events.empty IS NULL',
+     UNTYPED),
+])
+def test_a_query_naming_a_left_out_column_says_why_it_is_missing(
+        query, expected, tmp_path):
+    from kumo.engine import FileConnector, PredictiveQuery
+
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            'pk': range(3),
+            'bad': pa.array([{
+                'a': 1
+            }, {
+                'a': 2
+            }, {
+                'a': 3
+            }]),
+            'amount': [1.5, 2.5, 3.5],
+            'kind': ['x', 'y', 'x'],
+            'empty': pa.array([None] * 3, pa.float64()),
+        }), root / 'events.parquet')
+    with pytest.warns(UserWarning, match='has no values'):
+        table = Table.from_source_table(
+            FileConnector(root_dir=str(root))['events'], primary_key='pk')
+    graph = Graph({'events': table})
+    with pytest.warns(UserWarning, match='left out of the graph'), \
+            pytest.raises(ValueError, match=re.escape(expected)):
+        PredictiveQuery(graph, query).validate()
+
+
+def test_a_snapshot_bound_query_over_an_untyped_column_is_refused(tmp_path):
+    """A query bound to a snapshot has no `Graph` to ask what was left out,
+    but the snapshot's own graph still says which columns have no type."""
+    from kumo.engine import FileConnector, PredictiveQuery, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            'pk': range(3),
+            'empty': pa.array([None] * 3, pa.float64()),
+            'amount': [1.5, 2.5, 3.5],
+        }), root / 'events.parquet')
+    with pytest.warns(UserWarning, match='has no values'):
+        table = Table.from_source_table(
+            FileConnector(root_dir=str(root))['events'], primary_key='pk')
+    snapshot = Graph({'events': table}).snapshot()
+    with pytest.raises(ValueError, match=re.escape(UNTYPED)):
+        PredictiveQuery(
+            snapshot, 'PREDICT events.amount FOR EACH events.pk '
+            'WHERE events.empty IS NULL').validate()
+
+
+def test_a_query_may_use_a_foreign_key_with_no_sampled_values(tmp_path):
+    """The graph types a foreign key as an ID whatever its sample held, so
+    a query over one is not a query over an untyped column."""
+    from kumoapi.graph import Edge
+
+    from kumo.engine import FileConnector, PredictiveQuery
+
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            'id': range(3),
+            'customer': pa.array([None] * 3, pa.int64()),
+            'amount': [1.5, 2.5, 3.5],
+        }), root / 'orders.parquet')
+    pq.write_table(pa.table({'id': range(3)}), root / 'users.parquet')
+    connector = FileConnector(root_dir=str(root))
+    with pytest.warns(UserWarning, match='has no values'):
+        orders = Table.from_source_table(connector['orders'], primary_key='id')
+    graph = Graph(
+        {
+            'orders': orders,
+            'users': Table.from_source_table(connector['users'],
+                                             primary_key='id'),
+        }, [Edge('orders', 'customer', 'users')])
+    PredictiveQuery(
+        graph, 'PREDICT orders.amount FOR EACH orders.id '
+        'WHERE orders.customer IS NOT NULL').validate()
+
+
+def test_a_column_with_no_values_snapshots_untyped_and_can_be_typed_later(
+        tmp_path):
+    from kumo.engine import FileConnector, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            'id': range(3),
+            'empty': pa.array([None] * 3, pa.float64())
+        }), root / 'events.parquet')
+    with pytest.warns(
+            UserWarning, match=re.escape("Column 'empty' in table 'events' has "
+                                         "no values in the 3 sampled rows")):
+        table = Table.from_source_table(
+            FileConnector(root_dir=str(root))['events'], primary_key='id')
+    assert table.definition.cols[1].stype == Stype.unsupported
+    assert table.definition.cols[1].dtype == Dtype.float64
+    snapshot = Graph({'events': table}).snapshot()
+    native = json.loads(
+        (snapshot.index_path / 'diskgraph_config.json').read_text())
+    assert [(col['name'], col['semantic_type'])
+            for col in native['tables'][0]['columns']] == [('id', 'id'),
+                                                           ('empty',
+                                                            'unsupported')]
+    typed = table.with_column('empty', stype=Stype.numerical)
+    assert typed.definition.cols[1].stype == Stype.numerical
 
 
 def test_a_declared_dtype_resolves_an_unreadable_column(tmp_path):

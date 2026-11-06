@@ -157,14 +157,16 @@ def read_frames(filesystem: Any, paths: list[str], *,
 
 def read_files(filesystem: Any, paths: list[str], *, sep: str, rows: int,
                null_values: tuple[str, ...] | None = None,
-               escape_char: str | bool = False) -> pd.DataFrame:
+               escape_char: str | bool = False,
+               names: list[str] | None = None) -> pd.DataFrame:
     def read(options: dict[str, Any]) -> pd.DataFrame:
         return read_frames(filesystem, paths, **options)
 
+    selected = {} if names is None else {'usecols': names}
     try:
         return read_pandas(read, {}, sep=sep, nrows=rows,
                            na_values=list(NA_TOKENS | set(null_values or ())),
-                           escapechar=escape_char or None)
+                           escapechar=escape_char or None, **selected)
     except pd.errors.ParserError as error:
         raise PermanentSourceError(str(error)) from error
 

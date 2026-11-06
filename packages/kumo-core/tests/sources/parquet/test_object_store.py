@@ -1614,3 +1614,45 @@ def test_failed_identity_recheck_discards_staged_output(
                        mode=ReadMode.STREAMED)
     assert not destination.exists()
     assert (parts / "part-0.parquet").exists()
+
+
+@pytest.mark.parametrize("unreadable", [
+    pa.array([{
+        "a": 1
+    }, {
+        "a": 2
+    }], pa.struct([("a", pa.int64())])),
+    pa.array([[("k", 1)], [("k", 2)]], pa.map_(pa.string(), pa.int64())),
+])
+def test_a_column_type_kumo_cannot_read_leaves_the_other_columns_readable(
+        unreadable, tmp_path):
+    """The catalog, the sample and a staging that did not select the column
+    all refused the whole table over it, so no other column of the table
+    could be typed or ingested either."""
+    write_parts(
+        tmp_path / "nested",
+        pa.table({
+            "id": pa.array([1, 2], pa.int64()),
+            "payload": unreadable,
+            "amount": pa.array([1.5, 2.5], pa.float64()),
+        }))
+    reader = reader_over(tmp_path)
+    assert reader.dtypes("nested") == {
+        "id": Dtype.int64,
+        "payload": Dtype.unsupported,
+        "amount": Dtype.float64,
+    }
+    assert reader.source_types("nested")["payload"] == unreadable.type
+    assert reader.head("nested", 2).to_pydict() == {
+        "id": [1, 2],
+        "amount": [1.5, 2.5]
+    }
+    staged = reader.prepare(
+        "nested", str(tmp_path / "out"), columns={
+            "id": Dtype.int64,
+            "amount": Dtype.float64
+        }, mode=ReadMode.STREAMED)
+    assert staged_frame(staged).to_pydict() == {
+        "id": [1, 2],
+        "amount": [1.5, 2.5]
+    }

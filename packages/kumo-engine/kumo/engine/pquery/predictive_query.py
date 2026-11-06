@@ -59,8 +59,10 @@ from kumo_core.model_plan import (
 from kumo_core.model_plan_conversion import public_model_plan_from_internal
 from kumo_core.pquery import (
     NativeGraph,
+    PredictiveQueryPlanError,
     ValidatedNativeQuery,
     parse_and_validate_query,
+    query_column_names,
     query_is_temporal,
     resolve_query_split,
     target_to_entity_paths,
@@ -80,6 +82,7 @@ from kumoapi.model_plan import ModelPlan, RunMode, TrainingTableGenerationPlan
 from kumoapi.pquery import QueryType
 from kumoapi.task import TaskType
 from kumoapi.train import TrainingTableSpec
+from kumoapi.typing import Stype
 
 from kumo.engine._embeddings import no_encoder_inference_warnings
 from kumo.engine._prep_cost import start
@@ -127,14 +130,53 @@ class PredictiveQuery:
 
         Raises (an unspecified `kumo_core` exception, typically a
         `PredictiveQueryPlanError`) on an invalid query -- unknown table/
-        column, malformed PQL, a dangling `FOR EACH` entity, and so on. The
-        failure itself is not cached; a later access re-parses.
+        column, malformed PQL, a dangling `FOR EACH` entity, and so on. A
+        query naming a column the graph left out, or one without a semantic
+        type, is refused first with the reason and the fix (`_refuse_columns_
+        the_graph_cannot_use`). The failure itself is not cached; a later
+        access re-parses.
 
         `task_type`/`task_family`/`query_type` on the returned
         `ValidatedNativeQuery` are all plain `str`; `get_task_type` below
         wraps `task_type` into the shared, public `kumoapi.task.TaskType`.
         """
+        self._refuse_columns_the_graph_cannot_use()
         return parse_and_validate_query(self.query, self._native_graph)
+
+    def _refuse_columns_the_graph_cannot_use(self) -> None:
+        r"""A column the graph left out for a source type it cannot read, or
+        kept without a semantic type, is refused by name with the fix. The
+        validator alone would call the first merely unknown and, for the
+        second in a condition, fail an assertion. Only a `Graph` knows what
+        it left out; a snapshot's graph still says which columns have no
+        type, the graph's effective one: a foreign key is an ID whatever its
+        sample held.
+        """
+        left_out = (self.graph._left_out
+                    if isinstance(self.graph, Graph) else {})
+        native = self._native_graph
+        for qualified in query_column_names(self.query):
+            alias, _, name = qualified.partition('.')
+            if name in left_out.get(alias, {}):
+                source_type = left_out[alias][name]
+                described = (f"its source type {source_type}"
+                             if source_type is not None else "its source type")
+                raise PredictiveQueryPlanError(
+                    f"Column {alias}.{name} is named in the query but was "
+                    f"left out of the graph: {described} cannot be read. "
+                    f"Declare a dtype for it (`dtypes=` or "
+                    f"`with_column({name!r}, dtype=...)`) or cast it at "
+                    f"the source, then build the graph again.")
+            try:
+                column = native.table(alias).column(name)
+            except PredictiveQueryPlanError:
+                continue
+            if column.stype == Stype.unsupported.value:
+                raise PredictiveQueryPlanError(
+                    f"Column {alias}.{name} is named in the query but has no "
+                    f"semantic type, so it is not one of the graph's "
+                    f"features. Set one with `with_column({name!r}, "
+                    f"stype=...)` to use it.")
 
     @property
     def _native_graph(self) -> NativeGraph:
