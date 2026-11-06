@@ -54,7 +54,7 @@ Prerequisites:
     entries; this module also defaults it at import time)
   - ``GOOGLE_APPLICATION_CREDENTIALS`` pointing to an explicit local ADC file;
     ``external_account`` credentials are required when workload exchange is
-    enabled. See ``docs/development/testing.md`` for supported local ADC types.
+    enabled.
   - ``GCP_STORAGE_TRANSFER_BUCKET`` env var set to a writable
     GCS bucket (CI sets it to ``kumo-test-bucket``)
 

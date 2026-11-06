@@ -86,32 +86,3 @@ The [Engine PR guide](engine-pr-ci.md#local-feedback) gives one pytest command
 for the small pure output and workflow checks. The existing OSS Readiness job
 runs the same tests. They need no GPU or cloud access. The GPU job runs the
 eight actual training and save/load cases.
-
-## Live Google Cloud tests
-
-Selected BigQuery and GCS tests require an explicit
-`GOOGLE_APPLICATION_CREDENTIALS` JSON file. Local runs accept `service_account`,
-`authorized_user`, `impersonated_service_account`, and `external_account` ADC.
-With `KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED=true`, only `external_account` is
-accepted. Missing or invalid inputs fail setup. Tests do not fetch Google keys
-from AWS Secrets Manager, decode `GOOGLE_CREDENTIALS_STR_JSON`, discover home
-credentials, or write credential files. Existing input files remain unchanged.
-
-Restricted BigQuery permission tests use `GCP_BIGQUERY_NO_TABLE_CREDENTIALS`
-and `GCP_BIGQUERY_NO_JOB_CREDENTIALS` for separate service-account key files.
-Other ADC types use `GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT` and
-`GCP_BIGQUERY_NO_JOB_SERVICE_ACCOUNT` impersonation targets. The source identity
-must be allowed to impersonate those deliberately restricted accounts.
-
-The decorators declare credentials without collection-time IO. Selected tests
-prepare the base identity before fixtures start, scope restricted identities
-through fixture teardown, and restore the original environment and cached GCS
-client after the session's workers stop. Skipped Snowflake tests do not resolve
-Google credentials. No credentials are required for collection alone.
-
-Run GCP integration modules in a separate pytest invocation from non-GCP
-DiskGraph integration modules. If pool workers have already started without the
-GCP test context, later GCP tests fail with an explicit instruction rather than
-silently reusing workers with stale credentials. CI runs each integration module
-in its own process. Shared AWS, Azure, and Databricks environment isolation is
-outside this credential-helper change.
