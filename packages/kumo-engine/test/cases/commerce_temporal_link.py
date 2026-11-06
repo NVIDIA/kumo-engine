@@ -3,9 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from commerce_static_link import build_graph as commerce_graph
-from common import LIMITS, metric, parse_args, run, sources
+from common import LIMITS, Scale, metric, parse_args, run, sources
 
-SCALES = {"100M": 100, "1B": 300, "10B": 1600, "25B": 3200}
+SCALES = {
+    "100M": Scale(100, "g7e.8xlarge"),
+    "1B": Scale(300, "g7e.8xlarge"),
+    "10B": Scale(1600, "g7e.12xlarge"),
+    "25B": Scale(3200, "g7e.24xlarge")
+}
 QUERY = ('PREDICT LIST_DISTINCT(purchases.merchant_id, 0, 7, days) RANK TOP '
          '10 FOR EACH customers.customer_id ')
 SPLIT = ("TimeRangeSplit([('2024-12-05T00:00:00', '2024-12-12T00:00:00'), "
