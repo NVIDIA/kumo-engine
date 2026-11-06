@@ -26,13 +26,12 @@ permissions:
 
 concurrency:
   group: engine-nightly
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   nightly:
     if: github.ref == 'refs/heads/main' && vars.ENGINE_E2E_ENABLED == 'true'
     uses: ./.github/workflows/kumo-engine-e2e.yml
-    secrets: inherit
     with:
       tier: nightly
       scales: '["100M", "1B"]'

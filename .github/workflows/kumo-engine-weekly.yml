@@ -33,7 +33,6 @@ jobs:
   weekly:
     if: github.ref == 'refs/heads/main' && vars.ENGINE_E2E_ENABLED == 'true'
     uses: ./.github/workflows/kumo-engine-e2e.yml
-    secrets: inherit
     with:
       tier: weekly
       scales: '["10B", "25B"]'

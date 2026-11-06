@@ -18,6 +18,13 @@ CASES = ROOT / "packages/kumo-engine/test/cases"
 common = SimpleNamespace(**runpy.run_path(str(CASES / "common.py")))
 
 
+@pytest.mark.parametrize("tier", ["nightly", "weekly"])
+def test_new_dispatch_preserves_active_reference_generation(tier):
+    workflow = yaml.safe_load(
+        (ROOT / f".github/workflows/kumo-engine-{tier}.yml").read_text())
+    assert workflow["concurrency"]["cancel-in-progress"] is False
+
+
 @pytest.mark.parametrize(
     "workflow,controller,worker",
     [("kumo-engine-e2e.yml", "pool", "cases"),
