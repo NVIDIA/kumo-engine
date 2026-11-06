@@ -1,13 +1,7 @@
 # Install on DGX Spark
 
 Use the Linux ARM64 Kumo Engine wheel with CPython **3.11–3.14**. The host
-needs glibc 2.34 or newer and CPU AES and NEON instructions. Check the
-[PyPI files for your release](https://pypi.org/project/kumo-engine/#files)
-for an `aarch64` wheel before using the installation steps below. If your
-release has no ARM64 wheel, use the
-[local source-build instructions](../../docs/development/releasing-kumo-engine.md#build-locally),
-including the [Linux ARM64 build notes](../../docs/development/releasing-kumo-engine.md#linux-arm64-builds),
-then install the resulting wheel in your virtual environment.
+needs glibc 2.34 or newer and CPU AES and NEON instructions.
 
 The installed-wheel qualification covers CPU ingestion, training, prediction
 and model reload on Python 3.11–3.14. GPU execution and Faiss retrieval have

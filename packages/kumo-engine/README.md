@@ -63,9 +63,8 @@ pip install "kumo-engine[text]"
 
 Extras combine, for example `pip install "kumo-engine[s3,text]"`.
 
-Release wheel targets are Linux x86_64 and ARM64, and macOS on Apple silicon.
-Check the [PyPI files for your release](https://pypi.org/project/kumo-engine/#files)
-for published availability. For Linux ARM64 installation and optional GPU
+Prebuilt wheels are available for Linux x86_64 and ARM64, and macOS on Apple
+silicon. For Linux ARM64 installation and optional GPU
 Faiss setup, follow the [DGX Spark guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/dgx-spark.md).
 
 ### Optional: faster training on NVIDIA GPUs
