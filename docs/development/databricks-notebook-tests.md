@@ -53,7 +53,8 @@ Use the GitHub environment `databricks-mlops-test`, require approval from
 The PAT identity needs Jobs submission/export, workspace notebook import and
 read/write access to the dedicated Unity Catalog volume. GitHub's built-in token
 checks environment protections before approval and again before consuming the PAT.
-The workflow accepts manual dispatch only on the feature branch.
+The cloud jobs accept manual dispatch only on the feature branch. A branch-scoped
+push event registers the workflow in GitHub; both jobs are skipped for pushes.
 
 By default, the runner uses serverless environment 2. Serverless can select ARM64;
 the notebook rejects that architecture before installation. Databricks may

@@ -219,7 +219,8 @@ def test_workflow_secrets_are_available_only_after_native_environment_approval(
     workflow = yaml.safe_load(
         (ROOT /
          '.github/workflows/kumo-engine-databricks-notebook.yml').read_text())
-    assert set(workflow[True]) == {'workflow_dispatch'}
+    assert set(workflow[True]) == {'workflow_dispatch', 'push'}
+    assert workflow[True]['push']['branches'] == ['egu/databricks-ui-validation']
     gate = workflow['jobs']['configuration']['steps'][1]
     job = workflow['jobs']['notebook-ui']
     assert job['environment'] == 'databricks-mlops-test'
