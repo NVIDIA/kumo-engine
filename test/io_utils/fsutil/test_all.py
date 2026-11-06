@@ -49,7 +49,7 @@ def root_ucv(temp_ucv) -> Generator[str, None, None]:
 @pytest.fixture(
     params=[
         "root_s3",
-        "root_gcs",
+        pytest.param("root_gcs", marks=pytest.mark.gcs_credentials),
         "root_ucv",
         "root_adls",
     ],

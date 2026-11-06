@@ -20,6 +20,7 @@ import socket  # noqa: E402
 import time  # noqa: E402
 import uuid  # noqa: E402
 from collections.abc import Callable  # noqa: E402
+from contextlib import ExitStack  # noqa: E402
 from test.fixtures.backend_cache import (  # noqa: E402, F401
     auto_setup_kumo_backend,
     backend_cache,
@@ -70,7 +71,12 @@ from kumo.graph.graph import Graph  # noqa: E402
 from kumo.graph.table import Table  # noqa: E402
 from kumo.task.task import Task  # noqa: E402
 from kumo.testing import withDatabricksCredentials  # noqa: E402
-from kumo.testing.gcs import require_gcs_credentials  # noqa: E402
+from kumo.testing.bigquery import (  # noqa: E402
+    GCP_WORKERS_STARTED,
+    BigQueryIdentity,
+    setup_bigquery_credentials,
+)
+from kumo.testing.gcs import setup_gcs_credentials  # noqa: E402
 from kumo.testing.generator import EdgeSpec, GraphSpec, TableSpec  # noqa: E402
 from kumo.testing.snowflake import setup_snowflake_credentials  # noqa: E402
 from kumo.utils.embedding_models import embedding_model_store  # noqa: E402
@@ -191,21 +197,55 @@ def pytest_runtest_makereport(item, call):
         _flake_diagnostics.run_on_failure(item.nodeid, tc)
 
 
+_GCP_SESSION = pytest.StashKey[ExitStack]()
+_GCP_TEST = pytest.StashKey[ExitStack]()
+
+
 def pytest_runtest_setup(item: pytest.Item) -> None:
-    # Pytest's tryfirst skip hook runs before this normal setup hook; its
-    # fixture setup runs afterward. Skipped Snowflake targets never load GCP
-    # credentials, and selected GCS tests configure them before session workers.
-    if item.get_closest_marker('gcs_credentials') is not None:
-        require_gcs_credentials()
+    # Normal setup runs after pytest's skip hook and before fixture setup.
+    # Keep the base identity until all session workers have been torn down.
+    marker = item.get_closest_marker('bigquery_credentials')
+    needs_gcs = (item.get_closest_marker('gcs_credentials') is not None
+                 or 'gcs_credentials' in item.fixturenames)
+    if marker is None and not needs_gcs:
+        return
+    if _GCP_SESSION not in item.config.stash:
+        if item.config.stash.get(GCP_WORKERS_STARTED, False):
+            raise RuntimeError(
+                'GCP tests cannot reuse workers started before credential setup; '
+                'run GCP integration modules in a separate pytest invocation')
+        session = ExitStack()
+        item.config.add_cleanup(session.close)
+        session.enter_context(setup_gcs_credentials())
+        item.config.stash[_GCP_SESSION] = session
+    identity = BigQueryIdentity.DEFAULT
+    if marker is not None:
+        identity, = marker.args
+    scoped = ExitStack()
+    item.stash[_GCP_TEST] = scoped
+    scoped.enter_context(setup_gcs_credentials())
+    scoped.enter_context(setup_bigquery_credentials(identity))
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_teardown(item: pytest.Item):
+    try:
+        yield
+    finally:
+        if _GCP_TEST in item.stash:
+            item.stash[_GCP_TEST].close()
+            del item.stash[_GCP_TEST]
 
 
 @pytest.fixture
 def gcs_credentials() -> None:
-    require_gcs_credentials()
+    # The setup hook resolves fixture prerequisites before resource startup.
+    pass
 
 
 def pytest_configure(config):
     config.addinivalue_line('markers', 'gcs_credentials: live GCS prerequisite')
+    config.addinivalue_line('markers', 'bigquery_credentials(identity): BigQuery identity')
     # register nightly marker
     config.addinivalue_line("markers",
                             ("nightly(name): Used to mark long-running"
