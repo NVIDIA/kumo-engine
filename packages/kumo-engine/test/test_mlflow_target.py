@@ -76,6 +76,12 @@ def test_unity_catalog_names_the_extra_its_storage_needs(
             _open_uc_storage(kind)
 
 
+def test_an_unwrapped_missing_client_names_its_extra_too():
+    with pytest.raises(ImportError, match=r"pip install 'kumo-engine\[s3\]'"):
+        with target_module.Target('databricks', 'databricks-uc').scope():
+            raise ModuleNotFoundError(name='boto3')
+
+
 def test_other_missing_modules_pass_through(monkeypatch):
     monkeypatch.setitem(sys.modules, 'boto3', None)
     with pytest.raises(mlflow.exceptions.MlflowException):
@@ -84,6 +90,12 @@ def test_other_missing_modules_pass_through(monkeypatch):
     with pytest.raises(RuntimeError):
         with target_module.Target('databricks', 'databricks-uc').scope():
             raise RuntimeError() from ModuleNotFoundError(name='snowflake')
+    for registry, module in (('databricks-uc', 'snowflake'),
+                             ('databricks', 'boto3')):
+        with pytest.raises(ModuleNotFoundError) as raised:
+            with target_module.Target('databricks', registry).scope():
+                raise ModuleNotFoundError(name=module)
+        assert type(raised.value) is ModuleNotFoundError
 
 
 def test_ambient_identities_set_no_credentials(monkeypatch, tracking_uri):

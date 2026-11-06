@@ -115,7 +115,8 @@ class Target:
                     with _LOCK, self._swap():
                         yield
         except Exception as error:
-            missing = error.__cause__
+            missing = (error if isinstance(error, ModuleNotFoundError) else
+                       error.__cause__)
             if not isinstance(missing, ModuleNotFoundError):
                 raise
             client = (missing.name or '').partition('.')[0]
