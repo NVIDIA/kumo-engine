@@ -1,6 +1,6 @@
 ---
 name: kumo-data-science
-description: "Use for any work with KumoAI predictive models on relational data in a warehouse, an object store or local files: train a model, score data with a trained one, or answer questions about an existing model or run — explain its predictions, diagnose its training, publish, reload or retain it, train or score on custom labels or rows, or tune it. Covers churn, propensity, fraud, recommendation, forecasting and link prediction. For a new model it checks that the request names the data (a schema, dataset, folder of files, connector, semantic view or metric view), the outcome and the time window, confirms the inferred tables and the task, then generates one notebook or script; it runs it only when asked, in the notebook or as a host job (a Snowflake ML Job, a Databricks job). Also use it, before any general jobs or workspace skill, for a job, schedule, run or cluster that runs a Kumo notebook or scores a model published from one: creating, scheduling, pausing, submitting or debugging it."
+description: "Use for KumoAI graphs and predictive models on relational data in a warehouse, an object store or local files: inspect, visualize or export a graph's schema and relationships; train a model, score data with a trained one, explain its predictions, diagnose its training, publish, reload or retain it, train or score on custom labels or rows, or tune it. Covers churn, propensity, fraud, recommendation, forecasting and link prediction. For a new model it checks that the request names the data, outcome and time window, confirms the inferred tables and task, then generates one notebook or script; it runs it only when asked, in the notebook or as a host job. Also use it, before any general jobs or workspace skill, for a job, schedule, run or cluster that runs a Kumo notebook or scores a model published from one: creating, scheduling, pausing, submitting or debugging it."
 ---
 
 # Data Science Agent — Router Skill
@@ -12,7 +12,8 @@ description: "Use for any work with KumoAI predictive models on relational data 
 Quote this string verbatim whenever asked which build of the skill is loaded. If you cannot read
 it from this file, you have not loaded the skill — say so rather than guessing.
 
-Targets Kumo bundle `20261007+2e1eb12` (import `kumo.engine`; kumo-ai/kumo#31382).
+Targets the local `kumo.engine` API; the baseline bundle is `20261007+2e1eb12`.
+Graph visualization requires a source build including [NVIDIA/kumo-engine#134](https://github.com/NVIDIA/kumo-engine/pull/134); it is absent from that bundle and the `1.0.0` release.
 One SDK, no variants.
 
 ## Read the host adapter first
@@ -30,7 +31,8 @@ Requests that mention any of: kumo, predict, churn, recommend, forecast, fraud, 
 inference, explain a prediction, feature importance, feature attribution, column cohorts, model
 metrics, trials, learning curves, publish or load a model, registry publishing, artifact retention,
 caller-supplied labels, weights or splits, encoders, run mode, experiments, tune a model, semantic
-view, metric view, ML Job, compute pool, Databricks job.
+view, metric view, ML Job, compute pool, Databricks job, graph diagram, visualize a graph,
+inspect graph schema, export graph relationships.
 
 ## Routing
 
@@ -39,6 +41,7 @@ build and artifact checks:
 
 | Request | Skill |
 |---|---|
+| Show or export a graph; inspect its schema during model iteration | `kumo-graph-visualization/SKILL.md` |
 | Attribution or column cohorts for an existing run | `kumo-model-explanations/SKILL.md` |
 | Metrics, trial comparisons, learning curves, recorded progress | `kumo-training-diagnostics/SKILL.md` |
 | Publish, reload, retain or retrieve a model or its artifacts | `kumo-model-persistence/SKILL.md` |
@@ -277,6 +280,8 @@ After ACCEPT, load `kumoai-reference/SKILL.md` and hand off the confirmed payloa
 
 1. Connector from environment credentials; confirmed tables, metadata, links; graph and PQL
    validation; SDK-default training table and model plan, no tuning.
+   After graph construction and validation, include the interactive graph cell from `kumo-graph-visualization/SKILL.md` for the user, before snapshot creation and training.
+   Visualization adds no approval gate; continue unless the user requests a pause for review.
 2. **Exactly one** training call — `trainer.fit(...)`. It blocks until training finishes and
    returns a `TrainingResult`; print its `metrics`.
 3. **Predict in the same notebook** — same `Trainer`, same process, immediately after
@@ -292,6 +297,7 @@ After ACCEPT, load `kumoai-reference/SKILL.md` and hand off the confirmed payloa
    still executes nothing (Step 3 is opt-in).
 
 The user may ask for a script instead of a notebook.
+Include the SVG export from `kumo-graph-visualization/SKILL.md` before training, saving it alongside run outputs and reporting its path.
 
 ### `batch_inference`
 

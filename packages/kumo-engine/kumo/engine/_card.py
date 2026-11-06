@@ -13,6 +13,7 @@ from kumo_core.score_drift import holdout_shift, psi_shift
 from kumo_core.summaries import Note, Summary, Table
 
 from kumo.engine._prep_cost import PREP_TABLE
+from kumo.engine._run_names import version_label
 from kumo.engine._text import metric_key, number
 
 HEADLINE_CHARS = 140
@@ -34,6 +35,9 @@ _NAMED = ('source_table', 'prediction_output')
 _STEPS = {'snapshot': 'Graph snapshot', 'training_table': 'Training table'}
 _CONSOLES = {'s3': 'https://s3.console.aws.amazon.com/s3/buckets/{}?prefix={}/',
              'gs': 'https://console.cloud.google.com/storage/browser/{}/{}'}
+_AZURE_PORTALS = {'dfs.core.windows.net': 'https://portal.azure.com',
+                  'dfs.core.usgovcloudapi.net': 'https://portal.azure.us',
+                  'dfs.core.chinacloudapi.cn': 'https://portal.azure.cn'}
 
 
 @dataclass(frozen=True)
@@ -316,6 +320,13 @@ def _location(location: str) -> str:
     scheme, _, path = location.partition('://')
     bucket, _, key = path.partition('/')
     text = f"`{location.replace('|', '%7C')}`"
+    if scheme.lower() == 'abfss':
+        suffix = bucket.partition('@')[2].partition('.')[2]
+        portal = _AZURE_PORTALS.get(suffix)
+        if portal:
+            # An ADLS URI has no subscription or resource-group ID.
+            return (f'{text} ([Azure Storage accounts]({portal}/#browse/'
+                    'Microsoft.Storage%2FStorageAccounts))')
     console = _CONSOLES.get(scheme)
     return (f'[{text}]({console.format(bucket, quote(key.rstrip("/")))})'
             if console and bucket else text)
@@ -328,7 +339,7 @@ def _notes(summaries: Sequence[Summary], section: str) -> List[str]:
 
 def _model(tags: Mapping[str, str]) -> Optional[str]:
     name, version = tags.get('kumo.model_name'), tags.get('kumo.model_version')
-    return f'`{name}` v{version}' if name and version else None
+    return f'`{name}` {version_label(version)}' if name and version else None
 
 
 def _tuned(tags: Mapping[str, str]) -> str:

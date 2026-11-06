@@ -10,6 +10,7 @@
     python3 agent-skills/scripts/package_skill.py genie --deploy   # + upload to your Genie skills folder
     python3 agent-skills/scripts/package_skill.py coco --out DIR   # build somewhere else
     python3 agent-skills/scripts/package_skill.py --check          # build every host in a temp dir
+    python3 agent-skills/scripts/package_skill.py --zip DIR        # one download zip per host
 
 The source tree under `skills/` is not the layout that ships. A package holds one skill directory,
 `kumo-data-science/`, and every other source directory nests inside it, so the router reaches
@@ -17,8 +18,10 @@ The source tree under `skills/` is not the layout that ships. A package holds on
 the portable core plus only its own host files, so an agent never reads another host's adapter.
 
 The build stamps the router's `SKILL-BUILD` marker with the commit the package was built from,
-`<commit date>-<short sha>`, suffixed `-dirty` when `skills/` has uncommitted changes. The source
-tree carries `SKILL-BUILD: source`, so a session quoting that value read an unpackaged copy.
+`<commit date>-<short sha>`, suffixed `-dirty` when `skills/` has uncommitted changes. Without git
+(an extracted source archive) it is `unknown-<digest>`, a hash of the skill files, so two different
+archives never share a stamp. The source tree carries `SKILL-BUILD: source`, so a session quoting
+that value read an unpackaged copy.
 
 `genie --deploy` uploads the package to `/Users/<you>/.assistant/skills/kumo-data-science/`, the
 folder Genie Code reads skills from, through the Workspace API, then reads every file back and
@@ -26,6 +29,12 @@ compares bytes. It authenticates with `DATABRICKS_HOST` (or `DATABRICKS_URL`) an
 `DATABRICKS_TOKEN` from the environment or `--env-file`. Files already in that folder that the
 package does not ship are reported, and deleted with `--prune` (only inside
 `kumo-data-science/`). A new Genie Code chat picks up the change.
+
+`--zip DIR` writes `kumo-data-science-<host>.zip` for every host, each holding the one
+`kumo-data-science/` directory at its root: unzip it into an agent's skills directory, or upload it
+where an agent takes a skill zip. The release workflow attaches them to each `kumo-engine-v*`
+GitHub release, beside the wheel built from the same commit. Entries are sorted and carry a fixed
+timestamp and creating system, so one commit always yields the same bytes, on any OS.
 
 Every build is checked: each markdown link must resolve relative to the file that holds it, and
 each backticked path naming a package directory must resolve relative to the package root. A
@@ -35,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
@@ -45,6 +55,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +64,7 @@ DIST = ROOT / 'dist'
 ROUTER = 'kumo-data-science'
 
 CAPABILITY = [
+    'kumo-graph-visualization',
     'kumo-model-explanations',
     'kumo-training-diagnostics',
     'kumo-model-persistence',
@@ -84,25 +96,53 @@ CODE_PATH = re.compile(r'`([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+\.(?:md|py))`')
 
 
 def build_id() -> str:
-    """Name the source commit: `<commit date>-<short sha>`, `-dirty` if `skills/` has edits."""
+    """Name the source commit: `<commit date>-<short sha>`, `-dirty` if `skills/` has edits.
+
+    Without git, name the content instead: `unknown-<digest>` of every skill file, the same for
+    every host, so the stale check never takes two different builds for one.
+    """
     def git(*args: str) -> str:
         return subprocess.run(['git', '-C', str(ROOT), *args], check=True, capture_output=True,
                               text=True).stdout.strip()
 
     try:
-        stamp = git('log', '-1', '--format=%cd-%h', '--date=format:%Y-%m-%d')
+        # A fixed 8 characters: %h's length depends on the clone, so a shallow CI checkout and a
+        # full one would stamp the same commit differently.
+        date, sha = git('log', '-1', '--format=%cd %H', '--date=format:%Y-%m-%d').split()
+        stamp = f'{date}-{sha[:8]}'
         dirty = git('status', '--porcelain', '--', str(SKILLS))
     except (OSError, subprocess.CalledProcessError):
-        return 'unknown'
+        digest = hashlib.sha256()
+        for p in skill_files(SKILLS):
+            data = p.read_bytes()
+            digest.update(f'{p.relative_to(SKILLS).as_posix()}\0{len(data)}\0'.encode() + data)
+        return f'unknown-{digest.hexdigest()[:12]}'
     return f'{stamp}-dirty' if dirty else stamp
 
 
+SKILL_SUFFIXES = ('.md', '.py')
+
+
 def git_tracked(src: Path) -> list[Path]:
-    """List the files git tracks under `src`, as absolute paths."""
+    """List the files git tracks under `src`, as absolute paths.
+
+    Without git — a source archive, extracted — fall back to the skill's own file types, so a
+    stray `.env` or log still cannot ship. `tests/test_package_skill.py` checks that the two lists
+    agree on the committed tree.
+    """
     rel = src.relative_to(ROOT)
-    out = subprocess.run(['git', '-C', str(ROOT), 'ls-files', '--', str(rel)],
-                         check=True, capture_output=True, text=True).stdout
+    try:
+        out = subprocess.run(['git', '-C', str(ROOT), 'ls-files', '--', str(rel)],
+                             check=True, capture_output=True, text=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return skill_files(src)
     return [ROOT / line for line in out.splitlines() if line]
+
+
+def skill_files(src: Path) -> list[Path]:
+    """The files under `src` a skill is made of, found without git."""
+    return sorted(p for p in src.rglob('*')
+                  if p.is_file() and p.suffix in SKILL_SUFFIXES and '__pycache__' not in p.parts)
 
 
 def copy_tracked(src: Path, dest: Path) -> None:
@@ -136,10 +176,10 @@ def build(host: str, dist: Path) -> Path:
         for name in CAPABILITY:
             copy_tracked(SKILLS / name, pkg / name)
     router = pkg / 'SKILL.md'
-    text, n = MARKER.subn(f'SKILL-BUILD: {build_id()}', router.read_text())
+    text, n = MARKER.subn(f'SKILL-BUILD: {build_id()}', router.read_text(encoding='utf-8'))
     if n != 1:
         raise SystemExit(f'expected one SKILL-BUILD marker in {router}, found {n}')
-    router.write_text(text)
+    router.write_text(text, encoding='utf-8')
     return pkg
 
 
@@ -149,7 +189,7 @@ def unresolved(pkg: Path) -> list[str]:
     roots = {p.name for p in pkg.iterdir()}
     errors = []
     for doc in sorted(pkg.rglob('*.md')):
-        text = doc.read_text()
+        text = doc.read_text(encoding='utf-8')
         where = doc.relative_to(pkg)
         for target in MD_LINK.findall(text):
             if '://' in target or target.startswith('mailto:'):
@@ -168,6 +208,54 @@ def unresolved(pkg: Path) -> list[str]:
             if not (pkg / head / rest).is_file():
                 errors.append(f'{where}: `{target}` does not resolve from the package root')
     return errors
+
+
+def bundle(out: Path) -> None:
+    """Build every host's package into `out/<host>/kumo-data-science/`, the layout the
+    `kumo-engine` wheel ships under `kumo/engine/_skills/` for `kumo.engine.install_skills()`.
+
+    `packages/kumo-engine/setup.py` calls this on every build from a checkout, so a wheel always
+    carries the skill built from its own commit. A package with an unresolved reference fails the
+    build instead of shipping.
+    """
+    if out.exists():
+        shutil.rmtree(out)
+    with tempfile.TemporaryDirectory() as tmp:
+        for host in sorted(HOSTS):
+            pkg = build(host, Path(tmp))
+            errors = unresolved(pkg)
+            if errors:
+                raise SystemExit(f'{host}: {len(errors)} unresolved reference(s): {errors[:3]}')
+            shutil.copytree(pkg, out / host / ROUTER)
+
+
+# A zip entry's timestamp: the earliest a zip can hold, so a rebuild never changes the bytes.
+ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
+
+
+def archive(out: Path) -> list[Path]:
+    """Write `out/kumo-data-science-<host>.zip` for every host and return the paths.
+
+    Each zip is the `bundle()` layout for one host: `kumo-data-science/` at its root, the same
+    directory `kumo.engine.install_skills()` installs.
+    """
+    out.mkdir(parents=True, exist_ok=True)
+    zips = []
+    with tempfile.TemporaryDirectory() as tmp:
+        bundle(Path(tmp) / 'bundle')
+        for host in sorted(HOSTS):
+            root = Path(tmp) / 'bundle' / host
+            dest = out / f'{ROUTER}-{host}.zip'
+            with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for p in sorted(p for p in root.rglob('*') if p.is_file()):
+                    info = zipfile.ZipInfo(p.relative_to(root).as_posix(), ZIP_EPOCH)
+                    info.compress_type = zipfile.ZIP_DEFLATED
+                    info.external_attr = 0o644 << 16
+                    # Each entry records the system that wrote it, 0 on Windows: fix it to Unix.
+                    info.create_system = 3
+                    zf.writestr(info, p.read_bytes())
+            zips.append(dest)
+    return zips
 
 
 class Workspace:
@@ -220,7 +308,7 @@ class Workspace:
 
 def read_env_file(path: Path) -> None:
     """Set KEY=VALUE lines from `path` into the environment, without overriding it."""
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding='utf-8').splitlines():
         key, sep, value = line.strip().partition('=')
         if sep and not key.startswith('#'):
             os.environ.setdefault(key.strip(), value.strip().strip('\'"'))
@@ -287,12 +375,21 @@ def main() -> None:
     ap.add_argument('host', nargs='?', choices=sorted(HOSTS))
     ap.add_argument('--out', type=Path, default=DIST, help='output root (default: %(default)s)')
     ap.add_argument('--check', action='store_true', help='build and check every host in a temp dir')
+    ap.add_argument('--zip', type=Path, metavar='DIR',
+                    help='write kumo-data-science-<host>.zip for every host into DIR')
     ap.add_argument('--deploy', action='store_true',
                     help='genie: upload to your Genie Code skills folder and read it back')
     ap.add_argument('--prune', action='store_true',
                     help='genie --deploy: delete files in the target the package does not ship')
     ap.add_argument('--env-file', type=Path, help='KEY=VALUE file with DATABRICKS_HOST/_TOKEN')
     args = ap.parse_args()
+    if args.zip:
+        if args.host or args.check or args.deploy:
+            ap.error('--zip builds every host; give it alone')
+        for z in archive(args.zip):
+            with zipfile.ZipFile(z) as zf:
+                print(f'{z}: {len(zf.namelist())} files, build {build_id()}')
+        return
     if not args.check and not args.host:
         ap.error('give a host, or --check')
     if args.deploy and (args.check or args.host != 'genie'):

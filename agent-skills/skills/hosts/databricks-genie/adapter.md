@@ -143,17 +143,33 @@ run as the signed-in user. The check is the scope query, against `source_scope` 
 SELECT schema_name FROM <catalog>.information_schema.schemata WHERE schema_name = lower('<schema>');
 ```
 
-- A row back: you can read the scope. Name the tool in the proposal's `Source scope` line
-  (`Genie Code SQL, as <user>`).
+- A row back: you can see the scope. That is not yet reading it — continue with the read probe
+  below.
 - No row, or `CATALOG_NOT_FOUND` / `SCHEMA_NOT_FOUND`: name `source_scope` as not found and ask
   for a valid catalog and schema, adding that the user may also lack access to it. Do not
   suggest a similar name, and do not ask for its structure.
 - `PERMISSION_DENIED` or `INSUFFICIENT_PERMISSIONS`: the scope exists and this user cannot read it.
 
+**Read probe.** Unity Catalog lists a schema's tables and columns to a user who holds no `SELECT`
+on them, so the scope query, and every `information_schema` read in §3, can succeed for tables
+the notebook will then fail to read. Once §3 has listed the tables, probe each one the notebook
+will read:
+
+```sql
+SELECT 1 FROM <catalog>.<schema>.<table> LIMIT 0;   -- no rows, nothing scanned; needs SELECT
+```
+
+Quote each name with backticks, as `runtime.md` §3 does. Every probe succeeding is what makes the
+scope readable: name the tool in the proposal's `Source scope` line (`Genie Code SQL, as <user>;
+<n> tables read-checked`). `INSUFFICIENT_PERMISSIONS` on any probe is the ask-back below, naming
+those tables. The probe checks the signed-in user only: when the notebook will run as a service
+principal (`runtime.md` §2), which its SQL then runs as too, say in the proposal that the
+service principal's access, to these tables and the warehouse, is unchecked.
+
 Run the scope query before any ask-back that names a source: a scope that does not resolve is
-listed in that same ask-back, with the other missing fields. When the scope exists but cannot
-be read (`PERMISSION_DENIED`), send the preflight §0 ask-back. State what you ran and what came
-back, quoting the error, then offer:
+listed in that same ask-back, with the other missing fields. When the scope exists but nothing
+reads it (`PERMISSION_DENIED`), or a read probe fails, send the preflight §0 ask-back. State what
+you ran and what came back, quoting the error, then offer:
 
 1. **Access**: `USE CATALOG`, `USE SCHEMA` and `SELECT` on the tables for this user, granted by
    the user or a workspace administrator; tell you when it is done. Never run a `GRANT` yourself.
@@ -166,7 +182,8 @@ and show it in the proposal as `Warehouse: <name> (<id>) [inferred]`. The user c
 the graph. A warehouse the user names is `[supplied]`. If none is visible, say so; the notebook
 then carries the placeholder in `runtime.md` §1.
 
-**What a check may do.** Read catalog metadata and run the preflight §3 probe — nothing else.
+**What a check may do.** Read catalog metadata, run the read probe above and the preflight §3
+probe — nothing else.
 Never create, alter, drop or write anything during intake, and never change compute, permissions
 or workspace settings.
 
@@ -186,15 +203,31 @@ SELECT table_name FROM <catalog>.information_schema.tables WHERE table_schema = 
 -- columns and types
 SELECT table_name, column_name, data_type, full_data_type FROM <catalog>.information_schema.columns
 WHERE table_schema = lower('<schema>') ORDER BY table_name, ordinal_position;
--- declared keys, if any (informational constraints)
-SELECT tc.table_name, tc.constraint_type, kcu.column_name
+-- declared keys, if any (informational constraints); a FOREIGN KEY row names its target
+SELECT tc.table_name, tc.constraint_name, tc.constraint_type, kcu.column_name,
+       rc.unique_constraint_catalog AS referenced_catalog,
+       rc.unique_constraint_schema AS referenced_schema,
+       ref.table_name AS referenced_table, ref.column_name AS referenced_column
 FROM <catalog>.information_schema.table_constraints tc
 JOIN <catalog>.information_schema.key_column_usage kcu
   ON tc.constraint_catalog = kcu.constraint_catalog AND tc.constraint_schema = kcu.constraint_schema
  AND tc.constraint_name = kcu.constraint_name
-WHERE tc.table_schema = lower('<schema>');
+LEFT JOIN <catalog>.information_schema.referential_constraints rc
+  ON tc.constraint_catalog = rc.constraint_catalog AND tc.constraint_schema = rc.constraint_schema
+ AND tc.constraint_name = rc.constraint_name
+LEFT JOIN <catalog>.information_schema.key_column_usage ref
+  ON rc.unique_constraint_catalog = ref.constraint_catalog
+ AND rc.unique_constraint_schema = ref.constraint_schema
+ AND rc.unique_constraint_name = ref.constraint_name
+ AND kcu.position_in_unique_constraint = ref.ordinal_position
+WHERE tc.table_schema = lower('<schema>')
+ORDER BY tc.table_name, tc.constraint_name, kcu.ordinal_position;
 ```
 
+- A FOREIGN KEY row links two tables in scope only when its `referenced_catalog` and
+  `referenced_schema` are the confirmed `source_scope`, compared lowercased. A key into another
+  schema or catalog (there `referenced_table` may be empty) is not a link: never propose it, and
+  name it in the proposal as a reference outside the scope.
 - Row counts are not in `information_schema` and are not needed for the graph proposal.
 - Unity Catalog types: `STRING`, `BIGINT`, `INT`, `DOUBLE`, `DECIMAL(p,s)`, `BOOLEAN`, `DATE`,
   `TIMESTAMP`, `TIMESTAMP_NTZ`, `ARRAY<...>`. Read the type from `full_data_type`: `data_type`
