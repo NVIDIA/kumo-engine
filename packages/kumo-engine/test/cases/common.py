@@ -30,6 +30,7 @@ def parse_args(case, scales, *, family, prediction_rows=20,
         default=Path(os.environ.get("DISKGRAPH_DATA_ROOT", "/mnt/localssd")))
     parser.add_argument("--source-sha")
     parser.add_argument("--write-reference", action="store_true")
+    parser.add_argument("--control", action="store_true")
     args = parser.parse_args()
     args.case, args.scratch_gib = case, scales[args.scale]
     if args.requirements:
@@ -84,6 +85,62 @@ def table_counts(training_table):
         "rows": sum(part["rows"] for part in splits.values()),
         "splits": splits
     }
+
+
+def scramble_labels(frame, task):
+    import numpy as np
+    import pandas as pd
+
+    random = np.random.RandomState(0)
+    keys = [key for key in ("SPLIT", "TIMESTAMP") if key in frame]
+    labels = [key for key in ("TARGET1", "future_labels") if key in frame]
+    answers = labels + (["__kumo_internal_frequency_column__"] if
+                        "__kumo_internal_frequency_column__" in frame else [])
+    ordered = frame.sort_values(["ENTITY1", *keys])
+    rows = frame.copy()
+    if task == "static_link":
+        profiles = ordered.groupby("ENTITY1")[keys].agg(tuple)
+        donors = {}
+        for entities in profiles.groupby(keys, sort=False).groups.values():
+            donors.update(
+                zip(entities,
+                    pd.Series(entities).sample(frac=1, random_state=random)))
+        coordinates = ordered[["ENTITY1", *keys]].copy()
+        coordinates["ENTITY1"] = coordinates["ENTITY1"].map(donors)
+        rows.loc[ordered.index, answers] = ordered.set_index([
+            "ENTITY1", *keys
+        ])[answers].reindex(pd.MultiIndex.from_frame(coordinates)).to_numpy()
+    else:
+        for positions in ordered.groupby(keys, sort=False,
+                                         dropna=False).groups.values():
+            rows.loc[positions,
+                     answers] = ordered.loc[positions, answers].sample(
+                         frac=1, random_state=random).to_numpy()
+    if rows[labels].equals(frame[labels]):
+        raise ValueError("Control needs distinct exchangeable answers")
+    return rows
+
+
+def control_table(training_table, query, snapshot, split, task, scratch):
+    import pandas as pd
+    from kumoapi.train import TrainingTableSpec
+
+    import kumo.engine as kumo
+
+    # ponytail: opt-in controls load exported answers into RAM.
+    root = scratch / "control"
+    connector = kumo.FileConnector(root_dir=root)
+    training_table.export(kumo.TrainingTableOutputConfig(connector, "answers"))
+    frame = pd.concat(
+        [pd.read_parquet(path) for path in sorted(root.rglob("*.parquet"))],
+        ignore_index=True)
+    scramble_labels(frame, task).to_parquet(root / "rows.parquet", index=False)
+    return kumo.TrainingTable.from_source_table(
+        connector["rows.parquet"], TrainingTableSpec(split_col="SPLIT"),
+        pq=query, snapshot=snapshot, plan=split,
+        **({
+            "allow_new_target_entities": True
+        } if task == "temporal_link" else {}))
 
 
 def table_fingerprint(training_table, scratch):
@@ -266,6 +323,7 @@ def run(graph, query, split, task, overrides=None, *, args,
     result = {
         "case": args.case,
         "scale": args.scale,
+        "control": args.control,
         "source_sha": args.source_sha,
         "status": "failed",
         "resources": {
@@ -291,6 +349,8 @@ def run(graph, query, split, task, overrides=None, *, args,
                         r"[0-9a-f]{40}", expected.get("source_sha", ""))):
                 raise ValueError(
                     "Reference must be a passed result for this case and scale")
+            if expected.get("control", False) != args.control:
+                raise ValueError("Reference control mode differs")
         args.scratch.mkdir(parents=True, exist_ok=True)
         if shutil.disk_usage(args.scratch).free < args.scratch_gib * 2**30:
             raise ValueError(
@@ -321,6 +381,9 @@ def run(graph, query, split, task, overrides=None, *, args,
             for key in ("node_counts", "edge_counts")
         }
         training_table = query.generate_training_table(snapshot, plan=split)
+        if args.control:
+            training_table = control_table(training_table, query, snapshot,
+                                           split, task, args.scratch)
         result["training_table"] = table_counts(training_table)
         if args.scale in ("100M", "1B"):
             result["training_table"]["fingerprint"] = table_fingerprint(
