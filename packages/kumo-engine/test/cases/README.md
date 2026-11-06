@@ -40,7 +40,7 @@ The result records `control=true`; a normal reference cannot qualify a control r
 Temporal-link controls require a wheel with `allow_new_target_entities` import support.
 Controls load all exported answer rows into RAM. Their large-scale memory and runtime remain unqualified.
 Static-link controls use manual split import, which does not retain the generated table's prior-stage target exclusions.
-Controls compare with their own references. This change adds no paired normal/control quality gate.
+This change adds no paired normal/control quality gate.
 References compare node and edge counts, training-table checks and metric bands.
 At 100M and 1B, an order-independent pandas hash covers all exported training rows.
 At 10B and 25B, native metadata supplies total rows, per-split rows and binary positive counts without a full export.
@@ -60,7 +60,7 @@ Results also record hardware, elapsed time and sampled peak RAM, GPU memory and 
 Set `ENGINE_E2E_RUNNER_GROUP`, `ENGINE_E2E_RUNNER_LABEL`, `ENGINE_E2E_MAX_PARALLEL`, `ENGINE_E2E_DATA_S3`, `ENGINE_E2E_REFERENCES_S3` and `ENGINE_E2E_RESULTS_S3`.
 References use `<scale>/<case>.json`. Results use `<run>/<attempt>/<scale>/<case>.json`.
 Set `run_controls=true` when dispatching a workflow to add control jobs. The default runs only normal cases.
-Control jobs use `<case>-control` in reference, result and artifact paths, with a separate VM for each job.
+Control jobs use `<case>-control` in reference, result and artifact paths.
 The workflow reuses the existing wheel builder and `gha-kumo-workflow-tests` AWS role. The role needs source/reference reads and result writes.
 Both callers require `main` and `ENGINE_E2E_ENABLED=true`. They use prepared runners and run only by manual dispatch.
 Configure the runner and reference locations before enabling a run. These workflows do not provision or schedule VMs.
