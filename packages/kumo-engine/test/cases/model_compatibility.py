@@ -8,6 +8,7 @@ from importlib import import_module
 from importlib.metadata import version
 from pathlib import Path
 
+import pandas as pd
 import pyarrow.parquet as parquet
 from common import check_predictions
 from kumoapi.jobs import MetadataField
@@ -51,8 +52,13 @@ def test_model_compatibility(tmp_path, record_testsuite_property):
     if population[keys].isna().any().any() or population.duplicated(keys).any():
         raise ValueError('Population coordinates must be unique and non-null')
     output_keys = ['ENTITY'] + (['ANCHOR_TIMESTAMP'] if anchored else [])
-    if set(population[keys].itertuples(index=False, name=None)) != set(
-            expected[output_keys].itertuples(index=False, name=None)):
+    coordinates = [population[keys].copy(), expected[output_keys].copy()]
+    if anchored:
+        for frame in coordinates:
+            clock = frame.columns[1]
+            frame[clock] = pd.to_datetime(frame[clock], utc=True)
+    if set(coordinates[0].itertuples(index=False, name=None)) != set(
+            coordinates[1].itertuples(index=False, name=None)):
         raise ValueError('Expected coordinates must cover the input population')
     record_testsuite_property('input_rows', len(population))
     record_testsuite_property('output_rows', len(expected))
