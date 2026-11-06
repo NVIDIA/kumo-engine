@@ -1,0 +1,242 @@
+{
+  "id": "C-FIELDS-001",
+  "contract": {
+    "$type": "DataLoaderSpec",
+    "schema": {
+      "$type": "DataSchema",
+      "tables": [
+        {
+          "$type": "TableSpec",
+          "name": "users",
+          "primary_key": "id",
+          "columns": {
+            "id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "currency": {
+              "$type": "DType",
+              "name": "string",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "amount": {
+              "$type": "DType",
+              "name": "float64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": {
+            "$type": "NonTemporal"
+          }
+        }
+      ],
+      "relations": []
+    },
+    "sample": {
+      "$type": "SampleSpec",
+      "entity": {
+        "$type": "EntitySpec",
+        "table": "users",
+        "entity_type": "users",
+        "filters": [],
+        "available_from": null
+      },
+      "entity_values": {
+        "currency": {
+          "$type": "Field",
+          "column": "currency",
+          "path": [],
+          "selection": "one",
+          "time_column": null,
+          "reference_time": "sample"
+        },
+        "amount": {
+          "$type": "Field",
+          "column": "amount",
+          "path": [],
+          "selection": "one",
+          "time_column": null,
+          "reference_time": "sample"
+        }
+      },
+      "dated_entity_values": {},
+      "events": {},
+      "current_events": {},
+      "neighborhoods": {},
+      "targets": {},
+      "candidate_sets": {}
+    },
+    "batch": {
+      "$type": "BatchSpec",
+      "inputs": {
+        "entity": {
+          "$type": "Input",
+          "source": {
+            "$type": "EntitySource"
+          },
+          "representation": {
+            "$type": "Fields",
+            "fields": [
+              {
+                "$type": "Encode",
+                "field": "currency",
+                "encoding": {
+                  "$type": "Vocabulary",
+                  "values": [
+                    [
+                      "USD",
+                      2
+                    ],
+                    [
+                      "EUR",
+                      3
+                    ]
+                  ],
+                  "max_size": null,
+                  "min_frequency": 1,
+                  "missing_id": 0,
+                  "unknown_id": 1
+                },
+                "id_space": null
+              },
+              {
+                "$type": "Encode",
+                "field": "amount",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              }
+            ],
+            "row": {
+              "$type": "Columns"
+            },
+            "history": {
+              "$type": "Grouped"
+            },
+            "field_names": null,
+            "field_space": null,
+            "forbidden_fields": []
+          },
+          "layout": {
+            "$type": "Separate"
+          }
+        }
+      },
+      "targets": {},
+      "encodings": {},
+      "id_spaces": {},
+      "field_names": {},
+      "batching": {
+        "$type": "Batching",
+        "max_samples": null,
+        "max_tokens": null,
+        "length_input": null,
+        "bucket_by_length": false,
+        "drop_last": false
+      }
+    },
+    "version": 3
+  },
+  "tables": {
+    "users": [
+      {
+        "id": 1,
+        "currency": "USD",
+        "amount": 0.0
+      },
+      {
+        "id": 2,
+        "currency": "EUR",
+        "amount": null
+      }
+    ]
+  },
+  "anchors": [
+    {
+      "sample_id": "u1",
+      "entity_id": 1,
+      "as_of_time": 100
+    },
+    {
+      "sample_id": "u2",
+      "entity_id": 2,
+      "as_of_time": 100
+    }
+  ],
+  "expected": {
+    "u1": {
+      "entity_values": {
+        "currency": "USD",
+        "amount": 0.0
+      }
+    },
+    "u2": {
+      "entity_values": {
+        "currency": "EUR",
+        "amount": null
+      }
+    }
+  },
+  "reason": "Currency uses supplied category IDs USD=2 and EUR=3, while amount remains a separate float64 column. The encodings never promote both fields into a common float tensor. A real amount of 0.0 is valid; a missing amount stores zero but has false validity.",
+  "batch": {
+    "inputs": {
+      "entity": {
+        "currency": {
+          "values": {
+            "dtype": "int64",
+            "shape": [
+              2
+            ],
+            "values": [
+              2,
+              3
+            ]
+          },
+          "valid": {
+            "dtype": "bool",
+            "shape": [
+              2
+            ],
+            "values": [
+              true,
+              true
+            ]
+          }
+        },
+        "amount": {
+          "values": {
+            "dtype": "float64",
+            "shape": [
+              2
+            ],
+            "values": [
+              0.0,
+              0.0
+            ]
+          },
+          "valid": {
+            "dtype": "bool",
+            "shape": [
+              2
+            ],
+            "values": [
+              true,
+              false
+            ]
+          }
+        }
+      }
+    }
+  }
+}

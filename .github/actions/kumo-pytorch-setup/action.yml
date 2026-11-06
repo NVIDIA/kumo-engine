@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Exported from kumo-pytorch's upstream repository; edit upstream, not here.
+name: kumo-pytorch setup
+description: >-
+  kumo-engine's locked CPU workspace environment (CPU torch, kumo-core and its
+  torch-geometric) plus kumo-pytorch and its dev extra (and its notebooks extra
+  with notebooks: 'true'); with diskgraph-wheel-artifact, also DiskGraph from
+  that wheel of this commit's packages/diskgraph.
+inputs:
+  python-version:
+    required: false
+    default: '3.12'
+  diskgraph-wheel-artifact:
+    description: Artifact from _diskgraph-wheel.yml. Unset, DiskGraph is not installed and its tests skip.
+    required: false
+    default: ''
+  notebooks:
+    description: "'true' also installs kumo-pytorch's notebooks extra (Jupyter kernel and client)."
+    required: false
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      with:
+        python-version: ${{ inputs.python-version }}
+        activate-environment: true
+        enable-cache: true
+        cache-dependency-glob: |
+          uv.lock
+          packages/experimental/kumo-pytorch/pyproject.toml
+    - name: Download the DiskGraph wheel
+      if: inputs.diskgraph-wheel-artifact != ''
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      with:
+        name: ${{ inputs.diskgraph-wheel-artifact }}
+        path: /tmp/diskgraph-wheel
+    - name: Install DiskGraph from the wheel
+      if: inputs.diskgraph-wheel-artifact != ''
+      shell: bash
+      run: ./scripts/diskgraph install --python "$(command -v python)" -f --wheel /tmp/diskgraph-wheel
+    - name: Install the locked workspace environment, then kumo-pytorch into it
+      shell: bash
+      env:
+        NOTEBOOKS: ${{ inputs.notebooks }}
+      run: |
+        set -euo pipefail
+        notebooks=()
+        if [ "$NOTEBOOKS" = true ]; then notebooks=(--extra notebooks); fi
+        # --inexact keeps the DiskGraph wheel installed above and the root environment.
+        uv sync --locked --inexact --no-install-package diskgraph --extra cpu
+        uv sync --locked --inexact --no-install-package diskgraph --no-install-package torch \
+          --package kumo-pytorch --extra dev "${notebooks[@]}"
+    - name: Runner
+      shell: bash
+      run: |
+        echo "$(nproc) CPUs:$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2)"

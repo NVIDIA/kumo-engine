@@ -1,0 +1,316 @@
+{
+  "id": "C-COMPOSITE-001",
+  "contract": {
+    "$type": "DataLoaderSpec",
+    "schema": {
+      "$type": "DataSchema",
+      "tables": [
+        {
+          "$type": "TableSpec",
+          "name": "events",
+          "primary_key": "id",
+          "columns": {
+            "id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "user_id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "at": {
+              "$type": "DType",
+              "name": "timestamp",
+              "unit": "s",
+              "timezone": "UTC",
+              "precision": null,
+              "scale": null
+            },
+            "channel": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "amount": {
+              "$type": "DType",
+              "name": "float64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": "at"
+        },
+        {
+          "$type": "TableSpec",
+          "name": "users",
+          "primary_key": "id",
+          "columns": {
+            "id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": {
+            "$type": "NonTemporal"
+          }
+        }
+      ],
+      "relations": [
+        {
+          "$type": "RelationSpec",
+          "name": "user_events",
+          "left_table": "users",
+          "left_key": "id",
+          "right_table": "events",
+          "right_key": "user_id"
+        }
+      ]
+    },
+    "sample": {
+      "$type": "SampleSpec",
+      "entity": {
+        "$type": "EntitySpec",
+        "table": "users",
+        "entity_type": "users",
+        "filters": [],
+        "available_from": null
+      },
+      "entity_values": {},
+      "dated_entity_values": {},
+      "events": {
+        "transaction": {
+          "$type": "EventSpec",
+          "rows": {
+            "$type": "Rows",
+            "path": [
+              "user_events"
+            ],
+            "time": null,
+            "filters": [],
+            "active": null,
+            "distinct": true
+          },
+          "fields": {
+            "channel": {
+              "$type": "Field",
+              "column": "channel",
+              "path": [],
+              "selection": "one",
+              "time_column": null,
+              "reference_time": "sample"
+            },
+            "amount": {
+              "$type": "Field",
+              "column": "amount",
+              "path": [],
+              "selection": "one",
+              "time_column": null,
+              "reference_time": "sample"
+            }
+          },
+          "limit": null,
+          "order": "ascending"
+        }
+      },
+      "current_events": {},
+      "neighborhoods": {},
+      "targets": {},
+      "candidate_sets": {}
+    },
+    "batch": {
+      "$type": "BatchSpec",
+      "inputs": {
+        "history": {
+          "$type": "Input",
+          "source": {
+            "$type": "EventSource",
+            "events": [
+              "transaction"
+            ],
+            "collection": "history",
+            "max_events": null,
+            "keep": "last",
+            "order": "ascending"
+          },
+          "representation": {
+            "$type": "Fields",
+            "fields": [
+              {
+                "$type": "Encode",
+                "field": "channel",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              },
+              {
+                "$type": "Encode",
+                "field": "amount",
+                "encoding": {
+                  "$type": "Buckets",
+                  "bins": null,
+                  "boundaries": [
+                    10.0
+                  ],
+                  "separate_zero": false
+                },
+                "id_space": null
+              }
+            ],
+            "row": {
+              "$type": "Composite",
+              "top_k": 2,
+              "required_fields": [
+                "channel"
+              ],
+              "missing": "typed",
+              "id_space": null,
+              "vocabulary": null
+            },
+            "history": {
+              "$type": "Grouped"
+            },
+            "field_names": null,
+            "field_space": null,
+            "forbidden_fields": []
+          },
+          "layout": {
+            "$type": "Padded"
+          }
+        }
+      },
+      "targets": {},
+      "encodings": {},
+      "id_spaces": {},
+      "field_names": {},
+      "batching": {
+        "$type": "Batching",
+        "max_samples": null,
+        "max_tokens": null,
+        "length_input": null,
+        "bucket_by_length": false,
+        "drop_last": false
+      }
+    },
+    "version": 3
+  },
+  "tables": {
+    "users": [
+      {
+        "id": 1
+      }
+    ],
+    "events": [
+      {
+        "id": 1,
+        "user_id": 1,
+        "at": 1,
+        "channel": 2,
+        "amount": 5.0
+      },
+      {
+        "id": 2,
+        "user_id": 1,
+        "at": 2,
+        "channel": 2,
+        "amount": 5.0
+      },
+      {
+        "id": 3,
+        "user_id": 1,
+        "at": 3,
+        "channel": 2,
+        "amount": 15.0
+      },
+      {
+        "id": 4,
+        "user_id": 1,
+        "at": 4,
+        "channel": 3,
+        "amount": 15.0
+      },
+      {
+        "id": 5,
+        "user_id": 1,
+        "at": 5,
+        "channel": null,
+        "amount": 5.0
+      },
+      {
+        "id": 6,
+        "user_id": 1,
+        "at": 6,
+        "channel": 4,
+        "amount": null
+      }
+    ]
+  },
+  "anchors": [
+    {
+      "sample_id": "u1",
+      "entity_id": 1,
+      "as_of_time": 10
+    }
+  ],
+  "expected": {
+    "u1": {
+      "entity_values": {}
+    }
+  },
+  "reason": "Eligible ordered tuples are (2,1), (2,1), (2,2), (3,2), and (4,missing). Required missing channel removes event 5. Top-K=2 retains (2,1) by frequency 2, then (2,2) among frequency-1 ties by canonical typed tuple order, assigning outer IDs 2 and 3. Remaining tuples use unknown ID 1. Missing optional amount is not a placeholder string. Event order therefore gives [2,2,3,1,1].",
+  "batch": {
+    "inputs": {
+      "history": {
+        "value_ids": {
+          "dtype": "int64",
+          "shape": [
+            1,
+            5
+          ],
+          "values": [
+            [
+              2,
+              2,
+              3,
+              1,
+              1
+            ]
+          ]
+        },
+        "valid": {
+          "dtype": "bool",
+          "shape": [
+            1,
+            5
+          ],
+          "values": [
+            [
+              true,
+              true,
+              true,
+              true,
+              true
+            ]
+          ]
+        }
+      }
+    }
+  }
+}
