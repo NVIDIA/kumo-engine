@@ -1,14 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Commerce temporal link through the installed Engine wheel."""
 
 from commerce_static_link import build_graph as commerce_graph
-from common import parse_args, run, sources
+from common import LIMITS, metric, parse_args, run, sources
 
 SCALES = {"100M": 100, "1B": 300, "10B": 1600, "25B": 3200}
-LIMITS = dict(prediction_rows=20, metric_tolerance=0.25,
-              prediction_tolerance=0.005)
 QUERY = ('PREDICT LIST_DISTINCT(purchases.merchant_id, 0, 7, days) RANK TOP '
          '10 FOR EACH customers.customer_id ')
 SPLIT = ("TimeRangeSplit([('2024-12-05T00:00:00', '2024-12-12T00:00:00'), "
@@ -26,13 +23,11 @@ def main():
                       **LIMITS)
     from kumoapi.model_plan import TrainingTableGenerationPlan
 
-    run(
-        build_graph(sources(args)), QUERY,
-        TrainingTableGenerationPlan(split=SPLIT, timeframe_step=7),
-        'temporal_link', {
-            'training_job.metrics': ['recall@10'],
-            'training_job.tune_metric': 'recall@10'
-        }, args=args, prediction_kwargs={'num_classes_to_return': 10})
+    run(build_graph(sources(args)), QUERY,
+        TrainingTableGenerationPlan(split=SPLIT,
+                                    timeframe_step=7), 'temporal_link',
+        metric('recall@10'), args=args,
+        prediction_kwargs={'num_classes_to_return': 10})
 
 
 if __name__ == "__main__":
