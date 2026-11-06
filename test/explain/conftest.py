@@ -14,13 +14,7 @@ from kumoapi.typing import Dtype, Stype
 from kumo.connector.parquet_connector import ParquetConnector
 from kumo.graph.graph import Graph
 from kumo.task.task import Task
-from kumo.testing.fixtures.task import (
-    forecasting_task,
-    static_task,
-    temporal_explain_task,
-    temporal_task,
-    user_store_graph,
-)
+from kumo.testing.fixtures.task import temporal_task, user_store_graph
 
 
 @pytest.fixture(autouse=True)
@@ -188,9 +182,6 @@ def _create_explainer_task(
 
 
 __all__ = [
-    'forecasting_task',
     'user_store_graph',
     'temporal_task',
-    'temporal_explain_task',
-    'static_task',
 ]

@@ -208,7 +208,13 @@ def _walk(value: Any, key: str, root: Manifest) -> Iterator[Artifact]:
             yield from _walk(item, key, root)
 
 
-_SCHEMES = {'s3': 'S3', 'gs': 'GCS', 'file': 'LOCAL_FILE', '': 'LOCAL_FILE'}
+_SCHEMES = {
+    's3': 'S3',
+    'gs': 'GCS',
+    'abfss': 'ADLS',
+    'file': 'LOCAL_FILE',
+    '': 'LOCAL_FILE'
+}
 
 Details = Mapping[str, Tuple[Mapping[str, Any], Mapping[str, Any]]]
 
@@ -500,7 +506,7 @@ class OutputDestination(Record):
     location: Optional[str]
 
 
-PATH_CONNECTORS = ('LOCAL_FILE', 'S3', 'GCS')
+PATH_CONNECTORS = ('LOCAL_FILE', 'S3', 'GCS', 'ADLS')
 
 
 @dataclass(frozen=True, kw_only=True)

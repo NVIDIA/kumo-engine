@@ -22,6 +22,8 @@ import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
+from multiprocessing import queues as mp_queues
+from multiprocessing.reduction import ForkingPickler
 from typing import Any, Iterator, Mapping
 
 import pytorch_lightning as pl
@@ -31,6 +33,7 @@ from kumo_core.diskgraph.runtime_adapter import (
     runtime_batch_to_hetero,
 )
 from kumo_core.task_dataset import DiskgraphTaskManifest
+from torch._utils import ExceptionWrapper
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
 logger = logging.getLogger(__name__)
@@ -1697,8 +1700,35 @@ def _exit_when_parent_exits() -> None:
     os._exit(0)
 
 
+_python_feeder_error = mp_queues.Queue._on_queue_feeder_error
+
+
+def _send_feeder_error(queue: Any, error: Exception, item: Any) -> None:
+    """Fail the batch a worker could not pickle instead of dropping it.
+
+    Sent before anything queued after the batch, so a later end-of-stream
+    marker cannot make the main process skip it.
+    """
+    if not (isinstance(item, tuple) and len(item) == 2
+            and isinstance(item[0], int)):
+        _python_feeder_error(error, item)
+        return
+    wrapper = ExceptionWrapper(
+        (type(error), error, error.__traceback__),
+        where=f'in DataLoader worker process {get_worker_info().id}')
+    try:
+        payload = ForkingPickler.dumps((item[0], wrapper))
+    except Exception:
+        wrapper.exc_type = RuntimeError
+        payload = ForkingPickler.dumps((item[0], wrapper))
+    queue._sem.acquire()
+    with queue._wlock:
+        queue._writer.send_bytes(payload)
+
+
 def _init_diskgraph_worker(_worker_id: int) -> None:
-    """Start logical-parent death detection in a DataLoader worker."""
+    """Start parent-death detection and fail unsendable batches loudly."""
+    mp_queues.Queue._on_queue_feeder_error = _send_feeder_error
     threading.Thread(
         target=_exit_when_parent_exits,
         daemon=True,
@@ -1888,7 +1918,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             'batch_size': self.eval_batch_size,
         }
 
-        # (feature_store, graph_store) for the explainer; populated only during
+        # Feature access and graph schema for the explainer; populated only during
         # DiskgraphNestedTrainer.explain.
         self._data: tuple[Any, Any] | None = None
 
@@ -2666,12 +2696,12 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
 
     @property
     def data(self) -> tuple[Any, Any]:
-        """``(feature_store, graph_store)``, populated only during
+        """Feature access and graph schema, populated only during
         RHS feature reads or ``Trainer.explain``; raises otherwise."""
         if self._data is None:
             raise RuntimeError(
                 "DiskgraphLightningDataModule.data is only populated "
-                "when a runtime feature/graph store is attached.")
+                "when runtime feature access and graph metadata are attached.")
         return self._data
 
     @property
@@ -2679,7 +2709,8 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         return self.data[0]
 
     @property
-    def graph_store(self) -> Any:
+    def graph_schema(self) -> Any:
+        """Return graph metadata attached for RHS feature reads or explanation."""
         return self.data[1]
 
     @property

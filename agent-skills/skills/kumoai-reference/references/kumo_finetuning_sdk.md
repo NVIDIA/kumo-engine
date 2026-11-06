@@ -7,11 +7,12 @@ process. There is no hosted service, no project, no job registry, no API key, no
 
 ## 0. Ground truth
 
-Everything in this file is verified against **one** build:
+The baseline API was verified against the bundle below; graph visualization was checked against source including [NVIDIA/kumo-engine#134](https://github.com/NVIDIA/kumo-engine/pull/134).
 
 | | |
 |---|---|
-| Bundle | `kumo_fat_bundle` `20261007+2e1eb12` (after the `kumo-engine` rename, kumo-ai/kumo#31382) |
+| Baseline bundle | `kumo_fat_bundle` `20261007+2e1eb12` (after the `kumo-engine` rename, kumo-ai/kumo#31382) |
+| Graph visualization | Source build including #134 (merged at `fa46bed23fb01921955cb77bfec21e80ab7e0fc6`); unavailable in the baseline bundle and `kumo-engine` `1.0.0`, with no released build verified |
 | Import name | `kumo.engine` (the `kumo-engine` package; `kumoai` / `kumoai-local` before the rename) |
 | Python / torch | 3.12 / `2.9.1+cu129` |
 
@@ -373,9 +374,12 @@ graph.validate()
 - Emit `validate()` explicitly. It is a structural check needing only schemas — no snapshot yet,
   so it is cheap and catches edge typos before any data moves.
 
-Surface, complete: `.tables`, `.edges`, `.id`, `.native_graph`, `.validate()`, `.snapshot()`.
+Surface includes `.tables`, `.edges`, `.id`, `.native_graph`, `.validate()`, `.visualize()`, `.snapshot()`.
 **There is no `add_table`, `remove_table`, `link`, `unlink`, `infer_links`, `get_edge_stats`, or
 `get_table_stats`.**
+
+`Graph.visualize(path=None, *, show_cols=False, show_samples=False, layout='auto')` displays or exports the graph.
+Follow `kumo-graph-visualization/SKILL.md` for generated notebook visuals, script exports, and schema inspection during model iteration.
 
 Source: shipped package (`kumo.engine.graph`)
 
