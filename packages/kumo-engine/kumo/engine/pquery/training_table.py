@@ -154,7 +154,9 @@ class TrainingTable:
             return cls._from_rows(
                 FileConnector(root_dir=str(local))['rows'], spec, pq=pquery,
                 snapshot=snapshot, version=version,
-                source=provenance.stored_table(connector, path, version))
+                source=provenance.stored_table(
+                    connector, path, version,
+                    record_sources=_record_sources(snapshot)))
         finally:
             shutil.rmtree(local, ignore_errors=True)
 

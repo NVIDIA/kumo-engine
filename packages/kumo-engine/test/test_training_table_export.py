@@ -461,7 +461,7 @@ def test_a_mlops_block_stores_each_table_once_under_the_root(graph, tmp_path):
     assert off.id == table.id and not (tmp_path / 'other').exists()
 
 
-def test_a_table_stored_on_a_volume_loads_back(graph, tmp_path):
+def _volume_root(tmp_path):
     from types import SimpleNamespace
 
     from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
@@ -472,7 +472,11 @@ def test_a_table_stored_on_a_volume_loads_back(graph, tmp_path):
         source_type='databricks', sink_backend=SimpleNamespace(
             holds_files=lambda connector, path: path.startswith('/Volumes/'),
             filesystem=lambda connector, path: (files, path.lstrip('/'))))
-    cfg = kumo.MLOps((volume, '/Volumes/c/s/v/kumo'))
+    return kumo.MLOps((volume, '/Volumes/c/s/v/kumo'))
+
+
+def test_a_table_stored_on_a_volume_loads_back(graph, tmp_path):
+    cfg = _volume_root(tmp_path)
     with kumo.mlops(cfg):
         pquery, table = _generate(graph)
     path = f'training_tables/{table.id}'
@@ -486,3 +490,16 @@ def test_a_table_stored_on_a_volume_loads_back(graph, tmp_path):
     assert reloaded.manifest.parents.source_table.location == (
         f'/Volumes/c/s/v/kumo/{path}')
     assert load().id == reloaded.id
+
+
+def test_a_reloaded_table_keeps_unrecorded_sources_unrecorded(graph, tmp_path):
+    cfg = _volume_root(tmp_path)
+    snapshot = graph[0].snapshot(record_sources=False)
+    pquery = kumo.PredictiveQuery(graph=graph[0], query=LABEL)
+    with kumo.mlops(cfg):
+        table = pquery.generate_training_table(snapshot)
+    reloaded = kumo.TrainingTable.load_from_connector(
+        cfg, path=f'training_tables/{table.id}', pquery=pquery,
+        snapshot=snapshot)
+    assert reloaded.manifest.parents.source_table.location == table.id
+    assert '/Volumes' not in json.dumps(reloaded.manifest.to_dict())
