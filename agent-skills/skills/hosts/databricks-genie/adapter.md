@@ -294,10 +294,12 @@ not adapt it.
 
 This refines `batch_inference.md` Node 1c and 1d for this host. For `batch_inference` from a Unity
 Catalog registered model, Node 1c reads the version's training
-record — the version's comment and tags (`databricks model-versions get`), then the files they
-point to in its run (`databricks experiments list-artifacts --run-id`). Read a file with
-`databricks api get "/api/2.0/mlflow/artifacts/credentials-for-read?run_id=<id>&path=<path>"`,
-then `curl` its `signed_uri`. Never read a credential file or pass a token yourself. That record is the
+record that the training notebook wrote (`runtime.md` §5.1). Read the version's comment
+(`databricks model-versions get <catalog.schema.model> <N>`); its line
+`kumo training record: /Volumes/<catalog>/<schema>/_kumo_staging/records/<model>/<N>/` names
+the record's directory. Read `record.json` and `graph.py` there with
+`databricks fs cat dbfs:/Volumes/…/record.json` (the `dbfs:` prefix is required). Never read a
+credential file or pass a token yourself. That record is the
 graph: nothing in it is proposed or inferred, so 1c and 1d are **one gate**. When the record is
 found and the live source still has every recorded column, reply with the
 `kumo-data-science/accept/batch_inference.md` Node 1d restatement, one `Graph:` line added, and
@@ -321,8 +323,9 @@ tables and columns beyond that line:
 the task is reused, not reconfirmed. A recorded column the live source lacks, or a record that
 names no source, is the 1c finding to report instead.
 
-When the version has **no** training record, say that no column selection or graph definition
-is recorded for that version, that scoring must use the columns it was trained on, and ask for
+When the version has **no** training record — no `kumo training record:` line, as on versions
+published before the notebook wrote one, or no file there — say that no column selection or graph
+definition is recorded for that version, that scoring must use the columns it was trained on, and ask for
 the training-time graph definition — the graph-building code or the per-table column lists.
 Ask only for that: not the model, version, source or destination. Never propose retraining or
 publishing a new model in its place; that is a new request for the user to make.

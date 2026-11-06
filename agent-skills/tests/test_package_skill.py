@@ -163,6 +163,26 @@ def test_genie_saved_model_template_carries_every_line_other_files_require() -> 
     assert 'refines `batch_inference.md` Node 1c and 1d' in section
 
 
+def test_genie_training_record_is_written_where_scoring_reads_it() -> None:
+    """Publishing writes no record (kumo_databricks.registry), so the training notebook writes one
+    to the staging volume and points the version's comment at it; §6.1 follows that pointer."""
+    host = package_skill.SKILLS / 'hosts' / 'databricks-genie'
+    flat = lambda path: ' '.join(path.read_text().split())  # noqa: E731
+    adapter, runtime = flat(host / 'adapter.md'), flat(host / 'runtime.md')
+    publish = runtime[runtime.index('### 5.1'):runtime.index('### 5.2')]
+    section = adapter[adapter.index('### 6.1'):adapter.index('## 7.')]
+    pointer = 'kumo training record: '
+    for text in ("'record.json'", "'graph.py'", '_kumo_staging/records/', f"f'{pointer}",
+                 'ws.model_versions.update(', 'location.comment'):
+        assert text in publish, text
+    for text in (pointer + '/Volumes/', 'databricks model-versions get',
+                 'databricks fs cat dbfs:/Volumes/', 'Never read a credential file',
+                 f'no `{pointer.strip()}` line', 'Never propose retraining'):
+        assert text in section, text
+    for gone in ('mlflow', 'credentials-for-read', 'list-artifacts', 'curl', 'signed_uri'):
+        assert gone not in section.lower(), gone
+
+
 def test_genie_no_code_rule_names_its_scope_and_agrees_with_inspection_skills() -> None:
     """Explanations ask for plotting code in the reply and graph visualization needs no intake;
     the adapter's no-code rule must scope itself to requests that have a Node 1d gate."""

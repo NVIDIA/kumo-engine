@@ -228,6 +228,39 @@ print(published.name, published.version, published.uri)   # the version Unity Ca
 
 Report the assigned version; it is the one every later load names.
 
+**Write the training record.** Scoring this version later rebuilds its graph from a record
+(`adapter.md` §6.1), and the bundle holds none. Right after the fit, the notebook writes it to the
+registry schema's staging volume and points the version's comment at it. `GRAPH_CODE` is the
+graph-building cell's source, verbatim; `TABLES` gives, per table, its columns, primary key and
+time column, as that cell builds them; `LINKS` its edges; `TRAINED_QUERY` the query string the
+fit used; `TASK_TYPE` the confirmed task type; `THRESHOLD` the confirmed binary threshold, else
+`None`. A comment the user asked for goes in `ModelRegistryLocation(comment=...)`. When
+`_kumo_staging` does not exist in the registry schema, the gate says so on the `Staging volume:`
+line (§4).
+
+```python
+import datetime
+import json
+from pathlib import Path
+
+run_sql(f'CREATE VOLUME IF NOT EXISTS {q(REGISTRY_CATALOG, REGISTRY_SCHEMA, "_kumo_staging")}')
+record_dir = (f'/Volumes/{REGISTRY_CATALOG}/{REGISTRY_SCHEMA}/_kumo_staging/records/'
+              f'{published.name}/{published.version}/')
+Path(record_dir).mkdir(parents=True, exist_ok=True)
+record = dict(model=f'{REGISTRY_CATALOG}.{REGISTRY_SCHEMA}.{published.name}',
+              version=published.version, source=f'{CATALOG}.{SCHEMA}', tables=TABLES,
+              links=LINKS, predictive_query=TRAINED_QUERY, task_type=TASK_TYPE,
+              created=datetime.datetime.now(datetime.timezone.utc).isoformat())
+if THRESHOLD is not None:                       # binary classification only
+    record['binary_classification_threshold'] = THRESHOLD
+Path(record_dir, 'record.json').write_text(json.dumps(record, indent=2))
+Path(record_dir, 'graph.py').write_text(GRAPH_CODE)
+pointer = f'kumo training record: {record_dir}'
+ws.model_versions.update(                     # the pointer is its own line, after any user comment
+    record['model'], int(published.version),
+    comment=f'{location.comment}\n{pointer}' if location.comment else pointer)
+```
+
 ### 5.2 Pick the version and load it
 
 Versions are positive integers. A user's `v2` or `V2` is version `2`; pass it as the string `'2'`.
