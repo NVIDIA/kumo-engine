@@ -1,0 +1,136 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: kumo-pytorch end-to-end
+
+# The end-to-end flows at S (train, persist, fresh-process batch inference on
+# DiskGraph, serving) on every main commit that changes kumo-pytorch or
+# DiskGraph. Not a required check. Pull requests run it only when they change
+# the flows or this workflow. Exported from kumo-pytorch's development
+# repository; change it there, not here.
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches: [main]
+    paths:
+      - 'packages/experimental/kumo-pytorch/**'
+      - 'packages/diskgraph/**'
+      - 'scripts/diskgraph'
+      - '.github/workflows/_diskgraph-wheel.yml'
+      - '.github/actions/kumo-pytorch-setup/**'
+      - '.github/workflows/kumo-pytorch-t2a.yml'
+  pull_request:
+    paths:
+      - 'packages/experimental/kumo-pytorch/e2e/**'
+      - 'packages/experimental/kumo-pytorch/tests/e2e/**'
+      - '.github/actions/kumo-pytorch-setup/**'
+      - '.github/workflows/kumo-pytorch-t2a.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+    working-directory: packages/experimental/kumo-pytorch
+
+jobs:
+  diskgraph-wheel:
+    uses: ./.github/workflows/_diskgraph-wheel.yml
+
+  plan:
+    name: Plan the end-to-end runs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - id: matrix
+        run: echo "matrix=$(python3 tests/e2e/tiers.py t2a)" >> "$GITHUB_OUTPUT"
+
+  run:
+    name: End-to-end ${{ matrix.flow }} seed ${{ matrix.seed }} (size S)
+    needs: [diskgraph-wheel, plan]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+      - name: Train, persist, infer and serve
+        env:
+          FLOW: ${{ matrix.flow }}
+          SEED: ${{ matrix.seed }}
+        run: python -m tests.e2e.runs t2a "$FLOW" "$SEED" --e2e-dir "$RUNNER_TEMP/e2e"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: kumo-pytorch-t2a-${{ matrix.flow }}-seed${{ matrix.seed }}
+          path: |
+            ${{ runner.temp }}/e2e/t2a/${{ matrix.flow }}-seed${{ matrix.seed }}/
+            !${{ runner.temp }}/e2e/t2a/**/index/**
+          retention-days: 14
+
+  checks:
+    name: kumo-pytorch-t2a
+    needs: [diskgraph-wheel, run]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: kumo-pytorch-t2a-*-seed*
+          path: ${{ runner.temp }}/e2e-runs
+      - name: Place the runs where the checks read them
+        run: |
+          mkdir -p "$RUNNER_TEMP/e2e/t2a"
+          for run in "$RUNNER_TEMP"/e2e-runs/kumo-pytorch-t2a-*; do
+            mv "$run" "$RUNNER_TEMP/e2e/t2a/${run##*/kumo-pytorch-t2a-}"
+          done
+      - name: Check the runs
+        env:
+          KUMO_PYTORCH_E2E_REUSE_ONLY: '1'
+        run: |
+          python -m pytest -q --t2a --e2e-dir "$RUNNER_TEMP/e2e" --durations=0 \
+            tests/e2e/test_lifecycle.py
+      - name: Summarize metrics and run times
+        if: ${{ always() }}
+        run: |
+          if [ -f "$RUNNER_TEMP/e2e/t2a/metrics.json" ]; then
+            {
+              echo '### T2a metrics'
+              echo '```json'
+              cat "$RUNNER_TEMP/e2e/t2a/metrics.json"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ failure() }}
+        with:
+          name: kumo-pytorch-t2a-predictions-and-metrics
+          path: |
+            ${{ runner.temp }}/e2e/t2a/metrics.json
+            ${{ runner.temp }}/e2e/t2a/*/*.json
+            ${{ runner.temp }}/e2e/t2a/*/*.parquet
+            ${{ runner.temp }}/e2e/t2a/*/*-predictions/*
+            !${{ runner.temp }}/e2e/t2a/**/index/**
+          retention-days: 14

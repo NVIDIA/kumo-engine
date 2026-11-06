@@ -1,0 +1,152 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: kumo-pytorch DiskGraph
+
+# Both engines against the same golden cases, the whole suite with no test
+# skipped for a missing import, and every example notebook from a fresh kernel,
+# on DiskGraph built from this commit's packages/diskgraph. A third job builds
+# the package and runs the README quick start and the notebooks from its wheel,
+# installed with DiskGraph's into a fresh environment. Runs on DiskGraph changes
+# too: the package builds against the workspace DiskGraph. Exported from
+# kumo-pytorch's development repository; change it there, not here.
+on:  # yamllint disable-line rule:truthy
+  pull_request:
+    paths:
+      - 'packages/experimental/kumo-pytorch/**'
+      - 'packages/diskgraph/**'
+      - 'scripts/diskgraph'
+      - '.github/workflows/_diskgraph-wheel.yml'
+      - '.github/actions/kumo-pytorch-setup/**'
+      - '.github/workflows/kumo-pytorch-diskgraph.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'packages/experimental/kumo-pytorch/**'
+      - 'packages/diskgraph/**'
+      - 'scripts/diskgraph'
+      - '.github/workflows/_diskgraph-wheel.yml'
+      - '.github/actions/kumo-pytorch-setup/**'
+      - '.github/workflows/kumo-pytorch-diskgraph.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  diskgraph-wheel:
+    uses: ./.github/workflows/_diskgraph-wheel.yml
+
+  diskgraph:
+    name: kumo-pytorch-diskgraph
+    needs: diskgraph-wheel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: packages/experimental/kumo-pytorch
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+      - name: Both engines against the same golden cases
+        run: python -m conformance --engine all
+      - name: Every test, failing any that skips for a missing dependency
+        run: |
+          python -c 'import diskgraph, pyarrow; print(diskgraph.__file__)'
+          python -m pytest -q --require-imports
+
+  notebooks:
+    name: kumo-pytorch-notebooks
+    needs: diskgraph-wheel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+        working-directory: packages/experimental/kumo-pytorch
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+          notebooks: 'true'
+      # Each examples/<name>/walkthrough.ipynb runs in a copy of its folder; the JSON it
+      # writes must equal the committed files byte for byte.
+      - name: Every example notebook, failing on drift from its committed files
+        run: python -m pytest -m notebook --require-imports -q --durations=0
+
+  install:
+    name: kumo-pytorch-install
+    needs: diskgraph-wheel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+        working-directory: packages/experimental/kumo-pytorch
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: '3.12'
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            packages/experimental/kumo-pytorch/pyproject.toml
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: diskgraph-wheel
+          path: ${{ runner.temp }}/diskgraph-wheel
+      # The wheel is built from the sdist, so this also checks the sdist is complete.
+      - name: Build the sdist, then the wheel from it
+        run: uv build --package kumo-pytorch --out-dir "$RUNNER_TEMP/dist"
+      # Outside the workspace, so neither the source tree nor the workspace's uv
+      # settings take part: the install a user gets from the two wheels.
+      - name: Install the wheel and DiskGraph's into a fresh environment
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          uv venv --python 3.12 fresh
+          wheel=$(ls dist/kumo_pytorch-*.whl)
+          uv pip install --python fresh/bin/python --torch-backend cpu \
+            "kumo-pytorch[dev,notebooks] @ file://$RUNNER_TEMP/$wheel" diskgraph-wheel/diskgraph-*.whl
+      # The README, docs, tests, conformance harness and examples, without src/:
+      # kumo.pytorch can only come from the installed wheel.
+      - name: Copy the README, tests and examples out of the source tree
+        run: |
+          mkdir "$RUNNER_TEMP/stage"
+          cp -R README.md pyproject.toml docs tests conformance examples "$RUNNER_TEMP/stage/"
+      - name: kumo.pytorch imports from the installed wheel
+        working-directory: ${{ runner.temp }}/stage
+        run: |
+          ../fresh/bin/python -I -c '
+          import importlib.metadata, sys
+          import diskgraph, kumo.pytorch
+          print("kumo-pytorch", importlib.metadata.version("kumo-pytorch"), kumo.pytorch.__file__)
+          print("diskgraph", importlib.metadata.version("diskgraph"), diskgraph.__file__)
+          assert kumo.pytorch.__file__.startswith(sys.prefix), "not the installed wheel"
+          '
+      - name: README quick start on DiskGraph, from the installed wheel
+        working-directory: ${{ runner.temp }}/stage
+        run: |
+          ../fresh/bin/python -m pytest -p no:cacheprovider -q --require-imports \
+            "tests/test_docs_code.py::test_page_code_runs_in_order[README.md]"
+      - name: Every example notebook, from the installed wheel
+        working-directory: ${{ runner.temp }}/stage
+        run: |
+          ../fresh/bin/python -m pytest -p no:cacheprovider -m notebook --require-imports -q \
+            --durations=0 tests/test_notebooks.py

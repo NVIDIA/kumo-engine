@@ -1,0 +1,543 @@
+{
+  "$type": "DataLoaderSpec",
+  "batch": {
+    "$type": "BatchSpec",
+    "batching": {
+      "$type": "Batching",
+      "bucket_by_length": false,
+      "drop_last": false,
+      "length_input": null,
+      "max_samples": 64,
+      "max_tokens": null
+    },
+    "encodings": {
+      "colour_group_name": {
+        "$type": "Vocabulary",
+        "max_size": null,
+        "min_frequency": 1,
+        "missing_id": 0,
+        "unknown_id": 1,
+        "values": null
+      },
+      "index_group_name": {
+        "$type": "Vocabulary",
+        "max_size": null,
+        "min_frequency": 1,
+        "missing_id": 0,
+        "unknown_id": 1,
+        "values": null
+      },
+      "product_type_name": {
+        "$type": "Vocabulary",
+        "max_size": null,
+        "min_frequency": 1,
+        "missing_id": 0,
+        "unknown_id": 1,
+        "values": null
+      }
+    },
+    "field_names": {},
+    "id_spaces": {},
+    "inputs": {
+      "candidates": {
+        "$type": "Input",
+        "layout": {
+          "$type": "Padded"
+        },
+        "representation": {
+          "$type": "Fields",
+          "field_names": null,
+          "field_space": null,
+          "fields": [
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "UseEncoding",
+                "name": "product_type_name"
+              },
+              "field": "product_type_name",
+              "id_space": null
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "UseEncoding",
+                "name": "index_group_name"
+              },
+              "field": "index_group_name",
+              "id_space": null
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "UseEncoding",
+                "name": "colour_group_name"
+              },
+              "field": "colour_group_name",
+              "id_space": null
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "ZScore",
+                "dtype": "float32",
+                "mean": null,
+                "scale": null
+              },
+              "field": "sold_30d",
+              "id_space": null
+            }
+          ],
+          "forbidden_fields": [],
+          "history": {
+            "$type": "Grouped"
+          },
+          "row": {
+            "$type": "Columns"
+          }
+        },
+        "source": {
+          "$type": "CandidateSource",
+          "name": "articles"
+        }
+      },
+      "customer": {
+        "$type": "Input",
+        "layout": {
+          "$type": "Separate"
+        },
+        "representation": {
+          "$type": "Fields",
+          "field_names": null,
+          "field_space": null,
+          "fields": [
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "ZScore",
+                "dtype": "float32",
+                "mean": null,
+                "scale": null
+              },
+              "field": "age",
+              "id_space": null
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "Vocabulary",
+                "max_size": null,
+                "min_frequency": 1,
+                "missing_id": 0,
+                "unknown_id": 1,
+                "values": null
+              },
+              "field": "club",
+              "id_space": null
+            }
+          ],
+          "forbidden_fields": [],
+          "history": {
+            "$type": "Grouped"
+          },
+          "row": {
+            "$type": "Columns"
+          }
+        },
+        "source": {
+          "$type": "EntitySource"
+        }
+      },
+      "graph": {
+        "$type": "Input",
+        "layout": null,
+        "representation": {
+          "$type": "Graph",
+          "node_fields": {
+            "articles": {
+              "$type": "Fields",
+              "field_names": null,
+              "field_space": null,
+              "fields": [
+                {
+                  "$type": "Encode",
+                  "encoding": {
+                    "$type": "UseEncoding",
+                    "name": "product_type_name"
+                  },
+                  "field": "product_type_name",
+                  "id_space": null
+                },
+                {
+                  "$type": "Encode",
+                  "encoding": {
+                    "$type": "UseEncoding",
+                    "name": "index_group_name"
+                  },
+                  "field": "index_group_name",
+                  "id_space": null
+                },
+                {
+                  "$type": "Encode",
+                  "encoding": {
+                    "$type": "UseEncoding",
+                    "name": "colour_group_name"
+                  },
+                  "field": "colour_group_name",
+                  "id_space": null
+                }
+              ],
+              "forbidden_fields": [],
+              "history": {
+                "$type": "Grouped"
+              },
+              "row": {
+                "$type": "Columns"
+              }
+            },
+            "transactions": {
+              "$type": "Fields",
+              "field_names": null,
+              "field_space": null,
+              "fields": [
+                {
+                  "$type": "Encode",
+                  "encoding": {
+                    "$type": "ZScore",
+                    "dtype": "float32",
+                    "mean": null,
+                    "scale": null
+                  },
+                  "field": "price",
+                  "id_space": null
+                }
+              ],
+              "forbidden_fields": [],
+              "history": {
+                "$type": "Grouped"
+              },
+              "row": {
+                "$type": "Columns"
+              }
+            }
+          }
+        },
+        "source": {
+          "$type": "NeighborhoodSource",
+          "name": "recent"
+        }
+      }
+    },
+    "targets": {
+      "bought": {
+        "$type": "CandidateTarget",
+        "encoding": {
+          "$type": "Raw"
+        },
+        "id_space": null,
+        "input": "candidates",
+        "source": "bought"
+      }
+    }
+  },
+  "sample": {
+    "$type": "SampleSpec",
+    "candidate_sets": {
+      "articles": {
+        "$type": "CandidateSetSpec",
+        "entity": {
+          "$type": "EntitySpec",
+          "available_from": null,
+          "entity_type": "article",
+          "filters": [],
+          "table": "articles"
+        },
+        "targets": {
+          "bought": {
+            "$type": "ExternalTarget",
+            "dtype": {
+              "$type": "DType",
+              "name": "bool",
+              "precision": null,
+              "scale": null,
+              "timezone": null,
+              "unit": null
+            }
+          }
+        },
+        "values": {
+          "colour_group_name": {
+            "$type": "Field",
+            "column": "colour_group_name",
+            "path": [],
+            "reference_time": "sample",
+            "selection": "one",
+            "time_column": null
+          },
+          "index_group_name": {
+            "$type": "Field",
+            "column": "index_group_name",
+            "path": [],
+            "reference_time": "sample",
+            "selection": "one",
+            "time_column": null
+          },
+          "product_type_name": {
+            "$type": "Field",
+            "column": "product_type_name",
+            "path": [],
+            "reference_time": "sample",
+            "selection": "one",
+            "time_column": null
+          },
+          "sold_30d": {
+            "$type": "Aggregate",
+            "column": null,
+            "dtype": {
+              "$type": "DType",
+              "name": "int64",
+              "precision": null,
+              "scale": null,
+              "timezone": null,
+              "unit": null
+            },
+            "operation": "count",
+            "source": {
+              "$type": "Rows",
+              "active": null,
+              "distinct": true,
+              "filters": [],
+              "path": [
+                "article_transactions"
+              ],
+              "time": {
+                "$type": "TimeWindow",
+                "column": "t_dat",
+                "start": -2592000,
+                "stop": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    "current_events": {},
+    "dated_entity_values": {},
+    "entity": {
+      "$type": "EntitySpec",
+      "available_from": null,
+      "entity_type": "customer",
+      "filters": [],
+      "table": "customers"
+    },
+    "entity_values": {
+      "age": {
+        "$type": "Field",
+        "column": "age",
+        "path": [],
+        "reference_time": "sample",
+        "selection": "one",
+        "time_column": null
+      },
+      "club": {
+        "$type": "Field",
+        "column": "club_member_status",
+        "path": [],
+        "reference_time": "sample",
+        "selection": "one",
+        "time_column": null
+      }
+    },
+    "events": {},
+    "neighborhoods": {
+      "recent": {
+        "$type": "NeighborhoodSpec",
+        "layers": [
+          {
+            "$type": "GraphLayer",
+            "samples": [
+              {
+                "$type": "GraphSample",
+                "direction": "forward",
+                "fanout": 16,
+                "relation": "customer_transactions",
+                "strategy": "recent",
+                "temporal": "inherit",
+                "time_column": null
+              }
+            ]
+          },
+          {
+            "$type": "GraphLayer",
+            "samples": [
+              {
+                "$type": "GraphSample",
+                "direction": "reverse",
+                "fanout": 1,
+                "relation": "article_transactions",
+                "strategy": "recent",
+                "temporal": "inherit",
+                "time_column": null
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "targets": {}
+  },
+  "schema": {
+    "$type": "DataSchema",
+    "relations": [
+      {
+        "$type": "RelationSpec",
+        "left_key": "article_id",
+        "left_table": "articles",
+        "name": "article_transactions",
+        "right_key": "article_id",
+        "right_table": "transactions"
+      },
+      {
+        "$type": "RelationSpec",
+        "left_key": "customer_id",
+        "left_table": "customers",
+        "name": "customer_transactions",
+        "right_key": "customer_id",
+        "right_table": "transactions"
+      }
+    ],
+    "tables": [
+      {
+        "$type": "TableSpec",
+        "columns": {
+          "article_id": {
+            "$type": "DType",
+            "name": "int64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "colour_group_name": {
+            "$type": "DType",
+            "name": "string",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "index_group_name": {
+            "$type": "DType",
+            "name": "string",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "listed_at": {
+            "$type": "DType",
+            "name": "timestamp",
+            "precision": null,
+            "scale": null,
+            "timezone": "UTC",
+            "unit": "s"
+          },
+          "product_type_name": {
+            "$type": "DType",
+            "name": "string",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          }
+        },
+        "name": "articles",
+        "primary_key": "article_id",
+        "time_column": "listed_at"
+      },
+      {
+        "$type": "TableSpec",
+        "columns": {
+          "age": {
+            "$type": "DType",
+            "name": "int64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "club_member_status": {
+            "$type": "DType",
+            "name": "string",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "customer_id": {
+            "$type": "DType",
+            "name": "int64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          }
+        },
+        "name": "customers",
+        "primary_key": "customer_id",
+        "time_column": {
+          "$type": "NonTemporal"
+        }
+      },
+      {
+        "$type": "TableSpec",
+        "columns": {
+          "article_id": {
+            "$type": "DType",
+            "name": "int64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "customer_id": {
+            "$type": "DType",
+            "name": "int64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "price": {
+            "$type": "DType",
+            "name": "float64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "t_dat": {
+            "$type": "DType",
+            "name": "timestamp",
+            "precision": null,
+            "scale": null,
+            "timezone": "UTC",
+            "unit": "s"
+          },
+          "transaction_id": {
+            "$type": "DType",
+            "name": "int64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          }
+        },
+        "name": "transactions",
+        "primary_key": "transaction_id",
+        "time_column": "t_dat"
+      }
+    ]
+  },
+  "version": 3
+}

@@ -1,0 +1,665 @@
+{
+  "$type": "DataLoaderSpec",
+  "batch": {
+    "$type": "BatchSpec",
+    "batching": {
+      "$type": "Batching",
+      "bucket_by_length": false,
+      "drop_last": false,
+      "length_input": null,
+      "max_samples": 128,
+      "max_tokens": null
+    },
+    "encodings": {},
+    "field_names": {},
+    "id_spaces": {},
+    "inputs": {
+      "customer": {
+        "$type": "Input",
+        "layout": {
+          "$type": "Separate"
+        },
+        "representation": {
+          "$type": "Fields",
+          "field_names": null,
+          "field_space": null,
+          "fields": [
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "Buckets",
+                "bins": 8,
+                "boundaries": null,
+                "separate_zero": false
+              },
+              "field": "age",
+              "id_space": null
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "ZScore",
+                "dtype": "float32",
+                "mean": null,
+                "scale": null
+              },
+              "field": "recency",
+              "id_space": null
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "ZScore",
+                "dtype": "float32",
+                "mean": null,
+                "scale": null
+              },
+              "field": "spend_30d",
+              "id_space": null
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "ZScore",
+                "dtype": "float32",
+                "mean": null,
+                "scale": null
+              },
+              "field": "visits_7d",
+              "id_space": null
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "ZScore",
+                "dtype": "float32",
+                "mean": null,
+                "scale": null
+              },
+              "field": "visits_30d",
+              "id_space": null
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "ZScore",
+                "dtype": "float32",
+                "mean": null,
+                "scale": null
+              },
+              "field": "visits_90d",
+              "id_space": null
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "Vocabulary",
+                "max_size": null,
+                "min_frequency": 1,
+                "missing_id": 0,
+                "unknown_id": 1,
+                "values": null
+              },
+              "field": "club",
+              "id_space": null
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "Vocabulary",
+                "max_size": null,
+                "min_frequency": 1,
+                "missing_id": 0,
+                "unknown_id": 1,
+                "values": null
+              },
+              "field": "news",
+              "id_space": null
+            }
+          ],
+          "forbidden_fields": [],
+          "history": {
+            "$type": "Grouped"
+          },
+          "row": {
+            "$type": "Columns"
+          }
+        },
+        "source": {
+          "$type": "EntitySource"
+        }
+      },
+      "history": {
+        "$type": "Input",
+        "layout": {
+          "$type": "Padded"
+        },
+        "representation": {
+          "$type": "Fields",
+          "field_names": null,
+          "field_space": null,
+          "fields": [
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "ZScore",
+                "dtype": "float32",
+                "mean": null,
+                "scale": null
+              },
+              "field": "price",
+              "id_space": null
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "Vocabulary",
+                "max_size": null,
+                "min_frequency": 1,
+                "missing_id": 0,
+                "unknown_id": 1,
+                "values": null
+              },
+              "field": "channel",
+              "id_space": null
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "Vocabulary",
+                "max_size": null,
+                "min_frequency": 1,
+                "missing_id": 0,
+                "unknown_id": 1,
+                "values": null
+              },
+              "field": "weekday",
+              "id_space": null
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "ZScore",
+                "dtype": "float32",
+                "mean": null,
+                "scale": null
+              },
+              "field": "age_days",
+              "id_space": null
+            }
+          ],
+          "forbidden_fields": [],
+          "history": {
+            "$type": "Grouped"
+          },
+          "row": {
+            "$type": "Columns"
+          }
+        },
+        "source": {
+          "$type": "EventSource",
+          "collection": "history",
+          "events": [
+            "recent"
+          ],
+          "keep": "last",
+          "max_events": null,
+          "order": "ascending"
+        }
+      }
+    },
+    "targets": {
+      "purchases": {
+        "$type": "LabelTarget",
+        "encoding": {
+          "$type": "Raw"
+        },
+        "id_space": null,
+        "source": "purchases_next_week"
+      }
+    }
+  },
+  "sample": {
+    "$type": "SampleSpec",
+    "candidate_sets": {},
+    "current_events": {},
+    "dated_entity_values": {},
+    "entity": {
+      "$type": "EntitySpec",
+      "available_from": null,
+      "entity_type": "customer",
+      "filters": [],
+      "table": "customers"
+    },
+    "entity_values": {
+      "age": {
+        "$type": "Field",
+        "column": "age",
+        "path": [],
+        "reference_time": "sample",
+        "selection": "one",
+        "time_column": null
+      },
+      "club": {
+        "$type": "Field",
+        "column": "club_member_status",
+        "path": [],
+        "reference_time": "sample",
+        "selection": "one",
+        "time_column": null
+      },
+      "news": {
+        "$type": "Field",
+        "column": "fashion_news_frequency",
+        "path": [],
+        "reference_time": "sample",
+        "selection": "one",
+        "time_column": null
+      },
+      "recency": {
+        "$type": "Aggregate",
+        "column": "t_dat",
+        "dtype": {
+          "$type": "DType",
+          "name": "float64",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "operation": "recency",
+        "source": {
+          "$type": "Rows",
+          "active": null,
+          "distinct": true,
+          "filters": [],
+          "path": [
+            "customer_transactions"
+          ],
+          "time": {
+            "$type": "TimeWindow",
+            "column": "t_dat",
+            "start": null,
+            "stop": 0
+          }
+        }
+      },
+      "spend_30d": {
+        "$type": "Aggregate",
+        "column": "price",
+        "dtype": {
+          "$type": "DType",
+          "name": "float64",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "operation": "sum",
+        "source": {
+          "$type": "Rows",
+          "active": null,
+          "distinct": true,
+          "filters": [],
+          "path": [
+            "customer_transactions"
+          ],
+          "time": {
+            "$type": "TimeWindow",
+            "column": "t_dat",
+            "start": -2592000,
+            "stop": 0
+          }
+        }
+      },
+      "visits_30d": {
+        "$type": "Aggregate",
+        "column": "t_dat",
+        "dtype": {
+          "$type": "DType",
+          "name": "int64",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "operation": "count_distinct",
+        "source": {
+          "$type": "Rows",
+          "active": null,
+          "distinct": true,
+          "filters": [],
+          "path": [
+            "customer_transactions"
+          ],
+          "time": {
+            "$type": "TimeWindow",
+            "column": "t_dat",
+            "start": -2592000,
+            "stop": 0
+          }
+        }
+      },
+      "visits_7d": {
+        "$type": "Aggregate",
+        "column": "t_dat",
+        "dtype": {
+          "$type": "DType",
+          "name": "int64",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "operation": "count_distinct",
+        "source": {
+          "$type": "Rows",
+          "active": null,
+          "distinct": true,
+          "filters": [],
+          "path": [
+            "customer_transactions"
+          ],
+          "time": {
+            "$type": "TimeWindow",
+            "column": "t_dat",
+            "start": -604800,
+            "stop": 0
+          }
+        }
+      },
+      "visits_90d": {
+        "$type": "Aggregate",
+        "column": "t_dat",
+        "dtype": {
+          "$type": "DType",
+          "name": "int64",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "operation": "count_distinct",
+        "source": {
+          "$type": "Rows",
+          "active": null,
+          "distinct": true,
+          "filters": [],
+          "path": [
+            "customer_transactions"
+          ],
+          "time": {
+            "$type": "TimeWindow",
+            "column": "t_dat",
+            "start": -7776000,
+            "stop": 0
+          }
+        }
+      }
+    },
+    "events": {
+      "recent": {
+        "$type": "EventSpec",
+        "fields": {
+          "age_days": {
+            "$type": "EventTimeDelta",
+            "dtype": {
+              "$type": "DType",
+              "name": "float64",
+              "precision": null,
+              "scale": null,
+              "timezone": null,
+              "unit": null
+            },
+            "unit": "days"
+          },
+          "channel": {
+            "$type": "Field",
+            "column": "sales_channel_id",
+            "path": [],
+            "reference_time": "sample",
+            "selection": "one",
+            "time_column": null
+          },
+          "price": {
+            "$type": "Field",
+            "column": "price",
+            "path": [],
+            "reference_time": "sample",
+            "selection": "one",
+            "time_column": null
+          },
+          "time": {
+            "$type": "Field",
+            "column": "t_dat",
+            "path": [],
+            "reference_time": "sample",
+            "selection": "one",
+            "time_column": null
+          },
+          "weekday": {
+            "$type": "Derived",
+            "dtype": {
+              "$type": "DType",
+              "name": "int64",
+              "precision": null,
+              "scale": null,
+              "timezone": null,
+              "unit": null
+            },
+            "inputs": [
+              "time"
+            ],
+            "operation": {
+              "$type": "CalendarPart",
+              "part": "weekday",
+              "timezone": "UTC"
+            }
+          }
+        },
+        "limit": 16,
+        "order": "descending",
+        "rows": {
+          "$type": "Rows",
+          "active": null,
+          "distinct": true,
+          "filters": [],
+          "path": [
+            "customer_transactions"
+          ],
+          "time": {
+            "$type": "TimeWindow",
+            "column": "t_dat",
+            "start": null,
+            "stop": 0
+          }
+        }
+      }
+    },
+    "neighborhoods": {},
+    "targets": {
+      "purchases_next_week": {
+        "$type": "Aggregate",
+        "column": null,
+        "dtype": {
+          "$type": "DType",
+          "name": "int64",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "operation": "count",
+        "source": {
+          "$type": "Rows",
+          "active": null,
+          "distinct": true,
+          "filters": [],
+          "path": [
+            "customer_transactions"
+          ],
+          "time": {
+            "$type": "TimeWindow",
+            "column": "t_dat",
+            "start": 0,
+            "stop": 604800
+          }
+        }
+      }
+    }
+  },
+  "schema": {
+    "$type": "DataSchema",
+    "relations": [
+      {
+        "$type": "RelationSpec",
+        "left_key": "article_id",
+        "left_table": "articles",
+        "name": "article_transactions",
+        "right_key": "article_id",
+        "right_table": "transactions"
+      },
+      {
+        "$type": "RelationSpec",
+        "left_key": "customer_id",
+        "left_table": "customers",
+        "name": "customer_transactions",
+        "right_key": "customer_id",
+        "right_table": "transactions"
+      }
+    ],
+    "tables": [
+      {
+        "$type": "TableSpec",
+        "columns": {
+          "article_id": {
+            "$type": "DType",
+            "name": "int64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "listed_at": {
+            "$type": "DType",
+            "name": "timestamp",
+            "precision": null,
+            "scale": null,
+            "timezone": "UTC",
+            "unit": "s"
+          },
+          "product_type_name": {
+            "$type": "DType",
+            "name": "string",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          }
+        },
+        "name": "articles",
+        "primary_key": "article_id",
+        "time_column": "listed_at"
+      },
+      {
+        "$type": "TableSpec",
+        "columns": {
+          "age": {
+            "$type": "DType",
+            "name": "int64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "club_member_status": {
+            "$type": "DType",
+            "name": "string",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "customer_id": {
+            "$type": "DType",
+            "name": "int64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "fashion_news_frequency": {
+            "$type": "DType",
+            "name": "string",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          }
+        },
+        "name": "customers",
+        "primary_key": "customer_id",
+        "time_column": {
+          "$type": "NonTemporal"
+        }
+      },
+      {
+        "$type": "TableSpec",
+        "columns": {
+          "article_id": {
+            "$type": "DType",
+            "name": "int64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "customer_id": {
+            "$type": "DType",
+            "name": "int64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "price": {
+            "$type": "DType",
+            "name": "float64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "sales_channel_id": {
+            "$type": "DType",
+            "name": "int64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "t_dat": {
+            "$type": "DType",
+            "name": "timestamp",
+            "precision": null,
+            "scale": null,
+            "timezone": "UTC",
+            "unit": "s"
+          },
+          "transaction_id": {
+            "$type": "DType",
+            "name": "int64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          }
+        },
+        "name": "transactions",
+        "primary_key": "transaction_id",
+        "time_column": "t_dat"
+      }
+    ]
+  },
+  "version": 3
+}
