@@ -230,9 +230,10 @@ Every value comes from exact counts over all rows, with no sampling. Numbers you
   tables, then the snapshot it scored ← that snapshot's tables, and, when the two snapshots differ, which tables are
   newer.
 - On MLflow the card ends with the line "kumo rewrites everything above this line; editing it stops kumo's updates."
-  and a rule. Add your own notes below the rule; editing anything above it stops kumo-engine updating that card and
-  tags the run `kumo.card_frozen`. On Snowflake the card is the `run_card.md` artifact, written once when the run
-  ends, with no notes line.
+  and a rule, followed by a hidden `<!-- /kumo:card sha256=... -->` marker that only the description editor shows.
+  Add your own notes after that marker and keep it; editing anything above it, the marker included, stops
+  kumo-engine updating that card and tags the run `kumo.card_frozen`. On Snowflake the card is the `run_card.md`
+  artifact, written once when the run ends, with no notes line.
 - Every comparison names its reference: "vs holdout" (the model's holdout scores at training), "vs previous" (the previous run) or "vs training data" (input columns).
 
 **Metrics.**
