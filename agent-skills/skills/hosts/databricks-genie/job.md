@@ -195,10 +195,11 @@ a saved job's runs; a one-time run is found from its page or its id as printed a
 | `life_cycle_state` `PENDING` for minutes | The cluster is starting. Not a failure |
 | `INTERNAL_ERROR`, or a cluster that failed to start | Platform-side. Report the `state_message` |
 
-Propose the specific fix: say what to change in the job notebook, offer to make that change,
-and ask whether to resubmit after it — two things the user confirms. End with that question
-("Shall I set `MODEL_VERSION = 1` in the job notebook, then resubmit?"), never "then rerun". Never edit the notebook or
-resubmit on your own: every submission is a new GPU run. Never delete a run or a job, because
+Propose the specific fix: say what to change in the job notebook and ask only whether to make
+that change ("Shall I set `MODEL_VERSION = 1` in the job notebook?"). A yes edits that job
+notebook, which this skill generated; it is the one edit of an existing notebook the user can
+approve here. Resubmitting is a separate confirmation, asked after the edit; never "then rerun".
+Never edit the notebook or resubmit on your own: every submission is a new GPU run. Never delete a run or a job, because
 that discards its output.
 
 **"Does the cluster have Kumo? Do I need to add libraries?"** Kumo is present on the GPU cluster

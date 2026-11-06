@@ -18,11 +18,16 @@ schedules and cost — is in `job.md`; read it only when the user asks for a job
 
 Genie Code can act on the workspace, and a request that names a deliverable — "make the notebook",
 "write a job", "score every account", "fit on this table" — reads like permission to act. It is
-not: it starts intake. Until the user has confirmed the Node 1d restatement, in a later turn:
+not: it starts intake. For a request that has a Node 1d gate — a new model, batch scoring, a job —
+until the user has confirmed the restatement, in a later turn:
 
 - do not create, import, upload or edit a notebook or any file, in the workspace or on local disk;
 - do not submit a run, create a job, or create a table, volume or model;
 - do not put the code in your reply.
+
+An inspection request has no Node 1d — explanations, training diagnostics, graph visualization.
+Answer it directly, code in the reply included; it still writes, imports and runs nothing in the
+workspace unasked.
 
 Preflight reads — the SQL in §2 and §3, reading clusters, registered models and runs — are not
 writes and need no confirmation. A reply that reaches a gate ends with the proposal or the
@@ -30,11 +35,12 @@ restatement and its confirmation question.
 
 Confirmation is the user's answer to a restatement you showed in an earlier reply of this
 conversation. "Looks good, build it" when no restatement has been shown is not confirmation:
-show the graph proposal, then the restatement, and stop at each.
+show the gates the operation has — for a new model the graph proposal, then the restatement; for
+§6.1 the single combined restatement — and stop at each.
 
 This holds for a follow-up in a session that already has a notebook, and for a request routed to
 a capability skill — custom labels, weights, splits or scoring rows; publishing, reloading or
-retaining a model; explanations; tuning. A change to the population, labels, weights, splits,
+retaining a model; tuning. A change to the population, labels, weights, splits,
 task or destination goes back through the gates: answer with the restatement, or with the
 ask-back that names the offending field, never with new or edited code. A field the capability
 skill says not to transform — a split column holding strings, weights to normalize, a list
@@ -286,7 +292,8 @@ not adapt it.
 
 ### 6.1 Scoring a registered model
 
-For `batch_inference` from a Unity Catalog registered model, Node 1c reads the version's training
+This refines `batch_inference.md` Node 1c and 1d for this host. For `batch_inference` from a Unity
+Catalog registered model, Node 1c reads the version's training
 record — the version's comment and tags (`databricks model-versions get`), then the files they
 point to in its run (`databricks experiments list-artifacts --run-id`). Read a file with
 `databricks api get "/api/2.0/mlflow/artifacts/credentials-for-read?run_id=<id>&path=<path>"`,
@@ -302,8 +309,12 @@ stop for confirmation:
 - Graph: rebuilt from the version's training record — <n> tables, the recorded column lists, keys and links [recorded]
 - Population: all <entity> as of latest snapshot timestamp [default]
 - Output: <catalog.schema.table, verbatim>
+- Staging volume: creates <catalog.schema>._kumo_staging   (only when it does not exist)
+- Embeddings: <included, if explicitly requested>
 - Scoring options: <as batch_inference.md gives them by task type>
 ```
+
+`[recorded]` marks a value read from the version's training record.
 
 For a job, add the `job.md` §3 lines. Do not restate the task (entity, outcome, window) or list
 tables and columns beyond that line:

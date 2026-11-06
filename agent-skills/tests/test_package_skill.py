@@ -146,6 +146,57 @@ def test_genie_gates_hold_for_routed_requests_jobs_and_saved_models() -> None:
     assert 'names the destination verbatim and nothing else' in runtime
 
 
+def test_genie_saved_model_template_carries_every_line_other_files_require() -> None:
+    """The §6.1 template is the one the agent copies for scoring; a line other files rely on
+    (a confirmed staging volume, embeddings) must be in it, and its tags must be defined."""
+    skills = package_skill.SKILLS
+    host = skills / 'hosts' / 'databricks-genie'
+    flat = lambda path: ' '.join(path.read_text().split())  # noqa: E731
+    adapter, runtime = flat(host / 'adapter.md'), flat(host / 'runtime.md')
+    batch = flat(skills / 'kumo-data-science' / 'accept' / 'batch_inference.md')
+    section = adapter[adapter.index('### 6.1'):adapter.index('## 7.')]
+    template = section[section.index('```'):section.index('```', section.index('```') + 3)]
+    assert 'Staging volume:' in runtime and '- Embeddings:' in batch and '- Output:' in batch
+    for line in ('- Output:', '- Staging volume:', '- Embeddings:'):
+        assert line in template, f'§6.1 template lacks {line!r}'
+    assert '[recorded]' in template and 'marks a value read from' in section
+    assert 'refines `batch_inference.md` Node 1c and 1d' in section
+
+
+def test_genie_no_code_rule_names_its_scope_and_agrees_with_inspection_skills() -> None:
+    """Explanations ask for plotting code in the reply and graph visualization needs no intake;
+    the adapter's no-code rule must scope itself to requests that have a Node 1d gate."""
+    skills = package_skill.SKILLS
+    adapter = ' '.join((skills / 'hosts' / 'databricks-genie' / 'adapter.md').read_text().split())
+    gate = adapter[adapter.index('## 0.'):adapter.index('## 1.')]
+    assert 'that has a Node 1d gate' in gate
+    assert ('An inspection request has no Node 1d — explanations, training diagnostics, '
+            'graph visualization') in gate
+    assert 'code in the reply included' in gate
+    assert 'explanations;' not in gate   # no longer listed among the gated capability skills
+    assert 'stop at each' in gate and 'single combined restatement' in gate
+    explanations = ' '.join((skills / 'kumo-model-explanations' / 'SKILL.md').read_text().split())
+    assert 'the plotting code in the reply' in explanations
+
+
+def test_genie_job_fix_offer_does_not_bundle_a_resubmit() -> None:
+    """One yes must not approve a notebook edit and a new GPU run."""
+    job = ' '.join((package_skill.SKILLS / 'hosts' / 'databricks-genie' / 'job.md')
+                   .read_text().split())
+    assert 'then resubmit?' not in job
+    assert 'Resubmitting is a separate confirmation' in job
+    assert 'the one edit of an existing notebook the user can approve here' in job
+
+
+def test_explanations_checklist_keeps_the_conditions_the_body_gives() -> None:
+    text = ' '.join((package_skill.SKILLS / 'kumo-model-explanations' / 'SKILL.md')
+                    .read_text().split())
+    checklist = text[text.index('## Return a useful answer'):]
+    assert 'normalized across the graph as observed' in checklist
+    assert 'when the total is positive' in checklist
+    assert 'when the file records one, mean target' in checklist
+
+
 def test_genie_sql_quotes_identifiers_and_names_the_staging_volume() -> None:
     """Unity Catalog names may contain hyphens, and a write creates `_kumo_staging`."""
     host = package_skill.SKILLS / 'hosts' / 'databricks-genie'

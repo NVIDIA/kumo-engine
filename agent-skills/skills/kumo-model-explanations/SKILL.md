@@ -76,9 +76,10 @@ Every answer, however short, carries:
 
 - the run, task, stage, selected trainer/refit and the exact file paths read;
 - gradient scores named as Kumo gradient attribution over the processed test subset, normalized
-  across the graph, and never called drivers, probabilities or percentages;
-- for cohorts, each cohort's population share beside its mean prediction and mean target, read
-  from column analysis;
+  across the graph as observed (the default producer, when the total is positive), and never
+  called drivers, probabilities or percentages;
+- for cohorts, each cohort's population share beside its mean prediction and, when the file
+  records one, mean target, read from column analysis;
 - for a plot, the plotting code in the reply, reading the selected run's files, titled with the
   table, column, run and test stage;
 - when evidence is missing, that no fit was started, and whether the user wants one.
