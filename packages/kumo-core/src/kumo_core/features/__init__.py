@@ -4,11 +4,9 @@
 """Model-ready feature statistics and stores."""
 
 from .stats import get_stats
-from .stores import FeatureStore, GraphStore, InMemoryFeatureStore
+from .stores import FeatureStore
 
 __all__ = [
     "FeatureStore",
-    "GraphStore",
-    "InMemoryFeatureStore",
     "get_stats",
 ]

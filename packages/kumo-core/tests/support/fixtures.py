@@ -6,17 +6,18 @@ from dataclasses import dataclass, field
 import pandas as pd
 import pytest
 import torch
-from torch_geometric.data import HeteroData
+from kumo_core.diskgraph.metadata import DiskgraphSchema
+from kumo_core.diskgraph.stores import DiskgraphFeatureStore
+from kumo_core.encoders.selection import compute_missing_stats_
+from kumo_core.encoders.tensor_mapper import TensorMapper
+from kumo_core.features.stores.feature import FeatureStoreTableSchema
+from kumo_core.features.time import to_datetime
 from kumoapi.encoder import Encoder
 from kumoapi.typing import Stype
+from torch_geometric.data import HeteroData
 
-from kumo_core.features.stores.feature import FeatureStoreTableSchema
-from kumo_core.features.stores.in_memory_feature import InMemoryFeatureStore
-from tests.support.in_memory_graph import InMemoryGraphStore
-from kumo_core.encoders.tensor_mapper import TensorMapper
-from kumo_core.encoders.selection import compute_missing_stats_
+from tests.support.diskgraph_feature_store import make_diskgraph_feature_store
 from tests.support.encoders import get_encoder
-from kumo_core.features.time import to_datetime
 
 
 @dataclass
@@ -32,8 +33,8 @@ def create_graph_data(
     df_dict: dict[str, pd.DataFrame],
     schema_dict: dict[str, TestTableSchema],
 ) -> tuple[
-        InMemoryFeatureStore,
-        InMemoryGraphStore,
+        DiskgraphFeatureStore,
+        DiskgraphSchema,
         dict[str, dict[str, Encoder]],
 ]:
     # Convert time columns to `pd.Datetime` ###################################
@@ -72,13 +73,12 @@ def create_graph_data(
         for table_name, schema in schema_dict.items()
     }
 
-    feature_store = InMemoryFeatureStore(
+    feature_store = make_diskgraph_feature_store(
         df_dict=df_dict,
         table_schema_dict=fs_table_schema_dict,
-        train_table_schema=None,
     )
 
-    # Create `GraphStore` #####################################################
+    # Graph metadata for explanation:
     fkeys = []
     for table_name, schema in schema_dict.items():
         for fkey, dst_table in schema.fkeys:
@@ -87,25 +87,36 @@ def create_graph_data(
                 f'{dst_table}.{schema_dict[dst_table].pkey_name}',
             ))
 
-    time_col_dict = {
-        table_name: schema.time_col
+    edge_types = [
+        edge_type
         for table_name, schema in schema_dict.items()
-        if schema.time_col is not None
-    }
-
-    graph_store = InMemoryGraphStore(
-        df_dict=df_dict,
-        fkeys=fkeys,
-        time_col_dict=time_col_dict,
+        for column_name, destination in schema.fkeys
+        for edge_type in (
+            (table_name, column_name, destination),
+            (destination, f'rev_{column_name}', table_name),
+        )
+    ]
+    graph_schema = DiskgraphSchema(
+        table_names=list(schema_dict),
+        pkey_dict={
+            name: schema.pkey_name
+            for name, schema in schema_dict.items()
+            if schema.pkey_name is not None
+        },
+        fk_specs=fkeys,
+        raw_edge_types=list(edge_types),
+        edge_types=edge_types,
+        edge_type_remap={},
+        node_types=list(schema_dict),
     )
 
-    return feature_store, graph_store, table_encoder_dict
+    return feature_store, graph_schema, table_encoder_dict
 
 
 @pytest.fixture()
 def user_store_graph() -> tuple[
-    InMemoryFeatureStore,
-    InMemoryGraphStore,
+    DiskgraphFeatureStore,
+    DiskgraphSchema,
     dict[str, dict[str, Encoder]],
 ]:
     df_dict: dict[str, pd.DataFrame] = {}
@@ -180,8 +191,8 @@ def user_store_graph() -> tuple[
 
 @pytest.fixture()
 def large_user_store_graph() -> tuple[
-    InMemoryFeatureStore,
-    InMemoryGraphStore,
+    DiskgraphFeatureStore,
+    DiskgraphSchema,
     dict[str, dict[str, Encoder]],
 ]:
     df_dict: dict[str, pd.DataFrame] = {}
@@ -256,7 +267,7 @@ def large_user_store_graph() -> tuple[
 
 
 def user_store_batch(
-    feature_store: InMemoryFeatureStore,
+    feature_store: DiskgraphFeatureStore,
     num_hops: int = 2,
 ) -> HeteroData:
     """Fixed temporal batch for explanation and edge-exclusion tests.
