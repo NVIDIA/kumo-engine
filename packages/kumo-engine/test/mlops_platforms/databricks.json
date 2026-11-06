@@ -8,5 +8,6 @@
   "identity": "ambient",
   "accelerator": "cpu",
   "execution_context": "databricks",
-  "environment": "managed"
+  "environment": "managed",
+  "cluster_id": "YOUR_TEST_CLUSTER_ID"
 }

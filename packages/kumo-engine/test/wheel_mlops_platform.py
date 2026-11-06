@@ -31,6 +31,8 @@ FIELDS = {
     'warehouse',
     'role',
     'catalog',
+    'cluster_id',
+    'warehouse_id',
     'tracking_arn',
     'role_arn',
     'accelerator',
@@ -150,6 +152,9 @@ def validate(config):
             raise ValueError('Notebook context is only for Snowflake')
         for name in ('catalog', 'schema'):
             identifier(config.get(name))
+        if bool(config.get('cluster_id')) == bool(config.get('warehouse_id')):
+            raise ValueError(
+                'Databricks requires exactly one cluster_id or warehouse_id')
         if config.get('identity') not in ('ambient', 'service_principal'):
             raise ValueError(
                 'Databricks identity must be ambient or service_principal')
@@ -273,7 +278,13 @@ class Backend:
             if not version:
                 raise PlatformUnavailable(
                     'Run inside the selected Databricks runtime')
-            return dict(context='databricks', runtime=version)
+            from databricks.sdk import WorkspaceClient
+            user = WorkspaceClient().current_user.me().user_name
+            expected = os.environ.get('KUMO_MLOPS_EXPECTED_DATABRICKS_USER')
+            if expected and user != expected:
+                raise PlatformUnavailable(
+                    'Fresh Databricks process resolved another identity')
+            return dict(context='databricks', runtime=version, user=user)
         processing = Path('/opt/ml/config/processingjobconfig.json')
         if processing.is_file():
             record = json.loads(processing.read_text())
@@ -326,9 +337,11 @@ class Mlflow(Backend):
                 identity = kumo.DatabricksIdentity(
                     host=os.environ[names[0]], client_id=os.environ[names[1]],
                     client_secret=os.environ[names[2]])
-            return kumo.DatabricksConnector(catalog=self.config['catalog'],
-                                            schema_name=self.config['schema'],
-                                            identity=identity)
+            return kumo.DatabricksConnector(
+                catalog=self.config['catalog'],
+                schema_name=self.config['schema'], identity=identity,
+                cluster_id=self.config.get('cluster_id'),
+                warehouse_id=self.config.get('warehouse_id'))
         identity = (kumo.S3Identity(role_arn=self.config['role_arn'])
                     if self.config.get('role_arn') else None)
         return kumo.S3Connector(identity=identity)

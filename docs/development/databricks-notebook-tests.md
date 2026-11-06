@@ -1,8 +1,9 @@
-# Databricks notebook graph tests
+# Databricks notebook platform tests
 
 These tests run the same graph scenario as the
 [Snowflake notebook tests](snowflake-notebook-actions.md), using An's unchanged
-PR172 adtech fixture and the same pinned candidate wheel. They do not train a model.
+PR172 adtech fixture and the same pinned candidate wheel. Graph checks do not train
+a model; the separate lifecycle scenario performs two small fits.
 
 The runner stages checksum-addressed assets in a dedicated test volume, imports a
 new notebook, submits it through the Jobs API, and polls for completion. The notebook
@@ -13,14 +14,15 @@ The kernel checks all nine tables, 52 columns and ten relationships. Default dis
 must read no source data; explicit previews must use bounded real fixture samples.
 SVG, PDF and Markdown exports must exclude sample values. The runner verifies each
 output against the receipt printed by the successful notebook execution. After job
-success, it waits up to 120 seconds if Databricks is still persisting cell outputs.
+success, it polls for persisted cell outputs with a 120-second budget; individual
+API requests have their own network timeout.
 
 Playwright opens the actual Jobs HTML export without a Databricks browser login.
 It reuses Snowflake's assertions for graph geometry, PK/FK tooltips, preview values,
 zoom, layout and export commands. A fresh browser context reopens the same export
 and checks retained schema and previews. Screenshots, receipts, outputs and assertions
 are saved in the output directory. This does not check live workspace-editor
-reopening, native experiment/registry pages, training, or complete dependency
+reopening, native experiment/registry pages, or complete dependency
 compatibility. Pip logs remain evidence even when they report dependency conflicts.
 
 ## Authentication and test resources
@@ -97,3 +99,47 @@ and again inside the notebook; installed graph modules must match the test revis
 
 GitHub Actions runs this same command after environment approval. It requires the
 PAT secret and the published feature branch; resource settings come from the code.
+
+
+## Lifecycle and Snowflake parity
+
+The lifecycle notebook reuses `wheel_mlops_lifecycle.py`,
+`wheel_mlops_platform.py`, and An's `wheel_gpu_smoke.py` recipe. Its fixture is
+exactly the shared Snowflake lifecycle fixture: 60 users, 1,500 seeded events,
+and two two-epoch binary fits. The graph scenario separately uses An's PR172 data.
+
+Each lifecycle attempt uses a new experiment, fully qualified Unity Catalog model,
+and Volume artifact prefix. The notebook creates a clean virtual environment,
+installs the pinned candidate with its Databricks and MLflow extras, and requires
+`pip check` to pass. Each phase runs in a fresh process using runtime-derived
+credentials, verifies its effective Databricks identity, and checks its installed wheel.
+The runner PAT is never copied into the notebook. Producer scratch and source data
+are removed before recovery phases. The same process-group deadline handling as the
+shared runner stops timed-out workers and their descendants.
+
+```sh
+python packages/kumo-engine/test/databricks_notebook/lifecycle_notebook.py \
+  --execute --cluster-id DEDICATED_TEST_CLUSTER_ID \
+  --output-dir /tmp/databricks-lifecycle-001
+```
+
+| Scenario | Databricks coverage |
+| --- | --- |
+| Graph schema, tooltips, controls, samples and exports | Passed in GitHub Actions [42185727637](https://github.com/NVIDIA/kumo-engine/actions/runs/42185727637). |
+| Exported notebook reopened in a fresh browser context | Passed in the same run; does not establish native editor reopening. |
+| Fit/register two versions; reload, predict, aliases, lineage, drift and delayed labels | Shared lifecycle entrypoint implemented; live validation pending. |
+| Real provider-denied artifact access | Requires a deliberately read-only test root; never inferred from a missing path. |
+| Native notebook editor, kernel shutdown/reopening, experiment and registry UI | Not qualified by PAT/API or exported HTML evidence. |
+| Full exported epoch history, independently nonzero drift, interrupted remote writer | Existing shared qualification gaps remain explicit. |
+
+Native Databricks web pages require a separate browser session; the workspace
+redirects PAT-authenticated page requests to login. Under PAT-only authentication,
+these native UI checks remain blocked. Do not replace them with a custom test dashboard
+or label an API readback as native UI evidence. The lifecycle summary separates
+positive API checks, all four engine phases, and full qualification.
+
+GitHub Actions offers `graph-ui`, `engine`, and `all` modes. Lifecycle modes require
+the ID of a running dedicated `KUMO_TEST_` x86 cluster. The engine job requires all
+four API phases, including real denied access; it preserves native-UI and export
+qualification gaps even when those selected engine checks pass. No email login is
+part of the PAT notebook runner.

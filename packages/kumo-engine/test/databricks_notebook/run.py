@@ -74,12 +74,12 @@ def notebook(config):
         ])
 
 
-def task_request(config, path, attempt, client):
+def task_request(config, path, attempt, client, timeout=1800):
     task = dict(task_key='graph_notebook',
                 notebook_task=dict(notebook_path=path, source='WORKSPACE'),
-                timeout_seconds=1800, max_retries=0)
+                timeout_seconds=timeout, max_retries=0)
     payload = dict(run_name='kumo-test-notebook-ui-' + attempt,
-                   timeout_seconds=1800, tasks=[task])
+                   timeout_seconds=timeout, tasks=[task])
     if config['cluster_id']:
         cluster = client.api('/api/2.0/clusters/get?cluster_id=' +
                              config['cluster_id'])
@@ -193,6 +193,42 @@ def collect(client, run, config, root, submitted):
     return stored
 
 
+def submit_and_wait(client, config, spec, content, root, timeout,
+                    task_timeout=1800):
+    path = spec['notebook_path']
+    client.api('/api/2.0/workspace/mkdirs', 'POST',
+               dict(path=config['workspace_dir']))
+    client.api(
+        '/api/2.0/workspace/import', 'POST',
+        dict(path=path, format='JUPYTER',
+             content=base64.b64encode(json.dumps(content).encode()).decode(),
+             overwrite=False))
+    payload = task_request(config, path, spec['attempt'], client, task_timeout)
+    save(root / 'submission.json', payload)
+    run_id = client.api('/api/2.2/jobs/runs/submit', 'POST', payload)['run_id']
+    save(root / 'submitted-run.json', dict(run_id=run_id))
+    print('Notebook submitted:', run_id, flush=True)
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            run = client.api('/api/2.2/jobs/runs/get?run_id=' + str(run_id))
+            save(root / 'run.json', run)
+            if run['state']['life_cycle_state'] in ('TERMINATED', 'SKIPPED',
+                                                    'INTERNAL_ERROR'):
+                break
+            if time.monotonic() >= deadline:
+                raise TimeoutError('Notebook deadline exceeded')
+            print('Notebook:', run['state']['life_cycle_state'], flush=True)
+            time.sleep(20)
+    except BaseException:
+        try:
+            client.api('/api/2.2/jobs/runs/cancel', 'POST', dict(run_id=run_id))
+        except RuntimeError:
+            pass
+        raise
+    return run
+
+
 def execute(args, root):
     config = configuration(args.cluster_id)
     client = Client(config)
@@ -235,36 +271,8 @@ def execute(args, root):
     save(root / 'scenario.json', spec)
     content = notebook(spec)
     save(root / 'notebook.ipynb', content)
-    client.api('/api/2.0/workspace/mkdirs', 'POST',
-               dict(path=config['workspace_dir']))
-    client.api(
-        '/api/2.0/workspace/import', 'POST',
-        dict(path=path, format='JUPYTER',
-             content=base64.b64encode(json.dumps(content).encode()).decode(),
-             overwrite=False))
-    payload = task_request(config, path, attempt, client)
-    save(root / 'submission.json', payload)
-    run_id = client.api('/api/2.2/jobs/runs/submit', 'POST', payload)['run_id']
-    save(root / 'submitted-run.json', dict(run_id=run_id))
-    print('Notebook submitted:', run_id, flush=True)
-    deadline = time.monotonic() + args.timeout
-    try:
-        while True:
-            run = client.api('/api/2.2/jobs/runs/get?run_id=' + str(run_id))
-            save(root / 'run.json', run)
-            if run['state']['life_cycle_state'] in ('TERMINATED', 'SKIPPED',
-                                                    'INTERNAL_ERROR'):
-                break
-            if time.monotonic() >= deadline:
-                raise TimeoutError('Notebook deadline exceeded')
-            print('Notebook:', run['state']['life_cycle_state'], flush=True)
-            time.sleep(20)
-    except BaseException:
-        try:
-            client.api('/api/2.2/jobs/runs/cancel', 'POST', dict(run_id=run_id))
-        except RuntimeError:
-            pass
-        raise
+    run = submit_and_wait(client, config, spec, content, root, args.timeout)
+    run_id = run['run_id']
     report = collect(client, run, spec, root, content)
     subprocess.run(
         [args.node, str(HERE / 'verify_export.cjs'),

@@ -823,9 +823,9 @@ def run(args):
     return 0 if report['status'] == 'passed' else 1
 
 
-def execute(command, cwd, log, timeout):
+def execute(command, cwd, log, timeout, *, env=None):
     """Bound each worker and its training/prediction descendants."""
-    with subprocess.Popen(command, cwd=cwd, stdout=log,
+    with subprocess.Popen(command, cwd=cwd, stdout=log, env=env,
                           stderr=subprocess.STDOUT,
                           start_new_session=True) as process:
         try:

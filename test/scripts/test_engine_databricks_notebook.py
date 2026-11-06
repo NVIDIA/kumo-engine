@@ -261,7 +261,8 @@ def test_invalid_pat_cannot_enter_request_error_output(modules, config,
     assert token not in str(error.value)
 
 
-@pytest.mark.parametrize('job_name', ['configuration', 'notebook-ui'])
+@pytest.mark.parametrize('job_name',
+                         ['configuration', 'notebook-ui', 'engine-lifecycle'])
 @pytest.mark.parametrize('event,branch,repository,expected', [
     ('push', 'egu/databricks-ui-validation', 'NVIDIA/kumo-engine', False),
     ('workflow_dispatch', 'egu/databricks-ui-validation', 'NVIDIA/kumo-engine',
@@ -277,9 +278,12 @@ def test_cloud_jobs_require_manual_feature_dispatch(job_name, event, branch,
          '.github/workflows/kumo-engine-databricks-notebook.yml').read_text())
     condition = workflow['jobs'][job_name]['if']
     expression = condition.replace('&&', ' and ')
-    for name, value in [('github.event_name', event),
-                        ('github.ref', 'refs/heads/' + branch),
-                        ('github.repository', repository)]:
+    for name, value in [
+        ('inputs.mode',
+         'engine' if job_name == 'engine-lifecycle' else 'graph-ui'),
+        ('github.event_name', event), ('github.ref', 'refs/heads/' + branch),
+        ('github.repository', repository)
+    ]:
         expression = expression.replace(name, repr(value))
     assert eval(expression, {'__builtins__': {}}) is expected
 
