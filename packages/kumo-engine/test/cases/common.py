@@ -127,13 +127,12 @@ def control_table(training_table, query, snapshot, split, task, scratch):
 
     import kumo.engine as kumo
 
-    # ponytail: opt-in controls load exported answers into RAM.
+    # The full answer table must fit in RAM.
     root = scratch / "control"
     connector = kumo.FileConnector(root_dir=root)
-    training_table.export(kumo.TrainingTableOutputConfig(connector, "answers"))
-    frame = pd.concat(
-        [pd.read_parquet(path) for path in sorted(root.rglob("*.parquet"))],
-        ignore_index=True)
+    exported = training_table.export(
+        kumo.TrainingTableOutputConfig(connector, "answers"))
+    frame = pd.read_parquet(exported)
     scramble_labels(frame, task).to_parquet(root / "rows.parquet", index=False)
     return kumo.TrainingTable.from_source_table(
         connector["rows.parquet"], TrainingTableSpec(split_col="SPLIT"),
