@@ -2,7 +2,7 @@
 
 These generators create local files with seeded predictive patterns and related-table keys.
 They do not connect to a warehouse or upload data.
-Install `numpy`, `pandas` and `pyarrow`, then run the generator command shown at the top of the example from the repository root.
+Install `numpy`, `pandas` and `pyarrow`, then run the generator command shown at the top of the example from the collection root (`examples/kumo-example-notebooks`).
 Use a new output directory to avoid overwriting existing data.
 
 | Directory | Examples |

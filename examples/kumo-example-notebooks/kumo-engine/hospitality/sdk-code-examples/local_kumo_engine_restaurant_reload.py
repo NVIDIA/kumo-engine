@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Reload a trusted restaurant model and score its unchanged original snapshot.
 Synthetic data only.
 Generate synthetic example data first:
@@ -11,17 +14,26 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from kumo.engine import FileConnector, Graph, PredictiveQuery, Table, Trainer, configure
-from kumo.engine.trainer.output_config import PredictionOutputConfig
 from kumoapi.graph import Edge
 from kumoapi.jobs import PredictionArtifactType, WriteMode
 from kumoapi.typing import Dtype, Stype
 
+from kumo.engine import (
+    FileConnector,
+    Graph,
+    PredictiveQuery,
+    Table,
+    Trainer,
+    configure,
+)
+from kumo.engine.trainer.output_config import PredictionOutputConfig
+
 prepared, scratch, published, output = [
-    Path(os.environ[name]).expanduser().resolve()
-    for name in (
-        "KUMO_PREDICTION_INPUT", "KUMO_SCRATCH",
-        "KUMO_PREDICTION_OUTPUT", "KUMO_RELOAD_OUTPUT",
+    Path(os.environ[name]).expanduser().resolve() for name in (
+        "KUMO_PREDICTION_INPUT",
+        "KUMO_SCRATCH",
+        "KUMO_PREDICTION_OUTPUT",
+        "KUMO_RELOAD_OUTPUT",
     )
 ]
 for existing in (prepared, scratch, published):
@@ -36,15 +48,12 @@ trainer = Trainer.load(published / "model")
 
 connector = FileConnector(root_dir=str(prepared))
 users = Table.from_source_table(connector["users"], primary_key="user_id")
-restaurants = Table.from_source_table(
-    connector["restaurants"], primary_key="restaurant_id"
-)
-interactions = Table.from_source_table(
-    connector["interactions"], time_column="timestamp"
-)
-interactions = interactions.with_column(
-    "timestamp", dtype=Dtype.time, timestamp_format="%Y-%m-%d %H:%M:%S"
-)
+restaurants = Table.from_source_table(connector["restaurants"],
+                                      primary_key="restaurant_id")
+interactions = Table.from_source_table(connector["interactions"],
+                                       time_column="timestamp")
+interactions = interactions.with_column("timestamp", dtype=Dtype.time,
+                                        timestamp_format="%Y-%m-%d %H:%M:%S")
 interactions = interactions.with_column("user_id", stype=Stype.ID)
 interactions = interactions.with_column("restaurant_id", stype=Stype.ID)
 social = Table.from_source_table(connector["social_graph"])
@@ -54,14 +63,16 @@ graph = Graph(
     tables=[users, restaurants, interactions, social],
     edges=[
         Edge(src_table="interactions", fkey="user_id", dst_table="users"),
-        Edge(src_table="interactions", fkey="restaurant_id", dst_table="restaurants"),
+        Edge(src_table="interactions", fkey="restaurant_id",
+             dst_table="restaurants"),
         Edge(src_table="social_graph", fkey="user_a", dst_table="users"),
         Edge(src_table="social_graph", fkey="user_b", dst_table="users"),
     ],
 )
 graph.validate()
 snapshot = graph.snapshot()
-query = PredictiveQuery(graph, "PREDICT users.preferred_cuisine FOR EACH users.user_id")
+query = PredictiveQuery(
+    graph, "PREDICT users.preferred_cuisine FOR EACH users.user_id")
 query.validate()
 
 # Batch predictions
@@ -72,7 +83,8 @@ selected = pd.read_parquet(prediction_table.table_path)
 assert len(truth) >= 2 and truth["user_id"].is_unique
 assert len(selected) == len(truth)
 assert set(selected["ENTITY1"]) == set(truth["user_id"])
-class_count = int(pd.read_parquet(prepared / "users.parquet")["preferred_cuisine"].nunique())
+class_count = int(
+    pd.read_parquet(prepared / "users.parquet")["preferred_cuisine"].nunique())
 output.mkdir(parents=True, exist_ok=False)
 destination = FileConnector(root_dir=str(output))
 predictions = trainer.predict(
@@ -97,8 +109,10 @@ embeddings = trainer.predict(
         write_mode=WriteMode.OVERWRITE,
     ),
 ).frame
-pd.testing.assert_frame_equal(predictions, pd.read_parquet(output / "predictions.parquet"))
-pd.testing.assert_frame_equal(embeddings, pd.read_parquet(output / "embeddings.parquet"))
+pd.testing.assert_frame_equal(predictions,
+                              pd.read_parquet(output / "predictions.parquet"))
+pd.testing.assert_frame_equal(embeddings,
+                              pd.read_parquet(output / "embeddings.parquet"))
 assert set(predictions["ENTITY"]) == set(truth["user_id"])
 assert not predictions.duplicated(["ENTITY", "CLASS"]).any()
 assert predictions.groupby("ENTITY").size().eq(class_count).all()

@@ -12,13 +12,26 @@ The generator writes local files only. Configure your own SPCS environment or ac
 Install: pip install "kumo-engine[snowflake]"
 """
 import os
+
 from kumo.engine import Edge, Graph, SnowflakeConnector, Table
 
-source = SnowflakeConnector.from_connection_toml(connection_name=os.environ['SNOWFLAKE_CONNECTION_NAME'])
-users = Table.from_source_table(source.sql("SELECT TO_JSON(ARRAY_CONSTRUCT(user_id, location_id)) AS entity_id, user_id, location_id, created_time FROM USERS"), primary_key='ENTITY_ID', time_column='CREATED_TIME')
-orders = Table.from_source_table(source.sql("SELECT TO_JSON(ARRAY_CONSTRUCT(user_id, location_id)) AS entity_id, store_id, order_time FROM ORDERS"), time_column='ORDER_TIME')
-stores = Table.from_source_table(source['STORES'], primary_key='STORE_ID', time_column='CREATED_TIME')
-graph = Graph({'users': users, 'orders': orders, 'stores': stores},
-              [Edge('orders', 'ENTITY_ID', 'users'), Edge('orders', 'STORE_ID', 'stores')])
+source = SnowflakeConnector.from_connection_toml(
+    connection_name=os.environ['SNOWFLAKE_CONNECTION_NAME'])
+users = Table.from_source_table(
+    source.sql(
+        "SELECT TO_JSON(ARRAY_CONSTRUCT(user_id, location_id)) AS entity_id, user_id, location_id, created_time FROM USERS"
+    ), primary_key='ENTITY_ID', time_column='CREATED_TIME')
+orders = Table.from_source_table(
+    source.sql(
+        "SELECT TO_JSON(ARRAY_CONSTRUCT(user_id, location_id)) AS entity_id, store_id, order_time FROM ORDERS"
+    ), time_column='ORDER_TIME')
+stores = Table.from_source_table(source['STORES'], primary_key='STORE_ID',
+                                 time_column='CREATED_TIME')
+graph = Graph({
+    'users': users,
+    'orders': orders,
+    'stores': stores
+}, [Edge('orders', 'ENTITY_ID', 'users'),
+    Edge('orders', 'STORE_ID', 'stores')])
 graph.validate()
 print('Validated graph:', graph.id)

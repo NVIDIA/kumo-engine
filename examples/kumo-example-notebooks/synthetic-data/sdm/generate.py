@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Seeded local datasets for SDM examples; no downloads or warehouse writes."""
 
 import argparse
@@ -20,7 +23,8 @@ SPECS = {
     "leaf_classification": ("id", "species", 99, 192),
     "forest_cover_type_prediction": ("Id", "Cover_Type", 7, 54),
     "afsis_soil_properties": ("PIDN", "Ca", 0, 512),
-    "unimelb_grant_application": ("Grant.Application.ID", "Grant.Status", 2, 64),
+    "unimelb_grant_application":
+    ("Grant.Application.ID", "Grant.Status", 2, 64),
     "playground_series_s4e10": ("id", "loan_status", 2, 12),
     "santander_customer_transaction_prediction": ("ID_code", "target", 2, 200),
     "santander_value_prediction_challenge": ("ID", "target", 0, 512),
@@ -46,29 +50,26 @@ def tabular(name, seed=42):
         n = 6000
     rng = np.random.default_rng(seed)
     x = rng.normal(size=(n, width))
-    score = 1.7 * x[:, 0] - x[:, 1] + 0.7 * x[:, 2] ** 2
+    score = 1.7 * x[:, 0] - x[:, 1] + 0.7 * x[:, 2]**2
     noisy_score = score + rng.normal(0, 0.6, n)
-    labels = (
-        np.minimum(
-            (pd.Series(noisy_score).rank(pct=True).to_numpy() * classes).astype(int),
-            classes - 1,
-        )
-        if classes
-        else np.exp(4 + 0.3 * noisy_score)
-    )
+    labels = (np.minimum(
+        (pd.Series(noisy_score).rank(pct=True).to_numpy() *
+         classes).astype(int),
+        classes - 1,
+    ) if classes else np.exp(4 + 0.3 * noisy_score))
     prefix = {
         "bioresponse": "D",
         "restaurant_revenue_prediction": "P",
         "santander_customer_transaction_prediction": "var_",
         "otto_group_product_classification_challenge": "feat_",
     }.get(name, "feature_")
-    frame = pd.DataFrame(x.round(4), columns=[f"{prefix}{i + 1}" for i in range(width)])
+    frame = pd.DataFrame(x.round(4),
+                         columns=[f"{prefix}{i + 1}" for i in range(width)])
     if identifier:
         frame.insert(0, identifier, np.arange(n))
     if name == "leaf_classification":
         frame.columns = ["id"] + [
-            f"{kind}{i}"
-            for kind in ("margin", "shape", "texture")
+            f"{kind}{i}" for kind in ("margin", "shape", "texture")
             for i in range(1, 65)
         ]
         labels = np.array([f"species_{i:02d}" for i in labels])
@@ -82,22 +83,19 @@ def tabular(name, seed=42):
     if name == "icr_identify_age_related_conditions":
         frame["EJ"] = np.where(x[:, 0] > 0, "A", "B")
     if name == "restaurant_revenue_prediction":
-        frame["Open Date"] = (
-            pd.Timestamp("2005-01-01")
-            + pd.to_timedelta(rng.integers(0, 3000, n), unit="D")
-        ).strftime("%m/%d/%Y")
+        frame["Open Date"] = (pd.Timestamp("2005-01-01") + pd.to_timedelta(
+            rng.integers(0, 3000, n), unit="D")).strftime("%m/%d/%Y")
         frame["City"] = rng.choice(["city_a", "city_b", "city_c"], n)
         frame["City Group"] = rng.choice(["large", "small"], n)
         frame["Type"] = rng.choice(["FC", "IL"], n)
     if name == "unimelb_grant_application":
-        frame["Start.date"] = (
-            pd.Timestamp("2020-01-01")
-            + pd.to_timedelta(rng.integers(0, 1000, n), unit="D")
-        ).strftime("%d/%m/%y")
+        frame["Start.date"] = (pd.Timestamp("2020-01-01") + pd.to_timedelta(
+            rng.integers(0, 1000, n), unit="D")).strftime("%d/%m/%y")
     if name == "afsis_soil_properties":
         frame["Depth"] = rng.choice(["topsoil", "subsoil"], n)
         for i, col in enumerate(["P", "pH", "SOC", "Sand"]):
-            frame[col] = (x[:, i] + 0.5 * x[:, i + 1] + rng.normal(0, 0.2, n)).round(4)
+            frame[col] = (x[:, i] + 0.5 * x[:, i + 1] +
+                          rng.normal(0, 0.2, n)).round(4)
     if name == "two_sigma_connect_rental_listing_inquiries":
         labels = np.array(["low", "medium", "high"])[labels]
         frame["bedrooms"] = rng.integers(1, 5, n)
@@ -112,15 +110,16 @@ def tabular(name, seed=42):
         frame["display_address"] = "synthetic address"
         frame["street_address"] = "synthetic street"
         frame["features"] = [
-            ["Dishwasher", "Balcony"] if v > 0 else ["Courtyard"] for v in x[:, 0]
+            ["Dishwasher", "Balcony"] if v > 0 else ["Courtyard"]
+            for v in x[:, 0]
         ]
-        frame["created"] = pd.date_range("2025-01-01", periods=n, freq="h").astype(str)
+        frame["created"] = pd.date_range("2025-01-01", periods=n,
+                                         freq="h").astype(str)
         frame["building_id"] = rng.integers(0, 30, n).astype(str)
         frame["manager_id"] = rng.integers(0, 10, n).astype(str)
     if name == "mercari_price_suggestion_challenge":
-        frame["name"] = np.where(
-            x[:, 0] > 0, "Premium synthetic item", "Basic synthetic item"
-        )
+        frame["name"] = np.where(x[:, 0] > 0, "Premium synthetic item",
+                                 "Basic synthetic item")
         frame["item_description"] = np.where(
             x[:, 0] > 0,
             "Unused durable item with accessories",
@@ -140,16 +139,12 @@ def generate(name, output, seed=42):
     output.mkdir(parents=True, exist_ok=True)
     frame = tabular(name, seed)
     target = SPECS[name][1]
-    targets = [target] + (
-        ["P", "pH", "SOC", "Sand"] if name == "afsis_soil_properties" else []
-    )
+    targets = [target] + (["P", "pH", "SOC", "Sand"]
+                          if name == "afsis_soil_properties" else [])
     # Stratification preserves all 99 species in both populations.
     if SPECS[name][2]:
-        test_index = (
-            frame.groupby(target, group_keys=False)
-            .sample(frac=0.2, random_state=seed)
-            .index
-        )
+        test_index = (frame.groupby(target, group_keys=False).sample(
+            frac=0.2, random_state=seed).index)
     else:
         test_index = frame.sample(frac=0.2, random_state=seed).index
     train = frame.drop(index=test_index)
@@ -162,19 +157,14 @@ def generate(name, output, seed=42):
             (train, "aps_failure_training_set.arff"),
             (test.assign(**{"class": False}), "aps_failure_test_set.arff"),
         ]:
-            header = (
-                "@RELATION synthetic\n"
-                + "\n".join(
-                    f"@ATTRIBUTE {c} {'{false,true}' if c == 'class' else 'NUMERIC'}"
-                    for c in part
-                )
-                + "\n@DATA\n"
-            )
+            header = ("@RELATION synthetic\n" + "\n".join(
+                f"@ATTRIBUTE {c} {'{false,true}' if c == 'class' else 'NUMERIC'}"
+                for c in part) + "\n@DATA\n")
             part = part.copy()
             part["class"] = part["class"].map({False: "false", True: "true"})
-            (output / filename).write_text(
-                header + part.to_csv(index=False, header=False, na_rep="?")
-            )
+            (output / filename
+             ).write_text(header +
+                          part.to_csv(index=False, header=False, na_rep="?"))
     else:
         train_name, test_name, sep = "train.csv", "test.csv", ","
         if name == "afsis_soil_properties":

@@ -1,6 +1,6 @@
 # Synthetic retail data
 
-Run from the repository root with `numpy`, `pandas` and `pyarrow` installed:
+Run from the collection root (`examples/kumo-example-notebooks`) with `numpy`, `pandas` and `pyarrow` installed:
 
 ```bash
 python synthetic-data/engine_retail/generate.py --dataset fashion --output-dir ./synthetic-fashion

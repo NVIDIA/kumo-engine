@@ -15,6 +15,7 @@ Set SOURCE_ROOT to an authorized S3 prefix, SOURCE_TABLE to a table below it,
 and SOURCE_URI to a complete S3 table URI. These checks perform source reads.
 """
 import os
+
 from kumo.engine import S3Connector
 
 rooted = S3Connector(root_dir=os.environ['SOURCE_ROOT'])

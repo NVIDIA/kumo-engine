@@ -1,6 +1,6 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-
 """Predict afsis soil properties with synthetic example data.
 
 Generate local files from the repository root:
@@ -17,11 +17,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import torch
-from sklearn.model_selection import ShuffleSplit
-
 import sdm
 import sdm.processing as sp
+import torch
+from sklearn.model_selection import ShuffleSplit
 
 ID_COLUMN = "PIDN"
 TARGET_COLUMNS = ("Ca", "P", "pH", "SOC", "Sand")
@@ -36,17 +35,18 @@ def _build_model(
         return sdm.models.TabICLv2(task="regression", device=device)
     size = "small" if name == "kumo-small" else "large"
     if local_checkpoint is None:
-        return sdm.models.KumoTabular(task="regression", size=size, device=device)
-    model = sdm.models.KumoTabular(
-        task="regression", size=size, pretrained=False, device=device
-    )
+        return sdm.models.KumoTabular(task="regression", size=size,
+                                      device=device)
+    model = sdm.models.KumoTabular(task="regression", size=size,
+                                   pretrained=False, device=device)
     state = torch.load(local_checkpoint, map_location=device, weights_only=True)
     model.load_state_dict(state)
     model.eval()
     return model
 
 
-def _wide_column_recipe(model: sdm.models.ICLModel, max_columns: int) -> sp.Recipe:
+def _wide_column_recipe(model: sdm.models.ICLModel,
+                        max_columns: int) -> sp.Recipe:
     """Select a different feature subset per estimator for wide tables."""
     recipe = model.default_recipe()
     for processor in recipe.features.modules():
@@ -74,13 +74,12 @@ def _predict(
     device = x_context.device
     effective_num_estimators: int | None = num_estimators
     if max_context_size is not None and x_context.size(0) > max_context_size:
-        num_repeats = math.ceil(num_estimators * max_context_size / x_context.size(0))
-        perm = torch.cat(
-            [
-                torch.randperm(x_context.size(0), generator=generator, device=device)
-                for _ in range(num_repeats)
-            ]
-        )[: num_estimators * max_context_size]
+        num_repeats = math.ceil(num_estimators * max_context_size /
+                                x_context.size(0))
+        perm = torch.cat([
+            torch.randperm(x_context.size(0), generator=generator,
+                           device=device) for _ in range(num_repeats)
+        ])[:num_estimators * max_context_size]
         shape = (num_estimators, max_context_size)
         x_context = x_context[perm].unflatten(0, shape)
         y_context = y_context[perm].unflatten(0, shape)
@@ -88,8 +87,9 @@ def _predict(
         effective_num_estimators = None
 
     with (
-        torch.inference_mode(),
-        torch.amp.autocast(device.type, torch.float16, enabled=x_context.is_cuda),
+            torch.inference_mode(),
+            torch.amp.autocast(device.type, torch.float16,
+                               enabled=x_context.is_cuda),
     ):
         model.fit(
             x=x_context,
@@ -101,7 +101,10 @@ def _predict(
         # Row dim is always -2 (there may be a leading ensemble dim from
         # the max_context_size branch above).
         out = torch.cat(
-            [model.predict(batch) for batch in x_query.split(query_batch_size, dim=-2)],
+            [
+                model.predict(batch)
+                for batch in x_query.split(query_batch_size, dim=-2)
+            ],
             dim=-2,
         )
     model.clear()
@@ -158,21 +161,22 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     generator = torch.Generator(device).manual_seed(args.seed)
 
-    train_frame = pd.read_csv(args.data_dir / "training.csv").drop(columns=[ID_COLUMN])
+    train_frame = pd.read_csv(args.data_dir /
+                              "training.csv").drop(columns=[ID_COLUMN])
     test_ids = pd.read_csv(args.data_dir / "sorted_test.csv")[ID_COLUMN]
-    test_frame = pd.read_csv(args.data_dir / "sorted_test.csv").drop(
-        columns=[ID_COLUMN]
-    )
+    test_frame = pd.read_csv(args.data_dir /
+                             "sorted_test.csv").drop(columns=[ID_COLUMN])
 
-    feature_columns = [c for c in train_frame.columns if c not in TARGET_COLUMNS]
+    feature_columns = [
+        c for c in train_frame.columns if c not in TARGET_COLUMNS
+    ]
     stypes = sdm.infer_stypes(
-        train_frame, overrides={t: "numerical" for t in TARGET_COLUMNS}
-    )
+        train_frame, overrides={t: "numerical"
+                                for t in TARGET_COLUMNS})
     feature_stypes = {c: stypes[c] for c in feature_columns}
     model = _build_model(args.model, device, args.local_checkpoint)
     recipe = _wide_column_recipe(
-        model, max_columns=min(args.max_columns, len(feature_columns))
-    )
+        model, max_columns=min(args.max_columns, len(feature_columns)))
 
     splitter = ShuffleSplit(
         n_splits=args.num_splits,
@@ -208,34 +212,29 @@ def main() -> None:
             # out.numerical holds 999 quantile columns; their mean is the
             # point estimate (a point estimate).
             pred = out.numerical.mean(dim=-1).float().cpu().numpy()
-            actual = (
-                split_val[:, target_column].numerical.squeeze(-1).float().cpu().numpy()
-            )
-            rmses[target_column].append(float(np.sqrt(np.mean((pred - actual) ** 2))))
+            actual = (split_val[:, target_column].numerical.squeeze(
+                -1).float().cpu().numpy())
+            rmses[target_column].append(
+                float(np.sqrt(np.mean((pred - actual)**2))))
 
     for target_column in TARGET_COLUMNS:
         values = np.array(rmses[target_column])
-        print(
-            f"{args.model}  {target_column}  val_rmse={values.mean():.4f}"
-            f"+-{values.std():.4f}"
-        )
+        print(f"{args.model}  {target_column}  val_rmse={values.mean():.4f}"
+              f"+-{values.std():.4f}")
     mean_columnwise_rmse = np.mean([np.mean(rmses[t]) for t in TARGET_COLUMNS])
-    print(
-        f"{args.model}  val_mean_columnwise_rmse={mean_columnwise_rmse:.4f}  "
-        f"({args.num_splits} splits of {args.val_fraction:.0%})"
-    )
+    print(f"{args.model}  val_mean_columnwise_rmse={mean_columnwise_rmse:.4f}  "
+          f"({args.num_splits} splits of {args.val_fraction:.0%})")
 
     # Batch predictions: each soil target is fitted and scored separately.
     predictions: dict[str, np.ndarray] = {}
     for target_column in TARGET_COLUMNS:
         frame = train_frame[[*feature_columns, target_column]]
         target_stypes = {**feature_stypes, target_column: stypes[target_column]}
-        full_train = sdm.TableTensor.from_pandas(
-            df=frame, stypes=target_stypes, device=device
-        )
-        query = sdm.TableTensor.from_pandas(
-            df=test_frame[feature_columns], stypes=feature_stypes, device=device
-        )
+        full_train = sdm.TableTensor.from_pandas(df=frame, stypes=target_stypes,
+                                                 device=device)
+        query = sdm.TableTensor.from_pandas(df=test_frame[feature_columns],
+                                            stypes=feature_stypes,
+                                            device=device)
         out = _predict(
             model,
             x_context=full_train.drop_columns(target_column),
@@ -247,11 +246,13 @@ def main() -> None:
             query_batch_size=args.query_batch_size,
             generator=generator,
         )
-        predictions[target_column] = out.numerical.mean(dim=-1).float().cpu().numpy()
+        predictions[target_column] = out.numerical.mean(
+            dim=-1).float().cpu().numpy()
 
     submission = pd.DataFrame({ID_COLUMN: test_ids, **predictions})
     if len(submission) != len(test_frame) or len(submission) < 2:
-        raise ValueError("Expected one prediction for each of at least two test rows")
+        raise ValueError(
+            "Expected one prediction for each of at least two test rows")
     if submission[ID_COLUMN].tolist() != test_ids.tolist():
         raise ValueError("Prediction IDs do not match scoring input order")
     # Each row follows the original test-file order; columns hold the task outputs.

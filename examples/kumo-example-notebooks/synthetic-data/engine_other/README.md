@@ -1,6 +1,6 @@
 # Engine example data
 
-From the repository root, run `python synthetic-data/engine_other/generate.py --dataset movielens --output-dir ./example-data/movielens`.
+From the collection root (`examples/kumo-example-notebooks`), run `python synthetic-data/engine_other/generate.py --dataset movielens --output-dir ./example-data/movielens`.
 Install `numpy pandas pyarrow` first.
 The destination must be new, so an existing dataset is never overwritten.
 Every generator writes local Parquet files and uses seed 42 by default.

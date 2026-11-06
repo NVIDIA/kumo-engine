@@ -1,6 +1,6 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-
 """Full fine-tuning of KumoTabular ("kumo-small") or TabICLv2.
 
 Install: pip install structured-data-models pandas scikit-learn
@@ -12,12 +12,11 @@ import runpy
 from pathlib import Path
 
 import pandas as pd
+import sdm
+import sdm.processing as sp
 import torch
 import torch.nn.functional as F
 from sklearn.model_selection import train_test_split
-
-import sdm
-import sdm.processing as sp
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -41,13 +40,12 @@ parser.add_argument("--num-estimators", type=int, default=8)
 parser.add_argument("--seed", type=int, default=0)
 args = parser.parse_args()
 
-
 torch.manual_seed(args.seed)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 generate = runpy.run_path(
-    str(Path(__file__).resolve().parents[4] / "synthetic-data/sdm/generate.py")
-)["generate"]
+    str(Path(__file__).resolve().parents[4] /
+        "synthetic-data/sdm/generate.py"))["generate"]
 
 if args.task == "classification":
     df = generate("classification", Path("synthetic_data") / "classification")
@@ -71,7 +69,8 @@ val_index, test_index = train_test_split(
     rest_index,
     test_size=0.5,
     random_state=args.seed,
-    stratify=df[target].iloc[rest_index] if args.task == "classification" else None,
+    stratify=df[target].iloc[rest_index]
+    if args.task == "classification" else None,
 )
 train_table = table[torch.from_numpy(train_index).to(device)]
 val_table = table[torch.from_numpy(val_index).to(device)]
@@ -102,7 +101,8 @@ def evaluate(context: sdm.TableTensor, query: sdm.TableTensor) -> float:
         num_estimators=args.num_estimators,
     )
     if args.task == "classification":
-        prob, y = sdm.evaluation.to_class_indices(out, query[target], missing_score=0.0)
+        prob, y = sdm.evaluation.to_class_indices(out, query[target],
+                                                  missing_score=0.0)
         return float((prob.argmax(dim=-1) == y).float().mean())
 
     pred = out.numerical.mean(dim=-1)
@@ -124,9 +124,9 @@ for epoch in range(1, args.max_epochs + 1):
     total_loss = 0.0
     for _ in range(args.steps_per_epoch):
         index = torch.randperm(train_table.size(0), device=device)
-        index = index[: args.context_size + args.query_size]
-        context = train_table[index[: args.context_size]]
-        query = train_table[index[args.context_size :]]
+        index = index[:args.context_size + args.query_size]
+        context = train_table[index[:args.context_size]]
+        query = train_table[index[args.context_size:]]
 
         optimizer.zero_grad()
         out = model(
@@ -137,8 +137,7 @@ for epoch in range(1, args.max_epochs + 1):
         )[0]
         if args.task == "classification":
             logits, y = sdm.evaluation.to_class_indices(
-                out, query[target], missing_score=-torch.inf
-            )
+                out, query[target], missing_score=-torch.inf)
             loss = F.cross_entropy(logits, y)
         else:  # Pinball loss over the model's 999 fixed quantile levels:
             diff = query[target].numerical - out.numerical
@@ -149,11 +148,9 @@ for epoch in range(1, args.max_epochs + 1):
         total_loss += float(loss.detach())
 
     metric = evaluate(context=train_table, query=val_table)
-    print(
-        f"epoch={epoch}/{args.max_epochs} "
-        f"val_{metric_name}={metric:.4f} "
-        f"train_loss={total_loss / args.steps_per_epoch:.4f}"
-    )
+    print(f"epoch={epoch}/{args.max_epochs} "
+          f"val_{metric_name}={metric:.4f} "
+          f"train_loss={total_loss / args.steps_per_epoch:.4f}")
     if metric > val_metric if higher_is_better else metric < val_metric:
         val_metric = metric
         torch.save(model.state_dict(), ckpt_path)
@@ -174,9 +171,8 @@ with torch.inference_mode():
         num_estimators=args.num_estimators,
     )
 if args.task == "classification":
-    results = pd.DataFrame(
-        out.numerical.cpu().numpy(), columns=out.columns[sdm.Stype.numerical]
-    )
+    results = pd.DataFrame(out.numerical.cpu().numpy(),
+                           columns=out.columns[sdm.Stype.numerical])
 else:
     results = pd.DataFrame({"prediction": out.numerical.mean(-1).cpu().numpy()})
 if len(results) != len(test_index) or len(results) < 2:

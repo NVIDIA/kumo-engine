@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Preview interactive inspection of a small synthetic shop graph.
 Synthetic data setup (run from the repository root):
   python synthetic-data/engine_other/generate.py --dataset modules --output-dir ./example-data/modules
@@ -11,14 +14,20 @@ Graph visualization is a preview and requires a release exposing visualize.
 """
 import os
 from pathlib import Path
-from kumo.engine import FileConnector, Graph, Table, Edge, configure
+
+from kumo.engine import Edge, FileConnector, Graph, Table, configure
 
 configure(scratch_dir=Path(os.environ['KUMO_SCRATCH_DIR']))
-data = os.environ['SOURCE_ROOT']  # Local directory generated with --dataset modules.
+data = os.environ[
+    'SOURCE_ROOT']  # Local directory generated with --dataset modules.
 source = FileConnector(root_dir=data)
-graph = Graph({'users': Table.from_source_table(source['users'], primary_key='user_id'),
-               'orders': Table.from_source_table(source['orders'], primary_key='order_id')},
-              [Edge('orders', 'user_id', 'users')])
+graph = Graph(
+    {
+        'users': Table.from_source_table(source['users'],
+                                         primary_key='user_id'),
+        'orders': Table.from_source_table(source['orders'],
+                                          primary_key='order_id')
+    }, [Edge('orders', 'user_id', 'users')])
 graph.validate()
 # Interactive graph preview:
 # from IPython.display import display

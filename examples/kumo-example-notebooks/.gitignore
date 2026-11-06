@@ -1,2 +1,5 @@
 kumo_example_runs/
 .ipynb_checkpoints/
+
+# This collection intentionally tracks notebooks.
+!*.ipynb

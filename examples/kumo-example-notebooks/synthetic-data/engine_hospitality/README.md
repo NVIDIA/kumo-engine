@@ -1,6 +1,6 @@
 # Synthetic hospitality data
 
-Run from the repository root with `numpy`, `pandas` and `pyarrow` installed:
+Run from the collection root (`examples/kumo-example-notebooks`) with `numpy`, `pandas` and `pyarrow` installed:
 
 ```bash
 python synthetic-data/engine_hospitality/generate.py --dataset restaurant --output-dir ./synthetic-restaurant

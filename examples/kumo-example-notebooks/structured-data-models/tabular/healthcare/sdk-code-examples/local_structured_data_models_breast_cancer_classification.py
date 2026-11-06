@@ -1,31 +1,30 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Breast cancer classification and embedding capture
 
 Install: pip install structured-data-models pandas scikit-learn
 Documentation: https://nvidia.github.io/structured-data-models/
 """
 
-# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
+import runpy
+from pathlib import Path
 
 import pandas as pd
+import sdm
 import torch
 from torch import Tensor
 
-import sdm
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Generate local synthetic files with the shared dataset generator.
-from pathlib import Path
-import runpy
 
 generate = runpy.run_path(
-    str(Path(__file__).resolve().parents[4] / "synthetic-data/sdm/generate.py")
-)["generate"]
+    str(Path(__file__).resolve().parents[4] /
+        "synthetic-data/sdm/generate.py"))["generate"]
 df = generate(
     "breast_cancer_classification",
     Path("synthetic_data") / "breast_cancer_classification",
 )
-
 
 table = sdm.TableTensor.from_pandas(
     df=df,

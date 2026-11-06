@@ -12,9 +12,7 @@ Synthetic evaluation metrics are demonstration only.
 
 integration API and compatible scheduler SDK. No resources are provisioned by
 """
-# # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # # All rights reserved.
-# # SPDX-License-Identifier: Apache-2.0
 # """Upsert a SageMaker Pipeline that fits and scores; see README.md."""
 #
 # import argparse

@@ -15,9 +15,11 @@ Set SNOWFLAKE_CONNECTION_NAME to a connections.toml entry with password or
 key-pair authentication, warehouse, database and schema. Set SOURCE_TABLE.
 """
 import os
+
 from kumo.engine import SnowflakeConnector
 
-source = SnowflakeConnector.from_connection_toml(connection_name=os.environ['SNOWFLAKE_CONNECTION_NAME'])
+source = SnowflakeConnector.from_connection_toml(
+    connection_name=os.environ['SNOWFLAKE_CONNECTION_NAME'])
 print('Visible tables:', source.table_names()[:10])
 table = source[os.environ['SOURCE_TABLE']]
 print('Source schema:', table.columns)

@@ -1,7 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Local synthetic tables used by the standalone SDM notebooks."""
 
 import argparse
 from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -9,15 +13,14 @@ import pandas as pd
 def breast_mass(seed=42):
     rng = np.random.default_rng(seed)
     n = 20000
-    frame = pd.DataFrame(
-        {
-            "Age": rng.uniform(20, 90, n).round(3),
-            "Shape": rng.integers(1, 5, n),
-            "Margin": rng.integers(1, 6, n),
-            "Density": rng.uniform(1, 4, n).round(4),
-        }
-    )
-    risk = (frame.Age - 55) / 20 + (frame.Shape - 2.5) * 0.7 + (frame.Margin - 3) * 0.5
+    frame = pd.DataFrame({
+        "Age": rng.uniform(20, 90, n).round(3),
+        "Shape": rng.integers(1, 5, n),
+        "Margin": rng.integers(1, 6, n),
+        "Density": rng.uniform(1, 4, n).round(4),
+    })
+    risk = (frame.Age - 55) / 20 + (frame.Shape - 2.5) * 0.7 + (frame.Margin -
+                                                                3) * 0.5
     frame["Severity"] = (rng.random(n) < 1 / (1 + np.exp(-risk))).astype(int)
     return frame
 
@@ -42,5 +45,8 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
-    frame = {"breast_mass": breast_mass, "vehicle": vehicle}[args.dataset](args.seed)
+    frame = {
+        "breast_mass": breast_mass,
+        "vehicle": vehicle
+    }[args.dataset](args.seed)
     frame.to_csv(args.output / f"{args.dataset}.csv", index=False)

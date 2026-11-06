@@ -1,11 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Historical target features for RelBench entity tasks
 
 Install: pip install structured-data-models relbench sentence-transformers
 Documentation: https://nvidia.github.io/structured-data-models/
 """
-
-# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
 
 import pandas as pd
 import relbench
@@ -21,13 +21,11 @@ def add_lag_target(
     df = df.copy()
     # Only labeled context contributes lag features; never use held-out targets.
     right = df.iloc[:history_rows].sort_values(task.time_col)
-    left = pd.DataFrame(
-        {
-            task.entity_col: df[task.entity_col],
-            "__lookup_time__": df[task.time_col] - task.timedelta,
-            "__row__": range(len(df)),
-        }
-    )
+    left = pd.DataFrame({
+        task.entity_col: df[task.entity_col],
+        "__lookup_time__": df[task.time_col] - task.timedelta,
+        "__row__": range(len(df)),
+    })
     for lag in range(1, num_lags + 1):
         column = f"{task.target_col}_lag_{lag}"
         if task.task_type == relbench.base.TaskType.REGRESSION:

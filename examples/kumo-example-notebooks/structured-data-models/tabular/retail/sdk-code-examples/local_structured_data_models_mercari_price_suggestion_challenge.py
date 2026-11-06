@@ -1,6 +1,6 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-
 """Predict mercari price suggestion challenge with synthetic example data.
 
 Generate local files from the repository root:
@@ -17,11 +17,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import torch
-from sklearn.model_selection import ShuffleSplit
-
 import sdm
 import sdm.processing as sp
+import torch
+from sklearn.model_selection import ShuffleSplit
 
 TARGET_COLUMN = "price"
 TEXT_COLUMNS = ("name", "item_description")
@@ -36,26 +35,24 @@ def _build_model(
         return sdm.models.TabICLv2(task="regression", device=device)
     size = "small" if name == "kumo-small" else "large"
     if local_checkpoint is None:
-        return sdm.models.KumoTabular(task="regression", size=size, device=device)
-    model = sdm.models.KumoTabular(
-        task="regression", size=size, pretrained=False, device=device
-    )
+        return sdm.models.KumoTabular(task="regression", size=size,
+                                      device=device)
+    model = sdm.models.KumoTabular(task="regression", size=size,
+                                   pretrained=False, device=device)
     state = torch.load(local_checkpoint, map_location=device, weights_only=True)
     model.load_state_dict(state)
     model.eval()
     return model
 
 
-def _text_recipe(
-    model: sdm.models.ICLModel, text_model: str, embedding_dim: int
-) -> sp.Recipe:
+def _text_recipe(model: sdm.models.ICLModel, text_model: str,
+                 embedding_dim: int) -> sp.Recipe:
     """Embed text and fit PCA on the context before the default numeric recipe."""
     recipe = model.default_recipe()
     recipe.prepend_features(
         sp.StypeDispatch(
-            text=[sp.SentenceTransformer(text_model), sp.PCA(embedding_dim)]
-        )
-    )
+            text=[sp.SentenceTransformer(text_model),
+                  sp.PCA(embedding_dim)]))
     return recipe
 
 
@@ -77,13 +74,12 @@ def _predict(
     device = x_context.device
     effective_num_estimators: int | None = num_estimators
     if max_context_size is not None and x_context.size(0) > max_context_size:
-        num_repeats = math.ceil(num_estimators * max_context_size / x_context.size(0))
-        perm = torch.cat(
-            [
-                torch.randperm(x_context.size(0), generator=generator, device=device)
-                for _ in range(num_repeats)
-            ]
-        )[: num_estimators * max_context_size]
+        num_repeats = math.ceil(num_estimators * max_context_size /
+                                x_context.size(0))
+        perm = torch.cat([
+            torch.randperm(x_context.size(0), generator=generator,
+                           device=device) for _ in range(num_repeats)
+        ])[:num_estimators * max_context_size]
         shape = (num_estimators, max_context_size)
         x_context = x_context[perm].unflatten(0, shape)
         y_context = y_context[perm].unflatten(0, shape)
@@ -91,8 +87,9 @@ def _predict(
         effective_num_estimators = None
 
     with (
-        torch.inference_mode(),
-        torch.amp.autocast(device.type, torch.float16, enabled=x_context.is_cuda),
+            torch.inference_mode(),
+            torch.amp.autocast(device.type, torch.float16,
+                               enabled=x_context.is_cuda),
     ):
         model.fit(
             x=x_context,
@@ -104,7 +101,10 @@ def _predict(
         # Row dim is always -2 (there may be a leading ensemble dim from
         # the max_context_size branch above).
         out = torch.cat(
-            [model.predict(batch) for batch in x_query.split(query_batch_size, dim=-2)],
+            [
+                model.predict(batch)
+                for batch in x_query.split(query_batch_size, dim=-2)
+            ],
             dim=-2,
         )
     model.clear()
@@ -160,8 +160,7 @@ def main() -> None:
         help=(
             "Per-estimator context row cap; unlike this directory's other "
             "scripts, this defaults to a real cap (not None/full-context), "
-            "since train.tsv has 1482535 rows."
-        ),
+            "since train.tsv has 1482535 rows."),
     )
     parser.add_argument("--query-batch-size", type=int, default=20000)
     parser.add_argument("--seed", type=int, default=0)
@@ -231,25 +230,20 @@ def main() -> None:
         # point estimate (a point estimate). Both
         # sides are still log1p-transformed here, so plain RMSE == RMSLE.
         pred_log = out.numerical.mean(dim=-1).float().cpu().numpy()
-        actual_log = (
-            split_val[:, TARGET_COLUMN].numerical.squeeze(-1).float().cpu().numpy()
-        )
-        rmsles.append(float(np.sqrt(np.mean((pred_log - actual_log) ** 2))))
+        actual_log = (split_val[:, TARGET_COLUMN].numerical.squeeze(
+            -1).float().cpu().numpy())
+        rmsles.append(float(np.sqrt(np.mean((pred_log - actual_log)**2))))
 
     rmsle = np.array(rmsles)
-    print(
-        f"{args.model}  val_rmsle={rmsle.mean():.4f}+-{rmsle.std():.4f}  "
-        f"({args.num_splits} splits, val_size={args.val_size}, "
-        f"max_context_size={args.max_context_size})"
-    )
+    print(f"{args.model}  val_rmsle={rmsle.mean():.4f}+-{rmsle.std():.4f}  "
+          f"({args.num_splits} splits, val_size={args.val_size}, "
+          f"max_context_size={args.max_context_size})")
 
     # Batch predictions: score competition rows without target labels.
-    full_train = sdm.TableTensor.from_pandas(
-        df=train_frame, stypes=stypes, device=device
-    )
-    query = sdm.TableTensor.from_pandas(
-        df=test_frame, stypes=feature_stypes, device=device
-    )
+    full_train = sdm.TableTensor.from_pandas(df=train_frame, stypes=stypes,
+                                             device=device)
+    query = sdm.TableTensor.from_pandas(df=test_frame, stypes=feature_stypes,
+                                        device=device)
     out = _predict(
         model,
         x_context=full_train.drop_columns(TARGET_COLUMN),
@@ -264,9 +258,13 @@ def main() -> None:
     pred_log = out.numerical.mean(dim=-1).float().cpu().numpy()
     predicted_price = np.clip(np.expm1(pred_log), a_min=0.0, a_max=None)
 
-    submission = pd.DataFrame({"test_id": test_ids, TARGET_COLUMN: predicted_price})
+    submission = pd.DataFrame({
+        "test_id": test_ids,
+        TARGET_COLUMN: predicted_price
+    })
     if len(submission) != len(test_frame) or len(submission) < 2:
-        raise ValueError("Expected one prediction for each of at least two test rows")
+        raise ValueError(
+            "Expected one prediction for each of at least two test rows")
     # Each row follows the original test-file order; columns hold the task outputs.
     print(submission.head(10).to_string(index=False))
     args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -12,9 +12,7 @@ Synthetic evaluation metrics are demonstration only.
 
 integration API and compatible scheduler SDK. No resources are provisioned by
 """
-# # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # # All rights reserved.
-# # SPDX-License-Identifier: Apache-2.0
 # """Experimental: register the fit and score jobs as Snowflake Tasks."""
 #
 # import argparse

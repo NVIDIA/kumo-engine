@@ -1,20 +1,19 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Sentence Transformer and PCA features for relational text columns
 
 Install: pip install structured-data-models relbench sentence-transformers
 Documentation: https://nvidia.github.io/structured-data-models/
 """
 
-# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-
 import time
 from typing import cast
 
-import torch
-from torch import Tensor
-
 import sdm
 import sdm.processing as sp
+import torch
+from torch import Tensor
 
 
 @torch.inference_mode()

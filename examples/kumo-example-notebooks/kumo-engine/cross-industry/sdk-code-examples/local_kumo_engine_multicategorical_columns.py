@@ -11,13 +11,13 @@ Synthetic evaluation metrics are demonstration only.
 Install: pip install kumo-engine
 
 """
-from kumo.engine import SourceTable, Table
 from kumoapi.typing import Dtype, Stype
+
+from kumo.engine import SourceTable, Table
 
 
 def configure_multicategorical_table(source_table: SourceTable) -> Table:
-    return (Table.from_source_table(source_table)
-            .with_column('interests', stype=Stype.multicategorical,
-                         dtype=Dtype.string, multicategorical_delimiter='|')
-            .with_column('product_ids', stype=Stype.multicategorical,
-                         dtype=Dtype.intlist))
+    return (Table.from_source_table(source_table).with_column(
+        'interests', stype=Stype.multicategorical, dtype=Dtype.string,
+        multicategorical_delimiter='|').with_column(
+            'product_ids', stype=Stype.multicategorical, dtype=Dtype.intlist))

@@ -1,12 +1,14 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Validate and prepare the AdventureWorks tables used by the Linux examples."""
 
 import argparse
 import csv
-from datetime import datetime
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
-
 
 SPECS = {
     "Customer": {
@@ -14,27 +16,42 @@ SPECS = {
         "columns": [("CustomerID", 0), ("StoreID", 2), ("TerritoryID", 3)],
     },
     "Product": {
-        "source_width": 25,
+        "source_width":
+        25,
         "columns": [
-            ("ProductID", 0), ("Name", 1), ("Color", 5),
-            ("ProductLine", 15), ("Class", 16),
-            ("StandardCost", 8), ("ListPrice", 9),
+            ("ProductID", 0),
+            ("Name", 1),
+            ("Color", 5),
+            ("ProductLine", 15),
+            ("Class", 16),
+            ("StandardCost", 8),
+            ("ListPrice", 9),
         ],
     },
     "SalesOrderHeader": {
-        "source_width": 26,
+        "source_width":
+        26,
         "columns": [
-            ("SalesOrderID", 0), ("CustomerID", 10), ("OrderDate", 2),
-            ("OnlineOrderFlag", 6), ("TerritoryID", 12),
-            ("SubTotal", 19), ("TotalDue", 22),
+            ("SalesOrderID", 0),
+            ("CustomerID", 10),
+            ("OrderDate", 2),
+            ("OnlineOrderFlag", 6),
+            ("TerritoryID", 12),
+            ("SubTotal", 19),
+            ("TotalDue", 22),
         ],
     },
     "SalesOrderDetail": {
-        "source_width": 11,
+        "source_width":
+        11,
         "columns": [
-            ("SalesOrderDetailID", 1), ("SalesOrderID", 0),
-            ("ProductID", 4), ("ModifiedDate", 10), ("OrderQty", 3),
-            ("UnitPrice", 6), ("LineTotal", 8),
+            ("SalesOrderDetailID", 1),
+            ("SalesOrderID", 0),
+            ("ProductID", 4),
+            ("ModifiedDate", 10),
+            ("OrderQty", 3),
+            ("UnitPrice", 6),
+            ("LineTotal", 8),
         ],
     },
 }
@@ -51,9 +68,11 @@ def read_source(path, spec):
             if len(source) != spec["source_width"]:
                 raise ValueError(
                     f"{path.name}:{number}: expected {spec['source_width']} "
-                    f"fields, got {len(source)}"
-                )
-            rows.append({name: source[index] for name, index in spec["columns"]})
+                    f"fields, got {len(source)}")
+            rows.append({
+                name: source[index]
+                for name, index in spec["columns"]
+            })
     if not rows:
         raise ValueError(f"{path.name}: source table is empty")
     return rows
@@ -62,7 +81,8 @@ def read_source(path, spec):
 def unique_key(rows, table, column):
     values = [row[column] for row in rows]
     if any(not value for value in values) or len(values) != len(set(values)):
-        raise ValueError(f"{table}.{column}: primary key must be nonempty and unique")
+        raise ValueError(
+            f"{table}.{column}: primary key must be nonempty and unique")
     return set(values)
 
 
@@ -79,12 +99,10 @@ def prepare(source, destination):
     }
     customer_ids = unique_key(tables["Customer"], "Customer", "CustomerID")
     product_ids = unique_key(tables["Product"], "Product", "ProductID")
-    order_ids = unique_key(
-        tables["SalesOrderHeader"], "SalesOrderHeader", "SalesOrderID"
-    )
-    unique_key(
-        tables["SalesOrderDetail"], "SalesOrderDetail", "SalesOrderDetailID"
-    )
+    order_ids = unique_key(tables["SalesOrderHeader"], "SalesOrderHeader",
+                           "SalesOrderID")
+    unique_key(tables["SalesOrderDetail"], "SalesOrderDetail",
+               "SalesOrderDetailID")
     relationships = [
         ("SalesOrderHeader", "CustomerID", customer_ids, "Customer"),
         ("SalesOrderDetail", "SalesOrderID", order_ids, "SalesOrderHeader"),
@@ -105,16 +123,13 @@ def prepare(source, destination):
         if customer_id is None:
             raise ValueError(
                 "SalesOrderDetail.SalesOrderID must resolve to exactly one "
-                "SalesOrderHeader row"
-            )
+                "SalesOrderHeader row")
         if customer_id not in customer_ids:
             raise ValueError(
-                "Derived SalesOrderDetail.CustomerID is absent from Customer"
-            )
+                "Derived SalesOrderDetail.CustomerID is absent from Customer")
         row["CustomerID"] = customer_id
     relationships.append(
-        ("SalesOrderDetail", "CustomerID", customer_ids, "Customer")
-    )
+        ("SalesOrderDetail", "CustomerID", customer_ids, "Customer"))
     timestamp_format = "%Y-%m-%d %H:%M:%S.%f"
     order_times = [
         datetime.strptime(row["OrderDate"], timestamp_format)
@@ -142,15 +157,21 @@ def prepare(source, destination):
             "sha256": digest(path),
         }
     return {
-        "tables": metadata,
-        "relationships": [
-            {"src_table": table, "fkey": column, "dst_table": target}
-            for table, column, _, target in relationships
-        ],
-        "order_date_min": min(order_times).isoformat(),
-        "order_date_max": max(order_times).isoformat(),
-        "detail_modified_min": min(detail_times).isoformat(),
-        "detail_modified_max": max(detail_times).isoformat(),
+        "tables":
+        metadata,
+        "relationships": [{
+            "src_table": table,
+            "fkey": column,
+            "dst_table": target
+        } for table, column, _, target in relationships],
+        "order_date_min":
+        min(order_times).isoformat(),
+        "order_date_max":
+        max(order_times).isoformat(),
+        "detail_modified_min":
+        min(detail_times).isoformat(),
+        "detail_modified_max":
+        max(detail_times).isoformat(),
     }
 
 

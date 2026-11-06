@@ -15,6 +15,7 @@ This script makes billed API calls when run; it does not train an Engine model.
 import argparse
 import json
 from pathlib import Path
+
 import pandas as pd
 from google import genai
 
@@ -38,7 +39,8 @@ def main():
         for index, prompt in rows['prompt'].head(args.n).items():
             if not isinstance(prompt, str) or not prompt.strip():
                 raise ValueError(f'Row {index} needs a nonempty prompt string.')
-            response = client.models.generate_content(model=args.model, contents=prompt)
+            response = client.models.generate_content(model=args.model,
+                                                      contents=prompt)
             if response.text is None:
                 raise RuntimeError(f'No explanation returned for row {index}.')
             record = {'source_row': str(index), 'explanation': response.text}

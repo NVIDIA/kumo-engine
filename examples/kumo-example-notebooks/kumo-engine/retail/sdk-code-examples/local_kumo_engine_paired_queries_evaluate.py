@@ -12,6 +12,7 @@ Install: pip install pandas pyarrow
 """
 import argparse
 from pathlib import Path
+
 import pandas as pd
 
 
@@ -24,14 +25,22 @@ def main():
     conversion = pd.read_parquet(args.conversion)[keys + ['True_PROB']]
     amount = pd.read_parquet(args.amount)[keys + ['TARGET_PRED']]
     actual = pd.read_parquet(args.actual)[keys + ['TARGET']]
-    combined = conversion.merge(amount, on=keys, how='outer', validate='one_to_one', indicator=True)
+    combined = conversion.merge(amount, on=keys, how='outer',
+                                validate='one_to_one', indicator=True)
     if not combined['_merge'].eq('both').all():
-        raise ValueError('Score both models on exactly the same entity/time rows.')
-    combined = combined.drop(columns='_merge').merge(actual, on=keys, how='outer', validate='one_to_one', indicator=True)
-    if not combined['_merge'].eq('both').all() or combined['TARGET'].isna().any():
-        raise ValueError('Actual spend must cover every scoring row exactly once.')
+        raise ValueError(
+            'Score both models on exactly the same entity/time rows.')
+    combined = combined.drop(columns='_merge').merge(actual, on=keys,
+                                                     how='outer',
+                                                     validate='one_to_one',
+                                                     indicator=True)
+    if not combined['_merge'].eq('both').all() or combined['TARGET'].isna().any(
+    ):
+        raise ValueError(
+            'Actual spend must cover every scoring row exactly once.')
     combined['EXPECTED_SPEND'] = combined['True_PROB'] * combined['TARGET_PRED']
-    print('MAE:', (combined['EXPECTED_SPEND'] - combined['TARGET']).abs().mean())
+    print('MAE:',
+          (combined['EXPECTED_SPEND'] - combined['TARGET']).abs().mean())
     print(combined.head(10).to_string(index=False))
     if args.output.exists():
         raise FileExistsError(args.output)

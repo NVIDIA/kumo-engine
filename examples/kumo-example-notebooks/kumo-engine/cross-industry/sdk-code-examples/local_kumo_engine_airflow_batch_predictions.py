@@ -14,21 +14,28 @@ Install: pip install apache-airflow "kumo-engine[s3,text]"
 """
 import os
 from datetime import datetime, timezone
+
 from airflow.sdk import dag, task
-from airflow_companions.local_kumo_engine_batch_prediction_helpers import predict
+from airflow_companions.local_kumo_engine_batch_prediction_helpers import (
+    predict,
+)
 
 
-@dag(schedule='0 0 * * *', start_date=datetime(2026, 1, 1, tzinfo=timezone.utc), catchup=False)
+@dag(schedule='0 0 * * *', start_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
+     catchup=False)
 def daily_engine_predictions():
     @task
     def score():
         from pathlib import Path
         from uuid import uuid4
+
         # Unique attempt paths avoid overwriting a prior successful run.
         attempt = uuid4().hex
-        return predict(os.environ['KUMO_SOURCE_ROOT'], os.environ['KUMO_MODEL_PATH'],
+        return predict(os.environ['KUMO_SOURCE_ROOT'],
+                       os.environ['KUMO_MODEL_PATH'],
                        str(Path(os.environ['KUMO_SCRATCH_ROOT']) / attempt),
                        str(Path(os.environ['KUMO_OUTPUT_ROOT']) / attempt))
+
     score()
 
 

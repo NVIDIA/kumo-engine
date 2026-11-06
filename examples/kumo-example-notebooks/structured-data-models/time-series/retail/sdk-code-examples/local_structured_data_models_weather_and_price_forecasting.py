@@ -1,6 +1,6 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-
 """Forecast ice cream and cold drink demand with historical weather and known future prices.
 
 Generate local files first: python synthetic-data/sdm/time_series.py --output synthetic_data/time_series

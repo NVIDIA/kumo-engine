@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Synthetic sales and item categorical field completion, evaluated with reciprocal rank
 
 Install: pip install structured-data-models pandas torchmetrics tqdm
@@ -7,20 +10,16 @@ for the matching wheel before running this script.
 Documentation: https://nvidia.github.io/structured-data-models/
 """
 
-# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-
 import argparse
-from typing import Any, cast
+import runpy
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
+import sdm
 import torch
 import torchmetrics
 import tqdm
-from pathlib import Path
-import runpy
-
-import sdm
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--task", type=str, default="SALESOFFICE")
@@ -52,18 +51,17 @@ item_tasks = [
     "ITEMINCOTERMSCLASSIFICATION",
 ]
 
-
 # Generate synthetic example data locally; no external source is read.
 generate = runpy.run_path(
-    str(Path(__file__).resolve().parents[4] / "synthetic-data/sdm/relational.py")
-)["generate"]
+    str(
+        Path(__file__).resolve().parents[4] /
+        "synthetic-data/sdm/relational.py"))["generate"]
 data_dir = generate(Path("synthetic_data/sales"), args.seed)
 
 
 def get_df(name: str, split: str = "train") -> pd.DataFrame:
-    filename = (
-        f"{name}_{split}" if name in {"salesdocuments", "salesdocument_items"} else name
-    )
+    filename = (f"{name}_{split}"
+                if name in {"salesdocuments", "salesdocument_items"} else name)
     return pd.read_csv(data_dir / f"{filename}.csv")
 
 
@@ -101,11 +99,9 @@ del dfs["addresses"]["__index_level_0__"]
 dfs["items"]["ID"] = range(len(dfs["items"]))
 # 5. Rename columns to align with task name:
 dfs["sales"] = dfs["sales"].rename(
-    columns={"INCOTERMSCLASSIFICATION": "HEADERINCOTERMSCLASSIFICATION"}
-)
+    columns={"INCOTERMSCLASSIFICATION": "HEADERINCOTERMSCLASSIFICATION"})
 dfs["items"] = dfs["items"].rename(
-    columns={"INCOTERMSCLASSIFICATION": "ITEMINCOTERMSCLASSIFICATION"}
-)
+    columns={"INCOTERMSCLASSIFICATION": "ITEMINCOTERMSCLASSIFICATION"})
 # 6. Join 1:1 mapping between customers and addresses:
 dfs["customers"] = pd.merge(
     left=dfs["customers"],
@@ -152,7 +148,7 @@ if args.task.upper() in sale_tasks:
     perm = context["CREATIONDATETIME"].datetime.flatten().argsort(stable=True)
 else:
     perm = torch.randperm(len(context))
-context = context[perm[-args.context_size :]]
+context = context[perm[-args.context_size:]]
 
 # Build Relational Data #######################################################
 dfs["sales"] = dfs["sales"].drop(labels=sale_tasks, axis=1)
@@ -160,7 +156,8 @@ dfs["items"] = dfs["items"].drop(labels=item_tasks, axis=1)
 
 data = sdm.RelationalData(
     tables={
-        name: sdm.TableTensor.from_pandas(
+        name:
+        sdm.TableTensor.from_pandas(
             df=df,
             stypes=sdm.infer_stypes(
                 df.head(10_000),
@@ -177,28 +174,24 @@ data = sdm.RelationalData(
         )
         for name, df in dfs.items()
     },
-    relationships=[
-        {
-            "left_table": left_table,
-            "left_column": left_column,
-            "right_table": right_table,
-            "right_column": right_column,
-        }
-        for left_table, left_column, right_table, right_column in [
-            ("items", "SALESDOCUMENT", "sales", "SALESDOCUMENT"),
-            ("items", "SOLDTOPARTY", "customers", "CUSTOMER"),
-            ("items", "SHIPTOPARTY", "customers", "CUSTOMER"),
-            ("items", "BILLTOPARTY", "customers", "CUSTOMER"),
-            ("items", "PAYERPARTY", "customers", "CUSTOMER"),
-        ]
-    ],
+    relationships=[{
+        "left_table": left_table,
+        "left_column": left_column,
+        "right_table": right_table,
+        "right_column": right_column,
+    } for left_table, left_column, right_table, right_column in [
+        ("items", "SALESDOCUMENT", "sales", "SALESDOCUMENT"),
+        ("items", "SOLDTOPARTY", "customers", "CUSTOMER"),
+        ("items", "SHIPTOPARTY", "customers", "CUSTOMER"),
+        ("items", "BILLTOPARTY", "customers", "CUSTOMER"),
+        ("items", "PAYERPARTY", "customers", "CUSTOMER"),
+    ]],
 )
 sampler = data.sampler(
     time_columns={
         "sales": "CREATIONDATETIME",
         "items": "CREATIONDATETIME",
-    },
-)
+    }, )
 
 # Execute Model ###############################################################
 model = sdm.models.KumoRelational(task="classification", device=device)
@@ -209,7 +202,8 @@ kwargs: dict[str, Any] = {
 }
 
 context, related_tables = sampler(context, **kwargs).to(device)
-with torch.amp.autocast(device.type, torch.float16, enabled=device.type == "cuda"):
+with torch.amp.autocast(device.type, torch.float16,
+                        enabled=device.type == "cuda"):
     model.fit(
         x=context.drop_columns(args.task.upper()),
         y=context[args.task.upper()],
@@ -221,21 +215,20 @@ metric = torchmetrics.aggregation.MeanMetric().to(device)
 # Batch predictions: only query features enter the sampler and model.
 result_parts = []
 scored_rows = 0
-query_ids = (
-    sales_test["SALESDOCUMENT"].reset_index(drop=True)
-    if args.task.upper() in sale_tasks
-    else pd.Series(range(len(items_train), len(dfs["items"])))
-)
-for batch in tqdm.tqdm(query.split(args.batch_size)[: args.max_test_steps]):
+query_ids = (sales_test["SALESDOCUMENT"].reset_index(
+    drop=True) if args.task.upper() in sale_tasks else pd.Series(
+        range(len(items_train), len(dfs["items"]))))
+for batch in tqdm.tqdm(query.split(args.batch_size)[:args.max_test_steps]):
     x_query = batch.drop_columns(args.task.upper())
     y_query = batch[args.task.upper()].to(device)
-    with torch.amp.autocast(device.type, torch.float16, enabled=device.type == "cuda"):
+    with torch.amp.autocast(device.type, torch.float16,
+                            enabled=device.type == "cuda"):
         out = model.predict(*sampler(x_query, **kwargs).to(device))
     # Missing prediction classes must contribute zero reciprocal rank.
-    prob, target = sdm.evaluation.to_class_indices(
-        out, y_query, missing_score=float("-inf")
-    )
-    target_present = torch.isfinite(prob.gather(-1, target.unsqueeze(-1))).squeeze(-1)
+    prob, target = sdm.evaluation.to_class_indices(out, y_query,
+                                                   missing_score=float("-inf"))
+    target_present = torch.isfinite(prob.gather(
+        -1, target.unsqueeze(-1))).squeeze(-1)
     match = prob.argsort(dim=-1, descending=True) == target.unsqueeze(-1)
     ranks = match.float().argmax(dim=-1) + 1
     metric.update(torch.where(target_present, ranks.float().reciprocal(), 0.0))
@@ -248,7 +241,7 @@ for batch in tqdm.tqdm(query.split(args.batch_size)[: args.max_test_steps]):
     frame.insert(
         0,
         "entity_id",
-        query_ids.iloc[scored_rows : scored_rows + len(frame)].to_numpy(),
+        query_ids.iloc[scored_rows:scored_rows + len(frame)].to_numpy(),
     )
     result_parts.append(frame)
     scored_rows += len(frame)

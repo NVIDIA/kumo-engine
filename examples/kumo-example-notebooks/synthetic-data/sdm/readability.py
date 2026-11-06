@@ -1,7 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Generate local synthetic passages with noisy readability targets."""
 
 import argparse
 from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -18,15 +22,15 @@ def generate(output, seed=42):
         ((simple * (10 - int(c * 8))) + (complex_text * (1 + int(c * 8))))
         for c in complexity
     ]
-    frame = pd.DataFrame(
-        {
-            "ID": np.arange(n),
-            "Title": [f"Synthetic passage {i}" for i in range(n)],
-            "Excerpt": passages,
-            "Word Count": [len(t.split()) for t in passages],
-            "BT Easiness": (1 - 3 * complexity + rng.normal(0, 0.2, n)).round(4),
-        }
-    )
+    frame = pd.DataFrame({
+        "ID":
+        np.arange(n),
+        "Title": [f"Synthetic passage {i}" for i in range(n)],
+        "Excerpt":
+        passages,
+        "Word Count": [len(t.split()) for t in passages],
+        "BT Easiness": (1 - 3 * complexity + rng.normal(0, 0.2, n)).round(4),
+    })
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     path = output / "passages.parquet"

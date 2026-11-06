@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Forecast three daily interaction counts for each user.
 Synthetic data only.
 Generate synthetic example data first:
@@ -7,26 +10,27 @@ See https://docs.nvidia.com/sdgm/kumo-engine/ for setup and modeling guidance.
 """
 
 import argparse
-from datetime import datetime
 import hashlib
-from itertools import combinations
 import json
 import math
+from datetime import datetime
+from itertools import combinations
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from kumo.engine import FileConnector, PredictiveQuery, Trainer, configure
-from kumo.engine.trainer.output_config import ModelOutputConfig, PredictionOutputConfig
 from kumoapi.jobs import PredictionArtifactType, WriteMode
 from kumoapi.model_plan import RunMode
-
 from local_kumo_engine_restaurant_temporal import build_graph, save_json
 
-QUERY = (
-    "PREDICT COUNT(interactions.*, 0, 1, days) "
-    "FORECAST 3 TIMEFRAMES FOR EACH users.user_id"
+from kumo.engine import FileConnector, PredictiveQuery, Trainer, configure
+from kumo.engine.trainer.output_config import (
+    ModelOutputConfig,
+    PredictionOutputConfig,
 )
+
+QUERY = ("PREDICT COUNT(interactions.*, 0, 1, days) "
+         "FORECAST 3 TIMEFRAMES FOR EACH users.user_id")
 TABLES = ("users", "restaurants", "interactions", "social_graph")
 
 
@@ -40,15 +44,16 @@ def separate_paths(*paths):
 
 def file_hashes(root):
     return {
-        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
+        str(path.relative_to(root)):
+        hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*")) if path.is_file()
     }
 
 
 def source_hashes(root):
     return {
-        f"{name}.csv": hashlib.sha256((root / f"{name}.csv").read_bytes()).hexdigest()
+        f"{name}.csv":
+        hashlib.sha256((root / f"{name}.csv").read_bytes()).hexdigest()
         for name in TABLES
     }
 
@@ -56,13 +61,17 @@ def source_hashes(root):
 def prepare(source, prepared):
     separate_paths(source, prepared)
     before = source_hashes(source)
-    original = pd.read_csv(source / "interactions.csv", parse_dates=["timestamp"])
+    original = pd.read_csv(source / "interactions.csv",
+                           parse_dates=["timestamp"])
     if original.empty or original.timestamp.isna().any():
-        raise ValueError("Generate nonempty synthetic history with valid timestamps first.")
+        raise ValueError(
+            "Generate nonempty synthetic history with valid timestamps first.")
     prepared.mkdir(parents=True, exist_ok=False)
     for name in ("users", "restaurants", "social_graph"):
-        (prepared / f"{name}.csv").write_bytes((source / f"{name}.csv").read_bytes())
-    original.to_csv(prepared / "interactions.csv", index=False, date_format="%Y-%m-%d %H:%M:%S")
+        (prepared / f"{name}.csv").write_bytes(
+            (source / f"{name}.csv").read_bytes())
+    original.to_csv(prepared / "interactions.csv", index=False,
+                    date_format="%Y-%m-%d %H:%M:%S")
     assert before == source_hashes(source)
     result = {
         "synthetic_history": True,
@@ -77,12 +86,12 @@ def prepare(source, prepared):
 
 
 def run(args):
-    source, scratch, output = (
-        getattr(args, key).expanduser().resolve()
-        for key in ("input_dir", "scratch_dir", "output_dir")
-    )
+    source, scratch, output = (getattr(args, key).expanduser().resolve()
+                               for key in ("input_dir", "scratch_dir",
+                                           "output_dir"))
     paths = [source, scratch, output]
-    model = args.model_dir.expanduser().resolve() if args.mode == "predict" else None
+    model = args.model_dir.expanduser().resolve(
+    ) if args.mode == "predict" else None
     if model is not None:
         if not model.is_dir():
             raise ValueError("The saved model directory must exist.")
@@ -120,11 +129,11 @@ def run(args):
         trained = trainer.fit(
             training_table,
             snapshot=snapshot,
-            export_config=ModelOutputConfig(connector=destination, path="model"),
+            export_config=ModelOutputConfig(connector=destination,
+                                            path="model"),
         )
         assert trained.metrics and all(
-            math.isfinite(float(v)) for v in trained.metrics.values()
-        )
+            math.isfinite(float(v)) for v in trained.metrics.values())
         save_json(output / "training-metrics.json", trained.metrics)
         summary.update(
             training_rows=len(pd.read_parquet(training_table.train_table_path)),
@@ -157,8 +166,7 @@ def run(args):
     assert frame.ANCHOR_TIMESTAMP.eq(pd.Timestamp(anchor)).all()
     assert np.isfinite(frame.TARGET_PRED.to_numpy()).all()
     pd.testing.assert_frame_equal(
-        frame, pd.read_parquet(output / "predictions.parquet")
-    )
+        frame, pd.read_parquet(output / "predictions.parquet"))
     assert source_hashes(source) == before
     if model is not None:
         assert file_hashes(model) == model_before
@@ -182,8 +190,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="mode", required=True)
     preparation = commands.add_parser(
-        "prepare", help="Create four synthetic weeks from the sample."
-    )
+        "prepare", help="Create four synthetic weeks from the sample.")
     preparation.add_argument("--input-dir", type=Path, required=True)
     preparation.add_argument("--prepared-dir", type=Path, required=True)
     for mode in ("fit", "predict"):

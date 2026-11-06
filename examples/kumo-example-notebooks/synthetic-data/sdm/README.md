@@ -1,6 +1,6 @@
 # Synthetic SDM data
 
-Run generators from the repository root with NumPy, pandas and PyArrow installed.
+Run generators from the collection root (`examples/kumo-example-notebooks`) with NumPy, pandas and PyArrow installed.
 All output stays on the local filesystem; the scripts never upload data or connect to a warehouse.
 Seeds fix the samples and targets contain noisy predictive signal.
 Synthetic metrics are demonstration only.

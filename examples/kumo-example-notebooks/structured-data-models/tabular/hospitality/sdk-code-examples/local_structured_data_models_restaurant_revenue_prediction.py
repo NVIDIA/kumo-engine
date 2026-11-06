@@ -1,6 +1,6 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-
 """Predict restaurant revenue prediction with synthetic example data.
 
 Generate local files from the repository root:
@@ -17,11 +17,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import sdm
 import torch
 from sklearn.decomposition import PCA
 from sklearn.model_selection import ShuffleSplit
-
-import sdm
 
 ID_COLUMN = "Id"
 TARGET_COLUMN = "revenue"
@@ -38,10 +37,10 @@ def _build_model(
         return sdm.models.TabICLv2(task="regression", device=device)
     size = "small" if name == "kumo-small" else "large"
     if local_checkpoint is None:
-        return sdm.models.KumoTabular(task="regression", size=size, device=device)
-    model = sdm.models.KumoTabular(
-        task="regression", size=size, pretrained=False, device=device
-    )
+        return sdm.models.KumoTabular(task="regression", size=size,
+                                      device=device)
+    model = sdm.models.KumoTabular(task="regression", size=size,
+                                   pretrained=False, device=device)
     state = torch.load(local_checkpoint, map_location=device, weights_only=True)
     model.load_state_dict(state)
     model.eval()
@@ -65,13 +64,12 @@ def _predict(
     device = x_context.device
     effective_num_estimators: int | None = num_estimators
     if max_context_size is not None and x_context.size(0) > max_context_size:
-        num_repeats = math.ceil(num_estimators * max_context_size / x_context.size(0))
-        perm = torch.cat(
-            [
-                torch.randperm(x_context.size(0), generator=generator, device=device)
-                for _ in range(num_repeats)
-            ]
-        )[: num_estimators * max_context_size]
+        num_repeats = math.ceil(num_estimators * max_context_size /
+                                x_context.size(0))
+        perm = torch.cat([
+            torch.randperm(x_context.size(0), generator=generator,
+                           device=device) for _ in range(num_repeats)
+        ])[:num_estimators * max_context_size]
         shape = (num_estimators, max_context_size)
         x_context = x_context[perm].unflatten(0, shape)
         y_context = y_context[perm].unflatten(0, shape)
@@ -79,8 +77,9 @@ def _predict(
         effective_num_estimators = None
 
     with (
-        torch.inference_mode(),
-        torch.amp.autocast(device.type, torch.float16, enabled=x_context.is_cuda),
+            torch.inference_mode(),
+            torch.amp.autocast(device.type, torch.float16,
+                               enabled=x_context.is_cuda),
     ):
         model.fit(
             x=x_context,
@@ -91,16 +90,18 @@ def _predict(
         # Row dim is always -2 (there may be a leading ensemble dim from
         # the max_context_size branch above).
         out = torch.cat(
-            [model.predict(batch) for batch in x_query.split(query_batch_size, dim=-2)],
+            [
+                model.predict(batch)
+                for batch in x_query.split(query_batch_size, dim=-2)
+            ],
             dim=-2,
         )
     model.clear()
     return out
 
 
-def _with_age_feature(
-    frame: pd.DataFrame, reference_date: pd.Timestamp
-) -> pd.DataFrame:
+def _with_age_feature(frame: pd.DataFrame,
+                      reference_date: pd.Timestamp) -> pd.DataFrame:
     frame = frame.copy()
     open_date = pd.to_datetime(frame[DATE_COLUMN], format="%m/%d/%Y")
     frame[AGE_COLUMN] = (reference_date - open_date).dt.days.astype(float)
@@ -122,22 +123,23 @@ def _engineer_features(
     if pca_components > 0:
         p_columns = [c for c in train_frame.columns if c.startswith("P")]
         pca = PCA(n_components=pca_components).fit(
-            pd.concat([train_frame[p_columns], test_frame[p_columns]])
-        )
+            pd.concat([train_frame[p_columns], test_frame[p_columns]]))
         train_pca = pca.transform(train_frame[p_columns])
         test_pca = pca.transform(test_frame[p_columns])
         pc_columns = pd.Index(f"PC{i}" for i in range(1, pca_components + 1))
         train_frame = pd.concat(
             [
                 train_frame.drop(columns=p_columns),
-                pd.DataFrame(train_pca, columns=pc_columns, index=train_frame.index),
+                pd.DataFrame(train_pca, columns=pc_columns,
+                             index=train_frame.index),
             ],
             axis=1,
         )
         test_frame = pd.concat(
             [
                 test_frame.drop(columns=p_columns),
-                pd.DataFrame(test_pca, columns=pc_columns, index=test_frame.index),
+                pd.DataFrame(test_pca, columns=pc_columns,
+                             index=test_frame.index),
             ],
             axis=1,
         )
@@ -183,7 +185,9 @@ def main() -> None:
         "--pca-components",
         type=int,
         default=0,
-        help=("PCA-reduce the 37 P columns to this many components (0 disables)."),
+        help=(
+            "PCA-reduce the 37 P columns to this many components (0 disables)."
+        ),
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output", type=Path, default=Path("submission.csv"))
@@ -199,9 +203,11 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     generator = torch.Generator(device).manual_seed(args.seed)
 
-    train_frame = pd.read_csv(args.data_dir / "train.csv").drop(columns=[ID_COLUMN])
+    train_frame = pd.read_csv(args.data_dir /
+                              "train.csv").drop(columns=[ID_COLUMN])
     test_ids = pd.read_csv(args.data_dir / "test.csv")[ID_COLUMN]
-    test_frame = pd.read_csv(args.data_dir / "test.csv").drop(columns=[ID_COLUMN])
+    test_frame = pd.read_csv(args.data_dir /
+                             "test.csv").drop(columns=[ID_COLUMN])
 
     # One reference date (after the latest date in either split) so "age"
     # is on a comparable scale between train and test.
@@ -219,7 +225,8 @@ def main() -> None:
     )
     train_frame[TARGET_COLUMN] = np.log1p(train_frame[TARGET_COLUMN])
 
-    stypes = sdm.infer_stypes(train_frame, overrides={TARGET_COLUMN: "numerical"})
+    stypes = sdm.infer_stypes(train_frame,
+                              overrides={TARGET_COLUMN: "numerical"})
     feature_stypes = {k: v for k, v in stypes.items() if k != TARGET_COLUMN}
     model = _build_model(args.model, device, args.local_checkpoint)
 
@@ -253,24 +260,19 @@ def main() -> None:
         # out.numerical holds 999 quantile columns; their mean is the
         # point estimate (a point estimate).
         pred_raw = np.expm1(out.numerical.mean(dim=-1).float().cpu().numpy())
-        actual_raw = np.expm1(
-            split_val[:, TARGET_COLUMN].numerical.squeeze(-1).float().cpu().numpy()
-        )
-        rmses.append(float(np.sqrt(np.mean((pred_raw - actual_raw) ** 2))))
+        actual_raw = np.expm1(split_val[:, TARGET_COLUMN].numerical.squeeze(
+            -1).float().cpu().numpy())
+        rmses.append(float(np.sqrt(np.mean((pred_raw - actual_raw)**2))))
 
     rmse = np.array(rmses)
-    print(
-        f"{args.model}  val_rmse={rmse.mean():.1f}+-{rmse.std():.1f}  "
-        f"({args.num_splits} splits of {args.val_fraction:.0%})"
-    )
+    print(f"{args.model}  val_rmse={rmse.mean():.1f}+-{rmse.std():.1f}  "
+          f"({args.num_splits} splits of {args.val_fraction:.0%})")
 
     # Batch predictions: score competition rows without target labels.
-    full_train = sdm.TableTensor.from_pandas(
-        df=train_frame, stypes=stypes, device=device
-    )
-    query = sdm.TableTensor.from_pandas(
-        df=test_frame, stypes=feature_stypes, device=device
-    )
+    full_train = sdm.TableTensor.from_pandas(df=train_frame, stypes=stypes,
+                                             device=device)
+    query = sdm.TableTensor.from_pandas(df=test_frame, stypes=feature_stypes,
+                                        device=device)
     out = _predict(
         model,
         x_context=full_train.drop_columns(TARGET_COLUMN),
@@ -284,9 +286,13 @@ def main() -> None:
     pred_log = out.numerical.mean(dim=-1).float().cpu().numpy()
     predicted_revenue = np.clip(np.expm1(pred_log), a_min=0.0, a_max=None)
 
-    submission = pd.DataFrame({ID_COLUMN: test_ids, "Prediction": predicted_revenue})
+    submission = pd.DataFrame({
+        ID_COLUMN: test_ids,
+        "Prediction": predicted_revenue
+    })
     if len(submission) != len(test_frame) or len(submission) < 2:
-        raise ValueError("Expected one prediction for each of at least two test rows")
+        raise ValueError(
+            "Expected one prediction for each of at least two test rows")
     if submission[ID_COLUMN].tolist() != test_ids.tolist():
         raise ValueError("Prediction IDs do not match scoring input order")
     # Each row follows the original test-file order; columns hold the task outputs.

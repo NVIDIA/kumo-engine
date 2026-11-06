@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Synthetic sales entity classification with the RelBench task contract
 
 Metrics are demonstration only.
@@ -9,30 +12,29 @@ for the matching wheel before running this script.
 Documentation: https://nvidia.github.io/structured-data-models/
 """
 
-# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-
 import argparse
 import math
-from typing import Any, cast
+import runpy
 from pathlib import Path
 from types import SimpleNamespace
-import runpy
+from typing import Any, cast
 
 import pandas as pd
 import relbench
+import sdm
 import torch
 import torchmetrics
 from relbench_companions.local_structured_data_models_lagged_targets import (
     add_lag_target,
 )
-from relbench_companions.local_structured_data_models_text_embeddings import embed_text
+from relbench_companions.local_structured_data_models_text_embeddings import (
+    embed_text,
+)
 from tqdm import tqdm
 
-import sdm
-
 parser = argparse.ArgumentParser()
-parser.add_argument("--dataset", choices=["synthetic-sales"], default="synthetic-sales")
+parser.add_argument("--dataset", choices=["synthetic-sales"],
+                    default="synthetic-sales")
 parser.add_argument("--task", choices=["purchase"], default="purchase")
 parser.add_argument("--context_size", type=int, default=10_000)
 parser.add_argument("--context_mode", choices=("last", "rnd"), default="last")
@@ -54,12 +56,12 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Collect Relational Data #####################################################
 generate = runpy.run_path(
-    str(Path(__file__).resolve().parents[4] / "synthetic-data/sdm/relational.py")
-)["generate"]
+    str(
+        Path(__file__).resolve().parents[4] /
+        "synthetic-data/sdm/relational.py"))["generate"]
 data_dir = generate(Path("synthetic_data/sales"), args.seed)
-customers = pd.read_csv(data_dir / "customers.csv").drop(
-    columns=["__index_level_0__", "ADDRESSID"]
-)
+customers = pd.read_csv(
+    data_dir / "customers.csv").drop(columns=["__index_level_0__", "ADDRESSID"])
 sales = pd.concat(
     [
         pd.read_csv(data_dir / f"salesdocuments_{split}.csv")
@@ -67,21 +69,22 @@ sales = pd.concat(
     ],
     ignore_index=True,
 )
-sales["timestamp"] = pd.to_datetime(sales.CREATIONDATE + " " + sales.CREATIONTIME)
+sales["timestamp"] = pd.to_datetime(sales.CREATIONDATE + " " +
+                                    sales.CREATIONTIME)
 sales = sales[["SALESDOCUMENT", "CUSTOMER", "timestamp", "value"]]
 db = SimpleNamespace(
     table_dict={
-        "customers": SimpleNamespace(
-            df=customers, pkey_col="CUSTOMER", fkey_col_to_pkey_table={}, time_col=None
-        ),
-        "sales": SimpleNamespace(
+        "customers":
+        SimpleNamespace(df=customers, pkey_col="CUSTOMER",
+                        fkey_col_to_pkey_table={}, time_col=None),
+        "sales":
+        SimpleNamespace(
             df=sales,
             pkey_col="SALESDOCUMENT",
             fkey_col_to_pkey_table={"CUSTOMER": "customers"},
             time_col="timestamp",
         ),
-    }
-)
+    })
 task = SimpleNamespace(
     entity_table="customers",
     entity_col="CUSTOMER",
@@ -92,7 +95,8 @@ task = SimpleNamespace(
 )
 data = sdm.RelationalData(
     tables={
-        name: sdm.TableTensor.from_pandas(
+        name:
+        sdm.TableTensor.from_pandas(
             df=table.df,
             stypes=sdm.infer_stypes(
                 table.df.head(10_000),
@@ -100,11 +104,8 @@ data = sdm.RelationalData(
                     cast(str, table.pkey_col): "id",
                     **dict.fromkeys(table.fkey_col_to_pkey_table, "id"),
                 },
-                text=(
-                    "infer"
-                    if args.text_dim > 0 and name == task.entity_table
-                    else "drop"
-                ),
+                text=("infer" if args.text_dim > 0 and name == task.entity_table
+                      else "drop"),
                 unsupported="drop",
             ),
         )
@@ -116,17 +117,16 @@ data = sdm.RelationalData(
             "left_column": left_column,
             "right_table": right_table,
             "right_column": cast(str, db.table_dict[right_table].pkey_col),
-        }
-        for left_table, table in db.table_dict.items()
+        } for left_table, table in db.table_dict.items()
         for left_column, right_table in table.fkey_col_to_pkey_table.items()
     ],
 )
 
 # Collect Task Table ##########################################################
 if task.task_type not in {
-    relbench.base.TaskType.BINARY_CLASSIFICATION,
-    relbench.base.TaskType.MULTICLASS_CLASSIFICATION,
-    relbench.base.TaskType.REGRESSION,
+        relbench.base.TaskType.BINARY_CLASSIFICATION,
+        relbench.base.TaskType.MULTICLASS_CLASSIFICATION,
+        relbench.base.TaskType.REGRESSION,
 }:
     quit(f"Unsupported task {task.task_type.value!r}")
 
@@ -160,12 +160,8 @@ if args.text_dim > 0:  # Embed entity table text:
         table=data.tables[task.entity_table],
         text_model="sentence-transformers/all-MiniLM-L6-v2",
         text_dim=args.text_dim,
-        mask=torch.from_numpy(
-            db.table_dict[task.entity_table]
-            .df[db.table_dict[task.entity_table].pkey_col]
-            .isin(df[task.entity_col])
-            .to_numpy()
-        ),
+        mask=torch.from_numpy(db.table_dict[task.entity_table].df[db.table_dict[
+            task.entity_table].pkey_col].isin(df[task.entity_col]).to_numpy()),
         device=device,
     )
 
@@ -184,15 +180,12 @@ if len(context) > args.context_size:  # Sample different context per estimator:
         query = query.expand(num_estimators, *query.size())
         num_estimators = None  # Context provides ensemble dimension.
 
-
 # Create Subgraph Sampler #####################################################
 sampler = data.sampler(
     time_columns={
         name: table.time_col
-        for name, table in db.table_dict.items()
-        if table.time_col is not None
-    },
-)
+        for name, table in db.table_dict.items() if table.time_col is not None
+    }, )
 kwargs: dict[str, Any] = {
     "task_link": {
         "task_column": task.entity_col,
@@ -207,7 +200,8 @@ kwargs: dict[str, Any] = {
 model = sdm.models.KumoRelational(device=device)
 
 context, related_tables = sampler(context, **kwargs).to(device)
-with torch.amp.autocast(device.type, torch.float16, enabled=device.type == "cuda"):
+with torch.amp.autocast(device.type, torch.float16,
+                        enabled=device.type == "cuda"):
     model.fit(
         x=context.drop_columns(task.target_col),
         y=context[task.target_col],
@@ -215,32 +209,36 @@ with torch.amp.autocast(device.type, torch.float16, enabled=device.type == "cuda
         num_estimators=num_estimators,
     )
 
+positive_class = None
 if task.task_type == relbench.base.TaskType.REGRESSION:
     metric = torchmetrics.regression.MeanAbsoluteError()
 elif task.task_type == relbench.base.TaskType.BINARY_CLASSIFICATION:
     metric = torchmetrics.classification.BinaryAUROC()
-    positive_class = sorted(dfs[0][task.target_col].dropna().unique().tolist())[-1]
+    positive_class = sorted(
+        dfs[0][task.target_col].dropna().unique().tolist())[-1]
 else:
     metric = torchmetrics.classification.MulticlassAccuracy(
-        num_classes=df[task.target_col].nunique(), average="micro"
-    )
+        num_classes=df[task.target_col].nunique(), average="micro")
 metric = metric.to(device)
 # Batch predictions: preserve test-table order while sampling label-free query features.
 result_parts = []
 scored_rows = 0
-for batch in tqdm(query.split(args.batch_size, -2)[: args.max_test_steps]):
+for batch in tqdm(query.split(args.batch_size, -2)[:args.max_test_steps]):
     x_query = batch.drop_columns(task.target_col)
     y_query = batch[task.target_col].to(device)
     if num_estimators is None:
         y_query = y_query[0]
-    with torch.amp.autocast(device.type, torch.float16, enabled=device.type == "cuda"):
+    with torch.amp.autocast(device.type, torch.float16,
+                            enabled=device.type == "cuda"):
         out = model.predict(*sampler(x_query, **kwargs).to(device))
 
     if task.task_type == relbench.base.TaskType.REGRESSION:
         pred = out["q500"].numerical.squeeze(-1)  # Median prediction.
         target = y_query.numerical.squeeze(-1)
     elif task.task_type == relbench.base.TaskType.BINARY_CLASSIFICATION:
-        pred, target = sdm.evaluation.to_binary_class(out, y_query, positive_class)
+        assert positive_class is not None
+        pred, target = sdm.evaluation.to_binary_class(out, y_query,
+                                                      positive_class)
     else:
         pred, target = sdm.evaluation.to_class_indices(out, y_query)
     metric.update(pred, target)
@@ -251,13 +249,9 @@ for batch in tqdm(query.split(args.batch_size, -2)[: args.max_test_steps]):
     expected_rows = x_query.size(-2)
     if len(output_frame) != expected_rows:
         raise ValueError("Prediction count does not match the query batch")
-    keys = (
-        dfs[2]
-        .iloc[scored_rows : scored_rows + expected_rows][
-            [task.entity_col, task.time_col]
-        ]
-        .reset_index(drop=True)
-    )
+    keys = (dfs[2].iloc[scored_rows:scored_rows +
+                        expected_rows][[task.entity_col,
+                                        task.time_col]].reset_index(drop=True))
     result_parts.append(pd.concat([keys, output_frame], axis=1))
     scored_rows += expected_rows
 
@@ -271,10 +265,8 @@ else:
 if not result_parts or scored_rows < 2:
     raise ValueError("Need at least two scoring records; check max_test_steps")
 results = pd.concat(result_parts, ignore_index=True)
-assert (
-    results[task.entity_col].tolist()
-    == dfs[2][task.entity_col].iloc[:scored_rows].tolist()
-)
+assert (results[task.entity_col].tolist() == dfs[2][
+    task.entity_col].iloc[:scored_rows].tolist())
 # Numerical column names are quantiles for regression, class probabilities otherwise.
 print(results.head(10).to_string(index=False))
 results.to_csv("relbench_predictions.csv", index=False)

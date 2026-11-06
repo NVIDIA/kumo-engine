@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Rank product relationships without a future prediction window.
 
 Use the original prepared CSV files and local scratch. Use the suggested FAST plan for the static recommendation task.
@@ -9,19 +12,30 @@ See https://docs.nvidia.com/sdgm/kumo-engine/ for setup and modeling guidance.
 
 import argparse
 import hashlib
-from itertools import combinations
 import json
 import math
+from itertools import combinations
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from kumo.engine import FileConnector, Graph, PredictiveQuery, Table, Trainer, configure
-from kumo.engine.trainer.output_config import ModelOutputConfig, PredictionOutputConfig
 from kumoapi.graph import Edge
 from kumoapi.jobs import PredictionArtifactType, WriteMode
 from kumoapi.model_plan import RunMode
 from kumoapi.typing import Stype
+
+from kumo.engine import (
+    FileConnector,
+    Graph,
+    PredictiveQuery,
+    Table,
+    Trainer,
+    configure,
+)
+from kumo.engine.trainer.output_config import (
+    ModelOutputConfig,
+    PredictionOutputConfig,
+)
 
 QUERY = "PREDICT LIST_DISTINCT(SalesOrderDetail.ProductID) RANK TOP 5 FOR EACH Customer.CustomerID"
 TABLES = ("Customer", "Product", "SalesOrderHeader", "SalesOrderDetail")
@@ -33,43 +47,55 @@ def save_json(path, value):
 
 def source_hashes(root):
     return {
-        f"{name}.csv": hashlib.sha256((root / f"{name}.csv").read_bytes()).hexdigest()
+        f"{name}.csv":
+        hashlib.sha256((root / f"{name}.csv").read_bytes()).hexdigest()
         for name in TABLES
     }
 
 
 def model_hashes(root):
     return {
-        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
+        str(path.relative_to(root)):
+        hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*")) if path.is_file()
     }
 
 
 def build_graph(input_dir):
     connector = FileConnector(root_dir=str(input_dir))
-    customers = Table.from_source_table(connector["Customer"],
-        ["CustomerID", "StoreID", "TerritoryID"], primary_key="CustomerID")
+    customers = Table.from_source_table(
+        connector["Customer"], ["CustomerID", "StoreID", "TerritoryID"],
+        primary_key="CustomerID")
     customers = customers.with_column("StoreID", stype=Stype.categorical)
     customers = customers.with_column("TerritoryID", stype=Stype.categorical)
-    products = Table.from_source_table(connector["Product"],
-        ["ProductID", "Name", "Color", "ProductLine", "Class", "StandardCost", "ListPrice"], primary_key="ProductID")
+    products = Table.from_source_table(connector["Product"], [
+        "ProductID", "Name", "Color", "ProductLine", "Class", "StandardCost",
+        "ListPrice"
+    ], primary_key="ProductID")
     products = products.with_column("Name", stype=Stype.text)
-    headers = Table.from_source_table(connector["SalesOrderHeader"],
-        ["SalesOrderID", "CustomerID", "OnlineOrderFlag", "TerritoryID", "SubTotal", "TotalDue"], primary_key="SalesOrderID")
+    headers = Table.from_source_table(connector["SalesOrderHeader"], [
+        "SalesOrderID", "CustomerID", "OnlineOrderFlag", "TerritoryID",
+        "SubTotal", "TotalDue"
+    ], primary_key="SalesOrderID")
     headers = headers.with_column("CustomerID", stype=Stype.ID)
-    details = Table.from_source_table(connector["SalesOrderDetail"],
-        ["SalesOrderDetailID", "SalesOrderID", "CustomerID", "ProductID", "OrderQty", "UnitPrice", "LineTotal"], primary_key="SalesOrderDetailID")
+    details = Table.from_source_table(connector["SalesOrderDetail"], [
+        "SalesOrderDetailID", "SalesOrderID", "CustomerID", "ProductID",
+        "OrderQty", "UnitPrice", "LineTotal"
+    ], primary_key="SalesOrderDetailID")
     details = details.with_column("SalesOrderID", stype=Stype.ID)
     details = details.with_column("CustomerID", stype=Stype.ID)
     details = details.with_column("ProductID", stype=Stype.ID)
     return Graph(
         tables=[customers, products, headers, details],
         edges=[
-            Edge(src_table="SalesOrderHeader", fkey="CustomerID", dst_table="Customer"),
-            Edge(src_table="SalesOrderDetail", fkey="SalesOrderID", dst_table="SalesOrderHeader"),
-            Edge(src_table="SalesOrderDetail", fkey="CustomerID", dst_table="Customer"),
-            Edge(src_table="SalesOrderDetail", fkey="ProductID", dst_table="Product"),
+            Edge(src_table="SalesOrderHeader", fkey="CustomerID",
+                 dst_table="Customer"),
+            Edge(src_table="SalesOrderDetail", fkey="SalesOrderID",
+                 dst_table="SalesOrderHeader"),
+            Edge(src_table="SalesOrderDetail", fkey="CustomerID",
+                 dst_table="Customer"),
+            Edge(src_table="SalesOrderDetail", fkey="ProductID",
+                 dst_table="Product"),
         ],
     )
 
@@ -86,12 +112,11 @@ def check_labels(training_table, source, customers, products):
         actual = set(row.TARGET1)
         assert actual == expected.get(row.ENTITY1, set())
         assert actual <= products
-        frequency = dict(zip(row.TARGET1, row["__kumo_internal_frequency_column__"]))
+        frequency = dict(
+            zip(row.TARGET1, row["__kumo_internal_frequency_column__"]))
         expected_frequency = (
-            purchases.loc[purchases.CustomerID.eq(row.ENTITY1), "ProductID"]
-            .value_counts()
-            .to_dict()
-        )
+            purchases.loc[purchases.CustomerID.eq(row.ENTITY1),
+                          "ProductID"].value_counts().to_dict())
         assert frequency == expected_frequency
     return {
         "rows": len(training),
@@ -104,11 +129,11 @@ def check_labels(training_table, source, customers, products):
 
 
 def run(args):
-    source, scratch, output = (
-        getattr(args, key).expanduser().resolve()
-        for key in ("input_dir", "scratch_dir", "output_dir")
-    )
-    model = args.model_dir.expanduser().resolve() if args.mode == "predict" else None
+    source, scratch, output = (getattr(args, key).expanduser().resolve()
+                               for key in ("input_dir", "scratch_dir",
+                                           "output_dir"))
+    model = args.model_dir.expanduser().resolve(
+    ) if args.mode == "predict" else None
     paths = [source, scratch, output]
     if model is not None:
         if not model.is_dir():
@@ -117,8 +142,7 @@ def run(args):
     for first, second in combinations(paths, 2):
         if first.is_relative_to(second) or second.is_relative_to(first):
             raise ValueError(
-                "Input, scratch, model, and output paths must be separate."
-            )
+                "Input, scratch, model, and output paths must be separate.")
     if args.num_classes_to_return <= 0:
         raise ValueError("Use a positive --num-classes-to-return value.")
     before = source_hashes(source)
@@ -152,11 +176,11 @@ def run(args):
         trained = trainer.fit(
             training_table,
             snapshot=snapshot,
-            export_config=ModelOutputConfig(connector=destination, path="model"),
+            export_config=ModelOutputConfig(connector=destination,
+                                            path="model"),
         )
         assert trained.metrics and all(
-            math.isfinite(float(v)) for v in trained.metrics.values()
-        )
+            math.isfinite(float(v)) for v in trained.metrics.values())
         save_json(output / "training-metrics.json", trained.metrics)
         summary.update(
             training_rows=labels["rows"],
@@ -179,10 +203,9 @@ def run(args):
         table_name="predictions.parquet",
         write_mode=WriteMode.OVERWRITE,
     )
-    frame = trainer.predict(
-        table, snapshot=snapshot,
-        num_classes_to_return=args.num_classes_to_return, output_config=config
-    ).frame
+    frame = trainer.predict(table, snapshot=snapshot,
+                            num_classes_to_return=args.num_classes_to_return,
+                            output_config=config).frame
     print(frame.head(8).to_string(index=False), flush=True)
     assert list(frame.columns) == ["ENTITY", "CLASS", "SCORE"]
     assert frame.notna().all().all()
@@ -191,33 +214,26 @@ def run(args):
     assert not frame.duplicated(["ENTITY", "CLASS"]).any()
     assert set(frame.CLASS) <= products
     assert np.isfinite(frame.SCORE.to_numpy()).all()
-    assert all(
-        group.SCORE.is_monotonic_decreasing for _, group in frame.groupby("ENTITY")
-    )
+    assert all(group.SCORE.is_monotonic_decreasing
+               for _, group in frame.groupby("ENTITY"))
     pd.testing.assert_frame_equal(
-        frame, pd.read_parquet(output / "predictions.parquet")
-    )
+        frame, pd.read_parquet(output / "predictions.parquet"))
     output_hash = hashlib.sha256(
-        (output / "predictions.parquet").read_bytes()
-    ).hexdigest()
+        (output / "predictions.parquet").read_bytes()).hexdigest()
     controls = []
     for topk in (0, -1):
         try:
-            trainer.predict(
-                table, snapshot=snapshot,
-                num_classes_to_return=topk, output_config=config
-            )
+            trainer.predict(table, snapshot=snapshot,
+                            num_classes_to_return=topk, output_config=config)
         except ValueError as error:
             assert "positive" in str(error)
-            assert (
-                output_hash
-                == hashlib.sha256(
-                    (output / "predictions.parquet").read_bytes()
-                ).hexdigest()
-            )
-            controls.append(
-                {"top_k": topk, "error": str(error), "output_unchanged": True}
-            )
+            assert (output_hash == hashlib.sha256(
+                (output / "predictions.parquet").read_bytes()).hexdigest())
+            controls.append({
+                "top_k": topk,
+                "error": str(error),
+                "output_unchanged": True
+            })
         else:
             raise AssertionError("Expected nonpositive candidate-count refusal")
     save_json(output / "controls.json", controls)

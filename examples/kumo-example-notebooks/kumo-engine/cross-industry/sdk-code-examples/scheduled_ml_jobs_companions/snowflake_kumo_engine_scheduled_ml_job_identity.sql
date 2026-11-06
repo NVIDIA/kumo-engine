@@ -1,8 +1,9 @@
+-- SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+-- All rights reserved.
+-- SPDX-License-Identifier: Apache-2.0
 -- Scheduling identity preview; requires the MLOps context integration.
 -- Configure account-specific names before using this preview.
--- -- SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 -- -- All rights reserved.
--- -- SPDX-License-Identifier: Apache-2.0
 --
 -- -- snowflake_kumo_engine_scheduled_ml_jobs.py fills the <...> slots once per job; the block swaps this
 -- -- run's task name and graph run id into the job arguments.

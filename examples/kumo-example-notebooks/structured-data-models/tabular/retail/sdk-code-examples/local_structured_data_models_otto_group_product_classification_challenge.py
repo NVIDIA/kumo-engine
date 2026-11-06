@@ -1,6 +1,6 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-
 """Predict otto group product classification challenge with synthetic example data.
 
 Generate local files from the repository root:
@@ -17,11 +17,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import sdm
 import torch
 from sklearn.metrics import log_loss
 from sklearn.model_selection import StratifiedShuffleSplit
-
-import sdm
 
 ID_COLUMN = "id"
 TARGET_COLUMN = "target"
@@ -37,10 +36,10 @@ def _build_model(
         return sdm.models.TabICLv2(task="classification", device=device)
     size = "small" if name == "kumo-small" else "large"
     if local_checkpoint is None:
-        return sdm.models.KumoTabular(task="classification", size=size, device=device)
-    model = sdm.models.KumoTabular(
-        task="classification", size=size, pretrained=False, device=device
-    )
+        return sdm.models.KumoTabular(task="classification", size=size,
+                                      device=device)
+    model = sdm.models.KumoTabular(task="classification", size=size,
+                                   pretrained=False, device=device)
     state = torch.load(local_checkpoint, map_location=device, weights_only=True)
     model.load_state_dict(state)
     model.eval()
@@ -64,13 +63,12 @@ def _predict(
     device = x_context.device
     effective_num_estimators: int | None = num_estimators
     if max_context_size is not None and x_context.size(0) > max_context_size:
-        num_repeats = math.ceil(num_estimators * max_context_size / x_context.size(0))
-        perm = torch.cat(
-            [
-                torch.randperm(x_context.size(0), generator=generator, device=device)
-                for _ in range(num_repeats)
-            ]
-        )[: num_estimators * max_context_size]
+        num_repeats = math.ceil(num_estimators * max_context_size /
+                                x_context.size(0))
+        perm = torch.cat([
+            torch.randperm(x_context.size(0), generator=generator,
+                           device=device) for _ in range(num_repeats)
+        ])[:num_estimators * max_context_size]
         shape = (num_estimators, max_context_size)
         x_context = x_context[perm].unflatten(0, shape)
         y_context = y_context[perm].unflatten(0, shape)
@@ -78,8 +76,9 @@ def _predict(
         effective_num_estimators = None
 
     with (
-        torch.inference_mode(),
-        torch.amp.autocast(device.type, torch.float16, enabled=x_context.is_cuda),
+            torch.inference_mode(),
+            torch.amp.autocast(device.type, torch.float16,
+                               enabled=x_context.is_cuda),
     ):
         model.fit(
             x=x_context,
@@ -90,7 +89,10 @@ def _predict(
         # Row dim is always -2 (there may be a leading ensemble dim from
         # the max_context_size branch above).
         out = torch.cat(
-            [model.predict(batch) for batch in x_query.split(query_batch_size, dim=-2)],
+            [
+                model.predict(batch)
+                for batch in x_query.split(query_batch_size, dim=-2)
+            ],
             dim=-2,
         )
     model.clear()
@@ -138,11 +140,14 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     generator = torch.Generator(device).manual_seed(args.seed)
 
-    train_frame = pd.read_csv(args.data_dir / "train.csv").drop(columns=[ID_COLUMN])
+    train_frame = pd.read_csv(args.data_dir /
+                              "train.csv").drop(columns=[ID_COLUMN])
     test_ids = pd.read_csv(args.data_dir / "test.csv")[ID_COLUMN]
-    test_frame = pd.read_csv(args.data_dir / "test.csv").drop(columns=[ID_COLUMN])
+    test_frame = pd.read_csv(args.data_dir /
+                             "test.csv").drop(columns=[ID_COLUMN])
 
-    stypes = sdm.infer_stypes(train_frame, overrides={TARGET_COLUMN: "categorical"})
+    stypes = sdm.infer_stypes(train_frame,
+                              overrides={TARGET_COLUMN: "categorical"})
     feature_stypes = {k: v for k, v in stypes.items() if k != TARGET_COLUMN}
     model = _build_model(args.model, device, args.local_checkpoint)
 
@@ -154,8 +159,7 @@ def main() -> None:
     log_losses: list[float] = []
     accuracies: list[float] = []
     for split_train_index, split_val_index in splitter.split(
-        train_frame, train_frame[TARGET_COLUMN]
-    ):
+            train_frame, train_frame[TARGET_COLUMN]):
         split_train = sdm.TableTensor.from_pandas(
             df=train_frame.iloc[split_train_index],
             stypes=stypes,
@@ -177,30 +181,25 @@ def main() -> None:
             generator=generator,
         )
         scores, indices = sdm.evaluation.to_class_indices(
-            out, split_val[:, TARGET_COLUMN], missing_score=0.0
-        )
+            out, split_val[:, TARGET_COLUMN], missing_score=0.0)
         scores_np = scores.float().cpu().numpy()
         indices_np = indices.cpu().numpy()
         log_losses.append(
-            log_loss(indices_np, scores_np, labels=list(range(scores_np.shape[-1])))
-        )
+            log_loss(indices_np, scores_np,
+                     labels=list(range(scores_np.shape[-1]))))
         accuracies.append(float((scores_np.argmax(-1) == indices_np).mean()))
 
     loss = np.array(log_losses)
     acc = np.array(accuracies)
-    print(
-        f"{args.model}  val_log_loss={loss.mean():.4f}+-{loss.std():.4f}  "
-        f"val_accuracy={acc.mean():.4f}+-{acc.std():.4f}  "
-        f"({args.num_splits} splits of {args.val_fraction:.0%})"
-    )
+    print(f"{args.model}  val_log_loss={loss.mean():.4f}+-{loss.std():.4f}  "
+          f"val_accuracy={acc.mean():.4f}+-{acc.std():.4f}  "
+          f"({args.num_splits} splits of {args.val_fraction:.0%})")
 
     # Batch predictions: score competition rows without target labels.
-    full_train = sdm.TableTensor.from_pandas(
-        df=train_frame, stypes=stypes, device=device
-    )
-    query = sdm.TableTensor.from_pandas(
-        df=test_frame, stypes=feature_stypes, device=device
-    )
+    full_train = sdm.TableTensor.from_pandas(df=train_frame, stypes=stypes,
+                                             device=device)
+    query = sdm.TableTensor.from_pandas(df=test_frame, stypes=feature_stypes,
+                                        device=device)
     out = _predict(
         model,
         x_context=full_train.drop_columns(TARGET_COLUMN),
@@ -218,7 +217,8 @@ def main() -> None:
     submission = pd.DataFrame(probabilities, columns=pd.Index(CLASSES))
     submission.insert(0, ID_COLUMN, test_ids.to_numpy())
     if len(submission) != len(test_frame) or len(submission) < 2:
-        raise ValueError("Expected one prediction for each of at least two test rows")
+        raise ValueError(
+            "Expected one prediction for each of at least two test rows")
     if submission[ID_COLUMN].tolist() != test_ids.tolist():
         raise ValueError("Prediction IDs do not match scoring input order")
     # Each row follows the original test-file order; columns hold the task outputs.
