@@ -220,7 +220,7 @@ def test_explicit_gpu_selection_overrides_cpu_environment(
 
 
 @pytest.mark.parametrize('mismatch', [False, True])
-def test_forecast_options_reach_every_scorer_before_output(
+def test_task_options_reach_every_scorer_before_output(
         tmp_path, monkeypatch, mismatch):
     from kumo_core.resolved_task import ResolvedNumericalTask
     from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
@@ -234,9 +234,7 @@ def test_forecast_options_reach_every_scorer_before_output(
     }
     captured, predicted = [], []
     task = SimpleNamespace(
-        lag_timesteps=1,
         has_year_over_year_labels=False,
-        unix_step_size=options['unix_step_size'],
         train_table=SimpleNamespace(name='train_table'),
         encoder_inputs={
             'train_table':
@@ -258,9 +256,7 @@ def test_forecast_options_reach_every_scorer_before_output(
     monkeypatch.setattr('kumo_core.train.trainer.load_encoders',
                         lambda *a: None)
     trainer = SimpleNamespace(
-        past_encoder=SimpleNamespace(length=2 if mismatch else 1),
-        year_over_year_encoder=None,
-        head=SimpleNamespace(unix_step_size=options['unix_step_size']),
+        year_over_year_encoder=object() if mismatch else None,
         encoders=SimpleNamespace(
             encoders={'train_table': {
                 'autoregression_labels': object()

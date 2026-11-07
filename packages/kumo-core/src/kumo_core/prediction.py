@@ -93,16 +93,9 @@ class PreparedCustomPredictionTable:
 
 def _validate_forecast_checkpoint(trainer: Any, task: Any) -> None:
     """Reject a checkpoint whose fitted forecast inputs differ from task."""
-    past_encoder = trainer.past_encoder
-    trained_lags = (getattr(past_encoder, "length", None)
-                    if past_encoder is not None else getattr(
-                        trainer.head, "past_channels", None))
-    if (trained_lags != task.lag_timesteps
-            or (trainer.year_over_year_encoder is not None)
-            != task.has_year_over_year_labels or getattr(
-                trainer.head, "unix_step_size", None) != task.unix_step_size):
-        raise ValueError(
-            "Forecast checkpoint lag/year-over-year/timing mismatch")
+    if ((trainer.year_over_year_encoder is not None)
+            != task.has_year_over_year_labels):
+        raise ValueError("Forecast checkpoint year-over-year mismatch")
     fitted = (trainer.encoders.encoders.get(task.train_table.name)
               if trainer.encoders is not None else None)
     if fitted is None or any(
@@ -513,7 +506,6 @@ def _score_prediction_shard(
     from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
     from kumo_core.train.trainer import load_encoders
     from kumo_core.training.runtime import LocalDiskgraphTrainingRuntime
-    from kumo_core.types import TaskType
 
     if manifest is None:
         manifest = DiskgraphTaskManifest.load(config.manifest_path)
@@ -539,7 +531,7 @@ def _score_prediction_shard(
         embedding_models=config.embedding_models,
         **load_options,
     )
-    if manifest.task_type == TaskType.FORECASTING.value:
+    if manifest.task_type == "forecasting":
         _validate_forecast_checkpoint(trainer, task)
     from kumo_core.score_counts import Counts
     from kumo_core.train.artifact_stats import PredictionArtifactStatsCollector
