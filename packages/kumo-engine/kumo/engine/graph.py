@@ -78,10 +78,15 @@ from typing import (
     Sequence,
 )
 
+import pyarrow as pa
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.pquery import NativeGraph, normalize_graph
 from kumoapi.graph import Edge
-from kumoapi.typing import TimestampPrecision, validate_timestamp_precision
+from kumoapi.typing import (
+    Dtype,
+    TimestampPrecision,
+    validate_timestamp_precision,
+)
 
 from kumo.engine._events import Event, EventEmitter
 from kumo.engine._manifest import (
@@ -130,6 +135,23 @@ def _warn_if_network_scratch(root: Path) -> None:
 
 
 _LOW_FK_MATCH_RATE = 0.5
+
+# Largest magnitude below which every integer is exact, per Arrow float type.
+_MANTISSA_BITS = {
+    pa.float16().id: 11,
+    pa.float32().id: 24,
+    pa.float64().id: 53,
+}
+
+# Inclusive value range of each integer dtype as DiskGraph ingests it; `byte`
+# is unsigned there.
+_INTEGER_RANGE = {
+    Dtype.byte: (0, 2**8 - 1),
+    Dtype.int16: (-2**15, 2**15 - 1),
+    Dtype.int32: (-2**31, 2**31 - 1),
+    Dtype.int: (-2**63, 2**63 - 1),
+    Dtype.int64: (-2**63, 2**63 - 1),
+}
 
 
 def _warn_low_fk_match_rates(stats: Dict[str, Any],
@@ -605,6 +627,187 @@ class Graph:
         return result
 
     @cached_property
+    def _float_keys(self) -> Dict[str, Dict[str, tuple[Dtype, Dtype]]]:
+        r"""Key columns stored as floats, by table alias: the primary key and
+        every retained foreign key whose declared dtype is a float, each
+        with the integer dtype it is declared as instead. A primary key
+        becomes `int64`; a foreign key takes its destination key's integer
+        width, so the link still passes the lossless-widening rule. A key
+        shared by several edges takes the narrowest destination, and a
+        destination that is itself converted counts with its converted
+        width, so the widths settle in a few passes over the edges.
+        """
+        tables = self._named_tables
+        dtypes = {
+            alias: {
+                col.name: col.dtype
+                for col in table.definition.cols
+            }
+            for alias, table in tables.items() if table.definition is not None
+        }
+        effective = {alias: dict(columns) for alias, columns in dtypes.items()}
+        for _ in range(len(self.edges) + 1):
+            targets: Dict[str, Dict[str, Dtype]] = {}
+            for alias, table in tables.items():
+                if table.definition is None:
+                    continue
+                pkey = table.definition.pkey
+                if pkey in dtypes[alias] and dtypes[alias][pkey].is_float():
+                    targets.setdefault(alias, {})[pkey] = Dtype.int64
+            for edge in self.edges:
+                alias = edge.src_table
+                if (edge.dst_table == alias
+                        or alias not in dtypes or not dtypes[alias].get(
+                            edge.fkey, Dtype.int64).is_float()):
+                    continue
+                target = Dtype.int64
+                destination = tables.get(edge.dst_table)
+                if destination is not None and destination.definition is not None:
+                    pkey_dtype = effective[edge.dst_table].get(
+                        destination.definition.pkey)
+                    if pkey_dtype is not None and pkey_dtype.is_int():
+                        target = pkey_dtype
+                current = targets.setdefault(alias, {})
+                previous = current.get(edge.fkey, target)
+                current[edge.fkey] = min(
+                    (previous, target),
+                    key=lambda dtype: _INTEGER_RANGE[dtype][1])
+            settled = {
+                alias: dict(columns)
+                for alias, columns in dtypes.items()
+            }
+            for alias, columns in targets.items():
+                settled[alias].update(columns)
+            if settled == effective:
+                break
+            effective = settled
+        return {
+            alias: {
+                name: (dtypes[alias][name], target)
+                for name, target in columns.items()
+            }
+            for alias, columns in targets.items() if columns
+        }
+
+    @cached_property
+    def _ingest_tables(self) -> Dict[str, Table]:
+        r"""`_named_tables` with every key column stored as a float declared
+        an integer instead (`_float_keys`), so a key that pandas turned
+        into `123.0` links
+        again without a manual cast. DiskGraph converts the values at
+        snapshot time; `_snapshot_no_lock` refuses the column first if any
+        value is not a whole number. Warns once per column, on first
+        access. Only `_graph_config` reads this: staging keeps the source's
+        own float declaration so a CSV value like `2.5` reaches the check
+        unrounded, and DiskGraph converts the staged floats to the `int64`
+        the graph config declares.
+        """
+        tables = dict(self._named_tables)
+        for alias, columns in self._float_keys.items():
+            for name, (dtype, target) in columns.items():
+                warnings.warn(
+                    f"Key column {alias}.{name} is stored as {dtype.value}; "
+                    "its whole-number values are converted to "
+                    f"{target.value} at snapshot time. Store keys as integers "
+                    "or strings at the source to avoid this.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+                tables[alias] = tables[alias].with_column(name, dtype=target)
+        return tables
+
+    def _refuse_fractional_keys(self, alias: str, paths: Sequence[str]) -> None:
+        r"""Raises if a float key column declared `int64` by `_ingest_tables`
+        holds a value that has no exact integer: a fraction, a float beyond
+        its type's mantissa (2**53 for a double, 2**24 for a float32, 2**11
+        for a float16, past which neighbouring integers collapse), or a
+        value outside the integer dtype the key is declared as. DiskGraph would parse a fraction as
+        null and drop or unlink its row, and a wide float would merge
+        identities. Reads that column of each staged parquet part one batch
+        at a time, in the part's own physical type, so a wider part is not
+        narrowed to the first part's schema. Decimals, which the source
+        reader also reports as floats, are checked at their own precision
+        when the connector stages them as decimals; a warehouse connector
+        that stages a scaled decimal through a double (kumo-databricks does
+        for more than 18 digits) hides any fraction below the double's
+        precision, and such a key converts by its double value. A part
+        staged under any other type is left to DiskGraph's own conversion.
+        """
+        from decimal import Decimal
+
+        import pyarrow.compute as pc
+        import pyarrow.parquet as pq
+
+        files = [
+            file for path in paths for file in
+            (sorted(Path(path).rglob('*.parquet')) if Path(path).is_dir() else
+             [Path(path)])
+        ]
+        for name, (dtype, target) in self._float_keys.get(alias, {}).items():
+            low, high = _INTEGER_RANGE[target]
+            count = 0
+            for file in files:
+                parquet = pq.ParquetFile(file)
+                if name not in parquet.schema_arrow.names:
+                    continue
+                stored = parquet.schema_arrow.field(name).type
+                if not (pa.types.is_floating(stored)
+                        or pa.types.is_decimal(stored)):
+                    continue
+                for batch in parquet.iter_batches(columns=[name]):
+                    values = batch.column(0)
+                    if pa.types.is_decimal(stored):
+                        # Widened so `floor` has room for every scale and
+                        # every decimal width shares one kernel.
+                        wide = pa.decimal256(76, stored.scale)
+                        exact = values.cast(wide)
+                        finite = pc.is_valid(exact)
+                        if 76 - stored.scale < len(str(max(-low, high))):
+                            # Too few integer digits to reach the bounds:
+                            # every value fits, and a bound would not. An
+                            # unsigned target still refuses the negatives.
+                            in_range = finite if low < 0 else pc.greater_equal(
+                                exact, pa.scalar(Decimal(0), wide))
+                        else:
+                            in_range = pc.and_(
+                                pc.greater_equal(exact,
+                                                 pa.scalar(Decimal(low), wide)),
+                                pc.less_equal(exact,
+                                              pa.scalar(Decimal(high), wide)))
+                    else:
+                        exact = values.cast(pa.float64())
+                        in_range = pc.and_(
+                            pc.less_equal(pc.abs(exact),
+                                          2.0**_MANTISSA_BITS[stored.id]),
+                            pc.and_(pc.greater_equal(exact, float(low)),
+                                    pc.less_equal(exact, float(high))))
+                        finite = pc.fill_null(pc.is_finite(exact), False)
+                    if pa.types.is_decimal(stored) and stored.scale >= 76:
+                        # No integer digit at all: zero is the only whole
+                        # value, and `floor` has nowhere to put a result.
+                        floored = pa.scalar(Decimal(0), exact.type)
+                    else:
+                        floored = pc.floor(exact)
+                    whole = pc.and_(pc.equal(floored, exact), in_range)
+                    invalid = pc.and_(finite,
+                                      pc.invert(pc.fill_null(whole, False)))
+                    if low == 0:
+                        # DiskGraph reads a non-finite float into an unsigned
+                        # key as 0 rather than as missing.
+                        invalid = pc.or_(
+                            invalid, pc.and_(pc.is_valid(exact),
+                                             pc.invert(finite)))
+                    count += pc.sum(invalid).as_py() or 0
+            if count:
+                raise ValueError(
+                    f"Key column {alias}.{name} is stored as {dtype.value} "
+                    f"and {count} of its values cannot be converted to an "
+                    "integer exactly (a fraction, a float too wide for its "
+                    f"type's mantissa, or a value outside {target.value}), "
+                    "so it cannot be an integer key. Use an integer or "
+                    "string key.")
+
+    @cached_property
     def id(self) -> str:
         r"""A content-fingerprint id derived from this graph's definition and
         table sources -- the same approach the cloud pipeline uses. Two
@@ -681,12 +884,12 @@ class Graph:
         from kumo.engine._infer import refuse_unsupported_columns
         from kumo.engine._portable import portable_graph_config
 
-        for table in self._named_tables.values():
+        tables = self._ingest_tables
+        for table in tables.values():
             if table.definition is not None:
                 refuse_unsupported_columns(table.connector, table.table_name,
                                            table.definition.cols)
-        return portable_graph_config(self._named_tables, self.edges,
-                                     name=self.id)
+        return portable_graph_config(tables, self.edges, name=self.id)
 
     @cached_property
     def native_graph(self) -> NativeGraph:
@@ -704,9 +907,11 @@ class Graph:
         r"""Validate table schemas, key references and key dtype compatibility.
 
         Keys must have matching types or allow lossless integer widening,
-        following the shared hosted dtype compatibility rules. Invalid
-        graphs raise before snapshot ingestion starts, as do columns whose
-        source type has no Kumo dtype and that no declared dtype resolved.
+        following the shared hosted dtype compatibility rules. A key column
+        stored as a float is declared `int64` with a warning; `snapshot()`
+        refuses it if any value is not a whole number. Invalid graphs raise
+        before snapshot ingestion starts, as do columns whose source type
+        has no Kumo dtype and that no declared dtype resolved.
         """
         self.native_graph
 
@@ -916,6 +1121,9 @@ class Graph:
                     record_sources=record_sources)
 
                 paths = prepared.source.get('paths') or []
+                self._refuse_fractional_keys(
+                    alias, paths
+                    or [str(prepared.source.get('path') or dest_dir)])
                 if paths:
                     parents = {str(Path(path).parent) for path in paths}
                     if len(parents) != 1:
