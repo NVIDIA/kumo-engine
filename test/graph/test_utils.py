@@ -5,6 +5,7 @@
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
+import pyarrow as pa
 from kumo_core.encoders.tensor_mapper import TensorMapper
 from kumo_core.types import ColStatType
 from kumoapi.encoder import Index, MultiCategorical
@@ -12,8 +13,7 @@ from kumoapi.graph import ColumnKey, ColumnKeyGroup, GraphDefinition
 from kumoapi.source_table import UnavailableSourceTable
 from kumoapi.table import Column as ColumnDefinition
 from kumoapi.table import TableDefinition
-from kumoapi.typing import Dtype
-from kumoapi.typing import Stype
+from kumoapi.typing import Dtype, Stype
 from kumoapi.typing import Stype as KumoStype
 
 from kumo.graph.column import Column
@@ -99,8 +99,9 @@ def test_preloaded_int_category_counts_match_target_values():
     _normalize_encoder_category_stats_for_dtype(encoder, Dtype.int64)
     assert encoder._stats[ColStatType.CATEGORY_COUNTS] == [[0, 10], [23, 5]]
 
-    mapped = TensorMapper.from_encoder(encoder)(pd.Series(
-        [0, 23], dtype="Int64")).view(-1)
+    mapped = TensorMapper.from_encoder(encoder)(
+        pa.array([0, 23], type=pa.int64())
+    ).view(-1)
     assert mapped.tolist() == [0, 1]
 
 
@@ -244,8 +245,9 @@ def test_fetch_and_set_encoder_stats_coerces_fetched_category_counts():
     mock_cache.get_col_stats.assert_called_once()
     assert (col.encoder._stats[ColStatType.CATEGORY_COUNTS] == [[0, 10],
                                                                 [23, 5]])
-    mapped = TensorMapper.from_encoder(col.encoder)(pd.Series(
-        [0, 23], dtype="Int64")).view(-1)
+    mapped = TensorMapper.from_encoder(col.encoder)(
+        pa.array([0, 23], type=pa.int64())
+    ).view(-1)
     assert mapped.tolist() == [0, 1]
 
 
@@ -269,8 +271,9 @@ def test_fetch_and_set_encoder_stats_coerces_preloaded_cached_stats():
     mock_cache.get_col_stats.assert_not_called()
     assert (col.encoder._stats[ColStatType.CATEGORY_COUNTS] == [[0, 10],
                                                                 [23, 5]])
-    mapped = TensorMapper.from_encoder(col.encoder)(pd.Series(
-        [0, 23], dtype="Int64")).view(-1)
+    mapped = TensorMapper.from_encoder(col.encoder)(
+        pa.array([0, 23], type=pa.int64())
+    ).view(-1)
     assert mapped.tolist() == [0, 1]
 
 
@@ -509,7 +512,6 @@ def test_read_parquet_local_unchanged(tmp_path):
 def test_read_parquet_routes_s3_through_arrow_cloud_filesystem(monkeypatch):
     # S3 reads route through the credentialed choke point with a
     # scheme-stripped path handed to the native reader.
-    import pyarrow as pa
     from pyarrow import parquet
 
     import io_utils.pyarrow as io_pyarrow

@@ -15,7 +15,7 @@ import pytest
 from kumo_core.diskgraph.metadata import DiskgraphSchema
 from kumo_core.encoders.config import EncodersConfig, TargetEncoderConfig
 from kumo_core.encoders.selection import compute_missing_stats_
-from kumo_core.encoders.tensor_mappers import TensorMappers
+from kumo_core.encoders.tensor_mapper import TensorMapper
 from kumo_core.features.stores.feature import FeatureStore
 from kumo_core.training.options import allow_array_targets
 from kumo_core.types import ColStatType, TaskType
@@ -181,7 +181,13 @@ def create_task_data(
         compute_missing_stats_(target_encoder, train_table_df["TARGET"])
         encoders.target = TargetEncoderConfig("TARGET", target_encoder)
 
-    mappers = TensorMappers.from_encoders(encoders)
+    mappers = {
+        table_name: {
+            column_name: TensorMapper.from_encoder(encoder)
+            for column_name, encoder in table_encoders.items()
+        }
+        for table_name, table_encoders in encoders.items()
+    }
     train_fkeys = [
         (column, table_name)
         for column in train_table_df.columns
@@ -207,7 +213,9 @@ def create_task_data(
         has_train_table_test_mask="TEST_MASK" in train_table_df,
     )
     feature_store.get_target_tensor_mapper.return_value = (
-        mappers.target.mapper if mappers.target is not None else None
+        TensorMapper.from_encoder(encoders.target.encoder)
+        if encoders.target is not None
+        else None
     )
     feature_store.get_tensor_mapper.side_effect = lambda table, column: mappers[table][
         column
