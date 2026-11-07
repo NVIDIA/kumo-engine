@@ -45,7 +45,7 @@ an actual `locate`-based connector lookup this package has no equivalent of.
 """
 
 import warnings
-from typing import Any, Dict, Mapping, Sequence
+from typing import Any, Dict, Mapping, NamedTuple, Optional, Sequence
 
 from kumoapi.graph import Edge, graph_definition_from_edges
 from kumoapi.source_table import (
@@ -61,6 +61,7 @@ from kumoapi.source_table import (
     S3SourceTable,
     SnowflakeSourceTable,
 )
+from kumoapi.typing import Dtype
 
 from kumo.engine._local_schema import GraphDefinition, LocalSourceTableType
 from kumo.engine._scratch import fingerprint
@@ -74,6 +75,88 @@ class PortableGraphError(ValueError):
     result (a missing primary key on an edge's destination table, a dangling
     edge, ...).
     """
+
+
+_INTEGER_RANGES = {
+    Dtype.byte: (0, 2**8 - 1),
+    Dtype.int16: (-2**15, 2**15 - 1),
+    Dtype.int32: (-2**31, 2**31 - 1),
+    Dtype.int: (-2**63, 2**63 - 1),
+    Dtype.int64: (-2**63, 2**63 - 1),
+}
+
+
+class KeyConversion(NamedTuple):
+    dtype: Dtype
+    target: Dtype
+    destination: str
+    bounds: Optional[tuple[int, int]]
+
+
+def key_conversions(
+        tables: Mapping[str, Table],
+        edges: Sequence[Edge]) -> Dict[str, Dict[str, KeyConversion]]:
+    r"""Foreign keys the portable config declares with their destination
+    key's dtype: a string key linking to an integer key, or an integer key
+    linking to a string key. DiskGraph converts the values at ingest and
+    the source column stays as it is; `Graph.snapshot()` first refuses a
+    string key whose values do not all convert exactly to distinct
+    integers. A converted key that is also its table's primary key carries
+    the conversion on to the keys linking to it, so the targets settle in
+    a few passes over the edges; keys that never settle, a key linked to
+    keys of different dtypes, a float key and an integer key linking to a
+    narrower integer keep the hosted dtype rule.
+    """
+    dtypes = {
+        alias: {
+            column.name: column.dtype
+            for column in table.definition.cols
+        }
+        for alias, table in tables.items() if table.definition is not None
+    }
+    links: Dict[tuple[str, str], list] = {}
+    for edge in edges:
+        destination = tables.get(edge.dst_table)
+        if (edge.src_table == edge.dst_table or edge.src_table not in dtypes
+                or destination is None or destination.definition is None
+                or edge.fkey not in dtypes[edge.src_table]
+                or destination.definition.pkey not in dtypes[edge.dst_table]):
+            continue
+        links.setdefault((edge.src_table, edge.fkey), []).append(
+            (edge.dst_table, destination.definition.pkey))
+    effective = {alias: dict(columns) for alias, columns in dtypes.items()}
+    result: Dict[str, Dict[str, KeyConversion]] = {}
+    for _ in range(len(links) + 1):
+        settled: Dict[str, Dict[str, KeyConversion]] = {}
+        for (alias, name), linked in links.items():
+            targets = {effective[table][key] for table, key in linked}
+            source = dtypes[alias][name]
+            if len(targets) != 1:
+                continue
+            target = targets.pop()
+            if (source.can_link_to_dtype(target)
+                    or {source == Dtype.string,
+                        target == Dtype.string} != {True, False}
+                    or not (source.is_int() or target.is_int())):
+                continue
+            settled.setdefault(alias, {})[name] = KeyConversion(
+                source, target, '.'.join(linked[0]),
+                _INTEGER_RANGES.get(target))
+        if settled == result:
+            return result
+        result, previous = settled, result
+        effective = {alias: dict(columns) for alias, columns in dtypes.items()}
+        for alias, columns in result.items():
+            for name, conversion in columns.items():
+                effective[alias][name] = conversion.target
+    return {
+        alias: {
+            name: conversion
+            for name, conversion in columns.items()
+            if previous.get(alias, {}).get(name) == conversion
+        }
+        for alias, columns in result.items()
+    }
 
 
 def _escape_dots(value: str) -> str:
@@ -152,12 +235,26 @@ def portable_graph_config(
             portable dict; the caller (`Graph._graph_config`) passes its own
             `Graph.id`.
     """
+    conversions = key_conversions(tables, edges)
     definitions = {}
     for alias, table in tables.items():
         if table.definition is None:
             raise PortableGraphError(
                 f"Table {alias!r} has no resolved `definition`; "
                 "call infer_metadata() or provide a definition.")
+        for column, conversion in conversions.get(alias, {}).items():
+            warnings.warn(
+                f"Foreign key {alias}.{column} is stored as "
+                f"{conversion.dtype.value} and links to "
+                f"{conversion.destination}, which is "
+                f"{conversion.target.value}; its values are converted to "
+                f"{conversion.target.value} for the link at snapshot time "
+                "and the source column is unchanged. Store both keys with "
+                "the same type to avoid this.",
+                UserWarning,
+                stacklevel=2,
+            )
+            table = table.with_column(column, dtype=conversion.target)
         definitions[alias] = table.definition
     try:
         definition = graph_definition_from_edges(

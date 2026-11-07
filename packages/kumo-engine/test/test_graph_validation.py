@@ -10,7 +10,9 @@ from pathlib import Path
 from unittest.mock import Mock, PropertyMock, patch
 from xml.etree import ElementTree
 
+import pyarrow as pa
 import pytest
+from kumo_core.pquery import PredictiveQueryPlanError
 from kumoapi.graph import Edge
 from kumoapi.source_table import (
     CustomSQLSourceTable,
@@ -27,6 +29,7 @@ from matplotlib.text import Text
 
 from kumo.engine import FileConnector, Graph, S3Connector, Table
 from kumo.engine._portable import PortableGraphError
+from kumo.engine.graph import _integer_literals
 
 
 def _file_tables(root: Path) -> list[Table]:
@@ -138,6 +141,123 @@ def test_graph_validation_keeps_valid_edges(tables):
         for table in graph._graph_config['tables']
     }
     assert portable_tables['events']['fkeys'][0]['dst_table'] == 'users'
+
+
+def test_graph_validation_keeps_dotted_table_names(tables):
+    users, events = tables
+    names = ['crm.users', 'sales.users', 'users', 'users.v1']
+    graph = Graph({name: users for name in names} | {'events': events})
+
+    graph.validate()
+
+    assert [table.name for table in graph.native_graph.tables
+            ] == [*names, 'events']
+    linked = Graph(graph.tables, [Edge('events', 'user_id', 'crm.users')])
+    with pytest.raises(
+            PredictiveQueryPlanError,
+            match=r"foreign key events\.user_id links to table 'crm\.users'"
+            r".*cannot be a link target.*'crm_users'"):
+        linked.validate()
+
+
+@pytest.mark.parametrize('fkey_dtype, pkey_dtypes, declared', [
+    (Dtype.string, (Dtype.int64, ), Dtype.int64),
+    (Dtype.string, (Dtype.int32, ), Dtype.int32),
+    (Dtype.string, (Dtype.byte, ), Dtype.byte),
+    (Dtype.int64, (Dtype.string, ), Dtype.string),
+    (Dtype.int16, (Dtype.string, ), Dtype.string),
+    (Dtype.string, (Dtype.int64, Dtype.int64), Dtype.int64),
+    (Dtype.string, (Dtype.int64, Dtype.string), None),
+    (Dtype.int64, (Dtype.int32, ), None),
+])
+def test_mismatched_key_dtypes_convert_the_foreign_key(
+        tables, fkey_dtype, pkey_dtypes, declared):
+    users, events = tables
+    events = events.with_column('user_id', dtype=fkey_dtype)
+    keyed = {
+        f'users_{i}': users.with_column('id', dtype=dtype)
+        for i, dtype in enumerate(pkey_dtypes)
+    }
+    graph = Graph(keyed | {'events': events},
+                  [Edge('events', 'user_id', alias) for alias in keyed])
+    if declared is None:
+        with pytest.raises(PredictiveQueryPlanError, match='cannot link'):
+            graph.validate()
+        return
+
+    with pytest.warns(
+            UserWarning,
+            match=rf"Foreign key events\.user_id is stored as {fkey_dtype.value}"
+            rf" and links to users_0\.id, which is {declared.value}; .* "
+            rf"converted to {declared.value} .* source column is unchanged"
+    ) as caught:
+        graph.validate()
+        with patch.object(Graph, '_snapshot_no_lock'):
+            graph.snapshot()
+
+    assert sum('Foreign key events.user_id' in str(w.message)
+               for w in caught) == 1
+    assert graph._graph_config['name'] == graph.id
+    projected = next(table for table in graph._graph_config['tables']
+                     if table['table_name'] == 'events')
+    assert {key['dtype'] for key in projected['fkeys']} == {declared.value}
+    assert next(col for col in projected['cols']
+                if col['name'] == 'user_id')['dtype'] == declared.value
+    assert next(col for col in events.definition.cols
+                if col.name == 'user_id').dtype == fkey_dtype
+
+
+@pytest.mark.parametrize('cycle', [False, True])
+def test_key_conversions_follow_chains_and_keep_cycles(cycle):
+    users, events = _s3_tables()
+    keyed = lambda dtype: replace(
+        users, definition=replace(users.definition,
+                                  cols=[Column('id', Stype.ID, dtype)]))
+    tables = {
+        'a': keyed(Dtype.string),
+        'b': keyed(Dtype.int64),
+        'c': replace(events, definition=replace(
+            events.definition, cols=[
+                events.definition.cols[0],
+                Column('a_id', Stype.ID, Dtype.string)
+            ]))
+    }
+    edges = [Edge('a', 'id', 'b'), Edge('c', 'a_id', 'a')]
+    if cycle:
+        edges.append(Edge('b', 'id', 'a'))
+    graph = Graph(tables, edges)
+
+    if cycle:
+        with pytest.raises(PredictiveQueryPlanError, match='cannot link'):
+            graph.validate()
+        return
+    with pytest.warns(UserWarning) as caught:
+        graph.validate()
+
+    messages = sorted(
+        str(w.message) for w in caught if 'Foreign key' in str(w.message))
+    assert [message.split(';')[0] for message in messages] == [
+        'Foreign key a.id is stored as string and links to b.id, which is '
+        'int64',
+        'Foreign key c.a_id is stored as string and links to a.id, which is '
+        'int64',
+    ]
+    declared = {
+        table['table_name']: table.get('pkey', {}).get('dtype')
+        for table in graph._graph_config['tables']
+    }
+    assert declared == {'a': 'int64', 'b': 'int64', 'c': 'int64'}
+
+
+def test_integer_literals_keep_large_string_offsets():
+    values = pa.array(['7', ' 007 ', '\x1c7', 'x', '-0'], pa.large_string())
+
+    valid, canonical = _integer_literals(values, -2**63, 2**63 - 1)
+
+    assert valid.to_pylist() == [True, True, False, False, True]
+    assert canonical.type == pa.large_string()
+    assert canonical.to_pylist()[:2] == ['7', '7']
+    assert canonical.to_pylist()[4] == '0'
 
 
 def test_graph_validation_rejects_destination_without_primary_key(tables):

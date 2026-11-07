@@ -23,6 +23,7 @@ from kumo_core.pquery import (
     normalize_graph,
     parse_and_validate_query,
     query_train_table_time,
+    split_column_fqn,
     static_link_fact,
     table_row_count,
     target_to_entity_paths,
@@ -1865,3 +1866,57 @@ def test_clean_query_has_empty_validation_response():
                                       graph_config())
     assert parsed.validation_response.ok
     assert parsed.validation_response.empty()
+
+
+@pytest.mark.parametrize("names", [
+    ("crm.users", "products"),
+    ("crm.users", "sales.users"),
+    ("crm.users", "users"),
+    ("catalog.crm.users", "catalog.sales.users"),
+    ("users.v1", "users.parquet"),
+])
+def test_normalize_graph_keeps_table_names_that_contain_dots(names):
+    config = graph_config()
+    for table, name in zip(config["tables"][:2], names):
+        table["table_name"] = name
+    orders = config["tables"][2]
+    orders["fkeys"] = []
+    orders["cols"] = [{
+        "name": "amount",
+        "dtype": "float64",
+        "stype": "numerical"
+    }]
+
+    graph = normalize_graph(config)
+
+    assert [table.name for table in graph.tables] == [*names, "orders"]
+    assert all(graph.table(name).name == name for name in names)
+    assert split_column_fqn(f"{names[0]}.id") == (names[0], "id")
+    if "users" not in names:
+        with pytest.raises(PredictiveQueryPlanError,
+                           match="no table named 'users'"):
+            graph.table("users")
+    validated = parse_and_validate_query(
+        "PREDICT orders.amount FOR EACH orders.id", config)
+    assert validated.entity_table == "orders"
+
+
+def test_normalize_graph_refuses_a_link_target_whose_name_contains_a_dot():
+    config = graph_config()
+    config["tables"][0]["table_name"] = "crm.users"
+    config["tables"][2]["fkeys"][0]["dst_table"] = "crm.users"
+
+    with pytest.raises(
+            PredictiveQueryPlanError,
+            match=r"foreign key orders\.user_id links to table 'crm\.users'"
+            r".*cannot be a link target.*'crm_users'"):
+        normalize_graph(config)
+
+
+def test_normalize_graph_names_duplicate_tables():
+    config = graph_config()
+    config["tables"][1]["table_name"] = "users"
+
+    with pytest.raises(PredictiveQueryPlanError,
+                       match="duplicate table names: users"):
+        normalize_graph(config)

@@ -339,14 +339,9 @@ def apply_reference_resolution(
     if not isinstance(entity_node_type, str) or not entity_node_type:
         raise RuntimeError("entity_node_type must be resolved before "
                            "train-table generation")
-    if "." in entity_node_type:
-        raise RuntimeError(
-            "entity_node_type must be an exact unqualified graph node type")
     if rhs_node_type is not None and (not isinstance(rhs_node_type, str)
-                                      or not rhs_node_type
-                                      or "." in rhs_node_type):
-        raise RuntimeError(
-            "rhs_node_type must be an exact unqualified graph node type")
+                                      or not rhs_node_type):
+        raise RuntimeError("rhs_node_type must be a graph node type")
     resolution: list[dict[str, Any]] = [{
         "src_col": "ENTITY1",
         "dst_table": entity_node_type,

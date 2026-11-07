@@ -218,6 +218,171 @@ def _warn_ingest_data_loss(result: Any, graph_config: Dict[str, Any]) -> None:
             )
 
 
+_INTEGER_LITERAL = r'^(?P<sign>[+-]?)(?P<digits>[0-9]+)(?:\.0+)?$'
+# Unicode White_Space, which is what DiskGraph trims around an integer.
+_WHITESPACE = ''.join(
+    map(chr, [
+        *range(0x9, 0xE), 0x20, 0x85, 0xA0, 0x1680, *range(0x2000, 0x200B),
+        0x2028, 0x2029, 0x202F, 0x205F, 0x3000
+    ]))
+_DISTINCT_COMPACTION_ROWS = 1_000_000
+
+
+def _integer_literals(values: Any, low: int, high: int) -> tuple[Any, Any]:
+    from decimal import Decimal
+
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    text = pa.large_string()
+    parts = pc.extract_regex(pc.utf8_trim(values, characters=_WHITESPACE),
+                             _INTEGER_LITERAL)
+    digits = pc.utf8_ltrim(pc.struct_field(parts, 'digits'), characters='0')
+    digits = pc.if_else(pc.equal(digits, ''), pa.scalar('0', text), digits)
+    negative = pc.equal(pc.struct_field(parts, 'sign'), '-')
+    bounded = pc.fill_null(pc.less_equal(pc.utf8_length(digits), 38), False)
+    decimal = pa.decimal128(38, 0)
+    magnitude = pc.cast(pc.if_else(bounded, digits, pa.scalar('0', text)),
+                        decimal)
+    signed = pc.if_else(negative, pc.negate(magnitude), magnitude)
+    in_range = pc.and_(
+        pc.greater_equal(signed, pa.scalar(Decimal(low), decimal)),
+        pc.less_equal(signed, pa.scalar(Decimal(high), decimal)))
+    if low == 0:
+        in_range = pc.and_(in_range, pc.invert(negative))
+    valid = pc.fill_null(pc.and_(bounded, in_range), False)
+    sign = pc.if_else(pc.and_(negative, pc.not_equal(digits, '0')),
+                      pa.scalar('-', text), pa.scalar('', text))
+    return valid, pc.binary_join_element_wise(sign, digits,
+                                              pa.scalar('', text))
+
+
+def _refuse_inexact_key_conversions(alias: str,
+                                    conversions: Mapping[str, Any],
+                                    paths: Sequence[str]) -> None:
+    r"""Raises when a string foreign key that `portable_graph_config`
+    declared with its destination's integer dtype holds a value DiskGraph
+    cannot convert exactly, or two distinct values that convert to the
+    same integer, and when an integer key declared over text or any other
+    storage that is not an integer, a scale-zero decimal or all null is to
+    link to a string key, since DiskGraph would then use the stored values
+    as they are. DiskGraph reads an optional sign, ASCII digits and a zero
+    fraction inside Unicode whitespace, within the dtype's range (`byte`
+    is unsigned), and anything else, including a binary value that is not
+    UTF-8, as null, so such a row would lose its link; an empty or blank
+    value counts as missing, as DiskGraph reads it. Reads that column of
+    each staged parquet part one batch at a time and keeps only the
+    distinct convertible values, compacted as they accumulate; a part
+    staged under a type that is neither text nor binary is left to
+    DiskGraph's own conversion.
+    """
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
+    if not conversions:
+        return
+    files = [
+        file for path in paths for file in
+        (sorted(Path(path).rglob('*.parquet')) if Path(path).is_dir() else
+         [Path(path)])
+    ]
+    text = pa.large_string()
+    for name, conversion in conversions.items():
+        stored_types = {}
+        for file in files:
+            parquet = pq.ParquetFile(file)
+            if name in parquet.schema_arrow.names:
+                stored = parquet.schema_arrow.field(name).type
+                stored_types[file] = (stored.value_type if
+                                      pa.types.is_dictionary(stored) else stored)
+        if conversion.bounds is None:
+            for stored in stored_types.values():
+                if not (pa.types.is_integer(stored) or pa.types.is_null(stored)
+                        or (pa.types.is_decimal(stored) and stored.scale == 0)):
+                    raise ValueError(
+                        f"Foreign key {alias}.{name} is declared "
+                        f"{conversion.dtype.value} but stored as {stored} in "
+                        "the staged data; linking it to "
+                        f"{conversion.destination}, which is string, would "
+                        "use the stored values as they are. Declare the "
+                        "column as string, or store it as integers, before "
+                        "snapshot.")
+            continue
+        low, high = conversion.bounds
+        invalid, example = 0, None
+        distinct, pending, pending_rows = pa.array([], text), [], 0
+        for file, stored in stored_types.items():
+            if not (pa.types.is_string(stored)
+                    or pa.types.is_large_string(stored)
+                    or pa.types.is_binary(stored)
+                    or pa.types.is_large_binary(stored)):
+                continue
+            for batch in pq.ParquetFile(file).iter_batches(columns=[name]):
+                values = batch.column(0)
+                if pa.types.is_dictionary(values.type):
+                    values = values.dictionary_decode()
+                values = pc.drop_null(values)
+                try:
+                    values = values.cast(text)
+                except pa.ArrowInvalid:
+                    decoded = []
+                    for value in values.to_pylist():
+                        try:
+                            decoded.append(value.decode('utf-8'))
+                        except UnicodeDecodeError:
+                            invalid += 1
+                            example = value if example is None else example
+                    values = pa.array(decoded, text)
+                values = pc.filter(
+                    values,
+                    pc.not_equal(pc.utf8_trim(values, characters=_WHITESPACE),
+                                 ''))
+                if not len(values):
+                    continue
+                valid, _ = _integer_literals(values, low, high)
+                failures = pc.filter(values, pc.invert(valid))
+                invalid += len(failures)
+                if example is None and len(failures):
+                    example = failures[0].as_py()
+                pending.append(pc.unique(pc.filter(values, valid)))
+                pending_rows += len(pending[-1])
+                if pending_rows > max(len(distinct), _DISTINCT_COMPACTION_ROWS):
+                    distinct = pc.unique(pa.concat_arrays([distinct, *pending]))
+                    pending, pending_rows = [], 0
+        colliding, pair = 0, []
+        values = pc.unique(pa.concat_arrays([distinct, *pending]))
+        if len(values):
+            _, canonical = _integer_literals(values, low, high)
+            counts = pc.value_counts(canonical)
+            repeated = pc.greater(counts.field('counts'), 1)
+            if pc.any(repeated).as_py():
+                colliding = pc.sum(pc.filter(counts.field('counts'),
+                                             repeated)).as_py()
+                first = pc.filter(counts.field('values'), repeated)[0]
+                pair = pc.filter(values, pc.equal(canonical,
+                                                  first)).to_pylist()[:2]
+        if not invalid and not colliding:
+            continue
+        problems = []
+        if invalid:
+            problems.append(
+                f"{invalid} of its non-null values cannot be converted to "
+                f"{conversion.target.value} (for example {example!r}), so "
+                "those rows would lose their link")
+        if colliding:
+            problems.append(
+                f"{colliding} distinct values convert to the same integer "
+                f"(for example {pair[0]!r} and {pair[1]!r})")
+        raise ValueError(
+            f"Foreign key {alias}.{name} is stored as "
+            f"{conversion.dtype.value} and links to "
+            f"{conversion.destination}, which is {conversion.target.value}: "
+            + '; '.join(problems) +
+            ". Store both keys with the same type, or fix the values, "
+            "before snapshot.")
+
+
 _LOCATION_KEYS = frozenset({'table_name', 'source_table_name', 'connector_id'})
 _SCHEMA_PARTS = {
     'cols': 'columns',
@@ -867,9 +1032,11 @@ class Graph:
         from kumo_core.sources.transfer import discard_destination
         from kumoapi.source_table import CustomSQLSourceTable
 
+        from kumo.engine._portable import key_conversions
         from kumo.engine.connector.source_table import checked_sql
 
         graph_config = self._graph_config
+        conversions = key_conversions(self._named_tables, self.edges)
         store = _store()
 
         table_data_versions: Dict[str, str] = {}
@@ -928,6 +1095,9 @@ class Graph:
                 else:
                     source_paths[alias] = str(
                         prepared.source.get('path') or dest_dir)
+                _refuse_inexact_key_conversions(alias,
+                                                conversions.get(alias, {}),
+                                                paths or [source_paths[alias]])
 
             version_parts = [
                 json.dumps(table_data_versions, sort_keys=True).encode()
