@@ -61,6 +61,7 @@ remote/durable cache, e.g. a Snowflake stage) -- out of scope for now.
 
 import json
 import logging
+import math
 import threading
 import time
 import warnings
@@ -76,12 +77,18 @@ from typing import (
     Mapping,
     Optional,
     Sequence,
+    Tuple,
 )
 
 from kumo_core.artifacts import PROVENANCE_FILE
+from kumo_core.csv_rules import NA_TOKENS
 from kumo_core.pquery import NativeGraph, normalize_graph
 from kumoapi.graph import Edge
-from kumoapi.typing import TimestampPrecision, validate_timestamp_precision
+from kumoapi.typing import (
+    Dtype,
+    TimestampPrecision,
+    validate_timestamp_precision,
+)
 
 from kumo.engine._events import Event, EventEmitter
 from kumo.engine._manifest import (
@@ -156,7 +163,160 @@ def _warn_low_fk_match_rates(stats: Dict[str, Any],
                 )
 
 
-def _warn_ingest_data_loss(result: Any, graph_config: Dict[str, Any]) -> None:
+_FLOAT32_EXACT_BITS = 24
+_FLOAT32_DTYPES = frozenset({Dtype.float, Dtype.float32})
+
+
+def _read_column_stats(kumo_stats_dir: Any, table: str) -> Dict[str, Any]:
+    try:
+        path = Path(kumo_stats_dir) / 'col_stats_min' / f'{table}.json'
+        column_stats = json.loads(path.read_text())
+    except (OSError, TypeError, ValueError):
+        return {}
+    return column_stats if isinstance(column_stats, dict) else {}
+
+
+def _by_column(column_stats: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
+    r"""The ``__False`` statistics of each column, keyed by statistic name."""
+    stats: Dict[str, Dict[str, Any]] = {}
+    for key, entry in column_stats.items():
+        parts = key.rsplit('__', 3)
+        if isinstance(entry, dict) and len(parts) == 4 and parts[3] == 'False':
+            stats.setdefault(parts[0], {})[parts[2]] = entry.get('value')
+    return stats
+
+
+def _count(stat: Mapping[str, Any], key: str) -> int:
+    value = stat.get(key)
+    return value if type(value) is int and value > 0 else 0
+
+
+def _non_finite(stat: Mapping[str, Any]) -> int:
+    fraction = stat.get('INVALID_FRACTION')
+    if isinstance(fraction, bool) or not isinstance(fraction, (int, float)):
+        return 0
+    return round(fraction * _count(stat, 'COUNT')) if fraction > 0 else 0
+
+
+def invalid_value_counts(kumo_stats_dir: Any,
+                         tables: Sequence[str]) -> Dict[str, Dict[str, int]]:
+    r"""Per table and column, how many values became missing at ingest
+    because the declared type could not read them or they were not finite."""
+    counts: Dict[str, Dict[str, int]] = {}
+    for table in sorted(tables):
+        stats = _by_column(_read_column_stats(kumo_stats_dir, table))
+        for column, stat in sorted(stats.items()):
+            count = _count(stat, 'NUM_PARSE_FAILURES') + _non_finite(stat)
+            if count:
+                counts.setdefault(table, {})[column] = count
+    return counts
+
+
+def _float32_limit(scale: int) -> float:
+    return float(2**(_FLOAT32_EXACT_BITS - math.ceil(scale * math.log2(10))))
+
+
+def _narrowed_float_columns(
+        alias: str, table: Table,
+        paths: Sequence[str]) -> Dict[Tuple[str, str], Tuple[str, int]]:
+    r"""Each float32 column staged from a wider type, with that type and the
+    decimal scale its values are written at."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    assert table.definition is not None
+    columns = [
+        column.name for column in table.definition.cols
+        if column.dtype in _FLOAT32_DTYPES
+    ]
+    narrowed: Dict[Tuple[str, str], Tuple[str, int]] = {}
+    for path in paths if columns else ():
+        schema = pq.read_schema(path)
+        for column in columns:
+            if column not in schema.names:
+                continue
+            physical = schema.field(column).type
+            if pa.types.is_float32(physical) or pa.types.is_float16(physical):
+                continue
+            scale = physical.scale if pa.types.is_decimal(physical) else 0
+            if scale >= narrowed.get((alias, column), ('', -1))[1]:
+                narrowed[alias, column] = (str(physical), scale)
+    return narrowed
+
+
+def _warn_missing_like_text(table: str, column: Mapping[str, Any],
+                            stat: Mapping[str, Any]) -> None:
+    if (column.get('dtype') != 'string'
+            or column.get('stype') != 'categorical'):
+        return
+    counts = stat.get('CATEGORY_COUNTS')
+    if not isinstance(counts, list):
+        return
+    found = {
+        entry[0]: entry[1]
+        for entry in counts if isinstance(entry, list) and len(entry) == 2
+        and isinstance(entry[0], str) and entry[0] in NA_TOKENS
+        and type(entry[1]) is int and entry[1] > 0
+    }
+    if not found:
+        return
+    listed = sum(entry[1] for entry in counts if isinstance(entry, list)
+                 and len(entry) == 2 and type(entry[1]) is int)
+    present = _count(stat, 'COUNT') - _count(stat, 'NUM_NA')
+    bound = 'at least ' if listed < present else ''
+    tokens = ', '.join(repr(value) for value in sorted(found))
+    warnings.warn(
+        f"{table}.{column['name']} holds {bound}{sum(found.values())} "
+        f"value(s) that look like missing ({tokens}); they are kept as text. "
+        "If they mean missing, replace them with nulls at the source; a "
+        "number or date column reads them as missing.", UserWarning,
+        stacklevel=3)
+
+
+def _magnitude(stat: Mapping[str, Any]) -> Optional[float]:
+    values = [stat.get('MIN'), stat.get('MAX')]
+    counts = stat.get('CATEGORY_COUNTS')
+    if isinstance(counts, list):
+        values += [
+            entry[0] for entry in counts if isinstance(entry, list) and entry
+        ]
+    numbers = []
+    for value in values:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(value, bool) and math.isfinite(number):
+            numbers.append(abs(number))
+    return max(numbers, default=None)
+
+
+def _warn_float32_narrowing(table: str, column: Mapping[str, Any],
+                            stat: Mapping[str, Any],
+                            source: Optional[Tuple[str, int]]) -> None:
+    if source is None:
+        return
+    magnitude = _magnitude(stat)
+    if magnitude is None:
+        return
+    physical, scale = source
+    limit = _float32_limit(scale)
+    if magnitude < limit:
+        return
+    step = ('every whole number' if scale == 0 else f"steps of {10**-scale:g}")
+    warnings.warn(
+        f"{table}.{column['name']} is stored as float32 but comes from "
+        f"{physical} and reaches {magnitude:,.{scale}f}; from {limit:,.0f} on "
+        f"float32 no longer resolves {step}, so values are rounded. Declare "
+        "dtype=Dtype.float64 for the column to keep full precision.",
+        UserWarning, stacklevel=3)
+
+
+def _warn_ingest_data_loss(
+    result: Any,
+    graph_config: Dict[str, Any],
+    narrowed: Optional[Mapping[Tuple[str, str], Tuple[str, int]]] = None,
+) -> None:
     from kumo_core.diskgraph.validation import parse_failure_warning
 
     for table in graph_config.get('tables', []):
@@ -178,6 +338,22 @@ def _warn_ingest_data_loss(result: Any, graph_config: Dict[str, Any]) -> None:
                 column = key.rsplit('__', 3)[0]
                 warnings.warn(parse_failure_warning(name, column, count),
                               UserWarning, stacklevel=3)
+        stats = _by_column(column_stats)
+        for column, stat in sorted(stats.items()):
+            count = _non_finite(stat)
+            if count:
+                warnings.warn(
+                    f"{count} non-finite value(s) (inf, -inf or NaN) found "
+                    f"in {name}.{column}. They are left out of the column "
+                    "statistics and treated as missing. Infinity usually "
+                    "comes from a division by zero upstream; replace "
+                    "non-finite values at the source.", UserWarning,
+                    stacklevel=3)
+        for column in table.get('cols', []):
+            stat = stats.get(column['name'], {})
+            _warn_missing_like_text(name, column, stat)
+            _warn_float32_narrowing(name, column, stat, (narrowed or {}).get(
+                (name, column['name'])))
 
     try:
         stats = json.loads(Path(result.ingest_stats_path).read_text())['stats']
@@ -537,6 +713,15 @@ class GraphSnapshot:
         return read_manifest(Path(self.index_path) / PROVENANCE_FILE,
                              SnapshotManifest)
 
+    @property
+    def invalid_value_counts(self) -> Dict[str, Dict[str, int]]:
+        r"""Per table and column, the number of values that became missing at
+        ingest: values the declared type could not read, and non-finite
+        numbers. Columns with none are left out."""
+        return invalid_value_counts(
+            Path(self.index_path) / 'kumo_col_stats',
+            [table['table_name'] for table in self.graph_config['tables']])
+
 
 def _write_snapshot_manifest(result: Any, snapshot_id: str,
                              source_tables: Dict[str, SourceTableEntry],
@@ -875,6 +1060,7 @@ class Graph:
         table_data_versions: Dict[str, str] = {}
         source_paths: Dict[str, str] = {}
         source_tables: Dict[str, SourceTableEntry] = {}
+        narrowed: Dict[Tuple[str, str], Tuple[str, int]] = {}
 
         started = start() if timed else None
         try:
@@ -928,6 +1114,11 @@ class Graph:
                 else:
                     source_paths[alias] = str(
                         prepared.source.get('path') or dest_dir)
+                narrowed.update(
+                    _narrowed_float_columns(
+                        alias, table, paths or sorted(
+                            str(part) for part in Path(
+                                source_paths[alias]).rglob('*.parquet'))))
 
             version_parts = [
                 json.dumps(table_data_versions, sort_keys=True).encode()
@@ -975,7 +1166,7 @@ class Graph:
                                      record_sources, fresh=existing is None,
                                      build=build)
 
-            _warn_ingest_data_loss(result, graph_config)
+            _warn_ingest_data_loss(result, graph_config, narrowed)
             if events is not None:
                 events.emit('snapshot_ended', params={
                     'snapshot_id': snapshot_id, 'reused': existing is not None})
