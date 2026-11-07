@@ -139,6 +139,12 @@ jobs:
           KUMO_PYTEST_ENABLE_FSUTIL_DEBUG_LOGS: "0"
           SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          # Both tests here use OAuth; a PAT would take precedence over it.
+          DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+          DATABRICKS_CLUSTER_ID: ${{ vars.DATABRICKS_CLUSTER_ID }}
+          DATABRICKS_WAREHOUSE_ID: ${{ vars.DATABRICKS_WAREHOUSE_ID }}
+          DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
           GCS_TEST_BUCKET: 'kumo-test-bucket'
           AWS_DEFAULT_REGION: "us-west-2"
           DEPLOY_STAGE: "test"
@@ -165,6 +171,12 @@ jobs:
           KUMO_PYTEST_ENABLE_FSUTIL_DEBUG_LOGS: "0"
           SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          # Both tests here use OAuth; a PAT would take precedence over it.
+          DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+          DATABRICKS_CLUSTER_ID: ${{ vars.DATABRICKS_CLUSTER_ID }}
+          DATABRICKS_WAREHOUSE_ID: ${{ vars.DATABRICKS_WAREHOUSE_ID }}
+          DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
           GCS_TEST_BUCKET: 'kumo-test-bucket'
           AWS_DEFAULT_REGION: "us-west-2"
           DEPLOY_STAGE: "test"
