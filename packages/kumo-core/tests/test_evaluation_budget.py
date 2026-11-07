@@ -56,25 +56,39 @@ def test_retry_budget_reaches_the_trainer_constructor(tmp_path, monkeypatch,
             received['max_test_steps']) == (32, *expected)
 
 
-@pytest.mark.parametrize('stage,limit,caps', [
-    ('test', 100, [100, 200, 400, 800]),
-    ('test', None, [None, None, None, None]),
-    ('predict', 100, [100, 100, 100, 100]),
+@pytest.mark.parametrize('stage,limit,caps,rebuild', [
+    ('test', 100, [100, 200, 400, 800], False),
+    ('test', None, [None, None, None, None], False),
+    ('predict', 100, [100, 100, 100, 100], False),
+    ('test', 100, [100, 200, 400, 800], True),
+    ('test', None, [None, None, None, None], True),
 ])
+@pytest.mark.parametrize('loader_options',
+                         [None, {}, {'batch_size': 64, 'num_workers': 2}])
 @pytest.mark.parametrize('failure',
                          [None, torch.cuda.OutOfMemoryError, RuntimeError])
 def test_evaluation_retry_preserves_budget_and_restores_state(
-        stage, limit, caps, failure, monkeypatch):
+        stage, limit, caps, rebuild, loader_options, failure, monkeypatch):
     monkeypatch.setattr(torch.cuda, 'empty_cache', lambda: None)
     module = SimpleNamespace(eval_loader_kwargs={'batch_size': 64},
                              max_test_steps=limit)
     trainer = SimpleNamespace(
         datamodule=module,
+        eval_loader_kwargs=(None if loader_options is None else
+                            loader_options.copy()),
+        max_test_steps=limit,
         task=SimpleNamespace(task_type=TaskType.BINARY_CLASSIFICATION),
         pl_model=Mock())
+    original_options = trainer.eval_loader_kwargs
     attempted = []
 
     def evaluate(self):
+        if rebuild:
+            self.datamodule = SimpleNamespace(
+                eval_loader_kwargs={
+                    'batch_size': (self.eval_loader_kwargs or {}).get(
+                        'batch_size', 64)}, max_test_steps=self.max_test_steps)
+        module = self.datamodule
         batch = module.eval_loader_kwargs['batch_size']
         attempted.append((batch, module.max_test_steps))
         if batch > 16:
@@ -91,5 +105,8 @@ def test_evaluation_retry_preserves_budget_and_restores_state(
     assert attempted == expected[:4 if failure is
                                  torch.cuda.OutOfMemoryError else 3]
     if stage == 'test' or failure is None:
-        assert module.eval_loader_kwargs == {'batch_size': 64}
-    assert module.max_test_steps == limit
+        assert trainer.datamodule.eval_loader_kwargs == {'batch_size': 64}
+    assert trainer.datamodule.max_test_steps == limit
+    assert trainer.eval_loader_kwargs is original_options
+    assert trainer.eval_loader_kwargs == loader_options
+    assert trainer.max_test_steps == limit
