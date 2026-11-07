@@ -50,8 +50,12 @@ jobs:
             test/scripts/test_check_oss_readiness.py \
             test/scripts/test_check_secrets.py \
             test/scripts/test_engine_gpu_smoke.py \
+            test/scripts/test_engine_e2e_case_hardware.py \
             test/scripts/test_engine_pr_workflow.py \
             test/scripts/test_engine_wheel_workflow.py
+
+      - name: Test the Engine runner pool without AWS
+        run: node --test test/scripts/test-engine-e2e-pool.cjs
 
       # Pull requests check only the files they change. Pushes to main check
       # the whole tree, so a recorded public-reference count that is no longer

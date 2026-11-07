@@ -1,0 +1,415 @@
+{
+  "id": "C-FIELDS-002",
+  "contract": {
+    "$type": "DataLoaderSpec",
+    "schema": {
+      "$type": "DataSchema",
+      "tables": [
+        {
+          "$type": "TableSpec",
+          "name": "facts",
+          "primary_key": "id",
+          "columns": {
+            "id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "user": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "at": {
+              "$type": "DType",
+              "name": "timestamp",
+              "unit": "s",
+              "timezone": "UTC",
+              "precision": null,
+              "scale": null
+            },
+            "tag": {
+              "$type": "DType",
+              "name": "string",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": "at"
+        },
+        {
+          "$type": "TableSpec",
+          "name": "users",
+          "primary_key": "id",
+          "columns": {
+            "id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "country": {
+              "$type": "DType",
+              "name": "string",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": {
+            "$type": "NonTemporal"
+          }
+        }
+      ],
+      "relations": [
+        {
+          "$type": "RelationSpec",
+          "name": "facts",
+          "left_table": "users",
+          "left_key": "id",
+          "right_table": "facts",
+          "right_key": "user"
+        }
+      ]
+    },
+    "sample": {
+      "$type": "SampleSpec",
+      "entity": {
+        "$type": "EntitySpec",
+        "table": "users",
+        "entity_type": "users",
+        "filters": [],
+        "available_from": null
+      },
+      "entity_values": {
+        "country": {
+          "$type": "Field",
+          "column": "country",
+          "path": [],
+          "selection": "one",
+          "time_column": null,
+          "reference_time": "sample"
+        }
+      },
+      "dated_entity_values": {
+        "tag": {
+          "$type": "DatedEntityValue",
+          "rows": {
+            "$type": "Rows",
+            "path": [
+              "facts"
+            ],
+            "time": {
+              "$type": "TimeWindow",
+              "column": "at",
+              "start": null,
+              "stop": 0
+            },
+            "filters": [],
+            "active": null,
+            "distinct": true
+          },
+          "field": {
+            "$type": "Field",
+            "column": "tag",
+            "path": [],
+            "selection": "one",
+            "time_column": null,
+            "reference_time": "sample"
+          },
+          "first_per_value": true,
+          "fields": {
+            "age": {
+              "$type": "EventTimeDelta",
+              "unit": "seconds",
+              "dtype": {
+                "$type": "DType",
+                "name": "float64",
+                "unit": null,
+                "timezone": null,
+                "precision": null,
+                "scale": null
+              }
+            }
+          }
+        }
+      },
+      "events": {},
+      "current_events": {},
+      "neighborhoods": {},
+      "targets": {},
+      "candidate_sets": {}
+    },
+    "batch": {
+      "$type": "BatchSpec",
+      "inputs": {
+        "profile": {
+          "$type": "Input",
+          "source": {
+            "$type": "EntitySource"
+          },
+          "representation": {
+            "$type": "Fields",
+            "fields": [
+              {
+                "$type": "Encode",
+                "field": "tag",
+                "encoding": {
+                  "$type": "Text",
+                  "vocabulary_size": 8000,
+                  "min_frequency": 1,
+                  "empty": "empty",
+                  "state": "{\"version\":\"1.0\",\"truncation\":null,\"padding\":null,\"added_tokens\":[],\"normalizer\":null,\"pre_tokenizer\":{\"type\":\"Whitespace\"},\"post_processor\":null,\"decoder\":null,\"model\":{\"type\":\"BPE\",\"dropout\":null,\"unk_token\":\"[UNK]\",\"continuing_subword_prefix\":null,\"end_of_word_suffix\":null,\"fuse_unk\":false,\"byte_fallback\":false,\"ignore_merges\":false,\"vocab\":{\"[MISSING]\":0,\"[UNK]\":1,\"a\":2,\"b\":3},\"merges\":[]}}",
+                  "missing_id": 0,
+                  "unknown_id": 1
+                },
+                "id_space": "model"
+              },
+              {
+                "$type": "Encode",
+                "field": "country",
+                "encoding": {
+                  "$type": "Vocabulary",
+                  "values": [
+                    [
+                      "US",
+                      2
+                    ]
+                  ],
+                  "max_size": null,
+                  "min_frequency": 1,
+                  "missing_id": 0,
+                  "unknown_id": 1
+                },
+                "id_space": "model"
+              }
+            ],
+            "row": {
+              "$type": "Tokens",
+              "max_tokens": null,
+              "keep": "first",
+              "missing": "omit",
+              "occurrence_order": "fields"
+            },
+            "history": {
+              "$type": "Grouped"
+            },
+            "field_names": null,
+            "field_space": null,
+            "forbidden_fields": []
+          },
+          "layout": {
+            "$type": "Padded"
+          }
+        },
+        "ages": {
+          "$type": "Input",
+          "source": {
+            "$type": "OccurrencesOf",
+            "input": "profile"
+          },
+          "representation": {
+            "$type": "Fields",
+            "fields": [
+              {
+                "$type": "Encode",
+                "field": "age",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              }
+            ],
+            "row": {
+              "$type": "Columns"
+            },
+            "history": {
+              "$type": "Grouped"
+            },
+            "field_names": null,
+            "field_space": null,
+            "forbidden_fields": []
+          },
+          "layout": {
+            "$type": "Padded"
+          }
+        }
+      },
+      "targets": {},
+      "encodings": {},
+      "id_spaces": {
+        "model": {
+          "$type": "IdSpace",
+          "specials": {
+            "pad": "[PAD]",
+            "missing": "[MISSING]",
+            "unknown": "[UNK]"
+          }
+        }
+      },
+      "field_names": {},
+      "batching": {
+        "$type": "Batching",
+        "max_samples": null,
+        "max_tokens": null,
+        "length_input": null,
+        "bucket_by_length": false,
+        "drop_last": false
+      }
+    },
+    "version": 3
+  },
+  "tables": {
+    "users": [
+      {
+        "id": 1,
+        "country": "US"
+      },
+      {
+        "id": 2,
+        "country": "US"
+      }
+    ],
+    "facts": [
+      {
+        "id": 1,
+        "user": 1,
+        "at": 10,
+        "tag": "ab"
+      },
+      {
+        "id": 2,
+        "user": 1,
+        "at": 20,
+        "tag": "ab"
+      },
+      {
+        "id": 3,
+        "user": 1,
+        "at": 30,
+        "tag": "ba"
+      },
+      {
+        "id": 4,
+        "user": 1,
+        "at": 110,
+        "tag": "ab"
+      }
+    ]
+  },
+  "anchors": [
+    {
+      "sample_id": "one",
+      "entity_id": 1,
+      "as_of_time": 100
+    },
+    {
+      "sample_id": "empty",
+      "entity_id": 2,
+      "as_of_time": 100
+    }
+  ],
+  "expected": {
+    "one": {
+      "entity_values": {
+        "country": "US"
+      }
+    },
+    "empty": {
+      "entity_values": {
+        "country": "US"
+      }
+    }
+  },
+  "reason": "At anchor 100, first-per-value keeps tag ab at time 10, ignores its later duplicate at time 20, and keeps ba at time 30. Time 110 is after the anchor at 100 and is excluded; cutoff equality remains eligible. The supplied BPE has no merges, so ab emits a,b and ba emits b,a. Final roles pad=0, unknown=1 and missing=2 precede private country US=3 and text a=4,b=5. Field-major order therefore emits [4,5,5,4,3]. Explicit ages repeat per retained text piece: [90,90,70,70], followed by an invalid static-country age. User 2 has only its country token, no dated occurrences; all its age slots are invalid. No automatic timestamp or elapsed-time feature is requested.",
+  "batch": {
+    "inputs": {
+      "profile": {
+        "value_ids": {
+          "dtype": "int64",
+          "shape": [
+            2,
+            5
+          ],
+          "values": [
+            [
+              4,
+              5,
+              5,
+              4,
+              3
+            ],
+            [
+              3,
+              0,
+              0,
+              0,
+              0
+            ]
+          ]
+        }
+      },
+      "ages": {
+        "age": {
+          "values": {
+            "dtype": "float64",
+            "shape": [
+              2,
+              5
+            ],
+            "values": [
+              [
+                90.0,
+                90.0,
+                70.0,
+                70.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            ]
+          },
+          "valid": {
+            "dtype": "bool",
+            "shape": [
+              2,
+              5
+            ],
+            "values": [
+              [
+                true,
+                true,
+                true,
+                true,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ]
+            ]
+          }
+        }
+      }
+    }
+  }
+}

@@ -2,9 +2,14 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from common import LIMITS, metric, parse_args, run, sources, table
+from common import LIMITS, Scale, metric, parse_args, run, sources, table
 
-SCALES = {"100M": 100, "1B": 300, "10B": 1600, "25B": 3200}
+SCALES = {
+    "100M": Scale(100, "g7e.8xlarge"),
+    "1B": Scale(300, "g7e.8xlarge"),
+    "10B": Scale(1600, "g7e.12xlarge"),
+    "25B": Scale(3200, "g7e.24xlarge")
+}
 QUERY = ('PREDICT COUNT(conversions.*, 0, 7, days) > 0 FOR EACH users.user_id '
          'WHERE COUNT(impressions.*, -14, 0, days) > 0 ')
 SPLIT = ("TimeRangeSplit([('2025-12-10T00:00:00', '2025-12-17T00:00:00'), "
