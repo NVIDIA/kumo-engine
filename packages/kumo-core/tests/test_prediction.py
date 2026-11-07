@@ -426,10 +426,24 @@ def test_forecast_prediction_compiles_only_historical_features(
     }
 
 
-def test_forecast_task_options_uses_fitted_timeframe_step(tmp_path):
+def test_prediction_task_options_use_fitted_timeframe_step(tmp_path):
     req = replace(forecast_request(tmp_path), forecast_timeframe_step=2)
 
     assert prediction_task_options(req)['unix_step_size'] == 172800000000000
+
+
+def test_prediction_task_options_bound_temporal_link_candidates(tmp_path):
+    req = forecast_request(tmp_path)
+    link = replace(req, query=replace(req.query,
+                                      task_type="temporal_link_prediction"))
+
+    assert prediction_task_options(link) == {
+        "unix_start_offset": 0,
+        "unix_end_offset": 86400000000000,
+    }
+    assert prediction_task_options(
+        request(tmp_path, family="link_prediction")) is None
+    assert prediction_task_options(request(tmp_path)) is None
 
 
 @pytest.mark.parametrize("options", [{

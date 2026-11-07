@@ -94,28 +94,35 @@ class PreparedCustomPredictionTable:
 
 def prediction_task_options(
     request: PredictionTableRequest, ) -> Dict[str, int] | None:
-    """Return the resolved-task scalars required to replay a forecast.
+    """Return the resolved-task scalars a temporal prediction replays.
 
-    Prediction-table compilation owns the temporal query and the exact lag
-    features it emitted. Passing these small values to every scoring process
-    keeps spawned workers aligned with the fitted checkpoint.
+    Prediction-table compilation owns the temporal query. Temporal link
+    prediction needs its target window to bound candidates; forecasts also
+    need the exact lag features it emitted. Passing these small values to
+    every scoring process keeps spawned workers aligned with the checkpoint.
     """
-    if request.query.task_type != "forecasting":
+    task_type = request.query.task_type
+    if task_type not in ("forecasting", "temporal_link_prediction"):
         return None
+    offset = request.query.query.get_combined_date_offset_range()
+    start = int(offset.start or 0)
+    end = int(offset.end)
+    from .utils.time import compute_unix_step
+    window = {
+        "unix_start_offset": int(compute_unix_step(start, offset.unit)),
+        "unix_end_offset": int(compute_unix_step(end, offset.unit)),
+    }
+    if task_type != "forecasting":
+        return window
     options = dict(request.compiler_options or {})
     lag_offsets = options.get("lag_offsets_secs")
     if not isinstance(lag_offsets, (list, tuple)) or not lag_offsets:
         raise ValueError("Forecast prediction requires historical lag offsets")
-    offset = request.query.query.get_combined_date_offset_range()
-    start = int(offset.start or 0)
-    end = int(offset.end)
     step = request.forecast_timeframe_step or end - start
-    from .utils.time import compute_unix_step
     return {
         "forecast_length": int(request.query.forecast_length),
         "lag_timesteps": len(lag_offsets),
-        "unix_start_offset": int(compute_unix_step(start, offset.unit)),
-        "unix_end_offset": int(compute_unix_step(end, offset.unit)),
+        **window,
         "unix_step_size": int(compute_unix_step(step, offset.unit)),
     }
 
@@ -568,7 +575,7 @@ def _score_prediction_shard(
         embedding_models=config.embedding_models,
         **load_options,
     )
-    if config.task_options is not None:
+    if "forecast_length" in (config.task_options or {}):
         _validate_forecast_checkpoint(trainer, task)
     from kumo_core.score_counts import Counts
     from kumo_core.train.artifact_stats import PredictionArtifactStatsCollector
