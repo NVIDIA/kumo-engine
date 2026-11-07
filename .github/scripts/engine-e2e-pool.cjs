@@ -113,7 +113,8 @@ async function start(selected, io) {
     const quote = value => "'" + String(value).replaceAll("'", "'\\''") + "'";
     const script = '#!/bin/bash\n' + Object.entries(values).map(([key, value]) => key + '=' + quote(value)).join('\n') +
       '\n' + readFileSync(join(__dirname, 'engine-e2e-runner.sh'), 'utf8');
-    const tags = {EngineE2EPool: label, EngineE2ERepository: repo};
+    const tags = {EngineE2EPool: label, EngineE2ERepository: repo,
+      EngineE2ESha: env.GITHUB_SHA, EngineE2EDeadline: String(deadline)};
     const version = (await io.aws('ec2', 'create-launch-template-version', {LaunchTemplateId: p.template,
       SourceVersion: p.version, VersionDescription: p.label, ClientToken: p.label,
       LaunchTemplateData: {InstanceType: p.instance, UserData: Buffer.from(script).toString('base64'),
@@ -135,28 +136,43 @@ function admission(event, row) {
   return {Bucket: url.hostname, Key: [url.pathname.replace(/^\//, '').replace(/\/$/, ''),
     event.run, event.attempt, row.scale, row.case + '.admission.json'].filter(Boolean).join('/')};
 }
+function poolFailure(event, instance) {
+  return admission(event, {scale: 'pools', case: instance});
+}
 async function registration(event, io) {
   const {repo, run, attempt, label} = identity({GITHUB_REPOSITORY: event.repo, POOL_RUN_ID: event.run, POOL_ATTEMPT: event.attempt});
-  const source = await io.api('repos/' + repo + '/actions/runs/' + run);
-  assert(trusted(source, repo) && source.run_attempt === Number(attempt) && source.head_sha === event.sha &&
-    ['queued', 'in_progress'].includes(source.status) && Number.isFinite(event.deadline) && io.now() < event.deadline &&
+  assert(Number.isFinite(event.deadline) && io.now() < event.deadline &&
     /^[a-z0-9]+\.[a-z0-9]+$/.test(event.instance) && event.label === label + '-' + event.instance,
     'Registration requires a live approved pool');
-  if (event.kind === 'bootstrap') assert(typeof event.error === 'string' && event.error.length <= 160 &&
-    /^Bootstrap failed: [a-zA-Z0-9 ._-]+ \(exit [1-9][0-9]{0,2}\)$/.test(event.error), 'Invalid bootstrap check');
+  const groups = (await io.aws('autoscaling', 'describe-auto-scaling-groups', {AutoScalingGroupNames: [event.label]})).AutoScalingGroups;
+  assert(groups.length === 1 && [['EngineE2EPool', label], ['EngineE2ERepository', repo]].every(([key, value]) =>
+    groups[0].Tags?.some(t => t.Key === key && t.Value === value)), 'Expected an owned runner group');
+  if (event.kind === 'bootstrap') {
+    assert(typeof event.error === 'string' && event.error.length <= 160 &&
+      /^Bootstrap failed: [a-zA-Z0-9 ._-]+ \(exit [1-9][0-9]{0,2}\)$/.test(event.error) &&
+      [['EngineE2ESha', event.sha], ['EngineE2EDeadline', String(event.deadline)]].every(([key, value]) =>
+        groups[0].Tags?.some(t => t.Key === key && t.Value === value)), 'Invalid bootstrap failure');
+    try {
+      await io.aws('s3', 'put-object', {...poolFailure({...event, results: io.env.RESULTS_S3}, event.instance), IfNoneMatch: '*',
+        Body: JSON.stringify({sha: event.sha, deadline: event.deadline, instance: event.instance, error: event.error})});
+    } catch (error) { if (!io.preconditionFailed(error)) throw error; }
+    await io.aws('autoscaling', 'suspend-processes', {AutoScalingGroupName: event.label, ScalingProcesses: ['Launch']});
+    if (/^Bootstrap failed: runner (registration|configuration) /.test(event.error)) return null;
+  }
+  const source = await io.api('repos/' + repo + '/actions/runs/' + run);
+  assert(trusted(source, repo) && source.run_attempt === Number(attempt) && source.head_sha === event.sha &&
+    ['queued', 'in_progress'].includes(source.status),
+    'Registration requires a live approved pool');
   assert(Array.isArray(event.cases) && event.cases.length > 0 && event.cases.length <= 48 &&
     new Set(event.cases.map(r => r.case + '/' + r.scale)).size === event.cases.length && event.cases.every(r =>
       CASES.includes(r.case.replace(/-control$/, '')) && r.instance === event.instance && r.label === event.label &&
       (source.name.endsWith('nightly') ? ['100M', '1B'] : ['10B', '25B']).includes(r.scale)), 'Invalid pool cases');
-  const groups = (await io.aws('autoscaling', 'describe-auto-scaling-groups', {AutoScalingGroupNames: [event.label]})).AutoScalingGroups;
-  assert(groups.length === 1 && [['EngineE2EPool', label], ['EngineE2ERepository', repo]].every(([key, value]) =>
-    groups[0].Tags?.some(t => t.Key === key && t.Value === value)), 'Expected an owned runner group');
   const jobs = await list(io, 'repos/' + repo + '/actions/runs/' + run + '/attempts/' + attempt + '/jobs', 'jobs');
   const drained = event.cases.every(r => jobs.some(j => j.labels?.includes(event.label) &&
     j.name.endsWith('engine-e2e:' + r.case + ':' + r.scale) && ['in_progress', 'completed'].includes(j.status)));
   if (event.kind === 'bootstrap' || drained) {
-    await io.aws('autoscaling', 'suspend-processes', {AutoScalingGroupName: event.label, ScalingProcesses: ['Launch']});
     if (event.kind === 'bootstrap') return capacity({...event, results: io.env.RESULTS_S3}, io);
+    await io.aws('autoscaling', 'suspend-processes', {AutoScalingGroupName: event.label, ScalingProcesses: ['Launch']});
     return null;
   }
   if (groups[0].SuspendedProcesses?.some(p => p.ProcessName === 'Launch')) return null;
@@ -173,14 +189,21 @@ async function capacity(event, io) {
     'Capacity deadline has not passed');
   if (source.status === 'completed' && Date.parse(source.updated_at) / 1000 < event.deadline) return;
   const jobs = await list(io, 'repos/' + event.repo + '/actions/runs/' + event.run + '/attempts/' + event.attempt + '/jobs', 'jobs');
-  const failed = [];
+  const failed = [], causes = new Map();
   for (const row of event.cases) {
     const job = jobs.find(j => j.name.endsWith('engine-e2e:' + row.case + ':' + row.scale));
     if ((!job && !bootstrap) || job?.status === 'in_progress' || (job?.status === 'completed' && job.runner_id)) continue;
+    if (!causes.has(row.instance)) {
+      const saved = await io.aws('s3', 'get-object', poolFailure(event, row.instance));
+      if (saved) assert(saved.sha === event.sha && saved.deadline === event.deadline && saved.instance === row.instance &&
+        typeof saved.error === 'string' && /^Bootstrap failed: [a-zA-Z0-9 ._-]+ \(exit [1-9][0-9]{0,2}\)$/.test(saved.error), 'Invalid saved pool failure');
+      causes.set(row.instance, saved?.error);
+    }
+    const error = causes.get(row.instance) || (bootstrap && event.error);
     try {
       await io.aws('s3', 'put-object', {...admission(event, row), IfNoneMatch: '*',
-        Body: JSON.stringify({state: bootstrap ? 'bootstrap_failed' : 'capacity_failed', instance: row.instance,
-          deadline: event.deadline, ...(bootstrap ? {error: event.error} : {})})});
+        Body: JSON.stringify({state: error ? 'bootstrap_failed' : 'capacity_failed', instance: row.instance,
+          deadline: event.deadline, ...(error ? {error} : {})})});
       failed.push(row);
     } catch (error) {
       if (!io.preconditionFailed(error)) throw error;

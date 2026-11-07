@@ -22,6 +22,17 @@ PY
   function_error=$(aws lambda invoke --function-name "$CAPACITY_FUNCTION" --region "$AWS_REGION" --cli-connect-timeout 10 --cli-read-timeout 30 --cli-binary-format raw-in-base64-out --payload "$payload" --query FunctionError --output text "$token_file") || return
   [[ $function_error == None ]]
 }
+retry_invoke() {
+  local delay status=1
+  [[ $CAPACITY_DEADLINE =~ ^[1-9][0-9]{0,10}$ ]] || return 1
+  for delay in 0 5 10; do
+    (( $(date +%s) + delay < CAPACITY_DEADLINE )) || break
+    (( delay == 0 )) || sleep "$delay"
+    (( $(date +%s) < CAPACITY_DEADLINE )) || break
+    if invoke "$@"; then return 0; else status=$?; fi
+  done
+  return "$status"
+}
 finish() {
   local status=$? reason
   trap - EXIT
@@ -29,7 +40,7 @@ finish() {
   if (( status != 0 && bootstrapping )); then
     reason="Bootstrap failed: $boot_check (exit $status)"
     printf '%s\n' "$reason" >&2
-    invoke bootstrap "$reason" || printf '%s\n' 'Bootstrap failure notification failed' >&2
+    retry_invoke bootstrap "$reason" || printf '%s\n' 'Bootstrap failure notification failed' >&2
   fi
   rm -f "${token_file:-}"
   shutdown -h now
@@ -75,15 +86,8 @@ runuser -u engine-e2e -- python3.12 -c 'import sys, venv; assert sys.version_inf
 boot_check='scratch write access'
 runuser -u engine-e2e -- test -w /mnt/localssd/engine-e2e
 echo 'engine-e2e boot prerequisites ready: GPU, Python 3.12, and local SSD'
-bootstrapping=0 boot_check='runner registration'
-registration_status=1
-for delay in 0 5 10; do
-  (( $(date +%s) + delay < CAPACITY_DEADLINE )) || break
-  (( delay == 0 )) || sleep "$delay"
-  (( $(date +%s) < CAPACITY_DEADLINE )) || break
-  if invoke registration; then registration_status=0; break; else registration_status=$?; fi
-done
-(( registration_status == 0 )) || exit "$registration_status"
+boot_check='runner registration'
+retry_invoke registration
 RUNNER_TOKEN=$(python3 -c 'import json,sys; token=json.load(open(sys.argv[1])); assert token is None or (isinstance(token,str) and token); print(token or "")' "$token_file")
 rm -f "$token_file"
 unset token_file
@@ -96,4 +100,5 @@ runuser -u engine-e2e -- env -i HOME=/home/engine-e2e PATH=/usr/local/bin:/usr/b
 unset RUNNER_TOKEN
 printf 'ENGINE_E2E_INSTANCE_TYPE=%s\nENGINE_E2E_CAPACITY_DEADLINE=%s\n' "$actual_instance" "$CAPACITY_DEADLINE" >> .env
 chown engine-e2e:engine-e2e .env
+bootstrapping=0
 runuser -u engine-e2e -- env -i HOME=/home/engine-e2e PATH=/usr/local/bin:/usr/bin:/bin ./run.sh

@@ -76,6 +76,8 @@ After reviewing the references, keep `write_reference=false` for candidate runs 
 Package `.github/scripts/engine-e2e-capacity.cjs` and `engine-e2e-pool.cjs` as a Node.js 22 Lambda with handler `engine-e2e-capacity.handler`.
 The App needs Administration write and Actions write for `NVIDIA/kumo-engine` only. Lambda keeps its keys and issues fresh registration tokens at boot.
 The external Lambda role needs Auto Scaling `DescribeAutoScalingGroups` and `SuspendProcesses`, with suspension restricted to owned groups.
+It also needs `s3:ListBucket`, restricted to the result prefix, so missing pool records return 404. Permission and network errors remain failures.
+The pool role's tag allowlist must include `EngineE2ESha` and `EngineE2EDeadline` alongside the existing ownership tags.
 The VM profile invokes only this Lambda. Repository workflow permissions control runner access. Labels select hardware without restricting workflow access.
 
 AWS maintains one pool per declared instance type and retries that type across approved subnets outside the CPU job.
@@ -87,10 +89,12 @@ Before allocation, AWS schedules suspend launches at the capacity deadline.
 Deletion is scheduled at the capacity deadline plus the case job timeout and a 30-minute cleanup buffer.
 These safeguards use minute precision and are best effort.
 Conditional S3 claims protect admitted cases. From the wait limit, EventBridge checks unstarted cases every ten minutes. Runs completed before that limit are skipped.
-Local prerequisite failures send their check and exit status to the registration Lambda. Registration and configuration failures shut down only that VM.
-Network reads retry up to five times. Registration makes up to three attempts, with backoff, before the capacity deadline.
+Boot failures, including runner registration and configuration, save their check and exit status and suspend new launches for that pool.
+The pool record is separate from case admission claims and does not need GitHub App access.
+Registration and configuration failures leave queued cases available to healthy workers. At the deadline, unstarted cases report the saved cause.
+Network reads retry up to five times. Registration and failure reports make up to three attempts, with backoff, before the capacity deadline.
 Retries never repeat the SSD formatter. Hardware checks still fail immediately.
-The Lambda validates the live run and owned group, suspends launches, and reports unadmitted cases through lifecycle jobs with `phase=bootstrap`.
+The Lambda checks pool ownership, pinned commit and deadline before saving failures. Hardware failures also validate the live run and report unadmitted cases immediately through lifecycle jobs with `phase=bootstrap`.
 Stored claims retain the failure reason and protect admitted cases.
 Capacity failures appear in a separate lifecycle run and preserve requested hardware.
 After a four-hour capacity failure, the original nightly job can remain queued until GitHub's 24-hour queue expiry.

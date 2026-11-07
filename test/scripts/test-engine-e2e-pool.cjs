@@ -24,7 +24,8 @@ function fixture(tier = 'weekly', runControls = false, scales = [tier === 'weekl
     labels: [r.label], status: 'queued'}));
   const owned = selected.pools.map(p => ({AutoScalingGroupName: p.label,
     LaunchTemplate: {LaunchTemplateId: p.template, Version: '3'},
-    Tags: [{Key: 'EngineE2EPool', Value: 'engine-e2e-41-2'}, {Key: 'EngineE2ERepository', Value: env.GITHUB_REPOSITORY}]}));
+    Tags: Object.entries({EngineE2EPool: 'engine-e2e-41-2', EngineE2ERepository: env.GITHUB_REPOSITORY,
+      EngineE2ESha: env.GITHUB_SHA, EngineE2EDeadline: String(Date.parse('2026-11-06T12:00:00Z') / 1000)}).map(([Key, Value]) => ({Key, Value}))}));
   const activeGroups = [...owned, {AutoScalingGroupName: 'engine-e2e-41-1-old', Tags: []}];
   const io = {env, now: () => Date.parse('2026-11-05T12:00:00Z') / 1000,
     preconditionFailed: error => error.message === 'existing claim',
@@ -284,31 +285,35 @@ test('drained pools stop launches without stopping active cases or unmaterialize
   own[0].status = 'queued';
   assert.equal(await registration(event, f.io), null, 'A failed/suspended pool cannot register another runner');
 });
-test('bootstrap failures report the check before the deadline and preserve admitted or running cases', async () => {
+for (const check of ['local SSD', 'runner registration', 'runner configuration'])
+test('bootstrap failure preserves its cause and other workers: ' + check, async () => {
   const f = await expired('weekly', true, ['10B', '25B']), pool = f.selected.pools[0];
   f.io.now = () => f.event.deadline - 60;
   const event = {...f.event, kind: 'bootstrap', instance: pool.instance, label: pool.label,
-    cases: f.event.cases.filter(r => r.label === pool.label), error: 'Bootstrap failed: local SSD (exit 1)'};
+    cases: f.event.cases.filter(r => r.label === pool.label), error: 'Bootstrap failed: ' + check + ' (exit 1)'};
   f.io.env.RESULTS_S3 = event.results;
   f.claims.set(claimKey(event.cases[0]), {state: 'admitted'});
   f.jobs.find(j => j.name.endsWith('engine-e2e:' + event.cases[1].case + ':' + event.cases[1].scale)).status = 'in_progress';
   f.jobs.splice(f.jobs.findIndex(j => j.name.endsWith('engine-e2e:' + event.cases[2].case + ':' + event.cases[2].scale)), 1);
   await registration(event, f.io);
   const dispatch = f.calls.find(c => c.path?.endsWith('/dispatches'));
-  assert.ok(dispatch, 'A failed boot must dispatch its failure before the capacity deadline');
-  const dispatched = JSON.parse(dispatch.data.inputs.payload);
-  const rows = (await report(dispatched, f.io)).include;
-  assert.equal(rows.length, event.cases.length - 2);
-  assert.ok(rows.every(r => r.phase === 'bootstrap' && r.error === event.error && r.label === pool.label));
+  if (check.startsWith('runner ')) {
+    assert.equal(dispatch, undefined);
+    assert.equal(f.claims.size, 2, 'Only the existing admission and pool marker may be saved');
+    assert.ok(!f.claims.has(claimKey(event.cases[3])), 'A healthy worker can still admit queued cases');
+  } else assert.ok(dispatch, 'A hard boot failure must report before the capacity deadline');
+  await registration({...event, error: 'Bootstrap failed: ' + check + ' (exit 2)'}, f.io);
+  f.io.now = () => f.event.deadline;
+  await capacity(f.event, f.io);
+  const replay = JSON.parse(f.calls.filter(c => c.path?.endsWith('/dispatches')).at(-1).data.inputs.payload);
+  const rows = (await report(replay, f.io)).include;
+  assert.equal(rows.filter(r => r.label === pool.label).length, event.cases.length - 3);
+  assert.ok(rows.filter(r => r.label === pool.label).every(r => r.phase === 'bootstrap' && r.error === event.error));
+  assert.ok(rows.filter(r => r.label !== pool.label).every(r => !r.error && !r.phase), 'Other pools retain capacity failures');
   assert.equal(f.claims.get(claimKey(event.cases[0])).state, 'admitted');
   assert.equal(f.claims.has(claimKey(event.cases[1])), false);
   assert.ok(f.calls.some(c => c.operation === 'suspend-processes' && c.input.ScalingProcesses.includes('Launch')));
   assert.equal(f.calls.filter(c => c.path?.endsWith('/registration-token')).length, 0);
-  await registration({...event, error: 'Bootstrap failed: Python 3.12 (exit 2)'}, f.io);
-  f.io.now = () => f.event.deadline;
-  await capacity({...f.event, cases: event.cases}, f.io);
-  const replay = JSON.parse(f.calls.filter(c => c.path?.endsWith('/dispatches')).at(-1).data.inputs.payload);
-  assert.ok((await report(replay, f.io)).include.every(r => r.phase === 'bootstrap' && r.error === event.error));
   f.owned[0].Tags = [];
   await assert.rejects(registration(event, f.io));
 });
@@ -328,32 +333,63 @@ test('repository runner administration uses its credential while workflow reads 
   });
   assert.deepEqual(calls, requests.map(([path, , token]) => [path, token]));
 });
-test('registration broker restricts its fresh installation token to this repository and its required permissions', async () => {
+for (const mode of [false, true, 403, 404])
+test('broker preserves authentication and S3 failure boundaries: ' + mode, async () => {
   const f = fixture(), handler = {}, calls = [], secret = {app_id: 1, installation_id: 7,
     private_key: generateKeyPairSync('rsa', {modulusLength: 2048}).privateKey.export({type: 'pkcs8', format: 'pem'})};
   const responses = {
     '/app/installations/7/access_tokens': {token: 'installation-token'},
     '/repos/NVIDIA/kumo-engine/actions/runs/41': f.run,
     '/repos/NVIDIA/kumo-engine/actions/runners/registration-token': {token: 'fresh-registration'},
-    '/repos/NVIDIA/kumo-engine/actions/runs/41/attempts/2/jobs': {jobs: f.jobs}
+    '/repos/NVIDIA/kumo-engine/actions/runs/41/attempts/2/jobs': {jobs: f.jobs},
+    '/repos/NVIDIA/kumo-engine/actions/workflows/engine-e2e-lifecycle.yml/dispatches': null
   };
   runInNewContext(readFileSync(join(__dirname, '../../.github/scripts/engine-e2e-capacity.cjs'), 'utf8'), {
-    exports: handler, Buffer, process: {env: {RUNNER_SECRET: 'registration-secret'}},
-    require: name => name.endsWith('engine-e2e-pool.cjs') ? {registration} :
+    exports: handler, Buffer, process: {env: {...f.io.env, RUNNER_SECRET: 'registration-secret'}},
+    require: name => name.endsWith('engine-e2e-pool.cjs') ? {registration, capacity} :
       name === '@aws-sdk/client-secrets-manager' ? {
-        SecretsManagerClient: class {async send() { return {SecretString: JSON.stringify(secret)}; }}, GetSecretValueCommand: class {}
-      } : name === '@aws-sdk/client-s3' ? {S3Client: class {}, PutObjectCommand: class {}, GetObjectCommand: class {}} :
+        SecretsManagerClient: class {async send() { assert.notEqual(mode, true); return {SecretString: JSON.stringify(secret)}; }}, GetSecretValueCommand: class {}
+      } : name === '@aws-sdk/client-s3' ? {
+        S3Client: class {async send(command) {
+          if (command.input.Body) return f.io.aws('s3', 'put-object', command.input);
+          throw Object.assign(Error('S3 read failed'), {$metadata: {httpStatusCode: mode}});
+        }},
+        PutObjectCommand: class {constructor(input) { this.input = input; }}, GetObjectCommand: class {constructor(input) { this.input = input; }}
+      } :
       name === '@aws-sdk/client-auto-scaling' ? {
-        AutoScalingClient: class {async send(command) { return {AutoScalingGroups: f.owned.filter(g =>
-          command.input.AutoScalingGroupNames.includes(g.AutoScalingGroupName))}; }},
-        DescribeAutoScalingGroupsCommand: class {constructor(input) { this.input = input; }}, SuspendProcessesCommand: class {}
+        AutoScalingClient: class {async send(command) { return f.io.aws('autoscaling', command.input.AutoScalingGroupNames ?
+          'describe-auto-scaling-groups' : 'suspend-processes', command.input); }},
+        DescribeAutoScalingGroupsCommand: class {constructor(input) { this.input = input; }},
+        SuspendProcessesCommand: class {constructor(input) { this.input = input; }}
       } : require(name),
     fetch: async (url, options) => {
       calls.push(options);
-      const value = responses[new URL(url).pathname]; assert.ok(value, 'Unexpected GitHub endpoint');
-      return {ok: true, status: options.method === 'POST' ? 201 : 200, json: async () => value};
+      const path = new URL(url).pathname; assert.ok(Object.hasOwn(responses, path), 'Unexpected GitHub endpoint');
+      return {ok: true, status: responses[path] === null ? 204 : 200, json: async () => responses[path]};
     }
   });
+  if (typeof mode === 'number') {
+    const event = {repo: f.io.env.GITHUB_REPOSITORY, run: '41', attempt: '2', sha: f.run.head_sha,
+      results: f.io.env.RESULTS_S3, deadline: Date.parse('2026-11-06T12:00:00Z') / 1000, cases: f.selected.matrix.include};
+    if (mode === 403) await assert.rejects(handler.handler(event), /S3 read failed/);
+    else await handler.handler(event);
+    assert.equal(f.claims.size, mode === 404 ? event.cases.length : 0);
+    return;
+  }
+  if (mode) {
+    const event = {...poolEvent(f, Math.floor(Date.now() / 1000) + 60),
+      kind: 'bootstrap', error: 'Bootstrap failed: runner registration (exit 31)', results: 's3://untrusted/root'};
+    f.owned[0].Tags.find(t => t.Key === 'EngineE2EDeadline').Value = String(event.deadline);
+    for (const bad of [{sha: 'b'.repeat(40)}, {deadline: event.deadline + 1}])
+      await assert.rejects(handler.handler({...event, ...bad}));
+    await handler.handler(event);
+    assert.equal(calls.length, 0);
+    assert.equal(f.claims.size, 1);
+    assert.equal([...f.claims.values()][0].error, event.error);
+    assert.ok(f.calls.some(c => c.operation === 'suspend-processes'));
+    assert.equal(f.calls.find(c => c.operation === 'put-object').input.Bucket, 'results');
+    return;
+  }
   assert.equal(await handler.handler({kind: 'registration', ...poolEvent(f, Date.now() / 1000 + 60)}), 'fresh-registration');
   assert.deepEqual(JSON.parse(calls[0].body), {repositories: ['kumo-engine'], permissions: {administration: 'write', actions: 'write'}});
   assert.ok(calls.slice(1).every(c => c.headers.Authorization === 'Bearer installation-token'));

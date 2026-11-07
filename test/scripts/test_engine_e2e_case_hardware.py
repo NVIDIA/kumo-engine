@@ -156,17 +156,23 @@ def test_formatter_download_retries_without_rerunning_it(tmp_path, status):
     assert log.read_text() == "formatter"
 
 
-@pytest.mark.parametrize("mode,status,attempts",
-                         [("failure", 1, 0), ("report-failure", 1, 0),
-                          ("drained", 0, 1), ("job-exit", 7, 1),
-                          ("registration-transport", 31, 3),
-                          ("registration-function", 1, 3),
-                          ("configuration", 7, 1), ("transport-recovery", 0, 3),
-                          ("function-recovery", 0, 3),
-                          ("drained-recovery", 0, 2),
-                          ("registration-deadline", 31, 1)])
+@pytest.mark.parametrize("mode,status,attempts,reports",
+                         [("failure", 1, 0, 1), ("report-failure", 1, 0, 3),
+                          ("report-transport-recovery", 1, 0, 2),
+                          ("report-function-recovery", 1, 0, 3),
+                          ("report-deadline", 1, 0, 1),
+                          ("report-expired", 1, 0, 0),
+                          ("report-invalid-deadline", 1, 0, 0),
+                          ("drained", 0, 1, 0), ("job-exit", 7, 1, 0),
+                          ("registration-transport", 31, 3, 1),
+                          ("registration-function", 1, 3, 1),
+                          ("configuration", 7, 1, 1),
+                          ("transport-recovery", 0, 3, 0),
+                          ("function-recovery", 0, 3, 0),
+                          ("drained-recovery", 0, 2, 0),
+                          ("registration-deadline", 31, 1, 1)])
 def test_bootstrap_reports_its_failed_check_and_always_shuts_down(
-        tmp_path, mode, status, attempts):
+        tmp_path, mode, status, attempts, reports):
     source = (ROOT / ".github/scripts/engine-e2e-runner.sh").read_text()
     functions = "\n".join(
         re.findall(r"^[a-z_]+\(\) \{\n.*?^\}", source,
@@ -174,13 +180,13 @@ def test_bootstrap_reports_its_failed_check_and_always_shuts_down(
     trap = next(line for line in source.splitlines()
                 if line.startswith("trap ") and line.endswith(" EXIT"))
     body = "boot_check=GPU\nfalse\n"
-    if not mode.endswith("failure"):
+    preflight = mode == "failure" or mode.startswith("report-")
+    if not preflight:
         body = source.split("and local SSD'\n",
                             1)[1].replace("cd /opt/actions-runner",
                                           'cd "$TEST_DIR"')
-    clock = (
-        'if [[ $TEST_MODE == registration-deadline ]]; then echo 1999999999; '
-        'else echo 1000000000; fi')
+    clock = ('case $TEST_MODE in *-deadline) echo 1999999999;; '
+             'report-expired) echo 2000000000;; *) echo 1000000000;; esac')
     commands = dict(
         date=clock, mktemp='exec /usr/bin/mktemp "$TEST_DIR/token.XXXXXX"',
         shutdown='printf shutdown >> "$TEST_DIR/shutdown.log"', chown="exit 0",
@@ -197,12 +203,18 @@ payload = json.loads(sys.argv[sys.argv.index('--payload') + 1])
 with (Path(os.environ['TEST_DIR']) / 'events').open('a') as output:
     output.write(json.dumps(payload) + '\\n')
 mode = os.environ['TEST_MODE']
-attempt = len((Path(os.environ['TEST_DIR']) / 'events').read_text().splitlines())
-if mode in ('report-failure', 'registration-transport', 'registration-deadline') or (
-        mode == 'transport-recovery' and attempt < 3) or (mode == 'drained-recovery' and attempt < 2):
+attempt = sum(json.loads(line)['kind'] == payload['kind'] for line in
+    (Path(os.environ['TEST_DIR']) / 'events').read_text().splitlines())
+registration = payload['kind'] == 'registration'
+if (registration and (mode in ('registration-transport', 'registration-deadline') or
+        (mode == 'transport-recovery' and attempt < 3) or (mode == 'drained-recovery' and attempt < 2))) or (
+        not registration and (mode in ('report-failure', 'report-deadline') or
+        (mode == 'report-transport-recovery' and attempt < 2))):
     raise SystemExit(31)
-Path(sys.argv[-1]).write_text(json.dumps(None if mode in ('drained', 'drained-recovery') else 'fixture-token'))
-print('Unhandled' if mode == 'registration-function' or (mode == 'function-recovery' and attempt < 3) else 'None')
+Path(sys.argv[-1]).write_text(json.dumps(None if not registration or mode in ('drained', 'drained-recovery') else 'fixture-token'))
+failed = (registration and (mode == 'registration-function' or (mode == 'function-recovery' and attempt < 3))) or (
+    not registration and mode == 'report-function-recovery' and attempt < 3)
+print('Unhandled' if failed else 'None')
 """)
     (tmp_path / "aws").chmod(0o755)
     (tmp_path / "events").touch()
@@ -216,28 +228,33 @@ print('Unhandled' if mode == 'registration-function' or (mode == 'function-recov
     ], cwd=tmp_path, env=dict(
         os.environ, PATH=f"{tmp_path}:/usr/bin:/bin", TEST_DIR=str(tmp_path),
         TEST_MODE=mode, REPOSITORY="NVIDIA/kumo-engine", POOL_RUN_ID="41",
-        POOL_ATTEMPT="2", SOURCE_SHA="a" * 40, CAPACITY_DEADLINE="2000000000",
-        INSTANCE_TYPE="g7e.8xlarge", LABEL=cases[0]["label"],
-        POOL_CASES=json.dumps(cases), CAPACITY_FUNCTION="fixture",
-        AWS_REGION="us-west-2", actual_instance="g7e.8xlarge", TIER="weekly"),
-                            capture_output=True, text=True, timeout=10)
+        POOL_ATTEMPT="2", SOURCE_SHA="a" * 40,
+        CAPACITY_DEADLINE=("invalid" if mode == "report-invalid-deadline" else
+                           "2000000000"), INSTANCE_TYPE="g7e.8xlarge",
+        LABEL=cases[0]["label"], POOL_CASES=json.dumps(cases),
+        CAPACITY_FUNCTION="fixture", AWS_REGION="us-west-2",
+        actual_instance="g7e.8xlarge", TIER="weekly"), capture_output=True,
+                            text=True, timeout=10)
     assert result.returncode == status, result.stdout + result.stderr
     lines = (tmp_path / "events").read_text().splitlines()
     events = [json.loads(line) for line in lines]
-    assert [
-        event["kind"] for event in events
-    ] == (["bootstrap"] if mode.endswith("failure") else ["registration"] *
-          attempts)
+    assert [event["kind"] for event in events
+            ] == ["registration"] * attempts + ["bootstrap"] * reports
     sleeps = tmp_path / "sleeps"
-    assert (sleeps.read_text().splitlines() if sleeps.exists() else []) == [
-        "5", "10"
-    ][:max(0, attempts - 1)]
+    expected_sleeps = ["5", "10"][:max(0, attempts - 1)]
+    expected_sleeps.extend(["5", "10"][:max(0, reports - 1)])
+    assert (sleeps.read_text().splitlines()
+            if sleeps.exists() else []) == expected_sleeps
     if events:
         assert events[0]["cases"] == cases
-    if mode.endswith("failure"):
-        assert events[0]["error"] == "Bootstrap failed: GPU (exit 1)"
-        assert events[0]["error"] in result.stderr
-    if mode == "report-failure":
+    if reports:
+        check = ("GPU" if preflight else "runner configuration"
+                 if mode == "configuration" else "runner registration")
+        error = f"Bootstrap failed: {check} (exit {status})"
+        assert all(event["error"] == error for event in events[attempts:])
+        assert error in result.stderr
+    if mode in ("report-failure", "report-deadline", "report-expired",
+                "report-invalid-deadline"):
         assert "Bootstrap failure notification failed" in result.stderr
     assert (tmp_path / "shutdown.log").read_text() == "shutdown"
     assert not list(tmp_path.glob("token.*"))
