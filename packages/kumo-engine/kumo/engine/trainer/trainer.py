@@ -108,6 +108,8 @@ from kumo.engine._tracking import (
 )
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.source_table import SourceTable
+from kumo.engine.explain._artifacts import explanation_trial
+from kumo.engine.explain.results import TrainingExplanations
 from kumo.engine.graph import (
     GraphSnapshot,
     index_timestamp_precision,
@@ -174,6 +176,8 @@ class TrainingResult:
     bundles from before this copy was added have none. The file is capped at
     1 GiB in memory; `holdout_truncated` is true when rows were dropped to fit,
     and `None` when the size record could not be read.
+    `explanations` lazily reads retained training diagnostics. Restoring a model
+    bundle alone leaves these diagnostics unavailable.
     """
 
     metrics: Dict[str, float]
@@ -192,6 +196,8 @@ class TrainingResult:
                                             compare=False)
     _tracking: Optional[TrackingRef] = field(default=None, repr=False,
                                              compare=False)
+    explanations: TrainingExplanations = field(
+        default_factory=TrainingExplanations.unavailable)
 
     @property
     def id(self) -> Optional[str]:
@@ -521,8 +527,10 @@ def _fetch_dir(prefix: str) -> Path:
     return Path(tempfile.mkdtemp(prefix=prefix, dir=scratch))
 
 
-def fetch_parquet(filesystem: Any, root: str, target: Path) -> None:
-    r"""Download the Parquet files under ``root`` into ``target``."""
+def fetch_parquet(filesystem: Any, root: str, target: Path,
+                  parts: Optional[Sequence[Any]] = None) -> None:
+    r"""Download the Parquet files under ``root``, or ``parts``, into
+    ``target``."""
     from kumo_core.sources.transfer import StagedFile, fetch_all
     from pyarrow.fs import FileSelector, FileType
 
@@ -531,11 +539,13 @@ def fetch_parquet(filesystem: Any, root: str, target: Path) -> None:
                 open(local, 'wb') as writer:
             shutil.copyfileobj(reader, writer, 1 << 20)
 
-    fetch_all([
-        StagedFile(info.path, info.size)
-        for info in filesystem.get_file_info(FileSelector(root))
-        if info.type == FileType.File and info.path.endswith('.parquet')
-    ], str(target), fetch=fetch)
+    if parts is None:
+        parts = [
+            info for info in filesystem.get_file_info(FileSelector(root))
+            if info.type == FileType.File and info.path.endswith('.parquet')
+        ]
+    fetch_all([StagedFile(info.path, info.size) for info in parts],
+              str(target), fetch=fetch)
 
 
 def _sidecar_bytes(manifest: Optional[PredictionManifest]) -> Optional[bytes]:
@@ -920,7 +930,7 @@ def _validate_model_plan(model_plan: CoreModelPlan,
     )
 
 
-def _explain(best_trainer: Any, run_id: str) -> None:
+def _explain(best_trainer: Any, run_id: str) -> Optional[str]:
     try:
         best_trainer.explain(
             explain_methods=[
@@ -933,11 +943,13 @@ def _explain(best_trainer: Any, run_id: str) -> None:
         aggregate_subgraph_features(
             str(Path(best_trainer.subgraph_collector_dir()) / 'test'),
             TrainingStage.TEST)
-    except Exception:
+    except Exception as error:
         logger.exception(
             'Training succeeded, but post-training explanations '
             'failed for run %s. The trained model remains available.',
             run_id)
+        return f'{type(error).__name__}: {error}'
+    return None
 
 
 def _stage_model_bundle(artifacts: Mapping[str, str], dest: Path) -> Path:
@@ -1408,8 +1420,13 @@ class Trainer:
                 binary_classification_threshold=threshold,
                 target_edges=edges),
         )
+        explanation_root = explanation_trial(
+            result.best_trainer.original_log_dir,
+            refitted_trainval=result.best_trainer.refit_cfg.refitted_trainval,
+        )
+        explanation_failure = None
         if not result.explain_disabled:
-            _explain(result.best_trainer, run_id)
+            explanation_failure = _explain(result.best_trainer, run_id)
         holdout_path, holdout_truncated = _published_holdout(
             result.best_trainer)
         fit_mode = result.best_trainer.published_fit_mode()
@@ -1433,6 +1450,9 @@ class Trainer:
                 *([Note('notes', _UNBINNED)] if unbinned else [])),
                 result.metrics,
                 refit_full=fit_mode == 'refit_full'),
+            explanations=TrainingExplanations.from_trial(
+                run_dir, explanation_root, disabled=result.explain_disabled,
+                failure=explanation_failure),
         )
         holdout_counts = None if result.published_counts is None else (
             baseline(result.published_counts).to_dict())
@@ -1890,9 +1910,11 @@ class Trainer:
 
     def _from_registry(self, model: PublishedModel,
                        alias: Optional[str]) -> None:
-        self._training_result = replace(self._fitted('predict'),
-                                        registered_model=model,
-                                        registered_alias=alias)
+        result = self._fitted('predict')
+        self._training_result = replace(
+            result,
+            registered_model=replace(model, metrics=registry_metrics(result)),
+            registered_alias=alias)
 
     @classmethod
     def _load_bundle(

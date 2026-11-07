@@ -1172,12 +1172,12 @@ class OptimizationPlan(PlanMixin):
         metadata=Metadata(),
     )
 
-    max_val_steps: Union[PositiveInt, MissingType, None] = compat_field(
+    max_val_steps: Union[conint(ge=1), MissingType, None] = compat_field(
         default_factory=lambda: MissingType.VALUE,
         metadata=Metadata(),
     )
 
-    max_test_steps: Union[PositiveInt, MissingType, None] = compat_field(
+    max_test_steps: Union[conint(ge=1), MissingType, None] = compat_field(
         default_factory=lambda: MissingType.VALUE,
         metadata=Metadata(),
     )

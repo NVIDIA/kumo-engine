@@ -119,7 +119,7 @@ with kumo.mlops(cfg):
 trainer.fit(table, snapshot=snapshot, mlops=cfg)
 ```
 
-- **`artifact_root`** (required): a URI (`s3://`, `gs://`, `file://`, or a local path, including `/Volumes/...` on a Databricks cluster) or a `(connector, path)` pair for a store a URI cannot reach: a volume through a `DatabricksConnector` (`"/Volumes/<catalog>/<schema>/<volume>/kumo"`) or a named stage through a `SnowflakeConnector` (`"@DB.SCHEMA.STAGE/kumo"`). The connector's `root_dir` must contain the path; `kumo.MLOps` raises otherwise, so a data connector rooted at `s3://<bucket>/data` cannot hold `s3://<bucket>/artifacts`.
+- **`artifact_root`** (required): a URI (`s3://`, `gs://`, `abfss://`, `file://`, or a local path, including `/Volumes/...` on a Databricks cluster) or a `(connector, path)` pair for a store a URI cannot reach: a volume through a `DatabricksConnector` (`"/Volumes/<catalog>/<schema>/<volume>/kumo"`) or a named stage through a `SnowflakeConnector` (`"@DB.SCHEMA.STAGE/kumo"`). The connector's `root_dir` must contain the path; `kumo.MLOps` raises otherwise, so a data connector rooted at `s3://<bucket>/data` cannot hold `s3://<bucket>/artifacts`.
 - **`tracking`**: `MlflowTracking` or `SnowflakeTracking` (below), or your own [`Tracking`](#custom-trackers).
 - **`registry`**: a `ModelRegistryLocation(name, alias=...)`; every fit registers its model there, in the tracker's registry.
 - **`store`**: the artifact kinds stored when produced: `snapshot`, `training_table`, `model` and `prediction` (default: all).
@@ -128,6 +128,8 @@ trainer.fit(table, snapshot=snapshot, mlops=cfg)
 - **Off by default.** Without a block or `mlops=`, every call behaves as it always has; plain exports (`export(config)`, `export_config=`, `output_config=`) never write to the artifact root.
 - **Per call, not per model.** MLOps applies only to a call given `mlops=` or run inside `with kumo.mlops(...)`. A later call outside the block, even on a model trained inside one, runs without MLOps, and `on_error="raise"` does not detect this: it covers only MLOps work that ran. There is no per-call off switch; to run one call without MLOps, call it outside the block. For scheduled jobs, wrap the whole job in one block.
 - `kumo.MLOps(...)` checks the tracker and registry when it is built (one experiment lookup, one registry listing, the model name's rules), so wrong credentials or a bad name fail before any work.
+
+ADLS roots use the secure `abfss://<filesystem>@<account>.<dfs-endpoint>/<prefix>` form. The full connector root is a valid artifact directory; relative root spellings (`''`, `'.'`, `'/'`) require the full URI instead. Table sources and prediction destinations still require a child path. Pass `(ADLSConnector(...), root_uri)` to retain an explicit identity, and use `model_config={"assets_from": connector}` when loading a model with ADLS snapshots or assets. The connector's existing workload-identity and sovereign-cloud write requirements still apply.
 
 ### Reading artifacts back
 
@@ -224,13 +226,19 @@ Every value comes from exact counts over all rows, with no sampling. Numbers you
 - Problems, when there are any, come right after the sentence.
 - Then tables: holdout metrics (fit; `ap`, `auprc`, `loss` and `logloss` with their meanings, as under Metrics); the 2x2
   matrix at the binary threshold; the training data; data preparation; notes; "Lineage"; "Where things are", with
-  each artifact's full location, linked to the S3 or GCS console.
+  each artifact's full location, linked to the S3 or GCS console. ADLS locations
+  include an Azure Storage accounts link for their public, Government or China
+  cloud; opening a specific directory requires subscription and resource-group
+  IDs that are absent from an ADLS URI.
 - "Lineage" is how the run's data depend on each other. A fit: its source tables with their versions and locations →
   graph snapshot → training table → model. A prediction: the model ← its training table ← its snapshot ← its source
   tables, then the snapshot it scored ← that snapshot's tables, and, when the two snapshots differ, which tables are
   newer.
-- Add your own notes below the line "Add notes below this line"; the card ends with a rule. Editing above it stops
-  kumo-engine updating that card; the run is then tagged `kumo.card_frozen`.
+- On MLflow the card ends with the line "kumo rewrites everything above this line; editing it stops kumo's updates."
+  and a rule, followed by a hidden `<!-- /kumo:card sha256=... -->` marker that only the description editor shows.
+  Add your own notes after that marker and keep it; editing anything above it, the marker included, stops
+  kumo-engine updating that card and tags the run `kumo.card_frozen`. On Snowflake the card is the `run_card.md`
+  artifact, written once when the run ends, with no notes line.
 - Every comparison names its reference: "vs holdout" (the model's holdout scores at training), "vs previous" (the previous run) or "vs training data" (input columns).
 
 **Metrics.**
@@ -315,9 +323,9 @@ scores = model.predict(pd.DataFrame({"ENTITY": [1, 2, 3]}), params={
 
 - Input rows have an `ENTITY` column and optionally a `TIMESTAMP`; a temporal query needs one of `TIMESTAMP` or `prediction_time` (the anchor of a batch run is `run.manifest.prediction_table.anchors[0]`). Scores come back in input order, one per scored row. Binary classification returns `True_PROB`; `TARGET_PRED` needs `params={"binary_classification_threshold": ...}` or a stored threshold, and is null without one.
 - Each replica loads a snapshot on its first `predict` with that URI and keeps it. `log_model(trainer, snapshot=..., serving_snapshot=...)` logs a model whose replicas load that snapshot at startup and use it when no `snapshot` param is given; `serving_snapshot` takes a URI, or a `GraphSnapshot` or snapshot id stored under the block's artifact root.
-- Snapshot URIs: `s3://`, `gs://`, `file://` or a local path, read with the ambient credentials. A `/Volumes/...` path off a Databricks cluster, or a stage path, is read through `model_config={"assets_from": connector}` (below), e.g. the connector of a `(connector, "/Volumes/...")` root.
+- Snapshot URIs: `s3://`, `gs://`, `abfss://`, `file://` or a local path, read with the ambient credentials. A `/Volumes/...` path off a Databricks cluster, or a stage path, is read through `model_config={"assets_from": connector}` (below), e.g. the connector of a `(connector, "/Volumes/...")` root.
 - A model with stored assets (word vectors for text columns) on a volume, stage or bucket reads them, and snapshots there, with the identity it is given: `mlflow.pyfunc.load_model(uri, model_config={"assets_from": connector})`, a connector for that store with its credentials; an asset it cannot find raises, naming this option.
-- `mlflow models serve` needs an image with kumo-engine installed: `mlflow models serve -m <model dir> --env-manager local`. Its pip requirement is `kumo-engine[s3,gcs]` of the same version (plus `[text]` for text columns).
+- `mlflow models serve` needs an image with kumo-engine installed: `mlflow models serve -m <model dir> --env-manager local`. Its pip requirement is `kumo-engine[s3,gcs]` of the same version (plus `[text]` for text columns). Models with an ADLS bundle, asset or default snapshot location also include `[adls]`. If an ADLS snapshot is supplied only at prediction time, install `[adls]` in the serving environment too.
 
 ### Batch inference in Snowflake
 

@@ -23,6 +23,15 @@ import pandas as pd
 import pyarrow as pa
 import pytorch_lightning as pl
 import torch
+from kumoapi.encoder import TextEmbedding
+from kumoapi.model_plan import WeightMode
+from kumoapi.train import TrainingStage
+from pytorch_lightning.profilers import AdvancedProfiler, SimpleProfiler
+from torch import Tensor
+from torch_frame.data import MultiEmbeddingTensor, MultiNestedTensor
+from torch_geometric.sampler.base import NumNeighbors, SubgraphType
+from torch_geometric.typing import EdgeType, EdgeTypeStr
+
 from kumo_core.callbacks import (
     CudaOOMHandler,
     EarlyStopping,
@@ -30,13 +39,29 @@ from kumo_core.callbacks import (
     TrainerProgress,
     TrainingProgressLogger,
 )
-from kumo_core.errors import TrainingValidationError
-from kumo_core.explain import ExplainRuntime
+from kumo_core.diskgraph.metadata import DiskgraphSchema
 from kumo_core.embedding_models import (
     EmbeddingModelStore,
     require_encoder_models,
     resolve_encoder,
 )
+from kumo_core.encoders.config import EncodersConfig
+from kumo_core.encoders.sequence.base import SequenceEncoder
+from kumo_core.encoders.sequence.decomposed import DecomposedSequenceEncoder
+from kumo_core.encoders.sequence.mlp import MLPSequenceEncoder
+from kumo_core.encoders.sequence.normalized import NormalizedSequenceEncoder
+from kumo_core.encoders.sequence.transformer import TransformerSequenceEncoder
+from kumo_core.encoders.target.base import TargetEncoder
+from kumo_core.encoders.target.multicategorical import MultiCategoricalTargetEncoder
+from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
+from kumo_core.encoders.time import TimeEncoder
+from kumo_core.errors import TrainingValidationError
+from kumo_core.evaluation.suite import MetricStore
+from kumo_core.explain import ExplainRuntime
+from kumo_core.explain.column_analysis import ColumnAnalysis
+from kumo_core.explain.gradient_explainer import GradientExplainer
+from kumo_core.explain.subgraph_collector import SubgraphCollector
+from kumo_core.features.stores.feature import FeatureStore
 from kumo_core.instrumentation import set_metrics_job_name, timing, trace
 from kumo_core.io import filesystem as fsutil
 from kumo_core.io.csv import save_csv
@@ -48,8 +73,14 @@ from kumo_core.job_config import (
     TextEmbeddingSize,
     TrialStatus,
 )
-from kumo_core.public_error import PublicTrainingError
+from kumo_core.modeling.gnn.hetero import HeteroGNN
+from kumo_core.modeling.gnn.transformer import GraphTransformer
+from kumo_core.modeling.heads.forecasting import ForecastingHead
+from kumo_core.modeling.heads.link_prediction import LinkPredHead
+from kumo_core.modeling.heads.node_prediction import NodePredHead
+from kumo_core.modeling.heads.year_over_year import YearOverYearEncoder
 from kumo_core.modeling.retrieval.mips import require_faiss
+from kumo_core.public_error import PublicTrainingError
 from kumo_core.resolved_task import ResolvedNumericalTask
 from kumo_core.train.checkpoint import KumoCheckpointIO
 from kumo_core.train.formatting import format_embeddings, format_prediction
@@ -64,7 +95,7 @@ from kumo_core.train.loss import (
 )
 from kumo_core.train.mapping import NODE_INDEX_COLUMN
 from kumo_core.train.node_gnn_module import NodeGNNLightningModule
-from kumo_core.train.output import EvalOutput, PredOutput
+from kumo_core.train.output import EvalFrames, EvalOutput, PredOutput
 from kumo_core.training.config import (
     RHS_NUM_EMB_SIZE_LIMIT,
     FitMode,
@@ -79,44 +110,14 @@ from kumo_core.training.options import allow_array_targets
 from kumo_core.training.runtime import (
     DiskgraphTrainingRuntime,
     TrainingArtifactRuntime,
-    TrainingDataRuntime,
 )
+from kumo_core.training.task_config import TaskConfig
 from kumo_core.types import ExplainMethod, TaskType
 from kumo_core.utils.config_mixin import PortableConfigMixin
 from kumo_core.utils.names import get_table_name
 from kumo_core.utils.registry import register
 from kumo_core.utils.time import MAX_PSEUDO_TIME
 from kumo_core.version import get_kumo_version
-from kumoapi.encoder import TextEmbedding
-from kumoapi.model_plan import WeightMode
-from kumoapi.train import TrainingStage
-from kumo_core.encoders.config import EncodersConfig
-from kumo_core.features.stores.feature import FeatureStore
-from kumo_core.features.stores.graph import GraphStore
-from kumo_core.explain.column_analysis import ColumnAnalysis
-from kumo_core.evaluation.suite import MetricStore
-from kumo_core.modeling.gnn.hetero import HeteroGNN
-from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
-from kumo_core.encoders.time import TimeEncoder
-from kumo_core.encoders.target.multicategorical import MultiCategoricalTargetEncoder
-from kumo_core.encoders.target.base import TargetEncoder
-from kumo_core.explain.gradient_explainer import GradientExplainer
-from kumo_core.explain.subgraph_collector import SubgraphCollector
-from kumo_core.encoders.sequence.decomposed import DecomposedSequenceEncoder
-from kumo_core.modeling.heads.forecasting import ForecastingHead
-from kumo_core.modeling.gnn.transformer import GraphTransformer
-from kumo_core.modeling.heads.link_prediction import LinkPredHead
-from kumo_core.encoders.sequence.mlp import MLPSequenceEncoder
-from kumo_core.modeling.heads.node_prediction import NodePredHead
-from kumo_core.encoders.sequence.normalized import NormalizedSequenceEncoder
-from kumo_core.encoders.sequence.base import SequenceEncoder
-from kumo_core.encoders.sequence.transformer import TransformerSequenceEncoder
-from kumo_core.modeling.heads.year_over_year import YearOverYearEncoder
-from pytorch_lightning.profilers import AdvancedProfiler, SimpleProfiler
-from torch import Tensor
-from torch_frame.data import MultiEmbeddingTensor, MultiNestedTensor
-from torch_geometric.sampler.base import NumNeighbors, SubgraphType
-from torch_geometric.typing import EdgeType, EdgeTypeStr
 
 from .forecasting_gnn_module import ForecastingGNNLightningModule
 from .shallow_rhs_link_gnn_module import ShallowRHSLinkGNNLightningModule
@@ -418,6 +419,10 @@ class Trainer(PortableConfigMixin):
             compiled using torch.compile. (default: :obj:`False`)
         **kwargs (optional): Additional arguments of
             :class:`pytorch_lightning.Trainer`.
+
+    Raises:
+        TypeError: If feature_store or graph_store is supplied. The trainer
+            creates feature access and schema metadata internally.
     """
     @staticmethod
     def _validate_eval_new_visit(task_type: TaskType,
@@ -477,35 +482,28 @@ class Trainer(PortableConfigMixin):
         random_state_seed: int | None = None,
         enable_compile: bool = False,
         is_reverse_edge_enabled: bool = True,
-        # `FeatureStore`/`GraphStore` interface:
-        feature_store: FeatureStore | None = None,
-        graph_store: GraphStore | None = None,
         encoders: EncodersConfig | None = None,
         explain_runtime: ExplainRuntime | None = None,
-        data_runtime: TrainingDataRuntime | None = None,
         artifact_runtime: TrainingArtifactRuntime | None = None,
         diskgraph_runtime: DiskgraphTrainingRuntime | None = None,
         embedding_models: EmbeddingModelStore | None = None,
         accelerator: str = 'auto',
         **kwargs,
     ) -> None:
+        for name in ('feature_store', 'graph_store'):
+            if name in kwargs:
+                raise TypeError(f"{name} is managed internally by the trainer")
         self._embedding_models = embedding_models
 
         # Filter useless PyTorch Lightning warning for `log_every_n_steps`
         # being greater than `steps_per_epoch`:
         warnings.filterwarnings('ignore', '.*value for log_every_n_steps.*')
 
-        # NOTE In some case (e.g., TrainingJobActivities postprocess results of
-        # the best trainer), `feature_store`, `graph_store`, and `encoders` are
-        # `None`. However, we might want to force those arguments to be
-        # non-`None` in the future.
-
         self.task = task
-        self.feature_store = feature_store
-        self.graph_store = graph_store
+        self.feature_store: FeatureStore | None = None
+        self.graph_schema: DiskgraphSchema | None = None
         self.encoders = encoders
         self.explain_runtime = explain_runtime
-        self.data_runtime = data_runtime
         self.artifact_runtime = artifact_runtime
         self.diskgraph_runtime = diskgraph_runtime
         self._target_encoder: TargetEncoder | None = None
@@ -580,15 +578,6 @@ class Trainer(PortableConfigMixin):
             sampler_kwargs = SamplerKwargs()
         elif isinstance(sampler_kwargs, dict):
             sampler_kwargs = SamplerKwargs.cast(sampler_kwargs)
-
-        # TODO: Clean up how training job workflow retrieves log_dir, so that
-        # we can always require non-None `feature_store` and `graph_store`.
-        # NOTE Currently, when loading Trainer in training job workflow via
-        # TrainingJobActivities. In such cases, we likely don't need
-        # sampler_kwargs anyway:
-        if (feature_store is not None
-                and feature_store.has_train_table_time_col):
-            sampler_kwargs.time_attr = 'time'
 
         if task.task_type == TaskType.STATIC_LINK_PREDICTION:
             # For static link prediction, we want to sample valid links
@@ -748,207 +737,12 @@ class Trainer(PortableConfigMixin):
             self.head = torch.compile(self.head, dynamic=True)
 
     def init(self) -> 'Trainer':
-        r"""Initialize the trainer."""
+        """Require a runtime-specific trainer implementation.
 
-        if self._fully_initialized and not self.fit_mode.is_refit:
-            return self
-
-        # Initialize GNN Model ################################################
-
-        num_entities: int | None = None
-        if self.task.task_type == TaskType.FORECASTING:
-            num_entities = self.feature_store.get_tensor_size(
-                self.feature_store.entity_table_names[0], 'tf')[0]
-
-        self.initialize_model(
-            node_types=sorted(self.feature_store.table_names),
-            edge_types=self.graph_store.edge_types,
-            train_table_name=self.feature_store.train_table_name,
-            has_train_table_time_col=self.feature_store.has_train_table_time_col,
-            time_col_dict=self.feature_store.time_col_dict,
-            entity_table_names=self.feature_store.entity_table_names,
-            num_entities=num_entities,
-        )
-
-        # Instantiate graph samplers ##########################################
-
-        if (self.task.task_type == TaskType.MULTICLASS_CLASSIFICATION
-                and self.head.out_channels == 1):
-            logger.warning("Setting the task type to binary classification "
-                           "since there only exists two classes")
-            self.task.task_type = TaskType.BINARY_CLASSIFICATION
-
-        assert self.feature_store is not None
-        assert self.graph_store is not None
-
-        with timing("trainer.init.create_graph_sampler"):
-            if self.data_runtime is None:
-                raise RuntimeError(
-                    "data_runtime is required to initialize legacy training")
-            self.graph_sampler = self.data_runtime.create_graph_sampler(
-                self.feature_store,
-                self.graph_store,
-                self.sampler_kwargs,
-                random_seed=self.random_state_seed,
-            )
-
-        # Apply diskgraph auto-configured num_workers to DataLoader.
-        _dg_cfg = getattr(self.graph_sampler, '_auto_config', None)
-        if _dg_cfg is not None:
-            self.loader_kwargs.num_workers = _dg_cfg['num_workers']
-            logger.info(
-                "DiskGraph auto_config applied: num_workers=%d, "
-                "rayon_threads=%d, mode=%s", _dg_cfg['num_workers'],
-                _dg_cfg['rayon_threads'], _dg_cfg['mode'])
-
-        # Create PyTorch Lightning Modules ####################################
-
-        entity_table_names = self.feature_store.entity_table_names
-        train_table_name = self.feature_store.train_table_name
-        with timing("trainer.init.load_train_table_tensors"):
-            fkey = self.feature_store[train_table_name, 'fkey', :]
-            train_mask = self.feature_store[train_table_name, 'train_mask', :]
-            val_mask = self.feature_store[train_table_name, 'val_mask', :]
-        logger.info(f"Obtained foreign keys of shape {fkey.shape}")
-        logger.info(f"Obtained train mask of shape {train_mask.shape} with "
-                    f"{int(train_mask.sum())} positive entries")
-        logger.info(f"Obtained validation mask of shape {val_mask.shape} with "
-                    f"{int(val_mask.sum())} positive entries")
-        test_mask: Tensor | None = None
-        if self.feature_store.has_train_table_test_mask:
-            test_mask = self.feature_store[train_table_name, 'test_mask', :]
-            logger.info(f"Obtained test mask of shape {test_mask.shape} with "
-                        f"{int(test_mask.sum())} positive entries")
-        time: Tensor | None = None
-        if self.feature_store.has_train_table_time_col:
-            time = self.feature_store[train_table_name, 'time', :]
-            logger.info(f"Obtained time vector of shape {time.shape}")
-        weight: Tensor | None = None
-        # Prediction does not use `weight` column. Weight column
-        # is needed mainly for loss and metrics calculation.
-        if (self.feature_store.has_train_table_weight_col
-                and not self._prediction_mode):
-            weight = self.feature_store[train_table_name, 'weight', :]
-            logger.info(f"Obtained weight vector of shape {weight.shape}")
-        target: Tensor | None = None
-        if (self.task.task_type in {
-                TaskType.FORECASTING,
-                TaskType.BINARY_CLASSIFICATION,
-        } and not self._prediction_mode):
-            target = self.feature_store[train_table_name, 'y', :]
-            if self.task.task_type == TaskType.BINARY_CLASSIFICATION:
-                target = self.target_encoder.encode_tensor(target)
-
-        # Compute the majority sampling strength for binary classification:
-        if (self.majority_sampling_ratio is not None
-                and self.task.task_type == TaskType.BINARY_CLASSIFICATION
-                and not self._prediction_mode):
-            assert target is not None
-            train_target = target[train_mask].view(-1).long()
-            train_target_count = train_target.bincount(minlength=2)
-            assert train_target_count.numel() == 2
-            target_distribution = {
-                False: int(train_target_count[0]) / train_target.numel(),
-                True: int(train_target_count[1]) / train_target.numel(),
-            }
-            self.majority_sampling_weights = generate_majority_sampling_weight(
-                self.majority_sampling_ratio,
-                target_distribution,
-            )
-
-        if self.fit_mode.is_refit:
-            if self.fit_mode == FitMode.refit_full:
-                train_mask = torch.ones_like(train_mask)
-            elif self.fit_mode == FitMode.refit_trainval:
-                if test_mask is not None:
-                    train_mask = train_mask | val_mask
-                else:
-                    logger.warning("Test split is not available. Refit "
-                                   "reduces to normal fit")
-
-        # PL data module, containing logic that interfaces with the feature and
-        # graph store to load data for the model:
-        with timing("trainer.init.create_datamodule"):
-            assert self.data_runtime is not None
-            self.datamodule = self.data_runtime.create_datamodule(
-                task=self.task,
-                fkey=fkey,
-                entity_table_names=entity_table_names,
-                train_mask=train_mask,
-                val_mask=val_mask,
-                test_mask=test_mask,
-                time=time,
-                target=target,
-                weight=weight,
-                feature_store=self.feature_store,
-                graph_store=self.graph_store,
-                graph_sampler=self.graph_sampler,
-                loader_kwargs=self.loader_kwargs,
-                module_kwargs=self.module_kwargs,
-                eval_loader_kwargs=self.eval_loader_kwargs,
-                max_steps_per_epoch=self.max_steps_per_epoch,
-                min_steps_per_epoch=self.min_steps_per_epoch,
-                max_val_steps=self.max_val_steps,
-                max_test_steps=self.max_test_steps,
-                majority_sampling_weights=self.majority_sampling_weights,
-                weight_mode=self.weight_mode,
-                is_prediction=self._prediction_mode,
-                fit_mode=self.fit_mode,
-            )
-
-        # PL trainer, containing metadata about the training pipeline:
-        with timing("trainer.init.create_pl_trainer"):
-            self.create_pl_trainer()
-
-        # PL model, containing the actual model (subclass of `base_module.py`):
-        rhs_name = entity_table_names[-1]
-        with self.feature_store.safe_batch_mode(batch_size=50_000):
-            rhs_index = self.feature_store[rhs_name, 'pkey', :]
-        rhs_index_map = pd.DataFrame(index=rhs_index)
-        rhs_index_map[NODE_INDEX_COLUMN] = range(len(rhs_index_map))
-
-        with timing("trainer.init.create_pl_model"):
-            self.create_pl_model(
-                entity_table_names=entity_table_names,
-                train_table_name=train_table_name,
-                rhs_index_map=rhs_index_map,
-                ckpt_path=self.checkpoint_path,
-            )
-
-        if self.fit_mode == FitMode.fit:
-            num_samples = self.datamodule.num_samples_per_epoch
-            self.refit_cfg.num_samples_per_epoch = num_samples
-
-        # Save Trainer Configuration ##########################################
-
-        if not self._prediction_mode:
-            path = osp.join(self.original_log_dir, 'config.json')
-            if not fsutil.exists(path):
-                save_json(self.config(), path)
-
-        subgraph_size = None
-        if isinstance(self.model,
-                      GraphTransformer) and not self.model.is_fully_specified:
-            # This block should be inside `initialize_model`. However, to
-            # compute the subgraph_size, we need to initialize the `datamodule`
-            # first, so we place it here.
-            subgraph_size = self.get_subgraph_size()
-            self.model.seq_len = GraphTransformer.get_seq_len(
-                total_num_nodes=subgraph_size.num_nodes,
-                batch_size=subgraph_size.batch_size,
-            )
-
-        self._fully_initialized = True
-
-        if self.trial is not None:
-            if self.trial.module_size is None:
-                self.trial.module_size = self.get_module_size()
-            if self.trial.subgraph_size is None:
-                self.trial.subgraph_size = (subgraph_size
-                                            if subgraph_size is not None else
-                                            self.get_subgraph_size())
-
-        return self
+        Raises:
+            NotImplementedError: The legacy store-based training path is retired.
+        """
+        raise NotImplementedError("Use DiskgraphNestedTrainer for training")
 
     def initialize_model(
         self,
@@ -1606,12 +1400,10 @@ class Trainer(PortableConfigMixin):
     @classmethod
     def load(
         cls,
-        task: ResolvedNumericalTask,
+        task: ResolvedNumericalTask | TaskConfig,
         root_dir: str,
         version: int | None = -1,
         infer_config_path: bool = True,
-        feature_store: FeatureStore | None = None,
-        graph_store: GraphStore | None = None,
         encoders: EncodersConfig | None = None,
         **kwargs,
     ) -> 'Trainer':
@@ -1620,6 +1412,7 @@ class Trainer(PortableConfigMixin):
 
         `**kwargs` are passed along to the constructor of Trainer.
         Args:
+            task: Resolved task or lightweight task metadata used to load results.
             version (int, optional): If :obj:`version` is specified to be
                 negative, versions will be index from the end, *i.e.*
                 :obj:`version == -1` will load the checkpoint of the latest
@@ -1629,7 +1422,13 @@ class Trainer(PortableConfigMixin):
                 TrainerConfig is assumed to be stored at <root_dir/config.json>
                 This is useful for loading a particular version Trainer from
                 AutoTrainer generated models.
+        Raises:
+            TypeError: If feature_store or graph_store is supplied. The trainer
+                creates feature access and schema metadata internally.
         """
+        for name in ('feature_store', 'graph_store'):
+            if name in kwargs:
+                raise TypeError(f"{name} is managed internally by the trainer")
         path = root_dir
         if infer_config_path:
             if task.name is not None:
@@ -1654,10 +1453,10 @@ class Trainer(PortableConfigMixin):
             old_num_neighbors = cfg.sampler_kwargs.num_neighbors
 
             if isinstance(old_num_neighbors.values, dict):
+                graph = getattr(task, 'graph', None)
                 edge_type_by_serialized = {
                     str(EdgeTypeStr(*edge_type)): edge_type
-                    for edge_type in (
-                        getattr(graph_store, 'edge_types', None) or [])
+                    for edge_type in (graph.edge_types if graph is not None else ())
                 }
 
                 def _convert_key(old_key: EdgeTypeStr) -> EdgeTypeStr:
@@ -1688,8 +1487,6 @@ class Trainer(PortableConfigMixin):
             task=task,
             root_dir=root_dir,
             version=version,
-            feature_store=feature_store,
-            graph_store=graph_store,
             encoders=encoders,
             **kwargs,
         )
@@ -2115,12 +1912,12 @@ class Trainer(PortableConfigMixin):
 
         counts = None
         if stage == TrainingStage.TEST and df is not None:
-            counts = self._test_counts(outputs, df,
+            counts = self._test_counts(outputs, EvalFrames.of(df),
                                        binary_classification_threshold,
                                        target_edges)
         return EvalOutput(metrics, df, embedding, counts)
 
-    def _test_counts(self, outputs: dict[str, Any], df: pd.DataFrame,
+    def _test_counts(self, outputs: dict[str, Any], frames: EvalFrames,
                      threshold: float | None,
                      edges: Sequence[float]) -> Any:
         from kumo_core.evaluation_counts import evaluation_counts
@@ -2138,11 +1935,12 @@ class Trainer(PortableConfigMixin):
                            'target bins.')
             return None
         column = self.encoders.target.col_name
-        horizon = (len(df) // len(outputs['target'])
+        horizon = (frames.num_rows // len(outputs['target'])
                    if task_type == TaskType.FORECASTING else None)
-        return evaluation_counts(task_type, pred=df[f'{column}_PRED'],
-                                 target=df[column], target_edges=edges,
-                                 horizon=horizon)
+        pred = frames.column(f'{column}_PRED')[f'{column}_PRED'].to_numpy()
+        target = frames.column(column)[column].to_numpy()
+        return evaluation_counts(task_type, pred=pred, target=target,
+                                 target_edges=edges, horizon=horizon)
 
     def _top_score_counts(self, prob: Any) -> Any:
         prob = np.asarray(prob)

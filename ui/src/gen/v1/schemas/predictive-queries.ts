@@ -1067,10 +1067,6 @@ export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanO
 
 export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationMaxStepsPerEpochOneExclusiveMin = 0;
 
-export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationMaxValStepsOneExclusiveMin = 0;
-
-export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationMaxTestStepsOneExclusiveMin = 0;
-
 export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationLossOneItemTwoAlphaDefault = 0.25;
 export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationLossOneItemTwoAlphaExclusiveMin = 0;
 export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationLossOneItemTwoAlphaExclusiveMax = 1;
@@ -2049,11 +2045,7 @@ export const GetV1PredictiveQueriesModelPlanResponse = zod
                             .optional(),
                         "max_val_steps": zod
                             .union([
-                                zod
-                                    .int()
-                                    .gt(
-                                        getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationMaxValStepsOneExclusiveMin
-                                    ),
+                                zod.int().min(1),
                                 zod.enum({
                                     "???": "???"
                                 }),
@@ -2062,11 +2054,7 @@ export const GetV1PredictiveQueriesModelPlanResponse = zod
                             .optional(),
                         "max_test_steps": zod
                             .union([
-                                zod
-                                    .int()
-                                    .gt(
-                                        getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationMaxTestStepsOneExclusiveMin
-                                    ),
+                                zod.int().min(1),
                                 zod.enum({
                                     "???": "???"
                                 }),

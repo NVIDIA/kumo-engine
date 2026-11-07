@@ -115,7 +115,7 @@ class ColumnAnalysis(Explainer):
         linked to it, average of numerical values, distribution of categorical
         values, etc).
         """
-        feature_store, graph_store = datamodule.data
+        feature_store = datamodule.data[0]
 
         batch_size: int | None = None
         seed_time: Tensor | None = None

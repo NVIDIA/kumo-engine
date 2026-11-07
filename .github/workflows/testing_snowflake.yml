@@ -49,12 +49,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    env:
-      KUMO_RUN_GCP_TESTS: ${{ github.repository == 'kumo-ai/kumo' && (contains(matrix.test_dir, 'test/io_utils/fsutil') || contains(matrix.test_dir, 'test/connector') || contains(matrix.test_dir, 'test/rest')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
-      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-      GCP_TEST_SERVICE_ACCOUNT: ${{ vars.GCP_TEST_SERVICE_ACCOUNT }}
-      GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT: ${{ vars.GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT }}
-      GCP_BIGQUERY_NO_JOB_SERVICE_ACCOUNT: ${{ vars.GCP_BIGQUERY_NO_JOB_SERVICE_ACCOUNT }}
 
     strategy:
       matrix:
@@ -179,14 +173,6 @@ jobs:
         with:
           github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
 
-      - name: Authenticate to Google Cloud with GitHub OIDC
-        if: steps.data-backend-files-changed.outputs.any_changed == 'true' && steps.only-ui-files-changed.outputs.only_changed != 'true' && steps.only-rest-files-changed.outputs.only_changed != 'true' && env.KUMO_RUN_GCP_TESTS == '1'
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3
-        with:
-          project_id: ${{ vars.GCP_PROJECT_ID }}
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_TEST_SERVICE_ACCOUNT }}
-
       # NOTE here we use coverage.py instead of pytest-cov to obtain JSON
       # outputs that are easier to parse and manage (pytest-cov/455).
       # coverage.py also has additional nice features that may be useful in the
@@ -201,9 +187,9 @@ jobs:
           configure_pytest_ci_output
           GLOG_logtostdout=1 python -m coverage run -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=30 --runsnowflake ${{ matrix.test_dir }}
         env:
-          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
-          GCS_TEST_BUCKET: 'kumo-test-bucket'
-          KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: ${{ env.KUMO_RUN_GCP_TESTS == '1' && 'true' || 'false' }}
+          # Least-privilege CI service user; takes precedence over the AWS key.
+          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_CI_USER }}
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_CI_PRIVATE_KEY }}
           AWS_DEFAULT_REGION: "us-west-2"
           DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
 
@@ -217,8 +203,8 @@ jobs:
           configure_pytest_ci_output
           FULL_TEST=1 GLOG_logtostdout=1 python -m coverage run -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=30 --runsnowflake ${{ matrix.test_dir }}
         env:
-          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
-          GCS_TEST_BUCKET: 'kumo-test-bucket'
-          KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: ${{ env.KUMO_RUN_GCP_TESTS == '1' && 'true' || 'false' }}
+          # Least-privilege CI service user; takes precedence over the AWS key.
+          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_CI_USER }}
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_CI_PRIVATE_KEY }}
           AWS_DEFAULT_REGION: "us-west-2"
           DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
