@@ -2,9 +2,22 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from common import LIMITS, parse_args, run, sources, sparse_overrides, table
+from common import (
+    LIMITS,
+    Scale,
+    parse_args,
+    run,
+    sources,
+    sparse_overrides,
+    table,
+)
 
-SCALES = {"100M": 100, "1B": 300, "10B": 1600, "25B": 3200}
+SCALES = {
+    "100M": Scale(100, "g7e.8xlarge"),
+    "1B": Scale(300, "g7e.8xlarge"),
+    "10B": Scale(1600, "g7e.12xlarge"),
+    "25B": Scale(3200, "g7e.24xlarge")
+}
 QUERY = ('PREDICT COUNT(account_flags.*, 0, 28, days) > 0 FOR EACH '
          'accounts.account_id WHERE COUNT(account_flags.*, -INF, 0, days) = 0 '
          'AND COUNT(logins.*, -30, 0, days) > 0 ')
