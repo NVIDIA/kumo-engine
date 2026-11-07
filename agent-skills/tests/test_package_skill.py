@@ -130,6 +130,169 @@ def test_genie_maps_every_snowflake_mechanism() -> None:
     assert not re.search(r'clusters\.create|new_cluster', job)
 
 
+def test_genie_gates_hold_for_routed_requests_jobs_and_saved_models() -> None:
+    """Live Genie Code skipped the adapter on job and population follow-ups and acted without
+    confirmation; the router sends every request through the adapter, which names those acts."""
+    router = (package_skill.SKILLS / 'kumo-data-science' / 'SKILL.md').read_text()
+    assert '## Read the host adapter first' in router
+    host = package_skill.SKILLS / 'hosts' / 'databricks-genie'
+    adapter, job, runtime = (' '.join((host / n).read_text().split())
+                             for n in ('adapter.md', 'job.md', 'runtime.md'))
+    gate = adapter[adapter.index('## 0.'):adapter.index('## 1.')]
+    for act in ('unpausing', 'submitting', 'capability skill', 'not confirmation'):
+        assert act in gate, act
+    assert 'one gate' in adapter and 'Never propose retraining' in adapter
+    assert 'creates its own cluster' in job and 'adds no libraries' in job
+    assert 'names the destination verbatim and nothing else' in runtime
+
+
+def test_genie_pause_runs_at_once_and_everything_else_stays_confirmed() -> None:
+    """A plain-words pause of a named (or the only matching) job runs without a confirmation turn
+    and is reported after; unpausing and cancelling a run still need confirmation, and job.md and
+    adapter.md say the same."""
+    host = package_skill.SKILLS / 'hosts' / 'databricks-genie'
+    adapter, job = (' '.join((host / n).read_text().split()) for n in ('adapter.md', 'job.md'))
+    section = job[job.index('### Pausing'):job.index('## 9.')]
+    for text in (section, adapter[adapter.index('## 0.'):adapter.index('## 1.')]):
+        assert 'plain words' in text and 'exactly one job' in text
+        assert 'at once' in text and 'previous state' in text
+    assert 'no confirmation turn' in section and 'pause_status=PAUSED' in section
+    assert 'list the candidates and ask; pause nothing' in section
+    assert 'unpausing it needs the user\'s confirmation' in section
+    assert 'Cancelling an active run discards work' in section
+    assert 'ask to confirm cancelling the run' in section
+    assert 'only after the user confirms' in job   # cancel_run at the deadline
+    assert 'scheduling or unpausing a job' in adapter and 'unpausing or pausing' not in adapter
+    # no other skill file says a pause needs confirmation
+    for path in package_skill.SKILLS.rglob('*.md'):
+        if path.name not in ('job.md', 'adapter.md'):
+            assert 'unpausing or pausing' not in ' '.join(path.read_text().split()), path
+
+
+def test_genie_saved_model_template_carries_every_line_other_files_require() -> None:
+    """The §6.1 template is the one the agent copies for scoring; a line other files rely on
+    (a confirmed staging volume, embeddings) must be in it, and its tags must be defined."""
+    skills = package_skill.SKILLS
+    host = skills / 'hosts' / 'databricks-genie'
+    flat = lambda path: ' '.join(path.read_text().split())  # noqa: E731
+    adapter, runtime = flat(host / 'adapter.md'), flat(host / 'runtime.md')
+    batch = flat(skills / 'kumo-data-science' / 'accept' / 'batch_inference.md')
+    section = adapter[adapter.index('### 6.1'):adapter.index('## 7.')]
+    template = section[section.index('```'):section.index('```', section.index('```') + 3)]
+    assert 'Staging volume:' in runtime and '- Embeddings:' in batch and '- Output:' in batch
+    for line in ('- Output:', '- Staging volume:', '- Embeddings:'):
+        assert line in template, f'§6.1 template lacks {line!r}'
+    assert '[recorded]' in template and 'marks a value read from' in section
+    assert 'refines `batch_inference.md` Node 1c and 1d' in section
+
+
+def test_genie_gate_blocks_every_mutation_and_scoring_keeps_what_the_user_named() -> None:
+    """Before confirmation every workspace or local mutation is blocked (read-only preflight is
+    the exception); the §6.1 template restates a user-named source, subset or date first and the
+    recorded or default value only otherwise."""
+    host = package_skill.SKILLS / 'hosts' / 'databricks-genie'
+    adapter = ' '.join((host / 'adapter.md').read_text().split())
+    gate = adapter[adapter.index('## 0.'):adapter.index('## 1.')]
+    for verb in ('create, update, edit, rename, move, upload, import or delete',
+                 'cluster, warehouse, table, volume or model'):
+        assert verb in gate, verb
+    assert 'Preflight reads' in gate and 'need no confirmation' in gate
+    assert 'plain words' in gate and 'that has a Node 1d gate' in gate
+    assert 'any field the Node 1d restatement lists' in gate
+    section = adapter[adapter.index('### 6.1'):adapter.index('## 7.')]
+    template = section[section.index('```'):section.index('```', section.index('```') + 3)]
+    assert 'the user\'s source, columns checked against the bundle\'s graph [supplied]' in template
+    assert 'the bundle\'s source tables [recorded], only when none was named' in template
+    assert 'the user\'s subset/date [supplied]' in template
+    assert '[default], only when none was given' in template
+    assert 'each table\'s columns with its keys, time column and links' in section
+    batch = ' '.join((package_skill.SKILLS / 'kumo-data-science' / 'accept'
+                      / 'batch_inference.md').read_text().split())
+    assert 'a source the user named' in batch and 'If the user names a subset' in batch
+
+
+def test_genie_scoring_reads_the_graph_from_the_published_bundle() -> None:
+    """A Kumo bundle carries `training-spec.json` (query + `graph_config`), so scoring reads that
+    through the Files API and the training notebook writes no separate record."""
+    host = package_skill.SKILLS / 'hosts' / 'databricks-genie'
+    flat = lambda path: ' '.join(path.read_text().split())  # noqa: E731
+    adapter, runtime, job = (flat(host / n) for n in ('adapter.md', 'runtime.md', 'job.md'))
+    section = adapter[adapter.index('### 6.1'):adapter.index('## 7.')]
+    for text in ('training-spec.json', '`graph_config`', '`predictive_query`',
+                 'databricks api get /api/2.0/fs/files/Models/<catalog>/<schema>/<model>/<N>/training-spec.json',
+                 '/api/2.0/fs/directories/Models/', 'artifacts/published-model/',
+                 'Read-only calls only', 'never read a credential file',
+                 'rebuilt from the version\'s bundle', 'read from the version\'s bundle',
+                 'spec carries no `graph_config`', 'Never propose retraining'):
+        assert text in section, text
+    # `[recorded]` stays on the graph, source and query fields
+    assert '[recorded]' in section
+    publish = runtime[runtime.index('### 5.1'):runtime.index('### 5.2')]
+    assert 'Nothing else is written' in publish
+    for gone in ('record.json', 'graph.py', 'GRAPH_CODE', 'records/', 'CREATE VOLUME',
+                 'model_versions.update', 'kumo training record', 'ws.model_versions'):
+        assert gone not in publish, gone
+    for name, text in (('adapter', adapter), ('runtime', runtime), ('job', job)):
+        for gone in ('kumo training record', 'training record', 'record.json', 'record files',
+                     'dbfs:/Volumes'):
+            assert gone not in text, (name, gone)
+    assert 'bundle\'s `graph_config` tables, column lists and edges rebuilt' in job
+    assert 're-read that version\'s bundle' in job
+    for gone in ('mlflow', 'credentials-for-read', 'list-artifacts', 'curl', 'signed_uri'):
+        assert gone not in section.lower().replace('wrapped for mlflow', ''), gone
+
+
+def test_genie_no_code_rule_names_its_scope_and_agrees_with_inspection_skills() -> None:
+    """Explanations ask for plotting code in the reply and graph visualization needs no intake;
+    the adapter's no-code rule must scope itself to requests that have a Node 1d gate."""
+    skills = package_skill.SKILLS
+    adapter = ' '.join((skills / 'hosts' / 'databricks-genie' / 'adapter.md').read_text().split())
+    gate = adapter[adapter.index('## 0.'):adapter.index('## 1.')]
+    assert 'that has a Node 1d gate' in gate
+    assert ('An inspection request has no Node 1d — explanations, training diagnostics, '
+            'graph visualization') in gate
+    assert 'code in the reply included' in gate
+    assert 'explanations;' not in gate   # no longer listed among the gated capability skills
+    assert 'stop at each' in gate and 'single combined restatement' in gate
+    explanations = ' '.join((skills / 'kumo-model-explanations' / 'SKILL.md').read_text().split())
+    assert 'the plotting code in the reply' in explanations
+
+
+def test_custom_populations_treat_weights_like_splits() -> None:
+    """Weights and splits share one rule: show, approve, apply read-only. Neither file may
+    still say to decline weights or forbid a read-only transform outright."""
+    base = package_skill.SKILLS / 'kumo-custom-populations'
+    skill = ' '.join((base / 'SKILL.md').read_text().split())
+    reference = ' '.join((base / 'references' / 'populations.md').read_text().split())
+    for text in (skill, reference):
+        assert 'decline' not in text and 'even after an earlier confirmation' not in text
+        assert 'not in a read-only query either' not in text
+        assert 'exact formula' in text and 'explicit approval' in text
+        assert 'read-only `connector.sql(...)`' in text
+        assert 'is not approval' in text and 'CREATE TABLE AS' in text
+    assert 'Weights follow the same rule as splits' in reference
+    assert 'resulting weight distribution' in reference
+    assert 'Validation still applies to the result' in skill
+
+
+def test_genie_job_fix_offer_does_not_bundle_a_resubmit() -> None:
+    """One yes must not approve a notebook edit and a new GPU run."""
+    job = ' '.join((package_skill.SKILLS / 'hosts' / 'databricks-genie' / 'job.md')
+                   .read_text().split())
+    assert 'then resubmit?' not in job
+    assert 'Resubmitting is a separate confirmation' in job
+    assert 'the one edit of an existing notebook the user can approve here' in job
+
+
+def test_explanations_checklist_keeps_the_conditions_the_body_gives() -> None:
+    text = ' '.join((package_skill.SKILLS / 'kumo-model-explanations' / 'SKILL.md')
+                    .read_text().split())
+    checklist = text[text.index('## Return a useful answer'):]
+    assert 'normalized across the graph as observed' in checklist
+    assert 'when the total is positive' in checklist
+    assert 'when the file records one, mean target' in checklist
+
+
 def test_genie_sql_quotes_identifiers_and_names_the_staging_volume() -> None:
     """Unity Catalog names may contain hyphens, and a write creates `_kumo_staging`."""
     host = package_skill.SKILLS / 'hosts' / 'databricks-genie'
@@ -351,3 +514,21 @@ def test_text_io_names_its_encoding() -> None:
         and not any(k.arg == 'encoding' for k in node.keywords)
     ]
     assert not unnamed, unnamed
+
+
+def test_followup_review_fixes_are_pinned() -> None:
+    """A MODEL_VERSION repair differs from a version change; the runtime's no-edit rule carves
+    out the job notebook; a mapping is never a derived table; the adapter's read list is full."""
+    skills = package_skill.SKILLS
+    flat = lambda p: ' '.join(p.read_text().split())
+    job = flat(skills / 'hosts' / 'databricks-genie' / 'job.md')
+    assert 'Tell a repair from a change first' in job and 're-read that version' in job
+    assert 'resubmit only after the user confirms that restatement' in job
+    runtime = flat(skills / 'hosts' / 'databricks-genie' / 'runtime.md')
+    assert 'apart from the one edit `job.md` §7 allows' in runtime
+    refs = flat(skills / 'kumo-custom-populations' / 'references' / 'populations.md')
+    assert 'create no mapped copy or derived table' in refs and 'approves writing one' not in refs
+    adapter = flat(skills / 'hosts' / 'databricks-genie' / 'adapter.md')
+    assert 'probe — nothing else' not in adapter and 'read clusters, registered models, runs' in adapter
+    router = flat(skills / 'kumo-data-science' / 'SKILL.md')
+    assert 'Where it has a section on what you may do before the user confirms' in router

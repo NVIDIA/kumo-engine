@@ -14,6 +14,58 @@ schedules and cost — is in `job.md`; read it only when the user asks for a job
 
 ---
 
+## 0. Nothing is written before the gate
+
+Genie Code can act on the workspace, and a request that names a deliverable — "make the notebook",
+"write a job", "score every account", "fit on this table" — reads like permission to act. It is
+not: it starts intake. For a request that has a Node 1d gate — a new model, batch scoring, a job —
+until the user has confirmed the restatement, in a later turn:
+
+- do not create, update, edit, rename, move, upload, import or delete anything in the workspace or
+  on local disk — a notebook, file, job, run, cluster, warehouse, table, volume or model;
+- do not submit or execute a run or job;
+- do not put the code in your reply.
+
+An inspection request has no Node 1d — explanations, training diagnostics, graph visualization.
+Answer it directly, code in the reply included; it still writes, imports and runs nothing in the
+workspace unasked.
+
+Preflight reads — the SQL in §2 and §3, reading clusters, registered models and runs — are not
+writes and need no confirmation. A reply that reaches a gate ends with the proposal or the
+restatement and its confirmation question.
+
+Confirmation is the user's answer to a restatement you showed in an earlier reply of this
+conversation. "Looks good, build it" when no restatement has been shown is not confirmation:
+show the gates the operation has — for a new model the graph proposal, then the restatement; for
+§6.1 the single combined restatement — and stop at each.
+
+This holds for a follow-up in a session that already has a notebook, and for a request routed to
+a capability skill — custom labels, weights, splits or scoring rows; publishing, reloading or
+retaining a model; tuning. A change to any field the Node 1d restatement lists, or to weights or
+splits, goes back through the gates: answer with the restatement, or with the
+ask-back that names the offending field, never with new or edited code. A field the capability
+skill says not to transform — a split column holding strings, weights to normalize, a list
+target — is reported and asked about, not converted in a file you write.
+
+A job, a run or a cluster you find in the workspace is not a request to change it. Creating,
+editing, deploying, scheduling or unpausing a job, submitting, cancelling or repairing a run, and
+starting a cluster are writes, each confirmed on its own (`job.md` §3, §7, §8). The one exception
+is a pause the user asks for in plain words, when the request names the job or exactly one job
+matches: pause it at once and report the job, its previous state and how to unpause (`job.md` §8
+*Pausing*). Reading a job's
+settings, a run's state and output, or a cluster's state is a read.
+
+After confirmation, Step 2 creates the one notebook (`runtime.md` §0). Running it, or submitting
+it as a job, is Step 3 and waits for its own explicit request (`job.md` §3).
+
+**Tools.** Preflight reads Unity Catalog through SQL on a warehouse (§2, §3) — Genie Code's own
+SQL, the SQL statement API (`WorkspaceClient().statement_execution`), or
+`databricks api post /api/2.0/sql/statements`. A minimum CLI version another skill asks for (for
+`genie ask`, say) is not needed for that: never stop intake to ask the user to upgrade or add a
+tool; use a SQL path that works.
+
+---
+
 ## 1. Source scope
 
 `source_scope` is a Unity Catalog **catalog and schema**: `catalog.schema`, or a schema with the
@@ -103,8 +155,9 @@ SELECT schema_name FROM <catalog>.information_schema.schemata WHERE schema_name 
 
 - A row back: you can see the scope. That is not yet reading it — continue with the read probe
   below.
-- No row, or `CATALOG_NOT_FOUND` / `SCHEMA_NOT_FOUND`: the scope may not exist, or this user may
-  not see it — say both.
+- No row, or `CATALOG_NOT_FOUND` / `SCHEMA_NOT_FOUND`: name `source_scope` as not found and ask
+  for a valid catalog and schema, adding that the user may also lack access to it. Do not
+  suggest a similar name, and do not ask for its structure.
 - `PERMISSION_DENIED` or `INSUFFICIENT_PERMISSIONS`: the scope exists and this user cannot read it.
 
 **Read probe.** Unity Catalog lists a schema's tables and columns to a user who holds no `SELECT`
@@ -123,7 +176,9 @@ those tables. The probe checks the signed-in user only: when the notebook will r
 principal (`runtime.md` §2), which its SQL then runs as too, say in the proposal that the
 service principal's access, to these tables and the warehouse, is unchecked.
 
-When nothing reads the scope, or a read probe fails, send the preflight §0 ask-back. State what
+Run the scope query before any ask-back that names a source: a scope that does not resolve is
+listed in that same ask-back, with the other missing fields. When the scope exists but nothing
+reads it (`PERMISSION_DENIED`), or a read probe fails, send the preflight §0 ask-back. State what
 you ran and what came back, quoting the error, then offer:
 
 1. **Access**: `USE CATALOG`, `USE SCHEMA` and `SELECT` on the tables for this user, granted by
@@ -138,7 +193,8 @@ the graph. A warehouse the user names is `[supplied]`. If none is visible, say s
 then carries the placeholder in `runtime.md` §1.
 
 **What a check may do.** Read catalog metadata, run the read probe above and the preflight §3
-probe — nothing else.
+probe, and read clusters, registered models, runs, and a model version's published bundle
+files (§0, §6.1).
 Never create, alter, drop or write anything during intake, and never change compute, permissions
 or workspace settings.
 
@@ -202,8 +258,8 @@ through a `DatabricksConnector` on that catalog and schema
 volume `<catalog>.<schema>._kumo_staging` and creates that volume on first use. So writing needs,
 for the user who runs the notebook: `USE CATALOG`, `USE SCHEMA`, `CREATE TABLE`, and either
 `CREATE VOLUME` on the schema or `READ VOLUME` and `WRITE VOLUME` on an existing `_kumo_staging`.
-A new volume is a write the user confirms: name it on the restatement's output line
-(`runtime.md` §4). Not destinations for predictions here: a path in a volume, S3, GCS or local
+A new volume is a write the user confirms: name it on its own restatement line, after the
+verbatim `Output:` line (`runtime.md` §4). Not destinations for predictions here: a path in a volume, S3, GCS or local
 files, and any table outside Unity Catalog.
 
 A model is published to a Unity Catalog registered model (`runtime.md` §5), and retained run
@@ -238,6 +294,48 @@ substitutions, which `runtime.md` §4.1, §5 and §6 spell out:
 
 A step that has no row here and names a Snowflake object is not covered on this host: say so; do
 not adapt it.
+
+### 6.1 Scoring a registered model
+
+This refines `batch_inference.md` Node 1c and 1d for this host. For `batch_inference` from a Unity
+Catalog registered model, Node 1c reads the graph and the query from the published bundle itself:
+its `training-spec.json` holds `predictive_query` and, for a Kumo bundle, `graph_config` — each
+table's source table, columns, primary key, time column, and its links. Read it with
+`databricks api get /api/2.0/fs/files/Models/<catalog>/<schema>/<model>/<N>/training-spec.json`
+(`<N>` the version). A bundle published by Kumo sits at the version's root; when that call finds no
+file, list the version's directory with `databricks api get
+/api/2.0/fs/directories/Models/<catalog>/<schema>/<model>/<N>` and look in its subdirectories — a
+bundle wrapped for MLflow keeps it under `artifacts/published-model/`. Read-only calls only; never
+read a credential file or pass a token yourself. The bundle is the graph: nothing in it is proposed
+or inferred, so 1c and 1d are **one gate**. When `graph_config` is found and the live source still
+has every column it lists, reply with the `kumo-data-science/accept/batch_inference.md` Node 1d
+restatement, one `Graph:` line added, and stop for confirmation:
+
+```
+- Model: <catalog.schema.model> version <N> — trained task reused unchanged
+- Source: <the user's source, columns checked against the bundle's graph [supplied] | the bundle's source tables [recorded], only when none was named>
+- Graph: rebuilt from the version's bundle — <n> tables, the bundle's column lists, keys and links [recorded]
+- Population: <the user's subset/date [supplied] | all <entity> as of latest snapshot timestamp [default], only when none was given>
+- Output: <catalog.schema.table, verbatim>
+- Staging volume: creates <catalog.schema>._kumo_staging   (only when it does not exist)
+- Embeddings: <included, if explicitly requested>
+- Scoring options: <as batch_inference.md gives them by task type>
+```
+
+`[recorded]` marks a value read from the version's bundle (`training-spec.json`).
+
+For a job, add the `job.md` §3 lines. Do not restate the task (entity, outcome, window) or list
+tables and columns beyond that line:
+the task is reused, not reconfirmed. A column the bundle lists that the live source lacks, or a
+`graph_config` whose source tables are not the live source, is the 1c finding to report instead.
+
+When the version is not a Kumo bundle — no `training-spec.json` — or its spec carries no
+`graph_config`, say that no column selection or graph definition is recorded for that version,
+that scoring must use the columns it was trained on, and ask for the training-time graph
+definition — the graph-building code, or each table's columns with its keys, time column and
+links. Ask only for that, and for the source if the request named none: not the model, version or
+destination. Never propose retraining or
+publishing a new model in its place; that is a new request for the user to make.
 
 ---
 
