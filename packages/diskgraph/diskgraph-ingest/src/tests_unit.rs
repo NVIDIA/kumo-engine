@@ -507,6 +507,89 @@ fn far_future_date32_edge_keys_sort_after_2037_in_every_clock() {
 }
 
 #[test]
+fn indexed_time_filter_accepts_production_encoded_in_window_rows() {
+    use diskgraph_core::metadata::{
+        EdgeSortKeyMetadata, EdgeSortKeyTimestampEncoding, EdgeSortKeyTimestampKind,
+        EdgeSortKeyTimestampMetadata, EdgeSortKeyWeightEncoding, EdgeSortKeyWeightKind,
+        EdgeSortKeyWeightMetadata,
+    };
+    use diskgraph_core::time_filter::{unclipped_bucket_end, IndexedTimeFilter};
+
+    for (bits, kind, metadata_kind) in [
+        (8, TimestampEncodingKind::Int8, EdgeSortKeyTimestampKind::Int8),
+        (
+            16,
+            TimestampEncodingKind::Int16,
+            EdgeSortKeyTimestampKind::Int16,
+        ),
+        (
+            32,
+            TimestampEncodingKind::Int32,
+            EdgeSortKeyTimestampKind::Int32,
+        ),
+    ] {
+        for step in [1, 60, 3600, 86400] {
+            for anchor in [-1_700_000_003i64, 0, 1_700_000_003] {
+                let encoding = TimestampEncodingSpec { kind, anchor, step };
+                let low = -(1i64 << (bits - 1));
+                let high = (1i64 << (bits - 1)) - 1;
+                for weight_bits in [0, 32] {
+                    let metadata = EdgeSortKeyMetadata {
+                        width_bits: bits + weight_bits,
+                        timestamp: Some(EdgeSortKeyTimestampMetadata {
+                            table: "events".into(),
+                            column: "time".into(),
+                            encoding: EdgeSortKeyTimestampEncoding {
+                                kind: metadata_kind.clone(),
+                                anchor,
+                                step,
+                            },
+                        }),
+                        weight: (weight_bits != 0).then(|| EdgeSortKeyWeightMetadata {
+                            table: "events".into(),
+                            expr: "amount".into(),
+                            encoding: EdgeSortKeyWeightEncoding {
+                                dtype: EdgeSortKeyWeightKind::Float32,
+                            },
+                        }),
+                    };
+                    let filter = IndexedTimeFilter::matching(
+                        Some(&metadata),
+                        "events",
+                        "time",
+                        diskgraph_core::time::TimeUnit::Seconds,
+                    )
+                    .unwrap();
+                    for bucket in [
+                        low - 1, low, low + 1, -2, -1, 0, 1, 2, high - 1, high, high + 1,
+                    ] {
+                        for remainder in [-1, 0, 1, step - 1] {
+                            let time = anchor + bucket * step + remainder;
+                            // Exercise the ingest encoder itself, including clipping,
+                            // rather than reproducing its quantization in the test.
+                            let timestamp_key = crate::encode_timestamp_value(Some(time), &encoding);
+                            for weight in [0, (1u64 << weight_bits) - 1] {
+                                let key = (timestamp_key << weight_bits) | weight;
+                                assert!(filter.may_overlap(key, Some(time - 1), Some(time)));
+                                assert!(filter.may_overlap(key, None, Some(time)));
+                                assert!(filter.may_overlap(key, Some(time - 1), None));
+                                if let Some(end) = unclipped_bucket_end(filter.decoder(), key) {
+                                    assert!(time <= end && time > end - step);
+                                    assert!(!filter.may_overlap(key, Some(end), None));
+                                    assert!(!filter.may_overlap(key, None, Some(end - step)));
+                                }
+                            }
+                        }
+                    }
+                    let null = crate::encode_timestamp_value(None, &encoding) << weight_bits;
+                    assert!(filter.may_overlap(null, Some(100_000), Some(100_001)));
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn convert_string_date_to_rowpack_date() {
     let table = TableSpec {
         name: "events".to_string(),

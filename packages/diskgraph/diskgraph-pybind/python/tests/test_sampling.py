@@ -673,5 +673,6 @@ def test_temporal_query_filters_sort_keys_before_rowpack_decode(sorted_orders_gr
     assert result["sequences"][0]["offsets"] == [0, 1, 2]
     assert result["sequences"][0]["batch"].column("order_id").to_pylist() == ["o1", "o2"]
     assert result["aggregates"][0]["values"] == [10.0, 30.0]
-    assert result["stats"]["edges_visited"] == 3
+    # The compatible clock seeks past the future order before unpacking edges.
+    assert result["stats"]["edges_visited"] == 2
     assert result["stats"]["rows_decoded"] == 2

@@ -2626,9 +2626,11 @@ impl DiskGraphEngine {
                     .flatten()
                     .and_then(|v| v.get(node.seed_index as usize).copied());
                 if let (Some(dec), Some(anch)) = (decoder, anchor) {
-                    let newer = unpacker
-                        .partition_point(|key| dec.decode(key).0.is_some_and(|ts| ts > anch));
-                    unpacker.advance(newer);
+                    let eligible = diskgraph_core::indexed_range::descending_range_by(
+                        unpacker.len(), None, Some(Some(anch)),
+                        |i| dec.decode(unpacker.key_at(i)).0,
+                    );
+                    unpacker.advance(eligible.start);
                 }
 
                 let mut n = 0;

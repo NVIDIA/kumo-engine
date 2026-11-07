@@ -137,7 +137,11 @@ and nanosecond counters for traversal, decode/selection, sequence assembly,
 aggregation, and the full native call. `stats.rows_decoded` counts rows sent to
 the rowpack decoder. When the final relation has a matching lossless timestamp
 sort key, bounded frames discard out-of-window edges before decoding their row
-attributes; other relations retain the rowpack timestamp path. This API does
+attributes. A matching coarse clock also filters conservatively: its upward-rounded
+bucket represents `(bucket_end - step, bucket_end]`. Only buckets that cannot
+overlap the requested window are discarded, and retained rows still undergo
+exact rowpack-clock filtering. Clipped floor/ceiling codes remain candidates;
+mismatched clocks and unsafe encoding ranges retain the full rowpack path. This API does
 not build training tables, fit encoders, tokenize values, or choose model layouts.
 
 For a one-hop, time-windowed frame with one bounded sequence and no aggregate
@@ -147,8 +151,9 @@ sequence limit choose the final rows. Distinct frames count distinct node IDs
 when choosing that boundary. If a candidate reaches the encoded timestamp
 ceiling, selection falls back to full-frame decoding: ingestion may have clamped
 its real timestamp. Other frames also retain full-frame decoding. This
-reduces rowpack work, not edge scanning: candidate edge buffers still grow with
-the adjacency, and boundary ties can require decoding more than the limit.
+reduces rowpack work after indexed window lookup. Candidate buffers grow with
+the sought ranges (including sentinel regions); boundary ties can still require
+decoding more than the limit.
 
 When one bounded sequence shares a frame with aggregates, traversal is still
 shared. The full frame decodes only its keys, clock, and aggregate input columns,
@@ -181,6 +186,33 @@ filtering decodes the timestamp already packed beside each edge. Otherwise it
 decodes only the destination rowpack's timestamp column. `timings_ns` separates
 traversal and filtering;
 `stats` reports which timestamp path ran.
+
+Both temporal APIs seek compatible exact or coarse clocks on the final hop
+before unpacking candidate edges. `edges_visited` counts unpacked candidates,
+excluding logarithmic key-only search probes. The length query's `rows_considered`
+counts candidates after seeking and distinct handling; `rowpack_timestamps`
+counts exact row-clock refinement. Coarse clocks do not enable early
+sequence-limit selection. Unbounded or incompatible clocks retain full traversal.
+
+Both APIs use `diskgraph_core::time_filter::IndexedTimeFilter` for compatible
+clock admission. Rejection proves that the bucket cannot intersect `(lower, upper]`;
+admission only produces candidates for the existing exact row-clock checks.
+Ordering, duplicate handling, and complete aggregate inputs remain downstream.
+Missing/mismatched clocks and unsafe arithmetic use the exact row-clock fallback.
+Query bounds use seconds: index-wide millisecond/microsecond/nanosecond/hour/day
+clocks and full-width keys also use row decoding. A bucket step of one alone
+does not establish compatible units.
+
+The shared `diskgraph_core::indexed_range::descending_range_by` primitive locates
+`(lower, upper]` in descending keys without materializing adjacency. GNN recent
+sampling, PQL training-table traversal (including cached autoregression windows),
+and RDL temporal queries all use it with their existing clock/endpoint policies.
+RDL's `IndexedTimeFilter::candidate_ranges` widens coarse bounds conservatively
+and retains ceiling and floor/NULL regions separately from the sought interior.
+The ranges are ordered and disjoint, preserving duplicates and ties for exact
+refinement. Projection/RowPack-to-Arrow consolidation remains separate work.
+See the [benchmark protocol and limitations](../scripts/benchmarks/temporal_fm_windows.md),
+including the measured overhead when coarse filtering cannot eliminate rows.
 
 ### Flat token packing for RDL
 
@@ -283,9 +315,8 @@ accumulation and result; mean and moments continue to use float64.
 Model-format integer sums retain their declared Arrow type when all results
 are null.
 
-The full row kernel still scans the reached adjacency; a sequence limit does
-not stop traversal, and aggregates still consider the entire selected frame.
-Neither API binary-prunes a time window within adjacency storage, applies
+A sequence limit does not stop traversal of the sought candidate ranges, and
+aggregates still consider the entire selected frame. Neither API applies
 arbitrary row predicates, follows field-level joins, or executes across a
 distributed mesh.
 Those limitations are explicit so callers do not mistake this boundary for the

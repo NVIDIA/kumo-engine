@@ -7,6 +7,9 @@
 //! `iter_edge` reads edges from a relation segment.
 //! `traverse_and_accumulate` recursively walks multi-hop paths.
 
+use diskgraph_core::indexed_range::descending_range_by;
+#[cfg(test)]
+use diskgraph_core::indexed_range::partition_point_by;
 use diskgraph_core::time::{convert_trunc, TimeUnit};
 use diskgraph_core::tt_builder::Value;
 use diskgraph_index::graph::TableReader;
@@ -88,43 +91,10 @@ pub fn iter_edge(
         EdgeEntry { dst_node, sort_key }
     };
 
-    match sort_key_range {
-        Some((lo, hi)) => {
-            // Binary search for the range (lo, hi] within sorted edges.
-            // Matches Kumo's temporal join: start < edge_ts AND end >= edge_ts.
-            // Edges are sorted by sort key DESCENDING (newest first).
-            // For descending data, `sk > X` is monotonic [true..., false...],
-            // so partition_point gives the first index where sk <= X.
-            let start = partition_point_by(num_entries, |i| {
-                decode_entry(i).sort_key > hi
-            });
-            let end = lo
-                .map(|lo| {
-                    partition_point_by(num_entries, |i| decode_entry(i).sort_key > lo)
-                })
-                .unwrap_or(num_entries);
-            (start..end).map(decode_entry).collect()
-        }
-        None => {
-            // Return all edges
-            (0..num_entries).map(decode_entry).collect()
-        }
-    }
-}
-
-/// Binary search helper: find the first index where predicate is false.
-fn partition_point_by(len: usize, mut pred: impl FnMut(usize) -> bool) -> usize {
-    let mut lo = 0;
-    let mut hi = len;
-    while lo < hi {
-        let mid = lo + (hi - lo) / 2;
-        if pred(mid) {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    lo
+    let range = sort_key_range.map_or(0..num_entries, |(lo, hi)| {
+        descending_range_by(num_entries, lo, Some(hi), |i| decode_entry(i).sort_key)
+    });
+    range.map(decode_entry).collect()
 }
 
 // ─── Multi-hop recursive traversal ──────────────────────────────────────────

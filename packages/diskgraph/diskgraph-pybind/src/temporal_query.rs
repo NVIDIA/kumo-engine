@@ -24,6 +24,8 @@ use arrow::pyarrow::ToPyArrow;
 use arrow_array::{RecordBatch, RecordBatchOptions};
 use diskgraph_core::metadata::{EdgeRelationMetadata, EdgeSortKeyMetadata};
 use diskgraph_core::sortkey::SortKeyDecoder;
+use diskgraph_core::time::TimeUnit;
+use diskgraph_core::time_filter::{unclipped_bucket_end, IndexedTimeFilter};
 use diskgraph_engine::edge_unpacker::EdgeUnpacker;
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use pyo3::prelude::*;
@@ -554,7 +556,7 @@ fn relation_columns(
     relation_name: &str,
     node_id: u64,
     include_sort_keys: bool,
-    window: Option<(&SortKeyDecoder, Option<i64>, Option<i64>, &str)>,
+    window: Option<(&IndexedTimeFilter, Option<i64>, Option<i64>)>,
     edges_visited: &mut u64,
 ) -> Result<(Vec<u64>, Vec<u64>), String> {
     let relation_id = table
@@ -577,44 +579,35 @@ fn relation_columns(
         .iter()
         .find(|segment| segment.layout.relation_id as usize == relation_id)
         .ok_or_else(|| format!("relation {relation_name:?} has no physical segment"))?;
-    let mut unpacker = EdgeUnpacker::new(segment.data, &segment.layout);
-    let mut destinations = Vec::with_capacity(segment.count as usize);
+    let keys = EdgeUnpacker::new(segment.data, &segment.layout);
+    let ranges = window.map_or([0..keys.len(), 0..0, 0..0], |(clock, lower, upper)| {
+        clock.candidate_ranges(keys.len(), lower, upper, |i| keys.key_at(i))
+    });
+    let capacity = ranges.iter().map(|range| range.len()).sum();
+    let mut destinations = Vec::with_capacity(capacity);
     let mut sort_keys = if include_sort_keys {
-        Vec::with_capacity(segment.count as usize)
+        Vec::with_capacity(capacity)
     } else {
         Vec::new()
     };
     let mut destination_buffer = [0u64; 256];
     let mut sort_key_buffer = [0u64; 256];
-    loop {
-        let count = unpacker.unpack_batch(&mut destination_buffer, &mut sort_key_buffer);
-        if count == 0 {
-            break;
-        }
-        if let Some((decoder, lower, upper, _)) = window {
-            for (&destination, &key) in destination_buffer[..count]
-                .iter()
-                .zip(&sort_key_buffer[..count])
-            {
-                // A clipped code is not the row's time; the rowpack check decides it.
-                let admitted = exact_key_time(decoder, key).is_none_or(|timestamp| {
-                    lower.is_none_or(|bound| timestamp > bound)
-                        && upper.is_none_or(|bound| timestamp <= bound)
-                });
-                if admitted {
-                    destinations.push(destination);
-                    if include_sort_keys {
-                        sort_keys.push(key);
-                    }
-                }
+    for range in ranges {
+        let entry_bytes = segment.layout.entry_bytes;
+        let data = &segment.data[range.start * entry_bytes..range.end * entry_bytes];
+        let mut unpacker = EdgeUnpacker::new(data, &segment.layout);
+        loop {
+            let count = unpacker.unpack_batch(&mut destination_buffer, &mut sort_key_buffer);
+            if count == 0 {
+                break;
             }
-        } else {
             destinations.extend_from_slice(&destination_buffer[..count]);
             if include_sort_keys {
                 sort_keys.extend_from_slice(&sort_key_buffer[..count]);
             }
+            // Count decoded candidates, excluding logarithmic key-only probes.
+            *edges_visited = edges_visited.saturating_add(count as u64);
         }
-        *edges_visited = edges_visited.saturating_add(count as u64);
     }
     Ok((destinations, sort_keys))
 }
@@ -623,11 +616,15 @@ fn relation_destinations(
     table: &TableReader,
     relation_name: &str,
     node_id: u64,
-    window: Option<(&SortKeyDecoder, Option<i64>, Option<i64>, &str)>,
+    window: Option<(&IndexedTimeFilter, Option<i64>, Option<i64>)>,
     sequence: Option<&SequencePlan>,
     distinct: bool,
     stats: &mut QueryStats,
 ) -> Result<Vec<u64>, String> {
+    // Coarse boundary buckets may contain out-of-window rows. They cannot
+    // count toward a sequence limit before exact row-clock filtering, and
+    // do not need a second buffer of keys for early sequence selection.
+    let sequence = sequence.filter(|_| window.is_some_and(|(clock, ..)| clock.is_exact()));
     let (mut destinations, keys) = relation_columns(
         table,
         relation_name,
@@ -636,13 +633,14 @@ fn relation_destinations(
         window,
         &mut stats.edges_visited,
     )?;
-    if let (Some(sequence), Some((decoder, ..))) = (sequence, window) {
+    if let (Some(sequence), Some((clock, ..))) = (sequence, window) {
+        let decoder = clock.decoder();
         if let Some(limit) = sequence.limit.filter(|&n| n > 0 && n < destinations.len()) {
             // All-one bits decode to the maximum ordered timestamp, regardless
             // of timestamp width or weight bits. Ingestion may clamp later rows
             // there: they must reach the existing rowpack window check before
             // they can count toward the limit.
-            if keys.iter().any(|&key| exact_key_time(decoder, key).is_none()) {
+            if keys.iter().any(|&key| unclipped_bucket_end(decoder, key).is_none()) {
                 return Ok(destinations);
             }
             let mut seen = HashSet::new();
@@ -676,26 +674,15 @@ fn relation_destinations(
     Ok(destinations)
 }
 
-/// The time a sort key stores exactly. Ingestion clips out-of-range times to the
-/// ceiling code or to the lowest code, which also means NULL; neither is exact.
-fn exact_key_time(decoder: &SortKeyDecoder, key: u64) -> Option<i64> {
-    let timestamp = decoder.decode(key).0?;
-    (Some(timestamp) != decoder.decode(u64::MAX).0).then_some(timestamp)
-}
-
 fn matching_time_decoder(
     metadata: Option<&EdgeSortKeyMetadata>,
     destination: &str,
     clock: &str,
+    index_clock: TimeUnit,
 ) -> Option<SortKeyDecoder> {
-    metadata.and_then(|metadata| {
-        metadata.timestamp.as_ref().and_then(|timestamp| {
-            (timestamp.table == destination
-                && timestamp.column == clock
-                && timestamp.encoding.step == 1)
-                .then(|| SortKeyDecoder::new(metadata))
-        })
-    })
+    IndexedTimeFilter::matching(metadata, destination, clock, index_clock)
+        .filter(IndexedTimeFilter::is_exact)
+        .map(|clock| clock.decoder().clone())
 }
 
 fn validate_frame_plan(plan: &FramePlan, root_type: &str) -> Result<(), String> {
@@ -830,10 +817,11 @@ fn materialize_frame(
                 && (plan.start_seconds.is_some() || plan.stop_seconds.is_some())
             {
                 plan.time_column.as_deref().and_then(|clock| {
-                    matching_time_decoder(
+                    IndexedTimeFilter::matching(
                         relation.dest_sort_key.as_ref(),
                         &step.destination_type,
                         clock,
+                        reader.metadata().timestamp_unit,
                     )
                 })
             } else {
@@ -846,7 +834,6 @@ fn materialize_frame(
                         .map(|seconds| cutoffs[anchor].saturating_add(seconds)),
                     plan.stop_seconds
                         .map(|seconds| cutoffs[anchor].saturating_add(seconds)),
-                    plan.name.as_str(),
                 )
             });
             let mut next = Vec::new();
@@ -1456,11 +1443,21 @@ fn count_frame(
         .last()
         .and_then(|(relation, _)| relation.dest_sort_key.clone());
 
+    let has_bounds = plan.start_seconds.is_some() || plan.stop_seconds.is_some();
+    let indexed_clock = plan.time_column.as_deref().filter(|_| has_bounds).and_then(|column| {
+        IndexedTimeFilter::matching(final_sort_key.as_ref(), &destination, column,
+            reader.metadata().timestamp_unit)
+    });
     let traversal_started = Instant::now();
     let mut rows_by_anchor = Vec::with_capacity(roots.len());
-    for &root in roots {
+    for (anchor, &root) in roots.iter().enumerate() {
         let mut frontier = vec![(root, 0)];
-        for (step, (_, table)) in plan.path.iter().zip(&hops) {
+        for (hop, (step, (_, table))) in plan.path.iter().zip(&hops).enumerate() {
+            let window = indexed_clock.as_ref().filter(|_| hop + 1 == plan.path.len()).map(|clock| {
+                (clock,
+                 plan.start_seconds.map(|offset| cutoffs[anchor].saturating_add(offset)),
+                 plan.stop_seconds.map(|offset| cutoffs[anchor].saturating_add(offset)))
+            });
             let mut next = Vec::new();
             for (node_id, _) in frontier {
                 let (destinations, sort_keys) = relation_columns(
@@ -1468,7 +1465,7 @@ fn count_frame(
                     &step.relation,
                     node_id,
                     true,
-                    None,
+                    window,
                     &mut stats.edges_visited,
                 )?;
                 next.extend(destinations.into_iter().zip(sort_keys));
@@ -1487,21 +1484,24 @@ fn count_frame(
         .saturating_add(elapsed_ns(traversal_started));
 
     let filter_started = Instant::now();
-    let has_bounds = plan.start_seconds.is_some() || plan.stop_seconds.is_some();
     let mut lengths = rows_by_anchor.iter().map(Vec::len).collect::<Vec<_>>();
     if has_bounds {
         let time_column = plan
             .time_column
             .as_ref()
             .expect("frame validation requires a time column for bounds");
-        let sort_decoder =
-            matching_time_decoder(final_sort_key.as_ref(), &destination, time_column)
-                .filter(|decoder| {
-                    rows_by_anchor
-                        .iter()
-                        .flatten()
-                        .all(|&(_, key)| exact_key_time(decoder, key).is_some())
-                });
+        let sort_decoder = matching_time_decoder(
+            final_sort_key.as_ref(),
+            &destination,
+            time_column,
+            reader.metadata().timestamp_unit,
+        )
+        .filter(|decoder| {
+            rows_by_anchor
+                .iter()
+                .flatten()
+                .all(|&(_, key)| unclipped_bucket_end(decoder, key).is_some())
+        });
         if let Some(decoder) = sort_decoder {
             for (anchor, rows) in rows_by_anchor.iter().enumerate() {
                 let lower = plan
@@ -1512,7 +1512,7 @@ fn count_frame(
                     .map(|value| cutoffs[anchor].saturating_add(value));
                 let mut selected = 0;
                 for &(_, raw_sort_key) in rows {
-                    let timestamp = exact_key_time(&decoder, raw_sort_key)
+                    let timestamp = unclipped_bucket_end(&decoder, raw_sort_key)
                         .expect("ambiguous sort keys select the rowpack path");
                     stats.sort_key_timestamps += 1;
                     if lower.is_none_or(|bound| timestamp > bound)
