@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Predict icr identify age related conditions with synthetic example data.
 
-Generate local files from the repository root:
+Generate local files, starting in the NVIDIA/kumo-engine checkout:
+    cd examples/kumo-example-notebooks
     python synthetic-data/sdm/generate.py icr_identify_age_related_conditions --output data/icr_identify_age_related_conditions
 Then pass --data-dir data/icr_identify_age_related_conditions to this script.
 Metrics are demonstration only; these are not benchmark or clinical results.

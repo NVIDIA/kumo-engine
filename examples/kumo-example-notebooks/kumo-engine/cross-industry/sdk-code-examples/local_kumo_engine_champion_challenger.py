@@ -2,13 +2,17 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Compare a retrained challenger with a trusted champion on identical held-out rows.
-Synthetic data setup (run from the repository root):
+The champion must have excluded the comparison rows from training, tuning,
+and all refits. Reusing its saved split plan does not prove this exclusion;
+verify the champion training history before interpreting the Brier comparison.
+Synthetic data setup, starting in the NVIDIA/kumo-engine checkout:
+  cd examples/kumo-example-notebooks
   python synthetic-data/engine_retail/generate.py --dataset fashion --output-dir ./example-data/fashion
 Pass ./example-data/fashion as --source-root where applicable.
 The generator writes local files only. Point FileConnector at that directory.
 Synthetic evaluation metrics are demonstration only.
 Install: pip install "kumo-engine[s3,text]"
-Run this local Python script with --source-root, --scratch-dir on a local
+Pass --source-root to select the generated data directory.
 Use --scratch-dir on local SSD and --output-dir at a new retained directory.
 """
 import argparse
@@ -76,7 +80,9 @@ def main():
     snapshot = graph.snapshot()
     from kumo.engine import TrainingTableOutputConfig
     files = FileConnector(root_dir=str(output))
-    training = query.generate_training_table(snapshot)
+    champion = Trainer.load(args.champion_path)
+    training = query.generate_training_table(
+        snapshot, plan=champion.training_table_generation_plan)
     training.export(TrainingTableOutputConfig(files, 'labeled_rows'))
     rows = pd.read_parquet(output / 'labeled_rows')
     holdout = rows.loc[rows['SPLIT'] == 2].copy()
@@ -85,7 +91,6 @@ def main():
     labels = holdout[['ENTITY1', 'TIMESTAMP', 'TARGET1']].copy()
     population_rows = holdout[['ENTITY1', 'TIMESTAMP']].copy()
     population_rows.to_parquet(output / 'comparison.parquet', index=False)
-    champion = Trainer.load(args.champion_path)
     challenger = Trainer(query.suggest_model_plan(snapshot))
     challenger.fit(training, snapshot=snapshot,
                    export_config=ModelOutputConfig(files, path='challenger'))

@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Predict two sigma connect rental listing inquiries with synthetic example data.
 
-Generate local files from the repository root:
+Generate local files, starting in the NVIDIA/kumo-engine checkout:
+    cd examples/kumo-example-notebooks
     python synthetic-data/sdm/generate.py two_sigma_connect_rental_listing_inquiries --output data/two_sigma_connect_rental_listing_inquiries
 Then pass --data-dir data/two_sigma_connect_rental_listing_inquiries to this script.
 Metrics are demonstration only; these are not benchmark or clinical results.

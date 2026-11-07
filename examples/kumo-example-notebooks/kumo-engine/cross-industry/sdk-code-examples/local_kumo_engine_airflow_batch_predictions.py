@@ -2,7 +2,8 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Schedule daily local Engine batch predictions on an Airflow worker.
-Synthetic data setup (run from the repository root):
+Synthetic data setup, starting in the NVIDIA/kumo-engine checkout:
+  cd examples/kumo-example-notebooks
   python synthetic-data/engine_other/generate.py --dataset mlops --output-dir ./example-data/mlops
 Pass ./example-data/mlops as --source-root where applicable.
 The generator writes local files only. For remote connectors, load those files

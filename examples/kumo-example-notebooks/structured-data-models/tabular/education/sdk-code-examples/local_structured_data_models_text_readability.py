@@ -88,7 +88,7 @@ print(f"Context rows: {context.size(0)}, held-out rows: {query.size(0)}")
 # ## Configure pretrained regression
 #
 # TabICLv2 predicts from labeled context without a separate training loop.
-# Apply the [text processor](https://nvidia.github.io/structured-data-models/api/generated/sdm.processing.SentenceTransformer) only to text columns, then compress their embeddings to 64 features with PCA fitted on context rows.
+# Apply the [text processor](https://nvidia.github.io/structured-data-models/api/generated/sdm.processing.text.SentenceTransformer.html) only to text columns, then compress their embeddings to 64 features with PCA fitted on context rows.
 # The default recipe handles the remaining numerical and categorical features.
 
 model = sdm.models.TabICLv2(task="regression", device=device)

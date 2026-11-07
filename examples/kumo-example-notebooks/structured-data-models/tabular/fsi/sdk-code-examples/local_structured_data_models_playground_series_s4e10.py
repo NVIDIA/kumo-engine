@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Predict playground series s4e10 with synthetic example data.
 
-Generate local files from the repository root:
+Generate local files, starting in the NVIDIA/kumo-engine checkout:
+    cd examples/kumo-example-notebooks
     python synthetic-data/sdm/generate.py playground_series_s4e10 --output data/playground_series_s4e10
 Then pass --data-dir data/playground_series_s4e10 to this script.
 Metrics are demonstration only; these are not benchmark or clinical results.

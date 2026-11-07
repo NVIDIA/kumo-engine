@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Predict leaf classification with synthetic example data.
 
-Generate local files from the repository root:
+Generate local files, starting in the NVIDIA/kumo-engine checkout:
+    cd examples/kumo-example-notebooks
     python synthetic-data/sdm/generate.py leaf_classification --output data/leaf_classification
 Then pass --data-dir data/leaf_classification to this script.
 Metrics are demonstration only; these are not benchmark or clinical results.

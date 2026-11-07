@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Predict mercari price suggestion challenge with synthetic example data.
 
-Generate local files from the repository root:
+Generate local files, starting in the NVIDIA/kumo-engine checkout:
+    cd examples/kumo-example-notebooks
     python synthetic-data/sdm/generate.py mercari_price_suggestion_challenge --output data/mercari_price_suggestion_challenge
 Then pass --data-dir data/mercari_price_suggestion_challenge to this script.
 Metrics are demonstration only; these are not benchmark or clinical results.
@@ -150,17 +151,16 @@ def main() -> None:
     parser.add_argument(
         "--val-size",
         type=int,
-        default=5000,
-        help="Absolute held-out row count (not a fraction of 1.48M rows).",
+        default=1000,
+        help="Held-out row count; must be smaller than the generated training set.",
     )
     parser.add_argument(
         "--max-context-size",
         type=int,
         default=8000,
         help=(
-            "Per-estimator context row cap; unlike this directory's other "
-            "scripts, this defaults to a real cap (not None/full-context), "
-            "since train.tsv has 1482535 rows."),
+            "Per-estimator context row cap; larger input datasets are subsampled "
+            "to bound attention memory."),
     )
     parser.add_argument("--query-batch-size", type=int, default=20000)
     parser.add_argument("--seed", type=int, default=0)
@@ -178,6 +178,8 @@ def main() -> None:
     generator = torch.Generator(device).manual_seed(args.seed)
 
     train_frame = _load(args.data_dir / "train.tsv").drop(columns=["train_id"])
+    if not 1 <= args.val_size < len(train_frame):
+        parser.error("val-size must be positive and smaller than the training row count")
     train_frame[TARGET_COLUMN] = np.log1p(train_frame[TARGET_COLUMN])
     test_frame_full = _load(args.data_dir / "test_stg2.tsv")
     test_ids = test_frame_full["test_id"]

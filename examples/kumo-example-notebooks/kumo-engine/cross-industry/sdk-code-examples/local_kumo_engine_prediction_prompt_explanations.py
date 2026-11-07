@@ -2,13 +2,15 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Turn prediction explanation prompts into natural-language explanations.
-Synthetic data setup (run from the repository root):
+Synthetic data setup, starting in the NVIDIA/kumo-engine checkout:
+  cd examples/kumo-example-notebooks
   python synthetic-data/engine_other/generate.py --dataset modules --output-dir ./example-data/modules
 Use ./example-data/modules as SOURCE_ROOT for connector examples.
 For prompts, pass prompts.parquet as --input; for collections, read interests.parquet.
 The generator writes local files only.
 Synthetic evaluation metrics are demonstration only.
-Install: pip install google-genai pandas pyarrow
+Install: pip install --upgrade google-genai pandas pyarrow
+The client context manager requires google-genai 1.39.0 or newer.
 Set GEMINI_API_KEY and pass --model naming a model enabled for your Google account.
 This script makes billed API calls when run; it does not train an Engine model.
 """

@@ -2,13 +2,14 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Classify loan status from the eight-table synthetic Financial relational dataset.
-Synthetic data setup (run from the repository root):
+Synthetic data setup, starting in the NVIDIA/kumo-engine checkout:
+  cd examples/kumo-example-notebooks
   python synthetic-data/engine_other/generate.py --dataset financial --output-dir ./example-data/financial
 Pass ./example-data/financial as --source-root where applicable.
 The generator writes local files only. Point FileConnector at that directory.
 Synthetic evaluation metrics are demonstration only.
 Install: pip install "kumo-engine[s3,text]"
-Run this local Python script with --source-root, --scratch-dir on a local
+Pass --source-root to select the generated data directory.
 Use --scratch-dir on local SSD and --output-dir at a new retained directory.
 """
 import argparse
@@ -111,7 +112,8 @@ def main():
     snapshot = graph.snapshot()
     if args.load_model:
         trainer = Trainer.load(args.load_model)
-        training = query.generate_training_table(snapshot)
+        training = query.generate_training_table(
+            snapshot, plan=trainer.training_table_generation_plan)
     else:
         training = query.generate_training_table(snapshot, plan=None)
         plan = query.suggest_model_plan(snapshot)  # Supported FAST defaults.

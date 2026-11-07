@@ -78,7 +78,7 @@ def main():
 
     from kumoapi.typing import Stype
     tables['users'] = tables['users'].with_column(
-        'timestamp_first_active', timestamp_format='yyyyMMddHHmmss')
+        'timestamp_first_active', timestamp_format='%Y%m%d%H%M%S')
     for column in ['action', 'action_detail']:
         tables['sessions'] = tables['sessions'].with_column(
             column, stype=Stype.categorical)
@@ -91,7 +91,8 @@ def main():
     snapshot = graph.snapshot()
     if args.load_model:
         trainer = Trainer.load(args.load_model)
-        training = query.generate_training_table(snapshot)
+        training = query.generate_training_table(
+            snapshot, plan=trainer.training_table_generation_plan)
     else:
         training = query.generate_training_table(snapshot, plan=None)
         plan = query.suggest_model_plan(snapshot)  # Supported FAST defaults.

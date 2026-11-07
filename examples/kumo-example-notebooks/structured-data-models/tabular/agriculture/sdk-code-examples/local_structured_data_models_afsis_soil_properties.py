@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Predict afsis soil properties with synthetic example data.
 
-Generate local files from the repository root:
+Generate local files, starting in the NVIDIA/kumo-engine checkout:
+    cd examples/kumo-example-notebooks
     python synthetic-data/sdm/generate.py afsis_soil_properties --output data/afsis_soil_properties
 Then pass --data-dir data/afsis_soil_properties to this script.
 Metrics are demonstration only; these are not benchmark or clinical results.
@@ -138,7 +139,7 @@ def main() -> None:
         type=int,
         default=2000,
         help=(
-            "Feature column cap (see _wide_column_recipe): raising this "
+            "KumoTabular feature column cap (TabICLv2 does not use SelectColumns): raising this "
             "improves RMSE but costs memory, especially for kumo-large."
         ),
     )

@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Predict santander customer transaction prediction with synthetic example data.
 
-Generate local files from the repository root:
+Generate local files, starting in the NVIDIA/kumo-engine checkout:
+    cd examples/kumo-example-notebooks
     python synthetic-data/sdm/generate.py santander_customer_transaction_prediction --output data/santander_customer_transaction_prediction
 Then pass --data-dir data/santander_customer_transaction_prediction to this script.
 Metrics are demonstration only; these are not benchmark or clinical results.

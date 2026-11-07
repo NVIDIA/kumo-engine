@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Predict restaurant revenue prediction with synthetic example data.
 
-Generate local files from the repository root:
+Generate local files, starting in the NVIDIA/kumo-engine checkout:
+    cd examples/kumo-example-notebooks
     python synthetic-data/sdm/generate.py restaurant_revenue_prediction --output data/restaurant_revenue_prediction
 Then pass --data-dir data/restaurant_revenue_prediction to this script.
 Metrics are demonstration only; these are not benchmark or clinical results.

@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Predict itk fall 2018 with synthetic example data.
 
-Generate local files from the repository root:
+Generate local files, starting in the NVIDIA/kumo-engine checkout:
+    cd examples/kumo-example-notebooks
     python synthetic-data/sdm/generate.py itk_fall_2018 --output data/itk_fall_2018
 Then pass --data-dir data/itk_fall_2018 to this script.
 Metrics are demonstration only; these are not benchmark or clinical results.

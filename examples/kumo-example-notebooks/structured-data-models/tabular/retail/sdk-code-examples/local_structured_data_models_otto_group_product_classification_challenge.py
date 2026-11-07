@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Predict otto group product classification challenge with synthetic example data.
 
-Generate local files from the repository root:
+Generate local files, starting in the NVIDIA/kumo-engine checkout:
+    cd examples/kumo-example-notebooks
     python synthetic-data/sdm/generate.py otto_group_product_classification_challenge --output data/otto_group_product_classification_challenge
 Then pass --data-dir data/otto_group_product_classification_challenge to this script.
 Metrics are demonstration only; these are not benchmark or clinical results.

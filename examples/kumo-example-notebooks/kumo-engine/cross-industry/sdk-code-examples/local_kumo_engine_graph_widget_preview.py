@@ -2,7 +2,8 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Preview interactive inspection of a small synthetic shop graph.
-Synthetic data setup (run from the repository root):
+Synthetic data setup, starting in the NVIDIA/kumo-engine checkout:
+  cd examples/kumo-example-notebooks
   python synthetic-data/engine_other/generate.py --dataset modules --output-dir ./example-data/modules
 Use ./example-data/modules as SOURCE_ROOT for connector examples.
 For prompts, pass prompts.parquet as --input; for collections, read interests.parquet.

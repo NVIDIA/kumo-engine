@@ -2,13 +2,14 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Regress hourly transformer oil temperature from the synthetic ETT series.
-Synthetic data setup (run from the repository root):
+Synthetic data setup, starting in the NVIDIA/kumo-engine checkout:
+  cd examples/kumo-example-notebooks
   python synthetic-data/engine_other/generate.py --dataset transformer --output-dir ./example-data/transformer
 Pass ./example-data/transformer as --source-root where applicable.
 The generator writes local files only. Point FileConnector at that directory.
 Synthetic evaluation metrics are demonstration only.
 Install: pip install "kumo-engine[s3,text]"
-Run this local Python script with --source-root, --scratch-dir on a local
+Pass --source-root to select the generated data directory.
 Use --scratch-dir on local SSD and --output-dir at a new retained directory.
 """
 import argparse

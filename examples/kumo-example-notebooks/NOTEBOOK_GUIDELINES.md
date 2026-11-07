@@ -105,7 +105,7 @@ Do not add training, graphs, predictive queries or explanations to a workflow th
 ### Batch predictions
 
 Every end-to-end model notebook must include a section titled **Batch predictions**, with a dedicated code cell that scores multiple records using the trained model or configured pretrained model/context.
-The scored predictions should come from rows added to the original graph. Thus there should be at least one additional cell showing the addition of these rows to be scored. They should be simulated in the same fashion as the original data.
+For graph workflows, score rows added to the original graph and show their addition in a separate cell. For tabular or client workflows without a graph, prepare a separate label-free scoring table or batch. Simulate scoring rows in the same fashion as the original data.
 Identify the scoring population and prepare its inputs without supplying held-out target values to prediction.
 Use the offering's supported prediction API; batch prediction does not require a hosted batch-job service.
 Display a small result sample, verify its alignment with the input IDs or row indices, and explain the prediction columns and expected output rows per input.
