@@ -91,6 +91,10 @@ def denied_access(error, *, provider_only=False):
                 or getattr(error, 'status_code', None) == 403
                 or getattr(response, 'status_code', None) == 403
                 or code in ('AccessDenied', 'AccessDeniedException')
+                or (type(error) is OSError and re.match(
+                    r"^When initiating multiple part upload for key '.+' "
+                    r"in bucket '.+': AWS Error ACCESS_DENIED during "
+                    r'CreateMultipartUpload operation:', str(error)))
                 or type(error).__name__ == 'PermissionDenied' or
             (not provider_only
              and getattr(error, 'errno', None) in (errno.EACCES, errno.EPERM))):

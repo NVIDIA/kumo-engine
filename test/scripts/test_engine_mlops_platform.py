@@ -240,6 +240,22 @@ def test_provider_denial_codes_are_recognized():
     assert not platform.access_error(AssertionError('model identity wrong'))
 
 
+@pytest.mark.parametrize('code,expected', [
+    ('ACCESS_DENIED', True), ('NO_SUCH_BUCKET', False),
+    ('NETWORK_CONNECTION', False), ('EXPIRED_TOKEN', False),
+])
+def test_arrow_s3_probe_requires_specific_provider_denial(code, expected):
+    error = OSError(
+        "When initiating multiple part upload for key 'test/.kumo-write-check' "
+        "in bucket 'kumo-test-dataplane-bucket': AWS Error " + code +
+        ' during CreateMultipartUpload operation: provider diagnostic')
+    wrapped = PermissionError('MLOps cannot write under artifact_root')
+    wrapped.__cause__ = error
+    assert platform.denied_access(wrapped, provider_only=True) is expected
+    assert not platform.denied_access(
+        OSError('ACCESS_DENIED'), provider_only=True)
+
+
 def test_execute_needs_a_candidate_and_output_directory():
     with pytest.raises(SystemExit) as result:
         platform.main([
