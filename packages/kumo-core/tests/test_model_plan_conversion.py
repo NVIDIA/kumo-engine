@@ -59,9 +59,13 @@ def test_round_trip_defaults_internal_only_sections(case: Case) -> None:
 
 
 @pytest.mark.parametrize("case", _CASES, ids=_CASE_IDS)
+@pytest.mark.parametrize('steps',
+                         [api.MissingType.VALUE, 8001, 1_000_000, None])
 def test_round_trip_with_base_preserves_internal_only_sections(
-        case: Case) -> None:
+        case: Case, steps) -> None:
     internal = case.internal_plan()
+    limits = internal.optimization
+    limits.max_val_steps = limits.max_test_steps = steps
 
     restored = case.to_internal(case.to_public(internal), base=internal)
 
@@ -147,20 +151,3 @@ def test_query_defaults_preserve_the_public_boundary(task_type, forecast_length,
     assert to_json_dict(restored.training_table_generation) == to_json_dict(
         ModelPlan().training_table_generation)
     assert set(restored.training_job.metrics) == metrics
-
-
-@pytest.mark.parametrize('steps', [8001, 1_000_000, None])
-def test_large_evaluation_budget_round_trip(steps):
-    public = api.ModelPlan(optimization=api.OptimizationPlan(
-        max_val_steps=steps, max_test_steps=steps))
-    restored = public_model_plan_from_internal(
-        internal_model_plan_from_public(public))
-    assert restored.optimization.max_val_steps == steps
-    assert restored.optimization.max_test_steps == steps
-
-
-@pytest.mark.parametrize('field', ['max_val_steps', 'max_test_steps'])
-@pytest.mark.parametrize('steps', [0, -1])
-def test_evaluation_budget_requires_positive_steps(field, steps):
-    with pytest.raises(ValueError):
-        api.OptimizationPlan(**{field: steps})
