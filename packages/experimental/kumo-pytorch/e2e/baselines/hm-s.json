@@ -1,0 +1,1054 @@
+{
+  "dataset": {
+    "ceiling_auroc": {
+      "test": 0.8590186657233347,
+      "train": 0.8635612333896786,
+      "val": 0.8717679556707767
+    },
+    "ceiling_auroc_se": {
+      "test": 0.007630014369074923,
+      "train": 0.0038358529445195917,
+      "val": 0.010566840714234643
+    },
+    "float_sums": {
+      "anchors": {},
+      "articles": {
+        "base_price": 13.943405
+      },
+      "customers": {},
+      "oracle/labels": {
+        "true_prob": 5385.925569876706
+      },
+      "oracle/latent": {
+        "drift_amplitude": 772.4662334212633,
+        "drift_period_days": 452405.4335095612,
+        "drift_phase": 6224.080104821589,
+        "mu": 770.1050600294607
+      },
+      "transactions": {
+        "price": 1277.2531159999999
+      }
+    },
+    "generator": "e2e.datasets.hm",
+    "generator_version": 2,
+    "positive_rate": {
+      "test": 0.12475,
+      "train": 0.1200625,
+      "val": 0.1205
+    },
+    "scale": "S",
+    "seed": 0,
+    "sizes": {
+      "anchors": 44000,
+      "articles": 500,
+      "customers": 2000,
+      "oracle/labels": 44000,
+      "oracle/latent": 2000,
+      "transactions": 50870
+    },
+    "table_sha256": {
+      "anchors": "a42058bf4a31d13dbbd27a474bacffc8dbea07f768741d9783699021e308da91",
+      "articles": "6f4b029bfa7d021f72b66b0c9be11e459ce8b552ccc81ced1b97f66bb670830b",
+      "customers": "a82dcaebde8be661e454a4068c4b773e81017b2ec8777eace0c960fd4cc04193",
+      "oracle/labels": "3cad14c303b0bc7bdb2f8066b0abfea10ae43c3df32d762c286f22d6f7e1599f",
+      "oracle/latent": "3361c72e2d397f885b88ab3b7a0bdffdca97f49fcf723e6a84fbc4ff27bcb892",
+      "transactions": "95393afbc4200f80d6371088ea7ac0ba3da73bda9b45575e3c0ff323bc9cbdcf"
+    }
+  },
+  "hardware": {
+    "accelerator": "cpu",
+    "cpu_count": 10,
+    "machine": "arm64",
+    "memory_gb": 24.0,
+    "numpy": "2.5.4",
+    "platform": "macOS-26.7.1-arm64-arm-64bit",
+    "processor": "arm",
+    "pyarrow": "24.0.0",
+    "python": "3.12.15",
+    "torch": "2.12.1"
+  },
+  "kumo_engine": {
+    "commit": "5321556a57152f1a61eaeb69c05349e7ecb55fd5",
+    "pinned_plan": "kumo_engine_hm_plan.json",
+    "resolved_model_plan": {
+      "column_processing": {
+        "encoder_overrides": null,
+        "na_strategy": null
+      },
+      "model_architecture": {
+        "activation": [
+          "leaky_relu"
+        ],
+        "aggregation": "???",
+        "channels": "???",
+        "distance_measure": "???",
+        "embedding_norm_reg_coeff": "???",
+        "forecast_type": "???",
+        "handle_new_entities": "???",
+        "handle_new_target_entities": "???",
+        "model": [
+          {
+            "aggregation": [
+              [
+                "sum",
+                "mean",
+                "min",
+                "max",
+                "std"
+              ]
+            ],
+            "channels": [
+              128
+            ],
+            "dropout": [
+              0.0
+            ],
+            "name": "GNN"
+          }
+        ],
+        "module": "???",
+        "normalization": [
+          "layer_norm"
+        ],
+        "num_post_message_passing_layers": [
+          2
+        ],
+        "num_pre_message_passing_layers": [
+          0
+        ],
+        "output_embedding_dim": "???",
+        "past_encoder": "???",
+        "prediction_time_encodings": [
+          false
+        ],
+        "ranking_embedding_loss_coeff": "???",
+        "target_embedding_mode": "???",
+        "use_seq_id": [
+          false
+        ]
+      },
+      "neighbor_sampling": {
+        "adaptive_sampling": false,
+        "max_target_neighbors_per_entity": "???",
+        "num_neighbors": [
+          {
+            "hop1": {
+              "customers.customer_id->transactions.customer_id": 16,
+              "default": 0
+            },
+            "hop2": {
+              "default": 0,
+              "transactions.article_id->articles.article_id": 1
+            },
+            "hop3": null,
+            "hop4": null,
+            "hop5": null,
+            "hop6": null
+          }
+        ],
+        "sample_from_entity_table": "???"
+      },
+      "optimization": {
+        "base_lr": [
+          0.0005
+        ],
+        "batch_size": [
+          512
+        ],
+        "early_stopping": [
+          {
+            "min_delta": 0.0,
+            "patience": 3
+          }
+        ],
+        "lookup_optimization": "???",
+        "loss": [
+          "binary_cross_entropy"
+        ],
+        "lr_scheduler": [
+          {
+            "interval": "step",
+            "kwargs": {
+              "warmup_ratio_or_steps": 0.1
+            },
+            "name": "constant_with_warmup"
+          }
+        ],
+        "majority_sampling_ratio": [
+          null
+        ],
+        "max_epochs": 10,
+        "max_steps_per_epoch": 64,
+        "max_test_steps": 4000,
+        "max_val_steps": 2000,
+        "min_steps_per_epoch": 30,
+        "optimizer": [
+          "Adam"
+        ],
+        "overlap_ratio": "???",
+        "target_fraction": "???",
+        "weight_decay": [
+          5e-07
+        ],
+        "weight_mode": [
+          null
+        ]
+      },
+      "training_job": {
+        "disable_compilation": true,
+        "disable_explain": true,
+        "metrics": [
+          "auroc",
+          "ap",
+          "auprc"
+        ],
+        "num_experiments": 1,
+        "pruning": {
+          "k": 3,
+          "min_delta": 0.0,
+          "min_epochs": 2,
+          "patience": 1
+        },
+        "refit_full": false,
+        "refit_trainval": false,
+        "tune_metric": "auroc"
+      },
+      "training_table_generation": {
+        "end_time": "???",
+        "entity_candidate": null,
+        "entity_candidate_aggregation": null,
+        "forecast_length": "???",
+        "lag_timesteps": "???",
+        "split": "ManualSplit(col='SPLIT', train_value=0, val_value=1, test_value=2)",
+        "start_time": "???",
+        "task_path_override": null,
+        "timeframe_step": 7,
+        "train_end_offset": "inferred",
+        "train_start_offset": "inferred",
+        "train_table_path_override": null,
+        "weight_col": null,
+        "year_over_year": "???"
+      }
+    }
+  },
+  "recorded_at": "2026-10-27T17:37:44+00:00",
+  "runs": [
+    {
+      "epochs_run": 10,
+      "fit_seconds": 18.9,
+      "holdout_test_auroc": 0.8264210511854901,
+      "kumo_metrics": {
+        "test_ap": 0.5322580337524414,
+        "test_auprc": 0.5318653583526611,
+        "test_auroc": 0.8264210224151611,
+        "test_loss": 0.28070148825645447,
+        "train_ap": 0.579066812992096,
+        "train_auprc": 0.5790006518363953,
+        "train_auroc": 0.8529924750328064,
+        "train_loss": 0.25528860092163086,
+        "val_ap": 0.5453349947929382,
+        "val_auprc": 0.5447715520858765,
+        "val_auroc": 0.8448795080184937,
+        "val_loss": 0.26486653089523315
+      },
+      "point_lookups": [
+        {
+          "customer_id": 463,
+          "expected": "high",
+          "kind": "active",
+          "scores": [
+            0.9278812408447266,
+            0.8649728894233704,
+            0.8926025032997131,
+            0.9119815826416016
+          ]
+        },
+        {
+          "customer_id": 1419,
+          "expected": "high",
+          "kind": "active",
+          "scores": [
+            0.8909891247749329,
+            0.9086308479309082,
+            0.9164716601371765,
+            0.9163094758987427
+          ]
+        },
+        {
+          "customer_id": 1670,
+          "expected": "high",
+          "kind": "active",
+          "scores": [
+            0.8922679424285889,
+            0.9120773673057556,
+            0.8755787014961243,
+            0.9260898232460022
+          ]
+        },
+        {
+          "customer_id": 1858,
+          "expected": "high",
+          "kind": "active",
+          "scores": [
+            0.9206821918487549,
+            0.9460325837135315,
+            0.9359330534934998,
+            0.9068552851676941
+          ]
+        },
+        {
+          "customer_id": 1867,
+          "expected": "high",
+          "kind": "active",
+          "scores": [
+            0.8897625803947449,
+            0.9062047004699707,
+            0.8948239684104919,
+            0.9083498120307922
+          ]
+        },
+        {
+          "customer_id": 496,
+          "expected": "low",
+          "kind": "dormant",
+          "scores": [
+            0.11714433133602142,
+            0.08591947704553604,
+            0.06562743335962296,
+            0.06810227781534195
+          ]
+        },
+        {
+          "customer_id": 685,
+          "expected": "low",
+          "kind": "dormant",
+          "scores": [
+            0.10855858027935028,
+            0.07787977159023285,
+            0.06936167925596237,
+            0.07028991729021072
+          ]
+        },
+        {
+          "customer_id": 742,
+          "expected": "low",
+          "kind": "dormant",
+          "scores": [
+            0.12184198200702667,
+            0.09312991052865982,
+            0.07667006552219391,
+            0.07912936806678772
+          ]
+        },
+        {
+          "customer_id": 1315,
+          "expected": "low",
+          "kind": "dormant",
+          "scores": [
+            0.1577400267124176,
+            0.13451683521270752,
+            0.10524433851242065,
+            0.10266207903623581
+          ]
+        },
+        {
+          "customer_id": 1666,
+          "expected": "low",
+          "kind": "dormant",
+          "scores": [
+            0.12077944725751877,
+            0.09282594174146652,
+            0.0691443532705307,
+            0.06934349238872528
+          ]
+        }
+      ],
+      "predict_seconds": 1.6,
+      "rerun": false,
+      "seed": 0,
+      "test_auroc": 0.8264210511854901,
+      "test_prediction_distribution": {
+        "count": 8000,
+        "mean": 0.12393695262039546,
+        "nan": 0,
+        "predicted_positive_rate_at_0.5": 0.056625,
+        "quantiles": {
+          "0.01": 0.011815369855612516,
+          "0.05": 0.01407534722238779,
+          "0.25": 0.02544373646378517,
+          "0.5": 0.05064582638442516,
+          "0.75": 0.13502857461571693,
+          "0.95": 0.5554843634366989,
+          "0.99": 0.8660632002353669
+        },
+        "std": 0.17625871449733363
+      }
+    },
+    {
+      "epochs_run": 9,
+      "fit_seconds": 15.5,
+      "holdout_test_auroc": 0.8270761746286059,
+      "kumo_metrics": {
+        "test_ap": 0.5308921933174133,
+        "test_auprc": 0.5305951237678528,
+        "test_auroc": 0.8270761966705322,
+        "test_loss": 0.28034138679504395,
+        "train_ap": 0.5701054334640503,
+        "train_auprc": 0.5700407028198242,
+        "train_auroc": 0.8487765192985535,
+        "train_loss": 0.25848904252052307,
+        "val_ap": 0.5403544902801514,
+        "val_auprc": 0.5398540496826172,
+        "val_auroc": 0.8309281468391418,
+        "val_loss": 0.2855522632598877
+      },
+      "point_lookups": [
+        {
+          "customer_id": 463,
+          "expected": "high",
+          "kind": "active",
+          "scores": [
+            0.89849853515625,
+            0.8215614557266235,
+            0.8487427830696106,
+            0.8815142512321472
+          ]
+        },
+        {
+          "customer_id": 1419,
+          "expected": "high",
+          "kind": "active",
+          "scores": [
+            0.8159976005554199,
+            0.8653848171234131,
+            0.8978279829025269,
+            0.8725234270095825
+          ]
+        },
+        {
+          "customer_id": 1670,
+          "expected": "high",
+          "kind": "active",
+          "scores": [
+            0.8660160303115845,
+            0.8784363865852356,
+            0.8460010290145874,
+            0.896177351474762
+          ]
+        },
+        {
+          "customer_id": 1858,
+          "expected": "high",
+          "kind": "active",
+          "scores": [
+            0.8959759473800659,
+            0.9032167196273804,
+            0.887581467628479,
+            0.8679478168487549
+          ]
+        },
+        {
+          "customer_id": 1867,
+          "expected": "high",
+          "kind": "active",
+          "scores": [
+            0.8359187841415405,
+            0.873242974281311,
+            0.8770209550857544,
+            0.8810768723487854
+          ]
+        },
+        {
+          "customer_id": 496,
+          "expected": "low",
+          "kind": "dormant",
+          "scores": [
+            0.10421882569789886,
+            0.0847424864768982,
+            0.06631259620189667,
+            0.06786851584911346
+          ]
+        },
+        {
+          "customer_id": 685,
+          "expected": "low",
+          "kind": "dormant",
+          "scores": [
+            0.09711544215679169,
+            0.07186266779899597,
+            0.06385307013988495,
+            0.061228327453136444
+          ]
+        },
+        {
+          "customer_id": 742,
+          "expected": "low",
+          "kind": "dormant",
+          "scores": [
+            0.1173853948712349,
+            0.10900838673114777,
+            0.08030316233634949,
+            0.07981836050748825
+          ]
+        },
+        {
+          "customer_id": 1315,
+          "expected": "low",
+          "kind": "dormant",
+          "scores": [
+            0.18295879662036896,
+            0.15106794238090515,
+            0.11703027039766312,
+            0.11524756252765656
+          ]
+        },
+        {
+          "customer_id": 1666,
+          "expected": "low",
+          "kind": "dormant",
+          "scores": [
+            0.1169033944606781,
+            0.09831604361534119,
+            0.06983722746372223,
+            0.06659205257892609
+          ]
+        }
+      ],
+      "predict_seconds": 1.7,
+      "rerun": false,
+      "seed": 1,
+      "test_auroc": 0.8270761746286059,
+      "test_prediction_distribution": {
+        "count": 8000,
+        "mean": 0.12190453584096395,
+        "nan": 0,
+        "predicted_positive_rate_at_0.5": 0.057375,
+        "quantiles": {
+          "0.01": 0.013826733455061913,
+          "0.05": 0.015361115336418152,
+          "0.25": 0.02754102787002921,
+          "0.5": 0.05019201524555683,
+          "0.75": 0.12946497276425362,
+          "0.95": 0.5560281276702875,
+          "0.99": 0.839730834364891
+        },
+        "std": 0.17256300531838767
+      }
+    },
+    {
+      "epochs_run": 7,
+      "fit_seconds": 12.1,
+      "holdout_test_auroc": 0.8251666142911358,
+      "kumo_metrics": {
+        "test_ap": 0.5316225290298462,
+        "test_auprc": 0.5312901735305786,
+        "test_auroc": 0.8251665830612183,
+        "test_loss": 0.28134429454803467,
+        "train_ap": 0.5596703886985779,
+        "train_auprc": 0.5595475435256958,
+        "train_auroc": 0.8411127328872681,
+        "train_loss": 0.2616172432899475,
+        "val_ap": 0.5451533794403076,
+        "val_auprc": 0.544343888759613,
+        "val_auroc": 0.8458608984947205,
+        "val_loss": 0.26558777689933777
+      },
+      "point_lookups": [
+        {
+          "customer_id": 463,
+          "expected": "high",
+          "kind": "active",
+          "scores": [
+            0.8928006887435913,
+            0.8366703987121582,
+            0.8412789106369019,
+            0.8828353881835938
+          ]
+        },
+        {
+          "customer_id": 1419,
+          "expected": "high",
+          "kind": "active",
+          "scores": [
+            0.8359131813049316,
+            0.8759171962738037,
+            0.9002232551574707,
+            0.8842914700508118
+          ]
+        },
+        {
+          "customer_id": 1670,
+          "expected": "high",
+          "kind": "active",
+          "scores": [
+            0.8596005439758301,
+            0.8903244137763977,
+            0.8719342350959778,
+            0.889968752861023
+          ]
+        },
+        {
+          "customer_id": 1858,
+          "expected": "high",
+          "kind": "active",
+          "scores": [
+            0.8751444816589355,
+            0.9043307304382324,
+            0.8830888867378235,
+            0.8458612561225891
+          ]
+        },
+        {
+          "customer_id": 1867,
+          "expected": "high",
+          "kind": "active",
+          "scores": [
+            0.8731873035430908,
+            0.8878660202026367,
+            0.8836881518363953,
+            0.8910767436027527
+          ]
+        },
+        {
+          "customer_id": 496,
+          "expected": "low",
+          "kind": "dormant",
+          "scores": [
+            0.09616202116012573,
+            0.09285817295312881,
+            0.07879413664340973,
+            0.09107024222612381
+          ]
+        },
+        {
+          "customer_id": 685,
+          "expected": "low",
+          "kind": "dormant",
+          "scores": [
+            0.08677016943693161,
+            0.07901211827993393,
+            0.07515858858823776,
+            0.08628431707620621
+          ]
+        },
+        {
+          "customer_id": 742,
+          "expected": "low",
+          "kind": "dormant",
+          "scores": [
+            0.09268692135810852,
+            0.08978649973869324,
+            0.07170373201370239,
+            0.07130052894353867
+          ]
+        },
+        {
+          "customer_id": 1315,
+          "expected": "low",
+          "kind": "dormant",
+          "scores": [
+            0.1313367784023285,
+            0.13445733487606049,
+            0.11938982456922531,
+            0.12847132980823517
+          ]
+        },
+        {
+          "customer_id": 1666,
+          "expected": "low",
+          "kind": "dormant",
+          "scores": [
+            0.09221042692661285,
+            0.09140005707740784,
+            0.06681666523218155,
+            0.06959154456853867
+          ]
+        }
+      ],
+      "predict_seconds": 1.5,
+      "rerun": false,
+      "seed": 2,
+      "test_auroc": 0.8251666142911358,
+      "test_prediction_distribution": {
+        "count": 8000,
+        "mean": 0.12425490500289016,
+        "nan": 0,
+        "predicted_positive_rate_at_0.5": 0.060375,
+        "quantiles": {
+          "0.01": 0.014948462136089802,
+          "0.05": 0.01575811393558979,
+          "0.25": 0.026466275099664927,
+          "0.5": 0.05063812807202339,
+          "0.75": 0.13388049975037575,
+          "0.95": 0.5729685574769972,
+          "0.99": 0.843119359612465
+        },
+        "std": 0.1766530833980243
+      }
+    },
+    {
+      "epochs_run": 6,
+      "fit_seconds": 10.5,
+      "holdout_test_auroc": 0.8249677017559827,
+      "kumo_metrics": {
+        "test_ap": 0.5276519060134888,
+        "test_auprc": 0.5272678732872009,
+        "test_auroc": 0.8249677419662476,
+        "test_loss": 0.2843717634677887,
+        "train_ap": 0.5595577955245972,
+        "train_auprc": 0.5594995617866516,
+        "train_auroc": 0.8355226516723633,
+        "train_loss": 0.2641928791999817,
+        "val_ap": 0.5469471216201782,
+        "val_auprc": 0.5463230609893799,
+        "val_auroc": 0.8481425642967224,
+        "val_loss": 0.263518363237381
+      },
+      "point_lookups": [
+        {
+          "customer_id": 463,
+          "expected": "high",
+          "kind": "active",
+          "scores": [
+            0.8532304167747498,
+            0.8385902643203735,
+            0.8434189558029175,
+            0.8540242314338684
+          ]
+        },
+        {
+          "customer_id": 1419,
+          "expected": "high",
+          "kind": "active",
+          "scores": [
+            0.8328095078468323,
+            0.8454711437225342,
+            0.8481851816177368,
+            0.8452631831169128
+          ]
+        },
+        {
+          "customer_id": 1670,
+          "expected": "high",
+          "kind": "active",
+          "scores": [
+            0.8413054943084717,
+            0.8541079163551331,
+            0.8389293551445007,
+            0.854821503162384
+          ]
+        },
+        {
+          "customer_id": 1858,
+          "expected": "high",
+          "kind": "active",
+          "scores": [
+            0.8579965829849243,
+            0.8696479201316833,
+            0.8606550097465515,
+            0.8456101417541504
+          ]
+        },
+        {
+          "customer_id": 1867,
+          "expected": "high",
+          "kind": "active",
+          "scores": [
+            0.8360584378242493,
+            0.8439927101135254,
+            0.8301644325256348,
+            0.8346039056777954
+          ]
+        },
+        {
+          "customer_id": 496,
+          "expected": "low",
+          "kind": "dormant",
+          "scores": [
+            0.10851757973432541,
+            0.09078424423933029,
+            0.06968294084072113,
+            0.0650118887424469
+          ]
+        },
+        {
+          "customer_id": 685,
+          "expected": "low",
+          "kind": "dormant",
+          "scores": [
+            0.10453185439109802,
+            0.08119950443506241,
+            0.06951688230037689,
+            0.0651877149939537
+          ]
+        },
+        {
+          "customer_id": 742,
+          "expected": "low",
+          "kind": "dormant",
+          "scores": [
+            0.10250578075647354,
+            0.08721984177827835,
+            0.07335062325000763,
+            0.07194302976131439
+          ]
+        },
+        {
+          "customer_id": 1315,
+          "expected": "low",
+          "kind": "dormant",
+          "scores": [
+            0.11940597742795944,
+            0.10239806771278381,
+            0.0845237597823143,
+            0.0815211683511734
+          ]
+        },
+        {
+          "customer_id": 1666,
+          "expected": "low",
+          "kind": "dormant",
+          "scores": [
+            0.1006903424859047,
+            0.08706144243478775,
+            0.0668223574757576,
+            0.06499060243368149
+          ]
+        }
+      ],
+      "predict_seconds": 1.6,
+      "rerun": true,
+      "seed": 0,
+      "test_auroc": 0.8249677017559827,
+      "test_prediction_distribution": {
+        "count": 8000,
+        "mean": 0.12454575464106164,
+        "nan": 0,
+        "predicted_positive_rate_at_0.5": 0.064375,
+        "quantiles": {
+          "0.01": 0.019186269491910934,
+          "0.05": 0.019983094464987517,
+          "0.25": 0.02817474864423275,
+          "0.5": 0.04602544754743576,
+          "0.75": 0.13014387339353561,
+          "0.95": 0.5966118544340132,
+          "0.99": 0.832810749411583
+        },
+        "std": 0.1783579325409488
+      }
+    }
+  ],
+  "same_seed_rerun": {
+    "max_abs_score_delta": 0.20852363109588623,
+    "max_abs_score_delta_second_vs_first_seed": 0.16388553380966187,
+    "seed": 0,
+    "test_auroc_delta": -0.0014533494295074778
+  },
+  "snapshot_seconds": 5.5,
+  "summary": {
+    "fit_seconds": {
+      "max": 18.863619791998644,
+      "mean": 14.243835573000979,
+      "min": 10.48655141700874,
+      "std": 3.7249960668064577
+    },
+    "runs": "every run above, the same-seed rerun included",
+    "test_auroc": {
+      "max": 0.8270761746286059,
+      "mean": 0.8259078854653036,
+      "min": 0.8249677017559827,
+      "std": 0.0010102255501271056
+    },
+    "test_prediction_mean": {
+      "max": 0.12454575464106164,
+      "mean": 0.1236605370263278,
+      "min": 0.12190453584096395,
+      "std": 0.0011967775149181441
+    }
+  },
+  "task": {
+    "anchors": "the generator's anchors.parquet with oracle/labels.parquet labels",
+    "cutoffs": {
+      "test": [
+        "2024-11-11T00:00:00",
+        "2024-11-18T00:00:00",
+        "2024-11-25T00:00:00",
+        "2024-12-02T00:00:00"
+      ],
+      "train": [
+        "2024-07-08T00:00:00",
+        "2024-07-15T00:00:00",
+        "2024-07-22T00:00:00",
+        "2024-07-29T00:00:00",
+        "2024-08-05T00:00:00",
+        "2024-08-12T00:00:00",
+        "2024-08-19T00:00:00",
+        "2024-08-26T00:00:00",
+        "2024-09-02T00:00:00",
+        "2024-09-09T00:00:00",
+        "2024-09-16T00:00:00",
+        "2024-09-23T00:00:00",
+        "2024-09-30T00:00:00",
+        "2024-10-07T00:00:00",
+        "2024-10-14T00:00:00",
+        "2024-10-21T00:00:00"
+      ],
+      "val": [
+        "2024-10-28T00:00:00",
+        "2024-11-04T00:00:00"
+      ]
+    },
+    "point_lookups": [
+      {
+        "customer_id": 463,
+        "expected": "high",
+        "kind": "active",
+        "test_true_prob": [
+          0.9998722415543094,
+          0.9997553465856001,
+          0.9998237340809423,
+          0.9997648361835335
+        ]
+      },
+      {
+        "customer_id": 1419,
+        "expected": "high",
+        "kind": "active",
+        "test_true_prob": [
+          0.9997203872241233,
+          0.9997366824401602,
+          0.9998319160069373,
+          0.999489779838449
+        ]
+      },
+      {
+        "customer_id": 1670,
+        "expected": "high",
+        "kind": "active",
+        "test_true_prob": [
+          0.9991212542171888,
+          0.9996288675811333,
+          0.9996750009629111,
+          0.9997241394352909
+        ]
+      },
+      {
+        "customer_id": 1858,
+        "expected": "high",
+        "kind": "active",
+        "test_true_prob": [
+          0.9998713489843963,
+          0.9997822288382301,
+          0.9998491723371256,
+          0.9998434277215271
+        ]
+      },
+      {
+        "customer_id": 1867,
+        "expected": "high",
+        "kind": "active",
+        "test_true_prob": [
+          0.9997609907501434,
+          0.9997700214273484,
+          0.999767100515589,
+          0.9997524818731662
+        ]
+      },
+      {
+        "customer_id": 496,
+        "expected": "low",
+        "kind": "dormant",
+        "test_true_prob": [
+          3.511529747080022e-05,
+          3.511529747057818e-05,
+          3.511529747057818e-05,
+          3.511529747057818e-05
+        ]
+      },
+      {
+        "customer_id": 685,
+        "expected": "low",
+        "kind": "dormant",
+        "test_true_prob": [
+          3.4340368742835636e-05,
+          3.4340368742835636e-05,
+          3.4340368742835636e-05,
+          3.43403687421695e-05
+        ]
+      },
+      {
+        "customer_id": 742,
+        "expected": "low",
+        "kind": "dormant",
+        "test_true_prob": [
+          3.461535921833736e-05,
+          3.4615359218004293e-05,
+          3.4615359217560204e-05,
+          3.4615359217560204e-05
+        ]
+      },
+      {
+        "customer_id": 1315,
+        "expected": "low",
+        "kind": "dormant",
+        "test_true_prob": [
+          3.228724568005159e-05,
+          3.2287245679829546e-05,
+          3.2287245679829546e-05,
+          3.2287245679829546e-05
+        ]
+      },
+      {
+        "customer_id": 1666,
+        "expected": "low",
+        "kind": "dormant",
+        "test_true_prob": [
+          3.212541834296534e-05,
+          3.212541834296534e-05,
+          3.212541834296534e-05,
+          3.212541834296534e-05
+        ]
+      }
+    ],
+    "pql_label_agreement": {
+      "anchors": 44000,
+      "disagreements": 0,
+      "matched": 44000,
+      "pql_rows_outside_anchors": 0
+    },
+    "query": "PREDICT COUNT(transactions.*, 0, 7, days) > 0 FOR EACH customers.customer_id"
+  },
+  "training_budget": {
+    "kumo_engine": {
+      "batch_size": 512,
+      "epochs_run": [
+        10,
+        9,
+        7,
+        6
+      ],
+      "max_epochs": 10,
+      "samples_per_epoch": 32256,
+      "steps_per_epoch": 63
+    },
+    "gnn_flow": {
+      "best_epoch": [
+        8,
+        3,
+        7
+      ],
+      "epochs_run": [
+        12,
+        7,
+        11
+      ],
+      "runs": [
+        "gnn-seed0",
+        "gnn-seed1",
+        "gnn-seed2"
+      ],
+      "samples_per_epoch": 32000
+    },
+    "train_anchors": 32000
+  }
+}

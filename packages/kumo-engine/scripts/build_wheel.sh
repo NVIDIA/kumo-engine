@@ -252,7 +252,8 @@ if [ -n "$(git -C "${KUMO_REPO}" status --porcelain -- packages 2>/dev/null)" ];
 fi
 for pkg_dir in "${KUMO_REPO}"/packages/*/; do
     pkg_name="$(basename "${pkg_dir}")"
-    case "${pkg_name}" in kumo-sdk|diskgraph) continue ;; esac
+    # packages/experimental/ holds packages that aren't released yet.
+    case "${pkg_name}" in kumo-sdk|diskgraph|experimental) continue ;; esac
     [ -f "${pkg_dir}pyproject.toml" ] || [ -f "${pkg_dir}setup.py" ] || continue
     dist_glob="${pkg_name//-/_}-*.whl"
     log "building ${pkg_name} from ${pkg_dir}"
