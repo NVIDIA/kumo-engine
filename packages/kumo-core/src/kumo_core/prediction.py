@@ -67,7 +67,6 @@ class PredictionTableRequest:
     tt_id: str
     task_dataset: TaskDatasetMaterializeSpec
     compiler_options: Mapping[str, Any] | None = None
-    forecast_timeframe_step: int | None = None
 
 
 @dataclass(frozen=True)

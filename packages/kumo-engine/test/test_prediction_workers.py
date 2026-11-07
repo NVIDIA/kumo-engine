@@ -107,8 +107,7 @@ def test_valid_class_count_reaches_scorer(task_type, count, tmp_path,
     table = SimpleNamespace(query='prediction query', tt_id='table',
                             compiler_options=None, timestamps=(),
                             staging_dir=tmp_path, table_path=tmp_path,
-                            row_count=1, required_stages=(),
-                            forecast_timeframe_step=None)
+                            row_count=1, required_stages=())
     snapshot = SimpleNamespace(graph_config={}, index_path=tmp_path, id='snap')
 
     if task_type.is_link_pred and count is None:

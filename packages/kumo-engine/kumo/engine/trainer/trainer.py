@@ -1025,7 +1025,6 @@ def _materialize_prediction(prediction_table: PredictionTable,
         tt_id=ingest_tt_id,
         task_dataset=task_dataset,
         compiler_options=prediction_table.compiler_options,
-        forecast_timeframe_step=prediction_table.forecast_timeframe_step,
     )
     generated = GeneratedPredictionTable(
         staging_dir=str(prediction_table.staging_dir),

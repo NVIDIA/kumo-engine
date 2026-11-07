@@ -429,5 +429,4 @@ class PredictiveQuery:
             timestamps=request.timestamps,
             required_stages=request.task_dataset.required_stages,
             compiler_options=request.compiler_options,
-            forecast_timeframe_step=request.forecast_timeframe_step,
         )
