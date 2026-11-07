@@ -3041,6 +3041,7 @@ def test_diskgraph_ingest_config_strips_hydrated_connectors_before_subprocess(
         lambda *_args, **_kwargs: graph_config,
     )
     ingest_args = SimpleNamespace(
+        timestamp_precision='seconds',
         all_graph_tables={},
         graph_definition=SimpleNamespace(col_groups=[]),
         graph_display_name='graph',
