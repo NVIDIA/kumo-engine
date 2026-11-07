@@ -227,6 +227,8 @@ def test_suggestions_require_matching_snapshot_and_resolved_metadata(
     with pytest.raises(ValueError, match='definition|infer_metadata'):
         PredictiveQuery(unresolved, query).suggest_model_plan(
             replace(snapshot, id=f'{unresolved.id}@fixture'))
+    assert PredictiveQuery(snapshot, query).suggest_model_plan(
+        replace(snapshot, id=f'{graph.id}@other'))
 
 
 @pytest.mark.parametrize('connector_kind', ['file', 's3'])
@@ -699,11 +701,12 @@ def test_generation_rejects_ignored_path_overrides(tmp_path, field):
             'id': pa.array(range(10), type=pa.int64()),
             'label': [True, False] * 5,
         }), tmp_path / 'users.parquet')
-    graph = Graph([
+    graph = Graph({
+        'users':
         Table.from_source_table(
             FileConnector(root_dir=str(tmp_path))['users.parquet'],
             primary_key='id')
-    ])
+    })
     query = PredictiveQuery(graph, 'PREDICT users.label FOR EACH users.id')
     snapshot = GraphSnapshot(f'{graph.id}@fixture', tmp_path / 'index',
                              graph._graph_config)

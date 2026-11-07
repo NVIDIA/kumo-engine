@@ -3,7 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import os
 import re
+from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -69,8 +71,8 @@ def test_source_table_inference_and_graph_acquisition(extension, tmp_path,
     ingested = []
 
     def ingest(graph_config, spec):
-        assert set(spec.source_paths) == {table.table_name}
-        local = Path(spec.source_paths[table.table_name])
+        assert set(spec.source_paths) == {'events'}
+        local = Path(spec.source_paths['events'])
         assert local.is_relative_to(tmp_path / 'scratch')
         actual = pq.ParquetDataset(local).read()
         assert actual.to_pydict() == expected.to_pydict()
@@ -80,7 +82,7 @@ def test_source_table_inference_and_graph_acquisition(extension, tmp_path,
 
     monkeypatch.setattr('kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
                         ingest)
-    graph = Graph(tables=[table])
+    graph = Graph(tables={'events': table})
     snapshot = graph.snapshot()
     assert len(ingested) == 1
     assert snapshot.graph_config == ingested[0]
@@ -607,3 +609,167 @@ def test_a_declared_dtype_resolves_an_unreadable_column(tmp_path):
         (snapshot.index_path / 'col_stats.json').read_text())['events']['big']
     assert dict(stats['category_counts']) == {0: 1, 2**63 - 1: 1}
     assert stats['null_count'] == 1
+
+
+@pytest.mark.parametrize('extension', ['parquet', 'csv'])
+def test_duplicate_column_names_are_refused_at_the_schema_read(
+        tmp_path, extension):
+    from kumo_core.sources.errors import PermanentSourceError
+
+    from kumo.engine import FileConnector
+
+    root = tmp_path / 'source'
+    root.mkdir()
+    if extension == 'csv':
+        (root / 'dups.csv').write_text('id,x,x\n1,10,a\n2,20,b\n')
+    else:
+        pq.write_table(
+            pa.Table.from_arrays(
+                [pa.array([1, 2]),
+                 pa.array([10, 20]),
+                 pa.array(['a', 'b'])], names=['id', 'x', 'x']),
+            root / 'dups.parquet')
+    connector = FileConnector(root_dir=str(root))
+
+    with pytest.raises(PermanentSourceError, match=r'[Dd]uplicate column.*x'):
+        Table.from_source_table(connector['dups'], primary_key='id')
+
+
+def test_a_table_with_no_rows_is_left_out_of_the_snapshot(tmp_path):
+    from kumo_core.pquery import PredictiveQueryPlanError
+    from kumo_core.sources.errors import SourceNotFoundError
+    from kumoapi.graph import Edge
+    from kumoapi.table import Column
+
+    from kumo.engine import FileConnector, configure
+    from kumo.engine.pquery import PredictiveQuery
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            'id': range(20),
+            'age': [20 + i for i in range(20)]
+        }), root / 'users.parquet')
+    pq.write_table(
+        pa.table({
+            'oid': range(40),
+            'uid': [i % 20 for i in range(40)],
+            'item_id': [i % 5 for i in range(40)],
+            'ts': [datetime(2024, 1, 1 + i % 28) for i in range(40)],
+        }), root / 'orders.parquet')
+    pq.write_table(
+        pa.table({
+            'item_id': pa.array([], pa.int64()),
+            'amount': pa.array([], pa.float64()),
+        }), root / 'items.parquet')
+    connector = FileConnector(root_dir=str(root))
+    users = Table.from_source_table(connector['users'], primary_key='id')
+    orders = Table.from_source_table(connector['orders'], primary_key='oid',
+                                     time_column='ts')
+    with pytest.warns(UserWarning, match=r"Table 'items' has no rows"):
+        items = Table.from_source_table(connector['items'],
+                                        primary_key='item_id')
+    assert {
+        col.name: col.stype
+        for col in items.definition.cols
+    } == {
+        'item_id': Stype.ID,
+        'amount': Stype.categorical,
+    }
+    graph = Graph({
+        'users': users,
+        'orders': orders,
+        'items': items
+    }, [Edge('orders', 'uid', 'users'),
+        Edge('orders', 'item_id', 'items')])
+    graph.validate()
+
+    with pytest.warns(
+            UserWarning,
+            match=r'Table items has no rows and is left out of the snapshot '
+            r'with 1 edge\(s\) \(orders\.item_id -> items\); a query that '
+            r'names it fails\.'):
+        snapshot = graph.snapshot()
+
+    assert [table['table_name'] for table in snapshot.graph_config['tables']
+            ] == ['users', 'orders']
+    assert [
+        fkey['dst_table'] for table in snapshot.graph_config['tables']
+        for fkey in table['fkeys']
+    ] == ['users']
+    assert snapshot.index_path.is_dir()
+    for text in ('PREDICT items.amount FOR EACH items.item_id',
+                 'PREDICT LIST_DISTINCT(orders.item_id, 0, 30, days) '
+                 'RANK TOP 2 FOR EACH users.id'):
+        query = PredictiveQuery(graph, text)
+        query.validate(verbose=False)
+        with pytest.raises(
+                PredictiveQueryPlanError,
+                match=rf'This query needs table\(s\) items, which have no '
+                rf'rows and were left out of snapshot {snapshot.id}\. Add '
+                r'rows to them and take a new snapshot, or write a query '
+                r'over the other tables\.'):
+            query.generate_training_table(snapshot)
+    with pytest.warns(UserWarning, match='left out of the snapshot'):
+        assert PredictiveQuery(
+            graph, 'PREDICT COUNT(orders.*, 0, 30, days) FOR EACH users.id'
+        ).suggest_model_plan(graph.snapshot())
+    undeclared = replace(
+        items, definition=replace(
+            items.definition, cols=[
+                *items.definition.cols,
+                Column('missing', Stype.numerical, Dtype.int64)
+            ]))
+    with pytest.raises(SourceNotFoundError,
+                       match='items has no column missing'):
+        Graph({'users': users, 'items': undeclared}).snapshot()
+    with pytest.raises(ValueError, match=r'Every table .* no rows \(items\)'):
+        Graph({'items': items}).snapshot()
+    assert snapshot.source_changes(graph)['items']['status'] == 'unchanged'
+    recorded = snapshot.manifest.parents.source_tables['items'].version
+    assert recorded == connector.source_backend.get_data_version(
+        connector, 'items')
+
+    def rewrite(table):
+        written = (root / 'items.parquet').stat().st_mtime
+        pq.write_table(table, root / 'items.parquet')
+        os.utime(root / 'items.parquet', (written + 2, written + 2))
+
+    rewrite(
+        pa.table({
+            'item_id': pa.array([], pa.int64()),
+            'amount': pa.array([], pa.float64()),
+        }))
+    assert snapshot.source_changes(graph)['items']['status'] == 'changed'
+    with pytest.warns(UserWarning, match='left out of the snapshot'):
+        rewritten = graph.snapshot()
+    assert rewritten.id != snapshot.id
+    assert rewritten.source_changes(graph)['items']['status'] == 'unchanged'
+
+    rewrite(pa.table({
+        'item_id': range(5),
+        'amount': [1.0, 2.0, 3.0, 4.0, 5.0]
+    }))
+    assert rewritten.source_changes(graph)['items']['status'] == 'changed'
+    full = graph.snapshot()
+    assert [table['table_name'] for table in full.graph_config['tables']
+            ] == ['users', 'orders', 'items']
+    ranking = ('PREDICT LIST_DISTINCT(orders.item_id, 0, 30, days) '
+               'RANK TOP 2 FOR EACH users.id')
+    with pytest.raises(
+            PredictiveQueryPlanError,
+            match=rf'This query needs table\(s\) items, which have '
+            rf'no rows and were left out of snapshot {snapshot.id}'):
+        PredictiveQuery(full, ranking).suggest_model_plan(snapshot)
+    with pytest.raises(
+            PredictiveQueryPlanError,
+            match=rf'Snapshot {full.id} has table\(s\) items that the snapshot '
+            r'this query was validated against left out, and the query '
+            r'means something else with them\. Validate it against this '
+            r'snapshot: PredictiveQuery\(snapshot, query\)\.'):
+        PredictiveQuery(snapshot, ranking).suggest_model_plan(full)
+    assert PredictiveQuery(
+        snapshot,
+        'PREDICT users.age FOR EACH users.id').suggest_model_plan(full)

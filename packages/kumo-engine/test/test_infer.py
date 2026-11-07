@@ -70,10 +70,12 @@ def test_native_list_sample_does_not_require_hashable_values():
     assert columns[0].stype == Stype.multicategorical
 
 
-def test_empty_sample_reports_the_diskgraph_row_requirement():
-    column = SourceColumn(name='measurement', dtype=Dtype.int64, stype=None,
+@pytest.mark.parametrize(
+    'dtype', [Dtype.int64, Dtype.float64, Dtype.string, Dtype.binary])
+def test_an_empty_sample_types_columns_from_zero_statistics_and_warns(dtype):
+    column = SourceColumn(name='measurement', dtype=dtype, stype=None,
                           is_primary=False)
-    frame = pd.DataFrame({'measurement': pd.Series([], dtype='Int64')})
+    frame = pd.DataFrame({'measurement': pd.Series([], dtype='object')})
 
     class Source:
         def get_sample(self, connector, table_name, sample_rows, sql=None):
@@ -81,13 +83,18 @@ def test_empty_sample_reports_the_diskgraph_row_requirement():
                 table_name=table_name, cols=[column],
                 sample_rows=frame.to_json(orient='table'))
 
-    from kumo_core.sources.errors import PermanentSourceError
+    with pytest.warns(
+            UserWarning,
+            match=r"Table 'events' has no rows; columns without statistics "
+            r"are typed categorical, and Graph\.snapshot\(\) leaves the "
+            r"table out\. Add rows or leave the table out of the graph\."):
+        columns = resolve_table_columns(
+            SimpleNamespace(source_backend=Source()), 'events',
+            {'measurement': column}, column_names=None, primary_key=None,
+            time_column=None, end_time_column=None)
 
-    with pytest.raises(PermanentSourceError, match='at least one row'):
-        resolve_table_columns(SimpleNamespace(source_backend=Source()),
-                              'events', {'measurement': column},
-                              column_names=None, primary_key=None,
-                              time_column=None, end_time_column=None)
+    assert columns[0].dtype == dtype
+    assert columns[0].stype == Stype.categorical
 
 
 def test_unresolved_column_error_names_its_table():

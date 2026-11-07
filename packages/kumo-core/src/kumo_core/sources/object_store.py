@@ -13,6 +13,7 @@ import posixpath
 import re
 import shutil
 import threading
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import KW_ONLY, dataclass, replace
@@ -907,7 +908,21 @@ def _repeated(value: Any, dtype: pa.DataType, rows: int) -> pa.Array:
     return pa.repeat(pa.scalar(value, dtype), rows)
 
 
+def _refuse_duplicate_names(table: str, schema: pa.Schema) -> None:
+    """A schema is read into a mapping by name, so a second column of one
+    name would silently replace the first wherever the table is used."""
+    counts = Counter(schema.names)
+    duplicated = [(name, count) for name, count in counts.items() if count > 1]
+    if not duplicated:
+        return
+    named = ", ".join(f"{name} ({count} columns)" for name, count in duplicated)
+    raise PermanentSourceError(
+        f"{table} has duplicate column names: {named}. Rename or drop the "
+        f"extra columns at the source.", table=table)
+
+
 def _refuse_unsupported(table: str, schema: pa.Schema) -> None:
+    _refuse_duplicate_names(table, schema)
     decoded = pa.schema([
         field.with_type(field.type.value_type)
         if pa.types.is_dictionary(field.type) else field for field in schema
