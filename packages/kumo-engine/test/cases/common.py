@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 LIMITS = dict(prediction_rows=20, metric_tolerance=0.25,
@@ -48,6 +49,12 @@ def sparse_overrides(scale):
     return overrides
 
 
+@dataclass(frozen=True)
+class Scale:
+    scratch_gib: int
+    instance: str
+
+
 def parse_args(case, scales, *, family, prediction_rows, metric_tolerance,
                prediction_tolerance):
     parser = argparse.ArgumentParser(description=f"Run the {case} Engine case")
@@ -62,10 +69,17 @@ def parse_args(case, scales, *, family, prediction_rows, metric_tolerance,
     parser.add_argument("--write-reference", action="store_true")
     parser.add_argument("--control", action="store_true")
     args = parser.parse_args()
-    args.case, args.scratch_gib = case, scales[args.scale]
+    scale = scales[args.scale]
+    args.case, args.scratch_gib = case, scale.scratch_gib
     if args.requirements:
-        print(json.dumps({"scratch_gib": args.scratch_gib}))
+        print(json.dumps(asdict(scale)))
         parser.exit()
+    args.instance_type = os.environ.get("ENGINE_E2E_INSTANCE_TYPE")
+    if os.environ.get("GITHUB_ACTIONS") == "true" and (
+            args.instance_type != scale.instance or args.instance_type
+            != os.environ.get("ENGINE_E2E_EXPECTED_INSTANCE_TYPE")):
+        parser.error(
+            "The actual CI instance type must match the case and runner pool")
     if args.reference is None or not re.fullmatch(r"[0-9a-f]{40}",
                                                   args.source_sha or ""):
         parser.error(
@@ -292,7 +306,15 @@ def check_predictions(first, repeat, reloaded, tolerance):
     return {"max_abs_difference": maximum}
 
 
+def check_hardware(result, expected):
+    current = result.get("hardware", {}).get("instance_type")
+    reference = expected.get("hardware", {}).get("instance_type")
+    if (current or reference) and (not current or current != reference):
+        raise ValueError("Reference instance type differs or is missing")
+
+
 def compare_reference(result, expected, tolerance):
+    check_hardware(result, expected)
     for key in ("graph", "training_table"):
         if result[key] != expected[key]:
             raise ValueError(f"Reference {key} differs")
@@ -357,6 +379,9 @@ def run(graph, query, split, task, overrides=None, *, args,
         "control": args.control,
         "source_sha": args.source_sha,
         "status": "failed",
+        "hardware": {
+            "instance_type": args.instance_type
+        },
         "resources": {
             "ram_peak_bytes": 0,
             "scratch_peak_delta_bytes": 0,
@@ -382,6 +407,7 @@ def run(graph, query, split, task, overrides=None, *, args,
                     "Reference must be a passed result for this case and scale")
             if expected.get("control", False) != args.control:
                 raise ValueError("Reference control mode differs")
+            check_hardware(result, expected)
         args.scratch.mkdir(parents=True, exist_ok=True)
         if shutil.disk_usage(args.scratch).free < args.scratch_gib * 2**30:
             raise ValueError(
@@ -391,12 +417,12 @@ def run(graph, query, split, task, overrides=None, *, args,
             prefix=f"{args.case}-{args.scale}-", dir=args.scratch)
         args.scratch = Path(temporary.name)
         kumo.configure(scratch_dir=args.scratch)
-        result["hardware"] = {
+        result["hardware"].update({
             "platform": platform.platform(),
             "cpus": os.cpu_count(),
             "memory_bytes": psutil.virtual_memory().total,
             "gpu": _gpu()
-        }
+        })
         observer = threading.Thread(target=_observe,
                                     args=(result, args.scratch, stopped),
                                     daemon=True)
