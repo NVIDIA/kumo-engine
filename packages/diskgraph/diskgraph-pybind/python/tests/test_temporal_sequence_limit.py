@@ -683,6 +683,11 @@ def test_shared_history_preserves_types_and_floating_point_order(
     extra = {
         "description": (pa.array([None, "alpha", "beta", "alpha"] * 25), "string"),
         "tags": (pa.array([None, [], ["a", "b"], ["c"]] * 25), "string_array"),
+        "blob": (pa.array([None, b"", b"\x00\xff", b"abc"] * 25), "bytes"),
+        "codes": (
+            pa.array([None, [], [-8, 7], [3]] * 25, type=pa.list_(pa.int8())),
+            "int8_array",
+        ),
         "enabled": (pa.array([True, False, None, True] * 25), "bool"),
     }
     for name, (values, dtype) in extra.items():
@@ -707,6 +712,8 @@ def test_shared_history_preserves_types_and_floating_point_order(
         plan["frames"][0]["columns"] += list(extra)
         plan["sequences"][0]["columns"] = [
             "tags",
+            "blob",
+            "codes",
             "value",
             "description",
             "enabled",
@@ -731,6 +738,13 @@ def test_shared_history_preserves_types_and_floating_point_order(
             for row in range(start, min(start + 3, stop))
         ]
         assert a["batch"].equals(b["batch"].take(pa.array(selected, type=pa.int64())))
+        assert a["batch"].schema.field("description").type == pa.large_string()
+        assert a["batch"].schema.field("blob").type == pa.large_binary()
+        assert a["batch"].schema.field("tags").type == pa.large_list(pa.large_string())
+        assert a["batch"].schema.field("codes").type == pa.large_list(pa.int8())
+        original_rows = {row["id"]: row for row in source.to_pylist()}
+        for row in a["batch"].to_pylist():
+            assert row == {name: original_rows[row["id"]][name] for name in row}
         assert actual["stats"]["values_decoded"] < full["stats"]["values_decoded"]
 
 

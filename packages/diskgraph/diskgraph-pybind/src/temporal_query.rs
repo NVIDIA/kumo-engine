@@ -338,7 +338,7 @@ fn scalar_values_to_array(
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         ))),
-        Some(ScalarValue::String(_)) => Ok(Arc::new(StringArray::from(
+        Some(ScalarValue::String(_)) => Ok(Arc::new(LargeStringArray::from(
             values
                 .iter()
                 .map(|value| match value {
@@ -478,7 +478,7 @@ fn table_rows(
         );
     }
     decoder
-        .decode_batch_to_arrow(&rows, projection_indices)
+        .decode_batch_to_arrow_large(&rows, projection_indices)
         .map_err(|error| error.to_string())
 }
 
@@ -1874,6 +1874,22 @@ pub(crate) fn config_error(error: String) -> PyErr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_string_aggregates_keep_large_offsets_and_nulls() {
+        let values = [
+            ScalarValue::String("café".into()),
+            ScalarValue::Null,
+            ScalarValue::String(String::new()),
+        ];
+        let actual = scalar_values_to_array(&values, None).unwrap();
+        let strings = actual.as_any().downcast_ref::<LargeStringArray>().unwrap();
+        assert_eq!(
+            strings.iter().collect::<Vec<_>>(),
+            vec![Some("café"), None, Some("")]
+        );
+        assert!(scalar_values_to_array(&[values[0].clone(), ScalarValue::I64(1)], None).is_err());
+    }
 
     #[test]
     fn frame_sort_keeps_existing_tie_order_for_every_scalar_kind() {
