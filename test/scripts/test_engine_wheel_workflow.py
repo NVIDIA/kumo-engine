@@ -221,8 +221,9 @@ def test_all_platforms_require_validation_and_release_environment() -> None:
         PORTAL_WORKFLOW[True]["workflow_call"]["secrets"]["KITMAKER_API_TOKEN"][
             "required"
         ]
-        is True
+        is False
     )
+    assert portal["env"]["KITMAKER_API_TOKEN"] == "${{ secrets.KITMAKER_API_TOKEN }}"
     glove = yaml.safe_load(
         (WORKFLOW.parent / "kumo-glove-6b-50d-wheel.yml").read_text()
     )
