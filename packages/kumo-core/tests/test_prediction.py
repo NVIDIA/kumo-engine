@@ -17,7 +17,6 @@ from kumo_core.pquery import (
 from kumo_core.prediction import (
     PredictionTableRequest,
     PreparedCustomPredictionTable,
-    forecast_task_options,
     generate_custom_prediction_table,
     generate_prediction_table,
     materialize_prediction_task,
@@ -417,19 +416,6 @@ def test_forecast_prediction_compiles_only_historical_features(
     assert runtime.compile_options["lag_offsets_secs"] == (-86400, )
     assert "future_offsets_secs" not in runtime.compile_options
     assert req.compiler_options["future_offsets_secs"] == (0, 86400, 172800)
-    assert forecast_task_options(req) == {
-        "forecast_length": 3,
-        "lag_timesteps": 1,
-        "unix_start_offset": 0,
-        "unix_end_offset": 86400000000000,
-        "unix_step_size": 86400000000000,
-    }
-
-
-def test_forecast_task_options_uses_fitted_timeframe_step(tmp_path):
-    req = replace(forecast_request(tmp_path), forecast_timeframe_step=2)
-
-    assert forecast_task_options(req)['unix_step_size'] == 172800000000000
 
 
 @pytest.mark.parametrize("options", [{
@@ -519,7 +505,8 @@ def _score_shard_on_device(monkeypatch, tmp_path, devices, worker_id,
                 model=HeteroGNN(channels=8, num_mp_layers=1),
                 head=NodePredHead(), root_dir=str(model_dir)).config(),
         str(model_dir / "config.json"))
-    monkeypatch.setattr(DiskgraphTaskManifest, "load", lambda *_: None)
+    monkeypatch.setattr(DiskgraphTaskManifest, "load", lambda *_:
+                        SimpleNamespace(task_type=task.task_type.value))
     monkeypatch.setattr(ResolvedNumericalTask, "from_manifest",
                         lambda *_, **__: task)
     monkeypatch.setattr(prediction, "_publish_scored_shard",
@@ -544,7 +531,7 @@ def _score_shard_on_device(monkeypatch, tmp_path, devices, worker_id,
             pred_time_col_name=None, output_dir=str(tmp_path / "output"),
             attempt_id="attempt", graph_snapshot_id="snapshot",
             source_config_sha256="0" * 64, runtime_config_sha256="1" * 64,
-            binary_threshold=None, forecast_options=None,
+            binary_threshold=None, task_options=None,
             accelerator=accelerator),
     )
     return trainers

@@ -70,8 +70,6 @@ class PredictionTable:
     required_stages: Tuple[str, ...]
     #: Forecast compiler options resolved when this table was generated.
     compiler_options: Optional[Mapping[str, Any]] = None
-    #: Effective temporal step used by the fitted forecast task.
-    forecast_timeframe_step: Optional[int] = None
     source: Literal['pql', 'custom'] = 'pql'
     skipped_rows: int = 0
     skipped_sample: Tuple[Any, ...] = ()
@@ -148,7 +146,6 @@ class PredictionTable:
             timestamps=(),
             required_stages=request.task_dataset.required_stages,
             compiler_options=request.compiler_options,
-            forecast_timeframe_step=request.forecast_timeframe_step,
             source='custom',
             skipped_dir=(Path(generated.skipped_rows_dir)
                          if skipped and generated.skipped_rows_dir else None),
@@ -207,14 +204,6 @@ def _build_prediction_table_request(
             timestamps=timestamps,
             supplied_rows=supplied_rows,
         )
-    forecast_timeframe_step = None
-    if parsed.task_type == 'forecasting' and generation_plan is not None:
-        from kumo_core.model_plan import inferred_or_missing_type_to_none
-        value = inferred_or_missing_type_to_none(options.timeframe_step)
-        offset = parsed.query.get_combined_date_offset_range()
-        forecast_timeframe_step = int(
-            value if value is not None else int(offset.end) -
-            int(offset.start or 0))
     return PredictionTableRequest(
         query=parsed,
         graph=native_graph,
@@ -223,7 +212,6 @@ def _build_prediction_table_request(
         tt_id=f'pred_{run_id}',
         task_dataset=plan.task_dataset,
         compiler_options=plan.train_table.compiler_options,
-        forecast_timeframe_step=forecast_timeframe_step,
     ), plan.graph_index_id
 
 

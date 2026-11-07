@@ -67,7 +67,6 @@ class PredictionTableRequest:
     tt_id: str
     task_dataset: TaskDatasetMaterializeSpec
     compiler_options: Mapping[str, Any] | None = None
-    forecast_timeframe_step: int | None = None
 
 
 @dataclass(frozen=True)
@@ -92,46 +91,11 @@ class PreparedCustomPredictionTable:
             raise ValueError("custom prediction table requires a path")
 
 
-def forecast_task_options(
-    request: PredictionTableRequest, ) -> Dict[str, int] | None:
-    """Return the resolved-task scalars required to replay a forecast.
-
-    Prediction-table compilation owns the temporal query and the exact lag
-    features it emitted. Passing these small values to every scoring process
-    keeps spawned workers aligned with the fitted checkpoint.
-    """
-    if request.query.task_type != "forecasting":
-        return None
-    options = dict(request.compiler_options or {})
-    lag_offsets = options.get("lag_offsets_secs")
-    if not isinstance(lag_offsets, (list, tuple)) or not lag_offsets:
-        raise ValueError("Forecast prediction requires historical lag offsets")
-    offset = request.query.query.get_combined_date_offset_range()
-    start = int(offset.start or 0)
-    end = int(offset.end)
-    step = request.forecast_timeframe_step or end - start
-    from .utils.time import compute_unix_step
-    return {
-        "forecast_length": int(request.query.forecast_length),
-        "lag_timesteps": len(lag_offsets),
-        "unix_start_offset": int(compute_unix_step(start, offset.unit)),
-        "unix_end_offset": int(compute_unix_step(end, offset.unit)),
-        "unix_step_size": int(compute_unix_step(step, offset.unit)),
-    }
-
-
 def _validate_forecast_checkpoint(trainer: Any, task: Any) -> None:
     """Reject a checkpoint whose fitted forecast inputs differ from task."""
-    past_encoder = trainer.past_encoder
-    trained_lags = (getattr(past_encoder, "length", None)
-                    if past_encoder is not None else getattr(
-                        trainer.head, "past_channels", None))
-    if (trained_lags != task.lag_timesteps
-            or (trainer.year_over_year_encoder is not None)
-            != task.has_year_over_year_labels or getattr(
-                trainer.head, "unix_step_size", None) != task.unix_step_size):
-        raise ValueError(
-            "Forecast checkpoint lag/year-over-year/timing mismatch")
+    if ((trainer.year_over_year_encoder is not None)
+            != task.has_year_over_year_labels):
+        raise ValueError("Forecast checkpoint year-over-year mismatch")
     fitted = (trainer.encoders.encoders.get(task.train_table.name)
               if trainer.encoders is not None else None)
     if fitted is None or any(
@@ -387,7 +351,6 @@ __all__ = [
     "GeneratedPredictionTable",
     "PreparedCustomPredictionTable",
     "PredictionTableRequest",
-    "forecast_task_options",
     "generate_prediction_table",
     "generate_custom_prediction_table",
     "materialize_prediction_task",
@@ -519,7 +482,7 @@ class _PredictionWorkerConfig(NamedTuple):
     source_config_sha256: str
     runtime_config_sha256: str
     binary_threshold: Optional[float]
-    forecast_options: Optional[Dict[str, int]]
+    task_options: Optional[Dict[str, Optional[int]]]
     embedding_models: Optional[EmbeddingModelStore] = None
     ignore_time_col: bool = False
     accelerator: str = 'auto'
@@ -549,7 +512,7 @@ def _score_prediction_shard(
     task = ResolvedNumericalTask.from_manifest(
         manifest,
         name=config.run_id,
-        **(config.forecast_options or {}),
+        **(config.task_options or {}),
     )
     load_options = {'accelerator': config.accelerator}
     device = config.devices[worker_id]
@@ -568,7 +531,7 @@ def _score_prediction_shard(
         embedding_models=config.embedding_models,
         **load_options,
     )
-    if config.forecast_options is not None:
+    if manifest.task_type == "forecasting":
         _validate_forecast_checkpoint(trainer, task)
     from kumo_core.score_counts import Counts
     from kumo_core.train.artifact_stats import PredictionArtifactStatsCollector
@@ -631,7 +594,7 @@ def score_prediction(
     graph_snapshot_id: str,
     source_config_sha256: str,
     binary_threshold: float | None = None,
-    forecast_options: Mapping[str, int] | None = None,
+    task_options: Mapping[str, int | None] | None = None,
     embedding_models: EmbeddingModelStore | None = None,
     encoders: Any = None,
     accelerator: str = 'auto',
@@ -706,8 +669,8 @@ def score_prediction(
         source_config_sha256=source_config_sha256,
         runtime_config_sha256=runtime_config_sha256,
         binary_threshold=binary_threshold,
-        forecast_options=(dict(forecast_options)
-                          if forecast_options is not None else None),
+        task_options=(dict(task_options)
+                      if task_options is not None else None),
         embedding_models=embedding_models,
         accelerator=accelerator,
         count_edges=None if count_edges is None else dict(count_edges),
