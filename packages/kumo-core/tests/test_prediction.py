@@ -20,7 +20,6 @@ from kumo_core.prediction import (
     generate_custom_prediction_table,
     generate_prediction_table,
     materialize_prediction_task,
-    prediction_task_options,
 )
 from kumo_core.prediction_options import (
     resolve_classification_threshold,
@@ -417,33 +416,6 @@ def test_forecast_prediction_compiles_only_historical_features(
     assert runtime.compile_options["lag_offsets_secs"] == (-86400, )
     assert "future_offsets_secs" not in runtime.compile_options
     assert req.compiler_options["future_offsets_secs"] == (0, 86400, 172800)
-    assert prediction_task_options(req) == {
-        "forecast_length": 3,
-        "lag_timesteps": 1,
-        "unix_start_offset": 0,
-        "unix_end_offset": 86400000000000,
-        "unix_step_size": 86400000000000,
-    }
-
-
-def test_prediction_task_options_use_fitted_timeframe_step(tmp_path):
-    req = replace(forecast_request(tmp_path), forecast_timeframe_step=2)
-
-    assert prediction_task_options(req)['unix_step_size'] == 172800000000000
-
-
-def test_prediction_task_options_bound_temporal_link_candidates(tmp_path):
-    req = forecast_request(tmp_path)
-    link = replace(req, query=replace(req.query,
-                                      task_type="temporal_link_prediction"))
-
-    assert prediction_task_options(link) == {
-        "unix_start_offset": 0,
-        "unix_end_offset": 86400000000000,
-    }
-    assert prediction_task_options(
-        request(tmp_path, family="link_prediction")) is None
-    assert prediction_task_options(request(tmp_path)) is None
 
 
 @pytest.mark.parametrize("options", [{
@@ -533,7 +505,8 @@ def _score_shard_on_device(monkeypatch, tmp_path, devices, worker_id,
                 model=HeteroGNN(channels=8, num_mp_layers=1),
                 head=NodePredHead(), root_dir=str(model_dir)).config(),
         str(model_dir / "config.json"))
-    monkeypatch.setattr(DiskgraphTaskManifest, "load", lambda *_: None)
+    monkeypatch.setattr(DiskgraphTaskManifest, "load", lambda *_:
+                        SimpleNamespace(task_type=task.task_type.value))
     monkeypatch.setattr(ResolvedNumericalTask, "from_manifest",
                         lambda *_, **__: task)
     monkeypatch.setattr(prediction, "_publish_scored_shard",

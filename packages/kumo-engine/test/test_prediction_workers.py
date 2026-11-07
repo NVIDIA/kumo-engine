@@ -91,6 +91,7 @@ def test_valid_class_count_reaches_scorer(task_type, count, tmp_path,
     monkeypatch.setattr('kumo_core.pquery.normalize_graph', lambda *args: None)
     monkeypatch.setattr('kumo_core.pquery.parse_and_validate_query',
                         lambda *args: SimpleNamespace(
+                            task_type=task_type.value,
                             query=SimpleNamespace(top_k=None)))
     monkeypatch.setattr(
         'kumo.engine.trainer.trainer.build_generated_training_task_dataset',
@@ -99,8 +100,8 @@ def test_valid_class_count_reaches_scorer(task_type, count, tmp_path,
                         lambda *args, **kwargs: object())
     monkeypatch.setattr('kumo.engine.trainer.trainer._stage_model_bundle',
                         lambda *args: tmp_path)
-    monkeypatch.setattr('kumo_core.prediction.prediction_task_options',
-                        lambda *args: None)
+    monkeypatch.setattr('kumo.engine.trainer.trainer.bundle_task_options',
+                        lambda *args: {'lag_timesteps': 0})
     score = Mock(return_value=object())
     monkeypatch.setattr('kumo_core.prediction.score_prediction', score)
     table = SimpleNamespace(query='prediction query', tt_id='table',

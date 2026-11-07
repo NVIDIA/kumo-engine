@@ -92,41 +92,6 @@ class PreparedCustomPredictionTable:
             raise ValueError("custom prediction table requires a path")
 
 
-def prediction_task_options(
-    request: PredictionTableRequest, ) -> Dict[str, int] | None:
-    """Return the resolved-task scalars a temporal prediction replays.
-
-    Prediction-table compilation owns the temporal query. Temporal link
-    prediction needs its target window to bound candidates; forecasts also
-    need the exact lag features it emitted. Passing these small values to
-    every scoring process keeps spawned workers aligned with the checkpoint.
-    """
-    task_type = request.query.task_type
-    if task_type not in ("forecasting", "temporal_link_prediction"):
-        return None
-    offset = request.query.query.get_combined_date_offset_range()
-    start = int(offset.start or 0)
-    end = int(offset.end)
-    from .utils.time import compute_unix_step
-    window = {
-        "unix_start_offset": int(compute_unix_step(start, offset.unit)),
-        "unix_end_offset": int(compute_unix_step(end, offset.unit)),
-    }
-    if task_type != "forecasting":
-        return window
-    options = dict(request.compiler_options or {})
-    lag_offsets = options.get("lag_offsets_secs")
-    if not isinstance(lag_offsets, (list, tuple)) or not lag_offsets:
-        raise ValueError("Forecast prediction requires historical lag offsets")
-    step = request.forecast_timeframe_step or end - start
-    return {
-        "forecast_length": int(request.query.forecast_length),
-        "lag_timesteps": len(lag_offsets),
-        **window,
-        "unix_step_size": int(compute_unix_step(step, offset.unit)),
-    }
-
-
 def _validate_forecast_checkpoint(trainer: Any, task: Any) -> None:
     """Reject a checkpoint whose fitted forecast inputs differ from task."""
     past_encoder = trainer.past_encoder
@@ -394,7 +359,6 @@ __all__ = [
     "GeneratedPredictionTable",
     "PreparedCustomPredictionTable",
     "PredictionTableRequest",
-    "prediction_task_options",
     "generate_prediction_table",
     "generate_custom_prediction_table",
     "materialize_prediction_task",
@@ -526,7 +490,7 @@ class _PredictionWorkerConfig(NamedTuple):
     source_config_sha256: str
     runtime_config_sha256: str
     binary_threshold: Optional[float]
-    task_options: Optional[Dict[str, int]]
+    task_options: Optional[Dict[str, Optional[int]]]
     embedding_models: Optional[EmbeddingModelStore] = None
     ignore_time_col: bool = False
     accelerator: str = 'auto'
@@ -550,6 +514,7 @@ def _score_prediction_shard(
     from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
     from kumo_core.train.trainer import load_encoders
     from kumo_core.training.runtime import LocalDiskgraphTrainingRuntime
+    from kumo_core.types import TaskType
 
     if manifest is None:
         manifest = DiskgraphTaskManifest.load(config.manifest_path)
@@ -575,7 +540,7 @@ def _score_prediction_shard(
         embedding_models=config.embedding_models,
         **load_options,
     )
-    if "forecast_length" in (config.task_options or {}):
+    if manifest.task_type == TaskType.FORECASTING.value:
         _validate_forecast_checkpoint(trainer, task)
     from kumo_core.score_counts import Counts
     from kumo_core.train.artifact_stats import PredictionArtifactStatsCollector
@@ -638,7 +603,7 @@ def score_prediction(
     graph_snapshot_id: str,
     source_config_sha256: str,
     binary_threshold: float | None = None,
-    task_options: Mapping[str, int] | None = None,
+    task_options: Mapping[str, int | None] | None = None,
     embedding_models: EmbeddingModelStore | None = None,
     encoders: Any = None,
     accelerator: str = 'auto',

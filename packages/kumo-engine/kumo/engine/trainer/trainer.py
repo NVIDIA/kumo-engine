@@ -32,7 +32,7 @@ from typing import (
 )
 
 import pandas as pd
-from kumo_core.artifacts import PROVENANCE_FILE
+from kumo_core.artifacts import PROVENANCE_FILE, bundle_task_options
 from kumo_core.embedding_models import EmbeddingModelStore
 from kumo_core.evaluation_counts import (
     at_k_summaries,
@@ -987,13 +987,12 @@ def _requested_artifacts(
 
 def _materialize_prediction(prediction_table: PredictionTable,
                             snapshot: GraphSnapshot, parsed: Any,
-                            native_graph: Any, run_id: str,
-                            run_dir: Path) -> Tuple[Any, Any, Any]:
+                            native_graph: Any, run_id: str, run_dir: Path,
+                            fitted_lags: int) -> Tuple[Any, Any]:
     from kumo_core.prediction import (
         GeneratedPredictionTable,
         PredictionTableRequest,
         materialize_prediction_task,
-        prediction_task_options,
     )
 
     ingest_tt_id = f'{prediction_table.tt_id}-{run_id}'
@@ -1001,6 +1000,11 @@ def _materialize_prediction(prediction_table: PredictionTable,
     lag_offsets = compiler_options.get('lag_offsets_secs')
     lag_timesteps = (len(lag_offsets) if isinstance(lag_offsets,
                                                     (tuple, list)) else None)
+    if parsed.task_type == 'forecasting' and lag_timesteps != fitted_lags:
+        raise ValueError(
+            f'The prediction table carries {lag_timesteps} forecast lags, but '
+            f'the model was fitted with {fitted_lags}. Generate the '
+            'prediction table for this model.')
     with no_encoder_inference_warnings():
         task_dataset = build_generated_training_task_dataset(
             query=parsed,
@@ -1031,7 +1035,7 @@ def _materialize_prediction(prediction_table: PredictionTable,
     )
     materialized = materialize_prediction_task(request, generated,
                                                graph_index_id=snapshot.id)
-    return materialized, request.timestamps, prediction_task_options(request)
+    return materialized, request.timestamps
 
 
 _UNACTIONABLE = (
@@ -1709,9 +1713,10 @@ class Trainer:
         if self._training_table_generation_plan is not None:
             parsed = resolve_query_forecast(
                 parsed, native_graph, self._training_table_generation_plan)
-        materialized, timestamps, task_options = (
-            _materialize_prediction(prediction_table, snapshot, parsed,
-                                    native_graph, run_id, run_dir))
+        task_options = bundle_task_options(training_result.artifact_paths)
+        materialized, timestamps = _materialize_prediction(
+            prediction_table, snapshot, parsed, native_graph, run_id, run_dir,
+            task_options['lag_timesteps'])
         model_dir = str(
             _stage_model_bundle(
                 training_result.artifact_paths,
