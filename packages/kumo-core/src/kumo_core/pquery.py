@@ -834,6 +834,8 @@ def query_is_temporal(query: ValidatedNativeQuery, graph: NativeGraph) -> bool:
 
 def link_target_window_end(query: Any) -> tuple[int, str] | None:
     """Creation cutoff for imported link targets, relative to the anchor."""
+    if query is None:
+        return None
     aggregation = query.get_final_target_aggregation()
     window = None if aggregation is None else aggregation.aggr_time_range
     return None if window is None else (int(window.end), window.unit.value)
