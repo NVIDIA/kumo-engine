@@ -117,6 +117,97 @@ for event in features:
     print(event["batch"].schema)
 ```
 
+### Columnar requests for external loaders
+
+Callers that own an anchor table can keep its columns out of Python row objects:
+
+```python
+import json
+from collections import defaultdict
+
+import diskgraph
+import pyarrow as pa
+
+engine = diskgraph.SamplerEngine("/path/to/index", num_threads=4)
+# Bound each request upstream; this is one batch, not the entire anchor table.
+keys = pa.array(["u1", "u2", "u1"])
+cutoffs = pa.array([1609545600, 1609632000, 1609718400], type=pa.int64())
+
+# The caller supplies its normal SamplingPlan JSON.
+events = engine.sample_from_keys(
+    {"users": keys}, plan_json, fused=True,
+    seed_timestamps={"users": cutoffs},
+    seed_timestamp_unit=diskgraph.TimeUnit.Seconds,
+    swap_edge_direction=False,
+)
+batches = defaultdict(list)
+for event in events:
+    if event["type"] != "stats":
+        kind = event["type"]
+        type_id = event["rel_id"] if kind == "edge" else event["type_id"]
+        batches[kind, type_id].append(event["batch"])
+tables = {key: pa.Table.from_batches(parts) for key, parts in batches.items()}
+```
+
+`sample_from_keys` resolves the supplied typed Arrow primary keys and invokes
+the existing sampler. `fused=True` also fetches features in that same request.
+It returns the same node, edge, feature and stats events as `sample`; it does
+not change fanouts, randomness, temporal selection or edge direction. Repeated
+keys retain separate anchor positions and aligned cutoffs. A missing key raises
+`DiskgraphDataError` with its type and batch offset before sampling starts;
+keys are never silently dropped. Invalid/null keys keep `lookup_node_ids`'s
+existing errors. No second key map or per-anchor Python request is constructed.
+
+For reusable/materialized dense IDs, resolve once and use `sample` directly:
+
+```python
+ids = engine.lookup_node_ids("users", keys, output_format="model")
+# Missing keys are nulls in the uint64 array. Apply the caller's missing-key
+# policy to all aligned columns before sampling; sample rejects null IDs.
+events = engine.sample(
+    {"users": ids}, plan_json, fused=True,
+    seed_timestamps={"users": cutoffs},
+    seed_timestamp_unit=diskgraph.TimeUnit.Seconds,
+)
+```
+
+`lookup_node_ids` defaults to the existing Python list result;
+`output_format="model"` returns nullable Arrow `uint64`. Both preserve input
+order, repetitions and missing-key positions. IDs belong to the opened index;
+persisted IDs need the caller's snapshot provenance checks.
+
+`sample`, `fetch_features`, `canonical_node_mask`, `query_temporal` and
+`query_temporal_lengths` accept dense IDs as Arrow `uint64` or nonnegative
+`int64` arrays as well as their existing Python sequences. Cutoffs accept Arrow
+`int64` or the existing sequences. Arrays are imported through Arrow's C data
+interface, including sliced arrays, without Python scalar iteration. Pass one
+array per column; combine a `ChunkedArray` explicitly. Nulls and incompatible
+physical types are rejected, including timestamp-typed arrays: cast cutoffs
+explicitly to the API's declared integer time unit. For `sample` and
+`sample_from_keys`, the existing default unit is **nanoseconds**; temporal
+queries always take **seconds**. Supplied sampling cutoff columns must match
+their seed type and length; omitted types retain the existing unbounded behavior.
+The engine still copies these input buffers into owned native vectors for the
+request lifetime. This is not an end-to-end zero-copy guarantee.
+
+Keep the returned Arrow batches through downstream gathering/encoding. In node
+events, `id_a` is the owner seed position and `id_b` is the dense graph ID;
+edge endpoints are local positions in the corresponding node tables, subject
+to `swap_edge_direction`. Features retain the existing node-row alignment.
+An FM payload builder can gather these columns with Arrow and convert only at
+its wire boundary; a tensor consumer can use numeric Arrow/NumPy buffers.
+Check nulls/dtypes and copy when mutable tensor storage is required. Python
+event dictionaries remain per batch, not per node or feature value.
+
+For relational deep learning (RDL) loaders, this supplies the native boundary
+for passing anchor columns without Python scalar lists and combining key lookup,
+sampling and feature retrieval in one call. Loader integration also requires
+wiring materialized anchors into these calls, vectorizing permutations while
+preserving their exact order, and retaining columnar topology/features through
+tensor assembly.
+No task policy, model dependency, full-task materialization, native iterator,
+or FM-specific wire schema is added here.
+
 ### Direct temporal rows
 
 `SamplerEngine.query_temporal(seed_nodes, seed_timestamps, plan_json,
