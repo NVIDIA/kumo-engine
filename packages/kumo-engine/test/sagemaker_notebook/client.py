@@ -213,18 +213,25 @@ class Client:
             def default_bucket(self):
                 return cfg['bucket']
 
+        class SingleAttemptNotebook(NotebookJobStep):
+            @property
+            def arguments(self):
+                request = super().arguments
+                request.pop('RetryStrategy', None)
+                return request
+
         session = ExistingBucketSession(
             boto_session=self.session, sagemaker_client=self.sm,
             default_bucket=cfg['bucket'],
             sagemaker_config={'SchemaVersion': '1.0'})
-        step = NotebookJobStep(
+        step = SingleAttemptNotebook(
             input_notebook=str(notebook),
             initialization_script=str(initialization), image_uri=cfg['image'],
             kernel_name=cfg['kernel'], name='KumoTestNotebook',
             notebook_job_name=spec['pipeline_name'], role=cfg['execution_role'],
             s3_root_uri=f's3://{cfg["bucket"]}/{spec["job_prefix"]}',
             instance_type=cfg['instance'], volume_size=cfg['volume_gib'],
-            max_retry_attempts=0, max_runtime_in_seconds=3600, tags=[
+            max_runtime_in_seconds=3600, tags=[
                 dict(Key='KumoTestSuite', Value='sagemaker-platform'),
                 dict(Key='KumoTestAttempt', Value=spec['attempt']),
                 dict(Key='KumoTestSource', Value=spec['source_commit'])

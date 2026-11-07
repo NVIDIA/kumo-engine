@@ -351,7 +351,7 @@ def test_sdk_compiles_actual_scoped_notebook_training_job(
     assert request['InputDataConfig'][0]['DataSource']['S3DataSource'][
         'S3Uri'].startswith(f's3://{config["bucket"]}/{spec["job_prefix"]}/')
     assert request['ResourceConfig']['InstanceType'] == 'ml.m5.2xlarge'
-    assert request['RetryStrategy']['MaximumRetryAttempts'] == 0
+    assert 'RetryStrategy' not in request
     upload.assert_called_once()
 
 
