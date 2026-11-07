@@ -17,7 +17,7 @@ print(explanations.availability)
 To reopen an explicitly retained run instead, replace the assignment with
 `explanations = kumo.TrainingExplanations.load("/path/to/retained/run")`.
 Do not change `kumo.configure`, search other runs, or train while inspecting existing files.
-If these APIs are absent from the installed build, report the runtime version and unavailable
+If these APIs are absent from the executing build, report the runtime version and unavailable
 interface rather than calling private trainers.
 
 The loader resolves one `models/<task>/automl/best_trainer.json` within the supplied run and
