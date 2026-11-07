@@ -193,7 +193,7 @@ the graph. A warehouse the user names is `[supplied]`. If none is visible, say s
 then carries the placeholder in `runtime.md` §1.
 
 **What a check may do.** Read catalog metadata, run the read probe above and the preflight §3
-probe, and read clusters, registered models, runs, and a model version's comment and record
+probe, and read clusters, registered models, runs, and a model version's published bundle
 files (§0, §6.1).
 Never create, alter, drop or write anything during intake, and never change compute, permissions
 or workspace settings.
@@ -298,22 +298,23 @@ not adapt it.
 ### 6.1 Scoring a registered model
 
 This refines `batch_inference.md` Node 1c and 1d for this host. For `batch_inference` from a Unity
-Catalog registered model, Node 1c reads the version's training
-record that the training notebook wrote (`runtime.md` §5.1). Read the version's comment
-(`databricks model-versions get <catalog.schema.model> <N>`); its line
-`kumo training record: /Volumes/<catalog>/<schema>/_kumo_staging/records/<model>/<N>/` names
-the record's directory. Read `record.json` and `graph.py` there with
-`databricks fs cat dbfs:/Volumes/…/record.json` (the `dbfs:` prefix is required). Never read a
-credential file or pass a token yourself. That record is the
-graph: nothing in it is proposed or inferred, so 1c and 1d are **one gate**. When the record is
-found and the live source still has every recorded column, reply with the
-`kumo-data-science/accept/batch_inference.md` Node 1d restatement, one `Graph:` line added, and
-stop for confirmation:
+Catalog registered model, Node 1c reads the graph and the query from the published bundle itself:
+its `training-spec.json` holds `predictive_query` and, for a Kumo bundle, `graph_config` — each
+table's source table, columns, primary key, time column, and its links. Read it with
+`databricks api get /api/2.0/fs/files/Models/<catalog>/<schema>/<model>/<N>/training-spec.json`
+(`<N>` the version). A bundle published by Kumo sits at the version's root; when that call finds no
+file, list the version's directory with `databricks api get
+/api/2.0/fs/directories/Models/<catalog>/<schema>/<model>/<N>` and look in its subdirectories — a
+bundle wrapped for MLflow keeps it under `artifacts/published-model/`. Read-only calls only; never
+read a credential file or pass a token yourself. The bundle is the graph: nothing in it is proposed
+or inferred, so 1c and 1d are **one gate**. When `graph_config` is found and the live source still
+has every column it lists, reply with the `kumo-data-science/accept/batch_inference.md` Node 1d
+restatement, one `Graph:` line added, and stop for confirmation:
 
 ```
 - Model: <catalog.schema.model> version <N> — trained task reused unchanged
-- Source: <the user's source, columns checked against the recorded graph [supplied] | the recorded source [recorded], only when none was named>
-- Graph: rebuilt from the version's training record — <n> tables, the recorded column lists, keys and links [recorded]
+- Source: <the user's source, columns checked against the bundle's graph [supplied] | the bundle's source tables [recorded], only when none was named>
+- Graph: rebuilt from the version's bundle — <n> tables, the bundle's column lists, keys and links [recorded]
 - Population: <the user's subset/date [supplied] | all <entity> as of latest snapshot timestamp [default], only when none was given>
 - Output: <catalog.schema.table, verbatim>
 - Staging volume: creates <catalog.schema>._kumo_staging   (only when it does not exist)
@@ -321,19 +322,19 @@ stop for confirmation:
 - Scoring options: <as batch_inference.md gives them by task type>
 ```
 
-`[recorded]` marks a value read from the version's training record.
+`[recorded]` marks a value read from the version's bundle (`training-spec.json`).
 
 For a job, add the `job.md` §3 lines. Do not restate the task (entity, outcome, window) or list
 tables and columns beyond that line:
-the task is reused, not reconfirmed. A recorded column the live source lacks, or a record that
-names no source, is the 1c finding to report instead.
+the task is reused, not reconfirmed. A column the bundle lists that the live source lacks, or a
+`graph_config` whose source tables are not the live source, is the 1c finding to report instead.
 
-When the version has **no** training record — no `kumo training record:` line, as on versions
-published before the notebook wrote one, or no file there — say that no column selection or graph
-definition is recorded for that version, that scoring must use the columns it was trained on, and ask for
-the training-time graph definition — the graph-building code, or each table's columns with its keys,
-time column and links. Ask only for that, and for the source if the request named none: not the
-model, version or destination. Never propose retraining or
+When the version is not a Kumo bundle — no `training-spec.json` — or its spec carries no
+`graph_config`, say that no column selection or graph definition is recorded for that version,
+that scoring must use the columns it was trained on, and ask for the training-time graph
+definition — the graph-building code, or each table's columns with its keys, time column and
+links. Ask only for that, and for the source if the request named none: not the model, version or
+destination. Never propose retraining or
 publishing a new model in its place; that is a new request for the user to make.
 
 ---

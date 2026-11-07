@@ -111,7 +111,7 @@ the graph itself. For scoring a pinned model, its cells are:
    `WRITE_MODE`, the scoring options, and `TRAINED_QUERY`.
 2. The connect step and `run_sql` (`runtime.md` §2, §3), and the registry connector (§5).
 3. `Trainer.load_from_connector` with the explicit version (`runtime.md` §5.2).
-4. The recorded tables, column lists and edges rebuilt into `graph`
+4. The bundle's `graph_config` tables, column lists and edges rebuilt into `graph`
    (`kumo-model-persistence/references/reuse.md`), then `PredictiveQuery`, `snapshot`, and
    `generate_prediction_table(snapshot, plan=loaded.training_table_generation_plan)` — add
    `prediction_time=` only if the user gave a scoring time.
@@ -201,8 +201,7 @@ notebook, which this skill generated; it is the one edit of an existing notebook
 approve here. Resubmitting is a separate confirmation, asked after the edit; never "then rerun".
 Tell a repair from a change first. Correcting `MODEL_VERSION` to the version the user already
 confirmed (a typo, a stale value) is a repair: the edit above, then the resubmission ask. Moving
-it to a different version is a new scoring request: re-read that version's metadata and training
-record (`adapter.md` §6.1), show the `adapter.md` §0 restatement for it, and resubmit only after
+it to a different version is a new scoring request: re-read that version's bundle (`adapter.md` §6.1), show the `adapter.md` §0 restatement for it, and resubmit only after
 the user confirms that restatement.
 Never edit the notebook or resubmit on your own: every submission is a new GPU run. Never delete a run or a job, because
 that discards its output.

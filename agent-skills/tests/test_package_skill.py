@@ -201,8 +201,8 @@ def test_genie_gate_blocks_every_mutation_and_scoring_keeps_what_the_user_named(
     assert 'any field the Node 1d restatement lists' in gate
     section = adapter[adapter.index('### 6.1'):adapter.index('## 7.')]
     template = section[section.index('```'):section.index('```', section.index('```') + 3)]
-    assert 'the user\'s source, columns checked against the recorded graph [supplied]' in template
-    assert 'the recorded source [recorded], only when none was named' in template
+    assert 'the user\'s source, columns checked against the bundle\'s graph [supplied]' in template
+    assert 'the bundle\'s source tables [recorded], only when none was named' in template
     assert 'the user\'s subset/date [supplied]' in template
     assert '[default], only when none was given' in template
     assert 'each table\'s columns with its keys, time column and links' in section
@@ -211,24 +211,35 @@ def test_genie_gate_blocks_every_mutation_and_scoring_keeps_what_the_user_named(
     assert 'a source the user named' in batch and 'If the user names a subset' in batch
 
 
-def test_genie_training_record_is_written_where_scoring_reads_it() -> None:
-    """Publishing writes no record (kumo_databricks.registry), so the training notebook writes one
-    to the staging volume and points the version's comment at it; §6.1 follows that pointer."""
+def test_genie_scoring_reads_the_graph_from_the_published_bundle() -> None:
+    """A Kumo bundle carries `training-spec.json` (query + `graph_config`), so scoring reads that
+    through the Files API and the training notebook writes no separate record."""
     host = package_skill.SKILLS / 'hosts' / 'databricks-genie'
     flat = lambda path: ' '.join(path.read_text().split())  # noqa: E731
-    adapter, runtime = flat(host / 'adapter.md'), flat(host / 'runtime.md')
-    publish = runtime[runtime.index('### 5.1'):runtime.index('### 5.2')]
+    adapter, runtime, job = (flat(host / n) for n in ('adapter.md', 'runtime.md', 'job.md'))
     section = adapter[adapter.index('### 6.1'):adapter.index('## 7.')]
-    pointer = 'kumo training record: '
-    for text in ("'record.json'", "'graph.py'", '_kumo_staging/records/', f"f'{pointer}",
-                 'ws.model_versions.update(', 'location.comment'):
-        assert text in publish, text
-    for text in (pointer + '/Volumes/', 'databricks model-versions get',
-                 'databricks fs cat dbfs:/Volumes/', 'Never read a credential file',
-                 f'no `{pointer.strip()}` line', 'Never propose retraining'):
+    for text in ('training-spec.json', '`graph_config`', '`predictive_query`',
+                 'databricks api get /api/2.0/fs/files/Models/<catalog>/<schema>/<model>/<N>/training-spec.json',
+                 '/api/2.0/fs/directories/Models/', 'artifacts/published-model/',
+                 'Read-only calls only', 'never read a credential file',
+                 'rebuilt from the version\'s bundle', 'read from the version\'s bundle',
+                 'spec carries no `graph_config`', 'Never propose retraining'):
         assert text in section, text
+    # `[recorded]` stays on the graph, source and query fields
+    assert '[recorded]' in section
+    publish = runtime[runtime.index('### 5.1'):runtime.index('### 5.2')]
+    assert 'Nothing else is written' in publish
+    for gone in ('record.json', 'graph.py', 'GRAPH_CODE', 'records/', 'CREATE VOLUME',
+                 'model_versions.update', 'kumo training record', 'ws.model_versions'):
+        assert gone not in publish, gone
+    for name, text in (('adapter', adapter), ('runtime', runtime), ('job', job)):
+        for gone in ('kumo training record', 'training record', 'record.json', 'record files',
+                     'dbfs:/Volumes'):
+            assert gone not in text, (name, gone)
+    assert 'bundle\'s `graph_config` tables, column lists and edges rebuilt' in job
+    assert 're-read that version\'s bundle' in job
     for gone in ('mlflow', 'credentials-for-read', 'list-artifacts', 'curl', 'signed_uri'):
-        assert gone not in section.lower(), gone
+        assert gone not in section.lower().replace('wrapped for mlflow', ''), gone
 
 
 def test_genie_no_code_rule_names_its_scope_and_agrees_with_inspection_skills() -> None:
