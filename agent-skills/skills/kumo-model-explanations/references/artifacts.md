@@ -127,9 +127,12 @@ deviation before separate normalization, not predictive accuracy or gradient att
 The same post-training step writes per-entity subgraphs to `subgraph_collector/test/` in the
 selected trainer directory: `strategy_mappings.json` plus `subgraph_json/<ordinal>.json`, one file
 per sampled test entity. The API resolves the selected trainer from `best_trainer.json` and
-its recorded `_refit_trainval` state as described above. Do not glob every `version_*` directory or every run: only the selected trainer's files
-describe this model. The folder also holds other collector formats (`nested_json/`, `output/`,
-`rfm/`) and `global_aggr_feature/`; read `subgraph_json/` only.
+its recorded `_refit_trainval` state as described above. TEST explanations use the
+train+validation refit when recorded, otherwise the original fit. If the published bundle uses a
+full-data refit, these artifacts describe the earlier fit, not the published model's parameters.
+Do not glob every `version_*` directory or every run; inspect only the selected TEST trial.
+The folder also holds other collector formats (`nested_json/`, `output/`, `rfm/`) and
+`global_aggr_feature/`; read `subgraph_json/` only.
 
 The files cover a bounded sample, not the test set. For each selection strategy (for binary
 classification: `random`, `unsure`, true/false positive/negative, `old_entity`, `recent_entity`)
