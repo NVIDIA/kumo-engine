@@ -3,8 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 name: Kumo Engine weekly
 
-# Activation and scheduling remain separate from this change.
 on:  # yamllint disable-line rule:truthy
+  schedule:
+    - cron: '47 0 * * 0'
+      timezone: America/Los_Angeles
   workflow_dispatch:
     inputs:
       run_controls:
@@ -19,17 +21,20 @@ on:  # yamllint disable-line rule:truthy
 permissions:
   contents: read
   pull-requests: read
+  actions: read
   id-token: write
 
 concurrency:
   group: engine-weekly
   cancel-in-progress: false
+  queue: max
 
 jobs:
   weekly:
     if: github.ref == 'refs/heads/main' && vars.ENGINE_E2E_ENABLED == 'true'
     uses: ./.github/workflows/kumo-engine-e2e.yml
     with:
+      tier: weekly
       scales: '["10B", "25B"]'
-      run_controls: ${{ inputs.run_controls }}
-      write_reference: ${{ inputs.write_reference }}
+      run_controls: ${{ inputs.run_controls || false }}
+      write_reference: ${{ inputs.write_reference || false }}

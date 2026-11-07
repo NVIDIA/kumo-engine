@@ -159,6 +159,7 @@ jobs:
             packages/kumo-sdk
             packages/kumo-snowflake
             packages/kumo-engine
+            packages/experimental/kumo-pytorch
             tools/glove-6b-50d
           )
           for project in "${projects[@]}"; do
@@ -421,7 +422,7 @@ jobs:
 
       - name: Set up Node.js
         if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.any_changed == 'true'
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
 

@@ -112,6 +112,8 @@ examples/*_prediction
 
 # Any test notebooks
 *.ipynb
+# Example notebooks of the experimental kumo-pytorch package are source.
+!packages/experimental/kumo-pytorch/examples/*/walkthrough.ipynb
 
 
 
