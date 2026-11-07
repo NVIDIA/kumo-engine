@@ -497,7 +497,7 @@ jobs:
 
   pyarrow-range:
     # DiskGraph accepts pyarrow>=16,<25 and every other job runs the locked
-    # version. Run the DiskGraph and kumo-core suites at both ends instead.
+    # version. Run the DiskGraph, kumo-core and kumo-adls suites at both ends.
     name: pyarrow-range (pyarrow${{ matrix.pyarrow }})
     needs: [diskgraph-wheel]
     if: ${{ !cancelled() }}
@@ -531,16 +531,18 @@ jobs:
           path: dist
       - name: Install the wheels with pyarrow${{ matrix.pyarrow }}
         run: |
-          for package in kumo-api kumo-pql kumo-core; do
+          for package in kumo-api kumo-pql kumo-core kumo-adls; do
             uv build --wheel --out-dir dist "packages/$package"
           done
           core=(dist/kumo_core-*.whl)
+          adls=(dist/kumo_adls-*.whl)
           constraints="$RUNNER_TEMP/constraints.txt"
           uv export --locked --no-emit-workspace --no-hashes --no-header \
             --no-annotate --extra cpu | grep -v '^pyarrow==' > "$constraints"
           uv pip install -c "$constraints" --torch-backend cpu dist/diskgraph-*.whl \
             dist/kumo_api-*.whl dist/kumo_pql-*.whl "${core[0]}[test]" \
-            "pyarrow${{ matrix.pyarrow }}" "setuptools>=77" setuptools_scm
+            "${adls[0]}[test]" "pyarrow${{ matrix.pyarrow }}" "setuptools>=77" \
+            setuptools_scm
           python -c 'import pyarrow; print(pyarrow.__version__)'
       - name: Run the wheel's ingest for the tests' `cargo run`
         run: |
@@ -570,6 +572,8 @@ jobs:
             "$GITHUB_WORKSPACE/packages/diskgraph/diskgraph-pybind/python/tests" -q
       - name: Test kumo-core
         run: cd packages/kumo-core && python -m pytest -rs
+      - name: Test kumo-adls
+        run: cd packages/kumo-adls && python -m pytest -rs
 
   package-tests:
     name: packages-${{ matrix.suite }}
