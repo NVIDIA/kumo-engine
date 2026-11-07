@@ -180,10 +180,7 @@ def control_table(training_table, query, snapshot, split, task, scratch):
     scramble_labels(frame, task).to_parquet(root / "rows.parquet", index=False)
     return kumo.TrainingTable.from_source_table(
         connector["rows.parquet"], TrainingTableSpec(split_col="SPLIT"),
-        pq=query, snapshot=snapshot, plan=split,
-        **({
-            "allow_new_target_entities": True
-        } if task == "temporal_link" else {}))
+        pq=query, snapshot=snapshot, plan=split)
 
 
 def table_fingerprint(training_table, scratch):
