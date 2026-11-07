@@ -5,6 +5,14 @@ Observable symptom → likely cause → fix. Ordered by when the agent hits them
 This file is the signal set as previously compiled. It is **not** re-verifiable against the published Kumo documentation, which is stale for this version of the local SDK and is not a source here — do not cite it, fetch it, or reconcile against it.
 
 > No verbatim Kumo exception text is established for this SDK. Entries below are keyed on the **observable condition**, not on a quoted message. **Do not fabricate Kumo error strings.**
+> The four messages quoted in §1a are the exceptions: they are the SDK's own text, read from its source.
+
+**Who applies a fix.** A fix that changes the data — casting a column, deduplicating, flattening,
+filling or filtering values, combining columns into a key, normalising key types — is the user's
+to make in their source. The agent reports the symptom, its cause in the data, and that fix, and
+asks; it never applies it in the generated code, and never declares a `dtype` to make a data
+problem pass (router *What this skill does NOT do*). Choosing a different primary key, time column
+or link, or leaving a column out, is a graph change: propose it and let the user confirm it.
 
 ---
 
@@ -53,27 +61,50 @@ Fully specify tables in production code to avoid unexpected re-inference.
 
 ### Symptom: a column holds URLs, lat/long, IP addresses, or phone numbers
 **Cause:** These types are **not supported** for preprocessing.
-**Fix:** Transform before ingestion — extract domain/path, geographic area, subnet, or area code and treat as categorical.
+**Fix (the user's, upstream):** derive domain/path, geographic area, subnet, or area code in the source and use that as a categorical column. The agent can leave the column out of the graph meanwhile, and says so.
 
 ### Symptom: a column holds nested schemas, arrays, or maps
 **Cause:** Not supported.
-**Fix:** Flatten to a delimited string. `["TV", "electronics", "promotion"]` → `"TV, electronics, promotion"` (multicategorical).
+**Fix (the user's, upstream):** flatten to a delimited string in the source. `["TV", "electronics", "promotion"]` → `"TV, electronics, promotion"` (multicategorical).
 
 ### Symptom: timestamps arrive as strings or are misparsed
 **Cause:** Non-ISO-8601 format, or Parquet columns not cast to a `DATE`/`TIME`/`TIMESTAMP` type.
-**Fix:** Use ISO 8601 or epoch time; cast Parquet timestamp columns at the source.
+**Fix:** Declare a TEXT date column with `dtype=Dtype.date` (a declaration the skill makes). Otherwise the user casts the column in the source (ISO 8601 or epoch time).
 
 ### Symptom: row count silently drops after ingestion
 **Cause:** Duplicate primary key values — Kumo retains one row per key and drops the rest.
-**Fix:** Deduplicate at the source, or pick a genuinely unique key.
+**Fix:** Report how many rows the key repeats on (the preflight probe, or the snapshot warning in
+§1a) and put the choice to the user: a different, genuinely unique key, or the source deduplicated
+upstream. The agent does not deduplicate.
 
 ### Symptom: a categorical column has very high cardinality
 **Cause:** Categorical supports up to **4,000 unique values by default**.
-**Fix:** Bucket the values, or re-type the column (`ID` for identifiers, `text` for multi-token strings).
+**Fix:** Re-type the column (`ID` for identifiers, `text` for multi-token strings) — a declaration the agent proposes. Bucketing the values is a data change for the user to make upstream.
 
 ### Symptom: missing values are filled with `N/A`, `none`, `null`, or `-1`
 **Cause:** These placeholders are interpreted as real values.
-**Fix:** Leave the field blank. A high-missingness column can still be useful when absence itself is informative.
+**Fix (the user's, upstream):** leave the field blank in the source. Report the placeholder to the user; a high-missingness column can still be useful when absence itself is informative.
+
+---
+
+## 1a. Kumo reports a problem in the data — stop and put it to the user
+
+These messages are the SDK's own (`kumo.engine.graph`, `kumo_core.pquery`,
+`kumo_core.diskgraph.validation`). Each says the data is not what the graph declares. The run may
+still finish. Do not report success before the user has seen the message and decided, and do not
+change data, types or the query to make it go away (*Who applies a fix*, above).
+
+| Message (begins) | What it means | Put to the user |
+|---|---|---|
+| `Snapshot contains <n> duplicate primary-key row(s) for <table>.<key>` | `<n>` rows share a key; Kumo keeps one per key and drops the rest | a different key, or the source deduplicated; or continue knowing `<n>` rows are gone |
+| `Foreign key <table>.<fk> matched <m> of <n> non-null rows` | only `<m>` of `<n>` rows reach the parent; the rest get no edge | the link may be wrong (wrong column, or values differing in format, e.g. `007` vs `7`), or the parent rows are missing |
+| `<n> invalid values found in <table>.<column>` | `<n>` values did not parse as the column's type and are read as null (see §5) | whether those rows are bad data, or the column's type is wrong |
+| `key <table>.<column> has a floating-point dtype` | an ID column is stored as a float (often an integer key with nulls) | the column fixed upstream as an integer or string key |
+| `foreign key <table>.<fk> (dtype=…) cannot link to primary key <table>.<pk> (dtype=…)` | the two sides of a link hold different types | which side is right, fixed upstream; never cast one side in the notebook |
+
+A float or mismatched key fails `graph.validate()` and stops the notebook. The other three are
+warnings: the notebook keeps going and trains on what is left. Either way, the report the user
+reads starts with the message, the table and column, and the count.
 
 ---
 
@@ -92,10 +123,11 @@ print(table.has_primary_key())
 **silently ignored** when linkages are built, so a broken join looks like a sparse one. If the two
 linked columns have different types, both are **cast to strings** — values equal as numbers may not
 match as strings (`1.0` vs `1`).
-**Fix:** There is **no `get_edge_stats()` in this SDK.** Check the join yourself in SQL before
-building the graph — count matching keys across the two tables — and normalize the key dtypes on
-both sides. Then set every foreign key to `Stype.ID`; left as numerical it is treated as a feature
-rather than a link.
+**Fix:** There is **no `get_edge_stats()` in this SDK.** The snapshot reports the match rate
+(§1a). Report it, and put a low one to the user before training: a wrong link to correct, or keys
+to fix upstream so both sides hold the same values in the same type. Do not cast either side.
+Set every foreign key to `Stype.ID`; left as numerical it is treated as a feature rather than a
+link.
 
 ### Symptom: the edge direction looks wrong / no neighbors are sampled
 **Cause:** `src_table` must be the table holding the **foreign key**; `dst_table` holds the matching **primary key**. Edges are bidirectional once declared, but the declaration itself is directional.
