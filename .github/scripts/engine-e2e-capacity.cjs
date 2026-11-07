@@ -5,7 +5,7 @@ const {createSign} = require('node:crypto');
 const assert = require('node:assert/strict');
 const {capacity, registration} = require('./engine-e2e-pool.cjs');
 const {SecretsManagerClient, GetSecretValueCommand} = require('@aws-sdk/client-secrets-manager');
-const {S3Client, PutObjectCommand, GetObjectCommand} = require('@aws-sdk/client-s3');
+const {S3Client, PutObjectCommand, GetObjectCommand, ListObjectsV2Command} = require('@aws-sdk/client-s3');
 const {AutoScalingClient, DescribeAutoScalingGroupsCommand, SuspendProcessesCommand} = require('@aws-sdk/client-auto-scaling');
 const secrets = new SecretsManagerClient(), s3 = new S3Client(), autoscaling = new AutoScalingClient();
 // App credentials are needed only for GitHub calls, after AWS failure handling.
@@ -35,7 +35,8 @@ exports.handler = async event => {
       if (service === 'autoscaling') return autoscaling.send(new (operation === 'describe-auto-scaling-groups' ?
         DescribeAutoScalingGroupsCommand : SuspendProcessesCommand)(input));
       if (operation === 'put-object') return s3.send(new PutObjectCommand(input));
-      try { return JSON.parse(await (await s3.send(new GetObjectCommand(input))).Body.transformToString()); }
-      catch (error) { if (error.$metadata?.httpStatusCode === 404) return null; throw error; }
+      const objects = await s3.send(new ListObjectsV2Command({Bucket: input.Bucket, Prefix: input.Key, MaxKeys: 1}));
+      if (objects.Contents?.[0]?.Key !== input.Key) return null;
+      return JSON.parse(await (await s3.send(new GetObjectCommand(input))).Body.transformToString());
     }});
 };

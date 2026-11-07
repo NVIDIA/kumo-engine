@@ -76,7 +76,7 @@ After reviewing the references, keep `write_reference=false` for candidate runs 
 Package `.github/scripts/engine-e2e-capacity.cjs` and `engine-e2e-pool.cjs` as a Node.js 22 Lambda with handler `engine-e2e-capacity.handler`.
 The App needs Administration write and Actions write for `NVIDIA/kumo-engine` only. Lambda keeps its keys and issues fresh registration tokens at boot.
 The external Lambda role needs Auto Scaling `DescribeAutoScalingGroups` and `SuspendProcesses`, with suspension restricted to owned groups.
-It also needs `s3:ListBucket`, restricted to the result prefix, so missing pool records return 404. Permission and network errors remain failures.
+It also needs `s3:ListBucket`, restricted to the result prefix. The Lambda lists at most one matching key before reading a record. Missing records are absent. Permission and network errors remain failures.
 The pool role's tag allowlist must include `EngineE2ESha` and `EngineE2EDeadline` alongside the existing ownership tags.
 The VM profile invokes only this Lambda. Repository workflow permissions control runner access. Labels select hardware without restricting workflow access.
 

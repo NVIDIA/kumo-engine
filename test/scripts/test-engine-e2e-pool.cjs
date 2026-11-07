@@ -352,9 +352,14 @@ test('broker preserves authentication and S3 failure boundaries: ' + mode, async
       } : name === '@aws-sdk/client-s3' ? {
         S3Client: class {async send(command) {
           if (command.input.Body) return f.io.aws('s3', 'put-object', command.input);
+          if (command.input.Prefix) {
+            f.calls.push({operation: 'list-objects-v2', input: command.input});
+            return {Contents: mode === 404 ? [] : [{Key: command.input.Prefix}]};
+          }
           throw Object.assign(Error('S3 read failed'), {$metadata: {httpStatusCode: mode}});
         }},
-        PutObjectCommand: class {constructor(input) { this.input = input; }}, GetObjectCommand: class {constructor(input) { this.input = input; }}
+        PutObjectCommand: class {constructor(input) { this.input = input; }}, GetObjectCommand: class {constructor(input) { this.input = input; }},
+        ListObjectsV2Command: class {constructor(input) { this.input = input; }}
       } :
       name === '@aws-sdk/client-auto-scaling' ? {
         AutoScalingClient: class {async send(command) { return f.io.aws('autoscaling', command.input.AutoScalingGroupNames ?
@@ -374,6 +379,7 @@ test('broker preserves authentication and S3 failure boundaries: ' + mode, async
     if (mode === 403) await assert.rejects(handler.handler(event), /S3 read failed/);
     else await handler.handler(event);
     assert.equal(f.claims.size, mode === 404 ? event.cases.length : 0);
+    assert.ok(f.calls.some(c => c.operation === 'list-objects-v2' && c.input.Prefix.endsWith('.admission.json') && c.input.MaxKeys === 1));
     return;
   }
   if (mode) {
