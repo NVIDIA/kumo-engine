@@ -9,8 +9,9 @@ import re
 import time
 from pathlib import Path
 
-from config import ACCOUNT, REGION, test_job
+from config import ACCOUNT, DENIED_ROOT, REGION, test_job
 from evidence import digest, save
+from runtime import receipt_reference
 
 
 class Client:
@@ -46,7 +47,7 @@ class Client:
             raise ValueError('Dedicated managed MLflow server is not ready')
         # An existing readable sentinel distinguishes permission tests from 404s.
         probe = self.s3.get_object(Bucket=cfg['bucket'],
-                                   Key=cfg['root'] + '/denied/README.txt')
+                                   Key=DENIED_ROOT + '/README.txt')
         probe['Body'].close()
         return dict(
             account=self.identity['Account'], caller=self.identity['Arn'],
@@ -99,8 +100,59 @@ class Client:
         return dict(bucket=cfg['bucket'], key=key, sha256=expected,
                     size=head['ContentLength'])
 
-    def wait(self, execution, root, timeout):
+    def publish_job(self, execution, arn, spec, root):
+        from botocore.exceptions import ClientError
+
+        name = test_job(arn.rsplit('/', 1)[-1])
+        if not name.startswith(spec['pipeline_name']):
+            raise ValueError('Job belongs to another pipeline attempt')
+        job = self.sm.describe_training_job(TrainingJobName=name)
+        tags = {
+            t['Key']: t['Value']
+            for t in self.sm.list_tags(ResourceArn=arn)['Tags']
+        }
+        if (job['TrainingJobArn'] != arn
+                or job['RoleArn'] != self.config['execution_role']
+                or tags.get('KumoTestAttempt') != spec['attempt']
+                or tags.get('KumoTestSource') != spec['source_commit']):
+            raise ValueError(
+                'Actual training job differs from the submitted attempt')
+        record = dict(attempt=spec['attempt'],
+                      source_commit=spec['source_commit'], job_arn=arn,
+                      execution_arn=execution.arn)
+        receipt_reference(dict(self.config, **spec), record)
+        content = (json.dumps(record, sort_keys=True) + '\n').encode()
+        save(Path(root) / 'training-job-live.json', job)
+        (Path(root) / 'job-identity.json').write_bytes(content)
+        try:
+            response = self.s3.put_object(Bucket=self.config['bucket'],
+                                          Key=spec['job_receipt_key'],
+                                          Body=content, IfNoneMatch='*')
+            save(
+                Path(root) / 'job-identity-publication.json',
+                dict(key=spec['job_receipt_key'], sha256=digest(content),
+                     response=response))
+        except ClientError as error:
+            if error.response['Error']['Code'] not in ('412',
+                                                       'PreconditionFailed'):
+                raise
+            body = self.s3.get_object(Bucket=self.config['bucket'],
+                                      Key=spec['job_receipt_key'])['Body']
+            try:
+                if body.read() != content:
+                    raise ValueError(
+                        'Job identity receipt already identifies another execution'
+                    )
+            finally:
+                body.close()
+            save(
+                Path(root) / 'job-identity-publication.json',
+                dict(key=spec['job_receipt_key'], sha256=digest(content),
+                     already_present=True))
+
+    def wait(self, execution, root, timeout, spec):
         deadline = time.monotonic() + timeout
+        published = None
         try:
             while True:
                 record = execution.describe()
@@ -108,12 +160,21 @@ class Client:
                 steps = execution.list_steps()
                 save(Path(root) / 'pipeline-steps.json', steps)
                 state = record['PipelineExecutionStatus']
+                jobs = [
+                    s['Metadata']['TrainingJob']['Arn'] for s in steps
+                    if 'TrainingJob' in s.get('Metadata', {})
+                ]
+                if len(jobs) > 1:
+                    raise ValueError('Expected only one actual notebook job')
+                if jobs and state in ('Executing', 'Stopping'):
+                    if published is None:
+                        self.publish_job(execution, jobs[0], spec, root)
+                        published = jobs[0]
+                    elif published != jobs[0]:
+                        raise ValueError(
+                            'Pipeline changed its notebook job identity')
                 print('SageMaker notebook pipeline:', state, flush=True)
                 if state not in ('Executing', 'Stopping'):
-                    jobs = [
-                        s['Metadata']['TrainingJob']['Arn'] for s in steps
-                        if 'TrainingJob' in s.get('Metadata', {})
-                    ]
                     if len(jobs) != 1:
                         raise ValueError(
                             'Expected one actual notebook training job; '
@@ -144,8 +205,7 @@ class Client:
         from sagemaker.workflow.notebook_job_step import NotebookJobStep
         from sagemaker.workflow.pipeline import Pipeline
         from sagemaker.workflow.pipeline_definition_config import (
-            PipelineDefinitionConfig,
-        )
+            PipelineDefinitionConfig, )
 
         cfg = self.config
 
@@ -182,4 +242,4 @@ class Client:
         save(
             Path(root) / 'submitted-run.json',
             dict(pipeline=spec['pipeline_name'], execution_arn=execution.arn))
-        return self.wait(execution, root, timeout)
+        return self.wait(execution, root, timeout, spec)

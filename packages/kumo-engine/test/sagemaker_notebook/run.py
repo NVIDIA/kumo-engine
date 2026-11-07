@@ -173,13 +173,15 @@ def execute(args, root):
                                                     fixture['sha256'],
                                                     args.fixture)
     attempt = uuid.uuid4().hex[:12]
-    spec = dict(cfg, attempt=attempt, candidate=candidate, assets=assets,
-                source_commit=commit, test_sources=hashes,
-                scenario=args.scenario, wheel_sha256=candidate['wheel_sha256'],
-                pipeline_name='kumo-test-notebook-' + attempt,
-                notebook_name='kumo-test-' + attempt + '.ipynb',
-                output_prefix=cfg['root'] + '/runs/' + attempt + '/outputs',
-                job_prefix=cfg['root'] + '/notebook-jobs/' + attempt)
+    spec = dict(
+        cfg, attempt=attempt, candidate=candidate, assets=assets,
+        source_commit=commit, test_sources=hashes, scenario=args.scenario,
+        wheel_sha256=candidate['wheel_sha256'],
+        pipeline_name='kumo-test-notebook-' + attempt,
+        notebook_name='kumo-test-' + attempt + '.ipynb',
+        output_prefix=cfg['root'] + '/runs/' + attempt + '/outputs',
+        job_prefix=cfg['root'] + '/notebook-jobs/' + attempt,
+        job_receipt_key=cfg['root'] + '/runs/' + attempt + '/job-identity.json')
     save(root / 'scenario.json', spec)
     submitted = notebook(spec, source(HERE / 'kernel.py').decode())
     input_path = root / spec['notebook_name']

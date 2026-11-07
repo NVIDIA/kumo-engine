@@ -11,6 +11,7 @@ ENVIRONMENT = 'sagemaker-mlops-test'
 PREFIX = 'kumo-test-sagemaker'
 BUCKET = 'kumo-test-dataplane-bucket'
 ROOT = 'mlops-validation/sagemaker'
+DENIED_ROOT = ROOT + '-denied'
 TRACKING_SERVER = 'kumo-mlops-validation'
 DOMAIN_NAME = PREFIX
 USER_PROFILE = 'kumo-test-platform'
@@ -42,7 +43,7 @@ def configuration():
         kernel='kumo-test-engine', instance=INSTANCE, volume_gib=100,
         tracking_artifact_root=f's3://{BUCKET}/{ROOT}/mlflow-artifacts-final',
         artifact_root=f's3://{BUCKET}/{ROOT}/artifacts',
-        denied_artifact_root=f's3://{BUCKET}/{ROOT}/denied')
+        denied_artifact_root=f's3://{BUCKET}/{DENIED_ROOT}')
 
 
 def execution_identity(identity, expected_role):

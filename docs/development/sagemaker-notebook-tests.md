@@ -17,6 +17,11 @@ kernel, mounted input notebook, architecture, Python, and glibc. Each lifecycle
 subprocess repeats the execution-identity check. A local process with copied
 environment variables cannot qualify as a managed notebook run.
 
+The controller publishes the job ARN from the Pipeline service response to an
+immutable, attempt-specific S3 receipt. The kernel checks that receipt and
+independently describes the job and its tags. The execution role does not need
+permission to list other training jobs.
+
 The `engine` scenario reuses `wheel_mlops_lifecycle.py` and An's small training
 recipe: 60 users, 1,500 seeded events, and two fits of two epochs each. Four
 fresh processes run the permission negative, training, scoring, and evaluation
@@ -91,9 +96,11 @@ enable GitHub Actions; they do not grant
 the local Engineer SSO role permission to pass the execution role.
 
 The permission negative uses an existing readable sentinel at
-`mlops-validation/sagemaker/denied/README.txt` and requires an actual provider
-write denial. An admin must seed that sentinel before enabling the explicit
-write-deny policy. A missing object or local permission failure is not a pass.
+`mlops-validation/sagemaker-denied/README.txt` and requires an actual provider
+write denial. This dedicated sibling prefix is outside the execution role's
+writable prefix. Launcher readability proves the object exists; the notebook's
+write attempt proves denial. A missing object or local permission failure is
+not a pass.
 
 ## Running
 

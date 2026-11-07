@@ -22,7 +22,7 @@ HERE = (Path(__file__).resolve().parents[2] /
 
 @pytest.fixture
 def modules(monkeypatch):
-    names = ('config', 'evidence', 'client', 'run', 'policies',
+    names = ('config', 'evidence', 'runtime', 'client', 'run', 'policies',
              'prepare_access', 'expected_ui')
     for name in names:
         monkeypatch.delitem(sys.modules, name, raising=False)
@@ -122,7 +122,7 @@ def test_failed_pipeline_retains_job_for_diagnostics(modules, tmp_path):
     execution.list_steps.return_value = [
         dict(Metadata=dict(TrainingJob=dict(Arn=arn)))
     ]
-    assert client.wait(execution, tmp_path, 1) == job
+    assert client.wait(execution, tmp_path, 1, {}) == job
     assert (tmp_path / 'pipeline-steps.json').is_file()
     execution.stop.assert_not_called()
 
@@ -134,7 +134,111 @@ def test_cleanup_failure_preserves_original_error(modules, tmp_path):
         ValueError('original'), RuntimeError('cleanup')
     ]
     with pytest.raises(ValueError, match='original'):
-        client.wait(execution, tmp_path, 1)
+        client.wait(execution, tmp_path, 1, {})
+
+
+@pytest.fixture
+def actual_job_reference(modules):
+    config = modules.config.configuration()
+    attempt = '123456abcdef'
+    pipeline = 'kumo-test-notebook-' + attempt
+    config.update(
+        attempt=attempt, source_commit='a' * 40, pipeline_name=pipeline,
+        job_receipt_key=config['root'] + '/runs/' + attempt +
+        '/job-identity.json')
+    base = 'arn:aws:sagemaker:us-west-2:926922431314:'
+    receipt = dict(
+        attempt=attempt, source_commit=config['source_commit'],
+        job_arn=base + 'training-job/' + pipeline + '-actual',
+        execution_arn=base + 'pipeline/' + pipeline + '/execution/actual123')
+    return config, receipt
+
+
+def test_kernel_discovers_only_its_controller_receipt(modules,
+                                                      actual_job_reference):
+    config, receipt = actual_job_reference
+    session = Mock()
+    session.client.return_value.get_object.return_value = {
+        'Body': io.BytesIO(json.dumps(receipt).encode())
+    }
+    assert modules.runtime.discover(config,
+                                    session)['job_arn'] == receipt['job_arn']
+    session.client.assert_called_once_with('s3')
+    session.client.return_value.get_object.assert_called_once_with(
+        Bucket=config['bucket'], Key=config['job_receipt_key'])
+
+
+@pytest.mark.parametrize(
+    'field,value',
+    [('attempt', 'another'), ('source_commit', 'b' * 40),
+     ('job_arn',
+      'arn:aws:sagemaker:us-west-2:000000000000:training-job/unrelated'),
+     ('execution_arn',
+      'arn:aws:sagemaker:us-west-2:926922431314:pipeline/other/execution/x'),
+     ('execution_arn', ''), ('job_arn', None),
+     ('secret', 'unrecognised field')])
+def test_wrong_controller_job_receipt_is_rejected(modules, actual_job_reference,
+                                                  field, value):
+    config, receipt = actual_job_reference
+    receipt[field] = value
+    with pytest.raises(ValueError):
+        modules.runtime.receipt_reference(config, receipt)
+
+
+def test_missing_job_receipt_wait_is_bounded(modules, actual_job_reference,
+                                             monkeypatch):
+    from botocore.exceptions import ClientError
+
+    config, _ = actual_job_reference
+    session = Mock()
+    session.client.return_value.get_object.side_effect = ClientError(
+        {'Error': {
+            'Code': 'NoSuchKey'
+        }}, 'GetObject')
+    times = iter([0, 91])
+    monkeypatch.setattr(modules.runtime.time, 'monotonic', lambda: next(times))
+    with pytest.raises(TimeoutError, match='did not publish'):
+        modules.runtime.discover(config, session)
+
+
+@pytest.mark.parametrize('collision', [False, True])
+def test_controller_publishes_actual_job_once_and_rejects_conflicts(
+        modules, actual_job_reference, tmp_path, collision):
+    from botocore.exceptions import ClientError
+
+    config, receipt = actual_job_reference
+    client = modules.client.Client.__new__(modules.client.Client)
+    client.config = config
+    client.s3, client.sm = Mock(), Mock()
+    client.sm.describe_training_job.return_value = dict(
+        TrainingJobArn=receipt['job_arn'], RoleArn=config['execution_role'])
+    client.sm.list_tags.return_value = {
+        'Tags': [
+            dict(Key='KumoTestAttempt', Value=config['attempt']),
+            dict(Key='KumoTestSource', Value=config['source_commit'])
+        ]
+    }
+    client.s3.put_object.return_value = {'ETag': 'actual'}
+    execution = SimpleNamespace(arn=receipt['execution_arn'])
+    if collision:
+        client.s3.put_object.side_effect = ClientError(
+            {'Error': {
+                'Code': 'PreconditionFailed'
+            }}, 'PutObject')
+        client.s3.get_object.return_value = {
+            'Body': io.BytesIO(b'other execution')
+        }
+        with pytest.raises(ValueError, match='another execution'):
+            client.publish_job(execution, receipt['job_arn'], config, tmp_path)
+    else:
+        client.publish_job(execution, receipt['job_arn'], config, tmp_path)
+        stored = client.s3.put_object.call_args.kwargs
+        assert stored['IfNoneMatch'] == '*'
+        assert json.loads(stored['Body']) == receipt
+        assert (tmp_path / 'job-identity.json').read_bytes() == stored['Body']
+        assert json.loads(
+            (tmp_path / 'training-job-live.json'
+             ).read_text())['TrainingJobArn'] == receipt['job_arn']
 
 
 def test_aliased_payload_is_uploaded_once_then_verified_from_cache(

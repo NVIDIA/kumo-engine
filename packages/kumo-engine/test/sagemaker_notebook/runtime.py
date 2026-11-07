@@ -11,28 +11,55 @@ import time
 from pathlib import Path
 
 
+def receipt_reference(config, record):
+    if (not isinstance(record, dict) or set(record)
+            != {'attempt', 'source_commit', 'job_arn', 'execution_arn'}
+            or not all(isinstance(value, str) for value in record.values())):
+        raise ValueError('Job identity receipt has invalid fields')
+    attempt = config['attempt']
+    pipeline = 'kumo-test-notebook-' + attempt
+    prefix = f'arn:aws:sagemaker:{config["region"]}:{config["account"]}'
+    if (not re.fullmatch(r'[a-f0-9]{12}', attempt)
+            or not re.fullmatch(r'[a-f0-9]{40}', config['source_commit'])
+            or config['pipeline_name'] != pipeline or config['job_receipt_key']
+            != config['root'] + '/runs/' + attempt + '/job-identity.json'
+            or record.get('attempt') != attempt
+            or record.get('source_commit') != config['source_commit']
+            or not re.fullmatch(
+                re.escape(prefix + ':training-job/' + pipeline) +
+                r'(?:-[A-Za-z0-9-]+)?', record.get('job_arn', ''))
+            or not re.fullmatch(
+                re.escape(prefix + ':pipeline/' + pipeline + '/execution/') +
+                r'[A-Za-z0-9_-]+', record.get('execution_arn', ''))):
+        raise ValueError(
+            'Job identity receipt differs from this notebook attempt')
+    return record['job_arn']
+
+
 def discover(config, session):
-    sm = session.client('sagemaker')
+    from botocore.exceptions import ClientError
+
+    s3 = session.client('s3')
     deadline = time.monotonic() + 90
     while True:
-        found = sm.list_training_jobs(NameContains=config['attempt'],
-                                      MaxResults=20, SortBy='CreationTime',
-                                      SortOrder='Descending')
-        candidates = []
-        for item in found['TrainingJobSummaries']:
-            if not item['TrainingJobName'].startswith(config['pipeline_name']):
-                continue
-            tags = {
-                t['Key']: t['Value']
-                for t in sm.list_tags(
-                    ResourceArn=item['TrainingJobArn'])['Tags']
-            }
-            if tags.get('KumoTestAttempt') == config['attempt']:
-                candidates.append(item['TrainingJobArn'])
-        if len(candidates) == 1:
-            return dict(config, job_arn=candidates[0])
-        if len(candidates) > 1 or time.monotonic() >= deadline:
-            raise ValueError('Could not identify one actual notebook job')
+        try:
+            body = s3.get_object(Bucket=config['bucket'],
+                                 Key=config['job_receipt_key'])['Body']
+        except ClientError as error:
+            if error.response['Error']['Code'] not in ('404', 'NoSuchKey'):
+                raise
+        else:
+            try:
+                content = body.read(8193)
+            finally:
+                body.close()
+            if len(content) > 8192:
+                raise ValueError('Job identity receipt exceeds its size budget')
+            record = json.loads(content)
+            return dict(config, job_arn=receipt_reference(config, record))
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                'Controller did not publish this notebook job identity')
         time.sleep(3)
 
 

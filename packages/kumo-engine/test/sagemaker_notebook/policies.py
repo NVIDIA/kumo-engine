@@ -8,6 +8,7 @@ from config import (
     ACCOUNT,
     BRANCH,
     BUCKET,
+    DENIED_ROOT,
     ENVIRONMENT,
     REGION,
     ROOT,
@@ -32,7 +33,8 @@ def trust(name):
         return document([
             dict(
                 Effect='Allow', Principal={
-                    'Federated': f'arn:aws:iam::{ACCOUNT}:oidc-provider/token.actions.githubusercontent.com'
+                    'Federated':
+                    f'arn:aws:iam::{ACCOUNT}:oidc-provider/token.actions.githubusercontent.com'
                 }, Action='sts:AssumeRoleWithWebIdentity', Condition=dict(
                     StringEquals={
                         'token.actions.githubusercontent.com:aud':
@@ -71,7 +73,7 @@ def permissions(name, domain_id=None):
             ], [bucket + '/' + ROOT + '/*']),
             statement(
                 ['s3:PutObject', 's3:DeleteObject', 's3:AbortMultipartUpload'],
-                [bucket + '/' + ROOT + '/denied/*'], effect='Deny')
+                [bucket + '/' + DENIED_ROOT + '/*'], effect='Deny')
         ]
     if name == 'MLFLOW':
         result += [
@@ -93,7 +95,6 @@ def permissions(name, domain_id=None):
             statement(['sagemaker-mlflow:*'], [server]),
             statement(['sagemaker:DescribeTrainingJob', 'sagemaker:ListTags'],
                       [jobs]),
-            statement(['sagemaker:ListTrainingJobs'], ['*']),
             statement([
                 'sagemaker:DescribeModelPackage',
                 'sagemaker:DescribeModelPackageGroup'
@@ -129,6 +130,10 @@ def permissions(name, domain_id=None):
             ], [jobs])
         ]
     if name == 'RUNNER':
+        result += [
+            statement(['s3:GetObject'],
+                      [bucket + '/' + DENIED_ROOT + '/README.txt'])
+        ]
         result += [
             statement([
                 'sagemaker:CreatePipeline', 'sagemaker:UpdatePipeline',
