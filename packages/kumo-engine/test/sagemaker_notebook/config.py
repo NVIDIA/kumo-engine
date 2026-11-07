@@ -16,8 +16,10 @@ TRACKING_SERVER = 'kumo-mlops-validation'
 DOMAIN_NAME = PREFIX
 USER_PROFILE = 'kumo-test-platform'
 SPACE_NAME = 'kumo-test-notebook'
-IMAGE = ('542918446943.dkr.ecr.us-west-2.amazonaws.com/'
-         'sagemaker-distribution-prod:3.6.1-cpu')
+# Unchanged SageMaker Distribution 3.6.1 CPU image in the test repository.
+IMAGE = (f'{ACCOUNT}.dkr.ecr.{REGION}.amazonaws.com/'
+         'kumo-mlops-validation@sha256:'
+         'c67c9ea12dcf5faa14496248553f6b441567137a75d533d0733a7671f00cf986')
 INSTANCE = 'ml.m5.2xlarge'
 
 

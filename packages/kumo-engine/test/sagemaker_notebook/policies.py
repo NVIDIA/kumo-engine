@@ -107,8 +107,8 @@ def permissions(name, domain_id=None):
                 'ecr:BatchGetImage', 'ecr:GetDownloadUrlForLayer',
                 'ecr:BatchCheckLayerAvailability'
             ], [
-                f'arn:aws:ecr:{REGION}:542918446943:'
-                'repository/sagemaker-distribution-prod'
+                f'arn:aws:ecr:{REGION}:{ACCOUNT}:'
+                'repository/kumo-mlops-validation'
             ]),
             statement(['logs:CreateLogStream', 'logs:PutLogEvents'], [
                 f'arn:aws:logs:{REGION}:{ACCOUNT}:'

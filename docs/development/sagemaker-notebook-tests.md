@@ -11,6 +11,9 @@ The initialization script creates a clean virtual environment, installs the
 pinned wheel with `[sagemaker]`, checks its dependencies, and registers the
 notebook kernel. Kernel tools are installed separately from the product.
 The runner caches inputs in S3 by SHA256 and checks S3 checksums before reuse.
+The container is the unchanged AWS SageMaker Distribution 3.6.1 CPU image,
+mirrored into the dedicated `kumo-mlops-validation` ECR repository and pinned
+by its original digest. The execution role only needs access to that repository.
 
 The notebook verifies its actual execution role, training-job identity, image,
 kernel, mounted input notebook, architecture, Python, and glibc. Each lifecycle
