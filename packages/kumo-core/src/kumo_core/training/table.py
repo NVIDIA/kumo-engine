@@ -165,7 +165,6 @@ class PreparedCustomTrainingTable:
     time_column: str = "TIMESTAMP"
     ingest_on_error: str = "skip_row_on_error"
     timestamp_unit: str = "nanoseconds"
-    allow_new_target_entities: bool = False
 
     def __post_init__(self) -> None:
         if not self.parquet_path:
@@ -564,6 +563,8 @@ def generate_custom_train_table(
 ) -> GeneratedTrainTableResult:
     """Build the standard TT-NG bundle from an existing parquet table."""
 
+    from ..pquery import link_target_window_end
+
     if not isinstance(custom_table, PreparedCustomTrainingTable):
         raise TypeError("custom_table must be PreparedCustomTrainingTable")
     if not Path(custom_table.parquet_path).exists():
@@ -601,9 +602,11 @@ def generate_custom_train_table(
         target_entity_table=request.rhs_node_type,
         task_type=request.task_type,
         lp_rhs_is_temporal=request.rhs_is_temporal,
+        target_window_end=(link_target_window_end(request.query)
+                           if request.task_type.lower() in _LINK_TASK_TYPES
+                           else None),
         fact_pseudo_time=_fact_pseudo_time(request),
         ingest_on_error=custom_table.ingest_on_error,
-        allow_new_target_entities=custom_table.allow_new_target_entities,
         allow_negative_weight=(
             request.task_type.lower() == "temporal_link_prediction"),
     )

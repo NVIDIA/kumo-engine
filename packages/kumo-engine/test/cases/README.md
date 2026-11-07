@@ -29,7 +29,7 @@ python packages/kumo-engine/test/cases/adtech_binary.py \
 
 Use `--write-reference` explicitly to create a reference after review. Ordinary runs only read it.
 For a control, add `--control` and use a separate reference. Results record `control=true` and reject normal references.
-Temporal-link controls require a wheel with `allow_new_target_entities` import support.
+Temporal-link imports use the query's label-window end to validate target creation times, matching generated answers.
 Controls load all exported answer rows into RAM. Their large-scale memory and runtime remain unqualified.
 Static-link imports omit native prior-stage target exclusions. Controls have no paired normal/control quality gate.
 References compare node and edge counts, training-table checks and metric bands.

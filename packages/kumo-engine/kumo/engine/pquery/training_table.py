@@ -128,14 +128,9 @@ class TrainingTable:
             return {}
 
     @classmethod
-    def load_from_connector(
-            cls,
-            connector: Any,
-            *,
-            path: str,
-            pquery: "PredictiveQuery",  # noqa: F821
-            snapshot: GraphSnapshot,
-            allow_new_target_entities: bool = False) -> "TrainingTable":
+    def load_from_connector(cls, connector: Any, *, path: str,
+                            pquery: "PredictiveQuery",  # noqa: F821
+                            snapshot: GraphSnapshot) -> "TrainingTable":
         r"""Load a table written by :meth:`export` against ``snapshot``.
 
         A folder must be a complete export (with ``_SUCCESS``); load other
@@ -155,9 +150,8 @@ class TrainingTable:
         spec = TrainingTableSpec(split_col='SPLIT')
         stored = _stored_parts(connector, path)
         if stored is None:
-            return cls.from_source_table(
-                connector[path], spec, pq=pquery, snapshot=snapshot,
-                allow_new_target_entities=allow_new_target_entities)
+            return cls.from_source_table(connector[path], spec, pq=pquery,
+                                         snapshot=snapshot)
         filesystem, root, files = stored
         parts = [info for info in files if info.path.endswith('.parquet')]
         version = _source_version(root, parts)
@@ -170,7 +164,6 @@ class TrainingTable:
             return cls._from_rows(
                 FileConnector(root_dir=str(local))['rows'], spec, pq=pquery,
                 snapshot=snapshot, version=version,
-                allow_new_target_entities=allow_new_target_entities,
                 source=provenance.stored_table(
                     connector, location, version,
                     record_sources=_record_sources(snapshot)))
@@ -228,7 +221,6 @@ class TrainingTable:
         snapshot: GraphSnapshot,
         plan: Optional[PublicGenerationPlan] = None,
         mlops: Optional[Any] = None,
-        allow_new_target_entities: bool = False,
     ) -> "TrainingTable":
         r"""Materialize caller-supplied labeled rows as a training table.
 
@@ -245,12 +237,11 @@ class TrainingTable:
         (``mlops=`` or a ``kumo.mlops`` block), the table is also stored
         under the artifact root.
 
-        ``allow_new_target_entities=True`` skips prediction-time label filtering.
-        The caller owns label times. Target keys must exist in the snapshot.
+        Temporal link targets use the same creation-time and expiry checks
+        as generated training rows.
         """
-        return cls._from_rows(
-            source_table, spec, pq=pq, snapshot=snapshot, plan=plan, mlops=mlops,
-            allow_new_target_entities=allow_new_target_entities)
+        return cls._from_rows(source_table, spec, pq=pq, snapshot=snapshot,
+                              plan=plan, mlops=mlops)
 
     @classmethod
     def _from_rows(
@@ -264,7 +255,6 @@ class TrainingTable:
         mlops: Optional[Any] = None,
         version: Any = None,
         source: Optional[SourceTableEntry] = None,
-        allow_new_target_entities: bool = False,
     ) -> "TrainingTable":
         # Local imports keep the immutable descriptor cheap to import and
         # avoid pquery -> trainer -> pquery cycles.
@@ -347,7 +337,6 @@ class TrainingTable:
                 parquet_path=str(rows_path),
                 weight_column=spec.weight_col,
                 timestamp_unit=spec.timestamp_unit,
-                allow_new_target_entities=allow_new_target_entities,
             ),
         )
         if workflow.query.query_type == "temporal":
@@ -378,8 +367,7 @@ class TrainingTable:
         )
         return finish_generated(
             table, snapshot, task_plan.train_table, mlops,
-            source_table=source, source_version=version, started=started,
-            allow_new_target_entities=allow_new_target_entities)
+            source_table=source, source_version=version, started=started)
 
 
 def _stored_parts(connector: Any,
@@ -446,17 +434,15 @@ def finish_generated(table: TrainingTable, snapshot: GraphSnapshot,
                      request: TrainTableRequest, mlops: Optional[Any], *,
                      source_table: Optional[SourceTableEntry] = None,
                      source_version: Any = None,
-                     started: Optional[Start] = None,
-                     allow_new_target_entities: bool = False) -> TrainingTable:
+                     started: Optional[Start] = None) -> TrainingTable:
     from kumo.engine._mlops import resolve
 
     settings = resolve(mlops)
     seed = None
     if request.split_family in _RANDOM_SPLITS:
         seed = (request.split_config or {}).get('rnd_seed') or 0
-    table = replace(table, id=_table_id(
-        table, snapshot, seed, source_version, custom=source_table is not None,
-        allow_new_target_entities=allow_new_target_entities))
+    table = replace(table, id=_table_id(table, snapshot, seed, source_version,
+                                        custom=source_table is not None))
     _record_manifest(table, snapshot, request, seed, source_table=source_table,
                      started=None if settings is None else started)
     if settings is not None and settings.wants('training_table'):
@@ -472,19 +458,16 @@ def finish_generated(table: TrainingTable, snapshot: GraphSnapshot,
 
 def _table_id(table: TrainingTable, snapshot: GraphSnapshot,
               seed: Optional[int], source_version: Any, *,
-              custom: bool, allow_new_target_entities: bool = False) -> str:
+              custom: bool) -> str:
     from kumo_core.io.json import to_json_dict
 
     if custom and source_version is None:
         from kumo.engine._scratch import new_run_id
         return f'tt-{new_run_id()}'
     build = provenance.environment()
-    generation = to_json_dict(table.generation_plan)
-    if allow_new_target_entities:
-        generation['allow_new_target_entities'] = True
     key = json.dumps([
         snapshot.id, table.query,
-        generation, seed,
+        to_json_dict(table.generation_plan), seed,
         None if source_version is None else str(source_version),
         build.kumo_engine, build.build_commit, build.diskgraph,
         build.diskgraph_build_commit
