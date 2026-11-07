@@ -92,7 +92,7 @@ class PreparedCustomPredictionTable:
             raise ValueError("custom prediction table requires a path")
 
 
-def forecast_task_options(
+def prediction_task_options(
     request: PredictionTableRequest, ) -> Dict[str, int] | None:
     """Return the resolved-task scalars required to replay a forecast.
 
@@ -387,7 +387,7 @@ __all__ = [
     "GeneratedPredictionTable",
     "PreparedCustomPredictionTable",
     "PredictionTableRequest",
-    "forecast_task_options",
+    "prediction_task_options",
     "generate_prediction_table",
     "generate_custom_prediction_table",
     "materialize_prediction_task",
@@ -519,7 +519,7 @@ class _PredictionWorkerConfig(NamedTuple):
     source_config_sha256: str
     runtime_config_sha256: str
     binary_threshold: Optional[float]
-    forecast_options: Optional[Dict[str, int]]
+    task_options: Optional[Dict[str, int]]
     embedding_models: Optional[EmbeddingModelStore] = None
     ignore_time_col: bool = False
     accelerator: str = 'auto'
@@ -549,7 +549,7 @@ def _score_prediction_shard(
     task = ResolvedNumericalTask.from_manifest(
         manifest,
         name=config.run_id,
-        **(config.forecast_options or {}),
+        **(config.task_options or {}),
     )
     load_options = {'accelerator': config.accelerator}
     device = config.devices[worker_id]
@@ -568,7 +568,7 @@ def _score_prediction_shard(
         embedding_models=config.embedding_models,
         **load_options,
     )
-    if config.forecast_options is not None:
+    if config.task_options is not None:
         _validate_forecast_checkpoint(trainer, task)
     from kumo_core.score_counts import Counts
     from kumo_core.train.artifact_stats import PredictionArtifactStatsCollector
@@ -631,7 +631,7 @@ def score_prediction(
     graph_snapshot_id: str,
     source_config_sha256: str,
     binary_threshold: float | None = None,
-    forecast_options: Mapping[str, int] | None = None,
+    task_options: Mapping[str, int] | None = None,
     embedding_models: EmbeddingModelStore | None = None,
     encoders: Any = None,
     accelerator: str = 'auto',
@@ -706,8 +706,8 @@ def score_prediction(
         source_config_sha256=source_config_sha256,
         runtime_config_sha256=runtime_config_sha256,
         binary_threshold=binary_threshold,
-        forecast_options=(dict(forecast_options)
-                          if forecast_options is not None else None),
+        task_options=(dict(task_options)
+                      if task_options is not None else None),
         embedding_models=embedding_models,
         accelerator=accelerator,
         count_edges=None if count_edges is None else dict(count_edges),

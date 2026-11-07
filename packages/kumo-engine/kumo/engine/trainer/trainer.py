@@ -992,8 +992,8 @@ def _materialize_prediction(prediction_table: PredictionTable,
     from kumo_core.prediction import (
         GeneratedPredictionTable,
         PredictionTableRequest,
-        forecast_task_options,
         materialize_prediction_task,
+        prediction_task_options,
     )
 
     ingest_tt_id = f'{prediction_table.tt_id}-{run_id}'
@@ -1031,7 +1031,7 @@ def _materialize_prediction(prediction_table: PredictionTable,
     )
     materialized = materialize_prediction_task(request, generated,
                                                graph_index_id=snapshot.id)
-    return materialized, request.timestamps, forecast_task_options(request)
+    return materialized, request.timestamps, prediction_task_options(request)
 
 
 _UNACTIONABLE = (
@@ -1709,7 +1709,7 @@ class Trainer:
         if self._training_table_generation_plan is not None:
             parsed = resolve_query_forecast(
                 parsed, native_graph, self._training_table_generation_plan)
-        materialized, timestamps, forecast_options = (
+        materialized, timestamps, task_options = (
             _materialize_prediction(prediction_table, snapshot, parsed,
                                     native_graph, run_id, run_dir))
         model_dir = str(
@@ -1745,7 +1745,7 @@ class Trainer:
                 json.dumps(source_identity, sort_keys=True,
                            default=str).encode()).hexdigest(),
             binary_threshold=threshold,
-            forecast_options=forecast_options,
+            task_options=task_options,
             embedding_models=self._embedding_models,
             encoders=encoders,
             accelerator=self._accelerator,

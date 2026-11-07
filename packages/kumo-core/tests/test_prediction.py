@@ -17,10 +17,10 @@ from kumo_core.pquery import (
 from kumo_core.prediction import (
     PredictionTableRequest,
     PreparedCustomPredictionTable,
-    forecast_task_options,
     generate_custom_prediction_table,
     generate_prediction_table,
     materialize_prediction_task,
+    prediction_task_options,
 )
 from kumo_core.prediction_options import (
     resolve_classification_threshold,
@@ -417,7 +417,7 @@ def test_forecast_prediction_compiles_only_historical_features(
     assert runtime.compile_options["lag_offsets_secs"] == (-86400, )
     assert "future_offsets_secs" not in runtime.compile_options
     assert req.compiler_options["future_offsets_secs"] == (0, 86400, 172800)
-    assert forecast_task_options(req) == {
+    assert prediction_task_options(req) == {
         "forecast_length": 3,
         "lag_timesteps": 1,
         "unix_start_offset": 0,
@@ -429,7 +429,7 @@ def test_forecast_prediction_compiles_only_historical_features(
 def test_forecast_task_options_uses_fitted_timeframe_step(tmp_path):
     req = replace(forecast_request(tmp_path), forecast_timeframe_step=2)
 
-    assert forecast_task_options(req)['unix_step_size'] == 172800000000000
+    assert prediction_task_options(req)['unix_step_size'] == 172800000000000
 
 
 @pytest.mark.parametrize("options", [{
@@ -544,7 +544,7 @@ def _score_shard_on_device(monkeypatch, tmp_path, devices, worker_id,
             pred_time_col_name=None, output_dir=str(tmp_path / "output"),
             attempt_id="attempt", graph_snapshot_id="snapshot",
             source_config_sha256="0" * 64, runtime_config_sha256="1" * 64,
-            binary_threshold=None, forecast_options=None,
+            binary_threshold=None, task_options=None,
             accelerator=accelerator),
     )
     return trainers

@@ -99,7 +99,7 @@ def test_valid_class_count_reaches_scorer(task_type, count, tmp_path,
                         lambda *args, **kwargs: object())
     monkeypatch.setattr('kumo.engine.trainer.trainer._stage_model_bundle',
                         lambda *args: tmp_path)
-    monkeypatch.setattr('kumo_core.prediction.forecast_task_options',
+    monkeypatch.setattr('kumo_core.prediction.prediction_task_options',
                         lambda *args: None)
     score = Mock(return_value=object())
     monkeypatch.setattr('kumo_core.prediction.score_prediction', score)
@@ -284,7 +284,7 @@ def test_forecast_options_reach_every_scorer_before_output(
         run_id='run', scratch_dir=str(tmp_path),
         artifacts=frozenset({PredictionArtifactType.PREDICTIONS}),
         num_workers=2, graph_snapshot_id='snapshot',
-        source_config_sha256='2' * 64, forecast_options=options)
+        source_config_sha256='2' * 64, task_options=options)
 
     if mismatch:
         with pytest.raises(ValueError, match='Forecast checkpoint'):
