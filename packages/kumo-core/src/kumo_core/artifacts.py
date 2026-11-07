@@ -509,15 +509,9 @@ def bundle_task_type(artifacts: Mapping[str, str]) -> TaskType:
 
 def bundle_task_options(artifacts: Mapping[str, str]) -> dict[str, Any]:
     """The temporal task scalars a bundle's model was fitted with."""
-    from .resolved_task import ResolvedNumericalTask
-
-    if not artifacts.get('input_manifest'):
-        raise ValueError("The model bundle has no resolved task "
-                         "(manifests/input.json); fit the model again.")
-    task = ResolvedNumericalTask.from_dict(
-        load_json(artifacts['input_manifest'], dict))
+    task = load_json(artifacts['input_manifest'], dict)
     return {
-        name: getattr(task, name)
+        name: task[name]
         for name in ('forecast_length', 'lag_timesteps', 'unix_start_offset',
                      'unix_end_offset', 'unix_step_size')
     }

@@ -1705,6 +1705,7 @@ class Trainer:
         run_id = f'{self._id}-predict-{new_run_id()}'
         if output_config is not None:
             _preflight(output_config)
+        task_options = bundle_task_options(training_result.artifact_paths)
         encoders = self._trained_encoders(training_result)
         started_at = datetime.now(timezone.utc)
         run_dir = self.scratch_dir / 'runs' / run_id
@@ -1712,7 +1713,6 @@ class Trainer:
         if self._training_table_generation_plan is not None:
             parsed = resolve_query_forecast(
                 parsed, native_graph, self._training_table_generation_plan)
-        task_options = bundle_task_options(training_result.artifact_paths)
         materialized, timestamps = _materialize_prediction(
             prediction_table, snapshot, parsed, native_graph, run_id, run_dir,
             task_options['lag_timesteps'])
