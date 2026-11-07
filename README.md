@@ -44,6 +44,8 @@ For example, to predict whether a customer will order in the next 30 days, Kumo 
 - **Existing data and infrastructure:** Read files or connect to cloud storage and warehouses using existing compute and credentials.
 - **Compatible with agentic workflows:** Agent skills let AI agents set up and run Kumo Engine workflows.
 
+Browse the [example collection](examples/kumo-example-notebooks/README.md) for industry notebooks, standalone scripts, and synthetic-data generators for Kumo Engine and Structured Data Models.
+
 ## Quick Tour
 
 See how to install Kumo Engine in a notebook, connect customer and order tables, and render their schema.
