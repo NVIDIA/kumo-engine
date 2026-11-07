@@ -398,6 +398,9 @@ class BaseLightningModule(pl.LightningModule, ABC):
 
     def on_evaluation_start(self, stage: TrainingStage):
         self.outputs: dict[str, Tensor | None] | None = None
+        # Discard partial outputs when a failed evaluation restarts.
+        self._validation_step_outputs.clear()
+        self._test_step_outputs.clear()
         if self._trainer is None:
             # Baseline module somehow uses this lightning module without a
             # PyTorch Lightning's trainer.

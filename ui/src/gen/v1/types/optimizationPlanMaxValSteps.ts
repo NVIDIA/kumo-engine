@@ -7,4 +7,4 @@
  */
 import type { MissingType } from "./missingType";
 
-export type OptimizationPlanMaxValSteps = number | MissingType;
+export type OptimizationPlanMaxValSteps = number | MissingType | null;
