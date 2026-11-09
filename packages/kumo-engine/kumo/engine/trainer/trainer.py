@@ -986,6 +986,12 @@ def _requested_artifacts(
             {PredictionArtifactType.PREDICTIONS})
 
 
+def _offset_count(compiler_options: Mapping[str, Any],
+                  name: str) -> Optional[int]:
+    offsets = compiler_options.get(name)
+    return len(offsets) if isinstance(offsets, (tuple, list)) else None
+
+
 def _materialize_prediction(prediction_table: PredictionTable,
                             snapshot: GraphSnapshot, parsed: Any,
                             native_graph: Any, run_id: str, run_dir: Path,
@@ -998,12 +1004,12 @@ def _materialize_prediction(prediction_table: PredictionTable,
 
     ingest_tt_id = f'{prediction_table.tt_id}-{run_id}'
     compiler_options = prediction_table.compiler_options or {}
-    lag_offsets = compiler_options.get('lag_offsets_secs')
-    lag_timesteps = (len(lag_offsets) if isinstance(lag_offsets,
-                                                    (tuple, list)) else None)
+    lag_timesteps = _offset_count(compiler_options, 'lag_offsets_secs')
     if parsed.task_type == 'forecasting':
-        check_prediction_plan(task_options, lag_timesteps=lag_timesteps,
-                              forecast_length=parsed.forecast_length)
+        check_prediction_plan(
+            task_options, lag_timesteps=lag_timesteps,
+            forecast_length=_offset_count(compiler_options,
+                                          'future_offsets_secs'))
     with no_encoder_inference_warnings():
         task_dataset = build_generated_training_task_dataset(
             query=parsed,

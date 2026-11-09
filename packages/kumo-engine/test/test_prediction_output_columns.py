@@ -223,6 +223,18 @@ def test_forecast_rejects_a_table_with_other_lags(graph, forecast):
                         snapshot=graph[1])
 
 
+def test_forecast_rejects_a_table_with_another_horizon(graph, forecast):
+    trainer, _, table = forecast
+    future = table.compiler_options['future_offsets_secs']
+    options = dict(table.compiler_options,
+                   future_offsets_secs=(*future, future[-1] + 86400))
+
+    expected = f'table uses forecast_length = {len(future) + 1}'
+    with pytest.raises(ValueError, match=expected):
+        trainer.predict(replace(table, compiler_options=options),
+                        snapshot=graph[1])
+
+
 @pytest.mark.parametrize('num_classes_to_return, expected', [
     (2, 2), (5, 5)
 ])
