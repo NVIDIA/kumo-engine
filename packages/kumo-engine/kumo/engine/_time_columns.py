@@ -31,6 +31,7 @@ warning counts the ones the scan would have made missing.
 """
 
 import os
+import shutil
 import warnings
 from collections import Counter
 from dataclasses import dataclass, field
@@ -1013,6 +1014,39 @@ def _parquet_files(paths: Sequence[str]) -> List[Path]:
     ]
 
 
+def _owned(file: Path, dest_dir: str) -> bool:
+    return file.resolve().is_relative_to(Path(dest_dir).resolve())
+
+
+def _copy_table(paths: Sequence[str],
+                dest_dir: str) -> Tuple[List[str], Dict[str, str]]:
+    r"""Plain copies of every part under `paths` in a directory of the
+    snapshot's own, in the layout they had: a described directory keeps
+    its tree, listed files their names. Returns the paths DiskGraph should
+    read instead and each original's copy, so a rewrite touches no file
+    outside the snapshot.
+    """
+    target = Path(dest_dir) / 'time-columns'
+    located: List[str] = []
+    moved: Dict[str, str] = {}
+    for path in paths:
+        source = Path(path)
+        if source.is_dir():
+            for file in sorted(p for p in source.rglob('*') if p.is_file()):
+                copy = target / file.relative_to(source)
+                copy.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(file, copy)
+                moved[str(file)] = str(copy)
+            located.append(str(target))
+        else:
+            target.mkdir(parents=True, exist_ok=True)
+            copy = target / source.name
+            shutil.copyfile(source, copy)
+            moved[str(source)] = str(copy)
+            located.append(str(copy))
+    return located, moved
+
+
 def _rewrite(file: Path, columns: Dict[str, Callable[[pa.Array],
                                                      pa.Array]]) -> None:
     r"""Rewrites one staged part with the given columns replaced by what
@@ -1058,8 +1092,11 @@ def resolve_time_columns(
     name, the sorted names of the columns whose staged parts were
     rewritten, and the paths DiskGraph should read; a column DiskGraph
     already reads unambiguously, or whose format the table declares, gets
-    none. `dest_dir` is the snapshot's own staging directory for the table.
-    Values no calendar or clock
+    none. `dest_dir` is the snapshot's own staging directory for the table:
+    no part outside it is rewritten in place, so when a table has values to
+    make missing and a backend only described its parts, every part is
+    copied under `dest_dir` first and the copies are rewritten and returned
+    as the paths to read. Values no calendar or clock
     holds, or with no reading once a column of whole numbers has one, are
     nulled in the staged parts; a column mixing bare and zoned ISO values,
     slash dates in more than one time shape and digit strings with padding
@@ -1096,6 +1133,16 @@ def resolve_time_columns(
         column.decide()
     rewritten = set()
     parts = {column.name: column.parts_to_rewrite() for column in columns}
+    located = list(paths)
+    if any(parts.values()) and not all(
+            _owned(file, dest_dir) for file in files):
+        located, moved = _copy_table(paths, dest_dir)
+        files = [Path(moved[str(file)]) for file in files]
+        parts = {
+            name: {moved.get(part, part)
+                   for part in held}
+            for name, held in parts.items()
+        }
     for file in files:
         touched = {
             column.name: column.rewritten
@@ -1107,4 +1154,4 @@ def resolve_time_columns(
     return {
         column.name: column.decision.timestamp_format
         for column in columns if column.decision.timestamp_format is not None
-    }, sorted(rewritten), list(paths)
+    }, sorted(rewritten), located

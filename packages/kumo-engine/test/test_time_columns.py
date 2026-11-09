@@ -3,8 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import re
+import warnings
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
 import pyarrow as pa
@@ -487,6 +489,82 @@ def test_a_part_is_rewritten_in_batches_bounded_by_decoded_bytes(
     assert stored.num_rows == rows
     assert stored.column('ts').to_pylist()[:2] == [None, '2024-01-15']
     assert stored.column('payload')[rows - 1].as_py() == 'x' * 16384
+
+
+def test_parts_outside_the_snapshot_are_copied_before_a_rewrite(tmp_path):
+    source, dest = tmp_path / 'source', tmp_path / 'dest'
+    source.mkdir()
+    dest.mkdir()
+    dirty = _part(source, pa.array(['2024-02-30', '2024-01-15']),
+                  'part-0.parquet')
+    clean = _part(source, pa.array(['2024-01-16', '2024-01-17']),
+                  'part-1.parquet')
+    before = {part: part.read_bytes() for part in (dirty, clean)}
+    with pytest.warns(UserWarning, match='1 value in time column'):
+        formats, rewritten, located = resolve_time_columns(
+            'events', _definition(), [str(dirty), str(clean)], str(dest))
+    assert {part: part.read_bytes() for part in before} == before
+    assert (formats, rewritten) == ({'ts': '%Y-%m-%d'}, ['ts'])
+    copies = [Path(path) for path in located]
+    assert [copy.parent for copy in copies] == [dest / 'time-columns'] * 2
+    assert [copy.name for copy in copies] == ['part-0.parquet', 'part-1.parquet']
+    assert pq.read_table(copies[0]).column('ts').to_pylist() == [
+        None, '2024-01-15'
+    ]
+    assert copies[1].read_bytes() == before[clean]
+
+
+def test_a_described_directory_outside_the_snapshot_is_copied_as_a_tree(
+        tmp_path):
+    source, dest = tmp_path / 'source', tmp_path / 'dest'
+    (source / 'day=1').mkdir(parents=True)
+    (source / 'day=2').mkdir()
+    dest.mkdir()
+    dirty = _part(source / 'day=1', pa.array(['2024-02-30', '2024-01-15']))
+    clean = _part(source / 'day=2', pa.array(['2024-01-16']))
+    (source / 'README.txt').write_text('kept')
+    before = {part: part.read_bytes() for part in (dirty, clean)}
+    with pytest.warns(UserWarning, match='1 value in time column'):
+        formats, rewritten, located = resolve_time_columns(
+            'events', _definition(), [str(source)], str(dest))
+    assert {part: part.read_bytes() for part in before} == before
+    copy = dest / 'time-columns'
+    assert (formats, rewritten, located) == ({
+        'ts': '%Y-%m-%d'
+    }, ['ts'], [str(copy)])
+    assert sorted(
+        str(path.relative_to(copy)) for path in copy.rglob('*')
+        if path.is_file()) == [
+            'README.txt', 'day=1/part-0.parquet', 'day=2/part-0.parquet'
+        ]
+    assert pq.read_table(copy / 'day=1' /
+                         'part-0.parquet').column('ts').to_pylist() == [
+                             None, '2024-01-15'
+                         ]
+    assert (copy / 'day=2' / 'part-0.parquet').read_bytes() == before[clean]
+    assert (copy / 'README.txt').read_text() == 'kept'
+
+
+@pytest.mark.parametrize('values, fmt', [
+    (pa.array(['2024-01-15', '2024-01-16']), {}),
+    (pa.array([1705276800, 1705363200], pa.int64()), {
+        'ts': 's'
+    }),
+])
+def test_parts_outside_the_snapshot_are_left_alone_without_a_rewrite(
+        tmp_path, values, fmt):
+    source, dest = tmp_path / 'source', tmp_path / 'dest'
+    source.mkdir()
+    dest.mkdir()
+    part = _part(source, values)
+    before = part.read_bytes()
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        outcome = resolve_time_columns('events', _definition(), [str(part)],
+                                       str(dest))
+    assert outcome == (fmt, [], [str(part)])
+    assert part.read_bytes() == before
+    assert list(dest.iterdir()) == []
 
 
 def test_only_parts_holding_an_invalid_value_are_rewritten(tmp_path):

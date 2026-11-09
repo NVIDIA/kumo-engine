@@ -836,6 +836,63 @@ def test_a_column_left_to_diskgraph_keeps_every_row_it_reads(
     assert stats['min_secs'] == _secs('2024-01-15')
 
 
+def test_parts_a_backend_only_describes_are_copied_before_a_rewrite(
+        tmp_path, monkeypatch):
+    from kumoapi.plugin import PrepareIngestResult
+
+    from kumo.engine import FileConnector, configure
+    from kumo.engine.connector import file as file_connector
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    originals, connectors = {}, {}
+    for name, values in (('events', ['2024-01-15', '2024-02-30']),
+                         ('users', ['2024-01-15', '2024-01-16'])):
+        folder = tmp_path / 'source' / name
+        folder.mkdir(parents=True)
+        path = folder / f'{name}.parquet'
+        pq.write_table(
+            pa.table({
+                'id': pa.array([0, 1], pa.int64()),
+                'ts': pa.array(values, pa.string())
+            }), path)
+        originals[name] = (path, path.read_bytes())
+        connectors[name] = FileConnector(root_dir=str(folder))
+
+    def describe(self, connector, table_name, dest_dir, *args, **kwargs):
+        path = Path(connector.config.root_dir) / table_name
+        if not path.exists():
+            path = path.with_suffix('.parquet')
+        return PrepareIngestResult(source={
+            'type': 'parquet',
+            'paths': [str(path)]
+        }, source_size=path.stat().st_size, version=table_name)
+
+    monkeypatch.setattr(file_connector._FileSourceBackend, 'prepare_ingest',
+                        describe)
+    tables = {
+        name: Table.from_source_table(connectors[name][f'{name}.parquet'],
+                                      primary_key='id', time_column='ts')
+        for name in originals
+    }
+    with pytest.warns(UserWarning, match='1 value in time column events.ts'):
+        snapshot = Graph(tables).snapshot()
+    assert {
+        name: path.read_bytes()
+        for name, (path, _) in originals.items()
+    } == {name: data
+          for name, (_, data) in originals.items()}
+    native = json.loads(
+        (snapshot.index_path / 'diskgraph_config.json').read_text())
+    sources = {t['name']: t['source']['paths'] for t in native['tables']}
+    (copy, ) = sources['events']
+    assert Path(copy).is_relative_to(tmp_path / 'scratch')
+    assert Path(copy).name == 'events.parquet'
+    assert sources['users'] == [str(originals['users'][0])]
+    ingest = json.loads(
+        (snapshot.index_path / 'ingest_stats.json').read_text())['stats']
+    assert ingest['dropped_rows_counts'] == {'events': 1}
+
+
 @pytest.mark.parametrize('values, hint', [
     (pa.array([datetime(9999, 12, 31)] * 1024 +
               [datetime(2024, 1, 15), datetime(2024, 1, 16)],
