@@ -787,9 +787,9 @@ def test_the_float32_step_is_sampled_on_one_budget_per_table(
 
     monkeypatch.setattr(pq.ParquetFile, 'iter_batches', recording)
     assert _narrowed_float_columns('t', table, paths, root) == {
-        ('t', 'a'): ('double', 1, 0),
-        ('t', 'b'): ('double', 2, 0),
-        ('t', 'n'): ('int64', 0, 0),
+        ('t', 'a'): ('double', 1, 0, 0),
+        ('t', 'b'): ('double', 2, 0, 0),
+        ('t', 'n'): ('int64', 0, 0, 0),
     }
     assert requested == [['a', 'b']] * reads
 
@@ -875,7 +875,7 @@ def test_a_step_finer_than_any_float64_is_no_step(tmp_path):
     from kumo.engine.graph import _sampled_precision
 
     assert _sampled_precision(pa.array(['1e-2147483648', '1e-300',
-                                        '0.5'])) == (300, 1)
+                                        '0.5'])) == (300, 1, 0)
     configure(scratch_dir=str(tmp_path / 'scratch'))
     root = tmp_path / 'source'
     root.mkdir()
@@ -898,7 +898,32 @@ def test_only_values_float32_rounds_to_zero_count_as_underflow():
     from kumo.engine.graph import _sampled_precision
 
     values = pa.array([1e-45, 1e-46, 7e-46, 2.0**-150, 0.0, 1.5])
-    assert _sampled_precision(values)[1] == 3
+    assert _sampled_precision(values)[1:] == (3, 0)
+
+
+def test_values_too_large_for_float32_are_reported(tmp_path):
+    from kumo.engine import FileConnector, configure
+    from kumo.engine.graph import _sampled_precision
+
+    values = pa.array([1e40, 3.5e38, 3.4e38, 0.5, float('inf')])
+    assert _sampled_precision(values)[1:] == (0, 2)
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            'id': range(4),
+            'rate': pa.array([1e40, 0.5, 1.5, 2.5]),
+        }), root / 't.parquet')
+    source = Table.from_source_table(
+        FileConnector(root_dir=str(root))['t.parquet'],
+        primary_key='id').with_column('rate', dtype=Dtype.float32)
+    with pytest.warns(UserWarning) as caught:
+        Graph({'t': source}).snapshot()
+    assert ('t.rate is stored as float32 but comes from double and holds 1 '
+            'sampled value(s) too large for float32, which stores them as '
+            'infinity. Declare dtype=Dtype.float64 for the column to keep them.'
+            ) in [str(warning.message) for warning in caught]
 
 
 def test_values_below_the_smallest_float32_are_reported(tmp_path):
@@ -974,7 +999,7 @@ def test_the_float32_step_ignores_the_decimal_context(tmp_path):
         assert [
             _sampled_precision(values.column(column))
             for column in ('cents', 'dollars', 'text')
-        ] == [(2, 0)] * 3
+        ] == [(2, 0, 0)] * 3
 
 
 @pytest.mark.parametrize('extension, values, expected', [
@@ -1151,8 +1176,8 @@ def test_the_float32_step_reads_only_parquet_parts(tmp_path):
         FileConnector(root_dir=str(tmp_path / 'source'))['t'], primary_key='id')
     table = table.with_column('a', dtype=Dtype.float32)
 
-    assert _narrowed_float_columns('t', table, [str(csv), str(parquet)],
-                                   root) == {
-                                       ('t', 'a'): ('double', 2, 0),
+    assert _narrowed_float_columns('t', table,
+                                   [str(csv), str(parquet)], root) == {
+                                       ('t', 'a'): ('double', 2, 0, 0),
                                    }
     assert _narrowed_float_columns('t', table, [str(csv)], root) == {}

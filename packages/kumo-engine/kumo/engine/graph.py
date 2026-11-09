@@ -257,11 +257,23 @@ def _float32_zero(number: Decimal) -> bool:
             and struct.unpack('f', struct.pack('f', value))[0] == 0)
 
 
-def _sampled_precision(values: Any) -> Tuple[int, int]:
+def _float32_infinite(number: Decimal) -> bool:
+    r"""Whether float32 stores a finite value as infinity, decided by the
+    round trip itself."""
+    value = float(number) if number.is_finite() else 0.0
+    if not math.isfinite(value):
+        return False
+    try:
+        return math.isinf(struct.unpack('f', struct.pack('f', value))[0])
+    except OverflowError:
+        return True
+
+
+def _sampled_precision(values: Any) -> Tuple[int, int, int]:
     r"""The most decimal places among the values, each read as the shortest
     decimal that names it, so a declared scale no value uses does not
-    count, and how many of them float32 stores as 0."""
-    places = underflows = 0
+    count, and how many of them float32 stores as 0 and as infinity."""
+    places = underflows = overflows = 0
     for value in values.to_pylist():
         try:
             number = Decimal(
@@ -270,7 +282,8 @@ def _sampled_precision(values: Any) -> Tuple[int, int]:
             continue
         places = max(places, _places(number))
         underflows += _float32_zero(number)
-    return places, underflows
+        overflows += _float32_infinite(number)
+    return places, underflows, overflows
 
 
 def _reads_as_number(physical: Any) -> bool:
@@ -291,10 +304,10 @@ def _reads_as_number(physical: Any) -> bool:
 
 def _narrowed_float_columns(
         alias: str, table: Table, paths: Sequence[str],
-        source_path: Any) -> Dict[Tuple[str, str], Tuple[str, int, int]]:
+        source_path: Any) -> Dict[Tuple[str, str], Tuple[str, int, int, int]]:
     r"""Each float32 column staged from a wider type DiskGraph reads as a
     number, with that type, the decimal places its values are written with
-    and how many lie below the smallest float32, read from the table's
+    and how many float32 stores as 0 and as infinity, read from the table's
     first ``_SAMPLE_ROWS`` rows across its parts, all such columns together
     and through a bounded buffer rather than whole column chunks. A backend
     that names a directory instead of its parts has it globbed, only when
@@ -310,7 +323,7 @@ def _narrowed_float_columns(
     ]
     if not columns:
         return {}
-    narrowed: Dict[Tuple[str, str], Tuple[str, int, int]] = {}
+    narrowed: Dict[Tuple[str, str], Tuple[str, int, int, int]] = {}
     budget = _SAMPLE_ROWS
     parts = [path for path in paths if Path(path).suffix.lower() == '.parquet']
     if not paths:
@@ -328,7 +341,7 @@ def _narrowed_float_columns(
             if (pa.types.is_float32(physical) or pa.types.is_float16(physical)
                     or not _reads_as_number(physical)):
                 continue
-            narrowed.setdefault((alias, column), (str(physical), 0, 0))
+            narrowed.setdefault((alias, column), (str(physical), 0, 0, 0))
             if not pa.types.is_integer(physical):
                 sampled.append(column)
         if budget <= 0 or not sampled:
@@ -336,11 +349,10 @@ def _narrowed_float_columns(
         for batch in parquet.iter_batches(budget, columns=sampled,
                                           use_threads=False):
             for column in sampled:
-                physical, places, underflows = narrowed[alias, column]
-                more, below = _sampled_precision(batch.column(column))
-                narrowed[alias,
-                         column] = (physical, max(places,
-                                                  more), underflows + below)
+                physical, places, zeros, infinities = narrowed[alias, column]
+                more, below, above = _sampled_precision(batch.column(column))
+                narrowed[alias, column] = (physical, max(places, more),
+                                           zeros + below, infinities + above)
             budget -= batch.num_rows
             break
     return narrowed
@@ -392,18 +404,25 @@ def _magnitude(stat: Mapping[str, Any]) -> Optional[float]:
     return max(numbers, default=None)
 
 
-def _warn_float32_narrowing(table: str, column: Mapping[str, Any],
-                            stat: Mapping[str, Any],
-                            source: Optional[Tuple[str, int, int]]) -> None:
+def _warn_float32_narrowing(
+        table: str, column: Mapping[str, Any], stat: Mapping[str, Any],
+        source: Optional[Tuple[str, int, int, int]]) -> None:
     if source is None:
         return
-    physical, places, underflows = source
+    physical, places, underflows, overflows = source
     if underflows:
         warnings.warn(
             f"{table}.{column['name']} is stored as float32 but comes from "
             f"{physical} and holds {underflows} sampled value(s) too small "
             "for float32, which stores them as 0. Declare dtype=Dtype.float64 "
             "for the column to keep them.", UserWarning, stacklevel=3)
+    if overflows:
+        warnings.warn(
+            f"{table}.{column['name']} is stored as float32 but comes from "
+            f"{physical} and holds {overflows} sampled value(s) too large "
+            "for float32, which stores them as infinity. Declare "
+            "dtype=Dtype.float64 for the column to keep them.", UserWarning,
+            stacklevel=3)
     magnitude = _magnitude(stat)
     if magnitude is None:
         return
@@ -425,7 +444,8 @@ def _warn_float32_narrowing(table: str, column: Mapping[str, Any],
 def _warn_ingest_data_loss(
     result: Any,
     graph_config: Dict[str, Any],
-    narrowed: Optional[Mapping[Tuple[str, str], Tuple[str, int, int]]] = None,
+    narrowed: Optional[Mapping[Tuple[str, str], Tuple[str, int, int,
+                                                      int]]] = None,
 ) -> None:
     from kumo_core.diskgraph.validation import parse_failure_warning
 
@@ -1171,7 +1191,7 @@ class Graph:
         table_data_versions: Dict[str, str] = {}
         source_paths: Dict[str, str] = {}
         source_tables: Dict[str, SourceTableEntry] = {}
-        narrowed: Dict[Tuple[str, str], Tuple[str, int, int]] = {}
+        narrowed: Dict[Tuple[str, str], Tuple[str, int, int, int]] = {}
 
         started = start() if timed else None
         try:
