@@ -165,17 +165,10 @@ def _warn_unqueryable_names(tables: Mapping[str, Table]) -> None:
 
 
 def _refuse_unusable_aliases(aliases: Sequence[str]) -> None:
-    r"""`kumo_core.pquery` reads the part of a table name after its last dot
-    and DiskGraph names tables in lowercase, so a dotted alias is renamed and
-    two aliases differing only by case collide. Both fail later with no
-    hint, so they are refused here."""
+    r"""DiskGraph names tables in lowercase, so two aliases differing only by
+    case collide and fail later with no hint; they are refused here."""
     lowered: Dict[str, str] = {}
     for alias in aliases:
-        if '.' in alias:
-            raise ValueError(
-                f"Graph alias {alias!r} contains a dot, which predictive "
-                "queries and the portable graph read as table.column; alias "
-                "the table without one, Graph({'name': table}).")
         other = lowered.setdefault(alias.lower(), alias)
         if other != alias:
             raise ValueError(

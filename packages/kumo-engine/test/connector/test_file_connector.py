@@ -286,7 +286,7 @@ def test_dot_names_metadata_stamp_and_permissions(local, tmp_path):
     dotted = root / 'users.v1.csv'
     dotted.write_text('id,name\n1,Alice\n')
     table = Table.from_source_table(connector['users.v1'], primary_key='id')
-    Graph(tables={'users': table}, edges=[]).validate()
+    Graph(tables=[table], edges=[]).validate()
     version = connector.source_backend.get_data_version(connector, 'users.v1')
     stat = dotted.stat()
     dotted.write_text('id,name\n1,Other\n')

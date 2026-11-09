@@ -140,25 +140,11 @@ def test_graph_validation_keeps_valid_edges(tables):
     assert portable_tables['events']['fkeys'][0]['dst_table'] == 'users'
 
 
-@pytest.mark.parametrize(
-    'aliases, as_sequence, message',
-    [
-        (('a.users', 'events'), False, r"alias 'a\.users' contains a dot"),
-        (('users.parquet', 'events.parquet'), True,
-         r"alias 'users\.parquet' contains a dot.*Graph\(\{'name': table\}\)"),
-        (('User', 'user'), False,
-         r"aliases 'User' and 'user' differ only by case"),
-    ],
-)
-def test_graph_aliases_that_break_downstream_names_are_refused(
-        tables, aliases, as_sequence, message):
-    renamed = [
-        replace(table, table_name=alias)
-        for alias, table in zip(aliases, tables)
-    ]
-    graph = Graph(renamed if as_sequence else dict(zip(aliases, renamed)))
+def test_graph_aliases_that_break_downstream_names_are_refused(tables):
+    graph = Graph(dict(zip(('User', 'user'), tables)))
 
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError,
+                       match=r"aliases 'User' and 'user' differ only by case"):
         graph.validate()
 
 

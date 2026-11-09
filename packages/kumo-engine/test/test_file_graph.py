@@ -71,8 +71,8 @@ def test_source_table_inference_and_graph_acquisition(extension, tmp_path,
     ingested = []
 
     def ingest(graph_config, spec):
-        assert set(spec.source_paths) == {'events'}
-        local = Path(spec.source_paths['events'])
+        assert set(spec.source_paths) == {table.table_name}
+        local = Path(spec.source_paths[table.table_name])
         assert local.is_relative_to(tmp_path / 'scratch')
         actual = pq.ParquetDataset(local).read()
         assert actual.to_pydict() == expected.to_pydict()
@@ -82,7 +82,7 @@ def test_source_table_inference_and_graph_acquisition(extension, tmp_path,
 
     monkeypatch.setattr('kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
                         ingest)
-    graph = Graph(tables={'events': table})
+    graph = Graph(tables=[table])
     snapshot = graph.snapshot()
     assert len(ingested) == 1
     assert snapshot.graph_config == ingested[0]
