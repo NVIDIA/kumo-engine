@@ -11,7 +11,10 @@ from kumoapi.typing import Dtype, Stype
 from kumo.connector.csv_connector import CSVConnector
 from kumo.connector.databricks_connector import DatabricksConnector
 from kumo.connector.snowflake_connector import SnowflakeConnector
-from kumo.testing import withDatabricksCredentials, withSnowflakeCredentials
+from kumo.testing import (
+    withDatabricksOauthCredentials,
+    withSnowflakeCredentials,
+)
 from service_framework.deploy_env import DATABRICKS_HOST
 
 
@@ -44,7 +47,7 @@ def test_csv_and_snowflake_connector():
                                   check_index_type=False)
 
 
-@withDatabricksCredentials
+@withDatabricksOauthCredentials
 def test_databricks_connector():
     connector = DatabricksConnector(
         'databricks',

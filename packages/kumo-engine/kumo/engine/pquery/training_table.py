@@ -236,6 +236,9 @@ class TrainingTable:
         graph through its own required ``snapshot=`` argument. With MLOps on
         (``mlops=`` or a ``kumo.mlops`` block), the table is also stored
         under the artifact root.
+
+        Temporal link targets use the same creation-time and expiry checks
+        as generated training rows.
         """
         return cls._from_rows(source_table, spec, pq=pq, snapshot=snapshot,
                               plan=plan, mlops=mlops)

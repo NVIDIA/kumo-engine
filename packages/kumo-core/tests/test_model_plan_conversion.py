@@ -59,9 +59,13 @@ def test_round_trip_defaults_internal_only_sections(case: Case) -> None:
 
 
 @pytest.mark.parametrize("case", _CASES, ids=_CASE_IDS)
+@pytest.mark.parametrize('steps',
+                         [api.MissingType.VALUE, 8001, 1_000_000, None])
 def test_round_trip_with_base_preserves_internal_only_sections(
-        case: Case) -> None:
+        case: Case, steps) -> None:
     internal = case.internal_plan()
+    limits = internal.optimization
+    limits.max_val_steps = limits.max_test_steps = steps
 
     restored = case.to_internal(case.to_public(internal), base=internal)
 

@@ -1056,6 +1056,9 @@ class OptimizationPlan(PlanMixin):
     `Kumo documentation <https://docs.kumo.ai/docs/advanced-operations
     #optimization>`_ for more information.
 
+    GPU memory retries increase evaluation step limits as batches shrink to
+    preserve the configured evaluation row budget.
+
     :ivar max_epochs: (``int``) The maximum number of epochs to train a model
         for (*default:* ``run_mode``-dependent).
         **Supported Task Types:** All
@@ -1169,17 +1172,15 @@ class OptimizationPlan(PlanMixin):
         metadata=Metadata(),
     )
 
-    max_val_steps: Union[conint(ge=1, le=8000), MissingType,
-                         None] = compat_field(
-                             default_factory=lambda: MissingType.VALUE,
-                             metadata=Metadata(),
-                         )
+    max_val_steps: Union[conint(ge=1), MissingType, None] = compat_field(
+        default_factory=lambda: MissingType.VALUE,
+        metadata=Metadata(),
+    )
 
-    max_test_steps: Union[conint(ge=1, le=8000), MissingType,
-                          None] = compat_field(
-                              default_factory=lambda: MissingType.VALUE,
-                              metadata=Metadata(),
-                          )
+    max_test_steps: Union[conint(ge=1), MissingType, None] = compat_field(
+        default_factory=lambda: MissingType.VALUE,
+        metadata=Metadata(),
+    )
 
     loss: Union[compat_conlist(
         Union[

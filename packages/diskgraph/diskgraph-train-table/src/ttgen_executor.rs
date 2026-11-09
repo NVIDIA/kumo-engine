@@ -415,6 +415,8 @@ pub struct CustomTtSource {
     pub allow_negative_weight: bool,
     /// Trusted generated-table footers for integer timestamp unit validation.
     pub timestamp_reference: Option<crate::custom_tt_row_errors::TimestampReference>,
+    /// Label-window end offset and unit for target creation validity.
+    pub target_window_end: Option<(i64, TimeUnit)>,
 }
 
 /// Determine which `SplitMode` applies to `plan` based on its split family.

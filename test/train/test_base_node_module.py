@@ -165,3 +165,41 @@ def test_validation_keeps_step_outputs_unless_fitting_unexplained(
         module.on_validation_epoch_end()
     assert bool(module.outputs) == bool(kept)
     assert ('pred' in module.outputs) == bool(kept)
+
+
+@pytest.mark.parametrize('name, fn', [
+    ('validation', TrainerFn.VALIDATING),
+    ('test', TrainerFn.TESTING),
+])
+def test_evaluation_retry_discards_outputs_from_failed_attempt(
+        monkeypatch, name, fn):
+    monkeypatch.setattr(BaseNodeLightningModule, '__abstractmethods__', set())
+    module = BaseNodeLightningModule(TaskType.BINARY_CLASSIFICATION)
+    module.metric_store.init_metrics([], module)
+    module._trainer = SimpleNamespace(
+        ckpt_path=None, sanity_checking=False, num_val_batches=[2],
+        num_test_batches=[2], state=SimpleNamespace(fn=fn))
+    first = dict(pkey=torch.tensor([10]), logits=torch.tensor([[-1.0]]),
+                 target=torch.tensor([[0.0]]))
+    second = dict(pkey=torch.tensor([11]), logits=torch.tensor([[1.0]]),
+                  target=torch.tensor([[1.0]]))
+    module.evaluation_step = Mock(side_effect=[
+        first, torch.cuda.OutOfMemoryError('simulated'), first, second,
+    ])
+    start = getattr(module, f'on_{name}_start')
+    step = getattr(module, f'{name}_step')
+    end = getattr(module, f'on_{name}_epoch_end')
+
+    start()
+    step(SimpleNamespace(), 0)
+    with pytest.raises(torch.cuda.OutOfMemoryError, match='simulated'):
+        step(SimpleNamespace(), 1)
+
+    start()
+    step(SimpleNamespace(), 0)
+    step(SimpleNamespace(), 1)
+    end()
+
+    assert module.outputs['pkey'].tolist() == [10, 11]
+    assert module.outputs['target'].flatten().tolist() == [0.0, 1.0]
+    assert module.outputs['pred'].tolist() == [False, True]
