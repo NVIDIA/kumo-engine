@@ -790,6 +790,82 @@ def test_inexact_string_foreign_keys_are_refused_with_counts(
     assert message.endswith('before snapshot.')
 
 
+def test_converted_key_collisions_span_parts_of_different_types(
+        tmp_path, monkeypatch):
+    from kumo.engine import configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(pa.table({'user_id': pa.array([7, 10], pa.int64())}),
+                   root / 'users.parquet')
+    (root / 'orders').mkdir()
+    pq.write_table(
+        pa.table({
+            'order_id': [1, 2],
+            'user_id': pa.array(['007', 'x'], pa.string())
+        }), root / 'orders' / 'part-0.parquet')
+    pq.write_table(
+        pa.table({
+            'order_id': [3, 4],
+            'user_id': pa.array([7, 10], pa.int64())
+        }), root / 'orders' / 'part-1.parquet')
+    graph = _keyed_graph(root, 'orders', Dtype.string)
+    monkeypatch.setattr(
+        'kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
+        lambda *args, **kwargs: pytest.fail('ingest started'))
+
+    with pytest.warns(UserWarning, match='Foreign key orders.user_id'):
+        with pytest.raises(ValueError) as error:
+            graph.snapshot()
+
+    assert str(error.value) == (
+        'Foreign key orders.user_id is stored as string and links to '
+        'users.user_id, which is int64: 1 of its non-null values cannot be '
+        "converted to int64 (for example 'x'), so those rows would lose "
+        'their link; 2 distinct values convert to the same integer (for '
+        "example '007' and '7'). Store both keys with the same type, or fix "
+        'the values, before snapshot.')
+
+
+def test_blank_values_of_a_converted_primary_key_are_refused(
+        tmp_path, monkeypatch):
+    from kumoapi.graph import Edge
+
+    from kumo.engine import FileConnector, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(pa.table({'user_id': pa.array([7, 10], pa.int64())}),
+                   root / 'users.parquet')
+    pq.write_table(pa.table({'user_id': ['7', '', ' ', '10']}),
+                   root / 'profiles.parquet')
+    connector = FileConnector(root_dir=str(root))
+    graph = Graph(
+        {
+            'users':
+            Table.from_source_table(connector['users'], primary_key='user_id'),
+            'profiles':
+            Table.from_source_table(connector['profiles'],
+                                    primary_key='user_id'),
+        }, [Edge('profiles', 'user_id', 'users')])
+    monkeypatch.setattr(
+        'kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
+        lambda *args, **kwargs: pytest.fail('ingest started'))
+
+    with pytest.warns(UserWarning, match='Foreign key profiles.user_id'):
+        with pytest.raises(ValueError) as error:
+            graph.snapshot()
+
+    assert str(error.value) == (
+        'Foreign key profiles.user_id is stored as string and links to '
+        'users.user_id, which is int64: 2 of its non-null values cannot be '
+        "converted to int64 (for example ''), so those rows, which it keys, "
+        'would be dropped. Store both keys with the same type, or fix the '
+        'values, before snapshot.')
+
+
 @pytest.mark.parametrize('layout', ['parquet', 'csv', 'dictionary', 'binary'])
 @pytest.mark.parametrize('values, source, invalid, example, colliding', [
     (['7', '007', ' 7', '7.0', '+7', None], Dtype.int64, 4, '007', 5),

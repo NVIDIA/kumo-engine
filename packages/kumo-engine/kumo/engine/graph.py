@@ -287,16 +287,18 @@ def _stored_as_text(stored: Any) -> bool:
 
 
 def _integer_text_failures(stored_types: Mapping[Path, Any], name: str,
-                           low: int, high: int,
-                           canonical: bool) -> tuple[int, Any, int, list]:
-    r"""Counts, over the parts of a staged column stored as text or binary,
-    the non-null values DiskGraph cannot read as an integer within `low`
-    and `high` and, with `canonical`, the values that are not the text
-    DiskGraph writes for that integer, with a first example; and the
-    distinct readable values that convert to the same integer, with a
-    first pair. Without `canonical` an empty or blank value counts as
-    missing, as DiskGraph reads it. Reads one batch at a time and keeps
-    only the distinct readable values, compacted as they accumulate.
+                           low: int, high: int, canonical: bool,
+                           blank_is_missing: bool) -> tuple[int, Any, int, list]:
+    r"""Counts, over the parts of a staged column stored as text, binary,
+    integers or a scale-zero decimal (the last two read as the text
+    DiskGraph writes for them), the non-null values DiskGraph cannot read
+    as an integer within `low` and `high` and, with `canonical`, the values
+    that are not the text DiskGraph writes for that integer, with a first
+    example; and the distinct readable values that convert to the same
+    integer, with a first pair. With `blank_is_missing` an empty or blank
+    value counts as missing, as DiskGraph reads a foreign key. Reads one
+    batch at a time and keeps only the distinct readable values,
+    compacted as they accumulate.
     """
     import pyarrow as pa
     import pyarrow.compute as pc
@@ -306,7 +308,8 @@ def _integer_text_failures(stored_types: Mapping[Path, Any], name: str,
     invalid, example = 0, None
     distinct, pending, pending_rows = pa.array([], text), [], 0
     for file, stored in stored_types.items():
-        if not _stored_as_text(stored):
+        if not (_stored_as_text(stored) or pa.types.is_integer(stored)
+                or (pa.types.is_decimal(stored) and stored.scale == 0)):
             continue
         for batch in pq.ParquetFile(file).iter_batches(columns=[name]):
             values = batch.column(0)
@@ -324,7 +327,7 @@ def _integer_text_failures(stored_types: Mapping[Path, Any], name: str,
                         invalid += 1
                         example = value if example is None else example
                 values = pa.array(decoded, text)
-            if not canonical:
+            if blank_is_missing:
                 values = pc.filter(
                     values,
                     pc.not_equal(pc.utf8_trim(values, characters=_WHITESPACE),
@@ -361,7 +364,8 @@ def _integer_text_failures(stored_types: Mapping[Path, Any], name: str,
 
 def _refuse_inexact_key_conversions(alias: str,
                                     conversions: Mapping[str, Any],
-                                    paths: Sequence[str]) -> None:
+                                    paths: Sequence[str],
+                                    pkey: Optional[str]) -> None:
     r"""Raises when a string foreign key that `portable_graph_config`
     declared with its destination's integer dtype holds a value DiskGraph
     cannot convert exactly, or two distinct values that convert to the
@@ -371,10 +375,13 @@ def _refuse_inexact_key_conversions(alias: str,
     as they are. DiskGraph reads an optional sign, ASCII digits and a zero
     fraction inside Unicode whitespace, within the dtype's range (`byte`
     is unsigned), and anything else, including a binary value that is not
-    UTF-8, as null, so such a row would lose its link; an empty or blank
-    value counts as missing, as DiskGraph reads it. A part staged under a
-    type that is neither text nor binary is left to DiskGraph's own
-    conversion.
+    UTF-8, as null, so such a row loses its link, or is dropped when the
+    key is also the table's primary key; an empty or blank value counts as
+    missing, as DiskGraph reads a foreign key, unless the key is the
+    primary key. A part staged as integers or a scale-zero decimal is read
+    as the text DiskGraph writes for it, so its values join the collision
+    check; a part under any other type that is not text or binary is left
+    to DiskGraph's own conversion.
     """
     import pyarrow as pa
 
@@ -382,6 +389,7 @@ def _refuse_inexact_key_conversions(alias: str,
         return
     files = _staged_parquet_parts(paths)
     for name, conversion in conversions.items():
+        primary = name == pkey
         stored_types = _stored_types(files, name)
         if conversion.bounds is None:
             for stored in stored_types.values():
@@ -398,7 +406,8 @@ def _refuse_inexact_key_conversions(alias: str,
             continue
         low, high = conversion.bounds
         invalid, example, colliding, pair = _integer_text_failures(
-            stored_types, name, low, high, canonical=False)
+            stored_types, name, low, high, canonical=False,
+            blank_is_missing=not primary)
         if not invalid and not colliding:
             continue
         problems = []
@@ -406,7 +415,8 @@ def _refuse_inexact_key_conversions(alias: str,
             problems.append(
                 f"{invalid} of its non-null values cannot be converted to "
                 f"{conversion.target.value} (for example {example!r}), so "
-                "those rows would lose their link")
+                + ("those rows, which it keys, would be dropped"
+                   if primary else "those rows would lose their link"))
         if colliding:
             problems.append(
                 f"{colliding} distinct values convert to the same integer "
@@ -463,7 +473,8 @@ def _refuse_inexact_link_targets(tables: Mapping[str, Any],
                     "the same type before snapshot.")
         low, high = _INTEGER_RANGES[conversion.dtype]
         invalid, example, colliding, pair = _integer_text_failures(
-            stored_types, key, low, high, canonical=True)
+            stored_types, key, low, high, canonical=True,
+            blank_is_missing=False)
         if not invalid and not colliding:
             continue
         problems = []
@@ -1201,7 +1212,8 @@ class Graph:
                 staged[alias] = paths or [source_paths[alias]]
                 _refuse_inexact_key_conversions(alias,
                                                 conversions.get(alias, {}),
-                                                staged[alias])
+                                                staged[alias],
+                                                table.definition.pkey)
             _refuse_inexact_link_targets(self._named_tables, self.edges,
                                          conversions, staged)
 
