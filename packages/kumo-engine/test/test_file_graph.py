@@ -626,10 +626,11 @@ def _float_key_graph(root, connector_cls, users, events):
         }, [Edge('events', 'user_id', 'users')])
 
 
-def test_float_key_columns_ingest_as_integer_keys(tmp_path):
+def test_float_key_columns_ingest_as_integer_keys(tmp_path, monkeypatch):
     from diskgraph import SamplerEngine
 
     from kumo.engine import FileConnector, configure
+    from kumo.engine import graph as graph_module
 
     configure(scratch_dir=str(tmp_path / 'scratch'))
     graph = _float_key_graph(
@@ -690,6 +691,12 @@ def test_float_key_columns_ingest_as_integer_keys(tmp_path):
     fetched = pa.Table.from_batches(batches).sort_by('event_id')
     assert fetched.column('user_id').type == pa.int64()
     assert fetched.column('user_id').to_pylist() == [1, 2, None, 3]
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError('a cached snapshot must not scan its keys')
+
+    monkeypatch.setattr(graph_module, '_count_inexact_keys', unexpected)
+    assert graph.snapshot().id == snapshot.id
 
 
 @pytest.mark.parametrize('extension, table_name, key, values', [

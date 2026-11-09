@@ -836,14 +836,20 @@ class Graph:
         stages them as decimals; a warehouse connector that stages a scaled
         decimal through a double (kumo-databricks does for more than 18
         digits) hides any fraction below the double's precision, and such a
-        key converts by its double value.
+        key converts by its double value. Reads nothing for a table without
+        a float key, and runs only for a snapshot about to be built: one
+        that already exists for this graph and data version passed it when
+        it was built.
         """
+        keys = self._float_keys.get(alias)
+        if not keys:
+            return
         files = [
             file for path in paths for file in
             (sorted(Path(path).rglob('*.parquet')) if Path(path).is_dir() else
              [Path(path)])
         ]
-        for name, (dtype, target) in self._float_keys.get(alias, {}).items():
+        for name, (dtype, target) in keys.items():
             count = _count_inexact_keys(files, name, target)
             if count:
                 raise ValueError(
@@ -1126,6 +1132,7 @@ class Graph:
 
         table_data_versions: Dict[str, str] = {}
         source_paths: Dict[str, str] = {}
+        staged: Dict[str, Sequence[str]] = {}
         source_tables: Dict[str, SourceTableEntry] = {}
 
         started = start() if timed else None
@@ -1168,9 +1175,9 @@ class Graph:
                     record_sources=record_sources)
 
                 paths = prepared.source.get('paths') or []
-                self._refuse_fractional_keys(
-                    alias, paths
-                    or [str(prepared.source.get('path') or dest_dir)])
+                staged[alias] = paths or [
+                    str(prepared.source.get('path') or dest_dir)
+                ]
                 if paths:
                     parents = {str(Path(path).parent) for path in paths}
                     if len(parents) != 1:
@@ -1198,6 +1205,8 @@ class Graph:
             if existing is not None:
                 result = existing
             else:
+                for alias, paths in staged.items():
+                    self._refuse_fractional_keys(alias, paths)
                 output_dir.mkdir(parents=True, exist_ok=True)
                 # The Rust ingest binary only writes the index's
                 # `_MANIFEST.json` (read later by, e.g., kumo_core.diskgraph.
