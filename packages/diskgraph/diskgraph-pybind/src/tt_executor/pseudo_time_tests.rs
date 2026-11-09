@@ -416,6 +416,7 @@ fn custom_weighted_artifacts(
             "abort",
             false,
             None,
+            None,
         )?;
         let staging: String = out
             .bind(py)

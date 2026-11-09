@@ -125,6 +125,11 @@ def test_bundles_upload_provenance_last(tmp_path, connector):
     assert list(connector.sink_backend.store.objects) == [
         '@stage/models/m/z.bin', '@stage/models/m/_provenance.json'
     ]
+    restored = tmp_path / 'restored'
+    connector.sink_backend.fetch_model(
+        connector, str(restored), path='@stage/models/m')
+    for name in ('_provenance.json', 'z.bin'):
+        assert (restored / name).read_bytes() == (bundle / name).read_bytes()
 
 
 def test_a_trainer_publishes_and_loads_through_a_filesystem_only_sink(
@@ -201,6 +206,7 @@ def test_an_occupied_directory_is_refused_by_its_full_location(
     pd.DataFrame({'x': range(3)}).to_parquet(part)
     sink.preflight_write_files(connector, '@stage/out/')
     sink.write_files(connector, '@stage/out/', [str(part)])
+    # Default/append retain ownership checks; explicit overwrite may replace data.
     for mode in (None, WriteMode.APPEND):
         with pytest.raises(ArtifactDestinationConflict,
                            match="'@stage/out/' already"):
@@ -222,3 +228,33 @@ def test_a_file_store_export_keeps_its_sidecars(tmp_path, connector):
         sidecars={'_provenance.json': b'{}'})
     assert connector.sink_backend.store.objects[
         '@stage/tt/_provenance.json'] == b'{}'
+
+
+@pytest.mark.parametrize('kind,root', [
+    (kumo.S3Connector, 's3://bucket/root'),
+    (kumo.GCSConnector, 'gs://bucket/root'),
+    (kumo.ADLSConnector,
+     'abfss://artifacts@companylake.dfs.core.windows.net/root'),
+])
+@pytest.mark.parametrize('full_uri', [False, True])
+def test_object_store_model_directories_roundtrip_without_cloud_clients(
+        monkeypatch, tmp_path, kind, root, full_uri):
+    from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
+
+    storage = tmp_path / 'storage'
+    storage.mkdir()
+    filesystem = SubTreeFileSystem(str(storage), LocalFileSystem())
+    connector = kind(root_dir=root)
+    monkeypatch.setattr(connector.sink_backend, '_filesystem',
+                        lambda *args: filesystem)
+    bundle = tmp_path / 'bundle'
+    (bundle / 'nested').mkdir(parents=True)
+    (bundle / 'nested' / 'weights.bin').write_bytes(b'weights')
+    path = f'{root}/models/m' if full_uri else 'models/m'
+    published = connector.sink_backend.publish_model(
+        connector, str(bundle), path=path)
+    assert published.uri == f'{root}/models/m'
+    restored = tmp_path / 'restored'
+    connector.sink_backend.fetch_model(
+        connector, str(restored), path=published.uri)
+    assert (restored / 'nested' / 'weights.bin').read_bytes() == b'weights'

@@ -18,13 +18,12 @@ import json
 import logging
 from typing import Optional
 
-from ._c import (  # type: ignore[import]
-    DiskgraphConfigError,
-    DiskgraphDataError,
-    build_prediction_table_artifacts_for_existing_table as _native_build_predict,
-    build_split_spec_json as _native_build_split_spec_json,
-    build_train_table_artifacts_for_existing_table as _native_build,
-)
+from ._c import DiskgraphConfigError, DiskgraphDataError
+from ._c import \
+    build_prediction_table_artifacts_for_existing_table as \
+    _native_build_predict  # type: ignore[import]
+from ._c import build_split_spec_json as _native_build_split_spec_json
+from ._c import build_train_table_artifacts_for_existing_table as _native_build
 from .compiler import index_timestamp_unit
 from .split_contract import SplitSpec
 
@@ -164,6 +163,7 @@ def build_train_table_artifacts_for_existing_table(
     ingest_on_error: str = 'skip_row_on_error',
     allow_negative_weight: bool = False,
     timestamp_reference: Optional[dict] = None,
+    target_window_end: Optional[tuple[int, str]] = None,
 ) -> dict:
     """Rebuild TT artifacts (manifest + sidecars) for an existing
     training-table parquet.
@@ -204,6 +204,8 @@ def build_train_table_artifacts_for_existing_table(
             timestamp bucket indexes, matching the native TT-gen path.
         allow_new_target_entities: Preserve targets created after the anchor;
             downstream LP resolution still validates every target PK.
+        target_window_end: Label-window end offset and unit. Target creation
+            must be no later than this bound, matching generated labels.
         fact_pseudo_time: Static LP fact table
             (``{table, entity_col, target_col}``).
         ingest_on_error: What a source row that fails validation does:
@@ -268,6 +270,8 @@ def build_train_table_artifacts_for_existing_table(
         task_type=task_type,
         lp_rhs_is_temporal=bool(lp_rhs_is_temporal),
         allow_new_target_entities=bool(allow_new_target_entities),
+        target_window_end_json=(json.dumps(target_window_end)
+                                if target_window_end is not None else None),
         fact_pseudo_time_json=(json.dumps(fact_pseudo_time)
                                if fact_pseudo_time is not None else None),
         ingest_on_error=ingest_on_error,

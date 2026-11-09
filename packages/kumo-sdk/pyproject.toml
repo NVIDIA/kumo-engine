@@ -84,6 +84,10 @@ filterwarnings=[
     # X509.get_subject during the TLS handshake. Cosmetic; remove once the
     # connector ships patched vendored code.
     "ignore:X509.get_subject is deprecated.*:DeprecationWarning",
+    # snowflake-connector caps pyarrow<24 on Python 3.14 for a free-threaded
+    # crash; Kumo runs GIL 3.14 with newer pyarrow (see the root pyproject).
+    # Remove with the root override before adopting free-threaded Python.
+    "ignore:You have an incompatible version of 'pyarrow' installed:UserWarning:snowflake.connector.options",
 ]
 markers = [
     "integration: integration tests",

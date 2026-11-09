@@ -377,3 +377,34 @@ def test_numerical_holdout_counts_are_skipped_without_target_bins():
     for task_type in (TaskType.REGRESSION, TaskType.FORECASTING):
         trainer = SimpleNamespace(task=SimpleNamespace(task_type=task_type))
         assert Trainer._test_counts(trainer, {}, None, None, ()) is None
+
+
+@pytest.mark.parametrize('task_type', [TaskType.REGRESSION,
+                                       TaskType.FORECASTING])
+def test_numerical_holdout_counts_read_chunked_frames(task_type):
+    from types import SimpleNamespace
+
+    import pandas as pd
+    from kumo_core.train.output import EvalFrames
+    from kumo_core.train.trainer import Trainer
+
+    rng = np.random.default_rng(0)
+    frame = pd.DataFrame({'y': rng.normal(size=1_200),
+                          'y_PRED': rng.normal(size=1_200)})
+    chunked = EvalFrames()
+    for start in range(0, len(frame), 500):
+        chunked.append(frame.iloc[start:start + 500])
+    trainer = SimpleNamespace(
+        task=SimpleNamespace(task_type=task_type),
+        encoders=SimpleNamespace(target=SimpleNamespace(col_name='y')))
+    outputs = {'target': np.zeros(300)}
+    edges = (-1.0, 0.0, 1.0)
+
+    def counts(frames):
+        return Trainer._test_counts(trainer, outputs, frames, None,
+                                    edges).arrays
+
+    whole, parts = counts(EvalFrames.of(frame)), counts(chunked)
+    assert whole.keys() == parts.keys()
+    for name in whole:
+        np.testing.assert_array_equal(whole[name], parts[name])

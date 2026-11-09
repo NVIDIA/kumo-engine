@@ -79,8 +79,10 @@ def test_a_connector_root_outside_its_root_dir_fails_when_built():
     data = kumo.S3Connector(root_dir='s3://bucket/data')
     assert kumo.MLOps(artifact_root=(data, 's3://bucket/data/kumo'),
                       store=False).root
-    with pytest.raises(ValueError, match=r"'s3://bucket/kumo' is outside "
-                       r"this S3Connector's root_dir s3://bucket/data"):
+    with pytest.raises(
+            ValueError, match=r"Invalid artifact_root "
+            r"'s3://bucket/kumo' for S3Connector "
+            r"\(root_dir s3://bucket/data\):"):
         kumo.MLOps(artifact_root=(data, 's3://bucket/kumo'), store=False)
 
 
@@ -126,3 +128,16 @@ def test_a_call_argument_beats_the_nearest_block(tmp_path):
 def test_stubs_stand_in_for_parents_without_a_manifest():
     assert stub('snapshot', 'abc@0123') == SnapshotManifest(id='abc@0123',
                                                             reconstructed=True)
+
+
+@pytest.mark.parametrize('kind,root', [
+    (kumo.S3Connector, 's3://bucket/data'),
+    (kumo.GCSConnector, 'gs://bucket/data'),
+])
+def test_empty_object_store_root_reports_invalid_path_without_claiming_escape(
+        kind, root):
+    with pytest.raises(ValueError, match='Invalid artifact_root') as caught:
+        kumo.MLOps((kind(root_dir=root), ''), store=False)
+    assert 'outside' not in str(caught.value)
+    assert isinstance(caught.value.__cause__, ValueError)
+    assert str(caught.value.__cause__) in str(caught.value)

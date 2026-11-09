@@ -4,6 +4,7 @@
 r"""How `MlflowTracking` reaches its server."""
 
 import os
+import sys
 import threading
 from types import SimpleNamespace
 
@@ -44,6 +45,67 @@ def test_no_target_reads_mlflows_own_uris_once(tracking_uri):
         'http://mlflow:5000/#/experiments/1/runs/r')
     assert resolve(ARN).platform == 'sagemaker'
     assert resolve(server) is server
+
+
+def _open_uc_storage(kind):
+    from mlflow.protos.databricks_uc_registry_messages_pb2 import (
+        TemporaryCredentials,
+    )
+    from mlflow.utils._unity_catalog_utils import (
+        get_artifact_repo_from_storage_info,
+    )
+
+    token = TemporaryCredentials()
+    getattr(token, kind).SetInParent()
+    get_artifact_repo_from_storage_info('s3://bucket/model', token,
+                                        lambda: token)
+
+
+@pytest.mark.parametrize('module,kind,extra', [
+    ('boto3', 'aws_temp_credentials', 's3'),
+    ('azure.core.credentials', 'azure_user_delegation_sas', 'adls'),
+    ('google.cloud.storage', 'gcp_oauth_token', 'gcs')])
+def test_unity_catalog_names_the_extra_its_storage_needs(
+        monkeypatch, module, kind, extra):
+    monkeypatch.setitem(sys.modules, module, None)
+    with pytest.raises(ImportError, match=(
+            rf"MLflow needs '{module}[\w.]*' to reach this model's files in "
+            rf"Unity Catalog, and it is not installed. Install it with: pip "
+            rf"install 'kumo-engine\[{extra}\]'")):
+        with target_module.Target('databricks', 'databricks-uc').scope():
+            _open_uc_storage(kind)
+
+
+@pytest.mark.parametrize('module,extra', [
+    ('boto3', 's3'), ('azure', 'adls'), ('google', 'gcs')])
+def test_an_unwrapped_missing_client_names_its_extra_too(module, extra):
+    with pytest.raises(ImportError,
+                       match=rf"pip install 'kumo-engine\[{extra}\]'"):
+        with target_module.Target('databricks', 'databricks-uc').scope():
+            raise ModuleNotFoundError(name=module)
+
+
+def test_other_missing_modules_pass_through(monkeypatch):
+    monkeypatch.setitem(sys.modules, 'boto3', None)
+    with pytest.raises(mlflow.exceptions.MlflowException):
+        with target_module.Target('databricks', 'databricks').scope():
+            _open_uc_storage('aws_temp_credentials')
+    with pytest.raises(RuntimeError):
+        with target_module.Target('databricks', 'databricks-uc').scope():
+            raise RuntimeError() from ModuleNotFoundError(name='snowflake')
+    for registry, module in (('databricks-uc', 'snowflake'),
+                             ('databricks-uc', 'google.protobuf'),
+                             ('databricks', 'boto3')):
+        with pytest.raises(ModuleNotFoundError) as raised:
+            with target_module.Target('databricks', registry).scope():
+                raise ModuleNotFoundError(name=module)
+        assert type(raised.value) is ModuleNotFoundError
+    nested = RuntimeError()
+    nested.__cause__ = ModuleNotFoundError(name='boto3')
+    for cause in (None, nested):
+        with pytest.raises(RuntimeError):
+            with target_module.Target('databricks', 'databricks-uc').scope():
+                raise RuntimeError() from cause
 
 
 def test_ambient_identities_set_no_credentials(monkeypatch, tracking_uri):

@@ -137,6 +137,7 @@ fn peak_while_skipping(index: &Path, root: &Path, rows: usize) -> (usize, usize)
                 index,
                 &out,
                 Some(CustomTtSource {
+                    target_window_end: None,
                     parquet_path: source.clone(),
                     input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
                     on_error: IngestOnError::SkipRowOnError,

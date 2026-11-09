@@ -315,3 +315,22 @@ def test_versions_say_whether_they_name_one_object_or_a_listing(
                                    'dfs.core.windows.net'))
     assert version_kind(source.data_version('')) == 'listing'
     assert version_kind(source.data_version('a.parquet')) == 'exact'
+
+
+@pytest.mark.parametrize('prefix', ['', 'nested/'])
+def test_nested_exact_versions_use_the_readers_resolved_coordinate_space(
+        listing_service, prefix):
+    from kumo_core.sources.identity import version_kind
+
+    service, _ = listing_service
+    service.files['curated/orders/nested/dir/a.parquet'] = b'parquet'
+    service.directories.update(
+        {'curated/orders/nested', 'curated/orders/nested/dir'})
+    filesystem = ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net')
+    source = ADLSSourceReader(PyFileSystem(FSSpecHandler(filesystem)),
+                              root=AUTHORITY + '/orders/' + prefix,
+                              object_identity=filesystem.object_identity)
+    table = 'dir/a.parquet' if prefix else 'nested/dir/a.parquet'
+    assert version_kind(source.data_version(table)) == 'exact'
+    assert version_kind(source.data_version(table.rsplit('/',
+                                                         1)[0])) == 'listing'

@@ -39,7 +39,8 @@ error while other tasks remain available. On ARM64 Linux,
 use `pip install "kumo-engine[cpu]"` for CPU retrieval with a compatible backend
 wheel for your platform and Python version. For CUDA retrieval, install a
 compatible GPU Faiss build directly, building from source on ARM64 Linux if
-needed. The CPU extra retains the required platform backend on Linux x86_64
+needed; see [GPU Faiss on DGX Spark](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/dgx-spark.md#optional-build-gpu-faiss-for-cuda-link-prediction).
+The CPU extra retains the required platform backend on Linux x86_64
 and macOS; it does not configure PyTorch or select the execution device.
 Choose one backend per environment.
 
@@ -62,7 +63,9 @@ pip install "kumo-engine[text]"
 
 Extras combine, for example `pip install "kumo-engine[s3,text]"`.
 
-The wheels on PyPI are for Linux x86_64 and for macOS on Apple silicon. To build and install on Linux ARM64 (DGX Spark), follow the [DGX Spark guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/dgx-spark.md).
+Prebuilt wheels are available for Linux x86_64 and ARM64, and macOS on Apple
+silicon. For Linux ARM64 installation and optional GPU
+Faiss setup, follow the [DGX Spark guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/dgx-spark.md).
 
 ### Optional: faster training on NVIDIA GPUs
 
@@ -95,7 +98,8 @@ snapshot = graph.snapshot()
 pquery = PredictiveQuery(
     graph, "PREDICT COUNT(orders.*, 0, 30, days) > 0 FOR EACH users.user_id")
 trainer = Trainer(pquery.suggest_model_plan(snapshot))
-trainer.fit(pquery.generate_training_table(snapshot), snapshot=snapshot)
+training_result = trainer.fit(pquery.generate_training_table(snapshot),
+                              snapshot=snapshot)
 
 result = trainer.predict(pquery.generate_prediction_table(snapshot),
                          snapshot=snapshot, binary_classification_threshold=0.5)
@@ -246,6 +250,24 @@ The specification is a snapshot; updating Python dictionaries does not update ex
 
 AFM initializes once attached; temporary host detachment preserves the view until the host calls its disposer.
 Disposed views must be rendered again.
+
+## Training explanations
+
+`training_result.explanations` reads existing training gradient scores, column
+cohorts, and sampled graphs. For example, after checking availability:
+
+```python
+explanations = training_result.explanations
+if explanations.availability["gradient"].available:
+    print(explanations.gradient_scores().to_pandas())
+    figure, axis = explanations.plot_gradient(top_k=20)
+    figure.savefig("training-importance.png", bbox_inches="tight")
+```
+
+Retain the training run separately from its published model bundle. See the
+[training explanation guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/explainability.md)
+for reopening a run, choosing cohort classes, loading sampled graphs, and
+interpreting availability and scores.
 
 ## Documentation
 

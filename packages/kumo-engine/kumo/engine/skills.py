@@ -413,8 +413,8 @@ def install_skills(
     if agent == 'genie' and scope != 'user':
         raise ValueError('genie installs to your workspace skills folder and '
                          f'takes no scope (got scope={scope!r}).')
-    if agent == 'genie':
-        _require_databricks_sdk()
+    if agent == 'genie':  # before building, so a missing SDK fails fast
+        _import_provider('databricks.sdk', 'databricks')
     with skill_package(host) as pkg:
         if agent == 'genie':
             return [_install_genie(pkg, client)]
@@ -446,16 +446,10 @@ def _warn_coco_shadowed() -> None:
             "scope='project' or scope='extension' instead.", stacklevel=3)
 
 
-def _require_databricks_sdk() -> None:
-    r"""Raises an error naming the extra a Genie install needs, if the
-    Databricks SDK is missing."""
-    try:
-        import databricks.sdk  # noqa: F401
-    except ImportError as e:
-        raise ModuleNotFoundError(
-            'Installing for genie needs the Databricks SDK, which the '
-            "kumo-engine[databricks] extra brings: pip install "
-            "'kumo-engine[databricks]'", name='databricks') from e
+def _import_provider(module: str, extra: str) -> Any:
+    # Keep standalone local installs independent of kumo.engine at import time.
+    from kumo.engine.connector._extras import import_provider
+    return import_provider(module, extra)
 
 
 def _install_genie(pkg: Path, client: Any = None) -> str:
@@ -472,8 +466,10 @@ def _install_genie(pkg: Path, client: Any = None) -> str:
     build. If every concurrent install succeeds, the folder holds exactly one
     complete build, the last one's.
     """
-    from databricks.sdk import WorkspaceClient
-    from databricks.sdk.service.workspace import ImportFormat, ObjectType
+    WorkspaceClient = _import_provider('databricks.sdk',
+                                       'databricks').WorkspaceClient
+    workspace = _import_provider('databricks.sdk.service.workspace',
+                                 'databricks')
 
     w = client or WorkspaceClient()
     target = (f'{GENIE_SKILLS.format(user=w.current_user.me().user_name)}'
@@ -486,16 +482,17 @@ def _install_genie(pkg: Path, client: Any = None) -> str:
     for path, p in remote.items():
         w.workspace.mkdirs(path.rsplit('/', 1)[0])
         w.workspace.upload(path, io.BytesIO(p.read_bytes()),
-                           format=ImportFormat.AUTO, overwrite=True)
+                           format=workspace.ImportFormat.AUTO, overwrite=True)
     bad = _genie_unequal(w, remote)
     if bad:
         raise RuntimeError(f'{len(bad)} file(s) did not read back intact, '
                            f'e.g. {bad[0]}')
     # Take the whole inventory before deleting anything.
-    stale = _genie_walk(w, target, remote, ObjectType.DIRECTORY)[1]
+    stale = _genie_walk(w, target, remote, workspace.ObjectType.DIRECTORY)[1]
     for path in stale:
         w.workspace.delete(path, recursive=True)
-    found, extra = _genie_walk(w, target, remote, ObjectType.DIRECTORY)
+    found, extra = _genie_walk(w, target, remote,
+                               workspace.ObjectType.DIRECTORY)
     changed = sorted(set(remote) - found) + extra or _genie_unequal(w, remote)
     if changed:
         raise RuntimeError(f'Another install changed {target} while this one '
@@ -507,11 +504,12 @@ def _install_genie(pkg: Path, client: Any = None) -> str:
 
 def _genie_build(w: Any, target: str) -> Optional[str]:
     r"""The build of the Genie install at ``target``, if there is one."""
-    from databricks.sdk.errors import NotFound
-    from databricks.sdk.service.workspace import ExportFormat
+    NotFound = _import_provider('databricks.sdk.errors', 'databricks').NotFound
+    workspace = _import_provider('databricks.sdk.service.workspace',
+                                 'databricks')
     try:
         md = w.workspace.download(f'{target}/SKILL.md',
-                                  format=ExportFormat.AUTO).read()
+                                  format=workspace.ExportFormat.AUTO).read()
     except NotFound:
         return None
     return build_of(md.decode('utf-8', 'replace'))
@@ -521,10 +519,11 @@ def _genie_unequal(w: Any, remote: dict[str, Path]) -> list[str]:
     r"""The files of ``remote`` whose workspace copy differs from the local
     one.
     """
-    from databricks.sdk.service.workspace import ExportFormat
+    workspace = _import_provider('databricks.sdk.service.workspace',
+                                 'databricks')
     return [
         path for path, p in remote.items() if w.workspace.download(
-            path, format=ExportFormat.AUTO).read() != p.read_bytes()
+            path, format=workspace.ExportFormat.AUTO).read() != p.read_bytes()
     ]
 
 
@@ -553,8 +552,8 @@ def _genie_walk(w: Any, target: str, remote: dict[str, Path],
 
 
 def _active_session() -> Any:
-    from snowflake.snowpark.context import get_active_session
-    return get_active_session()
+    context = _import_provider('snowflake.snowpark.context', 'snowflake')
+    return context.get_active_session()
 
 
 def _put(session: Any, pkg: Path, root: str) -> None:
@@ -752,7 +751,7 @@ def _connect(connection: str) -> Any:
     r"""A Snowpark session for a ``connections.toml`` entry, as the ``snow``
     CLI uses.
     """
-    from snowflake.snowpark import Session
+    Session = _import_provider('snowflake.snowpark', 'snowflake').Session
     return Session.builder.config('connection_name', connection).create()
 
 
@@ -836,10 +835,10 @@ def main(argv: Optional[list[str]] = None) -> None:
     client = None
     if args.profile:
         try:
-            _require_databricks_sdk()
+            WorkspaceClient = _import_provider('databricks.sdk',
+                                               'databricks').WorkspaceClient
         except ImportError as e:
             ap.exit(1, f'{ap.prog}: error: {e}\n')
-        from databricks.sdk import WorkspaceClient
         client = WorkspaceClient(profile=args.profile)
     try:
         session = _connect(args.connection) if account else None
