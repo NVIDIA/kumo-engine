@@ -212,7 +212,7 @@ Kumo determines the task type automatically. `pquery.get_task_type()` returns it
 | `LIST_DISTINCT` over a **non-foreign-key** categorical column | Multilabel classification |
 | `LIST_DISTINCT` over a **foreign key** column (+ `RANK TOP K`) | Link prediction / ranking |
 | `LIST_DISTINCT(...) CLASSIFY` | Separate binary classification per class |
-| Temporal regression + model-plan `forecast_length` | Forecasting |
+| Temporal regression + generation-plan `forecast_length` | Forecasting |
 
 Static vs temporal: a query without a time window is **static** (default 80/10/10 random split, no time column required). A query aggregating over a window is **temporal** (time-based splits, anchor times sampled back through history).
 
@@ -367,7 +367,7 @@ Produces a separate binary classification per article ID. Without `TOP K`, class
 
 ### Forecasting
 
-Forecasting is **not a distinct PQL keyword**. Write a temporal regression query and set `forecast_length` in the model plan; `forecast_length=3` on a 7-day window forecasts the next three 7-day windows.
+Forecasting is **not a distinct PQL keyword**. Write a temporal regression query and set `forecast_length` in the training and prediction table generation plans (`TrainingTableGenerationPlan`, `PredictionTableGenerationPlan`; Source: shipped package (`kumoapi.model_plan`)), not the model plan; `forecast_length=3` on a 7-day window forecasts the next three 7-day windows. The flow is in `kumoai-reference/references/task_journeys.md` *Forecasting*.
 
 ```text
 PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 7, days)

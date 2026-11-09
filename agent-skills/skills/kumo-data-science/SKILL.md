@@ -235,6 +235,14 @@ destination by default (`<DESTINATION>_POPULATION`) when the destination is in t
 system; otherwise, or when there is no destination, ask for a schema or path in the source's
 system. Never stage it in the source schema.
 
+**Name what a run replaces.** The notebook writes predictions with `OVERWRITE` and stages a
+population with `CREATE OR REPLACE` (a file: overwritten), on every run. Check from the catalog
+whether the destination and the population already exist, and say so on their lines —
+`<DB.SCHEMA.TABLE> (exists: replaced on every run)` — so confirming them approves the
+replacement. When the user does not want an existing table replaced, ask for another name, or
+for a destination, APPEND (`kumoai-reference/references/outputs.md`). If the check cannot run,
+say that instead.
+
 | Condition | Transition |
 |---|---|
 | User confirms | ACCEPT — proceed to Step 2 |

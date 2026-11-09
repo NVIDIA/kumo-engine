@@ -31,13 +31,14 @@ Continue the workflow normally; pause for visual review only if the user asks.
 
 ## Generated SDK scripts
 
-Save `graph.svg` alongside the run's outputs before training and report its path.
-Use the run's output directory; this example uses the current directory:
+Save the diagram next to the artifact, named after it (`churn_30d_train.graph.svg` for
+`churn_30d_train.py`), before training, and report its path. A fixed name such as `graph.svg`
+could replace an unrelated file; the artifact's own name is only ever its own:
 
 ```python
 from pathlib import Path
 
-graph_path = Path('graph.svg').resolve()
+graph_path = Path(__file__).with_suffix('.graph.svg').resolve()
 if not hasattr(graph, 'visualize'):
     print('Graph preview needs a kumo-engine build including #134; upgrade when available. Continuing.')
 else:

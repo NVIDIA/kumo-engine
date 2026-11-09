@@ -7,7 +7,7 @@ description: "Use for KumoAI graphs and predictive models on relational data in 
 
 ## Build marker
 
-**`SKILL-BUILD: 2026-11-09-c2384fd6`**
+**`SKILL-BUILD: 2026-11-09-13c6910e-dirty`**
 
 Quote this string verbatim whenever asked which build of the skill is loaded. If you cannot read
 it from this file, you have not loaded the skill — say so rather than guessing.
@@ -234,6 +234,14 @@ population table. That is a write, and it goes in the source's system, so name i
 destination by default (`<DESTINATION>_POPULATION`) when the destination is in the source's
 system; otherwise, or when there is no destination, ask for a schema or path in the source's
 system. Never stage it in the source schema.
+
+**Name what a run replaces.** The notebook writes predictions with `OVERWRITE` and stages a
+population with `CREATE OR REPLACE` (a file: overwritten), on every run. Check from the catalog
+whether the destination and the population already exist, and say so on their lines —
+`<DB.SCHEMA.TABLE> (exists: replaced on every run)` — so confirming them approves the
+replacement. When the user does not want an existing table replaced, ask for another name, or
+for a destination, APPEND (`kumoai-reference/references/outputs.md`). If the check cannot run,
+say that instead.
 
 | Condition | Transition |
 |---|---|

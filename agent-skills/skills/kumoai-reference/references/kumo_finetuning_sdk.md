@@ -228,6 +228,10 @@ Source: shipped package (`kumo.engine.connector.snowflake`, `.base`, `.source_ta
 
 ### 3.3 The Snowpark session: take it once, first
 
+Only where the host's `runtime.md` provides an active Snowpark session. A host without one
+follows its `runtime.md` for SQL and read-back instead, and this section and the `session`
+calls in §7.1 and §9.1 do not apply.
+
 Kumo's Snowflake connector opens its own Snowpark session. Once Kumo has read or written
 Snowflake, the process holds two sessions, and a later `get_active_session()` raises
 `SnowparkSessionException: (1409): More than one active session is detected`.
@@ -478,6 +482,7 @@ prediction_table = kumo.PredictionTable.from_source_table(
 )
 ```
 
+- `CREATE OR REPLACE` replaces an existing table; Node 1d names that before it is confirmed.
 - Stage the population only where Node 1d confirmed it — never in the source schema. Write
   `POP_TABLE` in upper case, so the unquoted `CREATE` and the connector lookup agree.
 - Never change the query, the entity or the target to get rows. An empty population is a fact
@@ -573,6 +578,9 @@ PredictionOutputConfig(connector=, artifact_type=, table_name=, write_mode=, ext
 PredictionResult.export(output_config)
 ```
 
+- `write_mode`: `OVERWRITE` replaces an existing table at the destination. Use the mode Node 1d
+  confirmed: `OVERWRITE` for a new table or an approved replacement, `APPEND` when the user chose
+  it (`kumoai-reference/references/outputs.md`).
 - For Snowflake, always pass `artifact_type` and `table_name`. `output_paths` is for file and
   object-store connectors only; with a `SnowflakeConnector` it raises `ValueError`. Every
   connector's form is in §9.2.
@@ -824,14 +832,14 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
       `PredictionArtifactType` / `WriteMode` from `kumoapi.jobs`; `RunMode` from
       `kumoapi.model_plan`.
 - [ ] The connect step is the host `runtime.md`'s, with no credential literal (§3, §3.4).
-- [ ] Snowflake: connection tries `from_spcs_env`, then `from_connection_toml`, then
-      `SnowflakeIdentity` from secrets (§3), with explicit `warehouse`, `database`,
-      `schema_name`; `SPCS_TOKEN_PATH` imported, never hardcoded.
+- [ ] Snowflake: the factory the host's `runtime.md` names (§3), with explicit `warehouse`,
+      `database`, `schema_name`; `SPCS_TOKEN_PATH` imported, never hardcoded.
 - [ ] Snowflake: lower-case or mixed-case `database` / `schema_name` passed with their double
       quotes (§3).
 - [ ] Table and column names in the catalog's exact spelling (§3.2).
-- [ ] Snowflake: `session = get_active_session()` once, in the first code cell; never again, no
-      `Session.builder` (§3.3).
+- [ ] Snowflake, on a host that provides a Snowpark session: `session = get_active_session()`
+      once, in the first code cell; never again, no `Session.builder` (§3.3). Elsewhere, the
+      host `runtime.md`'s connection for SQL and read-back.
 - [ ] `connector.table_names()` asserted before building tables.
 - [ ] Every foreign key corrected with `.with_column(col, stype=Stype.ID)`.
 - [ ] `with_column(...)` results assigned or chained — it returns a new Table.
@@ -848,6 +856,7 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
 - [ ] No code cell writes anywhere unless a destination was confirmed; an example of how to add
       one later is markdown text, not a code cell.
 - [ ] Smoke-test sizing called out as such.
+- [ ] `write_mode` and any population replacement as Node 1d confirmed them (§9, §7.1).
 - [ ] Destination in its connector's form (§9.2), reported with its exact name — no
       `_predictions` suffix.
 - [ ] Written destination read back and row count compared to `prediction_result.num_rows`.

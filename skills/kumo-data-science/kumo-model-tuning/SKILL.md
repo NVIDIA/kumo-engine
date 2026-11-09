@@ -10,8 +10,11 @@ known constraints and ask only for unresolved objectives or workload budget. Sug
 is not permission to execute its experiments. Keep a request for inspection separate from a
 request for another fit.
 
-Read [plan configuration](references/plans.md). Begin with `pq.suggest_model_plan`, apply only
-the requested changes and present the resolved plan and workload. Preserve target, class
+Read [plan configuration](references/plans.md). To change an existing plan, start from it —
+the plan the user supplies, or `trainer.model_plan` of the fitted or loaded trainer — since a fresh
+suggestion resets every setting the user did not mention; if it is not available, ask for it.
+For a new plan, begin with `pq.suggest_model_plan`. Apply only the requested changes and present
+the resolved plan and workload. Preserve target, class
 selection, threshold, ranking K, forecast horizon, population, splits and tuning metric unless
 the user requests a change. A smoke test is an explicitly limited functional check, not a
 production quality choice. Do not silently reduce epochs or turn off refits.

@@ -48,13 +48,17 @@ print(written.num_rows, written.files)
 **APPEND rows say which run wrote them.** An APPEND write adds `JOB_TIMESTAMP` (when the run
 started) and `ANCHOR_TIMESTAMP` (the time its predictions are for), so the table's history can be
 ordered and filtered by run, and a retried run shows as a second `JOB_TIMESTAMP`. A query with no
-time window has no anchor: pass `JOB_TIMESTAMP` alone, or the write fails after scoring.
+time window has no anchor: pass `JOB_TIMESTAMP` alone, or the write fails after scoring. Kumo
+also adds `PREDICTION_ID` and, when the model has one, `BUNDLE_ID` to every APPEND to a table,
+whatever `extra_fields` says (Source: shipped package
+(`kumo.engine.trainer.output_config.PredictionOutputConfig`)).
 
 The write never adds a column to an existing table. When an APPEND destination already exists,
-read its columns before generating the artifact. If it lacks either column, a run would fail at
-the write, after training and scoring. Say so at the gate and let the user pick: add the missing
-columns (`ALTER TABLE … ADD COLUMN`, type `TIMESTAMP_NTZ`; earlier rows hold nulls), a new table
-the first run creates, or OVERWRITE. Adding columns is a write, confirmed like any other.
+read its columns before generating the artifact. If it lacks any of these columns, a run would
+fail at the write, after training and scoring. Say so at the gate and let the user pick: add the
+missing columns (`ALTER TABLE … ADD COLUMN`: the timestamps `TIMESTAMP_NTZ`, the IDs a string
+type; earlier rows hold nulls), a new table the first run creates, or OVERWRITE. Adding columns is
+a write, confirmed like any other.
 
 The exact table name is used; no suffix is appended and its case is kept. Read back, with the
 session taken in the first cell (`kumoai-reference/references/kumo_finetuning_sdk.md` §3.3), using
