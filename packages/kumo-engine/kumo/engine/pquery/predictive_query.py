@@ -46,7 +46,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, List, Mapping, Optional, Set, Tuple
 
 from kumo_core.model_plan import ModelPlan as CoreModelPlan
 from kumo_core.model_plan import ModelPlanValueError
@@ -97,6 +97,37 @@ from kumo.engine.pquery.prediction_table import (
 from kumo.engine.pquery.training_table import TrainingTable, finish_generated
 
 logger = logging.getLogger(__name__)
+
+
+_Edge = Tuple[str, str, str]
+
+
+def _materialized(config: Mapping[str, Any]) -> Tuple[Set[str], Set[_Edge]]:
+    r"""The tables a graph config materialized and its edges as
+    `(src_table, fkey, dst_table)`."""
+    tables = {table['table_name'] for table in config['tables']}
+    edges = {(table['table_name'], fkey['name'], fkey['dst_table'])
+             for table in config['tables']
+             for fkey in table['fkeys']}
+    return tables, edges
+
+
+def _edges_between(tables: Set[str], edges: Set[_Edge]) -> List[str]:
+    r"""The edges with both tables in `tables`, as `src.fkey -> dst`; an edge
+    of a table that is itself missing is implied by the table."""
+    return [
+        f'{src}.{fkey} -> {dst}' for src, fkey, dst in sorted(edges)
+        if src in tables and dst in tables
+    ]
+
+
+def _describe(tables: Set[str], edges: List[str]) -> str:
+    parts = []
+    if tables:
+        parts.append(f"table(s) {', '.join(sorted(tables))}")
+    if edges:
+        parts.append(f"edge(s) {', '.join(edges)}")
+    return ' and '.join(parts)
 
 
 @dataclass(frozen=True)
@@ -155,29 +186,37 @@ class PredictiveQuery:
                 f"snapshot {snapshot.id!r} was not materialized from "
                 f"this query's graph (id {graph_key!r}) -- pass a "
                 "snapshot of that graph.")
-        bound = (set(self.graph._named_tables)
-                 if isinstance(self.graph, Graph) else {
-                     table['table_name']
-                     for table in self.graph.graph_config['tables']
-                 })
-        present = {
-            table['table_name']
-            for table in snapshot.graph_config['tables']
-        }
+        if isinstance(self.graph, Graph):
+            config = self.graph._graph_config
+        else:
+            config = self.graph.graph_config
+        bound = _materialized(config)
+        present = _materialized(snapshot.graph_config)
         if bound == present:
             return
         parsed = self._parsed
-        added = sorted(present - bound)
+        bound_tables, bound_edges = bound
+        present_tables, present_edges = present
+        common = bound_tables & present_tables
+        added = _describe(present_tables - bound_tables,
+                          _edges_between(common, present_edges - bound_edges))
+        tables = bound_tables - present_tables
+        edges = _edges_between(common, bound_edges - present_edges)
         if added:
             message = (
-                f"Snapshot {snapshot.id} has table(s) {', '.join(added)} that "
-                "the snapshot this query was validated against left out, and "
-                "the query means something else with them. Validate it "
-                "against this snapshot: PredictiveQuery(snapshot, query).")
+                f"Snapshot {snapshot.id} has {added} that the snapshot this "
+                "query was validated against left out, and the query means "
+                "something else with them. Validate it against this "
+                "snapshot: PredictiveQuery(snapshot, query).")
+        elif edges:
+            message = (
+                f"This query needs {_describe(tables, edges)}, which were "
+                f"left out of snapshot {snapshot.id}. Take a snapshot that "
+                "keeps them, or write a query over the other tables.")
         else:
             message = (
-                f"This query needs table(s) {', '.join(sorted(bound - present))}"
-                f", which have no rows and were left out of snapshot "
+                f"This query needs table(s) {', '.join(sorted(tables))}, "
+                f"which have no rows and were left out of snapshot "
                 f"{snapshot.id}. Add rows to them and take a new snapshot, or "
                 "write a query over the other tables.")
         try:

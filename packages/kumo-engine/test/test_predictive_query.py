@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,11 @@ import pyarrow.parquet as pq
 import pytest
 from kumo_core.model_plan import ModelPlan as CoreModelPlan
 from kumo_core.model_plan_conversion import public_model_plan_from_internal
-from kumo_core.pquery import target_to_entity_paths, to_plan_graph
+from kumo_core.pquery import (
+    PredictiveQueryPlanError,
+    target_to_entity_paths,
+    to_plan_graph,
+)
 from kumo_core.types import TaskType
 from kumoapi.graph import Edge
 from kumoapi.json_serde import to_json_dict
@@ -229,6 +234,41 @@ def test_suggestions_require_matching_snapshot_and_resolved_metadata(
             replace(snapshot, id=f'{unresolved.id}@fixture'))
     assert PredictiveQuery(snapshot, query).suggest_model_plan(
         replace(snapshot, id=f'{graph.id}@other'))
+
+
+def test_a_snapshot_without_an_edge_between_kept_tables_is_noticed(
+        graph_snapshot):
+    graph, snapshot = graph_snapshot
+    config = deepcopy(snapshot.graph_config)
+    orders = next(table for table in config['tables']
+                  if table['table_name'] == 'orders')
+    orders['fkeys'] = [
+        fkey for fkey in orders['fkeys'] if fkey['dst_table'] != 'products'
+    ]
+    dropped = replace(snapshot, id=f'{graph.id}@dropped', graph_config=config)
+    ranking = ('PREDICT LIST_DISTINCT(orders.product_id, 0, 7, days) '
+               'RANK TOP 2 FOR EACH users.id')
+
+    for query in (ranking,
+                  'PREDICT COUNT(orders.*, 0, 7, days) FOR EACH products.id'):
+        with pytest.raises(
+                PredictiveQueryPlanError,
+                match=r'This query needs edge\(s\) orders\.product_id -> '
+                r'products, which were left out of snapshot \w+@dropped\. '
+                r'Take a snapshot that keeps them, or write a query over '
+                r'the other tables\.'):
+            PredictiveQuery(graph, query).suggest_model_plan(dropped)
+    with pytest.raises(
+            PredictiveQueryPlanError,
+            match=r'Snapshot \w+@fixture has edge\(s\) orders\.product_id -> '
+            r'products that the snapshot this query was validated against '
+            r'left out, and the query means something else with them\. '
+            r'Validate it against this snapshot: '
+            r'PredictiveQuery\(snapshot, query\)\.'):
+        PredictiveQuery(dropped, ranking).suggest_model_plan(snapshot)
+    assert PredictiveQuery(
+        graph, 'PREDICT users.label FOR EACH users.id').suggest_model_plan(
+            dropped)
 
 
 @pytest.mark.parametrize('connector_kind', ['file', 's3'])
