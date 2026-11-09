@@ -279,6 +279,13 @@ def _stored_types(files: Sequence[Path], name: str) -> Dict[Path, Any]:
     return stored_types
 
 
+def _stored_as_text(stored: Any) -> bool:
+    import pyarrow as pa
+
+    return (pa.types.is_string(stored) or pa.types.is_large_string(stored)
+            or pa.types.is_binary(stored) or pa.types.is_large_binary(stored))
+
+
 def _integer_text_failures(stored_types: Mapping[Path, Any], name: str,
                            low: int, high: int,
                            canonical: bool) -> tuple[int, Any, int, list]:
@@ -299,9 +306,7 @@ def _integer_text_failures(stored_types: Mapping[Path, Any], name: str,
     invalid, example = 0, None
     distinct, pending, pending_rows = pa.array([], text), [], 0
     for file, stored in stored_types.items():
-        if not (pa.types.is_string(stored) or pa.types.is_large_string(stored)
-                or pa.types.is_binary(stored)
-                or pa.types.is_large_binary(stored)):
+        if not _stored_as_text(stored):
             continue
         for batch in pq.ParquetFile(file).iter_batches(columns=[name]):
             values = batch.column(0)
@@ -427,9 +432,14 @@ def _refuse_inexact_link_targets(tables: Mapping[str, Any],
     such a value, and the distinct values that convert to the same integer,
     could never be linked. An empty or blank value is such a value, since
     DiskGraph keeps it as a key; a null key is dropped with its own
-    warning. A part staged under a type that is neither text nor binary is
-    written that way by DiskGraph already.
+    warning. A part staged as integers, nulls or a scale-zero decimal is
+    written that way by DiskGraph already; a part staged under any other
+    type that is not text or binary is refused, since DiskGraph writes it
+    as text in its own form (`7.0` for a scaled decimal, `true` for a
+    boolean).
     """
+    import pyarrow as pa
+
     from kumo.engine._portable import _INTEGER_RANGES
 
     for edge in edges:
@@ -437,10 +447,23 @@ def _refuse_inexact_link_targets(tables: Mapping[str, Any],
         if conversion is None or conversion.bounds is not None:
             continue
         key = tables[edge.dst_table].definition.pkey
+        stored_types = _stored_types(
+            _staged_parquet_parts(staged[edge.dst_table]), key)
+        for stored in stored_types.values():
+            if not (_stored_as_text(stored) or pa.types.is_integer(stored)
+                    or pa.types.is_null(stored)
+                    or (pa.types.is_decimal(stored) and stored.scale == 0)):
+                raise ValueError(
+                    f"Foreign key {edge.src_table}.{edge.fkey} is stored as "
+                    f"{conversion.dtype.value} and links to "
+                    f"{edge.dst_table}.{key}, which is declared string but "
+                    f"stored as {stored} in the staged data; DiskGraph "
+                    "writes that storage as text in its own form, which a "
+                    "converted integer need not match. Store both keys with "
+                    "the same type before snapshot.")
         low, high = _INTEGER_RANGES[conversion.dtype]
         invalid, example, colliding, pair = _integer_text_failures(
-            _stored_types(_staged_parquet_parts(staged[edge.dst_table]), key),
-            key, low, high, canonical=True)
+            stored_types, key, low, high, canonical=True)
         if not invalid and not colliding:
             continue
         problems = []

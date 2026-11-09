@@ -852,6 +852,43 @@ def test_integer_keys_refuse_string_keys_that_are_not_canonical(
     assert message.endswith('before snapshot.')
 
 
+@pytest.mark.parametrize('keys, stored', [
+    pytest.param(
+        pa.array([Decimal('7.0'), Decimal('10.0')], pa.decimal128(10, 1)),
+        'decimal128(10, 1)', id='decimal'),
+    pytest.param(pa.array([7.0, 10.0], pa.float64()), 'double', id='float'),
+    pytest.param(pa.array([True, False], pa.bool_()), 'bool', id='bool'),
+])
+def test_integer_keys_refuse_string_keys_stored_as_other_types(
+        tmp_path, monkeypatch, keys, stored):
+    from kumo.engine import configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(pa.table({'user_id': keys}), root / 'users.parquet')
+    pq.write_table(
+        pa.table({
+            'order_id': [1, 2],
+            'user_id': pa.array([7, 10], pa.int64())
+        }), root / 'orders.parquet')
+    graph = _keyed_graph(root, 'orders', user_key_dtype=Dtype.string)
+    monkeypatch.setattr(
+        'kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
+        lambda *args, **kwargs: pytest.fail('ingest started'))
+
+    with pytest.warns(UserWarning, match='Foreign key orders.user_id'):
+        with pytest.raises(ValueError) as error:
+            graph.snapshot()
+
+    assert str(error.value) == (
+        'Foreign key orders.user_id is stored as int64 and links to '
+        'users.user_id, which is declared string but stored as '
+        f'{stored} in the staged data; DiskGraph writes that storage as '
+        'text in its own form, which a converted integer need not match. '
+        'Store both keys with the same type before snapshot.')
+
+
 def test_declared_integer_key_over_text_is_refused_before_a_string_link(
         tmp_path, monkeypatch):
     from kumo.engine import configure
