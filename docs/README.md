@@ -7,6 +7,7 @@ Keep one maintained explanation per topic and link to it from agent guidance.
 
 | Need | Start here |
 | --- | --- |
+| Industry notebooks and standalone examples | [Example collection](../examples/kumo-example-notebooks/README.md) |
 | Product and available source interfaces | [Repository overview](../README.md) |
 | System topology and execution boundaries | [Architecture](../ARCHITECTURE.md) |
 | Development prerequisites and setup side effects | [Setup](development/setup.md) |

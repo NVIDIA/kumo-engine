@@ -37,7 +37,8 @@ class _Root:
         return f'{base}/{relative}' if base else relative
 
     def uri(self, relative: str) -> str:
-        return f"{self._uri.rstrip('/')}/{relative}"
+        base = self._uri.rstrip('/')
+        return f'{base}/{relative}' if base else relative
 
 
 @dataclass(frozen=True)

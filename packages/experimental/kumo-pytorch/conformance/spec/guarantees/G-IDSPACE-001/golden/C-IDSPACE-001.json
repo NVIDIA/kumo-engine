@@ -1,0 +1,526 @@
+{
+  "id": "C-IDSPACE-001",
+  "contract": {
+    "$type": "DataLoaderSpec",
+    "schema": {
+      "$type": "DataSchema",
+      "tables": [
+        {
+          "$type": "TableSpec",
+          "name": "users",
+          "primary_key": "id",
+          "columns": {
+            "id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "amount": {
+              "$type": "DType",
+              "name": "float64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "currency": {
+              "$type": "DType",
+              "name": "string",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "merchant": {
+              "$type": "DType",
+              "name": "string",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": {
+            "$type": "NonTemporal"
+          }
+        }
+      ],
+      "relations": []
+    },
+    "sample": {
+      "$type": "SampleSpec",
+      "entity": {
+        "$type": "EntitySpec",
+        "table": "users",
+        "entity_type": "users",
+        "filters": [],
+        "available_from": null
+      },
+      "entity_values": {
+        "amount": {
+          "$type": "Field",
+          "column": "amount",
+          "path": [],
+          "selection": "one",
+          "time_column": null,
+          "reference_time": "sample"
+        },
+        "currency": {
+          "$type": "Field",
+          "column": "currency",
+          "path": [],
+          "selection": "one",
+          "time_column": null,
+          "reference_time": "sample"
+        },
+        "merchant": {
+          "$type": "Field",
+          "column": "merchant",
+          "path": [],
+          "selection": "one",
+          "time_column": null,
+          "reference_time": "sample"
+        }
+      },
+      "dated_entity_values": {},
+      "events": {},
+      "current_events": {},
+      "neighborhoods": {},
+      "targets": {},
+      "candidate_sets": {}
+    },
+    "batch": {
+      "$type": "BatchSpec",
+      "inputs": {
+        "spending": {
+          "$type": "Input",
+          "source": {
+            "$type": "EntitySource"
+          },
+          "representation": {
+            "$type": "Fields",
+            "fields": [
+              {
+                "$type": "Encode",
+                "field": "amount",
+                "encoding": {
+                  "$type": "Buckets",
+                  "bins": null,
+                  "boundaries": [
+                    10.0,
+                    50.0
+                  ],
+                  "separate_zero": false
+                },
+                "id_space": "tokens"
+              },
+              {
+                "$type": "Encode",
+                "field": "currency",
+                "encoding": {
+                  "$type": "UseEncoding",
+                  "name": "currencies"
+                },
+                "id_space": "tokens"
+              }
+            ],
+            "row": {
+              "$type": "Tokens",
+              "max_tokens": null,
+              "keep": "first",
+              "missing": "omit",
+              "occurrence_order": "fields"
+            },
+            "history": {
+              "$type": "Grouped"
+            },
+            "field_names": "fields",
+            "field_space": "tokens",
+            "forbidden_fields": []
+          },
+          "layout": {
+            "$type": "Padded"
+          }
+        },
+        "shopping": {
+          "$type": "Input",
+          "source": {
+            "$type": "EntitySource"
+          },
+          "representation": {
+            "$type": "Fields",
+            "fields": [
+              {
+                "$type": "Encode",
+                "field": "currency",
+                "encoding": {
+                  "$type": "UseEncoding",
+                  "name": "currencies"
+                },
+                "id_space": "tokens"
+              },
+              {
+                "$type": "Encode",
+                "field": "merchant",
+                "encoding": {
+                  "$type": "Vocabulary",
+                  "values": null,
+                  "max_size": null,
+                  "min_frequency": 1,
+                  "missing_id": 0,
+                  "unknown_id": 1
+                },
+                "id_space": "tokens"
+              }
+            ],
+            "row": {
+              "$type": "Tokens",
+              "max_tokens": null,
+              "keep": "first",
+              "missing": "omit",
+              "occurrence_order": "fields"
+            },
+            "history": {
+              "$type": "Grouped"
+            },
+            "field_names": "fields",
+            "field_space": "tokens",
+            "forbidden_fields": []
+          },
+          "layout": {
+            "$type": "Padded"
+          }
+        },
+        "local_currency": {
+          "$type": "Input",
+          "source": {
+            "$type": "EntitySource"
+          },
+          "representation": {
+            "$type": "Fields",
+            "fields": [
+              {
+                "$type": "Encode",
+                "field": "currency",
+                "encoding": {
+                  "$type": "UseEncoding",
+                  "name": "currencies"
+                },
+                "id_space": null
+              }
+            ],
+            "row": {
+              "$type": "Columns"
+            },
+            "history": {
+              "$type": "Grouped"
+            },
+            "field_names": null,
+            "field_space": null,
+            "forbidden_fields": []
+          },
+          "layout": {
+            "$type": "Separate"
+          }
+        }
+      },
+      "targets": {},
+      "encodings": {
+        "currencies": {
+          "$type": "Vocabulary",
+          "values": null,
+          "max_size": null,
+          "min_frequency": 1,
+          "missing_id": 0,
+          "unknown_id": 1
+        }
+      },
+      "id_spaces": {
+        "tokens": {
+          "$type": "IdSpace",
+          "specials": {
+            "pad": "[PAD]",
+            "unknown": "[UNK]",
+            "missing": "[MISSING]",
+            "mask": "[MASK]"
+          }
+        }
+      },
+      "field_names": {
+        "fields": {
+          "$type": "FieldNames"
+        }
+      },
+      "batching": {
+        "$type": "Batching",
+        "max_samples": null,
+        "max_tokens": null,
+        "length_input": null,
+        "bucket_by_length": false,
+        "drop_last": false
+      }
+    },
+    "version": 3
+  },
+  "tables": {
+    "users": [
+      {
+        "id": 1,
+        "amount": 5.0,
+        "currency": "USD",
+        "merchant": "shop"
+      },
+      {
+        "id": 2,
+        "amount": 80.0,
+        "currency": "EUR",
+        "merchant": "cafe"
+      },
+      {
+        "id": 3,
+        "amount": 20.0,
+        "currency": "USD",
+        "merchant": "shop"
+      }
+    ]
+  },
+  "anchors": [
+    {
+      "sample_id": "u1",
+      "entity_id": 1,
+      "as_of_time": 100
+    },
+    {
+      "sample_id": "u2",
+      "entity_id": 2,
+      "as_of_time": 100
+    },
+    {
+      "sample_id": "u3",
+      "entity_id": 3,
+      "as_of_time": 100
+    }
+  ],
+  "expected": {
+    "u1": {
+      "entity_values": {
+        "amount": 5.0,
+        "currency": "USD",
+        "merchant": "shop"
+      }
+    },
+    "u2": {
+      "entity_values": {
+        "amount": 80.0,
+        "currency": "EUR",
+        "merchant": "cafe"
+      }
+    },
+    "u3": {
+      "entity_values": {
+        "amount": 20.0,
+        "currency": "USD",
+        "merchant": "shop"
+      }
+    }
+  },
+  "reason": "The pad, unknown, missing and mask roles allocate IDs 0, 1, 2 and 3. Canonical declared field identities amount, currency and merchant allocate 4, 5 and 6. Private shopping merchant entries shop and cafe allocate 7 and 8 by frequencies 2 and 1; private spending ranges allocate 9, 10 and 11; shared currency entries USD and EUR allocate 12 and 13 by frequency. Every currency use refers to one shared mapping, but the local output keeps local USD=2/EUR=3 rather than joining the final space. Requested spending order remains amount before currency.",
+  "batch": {
+    "inputs": {
+      "spending": {
+        "value_ids": {
+          "dtype": "int64",
+          "shape": [
+            3,
+            2
+          ],
+          "values": [
+            [
+              9,
+              12
+            ],
+            [
+              11,
+              13
+            ],
+            [
+              10,
+              12
+            ]
+          ]
+        },
+        "field_ids": {
+          "dtype": "int64",
+          "shape": [
+            3,
+            2
+          ],
+          "values": [
+            [
+              4,
+              5
+            ],
+            [
+              4,
+              5
+            ],
+            [
+              4,
+              5
+            ]
+          ]
+        }
+      },
+      "shopping": {
+        "value_ids": {
+          "dtype": "int64",
+          "shape": [
+            3,
+            2
+          ],
+          "values": [
+            [
+              12,
+              7
+            ],
+            [
+              13,
+              8
+            ],
+            [
+              12,
+              7
+            ]
+          ]
+        },
+        "field_ids": {
+          "dtype": "int64",
+          "shape": [
+            3,
+            2
+          ],
+          "values": [
+            [
+              5,
+              6
+            ],
+            [
+              5,
+              6
+            ],
+            [
+              5,
+              6
+            ]
+          ]
+        }
+      },
+      "local_currency": {
+        "currency": {
+          "values": {
+            "dtype": "int64",
+            "shape": [
+              3
+            ],
+            "values": [
+              2,
+              3,
+              2
+            ]
+          },
+          "valid": {
+            "dtype": "bool",
+            "shape": [
+              3
+            ],
+            "values": [
+              true,
+              true,
+              true
+            ]
+          }
+        }
+      }
+    }
+  },
+  "state": {
+    "format_version": 2,
+    "encoders": {
+      "[\"shared\",\"currencies\"]": {
+        "kind": "vocabulary",
+        "dtype": {
+          "name": "string"
+        },
+        "entries": [
+          [
+            "USD",
+            2
+          ],
+          [
+            "EUR",
+            3
+          ]
+        ]
+      }
+    },
+    "spaces": {
+      "tokens": {
+        "roles": {
+          "pad": 0,
+          "unknown": 1,
+          "missing": 2,
+          "mask": 3
+        },
+        "size": 14,
+        "members": {
+          "[\"shared\",\"currencies\"]": [
+            [
+              0,
+              2
+            ],
+            [
+              1,
+              1
+            ],
+            [
+              2,
+              12
+            ],
+            [
+              3,
+              13
+            ]
+          ]
+        }
+      }
+    },
+    "inputs": {
+      "spending": {
+        "bindings": [
+          [
+            "amount",
+            "[\"inputs\",\"spending\",\"fields\",\"amount\"]",
+            "tokens"
+          ],
+          [
+            "currency",
+            "[\"shared\",\"currencies\"]",
+            "tokens"
+          ]
+        ]
+      },
+      "local_currency": {
+        "bindings": [
+          [
+            "currency",
+            "[\"shared\",\"currencies\"]",
+            null
+          ]
+        ]
+      }
+    }
+  }
+}

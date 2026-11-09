@@ -2,7 +2,6 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import os
 from dataclasses import asdict
 from test.connector.artifact_staging_contract import (
     CancelledByRuntime,
@@ -219,7 +218,7 @@ def test_databricks_connection_info():
         ) == 'token'
 
 
-_HOST = os.environ.get('DATABRICKS_HOST', 'workspace.cloud.databricks.com')
+_HOST = 'workspace.cloud.databricks.com'
 
 
 @pytest.mark.parametrize(

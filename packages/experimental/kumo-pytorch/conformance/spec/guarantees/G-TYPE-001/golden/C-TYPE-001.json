@@ -1,0 +1,328 @@
+{
+  "id": "C-TYPE-001",
+  "contract": {
+    "$type": "DataLoaderSpec",
+    "schema": {
+      "$type": "DataSchema",
+      "tables": [
+        {
+          "$type": "TableSpec",
+          "name": "users",
+          "primary_key": "id",
+          "columns": {
+            "id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "signed": {
+              "$type": "DType",
+              "name": "int16",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "unsigned": {
+              "$type": "DType",
+              "name": "uint8",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "flag": {
+              "$type": "DType",
+              "name": "bool",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "number": {
+              "$type": "DType",
+              "name": "float64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": {
+            "$type": "NonTemporal"
+          }
+        }
+      ],
+      "relations": []
+    },
+    "sample": {
+      "$type": "SampleSpec",
+      "entity": {
+        "$type": "EntitySpec",
+        "table": "users",
+        "entity_type": "users",
+        "filters": [],
+        "available_from": null
+      },
+      "entity_values": {
+        "signed": {
+          "$type": "Field",
+          "column": "signed",
+          "path": [],
+          "selection": "one",
+          "time_column": null,
+          "reference_time": "sample"
+        },
+        "unsigned": {
+          "$type": "Field",
+          "column": "unsigned",
+          "path": [],
+          "selection": "one",
+          "time_column": null,
+          "reference_time": "sample"
+        },
+        "flag": {
+          "$type": "Field",
+          "column": "flag",
+          "path": [],
+          "selection": "one",
+          "time_column": null,
+          "reference_time": "sample"
+        },
+        "number": {
+          "$type": "Field",
+          "column": "number",
+          "path": [],
+          "selection": "one",
+          "time_column": null,
+          "reference_time": "sample"
+        }
+      },
+      "dated_entity_values": {},
+      "events": {},
+      "current_events": {},
+      "neighborhoods": {},
+      "targets": {},
+      "candidate_sets": {}
+    },
+    "batch": {
+      "$type": "BatchSpec",
+      "inputs": {
+        "entity": {
+          "$type": "Input",
+          "source": {
+            "$type": "EntitySource"
+          },
+          "representation": {
+            "$type": "Fields",
+            "fields": [
+              {
+                "$type": "Encode",
+                "field": "signed",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              },
+              {
+                "$type": "Encode",
+                "field": "unsigned",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              },
+              {
+                "$type": "Encode",
+                "field": "flag",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              },
+              {
+                "$type": "Encode",
+                "field": "number",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              }
+            ],
+            "row": {
+              "$type": "Columns"
+            },
+            "history": {
+              "$type": "Grouped"
+            },
+            "field_names": null,
+            "field_space": null,
+            "forbidden_fields": []
+          },
+          "layout": {
+            "$type": "Separate"
+          }
+        }
+      },
+      "targets": {},
+      "encodings": {},
+      "id_spaces": {},
+      "field_names": {},
+      "batching": {
+        "$type": "Batching",
+        "max_samples": null,
+        "max_tokens": null,
+        "length_input": null,
+        "bucket_by_length": false,
+        "drop_last": false
+      }
+    },
+    "version": 3
+  },
+  "tables": {
+    "users": [
+      {
+        "id": 1,
+        "signed": -7,
+        "unsigned": 255,
+        "flag": false,
+        "number": 0.0
+      },
+      {
+        "id": 2,
+        "signed": 0,
+        "unsigned": 0,
+        "flag": true,
+        "number": null
+      }
+    ]
+  },
+  "anchors": [
+    {
+      "sample_id": "u1",
+      "entity_id": 1,
+      "as_of_time": 100
+    },
+    {
+      "sample_id": "u2",
+      "entity_id": 2,
+      "as_of_time": 100
+    }
+  ],
+  "expected": {
+    "u1": {
+      "entity_values": {
+        "signed": -7,
+        "unsigned": 255,
+        "flag": false,
+        "number": 0.0
+      }
+    },
+    "u2": {
+      "entity_values": {
+        "signed": 0,
+        "unsigned": 0,
+        "flag": true,
+        "number": null
+      }
+    }
+  },
+  "reason": "The declared signed/unsigned widths are int16/uint8, so -7 and 255 retain those exact tensor types. False, zero, and 0.0 are present values. The second number is NULL, represented by an invalid float64 slot whose stored padding value is 0.0; it is not an observed category or numerical fitting value.",
+  "batch": {
+    "inputs": {
+      "entity": {
+        "signed": {
+          "values": {
+            "dtype": "int16",
+            "shape": [
+              2
+            ],
+            "values": [
+              -7,
+              0
+            ]
+          },
+          "valid": {
+            "dtype": "bool",
+            "shape": [
+              2
+            ],
+            "values": [
+              true,
+              true
+            ]
+          }
+        },
+        "unsigned": {
+          "values": {
+            "dtype": "uint8",
+            "shape": [
+              2
+            ],
+            "values": [
+              255,
+              0
+            ]
+          },
+          "valid": {
+            "dtype": "bool",
+            "shape": [
+              2
+            ],
+            "values": [
+              true,
+              true
+            ]
+          }
+        },
+        "flag": {
+          "values": {
+            "dtype": "bool",
+            "shape": [
+              2
+            ],
+            "values": [
+              false,
+              true
+            ]
+          },
+          "valid": {
+            "dtype": "bool",
+            "shape": [
+              2
+            ],
+            "values": [
+              true,
+              true
+            ]
+          }
+        },
+        "number": {
+          "values": {
+            "dtype": "float64",
+            "shape": [
+              2
+            ],
+            "values": [
+              0.0,
+              0.0
+            ]
+          },
+          "valid": {
+            "dtype": "bool",
+            "shape": [
+              2
+            ],
+            "values": [
+              true,
+              false
+            ]
+          }
+        }
+      }
+    }
+  }
+}

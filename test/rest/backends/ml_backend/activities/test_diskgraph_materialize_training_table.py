@@ -18,7 +18,9 @@ from kumo_core.train.autoregression import (
     YOY_COL,
 )
 from kumoapi.encoder import Numerical, NumericalList
+from kumoapi.pquery import ValidatedPredictiveQuery
 from kumoapi.typing import Dtype, Stype
+from kumopql.parser import PQLParser
 
 mtt = import_module(
     'rest.backends.ml_backend.activities.materialize_training_task')
@@ -173,9 +175,13 @@ def _custom_tt_task(is_link_pred=False):
 
 
 def _custom_tt_pquery():
+    parsed = PQLParser().to_parsed_predictive_query(
+        'PREDICT LIST_DISTINCT(orders.product_id, 0, 7, days) '
+        'RANK TOP 3 FOR EACH Customer.customer_id')
+    parsed.target_ast.stype_maybe = Stype.categorical
     return SimpleNamespace(
-        graph=SimpleNamespace(), validated_predictive_query=SimpleNamespace(
-            target_stype=SimpleNamespace(value='categorical')))
+        graph=SimpleNamespace(),
+        validated_predictive_query=ValidatedPredictiveQuery(**vars(parsed)))
 
 
 def _custom_tt_split_config():
@@ -399,8 +405,7 @@ def test_custom_tt_link_pred_passes_rhs_temporal_flag(monkeypatch, tmp_path,
     )
     pquery = SimpleNamespace(
         graph=graph,
-        validated_predictive_query=SimpleNamespace(target_stype=SimpleNamespace(
-            value='categorical')),
+        validated_predictive_query=_custom_tt_pquery().validated_predictive_query,
     )
 
     train_table_path = str(tmp_path / 'multipart_train_table')
@@ -1202,8 +1207,7 @@ def test_temporal_link_prediction_manual_split_reaches_the_dg_builder(
     )
     pquery = SimpleNamespace(
         graph=graph,
-        validated_predictive_query=SimpleNamespace(target_stype=SimpleNamespace(
-            value='categorical')),
+        validated_predictive_query=_custom_tt_pquery().validated_predictive_query,
     )
 
     mtt._build_ttng_custom_train_table_artifacts(
@@ -1221,6 +1225,7 @@ def test_temporal_link_prediction_manual_split_reaches_the_dg_builder(
     assert calls['build']['split_family_hint'] == 'ManualSplit'
     assert calls['build']['lp_rhs_is_temporal'] is True
     assert calls['build']['allow_negative_weight'] is True
+    assert calls['build']['target_window_end'] == (7, 'days')
     split_spec = calls['build']['split_config']
     assert split_spec.kind == 'ManualSplit'
     assert split_spec.split_column == '__kumo_precomputed_split'
