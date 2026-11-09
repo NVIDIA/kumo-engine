@@ -12,6 +12,8 @@ from typing import Any, Mapping, Sequence
 from kumo_core.task_dataset import DiskgraphTaskManifest
 from kumo_core.train.autoregression import YOY_COL
 from kumo_core.types import TaskType
+from kumo_core.utils.time import compute_unix_step
+from kumoapi.pquery import QueryType
 
 EdgeType = tuple[str, str, str]
 
@@ -397,3 +399,37 @@ def default_metrics(task_type: TaskType) -> list[str]:
             for metric in ("map", "precision", "recall", "f1")
         ]
     raise ValueError(f"unsupported task type {task_type.value!r}")
+
+
+def resolve_task_options(
+    query: Any,
+    *,
+    task_type: TaskType,
+    timeframe_step: int | None,
+    lag_timesteps: int | None,
+    forecast_length: int,
+) -> dict[str, int | None]:
+    """The temporal task scalars a fit resolves from its query and plan.
+
+    The window is the combined range of the target aggregations, the range
+    the labels are generated over.
+    """
+
+    start = end = step = None
+    if query.query_type == QueryType.TEMPORAL:
+        offset = query.get_combined_date_offset_range()
+        first, last = int(offset.start or 0), int(offset.end)
+        start = int(compute_unix_step(first, offset.unit))
+        end = int(compute_unix_step(last, offset.unit))
+        step = int(
+            compute_unix_step(timeframe_step or last - first, offset.unit))
+    if lag_timesteps is None:
+        lag_timesteps = 1 if task_type == TaskType.FORECASTING else 0
+    return {
+        "forecast_length": int(forecast_length),
+        "lag_timesteps": int(lag_timesteps),
+        "unix_start_offset": start,
+        "unix_end_offset": end,
+        "unix_step_size": step,
+    }
+

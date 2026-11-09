@@ -56,6 +56,7 @@ from ..resolved_task import (
     ResolvedNumericalTask,
     ResolvedTaskSampling,
     plan_validation_facts,
+    resolve_task_options,
 )
 from ..task_dataset import (
     DiskgraphTaskManifest,
@@ -63,7 +64,6 @@ from ..task_dataset import (
     materialize_task_dataset,
 )
 from ..types import TaskType
-from ..utils.time import compute_unix_step
 from . import search as search_options
 from .orchestration import (
     CallableTrainingOptions,
@@ -499,23 +499,6 @@ def _resolved_task_options(
     table_options = request.training_table_generation_plan
     sampling_options = request.model_plan.neighbor_sampling
 
-    unix_start_offset = unix_end_offset = unix_step_size = None
-    if request.query.query_type == "temporal":
-        offset = request.query.query.get_combined_date_offset_range()
-        start = int(offset.start or 0)
-        end = int(offset.end)
-        timeframe_step = inferred_or_missing_type_to_none(
-            table_options.timeframe_step)
-        step = int(timeframe_step or end - start)
-        unix_start_offset = int(compute_unix_step(start, offset.unit))
-        unix_end_offset = int(compute_unix_step(end, offset.unit))
-        unix_step_size = int(compute_unix_step(step, offset.unit))
-
-    default_lags = 1 if request.query.task_type == "forecasting" else 0
-    lag_timesteps = inferred_or_missing_type_to_none(
-        table_options.lag_timesteps)
-    if lag_timesteps is None:
-        lag_timesteps = default_lags
     max_target_neighbors = effective_max_target_neighbors(
         request, inferred_max_target_neighbors)
     metrics = model_plan.training_job.metrics
@@ -537,11 +520,15 @@ def _resolved_task_options(
     return {
         "name": request.run_id,
         "metrics": list(metrics),
-        "forecast_length": request.query.forecast_length,
-        "lag_timesteps": int(lag_timesteps),
-        "unix_start_offset": unix_start_offset,
-        "unix_end_offset": unix_end_offset,
-        "unix_step_size": unix_step_size,
+        **resolve_task_options(
+            request.query.query,
+            task_type=TaskType(request.query.task_type),
+            timeframe_step=inferred_or_missing_type_to_none(
+                table_options.timeframe_step),
+            lag_timesteps=inferred_or_missing_type_to_none(
+                table_options.lag_timesteps),
+            forecast_length=request.query.forecast_length,
+        ),
         "sampling": sampling,
         "exclude_cols_dict": request.query.query.get_exclude_cols_dict(),
     }
