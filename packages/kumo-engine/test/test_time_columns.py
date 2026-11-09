@@ -561,3 +561,23 @@ def test_slash_dates_invalid_under_both_orders_are_made_missing(tmp_path):
         'them at the source to keep the values.'
     ]
     assert pq.read_table(path).column('ts').to_pylist() == [None, None]
+
+
+def test_only_parquet_parts_are_read_from_a_staged_source(tmp_path):
+    from kumo.engine._time_columns import _parquet_files
+
+    staged = tmp_path / 'staged'
+    staged.mkdir()
+    table = pa.table({'ts': pa.array([1700000000, 1700000100])})
+    pq.write_table(table, staged / 'part-0.parquet')
+    (staged / 'part-1.csv').write_text('ts\n1700000000\n')
+    pq.write_table(table, tmp_path / 'extra.parquet')
+    (tmp_path / 'extra.csv').write_text('ts\n1700000000\n')
+
+    files = _parquet_files([
+        str(staged),
+        str(tmp_path / 'extra.csv'),
+        str(tmp_path / 'extra.parquet'),
+    ])
+
+    assert files == [staged / 'part-0.parquet', tmp_path / 'extra.parquet']

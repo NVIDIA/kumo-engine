@@ -1003,10 +1003,13 @@ def _render(secs: Optional[int]) -> str:
 
 
 def _parquet_files(paths: Sequence[str]) -> List[Path]:
+    r"""The parquet parts under `paths`; a part of any other kind, such as
+    the CSV a custom backend may stage, is left to DiskGraph's own reading.
+    """
     return [
         file for path in paths
         for file in (sorted(Path(path).rglob('*.parquet')) if Path(path).is_dir(
-        ) else [Path(path)])
+        ) else [Path(path)] if Path(path).suffix.lower() == '.parquet' else [])
     ]
 
 
