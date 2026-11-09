@@ -134,6 +134,7 @@ fn path_with_suffix(base: &Path, suffix: &str) -> PathBuf {
     ingest_on_error = "skip_row_on_error",
     allow_negative_weight = false,
     timestamp_reference_json = None,
+    target_window_end_json = None,
 ))]
 pub fn build_train_table_artifacts_for_existing_table(
     py: Python<'_>,
@@ -154,7 +155,14 @@ pub fn build_train_table_artifacts_for_existing_table(
     ingest_on_error: &str,
     allow_negative_weight: bool,
     timestamp_reference_json: Option<&str>,
+    target_window_end_json: Option<&str>,
 ) -> PyResult<Py<PyAny>> {
+    let target_window_end = target_window_end_json
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|e| {
+            crate::DiskgraphConfigError::new_err(format!("invalid target_window_end_json: {e}"))
+        })?;
     let fact_pseudo_time = fact_pseudo_time_json
         .map(serde_json::from_str)
         .transpose()
@@ -181,6 +189,7 @@ pub fn build_train_table_artifacts_for_existing_table(
         allow_negative_weight,
         timestamp_reference_json,
         /* is_prediction */ false,
+        target_window_end,
     ))
 }
 
@@ -252,6 +261,7 @@ pub fn build_prediction_table_artifacts_for_existing_table(
         /* allow_negative_weight */ false,
         /* timestamp_reference_json */ None,
         /* is_prediction */ true,
+        None,
     ))
 }
 
@@ -396,6 +406,7 @@ fn build_bundle_for_existing_table<U: UnitSystem>(
     allow_negative_weight: bool,
     timestamp_reference_json: Option<&str>,
     is_prediction: bool,
+    target_window_end: Option<(i64, TimeUnit)>,
 ) -> PyResult<Py<PyAny>> {
     validate_tt_id(tt_id)?;
     let timestamp_reference: Option<TimestampReference> = timestamp_reference_json
@@ -518,6 +529,7 @@ fn build_bundle_for_existing_table<U: UnitSystem>(
         on_error,
         allow_negative_weight,
         timestamp_reference,
+        target_window_end,
     };
 
     let idx = index_path.to_owned();

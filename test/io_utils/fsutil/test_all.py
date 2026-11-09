@@ -13,7 +13,6 @@ import pytest
 
 from io_utils import fsutil
 from kumo.testing.adls import adls_test_base_uri, withADLSCredentials
-from kumo.testing.gcs import withGCSCredentials
 from kumo.testing.s3 import withS3Credentials
 
 
@@ -30,8 +29,7 @@ def root_s3() -> Generator[str, None, None]:
 
 
 @pytest.fixture
-@withGCSCredentials
-def root_gcs() -> Generator[str, None, None]:
+def root_gcs(gcs_credentials) -> Generator[str, None, None]:
     from kumo.testing.gcs import ENV_GCS_TEST_BUCKET
     bucket = os.getenv(ENV_GCS_TEST_BUCKET, 'kumo-test-bucket')
     yield f"gs://{bucket}/fsutil-test/"
@@ -51,7 +49,7 @@ def root_ucv(temp_ucv) -> Generator[str, None, None]:
 @pytest.fixture(
     params=[
         "root_s3",
-        "root_gcs",
+        pytest.param("root_gcs", marks=pytest.mark.gcs_credentials),
         "root_ucv",
         "root_adls",
     ],

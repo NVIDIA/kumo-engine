@@ -558,6 +558,8 @@ def generate_custom_train_table(
 ) -> GeneratedTrainTableResult:
     """Build the standard TT-NG bundle from an existing parquet table."""
 
+    from ..pquery import link_target_window_end
+
     if not isinstance(custom_table, PreparedCustomTrainingTable):
         raise TypeError("custom_table must be PreparedCustomTrainingTable")
     if not Path(custom_table.parquet_path).exists():
@@ -595,6 +597,9 @@ def generate_custom_train_table(
         target_entity_table=request.rhs_node_type,
         task_type=request.task_type,
         lp_rhs_is_temporal=request.rhs_is_temporal,
+        target_window_end=(link_target_window_end(request.query)
+                           if request.task_type.lower() in _LINK_TASK_TYPES
+                           else None),
         fact_pseudo_time=_fact_pseudo_time(request),
         ingest_on_error=custom_table.ingest_on_error,
         allow_negative_weight=(

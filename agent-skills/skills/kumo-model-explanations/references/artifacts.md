@@ -1,169 +1,137 @@
 # Explanation artifact workflow
 
-## Find the correct files
+## Open the selected run
 
-In the existing Snowflake notebook, use the fresh fit's result, or replace `run_dir` with an
-explicit retained run directory. Do not change `kumo.configure` while inspecting an existing run.
+In the existing notebook, reuse the result of the requested fit:
 
 ```python
-from pathlib import Path
-import json
-import pandas as pd
 import kumo.engine as kumo
 
 print("Kumo runtime:", kumo.__version__)
-
-run_dir = Path(training_result.bundle_dir).parent.resolve()  # fresh fit only
-if not run_dir.is_dir():
-    raise FileNotFoundError(f"Training run is unavailable: {run_dir}")
-
-gradient_files = sorted(run_dir.rglob("explain_test/scores.csv"))
-column_files = sorted(run_dir.rglob("column_analysis/test/column_analysis.json"))
-for kind, paths in (("gradient", gradient_files), ("column analysis", column_files)):
-    print(kind, len(paths))
-    for path in paths:
-        print(path.relative_to(run_dir))
-for path in sorted(run_dir.rglob("best_trainer.json")):
-    print("selection metadata:", path.relative_to(run_dir))
-    print(json.loads(path.read_text()))
+explanations = training_result.explanations
+print("Run:", explanations.run_root)
+print("Selected TEST trial:", explanations.trial_root)
+print(explanations.availability)
 ```
 
-An empty list is “no matching artifact found in this run”, not “no important features”.
-Use `best_trainer.json`, the run configuration, and logs to associate files with the selected
-trial. Test explanations use the train+validation refit when available, otherwise the original
-fit; do not label them as full-data-refit explanations. Keep trainer and refit paths visible.
-Selection metadata may contain paths from the original host after a copy. Do not follow those
-paths into another run; resolve against the retained run or report the missing mapping.
+To reopen an explicitly retained run instead, replace the assignment with
+`explanations = kumo.TrainingExplanations.load("/path/to/retained/run")`.
+Do not change `kumo.configure`, search other runs, or train while inspecting existing files.
+If these APIs are absent from the executing build, report the runtime version and unavailable
+interface rather than calling private trainers.
 
-Choose an exact file from the inventory, preserving any refit subdirectory. The examples below
-use `gradient_path` and `column_path` assigned to those selected `Path` objects; they deliberately
-do not default to the first match.
+The loader resolves one `models/<task>/automl/best_trainer.json` within the supplied run and
+reads the selected trial's `config.json` refit state. TEST explanations use the recorded
+train+validation refit (`_refit_trainval`), otherwise the original trial; they never select the
+full-data refit. Directory presence alone does not select a refit. Copied runs resolve within
+the supplied root instead of following old absolute paths. Invalid or ambiguous selection
+raises `kumo.InvalidRunError`; resolve the intended run rather than choosing the newest match.
+Retain this selection metadata as well as the artifacts to reopen a run through the API.
 
-## Read gradient scores
+Availability keys are `gradient`, `cohorts`, and `samples`. Each entry reports `available`,
+`path`, `reason`, and `generation_failure`. Availability checks presence, not contents;
+a generation failure can leave readable partial artifacts. Missing files are not zero-valued
+explanations. Reopening cannot recover generation status captured only during fit, so missing
+artifacts may have an unknown cause. Readers raise `kumo.ExplanationUnavailableError` for
+missing artifacts and `kumo.InvalidExplanationError` for malformed data.
 
-The reviewed CSV schema is `table`, `column`, `score`. Extra columns may exist, for example a
-serialized dataframe index; do not use those as features.
+Published model bundles exclude these files. `Trainer.load(bundle)` leaves explanations
+unavailable with reason `model_only`; retain `explanations.run_root` separately.
+
+## Read and plot gradient scores
 
 ```python
-def read_gradient_scores(path):
-    frame = pd.read_csv(path)
-    required = ["table", "column", "score"]
-    missing = set(required) - set(frame.columns)
-    if missing:
-        raise ValueError(f"Unexpected gradient schema in {path}: missing {sorted(missing)}")
-    frame = frame[required].copy()
-    frame["score"] = pd.to_numeric(frame["score"], errors="raise")
-    if frame["score"].isna().any() or not frame["score"].map(
-        lambda value: float("-inf") < value < float("inf")
-    ).all():
-        raise ValueError(f"Non-finite gradient scores in {path}")
-    if (frame["score"] < 0).any():
-        raise ValueError(f"Unexpected negative scores in {path}; check producer semantics")
-    return frame.sort_values("score", ascending=False).reset_index(drop=True)
+from IPython.display import display
 
-scores = read_gradient_scores(gradient_path)
-if scores.empty:
-    print("No gradient rows were recorded.")
+if explanations.availability["gradient"].available:
+    scores = explanations.gradient_scores().to_pandas()  # table, column, score; descending
+    if scores.empty:
+        print("No gradient rows were recorded.")
+    else:
+        print("Recorded score sum:", scores["score"].sum())
+        display(scores.head(20))
+        figure, axis = explanations.plot_gradient(top_k=20)
+        axis.set_title(f"TEST gradient scores — {explanations.trial_root}")
+        display(figure)
 else:
-    print("Recorded score sum:", scores["score"].sum())
-    display(scores.head(20))
+    print(explanations.availability["gradient"])
 ```
 
-The producer aggregates gradients within examples using gradient-based weights, averages across
-examples, then normalizes across all table-column scores when the total is positive. A positive
-normalized total is approximately one; CSV rounding can change that sum, and an all-zero output
-remains zero. Do not renormalize a
-top-20 subset and present it as a full-graph percentage. Bar charts should label values “gradient
-score”, include table and column, and identify the run/stage.
+The reader uses `explain_test/scores.csv` from the selected trial and returns the shared
+`GraphGradientScore` schema. It validates the CSV rather than treating extra columns or
+malformed rows as features. The producer aggregates gradients within examples using
+gradient-based weights, averages across examples, then normalizes across all table-column
+scores when the total is positive. Scores are written with six decimal places; a positive
+recorded total is approximately one, while all-zero output remains zero.
 
-### Plot from the file, not from memory
+`plot_gradient()` rereads that file, sorts before selecting the top N, labels bars
+`table.column`, and preserves recorded values. Do not type values copied from another output,
+renormalize a top-20 subset, or present scores as percentages. Report the run and TEST stage.
+The helpers return figures and axes without calling `show()`. In notebooks use `display(figure)`;
+in scripts use `figure.savefig("training-importance.png", bbox_inches="tight")` when saving is
+requested, or `matplotlib.pyplot.show()` for a window. Plotting requires Matplotlib
+(`kumo-engine[plots]`).
 
-Plot code reads the selected run's file when it runs. Do not type values copied from an earlier
-output, a printed table or a retained summary: those may belong to another run. `scores.csv` is
-not necessarily sorted, so sort descending before taking the top N. Label each bar `table.column`;
-the same column name (for example `created_at`) can appear in two tables, and a bare column name
-merges them. Plot the recorded scores unchanged, with no rescaling, then state the run and stage.
-A cohort chart keeps the producer's cohort order and keeps `N/A` and `OTHER(*)` as bars of their
-own.
+## Read and plot column cohorts
 
-## Read column cohorts
-
-The JSON contains `task_type` and a `cohorts` list. Each entry identifies `table_name`, `hop`,
-`col_name`, and `stype`; its inner `cohorts` list contains bucket labels. `populations` is a list
-of relative shares, not integer row counts. `predictions` and optional `targets` are either
-lists or mappings from class labels to lists. The latter must be interpreted one class at a time.
-Nonempty cohort labels require prediction data; an empty prediction mapping is incomplete,
-not an empty cohort result. Strings are not valid series, even when their lengths match.
+The reader validates `column_analysis/test/column_analysis.json` and returns a shared
+`ColumnAnalysisOutput`. Discover the recorded task, complete `(table_name, hop, col_name)` keys,
+and class labels before selecting a chart:
 
 ```python
-def read_column_cohorts(path):
-    payload = json.loads(Path(path).read_text())
-    if not isinstance(payload, dict) or not isinstance(payload.get("cohorts"), list):
-        raise ValueError(f"Unexpected column-analysis schema in {path}")
-    rows = []
-    for entry in payload["cohorts"]:
-        if not isinstance(entry, dict):
-            raise ValueError(f"Unexpected cohort entry in {path}")
-        labels = entry.get("cohorts")
-        shares = entry.get("populations")
-        if not isinstance(labels, list) or not isinstance(shares, list):
-            raise ValueError(f"Cohort labels and populations must be lists in {path}")
-        predictions = entry.get("predictions")
-        targets = entry.get("targets")
-        if not isinstance(predictions, (list, dict)):
-            raise ValueError(f"Predictions must be a list or class mapping in {path}")
-        if targets is not None and not isinstance(targets, (list, dict)):
-            raise ValueError(f"Targets must be a list or class mapping in {path}")
-        predictions = predictions if isinstance(predictions, dict) else {None: predictions}
-        targets = targets if isinstance(targets, dict) else {None: targets}
-        if labels and not predictions:
-            raise ValueError(f"Missing predictions for nonempty cohorts in {path}")
-        if len(shares) != len(labels):
-            raise ValueError(f"Cohort/population length mismatch in {path}")
-        for name, series in (("predictions", predictions), ("targets", targets)):
-            for values in series.values():
-                if name == "targets" and values is None:
-                    continue
-                if not isinstance(values, list):
-                    raise ValueError(f"Each {name} series must be a list in {path}")
-                if len(values) != len(labels):
-                    raise ValueError(f"Cohort/{name} length mismatch in {path}")
-        for class_label, values in predictions.items():
-            observed = targets.get(class_label)
-            for index, label in enumerate(labels):
-                rows.append({
-                    "table": entry["table_name"], "hop": entry["hop"],
-                    "column": entry["col_name"], "class": class_label,
-                    "cohort": label, "population_share": shares[index],
-                    "mean_prediction": values[index],
-                    "mean_target": None if observed is None else observed[index],
-                    "prediction_score": entry["prediction_score"],
-                    "target_score": entry.get("target_score"),
-                })
-    return payload.get("task_type"), pd.DataFrame(rows)
-
-task_type, cohorts = read_column_cohorts(column_path)
-print("Recorded task:", task_type)
-if cohorts.empty:
-    print("No column cohorts were recorded.")
+if explanations.availability["cohorts"].available:
+    analysis = explanations.column_analysis()
+    print("Recorded task:", analysis.task_type)
+    print("Cohort keys:", explanations.cohort_keys())
 else:
-    display(cohorts.head(30))
+    print(explanations.availability["cohorts"])
 ```
 
-Select one table/column/hop/class before plotting means. Preserve cohort ordering from the
-producer. `COUNT(*)` is a relationship-count cohort; `OTHER(*)` groups remaining categories;
-`N/A` describes missing values. None is a literal user feature to remove automatically.
-Do not derive exact counts from population shares without the correct denominator. Scores are
-weighted standard deviations before normalization, not measures of predictive accuracy.
+After choosing a key from that output, inspect its labels:
+
+```python
+key = ("users", 0, "age")  # replace with the table/hop/column you chose
+print("Classes:", explanations.classes(key))
+```
+
+For binary positive-class or regression vectors, `classes(key)` is empty:
+
+```python
+cohort = explanations.cohort(key)
+figure, (prediction_axis, population_axis) = explanations.plot_cohort(key)
+display(figure)
+```
+
+For class-keyed multiclass or multilabel outputs, use this alternative with an explicitly
+chosen label from `classes(key)`:
+
+```python
+class_name = "True"  # replace with your chosen recorded class label
+cohort = explanations.cohort(key, class_name=class_name)
+figure, (prediction_axis, population_axis) = explanations.plot_cohort(
+    key, class_name=class_name)
+display(figure)
+```
+
+`cohort()` returns `ColumnCohorts`; class selection validates the label while retaining the
+full class dictionaries. The upper plot compares mean predictions and observed targets when
+recorded; the lower plot shows population shares separately. These are relative shares, not
+integer row counts. Do not derive counts without the correct denominator or fabricate a
+missing negative-class vector. Preserve producer order, including `N/A` (missing values),
+`OTHER(*)` (remaining categories), and `COUNT(*)` (relationship counts); none is a literal
+user feature to remove automatically. Scores measure weighted between-cohort standard
+deviation before separate normalization, not predictive accuracy or gradient attribution.
 
 ## Sampled subgraphs
 
 The same post-training step writes per-entity subgraphs to `subgraph_collector/test/` in the
 selected trainer directory: `strategy_mappings.json` plus `subgraph_json/<ordinal>.json`, one file
-per sampled test entity. Take the trainer name from `best_trainer.json` (the last component of its
-`best_trainer` path) and use its `_refit_trainval` sibling when that directory exists. Do not glob
-every `version_*` directory or every run: only the selected trainer's files describe this model. The
-folder also holds other collector formats (`nested_json/`, `output/`, `rfm/`) and
+per sampled test entity. The API resolves the selected trainer from `best_trainer.json` and
+its recorded `_refit_trainval` state as described above. TEST explanations use the
+train+validation refit when recorded, otherwise the original fit. If the published bundle uses a
+full-data refit, these artifacts describe the earlier fit, not the published model's parameters.
+Do not glob every `version_*` directory or every run; inspect only the selected TEST trial.
+The folder also holds other collector formats (`nested_json/`, `output/`, `rfm/`) and
 `global_aggr_feature/`; read `subgraph_json/` only.
 
 The files cover a bounded sample, not the test set. For each selection strategy (for binary
@@ -185,53 +153,40 @@ Each file is a `kumoapi.explain.Subgraph`:
 - `score` is a gradient magnitude divided by the largest one in that subgraph, so it is
   comparable within one file, not across files or with `scores.csv`. It may be null.
 
-JSON object keys are strings: index `nodes`, `edges` and `features` with `str(node_id)`; ids inside
-`edges` and `tables` lists are integers.
+List sampled graph references without loading their bodies:
 
 ```python
-from pathlib import PurePosixPath
-
-def selected_trainer_dir(run_dir):
-    metadata = sorted(Path(run_dir).rglob("best_trainer.json"))
-    if len(metadata) != 1:
-        raise ValueError(f"Expected one best_trainer.json under {run_dir}: {metadata}")
-    name = PurePosixPath(json.loads(metadata[0].read_text())["best_trainer"]).name
-    for wanted in (f"{name}_refit_trainval", name):
-        found = [p for p in metadata[0].parent.rglob(wanted) if p.is_dir()]
-        if len(found) == 1:
-            return found[0]
-    raise FileNotFoundError(f"Trainer {name} is not under {metadata[0].parent}")
-
-def subgraph_tables(subgraph):
-    store = subgraph["subgraph_store"]
-    table_of = {node_id: table for table, ids in store["tables"].items() for node_id in ids}
-    nodes = pd.DataFrame([dict(node, table=table_of.get(int(key)))
-                          for key, node in store["nodes"].items()])
-    edges = pd.DataFrame([{"src": int(src), "relation": relation, "dst": dst}
-                          for src, relations in store["edges"].items()
-                          for relation, dsts in relations.items() for dst in dsts])
-    by_node = (subgraph.get("feature_store") or {}).get("features") or {}
-    features = pd.DataFrame([dict(feature, node_id=int(key))
-                             for key, columns in by_node.items() for feature in columns.values()],
-                            columns=["node_id", "table_name", "name", "value", "stype", "score"])
-    return store["nodes"][str(store["root_id"])], nodes, edges, features
-
-subgraph_dir = selected_trainer_dir(run_dir) / "subgraph_collector" / "test"
-paths = sorted((subgraph_dir / "subgraph_json").glob("*.json"), key=lambda p: int(p.stem))
-if not paths:
-    print(f"No sampled subgraphs in {subgraph_dir}. Check disable_explain in this run's plan "
-          "and the fit log for a post-training explanation error.")
-else:
-    mappings = json.loads((subgraph_dir / "strategy_mappings.json").read_text())
-    subgraphs = {int(p.stem): json.loads(p.read_text()) for p in paths}
-    print(len(subgraphs), "subgraphs; strategies:", sorted(mappings["mappings"]))
-    root, nodes, edges, features = subgraph_tables(subgraphs[min(subgraphs)])
-    print("root entity:", root["pkey_name"], "=", root["pkey"])
-    display(nodes, edges, features.sort_values("score", ascending=False, na_position="last"))
+samples = explanations.samples()
+if not samples:
+    print("No sampled graphs found in:", explanations.trial_root)
+for reference in samples:
+    print(reference.artifact_id, reference.categories, reference.original_ids,
+          reference.available)
 ```
 
-Absent or empty `subgraph_json/` is not "no neighbourhood": report the path and check the items
-in *If artifacts are missing*. The collector skips forecasting, multilabel ranking, and
+`samples()` lists references without loading graph bodies. Collector-local `artifact_id` values
+are not entity primary keys; `categories` and optional `original_ids` preserve the sampling
+metadata. A reference may name a missing graph, so check `available`. A graph can also be read
+without mapping metadata; arbitrary original-key lookup is not provided.
+
+Choose an artifact ID from this inventory; do not silently select the first sample:
+
+```python
+artifact_id = "0"  # replace with your chosen available collector ID
+reference = next(item for item in samples if item.artifact_id == artifact_id)
+if reference.available:
+    graph = explanations.sample(reference.artifact_id)  # typed kumoapi Subgraph
+    print(graph.subgraph_store, graph.feature_store)
+else:
+    print("Sample unavailable:", reference.path)
+```
+
+The typed stores use integer node keys, unlike raw JSON's string object keys. Either store can
+be absent. The API preserves structure, feature values, scores, timestamps, and aggregated
+nodes; it does not render an interactive sampled graph.
+
+Absent or empty `subgraph_json/` is not "no neighbourhood": report the path, check
+`disable_explain` and post-training errors, and follow *If artifacts are missing*. The collector skips forecasting, multilabel ranking, and
 link-prediction models other than the hybrid, ID and shallow-RHS modules. These files carry
 entity primary keys and raw feature values of real rows. Review them before sharing, and keep
 them out of shared locations unless the user asks.
@@ -260,6 +215,10 @@ Do not invoke internal `best_trainer.explain` as customer API code.
 ## Evidence and compatibility
 
 Source: Kumo modules, as shipped in the runtime:
+
+- `kumo.engine.explain.results.TrainingExplanations`: lazy availability, typed readers,
+  sample references and plotting; `kumo.engine.explain._artifacts`: retained-run selection
+  and artifact validation; `kumo.engine.explain.plotting`: plotting semantics.
 
 - `kumo.engine.trainer.trainer.Trainer.fit`: post-training dispatch, disable flag, error
   handling, local result fields and run directory.

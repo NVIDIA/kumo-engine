@@ -830,6 +830,15 @@ def query_is_temporal(query: ValidatedNativeQuery, graph: NativeGraph) -> bool:
     return query_train_table_time(query, graph) == TrainTableTime.REAL
 
 
+def link_target_window_end(query: Any) -> tuple[int, str] | None:
+    """Creation cutoff for imported link targets, relative to the anchor."""
+    if query is None:
+        return None
+    aggregation = query.get_final_target_aggregation()
+    window = None if aggregation is None else aggregation.aggr_time_range
+    return None if window is None else (int(window.end), window.unit.value)
+
+
 def static_link_fact(query: Any, rhs_node_type: str | None) -> dict[str, str]:
     """The fact table whose rows are a static link query's links."""
     fact, entity_col = split_column_fqn(str(query.get_single_target_fkey()))

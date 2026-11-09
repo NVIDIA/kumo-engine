@@ -1,0 +1,123 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Kumo Engine E2E lifecycle
+
+on:  # yamllint disable-line rule:truthy
+  workflow_run:
+    workflows: [Kumo Engine nightly, Kumo Engine weekly]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      payload:
+        description: Source run and cases with runner failures
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+jobs:
+  lifecycle:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' && vars.ENGINE_E2E_POOL_ROLE != '' &&
+      vars.ENGINE_E2E_RUNNER_APP_ID != '' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.head_branch == 'main' &&
+      contains(fromJSON('["workflow_dispatch", "schedule"]'), github.event.workflow_run.event))
+    runs-on: ubuntu-24.04
+    environment:
+      name: engine-e2e-pool
+      deployment: false
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.controller.outputs.matrix }}
+    env:
+      POOL_RUN_ID: ${{ github.event.workflow_run.id }}
+      POOL_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      ENGINE_E2E_TEMPLATES_JSON: ${{ vars.ENGINE_E2E_TEMPLATES_JSON }}
+      GITHUB_TOKEN: ${{ github.token }}
+      RESULTS_S3: ${{ vars.ENGINE_E2E_RESULTS_S3 }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3
+        if: github.event_name == 'workflow_run'
+        id: app-token
+        with:
+          app-id: ${{ vars.ENGINE_E2E_RUNNER_APP_ID }}
+          private-key: ${{ secrets.ENGINE_E2E_RUNNER_APP_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: write
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6
+        with:
+          role-to-assume: ${{ vars.ENGINE_E2E_POOL_ROLE }}
+          aws-region: ${{ vars.ENGINE_E2E_AWS_REGION || 'us-west-2' }}
+      - id: controller
+        run: node .github/scripts/engine-e2e-pool.cjs "$MODE"
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          MODE: ${{ github.event_name == 'workflow_dispatch' && 'report' || 'cleanup' }}
+  failed-case:
+    needs: lifecycle
+    if: >-
+      github.event_name == 'workflow_dispatch' && needs.lifecycle.outputs.matrix != '' &&
+      fromJSON(needs.lifecycle.outputs.matrix).include[0] != null
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: gha-kumo-workflow-tests
+      deployment: false
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.lifecycle.outputs.matrix) }}
+    concurrency:
+      group: engine-e2e-${{ fromJSON(inputs.payload).run }}-${{ fromJSON(inputs.payload).attempt }}-${{ matrix.case }}-${{ matrix.scale }}
+      cancel-in-progress: true
+    env:
+      CASE: ${{ matrix.case }}
+      SCALE: ${{ matrix.scale }}
+      INSTANCE: ${{ matrix.instance }}
+      FAILURE_PHASE: ${{ matrix.phase || 'capacity' }}
+      FAILURE_ERROR: ${{ matrix.error || 'No runner capacity before tier deadline' }}
+      SOURCE_RUN: ${{ fromJSON(inputs.payload).run }}
+      SOURCE_ATTEMPT: ${{ fromJSON(inputs.payload).attempt }}
+      SOURCE_SHA: ${{ fromJSON(inputs.payload).sha }}
+      CAPACITY_DEADLINE: ${{ fromJSON(inputs.payload).deadline }}
+      RESULTS_S3: ${{ vars.ENGINE_E2E_RESULTS_S3 }}
+    steps:
+      - name: Record the runner failure
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          result = dict(status='failed', phase=os.environ['FAILURE_PHASE'], case=os.environ['CASE'].removesuffix('-control'),
+              control=os.environ['CASE'].endswith('-control'),
+              scale=os.environ['SCALE'], source_sha=os.environ['SOURCE_SHA'],
+              requested_instance_type=os.environ['INSTANCE'], hardware=dict(instance_type=None),
+              capacity_deadline=float(os.environ['CAPACITY_DEADLINE']),
+              error=os.environ['FAILURE_ERROR'])
+          (Path(os.environ['RUNNER_TEMP']) / 'result.json').write_text(json.dumps(result))
+          PY
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-west-2
+      - name: Save the failed result
+        run: aws s3 cp "$RUNNER_TEMP/result.json" "${RESULTS_S3%/}/$SOURCE_RUN/$SOURCE_ATTEMPT/$SCALE/$CASE.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        if: always()
+        with:
+          name: engine-e2e-capacity-${{ env.SOURCE_RUN }}-${{ env.SOURCE_ATTEMPT }}-${{ matrix.case }}-${{ matrix.scale }}
+          path: ${{ runner.temp }}/result.json
+          if-no-files-found: error
+      - name: Fail the runner check
+        if: always()
+        run: exit 1

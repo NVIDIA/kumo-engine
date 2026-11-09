@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from io_utils import fsutil, logging
 from io_utils.json import load_json
+from kumo.testing.bigquery import GCP_WORKERS_STARTED
 from monitoring.settings import MonitoringSettings
 from rest.backends.data_backend.context import DataBackendContext
 from rest.backends.ml_backend.ml_job_backend import MLJobBackend
@@ -467,6 +468,7 @@ def _pool_subprocesses(_diskgraph_deploy_config, request):
         env = {**os.environ, **env_overrides}
         log.info('Spawning %s: %s', name, ' '.join(args))
         proc = subprocess.Popen(args, env=env)
+        request.config.stash[GCP_WORKERS_STARTED] = True
         procs.append(proc)
         _POOL_SUBPROCESSES_LIVE.append(proc)
         return proc

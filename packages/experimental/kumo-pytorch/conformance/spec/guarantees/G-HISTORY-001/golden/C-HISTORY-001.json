@@ -1,0 +1,466 @@
+{
+  "id": "C-HISTORY-001",
+  "contract": {
+    "$type": "DataLoaderSpec",
+    "schema": {
+      "$type": "DataSchema",
+      "tables": [
+        {
+          "$type": "TableSpec",
+          "name": "events",
+          "primary_key": "id",
+          "columns": {
+            "id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "user_id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "at": {
+              "$type": "DType",
+              "name": "timestamp",
+              "unit": "s",
+              "timezone": "UTC",
+              "precision": null,
+              "scale": null
+            },
+            "first": {
+              "$type": "DType",
+              "name": "string",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "second": {
+              "$type": "DType",
+              "name": "string",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": "at"
+        },
+        {
+          "$type": "TableSpec",
+          "name": "users",
+          "primary_key": "id",
+          "columns": {
+            "id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": {
+            "$type": "NonTemporal"
+          }
+        }
+      ],
+      "relations": [
+        {
+          "$type": "RelationSpec",
+          "name": "user_events",
+          "left_table": "users",
+          "left_key": "id",
+          "right_table": "events",
+          "right_key": "user_id"
+        }
+      ]
+    },
+    "sample": {
+      "$type": "SampleSpec",
+      "entity": {
+        "$type": "EntitySpec",
+        "table": "users",
+        "entity_type": "users",
+        "filters": [],
+        "available_from": null
+      },
+      "entity_values": {},
+      "dated_entity_values": {},
+      "events": {
+        "transaction": {
+          "$type": "EventSpec",
+          "rows": {
+            "$type": "Rows",
+            "path": [
+              "user_events"
+            ],
+            "time": {
+              "$type": "TimeWindow",
+              "column": "at",
+              "start": null,
+              "stop": 0
+            },
+            "filters": [],
+            "active": null,
+            "distinct": true
+          },
+          "fields": {
+            "first": {
+              "$type": "Field",
+              "column": "first",
+              "path": [],
+              "selection": "one",
+              "time_column": null,
+              "reference_time": "sample"
+            },
+            "second": {
+              "$type": "Field",
+              "column": "second",
+              "path": [],
+              "selection": "one",
+              "time_column": null,
+              "reference_time": "sample"
+            },
+            "age": {
+              "$type": "EventTimeDelta",
+              "unit": "seconds",
+              "dtype": {
+                "$type": "DType",
+                "name": "float64",
+                "unit": null,
+                "timezone": null,
+                "precision": null,
+                "scale": null
+              }
+            }
+          },
+          "limit": null,
+          "order": "ascending"
+        }
+      },
+      "current_events": {},
+      "neighborhoods": {},
+      "targets": {},
+      "candidate_sets": {}
+    },
+    "batch": {
+      "$type": "BatchSpec",
+      "inputs": {
+        "grouped": {
+          "$type": "Input",
+          "source": {
+            "$type": "EventSource",
+            "events": [
+              "transaction"
+            ],
+            "collection": "history",
+            "max_events": null,
+            "keep": "last",
+            "order": "ascending"
+          },
+          "representation": {
+            "$type": "Fields",
+            "fields": [
+              {
+                "$type": "Encode",
+                "field": "first",
+                "encoding": {
+                  "$type": "UseEncoding",
+                  "name": "codes"
+                },
+                "id_space": "tokens"
+              },
+              {
+                "$type": "Encode",
+                "field": "second",
+                "encoding": {
+                  "$type": "UseEncoding",
+                  "name": "codes"
+                },
+                "id_space": "tokens"
+              }
+            ],
+            "row": {
+              "$type": "Tokens",
+              "max_tokens": null,
+              "keep": "first",
+              "missing": "omit",
+              "occurrence_order": "fields"
+            },
+            "history": {
+              "$type": "Grouped"
+            },
+            "field_names": null,
+            "field_space": null,
+            "forbidden_fields": []
+          },
+          "layout": {
+            "$type": "Nested",
+            "fields": {
+              "$type": "Packed"
+            },
+            "events": {
+              "$type": "Packed"
+            }
+          }
+        },
+        "flat": {
+          "$type": "Input",
+          "source": {
+            "$type": "EventSource",
+            "events": [
+              "transaction"
+            ],
+            "collection": "history",
+            "max_events": null,
+            "keep": "last",
+            "order": "ascending"
+          },
+          "representation": {
+            "$type": "Fields",
+            "fields": [
+              {
+                "$type": "Encode",
+                "field": "first",
+                "encoding": {
+                  "$type": "UseEncoding",
+                  "name": "codes"
+                },
+                "id_space": "tokens"
+              },
+              {
+                "$type": "Encode",
+                "field": "second",
+                "encoding": {
+                  "$type": "UseEncoding",
+                  "name": "codes"
+                },
+                "id_space": "tokens"
+              }
+            ],
+            "row": {
+              "$type": "Tokens",
+              "max_tokens": null,
+              "keep": "first",
+              "missing": "omit",
+              "occurrence_order": "fields"
+            },
+            "history": {
+              "$type": "Flatten",
+              "max_tokens": 20,
+              "keep": "last",
+              "prefer_event_boundary": true,
+              "before": null,
+              "separator": null,
+              "separator_placement": "between",
+              "after": null
+            },
+            "field_names": null,
+            "field_space": null,
+            "forbidden_fields": []
+          },
+          "layout": {
+            "$type": "Packed"
+          }
+        }
+      },
+      "targets": {},
+      "encodings": {
+        "codes": {
+          "$type": "Vocabulary",
+          "values": [
+            [
+              "a",
+              2
+            ],
+            [
+              "b",
+              3
+            ],
+            [
+              "c",
+              4
+            ],
+            [
+              "d",
+              5
+            ],
+            [
+              "e",
+              6
+            ]
+          ],
+          "max_size": null,
+          "min_frequency": 1,
+          "missing_id": 0,
+          "unknown_id": 1
+        }
+      },
+      "id_spaces": {
+        "tokens": {
+          "$type": "IdSpace",
+          "specials": {
+            "pad": "[PAD]",
+            "unknown": "[UNK]",
+            "missing": "[MISSING]"
+          }
+        }
+      },
+      "field_names": {},
+      "batching": {
+        "$type": "Batching",
+        "max_samples": null,
+        "max_tokens": null,
+        "length_input": null,
+        "bucket_by_length": false,
+        "drop_last": false
+      }
+    },
+    "version": 3
+  },
+  "tables": {
+    "users": [
+      {
+        "id": 1
+      },
+      {
+        "id": 2
+      },
+      {
+        "id": 3
+      }
+    ],
+    "events": [
+      {
+        "id": 1,
+        "user_id": 1,
+        "at": 40,
+        "first": "a",
+        "second": "b"
+      },
+      {
+        "id": 2,
+        "user_id": 1,
+        "at": 90,
+        "first": "c",
+        "second": null
+      },
+      {
+        "id": 3,
+        "user_id": 2,
+        "at": 80,
+        "first": "d",
+        "second": "e"
+      }
+    ]
+  },
+  "anchors": [
+    {
+      "sample_id": "u1",
+      "entity_id": 1,
+      "as_of_time": 100
+    },
+    {
+      "sample_id": "u2",
+      "entity_id": 2,
+      "as_of_time": 100
+    },
+    {
+      "sample_id": "u3",
+      "entity_id": 3,
+      "as_of_time": 100
+    }
+  ],
+  "expected": {
+    "u1": {
+      "entity_values": {}
+    },
+    "u2": {
+      "entity_values": {}
+    },
+    "u3": {
+      "entity_values": {}
+    }
+  },
+  "reason": "Final reserved IDs are pad=0, unknown=1 and missing=2. The one supplied shared vocabulary allocates ordinary a=3, b=4, c=5, d=6 and e=7. Sample 1 has event tokens [3,4], then [5]; sample 2 has [6,7]; sample 3 has no events. Both storage buffers are [3,4,5,6,7]. Grouped event-token boundaries are [0,2,3,5] and sample-event boundaries [0,2,3,3]; flattened sample-token boundaries are [0,3,5,5]. The NULL second field emits no token but does not discard its event. No markers or automatic timing values are requested.",
+  "batch": {
+    "inputs": {
+      "grouped": {
+        "value_ids": {
+          "dtype": "int64",
+          "shape": [
+            5
+          ],
+          "values": [
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
+        },
+        "field_offsets": {
+          "dtype": "int64",
+          "shape": [
+            4
+          ],
+          "values": [
+            0,
+            2,
+            3,
+            5
+          ]
+        },
+        "sequence": {
+          "offsets": {
+            "dtype": "int64",
+            "shape": [
+              4
+            ],
+            "values": [
+              0,
+              2,
+              3,
+              3
+            ]
+          }
+        }
+      },
+      "flat": {
+        "value_ids": {
+          "dtype": "int64",
+          "shape": [
+            5
+          ],
+          "values": [
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
+        },
+        "offsets": {
+          "dtype": "int64",
+          "shape": [
+            4
+          ],
+          "values": [
+            0,
+            3,
+            5,
+            5
+          ]
+        }
+      }
+    }
+  }
+}

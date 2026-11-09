@@ -1064,3 +1064,240 @@ def test_dotted_table_names_survive_snapshot_and_training(tmp_path):
         query.generate_training_table(snapshot).train_table_path).num_rows == 120
     with pytest.raises(PredictiveQueryPlanError, match="'users'"):
         PredictiveQuery(graph, 'PREDICT v1.id FOR EACH users.id').validate()
+
+
+def _float_key_graph(root, connector_cls, users, events):
+    from kumoapi.graph import Edge
+
+    root.mkdir()
+    pq.write_table(pa.table(users), root / 'users.parquet')
+    pq.write_table(pa.table(events), root / 'events.parquet')
+    connector = connector_cls(root_dir=str(root))
+    return Graph(
+        {
+            'users':
+            Table.from_source_table(connector['users'], primary_key='id'),
+            'events':
+            Table.from_source_table(connector['events'],
+                                    primary_key='event_id'),
+        }, [Edge('events', 'user_id', 'users')])
+
+
+def test_float_key_columns_ingest_as_integer_keys(tmp_path, monkeypatch):
+    from diskgraph import SamplerEngine
+
+    from kumo.engine import FileConnector, configure
+    from kumo.engine import graph as graph_module
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    graph = _float_key_graph(
+        tmp_path / 'source', FileConnector, {
+            'id': pa.array([1.0, 2.0, 3.0]),
+            'name': ['a', 'b', 'c']
+        }, {
+            'event_id': range(4),
+            'user_id': pa.array([1.0, 2.0, None, 3.0]),
+            'amount': [1, 2, 3, 4],
+        })
+    for table, key in (('users', 'id'), ('events', 'user_id')):
+        columns = graph.tables[table].definition.cols
+        assert next(c.dtype for c in columns if c.name == key) == Dtype.float64
+
+    with pytest.warns(UserWarning) as caught:
+        snapshot = graph.snapshot()
+    messages = [str(warning.message) for warning in caught]
+    assert [m for m in messages if 'float64' in m] == [
+        'Key column users.id is stored as float64; its whole-number values '
+        'are converted to int64 at snapshot time. Store keys as integers or '
+        'strings at the source to avoid this.',
+        'Key column events.user_id is stored as float64; its whole-number '
+        'values are converted to int64 at snapshot time. Store keys as '
+        'integers or strings at the source to avoid this.',
+    ]
+    assert not [m for m in messages if 'invalid values' in m]
+
+    stats = json.loads(
+        (snapshot.index_path / 'ingest_stats.json').read_text())['stats']
+    assert stats['total_nodes'] == 7
+    assert stats['edge_counts']['events_user_id_to_users_id'] == 3
+    assert stats['key_failures_by_context'] == {
+        'fkey:events.user_id': {
+            'parse_failures': 1,
+            'non_null_parse_failures': 0,
+            'lookup_failures': 0,
+            'membership_failures': 0,
+        }
+    }
+    native = json.loads(
+        (snapshot.index_path / 'diskgraph_config.json').read_text())
+    native_columns = {
+        (table['name'], column['name']): column
+        for table in native['tables'] for column in table['columns']
+    }
+    assert native_columns['users', 'id']['ingested_dtype'] == 'int64'
+    assert native_columns['events', 'user_id']['ingested_dtype'] == 'int64'
+
+    engine = SamplerEngine(str(snapshot.index_path))
+    batches = [
+        event['batch'] for event in engine.fetch_features([{
+            'node_type': 'events',
+            'node_ids': [0, 1, 2, 3],
+            'feature_names': ['event_id', 'user_id'],
+        }]) if event['type'] == 'feature'
+    ]
+    fetched = pa.Table.from_batches(batches).sort_by('event_id')
+    assert fetched.column('user_id').type == pa.int64()
+    assert fetched.column('user_id').to_pylist() == [1, 2, None, 3]
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError('a cached snapshot must not scan its keys')
+
+    monkeypatch.setattr(graph_module, '_count_inexact_keys', unexpected)
+    assert graph.snapshot().id == snapshot.id
+
+
+@pytest.mark.parametrize('extension, table_name, key, values', [
+    ('parquet', 'users', 'id', [1.0, 2.5, 3.0]),
+    ('csv', 'events', 'user_id', [1.0, 2.5, None, 3.0]),
+])
+def test_float_key_with_fractional_values_is_refused(
+        tmp_path, extension, table_name, key, values):
+    from kumoapi.graph import Edge
+
+    from kumo.engine import FileConnector, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    columns = {
+        'users': {
+            'id': [1, 2, 3],
+            'name': ['a', 'b', 'c']
+        },
+        'events': {
+            'event_id': list(range(4)),
+            'user_id': [1, 2, None, 3],
+        },
+    }
+    columns[table_name][key] = pa.array(values, pa.float64())
+    for name, data in columns.items():
+        if extension == 'csv':
+            csv.write_csv(pa.table(data), root / f'{name}.csv')
+        else:
+            pq.write_table(pa.table(data), root / f'{name}.parquet')
+    connector = FileConnector(root_dir=str(root))
+    graph = Graph(
+        {
+            'users':
+            Table.from_source_table(connector['users'], primary_key='id'),
+            'events':
+            Table.from_source_table(connector['events'],
+                                    primary_key='event_id'),
+        }, [Edge('events', 'user_id', 'users')])
+
+    message = (rf"Key column {table_name}\.{key} is stored as float64 and 1 "
+               r"of its values cannot be converted to an integer exactly")
+    with pytest.warns(UserWarning, match='stored as float64'):
+        with pytest.raises(ValueError, match=message):
+            graph.snapshot()
+
+
+@pytest.mark.parametrize('target, parts, refused', [
+    ('int64', [pa.array([-2.0**53 + 1], pa.float64()),
+               pa.array([0.0, 2.0**53 - 1], pa.float64())], 0),
+    ('int64', [pa.array([2.0**53, -2.0**53], pa.float64()),
+               pa.array([2.0**53 + 2], pa.float64())], 3),
+    ('int64', [pa.array([2.0**53 + 2, -2.0**53 - 2], pa.float64()),
+               pa.array([1.0, float('inf'), float('nan'), None],
+                        pa.float64())], 3),
+    ('int64', [pa.array([float('inf'), float('-inf'), float('nan'), 1.0],
+                        pa.float64())], 2),
+    ('int64', [pa.array([float('inf'), 1.0], pa.float32())], 1),
+    ('int64', [pa.array(['1.0'], pa.string()),
+               pa.array(['2.5'], pa.string())], 1),
+    ('int64', [pa.array([' 7 ', '+8', '-9.00', '0001', '0' * 30 + '1', None],
+                        pa.string())], 0),
+    ('int64', [pa.array(['8.', '1e3', '', 'inf', '5.0.0', '.0', '٣'],
+                        pa.string())], 7),
+    ('int64', [pa.array(['9223372036854775807', '9223372036854775808',
+                         '-9223372036854775808', '-9223372036854775809'],
+                        pa.string())], 2),
+    ('int64', [pa.array(['2.5', '3.0'], pa.large_string())], 1),
+    ('int64', [pa.array(['1.0', '2.5', None, '1.0']).dictionary_encode()], 1),
+    ('byte', [pa.array(['255', '256', '-1', '0'], pa.string())], 2),
+    ('byte', [pa.array(['-0', '-0.0', '+0', '0'], pa.string())], 2),
+    ('int64', [pa.array([1.0], pa.float32()),
+               pa.array([16777216.5], pa.float64())], 1),
+    ('int64', [pa.array(['x'], pa.string()), pa.array([2.5], pa.float64())],
+     2),
+    ('int64', [pa.array([16777215.0, 16777216.0], pa.float32()),
+               pa.array([16777220.0], pa.float32())], 2),
+    ('int64', [pa.array(np.array([2047.0, 2048.0, 2050.0], np.float16))],
+     2),
+    ('int64', [pa.array([Decimal('7.00'), None], pa.decimal128(10, 2))], 0),
+    ('int64', [pa.array([Decimal('2.50'), Decimal('7.00')],
+                        pa.decimal128(10, 2))], 1),
+    ('int64', [pa.array([Decimal('9223372036854775807.00'),
+                         Decimal('-9223372036854775809.00')],
+                        pa.decimal128(38, 2))], 1),
+    ('int64', [pa.array([Decimal('0E-10'), Decimal('0.0000000001')],
+                        pa.decimal128(10, 10))], 1),
+    *([('int64', [pa.array([Decimal('7.00')], pa.decimal32(9, 2))], 0)]
+      if hasattr(pa, 'decimal32') else []),
+    ('int64', [pa.array([Decimal('1.' + '0' * 58),
+                         Decimal('1.' + '0' * 57 + '1')],
+                        pa.decimal256(76, 58))], 1),
+    ('int64', [pa.array([Decimal(0), Decimal('1E-76'), None],
+                        pa.decimal256(76, 76))], 1),
+    ('int64', [pa.array([None, None], pa.float64())], 0),
+    ('int32', [pa.array([1.0], pa.float64()),
+               pa.array([2**40, 1, None], pa.int64())], 1),
+    ('int64', [pa.array([2**63, 1], pa.uint64())], 1),
+    ('byte', [pa.array([255, 256, -1], pa.int64())], 2),
+    ('byte', [pa.array([200.0, 0.0, None], pa.float64())], 0),
+    ('byte', [pa.array([-1.0, 256.0], pa.float64())], 2),
+    ('byte', [pa.array([float('nan'), float('-inf'), 1.0], pa.float64())],
+     2),
+    ('byte', [pa.array([Decimal('-1.' + '0' * 74), Decimal('1.' + '0' * 74)],
+                       pa.decimal256(76, 74))], 1),
+])
+def test_fractional_key_check_reads_each_staged_part(tmp_path, target, parts,
+                                                     refused):
+    from kumoapi.graph import Edge
+    from kumoapi.source_table import FileType, S3RelativeSource, S3SourceTable
+    from kumoapi.table import Column, TableDefinition
+
+    from kumo.engine import S3Connector
+
+    connector = S3Connector(root_dir='s3://schema-only-fixture')
+
+    def table(name, columns, primary_key):
+        source = S3SourceTable(connector_id=connector.id,
+                               file_type=FileType.PARQUET,
+                               source=S3RelativeSource(path=name))
+        definition = TableDefinition(cols=columns, source_table=source,
+                                     pkey=primary_key)
+        return Table(connector, name, definition)
+
+    graph = Graph(
+        {
+            'users':
+            table('users', [Column('id', Stype.ID, Dtype(target))], 'id'),
+            'events':
+            table('events', [
+                Column('event_id', Stype.ID, Dtype.int64),
+                Column('user_id', Stype.ID, Dtype.float64),
+            ], 'event_id'),
+        }, [Edge('events', 'user_id', 'users')])
+    for part, chunk in enumerate(parts):
+        pq.write_table(pa.table({'user_id': chunk}),
+                       tmp_path / f'part-{part}.parquet')
+    paths = [str(path) for path in sorted(tmp_path.glob('*.parquet'))]
+
+    with pytest.warns(UserWarning, match=f'stored as float64.*{target}'):
+        graph._ingest_tables
+    if refused:
+        with pytest.raises(ValueError, match=f'{refused} of its values'):
+            graph._refuse_fractional_keys('events', paths)
+    else:
+        graph._refuse_fractional_keys('events', paths)

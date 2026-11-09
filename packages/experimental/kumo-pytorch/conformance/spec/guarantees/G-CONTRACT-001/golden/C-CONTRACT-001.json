@@ -1,0 +1,162 @@
+{
+  "id": "C-CONTRACT-001",
+  "contract": {
+    "$type": "DataLoaderSpec",
+    "schema": {
+      "$type": "DataSchema",
+      "tables": [
+        {
+          "$type": "TableSpec",
+          "name": "users",
+          "primary_key": "id",
+          "columns": {
+            "id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "first": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "second": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": {
+            "$type": "NonTemporal"
+          }
+        }
+      ],
+      "relations": []
+    },
+    "sample": {
+      "$type": "SampleSpec",
+      "entity": {
+        "$type": "EntitySpec",
+        "table": "users",
+        "entity_type": "user",
+        "filters": [],
+        "available_from": null
+      },
+      "entity_values": {
+        "z_first": {
+          "$type": "Field",
+          "column": "first",
+          "path": [],
+          "selection": "one",
+          "time_column": null,
+          "reference_time": "sample"
+        },
+        "a_second": {
+          "$type": "Field",
+          "column": "second",
+          "path": [],
+          "selection": "one",
+          "time_column": null,
+          "reference_time": "sample"
+        }
+      },
+      "dated_entity_values": {},
+      "events": {},
+      "current_events": {},
+      "neighborhoods": {},
+      "targets": {},
+      "candidate_sets": {}
+    },
+    "batch": {
+      "$type": "BatchSpec",
+      "inputs": {
+        "entity": {
+          "$type": "Input",
+          "source": {
+            "$type": "EntitySource"
+          },
+          "representation": {
+            "$type": "Fields",
+            "fields": [
+              {
+                "$type": "Encode",
+                "field": "z_first",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              },
+              {
+                "$type": "Encode",
+                "field": "a_second",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              }
+            ],
+            "row": {
+              "$type": "Columns"
+            },
+            "history": {
+              "$type": "Grouped"
+            },
+            "field_names": null,
+            "field_space": null,
+            "forbidden_fields": []
+          },
+          "layout": {
+            "$type": "Separate"
+          }
+        }
+      },
+      "targets": {},
+      "encodings": {},
+      "id_spaces": {},
+      "field_names": {},
+      "batching": {
+        "$type": "Batching",
+        "max_samples": null,
+        "max_tokens": null,
+        "length_input": null,
+        "bucket_by_length": false,
+        "drop_last": false
+      }
+    },
+    "version": 3
+  },
+  "tables": {
+    "users": [
+      {
+        "id": 1,
+        "first": 2,
+        "second": 4
+      }
+    ]
+  },
+  "anchors": [
+    {
+      "sample_id": "user-1",
+      "entity_id": 1,
+      "as_of_time": 10
+    }
+  ],
+  "expected": {
+    "user-1": {
+      "entity_values": {
+        "z_first": 2,
+        "a_second": 4
+      }
+    }
+  },
+  "reason": "User 1 has first=2 and second=4, so the named outputs are z_first=2 and a_second=4. The placement of these definitions in JSON objects does not specify output positions. After saving/loading and dictionary-key rearrangement, the engine must return these same named values with unchanged contract and input fingerprints."
+}

@@ -1,6 +1,6 @@
 # KumoAI Graph Construction
 
-Reference for translating a validated relational schema into Kumo Predict SDK objects.
+Reference for translating a confirmed relational schema into Kumo Predict SDK objects.
 
 Grounded **only** in the shipped Kumo package source. The published Kumo documentation is
 stale for this version of the local SDK — do not cite it, fetch it, or reconcile against it.
@@ -219,10 +219,13 @@ optional bookkeeping: the snapshot object is the argument passed to
 `pquery.generate_prediction_table(snapshot, prediction_time=...)`. Training and prediction
 themselves belong to `kumoai-reference/references/kumo_finetuning_sdk.md`.
 
-**`Graph` has no editing surface.** Its complete API is `.tables`, `.edges`, `.id`,
-`.native_graph`, `.validate()`, `.snapshot()`. There is no `add_table`, `remove_table`, `link`,
-`unlink`, `infer_links`, `get_edge_stats`, `get_table_stats`, `visualize`, or `save`/`load`. To
-change a graph, rebuild it.
+**`Graph` has no editing surface.** Its API includes `.tables`, `.edges`, `.id`, `.native_graph`, `.validate()`, `.visualize()`, and `.snapshot()`.
+There is no `add_table`, `remove_table`, `link`, `unlink`, `infer_links`, `get_edge_stats`, `get_table_stats`, or `save`/`load`.
+To change a graph, rebuild it.
+
+Use `kumo-graph-visualization/SKILL.md` to include an interactive graph in generated notebooks or an SVG export in scripts after graph validation.
+It also covers requested visuals and Markdown inspection during model iteration.
+Visualization adds no required review or pause.
 
 ---
 

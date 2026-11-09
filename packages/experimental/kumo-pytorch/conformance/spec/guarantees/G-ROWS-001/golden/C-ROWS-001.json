@@ -1,0 +1,322 @@
+{
+  "id": "C-ROWS-001",
+  "contract": {
+    "$type": "DataLoaderSpec",
+    "schema": {
+      "$type": "DataSchema",
+      "tables": [
+        {
+          "$type": "TableSpec",
+          "name": "events",
+          "primary_key": "event_id",
+          "columns": {
+            "event_id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "user_id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "group_id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "at": {
+              "$type": "DType",
+              "name": "timestamp",
+              "unit": "s",
+              "timezone": "UTC",
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": "at"
+        },
+        {
+          "$type": "TableSpec",
+          "name": "users",
+          "primary_key": "user_id",
+          "columns": {
+            "user_id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "group_id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": {
+            "$type": "NonTemporal"
+          }
+        }
+      ],
+      "relations": [
+        {
+          "$type": "RelationSpec",
+          "name": "user_events",
+          "left_table": "users",
+          "left_key": "user_id",
+          "right_table": "events",
+          "right_key": "user_id"
+        }
+      ]
+    },
+    "sample": {
+      "$type": "SampleSpec",
+      "entity": {
+        "$type": "EntitySpec",
+        "table": "users",
+        "entity_type": "user",
+        "filters": [],
+        "available_from": null
+      },
+      "entity_values": {
+        "event_count": {
+          "$type": "Aggregate",
+          "source": {
+            "$type": "Rows",
+            "path": [
+              "user_events"
+            ],
+            "time": {
+              "$type": "TimeWindow",
+              "column": "at",
+              "start": null,
+              "stop": 0
+            },
+            "filters": [],
+            "active": null,
+            "distinct": true
+          },
+          "operation": "count",
+          "column": null,
+          "dtype": {
+            "$type": "DType",
+            "name": "int64",
+            "unit": null,
+            "timezone": null,
+            "precision": null,
+            "scale": null
+          }
+        },
+        "recent_count": {
+          "$type": "Aggregate",
+          "source": {
+            "$type": "Rows",
+            "path": [
+              "user_events"
+            ],
+            "time": {
+              "$type": "TimeWindow",
+              "column": "at",
+              "start": -1,
+              "stop": 0
+            },
+            "filters": [],
+            "active": null,
+            "distinct": true
+          },
+          "operation": "count",
+          "column": null,
+          "dtype": {
+            "$type": "DType",
+            "name": "int64",
+            "unit": null,
+            "timezone": null,
+            "precision": null,
+            "scale": null
+          }
+        }
+      },
+      "dated_entity_values": {},
+      "events": {},
+      "current_events": {},
+      "neighborhoods": {},
+      "targets": {},
+      "candidate_sets": {}
+    },
+    "batch": {
+      "$type": "BatchSpec",
+      "inputs": {
+        "entity": {
+          "$type": "Input",
+          "source": {
+            "$type": "EntitySource"
+          },
+          "representation": {
+            "$type": "Fields",
+            "fields": [
+              {
+                "$type": "Encode",
+                "field": "event_count",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              },
+              {
+                "$type": "Encode",
+                "field": "recent_count",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              }
+            ],
+            "row": {
+              "$type": "Columns"
+            },
+            "history": {
+              "$type": "Grouped"
+            },
+            "field_names": null,
+            "field_space": null,
+            "forbidden_fields": []
+          },
+          "layout": {
+            "$type": "Separate"
+          }
+        }
+      },
+      "targets": {},
+      "encodings": {},
+      "id_spaces": {},
+      "field_names": {},
+      "batching": {
+        "$type": "Batching",
+        "max_samples": null,
+        "max_tokens": null,
+        "length_input": null,
+        "bucket_by_length": false,
+        "drop_last": false
+      }
+    },
+    "version": 3
+  },
+  "tables": {
+    "users": [
+      {
+        "user_id": 1,
+        "group_id": 100
+      },
+      {
+        "user_id": 2,
+        "group_id": 200
+      }
+    ],
+    "events": [
+      {
+        "event_id": 1,
+        "user_id": 1,
+        "group_id": 100,
+        "at": 2
+      },
+      {
+        "event_id": 2,
+        "user_id": 1,
+        "group_id": 100,
+        "at": 9
+      },
+      {
+        "event_id": 3,
+        "user_id": 1,
+        "group_id": 100,
+        "at": 10
+      },
+      {
+        "event_id": 4,
+        "user_id": 1,
+        "group_id": 100,
+        "at": 12
+      },
+      {
+        "event_id": 5,
+        "user_id": 2,
+        "group_id": 200,
+        "at": 11
+      }
+    ]
+  },
+  "anchors": [
+    {
+      "sample_id": "user-1-at-9",
+      "entity_id": 1,
+      "as_of_time": 9
+    },
+    {
+      "sample_id": "user-1-at-10",
+      "entity_id": 1,
+      "as_of_time": 10
+    },
+    {
+      "sample_id": "user-1-at-11",
+      "entity_id": 1,
+      "as_of_time": 11
+    },
+    {
+      "sample_id": "user-1-at-12",
+      "entity_id": 1,
+      "as_of_time": 12
+    },
+    {
+      "sample_id": "user-2-at-10",
+      "entity_id": 2,
+      "as_of_time": 10
+    }
+  ],
+  "expected": {
+    "user-1-at-9": {
+      "entity_values": {
+        "event_count": 2,
+        "recent_count": 1
+      }
+    },
+    "user-1-at-10": {
+      "entity_values": {
+        "event_count": 3,
+        "recent_count": 1
+      }
+    },
+    "user-1-at-11": {
+      "entity_values": {
+        "event_count": 3,
+        "recent_count": 0
+      }
+    },
+    "user-1-at-12": {
+      "entity_values": {
+        "event_count": 4,
+        "recent_count": 1
+      }
+    },
+    "user-2-at-10": {
+      "entity_values": {
+        "event_count": 0,
+        "recent_count": 0
+      }
+    }
+  },
+  "reason": "For user 1, times 2, 9, 10, 12 yield all-history counts 2 through 9, 3 through 10, 3 through 11, and 4 through 12. The recent windows (8,9], (9,10], (10,11], and (11,12] contain respectively 9; 10; no rows; and 12, giving counts 1, 1, 0, 1. User 2 has only time 11, so both counts at 10 are zero. Upper-bound equality is included, lower-bound equality and later times are excluded. Matching uses the declared relation keys."
+}
