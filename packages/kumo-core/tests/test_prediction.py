@@ -352,25 +352,61 @@ def test_materialize_prediction_writes_predict_only_bundle(
     assert calls["thin"]["stage_seed_times"] is None
 
 
-def test_custom_link_prediction_table_records_its_anchor_range(
-        monkeypatch, tmp_path):
+def _write_parts(table, *parts):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    req = request(tmp_path, family="link_prediction")
-    req = replace(
-        req, query=replace(req.query, task_type="temporal_link_prediction"))
-    table = tmp_path / "staging" / "tt.parquet"
     table.mkdir(parents=True)
-    pq.write_table(
-        pa.table({"TIMESTAMP": pa.array([5, 3], pa.timestamp("ns"))}),
-        table / "part-00000.parquet")
-    pq.write_table(pa.table({"TIMESTAMP": pa.array([2], pa.timestamp("us"))}),
-                   table / "part-00001.parquet", write_statistics=False)
+    for index, (values, unit, statistics) in enumerate(parts):
+        pq.write_table(
+            pa.table({"TIMESTAMP": pa.array(values, pa.timestamp(unit))}),
+            table / f"part-{index:05d}.parquet", write_statistics=statistics)
 
-    _, calls = _materialize(monkeypatch, tmp_path, req)
 
-    assert calls["thin"]["stage_seed_times"] == {"predict": [3, 2000]}
+def test_anchor_range_reads_footers_and_unindexed_row_groups(tmp_path):
+    table = tmp_path / "tt.parquet"
+    _write_parts(table, ([5, 3], "ns", True), ([], "ns", True),
+                 ([2], "us", False))
+
+    assert prediction._anchor_range(str(table)) == (3, 2000)
+
+
+def test_anchor_range_requires_the_anchor_column(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    table = tmp_path / "tt.parquet"
+    table.mkdir()
+    pq.write_table(pa.table({"ENTITY1": [1]}), table / "part-00000.parquet")
+
+    with pytest.raises(ValueError, match="no TIMESTAMP column"):
+        prediction._anchor_range(str(table))
+
+
+def _link_request(tmp_path):
+    req = request(tmp_path, family="link_prediction")
+    return replace(
+        req, query=replace(req.query, task_type="temporal_link_prediction"))
+
+
+def test_custom_link_prediction_table_records_its_anchor(monkeypatch, tmp_path):
+    _write_parts(tmp_path / "staging" / "tt.parquet", ([7, 7], "ns", True))
+
+    _, calls = _materialize(monkeypatch, tmp_path, _link_request(tmp_path))
+
+    assert calls["thin"]["stage_seed_times"] == {"predict": [7, 7]}
+
+
+def test_custom_link_prediction_table_with_two_anchors_is_not_ingested(
+        monkeypatch, tmp_path):
+    _write_parts(tmp_path / "staging" / "tt.parquet", ([7, 8], "ns", True))
+
+    with pytest.raises(ValueError, match="one table per anchor time"):
+        materialize_prediction_task(
+            _link_request(tmp_path),
+            SimpleNamespace(table_path=str(tmp_path / "staging" /
+                                           "tt.parquet")),
+            graph_index_id="graph", runtime=SimpleNamespace())
 
 
 def forecast_request(tmp_path):

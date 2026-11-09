@@ -2168,17 +2168,11 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         return pred if pred is not None else self.test_time
 
     def require_single_predict_anchor(self) -> None:
-        """Link prediction ranks one candidate set per prediction table, so
-        the table's rows must share one anchor time."""
+        from kumo_core.training.validation import require_single_anchor
         from kumoapi.train import TrainingStage
-        from pandas import Timestamp
         anchors = self._stage_time_dict.get(TrainingStage.PRED)
-        if anchors is not None and anchors[0] != anchors[1]:
-            first, last = (Timestamp(int(anchor)) for anchor in anchors)
-            raise ValueError(
-                "Link prediction requires predicting a single timestamp, but "
-                f"this prediction table's anchor times run from {first} to "
-                f"{last}. Split it into one table per anchor time.")
+        if anchors is not None:
+            require_single_anchor(*anchors)
 
     def _seed_time_to_index_unit(self, seed_time: "Any | None") -> int | None:
         """Collapse a stage seed-time tensor to the single int the engine's

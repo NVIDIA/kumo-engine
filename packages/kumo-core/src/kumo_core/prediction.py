@@ -46,7 +46,7 @@ from .task_dataset import (
 )
 from .train.autoregression import FUTURE_LABELS_COL
 from .training.table import apply_reference_resolution
-from .training.validation import validate_anchor_time
+from .training.validation import require_single_anchor, validate_anchor_time
 from .types.enums import PredictionArtifactType
 
 if TYPE_CHECKING:
@@ -254,8 +254,12 @@ def _anchor_range(table_path: str) -> tuple[int, int]:
     for path in ds.dataset(table_path, format="parquet").files:
         table = pq.ParquetFile(path)
         column = table.schema_arrow.get_field_index("TIMESTAMP")
+        if column < 0:
+            raise ValueError("prediction table has no TIMESTAMP column")
         kind = table.schema_arrow.field(column).type
         for group in range(table.metadata.num_row_groups):
+            if table.metadata.row_group(group).num_rows == 0:
+                continue
             stats = table.metadata.row_group(group).column(column).statistics
             if stats is not None and stats.has_min_max:
                 low = pa.scalar(stats.min_raw, kind)
@@ -264,6 +268,8 @@ def _anchor_range(table_path: str) -> tuple[int, int]:
                 bounds = pc.min_max(
                     table.read_row_group(group, ["TIMESTAMP"]).column(0))
                 low, high = bounds["min"], bounds["max"]
+            if not low.is_valid:
+                continue
             low = low.cast(pa.timestamp("ns")).value
             high = high.cast(pa.timestamp("ns")).value
             first = low if first is None else min(first, low)
@@ -285,6 +291,10 @@ def materialize_prediction_task(
     runtime = runtime or diskgraph
     forecasting = (request.query.task_type == "forecasting"
                    and request.compiler_options is not None)
+    anchors = request.timestamps
+    if not anchors and request.query.task_type == "temporal_link_prediction":
+        anchors = _anchor_range(generated.table_path)
+        require_single_anchor(*anchors)
     ingested = runtime.execute_tt_ingest(
         staging_dir=generated.staging_dir,
         index_path=request.index_path,
@@ -346,9 +356,6 @@ def materialize_prediction_task(
             "storage_kind": "diskgraph_table",
         }
     }
-    anchors = request.timestamps
-    if not anchors and request.query.task_type == "temporal_link_prediction":
-        anchors = _anchor_range(generated.table_path)
     stage_seed_times = None
     if anchors:
         stage_seed_times = {"predict": [min(anchors), max(anchors)]}
