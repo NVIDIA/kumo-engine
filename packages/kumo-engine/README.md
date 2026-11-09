@@ -114,7 +114,7 @@ To use your own data, point `FileConnector` at a directory of CSV or Parquet fil
 
 `graph.snapshot()` ingests the tables into an on-disk graph index under the scratch directory, which also holds training runs, model bundles, and predictions. It defaults to `~/.cache/kumo-engine`; to put it on a large local disk, call `kumo.engine.configure(scratch_dir=...)` first.
 
-### Absolute training bounds
+## Absolute training bounds
 
 For temporal node classification, regression, ranking, and forecasting, pass
 absolute bounds when generating the training table:
