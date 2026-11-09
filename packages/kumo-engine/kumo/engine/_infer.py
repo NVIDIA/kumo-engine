@@ -103,8 +103,8 @@ def _report_numbers_stored_as_text(
     source is told to clear the values its read refuses first."""
     csv = None
     for name, (dtype, stype) in resolved.items():
-        if (dtype != Dtype.string or stype in _NOT_NUMBERS
-                or name in declared or name not in frame):
+        if (dtype != Dtype.string or stype in _NOT_NUMBERS or name in declared
+                or name not in frame):
             continue
         column = frame[name]
         values = [value for value in column if isinstance(value, str)]

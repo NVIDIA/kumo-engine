@@ -713,8 +713,9 @@ def test_decimal_columns_beyond_float32_precision_are_reported(tmp_path):
         Graph({'t': source}).snapshot()
     assert sorted(
         str(warning.message) for warning in caught
-        if issubclass(warning.category, UserWarning)) == [
-            't.cents is stored as float32 but comes from decimal128(10, 2) and '
+        if issubclass(warning.category, UserWarning)
+    ) == [
+        't.cents is stored as float32 but comes from decimal128(10, 2) and '
         'reaches 131,072.02; from 131,072 on float32 no longer resolves steps '
         'of 0.01, so values are rounded. Declare dtype=Dtype.float64 for the '
         'column to keep full precision.',
@@ -799,8 +800,7 @@ def test_decimal_columns_beyond_float32_precision_are_reported(tmp_path):
     ('parquet', ['01234', '00987', '01111', '1', '2', ' '], None),
     ('csv', ['01234', '00987', '01111', '1', '2', ' '], None),
     ('parquet', ['NA', 'US', 'DE', 'FR', 'IT', 'ES'], None),
-    ('parquet', ['\u0661', '\u0662', '\u0663', '\u0664', '\u0665', ' '],
-     None),
+    ('parquet', ['\u0661', '\u0662', '\u0663', '\u0664', '\u0665', ' '], None),
     ('parquet', ['1', '2', '3', 'inf', '5', ' '], None),
 ])
 def test_numbers_stored_as_text_are_reported_at_inference(

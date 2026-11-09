@@ -156,13 +156,13 @@ def test_snapshot_reports_non_finite_values_per_column(tmp_path):
 def test_latlong_invalid_values_are_not_reported_as_non_finite(tmp_path):
     from kumo.engine.graph import invalid_value_counts
 
-    result = _min_stats(tmp_path, 'events', {
-        'geo': {
+    result = _min_stats(
+        tmp_path, 'events',
+        {'geo': {
             'COUNT': 8,
             'NUM_PARSE_FAILURES': 2,
             'INVALID_FRACTION': 0.5
-        }
-    }, stype='kumo.latlong')
+        }}, stype='kumo.latlong')
     with pytest.warns(UserWarning) as caught:
         _warn_ingest_data_loss(result, {'tables': [{'table_name': 'events'}]})
     assert [str(w.message) for w in caught] == [
