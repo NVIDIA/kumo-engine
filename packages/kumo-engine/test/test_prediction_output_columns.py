@@ -218,7 +218,7 @@ def test_forecast_rejects_a_table_with_other_lags(graph, forecast):
     trainer, _, table = forecast
     options = dict(table.compiler_options, lag_offsets_secs=(-86400, -172800))
 
-    with pytest.raises(ValueError, match='lag_timesteps = 2 in your Pred'):
+    with pytest.raises(ValueError, match='table uses lag_timesteps = 2'):
         trainer.predict(replace(table, compiler_options=options),
                         snapshot=graph[1])
 

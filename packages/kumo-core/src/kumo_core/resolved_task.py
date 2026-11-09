@@ -12,7 +12,6 @@ from typing import Any, Mapping, Sequence
 from kumo_core.task_dataset import DiskgraphTaskManifest
 from kumo_core.train.autoregression import YOY_COL
 from kumo_core.types import TaskType
-from kumo_core.utils.time import compute_unix_step
 from kumoapi.pquery import QueryType
 
 EdgeType = tuple[str, str, str]
@@ -415,6 +414,8 @@ def resolve_task_options(
     the labels are generated over.
     """
 
+    from kumo_core.utils.time import compute_unix_step
+
     start = end = step = None
     if query.query_type == QueryType.TEMPORAL:
         offset = query.get_combined_date_offset_range()
@@ -461,9 +462,5 @@ def check_prediction_plan(
     for name, value in plan.items():
         if value != fitted[name]:
             raise IncompatiblePredictionPlan(
-                "This prediction table is not compatible with the model that "
-                f"was requested. You specified {name} = {fitted[name]} in "
-                "your TrainingTableGenerationPlan when training the model, "
-                f"but you specified {name} = {value} in your "
-                "PredictionTableGenerationPlan when creating the prediction "
-                "table. These must match.")
+                f"The model was fitted with {name} = {fitted[name]}, but the "
+                f"prediction table uses {name} = {value}. These must match.")

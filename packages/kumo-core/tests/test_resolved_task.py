@@ -740,6 +740,6 @@ def test_prediction_plan_must_match_the_fit(name, plan):
 
     with pytest.raises(
             IncompatiblePredictionPlan,
-            match=(f"{name} = {fitted[name]} in your Training.*"
-                   f"{name} = {plan[name]} in your Prediction")):
+            match=(f"fitted with {name} = {fitted[name]}, but the prediction "
+                   f"table uses {name} = {plan[name]}")):
         check_prediction_plan(fitted, **plan)
