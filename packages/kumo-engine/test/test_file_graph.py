@@ -768,6 +768,7 @@ def test_float_key_with_fractional_values_is_refused(
     ('int64', [pa.array(['2.5', '3.0'], pa.large_string())], 1),
     ('int64', [pa.array(['1.0', '2.5', None, '1.0']).dictionary_encode()], 1),
     ('byte', [pa.array(['255', '256', '-1', '0'], pa.string())], 2),
+    ('byte', [pa.array(['-0', '-0.0', '+0', '0'], pa.string())], 2),
     ('int64', [pa.array([1.0], pa.float32()),
                pa.array([16777216.5], pa.float64())], 1),
     ('int64', [pa.array(['x'], pa.string()), pa.array([2.5], pa.float64())],

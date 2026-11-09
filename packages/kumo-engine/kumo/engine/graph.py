@@ -166,8 +166,9 @@ def _inexact_key_values(values: pa.Array, target: Dtype) -> int:
     widened to 76 digits so `floor` has room for every scale; with no
     integer digit at all zero is its only whole value, and with too few to
     reach a bound every value fits it. A string counts unless it spells an
-    integer the way DiskGraph's parser accepts: an optional sign, digits,
-    an optional all-zero fraction, whitespace around it. An integer, from
+    integer the way DiskGraph's parser accepts: an optional sign (a plus
+    only for an unsigned target), digits, an optional all-zero fraction,
+    whitespace around it. An integer, from
     a part staged in a wider or differently signed type than the target,
     counts when it is outside the target's range. Any other type is left
     to DiskGraph's own conversion.
@@ -185,7 +186,8 @@ def _inexact_key_values(values: pa.Array, target: Dtype) -> int:
         text = pc.replace_substring_regex(pc.utf8_trim_whitespace(values),
                                           r'\.0+$', '')
         text = pc.replace_substring_regex(text, r'^([+-]?)0+([0-9])', r'\1\2')
-        integer = pc.and_(pc.match_substring_regex(text, r'^[+-]?[0-9]+$'),
+        sign = r'[+-]?' if low < 0 else r'\+?'
+        integer = pc.and_(pc.match_substring_regex(text, f'^{sign}[0-9]+$'),
                           pc.less_equal(pc.utf8_length(text), 20))
         exact = pc.if_else(integer, text,
                            pa.scalar(None,
