@@ -346,6 +346,15 @@ def test_a_non_nullable_staged_column_still_takes_the_nulls(tmp_path):
     (pa.array(['1705276800.0', '0']), {
         'ts': 's'
     }, ['1705276800', None]),
+    (pa.array(['00000000001705276800', '1705363200']), {
+        'ts': 's'
+    }, ['1705276800', '1705363200']),
+    (pa.array(['00000000001705276800', '00000000001705363200']), {
+        'ts': 's'
+    }, ['1705276800', '1705363200']),
+    (pa.array(['00000000000000000000', '1705363200']), {
+        'ts': 's'
+    }, [None, '1705363200']),
 ])
 def test_padded_digit_strings_are_staged_as_the_numbers_they_spell(
         tmp_path, values, outcome, stored):

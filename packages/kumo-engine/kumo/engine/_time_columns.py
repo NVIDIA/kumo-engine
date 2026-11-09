@@ -369,10 +369,12 @@ def _native_instants(values: pa.Array) -> Optional[Tuple[pa.Array, pa.Array]]:
 
 def _text_numbers(text: pa.Array, digits: pa.Array) -> pa.Array:
     r"""The whole numbers spelled in text, as `int64`: the spellings
-    DiskGraph's integer parser accepts (padding, a zero fraction), null
-    where too wide for `int64`.
+    DiskGraph's integer parser accepts (padding, leading zeros, a zero
+    fraction), null where the significant digits are too wide for `int64`.
     """
-    plain = pc.struct_field(pc.extract_regex(text, _DIGITS), 'n')
+    plain = pc.utf8_ltrim(pc.struct_field(pc.extract_regex(text, _DIGITS), 'n'),
+                          '0')
+    plain = pc.if_else(pc.equal(plain, ''), '0', plain)
     length = pc.utf8_length(plain)
     fits = pc.and_(
         digits,

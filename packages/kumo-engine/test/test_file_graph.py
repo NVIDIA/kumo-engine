@@ -741,20 +741,24 @@ def test_integer_time_columns_drop_the_values_without_the_reading(
                                                       _secs(kept[1]))
 
 
+@pytest.mark.parametrize('values, hint, read, first, last', [
+    (['20240115.0', ' 20240116', '20240117'], ('timestamp_format', '%Y%m%d'),
+     'its 3 values are read as YYYYMMDD dates (20240115.0 is 2024-01-15 '
+     '00:00:00)', '2024-01-15', '2024-01-17'),
+    (['00000000001705276800', '1705363200'], ('timestamp_unit', 'seconds'),
+     'its 2 values are read as epoch seconds (00000000001705276800 is '
+     '2024-01-15 00:00:00)', '2024-01-15', '2024-01-16'),
+])
 def test_padded_digit_strings_reach_diskgraph_as_the_numbers_they_spell(
-        tmp_path):
-    with pytest.warns(
-            UserWarning, match=re.escape(
-                'its 3 values are read as YYYYMMDD dates (20240115.0 is '
-                '2024-01-15 00:00:00)')) as caught:
-        column, stats, ingest = _time_snapshot(
-            tmp_path, 'parquet',
-            pa.array(['20240115.0', ' 20240116', '20240117']))
+        tmp_path, values, hint, read, first, last):
+    with pytest.warns(UserWarning, match=re.escape(read)) as caught:
+        column, stats, ingest = _time_snapshot(tmp_path, 'parquet',
+                                               pa.array(values))
     assert len(_user_warnings(caught)) == 1
-    assert column['timestamp_format'] == '%Y%m%d'
-    assert ingest['total_nodes'] == 3
-    assert (stats['min_secs'], stats['max_secs']) == (_secs('2024-01-15'),
-                                                      _secs('2024-01-17'))
+    assert column[hint[0]] == hint[1]
+    assert ingest['total_nodes'] == len(values)
+    assert (stats['min_secs'], stats['max_secs']) == (_secs(first),
+                                                      _secs(last))
 
 
 @pytest.mark.parametrize('extension', ['csv', 'parquet'])
