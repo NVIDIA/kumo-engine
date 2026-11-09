@@ -1048,3 +1048,26 @@ def test_float_key_with_no_width_for_every_link_is_refused():
                    r"Declare these keys with one integer width at the "
                    r"source\.")):
         graph.validate()
+
+
+@pytest.mark.parametrize('reversed_edges', [False, True])
+def test_equal_width_integer_targets_settle_on_int64(reversed_edges):
+    users, events = _s3_tables()
+    tables = {
+        'plain': _keyed(users, [Column('id', Stype.ID, Dtype.int)], 'id'),
+        'wide': _keyed(users, [Column('id', Stype.ID, Dtype.int64)], 'id'),
+        'events': _keyed(events, [
+            Column('event_id', Stype.ID, Dtype.int64),
+            Column('user_id', Stype.ID, Dtype.float64),
+        ], 'event_id'),
+    }
+    edges = [Edge('events', 'user_id', 'plain'),
+             Edge('events', 'user_id', 'wide')]
+    if reversed_edges:
+        edges.reverse()
+    graph = Graph(tables, edges)
+
+    with pytest.warns(UserWarning):
+        graph.validate()
+    config = {t['table_name']: t for t in graph._graph_config['tables']}
+    assert {fk['dtype'] for fk in config['events']['fkeys']} == {'int64'}

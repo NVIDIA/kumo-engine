@@ -739,7 +739,9 @@ class Graph:
         width, so the link still passes the lossless-widening rule. A key
         shared by several edges takes the narrowest destination, and a
         destination that is itself converted counts with its converted
-        width, so the widths settle in a few passes over the edges. That
+        width, so the widths settle in a few passes over the edges; of two
+        names for one width (`int`, `int64`) the key takes `int64`, so the
+        result does not depend on edge order. That
         is the widest width every link of the column accepts; when none
         does, because an integer foreign key wider than that width links
         to a converted primary key, the graph is refused with both links
@@ -780,7 +782,8 @@ class Graph:
                 previous = current.get(edge.fkey, target)
                 current[edge.fkey] = min(
                     (previous, target),
-                    key=lambda dtype: _INTEGER_RANGE[dtype][1])
+                    key=lambda dtype:
+                    (_INTEGER_RANGE[dtype][1], dtype is not Dtype.int64))
             settled = {
                 alias: dict(columns)
                 for alias, columns in dtypes.items()
