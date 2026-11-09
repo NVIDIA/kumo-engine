@@ -3,6 +3,7 @@
   "seed": 20240109,
   "batch_size": 250000,
   "row_group_size": 1000000,
+  "parquet_compression": "zstd",
   "tables": [
     {
       "name": "users",

@@ -18,11 +18,12 @@ use arrow_array::builder::{
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use parquet::arrow::ArrowWriter;
+use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 
 use crate::config::{
     ColumnConfig, ColumnType, DatasetConfig, FkDistribution, GeneratorSpec, KeyEncoding,
-    TableConfig, TimestampUnit,
+    ParquetCompression, TableConfig, TimestampUnit,
 };
 use crate::output::OutputTarget;
 use crate::progress::ProgressState;
@@ -170,6 +171,7 @@ struct Plan {
     seed: u64,
     batch_size: usize,
     row_group_size: usize,
+    parquet_compression: ParquetCompression,
 }
 
 #[derive(Clone, Debug)]
@@ -218,7 +220,36 @@ struct KeyGenerator {
 struct ForeignKeyGenerator {
     dst_rows: u64,
     dst_key: KeyGenerator,
-    distribution: FkDistribution,
+    distribution: PreparedFkDistribution,
+}
+
+#[derive(Clone, Debug)]
+enum PreparedFkDistribution {
+    Uniform,
+    Sequential { offset: u64 },
+    Hotspot { hot_fraction: f64, hot_share: f64 },
+    Organic(OrganicDistribution),
+}
+
+#[derive(Clone, Debug)]
+struct OrganicDistribution {
+    source_rows: u64,
+    guaranteed_rows: u64,
+    ordinal_a: u64,
+    ordinal_b: u64,
+    rank_a: u64,
+    rank_b: u64,
+    total_mass: f64,
+    segments: Vec<PreparedPowerLawSegment>,
+}
+
+#[derive(Clone, Debug)]
+struct PreparedPowerLawSegment {
+    start_fraction: f64,
+    end_fraction: f64,
+    exponent: f64,
+    coefficient: f64,
+    cumulative_mass: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -380,6 +411,7 @@ fn build_plan(config: &DatasetConfig) -> Result<Plan> {
         seed: config.seed,
         batch_size: config.batch_size,
         row_group_size: config.row_group_size,
+        parquet_compression: config.parquet_compression,
     })
 }
 
@@ -603,7 +635,22 @@ fn build_relationship_map(
             );
         }
         validate_fk_compat(src_col, dst_col)?;
-        let distribution = rel.distribution.clone().unwrap_or(FkDistribution::Uniform);
+        let distribution = prepare_fk_distribution(
+            rel.distribution.clone().unwrap_or(FkDistribution::Uniform),
+            row_counts[src_idx],
+            row_counts[dst_idx],
+            mix64(
+                config.seed
+                    ^ hash_name(&rel.src_table)
+                    ^ hash_name(&rel.src_column).rotate_left(17),
+            ),
+        )
+        .with_context(|| {
+            format!(
+                "relationship distribution for {}.{}",
+                rel.src_table, rel.src_column
+            )
+        })?;
         let fk = ForeignKeyGenerator {
             dst_rows: row_counts[dst_idx],
             dst_key: dst_pk.clone(),
@@ -631,6 +678,11 @@ fn generate_shard(
     let sink = output.parquet_sink(&table.name, task.shard_idx)?;
     let props = WriterProperties::builder()
         .set_max_row_group_row_count(Some(plan.row_group_size))
+        .set_compression(match plan.parquet_compression {
+            ParquetCompression::Uncompressed => Compression::UNCOMPRESSED,
+            ParquetCompression::Snappy => Compression::SNAPPY,
+            ParquetCompression::Zstd => Compression::ZSTD(Default::default()),
+        })
         .build();
     let mut writer = ArrowWriter::try_new(sink, Arc::clone(&table.schema), Some(props))
         .with_context(|| format!("create parquet writer for {}", table.name))?;
@@ -1298,25 +1350,225 @@ impl KeyGenerator {
     }
 }
 
+fn prepare_fk_distribution(
+    distribution: FkDistribution,
+    source_rows: u64,
+    dst_rows: u64,
+    relationship_seed: u64,
+) -> Result<PreparedFkDistribution> {
+    Ok(match distribution {
+        FkDistribution::Uniform => PreparedFkDistribution::Uniform,
+        FkDistribution::Sequential { offset } => PreparedFkDistribution::Sequential { offset },
+        FkDistribution::Hotspot {
+            hot_fraction,
+            hot_share,
+        } => {
+            if !(0.0..=1.0).contains(&hot_fraction) || hot_fraction == 0.0 {
+                bail!("hot_fraction must be in (0, 1]");
+            }
+            if !(0.0..=1.0).contains(&hot_share) {
+                bail!("hot_share must be in [0, 1]");
+            }
+            PreparedFkDistribution::Hotspot {
+                hot_fraction,
+                hot_share,
+            }
+        }
+        FkDistribution::Organic {
+            minimum_degree,
+            permutation_seed,
+            segments,
+        } => {
+            if dst_rows == 0 && source_rows > 0 {
+                bail!("organic distribution cannot reference an empty table");
+            }
+            let guaranteed_rows = minimum_degree
+                .checked_mul(dst_rows)
+                .ok_or_else(|| anyhow!("minimum-degree row count overflow"))?;
+            if guaranteed_rows > source_rows {
+                bail!(
+                    "minimum_degree {} needs {} rows but the source table has {}",
+                    minimum_degree,
+                    guaranteed_rows,
+                    source_rows
+                );
+            }
+            if source_rows > guaranteed_rows && segments.is_empty() {
+                bail!("organic distribution needs at least one power-law segment");
+            }
+
+            let min_fraction = if dst_rows == 0 {
+                0.0
+            } else {
+                0.5 / dst_rows as f64
+            };
+            let mut prepared = Vec::with_capacity(segments.len());
+            let mut start_fraction = min_fraction;
+            let mut previous_exponent = None;
+            let mut coefficient = 1.0;
+            let mut cumulative_mass = 0.0;
+            for segment in segments {
+                if !segment.end_fraction.is_finite()
+                    || segment.end_fraction <= start_fraction
+                    || segment.end_fraction > 1.0
+                {
+                    bail!(
+                        "organic end_fraction {} must increase and stay within (0, 1]",
+                        segment.end_fraction
+                    );
+                }
+                if !segment.exponent.is_finite() || segment.exponent < 0.0 {
+                    bail!("organic exponent must be finite and non-negative");
+                }
+                if let Some(previous) = previous_exponent {
+                    // Make the density continuous where the exponent changes.
+                    coefficient *= start_fraction.powf(segment.exponent - previous);
+                }
+                let mass = power_law_integral(
+                    start_fraction,
+                    segment.end_fraction,
+                    segment.exponent,
+                    coefficient,
+                );
+                if !mass.is_finite() || mass <= 0.0 {
+                    bail!("organic segment has invalid probability mass");
+                }
+                cumulative_mass += mass;
+                prepared.push(PreparedPowerLawSegment {
+                    start_fraction,
+                    end_fraction: segment.end_fraction,
+                    exponent: segment.exponent,
+                    coefficient,
+                    cumulative_mass,
+                });
+                start_fraction = segment.end_fraction;
+                previous_exponent = Some(segment.exponent);
+            }
+
+            let (ordinal_a, ordinal_b) =
+                affine_parameters(source_rows, relationship_seed ^ 0x6a09e667f3bcc909);
+            // An explicit rank seed lets multiple relations agree on which
+            // keys are popular without coupling their edge-row order.
+            let (rank_a, rank_b) = affine_parameters(dst_rows, permutation_seed);
+            PreparedFkDistribution::Organic(OrganicDistribution {
+                source_rows,
+                guaranteed_rows,
+                ordinal_a,
+                ordinal_b,
+                rank_a,
+                rank_b,
+                total_mass: cumulative_mass,
+                segments: prepared,
+            })
+        }
+    })
+}
+
+fn power_law_integral(start: f64, end: f64, exponent: f64, coefficient: f64) -> f64 {
+    if (exponent - 1.0).abs() < 1e-12 {
+        coefficient * (end / start).ln()
+    } else {
+        coefficient * (end.powf(1.0 - exponent) - start.powf(1.0 - exponent)) / (1.0 - exponent)
+    }
+}
+
+fn inverse_power_law_integral(start: f64, mass: f64, exponent: f64, coefficient: f64) -> f64 {
+    if (exponent - 1.0).abs() < 1e-12 {
+        start * (mass / coefficient).exp()
+    } else {
+        (start.powf(1.0 - exponent) + mass * (1.0 - exponent) / coefficient)
+            .powf(1.0 / (1.0 - exponent))
+    }
+}
+
+fn gcd(mut left: u64, mut right: u64) -> u64 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left
+}
+
+fn affine_parameters(modulus: u64, seed: u64) -> (u64, u64) {
+    if modulus <= 1 {
+        return (0, 0);
+    }
+    let mut multiplier = (mix64(seed) % modulus) | 1;
+    while gcd(multiplier, modulus) != 1 {
+        multiplier = (multiplier + 2) % modulus;
+        if multiplier == 0 {
+            multiplier = 1;
+        }
+    }
+    (multiplier, mix64(seed ^ 0xbb67ae8584caa73b) % modulus)
+}
+
+fn affine_permute(value: u64, modulus: u64, multiplier: u64, offset: u64) -> u64 {
+    if modulus <= 1 {
+        0
+    } else {
+        ((value as u128 * multiplier as u128 + offset as u128) % modulus as u128) as u64
+    }
+}
+
+impl OrganicDistribution {
+    fn target_id(&self, row_id: u64, dst_rows: u64) -> u64 {
+        let ordinal = affine_permute(row_id, self.source_rows, self.ordinal_a, self.ordinal_b);
+        let rank = if ordinal < self.guaranteed_rows {
+            ordinal % dst_rows
+        } else {
+            let residual_rows = self.source_rows - self.guaranteed_rows;
+            let residual_ordinal = ordinal - self.guaranteed_rows;
+            let quantile = (residual_ordinal as f64 + 0.5) / residual_rows as f64;
+            let target_mass = quantile * self.total_mass;
+            let mut previous_mass = 0.0;
+            let mut fraction = self
+                .segments
+                .last()
+                .map(|segment| segment.end_fraction)
+                .unwrap_or(1.0);
+            for segment in &self.segments {
+                if target_mass <= segment.cumulative_mass {
+                    fraction = inverse_power_law_integral(
+                        segment.start_fraction,
+                        target_mass - previous_mass,
+                        segment.exponent,
+                        segment.coefficient,
+                    )
+                    .min(segment.end_fraction);
+                    break;
+                }
+                previous_mass = segment.cumulative_mass;
+            }
+            ((fraction * dst_rows as f64) as u64).min(dst_rows - 1)
+        };
+        affine_permute(rank, dst_rows, self.rank_a, self.rank_b)
+    }
+}
+
 impl ForeignKeyGenerator {
     fn target_id(&self, row_id: u64, seed: u64) -> u64 {
         if self.dst_rows == 0 {
             return 0;
         }
-        match self.distribution.clone() {
-            FkDistribution::Uniform => mix64(seed ^ row_id) % self.dst_rows,
-            FkDistribution::Sequential { offset } => (row_id + offset) % self.dst_rows,
-            FkDistribution::Hotspot {
+        match &self.distribution {
+            PreparedFkDistribution::Uniform => mix64(seed ^ row_id) % self.dst_rows,
+            PreparedFkDistribution::Sequential { offset } => (row_id + offset) % self.dst_rows,
+            PreparedFkDistribution::Hotspot {
                 hot_fraction,
                 hot_share,
             } => {
                 let hot_size = ((self.dst_rows as f64) * hot_fraction).max(1.0) as u64;
                 let random = rand_f64(mix64(seed ^ row_id));
-                if random < hot_share {
+                if random < *hot_share || hot_size == self.dst_rows {
                     mix64(seed ^ row_id ^ 0xabc) % hot_size
                 } else {
                     hot_size + (mix64(seed ^ row_id ^ 0xdef) % (self.dst_rows - hot_size))
                 }
+            }
+            PreparedFkDistribution::Organic(distribution) => {
+                distribution.target_id(row_id, self.dst_rows)
             }
         }
     }
@@ -1497,9 +1749,7 @@ fn column_arrow_type(column: &ColumnConfig) -> Result<DataType> {
         ColumnType::Float64Array => {
             DataType::List(Arc::new(Field::new("item", DataType::Float64, true)))
         }
-        ColumnType::Int8Array => {
-            DataType::List(Arc::new(Field::new("item", DataType::Int8, true)))
-        }
+        ColumnType::Int8Array => DataType::List(Arc::new(Field::new("item", DataType::Int8, true))),
         ColumnType::Int16Array => {
             DataType::List(Arc::new(Field::new("item", DataType::Int16, true)))
         }
@@ -2072,4 +2322,108 @@ fn hash_name(value: &str) -> u64 {
         hash = hash.wrapping_mul(1099511628211);
     }
     hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::PowerLawSegment;
+
+    fn organic_distribution(source_rows: u64, dst_rows: u64) -> OrganicDistribution {
+        let prepared = prepare_fk_distribution(
+            FkDistribution::Organic {
+                minimum_degree: 1,
+                permutation_seed: 71,
+                segments: vec![
+                    PowerLawSegment {
+                        end_fraction: 0.001,
+                        exponent: 0.24,
+                    },
+                    PowerLawSegment {
+                        end_fraction: 0.01,
+                        exponent: 0.42,
+                    },
+                    PowerLawSegment {
+                        end_fraction: 0.1,
+                        exponent: 0.58,
+                    },
+                    PowerLawSegment {
+                        end_fraction: 0.5,
+                        exponent: 1.2,
+                    },
+                ],
+            },
+            source_rows,
+            dst_rows,
+            19,
+        )
+        .unwrap();
+        let PreparedFkDistribution::Organic(distribution) = prepared else {
+            panic!("expected organic distribution")
+        };
+        distribution
+    }
+
+    #[test]
+    fn organic_distribution_is_deterministic_and_preserves_every_key() {
+        let dst_rows = 10_000;
+        let source_rows = 22_000;
+        let distribution = organic_distribution(source_rows, dst_rows);
+        let mut degrees = vec![0u32; dst_rows as usize];
+        for row in 0..source_rows {
+            let first = distribution.target_id(row, dst_rows);
+            let second = distribution.target_id(row, dst_rows);
+            assert_eq!(first, second);
+            degrees[first as usize] += 1;
+        }
+
+        assert_eq!(
+            degrees.iter().map(|degree| *degree as u64).sum::<u64>(),
+            source_rows
+        );
+        assert!(degrees.iter().all(|degree| *degree >= 1));
+        degrees.sort_unstable();
+        assert_eq!(degrees[dst_rows as usize / 2], 1);
+        assert!(degrees[dst_rows as usize * 9 / 10] >= 3);
+        assert!(degrees[dst_rows as usize * 99 / 100] >= 8);
+        assert!(degrees[dst_rows as usize - 1] >= 40);
+    }
+
+    #[test]
+    fn organic_distribution_rejects_an_impossible_minimum_degree() {
+        let error = prepare_fk_distribution(
+            FkDistribution::Organic {
+                minimum_degree: 2,
+                permutation_seed: 1,
+                segments: vec![PowerLawSegment {
+                    end_fraction: 0.5,
+                    exponent: 0.5,
+                }],
+            },
+            19,
+            10,
+            2,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("needs 20 rows"));
+    }
+
+    #[test]
+    fn pinterest_organic_config_builds_a_parallel_shard_plan() {
+        let config: DatasetConfig = serde_json::from_str(include_str!(
+            "../configs/pinterest_omnisage_pruned_organic.json"
+        ))
+        .expect("Pinterest organic JSON");
+        let plan = build_plan(&config).expect("Pinterest organic generation plan");
+        assert_eq!(plan.tables.len(), 12);
+        assert_eq!(plan.tasks.len(), 8128);
+        assert_eq!(
+            plan.tables
+                .iter()
+                .flat_map(|table| &table.shard_ranges)
+                .map(|range| range.len)
+                .sum::<u64>(),
+            43_470_000_000
+        );
+    }
 }

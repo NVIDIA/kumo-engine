@@ -42,7 +42,7 @@ Planning remains read-only until the user approves implementation.
 - `--skip-browser`: Skip browser-based visual verification
 - `--no-review`: Skip self-review
 - `--validate-only`: Complete implementation and verification but stop before push/PR creation
-- `--base-branch` (default `master`)
+- `--base-branch` (default `main` on `upstream`)
 - `--resume <stage>`
 - `--mode light|standard|full` (default `standard` for interactive/local use; the GitHub headless workflow defaults to `light` unless the trigger passes `--mode standard` or `--mode full`)
 
@@ -549,9 +549,9 @@ Checkpoint 1
 Only after Checkpoint 1 approval:
 
 ```bash
-git fetch origin
-git branch --list "ui/{issue}-*"
-git checkout -b ui/{issue}-{slug} origin/{base-branch}
+git fetch upstream
+git branch --list "dm-ui-{issue}-*"
+git checkout --no-track -b dm-ui-{issue}-{slug} upstream/{base-branch}
 ```
 
 Rules:
@@ -882,7 +882,7 @@ If approved:
 
 1. fetch latest base branch
 2. optionally rebase if the user wants that behavior
-3. push the feature branch
+3. push the feature branch to the same-name upstream branch with `git push --set-upstream upstream {work-branch}`
 4. determine the release-notes label
 5. detect breaking changes
 6. create the PR from `.github/PULL_REQUEST_TEMPLATE.md`
@@ -938,7 +938,7 @@ Use the exact phase label from this table in `lastCompletedPhase`. Do not collap
 Rules:
 
 - reuse the existing work branch
-- in `issue` mode, that is usually `ui/{issue}-*`
+- in `issue` mode, that is usually `dm-ui-{issue}-*`
 - in `pr` mode with continuation, that is usually `{headRefName}`
 - verify current branch state before skipping earlier stages
 - resume only when the branch state clearly corresponds to the requested stage

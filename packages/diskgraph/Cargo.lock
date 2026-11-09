@@ -1809,8 +1809,11 @@ dependencies = [
  "gxhash",
  "half",
  "hdrhistogram",
+ "jemallocator",
+ "libc",
  "parking_lot",
  "parquet",
+ "pprof",
  "rand 0.8.6",
  "rand_chacha 0.3.1",
  "ratatui",
@@ -1916,6 +1919,7 @@ dependencies = [
  "gxhash",
  "half",
  "indicatif",
+ "io-uring",
  "libc",
  "lz4_flex 0.12.2",
  "memmap2",
@@ -1923,6 +1927,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "smallvec",
  "tempfile",
  "thiserror 1.0.69",
  "tracing",
@@ -3075,6 +3080,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "io-uring"
+version = "0.7.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9080b15e63775b9a2ac7dca720f7050a8b955e092ea0f6020a4a80f69998cdc0"
+dependencies = [
+ "bitflags 2.13.0",
+ "cfg-if",
+ "libc",
 ]
 
 [[package]]

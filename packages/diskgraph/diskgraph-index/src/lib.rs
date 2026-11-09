@@ -17,7 +17,9 @@
 pub mod builder;
 pub mod graph;
 pub mod layout;
+pub mod page_io;
 pub mod pkmap;
+pub mod prefetch;
 pub mod reader;
 pub mod streaming;
 #[cfg(test)]

@@ -13,6 +13,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use serde::Deserialize;
 use std::collections::{HashMap, VecDeque};
+use std::mem::ManuallyDrop;
 use std::sync::{Arc, Mutex};
 fn py_record_batch_list<'py>(
     py: Python<'py>,
@@ -258,12 +259,60 @@ fn raw_feature_bank_to_pydict<'py>(
     Ok(block)
 }
 
+/// Thread pools and channels must only be used or destroyed in their creator.
+struct ProcessOwned<T> {
+    pid: u32,
+    value: ManuallyDrop<T>,
+}
+
+impl<T> ProcessOwned<T> {
+    fn new(value: T) -> Self {
+        Self {
+            pid: std::process::id(),
+            value: ManuallyDrop::new(value),
+        }
+    }
+
+    fn check(&self) -> PyResult<()> {
+        if self.pid != std::process::id() {
+            return Err(DiskgraphSystemError::new_err(
+                "DiskGraph runtime handle belongs to another process; reopen RuntimeIndex after fork",
+            ));
+        }
+        Ok(())
+    }
+
+    fn get(&self) -> PyResult<&T> {
+        self.check()?;
+        Ok(&self.value)
+    }
+
+    fn get_mut(&mut self) -> PyResult<&mut T> {
+        self.check()?;
+        Ok(&mut self.value)
+    }
+}
+
+impl<T> Drop for ProcessOwned<T> {
+    fn drop(&mut self) {
+        if self.pid == std::process::id() {
+            // SAFETY: the creating process owns this value, and Drop runs once.
+            // An inherited owner deliberately leaves its thread state untouched.
+            unsafe { ManuallyDrop::drop(&mut self.value) };
+        }
+    }
+}
+
 #[pyclass]
 pub struct RuntimeIndex {
-    inner: diskgraph_runtime::RuntimeIndex,
+    inner: ProcessOwned<diskgraph_runtime::RuntimeIndex>,
 }
 #[pyclass]
 pub struct RuntimeBatchIterator {
+    inner: ProcessOwned<RuntimeBatchState>,
+}
+
+struct RuntimeBatchState {
     inner: diskgraph_runtime::RuntimeBatchIterator,
     history: Option<HistoryIteration>,
     planning: Option<LengthPlanning>,
@@ -274,7 +323,7 @@ pub struct RuntimeBatchIterator {
 /// per (stage, prepared length contract), never a process-global graph cache.
 #[pyclass]
 pub struct RuntimeLengthCache {
-    values: Arc<Mutex<diskgraph_runtime::MappedLengthCache>>,
+    values: ProcessOwned<Arc<Mutex<diskgraph_runtime::MappedLengthCache>>>,
 }
 #[pymethods]
 impl RuntimeLengthCache {
@@ -282,14 +331,14 @@ impl RuntimeLengthCache {
     #[pyo3(signature = (stage_size, path, fields=3))]
     fn new(stage_size: usize, path: String, fields: usize) -> PyResult<Self> {
         Ok(Self {
-            values: Arc::new(Mutex::new(
+            values: ProcessOwned::new(Arc::new(Mutex::new(
                 diskgraph_runtime::MappedLengthCache::new(
                     std::path::Path::new(&path),
                     stage_size,
                     fields,
                 )
                 .map_err(map_runtime_err)?,
-            )),
+            ))),
         })
     }
 }
@@ -661,20 +710,22 @@ impl RuntimeIndex {
         num_threads: Option<usize>,
     ) -> PyResult<Self> {
         Ok(Self {
-            inner: diskgraph_runtime::RuntimeIndex::new(parent_root, tt_id, rnd_seed, num_threads)
-                .map_err(map_runtime_err)?,
+            inner: ProcessOwned::new(
+                diskgraph_runtime::RuntimeIndex::new(parent_root, tt_id, rnd_seed, num_threads)
+                    .map_err(map_runtime_err)?,
+            ),
         })
     }
 
     /// A sampler view over this runtime's combined reader; does not open files.
-    pub fn sampler(&self) -> crate::SamplerEngine {
-        let (reader, engine) = self.inner.shared_context();
-        crate::SamplerEngine {
+    pub fn sampler(&self) -> PyResult<crate::SamplerEngine> {
+        let (reader, engine) = self.inner.get()?.shared_context();
+        Ok(crate::SamplerEngine {
             reader,
             engine,
             pool: diskgraph_engine::state::StatePool::new(),
             sample_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        }
+        })
     }
 
     /// Build an iterator over one (stage, epoch, shard) of this index.
@@ -744,41 +795,44 @@ impl RuntimeIndex {
         projections: Option<std::collections::HashMap<String, Vec<String>>>,
     ) -> PyResult<RuntimeBatchIterator> {
         Ok(RuntimeBatchIterator {
-            history: None,
-            planning: None,
-            inner: self
-                .inner
-                .iter(
-                    stage_table,
-                    sampling_plan_json,
-                    num_workers,
-                    worker_id,
-                    shuffle,
-                    rnd_seed,
-                    epoch,
-                    batch_size,
-                    drop_last,
-                    fused,
-                    swap_edge_direction,
-                    neg_rhs_node_type,
-                    neg_amount_m,
-                    neg_rnd_seed,
-                    replace,
-                    disjoint,
-                    adaptive,
-                    entity_node_type,
-                    target_node_type,
-                    rhs_seed_node_type,
-                    rhs_seed_time,
-                    group_by_timestamp,
-                    weighted_seed_sampling_json,
-                    selected_stage_node_ids,
-                    use_seed_timestamps,
-                    pseudo_seed_time,
-                    disable_pseudo_time,
-                    projections,
-                )
-                .map_err(map_runtime_err)?,
+            inner: ProcessOwned::new(RuntimeBatchState {
+                history: None,
+                planning: None,
+                inner: self
+                    .inner
+                    .get()?
+                    .iter(
+                        stage_table,
+                        sampling_plan_json,
+                        num_workers,
+                        worker_id,
+                        shuffle,
+                        rnd_seed,
+                        epoch,
+                        batch_size,
+                        drop_last,
+                        fused,
+                        swap_edge_direction,
+                        neg_rhs_node_type,
+                        neg_amount_m,
+                        neg_rnd_seed,
+                        replace,
+                        disjoint,
+                        adaptive,
+                        entity_node_type,
+                        target_node_type,
+                        rhs_seed_node_type,
+                        rhs_seed_time,
+                        group_by_timestamp,
+                        weighted_seed_sampling_json,
+                        selected_stage_node_ids,
+                        use_seed_timestamps,
+                        pseudo_seed_time,
+                        disable_pseudo_time,
+                        projections,
+                    )
+                    .map_err(map_runtime_err)?,
+            }),
         })
     }
 }
@@ -858,62 +912,67 @@ impl RuntimeBatchIterator {
         projections: Option<std::collections::HashMap<String, Vec<String>>>,
     ) -> PyResult<Self> {
         Ok(Self {
-            history: None,
-            planning: None,
-            inner: diskgraph_runtime::RuntimeIndex::new(parent_root, tt_id, rnd_seed, num_threads)
-                .map_err(map_runtime_err)?
-                .iter(
-                    stage_table,
-                    sampling_plan_json,
-                    num_workers,
-                    worker_id,
-                    shuffle,
-                    rnd_seed,
-                    epoch,
-                    batch_size,
-                    drop_last,
-                    fused,
-                    swap_edge_direction,
-                    neg_rhs_node_type,
-                    neg_amount_m,
-                    neg_rnd_seed,
-                    replace,
-                    disjoint,
-                    adaptive,
-                    entity_node_type,
-                    target_node_type,
-                    rhs_seed_node_type,
-                    rhs_seed_time,
-                    group_by_timestamp,
-                    weighted_seed_sampling_json,
-                    selected_stage_node_ids,
-                    use_seed_timestamps,
-                    pseudo_seed_time,
-                    disable_pseudo_time,
-                    projections,
-                )
-                .map_err(map_runtime_err)?,
+            inner: ProcessOwned::new(RuntimeBatchState {
+                history: None,
+                planning: None,
+                inner: diskgraph_runtime::RuntimeIndex::new(parent_root, tt_id, rnd_seed, num_threads)
+                    .map_err(map_runtime_err)?
+                    .iter(
+                        stage_table,
+                        sampling_plan_json,
+                        num_workers,
+                        worker_id,
+                        shuffle,
+                        rnd_seed,
+                        epoch,
+                        batch_size,
+                        drop_last,
+                        fused,
+                        swap_edge_direction,
+                        neg_rhs_node_type,
+                        neg_amount_m,
+                        neg_rnd_seed,
+                        replace,
+                        disjoint,
+                        adaptive,
+                        entity_node_type,
+                        target_node_type,
+                        rhs_seed_node_type,
+                        rhs_seed_time,
+                        group_by_timestamp,
+                        weighted_seed_sampling_json,
+                        selected_stage_node_ids,
+                        use_seed_timestamps,
+                        pseudo_seed_time,
+                        disable_pseudo_time,
+                        projections,
+                    )
+                    .map_err(map_runtime_err)?,
+            }),
         })
     }
 
-    pub fn num_samples(&self) -> usize {
-        self.inner.num_samples()
+    pub fn num_samples(&self) -> PyResult<usize> {
+        Ok(self.inner.get()?.inner.num_samples())
     }
     pub fn worker_batch_count(&self) -> PyResult<usize> {
-        if self.planning.is_some() {
+        let state = self.inner.get()?;
+        if state.planning.is_some() {
             return Err(pyo3::exceptions::PyTypeError::new_err(
                 "length-aware batch count is known only after planning",
             ));
         }
-        Ok(self.inner.worker_batch_count())
+        Ok(state.inner.worker_batch_count())
     }
-    pub fn stage_size(&self) -> u64 {
-        self.inner.stage_size()
+    pub fn stage_size(&self) -> PyResult<u64> {
+        Ok(self.inner.get()?.inner.stage_size())
     }
 
     /// Attach named neighborhoods to the SAME native anchor schedule.
     pub fn with_neighborhoods(&mut self, specs: String) -> PyResult<()> {
         self.inner
+            .get_mut()?
+            .inner
             .with_neighborhoods(&specs)
             .map_err(map_runtime_err)
     }
@@ -926,6 +985,7 @@ impl RuntimeBatchIterator {
         plan: String,
         merges: String,
     ) -> PyResult<()> {
+        let state = self.inner.get_mut()?;
         let plan = diskgraph_train_table::batch_aggregate::PreparedTemporalPlan::prepare_history(
             &sampler.reader, &root_type, &plan,
         ).map_err(DiskgraphConfigError::new_err)?;
@@ -939,7 +999,7 @@ impl RuntimeBatchIterator {
                 plan.require_timed_sequence(sequence).map_err(DiskgraphConfigError::new_err)?;
             }
         }
-        self.history = Some(HistoryIteration {
+        state.history = Some(HistoryIteration {
             root_type,
             reader: std::sync::Arc::clone(&sampler.reader),
             engine: std::sync::Arc::clone(&sampler.engine),
@@ -956,9 +1016,11 @@ impl RuntimeBatchIterator {
         contract: String,
         token_lengths: &Bound<'_, PyDict>,
     ) -> PyResult<()> {
+        let state = self.inner.get_mut()?;
+        let cache = cache.values.get()?;
         let contract: LengthContract =
             serde_json::from_str(&contract).map_err(|e| length_error(e.to_string()))?;
-        if self.history.is_none() || contract.max_samples == 0 || contract.max_tokens == Some(0) {
+        if state.history.is_none() || contract.max_samples == 0 || contract.max_tokens == Some(0) {
             return Err(length_error(
                 "length planning requires attached history and positive limits",
             ));
@@ -990,15 +1052,15 @@ impl RuntimeBatchIterator {
             }
             metadata.insert(name.extract::<String>()?, LengthMetadata { chunks, ends });
         }
-        let history = self.history.as_ref().expect("checked attached history");
+        let history = state.history.as_ref().expect("checked attached history");
         let query = diskgraph_train_table::batch_aggregate::PreparedTemporalPlan::prepare_history(
             &history.reader, &history.root_type, &contract.query,
         ).map_err(length_error)?;
-        self.planning = Some(LengthPlanning {
+        state.planning = Some(LengthPlanning {
             query,
             contract,
             token_lengths: metadata,
-            cache: Arc::clone(&cache.values),
+            cache: Arc::clone(cache),
             batches: VecDeque::new(),
             consumed: 0,
             computed: 0,
@@ -1007,41 +1069,45 @@ impl RuntimeBatchIterator {
         Ok(())
     }
 
-    pub fn length_planning_stats(&self) -> (usize, usize) {
-        self.planning
+    pub fn length_planning_stats(&self) -> PyResult<(usize, usize)> {
+        Ok(self
+            .inner
+            .get()?
+            .planning
             .as_ref()
-            .map_or((0, 0), |v| (v.computed, v.hits))
+            .map_or((0, 0), |v| (v.computed, v.hits)))
     }
 
     pub fn next_batch(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        let state = self.inner.get_mut()?;
         let next = py.detach(|| {
-            let batch = if let Some(planning) = self.planning.as_mut() {
+            let batch = if let Some(planning) = state.planning.as_mut() {
                 while planning.batches.is_empty() {
-                    let Some(pool) = self.inner.next_batch().map_err(map_runtime_err)? else {
+                    let Some(pool) = state.inner.next_batch().map_err(map_runtime_err)? else {
                         return Ok(None);
                     };
                     planning.consumed += pool.task.tt_stage_node_ids.len();
                     planning.enqueue(
                         &pool,
-                        self.history.as_ref().unwrap(),
-                        planning.consumed == self.inner.num_samples(),
+                        state.history.as_ref().unwrap(),
+                        planning.consumed == state.inner.num_samples(),
                     )?;
                 }
                 Some(
-                    self.inner
+                    state.inner
                         .sample_stage_ids(&planning.batches.pop_front().unwrap())
                         .map_err(map_runtime_err)?,
                 )
             } else {
-                self.inner.next_batch().map_err(map_runtime_err)?
+                state.inner.next_batch().map_err(map_runtime_err)?
             };
             let Some(mut batch) = batch else {
                 return Ok(None);
             };
-            self.inner
+            state.inner
                 .add_neighborhoods(&mut batch)
                 .map_err(map_runtime_err)?;
-            let history = self
+            let history = state
                 .history
                 .as_ref()
                 .map(|config| {
