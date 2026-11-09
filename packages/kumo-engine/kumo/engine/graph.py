@@ -62,6 +62,7 @@ remote/durable cache, e.g. a Snowflake stage) -- out of scope for now.
 import json
 import logging
 import math
+import sys
 import threading
 import time
 import warnings
@@ -167,6 +168,7 @@ def _warn_low_fk_match_rates(stats: Dict[str, Any],
 
 _FLOAT32_EXACT_BITS = 24
 _FLOAT32_DTYPES = frozenset({Dtype.float, Dtype.float32})
+_FLOAT64_DIGITS = sys.float_info.dig
 _NUMERICAL = 'kumo.numerical'
 
 
@@ -227,7 +229,8 @@ def _float32_limit(places: int) -> float:
 
 def _places(number: Decimal) -> int:
     r"""Decimal places after the trailing zeros, read off the digits so the
-    caller's decimal context cannot round or trap."""
+    caller's decimal context cannot round or trap, and at most the digits
+    float64 keeps, since a finer step is lost in the wider type too."""
     digits, exponent = number.as_tuple()[1:]
     if not number.is_finite() or not any(digits):
         return 0
@@ -236,7 +239,7 @@ def _places(number: Decimal) -> int:
         if digit:
             break
         zeros += 1
-    return max(0, -(exponent + zeros))
+    return min(max(0, -(exponent + zeros)), _FLOAT64_DIGITS)
 
 
 def _decimal_places(values: Any) -> int:

@@ -794,6 +794,27 @@ def test_the_float32_step_is_sampled_on_one_budget_per_table(
     assert requested == [['a', 'b']] * reads
 
 
+def test_a_step_finer_than_float64_does_not_break_the_warning(tmp_path):
+    from kumo.engine import FileConnector, configure
+    from kumo.engine.graph import _decimal_places
+
+    assert _decimal_places(pa.array(['1e-2147483648', '1e-300', '0.5'])) == 15
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            'id': range(4),
+            'text': pa.array(['1e-2147483648', '131072.5', '1', '2']),
+        }), root / 't.parquet')
+    source = Table.from_source_table(
+        FileConnector(root_dir=str(root))['t.parquet'],
+        primary_key='id').with_column('text', dtype=Dtype.float32,
+                                      stype=Stype.numerical)
+    with pytest.warns(UserWarning, match='steps of 1e-15'):
+        Graph({'t': source}).snapshot()
+
+
 def test_the_float32_step_ignores_the_decimal_context(tmp_path):
     import decimal
 
