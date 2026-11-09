@@ -242,6 +242,36 @@ def test_genie_scoring_reads_the_graph_from_the_published_bundle() -> None:
         assert gone not in section.lower().replace('wrapped for mlflow', ''), gone
 
 
+
+def test_genie_threshold_survives_in_the_bundle_and_scoring_reads_it() -> None:
+    """With no separate record, a confirmed threshold must go into the bundle as
+    `scoring-defaults.json` (`fit(scoring_defaults=...)`) and §6.1 must read it back."""
+    host = package_skill.SKILLS / 'hosts' / 'databricks-genie'
+    flat = lambda path: ' '.join(path.read_text().split())  # noqa: E731
+    adapter, runtime, job = (flat(host / n) for n in ('adapter.md', 'runtime.md', 'job.md'))
+    publish = runtime[runtime.index('### 5.1'):runtime.index('### 5.2')]
+    assert 'scoring_defaults=kumo.ScoringDefaults(binary_classification_threshold=THRESHOLD)' \
+        in publish
+    assert 'only when the user confirmed a threshold' in publish
+    section = adapter[adapter.index('### 6.1'):adapter.index('## 7.')]
+    assert 'Read `scoring-defaults.json` from the same directory' in section
+    assert 'the threshold recorded with the model' in section
+    # A version with no spec cannot load: that is the unresolved-address ask-back, not a graph ask
+    assert 'it is not a Kumo bundle and cannot be loaded at all' in section
+    assert 'Kumo bundle whose spec carries no `graph_config`' in section
+    assert '§0 restatement' not in job and '§6.1 restatement' in job
+
+
+def test_custom_populations_allow_signed_temporal_link_weights_after_rescaling() -> None:
+    """kumo_core allows signed weights only for temporal link prediction; an approved
+    rescaling must not be held to a stricter rule than the builder."""
+    reference = ' '.join((package_skill.SKILLS / 'kumo-custom-populations' / 'references'
+                          / 'populations.md').read_text().split())
+    assert 'temporal link tasks permit signed weights' in reference
+    assert ('finite and nonnegative, except the signed weights temporal link prediction '
+            'permits above') in reference
+    assert 'disallowed negative weight' in reference
+
 def test_genie_no_code_rule_names_its_scope_and_agrees_with_inspection_skills() -> None:
     """Explanations ask for plotting code in the reply and graph visualization needs no intake;
     the adapter's no-code rule must scope itself to requests that have a Node 1d gate."""

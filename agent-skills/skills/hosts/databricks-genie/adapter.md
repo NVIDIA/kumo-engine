@@ -305,7 +305,10 @@ table's source table, columns, primary key, time column, and its links. Read it 
 (`<N>` the version). A bundle published by Kumo sits at the version's root; when that call finds no
 file, list the version's directory with `databricks api get
 /api/2.0/fs/directories/Models/<catalog>/<schema>/<model>/<N>` and look in its subdirectories — a
-bundle wrapped for MLflow keeps it under `artifacts/published-model/`. Read-only calls only; never
+bundle wrapped for MLflow keeps it under `artifacts/published-model/`. Read `scoring-defaults.json`
+from the same directory: its `binary_classification_threshold` is the threshold recorded with the
+model. When the file is absent or holds no threshold, none was recorded and the
+`batch_inference.md` default applies. Read-only calls only; never
 read a credential file or pass a token yourself. The bundle is the graph: nothing in it is proposed
 or inferred, so 1c and 1d are **one gate**. When `graph_config` is found and the live source still
 has every column it lists, reply with the `kumo-data-science/accept/batch_inference.md` Node 1d
@@ -319,18 +322,24 @@ restatement, one `Graph:` line added, and stop for confirmation:
 - Output: <catalog.schema.table, verbatim>
 - Staging volume: creates <catalog.schema>._kumo_staging   (only when it does not exist)
 - Embeddings: <included, if explicitly requested>
-- Scoring options: <as batch_inference.md gives them by task type>
+- Scoring options: <as batch_inference.md gives them by task type; a threshold from `scoring-defaults.json` is the recorded one [recorded]>
 ```
 
-`[recorded]` marks a value read from the version's bundle (`training-spec.json`).
+`[recorded]` marks a value read from the version's bundle (`training-spec.json` or
+`scoring-defaults.json`).
 
 For a job, add the `job.md` §3 lines. Do not restate the task (entity, outcome, window) or list
 tables and columns beyond that line:
 the task is reused, not reconfirmed. A column the bundle lists that the live source lacks, or a
 `graph_config` whose source tables are not the live source, is the 1c finding to report instead.
 
-When the version is not a Kumo bundle — no `training-spec.json` — or its spec carries no
-`graph_config`, say that no column selection or graph definition is recorded for that version,
+When the version has no `training-spec.json`, it is not a Kumo bundle and cannot be loaded at
+all: `load_from_connector` requires one. That is `batch_inference.md`'s "the model address does
+not resolve" finding: report it and ask for the model and version, as that node says. Ask
+for nothing else.
+
+When the version is a Kumo bundle whose spec carries no `graph_config`, say that no column
+selection or graph definition is recorded for that version,
 that scoring must use the columns it was trained on, and ask for the training-time graph
 definition — the graph-building code, or each table's columns with its keys, time column and
 links. Ask only for that, and for the source if the request named none: not the model, version or

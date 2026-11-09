@@ -110,7 +110,8 @@ approval given before the formula and distribution were shown is not approval. U
 and ask; do not transform. Only after approval, apply it in a read-only `connector.sql(...)`
 source, as for approved split mappings above; keep the table's `SPLIT` (or the generated
 training table's, if exported), and write nothing back: no UPDATE, no CREATE TABLE AS, no
-derived table. The result must still be finite and nonnegative with at least one positive weight.
+derived table. The result must still be finite and nonnegative, except the signed weights
+temporal link prediction permits above, with at least one positive weight.
 
 ## Export a generated training table
 
