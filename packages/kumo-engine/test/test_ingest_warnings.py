@@ -356,6 +356,17 @@ def test_snapshot_reports_values_beyond_float32_precision(
     assert messages == ([expected] if expected else [])
 
 
+def test_the_module_imports_with_denormals_flushed():
+    import subprocess
+    import sys
+
+    code = ('import torch; torch.set_flush_denormal(True); '
+            'import kumo.engine.graph as graph; print(graph._FLOAT64_PLACES)')
+    result = subprocess.run([sys.executable, '-c', code], capture_output=True,
+                            text=True, check=True)
+    assert result.stdout.strip() == '324'
+
+
 def test_snapshot_exposes_invalid_value_counts_per_column(tmp_path):
     from kumo.engine.graph import GraphSnapshot
 

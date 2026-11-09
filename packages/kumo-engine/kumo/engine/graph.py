@@ -169,8 +169,8 @@ def _warn_low_fk_match_rates(stats: Dict[str, Any],
 _FLOAT32_EXACT_BITS = 24
 _FLOAT32_DTYPES = frozenset({Dtype.float, Dtype.float32})
 _FLOAT64_DIGITS = sys.float_info.dig
-_FLOAT64_PLACES = math.ceil(-math.log10(sys.float_info.min *
-                                        sys.float_info.epsilon))
+_FLOAT64_PLACES = math.ceil(
+    (sys.float_info.mant_dig - sys.float_info.min_exp) * math.log10(2))
 _NUMERICAL = 'kumo.numerical'
 
 
