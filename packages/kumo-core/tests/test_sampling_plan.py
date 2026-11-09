@@ -15,7 +15,11 @@ from kumo_core.resolved_task import (
     ResolvedTrainTable,
 )
 from kumo_core.train import diskgraph_nested_trainer as trainer
-from kumo_core.train.trainer import Trainer, _restore_num_neighbors_key
+from kumo_core.train.trainer import (
+    Trainer,
+    _resolve_num_neighbors,
+    _restore_num_neighbors_key,
+)
 from kumo_core.training.config import SamplerKwargs
 from kumo_core.types import TaskType
 from torch_geometric.sampler.base import NumNeighbors
@@ -155,3 +159,15 @@ def test_plain_sampler_path_recovers_a_legacy_key_loaded_without_a_graph(
         ("orders", "user_id", "users"): [10, 5],
         ("users", "rev_user_id", "orders"): [3, 3],
     }
+
+
+def test_resolved_sampler_keys_keep_an_exact_fanout_over_a_legacy_alias():
+    exact = ("orders", "user_id", "users")
+    alias = ("ds.orders", "user_id", "ds.users")
+    for ordered in ([exact, alias], [alias, exact]):
+        fanouts = {key: [10] if key == exact else [3] for key in ordered}
+
+        resolved = _resolve_num_neighbors(NumNeighbors(fanouts, default=[1]),
+                                          [exact])
+
+        assert resolved.get_values([exact]) == {exact: [10]}

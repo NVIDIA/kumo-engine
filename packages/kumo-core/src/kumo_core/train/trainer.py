@@ -3425,7 +3425,8 @@ def _resolve_num_neighbors(
     saved key the graph holds is kept; a key it lacks, such as a legacy
     fully qualified name loaded without a graph, is matched by its
     stripped form to the one edge type with that form, as the DiskGraph
-    plan builder matches it; any other key is kept as saved."""
+    plan builder matches it, and never displaces a key the graph holds;
+    any other key is kept as saved."""
     if not isinstance(num_neighbors.values, dict):
         return num_neighbors
     exact = {
@@ -3436,11 +3437,17 @@ def _resolve_num_neighbors(
     for edge_type in edge_types:
         stripped.setdefault(_normalize_edge_type_key(edge_type),
                             []).append(tuple(edge_type))
-    values = {}
+    values, aliased = {}, {}
     for key, value in num_neighbors.values.items():
+        edge_type = exact.get(str(key))
+        if edge_type is not None:
+            values[edge_type] = value
+            continue
         candidates = stripped.get(_normalize_edge_type_key(key), [])
-        values[exact.get(str(key)) or (candidates[0] if len(candidates) == 1
-                                       else key.to_tuple())] = value
+        aliased[candidates[0] if len(candidates) == 1 else key.to_tuple()] = (
+            value)
+    for edge_type, value in aliased.items():
+        values.setdefault(edge_type, value)
     return NumNeighbors(values, num_neighbors.default)
 
 
