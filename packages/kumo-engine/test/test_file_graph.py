@@ -965,6 +965,48 @@ def test_integer_keys_refuse_string_keys_stored_as_other_types(
         'Store both keys with the same type before snapshot.')
 
 
+def test_an_omitted_self_relation_is_not_checked_as_a_link_target(
+        tmp_path, monkeypatch):
+    from kumoapi.graph import Edge
+
+    from kumo.engine import FileConnector, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(pa.table({'user_id': ['7', '10']}), root / 'users.parquet')
+    pq.write_table(
+        pa.table({
+            'order_id': ['a', 'b'],
+            'user_id': pa.array([7, 10], pa.int64())
+        }), root / 'orders.parquet')
+    connector = FileConnector(root_dir=str(root))
+    graph = Graph(
+        {
+            'users':
+            Table.from_source_table(connector['users'], primary_key='user_id'),
+            'orders':
+            Table.from_source_table(connector['orders'],
+                                    primary_key='order_id'),
+        }, [
+            Edge('orders', 'user_id', 'users'),
+            Edge('orders', 'user_id', 'orders'),
+        ])
+
+    class Ingested(Exception):
+        pass
+
+    def ingest(*args, **kwargs):
+        raise Ingested
+
+    monkeypatch.setattr('kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
+                        ingest)
+
+    with pytest.warns(UserWarning, match='Self-relation orders.user_id'):
+        with pytest.raises(Ingested):
+            graph.snapshot()
+
+
 def test_declared_integer_key_over_text_is_refused_before_a_string_link(
         tmp_path, monkeypatch):
     from kumo.engine import configure

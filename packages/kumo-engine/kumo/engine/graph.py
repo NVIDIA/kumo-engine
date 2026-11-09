@@ -446,7 +446,8 @@ def _refuse_inexact_link_targets(tables: Mapping[str, Any],
     written that way by DiskGraph already; a part staged under any other
     type that is not text or binary is refused, since DiskGraph writes it
     as text in its own form (`7.0` for a scaled decimal, `true` for a
-    boolean).
+    boolean). A self-relation, which the portable config omits, is not a
+    link target.
     """
     import pyarrow as pa
 
@@ -454,7 +455,8 @@ def _refuse_inexact_link_targets(tables: Mapping[str, Any],
 
     for edge in edges:
         conversion = conversions.get(edge.src_table, {}).get(edge.fkey)
-        if conversion is None or conversion.bounds is not None:
+        if (edge.src_table == edge.dst_table or conversion is None
+                or conversion.bounds is not None):
             continue
         key = tables[edge.dst_table].definition.pkey
         stored_types = _stored_types(
