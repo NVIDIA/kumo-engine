@@ -385,8 +385,6 @@ def _refuse_inexact_key_conversions(alias: str,
     """
     import pyarrow as pa
 
-    if not conversions:
-        return
     files = _staged_parquet_parts(paths)
     for name, conversion in conversions.items():
         primary = name == pkey
@@ -1212,10 +1210,10 @@ class Graph:
                     source_paths[alias] = str(
                         prepared.source.get('path') or dest_dir)
                 staged[alias] = paths or [source_paths[alias]]
-                _refuse_inexact_key_conversions(alias,
-                                                conversions.get(alias, {}),
-                                                staged[alias],
-                                                table.definition.pkey)
+                if alias in conversions:
+                    _refuse_inexact_key_conversions(alias, conversions[alias],
+                                                    staged[alias],
+                                                    table.definition.pkey)
             _refuse_inexact_link_targets(self._named_tables, self.edges,
                                          conversions, staged)
 
