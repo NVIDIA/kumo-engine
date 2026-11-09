@@ -271,6 +271,51 @@ def test_a_snapshot_without_an_edge_between_kept_tables_is_noticed(
             dropped)
 
 
+def test_a_pruned_snapshot_keeps_the_kept_columns_as_the_graph_typed_them(
+        graph_snapshot):
+    graph, snapshot = graph_snapshot
+    graph = Graph([
+        replace(
+            table, definition=replace(
+                table.definition, cols=[
+                    replace(col, stype=Stype.numerical)
+                    if col.name == 'product_id' else col
+                    for col in table.definition.cols
+                ])) if table.table_name == 'orders' else table
+        for table in graph.tables
+    ], graph.edges)
+    full = {
+        table['table_name']: table
+        for table in graph._graph_config['tables']
+    }
+    assert {
+        col['name']: col['stype']
+        for col in full['orders']['cols']
+    }['product_id'] == 'ID'
+
+    with pytest.warns(UserWarning, match=r'Table products has no rows'):
+        pruned = replace(
+            snapshot, id=f'{graph.id}@pruned',
+            graph_config=graph._config_without(['products'], graph.id))
+
+    kept = {
+        table['table_name']: table
+        for table in pruned.graph_config['tables']
+    }
+    assert kept == {
+        'users': full['users'],
+        'orders': {
+            **full['orders'], 'fkeys': [
+                fkey for fkey in full['orders']['fkeys']
+                if fkey['dst_table'] != 'products'
+            ]
+        },
+    }
+    assert PredictiveQuery(
+        graph, 'PREDICT COUNT(orders.product_id, 0, 7, days) FOR EACH users.id'
+    ).suggest_model_plan(pruned)
+
+
 @pytest.mark.parametrize('connector_kind', ['file', 's3'])
 def test_generated_weight_rejected_before_artifacts(connector_kind, tmp_path,
                                                     monkeypatch):

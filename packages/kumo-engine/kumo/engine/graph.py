@@ -756,14 +756,14 @@ class Graph:
     def _config_without(self, empty: Sequence[str],
                         graph_key: str) -> Dict[str, Any]:
         r"""The portable graph without the tables in `empty`, which have no
-        rows, and without the edges that touch them. Every table empty is an
-        error; each left-out table is reported once."""
-        from kumo.engine._portable import portable_graph_config
-
-        kept = {
-            alias: table
-            for alias, table in self._named_tables.items() if alias not in empty
-        }
+        rows, and without the edges that touch them; the kept tables keep
+        their columns as the full graph typed them, so a key column whose
+        edge is dropped stays an ID. Every table empty is an error; each
+        left-out table is reported once."""
+        kept = [
+            table for table in self._graph_config['tables']
+            if table['table_name'] not in empty
+        ]
         if not kept:
             raise ValueError(
                 f"Every table in the graph has no rows ({', '.join(empty)}); "
@@ -783,11 +783,11 @@ class Graph:
                 UserWarning,
                 stacklevel=4,
             )
-        edges = [
-            edge for edge in self.edges
-            if edge.src_table in kept and edge.dst_table in kept
-        ]
-        return portable_graph_config(kept, edges, name=graph_key)
+        tables = [{
+            **table, 'fkeys':
+            [fkey for fkey in table['fkeys'] if fkey['dst_table'] not in empty]
+        } for table in kept]
+        return {**self._graph_config, 'name': graph_key, 'tables': tables}
 
     @cached_property
     def native_graph(self) -> NativeGraph:
