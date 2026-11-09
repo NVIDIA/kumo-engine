@@ -527,8 +527,31 @@ def test_ttng_lp_custom_table_is_anchored_at_its_rows(monkeypatch, tmp_path):
 
 def test_ttng_lp_custom_table_with_two_anchors_is_rejected(
         monkeypatch, tmp_path):
-    with pytest.raises(ValueError, match='one table per anchor time'):
+    from statedb.utils.errors import PredictionDataMaterializationError
+
+    with pytest.raises(PredictionDataMaterializationError,
+                       match='one table per anchor time') as error:
         _materialize_custom_lp(monkeypatch, tmp_path, [4_000, 5_000])
+    assert error.value.non_retryable
+
+
+def test_ttng_lp_static_custom_table_seeds_zero(monkeypatch):
+    calls = []
+    _patch_common(monkeypatch, calls)
+    monkeypatch.setattr('kumo.pquery.utils.get_rhs_lp_table',
+                        lambda *a, **k: 'items')
+
+    _materialize(
+        task=_lp_task(TaskType.STATIC_LINK_PREDICTION),
+        pquery=_lp_pquery(),
+        prediction_config=_make_pred_config(),
+        job_input=_make_job_input(custom_pred_table_source=object()),
+        diskgraph_index_path='/dg',
+        train_table_name='train_tt',
+    )
+
+    _, _, kwargs = calls[0]
+    assert kwargs['predict_seed_time_ns'] == 0
 
 
 @pytest.mark.parametrize('fields', [

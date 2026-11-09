@@ -430,8 +430,8 @@ def _materialize_ttng_prediction_task_dataset(
         bp_gen = pquery.get_batch_pred_table_generator()
         if (bp_gen.query_type == QueryType.TEMPORAL
                 and job_input.config.custom_pred_table_source is not None):
-            predict_seed_time_ns = link_prediction_anchor(
-                (), osp.join(predict_staging_dir, 'tt.parquet'))
+            predict_seed_time_ns = _custom_link_prediction_anchor(
+                predict_staging_dir)
         elif bp_gen.query_type == QueryType.TEMPORAL:
             pred_time = bp_gen.generate_pred_timestamp()
             predict_seed_time_ns = int(pred_time.value) if pred_time else 0
@@ -467,6 +467,15 @@ def _materialize_ttng_prediction_task_dataset(
     log.info('[TT-NG] BP materialized task dataset at %s', result.bundle_dir)
     prediction_config.diskgraph_task_dataset_bundle_dir = result.bundle_dir
     return int(result.predict_row_count or 0)
+
+
+def _custom_link_prediction_anchor(staging_dir: str) -> int:
+    """The one anchor of a custom link-prediction table's staging bundle."""
+    try:
+        return link_prediction_anchor((), osp.join(staging_dir, 'tt.parquet'))
+    except ValueError as e:
+        raise PredictionDataMaterializationError(message=str(e),
+                                                 non_retryable=True) from e
 
 
 def _custom_pred_entity_metadata(
@@ -719,6 +728,8 @@ def _build_ttng_custom_pred_table_artifacts(
             # cleaned up; otherwise copy_tree_threaded sees an empty source and
             # silently publishes no bundle.
             assert_ttng_bundle_complete(staging_dir)
+            if is_temporal and target_entity_table is not None:
+                _custom_link_prediction_anchor(staging_dir)
             persist_durable_ttng_bundle(
                 staging_dir,
                 durable,
