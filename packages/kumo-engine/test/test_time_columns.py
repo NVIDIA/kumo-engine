@@ -72,11 +72,11 @@ def test_every_integer_shape_shares_the_reading(tmp_path, values):
     (pa.array([
         '1677-09-21 00:12:44', '2262-04-11 23:47:16', '1677-09-21 00:12:43',
         '2262-04-11 23:47:17'
-    ]), None, [2, 3]),
+    ]), '%Y-%m-%d %H:%M:%S%.f%#z', [2, 3]),
     (pa.array([
         '1677-09-21 00:12:43.145224193', '2262-04-11 23:47:16.854775807',
         '1677-09-21 00:12:43.145224192', '2262-04-11 23:47:16.854775808'
-    ]), None, [2, 3]),
+    ]), '%Y-%m-%d %H:%M:%S%.f%#z', [2, 3]),
     (pa.array([
         datetime(2262, 4, 11, 23, 47, 16, 854775),
         datetime(2262, 4, 11, 23, 47, 16, 854776)
@@ -381,6 +381,31 @@ def test_a_declared_format_is_left_alone(tmp_path):
                                               [str(path)])
     assert (formats, rewritten) == ({}, [])
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize('values, fmt, stored', [
+    (['2024-02-30', '2024-01-15'], '%Y-%m-%d', [None, '2024-01-15']),
+    (['2024-02-30T10:00:00', '2024-01-15T10:00:00.250Z'],
+     '%Y-%m-%dT%H:%M:%S%.f%#z', [None, '2024-01-15T10:00:00.250Z']),
+    (['2024-02-30 10:00', '2024-01-15 10:00+02:00'], '%Y-%m-%d %H:%M%#z',
+     [None, '2024-01-15 10:00+02:00']),
+    (['2024/02/30', '2024/1/15'], '%Y/%m/%d', [None, '2024/1/15']),
+    (['2024/02/30 10:00:00', '2024/01/15 10:00:00'], '%Y/%m/%d %H:%M:%S',
+     [None, '2024/01/15 10:00:00']),
+    (['2024-02-30', '2024-01-15T10:00:00'], '%Y-%m-%d %H:%M:%S%.f%#z',
+     [None, '2024-01-15 10:00:00']),
+    (['2024-02-30T10:00:00z', '2024-01-15T10:00:00z'],
+     '%Y-%m-%d %H:%M:%S%.f%#z', [None, '2024-01-15 10:00:00Z']),
+])
+def test_a_column_with_values_made_missing_declares_its_format(
+        tmp_path, values, fmt, stored):
+    path = _part(tmp_path, pa.array(values, pa.string()))
+    with pytest.warns(UserWarning) as caught:
+        formats, rewritten = resolve_time_columns('events', _definition(),
+                                                  [str(path)])
+    assert (formats, rewritten) == ({'ts': fmt}, ['ts'])
+    assert len(caught) == 1
+    assert pq.read_table(path).column('ts').to_pylist() == stored
 
 
 def test_the_parts_to_rewrite_are_settled_once_per_column(

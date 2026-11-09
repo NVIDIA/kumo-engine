@@ -798,6 +798,21 @@ def test_impossible_and_far_dates_in_the_time_column_drop_their_rows(
 
 
 @pytest.mark.parametrize('extension', ['csv', 'parquet'])
+def test_a_part_whose_first_rows_are_all_made_missing_still_ingests(
+        tmp_path, extension):
+    values = ['2024-02-30'] * 1024 + ['2024-01-15', '2024-01-16']
+    with pytest.warns(UserWarning, match='1024 values in time column') as caught:
+        column, stats, ingest = _time_snapshot(tmp_path, extension,
+                                               pa.array(values, pa.string()))
+    assert len(_user_warnings(caught)) == 1
+    assert column['timestamp_format'] == '%Y-%m-%d'
+    assert ingest['total_nodes'] == 2
+    assert ingest['dropped_rows_counts'] == {'events': 1024}
+    assert (stats['min_secs'], stats['max_secs']) == (_secs('2024-01-15'),
+                                                      _secs('2024-01-16'))
+
+
+@pytest.mark.parametrize('extension', ['csv', 'parquet'])
 @pytest.mark.parametrize('values, fmt, order, settled, first, last', [
     (['05/03/1990', '13/01/1990', '06/01/1990'], '%d/%m/%Y', 'day first',
      '1 of 3 values (e.g. 13/01/1990)', '1990-01-06', '1990-03-05'),

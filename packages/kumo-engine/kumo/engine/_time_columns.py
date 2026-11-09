@@ -16,9 +16,13 @@ the nanosecond timestamp range (1677-09-21 to 2262-04-11) is made missing in
 the staged data and counted, never moved to a neighbouring date. Bare
 timestamps are read as UTC and zoned ones converted to UTC; a column mixing
 the two is reported, staged in one shape (a space before a full time part)
-and given a format that reads both. A column that also holds a value in a
-shape the scan does not read is left to DiskGraph's own reading, with the
-value named, wherever the scan would otherwise have declared a format.
+and given a format that reads both. A column of ISO or year-first values in
+which the scan made values missing is handed to DiskGraph with its format
+declared, since DiskGraph otherwise decides the format from a part's first
+rows and refuses a column whose sample the scan has made all null. A column
+that also holds a value in a shape the scan does not read is left to
+DiskGraph's own reading, with the value named, wherever the scan would
+otherwise have declared a format.
 """
 
 import os
@@ -68,6 +72,17 @@ _ONE_SHAPE = (
      r'\1:00\2'),
     (r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?) ?z$', r'\1Z'),
 )
+_ZONE_AFTER_SPACE = r' (?:[Zz]|[+-]\d{2}:?\d{2})$'
+_TEXT_SHAPES = {
+    'iso': ('%Y-%m-%d', {
+        1: '%H:%M%#z',
+        2: '%H:%M:%S%.f%#z'
+    }),
+    'year_slash': ('%Y/%m/%d', {
+        1: '%H:%M',
+        2: '%H:%M:%S'
+    }),
+}
 _INT64_MAX = '9223372036854775807'
 _SLASH_SHAPES = {0: '', 1: ' %H:%M', 2: ' %H:%M:%S'}
 _SLASH_DATE = r'^(\d{1,2}/\d{1,2}/\d{4})$'
@@ -142,6 +157,8 @@ class _Scan:
     unread: _Tally = field(default_factory=_Tally)
     unread_parts: set = field(default_factory=set)
     padded_parts: set = field(default_factory=set)
+    text_shapes: Counter = field(default_factory=Counter)
+    awkward: int = 0
     slash_dm: _Tally = field(default_factory=_Tally)
     slash_md: _Tally = field(default_factory=_Tally)
     slash_both: _Tally = field(default_factory=_Tally)
@@ -504,19 +521,37 @@ class _Column:
                             _valid_time(hour, minute, second))
             secs = _epoch_seconds(y, m, d, hour, minute, second)
             nanos = pa.scalar(0, pa.int64())
+            depth = pc.add(
+                pc.cast(pc.is_valid(_number(parts, 'H')), pa.int64()),
+                pc.cast(pc.is_valid(_number(parts, 'S')), pa.int64()))
+            sep = pc.if_else(pc.greater(depth, 0), ' ', '')
             if kind == 'iso':
+                sep = pc.fill_null(pc.struct_field(parts, 'sep'), '')
                 zone = pc.fill_null(pc.struct_field(parts, 'z'), '')
                 secs = pc.subtract(secs, _offset_seconds(zone))
                 nanos = _fraction_nanos(parts)
-                zoned = pc.and_(matched, pc.not_equal(zone, ''))
-                bare = pc.and_(matched, pc.equal(zone, ''))
-                self._note_zones(text, zoned, bare)
+                dated = pc.and_(matched, valid)
+                self._note_zones(text, pc.and_(dated, pc.not_equal(zone, '')),
+                                 pc.and_(dated, pc.equal(zone, '')))
+                awkward = pc.or_(
+                    pc.equal(zone, 'z'),
+                    pc.fill_null(
+                        pc.match_substring_regex(text, _ZONE_AFTER_SPACE),
+                        False))
+                self.scan.awkward += pc.sum(pc.and_(matched,
+                                                    awkward)).as_py() or 0
                 if pc.any(
                         pc.and_(
                             matched,
-                            pc.or_(pc.equal(pc.struct_field(parts, 'sep'), 'T'),
+                            pc.or_(pc.equal(sep, 'T'),
                                    pc.is_null(_number(parts, 'S'))))).as_py():
                     self.scan.reshape_parts.add(part)
+            shape = pc.binary_join_element_wise(sep,
+                                                pc.cast(depth, pa.string()),
+                                                '|')
+            for value, count in zip(
+                    *pc.value_counts(pc.filter(shape, matched)).flatten()):
+                self.scan.text_shapes[value.as_py()] += count.as_py()
             self._tally('fixed', part, text, pc.and_(matched, pc.invert(valid)),
                         'impossible')
             self._tally(
@@ -600,6 +635,9 @@ class _Column:
             decide = self._decide_slash
         elif set(known) == {'iso'} and scan.zoned and scan.bare:
             decide = self._decide_zones
+        elif set(known) in ({'iso'}, {'year_slash'}) and (
+                scan.impossible['fixed'].count or scan.far['fixed'].count):
+            decide = self._decide_shape
         if decide is not None and other:
             warnings.warn(
                 f"Time column {self.alias}.{self.name} holds {other} "
@@ -621,6 +659,24 @@ class _Column:
             f'falls outside {_RANGE}',
             'Replace placeholder dates with nulls at the source to '
             '{keep}')
+
+    def _decide_shape(self) -> None:
+        r"""A column of ISO or year-first values the scan made values missing
+        in is handed to DiskGraph with its format declared, since DiskGraph
+        otherwise decides the format from a part's first rows and refuses a
+        column whose sample the scan has made all null: the exact format of
+        the one shape every value has, or the one-shape staging when ISO
+        shapes differ.
+        """
+        scan = self.scan
+        family = 'iso' if scan.families.get('iso') else 'year_slash'
+        base, times = _TEXT_SHAPES[family]
+        if len(scan.text_shapes) == 1 and not scan.awkward:
+            sep, depth = next(iter(scan.text_shapes)).split('|')
+            time = times[int(depth)] if int(depth) else ''
+            self.decision = _Decision(base + (sep + time if time else ''))
+        elif family == 'iso':
+            self.decision = _Decision('%Y-%m-%d %H:%M:%S%.f%#z', one_shape=True)
 
     def _decide_zones(self) -> None:
         scan = self.scan
