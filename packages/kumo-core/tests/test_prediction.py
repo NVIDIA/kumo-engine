@@ -293,9 +293,7 @@ def test_link_prediction_compiles_lhs_only(monkeypatch, tmp_path):
     assert runtime.compile_options["list_distinct_target_is_array"] is True
 
 
-def test_materialize_prediction_writes_predict_only_bundle(
-        monkeypatch, tmp_path):
-    req = request(tmp_path)
+def _materialize(monkeypatch, tmp_path, req):
     generated = SimpleNamespace(
         staging_dir=str(tmp_path / "staging"),
         table_path=str(tmp_path / "staging" / "tt.parquet"),
@@ -340,11 +338,39 @@ def test_materialize_prediction_writes_predict_only_bundle(
         graph_index_id="graph/version",
         runtime=IngestRuntime(),
     )
+    return result, calls
+
+
+def test_materialize_prediction_writes_predict_only_bundle(
+        monkeypatch, tmp_path):
+    result, calls = _materialize(monkeypatch, tmp_path, request(tmp_path))
 
     assert result.bundle_dir == str(tmp_path / "bundle")
     assert calls["thin"]["stage_counts"] == {"predict": 7}
     assert calls["thin"]["column_stats"] is False
     assert set(calls["thin"]["stage_table_refs"]) == {"predict"}
+    assert calls["thin"]["stage_seed_times"] is None
+
+
+def test_custom_link_prediction_table_records_its_anchor_range(
+        monkeypatch, tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    req = request(tmp_path, family="link_prediction")
+    req = replace(
+        req, query=replace(req.query, task_type="temporal_link_prediction"))
+    table = tmp_path / "staging" / "tt.parquet"
+    table.mkdir(parents=True)
+    pq.write_table(
+        pa.table({"TIMESTAMP": pa.array([5, 3], pa.timestamp("ns"))}),
+        table / "part-00000.parquet")
+    pq.write_table(pa.table({"TIMESTAMP": pa.array([2], pa.timestamp("us"))}),
+                   table / "part-00001.parquet", write_statistics=False)
+
+    _, calls = _materialize(monkeypatch, tmp_path, req)
+
+    assert calls["thin"]["stage_seed_times"] == {"predict": [3, 2000]}
 
 
 def forecast_request(tmp_path):

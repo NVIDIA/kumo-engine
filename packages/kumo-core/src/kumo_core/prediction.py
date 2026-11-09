@@ -238,6 +238,41 @@ def generate_custom_prediction_table(
     )
 
 
+def _anchor_range(table_path: str) -> tuple[int, int]:
+    """First and last anchor of a prediction table, in nanoseconds.
+
+    Reads the Parquet footer statistics, and a row group's anchor column
+    only when its footer has none, so memory does not grow with the rows.
+    """
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    import pyarrow.dataset as ds
+    import pyarrow.parquet as pq
+
+    first: int | None = None
+    last: int | None = None
+    for path in ds.dataset(table_path, format="parquet").files:
+        table = pq.ParquetFile(path)
+        column = table.schema_arrow.get_field_index("TIMESTAMP")
+        kind = table.schema_arrow.field(column).type
+        for group in range(table.metadata.num_row_groups):
+            stats = table.metadata.row_group(group).column(column).statistics
+            if stats is not None and stats.has_min_max:
+                low = pa.scalar(stats.min_raw, kind)
+                high = pa.scalar(stats.max_raw, kind)
+            else:
+                bounds = pc.min_max(
+                    table.read_row_group(group, ["TIMESTAMP"]).column(0))
+                low, high = bounds["min"], bounds["max"]
+            low = low.cast(pa.timestamp("ns")).value
+            high = high.cast(pa.timestamp("ns")).value
+            first = low if first is None else min(first, low)
+            last = high if last is None else max(last, high)
+    if first is None or last is None:
+        raise ValueError("prediction table has no anchor times")
+    return first, last
+
+
 def materialize_prediction_task(
     request: PredictionTableRequest,
     generated: GeneratedPredictionTable,
@@ -311,12 +346,12 @@ def materialize_prediction_task(
             "storage_kind": "diskgraph_table",
         }
     }
+    anchors = request.timestamps
+    if not anchors and request.query.task_type == "temporal_link_prediction":
+        anchors = _anchor_range(generated.table_path)
     stage_seed_times = None
-    if request.timestamps:
-        stage_seed_times = {
-            "predict": [min(request.timestamps),
-                        max(request.timestamps)]
-        }
+    if anchors:
+        stage_seed_times = {"predict": [min(anchors), max(anchors)]}
     manifest_path = write_thin_manifest(
         spec,
         graph_index_id=graph_index_id,
