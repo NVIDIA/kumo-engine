@@ -61,7 +61,7 @@ from kumoapi.source_table import (
     S3SourceTable,
     SnowflakeSourceTable,
 )
-from kumoapi.typing import Dtype
+from kumoapi.typing import Dtype, Stype
 
 from kumo.engine._local_schema import GraphDefinition, LocalSourceTableType
 from kumo.engine._scratch import fingerprint
@@ -254,7 +254,8 @@ def portable_graph_config(
                 UserWarning,
                 stacklevel=2,
             )
-            table = table.with_column(column, dtype=conversion.target)
+            table = table.with_column(column, dtype=conversion.target,
+                                      stype=Stype.ID)
         definitions[alias] = table.definition
     try:
         definition = graph_definition_from_edges(

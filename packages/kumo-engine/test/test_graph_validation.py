@@ -207,6 +207,27 @@ def test_mismatched_key_dtypes_convert_the_foreign_key(
                 if col.name == 'user_id').dtype == fkey_dtype
 
 
+def test_a_multicategorical_string_key_converts_with_the_id_stype(tables):
+    users, events = tables
+    events = events.with_column('user_id', dtype=Dtype.string,
+                                stype=Stype.multicategorical,
+                                multicategorical_delimiter=',')
+    graph = Graph(
+        {
+            'users': users.with_column('id', dtype=Dtype.int64),
+            'events': events,
+        }, [Edge('events', 'user_id', 'users')])
+
+    with pytest.warns(UserWarning,
+                      match=r'Foreign key events\.user_id is stored as string'):
+        graph.validate()
+
+    projected = next(table for table in graph._graph_config['tables']
+                     if table['table_name'] == 'events')
+    column = next(col for col in projected['cols'] if col['name'] == 'user_id')
+    assert (column['dtype'], column['stype']) == ('int64', 'ID')
+
+
 @pytest.mark.parametrize('cycle', [False, True])
 def test_key_conversions_follow_chains_and_keep_cycles(cycle):
     users, events = _s3_tables()
