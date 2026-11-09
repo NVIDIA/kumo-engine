@@ -113,6 +113,7 @@ from kumo.engine.graph import (
     index_timestamp_precision,
     report_other_graph,
     schema_changes,
+    tables_and_edges,
 )
 from kumo.engine.pquery.prediction_table import PredictionTable
 from kumo.engine.pquery.training_table import TrainingTable
@@ -1634,12 +1635,14 @@ class Trainer:
                 f"{snapshot._graph_key}, but this model was trained on a "
                 f"snapshot of graph {trained}.", self._graph_config,
                 snapshot.graph_config, stacklevel=stacklevel, strict=strict)
-        elif trained and self._graph_config is not None and schema_changes(
-                self._graph_config, snapshot.graph_config):
-            report_other_graph(
-                f"Snapshot {snapshot.id} differs from the snapshot this "
-                "model was trained on.", self._graph_config,
-                snapshot.graph_config, stacklevel=stacklevel, strict=strict)
+        elif trained and self._graph_config is not None:
+            before = tables_and_edges(self._graph_config)
+            after = tables_and_edges(snapshot.graph_config)
+            if schema_changes(before, after):
+                report_other_graph(
+                    f"Snapshot {snapshot.id} differs from the snapshot this "
+                    "model was trained on.", before, after,
+                    stacklevel=stacklevel, strict=strict)
 
     def _predict(
         self,

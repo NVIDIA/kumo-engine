@@ -313,6 +313,23 @@ def _changed_columns(before: List[str], after: List[str]) -> str:
     return f" ({', '.join(names)})" if names else ''
 
 
+def tables_and_edges(config: Mapping[str, Any]) -> Dict[str, Any]:
+    r"""`config` reduced to the tables it materialized and the edges between
+    them. Two snapshots of one graph key share every declared field, so this
+    is all that can differ between them: a table with no rows is left out
+    with its edges."""
+    return {
+        'tables': [{
+            'table_name':
+            table['table_name'],
+            'fkeys': [{
+                'name': fkey['name'],
+                'dst_table': fkey['dst_table']
+            } for fkey in table['fkeys']],
+        } for table in config['tables']]
+    }
+
+
 def report_other_graph(message: str, before: Optional[Mapping[str, Any]],
                        after: Mapping[str, Any], stacklevel: int,
                        strict: bool = False) -> None:

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import copy
+import warnings
 from dataclasses import replace
 
 import pytest
@@ -99,6 +100,25 @@ def test_predict_says_what_differs_from_the_training_graph(
         with pytest.raises(_Stop):
             trainer.predict(left_out(snapshot), prediction_table=table,
                             binary_classification_threshold=.5)
+
+    def derived(snapshot):
+        config = copy.deepcopy(snapshot.graph_config)
+        for table in config['tables']:
+            if 'time_col' in table:
+                table['time_col']['timestamp_format'] = 'YYYY-MM-DD'
+            for column in [*table['cols'], *table['fkeys'], table['pkey']]:
+                if column['dtype'] == 'int64':
+                    column['dtype'] = 'int32'
+        return replace(snapshot, graph_config=config)
+
+    with warnings.catch_warnings(record=True) as records:
+        warnings.simplefilter('always')
+        _predict(trainer, derived(snapshot), monkeypatch)
+        _predict(trainer, derived(snapshot), monkeypatch, mlops=strict)
+    assert not [
+        str(record.message) for record in records
+        if 'trained on' in str(record.message)
+    ]
 
     monkeypatch.setattr(trainer, '_graph_config', None)
     with pytest.warns(UserWarning, match='does not record its training graph'):
