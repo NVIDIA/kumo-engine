@@ -960,12 +960,19 @@ def test_float_key_columns_are_declared_int64_with_a_warning(table_name, key):
         'bridge.id': 'int32',
         'orders.bridge_id': 'int32'
     }),
+    ('chained_self_incoming', {
+        'events.user_id': 'int32',
+        'bridge.id': 'int32'
+    }),
 ])
 def test_float_keys_take_the_width_every_link_accepts(shape, widths):
     users, events = _s3_tables()
     narrow = _keyed(users, [Column('id', Stype.ID, Dtype.int32)], 'id')
     wide = _keyed(users, [Column('id', Stype.ID, Dtype.int64)], 'id')
-    bridge = _keyed(users, [Column('id', Stype.ID, Dtype.float64)], 'id')
+    bridge = _keyed(users, [
+        Column('id', Stype.ID, Dtype.float64),
+        Column('parent_id', Stype.ID, Dtype.int64),
+    ], 'id')
     events = _keyed(events, [
         Column('event_id', Stype.ID, Dtype.int64),
         Column('user_id', Stype.ID, Dtype.float64),
@@ -988,6 +995,8 @@ def test_float_keys_take_the_width_every_link_accepts(shape, widths):
                  Edge('events', 'user_id', 'bridge')]
     if shape == 'incoming':
         tables, edges = {'bridge': bridge}, []
+    if shape == 'chained_self_incoming':
+        edges.append(Edge('bridge', 'parent_id', 'bridge'))
     if incoming is not None:
         tables['orders'] = _keyed(events, [
             Column('order_id', Stype.ID, Dtype.int64),
@@ -998,9 +1007,11 @@ def test_float_keys_take_the_width_every_link_accepts(shape, widths):
 
     with pytest.warns(UserWarning) as caught:
         graph.validate()
-    assert {str(w.message).split(' is stored')[0]
-            for w in caught} == {f'Key column {column}'
-                                 for column in widths}
+    assert {
+        str(w.message).split(' is stored')[0]
+        for w in caught if ' is stored' in str(w.message)
+    } == {f'Key column {column}'
+          for column in widths}
     config = {t['table_name']: t for t in graph._graph_config['tables']}
     keys = {}
     for name, table in config.items():

@@ -167,8 +167,10 @@ def _inexact_key_values(values: pa.Array, target: Dtype) -> int:
     integer digit at all zero is its only whole value, and with too few to
     reach a bound every value fits it. A string counts unless it spells an
     integer the way DiskGraph's parser accepts: an optional sign, digits,
-    an optional all-zero fraction, whitespace around it. Any other type is
-    left to DiskGraph's own conversion.
+    an optional all-zero fraction, whitespace around it. An integer, from
+    a part staged in a wider or differently signed type than the target,
+    counts when it is outside the target's range. Any other type is left
+    to DiskGraph's own conversion.
     """
     from decimal import Decimal
 
@@ -188,6 +190,11 @@ def _inexact_key_values(values: pa.Array, target: Dtype) -> int:
         exact = pc.if_else(integer, text,
                            pa.scalar(None,
                                      text.type)).cast(pa.decimal256(76, 0))
+        whole = pc.and_(
+            pc.greater_equal(exact, pa.scalar(Decimal(low), exact.type)),
+            pc.less_equal(exact, pa.scalar(Decimal(high), exact.type)))
+    elif pa.types.is_integer(stored):
+        exact = values.cast(pa.decimal256(76, 0))
         whole = pc.and_(
             pc.greater_equal(exact, pa.scalar(Decimal(low), exact.type)),
             pc.less_equal(exact, pa.scalar(Decimal(high), exact.type)))
@@ -721,7 +728,8 @@ class Graph:
         is the widest width every link of the column accepts; when none
         does, because an integer foreign key wider than that width links
         to a converted primary key, the graph is refused with both links
-        named, since any width would fail one of them.
+        named, since any width would fail one of them. A self-relation is
+        no link here, as Kumo Local omits it.
         """
         tables = self._named_tables
         dtypes = {
@@ -770,7 +778,8 @@ class Graph:
         for edge in self.edges:
             destination = tables.get(edge.dst_table)
             if (destination is None or destination.definition is None
-                    or edge.src_table not in effective):
+                    or edge.src_table not in effective
+                    or edge.src_table == edge.dst_table):
                 continue
             pkey = destination.definition.pkey
             target = targets.get(edge.dst_table, {}).get(pkey)
