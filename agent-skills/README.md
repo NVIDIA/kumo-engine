@@ -146,10 +146,24 @@ Whatever is on `main` is what the catalog publishes. To change the skill:
    `tests/test_publish_nvskills.py` fails the PR if you forget. It ignores the `SKILL-BUILD`
    stamp, so a rebuild on an unrelated commit is not required.
 3. A maintainer comments `/nvskills-ci` on the PR. NVSkills CI runs the evals and pushes
-   `BENCHMARK.md` and `skill.oms.sig`. A later push to the PR needs another `/nvskills-ci`.
-4. Merge. The catalog picks the change up within the hour. A PR merged without step 3 leaves the
-   catalog on the last signed version.
+   `BENCHMARK.md` and `skill.oms.sig` as a commit by `nv-skills-ci[bot]`. copy-pr-bot does not
+   trust that commit, so `kumo-core-gpu-ci` runs only after a maintainer comments
+   `/ok to test <sha of that commit>`. A later push to the PR needs another `/nvskills-ci`.
+4. Merge. The catalog picks the change up within the hour.
 
-The catalog side is `components.d/kumo-engine.yml` in NVIDIA/skills, which points at
-`skills/kumo-data-science`. Its `verify-source-onboarding` check fails until a signed copy with
-`skill-card.md`, `BENCHMARK.md` and an eval dataset is on `main` here.
+A change merged without step 3, a revert included, is "sig drift" to the catalog sync: it keeps
+the last signed copy, so the catalog serves content that `main` no longer has until the next signed
+merge. Run `/nvskills-ci` on reverts too.
+
+### Before the first publish
+
+None of this exists yet; the catalog publishes nothing until all of it does:
+
+- [ ] `agent-skills/nvskills/kumo-data-science/skill-card.md`
+- [ ] `agent-skills/nvskills/kumo-data-science/evals/evals.json`
+- [ ] the `NVSKILLS_CI_DISPATCH_TOKEN` repository secret, from the NVSkills CI maintainers;
+      `request-nvskills-ci.yml` fails without it
+- [ ] a signed copy on `main`: a PR through steps 1–4 whose `BENCHMARK.md` says PASS
+- [ ] the onboarding PR to NVIDIA/skills adding `components.d/kumo-engine.yml`, pointing at
+      `skills/kumo-data-science`. Its `verify-source-onboarding` check passes only once the
+      signed copy is on `main`.
