@@ -96,12 +96,12 @@ def test_optional_parse_stats_do_not_block_existing_warnings(
     assert len(caught) == 1
 
 
-def _min_stats(tmp_path, table, columns):
+def _min_stats(tmp_path, table, columns, stype='kumo.numerical'):
     directory = tmp_path / 'col_stats_min'
     directory.mkdir(exist_ok=True)
     (directory / f'{table}.json').write_text(
         json.dumps({
-            f'{column}__kumo.stype__{stat}__False': {
+            f'{column}__{stype}__{stat}__False': {
                 'value': value
             }
             for column, stats in columns.items()
@@ -153,6 +153,25 @@ def test_snapshot_reports_non_finite_values_per_column(tmp_path):
     ]
 
 
+def test_latlong_invalid_values_are_not_reported_as_non_finite(tmp_path):
+    from kumo.engine.graph import invalid_value_counts
+
+    result = _min_stats(tmp_path, 'events', {
+        'geo': {
+            'COUNT': 8,
+            'NUM_PARSE_FAILURES': 2,
+            'INVALID_FRACTION': 0.5
+        }
+    }, stype='kumo.latlong')
+    with pytest.warns(UserWarning) as caught:
+        _warn_ingest_data_loss(result, {'tables': [{'table_name': 'events'}]})
+    assert [str(w.message) for w in caught] == [
+        '2 invalid values found in events.geo. Invalid values are parsed as '
+        'null. Please correct and retrain if needed.'
+    ]
+    assert invalid_value_counts(tmp_path, ['events']) == {'events': {'geo': 2}}
+
+
 @pytest.mark.parametrize('column, counts, expected', [
     ({
         'name': 'country',
@@ -163,6 +182,15 @@ def test_snapshot_reports_non_finite_values_per_column(tmp_path):
      "'NA', 'None'); they are kept as text. If they mean missing, replace "
      "them with nulls at the source; a number or date column reads them as "
      "missing."),
+    ({
+        'name': 'country',
+        'dtype': 'string',
+        'stype': 'categorical'
+    }, [['US', 5], ['none', 2], ['NULL ', 1], ['N/a', 1], ['  ', 3]
+        ], "events.country holds 7 value(s) that look like missing ('  ', "
+     "'N/a', 'NULL ', 'none'); they are kept as text. If they mean missing, "
+     "replace them with nulls at the source; a number or date column reads "
+     "them as missing."),
     ({
         'name': 'country',
         'dtype': 'string',

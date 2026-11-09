@@ -45,7 +45,7 @@ import warnings
 from dataclasses import replace
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
-from kumo_core.csv_rules import has_leading_zero, is_missing
+from kumo_core.csv_rules import has_leading_zero, looks_missing
 from kumo_core.stype_inference import infer_stype_from_name
 from kumoapi.plugin import SourceBackend
 from kumoapi.source_table import SourceColumn
@@ -88,8 +88,7 @@ def _report_numbers_stored_as_text(
         numbers = [value.strip() for value, number in judged if number]
         others = [value for value, number in judged if not number]
         if (not numbers or any(has_leading_zero(value) for value in numbers)
-                or any(value.strip() and not is_missing(value.strip())
-                       for value in others)):
+                or not all(looks_missing(value) for value in others)):
             continue
         missing = len(others) + len(column) - len(values)
         examples = ', '.join(

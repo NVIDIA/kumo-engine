@@ -81,7 +81,7 @@ from typing import (
 )
 
 from kumo_core.artifacts import PROVENANCE_FILE
-from kumo_core.csv_rules import NA_TOKENS
+from kumo_core.csv_rules import looks_missing
 from kumo_core.pquery import NativeGraph, normalize_graph
 from kumoapi.graph import Edge
 from kumoapi.typing import (
@@ -165,6 +165,7 @@ def _warn_low_fk_match_rates(stats: Dict[str, Any],
 
 _FLOAT32_EXACT_BITS = 24
 _FLOAT32_DTYPES = frozenset({Dtype.float, Dtype.float32})
+_NUMERICAL = 'kumo.numerical'
 
 
 def _read_column_stats(kumo_stats_dir: Any, table: str) -> Dict[str, Any]:
@@ -176,12 +177,15 @@ def _read_column_stats(kumo_stats_dir: Any, table: str) -> Dict[str, Any]:
     return column_stats if isinstance(column_stats, dict) else {}
 
 
-def _by_column(column_stats: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
-    r"""The ``__False`` statistics of each column, keyed by statistic name."""
+def _by_column(column_stats: Mapping[str, Any],
+               stype: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    r"""The ``__False`` statistics of each column, keyed by statistic name;
+    ``stype`` keeps only the columns DiskGraph collected under that key."""
     stats: Dict[str, Dict[str, Any]] = {}
     for key, entry in column_stats.items():
         parts = key.rsplit('__', 3)
-        if isinstance(entry, dict) and len(parts) == 4 and parts[3] == 'False':
+        if (isinstance(entry, dict) and len(parts) == 4 and parts[3] == 'False'
+                and stype in (None, parts[1])):
             stats.setdefault(parts[0], {})[parts[2]] = entry.get('value')
     return stats
 
@@ -205,9 +209,11 @@ def invalid_value_counts(kumo_stats_dir: Any,
     non-finite numbers, stored as is but left out of the statistics."""
     counts: Dict[str, Dict[str, int]] = {}
     for table in sorted(tables):
-        stats = _by_column(_read_column_stats(kumo_stats_dir, table))
-        for column, stat in sorted(stats.items()):
-            count = _count(stat, 'NUM_PARSE_FAILURES') + _non_finite(stat)
+        column_stats = _read_column_stats(kumo_stats_dir, table)
+        numerical = _by_column(column_stats, _NUMERICAL)
+        for column, stat in sorted(_by_column(column_stats).items()):
+            count = (_count(stat, 'NUM_PARSE_FAILURES') +
+                     _non_finite(numerical.get(column, {})))
             if count:
                 counts.setdefault(table, {})[column] = count
     return counts
@@ -256,8 +262,7 @@ def _warn_missing_like_text(table: str, column: Mapping[str, Any],
     found = {
         entry[0]: entry[1]
         for entry in counts if isinstance(entry, list) and len(entry) == 2
-        and isinstance(entry[0], str) and entry[0] in NA_TOKENS
-        and type(entry[1]) is int and entry[1] > 0
+        and looks_missing(entry[0]) and type(entry[1]) is int and entry[1] > 0
     }
     if not found:
         return
@@ -340,7 +345,8 @@ def _warn_ingest_data_loss(
                 warnings.warn(parse_failure_warning(name, column, count),
                               UserWarning, stacklevel=3)
         stats = _by_column(column_stats)
-        for column, stat in sorted(stats.items()):
+        numerical = _by_column(column_stats, _NUMERICAL)
+        for column, stat in sorted(numerical.items()):
             count = _non_finite(stat)
             if count:
                 warnings.warn(

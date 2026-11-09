@@ -634,7 +634,7 @@ def test_snapshot_reports_non_finite_and_missing_like_values(
              float('-inf'),
              float('nan'), 2.5, 3.5, 4.5]),
         'country':
-        pa.array(['NA', 'US', 'None', 'DE', 'N/A', 'DE', 'US']),
+        pa.array(['NA', 'US', 'None', 'N/a', 'N/A', 'none', 'NULL ']),
         'amount':
         pa.array(['1', '2', ' ', 'abc', None, '3.5', 'inf']),
     })
@@ -655,10 +655,10 @@ def test_snapshot_reports_non_finite_and_missing_like_values(
             'are stored as is and left out of the column statistics. '
             'Infinity usually comes from a division by zero upstream; replace '
             'non-finite values at the source.') in messages
-    assert ("t.country holds 3 value(s) that look like missing ('N/A', 'NA', "
-            "'None'); they are kept as text. If they mean missing, replace "
-            "them with nulls at the source; a number or date column reads "
-            "them as missing.") in messages
+    assert ("t.country holds 6 value(s) that look like missing ('N/A', 'N/a', "
+            "'NA', 'NULL ', 'None', 'none'); they are kept as text. If they "
+            "mean missing, replace them with nulls at the source; a number or "
+            "date column reads them as missing.") in messages
     if extension == 'parquet':
         assert (
             '2 invalid values found in t.amount. Invalid values are '
@@ -740,6 +740,13 @@ def test_decimal_columns_beyond_float32_precision_are_reported(tmp_path):
      "like missing "
      "(for example ' '). To read it as a number call "
      "table.with_column('amount', dtype=Dtype.float64, "
+     "stype=Stype.numerical); values that do not parse become missing and "
+     "are counted at snapshot."),
+    ('parquet', ['1', '2', 'none', 'NULL ', '3', '4'],
+     "Column 'amount' in table 't.parquet' is read as text, but every "
+     "non-blank value in the 6 sampled rows is a number; 2 value(s) are "
+     "blank or look like missing (for example 'NULL ', 'none'). To read it "
+     "as a number call table.with_column('amount', dtype=Dtype.int64, "
      "stype=Stype.numerical); values that do not parse become missing and "
      "are counted at snapshot."),
     ('parquet', ['7', '8', '9', '10', '11', '12'],
