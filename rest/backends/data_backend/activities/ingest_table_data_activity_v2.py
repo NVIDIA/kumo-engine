@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import NoReturn, Tuple
 
 from kumo_core.sources.errors import (
+    EmptySourceError,
     PermanentSourceError,
     ReconnectRequiredError,
     RowCountMismatchError,
@@ -85,6 +86,10 @@ _SAFE_INGESTION_PUBLIC_ERRORS = (
 # text must not be republished. Keyed on the exact type, so a subclass added
 # later inherits no message that was not written for it.
 _SAFE_SOURCE_ERROR_MESSAGES: dict[type[SourceError], str] = {
+    EmptySourceError:
+    ("Table '{table}' has no rows, and Kumo needs at least one to ingest "
+     'it. Load data into the table, or leave it out of the graph, then '
+     're-run the ingest.'),
     RowCountMismatchError:
     ("Table '{table}' was read incompletely: the source returned {actual} "
      'rows but reported {expected}. Re-run the ingest; if it happens again, '
