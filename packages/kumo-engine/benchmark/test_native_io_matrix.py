@@ -3,12 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Counter and matched-work checks that prevent misleading benchmark results."""
 
+import json
+from argparse import Namespace
 from collections import Counter
 
 import native_io_resources
 import pytest
 from native_io_matrix import (
     BACKENDS,
+    aggregate,
     confidence_interval,
     reuse_trial,
     runner_command,
@@ -37,6 +40,7 @@ def result(backend: str, repeat: int, seconds: float) -> dict:
                 provenance=dict(native_sha256='a' * 64),
                 config=dict(loader_mode='standalone'),
                 work=dict(optimizer_steps=128, train_batches=128,
+                          logical_seed_sha256='a' * 64,
                           predict_rows=1000, predict_batches=4),
                 phase_seconds=dict(fit=seconds, predict=seconds / 10,
                                    e2e=seconds * 1.1))
@@ -66,9 +70,41 @@ def test_config_mismatch_rejected():
         validate_work(rows)
 
 
+def test_equal_predictions_cannot_hide_row_drift():
+    rows = [result('mmap', 0, 20), result('direct', 0, 10)]
+    assert rows[0]['predictions'] == rows[1]['predictions']
+    rows[1]['work']['logical_seed_sha256'] = 'b' * 64
+    with pytest.raises(ValueError, match='different logical training streams'):
+        validate_work(rows)
+
+
+def test_missing_logical_work_rejected():
+    row = result('mmap', 0, 20)
+    del row['work']['logical_seed_sha256']
+    with pytest.raises(ValueError, match='no valid logical training stream hash'):
+        validate_work([row])
+
+
 def test_incomplete_matrix_rejected():
     with pytest.raises(ValueError, match='Incomplete matrix'):
         summarize([result('mmap', 0, 20)], 5, 12)
+
+
+def test_aggregate_retained_trial_directory(tmp_path):
+    fsutil.makedirs(str(tmp_path / 'preserved-clone.json'))
+    row = result('mmap', 0, 20)
+    row['matrix_spec'] = dict(pilot=True)
+    fsutil.write_text(str(tmp_path / 'mmap.json'), json.dumps(row))
+    fsutil.write_text(str(tmp_path / 'notes.txt'), 'not JSON')
+    args = Namespace(results_dir=str(tmp_path), output=str(tmp_path / 'out.json'),
+                     repetitions=1, order_seed=12, prediction_atol=1e-6)
+    with pytest.raises(ValueError, match='Incomplete matrix'):
+        aggregate(args)
+
+
+def test_empty_matrix_rejected():
+    with pytest.raises(ValueError, match='No completed trials'):
+        summarize([], 5, 12)
 
 
 def test_paired_speedups():

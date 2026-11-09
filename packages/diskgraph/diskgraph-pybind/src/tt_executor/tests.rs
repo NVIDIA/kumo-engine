@@ -1027,6 +1027,8 @@
                 index.to_str().unwrap(),
                 "ttpred",
                 Some("predict".to_string()),
+                None,
+                None,
             )
             .unwrap();
             let d = d.bind(py);
@@ -1444,6 +1446,8 @@
                 g2.to_str().unwrap(),
                 "ttx",
                 Some("predict".to_string()),
+                None,
+                None,
             )
             .unwrap();
             let d = d.bind(py);
@@ -1561,7 +1565,7 @@
         let tt_ext = pyo3::Python::attach(|py| {
             // No predict_stage_name → split path. NEW dir-API: pass the dir.
             let d =
-                execute_tt_ingest(py, &staging, index.to_str().unwrap(), "tttrain", None).unwrap();
+                execute_tt_ingest(py, &staging, index.to_str().unwrap(), "tttrain", None, None, None).unwrap();
             let d = d.bind(py);
             let ext: String = d.get_item("tt_extension_path").unwrap().extract().unwrap();
             ext
@@ -1716,6 +1720,70 @@
     }
 
     #[test]
+    fn tt_ingest_rejects_zero_threads() {
+        pyo3::Python::initialize();
+        pyo3::Python::attach(|py| {
+            for (loaders, encoders) in [(Some(0), None), (None, Some(0))] {
+                let error = execute_tt_ingest(
+                    py, "missing-stage", "missing-index", "test", None, loaders, encoders,
+                ).unwrap_err();
+                assert!(error.to_string().contains("must be positive"));
+            }
+        });
+    }
+
+    #[test]
+    fn serial_multipart_stage_replays() {
+        use arrow_array::{Float64Array, Int64Array, TimestampNanosecondArray};
+        use arrow_schema::{DataType, Field, Schema, TimeUnit as ArrowTimeUnit};
+        pyo3::Python::initialize();
+        let dir = tempfile::tempdir().unwrap();
+        let index = t_build_graph(dir.path());
+        let schema = StdArc2::new(Schema::new(vec![
+            Field::new(PRIMARY_ENTITY_COL, DataType::Int64, false),
+            Field::new(TIMESTAMP_COL, DataType::Timestamp(ArrowTimeUnit::Nanosecond, None), false),
+            Field::new(PRIMARY_TARGET_COL, DataType::Float64, false),
+        ]));
+        // Cross the 100,000-row context prefix: later parts use the parallel
+        // source dispatcher that previously changed physical seed-row order.
+        let parts = (0..3).map(|part| {
+            let start = part * 70_000i64;
+            let batch = RecordBatch::try_new(schema.clone(), vec![
+                StdArc2::new(Int64Array::from_iter_values((start..start + 70_000).map(|row| row % 4))),
+                StdArc2::new(TimestampNanosecondArray::from_iter_values((start..start + 70_000).map(|row| (row + 1000) * 1_000_000_000))),
+                StdArc2::new(Float64Array::from_iter_values((start..start + 70_000).map(|row| (row % 2) as f64))),
+            ]).unwrap();
+            let path = dir.path().join(format!("part-{part:05}.parquet"));
+            t_write_parquet(&path, &batch);
+            path
+        }).collect::<Vec<_>>();
+        let columns = diskgraph_ingest::infer_stage_columns(&parts[0]).unwrap();
+        let stages = [diskgraph_ingest::StageSpec {
+            stage_table_name: "train_seeds".to_string(), parquet_paths: parts,
+        }];
+        let mut results = Vec::new();
+        for name in ["first", "second"] {
+            let output = dir.path().join(name);
+            let result = diskgraph_ingest::ingest_stage_extension_with_resolution_and_sidecars(
+                "replay", &output, &index, &stages, Default::default(), columns.clone(),
+                vec![], &[diskgraph_ingest::ResolveSpec {
+                    src_col: PRIMARY_ENTITY_COL.to_string(), dst_table: "users".to_string(),
+                    kind: diskgraph_ingest::ResolveKind::Scalar, node_id_col: "entity_node_id".to_string(),
+                }], Some(1), false, false, Some(1), Some(1),
+            ).unwrap();
+            assert_eq!(result.counts, vec![("train_seeds".to_string(), 210_000)]);
+            results.push(output);
+        }
+        for relative in ["nodes/train_seeds/node_data.ctx", "nodes/train_seeds/shard-00000/edges.bin", "nodes/train_seeds/shard-00000/offsets.bin"] {
+            assert_eq!(
+                std::fs::read(results[0].join(relative)).unwrap(),
+                std::fs::read(results[1].join(relative)).unwrap(),
+                "physical seed-row layout changed across identical multipart ingests: {relative}",
+            );
+        }
+    }
+
+    #[test]
     fn test_train_binary_label_index_is_emitted_by_stage_ingest() {
         pyo3::Python::initialize();
         let dir = tempfile::tempdir().unwrap();
@@ -1750,6 +1818,8 @@
             Some(2),
             false,
             false,
+            None,
+            None,
         )
         .unwrap();
 
@@ -1852,6 +1922,8 @@
             Some(2),
             false,
             false,
+            None,
+            None,
         )
         .unwrap();
 
@@ -1941,6 +2013,8 @@
             Some(2),
             false,
             false,
+            None,
+            None,
         )
         .unwrap();
 
@@ -2503,6 +2577,8 @@
                 index.to_str().unwrap(),
                 ingest_tt_id,
                 Some("predict".to_string()),
+                None,
+                None,
             )
             .expect(
                 "execute_tt_ingest must consume the custom gen bundle — fails today \
@@ -2599,6 +2675,8 @@
                 index.to_str().unwrap(),
                 ingest_tt_id,
                 None, // split path
+                None,
+                None,
             )
             .expect(
                 "execute_tt_ingest must consume the custom gen bundle — fails \
@@ -2842,6 +2920,8 @@
                 index.to_str().unwrap(),
                 target_tt_id,
                 Some("predict".to_string()),
+                None,
+                None,
             )
             .expect("execute_tt_ingest must publish the predict bundle under the target id");
             let d = d.bind(py);

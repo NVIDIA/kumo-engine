@@ -28,6 +28,7 @@ from native_io_isolation import (
     verify_baseline,
 )
 from native_io_resources import cgroup_path, group_snapshot
+from torch_geometric.data import HeteroData
 
 from io_utils import fsutil
 
@@ -252,6 +253,29 @@ def controlled_plan(task: str, steps: int, batch_size: int):
     return plan
 
 
+def logical_seed_hash(batch: HeteroData) -> str:
+    """Fingerprint logical CPU training work, excluding neighbor features."""
+    store = batch['train_table']
+    size = int(store.batch_size)
+    fields = {'entity_ids': batch['users'].n_id[:size]}
+    for name in ('time', 'seed_time', 'y', 'edge_label_index', 'edge_weight'):
+        if name in store:
+            fields[name] = store[name]
+    if not any(name in fields for name in ('time', 'seed_time')):
+        raise ValueError('Temporal benchmark batch has no logical timestamps')
+    digest = hashlib.sha256()
+    for name, tensor in fields.items():
+        if tensor.device.type != 'cpu':
+            raise ValueError('Logical work proof requires CPU benchmark tensors')
+        data = tensor.detach().contiguous().numpy().tobytes()
+        header = json.dumps([name, str(tensor.dtype), list(tensor.shape), len(data)],
+                            separators=(',', ':')).encode()
+        digest.update(len(header).to_bytes(8, 'little'))
+        digest.update(header)
+        digest.update(data)
+    return digest.hexdigest()
+
+
 @contextmanager
 def observe_work(state: dict, workers: int, threads: int, mode: str,
                  namespace: str):
@@ -285,6 +309,7 @@ def observe_work(state: dict, workers: int, threads: int, mode: str,
 
         def on_train_batch_end(self, trainer, module, outputs, batch, batch_idx):
             state['train_batches'] += 1
+            state['logical_seed_stream'].update(bytes.fromhex(logical_seed_hash(batch)))
 
         def on_fit_end(self, trainer, module):
             state['optimizer_steps'] += int(trainer.global_step)
@@ -331,13 +356,26 @@ def observe_work(state: dict, workers: int, threads: int, mode: str,
             replace(request, tt_id=actual), replace(generated, tt_id=actual),
             graph_index_id=graph_index_id, runtime=runtime)
 
+    original_ingest = diskgraph.execute_tt_ingest
+
+    def ingest(staging_dir, index_path, tt_id, predict_stage_name=None):
+        state['tt_ingest_calls'].append({
+            'phase': state['phase'], 'namespace': tt_id,
+            'context_threads': 1, 'encode_threads': 1,
+        })
+        return original_ingest(
+            staging_dir=staging_dir, index_path=index_path, tt_id=tt_id,
+            predict_stage_name=predict_stage_name,
+            context_threads=1, encode_threads=1)
+
     with patch.object(pl, 'Trainer', ObservedTrainer), patch(
             'kumo_core.train.diskgraph_nested_trainer._ttng_diskgraph_runtime_config',
             configured), patch(
                 'kumo_core.training.workflow.materialize_generated_training_task',
                 materialize), patch(
                     'kumo_core.prediction.materialize_prediction_task',
-                    materialize_prediction):
+                    materialize_prediction), patch.object(
+                        diskgraph, 'execute_tt_ingest', ingest):
         yield
 
 
@@ -401,7 +439,8 @@ def run(args) -> dict:
     namespace = f'tt-native-io-benchmark-{args.task}-v1'
     state = dict(fits=0, completed_fits=0, optimizer_steps=0, train_batches=0,
                  phase='fit', predict_batches={name: 0 for name in (
-                     'predict', 'repeat', 'reload')}, loaders=[], task_namespaces=[])
+                     'predict', 'repeat', 'reload')}, loaders=[], task_namespaces=[],
+                 tt_ingest_calls=[], logical_seed_stream=hashlib.sha256())
     seconds, counters, resources_per_phase = {}, {}, {}
     group = cgroup_path()
 
@@ -487,6 +526,10 @@ def run(args) -> dict:
                            for phase in ('fit', 'predict', 'repeat', 'reload')]
     if state['task_namespaces'] != expected_namespaces:
         raise ValueError('Trial did not ingest four distinct controlled task namespaces')
+    expected_calls = [{**record, 'context_threads': 1, 'encode_threads': 1}
+                      for record in expected_namespaces]
+    if state['tt_ingest_calls'] != expected_calls:
+        raise ValueError('Trial did not perform four complete controlled task ingests')
     for record in expected_namespaces:
         path = snapshot.index_path / 'train_tables' / record['namespace']
         if not fsutil.exists(str(path / 'manifest.json')):
@@ -538,6 +581,7 @@ def run(args) -> dict:
                   threads=args.threads, rayon_threads=args.rayon_threads,
                   seed=args.seed, loader_mode=args.loader_mode,
                   task_namespace=namespace,
+                  tt_ingest_context_threads=1, tt_ingest_encode_threads=1,
                   requested_model_plan_sha256=requested_plan_sha)
     result = dict(
         version=1, status='PASS', task=args.task, backend=args.backend,
@@ -548,6 +592,7 @@ def run(args) -> dict:
         config=config, native_io=counters,
         resources_per_phase=resources_per_phase,
         work={'optimizer_steps': state['optimizer_steps'],
+              'logical_seed_sha256': state['logical_seed_stream'].hexdigest(),
               'optimizer_count': state['optimizer_count'],
               'selected_checkpoint_steps': checkpoint_steps,
               'selected_checkpoint_sha256': file_hash(checkpoint),
@@ -558,6 +603,7 @@ def run(args) -> dict:
               'predict_batches': state['predict_batches'],
               'loaders': state['loaders'],
               'materialization_calls': state['task_namespaces'],
+              'tt_ingest_calls': state['tt_ingest_calls'],
               'training_interval': state['training_interval']},
         predictions={'values': before.tolist(),
                      'decisions': None if decisions is None else decisions.tolist(),

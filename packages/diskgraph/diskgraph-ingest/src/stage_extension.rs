@@ -144,6 +144,8 @@ pub fn ingest_stage_extension_with_resolution(
         num_shards,
         col_stats,
         group_by_timestamp,
+        None,
+        None,
     )
 }
 
@@ -163,7 +165,11 @@ pub fn ingest_stage_extension_with_resolution_and_sidecars(
     col_stats: bool,
     // Emit per-stage `bucket_index` (temporal LP only).
     group_by_timestamp: bool,
+    source_loader_threads: Option<usize>,
+    source_encoder_threads: Option<usize>,
 ) -> Result<StageExtensionResult> {
+    anyhow::ensure!(source_loader_threads != Some(0), "source loader threads must be positive");
+    anyhow::ensure!(source_encoder_threads != Some(0), "source encoder threads must be positive");
     // Append the synthetic resolved node-id columns to the shared column list.
     let mut columns = columns;
     for spec in resolve_specs {
@@ -246,6 +252,8 @@ pub fn ingest_stage_extension_with_resolution_and_sidecars(
         col_stats,
         parent_index_path: Some(parent_index_path.to_path_buf()),
         resolve_columns,
+        source_loader_threads,
+        source_encoder_threads,
         ..Default::default()
     };
 

@@ -96,6 +96,12 @@ def validate_work(rows: list[dict]) -> None:
     for row in rows:
         if row['status'] != 'PASS':
             raise ValueError('Incomplete or failed trial')
+        logical = row['work'].get('logical_seed_sha256')
+        if (not isinstance(logical, str) or len(logical) != 64 or
+                any(character not in '0123456789abcdef' for character in logical)):
+            raise ValueError('Completed trial has no valid logical training stream hash')
+        if logical != reference['work'].get('logical_seed_sha256'):
+            raise ValueError('Backends completed different logical training streams')
         fields = ('optimizer_steps', 'train_batches', 'predict_rows',
                   'predict_batches')
         if any(row['work'][key] != reference['work'][key] for key in fields):
@@ -223,6 +229,8 @@ def runner_command(spec: dict) -> list[str]:
 
 def summarize(rows: list[dict], repetitions: int, seed: int,
               prediction_atol: float = 1e-6) -> dict:
+    if not rows:
+        raise ValueError('No completed trials')
     summary = {}
     for task in TASKS:
         for regime in REGIMES:
@@ -495,6 +503,8 @@ def summarize_partial(rows: list[dict], args: argparse.Namespace) -> dict:
 def aggregate(args: argparse.Namespace) -> None:
     rows = []
     for path in fsutil.listdir(args.results_dir, suffix='.json'):
+        if fsutil.isdir(path) or not path.endswith('.json'):
+            continue
         row = read_json(path)
         if 'matrix_spec' in row and 'phase_seconds' in row:
             rows.append(row)

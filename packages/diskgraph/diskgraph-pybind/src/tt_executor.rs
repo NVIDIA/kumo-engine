@@ -276,6 +276,8 @@ fn execute_tt_plan_in_clock<U: UnitSystem>(
                 &resolve_specs,
                 &artifacts,
                 group_by_timestamp,
+                None,
+                None,
             )?;
             let _ = std::fs::remove_dir_all(&staging_root);
             Ok((
@@ -880,7 +882,7 @@ fn execute_tt_gen_in_clock<U: UnitSystem>(
 pub(crate) const DEFAULT_PREDICT_STAGE: &str = "predict";
 
 #[pyfunction]
-#[pyo3(signature = (staging_dir, index_path, tt_id, predict_stage_name = None))]
+#[pyo3(signature = (staging_dir, index_path, tt_id, predict_stage_name = None, context_threads = None, encode_threads = None))]
 #[tracing::instrument(
     level = "info",
     skip_all,
@@ -899,9 +901,19 @@ pub fn execute_tt_ingest(
     // seed-table name derive from this. Ignored on the split path (which always
     // emits train/val/test). Defaults to "predict".
     predict_stage_name: Option<String>,
+    // Concurrent Parquet source-file loaders, matching ingest(context_threads).
+    // None retains the existing ingest policy; one preserves input-file order.
+    context_threads: Option<usize>,
+    // Encode consumers; one preserves each source batch's append order.
+    encode_threads: Option<usize>,
 ) -> PyResult<Py<PyAny>> {
+    if context_threads == Some(0) || encode_threads == Some(0) {
+        return Err(crate::DiskgraphConfigError::new_err(
+            "context_threads and encode_threads must be positive when supplied",
+        ));
+    }
     validate_tt_id(tt_id)?;
-    info!("execute_tt_ingest started (ingest-only) tt_id={}", tt_id);
+    info!(?context_threads, ?encode_threads, "execute_tt_ingest started (ingest-only) tt_id={}", tt_id);
 
     let idx = index_path.to_owned();
     let tt_id_owned = tt_id.to_owned();
@@ -987,6 +999,8 @@ pub fn execute_tt_ingest(
                 &resolve_specs,
                 &artifacts,
                 group_by_timestamp,
+                context_threads,
+                encode_threads,
             )?;
             rebuild_fact_pseudo_time(&spec, &stages, index_root, &ingest_root)?;
             // Self-describing manifest fields, recovered from the gen-time spec.
@@ -1166,6 +1180,8 @@ pub(crate) fn ingest_resolved_stages(
     // TT-NG temporal-LP timestamp grouping: emit per-stage `bucket_index.bin`.
     // Set only for the temporal-LP seed stages.
     group_by_timestamp: bool,
+    context_threads: Option<usize>,
+    encode_threads: Option<usize>,
 ) -> diskgraph_train_table::errors::TTGenResult<(
     Vec<ManifestStage>,
     diskgraph_ingest::KeyFailureState,
@@ -1178,6 +1194,8 @@ pub(crate) fn ingest_resolved_stages(
         index_root,
         resolve_specs,
         group_by_timestamp,
+        context_threads,
+        encode_threads,
     )?;
     // LP VAL/TEST single-timeframe contract: when ts grouping is built (i.e.
     // temporal RHS), each val/test stage must collapse to a single timestamp
@@ -1617,6 +1635,8 @@ pub(crate) fn ingest_stage_parquets_into_extension(
     // list. Set only for the temporal-LP seed stages. Returns the per-stage
     // groupings (empty when disabled).
     group_by_timestamp: bool,
+    context_threads: Option<usize>,
+    encode_threads: Option<usize>,
 ) -> diskgraph_train_table::errors::TTGenResult<diskgraph_ingest::StageExtensionResult> {
     let first_stage = stages_in.first().ok_or_else(|| {
         diskgraph_train_table::errors::TTGenError::InvalidPlan(
@@ -1685,6 +1705,8 @@ pub(crate) fn ingest_stage_parquets_into_extension(
         None,
         true,
         group_by_timestamp,
+        context_threads,
+        encode_threads,
     )
     .map_err(|e| {
         diskgraph_train_table::errors::TTGenError::SystemError(format!(

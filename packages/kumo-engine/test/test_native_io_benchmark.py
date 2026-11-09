@@ -10,6 +10,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
+from torch_geometric.data import HeteroData
 
 from io_utils import fsutil
 
@@ -25,6 +27,7 @@ from native_io_tasks import (  # noqa: E402
     arguments,
     check_work,
     generate_data,
+    logical_seed_hash,
     read_table,
 )
 
@@ -82,6 +85,25 @@ def test_missing_outputs():
     with pytest.raises(SystemExit):
         arguments(['--task', 'binary', '--prepared-dir', '/tmp/prepared',
                    '--prepare'])
+
+
+def test_logical_seed_fingerprint():
+    batch = HeteroData()
+    batch['users'].n_id = torch.tensor([11, 12, 99])
+    batch['train_table'].batch_size = 2
+    batch['train_table'].time = torch.tensor([100, 200])
+    batch['train_table'].y = torch.tensor([0., 1.])
+    expected = logical_seed_hash(batch)
+    assert len(expected) == 64
+    assert logical_seed_hash(batch.clone()) == expected
+    for store, name in [('users', 'n_id'), ('train_table', 'time'),
+                        ('train_table', 'y')]:
+        changed = batch.clone()
+        changed[store][name][0] += 1
+        assert logical_seed_hash(changed) != expected
+    # Extra sampled neighbors do not change which training seeds were used.
+    batch['users'].n_id[2] += 1
+    assert logical_seed_hash(batch) == expected
 
 
 def test_private_trial_copy(tmp_path):

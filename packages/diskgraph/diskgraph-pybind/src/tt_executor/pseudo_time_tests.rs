@@ -318,7 +318,7 @@ fn generated_tt(index: &Path, tt_id: &str, split: SplitSpec<Seconds>) {
             .unwrap()
             .extract()
             .unwrap();
-        super::execute_tt_ingest(py, &staging, index.to_str().unwrap(), tt_id, None).unwrap();
+        super::execute_tt_ingest(py, &staging, index.to_str().unwrap(), tt_id, None, None, None).unwrap();
     });
 }
 
@@ -372,6 +372,8 @@ fn custom_tt(
             staging.to_str().unwrap(),
             index.to_str().unwrap(),
             tt_id,
+            None,
+            None,
             None,
         )
         .unwrap();
@@ -879,6 +881,8 @@ fn custom_target_validation_preserves_filtered_link_alignment() {
                 staging.to_str().unwrap(),
                 index.to_str().unwrap(),
                 "tt",
+                None,
+                None,
                 None,
             )
             .unwrap();

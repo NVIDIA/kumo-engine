@@ -79,6 +79,17 @@ preserving public run IDs and bundle IDs. It performs four fresh ingests in
 the private index and verifies their published manifests. This control is
 recorded in the result; it is not a production reproducibility fix.
 
+Each of those four native task ingests explicitly uses one Parquet source
+loader (`context_threads=1`) and one encoder (`encode_threads=1`). Production
+defaults remain unchanged. Parallel task ingestion can assign physical seed
+row IDs in completion order, so the same shuffled physical IDs otherwise refer
+to different logical entities and labels. The benchmark still performs each
+complete ingest inside the public fit/prediction timer; its serialized ingest
+cost is included. Sampler threads retain their separate requested budget.
+Every completed training batch contributes logical seed IDs, timestamps and
+available targets to `work.logical_seed_sha256`. Cross-backend comparisons
+require that hash to match as well as work counts and predictions.
+
 Results retain the original manifest hash, source file hashes and sizes,
 private copy mode and cloning time. After each run, baseline inventory, inode
 identities, modification times and small metadata hashes must remain unchanged.
