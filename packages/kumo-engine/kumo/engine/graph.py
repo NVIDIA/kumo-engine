@@ -171,6 +171,7 @@ _FLOAT32_DTYPES = frozenset({Dtype.float, Dtype.float32})
 _FLOAT64_DIGITS = sys.float_info.dig
 _FLOAT64_PLACES = math.ceil(
     (sys.float_info.mant_dig - sys.float_info.min_exp) * math.log10(2))
+_FLOAT32_SMALLEST = 2.0**-149
 _NUMERICAL = 'kumo.numerical'
 
 
@@ -245,11 +246,11 @@ def _places(number: Decimal) -> int:
     return places if places <= _FLOAT64_PLACES else 0
 
 
-def _decimal_places(values: Any) -> int:
+def _sampled_precision(values: Any) -> Tuple[int, int]:
     r"""The most decimal places among the values, each read as the shortest
     decimal that names it, so a declared scale no value uses does not
-    count."""
-    places = 0
+    count, and how many of them lie below the smallest float32."""
+    places = underflows = 0
     for value in values.to_pylist():
         try:
             number = Decimal(
@@ -257,17 +258,20 @@ def _decimal_places(values: Any) -> int:
         except InvalidOperation:
             continue
         places = max(places, _places(number))
-    return places
+        if number.is_finite() and 0 < abs(float(number)) < _FLOAT32_SMALLEST:
+            underflows += 1
+    return places, underflows
 
 
 def _narrowed_float_columns(
         alias: str, table: Table, paths: Sequence[str],
-        source_path: Any) -> Dict[Tuple[str, str], Tuple[str, int]]:
-    r"""Each float32 column staged from a wider type, with that type and the
-    decimal places its values are written with, read from the table's first
-    ``_SAMPLE_ROWS`` rows across its parts, all such columns together. A
-    backend that names a directory instead of its parts has it globbed,
-    only when the table has a float32 column."""
+        source_path: Any) -> Dict[Tuple[str, str], Tuple[str, int, int]]:
+    r"""Each float32 column staged from a wider type, with that type, the
+    decimal places its values are written with and how many lie below the
+    smallest float32, read from the table's first ``_SAMPLE_ROWS`` rows
+    across its parts, all such columns together. A backend that names a
+    directory instead of its parts has it globbed, only when the table has
+    a float32 column."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -278,7 +282,7 @@ def _narrowed_float_columns(
     ]
     if not columns:
         return {}
-    narrowed: Dict[Tuple[str, str], Tuple[str, int]] = {}
+    narrowed: Dict[Tuple[str, str], Tuple[str, int, int]] = {}
     budget = _SAMPLE_ROWS
     for path in paths or sorted(
             str(part) for part in Path(source_path).rglob('*.parquet')):
@@ -291,18 +295,18 @@ def _narrowed_float_columns(
             physical = schema.field(column).type
             if pa.types.is_float32(physical) or pa.types.is_float16(physical):
                 continue
-            narrowed.setdefault((alias, column), (str(physical), 0))
+            narrowed.setdefault((alias, column), (str(physical), 0, 0))
             if not pa.types.is_integer(physical):
                 sampled.append(column)
         if budget <= 0 or not sampled:
             continue
         for batch in parquet.iter_batches(budget, columns=sampled):
             for column in sampled:
-                physical, places = narrowed[alias, column]
+                physical, places, underflows = narrowed[alias, column]
+                more, below = _sampled_precision(batch.column(column))
                 narrowed[alias,
-                         column] = (physical,
-                                    max(places,
-                                        _decimal_places(batch.column(column))))
+                         column] = (physical, max(places,
+                                                  more), underflows + below)
             budget -= batch.num_rows
             break
     return narrowed
@@ -356,13 +360,20 @@ def _magnitude(stat: Mapping[str, Any]) -> Optional[float]:
 
 def _warn_float32_narrowing(table: str, column: Mapping[str, Any],
                             stat: Mapping[str, Any],
-                            source: Optional[Tuple[str, int]]) -> None:
+                            source: Optional[Tuple[str, int, int]]) -> None:
     if source is None:
         return
+    physical, places, underflows = source
+    if underflows:
+        warnings.warn(
+            f"{table}.{column['name']} is stored as float32 but comes from "
+            f"{physical} and holds {underflows} sampled value(s) below "
+            f"{_FLOAT32_SMALLEST:.2g}, which float32 stores as 0. Declare "
+            "dtype=Dtype.float64 for the column to keep them.", UserWarning,
+            stacklevel=3)
     magnitude = _magnitude(stat)
     if magnitude is None:
         return
-    physical, places = source
     limit = _float32_limit(places)
     if magnitude < limit:
         return
@@ -381,7 +392,7 @@ def _warn_float32_narrowing(table: str, column: Mapping[str, Any],
 def _warn_ingest_data_loss(
     result: Any,
     graph_config: Dict[str, Any],
-    narrowed: Optional[Mapping[Tuple[str, str], Tuple[str, int]]] = None,
+    narrowed: Optional[Mapping[Tuple[str, str], Tuple[str, int, int]]] = None,
 ) -> None:
     from kumo_core.diskgraph.validation import parse_failure_warning
 
@@ -1127,7 +1138,7 @@ class Graph:
         table_data_versions: Dict[str, str] = {}
         source_paths: Dict[str, str] = {}
         source_tables: Dict[str, SourceTableEntry] = {}
-        narrowed: Dict[Tuple[str, str], Tuple[str, int]] = {}
+        narrowed: Dict[Tuple[str, str], Tuple[str, int, int]] = {}
 
         started = start() if timed else None
         try:

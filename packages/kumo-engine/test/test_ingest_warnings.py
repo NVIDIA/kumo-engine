@@ -272,7 +272,7 @@ def test_missing_like_count_is_a_lower_bound_past_the_kept_categories(tmp_path):
 
 @pytest.mark.parametrize('narrowed, stats, expected', [
     ({
-        ('events', 'amount'): ('double', 0)
+        ('events', 'amount'): ('double', 0, 0)
     }, {
         'MIN': 0.0,
         'MAX': 16777216.0
@@ -281,13 +281,13 @@ def test_missing_like_count_is_a_lower_bound_past_the_kept_categories(tmp_path):
      "number, so values are rounded. Declare dtype=Dtype.float64 for the "
      "column to keep full precision."),
     ({
-        ('events', 'amount'): ('double', 0)
+        ('events', 'amount'): ('double', 0, 0)
     }, {
         'MIN': 0.0,
         'MAX': 16777215.0
     }, None),
     ({
-        ('events', 'amount'): ('decimal128(10, 2)', 2)
+        ('events', 'amount'): ('decimal128(10, 2)', 2, 0)
     }, {
         'MIN': 0.25,
         'MAX': 131072.015625
@@ -296,13 +296,13 @@ def test_missing_like_count_is_a_lower_bound_past_the_kept_categories(tmp_path):
      "steps of 0.01, so values are rounded. Declare dtype=Dtype.float64 for "
      "the column to keep full precision."),
     ({
-        ('events', 'amount'): ('decimal128(10, 2)', 2)
+        ('events', 'amount'): ('decimal128(10, 2)', 2, 0)
     }, {
         'MIN': 0.25,
         'MAX': 131071.98
     }, None),
     ({
-        ('events', 'amount'): ('int64', 0)
+        ('events', 'amount'): ('int64', 0, 0)
     }, {
         'MIN': -16777300.0,
         'MAX': 5.0
@@ -315,13 +315,13 @@ def test_missing_like_count_is_a_lower_bound_past_the_kept_categories(tmp_path):
         'MAX': 1e12
     }, None),
     ({
-        ('events', 'other'): ('double', 0)
+        ('events', 'other'): ('double', 0, 0)
     }, {
         'MIN': 0.0,
         'MAX': 1e12
     }, None),
     ({
-        ('events', 'amount'): ('decimal128(10, 2)', 2)
+        ('events', 'amount'): ('decimal128(10, 2)', 2, 0)
     }, {
         'CATEGORY_COUNTS': [[0.25, 2], [131072.015625, 2], ['inf', 1]]
     }, "events.amount is stored as float32 but comes from decimal128(10, 2) "
@@ -329,11 +329,19 @@ def test_missing_like_count_is_a_lower_bound_past_the_kept_categories(tmp_path):
      "steps of 0.01, so values are rounded. Declare dtype=Dtype.float64 for "
      "the column to keep full precision."),
     ({
-        ('events', 'amount'): ('double', 0)
+        ('events', 'amount'): ('double', 0, 0)
     }, {
         'CATEGORY_COUNTS': [['a', 2], [], None, [True, 1]],
         'MIN': 'x'
     }, None),
+    ({
+        ('events', 'amount'): ('double', 50, 3)
+    }, {
+        'MIN': 0.0,
+        'MAX': 0.0
+    }, "events.amount is stored as float32 but comes from double and holds 3 "
+     "sampled value(s) below 1.4e-45, which float32 stores as 0. Declare "
+     "dtype=Dtype.float64 for the column to keep them."),
 ])
 def test_snapshot_reports_values_beyond_float32_precision(
         tmp_path, narrowed, stats, expected):

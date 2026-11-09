@@ -787,18 +787,19 @@ def test_the_float32_step_is_sampled_on_one_budget_per_table(
 
     monkeypatch.setattr(pq.ParquetFile, 'iter_batches', recording)
     assert _narrowed_float_columns('t', table, paths, root) == {
-        ('t', 'a'): ('double', 1),
-        ('t', 'b'): ('double', 2),
-        ('t', 'n'): ('int64', 0),
+        ('t', 'a'): ('double', 1, 0),
+        ('t', 'b'): ('double', 2, 0),
+        ('t', 'n'): ('int64', 0, 0),
     }
     assert requested == [['a', 'b']] * reads
 
 
 def test_a_step_finer_than_any_float64_is_no_step(tmp_path):
     from kumo.engine import FileConnector, configure
-    from kumo.engine.graph import _decimal_places
+    from kumo.engine.graph import _sampled_precision
 
-    assert _decimal_places(pa.array(['1e-2147483648', '1e-300', '0.5'])) == 300
+    assert _sampled_precision(pa.array(['1e-2147483648', '1e-300',
+                                        '0.5'])) == (300, 1)
     configure(scratch_dir=str(tmp_path / 'scratch'))
     root = tmp_path / 'source'
     root.mkdir()
@@ -815,6 +816,32 @@ def test_a_step_finer_than_any_float64_is_no_step(tmp_path):
         warnings.simplefilter('always')
         Graph({'t': source}).snapshot()
     assert not [w for w in caught if 'float32' in str(w.message)]
+
+
+def test_values_below_the_smallest_float32_are_reported(tmp_path):
+    from kumo.engine import FileConnector, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            'id': range(5),
+            'rate': pa.array([1e-50, 2e-50, 3e-50, 4e-50, 5e-50]),
+        }), root / 't.parquet')
+    source = Table.from_source_table(
+        FileConnector(root_dir=str(root))['t.parquet'],
+        primary_key='id').with_column('rate', dtype=Dtype.float32)
+    with pytest.warns(UserWarning) as caught:
+        Graph({'t': source}).snapshot()
+    assert [
+        str(warning.message) for warning in caught
+        if issubclass(warning.category, UserWarning)
+    ] == [
+        't.rate is stored as float32 but comes from double and holds 5 '
+        'sampled value(s) below 1.4e-45, which float32 stores as 0. Declare '
+        'dtype=Dtype.float64 for the column to keep them.'
+    ]
 
 
 def test_a_tiny_decimal_step_lost_in_float32_is_reported(tmp_path):
@@ -845,7 +872,7 @@ def test_a_tiny_decimal_step_lost_in_float32_is_reported(tmp_path):
 def test_the_float32_step_ignores_the_decimal_context(tmp_path):
     import decimal
 
-    from kumo.engine.graph import _decimal_places
+    from kumo.engine.graph import _sampled_precision
 
     path = tmp_path / 't.parquet'
     pq.write_table(
@@ -862,9 +889,9 @@ def test_the_float32_step_ignores_the_decimal_context(tmp_path):
     values = pq.read_table(path)
     with decimal.localcontext(prec=6, traps=[decimal.Inexact]):
         assert [
-            _decimal_places(values.column(column))
+            _sampled_precision(values.column(column))
             for column in ('cents', 'dollars', 'text')
-        ] == [2, 2, 2]
+        ] == [(2, 0)] * 3
 
 
 @pytest.mark.parametrize('extension, values, expected', [
