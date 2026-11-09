@@ -83,6 +83,53 @@ def test_sampling_plan_accepts_a_stripped_override_only_when_unambiguous(
         {"sales.events_user_id_to_users_id"} if resolved else set())
 
 
+def test_sampling_plan_leaves_a_legacy_key_between_a_bare_and_a_dotted_table(
+        monkeypatch):
+    monkeypatch.setattr(
+        trainer, "_load_index_metadata", lambda metadata: {
+            "edge_relations": [{
+                "name": f"{source}_user_id_to_users_id",
+                "src_type": source,
+                "dst_type": "users",
+            } for source in ("events", "sales.events")]
+        })
+    fake = SimpleNamespace(sampler_kwargs=SimpleNamespace(
+        num_neighbors=NumNeighbors(
+            {("legacy.events", "user_id", "users"): [10]}, default=[3]),
+        temporal_strategy="last"))
+
+    plan = trainer.DiskgraphNestedTrainer._build_ttng_sampling_plan(
+        fake, SimpleNamespace(graph_runtime_metadata=None))
+
+    assert plan["layers"][0]["fanouts"] == {}
+
+
+def test_sampling_plan_keeps_an_exact_fanout_over_a_stripped_alias(
+        monkeypatch):
+    relation = "sales.events_user_id_to_users_id"
+    monkeypatch.setattr(
+        trainer, "_load_index_metadata", lambda metadata: {
+            "edge_relations": [{
+                "name": relation,
+                "src_type": "sales.events",
+                "dst_type": "users",
+            }]
+        })
+    exact = ("sales.events", "user_id", "users")
+    alias = ("events", "user_id", "users")
+    for ordered in ([exact, alias], [alias, exact]):
+        fake = SimpleNamespace(sampler_kwargs=SimpleNamespace(
+            num_neighbors=NumNeighbors(
+                {key: [10] if key == exact else [3]
+                 for key in ordered}, default=[1]),
+            temporal_strategy="last"))
+
+        plan = trainer.DiskgraphNestedTrainer._build_ttng_sampling_plan(
+            fake, SimpleNamespace(graph_runtime_metadata=None))
+
+        assert plan["layers"][0]["fanouts"][relation]["fanout"] == 10
+
+
 def test_restored_sampler_keys_keep_matching_edge_types_exactly():
     edge_types = {
         str(EdgeTypeStr(*edge_type)): edge_type
