@@ -295,11 +295,13 @@ def _copy(pkg: Path, skills_dir: Path) -> Path:
 def _lock_path(root: Path) -> Path:
     r"""The lock file for installs into ``root``.
 
-    It is kept in the temporary directory, so none is left among the skills
-    (or in a project's version control).
+    It lives in ``root`` itself: every install into ``root`` derives the same
+    path whatever its user or ``TMPDIR``, and can write there, since it
+    stages there. Agents load only skill folders, so the hidden file is never
+    read as a skill; in a project it is a file to leave out of version
+    control.
     """
-    key = hashlib.sha256(str(root).encode()).hexdigest()[:16]
-    return Path(tempfile.gettempdir()) / f'{SKILL}-{key}.lock'
+    return root / f'.{SKILL}.lock'
 
 
 def _detect() -> list[str]:

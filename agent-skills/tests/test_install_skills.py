@@ -139,9 +139,10 @@ def test_bad_arguments(home: Path) -> None:
         skills.install_skills('genie', scope='project')
 
 
-def test_an_install_leaves_no_lock_file(home: Path) -> None:
+def test_an_install_leaves_only_its_hidden_lock_file(home: Path) -> None:
     skills.install_skills('claude', scope='project')
-    assert [p.name for p in Path('.claude/skills').iterdir()] == ['kumo-data-science']
+    assert sorted(p.name for p in Path('.claude/skills').iterdir()) == [
+        '.kumo-data-science.lock', 'kumo-data-science']
 
 
 def test_coco_beside_claude_code_warns(home: Path) -> None:
@@ -211,17 +212,25 @@ def test_an_install_waits_for_the_lock(home: Path, tmp_path: Path) -> None:
 def test_the_lock_is_shared_by_every_user(home: Path, tmp_path: Path,
                                           monkeypatch: pytest.MonkeyPatch) -> None:
     # The lock outlives the install, so another user installing into the same destination
-    # must be able to open it, despite the umask.
+    # must find it at the same path, whatever their TMPDIR, and be able to open it, despite
+    # the umask.
     import os
     import tempfile
-    monkeypatch.setattr(tempfile, 'tempdir', str(tmp_path))
+    root = (tmp_path / 'shared').resolve()
+    for tmp in ['tmp-a', 'tmp-b']:
+        (tmp_path / tmp).mkdir()
+    monkeypatch.setattr(tempfile, 'tempdir', str(tmp_path / 'tmp-a'))
+    lock = skills._lock_path(root)
+    monkeypatch.setattr(tempfile, 'tempdir', str(tmp_path / 'tmp-b'))
+    assert skills._lock_path(root) == lock == root / '.kumo-data-science.lock'
     umask = os.umask(0o022)
     try:
-        [target] = skills.install_skills(path=tmp_path / 'shared')
+        [target] = skills.install_skills(path=root)
     finally:
         os.umask(umask)
-    lock = skills._lock_path(Path(target).parent)
-    assert lock.parent == tmp_path and lock.stat().st_mode & 0o777 == 0o666
+    assert lock.stat().st_mode & 0o777 == 0o666
+    assert sorted(p.name for p in root.iterdir()) == ['.kumo-data-science.lock',
+                                                      'kumo-data-science']
 
 
 def test_kumo_engine_imports_install_skills_on_first_use(
@@ -872,7 +881,7 @@ def test_a_failed_copy_keeps_the_previous_install(home: Path,
     assert (Path(target) / 'SKILL.md').read_text() == before
     root = Path(target).parent
     names = sorted(p.name for p in root.iterdir())
-    assert names == ['kumo-data-science']
+    assert names == ['.kumo-data-science.lock', 'kumo-data-science']
 
 
 def test_a_checkout_install_checks_references_first(home: Path, tmp_path: Path,

@@ -103,9 +103,12 @@ def bq_location(dataset, credentials=None):
 
 With an explicit `BigQueryIdentity` (*Credentials* below), the lookup must run as that identity,
 not the ambient credential: build the Google credentials from the inputs the identity was given,
-as the SDK does (`kumo_bigquery.auth`), and pass `bq_location(<dataset>, BQ_CREDENTIALS)`.
+as the SDK does (`kumo_bigquery.auth`), and pass `bq_location(<dataset>, BQ_CREDENTIALS)`. Every
+direct BigQuery client in the artifact takes `credentials=BQ_CREDENTIALS`, `None` when ambient.
 
 ```python
+BQ_CREDENTIALS = None   # ambient credentials; replace with one of the forms below otherwise
+
 # BigQueryIdentity(service_account_key=SERVICE_ACCOUNT_KEY), the key read as Credentials says
 import json, os
 from google.oauth2 import service_account
@@ -184,7 +187,8 @@ written = ds.dataset(OUTPUT_LOCATION, format=OUTPUT_FORMAT).count_rows()  # full
 
 # BigQuery
 from google.cloud import bigquery
-written = next(iter(bigquery.Client(project=PROJECT_ID).query(
+# BQ_CREDENTIALS from §2 with an explicit identity; None with ambient credentials
+written = next(iter(bigquery.Client(project=PROJECT_ID, credentials=BQ_CREDENTIALS).query(
     f'SELECT COUNT(*) FROM `{PROJECT_ID}.{OUTPUT_DATASET}.{OUTPUT_TABLE}`').result()))[0]
 
 # Databricks — with the confirmed SQL warehouse; wait_timeout is at most '50s', so poll
@@ -317,8 +321,7 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   from google.cloud import bigquery
 
   time_col = f', CAST({ENTITY_TIME} AS TIMESTAMP) AS `TIMESTAMP`' if ENTITY_TIME else ''
-  # With an explicit identity, credentials=BQ_CREDENTIALS here and in bq_location (§2).
-  bigquery.Client(project=PROJECT_ID, credentials=None).query(
+  bigquery.Client(project=PROJECT_ID, credentials=BQ_CREDENTIALS).query(   # §2
       f'CREATE OR REPLACE TABLE `{PROJECT_ID}.{POP_DATASET}.{POP_TABLE}` AS '
       f'SELECT {ENTITY_KEY} AS ENTITY1{time_col} '
       f'FROM `{PROJECT_ID}.{DATASET_ID}.{ENTITY_TABLE}`').result()   # waits; raises on failure

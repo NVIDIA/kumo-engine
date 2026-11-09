@@ -28,6 +28,7 @@ APPEND can duplicate outputs on retry and never changes the existing table's sch
 existence and access first.
 
 ```python
+import warnings
 import kumo.engine as kumo
 from kumoapi.jobs import MetadataField, PredictionArtifactType, WriteMode
 
@@ -39,9 +40,12 @@ output = kumo.PredictionOutputConfig(
     table_name=OUTPUT_TABLE, write_mode=WRITE_MODE,
     extra_fields=RUN_COLUMNS if WRITE_MODE == WriteMode.APPEND else [],
 )
-written = trainer.predict(
-    population, snapshot=snapshot, output_config=output, **PREDICT_OPTIONS,
-)
+with warnings.catch_warnings():
+    if WRITE_MODE == WriteMode.APPEND:   # no model id, no write: see below
+        warnings.filterwarnings('error', message='Predicting without a prediction manifest')
+    written = trainer.predict(
+        population, snapshot=snapshot, output_config=output, **PREDICT_OPTIONS,
+    )
 print(written.num_rows, written.files)
 ```
 
@@ -49,7 +53,11 @@ print(written.num_rows, written.files)
 prediction run) and `BUNDLE_ID` (the model that scored it), and the `extra_fields` above add
 `JOB_TIMESTAMP` (when the run started) and `ANCHOR_TIMESTAMP` (the time its predictions are for),
 so the table's history can be ordered and filtered by run, and a retried run shows as a second
-`PREDICTION_ID` and `JOB_TIMESTAMP`. A query with no time window has no anchor: pass
+`PREDICTION_ID` and `JOB_TIMESTAMP`. `BUNDLE_ID` comes from the run's prediction manifest. If that
+manifest cannot be built, `predict` warns `Predicting without a prediction manifest` and writes the
+rows with `BUNDLE_ID` null — `PREDICTION_ID` is still set — and the row count still matches. The
+snippet above turns that warning into an error for APPEND, so the run fails before writing rather
+than append rows no model is named on; report it as a failed run. A query with no time window has no anchor: pass
 `JOB_TIMESTAMP` alone, or the write fails after scoring.
 
 The write never adds a column to an existing table. When an APPEND destination already exists,
