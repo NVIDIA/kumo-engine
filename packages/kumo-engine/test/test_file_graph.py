@@ -609,13 +609,17 @@ def test_a_declared_dtype_resolves_an_unreadable_column(tmp_path):
     assert stats['null_count'] == 1
 
 
-def _keyed_graph(root, orders, order_key_dtype=None):
+def _keyed_graph(root, orders, order_key_dtype=None, user_key_dtype=None):
     from kumoapi.graph import Edge
 
     from kumo.engine import FileConnector
 
     connector = FileConnector(root_dir=str(root))
-    users = Table.from_source_table(connector['users'], primary_key='user_id')
+    users = Table.from_source_table(
+        connector['users'], primary_key='user_id',
+        dtypes=None if user_key_dtype is None else {
+            'user_id': user_key_dtype
+        })
     orders = Table.from_source_table(
         connector[orders], primary_key='order_id',
         dtypes=None if order_key_dtype is None else {
@@ -642,7 +646,7 @@ def test_mismatched_key_dtypes_link_after_conversion(tmp_path):
             'user_id': ['007', ' 10 ', '-1.0', '+0', '9223372036854775807',
                         None, '8'],
         }), root / 'orders.parquet')
-    pq.write_table(pa.table({'account_id': ['7', '10', '-1', '007']}),
+    pq.write_table(pa.table({'account_id': ['7', '10', '-1', '0']}),
                    root / 'accounts.parquet')
     (root / 'payments').mkdir()
     pq.write_table(
@@ -779,6 +783,68 @@ def test_inexact_string_foreign_keys_are_refused_with_counts(
         assert 'would lose their link' in message
     else:
         assert 'lose their link' not in message
+    if colliding:
+        assert f'{colliding} distinct values convert to the same integer' in message
+    else:
+        assert 'same integer' not in message
+    assert message.endswith('before snapshot.')
+
+
+@pytest.mark.parametrize('layout', ['parquet', 'csv', 'dictionary', 'binary'])
+@pytest.mark.parametrize('values, source, invalid, example, colliding', [
+    (['7', '007', ' 7', '7.0', '+7', None], Dtype.int64, 4, '007', 5),
+    (['0', '-0', '00', ''], Dtype.int64, 3, '-0', 3),
+    (['7', '\u0667', 'x', None], Dtype.int64, 2, '\u0667', 0),
+    (['9223372036854775807', '9223372036854775808'], Dtype.int64, 1,
+     '9223372036854775808', 0),
+    (['255', '256', '-1'], Dtype.byte, 2, '256', 0),
+    (['2147483647', '2147483648'], Dtype.int32, 1, '2147483648', 0),
+])
+def test_integer_keys_refuse_string_keys_that_are_not_canonical(
+        tmp_path, monkeypatch, layout, values, source, invalid, example,
+        colliding):
+    from kumo.engine import configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    keys = pa.array(values, pa.string())
+    if layout == 'dictionary':
+        keys = keys.dictionary_encode()
+    if layout == 'binary':
+        keys = keys.cast(pa.binary())
+    users = pa.table({'user_id': keys})
+    if layout == 'csv':
+        if any(len(value or '') > 18 or not (value or '').isprintable()
+               for value in values):
+            pytest.skip('the CSV reader cannot stage this value as text, '
+                        'whatever dtype is declared')
+        csv.write_csv(users, root / 'users.csv')
+    else:
+        pq.write_table(users, root / 'users.parquet')
+    pq.write_table(
+        pa.table({
+            'order_id': range(3),
+            'user_id': pa.array([7, 0, 10], pa.int64()),
+        }), root / 'orders.parquet')
+    graph = _keyed_graph(
+        root, 'orders', source,
+        Dtype.string if layout in ('csv', 'binary') else None)
+    monkeypatch.setattr(
+        'kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
+        lambda *args, **kwargs: pytest.fail('ingest started'))
+
+    with pytest.warns(UserWarning, match='Foreign key orders.user_id'):
+        with pytest.raises(ValueError) as error:
+            graph.snapshot()
+
+    message = str(error.value)
+    assert message.startswith(
+        f'Foreign key orders.user_id is stored as {source.value} and links to '
+        f'users.user_id, which is string: ')
+    assert (f"{invalid} of users.user_id's non-null values (for example "
+            f"{example!r}) could never match orders.user_id, which DiskGraph "
+            f"writes as canonical {source.value} text") in message
     if colliding:
         assert f'{colliding} distinct values convert to the same integer' in message
     else:

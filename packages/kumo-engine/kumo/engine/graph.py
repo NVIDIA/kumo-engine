@@ -257,6 +257,103 @@ def _integer_literals(values: Any, low: int, high: int) -> tuple[Any, Any]:
                                               pa.scalar('', text))
 
 
+def _staged_parquet_parts(paths: Sequence[str]) -> list[Path]:
+    return [
+        file for path in paths for file in
+        (sorted(Path(path).rglob('*.parquet')) if Path(path).is_dir() else
+         [Path(path)])
+    ]
+
+
+def _stored_types(files: Sequence[Path], name: str) -> Dict[Path, Any]:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    stored_types = {}
+    for file in files:
+        parquet = pq.ParquetFile(file)
+        if name in parquet.schema_arrow.names:
+            stored = parquet.schema_arrow.field(name).type
+            stored_types[file] = (stored.value_type
+                                  if pa.types.is_dictionary(stored) else stored)
+    return stored_types
+
+
+def _integer_text_failures(stored_types: Mapping[Path, Any], name: str,
+                           low: int, high: int,
+                           canonical: bool) -> tuple[int, Any, int, list]:
+    r"""Counts, over the parts of a staged column stored as text or binary,
+    the non-null values DiskGraph cannot read as an integer within `low`
+    and `high` and, with `canonical`, the values that are not the text
+    DiskGraph writes for that integer, with a first example; and the
+    distinct readable values that convert to the same integer, with a
+    first pair. Without `canonical` an empty or blank value counts as
+    missing, as DiskGraph reads it. Reads one batch at a time and keeps
+    only the distinct readable values, compacted as they accumulate.
+    """
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
+    text = pa.large_string()
+    invalid, example = 0, None
+    distinct, pending, pending_rows = pa.array([], text), [], 0
+    for file, stored in stored_types.items():
+        if not (pa.types.is_string(stored) or pa.types.is_large_string(stored)
+                or pa.types.is_binary(stored)
+                or pa.types.is_large_binary(stored)):
+            continue
+        for batch in pq.ParquetFile(file).iter_batches(columns=[name]):
+            values = batch.column(0)
+            if pa.types.is_dictionary(values.type):
+                values = values.dictionary_decode()
+            values = pc.drop_null(values)
+            try:
+                values = values.cast(text)
+            except pa.ArrowInvalid:
+                decoded = []
+                for value in values.to_pylist():
+                    try:
+                        decoded.append(value.decode('utf-8'))
+                    except UnicodeDecodeError:
+                        invalid += 1
+                        example = value if example is None else example
+                values = pa.array(decoded, text)
+            if not canonical:
+                values = pc.filter(
+                    values,
+                    pc.not_equal(pc.utf8_trim(values, characters=_WHITESPACE),
+                                 ''))
+            if not len(values):
+                continue
+            readable, rendered = _integer_literals(values, low, high)
+            valid = readable
+            if canonical:
+                valid = pc.fill_null(
+                    pc.and_(readable, pc.equal(rendered, values)), False)
+            failures = pc.filter(values, pc.invert(valid))
+            invalid += len(failures)
+            if example is None and len(failures):
+                example = failures[0].as_py()
+            pending.append(pc.unique(pc.filter(values, readable)))
+            pending_rows += len(pending[-1])
+            if pending_rows > max(len(distinct), _DISTINCT_COMPACTION_ROWS):
+                distinct = pc.unique(pa.concat_arrays([distinct, *pending]))
+                pending, pending_rows = [], 0
+    colliding, pair = 0, []
+    values = pc.unique(pa.concat_arrays([distinct, *pending]))
+    if len(values):
+        _, rendered = _integer_literals(values, low, high)
+        counts = pc.value_counts(rendered)
+        repeated = pc.greater(counts.field('counts'), 1)
+        if pc.any(repeated).as_py():
+            colliding = pc.sum(pc.filter(counts.field('counts'),
+                                         repeated)).as_py()
+            first = pc.filter(counts.field('values'), repeated)[0]
+            pair = pc.filter(values, pc.equal(rendered, first)).to_pylist()[:2]
+    return invalid, example, colliding, pair
+
+
 def _refuse_inexact_key_conversions(alias: str,
                                     conversions: Mapping[str, Any],
                                     paths: Sequence[str]) -> None:
@@ -270,32 +367,17 @@ def _refuse_inexact_key_conversions(alias: str,
     fraction inside Unicode whitespace, within the dtype's range (`byte`
     is unsigned), and anything else, including a binary value that is not
     UTF-8, as null, so such a row would lose its link; an empty or blank
-    value counts as missing, as DiskGraph reads it. Reads that column of
-    each staged parquet part one batch at a time and keeps only the
-    distinct convertible values, compacted as they accumulate; a part
-    staged under a type that is neither text nor binary is left to
-    DiskGraph's own conversion.
+    value counts as missing, as DiskGraph reads it. A part staged under a
+    type that is neither text nor binary is left to DiskGraph's own
+    conversion.
     """
     import pyarrow as pa
-    import pyarrow.compute as pc
-    import pyarrow.parquet as pq
 
     if not conversions:
         return
-    files = [
-        file for path in paths for file in
-        (sorted(Path(path).rglob('*.parquet')) if Path(path).is_dir() else
-         [Path(path)])
-    ]
-    text = pa.large_string()
+    files = _staged_parquet_parts(paths)
     for name, conversion in conversions.items():
-        stored_types = {}
-        for file in files:
-            parquet = pq.ParquetFile(file)
-            if name in parquet.schema_arrow.names:
-                stored = parquet.schema_arrow.field(name).type
-                stored_types[file] = (stored.value_type if
-                                      pa.types.is_dictionary(stored) else stored)
+        stored_types = _stored_types(files, name)
         if conversion.bounds is None:
             for stored in stored_types.values():
                 if not (pa.types.is_integer(stored) or pa.types.is_null(stored)
@@ -310,58 +392,8 @@ def _refuse_inexact_key_conversions(alias: str,
                         "snapshot.")
             continue
         low, high = conversion.bounds
-        invalid, example = 0, None
-        distinct, pending, pending_rows = pa.array([], text), [], 0
-        for file, stored in stored_types.items():
-            if not (pa.types.is_string(stored)
-                    or pa.types.is_large_string(stored)
-                    or pa.types.is_binary(stored)
-                    or pa.types.is_large_binary(stored)):
-                continue
-            for batch in pq.ParquetFile(file).iter_batches(columns=[name]):
-                values = batch.column(0)
-                if pa.types.is_dictionary(values.type):
-                    values = values.dictionary_decode()
-                values = pc.drop_null(values)
-                try:
-                    values = values.cast(text)
-                except pa.ArrowInvalid:
-                    decoded = []
-                    for value in values.to_pylist():
-                        try:
-                            decoded.append(value.decode('utf-8'))
-                        except UnicodeDecodeError:
-                            invalid += 1
-                            example = value if example is None else example
-                    values = pa.array(decoded, text)
-                values = pc.filter(
-                    values,
-                    pc.not_equal(pc.utf8_trim(values, characters=_WHITESPACE),
-                                 ''))
-                if not len(values):
-                    continue
-                valid, _ = _integer_literals(values, low, high)
-                failures = pc.filter(values, pc.invert(valid))
-                invalid += len(failures)
-                if example is None and len(failures):
-                    example = failures[0].as_py()
-                pending.append(pc.unique(pc.filter(values, valid)))
-                pending_rows += len(pending[-1])
-                if pending_rows > max(len(distinct), _DISTINCT_COMPACTION_ROWS):
-                    distinct = pc.unique(pa.concat_arrays([distinct, *pending]))
-                    pending, pending_rows = [], 0
-        colliding, pair = 0, []
-        values = pc.unique(pa.concat_arrays([distinct, *pending]))
-        if len(values):
-            _, canonical = _integer_literals(values, low, high)
-            counts = pc.value_counts(canonical)
-            repeated = pc.greater(counts.field('counts'), 1)
-            if pc.any(repeated).as_py():
-                colliding = pc.sum(pc.filter(counts.field('counts'),
-                                             repeated)).as_py()
-                first = pc.filter(counts.field('values'), repeated)[0]
-                pair = pc.filter(values, pc.equal(canonical,
-                                                  first)).to_pylist()[:2]
+        invalid, example, colliding, pair = _integer_text_failures(
+            stored_types, name, low, high, canonical=False)
         if not invalid and not colliding:
             continue
         problems = []
@@ -379,6 +411,53 @@ def _refuse_inexact_key_conversions(alias: str,
             f"{conversion.dtype.value} and links to "
             f"{conversion.destination}, which is {conversion.target.value}: "
             + '; '.join(problems) +
+            ". Store both keys with the same type, or fix the values, "
+            "before snapshot.")
+
+
+def _refuse_inexact_link_targets(tables: Mapping[str, Any],
+                                 edges: Sequence[Any],
+                                 conversions: Mapping[str, Mapping[str, Any]],
+                                 staged: Mapping[str, Sequence[str]]) -> None:
+    r"""Raises when the string key an integer foreign key links to holds a
+    non-null value that is not the text DiskGraph writes for an integer of
+    the foreign key's dtype: no sign for zero, no leading zeros, no
+    fraction and no whitespace, within the dtype's range. DiskGraph writes
+    the converted foreign key that way and matches string keys exactly, so
+    such a value, and the distinct values that convert to the same integer,
+    could never be linked. An empty or blank value is such a value, since
+    DiskGraph keeps it as a key; a null key is dropped with its own
+    warning. A part staged under a type that is neither text nor binary is
+    written that way by DiskGraph already.
+    """
+    from kumo.engine._portable import _INTEGER_RANGES
+
+    for edge in edges:
+        conversion = conversions.get(edge.src_table, {}).get(edge.fkey)
+        if conversion is None or conversion.bounds is not None:
+            continue
+        key = tables[edge.dst_table].definition.pkey
+        low, high = _INTEGER_RANGES[conversion.dtype]
+        invalid, example, colliding, pair = _integer_text_failures(
+            _stored_types(_staged_parquet_parts(staged[edge.dst_table]), key),
+            key, low, high, canonical=True)
+        if not invalid and not colliding:
+            continue
+        problems = []
+        if invalid:
+            problems.append(
+                f"{invalid} of {edge.dst_table}.{key}'s non-null values (for "
+                f"example {example!r}) could never match "
+                f"{edge.src_table}.{edge.fkey}, which DiskGraph writes as "
+                f"canonical {conversion.dtype.value} text")
+        if colliding:
+            problems.append(
+                f"{colliding} distinct values convert to the same integer "
+                f"(for example {pair[0]!r} and {pair[1]!r})")
+        raise ValueError(
+            f"Foreign key {edge.src_table}.{edge.fkey} is stored as "
+            f"{conversion.dtype.value} and links to {edge.dst_table}.{key}, "
+            "which is string: " + '; '.join(problems) +
             ". Store both keys with the same type, or fix the values, "
             "before snapshot.")
 
@@ -1042,6 +1121,7 @@ class Graph:
         table_data_versions: Dict[str, str] = {}
         source_paths: Dict[str, str] = {}
         source_tables: Dict[str, SourceTableEntry] = {}
+        staged: Dict[str, Sequence[str]] = {}
 
         started = start() if timed else None
         try:
@@ -1095,9 +1175,12 @@ class Graph:
                 else:
                     source_paths[alias] = str(
                         prepared.source.get('path') or dest_dir)
+                staged[alias] = paths or [source_paths[alias]]
                 _refuse_inexact_key_conversions(alias,
                                                 conversions.get(alias, {}),
-                                                paths or [source_paths[alias]])
+                                                staged[alias])
+            _refuse_inexact_link_targets(self._named_tables, self.edges,
+                                         conversions, staged)
 
             version_parts = [
                 json.dumps(table_data_versions, sort_keys=True).encode()
