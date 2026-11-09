@@ -844,3 +844,23 @@ def test_fractional_key_check_reads_each_staged_part(tmp_path, target, parts,
             graph._refuse_fractional_keys('events', paths)
     else:
         graph._refuse_fractional_keys('events', paths)
+
+
+def test_staged_parts_of_other_formats_are_left_to_diskgraph(tmp_path):
+    from kumo.engine.graph import _staged_parquet_parts
+
+    staged = tmp_path / 'staged'
+    staged.mkdir()
+    table = pa.table({'id': pa.array([1.0, 2.0])})
+    pq.write_table(table, staged / 'part-0.parquet')
+    (staged / 'part-1.csv').write_text('id\n1.5\n')
+    pq.write_table(table, tmp_path / 'extra.parquet')
+    (tmp_path / 'extra.csv').write_text('id\n1.5\n')
+
+    parts = _staged_parquet_parts([
+        str(staged),
+        str(tmp_path / 'extra.csv'),
+        str(tmp_path / 'extra.parquet'),
+    ])
+
+    assert parts == [staged / 'part-0.parquet', tmp_path / 'extra.parquet']

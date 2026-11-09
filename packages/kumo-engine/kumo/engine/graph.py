@@ -245,6 +245,19 @@ def _count_inexact_keys(files: Sequence[Path], name: str, target: Dtype) -> int:
     return count
 
 
+def _staged_parquet_parts(paths: Sequence[str]) -> list[Path]:
+    r"""The parquet parts under `paths`: every `*.parquet` file of a
+    directory, or a file path itself when it is one. A part of any other
+    kind, such as the CSV a custom backend may stage, is left to DiskGraph's
+    own conversion.
+    """
+    return [
+        file for path in paths for file in
+        (sorted(Path(path).rglob('*.parquet')) if Path(path).is_dir() else
+         [Path(path)] if Path(path).suffix.lower() == '.parquet' else [])
+    ]
+
+
 def _warn_low_fk_match_rates(stats: Dict[str, Any],
                              tables: Dict[str, Any]) -> None:
     edges = stats.get('edge_counts', {})
@@ -850,16 +863,12 @@ class Graph:
         key converts by its double value. Reads nothing for a table without
         a float key, and runs only for a snapshot about to be built: one
         that already exists for this graph and data version passed it when
-        it was built.
+        it was built. Only parquet parts are read (`_staged_parquet_parts`).
         """
         keys = self._float_keys.get(alias)
         if not keys:
             return
-        files = [
-            file for path in paths for file in
-            (sorted(Path(path).rglob('*.parquet')) if Path(path).is_dir() else
-             [Path(path)])
-        ]
+        files = _staged_parquet_parts(paths)
         for name, (dtype, target) in keys.items():
             count = _count_inexact_keys(files, name, target)
             if count:
