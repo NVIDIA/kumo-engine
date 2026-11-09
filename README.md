@@ -6,7 +6,7 @@
   </picture>
 </p>
 
-<h1 align="center">NVIDIA Kumo Engine</h1>
+<h1 align="center">Kumo Engine</h1>
 
 <p align="center">
   <a href="https://pypi.org/project/kumo-engine/"><img src="https://img.shields.io/pypi/v/kumo-engine?color=76B900" alt="PyPI version"></a>
@@ -18,66 +18,71 @@
 <p align="center">
   <a href="https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/overview"><b>Documentation</b></a> ·
   <a href="#quickstart"><b>Quickstart</b></a> ·
-  <a href="#benchmarks"><b>Benchmarks</b></a> ·
+  <a href="#what-makes-kumo-engine-fast"><b>Performance</b></a> ·
   <a href="examples/kumo-example-notebooks/README.md"><b>Examples</b></a>
 </p>
 
-**NVIDIA Kumo Engine is an open accelerator for context generation over structured data.** Its Rust-based DiskGraph engine indexes connected tables on local SSD and samples time-correct, multi-hop context for each entity, even when the index is larger than RAM. Declare what to predict in one query, and Kumo Engine uses that context to train and run predictive models directly on your relational data.
-
-For example, to predict whether a customer will order in the next 30 days, Kumo Engine connects each customer to their order history and samples only the orders placed before the prediction time as model inputs.
+**Kumo Engine is an accelerator for context generation over structured data.** It stores your tables and their relationships as a graph on disk and, for each entity, samples the related records up to its prediction time. Describe what to predict in one query, and Kumo Engine uses that context to train and run predictive models directly on your relational data.
 
 <picture>
   <source media="(max-width: 600px)" srcset="assets/model-context-mobile.svg">
   <img src="assets/model-context.svg" alt="Connected tables become model context: customer and order tables define relationships, matching keys connect individual records, and selected historical records form model inputs. Future outcomes stay outside the inputs.">
 </picture>
 
-*Schematic example: the model plan determines sampling, and future outcomes remain outside the model inputs.*
+*Example: predicting whether a customer will order in the next 30 days. Keys link each customer to their orders, and the model sees only orders placed before the prediction time.*
 
 ## Key Capabilities
 
-- **Context at scale, past RAM:** On one machine, Kumo Engine samples context from a 50-billion-node, 175.5-billion-edge graph whose 2.6 TiB index exceeds the host's 1 TiB of RAM. Warm sampling throughput stays nearly flat as the graph grows from 1 billion to 50 billion nodes.
-- **Time-correct by construction:** Each training example and prediction sees only records timestamped before its prediction time, so future outcomes can't leak into model inputs.
-- **Train directly on relational data:** One predictive query, such as `PREDICT COUNT(orders.*, 0, 30, days) > 0 FOR EACH users.user_id`, defines the labels and the entities to score. A built-in temporal graph neural network learns from the connected records instead of hand-built cross-table features, for classification, regression, forecasting, and recommendation.
-- **From experiment to production:** Automatic hyperparameter search, training explanations, embeddings, and reloadable model bundles that score new data without retraining. Track experiments, register models, and monitor drift with MLflow or Snowflake.
-- **Run where your data lives:** Run in-process in Python on Linux, macOS, or Windows through WSL2, or in a Snowflake or Databricks notebook, with no Kumo account or API key. Read from and write predictions to local files, Amazon S3, Google Cloud Storage, Azure Data Lake Storage, BigQuery, Snowflake, and Databricks.
-- **Agent-ready:** `kumo.install_skills()` teaches Claude Code, Codex, Snowflake Cortex Code, or Databricks Genie Code to build, train, and run Kumo Engine models from a plain-language request.
+- **Scales beyond memory:** Kumo Engine samples context from graphs with billions of records on one machine, even when the graph is larger than memory.
+- **Training data from one query:** A predictive query generates labeled training examples at points in each entity's history. Each example sees only records timestamped at or before its point in time, with no hand-written label logic or point-in-time joins.
+- **Trains directly on relational data:** A built-in graph neural network (GNN) learns from the related records without requiring hand-built features. It handles classification, regression, forecasting, and recommendation tasks.
+- **End-to-end workflow:** Hyperparameter search, explanations, embedding export, and batch prediction are built in. Kumo Engine also works with MLflow, Databricks, SageMaker, and Snowflake to log each run, version models so scheduled prediction jobs use the one you promote, and monitor prediction drift.
+- **Runs locally or in your data platform:** Run Kumo Engine in Python on Linux, macOS, or Windows (WSL2), or in a Snowflake or Databricks notebook. Read data from, and write predictions to, local files, cloud storage, and data warehouses.
+- **Works with coding agents:** The bundled agent skill teaches your coding agent the Kumo Engine API, so it can build, train, and run models on your data.
 
 ## Part of NVIDIA Kumo
 
-NVIDIA Kumo is a family of open models, libraries, and tools for predictive AI across tabular, relational, and time-series data, and a core part of the NVIDIA Agent Knowledge Foundation.
-
-- **NVIDIA Kumo Engine (this repository):** for teams that train and run their own predictive models on relational data in files or warehouses, at production scale.
-- **NVIDIA Kumo Structured:** pretrained foundation models (Kumo Tabular, Kumo Relational, Kumo Forecast, and Kumo Anomaly) that make predictions without training a model per task. Refer to [NVIDIA/structured-data-models](https://github.com/NVIDIA/structured-data-models).
+Kumo Engine is part of [NVIDIA Kumo](https://docs.nvidia.com/sdgm/about-nvidia-kumo/overview), a family of open models and accelerated libraries for predictive AI on tabular, relational, and time-series data, and a core part of the [NVIDIA Agent Knowledge Foundation](https://developer.nvidia.com/topics/ai/agent-knowledge-foundation). To make predictions without training a model, use the pretrained Kumo foundation models (Kumo Tabular, Kumo Relational, Kumo Forecast, and Kumo Anomaly) with [Structured Data Models](https://github.com/NVIDIA/structured-data-models) or [Kumo-TS](https://github.com/NVIDIA/Kumo-TS).
 
 ## Installation
 
-| Requirement | Supported |
-| --- | --- |
-| Python | CPython 3.11 or later |
-| Operating system | Linux x86-64 or ARM64 with glibc 2.34 or later, macOS 14 or later on Apple silicon, or Windows through WSL2 (x86-64) |
-| Compute | An NVIDIA GPU for production workloads. Small jobs, such as the quickstart, also run on CPU or an Apple silicon GPU. |
-| Storage | Local SSD (NVMe or SATA) for the graph index and scratch data |
+Install Kumo Engine from PyPI:
 
 ```bash
 pip install kumo-engine
 ```
 
-The base package reads local CSV and Parquet files. To read from a remote data source, install the matching optional dependency:
-
-| Data Source | Installation |
+| Requirement | Details |
 | --- | --- |
-| Amazon S3 | `pip install "kumo-engine[s3]"` |
-| Google Cloud Storage | `pip install "kumo-engine[gcs]"` |
-| Azure Data Lake Storage Gen2 | `pip install "kumo-engine[adls]"` |
-| BigQuery | `pip install "kumo-engine[bigquery]"` |
-| Snowflake | `pip install "kumo-engine[snowflake]"` |
-| Databricks | `pip install "kumo-engine[databricks]"` |
+| Python | CPython 3.11 or later |
+| Operating system | Linux x86-64 or ARM64 with glibc 2.34 or later, macOS 14 or later on Apple silicon, or Windows through WSL2 (x86-64) |
+| CPU | AES and SSE2 instructions on x86-64, or AES and NEON on ARM64 |
+| GPU | An NVIDIA GPU for production workloads. The quickstart and other small datasets also run on a CPU or an Apple silicon GPU. |
+| Storage | A local NVMe SSD for production workloads. Network-attached volumes, such as Amazon EBS, make sampling much slower. |
 
-Refer to [prerequisites](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/prerequisites) and [GPU sizing](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/gpu-sizing) for a compatible runtime and storage capacity. Follow the setup guide for [Linux](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/linux-machine-deployment), [macOS](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/macos), [Windows (WSL2)](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/windows-wsl2), [Snowflake notebooks](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/snowflake-notebook), or [Databricks notebooks](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/databricks-notebook). The [package README](packages/kumo-engine/README.md#installation) covers text columns, Faiss options, and ARM64 Linux.
+The base package reads and writes local CSV and Parquet files. Optional extras add connectors and additional features; combine them as needed, for example `pip install "kumo-engine[snowflake,text]"`.
+
+| Extra | Adds |
+| --- | --- |
+| `s3` | Amazon S3 |
+| `gcs` | Google Cloud Storage |
+| `adls` | Azure Data Lake Storage Gen2 |
+| `bigquery` | BigQuery |
+| `snowflake` | Snowflake, including Snowflake notebooks |
+| `databricks` | Databricks, including Databricks notebooks |
+| `text` | Encoding for free-text columns, such as descriptions or reviews, with GloVe 6B 50d word vectors |
+| `mlflow` | MLflow run tracking and model registry |
+| `sagemaker` | SageMaker managed MLflow |
+
+Choose your hardware and runtime environment:
+
+- **Hardware:** [Prerequisites](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/prerequisites) · [GPU sizing](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/gpu-sizing)
+- **Setup guides:** [Linux](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/linux-machine-deployment) · [macOS](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/macos) · [Windows (WSL2)](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/windows-wsl2) · [Snowflake notebook](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/snowflake-notebook) · [Databricks notebook](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/databricks-notebook)
+- **Platform details:** the [package README](packages/kumo-engine/README.md#installation) covers ARM64 Linux setup, including Faiss for recommendation tasks.
 
 ## Quickstart
 
-Predict which users will place an order in the next 30 days, using a bundled sample dataset of users and their orders. The example is small enough to train on CPU.
+This example trains a model that predicts which users will place an order in the next 30 days, using a sample dataset of users and orders that ships with the package.
 
 ```python
 from kumo.engine import (Edge, FileConnector, Graph, PredictiveQuery, Table,
@@ -104,7 +109,7 @@ result = trainer.predict(pquery.generate_prediction_table(snapshot),
 print(result.frame.head())
 ```
 
-After the training progress output, it prints the first predictions. Values vary between runs:
+When training completes, the example prints the first five predictions:
 
 ```text
    ENTITY  TARGET_PRED  False_PROB  True_PROB
@@ -115,37 +120,25 @@ After the training progress output, it prints the first predictions. Values vary
 4     752        False    0.939077   0.060923
 ```
 
-`result.frame` has one row per user, with the predicted label `TARGET_PRED` and the class probabilities `False_PROB` and `True_PROB`. To use your own data, point `FileConnector` at a directory of CSV or Parquet files instead of `datasets.shop()`.
+`result.frame` has one row per user, with the predicted label `TARGET_PRED` and the class probabilities `False_PROB` and `True_PROB`. Exact values can differ between runs. To use your own data, point `FileConnector` at a directory of CSV or Parquet files.
 
 Next steps:
 
 - Follow a complete walkthrough in a [Google Colab](https://docs.nvidia.com/sdgm/kumo-engine/user-code-guide/code-examples/google-colab-notebook), [Snowflake](https://docs.nvidia.com/sdgm/kumo-engine/user-code-guide/code-examples/snowflake-notebook), or [Databricks](https://docs.nvidia.com/sdgm/kumo-engine/user-code-guide/code-examples/databricks-notebook) notebook.
 - Explore more tasks in [Predictive Query Examples](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/workflows-and-solutions/predictive-query-examples), and browse the [example collection](examples/kumo-example-notebooks/README.md) for industry notebooks, standalone scripts, and synthetic-data generators.
-- To have a coding agent build the workflow for you, install the agent skill with `kumo.install_skills()`. Refer to [Get Started with Agents](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/agents).
+- To have a coding agent build the workflow for you, install the agent skill by running `python -m kumo.engine.skills`. See [Get Started with Agents](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/agents).
 
-## Benchmarks
+## What Makes Kumo Engine Fast
 
-### Context Generation on a 50-Billion-Node Graph
+Kumo Engine converts your tables into a graph once, at ingest. Its on-disk layout and its sampler are designed together for high-performance sampling:
 
-Time to sample **one million starting entities**, normalized from warm sampling throughput, on a synthetic graph with **50 billion nodes and 175.5 billion edges**:
+- **Links resolved at ingest:** Minimal perfect hashing maps every primary key to a compact integer ID, and each foreign key is resolved once. Following a link while sampling is a direct lookup rather than a join.
+- **Bounded context:** By default, each hop samples at most a set number of related records, so each entity's context has a fixed maximum size, however large the graph grows.
+- **Contiguous recent history:** Each record's links are grouped by relationship and stored newest first. By default, sampling takes the most recent links: a binary search finds the prediction time, and the sampler reads the links that follow in order rather than gathering scattered rows.
+- **Ordered reads for large batches:** Sampling expands a batch one hop at a time. For large batches, the sampler sorts each hop's records by their position on disk so reads move through each file in order, and spreads the work across CPU threads.
+- **Larger than memory:** The graph files are read-only and memory-mapped. The operating system keeps frequently read pages in RAM and reads the rest from disk on demand, so the graph does not have to fit in memory, and many threads read it in parallel without locks.
 
-| Sampling Depth | Kumo Engine | Prepared DuckDB 1.5.6 |
-| --- | --- | --- |
-| 2 hops | **5 seconds** | 4.0 minutes |
-| 3 hops | **19 seconds** | 5.3 minutes |
-| 4 hops | **39 seconds** | 6.5 minutes |
-
-Both ran with warm caches on one AWS i4i.32xlarge: 128 vCPUs, 1 TiB RAM, and 30 TB local NVMe. Kumo Engine's 2.6 TiB index exceeded RAM. Timings exclude preparation and model training. Initial preparation took 49.8 minutes for DiskGraph and 40.1 minutes for DuckDB.
-
-### Training on Matched Hardware
-
-On a separate 111-million-node citation graph, Kumo Engine completed 15 training/validation epochs in **41 minutes 14 seconds**, compared with **64 minutes 13 seconds** for matched-model PyG. Test accuracy was **63.26% versus 63.93%**; both used one g5.16xlarge with one A10G GPU.
-
-### Complete Workflow Versus Feature Engineering
-
-From raw Parquet to a trained model on the 50-billion-node dataset, Kumo Engine took **5.2 hours**, compared with **9.9 hours** for a pipeline that engineered features with DuckDB 1.5.5. Each ran on one AWS g6e.48xlarge. The workflows used different model families and training budgets, so this compares complete workflows rather than matched models.
-
-Refer to the [full benchmark report](https://docs.nvidia.com/sdgm/kumo-engine/resources/benchmarks) for experimental scope, preparation costs, memory measurements, and additional comparisons. Results depend on the workload and configuration.
+See the [benchmark report](https://docs.nvidia.com/sdgm/kumo-engine/resources/benchmarks) for measured sampling and end-to-end results, with hardware, cache conditions, and methodology.
 
 ## Documentation
 
@@ -155,25 +148,20 @@ Refer to the [full benchmark report](https://docs.nvidia.com/sdgm/kumo-engine/re
 | Configure sampling and training | [Model Plan Guide](https://docs.nvidia.com/sdgm/kumo-engine/user-code-guide/train-a-model/model-plan-guide) |
 | Run batch predictions in production | [Production Workflow](https://docs.nvidia.com/sdgm/kumo-engine/user-code-guide/deploy-a-model/overview) |
 | Use the in-process Python API | [Local Python interface](packages/kumo-engine/README.md), imported as `kumo.engine` |
-| Track experiments and register models | [MLOps guide](packages/kumo-engine/docs/mlops.md) |
+| Version, promote, and monitor models | [MLOps guide](packages/kumo-engine/docs/mlops.md) |
 | Check compatibility before upgrading | [Release notes](https://docs.nvidia.com/sdgm/kumo-engine/resources/release-notes) |
-
-For repository internals, refer to the [architecture](ARCHITECTURE.md) and [engineering documentation index](docs/README.md).
+| Explore the source code | [Architecture](ARCHITECTURE.md) and [engineering docs](docs/README.md) |
 
 ## Kumo Studio (Coming Soon)
 
 > [!NOTE]
 > This Kumo Studio information is prerelease and is not yet supported. Stay tuned for the Docker and Kubernetes releases.
 
-Kumo Studio is a self-hosted application with a web UI, a REST API, and a Python client (`kumoai_studio`). Its source, [Docker Compose topology](docker/compose/README.md), and [Helm charts](helm/README.md) are in this repository. Refer to the [preliminary documentation](https://docs.nvidia.com/sdgm/kumo-engine/kumo-studio-guide-coming-soon/preliminary-documentation/installation/requirements).
-
-## Releases
-
-Kumo Engine is published to [PyPI](https://pypi.org/project/kumo-engine/) and [GitHub Releases](https://github.com/NVIDIA/kumo-engine/releases). The release type identifies compatible fixes (patch), compatible additions (minor), or breaking changes (major).
+Kumo Studio is a self-hosted application with a web UI, a REST API, and a Python client (`kumoai_studio`). Its source, [Docker Compose topology](docker/compose/README.md), and [Helm charts](helm/README.md) are in this repository. See the [preliminary documentation](https://docs.nvidia.com/sdgm/kumo-engine/kumo-studio-guide-coming-soon/preliminary-documentation/installation/requirements).
 
 ## Development and Support
 
-Report bugs or documentation problems in [GitHub Issues](https://github.com/NVIDIA/kumo-engine/issues), including the affected path and observed behavior. Keep credentials and private deployment details out of reports. To report a security vulnerability, follow [SECURITY.md](SECURITY.md) instead of opening an issue.
+Report bugs and request features in [GitHub Issues](https://github.com/NVIDIA/kumo-engine/issues). To report a security vulnerability, follow [SECURITY.md](SECURITY.md) instead of opening an issue.
 
 This project is currently not accepting contributions.
 
