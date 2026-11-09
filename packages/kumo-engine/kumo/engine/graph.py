@@ -814,11 +814,12 @@ class Graph:
 
         Time columns are settled from every staged value before ingest
         (`kumo.engine._time_columns`): whole numbers and slash dates take
-        the one reading every value allows, declared as the column's
+        the one reading their values allow, declared as the column's
         `timestamp_format`, or are refused; a value no calendar or clock
-        holds is made missing and counted. What the scan settles is part
-        of the snapshot's data version, so an index built before it is
-        not reused; a graph whose time columns need nothing keeps its key.
+        holds, or with no reading once the column has one, is made missing
+        and counted. What the scan settles is part of the snapshot's data
+        version, so an index built before it is not reused; a graph whose
+        time columns need nothing keeps its key.
 
         Args:
             mlops: also export the snapshot under this `kumo.MLOps` root.

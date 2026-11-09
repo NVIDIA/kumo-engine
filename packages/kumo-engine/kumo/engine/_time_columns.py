@@ -771,8 +771,13 @@ class _Column:
         return pc.if_else(invalid, None, values)
 
     def invalid(self, values: pa.Array) -> pa.Array:
-        r"""The values the decision makes missing: none when the column
-        is left to DiskGraph's own reading.
+        r"""The values made missing. Native instants and ISO or year-first
+        values no calendar holds or outside the range are missing in every
+        column, as are whole numbers outside the range under their own
+        digit-count reading, even when the column is left to DiskGraph's
+        own reading because it also holds a shape the scan does not read.
+        Whole numbers with no reading are missing only once the column
+        settled on one, and slash dates only under a settled order.
         """
         instants = _native_instants(values)
         if instants is not None:
@@ -882,10 +887,12 @@ def resolve_time_columns(
     name, with the sorted names of the columns whose staged parts were
     rewritten; a column DiskGraph already reads unambiguously, or whose
     format the table declares, gets none. Values no calendar or clock
-    holds are nulled in the staged parts, and a column mixing bare and
-    zoned ISO values is staged in one shape. Raises when a column of whole
-    numbers has no single reading or a column of slash dates no single
-    order.
+    holds, or with no reading once a column of whole numbers has one, are
+    nulled in the staged parts; a column mixing bare and zoned ISO values,
+    slash dates in more than one time shape and digit strings with padding
+    or a zero fraction are staged in the one shape the declared format
+    reads. Raises when a column of whole numbers has no single reading or
+    a column of slash dates no single order.
     """
     declared = {
         column.name: column.timestamp_format
