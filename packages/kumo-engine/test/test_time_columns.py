@@ -383,6 +383,30 @@ def test_a_declared_format_is_left_alone(tmp_path):
     assert path.read_bytes() == before
 
 
+def test_the_parts_to_rewrite_are_settled_once_per_column(
+        tmp_path, monkeypatch):
+    from kumo.engine import _time_columns
+
+    calls = []
+    settle = _time_columns._Column.parts_to_rewrite
+
+    def counted(column):
+        calls.append(column.name)
+        return settle(column)
+
+    monkeypatch.setattr(_time_columns._Column, 'parts_to_rewrite', counted)
+    paths = [
+        _part(tmp_path, pa.array(['2024-02-30', f'2024-01-1{i}']),
+              f'part-{i}.parquet') for i in range(3)
+    ]
+    with pytest.warns(UserWarning, match='3 values in time column'):
+        resolve_time_columns('events', _definition(), [str(p) for p in paths])
+    assert calls == ['ts']
+    assert all(
+        pq.read_table(path).column('ts').to_pylist()[0] is None
+        for path in paths)
+
+
 def test_only_parts_holding_an_invalid_value_are_rewritten(tmp_path):
     clean = _part(tmp_path, pa.array(['2024-01-15', '2024-01-16']),
                   'part-0.parquet')

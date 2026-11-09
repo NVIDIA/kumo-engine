@@ -933,10 +933,11 @@ def resolve_time_columns(
     for column in columns:
         column.decide()
     rewritten = set()
+    parts = {column.name: column.parts_to_rewrite() for column in columns}
     for file in files:
         touched = {
             column.name: column.rewritten
-            for column in columns if str(file) in column.parts_to_rewrite()
+            for column in columns if str(file) in parts[column.name]
         }
         if touched:
             _rewrite(file, touched)
