@@ -19,7 +19,9 @@ the two is reported, staged in one shape (a space before a full time part)
 and given a format that reads both. A column of ISO or year-first values in
 which the scan made values missing is handed to DiskGraph with its format
 declared, since DiskGraph otherwise decides the format from a part's first
-rows and refuses a column whose sample the scan has made all null. A column
+rows and refuses a column whose sample the scan has made all null; a native
+timestamp or date column is declared under its own unit or date format for
+the same reason. A column
 that also holds a value in a shape the scan does not read is left to
 DiskGraph's own reading, with the value named, wherever the scan would
 otherwise have declared a format.
@@ -165,6 +167,7 @@ class _Scan:
     padded_parts: set = field(default_factory=set)
     text_shapes: Counter = field(default_factory=Counter)
     awkward: int = 0
+    native_hint: Optional[str] = None
     year_parts: Dict[int, set] = field(
         default_factory=lambda: {k: set()
                                  for k in _SLASH_SHAPES})
@@ -384,6 +387,20 @@ def _as_int64(values: pa.Array) -> Optional[pa.Array]:
     return None
 
 
+def _native_hint(kind: pa.DataType) -> Optional[str]:
+    r"""The unit or date format a native time column is declared under
+    once the scan made values in it missing. DiskGraph reads the typed
+    values the same either way; the declaration only keeps its sample of a
+    part's first rows from deciding the column is all null. A `date64`
+    column gets none, since DiskGraph reads no row of one.
+    """
+    if pa.types.is_timestamp(kind):
+        return kind.unit
+    if pa.types.is_date32(kind):
+        return '%Y-%m-%d'
+    return None
+
+
 def _native_instants(values: pa.Array) -> Optional[Tuple[pa.Array, pa.Array]]:
     kind = values.type
     if pa.types.is_date32(kind):
@@ -454,6 +471,7 @@ class _Column:
         instants = _native_instants(values)
         if instants is not None:
             self.scan.families['native'] += len(present)
+            self.scan.native_hint = _native_hint(values.type)
             self._tally('fixed', part, values, pc.invert(_in_range(*instants)),
                         None)
             return
@@ -651,6 +669,9 @@ class _Column:
         elif set(known) in ({'iso'}, {'year_slash'}) and (
                 scan.impossible['fixed'].count or scan.far['fixed'].count):
             decide = self._decide_shape
+        elif set(known) == {'native'} and scan.native_hint and (
+                scan.far['fixed'].count):
+            decide = self._decide_native
         if decide is not None and other:
             warnings.warn(
                 f"Time column {self.alias}.{self.name} holds {other} "
@@ -695,6 +716,9 @@ class _Column:
             depth = max(int(key.split('|')[1]) for key in scan.text_shapes)
             self.decision = _Decision(base + ' ' + times[depth],
                                       year_shape=depth)
+
+    def _decide_native(self) -> None:
+        self.decision = _Decision(self.scan.native_hint)
 
     def _decide_zones(self) -> None:
         scan = self.scan

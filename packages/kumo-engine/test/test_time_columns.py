@@ -63,12 +63,13 @@ def test_every_integer_shape_shares_the_reading(tmp_path, values):
 @pytest.mark.parametrize('values, fmt, missing', [
     (pa.array([1705276800, 9999999999], pa.int64()), 's', [1]),
     (pa.array([20240115, 99991231], pa.int64()), '%Y%m%d', [1]),
-    (pa.array([date(2024, 1, 15), date(9999, 12, 31)], pa.date32()), None, [1]),
+    (pa.array([date(2024, 1, 15), date(9999, 12, 31)],
+              pa.date32()), '%Y-%m-%d', [1]),
     (pa.array([datetime(2024, 1, 15),
-               datetime(9999, 12, 31)], pa.timestamp('us')), None, [1]),
+               datetime(9999, 12, 31)], pa.timestamp('us')), 'us', [1]),
     (pa.array(
         [datetime(2024, 1, 15), datetime(2262, 4, 12)],
-        pa.timestamp('ms', tz='America/New_York')), None, [1]),
+        pa.timestamp('ms', tz='America/New_York')), 'ms', [1]),
     (pa.array([
         '1677-09-21 00:12:44', '2262-04-11 23:47:16', '1677-09-21 00:12:43',
         '2262-04-11 23:47:17'
@@ -80,7 +81,7 @@ def test_every_integer_shape_shares_the_reading(tmp_path, values):
     (pa.array([
         datetime(2262, 4, 11, 23, 47, 16, 854775),
         datetime(2262, 4, 11, 23, 47, 16, 854776)
-    ], pa.timestamp('us')), None, [1]),
+    ], pa.timestamp('us')), 'us', [1]),
     (pa.array([1705276800854, 9223372036854, 9223372036855],
               pa.int64()), 'ms', [2]),
 ])

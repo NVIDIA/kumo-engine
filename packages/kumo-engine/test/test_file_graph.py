@@ -4,7 +4,7 @@
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -815,6 +815,27 @@ def test_a_part_whose_first_rows_are_all_made_missing_still_ingests(
     assert ingest['dropped_rows_counts'] == {'events': 1024}
     assert (stats['min_secs'], stats['max_secs']) == (_secs('2024-01-15'),
                                                       _secs(last))
+
+
+@pytest.mark.parametrize('values, hint', [
+    (pa.array([datetime(9999, 12, 31)] * 1024 +
+              [datetime(2024, 1, 15), datetime(2024, 1, 16)],
+              pa.timestamp('us')), ('timestamp_unit', 'micros')),
+    (pa.array([date(9999, 12, 31)] * 1024 + [date(2024, 1, 15),
+                                             date(2024, 1, 16)], pa.date32()),
+     ('timestamp_format', '%Y-%m-%d')),
+])
+def test_a_native_part_whose_first_rows_are_all_made_missing_still_ingests(
+        tmp_path, values, hint):
+    with pytest.warns(UserWarning, match='1024 values in time column events.ts '
+                      'fall outside') as caught:
+        column, stats, ingest = _time_snapshot(tmp_path, 'parquet', values)
+    assert len(_user_warnings(caught)) == 1
+    assert column[hint[0]] == hint[1]
+    assert ingest['total_nodes'] == 2
+    assert ingest['dropped_rows_counts'] == {'events': 1024}
+    assert (stats['min_secs'], stats['max_secs']) == (_secs('2024-01-15'),
+                                                      _secs('2024-01-16'))
 
 
 @pytest.mark.parametrize('extension', ['csv', 'parquet'])
