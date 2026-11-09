@@ -164,6 +164,7 @@ def test_graph_validation_keeps_dotted_table_names(tables):
     (Dtype.string, (Dtype.int64, ), Dtype.int64),
     (Dtype.string, (Dtype.int32, ), Dtype.int32),
     (Dtype.string, (Dtype.byte, ), Dtype.byte),
+    (Dtype.string, (Dtype.float64, ), Dtype.int64),
     (Dtype.int64, (Dtype.string, ), Dtype.string),
     (Dtype.int16, (Dtype.string, ), Dtype.string),
     (Dtype.string, (Dtype.int64, Dtype.int64), Dtype.int64),

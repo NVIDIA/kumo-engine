@@ -106,8 +106,10 @@ def key_conversions(
     integers. A converted key that is also its table's primary key carries
     the conversion on to the keys linking to it, so the targets settle in
     a few passes over the edges; keys that never settle, a key linked to
-    keys of different dtypes, a float key and an integer key linking to a
-    narrower integer keep the hosted dtype rule.
+    keys of different dtypes and an integer key linking to a narrower
+    integer keep the hosted dtype rule. A float key reaches this already
+    declared an integer (`Graph._ingest_tables`), so a string key linking
+    to it converts to that integer.
     """
     dtypes = {
         alias: {

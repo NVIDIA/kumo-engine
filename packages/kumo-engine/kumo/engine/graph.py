@@ -480,7 +480,8 @@ def _refuse_inexact_key_conversions(alias: str,
     primary key. A part staged as integers or a scale-zero decimal is read
     as the text DiskGraph writes for it, so its values join the collision
     check; a part under any other type that is not text or binary is left
-    to DiskGraph's own conversion.
+    to DiskGraph's own conversion. Runs only for a snapshot about to be
+    built, as `_refuse_fractional_keys` does.
     """
     import pyarrow as pa
 
@@ -544,7 +545,8 @@ def _refuse_inexact_link_targets(tables: Mapping[str, Any],
     type that is not text or binary is refused, since DiskGraph writes it
     as text in its own form (`7.0` for a scaled decimal, `true` for a
     boolean). A self-relation, which the portable config omits, is not a
-    link target.
+    link target. Runs only for a snapshot about to be built, as
+    `_refuse_fractional_keys` does.
     """
     import pyarrow as pa
 
@@ -1397,7 +1399,7 @@ class Graph:
         from kumo.engine.connector.source_table import checked_sql
 
         graph_config = self._graph_config
-        conversions = key_conversions(self._named_tables, self.edges)
+        conversions = key_conversions(self._ingest_tables, self.edges)
         store = _store()
 
         table_data_versions: Dict[str, str] = {}
@@ -1460,12 +1462,6 @@ class Graph:
                 else:
                     source_paths[alias] = str(
                         prepared.source.get('path') or dest_dir)
-                if alias in conversions:
-                    _refuse_inexact_key_conversions(alias, conversions[alias],
-                                                    staged[alias],
-                                                    table.definition.pkey)
-            _refuse_inexact_link_targets(self._named_tables, self.edges,
-                                         conversions, staged)
 
             version_parts = [
                 json.dumps(table_data_versions, sort_keys=True).encode()
@@ -1483,6 +1479,12 @@ class Graph:
             else:
                 for alias, paths in staged.items():
                     self._refuse_fractional_keys(alias, paths)
+                    if alias in conversions:
+                        _refuse_inexact_key_conversions(
+                            alias, conversions[alias], paths,
+                            self._ingest_tables[alias].definition.pkey)
+                _refuse_inexact_link_targets(self._ingest_tables, self.edges,
+                                             conversions, staged)
                 output_dir.mkdir(parents=True, exist_ok=True)
                 # The Rust ingest binary only writes the index's
                 # `_MANIFEST.json` (read later by, e.g., kumo_core.diskgraph.

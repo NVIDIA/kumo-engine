@@ -666,6 +666,14 @@ def test_mismatched_key_dtypes_link_after_conversion(tmp_path):
             'code': pa.array([Decimal(7), Decimal(10), None],
                              pa.decimal128(38, 0)),
         }), root / 'events.parquet')
+    pq.write_table(
+        pa.table({'shop_id': pa.array([7.0, 10.0], pa.float64())}),
+        root / 'shops.parquet')
+    pq.write_table(
+        pa.table({
+            'visit_id': [1, 2, 3],
+            'shop_id': ['007', '10', None]
+        }), root / 'visits.parquet')
     connector = FileConnector(root_dir=str(root))
 
     def table(name, key):
@@ -679,10 +687,13 @@ def test_mismatched_key_dtypes_link_after_conversion(tmp_path):
             'payments': table('payments', 'payment_id'),
             'codes': table('codes', 'code'),
             'events': table('events', 'event_id'),
+            'shops': table('shops', 'shop_id'),
+            'visits': table('visits', 'visit_id'),
         }, [
             Edge('orders', 'user_id', 'users'),
             Edge('payments', 'account_id', 'accounts'),
             Edge('events', 'code', 'codes'),
+            Edge('visits', 'shop_id', 'shops'),
         ])
 
     with pytest.warns(UserWarning) as caught:
@@ -697,6 +708,8 @@ def test_mismatched_key_dtypes_link_after_conversion(tmp_path):
         'users.user_id, which is int64',
         'Foreign key payments.account_id is stored as int64 and links to '
         'accounts.account_id, which is string',
+        'Foreign key visits.shop_id is stored as string and links to '
+        'shops.shop_id, which is int64',
     ]
     declared = {
         table['table_name']: {key['name']: key['dtype']
@@ -706,11 +719,46 @@ def test_mismatched_key_dtypes_link_after_conversion(tmp_path):
     assert declared['orders'] == {'user_id': 'int64'}
     assert declared['payments'] == {'account_id': 'string'}
     assert declared['events'] == {'code': 'string'}
+    assert declared['visits'] == {'shop_id': 'int64'}
     stats = json.loads((snapshot.index_path / 'ingest_stats.json').read_text())
     assert stats['stats']['edge_counts']['orders_user_id_to_users_user_id'] == 5
     assert stats['stats']['edge_counts'][
         'payments_account_id_to_accounts_account_id'] == 4
     assert stats['stats']['edge_counts']['events_code_to_codes_code'] == 2
+    assert stats['stats']['edge_counts']['visits_shop_id_to_shops_shop_id'] == 2
+
+
+def test_string_keys_linking_to_a_float_key_are_checked_as_integers(
+        tmp_path, monkeypatch):
+    from kumo.engine import configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({'user_id': pa.array([7.0, 10.0], pa.float64())}),
+        root / 'users.parquet')
+    pq.write_table(
+        pa.table({
+            'order_id': [1, 2, 3],
+            'user_id': ['7', '007', 'x']
+        }), root / 'orders.parquet')
+    graph = _keyed_graph(root, 'orders')
+    monkeypatch.setattr(
+        'kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
+        lambda *args, **kwargs: pytest.fail('ingest started'))
+
+    with pytest.warns(UserWarning, match='Foreign key orders.user_id'):
+        with pytest.raises(ValueError) as error:
+            graph.snapshot()
+
+    assert str(error.value) == (
+        'Foreign key orders.user_id is stored as string and links to '
+        'users.user_id, which is int64: 1 of its non-null values cannot be '
+        "converted to int64 (for example 'x'), so those rows would lose "
+        'their link; 2 distinct values convert to the same integer (for '
+        "example '7' and '007'). Store both keys with the same type, or fix "
+        'the values, before snapshot.')
 
 
 @pytest.mark.parametrize('layout', [
