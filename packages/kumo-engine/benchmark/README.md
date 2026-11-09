@@ -57,6 +57,16 @@ standalone); it is a separate diagnostic because those paths can select
 different training rows. More workers require process aggregation for
 native counters and are not the primary benchmark configuration.
 
+The matrix's experimental `--io-batch-mult` sets the existing native
+`DG_IO_BATCH_MULT` control (default 1, accepted range 1..32). Both the raw
+environment value and parsed `requested_io_config.io_batch_mult` are recorded
+separately from the model configuration hash. A value of 8 increases the owner
+batch page target to eight times queue depth and also increases its bounded
+page recycler reserve. This changes both aggregation and retained anonymous
+memory, so comparisons cannot attribute an effect solely to larger I/O batches.
+Keep the native wheel fixed when comparing these settings and retain its build
+provenance; changing Python benchmark metadata does not rebuild that wheel.
+
 One seeded model trains a fixed number of training batches without search,
 early stopping or refits. Completed fit/batch counts are checked. Prediction
 uses up to 2,048 evenly spaced held-out entities (configurable at preparation);

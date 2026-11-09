@@ -160,6 +160,9 @@ def validate_native(row: dict, spec: dict) -> None:
     environment = row['provenance']['environment']
     if environment['DG_DIRECT_CACHE_GB'] != str(spec['direct_cache_gib']):
         raise ValueError('Runner changed the configured native cache budget')
+    if (environment['DG_IO_BATCH_MULT'] != str(spec['io_batch_mult']) or
+            row['requested_io_config']['io_batch_mult'] != spec['io_batch_mult']):
+        raise ValueError('Runner changed the configured native I/O batch multiplier')
     after = row['native_io']['fit']['after']
     if after['configured_backend'] != spec['backend']:
         raise ValueError('Runner used a different native backend')
@@ -183,7 +186,8 @@ def reuse_trial(row: dict, spec: dict, expected_native: str) -> None:
     fields = ('task', 'backend', 'regime', 'repeat', 'prepared_dir', 'memory_bytes',
               'steps', 'batch_size', 'workers', 'threads', 'torch_threads',
               'model_seed', 'python', 'runner', 'direct_cache_gib', 'io_rings',
-              'io_qd', 'cpus', 'loader_mode', 'cleanup_work', 'build_provenance_sha256',
+              'io_qd', 'io_batch_mult', 'cpus', 'loader_mode', 'cleanup_work',
+              'build_provenance_sha256',
               'prepared_manifest_sha256')
     if any(previous[key] != spec[key] for key in fields):
         raise ValueError('Existing trial parameters differ from requested parameters')
@@ -238,6 +242,9 @@ def summarize(rows: list[dict], repetitions: int, seed: int,
                         if row['task'] == task and row['regime'] == regime]
             if not selected:
                 continue
+            if any(row['matrix_spec']['io_batch_mult'] !=
+                   selected[0]['matrix_spec']['io_batch_mult'] for row in selected):
+                raise ValueError('Cannot pool different native I/O batch multipliers')
             validate_work(selected)
             validate_predictions(selected, prediction_atol)
             cells = {(row['repeat'], row['backend']): row for row in selected}
@@ -423,7 +430,8 @@ def run_matrix(args: argparse.Namespace) -> None:
                     resources=f'{output}/{name}-resources.json',
                     eviction=None, timeout=args.timeout,
                     direct_cache_gib=args.direct_cache_gib,
-                    io_rings=args.io_rings, io_qd=args.io_qd, cpus=args.cpus,
+                    io_rings=args.io_rings, io_qd=args.io_qd,
+                    io_batch_mult=args.io_batch_mult, cpus=args.cpus,
                     source_provenance=source,
                     pilot=args.pilot, min_training_seconds=args.min_training_seconds,
                     cleanup_work=not args.keep_work,
@@ -456,6 +464,7 @@ def run_matrix(args: argparse.Namespace) -> None:
                     'DG_DIRECT_CACHE_GB': str(args.direct_cache_gib),
                     'DG_IO_RINGS': str(args.io_rings),
                     'DG_IO_QD': str(args.io_qd),
+                    'DG_IO_BATCH_MULT': str(args.io_batch_mult),
                     'RAYON_NUM_THREADS': str(args.threads),
                     'OMP_NUM_THREADS': str(args.torch_threads),
                     'OPENBLAS_NUM_THREADS': str(args.torch_threads),
@@ -556,6 +565,8 @@ def main() -> None:
     matrix.add_argument('--direct-cache-gib', type=int, default=2)
     matrix.add_argument('--io-rings', type=int, default=2)
     matrix.add_argument('--io-qd', type=int, default=32)
+    matrix.add_argument('--io-batch-mult', type=int, default=1,
+                        help='Native aggregation/recycler multiplier (1..32)')
     matrix.add_argument('--timeout', type=int, default=3600)
     matrix.add_argument('--prediction-atol', type=float, default=1e-6)
     matrix.add_argument('--min-training-seconds', type=float, default=30.)
@@ -567,7 +578,8 @@ def main() -> None:
     else:
         for name in ('repetitions', 'steps', 'batch_size', 'threads',
                      'torch_threads', 'resident_memory_gib',
-                     'constrained_memory_gib', 'io_rings', 'io_qd', 'timeout'):
+                     'constrained_memory_gib', 'io_rings', 'io_qd',
+                     'io_batch_mult', 'timeout'):
             if vars(args)[name] < 1:
                 parser.error(f'--{name.replace("_", "-")} must be positive')
         if args.workers < 0 or args.direct_cache_gib < 0:
@@ -576,6 +588,8 @@ def main() -> None:
             parser.error('Prediction tolerance must be finite and nonnegative')
         if not 1 <= args.io_rings <= 64 or not 1 <= args.io_qd <= 4096:
             parser.error('Native ring or queue depth would be clamped')
+        if args.io_batch_mult > 32:
+            parser.error('Native I/O batch multiplier must be in 1..32')
         run_matrix(args)
 
 

@@ -27,6 +27,7 @@ from native_io_tasks import (  # noqa: E402
     arguments,
     check_work,
     generate_data,
+    io_batch_multiplier,
     logical_seed_hash,
     read_table,
 )
@@ -85,6 +86,18 @@ def test_missing_outputs():
     with pytest.raises(SystemExit):
         arguments(['--task', 'binary', '--prepared-dir', '/tmp/prepared',
                    '--prepare'])
+
+
+def test_io_batch_multiplier(monkeypatch):
+    monkeypatch.delenv('DG_IO_BATCH_MULT', raising=False)
+    assert io_batch_multiplier() == 1
+    for value in ('1', '8', '32'):
+        monkeypatch.setenv('DG_IO_BATCH_MULT', value)
+        assert io_batch_multiplier() == int(value)
+    for value in ('0', '-1', '33', '1.5', 'invalid', ' 8', '1_0'):
+        monkeypatch.setenv('DG_IO_BATCH_MULT', value)
+        with pytest.raises(ValueError, match='DG_IO_BATCH_MULT'):
+            io_batch_multiplier()
 
 
 def test_logical_seed_fingerprint():

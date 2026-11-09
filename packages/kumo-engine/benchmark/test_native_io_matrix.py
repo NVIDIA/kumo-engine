@@ -4,6 +4,7 @@
 """Counter and matched-work checks that prevent misleading benchmark results."""
 
 import json
+import sys
 from argparse import Namespace
 from collections import Counter
 
@@ -13,6 +14,7 @@ from native_io_matrix import (
     BACKENDS,
     aggregate,
     confidence_interval,
+    main,
     reuse_trial,
     runner_command,
     summarize,
@@ -39,6 +41,7 @@ def result(backend: str, repeat: int, seconds: float) -> dict:
                 predictions=dict(values=[[.1, .9]], decisions=[True]),
                 provenance=dict(native_sha256='a' * 64),
                 config=dict(loader_mode='standalone'),
+                matrix_spec=dict(io_batch_mult=1),
                 work=dict(optimizer_steps=128, train_batches=128,
                           logical_seed_sha256='a' * 64,
                           predict_rows=1000, predict_batches=4),
@@ -93,7 +96,7 @@ def test_incomplete_matrix_rejected():
 def test_aggregate_retained_trial_directory(tmp_path):
     fsutil.makedirs(str(tmp_path / 'preserved-clone.json'))
     row = result('mmap', 0, 20)
-    row['matrix_spec'] = dict(pilot=True)
+    row['matrix_spec'] = dict(pilot=True, io_batch_mult=1)
     fsutil.write_text(str(tmp_path / 'mmap.json'), json.dumps(row))
     fsutil.write_text(str(tmp_path / 'notes.txt'), 'not JSON')
     args = Namespace(results_dir=str(tmp_path), output=str(tmp_path / 'out.json'),
@@ -175,12 +178,14 @@ def test_missing_io_is_unknown(monkeypatch):
 
 def test_cache_off_rejected():
     row = result('direct', 0, 10)
-    row['provenance']['environment'] = {'DG_DIRECT_CACHE_GB': '1'}
+    row['provenance']['environment'] = {
+        'DG_DIRECT_CACHE_GB': '1', 'DG_IO_BATCH_MULT': '1'}
+    row['requested_io_config'] = dict(io_batch_mult=1)
     row['native_io'] = {'fit': {'after': dict(
         configured_backend='direct', runtime_initialized=True, io_ops=1,
         runtime_rings=2, cache_initialized=False, cache_capacity_pages=0)}}
     spec = dict(backend='direct', direct_cache_gib=1, io_rings=2,
-                loader_mode='standalone')
+                loader_mode='standalone', io_batch_mult=1)
     with pytest.raises(ValueError, match='cache capacity'):
         validate_native(row, spec)
     row['native_io']['fit']['after'].update(
@@ -188,12 +193,13 @@ def test_cache_off_rejected():
     validate_native(row, spec)
 
 
-@pytest.mark.parametrize('changed', ('steps', 'loader_mode'))
+@pytest.mark.parametrize('changed', ('steps', 'loader_mode', 'io_batch_mult'))
 def test_resume_requires_matching_work(changed):
     fields = ('task', 'backend', 'regime', 'repeat', 'prepared_dir', 'memory_bytes',
               'steps', 'batch_size', 'workers', 'threads', 'torch_threads',
               'model_seed', 'python', 'runner', 'direct_cache_gib', 'io_rings',
-              'io_qd', 'cpus', 'loader_mode', 'cleanup_work', 'build_provenance_sha256',
+              'io_qd', 'io_batch_mult', 'cpus', 'loader_mode', 'cleanup_work',
+              'build_provenance_sha256',
               'prepared_manifest_sha256')
     spec = {field: 1 for field in fields}
     row = result('direct', 0, 10)
@@ -234,3 +240,55 @@ def test_loader_mode_forwarded():
     spec['loader_mode'] = 'auto'
     command = runner_command(spec)
     assert command[command.index('--loader-mode') + 1] == 'auto'
+
+
+def test_batch_variants_not_pooled():
+    rows = [result(backend, repeat, 10) for repeat in range(2)
+            for backend in BACKENDS]
+    for row in rows:
+        row['matrix_spec']['io_batch_mult'] = 1 if row['repeat'] == 0 else 8
+    with pytest.raises(ValueError, match='Cannot pool different native I/O batch'):
+        summarize(rows, 2, 12)
+
+
+def test_batch_override_verified():
+    row = result('mmap', 0, 10)
+    row['provenance']['environment'] = {
+        'DG_DIRECT_CACHE_GB': '1', 'DG_IO_BATCH_MULT': '8'}
+    row['requested_io_config'] = dict(io_batch_mult=8)
+    row['native_io'] = {'fit': {'after': dict(
+        configured_backend='mmap', cache_capacity_pages=0)}}
+    spec = dict(backend='mmap', direct_cache_gib=1, io_batch_mult=8,
+                loader_mode='standalone')
+    validate_native(row, spec)
+    row['requested_io_config']['io_batch_mult'] = 1
+    with pytest.raises(ValueError, match='I/O batch multiplier'):
+        validate_native(row, spec)
+    row['requested_io_config']['io_batch_mult'] = 8
+    row['provenance']['environment']['DG_IO_BATCH_MULT'] = '1'
+    with pytest.raises(ValueError, match='I/O batch multiplier'):
+        validate_native(row, spec)
+
+
+@pytest.mark.parametrize('value', ('0', '33', '-1'))
+def test_batch_range_rejected(monkeypatch, value):
+    arguments = ['native_io_matrix.py', 'run', '--prepared-root', '/unused',
+                 '--output-dir', '/unused', '--runner', '/unused',
+                 '--io-batch-mult', value]
+    monkeypatch.setattr(sys, 'argv', arguments)
+    with pytest.raises(SystemExit) as error:
+        main()
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize('value', (None, '1', '32'))
+def test_batch_default_and_bounds(monkeypatch, value):
+    arguments = ['native_io_matrix.py', 'run', '--prepared-root', '/unused',
+                 '--output-dir', '/unused', '--runner', '/unused']
+    if value is not None:
+        arguments.extend(['--io-batch-mult', value])
+    observed = []
+    monkeypatch.setattr(sys, 'argv', arguments)
+    monkeypatch.setattr('native_io_matrix.run_matrix', observed.append)
+    main()
+    assert observed[0].io_batch_mult == (1 if value is None else int(value))

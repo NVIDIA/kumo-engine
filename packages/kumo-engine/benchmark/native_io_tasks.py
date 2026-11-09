@@ -51,6 +51,16 @@ QUERIES = {
 HORIZONS = {'binary': 7, 'regression': 30, 'temporal_link': 7}
 
 
+def io_batch_multiplier() -> int:
+    value = os.environ.get('DG_IO_BATCH_MULT', '1')
+    if not value.isascii() or not value.isdecimal():
+        raise ValueError('DG_IO_BATCH_MULT must be an integer in 1..32')
+    multiplier = int(value)
+    if not 1 <= multiplier <= 32:
+        raise ValueError('DG_IO_BATCH_MULT must be an integer in 1..32')
+    return multiplier
+
+
 def json_write(path: Path, value) -> None:
     fsutil.write_text(str(path), json.dumps(value, indent=2, allow_nan=False)
                       + '\n')
@@ -586,6 +596,7 @@ def run(args) -> dict:
     result = dict(
         version=1, status='PASS', task=args.task, backend=args.backend,
         requested_model_plan=requested_model_plan,
+        requested_io_config={'io_batch_mult': io_batch_multiplier()},
         regime=args.regime, repeat=args.repeat, phase_seconds=seconds,
         config_sha256=hashlib.sha256(json.dumps(config, sort_keys=True).encode()
                                      ).hexdigest(),
@@ -619,7 +630,8 @@ def run(args) -> dict:
                     'index_bytes': manifest['index_bytes'],
                     'environment': {key: os.environ.get(key) for key in (
                         'DG_EDGE_BACKEND', 'DG_DIRECT_CACHE_GB', 'DG_IO_RINGS',
-                        'DG_IO_QD', 'RAYON_NUM_THREADS', 'PYTHONHASHSEED')}},
+                        'DG_IO_QD', 'DG_IO_BATCH_MULT', 'RAYON_NUM_THREADS',
+                        'PYTHONHASHSEED')}},
     )
     verify_baseline(manifest)
     json_write(output, result)
@@ -673,6 +685,7 @@ def main(argv=None) -> int:
     cache = int(os.environ.get('DG_DIRECT_CACHE_GB', '0'))
     if cache < 0:
         raise ValueError('DG_DIRECT_CACHE_GB must be a nonnegative integer')
+    io_batch_multiplier()
     if args.prepare:
         prepare(args)
     else:
