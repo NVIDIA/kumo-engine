@@ -169,7 +169,7 @@ jobs:
           fetch-depth: 40
 
       - name: Set up Python
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           python-version: "3.14"
           activate-environment: true
@@ -211,7 +211,7 @@ jobs:
 
       - name: Log in to Azure with GitHub OIDC
         if: (env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true') && env.KUMO_RUN_ADLS_TESTS == '1'
-        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43  # v3.0.0
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906  # v3.1.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
@@ -269,6 +269,14 @@ jobs:
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
           GCS_TEST_BUCKET: 'kumo-test-bucket'
           KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: ${{ env.KUMO_RUN_GCP_TESTS == '1' && 'true' || 'false' }}
+          # Connector shard: Databricks OAuth; io_utils shards: PAT. Never both:
+          # DatabricksConnectionInfo.from_environment() then ignores OAuth.
+          DATABRICKS_HOST: ${{ (contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/io_utils/')) && vars.DATABRICKS_HOST || '' }}
+          DATABRICKS_CLUSTER_ID: ${{ (contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/io_utils/')) && vars.DATABRICKS_CLUSTER_ID || '' }}
+          DATABRICKS_WAREHOUSE_ID: ${{ (contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/io_utils/')) && vars.DATABRICKS_WAREHOUSE_ID || '' }}
+          DATABRICKS_CLIENT_ID: ${{ contains(matrix.test_dir, 'test/connector/') && vars.DATABRICKS_CLIENT_ID || '' }}
+          DATABRICKS_CLIENT_SECRET: ${{ contains(matrix.test_dir, 'test/connector/') && secrets.DATABRICKS_CLIENT_SECRET || '' }}
+          DATABRICKS_TOKEN: ${{ contains(matrix.test_dir, 'test/io_utils/') && secrets.DATABRICKS_TOKEN || '' }}
           AWS_DEFAULT_REGION: "us-west-2"
           DEPLOY_STAGE: "test"
           TEMPORAL_SERVER: "localhost"
@@ -301,6 +309,14 @@ jobs:
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
           GCS_TEST_BUCKET: 'kumo-test-bucket'
           KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: ${{ env.KUMO_RUN_GCP_TESTS == '1' && 'true' || 'false' }}
+          # Connector shard: Databricks OAuth; io_utils shards: PAT. Never both:
+          # DatabricksConnectionInfo.from_environment() then ignores OAuth.
+          DATABRICKS_HOST: ${{ (contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/io_utils/')) && vars.DATABRICKS_HOST || '' }}
+          DATABRICKS_CLUSTER_ID: ${{ (contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/io_utils/')) && vars.DATABRICKS_CLUSTER_ID || '' }}
+          DATABRICKS_WAREHOUSE_ID: ${{ (contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/io_utils/')) && vars.DATABRICKS_WAREHOUSE_ID || '' }}
+          DATABRICKS_CLIENT_ID: ${{ contains(matrix.test_dir, 'test/connector/') && vars.DATABRICKS_CLIENT_ID || '' }}
+          DATABRICKS_CLIENT_SECRET: ${{ contains(matrix.test_dir, 'test/connector/') && secrets.DATABRICKS_CLIENT_SECRET || '' }}
+          DATABRICKS_TOKEN: ${{ contains(matrix.test_dir, 'test/io_utils/') && secrets.DATABRICKS_TOKEN || '' }}
           AWS_DEFAULT_REGION: "us-west-2"
           DEPLOY_STAGE: "test"
           TEMPORAL_SERVER: "localhost"
@@ -368,7 +384,7 @@ jobs:
         with:
           packages: lld
       - uses: ./.github/actions/rust-toolchain
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: '3.11'
           activate-environment: true
@@ -403,7 +419,7 @@ jobs:
       - uses: ./.github/actions/rust-toolchain
         with:
           components: clippy
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: '3.11'
           activate-environment: true
@@ -434,12 +450,12 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: '3.11'
           activate-environment: true
           prune-cache: true
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: diskgraph-wheel
           path: dist
@@ -497,7 +513,7 @@ jobs:
 
   pyarrow-range:
     # DiskGraph accepts pyarrow>=16,<25 and every other job runs the locked
-    # version. Run the DiskGraph and kumo-core suites at both ends instead.
+    # version. Run the DiskGraph, kumo-core and kumo-adls suites at both ends.
     name: pyarrow-range (pyarrow${{ matrix.pyarrow }})
     needs: [diskgraph-wheel]
     if: ${{ !cancelled() }}
@@ -520,27 +536,29 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: '3.12'
           activate-environment: true
           prune-cache: true
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: diskgraph-wheel
           path: dist
       - name: Install the wheels with pyarrow${{ matrix.pyarrow }}
         run: |
-          for package in kumo-api kumo-pql kumo-core; do
+          for package in kumo-api kumo-pql kumo-core kumo-adls; do
             uv build --wheel --out-dir dist "packages/$package"
           done
           core=(dist/kumo_core-*.whl)
+          adls=(dist/kumo_adls-*.whl)
           constraints="$RUNNER_TEMP/constraints.txt"
           uv export --locked --no-emit-workspace --no-hashes --no-header \
             --no-annotate --extra cpu | grep -v '^pyarrow==' > "$constraints"
           uv pip install -c "$constraints" --torch-backend cpu dist/diskgraph-*.whl \
             dist/kumo_api-*.whl dist/kumo_pql-*.whl "${core[0]}[test]" \
-            "pyarrow${{ matrix.pyarrow }}" "setuptools>=77" setuptools_scm
+            "${adls[0]}[test]" "pyarrow${{ matrix.pyarrow }}" "setuptools>=77" \
+            setuptools_scm
           python -c 'import pyarrow; print(pyarrow.__version__)'
       - name: Run the wheel's ingest for the tests' `cargo run`
         run: |
@@ -570,8 +588,15 @@ jobs:
             "$GITHUB_WORKSPACE/packages/diskgraph/diskgraph-pybind/python/tests" -q
       - name: Test kumo-core
         run: cd packages/kumo-core && python -m pytest -rs
+      - name: Test kumo-adls
+        run: cd packages/kumo-adls && python -m pytest -rs
 
-  packages:
+  package-tests:
+    name: packages-${{ matrix.suite }}
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [core, engine-0, engine-1]
     # The suites under packages/ are the only thing enforcing the source-reader
     # package boundary (a reader package may not import the monolith, may not
     # import a foreign vendor SDK, and must stay cheap to import at top level).
@@ -604,6 +629,7 @@ jobs:
           env -u PYTHONPATH python -c "import kumo_core, kumo_core.encoders, kumo_core.evaluation, kumo_core.explain, kumo_core.features, kumo_core.modeling, kumo_core.sampling, kumo_core.training; print(kumo_core.__file__)"
 
       - name: Run the packages/ test suites
+        if: matrix.suite == 'core'
         # Each suite runs from its own package directory and with no PYTHONPATH
         # set: the import roots live in that package's
         # `[tool.pytest.ini_options] pythonpath`, and a PYTHONPATH override
@@ -627,7 +653,7 @@ jobs:
           exit $status
 
       - name: Upload Kumo-core CPU coverage
-        if: always()
+        if: ${{ always() && matrix.suite == 'core' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: kumo-core-cpu-coverage
@@ -637,9 +663,11 @@ jobs:
           if-no-files-found: ignore
 
       - name: Test installed Kumo-core distributions
+        if: matrix.suite == 'core'
         run: make test-kumo-core-artifact
 
       - name: Run focused Kumo-core consumers
+        if: matrix.suite == 'core'
         run: make test-kumo-core-consumers
 
       # kumo-engine ships the `kumo.engine` submodule of the same `kumo`
@@ -650,7 +678,12 @@ jobs:
         run: uv pip install --no-deps -e packages/kumo-adls
 
       - name: Build and test the isolated kumo-engine wheel
+        if: matrix.suite != 'core'
+        env:
+          SUITE: ${{ matrix.suite }}
+          ENGINE_SHARD_COUNT: '2'
         run: |
+          export ENGINE_SHARD="${SUITE#engine-}"
           python -c "import importlib.util; assert importlib.util.find_spec('kumo.engine') is None"
           uv build --wheel packages/kumo-engine \
             --out-dir "$RUNNER_TEMP/kumo-engine-dist"
@@ -672,7 +705,21 @@ jobs:
           export KUMO_ENGINE_SOURCE_ROOT="$PWD/packages/kumo-engine"
           cat > "$RUNNER_TEMP/assert_installed_kumoai.py" <<'PY'
           import os
+          import zlib
           from pathlib import Path
+
+
+          def pytest_collection_modifyitems(config, items):
+              shard = int(os.environ['ENGINE_SHARD'])
+              shard_count = int(os.environ['ENGINE_SHARD_COUNT'])
+              if not 0 <= shard < shard_count:
+                  raise ValueError('Require 0 <= ENGINE_SHARD < ENGINE_SHARD_COUNT')
+              selected, deselected = [], []
+              for item in items:
+                  group = zlib.crc32(item.path.name.encode()) % shard_count
+                  (selected if group == shard else deselected).append(item)
+              config.hook.pytest_deselected(items=deselected)
+              items[:] = selected
 
 
           def pytest_collection_finish(session):
@@ -711,6 +758,7 @@ jobs:
       # types, and no other job installs a plugin distribution at all.
       # Without them here those modules are collected by no job.
       - name: Run the kumo-sdk suite against kumo_core
+        if: matrix.suite == 'core'
         run: |
           uv pip install --no-deps -e packages/kumo-core -e packages/kumo-s3 -e packages/kumo-gcs -e packages/kumo-snowflake -e packages/kumo-databricks -e packages/kumo-bigquery -e packages/kumo-sdk
           uv pip install pytest-mock requests-mock
@@ -719,6 +767,17 @@ jobs:
           # this venv resolves 24, so its import guard warns. Only skew, not a bug.
           cd packages/kumo-sdk && python -m pytest -rs \
             -W "ignore:You have an incompatible version of 'pyarrow' installed:UserWarning"
+
+  packages:
+    needs: [package-tests]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every package test worker
+        env:
+          RESULT: ${{ needs.package-tests.result }}
+        run: test "$RESULT" = success
 
   mlflow-floor:
     # kumo-engine's `mlflow` extra allows the MLflow a Databricks Runtime
@@ -761,7 +820,7 @@ jobs:
     if: always() && needs.pytest.result != 'skipped' && needs.pytest.result != 'cancelled' && inputs.store_durations == true
     steps:
       - name: Download durations artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: durations-${{ github.run_id }}-*
           path: durations/
@@ -836,7 +895,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Setup Python
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           python-version: "3.14"
           activate-environment: true
@@ -846,7 +905,7 @@ jobs:
         run: uv pip install -q 'coverage[toml]'
 
       - name: Download coverage data
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: .coverage-${{ github.run_id }}-*
           path: coverages/
@@ -909,7 +968,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: ${{ matrix.python }}
           activate-environment: true

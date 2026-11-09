@@ -614,7 +614,7 @@ def _build_ttng_custom_train_table_artifacts(
         SplitSpec,
         build_train_table_artifacts_for_existing_table,
     )
-    from kumo_core.pquery import static_link_fact
+    from kumo_core.pquery import link_target_window_end, static_link_fact
     from kumo_core.training.splits import uses_pseudo_time
 
     from kumo.data.generic.diskgraph_train_table import (
@@ -694,6 +694,9 @@ def _build_ttng_custom_train_table_artifacts(
                 target_entity_table=target_entity_table,
                 task_type=task_type_value,
                 lp_rhs_is_temporal=lp_rhs_is_temporal,
+                target_window_end=(link_target_window_end(
+                    pquery.validated_predictive_query) if target_entity_table
+                                   is not None else None),
                 fact_pseudo_time=fact_pseudo_time,
                 ingest_on_error=ingest_on_error,
                 allow_negative_weight=(

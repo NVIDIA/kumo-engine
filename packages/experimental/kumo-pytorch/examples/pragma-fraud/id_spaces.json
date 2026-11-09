@@ -1,0 +1,13 @@
+{
+  "tokens": {
+    "roles": {
+      "entity": 4,
+      "event": 5,
+      "mask": 3,
+      "missing": 2,
+      "pad": 0,
+      "unknown": 1
+    },
+    "size": 151
+  }
+}

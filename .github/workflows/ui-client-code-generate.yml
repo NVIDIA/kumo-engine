@@ -62,7 +62,7 @@ jobs:
           fetch-depth: 1
 
       - name: Set up Python
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           python-version: "3.14"
           activate-environment: true
@@ -106,7 +106,7 @@ jobs:
 
       - name: Set up Node.js
         if: steps.backend-changes.outputs.any_changed == 'true'
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
 
@@ -266,7 +266,7 @@ jobs:
           token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
 
       - name: Set up Python
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           python-version: "3.14"
           activate-environment: true
@@ -307,7 +307,7 @@ jobs:
           jq -e '.paths | length > 0' ui/src/gen/spec/v1_openapi.json
 
       - name: Set up Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
 
@@ -393,7 +393,7 @@ jobs:
           fetch-depth: 40
 
       - name: Set up Python
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           python-version: "3.14"
           activate-environment: true
@@ -419,7 +419,7 @@ jobs:
           jq -e '.paths | length > 0' ui/src/gen/spec/v1_openapi.json
 
       - name: Set up Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
 

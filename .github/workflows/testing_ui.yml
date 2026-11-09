@@ -79,7 +79,7 @@ jobs:
 
       - name: Set up Node.js
         if: steps.ui-changes.outputs.any_changed == 'true' || github.event_name == 'schedule'
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
 
@@ -204,7 +204,7 @@ jobs:
     continue-on-error: true
     steps:
       - name: Download coverage
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ui-coverage
           path: ui/ui-coverage

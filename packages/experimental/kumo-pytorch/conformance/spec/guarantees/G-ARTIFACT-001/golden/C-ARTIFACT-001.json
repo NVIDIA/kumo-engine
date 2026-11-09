@@ -1,0 +1,271 @@
+{
+  "id": "C-ARTIFACT-001",
+  "contract": {
+    "$type": "DataLoaderSpec",
+    "schema": {
+      "$type": "DataSchema",
+      "tables": [
+        {
+          "$type": "TableSpec",
+          "name": "events",
+          "primary_key": "event_id",
+          "columns": {
+            "event_id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "user_id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "at": {
+              "$type": "DType",
+              "name": "timestamp",
+              "unit": "s",
+              "timezone": "UTC",
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": "at"
+        },
+        {
+          "$type": "TableSpec",
+          "name": "users",
+          "primary_key": "user_id",
+          "columns": {
+            "user_id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "country": {
+              "$type": "DType",
+              "name": "string",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": {
+            "$type": "NonTemporal"
+          }
+        }
+      ],
+      "relations": [
+        {
+          "$type": "RelationSpec",
+          "name": "user_events",
+          "left_table": "users",
+          "left_key": "user_id",
+          "right_table": "events",
+          "right_key": "user_id"
+        }
+      ]
+    },
+    "sample": {
+      "$type": "SampleSpec",
+      "entity": {
+        "$type": "EntitySpec",
+        "table": "users",
+        "entity_type": "user",
+        "filters": [],
+        "available_from": null
+      },
+      "entity_values": {
+        "country": {
+          "$type": "Field",
+          "column": "country",
+          "path": [],
+          "selection": "one",
+          "time_column": null,
+          "reference_time": "sample"
+        },
+        "event_count": {
+          "$type": "Aggregate",
+          "source": {
+            "$type": "Rows",
+            "path": [
+              "user_events"
+            ],
+            "time": {
+              "$type": "TimeWindow",
+              "column": "at",
+              "start": null,
+              "stop": 0
+            },
+            "filters": [],
+            "active": null,
+            "distinct": true
+          },
+          "operation": "count",
+          "column": null,
+          "dtype": {
+            "$type": "DType",
+            "name": "int64",
+            "unit": null,
+            "timezone": null,
+            "precision": null,
+            "scale": null
+          }
+        }
+      },
+      "dated_entity_values": {},
+      "events": {},
+      "current_events": {},
+      "neighborhoods": {},
+      "targets": {},
+      "candidate_sets": {}
+    },
+    "batch": {
+      "$type": "BatchSpec",
+      "inputs": {
+        "entity": {
+          "$type": "Input",
+          "source": {
+            "$type": "EntitySource"
+          },
+          "representation": {
+            "$type": "Fields",
+            "fields": [
+              {
+                "$type": "Encode",
+                "field": "country",
+                "encoding": {
+                  "$type": "Vocabulary",
+                  "values": null,
+                  "max_size": null,
+                  "min_frequency": 1,
+                  "missing_id": 0,
+                  "unknown_id": 1
+                },
+                "id_space": null
+              },
+              {
+                "$type": "Encode",
+                "field": "event_count",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              }
+            ],
+            "row": {
+              "$type": "Columns"
+            },
+            "history": {
+              "$type": "Grouped"
+            },
+            "field_names": null,
+            "field_space": null,
+            "forbidden_fields": []
+          },
+          "layout": {
+            "$type": "Separate"
+          }
+        }
+      },
+      "targets": {},
+      "encodings": {},
+      "id_spaces": {},
+      "field_names": {},
+      "batching": {
+        "$type": "Batching",
+        "max_samples": null,
+        "max_tokens": null,
+        "length_input": null,
+        "bucket_by_length": false,
+        "drop_last": false
+      }
+    },
+    "version": 3
+  },
+  "tables": {
+    "users": [
+      {
+        "user_id": 1,
+        "country": "US"
+      },
+      {
+        "user_id": 2,
+        "country": "FR"
+      },
+      {
+        "user_id": 3,
+        "country": "US"
+      }
+    ],
+    "events": [
+      {
+        "event_id": 1,
+        "user_id": 1,
+        "at": 2
+      },
+      {
+        "event_id": 2,
+        "user_id": 1,
+        "at": 5
+      },
+      {
+        "event_id": 3,
+        "user_id": 3,
+        "at": 4
+      },
+      {
+        "event_id": 4,
+        "user_id": 2,
+        "at": 20
+      }
+    ]
+  },
+  "anchors": [
+    {
+      "sample_id": "user-1-at-10",
+      "entity_id": 1,
+      "as_of_time": 10
+    },
+    {
+      "sample_id": "user-2-at-10",
+      "entity_id": 2,
+      "as_of_time": 10
+    },
+    {
+      "sample_id": "user-3-at-10",
+      "entity_id": 3,
+      "as_of_time": 10
+    }
+  ],
+  "expected": {
+    "user-1-at-10": {
+      "entity_values": {
+        "country": "US",
+        "event_count": 2
+      }
+    },
+    "user-2-at-10": {
+      "entity_values": {
+        "country": "FR",
+        "event_count": 0
+      }
+    },
+    "user-3-at-10": {
+      "entity_values": {
+        "country": "US",
+        "event_count": 1
+      }
+    }
+  },
+  "reason": "Every request is at 10. User 1 is US with events at 2 and 5, both before 10: 2. User 2 is FR with one event at 20, after 10: 0. User 3 is US with one event at 4: 1. A reloaded artifact must give the same values, and its vocabulary must decode the country IDs back to US, FR and US."
+}

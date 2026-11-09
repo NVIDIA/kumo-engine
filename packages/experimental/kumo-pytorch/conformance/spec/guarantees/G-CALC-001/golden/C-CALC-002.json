@@ -1,0 +1,449 @@
+{
+  "id": "C-CALC-002",
+  "contract": {
+    "$type": "DataLoaderSpec",
+    "schema": {
+      "$type": "DataSchema",
+      "tables": [
+        {
+          "$type": "TableSpec",
+          "name": "events",
+          "primary_key": "id",
+          "columns": {
+            "id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "user_id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "amount": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "measurement": {
+              "$type": "DType",
+              "name": "float64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": {
+            "$type": "NonTemporal"
+          }
+        },
+        {
+          "$type": "TableSpec",
+          "name": "users",
+          "primary_key": "id",
+          "columns": {
+            "id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": {
+            "$type": "NonTemporal"
+          }
+        }
+      ],
+      "relations": [
+        {
+          "$type": "RelationSpec",
+          "name": "user_events",
+          "left_table": "users",
+          "left_key": "id",
+          "right_table": "events",
+          "right_key": "user_id"
+        }
+      ]
+    },
+    "sample": {
+      "$type": "SampleSpec",
+      "entity": {
+        "$type": "EntitySpec",
+        "table": "users",
+        "entity_type": "users",
+        "filters": [],
+        "available_from": null
+      },
+      "entity_values": {
+        "total": {
+          "$type": "Aggregate",
+          "source": {
+            "$type": "Rows",
+            "path": [
+              "user_events"
+            ],
+            "time": null,
+            "filters": [],
+            "active": null,
+            "distinct": true
+          },
+          "operation": "sum",
+          "column": "amount",
+          "dtype": {
+            "$type": "DType",
+            "name": "int64",
+            "unit": null,
+            "timezone": null,
+            "precision": null,
+            "scale": null
+          }
+        },
+        "floating_total": {
+          "$type": "Aggregate",
+          "source": {
+            "$type": "Rows",
+            "path": [
+              "user_events"
+            ],
+            "time": null,
+            "filters": [],
+            "active": null,
+            "distinct": true
+          },
+          "operation": "sum",
+          "column": "measurement",
+          "dtype": {
+            "$type": "DType",
+            "name": "float64",
+            "unit": null,
+            "timezone": null,
+            "precision": null,
+            "scale": null
+          }
+        },
+        "grouped_count": {
+          "$type": "Aggregate",
+          "source": {
+            "$type": "GroupBy",
+            "source": {
+              "$type": "Rows",
+              "path": [
+                "user_events"
+              ],
+              "time": null,
+              "filters": [],
+              "active": null,
+              "distinct": true
+            },
+            "keys": [
+              "user_id"
+            ],
+            "values": {
+              "n": {
+                "$type": "Reduce",
+                "operation": "count",
+                "column": null,
+                "dtype": {
+                  "$type": "DType",
+                  "name": "int64",
+                  "unit": null,
+                  "timezone": null,
+                  "precision": null,
+                  "scale": null
+                }
+              }
+            }
+          },
+          "operation": "sum",
+          "column": "n",
+          "dtype": {
+            "$type": "DType",
+            "name": "int64",
+            "unit": null,
+            "timezone": null,
+            "precision": null,
+            "scale": null
+          }
+        }
+      },
+      "dated_entity_values": {},
+      "events": {},
+      "current_events": {},
+      "neighborhoods": {},
+      "targets": {},
+      "candidate_sets": {}
+    },
+    "batch": {
+      "$type": "BatchSpec",
+      "inputs": {
+        "entity": {
+          "$type": "Input",
+          "source": {
+            "$type": "EntitySource"
+          },
+          "representation": {
+            "$type": "Fields",
+            "fields": [
+              {
+                "$type": "Encode",
+                "field": "total",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              },
+              {
+                "$type": "Encode",
+                "field": "floating_total",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              },
+              {
+                "$type": "Encode",
+                "field": "grouped_count",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              }
+            ],
+            "row": {
+              "$type": "Columns"
+            },
+            "history": {
+              "$type": "Grouped"
+            },
+            "field_names": null,
+            "field_space": null,
+            "forbidden_fields": []
+          },
+          "layout": {
+            "$type": "Separate"
+          }
+        }
+      },
+      "targets": {},
+      "encodings": {},
+      "id_spaces": {},
+      "field_names": {},
+      "batching": {
+        "$type": "Batching",
+        "max_samples": null,
+        "max_tokens": null,
+        "length_input": null,
+        "bucket_by_length": false,
+        "drop_last": false
+      }
+    },
+    "version": 3
+  },
+  "tables": {
+    "users": [
+      {
+        "id": 1
+      },
+      {
+        "id": 2
+      },
+      {
+        "id": 3
+      },
+      {
+        "id": 4
+      }
+    ],
+    "events": [
+      {
+        "id": 1,
+        "user_id": 1,
+        "amount": 9007199254740992,
+        "measurement": 9007199254740992
+      },
+      {
+        "id": 2,
+        "user_id": 1,
+        "amount": 1,
+        "measurement": 1.0
+      },
+      {
+        "id": 3,
+        "user_id": 2,
+        "amount": 10,
+        "measurement": 10.0
+      },
+      {
+        "id": 4,
+        "user_id": 2,
+        "amount": 1,
+        "measurement": 1.0
+      },
+      {
+        "id": 5,
+        "user_id": 3,
+        "amount": 1,
+        "measurement": 1e+308
+      },
+      {
+        "id": 6,
+        "user_id": 3,
+        "amount": 1,
+        "measurement": 1e+308
+      }
+    ]
+  },
+  "anchors": [
+    {
+      "sample_id": "u1",
+      "entity_id": 1,
+      "as_of_time": 100
+    },
+    {
+      "sample_id": "u2",
+      "entity_id": 2,
+      "as_of_time": 100
+    },
+    {
+      "sample_id": "u3",
+      "entity_id": 3,
+      "as_of_time": 100
+    },
+    {
+      "sample_id": "u4",
+      "entity_id": 4,
+      "as_of_time": 100
+    }
+  ],
+  "expected": {
+    "u1": {
+      "entity_values": {
+        "total": 9007199254740993,
+        "floating_total": 9007199254740992.0,
+        "grouped_count": 2
+      }
+    },
+    "u2": {
+      "entity_values": {
+        "total": 11,
+        "floating_total": 11.0,
+        "grouped_count": 2
+      }
+    },
+    "u3": {
+      "entity_values": {
+        "total": 2,
+        "floating_total": {
+          "$float": "inf"
+        },
+        "grouped_count": 2
+      }
+    },
+    "u4": {
+      "entity_values": {
+        "total": 0,
+        "floating_total": 0.0,
+        "grouped_count": 0
+      }
+    }
+  },
+  "reason": "Integer sums preserve exact values: 2^53 + 1 is 9007199254740993, 10 + 1 is 11, and 1 + 1 is 2. The empty history sums to integer 0. Float64 cannot distinguish 2^53 + 1 from 2^53, so the corresponding floating sum is 9007199254740992.0. Two float64 values of 1e308 overflow to positive infinity, represented with an explicit JSON tag; the empty floating sum is 0.0. Summing grouped int64 counts yields the exact total row count, including zero for an empty history.",
+  "batch": {
+    "inputs": {
+      "entity": {
+        "total": {
+          "values": {
+            "dtype": "int64",
+            "shape": [
+              4
+            ],
+            "values": [
+              9007199254740993,
+              11,
+              2,
+              0
+            ]
+          },
+          "valid": {
+            "dtype": "bool",
+            "shape": [
+              4
+            ],
+            "values": [
+              true,
+              true,
+              true,
+              true
+            ]
+          }
+        },
+        "floating_total": {
+          "values": {
+            "dtype": "float64",
+            "shape": [
+              4
+            ],
+            "values": [
+              9007199254740992.0,
+              11.0,
+              {
+                "$float": "inf"
+              },
+              0.0
+            ]
+          },
+          "valid": {
+            "dtype": "bool",
+            "shape": [
+              4
+            ],
+            "values": [
+              true,
+              true,
+              true,
+              true
+            ]
+          }
+        },
+        "grouped_count": {
+          "values": {
+            "dtype": "int64",
+            "shape": [
+              4
+            ],
+            "values": [
+              2,
+              2,
+              2,
+              0
+            ]
+          },
+          "valid": {
+            "dtype": "bool",
+            "shape": [
+              4
+            ],
+            "values": [
+              true,
+              true,
+              true,
+              true
+            ]
+          }
+        }
+      }
+    }
+  }
+}
