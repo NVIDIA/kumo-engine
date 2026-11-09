@@ -66,6 +66,7 @@ import threading
 import time
 import warnings
 from dataclasses import dataclass, field, replace
+from decimal import Decimal, InvalidOperation
 from functools import cached_property, partial
 from pathlib import Path
 from typing import (
@@ -91,6 +92,7 @@ from kumoapi.typing import (
 )
 
 from kumo.engine._events import Event, EventEmitter
+from kumo.engine._infer import _SAMPLE_ROWS
 from kumo.engine._manifest import (
     RECONSTRUCTED,
     BuildCost,
@@ -219,15 +221,33 @@ def invalid_value_counts(kumo_stats_dir: Any,
     return counts
 
 
-def _float32_limit(scale: int) -> float:
-    return float(2**(_FLOAT32_EXACT_BITS - math.ceil(scale * math.log2(10))))
+def _float32_limit(places: int) -> float:
+    return float(2**(_FLOAT32_EXACT_BITS - math.ceil(places * math.log2(10))))
+
+
+def _decimal_places(parquet: Any, column: str) -> int:
+    r"""The most decimal places among the column's first ``_SAMPLE_ROWS``
+    values, each read as the shortest decimal that names it, so a declared
+    scale no value uses does not count."""
+    places = 0
+    for batch in parquet.iter_batches(_SAMPLE_ROWS, columns=[column]):
+        for value in batch.column(0).to_pylist():
+            try:
+                number = Decimal(
+                    value if isinstance(value, Decimal) else str(value).strip())
+            except InvalidOperation:
+                continue
+            if number.is_finite():
+                places = max(places, -number.normalize().as_tuple().exponent)
+        break
+    return places
 
 
 def _narrowed_float_columns(
         alias: str, table: Table,
         paths: Sequence[str]) -> Dict[Tuple[str, str], Tuple[str, int]]:
     r"""Each float32 column staged from a wider type, with that type and the
-    decimal scale its values are written at."""
+    decimal places its sampled values are written with."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -238,16 +258,18 @@ def _narrowed_float_columns(
     ]
     narrowed: Dict[Tuple[str, str], Tuple[str, int]] = {}
     for path in paths if columns else ():
-        schema = pq.read_schema(path)
+        parquet = pq.ParquetFile(path)
+        schema = parquet.schema_arrow
         for column in columns:
             if column not in schema.names:
                 continue
             physical = schema.field(column).type
             if pa.types.is_float32(physical) or pa.types.is_float16(physical):
                 continue
-            scale = physical.scale if pa.types.is_decimal(physical) else 0
-            if scale >= narrowed.get((alias, column), ('', -1))[1]:
-                narrowed[alias, column] = (str(physical), scale)
+            places = (0 if pa.types.is_integer(physical) else _decimal_places(
+                parquet, column))
+            if places >= narrowed.get((alias, column), ('', -1))[1]:
+                narrowed[alias, column] = (str(physical), places)
     return narrowed
 
 
@@ -305,14 +327,15 @@ def _warn_float32_narrowing(table: str, column: Mapping[str, Any],
     magnitude = _magnitude(stat)
     if magnitude is None:
         return
-    physical, scale = source
-    limit = _float32_limit(scale)
+    physical, places = source
+    limit = _float32_limit(places)
     if magnitude < limit:
         return
-    step = ('every whole number' if scale == 0 else f"steps of {10**-scale:g}")
+    step = ('every whole number'
+            if places == 0 else f"steps of {10**-places:g}")
     warnings.warn(
         f"{table}.{column['name']} is stored as float32 but comes from "
-        f"{physical} and reaches {magnitude:,.{scale}f}; from {limit:,.0f} on "
+        f"{physical} and reaches {magnitude:,.{places}f}; from {limit:,.0f} on "
         f"float32 no longer resolves {step}, so values are rounded. Declare "
         "dtype=Dtype.float64 for the column to keep full precision.",
         UserWarning, stacklevel=3)

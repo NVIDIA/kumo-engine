@@ -688,26 +688,53 @@ def test_decimal_columns_beyond_float32_precision_are_reported(tmp_path):
                 pa.decimal128(10, 2)),
             'whole':
             pa.array([16777217.0, 1.0, 2.0, 3.0]),
+            'dollars':
+            pa.array([131072.01, 0.25, 1.5, 2.0]),
+            'wide':
+            pa.array([
+                Decimal('1.5'),
+                Decimal('0.25'),
+                Decimal('2'),
+                Decimal('3.75')
+            ], pa.decimal128(38, 18)),
+            'wide_cents':
+            pa.array(
+                [Decimal('131072.01'), Decimal('0.25')] * 2,
+                pa.decimal128(38, 18)),
         }), root / 't.parquet')
     source = Table.from_source_table(
         FileConnector(root_dir=str(root))['t.parquet'],
-        primary_key='id').with_column('whole', dtype=Dtype.float32)
+        primary_key='id').with_column('whole', dtype=Dtype.float32).with_column(
+            'dollars', dtype=Dtype.float32)
     columns = {column.name: column.dtype for column in source.definition.cols}
     assert columns['cents'] == columns['small'] == Dtype.float32
+    assert columns['wide'] == columns['wide_cents'] == Dtype.float32
     with pytest.warns(UserWarning) as caught:
         Graph({'t': source}).snapshot()
-    assert sorted(str(warning.message) for warning in caught) == [
-        't.cents is stored as float32 but comes from decimal128(10, 2) and '
+    assert sorted(
+        str(warning.message) for warning in caught
+        if issubclass(warning.category, UserWarning)) == [
+            't.cents is stored as float32 but comes from decimal128(10, 2) and '
         'reaches 131,072.02; from 131,072 on float32 no longer resolves steps '
         'of 0.01, so values are rounded. Declare dtype=Dtype.float64 for the '
+        'column to keep full precision.',
+        't.dollars is stored as float32 but comes from double and reaches '
+        '131,072.02; from 131,072 on float32 no longer resolves steps of '
+        '0.01, so values are rounded. Declare dtype=Dtype.float64 for the '
         'column to keep full precision.',
         't.whole is stored as float32 but comes from double and reaches '
         '16,777,216; from 16,777,216 on float32 no longer resolves every '
         'whole number, so values are rounded. Declare dtype=Dtype.float64 '
         'for the column to keep full precision.',
+        't.wide_cents is stored as float32 but comes from decimal128(38, 18) '
+        'and reaches 131,072.02; from 131,072 on float32 no longer resolves '
+        'steps of 0.01, so values are rounded. Declare dtype=Dtype.float64 '
+        'for the column to keep full precision.',
     ]
     source = source.with_column('cents', dtype=Dtype.float64).with_column(
-        'whole', dtype=Dtype.float64)
+        'whole', dtype=Dtype.float64).with_column(
+            'dollars', dtype=Dtype.float64).with_column('wide_cents',
+                                                        dtype=Dtype.float64)
     with warnings.catch_warnings():
         warnings.simplefilter('error')
         snapshot = Graph({'t': source}).snapshot()
@@ -717,12 +744,14 @@ def test_decimal_columns_beyond_float32_precision_are_reported(tmp_path):
             'node_type':
             't',
             'node_ids': [0, 1],
-            'feature_names': ['id', 'cents', 'whole'],
+            'feature_names': ['id', 'cents', 'whole', 'dollars', 'wide_cents'],
         }]) if event['type'] == 'feature'
     ]
     fetched = pa.Table.from_batches(batches).sort_by('id')
     assert fetched.column('cents').to_pylist() == [131072.01, 0.25]
     assert fetched.column('whole').to_pylist() == [16777217.0, 1.0]
+    assert fetched.column('dollars').to_pylist() == [131072.01, 0.25]
+    assert fetched.column('wide_cents').to_pylist() == [131072.01, 0.25]
 
 
 @pytest.mark.parametrize('extension, values, expected', [
