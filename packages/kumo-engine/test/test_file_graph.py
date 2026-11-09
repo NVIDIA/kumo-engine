@@ -901,6 +901,44 @@ def test_only_values_float32_rounds_to_zero_count_as_underflow():
     assert _sampled_precision(values)[1:] == (3, 0)
 
 
+def test_bytes_are_measured_as_the_text_diskgraph_decodes(tmp_path):
+    from kumo.engine import FileConnector, configure
+    from kumo.engine.graph import _sampled_precision
+
+    values = pa.array([b'131072.01', b'1e-50', b'\xff', None], pa.binary())
+    assert _sampled_precision(values) == (50, 1, 0)
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            'id':
+            range(4),
+            'amount':
+            pa.array([b'131072.01', b'0.25', b'2.5', b'3.5'], pa.binary()),
+            'tiny':
+            pa.array([b'1e-50', b'0', b'0', b'0'], pa.binary()),
+        }), root / 't.parquet')
+    source = Table.from_source_table(
+        FileConnector(root_dir=str(root))['t.parquet'], primary_key='id')
+    for name in ('amount', 'tiny'):
+        source = source.with_column(name, dtype=Dtype.float32,
+                                    stype=Stype.numerical)
+    with pytest.warns(UserWarning) as caught:
+        Graph({'t': source}).snapshot()
+    assert sorted(
+        str(warning.message) for warning in caught
+        if issubclass(warning.category, UserWarning)) == [
+            't.amount is stored as float32 but comes from binary and reaches '
+            '131,072.02; from 131,072 on float32 no longer resolves steps of '
+            '0.01, so values are rounded. Declare dtype=Dtype.float64 for the '
+            'column to keep full precision.',
+            't.tiny is stored as float32 but comes from binary and holds 1 '
+            'sampled value(s) too small for float32, which stores them as 0. '
+            'Declare dtype=Dtype.float64 for the column to keep them.',
+        ]
+
+
 def test_values_too_large_for_float32_are_reported(tmp_path):
     from kumo.engine import FileConnector, configure
     from kumo.engine.graph import _sampled_precision
