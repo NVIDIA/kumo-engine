@@ -1021,29 +1021,28 @@ def _owned(file: Path, dest_dir: str) -> bool:
 def _copy_table(paths: Sequence[str],
                 dest_dir: str) -> Tuple[List[str], Dict[str, str]]:
     r"""Plain copies of every part under `paths` in a directory of the
-    snapshot's own, in the layout they had: a described directory keeps
-    its tree, listed files their names. Returns the paths DiskGraph should
-    read instead and each original's copy, so a rewrite touches no file
-    outside the snapshot.
+    snapshot's own, in the layout they had: each copy keeps its path
+    relative to the described parts' common parent, so one described
+    directory keeps its tree, listed files their names and sibling
+    directories theirs. Returns the paths DiskGraph should read instead
+    and each original's copy, so a rewrite touches no file outside the
+    snapshot.
     """
     target = Path(dest_dir) / 'time-columns'
+    inputs = [Path(path) for path in paths]
+    root = (inputs[0] if len(inputs) == 1 and inputs[0].is_dir() else Path(
+        os.path.commonpath([str(path.parent) for path in inputs])))
     located: List[str] = []
     moved: Dict[str, str] = {}
-    for path in paths:
-        source = Path(path)
-        if source.is_dir():
-            for file in sorted(p for p in source.rglob('*') if p.is_file()):
-                copy = target / file.relative_to(source)
-                copy.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(file, copy)
-                moved[str(file)] = str(copy)
-            located.append(str(target))
-        else:
-            target.mkdir(parents=True, exist_ok=True)
-            copy = target / source.name
-            shutil.copyfile(source, copy)
-            moved[str(source)] = str(copy)
-            located.append(str(copy))
+    for source in inputs:
+        files = (sorted(p for p in source.rglob('*')
+                        if p.is_file()) if source.is_dir() else [source])
+        for file in files:
+            copy = target / file.relative_to(root)
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(file, copy)
+            moved[str(file)] = str(copy)
+        located.append(str(target / source.relative_to(root)))
     return located, moved
 
 

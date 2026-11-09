@@ -545,6 +545,30 @@ def test_a_described_directory_outside_the_snapshot_is_copied_as_a_tree(
     assert (copy / 'README.txt').read_text() == 'kept'
 
 
+def test_described_directories_keep_their_names_when_copied(tmp_path):
+    source, dest = tmp_path / 'source', tmp_path / 'dest'
+    (source / 'day=1').mkdir(parents=True)
+    (source / 'day=2').mkdir()
+    dest.mkdir()
+    dirty = _part(source / 'day=1', pa.array(['2024-02-30', '2024-01-15']))
+    clean = _part(source / 'day=2', pa.array(['2024-01-16']))
+    before = {part: part.read_bytes() for part in (dirty, clean)}
+    with pytest.warns(UserWarning, match='1 value in time column'):
+        formats, rewritten, located = resolve_time_columns(
+            'events', _definition(),
+            [str(source / 'day=1'), str(source / 'day=2')], str(dest))
+    assert {part: part.read_bytes() for part in before} == before
+    copy = dest / 'time-columns'
+    assert (formats, rewritten, located) == ({
+        'ts': '%Y-%m-%d'
+    }, ['ts'], [str(copy / 'day=1'), str(copy / 'day=2')])
+    assert pq.read_table(copy / 'day=1' /
+                         'part-0.parquet').column('ts').to_pylist() == [
+                             None, '2024-01-15'
+                         ]
+    assert (copy / 'day=2' / 'part-0.parquet').read_bytes() == before[clean]
+
+
 @pytest.mark.parametrize('values, fmt', [
     (pa.array(['2024-01-15', '2024-01-16']), {}),
     (pa.array([1705276800, 1705363200], pa.int64()), {
