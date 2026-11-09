@@ -1,0 +1,53 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+set -euo pipefail
+
+apt-get update
+apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev patch
+python3 -m pip install --no-cache-dir maturin==1.15.0
+
+# Rebuild the locked SDK with the ZIP extraction security fix. The published
+# 1.33.0 and 1.34.0 wheels both contain zip 8.6.0 (GHSA-4684-h2q9-2vcp).
+# Remove this backport once the locked upstream wheel contains zip >=9.0.1.
+SOURCE=/tmp/temporalio-1.33.0
+curl --fail --location --silent --show-error \
+    https://files.pythonhosted.org/packages/bd/64/b92769790411fa33ce2d037131f5bc856b90837ab1af3d093036f5144c15/temporalio-1.33.0.tar.gz \
+    --output "${SOURCE}.tar.gz"
+echo "a1e506bcad08c995df7ec083bfd953f3c85bd1e2f6accbbb7562ef39386b3afb  ${SOURCE}.tar.gz" \
+    | sha256sum --check --strict
+tar -xzf "${SOURCE}.tar.gz" -C /tmp
+sed -i 's/^version = "1.33.0"$/version = "1.33.0+kumo.zip901"/' "${SOURCE}/pyproject.toml"
+sed -i 's/^__version__ = "1.33.0"$/__version__ = "1.33.0+kumo.zip901"/' "${SOURCE}/temporalio/service.py"
+MANIFEST="${SOURCE}/temporalio/bridge/sdk-core/crates/sdk-core/Cargo.toml"
+sed -i 's/^zip = { version = "8.4"/zip = { version = "=9.0.1"/' "$MANIFEST"
+patch --batch --fuzz=0 -p1 -d "$SOURCE" < /tmp/temporalio-zip.patch
+cargo fetch --locked --manifest-path "${SOURCE}/temporalio/bridge/Cargo.toml"
+for crate in zip-9.0.1 nix-0.31.3; do
+    mkdir -p "${SOURCE}/temporalio/bridge/third-party/${crate}"
+    cp /root/.cargo/registry/src/*/"${crate}"/LICENSE* \
+        "${SOURCE}/temporalio/bridge/third-party/${crate}/"
+done
+mkdir -p /tmp/temporalio-wheel
+cd "$SOURCE"
+python3 -m maturin build --locked --release --compatibility linux \
+    --interpreter python3 --out /tmp/temporalio-wheel
+python3 - <<'PY'
+import tomllib
+import zipfile
+from pathlib import Path
+
+wheel, = Path('/tmp/temporalio-wheel').glob('temporalio-*.whl')
+with zipfile.ZipFile(wheel) as archive:
+    lock = tomllib.loads(archive.read('temporalio/bridge/Cargo.lock').decode())
+    assert any(name.endswith('.so') for name in archive.namelist())
+    for crate in ('zip-9.0.1', 'nix-0.31.3'):
+        assert any(f'third-party/{crate}/LICENSE' in name for name in archive.namelist())
+    assert any(name.endswith('.dist-info/licenses/LICENSE') for name in archive.namelist())
+assert '1.33.0+kumo.zip901' in wheel.name, wheel.name
+versions = [p['version'] for p in lock['package'] if p['name'] == 'zip']
+assert versions == ['9.0.1'], versions
+print(f'Temporal wheel rebuilt with zip 9.0.1: {wheel.name}')
+PY

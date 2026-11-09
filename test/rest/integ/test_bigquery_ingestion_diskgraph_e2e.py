@@ -52,10 +52,9 @@ Prerequisites:
   - ``DEPLOY_ENV_CONFIG_FILE`` pointing at a diskgraph deploy
     config (CI sets it for the ``bigquery_*_diskgraph`` matrix
     entries; this module also defaults it at import time)
-  - BigQuery credentials available via the
-    ``withBigQueryCredentials`` decorator (from AWS Secrets
-    Manager in CI, ``GOOGLE_CREDENTIALS_STR_JSON`` fallback
-    otherwise)
+  - ``GOOGLE_APPLICATION_CREDENTIALS`` pointing to an explicit local ADC file;
+    ``external_account`` credentials are required when workload exchange is
+    enabled.
   - ``GCP_STORAGE_TRANSFER_BUCKET`` env var set to a writable
     GCS bucket (CI sets it to ``kumo-test-bucket``)
 

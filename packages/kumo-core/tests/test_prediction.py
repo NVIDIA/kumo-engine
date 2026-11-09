@@ -6,6 +6,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import kumo_core.prediction as prediction
+import numpy as np
 import pytest
 import torch
 from kumo_core.pquery import (
@@ -197,7 +198,8 @@ class Runtime:
         self.tmp_path = tmp_path
         self.compile_options = None
 
-    def DiskGraphPlanCompiler(self):
+    def DiskGraphPlanCompiler(self, *, index_path):
+        assert index_path == str(self.tmp_path / "index")
         runtime = self
 
         class Compiler:
@@ -481,7 +483,8 @@ def test_forecast_materialization_keeps_checkpoint_table_identity(
         "feature_columns"] == [FUTURE_LABELS_COL, AUTOREGRESSION_COL]
 
 
-def _score_shard_on_device(monkeypatch, tmp_path, devices, worker_id):
+def _score_shard_on_device(monkeypatch, tmp_path, devices, worker_id,
+                          accelerator='auto'):
     r"""Run one real prediction-worker load into ``create_pl_trainer``."""
     from kumo_core.encoders.tensor_frame_encoder import (
         HeteroTensorFrameEncoder,
@@ -541,20 +544,40 @@ def _score_shard_on_device(monkeypatch, tmp_path, devices, worker_id):
             pred_time_col_name=None, output_dir=str(tmp_path / "output"),
             attempt_id="attempt", graph_snapshot_id="snapshot",
             source_config_sha256="0" * 64, runtime_config_sha256="1" * 64,
-            binary_threshold=None, forecast_options=None),
+            binary_threshold=None, forecast_options=None,
+            accelerator=accelerator),
     )
     return trainers
 
 
 def test_prediction_worker_pins_lightning_to_its_device(monkeypatch, tmp_path):
     import pytorch_lightning as pl
-    monkeypatch.delenv("KUMO_ACCELERATOR", raising=False)
+    monkeypatch.setenv("KUMO_ACCELERATOR", "cpu")
     monkeypatch.setattr(pl, "Trainer", lambda **kwargs: kwargs)
 
     trainers = _score_shard_on_device(monkeypatch, tmp_path, (None, 3), 1)
 
     assert [(t["accelerator"], t["devices"])
             for t in trainers] == [("auto", [3])] * 2
+
+
+@pytest.mark.parametrize('accelerator', ['cpu', 'gpu', 'mps', 'auto'])
+def test_prediction_worker_accelerator_overrides_environment(
+        monkeypatch, tmp_path, accelerator):
+    import pytorch_lightning as pl
+    monkeypatch.setenv('KUMO_ACCELERATOR', 'cpu')
+    monkeypatch.setattr(pl, 'Trainer', lambda **kwargs: kwargs)
+    trainers = _score_shard_on_device(monkeypatch, tmp_path, (None,), 0,
+                                    accelerator=accelerator)
+    assert [trainer['accelerator'] for trainer in trainers] == [accelerator] * 2
+
+
+def test_explicit_cpu_runs_lightning_on_cpu(monkeypatch, tmp_path):
+    monkeypatch.setenv('KUMO_ACCELERATOR', 'mps')
+    trainers = _score_shard_on_device(monkeypatch, tmp_path, (None,), 0,
+                                    accelerator='cpu')
+    assert all(trainer.strategy.root_device.type == 'cpu'
+               for trainer in trainers)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
@@ -592,7 +615,7 @@ def test_score_prediction_metadata_options(monkeypatch, tmp_path, task_type,
                         lambda _: 'runtime-hash')
     monkeypatch.setattr(artifact_manifest, 'publish_prediction_selection',
                         lambda references, **kwargs: references[0])
-    monkeypatch.setattr(prediction, '_prediction_worker_devices', lambda _:
+    monkeypatch.setattr(prediction, '_prediction_worker_devices', lambda _, accelerator=None:
                         (None, ))
     monkeypatch.setattr(prediction, '_score_prediction_shard',
                         lambda *, worker_id, config, **_: config)
@@ -686,7 +709,7 @@ def test_in_process_scoring_parses_the_task_manifest_once(
                         lambda references, **kwargs: references[0])
     monkeypatch.setattr(prediction, '_publish_scored_shard',
                         lambda *_, **__: None)
-    monkeypatch.setattr(prediction, '_prediction_worker_devices', lambda _:
+    monkeypatch.setattr(prediction, '_prediction_worker_devices', lambda _, accelerator=None:
                         (None, ))
     encoders = object()
 
@@ -705,3 +728,69 @@ def test_in_process_scoring_parses_the_task_manifest_once(
     assert len(loaded) == 1
     assert predicts[0]['task_manifest'] is loaded[0]
     assert loads[0]['encoders'] is encoders
+
+
+@pytest.mark.parametrize('count', [False, True])
+def test_every_scorer_counts_its_scores_into_one_file(
+        monkeypatch, tmp_path, count):
+    import json
+
+    from kumo_core.prediction_counts import count_predictions
+    from kumo_core.resolved_task import ResolvedNumericalTask
+    from kumo_core.score_counts import Counts
+    from kumo_core.task_dataset import DiskgraphTaskManifest
+    from kumo_core.train import artifact_manifest
+    from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
+    from kumo_core.types import PredictionArtifactType
+
+    values = np.random.default_rng(0).normal(size=90)
+    edges = (-1.0, 0.0, 1.0)
+
+    def predict(**options):
+        assert (options['prediction_counts'] is not None) == count
+        if count:
+            count_predictions(
+                options['prediction_counts'], TaskType.REGRESSION, prob=None,
+                pred=None, target_pred=values[options['partition_id']::3],
+                columns=[])
+
+    monkeypatch.setattr(
+        DiskgraphTaskManifest, 'load', lambda _: SimpleNamespace(
+            task_type='regression', stage_counts={'predict': 90}))
+    monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest',
+                        lambda *_, **__: None)
+    monkeypatch.setattr(DiskgraphNestedTrainer, 'load',
+                        lambda *_, **__: SimpleNamespace(predict=predict))
+    monkeypatch.setattr('kumo_core.train.trainer.load_encoders',
+                        lambda *_: None)
+    monkeypatch.setattr(artifact_manifest, 'hash_prediction_config',
+                        lambda _: 'runtime-hash')
+    monkeypatch.setattr(artifact_manifest, 'publish_prediction_selection',
+                        lambda references, **kwargs: references)
+    monkeypatch.setattr(prediction, '_publish_scored_shard',
+                        lambda *_, **__: None)
+    monkeypatch.setattr(prediction, '_prediction_worker_devices',
+                        lambda n, accelerator=None: (None, ) * n)
+    monkeypatch.setattr(
+        prediction, '_run_prediction_workers',
+        lambda n, fn, kw: [fn(worker_id=i, **kw) for i in range(n)])
+
+    prediction.score_prediction(
+        materialized=SimpleNamespace(manifest_path='manifest',
+                                     bundle_dir='bundle'),
+        model_dir=str(tmp_path), run_id='prediction',
+        scratch_dir=str(tmp_path),
+        artifacts=frozenset({PredictionArtifactType.PREDICTIONS}),
+        num_workers=3, output_dir=str(tmp_path / 'out'),
+        graph_snapshot_id='snapshot', source_config_sha256='source',
+        count_edges={'target': edges} if count else None)
+
+    path = tmp_path / 'out' / prediction.COUNTS_FILE
+    assert path.exists() == count
+    if count:
+        counts = Counts.from_dict(json.loads(path.read_text()))
+        assert counts.arrays['TARGET_PRED'].tolist() == [
+            np.sum(values < -1), np.sum((-1 <= values) & (values < 0)),
+            np.sum((0 <= values) & (values < 1)), np.sum(values >= 1)]
+        assert counts.arrays['TARGET_PRED/sum'] == pytest.approx(values.sum())
+        assert counts.extents['TARGET_PRED'] == (values.min(), values.max())

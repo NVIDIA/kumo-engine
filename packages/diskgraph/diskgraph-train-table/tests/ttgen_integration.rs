@@ -683,6 +683,7 @@ fn build_graph1(root: &Path) -> PathBuf {
 
     // ── GraphConfig ──
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test_graph1".to_string(),
         tables: vec![
             TableSpec {
@@ -906,6 +907,7 @@ fn build_related_column_graph(root: &Path) -> PathBuf {
     write_parquet(&data_dir.join("targets.parquet"), &targets);
 
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "related_column_graph".to_string(),
         tables: vec![
             TableSpec {
@@ -2624,6 +2626,7 @@ fn build_graph1_with_create_time(root: &Path) -> PathBuf {
 
     // ── GraphConfig with create_time on users ──
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test_graph1_create_time".to_string(),
         tables: vec![
             TableSpec {
@@ -3438,6 +3441,7 @@ fn build_graph_calendar(root: &Path) -> PathBuf {
 
     // ── GraphConfig ──
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test_calendar".to_string(),
         tables: vec![
             TableSpec {
@@ -4804,6 +4808,7 @@ fn build_graph2(root: &Path) -> PathBuf {
 
     // ── GraphConfig ──
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test_graph2".to_string(),
         tables: vec![
             TableSpec {
@@ -5326,6 +5331,7 @@ fn build_graph3(root: &Path) -> PathBuf {
 
     // ── GraphConfig ──
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test_graph3".to_string(),
         tables: vec![
             TableSpec {
@@ -6540,7 +6546,7 @@ fn integ_forecasting_split_stats_use_future_labels() {
     assert!(num_train_rows > 0);
     assert_eq!(
         train["target_distribution"]["histogram"]["num_bins"].as_u64(),
-        Some(0)
+        Some(50)
     );
     assert!(
         train["target_distribution"]["target_max"]
@@ -6551,7 +6557,8 @@ fn integ_forecasting_split_stats_use_future_labels() {
     let counts = train["target_distribution"]["histogram"]["counts"]
         .as_array()
         .unwrap();
-    assert!(counts.is_empty());
+    assert_eq!(counts.len(), 50);
+    assert!(counts.iter().any(|count| count.as_u64().unwrap() > 0));
 }
 
 #[test]
@@ -6724,6 +6731,7 @@ fn build_graph_orphan_fk(root: &Path) -> PathBuf {
     };
 
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test_orphan_fk".to_string(),
         tables: vec![
             TableSpec {
@@ -7125,6 +7133,7 @@ fn build_graph_orphan_fk_all_valid(root: &Path) -> PathBuf {
     };
 
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test_orphan_fk_all_valid".to_string(),
         tables: vec![
             TableSpec {
@@ -7308,6 +7317,7 @@ fn build_graph_orphan_fk_all_orphans(root: &Path) -> PathBuf {
     };
 
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test_orphan_fk_all_orphans".to_string(),
         tables: vec![
             TableSpec {
@@ -7610,6 +7620,7 @@ fn build_graph_temporal_orphan(root: &Path) -> PathBuf {
     };
 
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test_temporal_orphan".to_string(),
         tables: vec![
             TableSpec {
@@ -9773,6 +9784,7 @@ fn build_multicat_graph(
     };
 
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test_multicat".to_string(),
         tables: vec![
             TableSpec {
@@ -10142,6 +10154,7 @@ fn build_scalar_status_graph(root: &Path) -> PathBuf {
         multicategorical_delimiter: None,
     };
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "scalar_contains".to_string(),
         tables: vec![
             TableSpec {
@@ -10345,6 +10358,7 @@ fn build_multicat_with_empty_list(root: &Path) -> PathBuf {
         multicategorical_delimiter: None,
     };
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "multicat_empty".to_string(),
         tables: vec![
             TableSpec {

@@ -5,9 +5,8 @@ r"""`configure(...)`: the one process-wide, opt-in setup call this package
 has.
 
 Everything else in `kumo.engine` is constructed and threaded through directly, no
-`Backend`/`kumoai_studio.init(...)` needed (see "Object model" in the package
-README). Scratch-directory placement is the one
-exception: `Graph.snapshot()`'s DiskGraph ingest and `Trainer.fit`/`predict`
+`Backend`/`kumoai_studio.init(...)` needed. Scratch-directory placement is the
+one exception: `Graph.snapshot()`'s DiskGraph ingest and `Trainer.fit`/`predict`
 all read and write a shared local filesystem root
 (`kumo.engine._scratch.get_scratch_dir()`, default `~/.cache/kumo-engine`)
 directly, for the same reason `kumo_core.config.NativeRuntimeConfig` keeps

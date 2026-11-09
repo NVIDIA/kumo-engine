@@ -28,17 +28,18 @@ class OptunaSearcher(Searcher[PlanT]):
         max_attempts: int = 50,
         **kwargs: Any,
     ) -> None:
-        warnings.filterwarnings(
-            "ignore",
-            message=".*plot_.*",
-            category=optuna.exceptions.ExperimentalWarning,
-        )
         super().__init__(space, max_attempts)
         direction = "maximize" if self.tune_mode == "max" else "minimize"
-        self.study = optuna.create_study(
-            direction=direction,
-            sampler=getattr(optuna.samplers, sampler_name)(**kwargs),
-        )
+        with warnings.catch_warnings():
+            # Multivariate TPE is a deliberate choice, but Optuna flags the
+            # argument as experimental on every sampler construction.
+            warnings.filterwarnings(
+                "ignore",
+                message="Argument ``multivariate`` is an experimental feature",
+                category=optuna.exceptions.ExperimentalWarning,
+            )
+            sampler = getattr(optuna.samplers, sampler_name)(**kwargs)
+        self.study = optuna.create_study(direction=direction, sampler=sampler)
         warnings.filterwarnings("ignore", ".*Choices for a categorical.*")
         self.fallback_sampler = RandomSearcher(space, max_attempts)
 
@@ -60,6 +61,7 @@ class OptunaSearcher(Searcher[PlanT]):
         for _ in range(self.fallback_sampler.max_attempts):
             self.current_trial = self.study.ask()
             cfg = self.fallback_sampler.sample_instance()
+            self.sampled_params = self.fallback_sampler.sampled_params
             if cfg not in [prev_cfg for prev_cfg, _ in self.state]:
                 return cfg
         return cfg
@@ -83,6 +85,12 @@ class OptunaSearcher(Searcher[PlanT]):
         return self.current_trial.suggest_categorical(key, value)
 
     def analyze(self, path: str) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore",
+                                  optuna.exceptions.ExperimentalWarning)
+            self._analyze(path)
+
+    def _analyze(self, path: str) -> None:
         import matplotlib
         import matplotlib.pyplot as plt
         from optuna.visualization.matplotlib import (
@@ -187,7 +195,10 @@ class TPESearcher(OptunaSearcher[PlanT]):
     ) -> None:
         kwargs.setdefault("n_startup_trials", 4)
         kwargs.setdefault("multivariate", True)
-        kwargs.setdefault("warn_independent_sampling", False)
+        major, minor = (int(part) for part in optuna.__version__.split(".")[:2])
+        if (major, minor) < (4, 9):
+            # Optuna 4.9 made False the default and deprecated the argument.
+            kwargs.setdefault("warn_independent_sampling", False)
         super().__init__(
             space,
             sampler_name="TPESampler",

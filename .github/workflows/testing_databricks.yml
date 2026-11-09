@@ -83,16 +83,17 @@ jobs:
           fetch-depth: 40
 
       - name: Set up Python
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       # uv.lock is deliberately excluded: a lock-only dependency bump must
       # still run the real install + test suite (see testing.yml).
       - name: Check for only non pytest required file changes
         id: non-pytest-changes
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             ui/**
@@ -138,6 +139,12 @@ jobs:
           KUMO_PYTEST_ENABLE_FSUTIL_DEBUG_LOGS: "0"
           SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          # Both tests here use OAuth; a PAT would take precedence over it.
+          DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+          DATABRICKS_CLUSTER_ID: ${{ vars.DATABRICKS_CLUSTER_ID }}
+          DATABRICKS_WAREHOUSE_ID: ${{ vars.DATABRICKS_WAREHOUSE_ID }}
+          DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
           GCS_TEST_BUCKET: 'kumo-test-bucket'
           AWS_DEFAULT_REGION: "us-west-2"
           DEPLOY_STAGE: "test"
@@ -164,6 +171,12 @@ jobs:
           KUMO_PYTEST_ENABLE_FSUTIL_DEBUG_LOGS: "0"
           SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          # Both tests here use OAuth; a PAT would take precedence over it.
+          DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+          DATABRICKS_CLUSTER_ID: ${{ vars.DATABRICKS_CLUSTER_ID }}
+          DATABRICKS_WAREHOUSE_ID: ${{ vars.DATABRICKS_WAREHOUSE_ID }}
+          DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
           GCS_TEST_BUCKET: 'kumo-test-bucket'
           AWS_DEFAULT_REGION: "us-west-2"
           DEPLOY_STAGE: "test"
@@ -177,7 +190,7 @@ jobs:
 
       - name: Upload coverage artifact
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ env.ARTIFACT_NAME_SAFE }}
           path: ${{ env.ARTIFACT_NAME_SAFE }}
@@ -185,7 +198,7 @@ jobs:
 
       - name: Upload durations artifact
         if: success() && env.STORE_DURATIONS == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: durations-${{ github.run_id }}-${{ strategy.job-index }}-of-${{ strategy.job-total }}
           path: .test_durations

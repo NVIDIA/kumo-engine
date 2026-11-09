@@ -27,7 +27,8 @@ from kumo_core.training.table import (
 )
 from kumo_core.training.validation import GenerationValidationError
 from kumo_core.types import TaskType
-from kumoapi.pquery import QueryType
+from kumoapi.pquery import QueryType, ValidatedPredictiveQuery
+from kumopql.parser import PQLParser
 
 
 class FakeSplitSpec:
@@ -49,7 +50,8 @@ class FakeRuntime:
 
     def __init__(self, staging_dir):
         self.calls = []
-        self.DiskGraphPlanCompiler = lambda: FakeCompiler(self.calls)
+        self.DiskGraphPlanCompiler = lambda *, index_path: FakeCompiler(
+            self.calls)
         self.staging_dir = staging_dir
 
     def execute_tt_gen(self, plan, index_path, tt_id):
@@ -160,6 +162,10 @@ def test_generated_degenerate_labels_are_rejected_before_publication(
                 },
             },
         }))
+    labels = generate_train_table(
+        request(tmp_path, task_type=task_type, target_stype=target_stype),
+        runtime=FakeRuntime(str(staging)), validate_targets=False)
+    assert labels.staging_dir == str(staging) and staging.is_dir()
     with pytest.raises(GenerationValidationError, match=message):
         generate_train_table(
             request(tmp_path, task_type=task_type, target_stype=target_stype),
@@ -398,8 +404,13 @@ def test_generate_custom_table_builds_standard_artifact_bundle(
             return {"staging_dir": str(staging),
                     "tt_parquet_path": str(staging / "tt.parquet")}
 
+    parsed = PQLParser().to_parsed_predictive_query(
+        "PREDICT LIST_DISTINCT(orders.product_id, 0, 7, days) "
+        "RANK TOP 3 FOR EACH users.user_id")
+    query = ValidatedPredictiveQuery(**vars(parsed))
     result = generate_custom_train_table(
-        request(tmp_path, target_stype=target_stype, task_type=task_type),
+        request(tmp_path, target_stype=target_stype, task_type=task_type,
+                query=query),
         PreparedCustomTrainingTable(
             str(parquet),
             weight_column="WEIGHT",
@@ -409,6 +420,8 @@ def test_generate_custom_table_builds_standard_artifact_bundle(
     )
 
     assert calls[0]["ingest_on_error"] == ingest_on_error
+    assert calls[0]["target_window_end"] == (
+        (7, "days") if task_type == "temporal_link_prediction" else None)
     assert calls[0]["allow_negative_weight"] == (
         task_type == "temporal_link_prediction")
     assert result.train_table_path == str(staging / "tt.parquet")

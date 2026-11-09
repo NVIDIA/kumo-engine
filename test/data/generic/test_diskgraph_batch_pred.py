@@ -91,6 +91,8 @@ def setup_dirs(tmpdir):
     out_path = os.path.join(tmpdir, "output")
     os.makedirs(idx_path, exist_ok=True)
     os.makedirs(out_path, exist_ok=True)
+    with open(os.path.join(idx_path, "index_metadata.json"), "w") as f:
+        f.write("{}")
     return str(idx_path), str(out_path)
 
 

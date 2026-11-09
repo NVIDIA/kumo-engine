@@ -1,0 +1,54 @@
+{
+  "run_date": "2026-10-10",
+  "runtime_build": "20261009+9a0321c",
+  "python": "3.12.3",
+  "torch": "2.9.1",
+  "instance_type": "g6e.48xlarge",
+  "vcpus": 192,
+  "nominal_ram_gib": 1536,
+  "gpu": "8 x NVIDIA L40S 48 GB available; prediction probe uses 4 scorers",
+  "customers": 1392680000,
+  "training": {
+    "epochs": 1,
+    "steps": 7000,
+    "batch_size": 64,
+    "fanout": [
+      24,
+      8,
+      6,
+      8,
+      6,
+      8
+    ],
+    "validation_steps": 700,
+    "test_steps": 700,
+    "seed": 1,
+    "loader_workers": 8,
+    "explanations": false
+  },
+  "stage_seconds": {
+    "snapshot": 3640.7,
+    "tt": 6281.9,
+    "fit": 8661.2
+  },
+  "fit_metrics": {
+    "val_map@10": 0.51337,
+    "val_recall@10": 0.7647,
+    "test_map@10": 0.51056,
+    "test_recall@10": 0.76071
+  },
+  "prediction": {
+    "scored_rows": 5000000,
+    "workers": 4,
+    "predict_s": 4701.7,
+    "snapshot_load_s": 356.1,
+    "subset_build_s": 131.1,
+    "total_s": 5201.8
+  },
+  "prediction_loader_workers_per_scorer": 4,
+  "prediction_anchor": "2024-12-25 23:59:59",
+  "notes": [
+    "The archived 5M prediction probe is a separate invocation from fit.",
+    "Current scripts use the same graph and requested training settings; a different runtime build is a new measurement."
+  ]
+}

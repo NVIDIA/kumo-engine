@@ -7,11 +7,12 @@ process. There is no hosted service, no project, no job registry, no API key, no
 
 ## 0. Ground truth
 
-Everything in this file is verified against **one** build:
+The baseline API was verified against the bundle below; graph visualization was checked against source including [NVIDIA/kumo-engine#134](https://github.com/NVIDIA/kumo-engine/pull/134).
 
 | | |
 |---|---|
-| Bundle | `kumo_fat_bundle` `20261007+2e1eb12` (after the `kumo-engine` rename, kumo-ai/kumo#31382) |
+| Baseline bundle | `kumo_fat_bundle` `20261007+2e1eb12` (after the `kumo-engine` rename, kumo-ai/kumo#31382) |
+| Graph visualization | Source build including #134 (merged at `fa46bed23fb01921955cb77bfec21e80ab7e0fc6`); unavailable in the baseline bundle and `kumo-engine` `1.0.0`, with no released build verified |
 | Import name | `kumo.engine` (the `kumo-engine` package; `kumoai` / `kumoai-local` before the rename) |
 | Python / torch | 3.12 / `2.9.1+cu129` |
 
@@ -114,6 +115,10 @@ Source: shipped package (`kumo.engine.config`)
 ---
 
 ## 3. Connection
+
+The connector is built in one step, as the host's `runtime.md` says; everything after it is the
+same for every connector. §3-§3.3 cover `SnowflakeConnector`; §3.4 covers every other connector.
+§3.2 (reading the catalog) applies to all of them.
 
 `SnowflakeConnector` is built by a **factory**, which constructs the connector and its identity
 together from the environment. No password, key, or API credential literal belongs in a cell.
@@ -243,6 +248,57 @@ session = get_active_session()   # first code cell, before any connector
 Source: shipped package (`kumo_snowflake.session`, which opens its session with
 `Session.builder.configs(...).create()`)
 
+### 3.4 Every other connector
+
+Constructors and identities, all keyword-only. Source: shipped package
+(`kumo.engine.connector.file`, `kumo.engine.connector.s3`, `kumo.engine.connector.gcs`,
+`kumo.engine.connector.bigquery`, `kumo.engine.connector.databricks`,
+`kumo.engine.connector.identity`):
+
+```
+FileConnector(*, root_dir)
+S3Connector(*, root_dir=None, identity=None, region=None)
+GCSConnector(*, root_dir=None, identity=None, requester_pays_project=None)
+BigQueryConnector(*, project_id, dataset_id, identity=None, location='US',
+                  billing_project_id=None, staging_uri=None, require_staged=False)
+DatabricksConnector(*, catalog, schema_name, identity, warehouse_id=None, cluster_id=None,
+                    staging_volume_path=None, require_staged=False)
+DatabricksConnector.from_notebook(*, catalog, schema_name, warehouse_id=None, cluster_id=None,
+                                  staging_volume_path=None, require_staged=False)
+
+S3Identity(*, access_key_id=None, secret_access_key=None, session_token=None, role_arn=None,
+           partition='aws', connection=None)
+GCSIdentity(*, service_account_key=None, workload_service_account_email=None)
+BigQueryIdentity(*, service_account_key=None, workload_service_account_email=None)
+DatabricksIdentity(*, host=None, client_id=None, client_secret=None)
+```
+
+**Prefer ambient credentials.** Each connector resolves its provider's own credential chain when
+no secret is passed, so the connect step names no secret at all:
+
+| Connector | Ambient form | Credentials it resolves | Table names | `sql()` |
+|---|---|---|---|---|
+| `FileConnector` | `FileConnector(root_dir=...)` | none needed | relative paths below `root_dir`, optionally with `.csv` / `.parquet`, or a directory of parts in one format | no |
+| `S3Connector` | `identity=None` | AWS chain: instance profile, `aws configure`, environment | relative paths below `root_dir`; with `root_dir=None`, full `s3://` URIs and no `table_names()` | no |
+| `GCSConnector` | `identity=None` | Application Default Credentials | as S3, with `gs://` | no |
+| `BigQueryConnector` | `identity=None` | Application Default Credentials | tables of `dataset_id` | yes |
+| `DatabricksConnector` | `from_notebook(...)`, or `identity=DatabricksIdentity()` | the Databricks SDK's chain: a notebook's context, a CLI profile, environment | tables of `catalog.schema_name` | yes |
+
+- The explicit identity forms carry secrets (an access key, a service-account key dict, an OAuth
+  client secret). Use one only when the user asks for it, and read each secret from the
+  environment's secret store at run time — never a literal, never a value asked for in chat.
+- `FileConnector.root_dir` is a filesystem directory, not a URI, and must not overlap the
+  scratch directory (§2.1). Absolute table paths, URIs, `..` and globs are rejected. A CSV time
+  column needs `.with_column(col, dtype=Dtype.date, timestamp_format=...)`.
+- `region` on `S3Connector` is optional and normally **omitted**: the ambient chain resolves the
+  bucket's region where the code runs. Pass it only when the user named one, and only with
+  `root_dir`. It is never a value to ask for, and never a placeholder.
+- `DatabricksConnector` takes exactly one of `warehouse_id` and `cluster_id`.
+- `require_staged=True` needs `staging_uri` (BigQuery) or `staging_volume_path` (Databricks).
+- ADLS has no connector in this package.
+
+Where each one writes is §9.2.
+
 ---
 
 ## 4. Tables
@@ -319,9 +375,12 @@ graph.validate()
 - Emit `validate()` explicitly. It is a structural check needing only schemas — no snapshot yet,
   so it is cheap and catches edge typos before any data moves.
 
-Surface, complete: `.tables`, `.edges`, `.id`, `.native_graph`, `.validate()`, `.snapshot()`.
+Surface includes `.tables`, `.edges`, `.id`, `.native_graph`, `.validate()`, `.visualize()`, `.snapshot()`.
 **There is no `add_table`, `remove_table`, `link`, `unlink`, `infer_links`, `get_edge_stats`, or
 `get_table_stats`.**
+
+`Graph.visualize(path=None, *, show_cols=False, show_samples=False, layout='auto')` displays or exports the graph.
+Follow `kumo-graph-visualization/SKILL.md` for generated notebook visuals, script exports, and schema inspection during model iteration.
 
 Source: shipped package (`kumo.engine.graph`)
 
@@ -399,7 +458,8 @@ labeled rows and scores the unlabeled ones. If every row already has its target,
 `generate_prediction_table` raises `RuntimeError: prediction query produced no rows`.
 
 The scoring population confirmed at the task gate (`kumo-data-science/SKILL.md` Node 1d) decides
-the path:
+the path. The staging example below is Snowflake's; on any other connector the host's `runtime.md`
+says how a population is staged, or that it is not covered there:
 
 - **Rows whose target is NULL** → `pquery.generate_prediction_table(snapshot)`, no
   `prediction_time`.
@@ -515,7 +575,13 @@ PredictionResult.export(output_config)
 ```
 
 - For Snowflake, always pass `artifact_type` and `table_name`. `output_paths` is for file and
-  object-store connectors only; with a `SnowflakeConnector` it raises `ValueError`.
+  object-store connectors only; with a `SnowflakeConnector` it raises `ValueError`. Every
+  connector's form is in §9.2.
+- `extra_fields=[MetadataField.JOB_TIMESTAMP, MetadataField.ANCHOR_TIMESTAMP]` (`kumoapi.jobs`)
+  adds those two columns: when the run started, and the time each prediction is anchored at.
+  `ANCHOR_TIMESTAMP` exists only for a query with a time window; requesting it for one without
+  raises `ValueError` after scoring. Source: shipped package (`kumo_core.train.output`,
+  `kumo_core.prediction_options`).
 
 - **`snapshot=` is required.** `output_config` is optional — omit it to keep results local.
 - `predict` requires a trainer holding fitted state — from `fit` on that same `Trainer`, or from
@@ -526,7 +592,12 @@ PredictionResult.export(output_config)
   (`kumo_core.prediction_options.MAX_LINKS_TO_PREDICT`); for more than 500 per entity, export
   embeddings instead. Multiclass and multilabel accept it optionally and fall back to the
   query's `RANK TOP K` when it has one. Regression and binary classification reject it.
-- Binary classification requires an explicit `binary_classification_threshold`.
+- Binary classification requires an explicit `binary_classification_threshold`; there is no SDK
+  default. Use the one confirmed at Node 1d (§12).
+- `binary_classification_threshold` and `num_classes_to_return` are arguments of `predict`, and
+  only of `predict`. `PredictionOutputConfig` describes where to write, not how to predict: it
+  takes neither, and passing one is a `TypeError`. Whatever the destination, the config carries
+  only the fields in its signature above.
 - `PredictionResult` exposes `.num_rows`, `.files`, `.frame`, `.selection`, `.artifact_type`.
   Prefer `.num_rows` and `.files` — `.frame` collects every row into pandas.
 - `prediction_result.export(output_config)` writes an existing result to a destination. Passing
@@ -535,10 +606,16 @@ PredictionResult.export(output_config)
 ### 9.1 The output table keeps its name
 
 **The table is written with exactly the name you pass.** No suffix, no case change, no quoting
-needed. Verify by reading it back and comparing the row count:
+needed on the write. Verify by reading it back and comparing the row count. Quote the table name
+in the read: `session.table` upper-cases an unquoted part, so `churn_scores` would look for
+`CHURN_SCORES` and not find the table Kumo wrote. The database and schema stay unquoted; both
+sides resolve those the same way.
 
 ```python
-destination = session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA, output_table])
+def quoted(name):
+    return '"' + name.replace('"', '""') + '"'
+
+destination = session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA, quoted(output_table)])
 assert destination.count() == prediction_result.num_rows
 ```
 
@@ -549,9 +626,28 @@ raises.
 
 Source: shipped package (`kumo.engine.trainer`)
 
+### 9.2 Destinations by connector
+
+The output connector may differ from the source connector. Source: shipped package
+(`kumo.engine.trainer.output_config`, `kumo.engine.connector.file`, `kumo_core.object_store_sink`,
+`kumo_databricks.sink`, `kumo_databricks.output`):
+
+| Connector | `PredictionOutputConfig` form | Rules |
+|---|---|---|
+| `SnowflakeConnector` | `artifact_type=` + `table_name=` (bare name) | connector scoped to the destination database and schema; §9.1 |
+| `FileConnector`, `S3Connector`, `GCSConnector` | `output_paths={'predictions': ..., 'embeddings': ...}` — the keys select the artifacts — or `artifact_type=` + `table_name=` | do not combine the two forms; a path ending in `/` is a directory and must be empty; otherwise one file, written in the format its `.parquet` or `.csv` suffix names, and `.parquet` is added when it has neither — by all three connectors; paths are relative to a rooted connector, full URIs for a rootless one |
+| `BigQueryConnector` | `artifact_type=` + `table_name=` (unqualified table ID in its dataset) | predictions and embeddings only — not a model `export_config` and not a `Trainer.load_from_connector` source |
+| `DatabricksConnector` | `artifact_type=` + `table_name=`: a bare name, or `'<schema>__kumo__<table>'` | a bare name lands in the connector's schema; a qualified name must name the connector's own schema, or it is refused; writes stage through the volume `<catalog>.<schema>._kumo_staging`, created on first use |
+
+`output_paths` with a non-file connector raises `ValueError`. Read every destination back after
+the write, as the host's `runtime.md` says (§9.1 for Snowflake).
+
 ---
 
 ## 10. Complete verified example
+
+On Snowflake. On any other connector, replace steps 1, 7 and 8 with the host `runtime.md`'s
+connect step, the §9.2 destination and its read-back; nothing else changes.
 
 Self-contained: `OUTPUT_DATABASE`, `OUTPUT_SCHEMA` and `OUTPUT_TABLE` are placeholders for the
 confirmed output destination (§12).
@@ -643,8 +739,8 @@ prediction_result = trainer.predict(
 )
 print('rows:', prediction_result.num_rows)
 
-# 8. Verify the write-back.
-destination = session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA, OUTPUT_TABLE])
+# 8. Verify the write-back. The table name is quoted (§9.1).
+destination = session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA, '"' + OUTPUT_TABLE.replace('"', '""') + '"'])
 assert destination.count() == prediction_result.num_rows
 ```
 
@@ -701,20 +797,21 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
 
 | Code location | Source |
 |---|---|
-| `TARGET = dict(warehouse=, database=, schema_name=)` | Data location from the intake contract; a lower-case name keeps its double quotes (§3) |
-| `from_connection_toml(connection_name=)` | The user's `[connections.<name>]` entry; ask |
-| `SnowflakeIdentity(account=, username=)`, secret names | Account identifier, key-pair user, and the names of the attached key and passphrase secrets; ask only when neither factory applies, never for a secret's value |
+| The connect step | The host's `runtime.md`, from the confirmed `source_scope` (§3, §3.4) |
+| `TARGET = dict(warehouse=, database=, schema_name=)` (Snowflake) | Data location from the intake contract; a lower-case name keeps its double quotes (§3) |
+| `from_connection_toml(connection_name=)` (Snowflake) | The user's `[connections.<name>]` entry; ask |
+| `SnowflakeIdentity(account=, username=)`, secret names (Snowflake) | Account identifier, key-pair user, and the names of the attached key and passphrase secrets; ask only when neither factory applies, never for a secret's value |
 | `configure(scratch_dir=)` | A local path; `/tmp/<run-id>` is fine |
-| `SnowflakeConnector(role=)` | Role from the intake contract |
+| `SnowflakeConnector(role=)` (Snowflake) | Role from the intake contract |
 | `connector['TABLE']` names, column names | Exactly as `table_names()` / `.columns` return them (§3.2) |
 | Column selection, `stype` / `dtype` | Data structure from the intake contract |
 | `Edge(src_table=, fkey=, dst_table=)` | Relationships from the intake contract |
 | PQL `query=` | Generated per `kumoai-reference/references/pql_writing.md` |
 | `prediction_time=` | A known in-range **naive** `datetime`; **cannot be computed** |
-| `num_classes_to_return=N` | Results per entity the user asked for, 1–500; defaults to `RANK TOP K` but may differ. Required for link prediction (§9) |
-| `binary_classification_threshold=` | Required for binary classification |
+| `predict(num_classes_to_return=N)` | Results per entity the user asked for; defaults to `RANK TOP K` but may differ. Link prediction writing predictions requires it, 1–500; no cap otherwise (§9) |
+| `predict(binary_classification_threshold=)` | Required for binary classification; never on `PredictionOutputConfig`. The threshold restated at Node 1d: the user's, else `0.5 [default]` (`kumo-data-science/accept/intake_contract.md`) |
 | Population table (static task, rows that already have a target) | Confirmed at Node 1d (§7.1) |
-| `PredictionOutputConfig(table_name=)` + output connector `database`/`schema_name` | Output destination; report back as `DB.SCHEMA.TABLE`, unchanged |
+| `PredictionOutputConfig(...)` + output connector | Output destination in its connector's form (§9.2); report it back unchanged — `DB.SCHEMA.TABLE`, or the path |
 
 ---
 
@@ -727,12 +824,14 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
 - [ ] `Stype` / `Dtype` imported from `kumoapi.typing`; `Column` from `kumoapi.table` and `Edge` from `kumoapi.graph` (the bundle the skill targets does not re-export either from `kumo.engine`);
       `PredictionArtifactType` / `WriteMode` from `kumoapi.jobs`; `RunMode` from
       `kumoapi.model_plan`.
-- [ ] Connection tries `from_spcs_env`, then `from_connection_toml`, then `SnowflakeIdentity` from
-      secrets (§3), with explicit `warehouse`, `database`, `schema_name`; `SPCS_TOKEN_PATH`
-      imported, never hardcoded.
-- [ ] Lower-case or mixed-case `database` / `schema_name` passed with their double quotes (§3).
+- [ ] The connect step is the host `runtime.md`'s, with no credential literal (§3, §3.4).
+- [ ] Snowflake: connection tries `from_spcs_env`, then `from_connection_toml`, then
+      `SnowflakeIdentity` from secrets (§3), with explicit `warehouse`, `database`,
+      `schema_name`; `SPCS_TOKEN_PATH` imported, never hardcoded.
+- [ ] Snowflake: lower-case or mixed-case `database` / `schema_name` passed with their double
+      quotes (§3).
 - [ ] Table and column names in the catalog's exact spelling (§3.2).
-- [ ] `session = get_active_session()` once, in the first code cell; never again, no
+- [ ] Snowflake: `session = get_active_session()` once, in the first code cell; never again, no
       `Session.builder` (§3.3).
 - [ ] `connector.table_names()` asserted before building tables.
 - [ ] Every foreign key corrected with `.with_column(col, stype=Stype.ID)`.
@@ -742,14 +841,17 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
 - [ ] `graph.snapshot()` before generating any table.
 - [ ] **`trainer.fit(training_table, snapshot=snapshot)`** — `snapshot=` present.
 - [ ] **`trainer.predict(prediction_table, snapshot=snapshot, ...)`** — `snapshot=` present.
+- [ ] `binary_classification_threshold` / `num_classes_to_return` on `predict`, never on
+      `PredictionOutputConfig` (§9).
 - [ ] `prediction_time` hardcoded and **naive** — no `tzinfo`, no `timezone.utc` — with the reason stated.
 - [ ] Static query: generated population only for rows whose target is NULL; otherwise the
       population table confirmed at Node 1d (§7.1).
 - [ ] No code cell writes anywhere unless a destination was confirmed; an example of how to add
       one later is markdown text, not a code cell.
 - [ ] Smoke-test sizing called out as such.
-- [ ] Output table reported with its exact name — no `_predictions` suffix.
-- [ ] Written table read back and row count compared to `prediction_result.num_rows`.
+- [ ] Destination in its connector's form (§9.2), reported with its exact name — no
+      `_predictions` suffix.
+- [ ] Written destination read back and row count compared to `prediction_result.num_rows`.
 - [ ] Success judged by blocking calls returning without raising — not by a status value.
 
 ---
@@ -767,12 +869,11 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
   nowhere. `load_from_connector` needs a connector whose sink implements `ModelFetchingSink`
   (otherwise `TypeError`); `FileConnector` provides `fetch_model`, other sinks are unverified.
 - `num_workers` above 1.
-- `extra_fields` on `PredictionOutputConfig` (`MetadataField` values).
 - `PredictionResult.export` against Snowflake — in the package, exercised nowhere.
 - Whether a snapshot can be reused across graphs or persisted between processes.
 - The written column schema for a ranking task.
-- Behaviour of `FileConnector`, `S3Connector`, `GCSConnector`, `BigQueryConnector`,
-  `DatabricksConnector`. Only Snowflake is covered here.
+- `FileConnector`, `S3Connector`, `GCSConnector`, `BigQueryConnector`, `DatabricksConnector`:
+  §3.4 and §9.2 are read from the package source; none has been run end to end with this skill.
 
 **Known absent** — do not reach for these: `SourceTable.head(...)`,
 `graph.infer_links()`, `graph.get_edge_stats()`, `graph.get_table_stats()`, `table.validate()`,

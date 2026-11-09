@@ -9,12 +9,16 @@ wants it to score data. A training request never needs it. It adds to `SKILL.md`
 **`batch_inference` — required (ask if missing):**
 - `model_address` — the model the user names: a name or ID, a registry location with a version, or
   a retained local bundle directory
-- `output_location` — a Snowflake table; a connector plus a table name is complete
+- `output_location` — a destination the active host can write (`hosts/<host>/adapter.md`,
+  *Destinations*); a connector plus a table name is complete
 
 **`batch_inference` — resolved, never asked** (`accept/intake_contract.md`):
-- `source_scope`: a source the user named, else the connector named for this request, else the
-  source recorded with the model. The bundle restores trainer state, **not** the graph, so the
-  graph is rebuilt from source at 1c.
+- `source_scope`: a source the user named, else the connector named for this request (only on a
+  host whose *Source scope* accepts a connector name), else the source in the team's training
+  record for the model (`kumo-model-persistence/references/reuse.md`) — the registry does not
+  keep one. The bundle restores trainer state, **not** the graph, so the graph is rebuilt from
+  source at 1c. The record is read at 1c, not at intake: a source that is not in the conversation
+  is not missing; ask for it only if 1c finds no training record.
 - `scoring_population`: defaults to every entity of the trained entity table, anchored at the
   latest timestamp in the rebuilt snapshot, tagged `[default]`. A subset or date the user names
   replaces it.
@@ -31,7 +35,7 @@ the user already said, or defaulted — and shown at the gates for confirmation.
 | Field | What it must include |
 |---|---|
 | **`model_address`** | The model the user names, in their words: a model name or ID ("trainingjob-benchmark-001", "the benchmark model"), a registry location with a version, or a retained local bundle directory |
-| **`output_location`** | Where scores are written: a Snowflake table. A connector plus a table name ("connector `benchmark_sf`, table `MODEL_SCORES`") is complete, because the connector supplies the database and schema. A fully qualified `DB.SCHEMA.TABLE` is also complete. |
+| **`output_location`** | Where scores are written, in a form the active host can write (`hosts/<host>/adapter.md`, *Destinations*). A connector plus a table name ("connector `benchmark_sf`, table `MODEL_SCORES`") is complete, because the connector supplies the database and schema. A fully qualified table (`DB.SCHEMA.TABLE`), or a path on a host that writes files, is also complete. |
 
 Both pass the quote test through earlier turns too. "Run the benchmark model again and put the
 preds in the scores table", after a turn that named the model and the table, supplies both.
@@ -41,11 +45,32 @@ preds in the scores table", after a turn that named the model and the table, sup
 | Field | How it is obtained | Shown as |
 |---|---|---|
 | **task** — entity, outcome, window, task type | Reused from the model unchanged. Never reopened. | restated at 1d |
-| **`source_scope`** | In order: a source the user named → the connector the user named for this request (one Snowflake connector reads the source and writes the scores unless the user separates them) → the source scope recorded with the model at publication. Ask only if none of the three exists. | `[supplied]` / `[inferred]` at 1c |
+| **`source_scope`** | In order: a source the user named → the connector the user named for this request, on a host whose *Source scope* accepts a connector name (one connector reads the source and writes the scores unless the user separates them) → the source scope in the team's training record for the model (`kumo-model-persistence/references/reuse.md`); the registry keeps only `spec_version`, the query and `snapshot_id`, not the source. When neither of the first two applies, restate `Source: from the training record of <model> [inferred]` and do not ask: the record is read at 1c. Ask only if 1c then finds no training record, or one that names no source. On a host that does not accept a connector name, a connector named alone is not a source: ask for the system and location as that host's adapter says. | `[supplied]` / `[inferred]` at 1c |
 | **graph** | Rebuilt from the model's recorded graph definition inside `source_scope`, then confirmed | `[inferred]` at 1c |
 | **`scoring_population`** | Default: every entity of the trained entity table, anchored at the latest timestamp in the rebuilt snapshot ("current predictions"). A static task has no anchor. If the user names a subset or an anchor date, use theirs. | `[default]` / `[supplied]` at 1d |
-| **model version** | The version the user named. If the address resolves to more than one version and none was named, ask which one. Never pick the latest yourself. | `[supplied]` at 1d |
+| **model version** | The version the user named. If the address resolves to more than one version and none was named, ask which one. Never pick the latest yourself. An address with a single version uses it. Either way, the generated code names the version explicitly. | `[supplied]` / `[inferred]` (the only version) at 1d |
 | **embeddings** | Only when the user explicitly asks ("export the entity and target-item embeddings") | restated at 1d |
+| **scoring options** | Set by the trained task type, below | restated at 1d |
+
+### `batch_inference` — scoring options by task type
+
+These are `predict` arguments, chosen at scoring time; none needs retraining, and the trained
+query is never changed to get them (`kumoai-reference/references/kumo_finetuning_sdk.md` §9;
+Source: shipped package (`kumo_core.prediction_options`)). The count is
+`num_classes_to_return`; it is **independent of the query's `RANK TOP K`** (a `RANK TOP 10`
+model can return 50), and when unstated it falls back to that K.
+
+| Task type | Count of results per entity | Threshold |
+|---|---|---|
+| Binary classification | none: the output already carries both class probabilities and the thresholded label, so a request for "both classes" needs no option | required, in [0, 1]: the user's value, else the one recorded with the model, else 0.5 `[default]` (`predict` has no default) |
+| Temporal or static link prediction | **required** when predictions are written, 1 to 500; unstated, K from `RANK TOP K` `[default]`. Above 500, say so and offer up to 500 per entity, or the entity and item embeddings for a nearest-neighbour search over longer lists; ask which | none |
+| Multilabel ranking | optional; unstated, K from `RANK TOP K`. No 500 cap | none |
+| Multiclass, multilabel classification | optional; unstated, K from `RANK TOP K` when the query has one, else every class | multilabel only, in [0, 1]: the user's value, else 0.5 `[default]` |
+| Regression, forecasting | none: one predicted value (or forecast series) per entity. A "top N" request does not apply; say so and ask whether that is what the user wants | none |
+
+A threshold outside [0, 1], or a count where the task takes none, is invalid: say which and ask.
+A count or threshold the user asks for that fits these rules is carried as given, never turned
+into a question and never a reason to retrain.
 
 **The saved bundle does not carry the graph.** It restores trainer state; `predict` takes an
 explicit `snapshot`, so the source data must be available and the graph rebuilt and confirmed at
@@ -62,7 +87,7 @@ tagged, so the user can correct it at confirmation.
 | Condition | Response |
 |---|---|
 | `model_address` does not resolve in the registry or as a bundle directory, or the user calls it rejected/invalid | Name it as unusable and ask for a corrected model identifier. Do not guess a similarly named model. |
-| `output_location` is not a Snowflake table (an `s3://`, `gs://` or file path) | Name it as unusable here, since scores are written to Snowflake tables, and ask for a Snowflake destination. Do not silently swap in another one. |
+| `output_location` is a kind the host cannot write (the adapter's *Destinations* lists what it can) | Name it as unusable here, say what the host writes instead, and ask for such a destination. Do not silently swap in another one. |
 
 When one field is invalid and the other is valid, ask only about the invalid one. When one is
 missing and the other is present, ask only for the missing one. Do not also list the resolved
@@ -71,7 +96,7 @@ fields as questions.
 | Condition | Transition |
 |---|---|
 | `batch_inference`: `model_address` does not resolve, or the user calls it rejected | ASK BACK — name it as unusable, ask for a corrected identifier; do not guess |
-| `batch_inference`: `output_location` is not a Snowflake table (`s3://`, file path) | ASK BACK — name it as unusable, ask for a Snowflake destination; do not substitute |
+| `batch_inference`: `output_location` is a kind the host cannot write | ASK BACK — name it as unusable, ask for a destination the host writes; do not substitute |
 
 ## Node 1c — rebuilt graph
 
@@ -101,6 +126,7 @@ For `batch_inference`, restate in this shape and stop for confirmation:
 - Source: <source_scope> [supplied | inferred]
 - Population: <all <entity> as of latest snapshot timestamp [default] | the user's subset/date [supplied]>
 - Output: predictions written to <destination, verbatim>
+- Scoring options: <threshold — the user's value [supplied] | recorded with the model [inferred] | 0.5 [default] (binary, multilabel); <N> results per entity [supplied | default: RANK TOP K] (link prediction, ranking, multiclass, multilabel); none (regression, forecasting)>
 - Embeddings: <included, if explicitly requested>
 ```
 
@@ -144,14 +170,16 @@ With "…export the entity and target-item embeddings" added, the gate also carr
 > "Use trained model `trainingjob-abc123` to score current accounts."
 
 - `model_address` ✓ · `output_location` ✗
-- Not asked: the source (recorded with the model), the population ("current accounts" means all
+- Not asked: the source (from the model's training record), the population ("current accounts" means all
   accounts at the latest snapshot timestamp, the default), and the task. The task is never
   reopened.
 
-> "Where should the scores be written? A Snowflake table, e.g. a connector plus a table name, or
+> "Where should the scores be written? For example a connector plus a table name, or
 > `DB.SCHEMA.TABLE`."
 
 ### Destination unusable → ASK BACK
+
+On a host whose *Destinations* are Snowflake tables only:
 
 > "Score with `trainingjob-abc123` and write predictions to `s3://tmp/scores`."
 

@@ -12,6 +12,7 @@ from kumo_core.sources.errors import (
     TransientSourceError,
 )
 from kumo_s3.access import source_access
+from kumo_s3.session import arrow_connection_options
 from pyarrow import fs
 from pyarrow.fs import AwsDefaultS3RetryStrategy
 
@@ -148,6 +149,13 @@ def test_an_explicit_endpoint_reaches_the_filesystem(monkeypatch, anonymous,
     assert built.get('anonymous', False) is anonymous
     if 'tls_ca_file_path' in options:
         assert built['tls_ca_file_path'] == options['tls_ca_file_path']
+
+
+def test_a_custom_ca_bundle_on_an_old_pyarrow_is_refused(monkeypatch):
+    monkeypatch.setattr('pyarrow.__version__', '20.0.0')
+    with pytest.raises(RuntimeError, match=r'pyarrow>=21 \(installed 20.0.0\)'):
+        arrow_connection_options(None, 'path', ca_path='/trusted/ca.pem')
+    assert 'tls_ca_file_path' not in arrow_connection_options(None, 'path')
 
 
 def test_connection_options_keep_the_authorized_credentials(monkeypatch):

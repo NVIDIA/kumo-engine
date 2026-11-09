@@ -1,5 +1,4 @@
 //! Bucket functions used to skew bucket size distributions.
-use mem_dbg::MemSize;
 
 use crate::util::mul_high;
 use std::fmt::Debug;
@@ -12,10 +11,10 @@ pub trait BucketFn: Clone + Copy + Sync + Debug {
 }
 
 /// `x * x * (1 + x)/2 * 255/256 + x/256`
-#[derive(Clone, Copy, Debug, MemSize, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 #[cfg_attr(feature = "epserde", derive(epserde::prelude::Epserde))]
 #[cfg_attr(feature = "epserde", repr(C))]
-#[cfg_attr(feature = "epserde", zero_copy)]
+#[cfg_attr(feature = "epserde", epserde(zero_copy))]
 pub struct CubicEps;
 
 impl BucketFn for CubicEps {

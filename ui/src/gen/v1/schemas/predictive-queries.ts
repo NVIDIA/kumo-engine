@@ -537,7 +537,7 @@ export const GetV1PredictiveQueriesModelPlanBody = zod
                 DEBUG: "debug"
             })
             .describe(
-                "Defines the run mode for AutoML. Please see the `Kumo documentation <https:<slash><slash>docs.kumo.ai<slash>docs<slash>whats-the-recommended-way-to-cut-down-on-model-training-time>`_ for more information."
+                "Defines the run mode for AutoML. Please see the `Kumo documentation <https:<slash><slash>docs.nvidia.com<slash>sdgm<slash>kumo-engine<slash>1.0.0<slash>kumo-studio-guide-coming-soon<slash>preliminary-documentation<slash>legacy-ui-references<slash>training-time>`_ for more information."
             ),
         "train_table_spec": zod
             .union([
@@ -1066,10 +1066,6 @@ export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanO
 export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationMinStepsPerEpochOneMax = 4000;
 
 export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationMaxStepsPerEpochOneExclusiveMin = 0;
-
-export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationMaxValStepsOneMax = 8000;
-
-export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationMaxTestStepsOneMax = 8000;
 
 export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationLossOneItemTwoAlphaDefault = 0.25;
 export const getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationLossOneItemTwoAlphaExclusiveMin = 0;
@@ -2049,28 +2045,20 @@ export const GetV1PredictiveQueriesModelPlanResponse = zod
                             .optional(),
                         "max_val_steps": zod
                             .union([
-                                zod
-                                    .int()
-                                    .min(1)
-                                    .max(
-                                        getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationMaxValStepsOneMax
-                                    ),
+                                zod.int().min(1),
                                 zod.enum({
                                     "???": "???"
-                                })
+                                }),
+                                zod.null()
                             ])
                             .optional(),
                         "max_test_steps": zod
                             .union([
-                                zod
-                                    .int()
-                                    .min(1)
-                                    .max(
-                                        getV1PredictiveQueriesModelPlanResponseSuggestedModelPlanModelPlanOptimizationMaxTestStepsOneMax
-                                    ),
+                                zod.int().min(1),
                                 zod.enum({
                                     "???": "???"
-                                })
+                                }),
+                                zod.null()
                             ])
                             .optional(),
                         "loss": zod

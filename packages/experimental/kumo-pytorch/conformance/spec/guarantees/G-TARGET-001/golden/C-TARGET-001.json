@@ -1,0 +1,246 @@
+{
+  "id": "C-TARGET-001",
+  "contract": {
+    "$type": "DataLoaderSpec",
+    "schema": {
+      "$type": "DataSchema",
+      "tables": [
+        {
+          "$type": "TableSpec",
+          "name": "users",
+          "primary_key": "id",
+          "columns": {
+            "id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "currency": {
+              "$type": "DType",
+              "name": "string",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": {
+            "$type": "NonTemporal"
+          }
+        }
+      ],
+      "relations": []
+    },
+    "sample": {
+      "$type": "SampleSpec",
+      "entity": {
+        "$type": "EntitySpec",
+        "table": "users",
+        "entity_type": "users",
+        "filters": [],
+        "available_from": null
+      },
+      "entity_values": {
+        "currency": {
+          "$type": "Field",
+          "column": "currency",
+          "path": [],
+          "selection": "one",
+          "time_column": null,
+          "reference_time": "sample"
+        }
+      },
+      "dated_entity_values": {},
+      "events": {},
+      "current_events": {},
+      "neighborhoods": {},
+      "targets": {},
+      "candidate_sets": {}
+    },
+    "batch": {
+      "$type": "BatchSpec",
+      "inputs": {
+        "entity": {
+          "$type": "Input",
+          "source": {
+            "$type": "EntitySource"
+          },
+          "representation": {
+            "$type": "Fields",
+            "fields": [
+              {
+                "$type": "Encode",
+                "field": "currency",
+                "encoding": {
+                  "$type": "Vocabulary",
+                  "values": [
+                    [
+                      "USD",
+                      2
+                    ],
+                    [
+                      "EUR",
+                      3
+                    ]
+                  ],
+                  "max_size": null,
+                  "min_frequency": 1,
+                  "missing_id": 0,
+                  "unknown_id": 1
+                },
+                "id_space": "tokens"
+              }
+            ],
+            "row": {
+              "$type": "Tokens",
+              "max_tokens": null,
+              "keep": "first",
+              "missing": "omit",
+              "occurrence_order": "fields"
+            },
+            "history": {
+              "$type": "Grouped"
+            },
+            "field_names": null,
+            "field_space": null,
+            "forbidden_fields": []
+          },
+          "layout": {
+            "$type": "Padded"
+          }
+        }
+      },
+      "targets": {
+        "masked": {
+          "$type": "MaskedValuesTarget",
+          "input": "entity",
+          "token_probability": 1.0,
+          "event_probability": 0.0,
+          "key_probability": 0.0,
+          "unknown_probability": 0.0,
+          "fields": [],
+          "combine": "union",
+          "ensure_at_least_one": true,
+          "supervise_unknown": false
+        }
+      },
+      "encodings": {},
+      "id_spaces": {
+        "tokens": {
+          "$type": "IdSpace",
+          "specials": {
+            "pad": "[PAD]",
+            "unknown": "[UNK]",
+            "missing": "[MISSING]",
+            "mask": "[MASK]"
+          }
+        }
+      },
+      "field_names": {},
+      "batching": {
+        "$type": "Batching",
+        "max_samples": null,
+        "max_tokens": null,
+        "length_input": null,
+        "bucket_by_length": false,
+        "drop_last": false
+      }
+    },
+    "version": 3
+  },
+  "tables": {
+    "users": [
+      {
+        "id": 1,
+        "currency": "USD"
+      },
+      {
+        "id": 2,
+        "currency": "EUR"
+      }
+    ]
+  },
+  "anchors": [
+    {
+      "sample_id": "u1",
+      "entity_id": 1,
+      "as_of_time": 100
+    },
+    {
+      "sample_id": "u2",
+      "entity_id": 2,
+      "as_of_time": 100
+    }
+  ],
+  "expected": {
+    "u1": {
+      "entity_values": {
+        "currency": "USD"
+      }
+    },
+    "u2": {
+      "entity_values": {
+        "currency": "EUR"
+      }
+    }
+  },
+  "reason": "The final roles pad=0, unknown=1, missing=2 and mask=3 precede supplied ordinary currency entries USD=4 and EUR=5. Probability-one token masking selects both positions, replaces each input with mask ID 3, and keeps the original final IDs 4 and 5 as answers. Encoder-local IDs are not the answers.",
+  "batch": {
+    "inputs": {
+      "entity": {
+        "value_ids": {
+          "dtype": "int64",
+          "shape": [
+            2,
+            1
+          ],
+          "values": [
+            [
+              3
+            ],
+            [
+              3
+            ]
+          ]
+        }
+      }
+    },
+    "targets": {
+      "masked": {
+        "values": {
+          "dtype": "int64",
+          "shape": [
+            2,
+            1
+          ],
+          "values": [
+            [
+              4
+            ],
+            [
+              5
+            ]
+          ]
+        },
+        "valid": {
+          "dtype": "bool",
+          "shape": [
+            2,
+            1
+          ],
+          "values": [
+            [
+              true
+            ],
+            [
+              true
+            ]
+          ]
+        }
+      }
+    }
+  }
+}

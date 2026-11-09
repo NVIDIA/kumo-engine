@@ -44,20 +44,25 @@ def withSnowflakeCredentials(func: Callable):
 def setup_snowflake_credentials() -> None:
     import pytest
 
-    try:
-        secrets = get_secrets("xva19026.snowflakecomputing.com")
-        os.environ[snowflake_connector._ENV_SNOWFLAKE_USER] = "kumo"
-        os.environ[snowflake_connector.
-                   _ENV_SNOWFLAKE_PRIVATE_KEY] = secrets["kumo_user_secretkey"]
-    except Exception:
-        # Use built-in credentials if this env doesn't have access to read the
-        # secrets from AWS
-        pass
+    def has_credentials() -> bool:
+        return bool(
+            os.getenv(snowflake_connector._ENV_SNOWFLAKE_USER)
+            and os.getenv(snowflake_connector._ENV_SNOWFLAKE_PRIVATE_KEY))
 
-    has_no_credentials = (
-        not os.getenv(snowflake_connector._ENV_SNOWFLAKE_USER)
-        or not os.getenv(snowflake_connector._ENV_SNOWFLAKE_PRIVATE_KEY))
-    if has_no_credentials:
+    # A user and key supplied by the environment (CI's service user) take
+    # precedence over the shared test key in AWS.
+    if not has_credentials():
+        try:
+            secrets = get_secrets("xva19026.snowflakecomputing.com")
+            os.environ[snowflake_connector._ENV_SNOWFLAKE_USER] = "kumo"
+            os.environ[snowflake_connector._ENV_SNOWFLAKE_PRIVATE_KEY] = (
+                secrets["kumo_user_secretkey"])
+        except Exception:
+            # Use built-in credentials if this env doesn't have access to read
+            # the secrets from AWS
+            pass
+
+    if not has_credentials():
         pytest.skip("No Snowflake credentials found")
 
 

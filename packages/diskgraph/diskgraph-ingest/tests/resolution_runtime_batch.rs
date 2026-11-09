@@ -179,6 +179,7 @@ fn ingest_parent_users_orders(parent_root: &Path, n_users: i64) -> Result<()> {
     };
 
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "users_orders_parent".to_string(),
         tables: vec![users, orders],
         rowpack: None,
@@ -318,6 +319,7 @@ fn build_fixture_to(
 
     let table = stage_table_spec(stage_parquet.to_str().unwrap());
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "resolve_run".to_string(),
         tables: vec![table],
         rowpack: None,
@@ -443,6 +445,7 @@ fn test_resolution_runtime_batch_label_path() {
             true,                 // preserve old behavior: use seed timestamps when present
             None,                 // node_range: stage-table seeding (NodeRange off)
             None,
+            None, // projection: resolved per call in tests
         )
         .expect("sample_runtime_batch must succeed on the resolution label path");
 
@@ -571,6 +574,7 @@ fn test_resolution_runtime_batch_orphan_dropped_at_ingest() {
             true,
             None,
             None,
+            None, // projection: resolved per call in tests
         )
         .expect("clean post-drop stage must sample");
 
@@ -674,6 +678,7 @@ fn test_resolution_rhs_not_rooted() {
             true, // preserve old behavior: use seed timestamps when present
             None, // node_range off
             None,
+            None, // projection: resolved per call in tests
         )
         .expect("sample_runtime_batch must succeed");
 
@@ -791,6 +796,7 @@ fn build_fixture_with_exclude(
     table.columns.push(typed_col("exclude_target_keys", IngestedType::Int64Array));
     table.columns.push(typed_col("exclude_node_ids", IngestedType::Int64Array));
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "resolve_exclude_run".to_string(),
         tables: vec![table],
         rowpack: None,
@@ -860,6 +866,7 @@ fn test_resolution_exclude_hydrate() {
             true,
             None,
             None,
+            None, // projection: resolved per call in tests
         )
         .expect("sample_runtime_batch on the exclude path");
 
@@ -947,6 +954,7 @@ fn test_resolution_exclude_absent_when_all_empty() {
             true,
             None,
             None,
+            None, // projection: resolved per call in tests
         )
         .expect("sample_runtime_batch");
     assert!(
@@ -1027,6 +1035,7 @@ fn run_two_tower(tmp: &tempfile::TempDir, tt_id: &str, neg_rnd_seed: u64) -> cra
             true,              // preserve old behavior: use seed timestamps when present
             None,              // node_range off
             None,
+            None, // projection: resolved per call in tests
         )
         .expect("two-tower sample_runtime_batch must succeed");
 
@@ -1276,6 +1285,7 @@ fn test_node_range_seeds_full_catalog() {
                     seed_time,
                 }),
                 None,
+                None, // projection: resolved per call in tests
             )
             .expect("NodeRange sample_runtime_batch must succeed");
 

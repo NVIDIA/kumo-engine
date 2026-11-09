@@ -7,13 +7,9 @@ import { HighlightTypes, HoverHintsType } from "types/codeEditor";
 import { keywords, operators, type_name } from "utils/Constants";
 import data from "utils/PQLParsing/pqDocs.json";
 
-import { modelPlannerKeys, predictiveQueryKeys } from "./tooltipKeys";
+import { LANGUAGE_KEYS, parseRegistry } from "./editorHintRegistry";
 
-// Language to keys mapping for extensibility
-const LANGUAGE_KEYS: Record<string, string[]> = {
-    PQLANG_V2: predictiveQueryKeys,
-    YAML: modelPlannerKeys
-};
+export { EDITOR_HINT_SCHEMA_VERSION } from "./editorHintRegistry";
 
 /**
  * Escapes HTML characters and converts markdown syntax to HTML tags
@@ -84,9 +80,37 @@ function resolveHighlight(
 
 export function parseHintsFromMintlify(
     language: string,
-    hintsObj: HoverHintsType
+    hintsObj: HoverHintsType,
+    source: unknown = data
 ) {
-    // every key in the json is stored as key: (title, subtitle, description)
+    if (
+        source &&
+        typeof source === "object" &&
+        ("schemaVersion" in source || "hints" in source || "noHints" in source)
+    ) {
+        const registry = parseRegistry(source);
+        for (const entry of registry.hints) {
+            if (entry.language !== language) continue;
+            const hint = {
+                title: entry.title,
+                subtitle:
+                    entry.format === "literal"
+                        ? entry.syntax
+                        : sanitizeAndFormatText(entry.syntax),
+                hint:
+                    entry.format === "literal"
+                        ? entry.description
+                        : formatHintBody(entry.description),
+                link: entry.documentationUrl ?? "",
+                type: entry.highlightType
+            };
+            for (const key of [entry.key, ...entry.aliases])
+                hintsObj[key] = hint;
+        }
+        return hintsObj;
+    }
+    // Legacy tuple data remains readable during reviewed synchronization updates.
+    const legacy = source as Record<string, string[]>;
     const keys: string[] = LANGUAGE_KEYS[language] ?? [];
 
     try {
@@ -94,7 +118,7 @@ export function parseHintsFromMintlify(
             const link = `https://kumo.ai/docs/reference/${rawKey}`;
             const key = stripKeyPrefix(rawKey);
 
-            const value = data[key as keyof typeof data] as Array<string>;
+            const value = legacy[key];
             if (value === undefined) {
                 continue;
             }

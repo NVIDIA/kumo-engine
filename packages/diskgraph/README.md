@@ -123,13 +123,15 @@ Use `--customer-prefix` if the storage directory differs from the customer name.
 
 ## Python wheel builds
 
-`.github/workflows/build.yml` builds the native Python wheel on every relevant
-push and pull request. The wheel contains the extension and the standalone
-`ingest` binary.
+The repository's CI builds the native Python wheel for every relevant push and
+pull request (`.github/workflows/_diskgraph-wheel.yml`), and the kumo-engine
+wheel bundles it. The wheel contains the extension and the standalone `ingest`
+binary.
 
 Kumo builds and distributes that artifact from its in-tree
-`packages/diskgraph` mirror. DiskGraph does not publish independently versioned
-or development wheels.
+`packages/diskgraph` source. This repository is the sole source of truth for
+DiskGraph; make changes here directly. DiskGraph does not publish independently
+versioned or development wheels.
 
 See `diskgraph-pybind/README.md` for local and portable Linux build commands.
 
@@ -144,6 +146,13 @@ uv pip install .
 The base package installs the native extension and bundled standalone ingest
 binary. Use the `kumo` extra only when calling Kumo compiler APIs outside an
 environment that already installs `kumo-api`.
+
+## Native batch runtime
+
+[`diskgraph-runtime`](diskgraph-runtime/README.md) provides reusable index ownership
+and worker-sharded batch generation without Python or transport dependencies. The
+Python binding uses this runtime and converts its batches to Arrow-backed Python
+objects.
 
 ## Contributing notes
 

@@ -85,7 +85,7 @@
     "lint": "eslint --fix --config eslint.config.ts",
     "lint-check": "eslint --fix-dry-run --config eslint.config.ts",
     "format": "prettier --write .",
-    "format-check": "prettier --check .",
+    "format-check": "prettier --check . && npm run check:editor-help",
     "type-check": "tsc --noEmit",
     "circular-check": "madge --circular --extensions ts,tsx --exclude '^(gen/|utils/PQLParsing/grammar/)' src/",
     "knip": "knip",
@@ -104,7 +104,9 @@
     "audit": "node scripts/ui-baseline-audit.mjs",
     "audit:write": "node scripts/ui-baseline-audit.mjs --write",
     "audit:report": "node scripts/ui-baseline-audit.mjs --report",
-    "audit:check": "node scripts/ui-baseline-audit.mjs --check"
+    "audit:check": "node scripts/ui-baseline-audit.mjs --check",
+    "generate:editor-help": "node scripts/generate-editor-help.mjs",
+    "check:editor-help": "node scripts/generate-editor-help.mjs --check"
   },
   "overrides": {
     "nanoid@>=3.0.0 <4.0.0": "3.3.18",

@@ -1,0 +1,277 @@
+{
+  "inputs": {
+    "customer": {
+      "age": {
+        "boundaries": [
+          23.0,
+          25.0,
+          28.0,
+          32.5,
+          35.0,
+          42.0,
+          51.0
+        ],
+        "dtype": {
+          "name": "int64",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "id_space": null,
+        "kind": "buckets",
+        "roles": {
+          "missing": 0
+        },
+        "separate_zero": false,
+        "vocabulary_size": 9
+      },
+      "club": {
+        "dtype": {
+          "name": "string",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "entries": [
+          [
+            "ACTIVE",
+            2
+          ],
+          [
+            "PRE-CREATE",
+            3
+          ],
+          [
+            "LEFT CLUB",
+            4
+          ]
+        ],
+        "id_space": null,
+        "kind": "vocabulary",
+        "roles": {
+          "missing": 0,
+          "unknown": 1
+        },
+        "vocabulary_size": 5
+      },
+      "news": {
+        "dtype": {
+          "name": "string",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "entries": [
+          [
+            "NONE",
+            2
+          ],
+          [
+            "Regularly",
+            3
+          ],
+          [
+            "Monthly",
+            4
+          ]
+        ],
+        "id_space": null,
+        "kind": "vocabulary",
+        "roles": {
+          "missing": 0,
+          "unknown": 1
+        },
+        "vocabulary_size": 5
+      },
+      "recency": {
+        "dtype": {
+          "name": "float64",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "id_space": null,
+        "kind": "zscore",
+        "mean": 7415240.0,
+        "output_dtype": "float32",
+        "scale": 6949560.0
+      },
+      "spend_30d": {
+        "dtype": {
+          "name": "float64",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "id_space": null,
+        "kind": "zscore",
+        "mean": 0.078814,
+        "output_dtype": "float32",
+        "scale": 0.262115
+      },
+      "visits_30d": {
+        "dtype": {
+          "name": "int64",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "id_space": null,
+        "kind": "zscore",
+        "mean": 1.1875,
+        "output_dtype": "float32",
+        "scale": 3.90542
+      },
+      "visits_7d": {
+        "dtype": {
+          "name": "int64",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "id_space": null,
+        "kind": "zscore",
+        "mean": 0.285,
+        "output_dtype": "float32",
+        "scale": 0.972767
+      },
+      "visits_90d": {
+        "dtype": {
+          "name": "int64",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "id_space": null,
+        "kind": "zscore",
+        "mean": 4.03625,
+        "output_dtype": "float32",
+        "scale": 11.8237
+      }
+    },
+    "history": {
+      "age_days": {
+        "dtype": {
+          "name": "float64",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "id_space": null,
+        "kind": "zscore",
+        "mean": 100.954,
+        "output_dtype": "float32",
+        "scale": 81.9129
+      },
+      "channel": {
+        "dtype": {
+          "name": "int64",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "entries": [
+          [
+            2,
+            2
+          ],
+          [
+            1,
+            3
+          ]
+        ],
+        "id_space": null,
+        "kind": "vocabulary",
+        "roles": {
+          "missing": 0,
+          "unknown": 1
+        },
+        "vocabulary_size": 4
+      },
+      "price": {
+        "dtype": {
+          "name": "float64",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "id_space": null,
+        "kind": "zscore",
+        "mean": 0.026285,
+        "output_dtype": "float32",
+        "scale": 0.0162101
+      },
+      "weekday": {
+        "dtype": {
+          "name": "int64",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "entries": [
+          [
+            3,
+            2
+          ],
+          [
+            5,
+            3
+          ],
+          [
+            4,
+            4
+          ],
+          [
+            1,
+            5
+          ],
+          [
+            2,
+            6
+          ],
+          [
+            6,
+            7
+          ],
+          [
+            0,
+            8
+          ]
+        ],
+        "id_space": null,
+        "kind": "vocabulary",
+        "roles": {
+          "missing": 0,
+          "unknown": 1
+        },
+        "vocabulary_size": 9
+      }
+    }
+  },
+  "targets": {
+    "purchases": {
+      "value": {
+        "dtype": {
+          "name": "int64",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "kind": "raw"
+      }
+    }
+  }
+}

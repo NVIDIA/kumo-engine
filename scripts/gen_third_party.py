@@ -29,7 +29,7 @@ DEFAULT_DISKGRAPH_MANIFEST = (DISKGRAPH_ROOT / "third_party" /
 DEFAULT_DISKGRAPH_PROVENANCE = (DISKGRAPH_ROOT / "third_party" /
                                 "source-provenance.json")
 DEFAULT_NOTICE = REPO_ROOT / "THIRD-PARTY.txt"
-# Matches the notice step of .github/workflows/sync-diskgraph.yml.
+# Refresh the inventory and notice after DiskGraph dependency changes.
 DISKGRAPH_REFRESH_COMMANDS = (
     "cargo fetch --locked --manifest-path packages/diskgraph/Cargo.toml && "
     "python scripts/refresh_diskgraph_notice_inventory.py && "
@@ -49,10 +49,12 @@ FIRST_PARTY_DISTRIBUTIONS = {
     "kumo-core",
     "kumo-databricks",
     "kumo-gcs",
+    "kumo-adls",
     "kumo-pql",
     "kumo-s3",
     "kumo-snowflake",
     "kumo-engine",
+    "kumo-pytorch",
     "kumo-glove-6b-50d",
 }
 NATIVE_DISTRIBUTIONS = {"diskgraph"}
@@ -918,7 +920,9 @@ def _diskgraph_manifest_errors(inventory: dict[str, Any],
         item.get("id"): item
         for item in manifest.get("artifacts", [])
     }
-    for artifact_id in ("diskgraph-extension", "diskgraph-ingest"):
+    for artifact_id in ("diskgraph-extension", "diskgraph-ingest",
+                        "diskgraph-extension-windows",
+                        "diskgraph-ingest-windows"):
         artifact = inventory_artifacts.get(artifact_id)
         resolved = manifest_artifacts.get(artifact_id)
         if artifact is None or resolved is None:

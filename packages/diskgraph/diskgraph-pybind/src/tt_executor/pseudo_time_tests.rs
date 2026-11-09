@@ -146,6 +146,7 @@ fn build_index_order(root: &Path, reverse: bool) -> (PathBuf, Vec<(i64, i64)>) {
         ..Default::default()
     };
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "static_lp".to_string(),
         tables: vec![
             table(
@@ -415,6 +416,7 @@ fn custom_weighted_artifacts(
             "abort",
             false,
             None,
+            None,
         )?;
         let staging: String = out
             .bind(py)
@@ -554,6 +556,7 @@ impl Sampled {
                     false,
                     None,
                     filter,
+                    None,
                 )
             }
             None => self.engine.sample_runtime_batch(
@@ -572,6 +575,7 @@ impl Sampled {
                     seed_time: 0,
                 }),
                 filter,
+                None,
             ),
         }
         .unwrap();
@@ -1078,6 +1082,7 @@ fn empty_last_shard_does_not_hide_truncated_fact_coverage() {
             false,
             None,
             Some(filter),
+            None,
         )
         .unwrap_err();
     assert!(error.to_string().contains("pseudo times cover 1"));

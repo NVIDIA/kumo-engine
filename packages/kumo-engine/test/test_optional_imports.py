@@ -25,13 +25,16 @@ OPTIONAL_THIRD_PARTY = (
     'botocore',
     's3fs',
     'google',
+    'azure',
     'gcsfs',
+    'mlflow',
 )
 PROVIDER_PACKAGES = (
     'kumo_snowflake',
     'kumo_databricks',
     'kumo_s3',
     'kumo_gcs',
+    'kumo_adls',
     'kumo_bigquery',
 )
 FORBIDDEN_AT_IMPORT = PROVIDER_PACKAGES + OPTIONAL_THIRD_PARTY
@@ -92,6 +95,7 @@ _BARE_INSTALL = textwrap.dedent('''
     # dependency, naming the extra, or the provider defers that import
     # further and fails later.
     for cls, extra in (
+            (engine.ADLSConnector, 'adls'),
             (engine.SnowflakeConnector, 'snowflake'),
             (engine.DatabricksConnector, 'databricks'),
             (engine.S3Connector, 's3'),
@@ -114,6 +118,22 @@ _BARE_INSTALL = textwrap.dedent('''
                 # and only the stand-in `self` is missing. Fine: nothing
                 # broke at import time.
                 pass
+
+    from kumo.engine.integrations.mlflow import MlflowTracking
+    try:
+        MlflowTracking()
+    except ImportError as e:
+        assert "kumo-engine[mlflow]" in str(e), e
+    else:
+        raise AssertionError("MlflowTracking() needs mlflow")
+
+    from kumo.engine.integrations.snowflake import SnowflakeTracking
+    try:
+        SnowflakeTracking(None, experiment_name="ents")
+    except ImportError as e:
+        assert "kumo-engine[snowflake]" in str(e), e
+    else:
+        raise AssertionError("SnowflakeTracking() needs snowflake-ml-python")
     print("ok")
 ''')
 

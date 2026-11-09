@@ -18,13 +18,13 @@ import json
 import logging
 from typing import Optional
 
-from ._c import (  # type: ignore[import]
-    DiskgraphConfigError,
-    DiskgraphDataError,
-    build_prediction_table_artifacts_for_existing_table as _native_build_predict,
-    build_split_spec_json as _native_build_split_spec_json,
-    build_train_table_artifacts_for_existing_table as _native_build,
-)
+from ._c import DiskgraphConfigError, DiskgraphDataError
+from ._c import \
+    build_prediction_table_artifacts_for_existing_table as \
+    _native_build_predict  # type: ignore[import]
+from ._c import build_split_spec_json as _native_build_split_spec_json
+from ._c import build_train_table_artifacts_for_existing_table as _native_build
+from .compiler import index_timestamp_unit
 from .split_contract import SplitSpec
 
 
@@ -45,9 +45,11 @@ def _split_spec_to_plan_json(
     split_spec: Optional[SplitSpec],
     *,
     split_family_hint: Optional[str],
+    index_path: Optional[str] = None,
 ) -> Optional[str]:
     """Serialize a Python `SplitSpec` to the JSON the Rust executor consumes
-    (a `SplitSpec<Seconds>` from `diskgraph-core`), for
+    (a `SplitSpec` from `diskgraph-core` in the clock of the index at
+    `index_path`, seconds when omitted), for
     `build_train_table_artifacts_for_existing_table`'s `split_spec_json`.
 
     Returns None when split_spec is None (no split path).
@@ -80,7 +82,8 @@ def _split_spec_to_plan_json(
     resolved_family = split_spec.kind or split_family_hint
     if resolved_family != split_spec.kind:
         split_spec = dataclasses.replace(split_spec, kind=resolved_family)
-    return _native_build_split_spec_json(split_spec)
+    return _native_build_split_spec_json(split_spec,
+                                         index_timestamp_unit(index_path))
 
 
 def _resolve_common_config(
@@ -160,6 +163,7 @@ def build_train_table_artifacts_for_existing_table(
     ingest_on_error: str = 'skip_row_on_error',
     allow_negative_weight: bool = False,
     timestamp_reference: Optional[dict] = None,
+    target_window_end: Optional[tuple[int, str]] = None,
 ) -> dict:
     """Rebuild TT artifacts (manifest + sidecars) for an existing
     training-table parquet.
@@ -200,6 +204,8 @@ def build_train_table_artifacts_for_existing_table(
             timestamp bucket indexes, matching the native TT-gen path.
         allow_new_target_entities: Preserve targets created after the anchor;
             downstream LP resolution still validates every target PK.
+        target_window_end: Label-window end offset and unit. Target creation
+            must be no later than this bound, matching generated labels.
         fact_pseudo_time: Static LP fact table
             (``{table, entity_col, target_col}``).
         ingest_on_error: What a source row that fails validation does:
@@ -242,7 +248,7 @@ def build_train_table_artifacts_for_existing_table(
     )
 
     plan_split_json = _split_spec_to_plan_json(
-        split_config, split_family_hint=split_family_hint)
+        split_config, split_family_hint=split_family_hint, index_path=index_path)
 
     # The producer_summary_json + train_table_edges_config kwargs are
     # currently consumed elsewhere (kumo's separate edge-bundle pass).
@@ -264,6 +270,8 @@ def build_train_table_artifacts_for_existing_table(
         task_type=task_type,
         lp_rhs_is_temporal=bool(lp_rhs_is_temporal),
         allow_new_target_entities=bool(allow_new_target_entities),
+        target_window_end_json=(json.dumps(target_window_end)
+                                if target_window_end is not None else None),
         fact_pseudo_time_json=(json.dumps(fact_pseudo_time)
                                if fact_pseudo_time is not None else None),
         ingest_on_error=ingest_on_error,
@@ -335,7 +343,7 @@ def build_prediction_table_artifacts_for_existing_table(
     _ = producer_summary_json
     _ = train_table_edges_config
 
-    result = _native_build_predict(
+    return _native_build_predict(
         output_path=output_path,
         index_path=index_path,
         tt_id=tt_id,
@@ -348,8 +356,6 @@ def build_prediction_table_artifacts_for_existing_table(
         task_type=task_type,
         ingest_on_error=ingest_on_error,
     )
-    _warn_skipped_rows(result)
-    return result
 
 
 __all__ = [

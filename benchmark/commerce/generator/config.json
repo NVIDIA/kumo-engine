@@ -1,0 +1,38 @@
+{
+  "generator_version": "0.1.0",
+  "seed": 20261009,
+  "perturbation": {
+    "seed": 1,
+    "min": 0.05,
+    "max": 0.15
+  },
+  "files": {
+    "target_bytes": 1000000000,
+    "max_bytes": 1073741824,
+    "row_group_bytes": 134217728,
+    "compression": "snappy",
+    "compression_level": null
+  },
+  "graphs": {
+    "commerce": {
+      "profile": "profiles/commerce.placeholder.json",
+      "shard_entities": 370000,
+      "block_entities": 32768,
+      "block_shards": 4
+    }
+  },
+  "rungs": {
+    "commerce": [
+      "100M",
+      "1B",
+      "50B"
+    ]
+  },
+  "vocab_caps": {
+    "commerce": {
+      "customers.city": 3000,
+      "searches.query_term": 1000,
+      "merchants.tags": 300
+    }
+  }
+}

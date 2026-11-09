@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::graph_config::{ColumnSpec, IngestedType, SemanticType};
+use diskgraph_core::time::{split_parts, TimeUnit};
 use diskgraph_rowpack::{ColumnValueObserver, FloatListView, IntListView, StringListView};
 use serde_json::{json, Value as JsonValue};
 
@@ -539,6 +540,83 @@ impl ReservoirSamplerL {
 pub use diskgraph_core::accumulators::TDigestEstimator;
 pub use diskgraph_core::accumulators::WelfordAccumulator;
 
+/// Exact counts on fixed bins, eight per power of two, in an open-addressing table.
+#[derive(Clone, Default)]
+pub struct ValueBins {
+    bins: Vec<i32>,
+    counts: Vec<u64>,
+    len: usize,
+}
+
+impl ValueBins {
+    const EMPTY: i32 = i32::MIN;
+
+    #[inline]
+    fn add(&mut self, value: f64) {
+        let bin = (value.abs().to_bits() >> 49) as i32;
+        self.add_count(if value < 0.0 { -bin - 1 } else { bin }, 1);
+    }
+
+    #[inline]
+    fn add_count(&mut self, bin: i32, count: u64) {
+        if 2 * (self.len + 1) > self.bins.len() {
+            self.grow();
+        }
+        let mask = self.bins.len() - 1;
+        let mut slot = (bin as u32).wrapping_mul(0x9E37_79B1) as usize & mask;
+        while self.bins[slot] != bin {
+            if self.bins[slot] == Self::EMPTY {
+                self.bins[slot] = bin;
+                self.len += 1;
+                break;
+            }
+            slot = (slot + 1) & mask;
+        }
+        self.counts[slot] += count;
+    }
+
+    fn grow(&mut self) {
+        let old = std::mem::take(self);
+        let size = (old.bins.len() * 2).max(64);
+        self.bins = vec![Self::EMPTY; size];
+        self.counts = vec![0; size];
+        for (bin, count) in old.iter() {
+            self.add_count(bin, count);
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (i32, u64)> + '_ {
+        self.bins
+            .iter()
+            .zip(&self.counts)
+            .filter(|(bin, _)| **bin != Self::EMPTY)
+            .map(|(bin, count)| (*bin, *count))
+    }
+
+    fn merge(&mut self, other: &ValueBins) {
+        for (bin, count) in other.iter() {
+            self.add_count(bin, count);
+        }
+    }
+
+    /// `[start, count]` pairs in value order; a negative bin starts below its values.
+    fn to_json(&self) -> JsonValue {
+        let mut bins: Vec<_> = self.iter().collect();
+        bins.sort_unstable();
+        let start = |bin: i32| {
+            let magnitude = |bits: i32| f64::from_bits((bits as u64) << 49);
+            if bin < 0 {
+                -magnitude(-bin)
+            } else {
+                magnitude(bin)
+            }
+        };
+        bins.into_iter()
+            .map(|(bin, count)| json!([start(bin), count]))
+            .collect()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // FileColStats — per-file observer
 // ---------------------------------------------------------------------------
@@ -562,6 +640,8 @@ pub struct FileColStats {
     rng: u64,
     /// Per-column cached graduated set snapshots (Graduation strategy only).
     grad_snapshots: Vec<Option<Arc<HashSet<u64>>>>,
+    /// The index clock that timestamp statistics are in.
+    clock: TimeUnit,
 }
 
 /// Per-column stats collector, chosen by SemanticType.
@@ -573,6 +653,7 @@ pub enum ColumnStatsCollector {
         welford: WelfordAccumulator,
         hll: HyperLogLog,
         tdigest: TDigestEstimator,
+        bins: ValueBins,
     },
     Categorical {
         count: u64,
@@ -596,8 +677,10 @@ pub enum ColumnStatsCollector {
         count: u64,
         null_count: u64,
         parse_fail_count: u64,
-        min_secs: i64,
-        max_secs: i64,
+        /// Of `parse_fail_count`, values outside the index clock's range.
+        beyond_clock_count: u64,
+        min: i64,
+        max: i64,
         hll: HyperLogLog,
     },
     Sequence {
@@ -677,6 +760,7 @@ impl FileColStats {
             row_subsample: false,
             rng: 1,
             grad_snapshots: (0..n).map(|_| None).collect(),
+            clock: TimeUnit::Seconds,
         }
     }
 
@@ -730,7 +814,13 @@ impl FileColStats {
             row_subsample,
             rng,
             grad_snapshots,
+            clock: TimeUnit::Seconds,
         }
+    }
+
+    pub fn with_clock(mut self, clock: TimeUnit) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Merge another `FileColStats` into this one (per-column dispatch).
@@ -780,12 +870,30 @@ impl FileColStats {
         }
     }
 
-    pub fn warn_parse_failures(&self, column_names: &[String], table_name: &str) {
+    pub fn warn_parse_failures(
+        &self,
+        column_names: &[String],
+        table_name: &str,
+        clock: TimeUnit,
+        time_col: Option<&str>,
+    ) {
         for (col, name) in self.cols.iter().zip(column_names) {
-            let count = col.parse_fail_count();
+            let beyond = col.beyond_clock_count();
+            let count = col.parse_fail_count() - beyond;
             if count > 0 {
                 tracing::warn!(
                     "{count} invalid values found in {table_name}.{name}. Invalid values are parsed as null. Please correct and retrain if needed."
+                );
+            }
+            if beyond > 0 {
+                let dropped = if time_col == Some(name.as_str()) {
+                    "; as the table's time column, their rows are dropped"
+                } else {
+                    ""
+                };
+                tracing::warn!(
+                    "{beyond} values in {table_name}.{name} are outside the range of the {} index clock and are stored as null{dropped}.",
+                    format!("{clock:?}").to_lowercase()
                 );
             }
         }
@@ -847,7 +955,7 @@ impl FileColStats {
     ) -> serde_json::Map<String, JsonValue> {
         let mut map = serde_json::Map::new();
         for (col_idx, (col, name)) in self.cols.iter_mut().zip(column_names.iter()).enumerate() {
-            if let Some(mut val) = col.to_json() {
+            if let Some(mut val) = col.to_json(self.clock) {
                 if has_counts[col_idx] {
                     if let JsonValue::Object(ref mut obj) = val {
                         obj.insert("category_counts".to_string(), json!([]));
@@ -1025,6 +1133,15 @@ fn single_byte_ascii(s: &str) -> Option<u8> {
 }
 
 impl ColumnStatsCollector {
+    fn beyond_clock_count(&self) -> u64 {
+        match self {
+            Self::Timestamp {
+                beyond_clock_count, ..
+            } => *beyond_clock_count,
+            _ => 0,
+        }
+    }
+
     fn parse_fail_count(&self) -> u64 {
         match self {
             Self::Numerical {
@@ -1079,6 +1196,7 @@ impl ColumnStatsCollector {
                 welford: WelfordAccumulator::new(),
                 hll: HyperLogLog::new(),
                 tdigest: TDigestEstimator::new(TDigestEstimator::DEFAULT_DELTA),
+                bins: ValueBins::default(),
             },
             Some(SemanticType::Categorical) => ColumnStatsCollector::Categorical {
                 count: 0,
@@ -1102,8 +1220,9 @@ impl ColumnStatsCollector {
                 count: 0,
                 null_count: 0,
                 parse_fail_count: 0,
-                min_secs: i64::MAX,
-                max_secs: i64::MIN,
+                beyond_clock_count: 0,
+                min: i64::MAX,
+                max: i64::MIN,
                 hll: HyperLogLog::new(),
             },
             Some(SemanticType::Sequence) => ColumnStatsCollector::Sequence {
@@ -1180,6 +1299,7 @@ impl ColumnStatsCollector {
                     welford,
                     hll,
                     tdigest,
+                    bins,
                 },
                 ColumnStatsCollector::Numerical {
                     null_count: nc2,
@@ -1188,6 +1308,7 @@ impl ColumnStatsCollector {
                     welford: w2,
                     hll: h2,
                     tdigest: td2,
+                    bins: b2,
                 },
             ) => {
                 *null_count += *nc2;
@@ -1196,6 +1317,7 @@ impl ColumnStatsCollector {
                 welford.merge(w2);
                 hll.merge(h2);
                 tdigest.merge(td2);
+                bins.merge(b2);
             }
             (
                 ColumnStatsCollector::Categorical {
@@ -1259,28 +1381,31 @@ impl ColumnStatsCollector {
                     count,
                     null_count,
                     parse_fail_count,
-                    min_secs,
-                    max_secs,
+                    beyond_clock_count,
+                    min,
+                    max,
                     hll,
                 },
                 ColumnStatsCollector::Timestamp {
                     count: c2,
                     null_count: nc2,
                     parse_fail_count: pf2,
-                    min_secs: ms2,
-                    max_secs: xs2,
+                    beyond_clock_count: bc2,
+                    min: ms2,
+                    max: xs2,
                     hll: hll2,
                 },
             ) => {
                 *count += *c2;
                 *null_count += *nc2;
                 *parse_fail_count += *pf2;
+                *beyond_clock_count += *bc2;
                 hll.merge(hll2);
-                if *ms2 < *min_secs {
-                    *min_secs = *ms2;
+                if *ms2 < *min {
+                    *min = *ms2;
                 }
-                if *xs2 > *max_secs {
-                    *max_secs = *xs2;
+                if *xs2 > *max {
+                    *max = *xs2;
                 }
             }
             (
@@ -1405,7 +1530,7 @@ impl ColumnStatsCollector {
 
     /// Serialize this collector's stats to JSON. Returns None for Skip.
     #[allow(clippy::wrong_self_convention)] // needs &mut self for tdigest flush
-    fn to_json(&mut self) -> Option<JsonValue> {
+    fn to_json(&mut self, clock: TimeUnit) -> Option<JsonValue> {
         match self {
             ColumnStatsCollector::Numerical {
                 null_count,
@@ -1414,6 +1539,7 @@ impl ColumnStatsCollector {
                 welford,
                 hll,
                 tdigest,
+                bins,
             } => {
                 let total = welford.count + *null_count + *invalid_count;
                 let (q25, q50, q75) = tdigest.quantiles().unwrap_or((0.0, 0.0, 0.0));
@@ -1433,6 +1559,7 @@ impl ColumnStatsCollector {
                     "q50": q50,
                     "q75": q75,
                     "num_unique": hll.estimate() as u64,
+                    "value_bins": bins.to_json(),
                 }))
             }
             ColumnStatsCollector::Categorical {
@@ -1475,21 +1602,26 @@ impl ColumnStatsCollector {
                 count,
                 null_count,
                 parse_fail_count,
-                min_secs,
-                max_secs,
+                min,
+                max,
                 hll,
                 ..
             } => {
                 let total = (*count).saturating_add(*null_count);
-                Some(json!({
+                let mut stats = json!({
                     "semantic_type": "timestamp",
                     "count": total,
                     "null_count": *null_count,
                     "parse_fail_count": *parse_fail_count,
                     "num_unique": hll.estimate() as u64,
-                    "min_secs": *min_secs,
-                    "max_secs": *max_secs,
-                }))
+                });
+                let suffix = timestamp_stat_suffix(clock);
+                stats[format!("min_{suffix}")] = json!(*min);
+                stats[format!("max_{suffix}")] = json!(*max);
+                if clock != TimeUnit::Seconds {
+                    stats["timestamp_unit"] = json!(clock);
+                }
+                Some(stats)
             }
             ColumnStatsCollector::Sequence {
                 count,
@@ -1568,14 +1700,28 @@ impl ColumnStatsCollector {
 // Kumo-format stats output (replaces Python bridge)
 // ---------------------------------------------------------------------------
 
-/// Format an epoch-second timestamp to kumo timestamp string.
+/// The `col_stats.json` key suffix of timestamp bounds (`min_secs` for seconds).
+fn timestamp_stat_suffix(clock: TimeUnit) -> &'static str {
+    match clock {
+        TimeUnit::Nanoseconds => "ns",
+        TimeUnit::Microseconds => "us",
+        TimeUnit::Milliseconds => "ms",
+        TimeUnit::Hours => "hours",
+        TimeUnit::Days => "days",
+        TimeUnit::Seconds => "secs",
+        other => unreachable!("{other:?} is not an index clock"),
+    }
+}
+
+/// Format a timestamp in `clock` ticks to kumo timestamp string.
 /// Sentinels (i64::MAX/MIN) and unparseable values → "kumo_timestamp_NaT".
-fn format_kumo_timestamp(epoch_secs: i64) -> String {
-    if epoch_secs == i64::MAX || epoch_secs == i64::MIN {
+fn format_kumo_timestamp(ticks: i64, clock: TimeUnit) -> String {
+    if ticks == i64::MAX || ticks == i64::MIN {
         return "kumo_timestamp_NaT".to_string();
     }
-    match chrono::DateTime::from_timestamp(epoch_secs, 0) {
-        Some(dt) => format!("kumo_timestamp_{}", dt.format("%Y-%m-%d %H:%M:%S")),
+    let (epoch_secs, nanos) = split_parts(ticks, clock);
+    match chrono::DateTime::from_timestamp(epoch_secs, nanos) {
+        Some(dt) => format!("kumo_timestamp_{}", dt.format("%Y-%m-%d %H:%M:%S%.f")),
         None => "kumo_timestamp_NaT".to_string(),
     }
 }
@@ -1780,6 +1926,7 @@ impl FileColStats {
                     welford,
                     hll,
                     tdigest,
+                    ..
                 } => {
                     let count = welford.count + *null_count + *invalid_count;
                     // Base stats
@@ -2050,8 +2197,8 @@ impl FileColStats {
                     count: c,
                     null_count,
                     parse_fail_count,
-                    min_secs,
-                    max_secs,
+                    min,
+                    max,
                     hll,
                     ..
                 } => {
@@ -2082,11 +2229,21 @@ impl FileColStats {
                     );
                     map.insert(
                         kumo_key(name, sk, "MIN", false),
-                        kumo_entry(json!(format_kumo_timestamp(*min_secs)), false, dv, total),
+                        kumo_entry(
+                            json!(format_kumo_timestamp(*min, self.clock)),
+                            false,
+                            dv,
+                            total,
+                        ),
                     );
                     map.insert(
                         kumo_key(name, sk, "MAX", false),
-                        kumo_entry(json!(format_kumo_timestamp(*max_secs)), false, dv, total),
+                        kumo_entry(
+                            json!(format_kumo_timestamp(*max, self.clock)),
+                            false,
+                            dv,
+                            total,
+                        ),
                     );
                     let num_unique = (hll.estimate() as u64).min(total);
                     map.insert(
@@ -2499,12 +2656,14 @@ impl ColumnValueObserver for FileColStats {
                 welford,
                 hll,
                 tdigest,
+                bins,
                 ..
             } => {
                 let fval = value as f64;
                 welford.observe(fval);
                 hll.observe_i64(value);
                 tdigest.observe(fval);
+                bins.add(fval);
             }
             ColumnStatsCollector::Categorical { count, hll, .. } => {
                 *count += 1;
@@ -2516,17 +2675,17 @@ impl ColumnValueObserver for FileColStats {
             }
             ColumnStatsCollector::Timestamp {
                 count,
-                min_secs,
-                max_secs,
+                min,
+                max,
                 hll,
                 ..
             } => {
                 *count += 1;
-                if value < *min_secs {
-                    *min_secs = value;
+                if value < *min {
+                    *min = value;
                 }
-                if value > *max_secs {
-                    *max_secs = value;
+                if value > *max {
+                    *max = value;
                 }
                 hll.observe_i64(value);
             }
@@ -2563,12 +2722,14 @@ impl ColumnValueObserver for FileColStats {
                 welford,
                 hll,
                 tdigest,
+                bins,
                 ..
             } => {
                 if value.is_finite() {
                     welford.observe(value);
                     hll.observe_f64(value);
                     tdigest.observe(value);
+                    bins.add(value);
                 } else {
                     *invalid_count += 1;
                 }
@@ -2643,18 +2804,18 @@ impl ColumnValueObserver for FileColStats {
     fn observe_timestamp(&mut self, col_idx: usize, secs: i64) {
         if let ColumnStatsCollector::Timestamp {
             count,
-            min_secs,
-            max_secs,
+            min,
+            max,
             hll,
             ..
         } = &mut self.cols[col_idx]
         {
             *count += 1;
-            if secs < *min_secs {
-                *min_secs = secs;
+            if secs < *min {
+                *min = secs;
             }
-            if secs > *max_secs {
-                *max_secs = secs;
+            if secs > *max {
+                *max = secs;
             }
             hll.observe_i64(secs);
         }
@@ -2847,6 +3008,17 @@ impl ColumnValueObserver for FileColStats {
             ColumnStatsCollector::Multicategorical { null_count, .. } => *null_count += 1,
             ColumnStatsCollector::Skip => {}
         }
+    }
+
+    #[inline]
+    fn observe_beyond_clock(&mut self, col_idx: usize) {
+        if let ColumnStatsCollector::Timestamp {
+            beyond_clock_count, ..
+        } = &mut self.cols[col_idx]
+        {
+            *beyond_clock_count += 1;
+        }
+        self.observe_parse_failure(col_idx);
     }
 
     #[inline]
@@ -3857,15 +4029,50 @@ mod tests {
     #[test]
     fn test_format_kumo_timestamp_normal() {
         assert_eq!(
-            format_kumo_timestamp(1537401600),
+            format_kumo_timestamp(1537401600, TimeUnit::Seconds),
             "kumo_timestamp_2018-09-20 00:00:00"
         );
     }
 
     #[test]
     fn test_format_kumo_timestamp_sentinels() {
-        assert_eq!(format_kumo_timestamp(i64::MAX), "kumo_timestamp_NaT");
-        assert_eq!(format_kumo_timestamp(i64::MIN), "kumo_timestamp_NaT");
+        assert_eq!(
+            format_kumo_timestamp(i64::MAX, TimeUnit::Seconds),
+            "kumo_timestamp_NaT"
+        );
+        assert_eq!(
+            format_kumo_timestamp(i64::MIN, TimeUnit::Seconds),
+            "kumo_timestamp_NaT"
+        );
+    }
+
+    #[test]
+    fn numerical_values_are_counted_exactly_on_fixed_bins() {
+        let stypes = vec![Some(SemanticType::Numerical)];
+        let mut first = FileColStats::new(&make_test_cols(&stypes));
+        let mut second = FileColStats::new(&make_test_cols(&stypes));
+        for value in [-3.0, 0.0, -0.0, 1.0, 1.1, 1.2] {
+            first.observe_f64(0, value);
+        }
+        second.observe_i64(0, 1);
+        second.observe_f64(0, f64::NAN);
+        second.observe_null(0);
+        first.merge(&mut second);
+
+        let raw = first.to_json(&["x".into()], &[IngestedType::Float64], None, None);
+        assert_eq!(
+            raw["x"]["value_bins"],
+            json!([[-3.25, 1], [0.0, 2], [1.0, 3], [1.125, 1]])
+        );
+
+        let mut wide = ValueBins::default();
+        for exponent in -100..100 {
+            wide.add(2f64.powi(exponent));
+            wide.add(2f64.powi(exponent));
+        }
+        let bins = wide.to_json();
+        assert_eq!(bins.as_array().unwrap().len(), 200);
+        assert_eq!(bins[0], json!([2f64.powi(-100), 2]));
     }
 
     #[test]
@@ -3923,6 +4130,27 @@ mod tests {
 
         assert!(map.contains_key("ts__kumo.timestamp__DROPPED_ROWS__False"));
         assert!(map.contains_key("ts__kumo.timestamp__NUM_UNIQUE__False"));
+    }
+
+    #[test]
+    fn kumo_timestamps_carry_a_fraction_only_when_one_is_stored() {
+        let at = |ticks, clock| format_kumo_timestamp(ticks, clock);
+        assert_eq!(
+            at(1_700_000_000_123_456_789, TimeUnit::Nanoseconds),
+            "kumo_timestamp_2023-11-14 22:13:20.123456789"
+        );
+        assert_eq!(
+            at(1_700_000_000_250, TimeUnit::Milliseconds),
+            "kumo_timestamp_2023-11-14 22:13:20.250"
+        );
+        assert_eq!(
+            at(1_700_000_000_000, TimeUnit::Milliseconds),
+            "kumo_timestamp_2023-11-14 22:13:20"
+        );
+        assert_eq!(
+            at(1_700_000_000, TimeUnit::Seconds),
+            "kumo_timestamp_2023-11-14 22:13:20"
+        );
     }
 
     #[test]

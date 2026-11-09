@@ -29,9 +29,6 @@ build_from_source() {
     fi
     ensure_cargo
     echo "Building DiskGraph wheel from staged source ${source_dir}"
-    # DiskGraph commit 5e20bec6 has no Cargo.lock, so fresh Docker builds can
-    # pick up time 0.3.48, which conflicts with aws-smithy-types 1.5.0.
-    cargo update --manifest-path "${source_dir}/Cargo.toml" -p time --precise 0.3.47
     # The builder stage's distro python3-pip targets py3.10 and imports stdlib
     # distutils (removed in 3.12), so it can't run under the py3.14 base; ensurepip
     # isn't shipped on the base either. Bootstrap a modern pip via get-pip.py.

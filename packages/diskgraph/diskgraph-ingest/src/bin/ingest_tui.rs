@@ -939,7 +939,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut AppState) {
             ]
             .as_ref(),
         )
-        .split(frame.size());
+        .split(frame.area());
     let body = chunks[1];
     let columns = Layout::default()
         .direction(Direction::Horizontal)
@@ -1136,7 +1136,7 @@ fn draw_runs(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
         .style(header_style),
     )
     .block(Block::default().borders(Borders::ALL).title("Runs"))
-    .highlight_style(Style::default().bg(Color::DarkGray));
+    .row_highlight_style(Style::default().bg(Color::DarkGray));
     frame.render_stateful_widget(table, area, &mut app.run_state);
 }
 
@@ -1310,7 +1310,7 @@ fn draw_details(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
 }
 
 fn draw_help(frame: &mut ratatui::Frame) {
-    let area = centered_rect(70, 60, frame.size());
+    let area = centered_rect(70, 60, frame.area());
     let text = vec![
         Line::from("Hotkeys:"),
         Line::from("  j/k: move runs"),
@@ -1328,7 +1328,7 @@ fn draw_help(frame: &mut ratatui::Frame) {
 }
 
 fn draw_profile_view(frame: &mut ratatui::Frame, app: &AppState) {
-    let area = centered_rect(90, 80, frame.size());
+    let area = centered_rect(90, 80, frame.area());
     frame.render_widget(Clear, area);
     let mut header = Vec::new();
     for (idx, tab) in app.profile_tabs.iter().enumerate() {

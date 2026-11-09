@@ -1,627 +1,285 @@
+<!-- This README is also the PyPI project description: keep every link absolute. -->
 <p align="center">
-  <img height="180" src="https://kumo-sdk-public.s3.us-west-2.amazonaws.com/kumo-logo-pink.svg" />
+  <img height="180" src="https://raw.githubusercontent.com/NVIDIA/kumo-engine/main/ui/src/images/kumo_logo_green.svg" alt="Kumo" />
 </p>
 
 ______________________________________________________________________
 
-`kumo.engine` (local) is a local-only, in-process implementation of the Kumo
-relational deep learning pipeline: define tables and graphs, materialize a
-snapshot with `kumo-core`, and train/predict with a GNN — all without a Kumo
-account or a network call. It has no notion of a remote backend, a project, or
-a hosted job.
+# Kumo Engine
 
-For a configured Kumo service (`kumoai_studio.init(url=..., api_key=...)`
-and service-managed training), use the separate `kumo-sdk` package instead.
+Kumo Engine (`kumo.engine`) trains graph neural networks on relational data, in-process on your own machine. Define tables and the relationships between them, describe what to predict with a predictive query, then train a model and run batch prediction.
 
-## Object model
+## Requirements
 
-Pass connectors, tables, graphs, and trainers directly as Python objects;
-there is no backend selection or hosted project/job registry. A `Table`
-holds its source and schema, and a `Graph` holds tables and edges.
-Import the graph-building types together with
-`from kumo.engine import Column, Edge, Graph, Table`. `Column` and `Edge`
-are re-exports of the shared `kumoapi` schema classes.
-`Table.from_source_table()` reads source metadata and may sample rows to
-infer column types; `Graph.snapshot()` performs graph ingestion.
+- Linux x86_64 or ARM64 with glibc 2.34 or newer, or macOS 14 or newer on Apple silicon
+- On Windows, use WSL2 x86_64 with a Linux distribution meeting that glibc requirement
+- CPython 3.11 or newer
+- For production workloads, an NVIDIA GPU with a compatible driver; see [prerequisites](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/prerequisites) and [GPU sizing](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/gpu-sizing)
 
-`Graph.snapshot()`, `Trainer.fit()`, and `Trainer.predict()` are synchronous.
-Training and prediction require an explicit `snapshot=`; retained table rows
-can be used with another snapshot as described under
-[local storage and results](#local-storage-and-results).
+Kumo Engine uses a GPU when one is available: an NVIDIA GPU through CUDA, or an Apple silicon GPU through PyTorch's MPS backend. Without one, training and prediction run on CPU, which is enough for small jobs such as the quickstart below. To choose the device, pass `accelerator=` (`"auto"`, `"cpu"`, `"gpu"`, or `"mps"`) to `Trainer`.
 
-Training-table generation rejects classification targets with fewer than two
-classes or more than the configured class limit, including custom training
-tables. Temporal training requires `train_end_offset < train_start_offset`
-when both are supplied. Prediction anchors before the query's source-data
-range are rejected; future anchors are allowed. These checks share the same
-validation rules as Kumo Studio.
+The bundled native engine requires CPU AES instructions: AES and SSE2 on
+x86-64, or AES and NEON on ARM64. Check that your host or virtual machine
+exposes these features before installing a wheel.
 
-
-Temporal PQL windows support calendar months, for example
-`PREDICT COUNT(events.*, 0, 1, months) FOR EACH users.id`. Month windows and
-integer time options use calendar offsets, including month-end and leap-year
-boundaries, through the same timestamp generator as Kumo Studio.
-
-The package reuses `kumoapi` model plans and connector plugin contracts.
-Its [output configurations](kumo/engine/trainer/output_config.py) hold live
-connector objects rather than the connector IDs used by service requests.
+Windows support for this release is limited to WSL2 using the Linux x86_64
+wheel. Run installation and Python commands inside WSL. Native Windows is not
+supported, and native Windows wheels are not published in this release.
 
 ## Installation
 
-The instructions below are for Linux x86_64. For ARM64 on DGX Spark, follow
-the [DGX Spark installation guide](dgx-spark.md).
-
-```
+```bash
 pip install kumo-engine
 ```
 
-Connector plugins (Snowflake, S3, GCS, BigQuery, Databricks) are installed as
-extras, mirroring `kumo-sdk`:
+Linux x86_64 requires GPU Faiss, which also handles CPU retrieval. macOS keeps
+CPU Faiss and its existing Metal retrieval support. Faiss is optional on ARM64
+Linux: without it, affected link-prediction retrieval raises an installation
+error while other tasks remain available. On ARM64 Linux,
+use `pip install "kumo-engine[cpu]"` for CPU retrieval with a compatible backend
+wheel for your platform and Python version. For CUDA retrieval, install a
+compatible GPU Faiss build directly, building from source on ARM64 Linux if
+needed; see [GPU Faiss on DGX Spark](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/dgx-spark.md#optional-build-gpu-faiss-for-cuda-link-prediction).
+The CPU extra retains the required platform backend on Linux x86_64
+and macOS; it does not configure PyTorch or select the execution device.
+Choose one backend per environment.
 
-```
-pip install "kumo-engine[snowflake]"
-```
+The base install reads local CSV and Parquet files. For other data sources, install the matching extra in the same environment:
 
-## Text columns
+| Data source | Command |
+| --- | --- |
+| Amazon S3 | `pip install "kumo-engine[s3]"` |
+| Google Cloud Storage | `pip install "kumo-engine[gcs]"` |
+| Azure Data Lake Storage Gen2 | `pip install "kumo-engine[adls]"` |
+| BigQuery | `pip install "kumo-engine[bigquery]"` |
+| Snowflake | `pip install "kumo-engine[snowflake]"` |
+| Databricks | `pip install "kumo-engine[databricks]"` |
 
-Text columns are encoded with word vectors. The default model, `glove.6B-50d`,
-ships as the `text` extra:
+Text columns are encoded with word vectors. The `text` extra installs the default model, GloVe 6B 50d:
 
-```
+```bash
 pip install "kumo-engine[text]"
 ```
 
-For any other model, register it in a store and pass the store to the trainer:
+Extras combine, for example `pip install "kumo-engine[s3,text]"`.
 
-```python
-from kumo.engine import EmbeddingModelStore, GloVeVectors, Trainer
-from kumoapi.encoder import TextEmbedding
+Prebuilt wheels are available for Linux x86_64 and ARM64, and macOS on Apple
+silicon. For Linux ARM64 installation and optional GPU
+Faiss setup, follow the [DGX Spark guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/dgx-spark.md).
 
-store = EmbeddingModelStore()
-store.add("desc", GloVeVectors("~/Downloads/glove.42B.300d.zip"))
-plan.column_processing.encoder_overrides = {
-    "articles.detail_desc": TextEmbedding(model="desc"),
-}
-trainer = Trainer(plan, embedding_models=store)
+### Optional: faster training on NVIDIA GPUs
+
+On an NVIDIA GPU, PyTorch Geometric's optional `torch-scatter` extension accelerates the min and max aggregations used in training. Its wheels are built for a specific PyTorch and CUDA version, so install it from PyG's wheel index for your environment, for example for PyTorch 2.9 with CUDA 12.8:
+
+```bash
+pip install torch-scatter --only-binary torch-scatter -f https://data.pyg.org/whl/torch-2.9.0+cu128.html
 ```
 
-`GloVeVectors` takes an official Stanford release `.zip`
-(https://nlp.stanford.edu/projects/glove/), converted once on first use, or a
-directory of converted files; pass `dim=` for zips that hold several sizes.
-Load a trained model with `Trainer.load(bundle, embedding_models=store)`;
-it finds the vectors by content, whatever name they are registered under.
-Custom models implement `kumo.engine.TokenEmbeddingModel`. Kumo never downloads word
-vectors itself.
+Check your versions with `python -c "import torch; print(torch.__version__, torch.version.cuda)"`, and see [PyG's installation guide](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html) for the available combinations.
 
-## Local files
+## Quickstart
 
-Read CSV or Parquet below a filesystem root with `FileConnector`; no credentials
-or connector extra are required. For `restaurant-data/users.csv` with an `id`
-column:
+Predict which users will place an order in the next 30 days, using a sample dataset of users and their orders.
 
 ```python
-from kumo.engine import FileConnector, Graph, Table, configure
+from kumo.engine import (Edge, FileConnector, Graph, PredictiveQuery, Table,
+                         Trainer, datasets)
 
-configure(scratch_dir="/mnt/nvme/kumo-scratch")
-files = FileConnector(root_dir="/mnt/nvme/restaurant-data")
-users = Table.from_source_table(files["users"], primary_key="id")
-snapshot = Graph(tables=[users], edges=[]).snapshot()
-```
-
-Integer and string columns with identifier-like names, such as `user_id`, are
-automatically assigned the `ID` semantic type, including columns that are not
-primary keys. Floating-point columns without a matching name are inferred from
-sampled values.
-Names that indicate numerical quantities, such as `num_items`, `price`, and
-`score`, assign the numerical semantic type to integer and floating-point
-columns, even when the sample contains only a few distinct values.
-Types supplied by the source or set with `with_column()` take precedence over
-automatic inference.
-
-Columns used as foreign keys in supported `Edge` relationships have the `ID`
-semantic type in the graph, even if the source table inferred them as numerical
-or categorical. The source `Table` object retains its original column types.
-Omitted self-relations leave their columns' semantic types unchanged.
-
-Use a table mapping when graph names differ from source names, such as
-`Graph(tables={"users": users})` for a table read from `users.parquet`.
-Edges and PQL use the mapping keys; connector reads keep the original source names.
-
-
-Table names are relative paths, optionally with a `.csv`/`.parquet` suffix,
-or directories of parts in one format. Absolute paths, URIs, traversal and
-globs are unsupported. For CSV timestamps, set `dtype=Dtype.time` (from
-`kumoapi.typing`) and `timestamp_format` with `Table.with_column()`.
-
-The root and scratch directory must not overlap. Directory symlinks and links
-escaping the root are rejected; file symlinks within the root are allowed.
-Keep sources and links unchanged during reads. Versions use paths, sizes and
-modification times, not content hashes; do not restore timestamps after edits.
-Source identities use canonical paths and are not portable across machines.
-
-Use a separate output root for artifacts. Single-file outputs overwrite; use
-an empty directory for partitioned outputs. Append is unsupported. Model
-publication copies bundles to an empty destination and rejects symlinks and
-overlap. It does not register models; reload a published bundle by path with
-`Trainer.load_from_connector(connector, path=...)`.
-
-## Local storage and results
-
-Snapshots, generated tables, trained model bundles, and unexported predictions
-are written below the configured scratch root. It defaults to
-`~/.cache/kumo-engine`; call `configure(scratch_dir=...)` once, before creating
-graphs or trainers, to place it on a larger local disk. `Graph.snapshot()`
-warns if it is on network-backed storage such as EBS. Each `fit()` and
-`predict()` call uses a separate run directory, so a later call does not
-overwrite an earlier result.
-
-Snapshot indexes are keyed by the graph definition and connector-reported
-source versions. A completed index with the same key is reused; a changed
-version gets a separate directory. Snapshot builds for the same graph are
-serialized with a filesystem lock. See [the implementation](kumo/engine/graph.py)
-for the fingerprint and locking rules.
-
-The return values expose the retained files directly:
-
-```python
-from kumo.engine import configure
-
-configure(scratch_dir="/mnt/nvme/kumo-scratch")
-
-fit_result = trainer.fit(training_table, snapshot=snapshot)
-print(fit_result.bundle_dir)       # pass this path to Trainer.load(...)
-
-prediction_result = trainer.predict(prediction_table, snapshot=snapshot)
-print(prediction_result.files)     # selected Parquet files
-predictions = prediction_result.frame  # collect them into a pandas DataFrame
-```
-
-### Holdout predictions
-
-`fit_result.holdout_df()` reads the test-split predictions as a pandas
-DataFrame, like `holdout_df()` on a hosted training job. The file is
-`fit_result.holdout_path`; it is not part of the published model bundle.
-Link-prediction tasks produce no holdout: `holdout_path` is `None` and
-`holdout_df()` raises `FileNotFoundError`. The same holds for results from
-`Trainer.load`. Holdouts above 1 GiB in memory are cut to fit, and
-`fit_result.holdout_truncated` is then `True` (`None` if the size record
-is unreadable; `fit()` still succeeds).
-
-`fit()` requires an explicit graph snapshot. To keep an existing table's rows
-and labels but train with updated graph features, pass the updated snapshot:
-
-```python
-updated_snapshot = graph.snapshot()
-fit_result = trainer.fit(training_table, snapshot=updated_snapshot)
-```
-
-Each fit builds its training task from the selected snapshot and the saved
-training-table artifacts. The table retains its rows, labels, splits, and
-generation settings; it does not retain a graph-bound training plan. Fitting
-does not regenerate or mutate the table.
-
-### Warm-start training
-
-Pass a fitted or restored trainer to start from its selected checkpoint:
-
-```python
-previous = Trainer.load("/models/previous/published-model")
-# Or: Trainer.load_from_connector(registry, location=location)
-trainer = Trainer(model_plan)
-result = trainer.fit(training_table, snapshot=snapshot, warm_start=previous)
-```
-
-Warm start reuses weights, optimizer state, fitted encoders, architecture, and
-neighbor sampling. The destination plan still controls training and refits.
-Its configured `model_plan` remains unchanged for subsequent ordinary fits;
-the effective warm-start plan is saved in the result's bundle. New bundles
-select the same checkpoint as hosted warm start: full refit, then train/validation
-refit, then the original fit, according to which modes completed.
-The bundle's persisted selected plan is authoritative, even if the source
-trainer's public `model_plan` was subsequently edited. Task types must match;
-forecasting warm starts are unsupported. Graph data is supplied by `snapshot`.
-The source bundle remains unchanged; the result is a separate reloadable bundle.
-
-If the source checkpoint was refitted on train/validation or all rows,
-warm-starting on overlapping data can reuse rows that the destination treats
-as held out. Validation or test metrics on those rows can be optimistic.
-For independent evaluation, use held-out rows that were not used to train
-or refit the source model.
-
-Bundles produced before selected trial plans were persisted may contain an
-AutoML search space instead of the fitted architecture; those bundles are
-still loadable for prediction but are not reliable warm-start sources.
-
-### Caller-supplied training and prediction rows
-
-A connector table can supply labeled training rows directly. The table uses
-the standard `ENTITY1`, `TARGET1` and, for temporal queries, `TIMESTAMP`
-columns. A named split column contains `0` for train, `1` for validation and
-`2` for test; a weight column carries per-row loss weights:
-
-```python
-from kumo.engine import TrainingTable
-from kumoapi.train import TrainingTableSpec
-
-training_table = TrainingTable.from_source_table(
-    files["curated_training.parquet"],
-    TrainingTableSpec(weight_col="WEIGHT", split_col="SPLIT"),
-    pq=pquery,
-    snapshot=snapshot,
+files = FileConnector(root_dir=datasets.shop())
+users = Table.from_source_table(files["users"], primary_key="user_id")
+orders = Table.from_source_table(files["orders"], primary_key="order_id",
+                                 time_column="order_time")
+graph = Graph(
+    tables={"users": users, "orders": orders},
+    edges=[Edge(src_table="orders", fkey="user_id", dst_table="users")],
 )
-result = trainer.fit(training_table, snapshot=snapshot)
-```
-
-When the source has no split column, the task's normal inferred split assigns
-the supplied rows. Pass `TrainingTableGenerationPlan(split=...)` to select a
-different split explicitly.
-
-### Exporting a generated training table
-
-To train with per-row weights, export a generated table, add a weight column,
-and load it back:
-
-```python
-from pathlib import Path
-
-import pyarrow as pa
-import pyarrow.parquet as pq
-from kumo.engine import FileConnector, TrainingTable, TrainingTableOutputConfig
-from kumoapi.train import TrainingTableSpec
-
-training_table = pquery.generate_training_table(snapshot)
-exports = FileConnector(root_dir="/data/exports")
-training_table.export(TrainingTableOutputConfig(exports, "training_table"))
-
-weighted_dir = Path("/data/exports/weighted")
-weighted_dir.mkdir()
-for part in sorted(Path("/data/exports/training_table").glob("*.parquet")):
-    source = pq.ParquetFile(part)
-    schema = source.schema_arrow.append(pa.field("WEIGHT", pa.float64()))
-    with pq.ParquetWriter(weighted_dir / part.name, schema) as writer:
-        for batch in source.iter_batches():
-            weight = pa.repeat(pa.scalar(1.0), batch.num_rows)
-            writer.write_batch(batch.append_column("WEIGHT", weight))
-
-weighted = TrainingTable.from_source_table(
-    exports["weighted"],
-    TrainingTableSpec(weight_col="WEIGHT", split_col="SPLIT"),
-    pq=pquery,
-    snapshot=snapshot,
-)
-trainer.fit(weighted, snapshot=snapshot)
-```
-
-Replace the constant `1.0` with your own per-row weights. Each exported part
-is read and rewritten one batch at a time, so the table never has to fit in
-memory. When the export goes to a Snowflake or Databricks
-table, add the `WEIGHT` column in the warehouse instead and load that table.
-
-The export holds exactly the rows of the generated train, validation and test
-stages: `ENTITY1`, `TIMESTAMP`, `TARGET1`, any sequence columns the task needs
-(link-prediction target frequencies, forecasting labels), and `SPLIT` (`0`
-train, `1` validation, `2` test). Loading it with `split_col="SPLIT"` keeps
-every row in its original stage. File and object-store destinations (local,
-S3, GCS) are written as a directory of Parquet parts; exporting the same table
-again replaces it, and a different table needs an empty directory. Snowflake
-and Databricks destinations are tables, with `write_mode` choosing overwrite
-or append.
-
-- For link prediction, `WEIGHT` must be a list with one weight per element of
-  `TARGET1`.
-- Forecasting tables are loaded back without `split_col`; their split is
-  recomputed from the timestamps.
-- A static link-prediction table that was split per link loses the rule that
-  excludes a user's training links from validation and test ranking, so its
-  validation metrics can differ from the original.
-- Snowflake stores list columns as JSON strings, so export link-prediction
-  and forecasting tables to files.
-
-A custom prediction table similarly supplies the exact entities and anchor
-times to score. It contains `ENTITY1` and, for a temporal query, `TIMESTAMP`;
-no target column is needed:
-
-```python
-from kumo.engine import PredictionTable
-
-prediction_table = PredictionTable.from_source_table(
-    files["curated_population.parquet"],
-    pq=pquery,
-    snapshot=snapshot,
-    plan=trainer.training_table_generation_plan,
-)
-predictions = trainer.predict(prediction_table, snapshot=snapshot)
-```
-
-Both constructors stage and validate their source rows immediately. Their
-results retain local artifact paths and query/generation metadata, without a
-connector registry, backend IDs, or a graph-bound plan. The later `fit` or
-`predict` call selects its graph data independently with `snapshot=`.
-
-Keep the scratch directory for as long as those paths must remain usable.
-`ModelOutputConfig` and `PredictionOutputConfig` can additionally copy results
-through a connector when they need storage outside the scratch root.
-
-For forecasting, custom rows must also carry the precomputed sequence columns
-that the corresponding generated table would contain: `future_labels` for
-training, `autoregression_labels` when lag features are enabled, and
-`year_over_year_labels` when year-over-year features are enabled. The custom
-constructors preserve these columns; they do not derive historical or future
-sequences from `ENTITY1`, `TARGET1`, and `TIMESTAMP` alone.
-
-## BigQuery staged ingestion
-
-BigQuery streams through the Storage Read API by default. For large tables,
-configure an owned GCS prefix to export Parquet and download it locally:
-
-```python
-from kumo.engine import BigQueryConnector
-
-events = BigQueryConnector(
-    project_id="data-project",
-    dataset_id="analytics",
-    staging_uri="gs://data-staging/kumo/run-123",
-    require_staged=True,
-)
-```
-
-`require_staged=True` fails if that prefix cannot be used; it never silently
-falls back to streaming. Supplying `staging_uri` without `require_staged`
-keeps staged-first behavior with the existing read-time streaming fallback.
-
-## Databricks staged ingestion
-
-Databricks streams through CloudFetch by default. To unload Parquet through
-an existing Unity Catalog volume and download it locally:
-
-```python
-from kumo.engine import DatabricksConnector, DatabricksIdentity
-
-identity = DatabricksIdentity(
-    host="https://workspace.cloud.databricks.com",
-    client_id="service-principal-id",
-    client_secret="...",
-)
-events = DatabricksConnector(
-    catalog="main",
-    schema_name="analytics",
-    warehouse_id="warehouse-id",
-    identity=identity,
-    staging_volume_path="/Volumes/main/kumo/staging",
-    require_staged=True,
-)
-```
-
-`require_staged=True` propagates staging failures without streaming fallback.
-Supplying only `staging_volume_path` keeps the backend's staged-first behavior
-and existing fallback policy. The configured identity needs access to the
-volume as well as the source table.
-
-## Custom SQL tables
-
-A Snowflake, Databricks or BigQuery connector can define a table from a
-read-only `SELECT`. The query runs in the warehouse and only its result is
-ingested, through the same reader (and staging options) as a named table:
-
-```python
-from kumo.engine import Edge, Graph, Table
-
-active_users = Table.from_sql(
-    events,
-    "SELECT user_id, country, signup_ts FROM users WHERE active",
-    primary_key="user_id",
-    time_column="signup_ts",
-)
-graph = Graph({"active_users": active_users, "orders": orders},
-              edges=[Edge(src_table="orders", fkey="user_id",
-                          dst_table="active_users")])
 snapshot = graph.snapshot()
+
+pquery = PredictiveQuery(
+    graph, "PREDICT COUNT(orders.*, 0, 30, days) > 0 FOR EACH users.user_id")
+trainer = Trainer(pquery.suggest_model_plan(snapshot))
+training_result = trainer.fit(pquery.generate_training_table(snapshot),
+                              snapshot=snapshot)
+
+result = trainer.predict(pquery.generate_prediction_table(snapshot),
+                         snapshot=snapshot, binary_classification_threshold=0.5)
+print(result.frame.head())
 ```
 
-`events.sql(query)` returns the `SQLSourceTable` to pass to
-`Table.from_source_table` instead. The query must be one statement with
-named output columns and may only read tables inside the connector's own
-database/catalog/project and schema/dataset; these checks are shared with
-the cloud platform. Schema inference samples the query's result, and on
-BigQuery a query estimated to scan more than 10 GiB is not sampled. To skip
-inference, pass `Table(events, name, definition=kumoapi.table.TableDefinition(
-cols=..., source_table=events.sql(query).to_source_table(), ...))`.
+To use your own data, point `FileConnector` at a directory of CSV or Parquet files instead of `datasets.shop()`.
 
-## Model-plan suggestions
+`result.frame` is a pandas DataFrame with one row per user: `ENTITY`, the predicted label `TARGET_PRED`, and the class probabilities `False_PROB` and `True_PROB`.
 
-Given a `pquery = PredictiveQuery(graph, query)` and its existing
-`snapshot = graph.snapshot()`, suggest a plan locally, inspect it and customize
-it before constructing a trainer:
+`generate_prediction_table(snapshot)` predicts as of the latest `order_time` in the snapshot, so the 30 days start there. To predict from another time, pass `prediction_time=` a timezone-naive `datetime`, read as UTC.
+
+`graph.snapshot()` ingests the tables into an on-disk graph index under the scratch directory, which also holds training runs, model bundles, and predictions. It defaults to `~/.cache/kumo-engine`; to put it on a large local disk, call `kumo.engine.configure(scratch_dir=...)` first.
+
+## Agent skills
+
+Kumo Engine ships an agent skill, `kumo-data-science`, that teaches a coding agent to build, train, and run Kumo models with this version of the SDK. Install it for your agent:
 
 ```python
-from kumo.engine import Trainer
-from kumoapi.model_plan import RunMode
+import kumo.engine as kumo
 
-plan = pquery.suggest_model_plan(snapshot, run_mode=RunMode.FAST)
-print(plan.training_job.metrics)
-plan.optimization.max_epochs = 5
-trainer = Trainer(plan)
+kumo.install_skills()          # every agent found locally, or Genie Code on Databricks
+kumo.install_skills("claude")  # or "codex", "coco" (Snowflake Cortex Code), "genie" (Databricks Genie Code), "genie-cli" (Genie Code CLI)
 ```
 
-Suggestions use graph/query metadata without starting training or generating
-a training table.
-Inferred settings are resolved during training.
+`scope="project"` installs into the current project instead of your home directory. From a shell, run `python -m kumo.engine.skills`; for a Snowsight workspace or a Cortex Extension, name a Snowflake connection from `connections.toml`, as the `snow` CLI uses: `python -m kumo.engine.skills coco --scope workspace --workspace MY_WS --connection my_conn`.
 
-## Status
+The skill is versioned with the wheel. After upgrading `kumo-engine`, run `install_skills()` again; `import kumo.engine` warns when a local install is out of date and names the call that updates it, and `python -m kumo.engine.skills --check` lists your installs.
 
-The core pipeline is implemented and runs real `kumo-core`/DiskGraph
-training and batch prediction, in-process: `Table`/`Graph`/`Graph.snapshot()`,
-`PredictiveQuery.validate`/`get_task_type`/`suggest_model_plan`/
-`generate_training_table`/`generate_prediction_table`, and
-`Trainer.fit`/`predict`/`load` (direct local bundle reload) and
-`load_from_connector` (model reload from local/S3/GCS paths or Snowflake).
+Without the wheel, download the skill from the GitHub release for your version: `kumo-data-science-generic.zip` (Claude Code, Codex, other agents), `kumo-data-science-coco.zip` (Snowflake Cortex Code) or `kumo-data-science-genie.zip` (Databricks Genie Code). Unzip it into your agent's skills directory.
 
-Not yet implemented, or explicitly out of scope for this package:
+## Visualize table relationships
 
-- `PredictiveQuery.suggest_prediction_table_plan`/`suggest_distilled_model_plan`
-  -- deferred by design, not merely unimplemented.
-- BigQuery stores predictions and embeddings only: it can't be an
-  `export_config` connector or a `Trainer.load_from_connector(...)` target.
-- Scoped per-table ingest credentials, and a table staged across multiple
-  directories, both raise `NotImplementedError` in `Graph.snapshot()`.
-
-See inline `TODO(local-sdk)` markers for the specifics of each gap.
-
-### Reloading a local model
-
-Every successful `Trainer.fit(training_table, snapshot=snapshot)` returns a
-result whose `bundle_dir` already exists on local disk, with the training metadata needed
-for reload. No export is required:
+Display declared tables and relationships in a notebook, or export SVG, PDF, or Markdown:
 
 ```python
-result = trainer.fit(training_table, snapshot=snapshot)
-# In a fresh Python process:
-restored = Trainer.load(result.bundle_dir)  # pass the recorded path
+graph.visualize()
+graph.visualize("relationships.svg", show_cols=True)
+graph.visualize("relationships.pdf", show_cols=True, layout="compact")
+graph.visualize("relationships.md")
+graph.visualize(layout="compact")
 ```
 
-For an exported model, use
-`Trainer.load_from_connector(connector, path="model/version")`, or
-`location=ModelRegistryLocation(...)` for Snowflake Model Registry. Rebuild
-the live graph and snapshot before generating prediction inputs. Bundles
-contain trained artifacts, not source data or graph storage.
+Visualization reads no source data by default and uses Kumo Engine's existing dependencies.
+The return value is SVG text with notebook display support.
+The default view includes primary keys, relationship foreign keys, and declared time (`TS`) and end-time (`TE`) columns.
+`show_cols=True` adds other columns up to 10 rows per table, or 5 above 10 tables; key and time columns always remain visible.
+Graphs are limited to 30 tables and require valid declared schemas without self-relations.
 
-When `fit(..., export_config=...)` publishes a model, its result also exposes
-`published_model`, the connector's `PublishedModel` with the actual name,
-version and URI. Without an export this is `None`. Training metrics and a
-small projection of the training metadata are passed to the connector;
-Snowflake records them for Kumo model discovery and registry comparison.
-For a registry-assigned version, retain that exact version for later reload:
+`layout="auto"` chooses Standard or Compact from graph structure; either is also selectable in the notebook.
+Drag to pan, use the controls or Ctrl/Cmd+wheel to zoom, and choose Fit to reset the view.
+Hover or focus a header or column for details without moving the graph.
+The default notebook view follows the browser’s light or dark appearance; SVG and PDF exports use the light palette.
+Notebook display automatically uses the widget protocol in detected Snowflake Workspace notebooks; Databricks and other hosts use HTML.
+Installing the Snowflake connector extra does not select the display protocol.
+HTML interactivity requires trusted output; fullscreen also needs permission from the notebook host.
+Saved HTML output includes the complete, sample-free SVG image in the requested initial layout and “Rerun this cell to activate animation.”
+Rerun the visualization cell once after upgrading and save the notebook to store this fallback; VS Code Restricted Mode can refuse HTML/SVG output entirely.
+The Snowflake Workspace view uses the environment's `anywidget>=0.9,<1` and `ipywidgets` packages, imported only when displaying the result.
+Snowflake Workspace Runtime 2.6 and later supplies these packages, including the documented GPU Runtime 2.9 target; Runtime 2.5 and earlier requires installation according to your environment's package policy.
+See [Snowflake's widget installation guidance](https://docs.snowflake.com/en/user-guide/ui-snowsight/notebooks-in-workspaces/notebooks-in-workspaces-interactive-widgets#installation).
+Kumo Engine does not install these packages as base dependencies or connector extras.
+If the widget packages are unavailable or incompatible, the Workspace view shows a static graph and a diagnostic; SVG, PDF, and Markdown exports remain available.
+The optional `graph.visualize().as_widget()` helper explicitly selects the same widget view on compatible hosts.
+The widget view uses the same controls, and widget restoration still depends on the notebook host.
+It inherits a host color scheme declared when mounted, with browser appearance as the fallback.
+Each displayed view has its own camera; redisplay after restarting the kernel.
+SVG exports contain the initial arrangement and native tooltips.
+The Export commands button reveals a selectable PDF save command followed by a Markdown save command.
+Run the desired command with your graph variable to save the file in the notebook filesystem.
+Opening the panel does not generate a PDF, start a download, or write a file.
+The PDF includes a paginated index of all declared tables, columns, data types, key/time roles, and connections, including columns omitted from the diagram.
+Passing a `.pdf` path to `visualize` saves the same document on the filesystem where Kumo Engine runs, using the requested initial layout; it overwrites an existing file.
+PDF export uses Matplotlib and its embedded DejaVu fonts; unsupported characters are shown as explicit Unicode escapes.
+For example, `_ = graph.visualize("graph.pdf", layout="standard")` saves a PDF in the notebook's working directory; use `layout="compact"` for Compact.
+Use `_ = graph.visualize("graph.md")` to save Markdown.
+The assignment suppresses automatic display of the returned SVG.
+In Snowflake Workspaces, retrieve the resulting file through the workspace file browser; saving requires write access to the directory.
+This writes a notebook-side file and does not start a browser download.
+
+Passing a `.md` or `.markdown` path writes a Mermaid relationship diagram and Markdown tables containing every declared column, data type, key/time role, and outgoing connection.
+The file is saved on the machine running Kumo Engine and overwrites an existing file.
+Mermaid diagrams render on GitHub and in compatible Markdown viewers, using the viewer's layout rather than the notebook arrangement.
+The schema tables are readable without Mermaid support.
+
+`show_samples=True` shows up to six non-null examples per visible column in two columns and up to three rows, sampled independently from up to 30 preview rows per table.
+The default `show_samples=False` hides samples and reads no source data.
+Previews can run warehouse queries and incur costs; the row limit does not bound bytes scanned.
+Unavailable or empty previews are labeled.
+Sample values are saved in notebook HTML or widget state, but never included in SVG, PDF, or Markdown exports.
+
+### Developing another notebook widget
+
+Use the private `_widget` helpers to define one feature specification for both notebook transports.
+The shared shell supplies theme tokens, controls, view identity, and disposal; keep feature behavior inside its initializer.
+This chart uses the same specification with trusted HTML and with real widget MIME:
 
 ```python
-result = trainer.fit(
-    training_table,
-    snapshot=snapshot,
-    export_config=ModelOutputConfig(
-        snowflake, location=ModelRegistryLocation("CHURN_GNN")),
+from IPython.display import HTML, display
+from kumo.engine._widget import (
+    CSS_THEME, button, render_anywidget, render_widget,
 )
-published = result.published_model
-restored = Trainer.load_from_connector(snowflake, location=ModelRegistryLocation(
-    published.name, version=published.version))
-```
 
-S3, GCS and file connectors expose their published path/URI through the same
-result; this does not add registry versioning to those destinations.
-
-## Prediction and embedding destinations
-
-Request both artifacts with separate destinations. Mapping keys select which
-artifacts to generate; paths receive no artifact-name suffix. Use a trailing
-`/` for a dataset directory, regardless of the number of output parts.
-
-```python
-from kumo.engine import PredictionOutputConfig, S3Connector
-
-outputs = PredictionOutputConfig(
-    connector=S3Connector(),
-    output_paths={
-        "predictions": "s3://my-bucket/predictions/project/",
-        "embeddings": "s3://my-bucket/embeddings/project/",
-    },
-)
-result = trainer.predict(prediction_table, snapshot=snapshot,
-                         output_config=outputs)
-```
-
-Use the connector's existing identity configuration, or its ambient credential
-chain. Engine supports this interface with S3, GCS, and local file connectors;
-ADLS is currently available through the hosted SDK only. Rooted connectors also
-accept relative destinations. Do not combine `output_paths` with `artifact_type`
-or `table_name`. Existing single-artifact configurations remain supported.
-
-`result.files`, `result.frame`, and `result.num_rows` refer to predictions when
-both artifacts were requested, or embeddings for an embeddings-only request.
-`result.export(outputs)` exports existing artifacts without rerunning inference;
-it cannot generate artifacts absent from the original run, and rejects
-`extra_fields` (pass them to `Trainer.predict(output_config=...)`). Directory exports
-retain the existing ownership checks: retries can reuse their own output, but
-a different export requires an empty destination. Explicit `.parquet`/`.csv`
-paths retain existing single-file/multipart export behavior.
-
-Prediction and embedding destinations are exported independently. If a later
-output fails, earlier outputs may already be complete and the failed directory
-may contain partial parts without `_SUCCESS`. Retry the retained result's
-`export()` with the same destinations. Directory retries remove an existing
-`_SUCCESS` before copying and publish it again only after that destination
-completes; this requires permission to delete that marker. Readers should wait
-for `_SUCCESS` before consuming a directory. Exports do not provide a
-transaction across destinations, atomic single-file replacement, or isolation
-from concurrent writers or readers.
-
-## BigQuery prediction output
-
-A `BigQueryConnector` writes predictions or embeddings to a table in its own
-dataset, either during `predict` or later through `result.export`:
-
-```python
-from kumo.engine import (
-    BigQueryConnector,
-    BigQueryIdentity,
-    PredictionOutputConfig,
-)
-from kumoapi.jobs import PredictionArtifactType, WriteMode
-
-output = BigQueryConnector(
-    identity=BigQueryIdentity(),  # application default credentials
-    project_id="data-project",
-    dataset_id="predictions",
-    staging_uri="gs://data-staging/kumo",
-)
-result = trainer.predict(
-    prediction_table,
-    snapshot=snapshot,
-    binary_classification_threshold=0.5,
-    output_config=PredictionOutputConfig(
-        connector=output,
-        artifact_type=PredictionArtifactType.PREDICTIONS,
-        table_name="user_scores",
+chart = dict(
+    class_name="kumo-contribution",
+    body=(
+        '<div class="kumo-widget-toolbar">'
+        + button("chart-toggle", "Toggle contribution", text="↔")
+        + '</div><svg width="320" height="48" role="img" '
+        'aria-label="Contribution"><rect y="8" height="24"/></svg>'
     ),
+    style=f'.kumo-contribution rect{{fill:{CSS_THEME["accent"]}}}',
+    data={"fraction": 0.75},
+    script="""
+const svg=host.querySelector('svg'),bar=svg.querySelector('rect');
+const toggle=host.querySelector('.chart-toggle');
+let fraction=data.fraction;
+const update=()=>{bar.setAttribute('width',300*fraction);
+svg.setAttribute('aria-label','Contribution: '+Math.round(100*fraction)+'%')};
+toggle.addEventListener('click',()=>{fraction=1-fraction;update()},{signal});
+update();toggle.disabled=false;
+""",
 )
-# Later, without rerunning inference:
-result.export(PredictionOutputConfig(
-    connector=output,
-    artifact_type=PredictionArtifactType.PREDICTIONS,
-    table_name="user_scores_history",
-    write_mode=WriteMode.APPEND,
-))
+display(HTML(render_widget(**chart)))
+display(render_anywidget(**chart))  # uses environment-provided widget packages
 ```
 
-- `table_name` is an unqualified table ID. Each configuration writes one
-  artifact; `output_paths` is for file and object-store connectors.
-- `OVERWRITE` replaces the table's rows and schema. `APPEND` adds rows and is
-  strict: every output column must be a column of the existing table with the
-  same type (integers may also go into `FLOAT` or `NUMERIC` columns, and an
-  all-null column fits any type); otherwise it fails before writing and names
-  each mismatched column and its types.
-- Every export commits at once, so a failed export leaves the table's rows
-  unchanged. Rerunning an `APPEND` adds the rows again; an `APPEND` to a
-  missing table creates it first.
-- Output is written the way BigQuery input is read. With a usable
-  `staging_uri`, output files are uploaded under
-  `<staging_uri>/_kumo.export/<id>/`, loaded by one load job and deleted.
-  Otherwise they are streamed through the BigQuery Storage Write API into
-  pending streams committed in one call; `OVERWRITE` commits into an expiring
-  `_kumo_export_*` table and replaces the destination with one
-  `WRITE_TRUNCATE` query over it. `require_staged=True` fails instead of
-  streaming when staging is unusable. A bucket outside the dataset's location
-  is not used for staging.
-- Cost: load jobs are free; the Storage Write API is billed per GB beyond its
-  monthly free tier, and a streamed `OVERWRITE` also bills the query over the
-  output. Prefer staging for large or frequent exports.
-- Rows written through the Storage Write API are queryable immediately, but
-  table metadata such as `num_rows` lags, and a copy job run right after may
-  miss them.
-- `OVERWRITE` keeps the table's partitioning and clustering, and the
-  descriptions and policy tags of columns that keep their name and type. A
-  streamed `OVERWRITE` restores them just after replacing the rows.
-- Embeddings land as `REPEATED FLOAT` columns, timestamps as `TIMESTAMP`.
-- `predict` checks the destination before scoring: the dataset exists in the
-  connector's `location`, the identity can create or update the table and run
-  load jobs or write streams, and staging is usable when required. The
-  identity needs `roles/bigquery.dataEditor` on the dataset,
-  `roles/bigquery.jobUser` on the billing project and, with staging,
-  `roles/storage.objectAdmin` on the bucket.
+`render_anywidget` lazily imports the optional dependency and provides an AFM `render({model, el})` entry point.
+It transports markup and structured `data` in model state; executable feature code stays in the module.
+Each view initializes its own closure, so repeated displays of one model have independent controls and camera state.
+The specification is a snapshot; updating Python dictionaries does not update existing views.
+
+- Escape user text in markup and use `data` for values; never interpret model state as code or include executable scripts in `body`.
+  Keep frontend code self-contained, without CDN imports, `eval`, or `new Function`.
+- Initializers receive `host`, `widgetId`, `data`, `signal`, and `onDispose(callback)`.
+  Scope queries to `host`, attach listeners with `signal`, and enable controls after initialization.
+  Register timer/animation cancellation, observer disconnection, pointer release, and object-URL revocation with `onDispose`; the shell invokes cleanup on HTML removal or AFM disposal.
+- Scope CSS under the feature's root class and use `CSS_THEME` for interactive colors.
+  Both shells retain `nodarkmode`; the widget transport inherits a declared host color scheme available at mount and otherwise follows browser appearance.
+  Redisplay to inherit a scheme that becomes available only after mounting.
+- Use `widgetId` for IDs created by the initializer; for IDs and references already in SVG markup, pass their shared unique prefix as `namespace` so each view rewrites it independently.
+- Keep static export serialization in the feature, using the resolved `THEME` palette for light exports.
+  Notebook-only sample values may enter saved HTML or widget state, but must stay out of static exports.
+- HTML needs a trusted execution surface; anywidget needs a compatible active notebook host.
+  Request fullscreen directly from a user action and handle rejection; use `host.matches(":fullscreen")` to recognize the actual fullscreen element inside Shadow DOM.
+  Fullscreen remains subject to host permissions, and widget support alone does not prove that capability.
+  Show explicit notebook-file export commands with accurate destinations; keep file generation outside display initialization.
+
+AFM initializes once attached; temporary host detachment preserves the view until the host calls its disposer.
+Disposed views must be rendered again.
+
+## Training explanations
+
+`training_result.explanations` reads existing training gradient scores, column
+cohorts, and sampled graphs. For example, after checking availability:
+
+```python
+explanations = training_result.explanations
+if explanations.availability["gradient"].available:
+    print(explanations.gradient_scores().to_pandas())
+    figure, axis = explanations.plot_gradient(top_k=20)
+    figure.savefig("training-importance.png", bbox_inches="tight")
+```
+
+Retain the training run separately from its published model bundle. See the
+[training explanation guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/explainability.md)
+for reopening a run, choosing cohort classes, loading sampled graphs, and
+interpreting availability and scores.
+
+## Documentation
+
+- [ADLS connector guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-adls/README.md): setup, authentication, supported reads and exports.
+- [Kumo Engine documentation](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/overview): prerequisites, GPU sizing, installation, and end-to-end workflows. Its User Code Guide covers connecting data, tables and graphs, training, and prediction.
+- [MLOps](docs/mlops.md): lineage manifests, the artifact root, tracking and registries.
+- [Predictive query examples](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/workflows-and-solutions/predictive-query-examples): common prediction tasks written as predictive queries.
+
+## Support
+
+Report bugs and request features in [GitHub Issues](https://github.com/NVIDIA/kumo-engine/issues). To report a security vulnerability, follow [SECURITY.md](https://github.com/NVIDIA/kumo-engine/blob/main/SECURITY.md) instead of opening an issue.
+
+## License
+
+Kumo Engine is licensed under the [Apache License 2.0](https://github.com/NVIDIA/kumo-engine/blob/main/LICENSE). The wheel also bundles third-party components under their own licenses, listed in [THIRD-PARTY.txt](https://github.com/NVIDIA/kumo-engine/blob/main/THIRD-PARTY.txt).

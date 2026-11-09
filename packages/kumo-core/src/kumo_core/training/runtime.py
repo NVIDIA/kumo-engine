@@ -10,24 +10,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, Protocol, Tuple
 
 import psutil
-from diskgraph import SamplerEngine
+
+from kumo_core.diskgraph.metadata import DiskgraphSchema, load_diskgraph_schema
 from kumo_core.diskgraph.stores import (
     DiskgraphFeatureStore,
-    DiskgraphGraphStore,
     diskgraph_auto_config,
     diskgraph_index_size_bytes,
 )
 
 if TYPE_CHECKING:
     from kumo_core.embedding_models import EmbeddingModelStore
-
-
-class TrainingDataRuntime(Protocol):
-    def create_graph_sampler(self, *args: Any, **kwargs: Any) -> Any:
-        ...
-
-    def create_datamodule(self, *args: Any, **kwargs: Any) -> Any:
-        ...
+    from kumo_core.instrumentation import TrainingInstrumentation
 
 
 class TrainingArtifactRuntime(Protocol):
@@ -48,19 +41,19 @@ class DiskgraphTrainingRuntime(Protocol):
     ) -> dict[str, Any]:
         ...
 
-    def create_feature_and_graph_stores(
+    def create_feature_store_and_schema(
         self,
         *,
         index_path: str,
         encoders: Any,
         entity_table_names: list[str],
         time_col_dict: dict[str, str],
-    ) -> tuple[Any, Any]:
+    ) -> tuple[DiskgraphFeatureStore, DiskgraphSchema]:
         ...
 
 
 class LocalDiskgraphTrainingRuntime:
-    """Construct core DiskGraph stores for a driver-local snapshot."""
+    """Construct feature access and schema metadata for a local snapshot."""
     def auto_config(
         self,
         *,
@@ -74,23 +67,23 @@ class LocalDiskgraphTrainingRuntime:
             estimated_edges=estimated_edges,
         )
 
-    def create_feature_and_graph_stores(
+    def create_feature_store_and_schema(
         self,
         *,
         index_path: str,
         encoders: Any,
         entity_table_names: list[str],
         time_col_dict: dict[str, str],
-    ) -> tuple[Any, Any]:
+    ) -> tuple[DiskgraphFeatureStore, DiskgraphSchema]:
+        schema = load_diskgraph_schema(index_path)
         feature_store = DiskgraphFeatureStore.for_explain(
             index_path=index_path,
             encoders=encoders,
             entity_table_names=entity_table_names,
             time_col_dict=time_col_dict,
+            schema=schema,
         )
-        graph_store = DiskgraphGraphStore(index_path=index_path)
-        feature_store.set_sampler_engine(SamplerEngine(index_path))
-        return feature_store, graph_store
+        return feature_store, schema
 
 
 class LocalTrainingArtifactRuntime:
@@ -143,11 +136,13 @@ class LocalAutoTrainingRuntime:
         resolved_task: Any,
         run_name: Optional[str] = None,
         embedding_models: Optional[EmbeddingModelStore] = None,
+        accelerator: str = 'auto',
     ) -> None:
         self.home_dir = str(Path(home_dir))
         self.resolved_task = resolved_task
         self.run_name = run_name
         self.embedding_models = embedding_models
+        self.accelerator = accelerator
         self.artifact_runtime = LocalTrainingArtifactRuntime(self.home_dir)
         self.diskgraph_runtime = LocalDiskgraphTrainingRuntime()
         self.explain_runtime = LocalExplainRuntime()
@@ -183,6 +178,7 @@ class LocalAutoTrainingRuntime:
 
     def trainer_runtime_kwargs(self) -> Dict[str, Any]:
         return {
+            'accelerator': self.accelerator,
             'artifact_runtime': self.artifact_runtime,
             'diskgraph_runtime': self.diskgraph_runtime,
             'explain_runtime': self.explain_runtime,
@@ -202,6 +198,8 @@ def local_training_bindings(
     training_input: Any,
     run_name: Optional[str] = None,
     embedding_models: Optional[EmbeddingModelStore] = None,
+    accelerator: str = 'auto',
+    instrumentation: Optional[TrainingInstrumentation] = None,
 ) -> Any:
     r"""Binds one resolved training input to this process.
 
@@ -218,8 +216,9 @@ def local_training_bindings(
         runtime=LocalAutoTrainingRuntime(home_dir=training_input.home_dir,
                                          resolved_task=training_input.task,
                                          run_name=run_name,
-                                         embedding_models=embedding_models),
-        instrumentation=NoOpTrainingInstrumentation(),
+                                         embedding_models=embedding_models,
+                                         accelerator=accelerator),
+        instrumentation=instrumentation or NoOpTrainingInstrumentation(),
         resolve_vital_artifacts=resolve_vital_artifact_sources,
         # The vital bundle lands beside the run. A platform backend would then
         # upload it to a registry; locally the path is the identity.

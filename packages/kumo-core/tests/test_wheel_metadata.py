@@ -45,6 +45,7 @@ def _wheel_requirements(tmp_path: Path) -> dict[str, Requirement]:
 def test_wheel_owns_training_dependency_closure(tmp_path: Path) -> None:
     requirements = _wheel_requirements(tmp_path)
 
+    assert "orjson" not in requirements
     assert {
         "diskgraph",
         "filelock",
@@ -85,7 +86,7 @@ def test_wheel_owns_training_dependency_closure(tmp_path: Path) -> None:
     assert Version("2025.3.0") in fsspec_versions
     assert Version("2025.5.1") in fsspec_versions
     assert Version("2025.5.2") in fsspec_versions
-    assert str(requirements["pytorch-lightning"].specifier) == "==2.6.5"
+    assert str(requirements["pytorch-lightning"].specifier) == "==2.6.6"
     tensorboard_versions = requirements["tensorboard"].specifier
     assert Version("2.16.2") in tensorboard_versions
     assert Version("2.17.1") in tensorboard_versions
@@ -121,7 +122,12 @@ def test_wheel_contains_migrated_runtime_but_not_test_support(
     assert expected_modules <= names
     assert "kumo_core/pyg_lib_trace.py" not in names
     assert "kumo_core/sampling/metapath.py" not in names
-    assert "kumo_core/features/stores/in_memory_graph.py" not in names
+    retired_stores = {
+        "kumo_core/features/stores/graph.py",
+        "kumo_core/features/stores/in_memory_feature.py",
+        "kumo_core/features/stores/in_memory_graph.py",
+    }
+    assert retired_stores.isdisjoint(names)
     assert not any(name.startswith("kumo_core/online_serving/") for name in names)
     assert not any(name.startswith("kumo" + "ml/") for name in names)
     assert not any(name.startswith("tests/") for name in names)

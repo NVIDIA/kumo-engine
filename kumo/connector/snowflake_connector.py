@@ -330,7 +330,10 @@ class SnowflakeConnector(SQLConnector):
                     f"Access checks failed. The user role does not have sufficient privileges "
                     f"on database '{self.database}', schema '{self.schema_name}', or warehouse '{self.warehouse}'.\n\n"
                     f"Please grant the required privileges by following the instructions at:\n"
-                    f"https://kumo.ai/docs/snowflake-connector/#minimum-privileges-required-for-the-connecting-user",
+                    "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/"
+                    "kumo-studio-guide-coming-soon/preliminary-documentation/"
+                    "connect-data/data-connectors"
+                    "#minimum-privileges-required-for-the-connecting-user",
                     diagnostic_code=diagnostic_code,
                 ) from None
             finally:

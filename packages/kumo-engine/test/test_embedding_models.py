@@ -14,7 +14,7 @@ import pytest
 from kumo_core import embedding_models
 from kumo_core.embedding_models import EmbeddingModelNotFoundError, Release
 from kumo_core.glove import TokenEmbeddingTable
-from kumoapi.encoder import TextEmbedding
+from kumoapi.encoder import Null
 from kumoapi.typing import Stype
 
 from kumo.engine import (
@@ -24,6 +24,7 @@ from kumo.engine import (
     Graph,
     PredictiveQuery,
     Table,
+    TextEmbedding,
     Trainer,
 )
 
@@ -38,7 +39,6 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(embedding_models, '_default_store', None)
     monkeypatch.setattr(TokenEmbeddingTable, 'instances',
                         weakref.WeakValueDictionary())
-    monkeypatch.setenv('KUMO_ACCELERATOR', 'cpu')
 
 
 @pytest.fixture(scope='module')
@@ -48,7 +48,6 @@ def fitted(tmp_path_factory):
         monkeypatch.setattr('kumo.engine._scratch._root', root / 'scratch')
         monkeypatch.setattr(embedding_models, 'entry_points', lambda group: [])
         monkeypatch.setattr(embedding_models, '_INSTALLED', None)
-        monkeypatch.setenv('KUMO_ACCELERATOR', 'cpu')
         archive = _release_zip(root / 'glove.6B.zip', monkeypatch)
         graph = Graph([_users_table(root / 'source')])
         snapshot = graph.snapshot()  # Snapshots do not need the models.
@@ -68,15 +67,16 @@ def fitted(tmp_path_factory):
                            r"embedding model glove.6B-50d, which is not "
                            r"installed. Install it with pip install "
                            r'"kumo-engine\[text\]"'):
-            Trainer(plan).fit(table, snapshot=snapshot)
+            Trainer(plan, accelerator='cpu').fit(table, snapshot=snapshot)
         warnings['failed fit'] = warned.take()
 
         plan.column_processing.encoder_overrides = {
-            'users.bio': TextEmbedding('words')
+            'users.bio': TextEmbedding('words'),
+            'users.code': Null(),
         }
         store = EmbeddingModelStore()
         store.add('words', GloVeVectors(archive, cache_dir=root / 'emb'))
-        trainer = Trainer(plan, embedding_models=store)
+        trainer = Trainer(plan, embedding_models=store, accelerator='cpu')
         result = trainer.fit(table, snapshot=snapshot)
         warnings['fit'] = warned.take()
         logging.getLogger('kumo_core.encoder_selection').removeHandler(warned)
@@ -138,7 +138,7 @@ def test_a_missing_model_fails_fit_before_any_work(fitted, monkeypatch):
     monkeypatch.setattr(
         'kumo_core.training.workflow.materialize_generated_training_task',
         lambda *args, **kwargs: pytest.fail('fit did work'))
-    unfitted = Trainer(trainer.model_plan)
+    unfitted = Trainer(trainer.model_plan, accelerator='cpu')
     with pytest.raises(EmbeddingModelNotFoundError,
                        match=r"^Column 'users.bio' uses the embedding model "
                        r"'words', which is not in the store\. .*The store is "
@@ -148,13 +148,16 @@ def test_a_missing_model_fails_fit_before_any_work(fitted, monkeypatch):
 
 
 def test_each_fit_reports_what_inference_leaves_unencoded(fitted):
-    unencoded = ("Text column 'code' will not be encoded by default: its "
+    unencoded = ("Text column 'users.code' will not be encoded by default: its "
                  "values are too short or have too few known words. To "
-                 "encode it anyway, set its encoder to TextEmbedding().")
+                 "encode it anyway, set its encoder to TextEmbedding(). No "
+                 "word-vector model is installed for it either: pip install "
+                 "\"kumo-engine[text]\", or pass embedding_models= to "
+                 "Trainer.")
     assert fitted[-1] == {
         'tables': [],
         'failed fit': [unencoded],
-        'fit': [unencoded],
+        'fit': [],
     }
 
 
@@ -174,7 +177,8 @@ def test_load_matches_models_by_identity_not_name(fitted):
     archive, root, snapshot, _, prediction_table, _, result, _ = fitted
     renamed = EmbeddingModelStore()
     renamed.add('renamed', GloVeVectors(archive, cache_dir=root / 'emb'))
-    loaded = Trainer.load(result.bundle_dir, embedding_models=renamed)
+    loaded = Trainer.load(result.bundle_dir, embedding_models=renamed,
+                          accelerator='cpu')
     predictions = loaded.predict(prediction_table, snapshot=snapshot,
                                  binary_classification_threshold=.5)
     assert predictions.num_rows == 20
@@ -183,6 +187,6 @@ def test_load_matches_models_by_identity_not_name(fitted):
                        match=r"^This model was trained with glove.6B 50d, as "
                        r"'words' for 'users.bio'.*store.add\(\"words\", "
                        r'GloVeVectors\("glove.6B.zip", dim=50\)\)'):
-        Trainer.load(result.bundle_dir).predict(
+        Trainer.load(result.bundle_dir, accelerator='cpu').predict(
             prediction_table, snapshot=snapshot,
             binary_classification_threshold=.5)

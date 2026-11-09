@@ -609,6 +609,18 @@ class MetricStore(torch.nn.Module):
         stage: TrainingStage,
     ) -> torchmetrics.MetricCollection | LinkPredMetricCollection:
         metric_collection = self._metric_collections[f'{stage}_metrics']
+        if isinstance(metric_collection, torchmetrics.MetricCollection):
+            for metric in metric_collection.values(copy_state=False):
+                if metric.device.type == 'mps':
+                    # On macOS 26.7.1 / PyTorch 2.12.1, MPSGraph constant
+                    # padding corrupts 1D tensors when the padded length
+                    # reaches 65,536. TorchMetrics uses F.pad to append a
+                    # threshold index for AP/AUPRC/AUROC, causing invalid
+                    # metrics or out-of-bounds errors on large epochs.
+                    # Keep accumulated prediction/target lists and their
+                    # computation on CPU; model training stays on MPS.
+                    # Check the actual metric device after model placement.
+                    metric.compute_on_cpu = True
         if self.task_type == TaskType.MULTILABEL_CLASSIFICATION:
             metric_collection.cpu()  # Use CPU for multilabel classification.
         return metric_collection

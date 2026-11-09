@@ -59,7 +59,7 @@ Resolved from a graph handle by `DiskgraphService.local_snapshot_path()` in
 
 Use the current [devserver guide](devserver.md) for coordinator commands,
 resource-policy selection, and the local Temporal variant. The in-tree
-[DiskGraph build and mirror instructions](development/generated-artifacts.md#diskgraph-source-mirror)
+[DiskGraph source ownership](development/generated-artifacts.md#diskgraph-source)
 describe how the native dependency is supplied.
 
 ## Stage Details

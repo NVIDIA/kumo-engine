@@ -83,7 +83,7 @@ For new table-generation behavior, prefer DiskGraph-backed tests in `test/data/g
 
 ### Test Patterns
 
-1. For compiler behavior, add tests through the [upstream DiskGraph owner](../../docs/development/generated-artifacts.md#diskgraph-source-mirror) and compatible adapter coverage here
+1. For compiler behavior, add tests in [the DiskGraph package](../../docs/development/generated-artifacts.md#diskgraph-source) and compatible adapter coverage here
 2. For generated parquet behavior, add a DiskGraph adapter or end-to-end test
 3. For validation changes, test both the happy path and the failure mode
 4. For schema changes, validate generated columns, row count, split behavior, and public error messages

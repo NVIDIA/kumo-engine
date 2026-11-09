@@ -33,6 +33,8 @@ import WithErrorBoundary from "components/@hoc/WithErrorBoundary";
 
 import type { ColumnGroup } from "types/graphs";
 
+import { docURLs } from "utils/Constants";
+
 // Context to provide the scrollable ancestor as collision boundary for Select popovers.
 // Without this, Radix checks against the viewport — dropdowns near the bottom of a
 // scroll container can overflow the container even though they fit in the viewport.
@@ -263,7 +265,8 @@ const textEmbeddingModelOptions = (model: string) =>
 interface SectionInfoPopoverProps {
     description: string;
     linkText: string;
-    pageLink: string;
+    pageLink?: string;
+    url?: string;
     id: string;
 }
 
@@ -271,6 +274,7 @@ const SectionInfoPopover = ({
     description,
     linkText,
     pageLink,
+    url,
     id
 }: SectionInfoPopoverProps) => (
     <HoverCard>
@@ -286,6 +290,7 @@ const SectionInfoPopover = ({
             <DocumentationLink
                 id={id}
                 pageLink={pageLink}
+                url={url}
                 linkText={linkText}
                 isNewDocs={true}
                 className="text-blue-300! hover:text-blue-400!"
@@ -929,7 +934,7 @@ const TrainingJobSection = ({
                 <SectionInfoPopover
                     description="Configures the number of experiments and the metric used to select the best model. You can also customize which evaluation metrics are reported after training."
                     linkText="Training Job"
-                    pageLink="reference/metrics/"
+                    url={docURLs.Metrics}
                     id="mp-training-job-info"
                 />
             }>
@@ -2048,7 +2053,7 @@ const NeighborSamplingSection = ({
                 <SectionInfoPopover
                     description="Controls how many neighboring nodes are sampled per hop when building each node's local subgraph. Higher budgets increase graph context at the cost of memory and training time."
                     linkText="Neighbor Sampling"
-                    pageLink="reference/num_neighbors/"
+                    url={docURLs.NeighborSampling}
                     id="mp-neighbor-sampling-info"
                 />
             }
@@ -2447,7 +2452,7 @@ const ModelArchitectureSection = ({
                 <SectionInfoPopover
                     description="Configures the model type and the hyperparameter search space for your experiments. Fix a specific architecture to skip AutoML search, or leave it open to let Kumo find the best configuration."
                     linkText="Model Architecture"
-                    pageLink="reference/gnn_model/"
+                    url={docURLs.ModelArchitecture}
                     id="mp-model-architecture-info"
                 />
             }>

@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Rust toolchain
+description: >-
+  Install the toolchain from packages/diskgraph/rust-toolchain.toml with the
+  runner's rustup and make it the default.
+inputs:
+  components:
+    description: Additional rustup components, space separated.
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Install the pinned Rust toolchain
+      shell: bash
+      working-directory: packages/diskgraph
+      env:
+        COMPONENTS: ${{ inputs.components }}
+      run: |
+        set -euo pipefail
+        rustup toolchain install --profile minimal --no-self-update
+        toolchain="$(rustup show active-toolchain | cut -d' ' -f1)"
+        rustup default "$toolchain"
+        if [ -n "$COMPONENTS" ]; then
+          # shellcheck disable=SC2086  # space-separated list
+          rustup component add --toolchain "$toolchain" $COMPONENTS
+        fi
+        if [ "$RUNNER_OS" != Windows ]; then
+          echo "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" >> "$GITHUB_ENV"
+        fi
+        [ -n "${CARGO_INCREMENTAL+set}" ] || echo CARGO_INCREMENTAL=0 >> "$GITHUB_ENV"
+        [ -n "${CARGO_TERM_COLOR+set}" ] || echo CARGO_TERM_COLOR=always >> "$GITHUB_ENV"
+        rustc --version --verbose

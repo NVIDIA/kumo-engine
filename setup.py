@@ -34,6 +34,9 @@ major_dependencies = [
     "pandas==2.3.3",
     # Used directly by kumo.utils.dataclass and REST integration tests.
     "httpx<0.28",
+    # Security floors for transitive HTTP and image dependencies.
+    "aiohttp>=3.14.4,<4",
+    "pillow>=13.0.0,<14",
     "backoff==2.2.1",
 ]
 
@@ -102,9 +105,10 @@ install_requires = major_dependencies + observability_requires + [
     # ImportError while computing BP column stats).
     "pyarrow>=18,<25",
     "kubernetes==24.2.0",
-    # filelock >=3.20.3 fixes CVE-2025-68146 / CVE-2026-22701. (3.29.5+ are
-    # newer than the uv exclude-newer quarantine window at time of writing.)
-    "filelock==3.29.4",
+    # filelock >=3.20.3 fixes CVE-2025-68146 / CVE-2026-22701; 3.29.5 stops
+    # unlinking the Unix lock file on release (3.20.4-3.29.4 do), which let
+    # two processes lock different inodes at one path. kumo-engine needs it.
+    "filelock==3.29.5",
     # cryptography 50 clears CVE-2026-27459 (critical) and the cryptography
     # 38.x CVE set. The historical "newer cryptography rejects legacy-cipher
     # Snowflake keys" concern no longer reproduces: 50.0.0 loads DES3-,
@@ -175,7 +179,8 @@ install_requires = major_dependencies + observability_requires + [
     "databricks-sql-connector==4.5.0",
     "databricks-sdk==0.73.0",
     "thrift==0.24.0",
-    "certifi==2025.1.31",  # sf support case 01012966
+    # Remove the compromised emSign root (GHSA-6q48-6c7w-9gw2).
+    "certifi==2026.10.19",
     "python-logging-loki==0.3.1",
     # temporalio 1.17.0 capped protobuf<6, conflicting with the cp314
     # protobuf>=6.33 floor (kumo-api requires protobuf>=5.27 on 3.14).
@@ -203,7 +208,8 @@ drawing_requires = [
     "seaborn==0.13.2",
     "graphviz==0.20.1",
     "matplotlib>=3.10.5",
-    "plotly==5.13.0",
+    # Bundles the MapLibre fix for CVE-2026-85061.
+    "plotly==7.1.0",
 ]
 
 rest_requires = [
@@ -276,24 +282,20 @@ test_requires = [
     "moto==4.2.14",
     "pytest==9.0.3",
     "pytest-asyncio==1.3.0",
-    "pytest-benchmark==4.0.0",
     "pytest-cov",
     "pytest-env==0.6.2",
     "pytest-mock",
     "pytest-timeout",
     "pytest-split",
     "coverage",
-    "category_encoders",
-    "rocksdict",
-    "respx==0.22.0",
     "pytorch-frame==0.3.0",
-    "pytorch-lightning==2.6.5",
+    "pytorch-lightning==2.6.6",
+    # Full mlflow, for its local SQLite store.
+    "mlflow>=3.13,<4",
 ]
 
 dev_requires = test_requires + [
     "pre-commit",
-    "enum-actions",
-    "pick",
     "packaging>=23",
     "kubernetes-stubs",
     # Editor/lint tooling; versions match CI and .pre-commit-config.yaml.
@@ -302,7 +304,6 @@ dev_requires = test_requires + [
     "pyright==1.1.283",
     "yapf==0.40.2",
     "autoflake==2.3.1",
-    "autopep8",
     "pip",
 ]
 
@@ -334,6 +335,7 @@ setup(
         # CUDA-env-var branch.
         "cpu": ["torch", "kumo-core[faiss-cpu]==0.1.0.dev1"],
         "cu130": ["torch", "kumo-core[faiss-gpu]==0.1.0.dev1"],
+        "cu132": ["torch", "kumo-core[faiss-gpu]==0.1.0.dev1"],
     },
     # The platform's version providers for `kumo_core.version.get_kumo_version`:
     # the image version in ~/kumo_version.txt, then the release version from

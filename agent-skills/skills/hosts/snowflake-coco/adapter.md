@@ -14,6 +14,24 @@ schedules and cost — is in `ml_job.md`; read it only when the user asks for a 
 
 ---
 
+## 0. Source scope, access and destinations
+
+**Source scope.** A Snowflake database and schema (warehouse optional), a fully qualified semantic
+view (`DB.SCHEMA.VIEW`, resolved by `kumo-data-science/accept/semantic_view.md`), or a connector
+name.
+
+**Access** (`kumo-data-science/accept/preflight.md` §0). The read tool is CoCo's own SQL, run as
+the session's role; the check is the §6.1 scope query. A schema missing from `INFORMATION_SCHEMA`
+may not exist or may not be visible to this role — say both. On an authorization error, or a
+scope the role cannot see, offer the two ways forward: a role with `USAGE` on the database and
+schema and `SELECT` on its tables, granted by the user or their administrator; or the structure
+pasted in. Never run a `GRANT` yourself.
+
+**Destinations.** Snowflake tables only: a connector plus a table name, or `DB.SCHEMA.TABLE`. An
+`s3://`, `gs://` or file path is not a destination on this host.
+
+---
+
 ## 1.4 Runtime-dependent text features
 In measured Snowflake CoCo runs, retaining a column resolved as `Stype.text` made text-encoder
 initialization fail with `NoCredentialsError` while resolving GloVe assets. The remedy is the
@@ -76,7 +94,8 @@ Database identifiers written with a hyphen in chat (`synthetic-datasets`) are th
 their underscore form (`SYNTHETIC_DATASETS`) — resolve, do not ask.
 
 The `source_scope` the user confirmed at intake is also the `database` / `schema_name` passed to
-the connector in `runtime.md` §3. Snowflake's `INFORMATION_SCHEMA` needs only `USAGE` on the database and
+the connector in `runtime.md` §3. For a semantic view, pass the database and schema its base
+tables share (`kumo-data-science/accept/semantic_view.md`), never the view's own `DB.SCHEMA.VIEW`. Snowflake's `INFORMATION_SCHEMA` needs only `USAGE` on the database and
 schema plus `SELECT` (or `REFERENCES`) on the tables to be listed.
 
 

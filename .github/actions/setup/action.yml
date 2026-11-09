@@ -66,7 +66,7 @@ runs:
         ref: ${{ inputs.ref || (steps.working-directory.outputs.working-directory == '' && github.sha) || '' }}
 
     - name: Set up Python ${{ inputs.python-version }}
-      uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
       with:
         python-version: ${{ inputs.python-version }}
         activate-environment: true
@@ -77,6 +77,7 @@ runs:
         # intermittent connect-timeout install failures. Key on
         # the files that determine the resolved dependency set.
         enable-cache: true
+        prune-cache: true
         cache-dependency-glob: |
           pyproject.toml
           packages/kumo-api/pyproject.toml
@@ -98,7 +99,7 @@ runs:
 
     - name: Download diskgraph wheel
       if: inputs.diskgraph-wheel-artifact != ''
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
       with:
         name: ${{ inputs.diskgraph-wheel-artifact }}
         path: /tmp/diskgraph-wheel

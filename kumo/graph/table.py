@@ -1717,7 +1717,8 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
                     k: Stats.from_config(v)
                     for k, v in stats_configs.items()
                 }
-                col.encoder = EncoderGenerator.get_encoder(col, stats)
+                col.encoder = EncoderGenerator.get_encoder(
+                    col, stats, table_name=self.table_name)
             except Exception as e:
                 if raise_on_error:
                     raise RuntimeError(

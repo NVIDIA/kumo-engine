@@ -184,13 +184,18 @@ use diskgraph_engine::state::{SamplingState, StatePool};
 
 mod artifact_helpers;
 mod bp_col_stats;
+mod bp_evaluate;
+mod exact_quantiles;
 mod col_stats_export;
 mod custom_tt_entry;
 mod index_metadata;
 mod success_marker;
+mod string_lookup;
 mod runtime_batch_iterator;
 mod custom_tt_contract;
 mod temporal;
+mod temporal_query;
+mod token_stream;
 mod tt_builder;
 mod tt_executor;
 
@@ -507,34 +512,40 @@ fn primary_key_type_error(key_type: KeyType, data_type: &DataType) -> PyErr {
     ))
 }
 
-fn canonical_node_mask_with<F>(
+fn primary_key_lookup_with<T, P, R>(
     table: &diskgraph_index::graph::TableReader,
     values: &dyn Array,
-    node_ids: Vec<u64>,
-    mut primary_key_at: F,
-) -> PyResult<Vec<bool>>
+    mut primary_key_at: P,
+    mut result: R,
+) -> PyResult<Vec<T>>
 where
-    F: FnMut(usize) -> PyResult<Key>,
+    P: FnMut(usize) -> PyResult<Key>,
+    R: FnMut(usize, Option<u64>) -> T,
 {
-    node_ids.into_iter().enumerate().map(|(index, node_id)| {
-        if values.is_null(index) {
-            return Err(DiskgraphDataError::new_err(format!(
-                "null primary key at batch offset {index}"
-            )));
-        }
-        let key = primary_key_at(index)?;
-        table
-            .node_id_from_pk(&key)
-            .map(|canonical| canonical == Some(node_id))
-            .map_err(|e| DiskgraphSystemError::new_err(e.to_string()))
-    }).collect()
+    (0..values.len())
+        .map(|index| {
+            if values.is_null(index) {
+                return Err(DiskgraphDataError::new_err(format!(
+                    "null primary key at batch offset {index}"
+                )));
+            }
+            let key = primary_key_at(index)?;
+            table
+                .node_id_from_pk(&key)
+                .map(|node_id| result(index, node_id))
+                .map_err(|e| DiskgraphSystemError::new_err(e.to_string()))
+        })
+        .collect()
 }
 
-fn canonical_node_mask_from_arrow(
+fn primary_key_lookup_from_arrow<T, R>(
     table: &diskgraph_index::graph::TableReader,
     values: &dyn Array,
-    node_ids: Vec<u64>,
-) -> PyResult<Vec<bool>> {
+    mut result: R,
+) -> PyResult<Vec<T>>
+where
+    R: FnMut(usize, Option<u64>) -> T,
+{
     let key_type = table
         .pk_map()
         .ok_or_else(|| DiskgraphConfigError::new_err("table has no primary-key index"))?
@@ -543,7 +554,7 @@ fn canonical_node_mask_from_arrow(
     macro_rules! mask_array {
         ($array_type:ty, |$array:ident, $index:ident| $key:expr) => {{
             let $array = values.as_any().downcast_ref::<$array_type>().unwrap();
-            canonical_node_mask_with(table, $array, node_ids, |$index| $key)
+            primary_key_lookup_with(table, $array, |$index| $key, &mut result)
         }};
     }
     macro_rules! mask_uuid_like {
@@ -650,6 +661,23 @@ fn canonical_node_mask_from_arrow(
     }
 }
 
+fn canonical_node_mask_from_arrow(
+    table: &diskgraph_index::graph::TableReader,
+    values: &dyn Array,
+    node_ids: Vec<u64>,
+) -> PyResult<Vec<bool>> {
+    primary_key_lookup_from_arrow(table, values, |index, canonical| {
+        canonical == Some(node_ids[index])
+    })
+}
+
+fn lookup_node_ids_from_arrow(
+    table: &diskgraph_index::graph::TableReader,
+    values: &dyn Array,
+) -> PyResult<Vec<Option<u64>>> {
+    primary_key_lookup_from_arrow(table, values, |_, node_id| node_id)
+}
+
 #[pymethods]
 impl SamplerEngine {
     #[new]
@@ -670,6 +698,131 @@ impl SamplerEngine {
             pool: StatePool::new(),
             sample_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
+    }
+
+    /// Resolve raw primary-key values to the dense node IDs used by sampling.
+    ///
+    /// Missing keys are returned as ``None`` in their original positions. A
+    /// null or physically incompatible Arrow value is a data error rather than
+    /// being conflated with a well-formed key that is absent from the index.
+    pub fn lookup_node_ids(
+        &self,
+        py: Python<'_>,
+        node_type: String,
+        primary_keys: &Bound<'_, PyAny>,
+    ) -> PyResult<Vec<Option<u64>>> {
+        let primary_keys = make_array(ArrayData::from_pyarrow_bound(primary_keys)?);
+        let table = self.reader.table(&node_type).ok_or_else(|| {
+            DiskgraphConfigError::new_err(format!("unknown node type: {node_type}"))
+        })?;
+        if table.pk_map().is_none() {
+            return Err(DiskgraphConfigError::new_err(format!(
+                "node type {node_type} has no primary-key index"
+            )));
+        }
+        py.detach(move || lookup_node_ids_from_arrow(&table, primary_keys.as_ref()))
+    }
+
+    /// Traverse exact relation paths and derive temporal sequences/aggregates.
+    ///
+    /// This intentionally accepts dense IDs: raw primary-key resolution stays
+    /// a separate, reusable boundary (`lookup_node_ids`).  Both dictionaries
+    /// must contain the same single root type, and cutoffs are epoch seconds.
+    /// The JSON plan is storage-oriented rather than task/model-oriented; see
+    /// `diskgraph-pybind/README.md` for its compact schema.
+    #[pyo3(signature = (seed_nodes, seed_timestamps, plan_json, *, output_format = "inspectable"))]
+    pub fn query_temporal(
+        &self,
+        py: Python<'_>,
+        seed_nodes: Bound<'_, PyDict>,
+        seed_timestamps: Bound<'_, PyDict>,
+        plan_json: String,
+        output_format: &str,
+    ) -> PyResult<Py<PyDict>> {
+        let model_format = match output_format {
+            "inspectable" => false,
+            "model" => true,
+            value => {
+                return Err(DiskgraphConfigError::new_err(format!(
+                    "output_format must be 'inspectable' or 'model', got {value:?}"
+                )))
+            }
+        };
+        if seed_nodes.len() != 1 || seed_timestamps.len() != 1 {
+            return Err(DiskgraphConfigError::new_err(
+                "temporal queries require exactly one root node type",
+            ));
+        }
+        let (root_key, root_values) = seed_nodes
+            .into_iter()
+            .next()
+            .expect("one seed node entry was validated");
+        let root_type: String = root_key.extract()?;
+        let roots: Vec<u64> = root_values.extract()?;
+        let cutoff_values = seed_timestamps.get_item(&root_type)?.ok_or_else(|| {
+            DiskgraphConfigError::new_err(format!(
+                "seed_timestamps has no entry for root type {root_type:?}"
+            ))
+        })?;
+        let cutoffs: Vec<i64> = cutoff_values.extract()?;
+        let reader = Arc::clone(&self.reader);
+        let result = py
+            .detach(move || {
+                temporal_query::execute(
+                    reader.as_ref(),
+                    &root_type,
+                    &roots,
+                    &cutoffs,
+                    &plan_json,
+                )
+            })
+            .map_err(temporal_query::config_error)?;
+        result.into_python(py, model_format)
+    }
+
+    /// Return exact cutoff-aware sequence lengths without decoding row values.
+    ///
+    /// The plan and seed contract match `query_temporal`. Only frames consumed
+    /// by sequences are visited. Time bounds use the destination timestamp
+    /// embedded in edge sort keys when available, with a one-column rowpack
+    /// fallback for older or differently indexed relations.
+    pub fn query_temporal_lengths(
+        &self,
+        py: Python<'_>,
+        seed_nodes: Bound<'_, PyDict>,
+        seed_timestamps: Bound<'_, PyDict>,
+        plan_json: String,
+    ) -> PyResult<Py<PyDict>> {
+        if seed_nodes.len() != 1 || seed_timestamps.len() != 1 {
+            return Err(DiskgraphConfigError::new_err(
+                "temporal queries require exactly one root node type",
+            ));
+        }
+        let (root_key, root_values) = seed_nodes
+            .into_iter()
+            .next()
+            .expect("one seed node entry was validated");
+        let root_type: String = root_key.extract()?;
+        let roots: Vec<u64> = root_values.extract()?;
+        let cutoff_values = seed_timestamps.get_item(&root_type)?.ok_or_else(|| {
+            DiskgraphConfigError::new_err(format!(
+                "seed_timestamps has no entry for root type {root_type:?}"
+            ))
+        })?;
+        let cutoffs: Vec<i64> = cutoff_values.extract()?;
+        let reader = Arc::clone(&self.reader);
+        let result = py
+            .detach(move || {
+                temporal_query::execute_lengths(
+                    reader.as_ref(),
+                    &root_type,
+                    &roots,
+                    &cutoffs,
+                    &plan_json,
+                )
+            })
+            .map_err(temporal_query::config_error)?;
+        result.into_python(py)
     }
 
     /// Return whether each supplied node ID is the PK map's canonical row.
@@ -1387,7 +1540,7 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
 
 /// Compute Kumo-format column statistics over one or more parquet files.
 ///
-/// Wraps :func:`bp_col_stats::compute_parquet_col_stats` for kumo's
+/// Wraps :func:`bp_col_stats::compute_parquet_col_stats_with_options` for kumo's
 /// batch-prediction stats path: after a BP run writes its output parquet,
 /// kumo invokes this to produce the same ``kumo_col_stats_v1`` JSON that
 /// ingest emits, so downstream readers (UI, encoder inference,
@@ -1414,6 +1567,14 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
 ///         invalid. Semantic and logical types are mapped through the same
 ///         ``map_kumo_stype`` / ``map_kumo_dtype`` helpers ingest uses.
 ///     data_version: version string stamped into every emitted entry.
+///     summary_stats_by_class: emit ``SUMMARY_STATS_BY_CLASS``.
+///     histograms: emit ``HISTOGRAM`` statistics (a second read).
+///     max_per: statistics of each column's maximum per run of equal values
+///         of these columns.
+///     fixed_edges: column -> bin edges, for ``FIXED_HISTOGRAM``.
+///     quantiles: column -> quantiles, for exact ``QUANTILES``.
+///     timestamp_unit: keyword-only index clock that timestamp statistics are
+///         computed in (default ``"seconds"``).
 ///     _category_count_limit_for_testing: keyword-only test hook that lowers
 ///         the retained category limit. ``None`` preserves the production
 ///         1,000,000-category limit; a supplied value must be greater than 0.
@@ -1428,6 +1589,12 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
     kumo_column_specs_json,
     data_version,
     *,
+    summary_stats_by_class=true,
+    histograms=true,
+    max_per=None,
+    fixed_edges=None,
+    quantiles=None,
+    timestamp_unit="seconds",
     _category_count_limit_for_testing=None,
 ))]
 #[tracing::instrument(level = "debug", skip(py, kumo_column_specs_json))]
@@ -1436,6 +1603,12 @@ fn compute_col_stats_for_parquet(
     parquet_paths: Vec<String>,
     kumo_column_specs_json: &str,
     data_version: &str,
+    summary_stats_by_class: bool,
+    histograms: bool,
+    max_per: Option<Vec<String>>,
+    fixed_edges: Option<HashMap<String, Vec<f64>>>,
+    quantiles: Option<HashMap<String, Vec<f64>>>,
+    timestamp_unit: &str,
     _category_count_limit_for_testing: Option<u64>,
 ) -> PyResult<(String, String)> {
     use diskgraph_ingest::config_converter::{
@@ -1443,9 +1616,9 @@ fn compute_col_stats_for_parquet(
     };
     use diskgraph_ingest::graph_config::ColumnSpec;
 
-    use crate::bp_col_stats::{
-        compute_parquet_col_stats, compute_parquet_col_stats_with_max_categories,
-    };
+    use diskgraph_core::accumulators::MAX_CATEGORIES;
+
+    use crate::bp_col_stats::{compute_parquet_col_stats_with_options, ColStatsOptions};
 
     if _category_count_limit_for_testing == Some(0) {
         return Err(DiskgraphConfigError::new_err(
@@ -1505,24 +1678,51 @@ fn compute_col_stats_for_parquet(
         .collect::<PyResult<Vec<_>>>()?;
     let data_version = data_version.to_string();
     let paths_owned = parquet_paths;
+    let options = ColStatsOptions {
+        summary_stats_by_class,
+        histograms,
+        max_per: max_per.unwrap_or_default(),
+        fixed_edges: fixed_edges.unwrap_or_default(),
+        quantiles: quantiles.unwrap_or_default(),
+        clock: tt_builder::parse_index_clock(timestamp_unit)?,
+    };
 
     py.detach(|| -> anyhow::Result<(String, String)> {
         let paths: Vec<&std::path::Path> =
             paths_owned.iter().map(std::path::Path::new).collect();
-        match _category_count_limit_for_testing {
-            Some(limit) => compute_parquet_col_stats_with_max_categories(
-                &paths,
-                &columns,
-                &data_version,
-                limit,
-            ),
-            None => compute_parquet_col_stats(&paths, &columns, &data_version),
-        }
+        compute_parquet_col_stats_with_options(
+            &paths,
+            &columns,
+            &data_version,
+            _category_count_limit_for_testing.unwrap_or(MAX_CATEGORIES),
+            &options,
+        )
     })
     // Route schema failures through the shared exception classifier rather
     // than reporting missing columns or invalid timestamp metadata as a
     // blanket system error. Unclassified failures still fall through to
     // `DiskgraphSystemError`.
+    .map_err(map_anyhow_err)
+}
+
+/// Realized metrics of prediction Parquet files against label Parquet parts,
+/// as JSON ``{"rows", "labelled", "metrics"}`` (and ``"by_horizon"``).
+#[pyfunction]
+#[pyo3(signature = (prediction_paths, label_paths, spec_json))]
+fn evaluate_prediction_parquet(
+    py: Python<'_>,
+    prediction_paths: Vec<String>,
+    label_paths: Vec<String>,
+    spec_json: &str,
+) -> PyResult<String> {
+    let spec: bp_evaluate::EvaluateSpec = serde_json::from_str(spec_json)
+        .map_err(|e| DiskgraphConfigError::new_err(format!("invalid spec_json: {e}")))?;
+    py.detach(|| -> anyhow::Result<String> {
+        let predictions: Vec<&std::path::Path> =
+            prediction_paths.iter().map(std::path::Path::new).collect();
+        let labels: Vec<&std::path::Path> = label_paths.iter().map(std::path::Path::new).collect();
+        Ok(bp_evaluate::evaluate_prediction_parquet(&predictions, &labels, &spec)?.to_string())
+    })
     .map_err(map_anyhow_err)
 }
 
@@ -1553,6 +1753,20 @@ fn verify_snapshot_integrity(py: Python<'_>, output_dir: &str) -> PyResult<()> {
         .map_err(|e| DiskgraphCorruptionError::new_err(e.to_string()))
 }
 
+/// CRC-32 per `range_bytes` span of each listed file and the manifest.
+#[pyfunction]
+fn snapshot_range_checksums(
+    py: Python<'_>,
+    output_dir: &str,
+    range_bytes: u64,
+) -> PyResult<std::collections::BTreeMap<String, Vec<u32>>> {
+    let output_dir = std::path::PathBuf::from(output_dir);
+    py.detach(|| {
+        diskgraph_ingest::snapshot_mirror::snapshot_range_checksums(&output_dir, range_bytes)
+    })
+    .map_err(|e| DiskgraphCorruptionError::new_err(e.to_string()))
+}
+
 #[pyfunction]
 fn has_resumable_ingest(output_dir: &str) -> PyResult<bool> {
     diskgraph_ingest::initial_resume_phase(std::path::Path::new(output_dir))
@@ -1570,6 +1784,7 @@ fn validated_index_resume_progress(output_dir: &str) -> PyResult<Option<Vec<Stri
 #[pymodule]
 #[pyo3(name = "_c")]
 fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<string_lookup::StringLookup>()?;
     let _ = pyo3_log::try_init();
     let _ = tracing_log::LogTracer::init();
     // Cap otherwise-global rayon users (col stats, TT-gen, pass-B) to
@@ -1593,6 +1808,8 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "DiskgraphCorruptionError",
         m.py().get_type::<DiskgraphCorruptionError>(),
     )?;
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    m.add("BUILD_COMMIT", env!("DISKGRAPH_BUILD_COMMIT"))?;
     m.add_function(wrap_pyfunction!(export_tt_artifacts, m)?)?;
     m.add_function(wrap_pyfunction!(convert_kumo_config, m)?)?;
     m.add_function(wrap_pyfunction!(ingest, m)?)?;
@@ -1606,9 +1823,11 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(success_marker::write_success_marker, m)?)?;
     m.add_function(wrap_pyfunction!(success_marker::touch_success_marker, m)?)?;
     m.add_function(wrap_pyfunction!(verify_snapshot_integrity, m)?)?;
+    m.add_function(wrap_pyfunction!(snapshot_range_checksums, m)?)?;
     m.add_function(wrap_pyfunction!(has_resumable_ingest, m)?)?;
     m.add_function(wrap_pyfunction!(validated_index_resume_progress, m)?)?;
     m.add_function(wrap_pyfunction!(compute_col_stats_for_parquet, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_prediction_parquet, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_export::read_col_stats, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_export::read_edge_stats, m)?)?;
     m.add_class::<SamplerEngine>()?;
@@ -1646,6 +1865,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     temporal::register(m)?;
+    token_stream::register(m)?;
     custom_tt_contract::register(m)?;
     Ok(())
 }

@@ -708,6 +708,7 @@
             unit: "s".to_string(),
         };
         let config = GraphConfig {
+            timestamp_unit: Default::default(),
             dataset_name: "predict_unify_test".to_string(),
             tables: vec![
                 TableSpec {
@@ -2037,6 +2038,7 @@
                     "abort",
                     false,
                     None,
+                    None,
                 )
                 .unwrap();
                 let d = d.bind(py);
@@ -2240,6 +2242,7 @@
                 "abort",
                 false,
                 None,
+                None,
             )
             .expect("custom gen build should succeed");
         });
@@ -2316,6 +2319,7 @@
                 "abort",
                 false,
                 None,
+                None,
             )
             .expect("custom gen build (split) should succeed");
         });
@@ -2391,6 +2395,7 @@
                 None,
                 "abort",
                 false,
+                None,
                 None,
             )
         });
@@ -2479,6 +2484,7 @@
                 None,
                 "abort",
                 false,
+                None,
                 None,
             )
             .expect("custom gen build should succeed");
@@ -2578,6 +2584,7 @@
                 None,
                 "abort",
                 false,
+                None,
                 None,
             )
             .expect("gen build should succeed");
@@ -2710,6 +2717,7 @@
                 None,
                 on_error,
                 false,
+                None,
                 None,
             )
         };

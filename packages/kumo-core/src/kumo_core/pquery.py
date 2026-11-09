@@ -14,13 +14,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from dataclasses import replace
 from datetime import datetime, timezone
 from enum import Enum
 from numbers import Integral
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from diskgraph import read_col_stats
 from kumoapi.common import ValidationResponse
@@ -104,6 +105,13 @@ class NativeGraphColumn:
     encoder: Mapping[str, Any] | None = None
     timestamp_format: str | None = None
     multicategorical_delimiter: str | None = None
+    table_name: str | None = dataclass_field(default=None, kw_only=True)
+
+    @property
+    def qualified_name(self) -> str:
+        """Return the column name qualified by its table when available."""
+        return (f"{self.table_name}.{self.name}"
+                if self.table_name is not None else self.name)
 
 
 @dataclass(frozen=True)
@@ -218,7 +226,7 @@ def split_column_fqn(value: str) -> tuple[str, str]:
     return parts[-2], parts[-1]
 
 
-def _column_from_payload(value: Any, ) -> NativeGraphColumn:
+def _column_from_payload(value: Any, *, table_name: str) -> NativeGraphColumn:
     if not isinstance(value, Mapping):
         raise PredictiveQueryPlanError(
             "portable graph columns must be fully resolved mappings")
@@ -230,6 +238,7 @@ def _column_from_payload(value: Any, ) -> NativeGraphColumn:
             f"portable graph column {name!r} requires dtype and stype")
     return NativeGraphColumn(
         name=name,
+        table_name=table_name,
         dtype=_enum_value(value["dtype"]).rsplit(".", 1)[-1],
         stype=_enum_value(value["stype"]).rsplit(".", 1)[-1],
         encoder=(dict(value["encoder"])
@@ -295,19 +304,19 @@ def normalize_graph(graph: Mapping[str, Any]) -> NativeGraph:
             raise PredictiveQueryPlanError(
                 f"portable graph table {name!r} requires a cols list")
         for raw_column in raw_columns:
-            column = _column_from_payload(raw_column)
+            column = _column_from_payload(raw_column, table_name=name)
             columns[column.name] = column
 
-        def add_special(field: Any) -> None:
+        def add_special(field: Any, table_name: str) -> None:
             column_name = _field_name(field)
             if not column_name:
                 return
-            column = _column_from_payload(field)
+            column = _column_from_payload(field, table_name=table_name)
             columns.setdefault(column_name, column)
 
-        add_special(raw_table.get("pkey"))
-        add_special(raw_table.get("time_col"))
-        add_special(raw_table.get("end_time_col"))
+        add_special(raw_table.get("pkey"), name)
+        add_special(raw_table.get("time_col"), name)
+        add_special(raw_table.get("end_time_col"), name)
 
         foreign_keys: list[NativeGraphForeignKey] = []
         if "fkeys" not in raw_table:
@@ -348,7 +357,7 @@ def normalize_graph(graph: Mapping[str, Any]) -> NativeGraph:
                     destination_name,
                     str(destination_column),
                 ))
-            add_special(raw_foreign_key)
+            add_special(raw_foreign_key, name)
 
         tables.append(
             NativeGraphTable(
@@ -823,6 +832,15 @@ def query_is_temporal(query: ValidatedNativeQuery, graph: NativeGraph) -> bool:
     return query_train_table_time(query, graph) == TrainTableTime.REAL
 
 
+def link_target_window_end(query: Any) -> tuple[int, str] | None:
+    """Creation cutoff for imported link targets, relative to the anchor."""
+    if query is None:
+        return None
+    aggregation = query.get_final_target_aggregation()
+    window = None if aggregation is None else aggregation.aggr_time_range
+    return None if window is None else (int(window.end), window.unit.value)
+
+
 def static_link_fact(query: Any, rhs_node_type: str | None) -> dict[str, str]:
     """The fact table whose rows are a static link query's links."""
     fact, entity_col = split_column_fqn(str(query.get_single_target_fkey()))
@@ -884,6 +902,9 @@ def _split_options(
     return split, family
 
 
+_SECONDS_FRACTION = re.compile(r"[.,](\d+)")
+
+
 def _timestamp_ns(value: Any) -> int:
     if isinstance(value, bool):
         raise PredictiveQueryPlanError("boolean timestamp statistic is invalid")
@@ -905,7 +926,11 @@ def _timestamp_ns(value: Any) -> int:
             f"invalid timestamp statistic {value!r}") from error
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return int(parsed.timestamp() * 1_000_000_000)
+    nanoseconds = Timestamp(parsed).value
+    fraction = _SECONDS_FRACTION.search(rendered)
+    if fraction and len(fraction.group(1)) > 6:  # datetime keeps only 6 digits
+        nanoseconds += int(fraction.group(1)[6:9].ljust(3, "0"))
+    return nanoseconds
 
 
 def _stat_value(stats: Mapping[str, Any], column: str, kind: str) -> Any:
@@ -976,8 +1001,13 @@ def latest_temporal_timestamp(query: ValidatedNativeQuery,
     if query.query_type != "temporal":
         raise PredictiveQueryPlanError(
             "a source-derived timestamp requires a temporal query")
-    return max(int(maximum.value)
-               for _, maximum in _target_time_bounds(query, index_path))
+    return _target_maximum(query, index_path, max)
+
+
+def _target_maximum(query: ValidatedNativeQuery, index_path: str,
+                    pick: Callable[[Iterable[int]], int]) -> int:
+    return pick(int(maximum.value)
+                for _, maximum in _target_time_bounds(query, index_path))
 
 
 def _temporal_timestamps(
@@ -1003,7 +1033,8 @@ def _temporal_timestamps(
     if error is not None:
         raise PredictiveQueryPlanError(f"{error.title}. {error.message}")
     if explicit:
-        return tuple(_timestamp_ns(value) for value in explicit), False
+        return (tuple(_timestamp_ns(value) for value in explicit),
+                "flexible_boundaries" in split)
     minimum, maximum, filter_buffer = _temporal_target_time_range(
         query, index_path)
 
@@ -1183,25 +1214,13 @@ def _encoder_input(column: NativeGraphColumn,
 
 
 def _infer_encoder(column: NativeGraphColumn,
-                   stats: Mapping[Any, Any]) -> dict[str, Any]:
-    normalized_stats = {
-        ColStatType(getattr(stat_type, "value", stat_type)):
-        (stat if isinstance(stat, _EncoderStat) else _EncoderStat(
-            value=stat,
-            approx=False,
-        ))
-        for stat_type, stat in stats.items()
-    }
-    try:
-        selected = select_encoder(
-            column.name,
-            Dtype(column.dtype),
-            Stype(column.stype),
-            normalized_stats,
-        )
-    except ValueError as error:
-        raise PredictiveQueryPlanError(
-            f"encoder inference for {column.name!r} failed: {error}") from error
+                   stats: Mapping[ColStatType, _EncoderStat]) -> dict[str, Any]:
+    selected = select_encoder(
+        column.qualified_name,
+        Dtype(column.dtype),
+        Stype(column.stype),
+        stats,
+    )
     return TypeAdapter(EncoderType).dump_python(selected, mode="json")
 
 

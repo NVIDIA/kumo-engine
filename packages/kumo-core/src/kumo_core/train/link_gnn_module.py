@@ -19,6 +19,7 @@ from kumoapi.model_plan import WeightMode
 from kumoapi.train import TrainingStage
 from kumo_core.modeling.heads.link_prediction import LinkPredHead
 from kumo_core.modeling.heads.link_prediction import LinkPredHeadOutput
+from kumo_core.modeling.retrieval.mips import require_faiss
 from torch import Tensor
 from torch_frame import TensorFrame
 from torch_geometric import is_torch_instance
@@ -153,6 +154,7 @@ class LinkGNNLightningModule(BaseLinkLightningModule):
                 computed. VAL, TEST or PRED
         """
 
+        require_faiss(self.device)
         # TODO Cache these dataloaders.
         if stage == TrainingStage.VAL:
             loader = self.datamodule.rhs_val_dataloader()
@@ -436,8 +438,9 @@ class LinkGNNLightningModule(BaseLinkLightningModule):
                 assert exclude_lhs_batch is not None
                 exclude_lhs_batch = exclude_lhs_batch[ex_keep]
 
+        score = None
         if not self.disable_eval_metrics:
-            _, rhs_pred_index_mat = self.get_rhs_pred_index_mat(
+            score, rhs_pred_index_mat = self.get_rhs_pred_index_mat(
                 None, lhs_emb, exclude_rhs_index, exclude_lhs_batch)
             self.update_metrics(
                 stage, valid_rhs[rhs_pred_index_mat]
@@ -463,7 +466,7 @@ class LinkGNNLightningModule(BaseLinkLightningModule):
             return dict(pkey=lhs_pkey, id=lhs_index, time=time, target=target,
                         score=score, label=label)
 
-        return {}
+        return self.holdout_top_scores(stage, batch, score)
 
     def evaluation_epoch_end(
         self,

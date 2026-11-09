@@ -98,7 +98,7 @@ def compat_field(
 
 class RunMode(StrEnum):
     r"""Defines the run mode for AutoML. Please see the
-    `Kumo documentation <https://docs.kumo.ai/docs/whats-the-recommended-way-to-cut-down-on-model-training-time>`_
+    `Kumo documentation <https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/legacy-ui-references/training-time>`_
     for more information."""  # noqa
     #: Speeds up the search process—typically about 4x faster than
     #: using the normal mode.
@@ -1056,6 +1056,9 @@ class OptimizationPlan(PlanMixin):
     `Kumo documentation <https://docs.kumo.ai/docs/advanced-operations
     #optimization>`_ for more information.
 
+    GPU memory retries increase evaluation step limits as batches shrink to
+    preserve the configured evaluation row budget.
+
     :ivar max_epochs: (``int``) The maximum number of epochs to train a model
         for (*default:* ``run_mode``-dependent).
         **Supported Task Types:** All
@@ -1070,14 +1073,17 @@ class OptimizationPlan(PlanMixin):
         mini-batch (*default:* ``run_mode``-dependent).
         **Supported Task Types:** All
 
-    :ivar max_val_steps: (``int``) The maximum number of steps to be included
-        in a validation pass; one step corresponds to one forward pass of a
-        mini-batch (*default:* ``run_mode``-dependent).
+    :ivar max_val_steps: (``int | None``) The maximum number of steps to be
+        included in a validation pass; one step corresponds to one forward pass
+        of a mini-batch (*default:* ``run_mode``-dependent). ``None`` evaluates
+        the whole validation split every epoch; time and memory then grow
+        with the split size, since the split's logits are held in memory.
         **Supported Task Types:** All
 
-    :ivar max_test_steps: (``int``) The maximum number of steps to be included
-        in a test pass; one step corresponds to one forward pass of a
-        mini-batch (*default:* ``run_mode``-dependent).
+    :ivar max_test_steps: (``int | None``) The maximum number of steps to be
+        included in a test pass; one step corresponds to one forward pass of a
+        mini-batch (*default:* ``run_mode``-dependent). ``None`` evaluates the
+        whole test split; memory then grows with the split size.
         **Supported Task Types:** All
 
     :ivar loss: (``list[str]``) The loss type to use in the model optimizer
@@ -1166,12 +1172,12 @@ class OptimizationPlan(PlanMixin):
         metadata=Metadata(),
     )
 
-    max_val_steps: Union[conint(ge=1, le=8000), MissingType] = compat_field(
+    max_val_steps: Union[conint(ge=1), MissingType, None] = compat_field(
         default_factory=lambda: MissingType.VALUE,
         metadata=Metadata(),
     )
 
-    max_test_steps: Union[conint(ge=1, le=8000), MissingType] = compat_field(
+    max_test_steps: Union[conint(ge=1), MissingType, None] = compat_field(
         default_factory=lambda: MissingType.VALUE,
         metadata=Metadata(),
     )

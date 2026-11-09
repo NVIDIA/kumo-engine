@@ -29,7 +29,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, TypeVar
 
-from kumo_core.diskgraph.snapshot import rebased
 # Aliased: three methods below take a `SnapshotStore` parameter named
 # `store`, and one name meaning two stores inside one class is how a line
 # reaching for the identity store quietly gets the snapshot store instead.
@@ -550,6 +549,7 @@ class StageArtifactLocation:
                                  copy_tree=files.copy_tree)
         if restored is None:
             return None
+        from kumo_core.diskgraph.snapshot import rebased
         return rebased(store, handle)
 
     def checkpoint(self, store: SnapshotStore[_Handle],

@@ -3,9 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""Scratch-directory naming and configuration.
 
-There is no central registry of `Trainer`/`Graph` objects in this package
-(see "Local storage and results" in the package README), so scratch-directory
-names must be collision-free on their own:
+There is no central registry of `Trainer`/`Graph` objects in this package,
+so scratch-directory names must be collision-free on their own:
 
 * Each :class:`~kumo.engine.trainer.Trainer` gets a random UUID at construction,
   used as its scratch-dir prefix.
@@ -36,11 +35,17 @@ path has already been computed and used.
 
 import hashlib
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Union
+from typing import Iterator, Optional, Union
+
+from kumo_core.chunked_fs import set_spool_dir
 
 _DEFAULT_ROOT = Path.home() / ".cache" / "kumo-engine"
 _root = _DEFAULT_ROOT
+_scoped_root: ContextVar[Optional[Path]] = ContextVar('kumo_scratch_root',
+                                                      default=None)
 
 
 def set_scratch_dir(path: Union[str, Path]) -> None:
@@ -66,7 +71,20 @@ def set_scratch_dir(path: Union[str, Path]) -> None:
 
 
 def get_scratch_dir() -> Path:
-    return _root
+    return _scoped_root.get() or _root
+
+
+@contextmanager
+def scoped_scratch_dir(path: Path) -> Iterator[None]:
+    r"""Nests this context's new scratch directories under ``path``."""
+    token = _scoped_root.set(path)
+    try:
+        yield
+    finally:
+        _scoped_root.reset(token)
+
+
+set_spool_dir(lambda: str(get_scratch_dir() / "spool"))
 
 
 def new_run_id() -> str:

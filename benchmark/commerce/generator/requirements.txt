@@ -1,0 +1,4 @@
+# Versions used to generate and validate the published commerce rungs.
+numpy==2.2.6
+scipy==1.15.3
+pyarrow==18.1.0

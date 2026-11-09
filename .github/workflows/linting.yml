@@ -30,17 +30,18 @@ jobs:
 
       - name: Check for lockfile-only changes
         id: lockfile-only
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             uv.lock
 
       - name: Set up Python
         if: steps.lockfile-only.outputs.only_changed != 'true'
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       - name: Install dependencies
         if: steps.lockfile-only.outputs.only_changed != 'true'
@@ -62,17 +63,18 @@ jobs:
 
       - name: Check for lockfile-only changes
         id: lockfile-only
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             uv.lock
 
       - name: Set up Python
         if: steps.lockfile-only.outputs.only_changed != 'true'
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       - name: Install dependencies
         if: steps.lockfile-only.outputs.only_changed != 'true'
@@ -94,17 +96,18 @@ jobs:
 
       - name: Check for lockfile-only changes
         id: lockfile-only
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             uv.lock
 
       - name: Set up Python
         if: steps.lockfile-only.outputs.only_changed != 'true'
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       - name: Install dependencies
         if: steps.lockfile-only.outputs.only_changed != 'true'
@@ -125,10 +128,11 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up Python
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       - name: Install test dependencies
         run: |
@@ -149,11 +153,13 @@ jobs:
             packages/kumo-core
             packages/kumo-databricks
             packages/kumo-gcs
+            packages/kumo-adls
             packages/kumo-pql
             packages/kumo-s3
             packages/kumo-sdk
             packages/kumo-snowflake
             packages/kumo-engine
+            packages/experimental/kumo-pytorch
             tools/glove-6b-50d
           )
           for project in "${projects[@]}"; do
@@ -174,17 +180,18 @@ jobs:
 
       - name: Check for lockfile-only changes
         id: lockfile-only
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             uv.lock
 
       - name: Set up Python
         if: steps.lockfile-only.outputs.only_changed != 'true'
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       - name: Install dependencies
         if: steps.lockfile-only.outputs.only_changed != 'true'
@@ -207,14 +214,14 @@ jobs:
 
       - name: Check for deployment shell changes
         id: deploy-shell-changes
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             deploy/**/*.sh
 
       - name: Check for deployment Terraform changes
         id: deploy-terraform-changes
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             deploy/azure/terraform/**/*.tf
@@ -224,14 +231,14 @@ jobs:
 
       - name: Check for deployment Packer changes
         id: deploy-packer-changes
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             deploy/**/*.pkr.hcl
 
       - name: Check for deployment test changes
         id: deploy-test-changes
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             deploy/**
@@ -296,9 +303,10 @@ jobs:
 
       - name: Set up Python for deployment tests
         if: steps.deploy-test-changes.outputs.any_changed == 'true'
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           python-version: "3.14"
+          prune-cache: true
 
       - name: Run focused offline deployment tests
         if: steps.deploy-test-changes.outputs.any_changed == 'true'
@@ -316,7 +324,7 @@ jobs:
 
       - name: Check for lockfile-only changes
         id: lockfile-only
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             uv.lock
@@ -328,17 +336,18 @@ jobs:
       # the entire workflow
       - name: Check for only ui file changes
         id: ui-changes
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             ui/**
 
       - name: Set up Python
         if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.only_changed != 'true'
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       # Reuse the DiskGraph wheel that testing.yml caches per source tree, as
       # .github/actions/setup does, instead of compiling it on every run.
@@ -394,7 +403,7 @@ jobs:
 
       - name: Check for lockfile-only changes
         id: lockfile-only
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             uv.lock
@@ -406,14 +415,14 @@ jobs:
       # the entire workflow
       - name: Check for only ui related file changes
         id: ui-changes
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             ui/**
 
       - name: Set up Node.js
         if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.any_changed == 'true'
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
 
@@ -481,9 +490,10 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.14"
+          prune-cache: true
 
       # Fails when a pyproject.toml/setup.py change was
       # not followed by `uv lock`.
@@ -502,7 +512,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.14"
           enable-cache: false

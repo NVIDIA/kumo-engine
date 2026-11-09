@@ -4,7 +4,7 @@
 r"""Local, in-process relational deep learning with Kumo.
 
 No `Backend` protocol, no `set_backend`, no remote/hosted mode, no
-hosted project -- see "Object model" in the package README.
+hosted project.
 There is nothing to call analogous to the cloud SDK's
 `kumoai_studio.init(url=..., api_key=...)`: connectors and tables are constructed
 and threaded through directly (`Table`, `Graph`, `Connector` subclasses), and
@@ -15,19 +15,34 @@ directory root (DiskGraph ingest, GNN training) at, e.g., a local NVMe SSD
 mount.
 """
 
+import sys
+
 from kumo_core.embedding_models import (
     EmbeddingModelStore,
     GloVeVectors,
     TokenEmbeddingModel,
 )
 from kumo_core.utils.nofile import ensure_nofile
+from kumoapi.encoder import TextEmbedding
 from kumoapi.graph import Edge
+from kumoapi.jobs import WriteMode
 from kumoapi.plugin import ModelRegistryLocation
 from kumoapi.table import Column
 
+from kumo.engine import _quiet  # noqa: F401
+from kumo.engine._manifest import (
+    ModelManifest,
+    PredictionManifest,
+    SnapshotManifest,
+    TrainingTableManifest,
+)
+from kumo.engine._mlops import MLOps, mlops
+from kumo.engine._monitoring import DriftReport, EvaluationResult
 from kumo.engine._version import __version__
 from kumo.engine.config import configure
 from kumo.engine.connector import (
+    ADLSConnector,
+    ADLSIdentity,
     BigQueryConnector,
     BigQueryIdentity,
     Connector,
@@ -44,6 +59,12 @@ from kumo.engine.connector import (
     SourceTable,
     SQLSourceTable,
 )
+from kumo.engine.explain.errors import (
+    ExplanationUnavailableError,
+    InvalidExplanationError,
+    InvalidRunError,
+)
+from kumo.engine.explain.results import TrainingExplanations
 from kumo.engine.graph import Graph, GraphSnapshot
 from kumo.engine.pquery import PredictionTable, PredictiveQuery, TrainingTable
 from kumo.engine.table import Table
@@ -51,16 +72,25 @@ from kumo.engine.trainer import (
     ModelOutputConfig,
     PredictionOutputConfig,
     PredictionResult,
+    ScoringDefaults,
+    SnapshotOutputConfig,
     Trainer,
     TrainingResult,
     TrainingTableOutputConfig,
 )
 
 __all__ = [
+    "ADLSConnector",
+    "ADLSIdentity",
     "__version__",
     "configure",
+    "install_skills",
+    "EvaluationResult",
+    "DriftReport",
     "EmbeddingModelStore",
     "GloVeVectors",
+    "TextEmbedding",
+    "WriteMode",
     "TokenEmbeddingModel",
     "ModelRegistryLocation",
     "Connector",
@@ -83,15 +113,50 @@ __all__ = [
     "Edge",
     "Graph",
     "GraphSnapshot",
+    "MLOps",
+    "mlops",
+    "SnapshotManifest",
+    "TrainingTableManifest",
+    "ModelManifest",
+    "PredictionManifest",
     "PredictiveQuery",
     "TrainingTable",
     "PredictionTable",
     "Trainer",
     "TrainingResult",
+    "TrainingExplanations",
+    "ExplanationUnavailableError",
+    "InvalidExplanationError",
+    "InvalidRunError",
     "PredictionResult",
+    "ScoringDefaults",
     "ModelOutputConfig",
     "PredictionOutputConfig",
     "TrainingTableOutputConfig",
+    "SnapshotOutputConfig",
 ]
 
+
+def __getattr__(name: str):
+    # Imported on first use, so `python -m kumo.engine.skills` does not find
+    # the module already imported by this package.
+    if name == "install_skills":
+        from kumo.engine.skills import install_skills
+        return install_skills
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _warn_if_skill_stale() -> None:
+    # `python -m kumo.engine.skills` runs that module as `__main__` and
+    # checks with --check; importing it here as well would load it twice.
+    argv = sys.orig_argv
+    if any(a == "-m" and b == "kumo.engine.skills"
+           for a, b in zip(argv, argv[1:])):
+        return
+    from kumo.engine.skills import warn_if_stale
+    warn_if_stale()
+
+
 ensure_nofile()
+# A local install of the agent skill from another build is out of date.
+_warn_if_skill_stale()

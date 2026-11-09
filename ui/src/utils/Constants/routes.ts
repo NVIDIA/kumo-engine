@@ -18,16 +18,18 @@ export enum navRoutes {
 }
 
 export enum docURLs {
-    QuickStart = "quick-start",
+    ConnectData = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/connect-data/data-connectors",
+    SelectTables = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/connect-data/select-tables",
+    CreateGraph = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/connect-data/create-graph",
+    TrainModel = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/train-model/model-training/training",
     BatchPrediction = "batch-prediction",
-    S3 = "aws-s3",
-    GCS = "gcs-connector",
     SnowflakeSite = "https://docs.snowflake.com/en/user-guide/gen-conn-config",
-    BigQuery = "google-cloud-bigquery",
     BigQuerySite = "https://cloud.google.com/bigquery/docs",
-    Databricks = "databricks-connector",
     DatabricksSite = "https://docs.databricks.com/aws/en",
     EncoderOverrides = "reference/column_processing#encoder-overrides",
+    Metrics = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/legacy-ui-references/metrics",
+    NeighborSampling = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/legacy-ui-references/neighbor-sampling",
+    ModelArchitecture = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/train-model/model-settings/model-planner#architecture-search",
     CreateDateSelection = "column-preprocessing#create-date-column",
     PkeySelection = "column-preprocessing#primary-key-column"
 }

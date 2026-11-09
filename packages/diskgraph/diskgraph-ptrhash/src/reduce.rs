@@ -1,5 +1,3 @@
-use mem_dbg::MemSize;
-
 use crate::util::mul_high;
 
 pub trait Reduce: Copy + Sync + std::fmt::Debug {
@@ -17,10 +15,10 @@ pub trait Reduce: Copy + Sync + std::fmt::Debug {
 /// FastReduce64
 /// Taken from https://lemire.me/blog/2016/06/27/a-fast-alternative-to-the-modulo-reduction/
 /// NOTE: This only uses the lg(n) high-order bits of entropy from the hash.
-#[derive(Copy, Clone, Debug, MemSize)]
+#[derive(Copy, Clone, Debug)]
 #[cfg_attr(feature = "epserde", derive(epserde::prelude::Epserde))]
 #[cfg_attr(feature = "epserde", repr(C))]
-#[cfg_attr(feature = "epserde", zero_copy)]
+#[cfg_attr(feature = "epserde", epserde(zero_copy))]
 pub struct FastReduce {
     d: u64,
 }
@@ -39,9 +37,9 @@ impl Reduce for FastReduce {
 
 /// FastMod32, using the low 32 bits of the hash.
 /// Taken from https://github.com/lemire/fastmod/blob/master/include/fastmod.h
-#[derive(Copy, Clone, Debug, MemSize)]
+#[derive(Copy, Clone, Debug)]
 #[cfg_attr(feature = "epserde", derive(epserde::prelude::Epserde))]
-#[cfg_attr(feature = "epserde", deep_copy)]
+#[cfg_attr(feature = "epserde", epserde(deep_copy))]
 pub struct FM32 {
     d: u64,
     m: u64,

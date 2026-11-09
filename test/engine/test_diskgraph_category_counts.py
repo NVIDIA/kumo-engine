@@ -139,7 +139,7 @@ def test_capped_categorical_stats_preserve_legacy_consumer_behavior(tmp_path):
                 dtype="float",
                 stype="categorical",
             ),
-            pquery._column_stats(raw_stats, column_name),
+            pquery._column_encoder_stats(raw_stats, column_name),
         )
         service_encoders[column_name] = EncoderGenerator.get_encoder(
             Column(

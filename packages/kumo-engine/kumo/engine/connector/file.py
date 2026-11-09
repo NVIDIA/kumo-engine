@@ -11,12 +11,12 @@ from functools import cached_property
 from pathlib import Path
 from typing import Literal, Union
 
-from kumo_core.artifact_export import ArtifactDestinationConflict
 from kumo_core.object_store_sink import ObjectStoreSinkBackend
 from kumo_core.sources import layout
 from kumo_core.sources.object_store import ObjectStoreSourceReader
 from kumo_core.sources.object_store_backend import ObjectStoreSourceBackend
 from kumo_core.types.enums import ConnectorType
+from kumoapi.jobs import WriteMode
 from kumoapi.plugin import SourceConnector
 from kumoapi.source_table import FileType, LocalFileSourceTable
 from pyarrow.fs import LocalFileSystem
@@ -121,6 +121,11 @@ class _FileSourceBackend(ObjectStoreSourceBackend):
             LocalFileSourceTable(path=str(Path(path).resolve()),
                                  file_type=FileType(kind.upper())))
 
+    def table_location(self, connector: Union[Connector, SourceConnector],
+                       table_name):
+        reader, name = self._reader(connector, table_name)
+        return str(Path(reader.resolve(name)[0]).resolve())
+
     def prepare_ingest(self, connector, table_name, dest_dir, *args, **kwargs):
         _disjoint(Path(connector.config.root_dir), Path(dest_dir))
         return super().prepare_ingest(connector, table_name, dest_dir, *args,
@@ -163,7 +168,6 @@ class _FileSinkBackend(ObjectStoreSinkBackend):
                                                else '')
 
     def preflight_write_files(self, connector, table_name, write_mode=None):
-        del write_mode
         _, destination = self._destination(connector, table_name)
         path = Path(destination)
         kind = layout.file_type(destination.rstrip('/')) or layout.PARQUET
@@ -181,12 +185,9 @@ class _FileSinkBackend(ObjectStoreSinkBackend):
         try:
             if target is None and path.is_file():
                 raise _not_a_directory(destination)
-            if target is None and path.is_dir() and any(path.iterdir()):
-                # Each prediction run exports under a new identity, so
-                # publication never accepts an occupied directory.
-                raise ArtifactDestinationConflict(
-                    f"Output directory '{destination}' already contains data "
-                    'from another export. Choose an empty destination path.')
+            if (target is None and write_mode is not WriteMode.OVERWRITE
+                    and path.is_dir() and any(path.iterdir())):
+                raise self._conflict(destination)
             for root in roots:
                 _probe_directory(root, destination)
             if target is not None and target.is_file():
@@ -242,8 +243,18 @@ class _FileSinkBackend(ObjectStoreSinkBackend):
 class FileConnector(Connector):
     """Read local CSV/Parquet tables and write local artifacts.
 
-    See the package README's "Local files" section for usage, path and
-    scratch constraints, source versioning, and artifact limitations.
+    For usage and path rules, see
+    https://docs.nvidia.com/sdgm/kumo-engine/user-code-guide/connect-your-data-linux.
+
+    Source versions use paths, sizes and modification times, not content
+    hashes: keep sources unchanged during reads, and do not restore
+    timestamps after edits. Source identities use canonical paths and are
+    not portable across machines.
+
+    Write artifacts to a separate root. Single-file outputs overwrite,
+    partitioned outputs need an empty directory, and append is unsupported.
+    Model publication copies a bundle to an empty destination and rejects
+    symlinks and overlap.
     """
     def __init__(self, *, root_dir: str):
         super().__init__()

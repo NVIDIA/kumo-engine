@@ -16,5 +16,5 @@ adapters, `packages/kumo-core`, PQL, and DiskGraph.
 Use [ML review patterns](ml-review-patterns.md) for concrete examples,
 [query orchestration guidance](../../kumo/pquery/AGENTS.md) for service rules,
 and [PQL instructions](../../packages/kumo-pql/AGENTS.md) for parser changes.
-Follow the [DiskGraph source boundary](generated-artifacts.md#diskgraph-source-mirror)
+Follow the [DiskGraph source boundary](generated-artifacts.md#diskgraph-source)
 for native-engine changes.

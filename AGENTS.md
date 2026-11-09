@@ -17,8 +17,8 @@ mean every nested instruction file has already been loaded.
 | --- | --- |
 | REST/API response | `rest/`, `packages/kumo-api/`, `packages/kumo-sdk/`, [UI instructions](ui/AGENTS.md), [generator map](docs/development/generated-artifacts.md) |
 | Runtime setting or default | `service_framework/`, affected service/worker consumers, [Helm requirements](helm/kumo-helm/docs/requirements.md), `docker/compose/` |
-| Worker/GPU/cache behavior | `pool/`, `kumo/diskgraph/`, `packages/kumo-core/`, [DiskGraph import boundary](docs/development/generated-artifacts.md#diskgraph-source-mirror), [Helm guide](helm/README.md) |
-| Query syntax or table semantics | [PQL instructions](packages/kumo-pql/AGENTS.md), [query integration](kumo/pquery/AGENTS.md), [DiskGraph import boundary](docs/development/generated-artifacts.md#diskgraph-source-mirror), UI grammar/help generators |
+| Worker/GPU/cache behavior | `pool/`, `kumo/diskgraph/`, `packages/kumo-core/`, [DiskGraph source ownership](docs/development/generated-artifacts.md#diskgraph-source), [Helm guide](helm/README.md) |
+| Query syntax or table semantics | [PQL instructions](packages/kumo-pql/AGENTS.md), [query integration](kumo/pquery/AGENTS.md), [DiskGraph source ownership](docs/development/generated-artifacts.md#diskgraph-source), UI grammar/help generators |
 | UI feature or shared component | [UI instructions](ui/AGENTS.md), [catalog instructions](packages/kumo-ui-catalog/CLAUDE.md), shared API and generated clients |
 | Filesystem/backend behavior | [fsutil instructions](io_utils/fsutil/AGENTS.md), affected connector and storage consumers |
 | Local Python interface | `packages/kumo-engine/`, `packages/kumo-core/`, relevant connector packages and their tests |
