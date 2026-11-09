@@ -45,7 +45,8 @@ import warnings
 from dataclasses import replace
 from typing import Any, Collection, Dict, List, Mapping, Optional, Tuple
 
-from kumo_core.csv_rules import has_leading_zero, looks_missing
+from kumo_core.csv_rules import NA_TOKENS, has_leading_zero, looks_missing
+from kumo_core.sources.csv_format import ARROW_NA_TOKENS
 from kumo_core.stype_inference import infer_stype_from_name
 from kumoapi.plugin import SourceBackend
 from kumoapi.source_table import SourceColumn
@@ -63,6 +64,8 @@ _WHOLE_NUMBER = re.compile(r'[+-]?\d{1,19}', re.ASCII)
 _INT64 = range(-2**63, 2**63)
 _NOT_NUMBERS = frozenset({Stype.ID, Stype.multicategorical, Stype.timestamp})
 _EXAMPLES = 3
+_HIDDEN_FROM_CSV = ' or '.join(
+    repr(token) for token in sorted(NA_TOKENS - set(ARROW_NA_TOKENS)))
 
 
 def _is_number(value: str) -> bool:
@@ -100,7 +103,8 @@ def _report_numbers_stored_as_text(
     sampled values are all numbers apart from at least one blank or
     missing-like token, naming the call that reads it as a number. A column
     of clean digits is a code, as is any value with a leading zero. A CSV
-    source is told to clear the values its read refuses first."""
+    source is told to clear the values its read refuses first, including
+    the spellings its pandas-read sample shows as missing."""
     csv = None
     for name, (dtype, stype) in resolved.items():
         if (dtype != Dtype.string or stype in _NOT_NUMBERS or name in declared
@@ -124,9 +128,10 @@ def _report_numbers_stored_as_text(
         call = (f"table.with_column({name!r}, dtype=Dtype.{dtype.name}, "
                 "stype=Stype.numerical)")
         csv = _reads_csv(connector, table_name, sql) if csv is None else csv
-        advice = (f"A CSV read as a number refuses {len(others)} of them; "
-                  f"replace them with empty fields at the source, then call "
-                  f"{call}." if csv else
+        advice = (f"A CSV read as a number refuses {len(others)} of them, "
+                  f"and any value spelled {_HIDDEN_FROM_CSV}, which the "
+                  f"sample reads as missing; replace them with empty fields "
+                  f"at the source, then call {call}." if csv else
                   f"To read it as a number call {call}; values that do not "
                   "parse become missing and are counted at snapshot.")
         warnings.warn(

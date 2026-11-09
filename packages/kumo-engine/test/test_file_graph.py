@@ -853,7 +853,8 @@ def test_the_float32_step_ignores_the_decimal_context(tmp_path):
      "Column 'amount' in table 't.csv' is read as text, but every non-blank "
      "value in the 6 sampled rows is a number; 3 value(s) are blank or look "
      "like missing (for example ' '). A CSV read as a number refuses 1 of "
-     "them; replace them with empty fields at the source, then call "
+     "them, and any value spelled '<NA>' or 'None', which the sample reads "
+     "as missing; replace them with empty fields at the source, then call "
      "table.with_column('amount', dtype=Dtype.float64, "
      "stype=Stype.numerical)."),
     ('parquet', ['1', '2', 'none', 'NULL ', '3', '4'],
@@ -919,24 +920,36 @@ def test_the_csv_advice_reads_the_column_once_followed(tmp_path):
     configure(scratch_dir=str(tmp_path / 'scratch'))
     root = tmp_path / 'source'
     root.mkdir()
-    values = ['1', '2', ' ', 'N/A', None, '3.5']
+    values = ['1', '2', ' ', 'N/A', None, '3.5', 'None']
 
     def write(amount):
         csv.write_csv(
             pa.table({
-                'id': range(6),
+                'id': range(len(values)),
                 'amount': pa.array(amount, pa.string())
             }), root / 't.csv')
 
     write(values)
-    with pytest.warns(UserWarning, match='refuses 1 of them'):
+    with pytest.warns(UserWarning) as caught:
         table = Table.from_source_table(
             FileConnector(root_dir=str(root))['t.csv'], primary_key='id')
+    assert [str(warning.message) for warning in caught] == [
+        "Column 'amount' in table 't.csv' is read as text, but every "
+        "non-blank value in the 7 sampled rows is a number; 4 value(s) are "
+        "blank or look like missing (for example ' '). A CSV read as a "
+        "number refuses 1 of them, and any value spelled '<NA>' or 'None', "
+        "which the sample reads as missing; replace them with empty fields "
+        "at the source, then call table.with_column('amount', "
+        "dtype=Dtype.float64, stype=Stype.numerical)."
+    ]
     table = table.with_column('amount', dtype=Dtype.float64,
                               stype=Stype.numerical)
     with pytest.raises(PermanentSourceError):
         Graph({'t': table}).snapshot()
     write([value if value != ' ' else '' for value in values])
+    with pytest.raises(PermanentSourceError, match='None'):
+        Graph({'t': table}).snapshot()
+    write([value if value not in (' ', 'None') else '' for value in values])
     with warnings.catch_warnings():
         warnings.simplefilter('error')
         snapshot = Graph({'t': table}).snapshot()
