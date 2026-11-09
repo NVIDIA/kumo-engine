@@ -817,6 +817,25 @@ def test_a_part_whose_first_rows_are_all_made_missing_still_ingests(
                                                       _secs(last))
 
 
+@pytest.mark.parametrize('extension', ['csv', 'parquet'])
+def test_a_column_left_to_diskgraph_keeps_every_row_it_reads(
+        tmp_path, extension):
+    values = ['2024-02-30'] * 1024 + ['2024-01-15', '15 Jan 2024']
+    with pytest.warns(UserWarning) as caught:
+        column, stats, ingest = _time_snapshot(tmp_path, extension,
+                                               pa.array(values, pa.string()))
+    assert _user_warnings(caught)[0] == (
+        'Time column events.ts holds 1 value in a shape the scan does not '
+        "read (e.g. 15 Jan 2024), so its format is left to DiskGraph's own "
+        'reading; its 1024 values no calendar holds (e.g. 2024-02-30, '
+        '2024-02-30, 2024-02-30) are read as DiskGraph reads them. Set '
+        'timestamp_format on the column to decide it.')
+    assert len(_user_warnings(caught)) == 2
+    assert ingest['total_nodes'] == 1025
+    assert ingest['dropped_rows_counts'] == {'events': 1}
+    assert stats['min_secs'] == _secs('2024-01-15')
+
+
 @pytest.mark.parametrize('values, hint', [
     (pa.array([datetime(9999, 12, 31)] * 1024 +
               [datetime(2024, 1, 15), datetime(2024, 1, 16)],

@@ -205,14 +205,37 @@ def test_mixed_timezones_are_staged_with_a_full_time_part(tmp_path):
     ]
 
 
-def test_far_numbers_among_other_shapes_are_still_made_missing(tmp_path):
-    path = _part(tmp_path, pa.array(['99991231', '2024-01-16']))
-    with pytest.warns(UserWarning, match='1 value in time column events.ts '
-                      'falls outside'):
+_LEFT = (", so its format is left to DiskGraph's own reading; its {found} "
+         "{verb} read as DiskGraph reads {them}. Set timestamp_format on the "
+         "column to decide it.")
+
+
+@pytest.mark.parametrize('values, message', [
+    (['99991231', '2024-01-16'],
+     'Time column events.ts holds whole numbers beside ISO dates' +
+     _LEFT.format(found='1 value outside 1677-09-21 to 2262-04-11 (e.g. '
+                  '99991231)', verb='is', them='it')),
+    (['2024-02-30', '2024-01-15', '15 Jan 2024'],
+     'Time column events.ts holds 1 value in a shape the scan does not read '
+     '(e.g. 15 Jan 2024)' +
+     _LEFT.format(found='1 value no calendar holds (e.g. 2024-02-30)',
+                  verb='is', them='it')),
+    (['2024-02-30', '9999-12-31', '2024-02-31', '20240116'],
+     'Time column events.ts holds whole numbers beside ISO dates' +
+     _LEFT.format(found='2 values no calendar holds (e.g. 2024-02-30, '
+                  '2024-02-31) and 1 value outside 1677-09-21 to 2262-04-11 '
+                  '(e.g. 9999-12-31)', verb='are', them='them')),
+])
+def test_a_column_left_to_diskgraph_keeps_its_invalid_values(
+        tmp_path, values, message):
+    path = _part(tmp_path, pa.array(values, pa.string()))
+    before = path.read_bytes()
+    with pytest.warns(UserWarning) as caught:
         formats, rewritten = resolve_time_columns('events', _definition(),
                                                   [str(path)])
-    assert (formats, rewritten) == ({}, ['ts'])
-    assert pq.read_table(path).column('ts').to_pylist() == [None, '2024-01-16']
+    assert (formats, rewritten) == ({}, [])
+    assert [str(w.message) for w in caught] == [message]
+    assert path.read_bytes() == before
 
 
 def test_a_native_instant_past_year_9999_is_made_missing(tmp_path):

@@ -13,7 +13,8 @@ Either decision is declared as the column's `timestamp_format`, so DiskGraph
 applies it to every value instead of voting on a sample. A value that no
 calendar holds (`2024-02-30`, hour 25, `0000-00-00`) or that falls outside
 the nanosecond timestamp range (1677-09-21 to 2262-04-11) is made missing in
-the staged data and counted, never moved to a neighbouring date. Bare
+the staged data of a column whose format the scan declares and counted,
+never moved to a neighbouring date. Bare
 timestamps are read as UTC and zoned ones converted to UTC; a column mixing
 the two is reported, staged in one shape (a space before a full time part)
 and given a format that reads both. A column of ISO or year-first values in
@@ -24,7 +25,9 @@ timestamp or date column is declared under its own unit or date format for
 the same reason. A column
 that also holds a value in a shape the scan does not read is left to
 DiskGraph's own reading, with the value named, wherever the scan would
-otherwise have declared a format.
+otherwise have declared a format, and so is a column holding more than one
+shape the scan reads. A column left to DiskGraph keeps every value; the
+warning counts the ones the scan would have made missing.
 """
 
 import os
@@ -75,6 +78,13 @@ _ONE_SHAPE = (
     (r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?) ?z$', r'\1Z'),
 )
 _ZONE_AFTER_SPACE = r' (?:[Zz]|[+-]\d{2}:?\d{2})$'
+_FAMILIES = {
+    'native': 'native instants',
+    'digits': 'whole numbers',
+    'iso': 'ISO dates',
+    'year_slash': 'year-first slash dates',
+    'slash': 'slash dates',
+}
 _TEXT_SHAPES = {
     'iso': ('%Y-%m-%d', {
         1: '%H:%M%#z',
@@ -672,18 +682,19 @@ class _Column:
         elif set(known) == {'native'} and scan.native_hint and (
                 scan.far['fixed'].count):
             decide = self._decide_native
+        found = scan.impossible['fixed'].count or scan.far['fixed'].count
         if decide is not None and other:
-            warnings.warn(
-                f"Time column {self.alias}.{self.name} holds {other} "
-                f"value{'s' if other != 1 else ''} in a shape the scan does "
-                f"not read (e.g. {scan.other_example}), so its format is "
-                "left to DiskGraph's own reading. Set timestamp_format on "
-                "the column to decide it.",
-                UserWarning,
-                stacklevel=5,
-            )
+            self._defer(f"holds {other} value{'s' if other != 1 else ''} in "
+                        f"a shape the scan does not read (e.g. "
+                        f"{scan.other_example})")
+        elif len(known) > 1 and found:
+            self._defer('holds ' + ' beside '.join(
+                label for family, label in _FAMILIES.items()
+                if family in known))
         elif decide is not None:
             decide()
+        if not self.settled:
+            return
         self._report(self._settled('impossible'),
                      'are not dates on the calendar',
                      'is not a date on the calendar',
@@ -716,6 +727,40 @@ class _Column:
             depth = max(int(key.split('|')[1]) for key in scan.text_shapes)
             self.decision = _Decision(base + ' ' + times[depth],
                                       year_shape=depth)
+
+    @property
+    def settled(self) -> bool:
+        r"""Whether the scan declared a format or a slash order; a column
+        it did not is left to DiskGraph whole.
+        """
+        return (self.decision.timestamp_format is not None
+                or self.decision.order != 'fixed')
+
+    def _defer(self, reason: str) -> None:
+        r"""Leaves the column, values included, to DiskGraph's own reading
+        and says so, counting the values the scan would have made missing.
+        """
+        found = []
+        for kind, what in (('impossible', 'no calendar holds'),
+                           ('far', f'outside {_RANGE}')):
+            tally = self._settled(kind)
+            if tally.count:
+                examples = ', '.join(
+                    str(v) for v in tally.examples[:_EXAMPLES])
+                found.append(f"{tally.count} value"
+                             f"{'s' if tally.count != 1 else ''} {what} "
+                             f"(e.g. {examples})")
+        total = sum(self._settled(k).count for k in ('impossible', 'far'))
+        left = (f"; its {' and '.join(found)} "
+                f"{'are' if total != 1 else 'is'} read as DiskGraph reads "
+                f"{'them' if total != 1 else 'it'}" if found else '')
+        warnings.warn(
+            f"Time column {self.alias}.{self.name} {reason}, so its format "
+            f"is left to DiskGraph's own reading{left}. Set timestamp_format "
+            "on the column to decide it.",
+            UserWarning,
+            stacklevel=5,
+        )
 
     def _decide_native(self) -> None:
         self.decision = _Decision(self.scan.native_hint)
@@ -847,6 +892,8 @@ class _Column:
         )
 
     def parts_to_rewrite(self) -> set:
+        if not self.settled:
+            return set()
         parts = set(self.scan.invalid_parts['fixed'])
         if self.decision.order != 'fixed':
             parts |= self.scan.invalid_parts[self.decision.order]
@@ -885,14 +932,15 @@ class _Column:
         return pc.if_else(invalid, None, values)
 
     def invalid(self, values: pa.Array) -> pa.Array:
-        r"""The values made missing. Native instants and ISO or year-first
-        values no calendar holds or outside the range are missing in every
-        column, as are whole numbers outside the range under their own
-        digit-count reading, even when the column is left to DiskGraph's
-        own reading because it also holds a shape the scan does not read.
-        Whole numbers with no reading are missing only once the column
-        settled on one, and slash dates only under a settled order.
+        r"""The values the decision makes missing: none when the column is
+        left to DiskGraph's own reading, which is every column the scan
+        declares no format or slash order for. In a settled column, native
+        instants and ISO or year-first values no calendar holds or outside
+        the range, whole numbers outside the range under the settled reading
+        or with none, and slash dates invalid under the settled order.
         """
+        if not self.settled:
+            return pa.array([False] * len(values), pa.bool_())
         instants = _native_instants(values)
         if instants is not None:
             return pc.fill_null(pc.invert(_in_range(*instants)), False)
