@@ -213,19 +213,70 @@ def test_an_end_time_column_is_made_missing_without_dropping_rows(tmp_path):
     assert pq.read_table(path).column('ts').to_pylist() == ['2024-01-15', None]
 
 
-@pytest.mark.parametrize('values, example', [
-    (pa.array([2**63, 20240115], pa.uint64()), 9223372036854775808),
+_HATCH = (" Replace placeholders with nulls at the source to keep the "
+          "{rows}, or set timestamp_format on the column to '{unit}' to read "
+          "every value as epoch {unit_name}.")
+
+
+@pytest.mark.parametrize('values, fmt, missing, message', [
+    (pa.array([1700000000, 1700000100, 0], pa.int64()), 's', [2],
+     '1 value in time column events.ts is not read as epoch seconds (e.g. 0);'
+     ' it is treated as missing and its row is dropped like any row without a'
+     ' time.' + _HATCH.format(rows='row', unit='s', unit_name='seconds')),
+    (pa.array([1700000000, -86400, 50000000], pa.int64()), 's', [1, 2],
+     '2 values in time column events.ts are not read as epoch seconds (e.g. '
+     '-86400, 50000000); they are treated as missing and their rows are '
+     'dropped like any row without a time.' +
+     _HATCH.format(rows='rows', unit='s', unit_name='seconds')),
+    (pa.array([1700000000000, 1700000100000, 0], pa.int64()), 'ms', [2],
+     '1 value in time column events.ts is not read as epoch milliseconds '
+     '(e.g. 0); it is treated as missing and its row is dropped like any row '
+     'without a time.' +
+     _HATCH.format(rows='row', unit='ms', unit_name='milliseconds')),
+    (pa.array(['1705276800', '0', None]), 's', [1, 2],
+     '1 value in time column events.ts is not read as epoch seconds (e.g. 0);'
+     ' it is treated as missing and its row is dropped like any row without a'
+     ' time.' + _HATCH.format(rows='row', unit='s', unit_name='seconds')),
+    (pa.array([20240115, 0, 20241301], pa.int64()), '%Y%m%d', [1, 2],
+     '2 values in time column events.ts are not read as YYYYMMDD dates (e.g. '
+     '0, 20241301); they are treated as missing and their rows are dropped '
+     'like any row without a time. Correct them at the source to keep the '
+     'rows.'),
+    (pa.array([2**63, 20240115], pa.uint64()), '%Y%m%d', [0],
+     '1 value in time column events.ts is not read as a YYYYMMDD date (e.g. '
+     '9223372036854775808); it is treated as missing and its row is dropped '
+     'like any row without a time. Correct it at the source to keep the row.'),
     (pa.array([Decimal(10**19), Decimal(20240115)], pa.decimal128(
-        38, 0)), Decimal(10**19)),
-    (pa.array(['99999999999999999999', '20240115']), '99999999999999999999'),
-    (pa.array(['9223372036854775808', '1705276800']), '9223372036854775808'),
+        38, 0)), '%Y%m%d', [0],
+     '1 value in time column events.ts is not read as a YYYYMMDD date (e.g. '
+     '10000000000000000000); it is treated as missing and its row is dropped '
+     'like any row without a time. Correct it at the source to keep the row.'),
+    (pa.array(['99999999999999999999', '20240115']), '%Y%m%d', [0],
+     '1 value in time column events.ts is not read as a YYYYMMDD date (e.g. '
+     '99999999999999999999); it is treated as missing and its row is dropped '
+     'like any row without a time. Correct it at the source to keep the row.'),
+    (pa.array(['9223372036854775808', '1705276800']), 's', [0],
+     '1 value in time column events.ts is not read as epoch seconds (e.g. '
+     '9223372036854775808); it is treated as missing and its row is dropped '
+     'like any row without a time.' +
+     _HATCH.format(rows='row', unit='s', unit_name='seconds')),
 ])
-def test_numbers_too_wide_for_int64_have_no_reading(tmp_path, values, example):
+def test_numbers_without_the_settled_reading_are_made_missing(
+        tmp_path, values, fmt, missing, message):
     path = _part(tmp_path, values)
-    with pytest.raises(
-            ValueError, match=re.escape(
-                f'1 is too small or too large to be a date (e.g. {example})')):
-        resolve_time_columns('events', _definition(), [str(path)])
+    with pytest.warns(UserWarning) as caught:
+        formats, rewritten = resolve_time_columns('events', _definition(),
+                                                  [str(path)])
+    assert (formats, rewritten) == ({'ts': fmt}, ['ts'])
+    read = len(values) - len(missing)
+    messages = [str(w.message) for w in caught]
+    assert messages[0].startswith(
+        f'Time column events.ts holds whole numbers; its {read} value'
+        f"{'s' if read != 1 else ''} {'are' if read != 1 else 'is'} read as")
+    assert messages[1:] == [message]
+    stored = pq.read_table(path).column('ts')
+    assert [i for i, v in enumerate(stored.to_pylist()) if v is None] == missing
+    assert stored.type == values.type
 
 
 def test_a_non_nullable_staged_column_still_takes_the_nulls(tmp_path):

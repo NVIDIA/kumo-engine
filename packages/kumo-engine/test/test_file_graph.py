@@ -691,8 +691,10 @@ def test_integer_time_columns_take_the_one_reading_every_value_allows(
     ([20240115, 1705276800, 86400], '1 is a YYYYMMDD date (e.g. 20240115), '
      '1 is epoch seconds (e.g. 1705276800), 1 is too small or too large to '
      'be a date (e.g. 86400)'),
-    ([20241301, 20240115], '1 is a YYYYMMDD date (e.g. 20240115), 1 is too '
-     'small or too large to be a date (e.g. 20241301)'),
+    ([0, 0, 0], '3 are too small or too large to be a date (e.g. 0)'),
+    ([1700000000, 1700000000000, 0], '1 is epoch seconds (e.g. 1700000000), '
+     '1 is epoch milliseconds (e.g. 1700000000000), 1 is too small or too '
+     'large to be a date (e.g. 0)'),
 ])
 def test_integer_time_columns_without_one_reading_are_refused(
         tmp_path, extension, values, message):
@@ -704,6 +706,39 @@ def test_integer_time_columns_without_one_reading_are_refused(
                 f'convert it to a timestamp at the source.')):
         _time_snapshot(tmp_path, extension, pa.array(values, pa.int64()))
     assert not list((tmp_path / 'scratch').rglob('ingest_stats.json'))
+
+
+@pytest.mark.parametrize('extension', ['csv', 'parquet'])
+@pytest.mark.parametrize('values, hint, read, missing, kept', [
+    ([1700000000, 1700000100, 0], ('timestamp_unit', 'seconds'),
+     'its 2 values are read as epoch seconds (1700000000 is 2023-11-14 '
+     '22:13:20)', '1 value in time column events.ts is not read as epoch '
+     'seconds (e.g. 0); it is treated as missing and its row is dropped like '
+     'any row without a time. Replace placeholders with nulls at the source '
+     "to keep the row, or set timestamp_format on the column to 's' to read "
+     'every value as epoch seconds.',
+     ('2023-11-14 22:13:20', '2023-11-14 22:15:00')),
+    ([20240115, 20241301, 20240116], ('timestamp_format', '%Y%m%d'),
+     'its 2 values are read as YYYYMMDD dates (20240115 is 2024-01-15 '
+     '00:00:00)', '1 value in time column events.ts is not read as a '
+     'YYYYMMDD date (e.g. 20241301); it is treated as missing and its row is '
+     'dropped like any row without a time. Correct it at the source to keep '
+     'the row.', ('2024-01-15 00:00:00', '2024-01-16 00:00:00')),
+])
+def test_integer_time_columns_drop_the_values_without_the_reading(
+        tmp_path, extension, values, hint, read, missing, kept):
+    with pytest.warns(UserWarning) as caught:
+        column, stats, ingest = _time_snapshot(tmp_path, extension,
+                                               pa.array(values, pa.int64()))
+    assert _user_warnings(caught) == [
+        f'Time column events.ts holds whole numbers; {read}. Set '
+        'timestamp_format on the column to read them differently.', missing
+    ]
+    assert column[hint[0]] == hint[1]
+    assert ingest['total_nodes'] == len(values) - 1
+    assert ingest['dropped_rows_counts'] == {'events': 1}
+    assert (stats['min_secs'], stats['max_secs']) == (_secs(kept[0]),
+                                                      _secs(kept[1]))
 
 
 @pytest.mark.parametrize('extension', ['csv', 'parquet'])

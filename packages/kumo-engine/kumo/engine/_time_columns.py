@@ -3,9 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""Time columns are settled from every staged value before DiskGraph parses
 them. A column of whole numbers is converted only when one reading fits
-every value: a `YYYYMMDD` or `YYYYMMDDHHMMSS` date shape, or epoch seconds,
-milliseconds, microseconds or nanoseconds told apart by digit count. A
-column of slash dates takes the one day and month order the data allows.
+every value that has one: a `YYYYMMDD` or `YYYYMMDDHHMMSS` date shape, or
+epoch seconds, milliseconds, microseconds or nanoseconds told apart by
+digit count; a value with no reading (a placeholder `0`, a number too small
+or too wide to be a date) is made missing and counted. A column of slash
+dates takes the one day and month order the data allows.
 Either decision is declared as the column's `timestamp_format`, so DiskGraph
 applies it to every value instead of voting on a sample. A value that no
 calendar holds (`2024-02-30`, hour 25, `0000-00-00`) or that falls outside
@@ -127,6 +129,8 @@ class _Scan:
     zoned_example: Any = None
     bare_example: Any = None
     reshape_parts: set = field(default_factory=set)
+    unread: _Tally = field(default_factory=_Tally)
+    unread_parts: set = field(default_factory=set)
     slash_dm: _Tally = field(default_factory=_Tally)
     slash_md: _Tally = field(default_factory=_Tally)
     slash_both: _Tally = field(default_factory=_Tally)
@@ -433,6 +437,10 @@ class _Column:
                                                            matches)[0].as_py())
         self._tally('fixed', part, values, pc.invert(_in_range(secs, nanos)),
                     None)
+        unread = pc.fill_null(pc.equal(reading, 'none'), False)
+        if pc.sum(unread).as_py():
+            self.scan.unread_parts.add(part)
+            self.scan.unread.add(unread, values)
 
     def _observe_text(self, part: str, text: pa.Array) -> None:
         iso = pc.extract_regex(text, _ISO)
@@ -582,16 +590,21 @@ class _Column:
                 UserWarning,
                 stacklevel=5,
             )
-        self._report('impossible', 'are not dates on the calendar',
+        self._report(self._settled('impossible'),
+                     'are not dates on the calendar',
                      'is not a date on the calendar',
-                     'Correct them at the source')
-        self._report('far', f'fall outside {_RANGE}', f'falls outside {_RANGE}',
-                     'Replace placeholder dates with nulls at the source')
+                     'Correct them at the source to {keep}')
+        self._report(
+            self._settled('far'), f'fall outside {_RANGE}',
+            f'falls outside {_RANGE}',
+            'Replace placeholder dates with nulls at the source to '
+            '{keep}')
 
     def _decide_numbers(self) -> None:
         scan = self.scan
         readings = [code for code in _READINGS if scan.readings.get(code)]
-        if readings == ['none'] or len(readings) != 1:
+        settled = [code for code in readings if code != 'none']
+        if len(settled) != 1:
             parts = ', '.join(f"{scan.readings[code]} "
                               f"{'is' if scan.readings[code] == 1 else 'are'} "
                               f"{_READINGS[code][2]} (e.g. "
@@ -603,20 +616,31 @@ class _Column:
                 f"the column to 's', 'ms', 'us', 'ns', '%Y%m%d' or "
                 f"'%Y%m%d%H%M%S', or convert it to a timestamp at the "
                 "source.")
-        code = readings[0]
-        hint, description, _ = _READINGS[code]
+        code = settled[0]
+        hint, description, singular = _READINGS[code]
         example, number = scan.reading_examples[code]
         rendered = _render(
             _int_readings(pa.array([number], pa.int64()))[1][0].as_py())
         self.decision = _Decision(hint, reading=code)
+        read = scan.readings[code]
         warnings.warn(
             f"Time column {self.alias}.{self.name} holds whole numbers; its "
-            f"{scan.values} values are read as {description} ({example} is "
-            f"{rendered}). Set timestamp_format on the column to read them "
+            f"{read} value{'s' if read != 1 else ''} "
+            f"{'are' if read != 1 else 'is'} read as {description} ({example} "
+            f"is {rendered}). Set timestamp_format on the column to read them "
             "differently.",
             UserWarning,
             stacklevel=5,
         )
+        if code in ('ymd', 'ymdhms'):
+            action = (f"Correct {'them' if scan.unread.count != 1 else 'it'} "
+                      "at the source to {keep}")
+        else:
+            action = ("Replace placeholders with nulls at the source to "
+                      "{keep}, or set timestamp_format on the column to "
+                      f"'{hint}' to read every value as {description}")
+        self._report(scan.unread, f'are not read as {description}',
+                     f'is not read as {singular}', action)
 
     def _decide_slash(self) -> None:
         scan = self.scan
@@ -655,14 +679,17 @@ class _Column:
             stacklevel=5,
         )
 
-    def _report(self, kind: str, plural: str, singular: str,
-                action: str) -> None:
+    def _settled(self, kind: str) -> _Tally:
         tallies = getattr(self.scan, kind)
         tally = _Tally()
         for order in dict.fromkeys(('fixed', self.decision.order)):
             if tallies[order].count:
                 tally.count += tallies[order].count
                 tally.examples.extend(tallies[order].examples)
+        return tally
+
+    def _report(self, tally: _Tally, plural: str, singular: str,
+                action: str) -> None:
         if not tally.count:
             return
         examples = ', '.join(str(v) for v in tally.examples[:_EXAMPLES])
@@ -680,7 +707,7 @@ class _Column:
         warnings.warn(
             f"{tally.count} value{'s' if tally.count != 1 else ''} in "
             f"{self.label} {plural if tally.count != 1 else singular} (e.g. "
-            f"{examples}); {outcome}. {action} to {keep}.",
+            f"{examples}); {outcome}. {action.format(keep=keep)}.",
             UserWarning,
             stacklevel=5,
         )
@@ -691,6 +718,8 @@ class _Column:
             parts |= self.scan.invalid_parts[self.decision.order]
         if self.decision.one_shape:
             parts |= self.scan.reshape_parts
+        if self.decision.reading:
+            parts |= self.scan.unread_parts
         return parts
 
     def rewritten(self, values: pa.Array) -> pa.Array:
@@ -715,15 +744,12 @@ class _Column:
             return pc.fill_null(pc.invert(_in_range(*instants)), False)
         numbers = _as_int64(values)
         if numbers is not None:
-            return pc.fill_null(
-                pc.invert(_in_range(*_int_readings(numbers)[1:])), False)
+            return self._invalid_numbers(pc.is_valid(values), numbers)
         text = _strings(values)
         if text is None:
             return pa.array([False] * len(values), pa.bool_())
         digits = pc.fill_null(pc.match_substring_regex(text, _DIGITS), False)
-        numbers = _text_numbers(text, digits)
-        invalid = pc.fill_null(
-            pc.invert(_in_range(*_int_readings(numbers)[1:])), False)
+        invalid = self._invalid_numbers(digits, _text_numbers(text, digits))
         for pattern, kind in ((_ISO, 'iso'), (_YEAR_SLASH, 'year_slash'),
                               (_SLASH, 'slash')):
             parts = pc.extract_regex(text, pattern)
@@ -754,6 +780,17 @@ class _Column:
             invalid = pc.or_(invalid, pc.and_(matched, pc.fill_null(bad,
                                                                     False)))
         return pc.fill_null(invalid, False)
+
+    def _invalid_numbers(self, present: pa.Array,
+                         numbers: pa.Array) -> pa.Array:
+        r"""Whole numbers outside the range under their own reading and,
+        once the column settled on one reading, those with none.
+        """
+        secs, nanos = _int_readings(numbers)[1:]
+        invalid = pc.fill_null(pc.invert(_in_range(secs, nanos)), False)
+        if self.decision.reading:
+            invalid = pc.or_(invalid, pc.and_(present, pc.is_null(secs)))
+        return invalid
 
 
 def _render(secs: Optional[int]) -> str:
