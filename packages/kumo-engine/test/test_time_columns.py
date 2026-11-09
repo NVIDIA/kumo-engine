@@ -407,6 +407,34 @@ def test_the_parts_to_rewrite_are_settled_once_per_column(
         for path in paths)
 
 
+def test_a_part_is_rewritten_in_batches_bounded_by_decoded_bytes(
+        tmp_path, monkeypatch):
+    rows = 3000
+    path = tmp_path / 'part-0.parquet'
+    pq.write_table(
+        pa.table({
+            'id': pa.array(range(rows), pa.int64()),
+            'ts': ['2024-02-30'] + ['2024-01-15'] * (rows - 1),
+            'payload': ['x' * 16384] * rows,
+        }), path)
+    sizes = []
+    write = pq.ParquetWriter.write_batch
+
+    def recorded(writer, batch, *args, **kwargs):
+        sizes.append(batch.nbytes)
+        return write(writer, batch, *args, **kwargs)
+
+    monkeypatch.setattr(pq.ParquetWriter, 'write_batch', recorded)
+    with pytest.warns(UserWarning, match='1 value in time column'):
+        resolve_time_columns('events', _definition(), [str(path)])
+    assert len(sizes) >= 3
+    assert max(sizes) <= 17 * 2**20
+    stored = pq.read_table(path)
+    assert stored.num_rows == rows
+    assert stored.column('ts').to_pylist()[:2] == [None, '2024-01-15']
+    assert stored.column('payload')[rows - 1].as_py() == 'x' * 16384
+
+
 def test_only_parts_holding_an_invalid_value_are_rewritten(tmp_path):
     clean = _part(tmp_path, pa.array(['2024-01-15', '2024-01-16']),
                   'part-0.parquet')

@@ -32,6 +32,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import pyarrow as pa
 import pyarrow.compute as pc
+import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 # The first and last instant a nanosecond timestamp can hold, as epoch
@@ -863,11 +864,17 @@ def _rewrite(file: Path, columns: Dict[str, Callable[[pa.Array],
                                                      pa.Array]]) -> None:
     r"""Rewrites one staged part with the given columns replaced by what
     their callables return, keeping every other byte of the schema and
-    data. The part is replaced atomically so a failure leaves the original
-    in place.
+    data. The part is read as staging reads one, in batches bounded by
+    decoded bytes, so a wide table is never decoded whole. The part is
+    replaced atomically so a failure leaves the original in place.
     """
+    from kumo_core.sources.object_store import _parquet_batches
+
     parquet = pq.ParquetFile(file)
     schema = parquet.schema_arrow
+    fragment = next(
+        iter(ds.dataset(str(file), format='parquet').get_fragments()))
+    batches = _parquet_batches(fragment, parquet.schema_arrow)
     for name in columns:
         index = schema.get_field_index(name)
         field_ = schema.field(index).with_nullable(True)
@@ -876,7 +883,7 @@ def _rewrite(file: Path, columns: Dict[str, Callable[[pa.Array],
         schema = schema.set(index, field_)
     temporary = file.with_name(f'.{file.name}.rewrite')
     with pq.ParquetWriter(temporary, schema) as writer:
-        for batch in parquet.iter_batches():
+        for batch in batches:
             arrays = []
             for field_ in schema:
                 array = batch.column(field_.name)
