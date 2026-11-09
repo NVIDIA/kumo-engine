@@ -126,6 +126,7 @@ def test_empty_parquet_table_is_typed_from_its_schema_with_a_warning(
             'name': pa.array([], type=pa.string()),
             'amount': pa.array([], type=pa.float64()),
             'active': pa.array([], type=pa.bool_()),
+            'measurement': pa.array([], type=pa.uint64()),
         }), root / 'empty_table.parquet')
     with pytest.warns(UserWarning, match="'empty_table' has no rows"):
         table = Table.from_source_table(connector['empty_table'])
@@ -137,8 +138,16 @@ def test_empty_parquet_table_is_typed_from_its_schema_with_a_warning(
         'name': Stype.categorical,
         'amount': Stype.categorical,
         'active': Stype.categorical,
+        'measurement': Stype.unsupported,
     }
     assert table.typed_without_rows == ('name', 'amount')
+    with pytest.warns(UserWarning, match="'empty_table' has no rows"):
+        declared = table.with_column('measurement', dtype=Dtype.int64)
+    assert {
+        col.name: col.stype
+        for col in declared.definition.cols
+    }['measurement'] == Stype.categorical
+    assert declared.typed_without_rows == ('name', 'amount', 'measurement')
 
 
 def test_read_symlinks_and_overlap(local, tmp_path):
