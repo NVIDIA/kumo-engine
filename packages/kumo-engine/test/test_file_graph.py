@@ -652,7 +652,7 @@ def test_snapshot_reports_non_finite_and_missing_like_values(
     messages = [str(warning.message) for warning in caught]
     assert (f'{non_finite} non-finite value(s) (inf, -inf or NaN) found in '
             't.value. They '
-            'are left out of the column statistics and treated as missing. '
+            'are stored as is and left out of the column statistics. '
             'Infinity usually comes from a division by zero upstream; replace '
             'non-finite values at the source.') in messages
     assert ("t.country holds 3 value(s) that look like missing ('N/A', 'NA', "

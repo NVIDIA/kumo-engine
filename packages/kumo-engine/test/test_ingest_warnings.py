@@ -143,11 +143,11 @@ def test_snapshot_reports_non_finite_values_per_column(tmp_path):
         _warn_ingest_data_loss(result, {'tables': [{'table_name': 'events'}]})
     assert [str(w.message) for w in caught] == [
         '3 non-finite value(s) (inf, -inf or NaN) found in events.amount. '
-        'They are left out of the column statistics and treated as missing. '
+        'They are stored as is and left out of the column statistics. '
         'Infinity usually comes from a division by zero upstream; replace '
         'non-finite values at the source.',
         '2 non-finite value(s) (inf, -inf or NaN) found in events.ratio. '
-        'They are left out of the column statistics and treated as missing. '
+        'They are stored as is and left out of the column statistics. '
         'Infinity usually comes from a division by zero upstream; replace '
         'non-finite values at the source.',
     ]

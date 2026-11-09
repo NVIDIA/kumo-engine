@@ -200,8 +200,9 @@ def _non_finite(stat: Mapping[str, Any]) -> int:
 
 def invalid_value_counts(kumo_stats_dir: Any,
                          tables: Sequence[str]) -> Dict[str, Dict[str, int]]:
-    r"""Per table and column, how many values became missing at ingest
-    because the declared type could not read them or they were not finite."""
+    r"""Per table and column, how many values the declared type could not
+    use at ingest: values it could not read, stored as missing, and
+    non-finite numbers, stored as is but left out of the statistics."""
     counts: Dict[str, Dict[str, int]] = {}
     for table in sorted(tables):
         stats = _by_column(_read_column_stats(kumo_stats_dir, table))
@@ -344,11 +345,10 @@ def _warn_ingest_data_loss(
             if count:
                 warnings.warn(
                     f"{count} non-finite value(s) (inf, -inf or NaN) found "
-                    f"in {name}.{column}. They are left out of the column "
-                    "statistics and treated as missing. Infinity usually "
-                    "comes from a division by zero upstream; replace "
-                    "non-finite values at the source.", UserWarning,
-                    stacklevel=3)
+                    f"in {name}.{column}. They are stored as is and left out "
+                    "of the column statistics. Infinity usually comes from a "
+                    "division by zero upstream; replace non-finite values at "
+                    "the source.", UserWarning, stacklevel=3)
         for column in table.get('cols', []):
             stat = stats.get(column['name'], {})
             _warn_missing_like_text(name, column, stat)
@@ -715,9 +715,10 @@ class GraphSnapshot:
 
     @property
     def invalid_value_counts(self) -> Dict[str, Dict[str, int]]:
-        r"""Per table and column, the number of values that became missing at
-        ingest: values the declared type could not read, and non-finite
-        numbers. Columns with none are left out."""
+        r"""Per table and column, the number of values the declared type
+        could not use at ingest: values it could not read, which are stored
+        as missing, and non-finite numbers, which are stored as is and left
+        out of the statistics. Columns with none are left out."""
         return invalid_value_counts(
             Path(self.index_path) / 'kumo_col_stats',
             [table['table_name'] for table in self.graph_config['tables']])
