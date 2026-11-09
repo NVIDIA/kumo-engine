@@ -432,14 +432,13 @@ def test_target_encoder_comes_from_materialized_target_not_source_column(
         ("rhs_node_type", "catalog.products"),
     ],
 )
-def test_task_dataset_spec_rejects_qualified_name_shortcuts(
+def test_task_dataset_spec_keeps_names_that_contain_dots(
         tmp_path, field, value) -> None:
     _, extension = setup_extension(tmp_path)
     values = make_spec(tmp_path, extension).__dict__.copy()
     values[field] = value
 
-    with pytest.raises(ValueError, match="exact unqualified portable name"):
-        TaskDatasetMaterializeSpec(**values)
+    assert getattr(TaskDatasetMaterializeSpec(**values), field) == value
 
 
 @pytest.mark.parametrize(

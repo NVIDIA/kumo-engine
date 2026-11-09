@@ -1,0 +1,195 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+from types import SimpleNamespace
+
+import pytest
+from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
+from kumo_core.io.json import save_json
+from kumo_core.modeling.gnn.hetero import HeteroGNN
+from kumo_core.modeling.heads.node_prediction import NodePredHead
+from kumo_core.resolved_task import (
+    ResolvedNumericalTask,
+    ResolvedTaskGraph,
+    ResolvedTrainTable,
+)
+from kumo_core.train import diskgraph_nested_trainer as trainer
+from kumo_core.train.trainer import Trainer, _restore_num_neighbors_key
+from kumo_core.training.config import SamplerKwargs
+from kumo_core.types import TaskType
+from torch_geometric.sampler.base import NumNeighbors
+from torch_geometric.typing import EdgeTypeStr
+
+
+@pytest.mark.parametrize("source", ["sales.events", "catalog.sales.events"])
+def test_sampling_plan_resolves_relations_of_a_dotted_source_table(
+        monkeypatch, source):
+    relation = f"{source}_user_id_to_users_id"
+    monkeypatch.setattr(
+        trainer, "_load_index_metadata", lambda metadata: {
+            "edge_relations": [{
+                "name": relation,
+                "src_type": source,
+                "dst_type": "users",
+            }, {
+                "name": f"{relation}_reverse",
+                "src_type": "users",
+                "dst_type": source,
+            }]
+        })
+    fake = SimpleNamespace(sampler_kwargs=SimpleNamespace(
+        num_neighbors=NumNeighbors({(source, "user_id", "users"): [10, 5]}),
+        temporal_strategy="last"))
+
+    plan = trainer.DiskgraphNestedTrainer._build_ttng_sampling_plan(
+        fake, SimpleNamespace(graph_runtime_metadata=None))
+
+    assert [set(layer["fanouts"]) for layer in plan["layers"]
+            ] == [{f"{relation}_reverse"}] * 2
+    assert [
+        layer["fanouts"][f"{relation}_reverse"]["fanout"]
+        for layer in plan["layers"]
+    ] == [10, 5]
+
+
+@pytest.mark.parametrize("sources, resolved", [
+    (["sales.events"], True),
+    (["sales.events", "crm.events"], False),
+])
+def test_sampling_plan_accepts_a_stripped_override_only_when_unambiguous(
+        monkeypatch, sources, resolved):
+    monkeypatch.setattr(
+        trainer, "_load_index_metadata", lambda metadata: {
+            "edge_relations": [{
+                "name": f"{source}_user_id_to_users_id",
+                "src_type": source,
+                "dst_type": "users",
+            } for source in sources]
+        })
+    fake = SimpleNamespace(sampler_kwargs=SimpleNamespace(
+        num_neighbors=NumNeighbors({("events", "user_id", "users"): [10]},
+                                   default=[3]),
+        temporal_strategy="last"))
+
+    plan = trainer.DiskgraphNestedTrainer._build_ttng_sampling_plan(
+        fake, SimpleNamespace(graph_runtime_metadata=None))
+
+    assert set(plan["layers"][0]["fanouts"]) == (
+        {"sales.events_user_id_to_users_id"} if resolved else set())
+
+
+def test_sampling_plan_leaves_a_legacy_key_between_a_bare_and_a_dotted_table(
+        monkeypatch):
+    monkeypatch.setattr(
+        trainer, "_load_index_metadata", lambda metadata: {
+            "edge_relations": [{
+                "name": f"{source}_user_id_to_users_id",
+                "src_type": source,
+                "dst_type": "users",
+            } for source in ("events", "sales.events")]
+        })
+    fake = SimpleNamespace(sampler_kwargs=SimpleNamespace(
+        num_neighbors=NumNeighbors(
+            {("legacy.events", "user_id", "users"): [10]}, default=[3]),
+        temporal_strategy="last"))
+
+    plan = trainer.DiskgraphNestedTrainer._build_ttng_sampling_plan(
+        fake, SimpleNamespace(graph_runtime_metadata=None))
+
+    assert plan["layers"][0]["fanouts"] == {}
+
+
+def test_sampling_plan_keeps_an_exact_fanout_over_a_stripped_alias(
+        monkeypatch):
+    relation = "sales.events_user_id_to_users_id"
+    monkeypatch.setattr(
+        trainer, "_load_index_metadata", lambda metadata: {
+            "edge_relations": [{
+                "name": relation,
+                "src_type": "sales.events",
+                "dst_type": "users",
+            }]
+        })
+    exact = ("sales.events", "user_id", "users")
+    alias = ("events", "user_id", "users")
+    for ordered in ([exact, alias], [alias, exact]):
+        fake = SimpleNamespace(sampler_kwargs=SimpleNamespace(
+            num_neighbors=NumNeighbors(
+                {key: [10] if key == exact else [3]
+                 for key in ordered}, default=[1]),
+            temporal_strategy="last"))
+
+        plan = trainer.DiskgraphNestedTrainer._build_ttng_sampling_plan(
+            fake, SimpleNamespace(graph_runtime_metadata=None))
+
+        assert plan["layers"][0]["fanouts"][relation]["fanout"] == 10
+
+
+def test_restored_sampler_keys_keep_matching_edge_types_exactly():
+    edge_types = {
+        str(EdgeTypeStr(*edge_type)): edge_type
+        for edge_type in [("sales.events", "user_id", "users")]
+    }
+
+    restore = lambda *key: _restore_num_neighbors_key(
+        EdgeTypeStr(*key), edge_types).to_tuple()
+
+    assert restore("sales.events", "user_id", "users") == (
+        "sales.events", "user_id", "users")
+    assert restore("legacy.orders", "user_id", "users") == (
+        "orders", "user_id", "users")
+    assert _restore_num_neighbors_key(
+        EdgeTypeStr("crm.events", "user_id", "users"), {}).to_tuple() == (
+            "crm.events", "user_id", "users")
+
+
+def test_a_legacy_key_loaded_without_a_graph_resolves_in_the_sampling_plan(
+        tmp_path, monkeypatch):
+    task = ResolvedNumericalTask(
+        name="test",
+        task_type=TaskType.BINARY_CLASSIFICATION,
+        metrics=["auroc"],
+        graph=ResolvedTaskGraph(node_types=("users", ), edge_types=(),
+                                seed_node_type="users",
+                                target_node_type="users"),
+        train_table=ResolvedTrainTable(name="train_table",
+                                       target_column="TARGET",
+                                       time_column=None, weight_column=None),
+    )
+    saved = Trainer(
+        task=task,
+        encoder=HeteroTensorFrameEncoder(),
+        model=HeteroGNN(channels=8, num_mp_layers=2),
+        head=NodePredHead(),
+        root_dir=str(tmp_path),
+        sampler_kwargs=SamplerKwargs(num_neighbors=NumNeighbors(
+            {("ds.orders", "user_id", "ds.users"): [10, 5]}, default=[3, 3])),
+    )
+    save_json(saved.config(), str(tmp_path / "config.json"))
+    relation = "orders_user_id_to_users_id"
+    monkeypatch.setattr(
+        trainer, "_load_index_metadata", lambda metadata: {
+            "edge_relations": [{
+                "name": relation,
+                "src_type": "orders",
+                "dst_type": "users",
+            }, {
+                "name": f"{relation}_reverse",
+                "src_type": "users",
+                "dst_type": "orders",
+            }]
+        })
+
+    loaded = Trainer.load(task, str(tmp_path), infer_config_path=False)
+
+    assert loaded.sampler_kwargs.num_neighbors.values == {
+        EdgeTypeStr("ds.orders", "user_id", "ds.users"): [10, 5]
+    }
+    plan = trainer.DiskgraphNestedTrainer._build_ttng_sampling_plan(
+        SimpleNamespace(sampler_kwargs=loaded.sampler_kwargs),
+        SimpleNamespace(graph_runtime_metadata=None))
+    assert [
+        layer["fanouts"][f"{relation}_reverse"]["fanout"]
+        for layer in plan["layers"]
+    ] == [10, 5]

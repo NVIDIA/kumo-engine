@@ -52,6 +52,7 @@ from kumo_core.training.config import (
     FitMode,
     LinkPredModuleType,
     WeightMode,
+    _edge_type_triple,
     _normalize_edge_type_key,
 )
 from kumo_core.training.options import allow_array_targets
@@ -804,6 +805,14 @@ class DiskgraphNestedTrainer(Trainer):
                 edge_type_to_rel_name[(src_type, name, dst_type)] = name
                 edge_type_to_rel_name[normalize_diskgraph_edge_type(
                     src_type, name, dst_type)] = name
+        stripped: dict[Any, set[str]] = {}
+        for key, name in edge_type_to_rel_name.items():
+            stripped.setdefault(_normalize_edge_type_key(key), set()).add(name)
+        aliased_rel_names = {
+            key: next(iter(names))
+            for key, names in stripped.items()
+            if key is not None and len(names) == 1
+        }
 
         rel_name_to_csc_counterpart = {}
         all_rel_names = {
@@ -837,6 +846,11 @@ class DiskgraphNestedTrainer(Trainer):
 
         # Case B: Dictionary-based per-relation num_neighbors
         per_type_values = raw_values or {}
+        exact_relations = {
+            edge_type_to_rel_name[triple]
+            for triple in map(_edge_type_triple, per_type_values)
+            if triple in edge_type_to_rel_name
+        }
         default_values = self.sampler_kwargs.num_neighbors.default
 
         num_hops = max((len(v) for v in per_type_values.values()), default=0)
@@ -855,8 +869,13 @@ class DiskgraphNestedTrainer(Trainer):
                 # A 0 is emitted only to override a default.
                 if raw_fanout == 0 and default_fanout_val == 0:
                     continue
-                edge_type_key = _normalize_edge_type_key(edge_type)
-                rel_name = edge_type_to_rel_name.get(edge_type_key)
+                rel_name = edge_type_to_rel_name.get(
+                    _edge_type_triple(edge_type))
+                if rel_name is None:
+                    rel_name = aliased_rel_names.get(
+                        _normalize_edge_type_key(edge_type))
+                    if rel_name in exact_relations:
+                        continue
                 if rel_name is None:
                     unresolved.add(str(edge_type))
                     continue

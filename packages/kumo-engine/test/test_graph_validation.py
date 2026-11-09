@@ -10,7 +10,9 @@ from pathlib import Path
 from unittest.mock import Mock, PropertyMock, patch
 from xml.etree import ElementTree
 
+import pyarrow as pa
 import pytest
+from kumo_core.pquery import PredictiveQueryPlanError
 from kumoapi.graph import Edge
 from kumoapi.source_table import (
     CustomSQLSourceTable,
@@ -27,6 +29,7 @@ from matplotlib.text import Text
 
 from kumo.engine import FileConnector, Graph, S3Connector, Table
 from kumo.engine._portable import PortableGraphError
+from kumo.engine.graph import _integer_literals
 
 
 def _file_tables(root: Path) -> list[Table]:
@@ -138,6 +141,145 @@ def test_graph_validation_keeps_valid_edges(tables):
         for table in graph._graph_config['tables']
     }
     assert portable_tables['events']['fkeys'][0]['dst_table'] == 'users'
+
+
+def test_graph_validation_keeps_dotted_table_names(tables):
+    users, events = tables
+    names = ['crm.users', 'sales.users', 'users', 'users.v1']
+    graph = Graph({name: users for name in names} | {'events': events})
+
+    graph.validate()
+
+    assert [table.name for table in graph.native_graph.tables
+            ] == [*names, 'events']
+    linked = Graph(graph.tables, [Edge('events', 'user_id', 'crm.users')])
+    with pytest.raises(
+            PredictiveQueryPlanError,
+            match=r"foreign key events\.user_id links to table 'crm\.users'"
+            r".*cannot be a link target.*'crm_users'"):
+        linked.validate()
+
+
+@pytest.mark.parametrize('fkey_dtype, pkey_dtypes, declared', [
+    (Dtype.string, (Dtype.int64, ), Dtype.int64),
+    (Dtype.string, (Dtype.int32, ), Dtype.int32),
+    (Dtype.string, (Dtype.byte, ), Dtype.byte),
+    (Dtype.string, (Dtype.float64, ), Dtype.int64),
+    (Dtype.int64, (Dtype.string, ), Dtype.string),
+    (Dtype.int16, (Dtype.string, ), Dtype.string),
+    (Dtype.string, (Dtype.int64, Dtype.int64), Dtype.int64),
+    (Dtype.string, (Dtype.int64, Dtype.string), None),
+    (Dtype.int64, (Dtype.int32, ), None),
+])
+def test_mismatched_key_dtypes_convert_the_foreign_key(
+        tables, fkey_dtype, pkey_dtypes, declared):
+    users, events = tables
+    events = events.with_column('user_id', dtype=fkey_dtype)
+    keyed = {
+        f'users_{i}': users.with_column('id', dtype=dtype)
+        for i, dtype in enumerate(pkey_dtypes)
+    }
+    graph = Graph(keyed | {'events': events},
+                  [Edge('events', 'user_id', alias) for alias in keyed])
+    if declared is None:
+        with pytest.raises(PredictiveQueryPlanError, match='cannot link'):
+            graph.validate()
+        return
+
+    with pytest.warns(
+            UserWarning,
+            match=rf"Foreign key events\.user_id is stored as {fkey_dtype.value}"
+            rf" and links to users_0\.id, which is {declared.value}; .* "
+            rf"converted to {declared.value} .* source column is unchanged"
+    ) as caught:
+        graph.validate()
+        with patch.object(Graph, '_snapshot_no_lock'):
+            graph.snapshot()
+
+    assert sum('Foreign key events.user_id' in str(w.message)
+               for w in caught) == 1
+    assert graph._graph_config['name'] == graph.id
+    projected = next(table for table in graph._graph_config['tables']
+                     if table['table_name'] == 'events')
+    assert {key['dtype'] for key in projected['fkeys']} == {declared.value}
+    assert next(col for col in projected['cols']
+                if col['name'] == 'user_id')['dtype'] == declared.value
+    assert next(col for col in events.definition.cols
+                if col.name == 'user_id').dtype == fkey_dtype
+
+
+def test_a_multicategorical_string_key_converts_with_the_id_stype(tables):
+    users, events = tables
+    events = events.with_column('user_id', dtype=Dtype.string,
+                                stype=Stype.multicategorical,
+                                multicategorical_delimiter=',')
+    graph = Graph(
+        {
+            'users': users.with_column('id', dtype=Dtype.int64),
+            'events': events,
+        }, [Edge('events', 'user_id', 'users')])
+
+    with pytest.warns(UserWarning,
+                      match=r'Foreign key events\.user_id is stored as string'):
+        graph.validate()
+
+    projected = next(table for table in graph._graph_config['tables']
+                     if table['table_name'] == 'events')
+    column = next(col for col in projected['cols'] if col['name'] == 'user_id')
+    assert (column['dtype'], column['stype']) == ('int64', 'ID')
+
+
+@pytest.mark.parametrize('cycle', [False, True])
+def test_key_conversions_follow_chains_and_keep_cycles(cycle):
+    users, events = _s3_tables()
+    keyed = lambda dtype: replace(
+        users, definition=replace(users.definition,
+                                  cols=[Column('id', Stype.ID, dtype)]))
+    tables = {
+        'a': keyed(Dtype.string),
+        'b': keyed(Dtype.int64),
+        'c': replace(events, definition=replace(
+            events.definition, cols=[
+                events.definition.cols[0],
+                Column('a_id', Stype.ID, Dtype.string)
+            ]))
+    }
+    edges = [Edge('a', 'id', 'b'), Edge('c', 'a_id', 'a')]
+    if cycle:
+        edges.append(Edge('b', 'id', 'a'))
+    graph = Graph(tables, edges)
+
+    if cycle:
+        with pytest.raises(PredictiveQueryPlanError, match='cannot link'):
+            graph.validate()
+        return
+    with pytest.warns(UserWarning) as caught:
+        graph.validate()
+
+    messages = sorted(
+        str(w.message) for w in caught if 'Foreign key' in str(w.message))
+    assert [message.split(';')[0] for message in messages] == [
+        'Foreign key a.id is stored as string and links to b.id, which is '
+        'int64',
+        'Foreign key c.a_id is stored as string and links to a.id, which is '
+        'int64',
+    ]
+    declared = {
+        table['table_name']: table.get('pkey', {}).get('dtype')
+        for table in graph._graph_config['tables']
+    }
+    assert declared == {'a': 'int64', 'b': 'int64', 'c': 'int64'}
+
+
+def test_integer_literals_keep_large_string_offsets():
+    values = pa.array(['7', ' 007 ', '\x1c7', 'x', '-0'], pa.large_string())
+
+    valid, canonical = _integer_literals(values, -2**63, 2**63 - 1)
+
+    assert valid.to_pylist() == [True, True, False, False, True]
+    assert canonical.type == pa.large_string()
+    assert canonical.to_pylist()[:2] == ['7', '7']
+    assert canonical.to_pylist()[4] == '0'
 
 
 def test_graph_validation_rejects_destination_without_primary_key(tables):
@@ -903,3 +1045,171 @@ def test_visualize_table_cap_precedes_source_access(count):
             assert len(root.findall(
                 './{http://www.w3.org/2000/svg}g[@data-kumo-card]')) == 30
         backend.assert_not_called()
+
+
+def _keyed(table: Table, columns: list[Column], pkey: str) -> Table:
+    definition = replace(table.definition, cols=columns, pkey=pkey)
+    return replace(table, definition=definition)
+
+
+@pytest.mark.parametrize('table_name, key', [('users', 'id'),
+                                             ('events', 'user_id')])
+def test_float_key_columns_are_declared_int64_with_a_warning(table_name, key):
+    from unittest import mock
+
+    users, events = _s3_tables()
+    tables = {'users': users, 'events': events}
+    owner = tables[table_name]
+    tables[table_name] = replace(
+        owner,
+        definition=replace(
+            owner.definition,
+            cols=[
+                replace(col, dtype=Dtype.float64) if col.name == key else col
+                for col in owner.definition.cols
+            ]))
+    graph = Graph(tables, [Edge('events', 'user_id', 'users')])
+
+    with pytest.warns(UserWarning,
+                      match=rf"{table_name}\.{key} .*float64.*int64") as caught:
+        graph.validate()
+        with mock.patch.object(Graph, '_snapshot_no_lock'):
+            graph.snapshot()
+    assert sum('float64' in str(w.message) for w in caught) == 1
+
+    config = {t['table_name']: t for t in graph._graph_config['tables']}
+    projected = (config['users']['pkey']
+                 if key == 'id' else config['events']['fkeys'][0])
+    assert projected['dtype'] == 'int64'
+    assert Dtype(graph.native_graph.table(table_name).column(key).dtype) \
+        == Dtype.int64
+    assert next(col for col in tables[table_name].definition.cols
+                if col.name == key).dtype == Dtype.float64
+
+
+@pytest.mark.parametrize('shape, widths', [
+    ('direct', {'events.user_id': 'int32'}),
+    ('shared', {'events.user_id': 'int32'}),
+    ('shared_reversed', {'events.user_id': 'int32'}),
+    ('incoming', {'bridge.id': 'int64'}),
+    ('chained', {'events.user_id': 'int32', 'bridge.id': 'int32'}),
+    ('chained_narrow_incoming', {
+        'events.user_id': 'int32',
+        'bridge.id': 'int32'
+    }),
+    ('chained_float_incoming', {
+        'events.user_id': 'int32',
+        'bridge.id': 'int32',
+        'orders.bridge_id': 'int32'
+    }),
+    ('chained_self_incoming', {
+        'events.user_id': 'int32',
+        'bridge.id': 'int32'
+    }),
+])
+def test_float_keys_take_the_width_every_link_accepts(shape, widths):
+    users, events = _s3_tables()
+    narrow = _keyed(users, [Column('id', Stype.ID, Dtype.int32)], 'id')
+    wide = _keyed(users, [Column('id', Stype.ID, Dtype.int64)], 'id')
+    bridge = _keyed(users, [
+        Column('id', Stype.ID, Dtype.float64),
+        Column('parent_id', Stype.ID, Dtype.int64),
+    ], 'id')
+    events = _keyed(events, [
+        Column('event_id', Stype.ID, Dtype.int64),
+        Column('user_id', Stype.ID, Dtype.float64),
+    ], 'event_id')
+    incoming = {
+        'incoming': Dtype.int64,
+        'chained_narrow_incoming': Dtype.int16,
+        'chained_float_incoming': Dtype.float64,
+    }.get(shape)
+    tables = {'narrow': narrow, 'events': events}
+    edges = [Edge('events', 'user_id', 'narrow')]
+    if shape.startswith('shared'):
+        tables['wide'] = wide
+        edges.append(Edge('events', 'user_id', 'wide'))
+        if shape == 'shared_reversed':
+            edges.reverse()
+    if shape.startswith('chained'):
+        tables['bridge'] = bridge
+        edges = [Edge('bridge', 'id', 'narrow'),
+                 Edge('events', 'user_id', 'bridge')]
+    if shape == 'incoming':
+        tables, edges = {'bridge': bridge}, []
+    if shape == 'chained_self_incoming':
+        edges.append(Edge('bridge', 'parent_id', 'bridge'))
+    if incoming is not None:
+        tables['orders'] = _keyed(events, [
+            Column('order_id', Stype.ID, Dtype.int64),
+            Column('bridge_id', Stype.ID, incoming),
+        ], 'order_id')
+        edges.append(Edge('orders', 'bridge_id', 'bridge'))
+    graph = Graph(tables, edges)
+
+    with pytest.warns(UserWarning) as caught:
+        graph.validate()
+    assert {
+        str(w.message).split(' is stored')[0]
+        for w in caught if ' is stored' in str(w.message)
+    } == {f'Key column {column}'
+          for column in widths}
+    config = {t['table_name']: t for t in graph._graph_config['tables']}
+    keys = {}
+    for name, table in config.items():
+        keys[f"{name}.{table['pkey']['name']}"] = table['pkey']['dtype']
+        for fkey in table['fkeys']:
+            keys[f"{name}.{fkey['name']}"] = fkey['dtype']
+            assert Dtype(fkey['dtype']).can_link_to_dtype(
+                Dtype(config[fkey['dst_table']]['pkey']['dtype']))
+    assert {column: keys[column] for column in widths} == widths
+
+
+def test_float_key_with_no_width_for_every_link_is_refused():
+    users, events = _s3_tables()
+    graph = Graph(
+        {
+            'narrow':
+            _keyed(users, [Column('id', Stype.ID, Dtype.int32)], 'id'),
+            'bridge':
+            _keyed(users, [Column('id', Stype.ID, Dtype.float64)], 'id'),
+            'orders':
+            _keyed(events, [
+                Column('order_id', Stype.ID, Dtype.int64),
+                Column('bridge_id', Stype.ID, Dtype.int64),
+            ], 'order_id'),
+        },
+        [Edge('bridge', 'id', 'narrow'),
+         Edge('orders', 'bridge_id', 'bridge')])
+
+    with pytest.raises(
+            ValueError,
+            match=(r"Key column bridge\.id is stored as float64; it links to "
+                   r"narrow\.id \(int32\) and orders\.bridge_id \(int64\) "
+                   r"links to it, so no integer width fits every link\. "
+                   r"Declare these keys with one integer width at the "
+                   r"source\.")):
+        graph.validate()
+
+
+@pytest.mark.parametrize('reversed_edges', [False, True])
+def test_equal_width_integer_targets_settle_on_int64(reversed_edges):
+    users, events = _s3_tables()
+    tables = {
+        'plain': _keyed(users, [Column('id', Stype.ID, Dtype.int)], 'id'),
+        'wide': _keyed(users, [Column('id', Stype.ID, Dtype.int64)], 'id'),
+        'events': _keyed(events, [
+            Column('event_id', Stype.ID, Dtype.int64),
+            Column('user_id', Stype.ID, Dtype.float64),
+        ], 'event_id'),
+    }
+    edges = [Edge('events', 'user_id', 'plain'),
+             Edge('events', 'user_id', 'wide')]
+    if reversed_edges:
+        edges.reverse()
+    graph = Graph(tables, edges)
+
+    with pytest.warns(UserWarning):
+        graph.validate()
+    config = {t['table_name']: t for t in graph._graph_config['tables']}
+    assert {fk['dtype'] for fk in config['events']['fkeys']} == {'int64'}

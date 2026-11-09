@@ -144,12 +144,10 @@ class NativeGraph:
     tables: tuple[NativeGraphTable, ...]
 
     def table(self, name: str) -> NativeGraphTable:
-        bare_name = name.rsplit(".", 1)[-1]
-        matches = [table for table in self.tables if table.name == bare_name]
-        if len(matches) != 1:
-            raise PredictiveQueryPlanError(
-                f"graph has no unique table named {name!r}")
-        return matches[0]
+        for table in self.tables:
+            if table.name == name:
+                return table
+        raise PredictiveQueryPlanError(f"graph has no table named {name!r}")
 
     def foreign_key(self, column_fqn: str) -> NativeGraphForeignKey | None:
         table_name, column_name = split_column_fqn(column_fqn)
@@ -214,16 +212,12 @@ def _field_name(value: Any) -> str | None:
         "portable graph fields must be strings or resolved mappings")
 
 
-def _bare_table_name(value: Any) -> str:
-    return str(value).rsplit(".", 1)[-1]
-
-
 def split_column_fqn(value: str) -> tuple[str, str]:
-    parts = value.split(".")
-    if len(parts) < 2:
+    table_name, _, column_name = value.rpartition(".")
+    if not table_name:
         raise PredictiveQueryPlanError(
             f"expected a table-qualified column, got {value!r}")
-    return parts[-2], parts[-1]
+    return table_name, column_name
 
 
 def _column_from_payload(value: Any, *, table_name: str) -> NativeGraphColumn:
@@ -283,7 +277,6 @@ def normalize_graph(graph: Mapping[str, Any]) -> NativeGraph:
             raise PredictiveQueryPlanError(
                 "portable graph table requires table_name")
         name = str(raw_table["table_name"])
-        name = _bare_table_name(name)
         source_table_name = raw_table.get("source_table_name")
         if (not isinstance(source_table_name, str)
                 or len(source_table_name.split(".")) != 3):
@@ -348,13 +341,16 @@ def normalize_graph(graph: Mapping[str, Any]) -> NativeGraph:
                     "dst_table, and dst_key")
             if "." in str(destination):
                 raise PredictiveQueryPlanError(
-                    "portable foreign-key dst_table must be an unqualified "
-                    "graph table_name")
-            destination_name = _bare_table_name(destination)
+                    f"foreign key {name}.{source_name} links to table "
+                    f"{str(destination)!r}, whose name contains '.'; "
+                    "DiskGraph resolves a link target by the part after its "
+                    "last '.', so such a table cannot be a link target. "
+                    "Rename the table, for example "
+                    f"{str(destination).replace('.', '_')!r}.")
             foreign_keys.append(
                 NativeGraphForeignKey(
                     source_name,
-                    destination_name,
+                    str(destination),
                     str(destination_column),
                 ))
             add_special(raw_foreign_key, name)
@@ -372,9 +368,12 @@ def normalize_graph(graph: Mapping[str, Any]) -> NativeGraph:
     if not tables:
         raise PredictiveQueryPlanError("graph must contain at least one table")
 
+    names = [table.name for table in tables]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise PredictiveQueryPlanError(
+            "graph contains duplicate table names: " + ", ".join(duplicates))
     by_name = {table.name: table for table in tables}
-    if len(by_name) != len(tables):
-        raise PredictiveQueryPlanError("graph contains duplicate table names")
     for table in tables:
         key_names = ([table.primary_key] if table.primary_key else []) + [
             key.name for key in table.foreign_keys
@@ -561,8 +560,7 @@ def target_to_entity_paths(
     if target_fkey is None:
         return []
     target_table, target_key = split_column_fqn(str(target_fkey))
-    target_table = _bare_table_name(target_table)
-    entity_table = _bare_table_name(query.entity_table)
+    entity_table = query.entity_table
     target_primary_key = graph.table(target_table).primary_key
     entity_fkey = query.query.get_single_target_fkey(lhs=True)
     _, entity_key = split_column_fqn(str(entity_fkey))

@@ -1471,24 +1471,14 @@ class Trainer(PortableConfigMixin):
                     for edge_type in (graph.edge_types if graph is not None else ())
                 }
 
-                def _convert_key(old_key: EdgeTypeStr) -> EdgeTypeStr:
-                    serialized_key = str(old_key)
-                    matching_edge_type = edge_type_by_serialized.get(
-                        serialized_key)
-                    if matching_edge_type is None:
-                        src, rel, dst = old_key.to_tuple()
-                    else:
-                        src, rel, dst = matching_edge_type
-
-                    return EdgeTypeStr(get_table_name(src), rel,
-                                       get_table_name(dst))
-
                 # Pass tuples (not EdgeTypeStr) to NumNeighbors() so the
                 # constructor uses the 3-arg path in EdgeTypeStr.__new__,
                 # and does not split on '__' which might break for tables with
                 # trailing '_' in the column name.
                 new_values = {
-                    _convert_key(k).to_tuple(): v
+                    _restore_num_neighbors_key(k,
+                                               edge_type_by_serialized).to_tuple():
+                    v
                     for k, v in old_num_neighbors.values.items()
                 }
                 cfg.sampler_kwargs.num_neighbors = NumNeighbors(
@@ -3229,6 +3219,23 @@ def temporary_callbacks(pl_trainer: pl.Trainer, callbacks: list[pl.Callback]):
     yield
     for callback in callbacks:
         pl_trainer.callbacks.remove(callback)
+
+
+def _restore_num_neighbors_key(
+    old_key: EdgeTypeStr,
+    edge_type_by_serialized: dict[str, EdgeType],
+) -> EdgeTypeStr:
+    r"""A saved sampler key as the graph names it. Only when the graph's edge
+    types are known and do not hold the key is it a legacy fully qualified
+    name that loses its data-source prefix; without a graph the key is
+    kept as saved."""
+    matching_edge_type = edge_type_by_serialized.get(str(old_key))
+    if matching_edge_type is not None:
+        return EdgeTypeStr(*matching_edge_type)
+    if not edge_type_by_serialized:
+        return old_key
+    src, rel, dst = old_key.to_tuple()
+    return EdgeTypeStr(get_table_name(src), rel, get_table_name(dst))
 
 
 def _get_versions(root_dir: str) -> list[int]:

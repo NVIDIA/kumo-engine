@@ -267,7 +267,7 @@ class TaskDatasetMaterializeSpec:
             ("train_table_name", self.train_table_name),
             ("entity_table_name", self.entity_table_name),
         ):
-            _require_bare_name(value, label)
+            _require_name(value, label)
         if self.task_family == "node_prediction":
             supported_task_types = _NODE_TASK_TYPES
         elif self.task_family == "link_prediction":
@@ -280,7 +280,7 @@ class TaskDatasetMaterializeSpec:
         if not isinstance(self.is_temporal, bool):
             raise ValueError("is_temporal must be a bool")
         if self.rhs_node_type is not None:
-            _require_bare_name(self.rhs_node_type, "rhs_node_type")
+            _require_name(self.rhs_node_type, "rhs_node_type")
         if (len(set(self.required_stages)) != len(self.required_stages)
                 or not set(self.required_stages) <= {"train", "val", "test"}):
             raise ValueError(
@@ -291,11 +291,11 @@ class TaskDatasetMaterializeSpec:
             if len(path) != 1:
                 raise ValueError(f"{location} must contain exactly one edge")
             source, relation, destination = path[0]
-            _require_bare_name(source, f"{location}.source")
-            _require_bare_name(relation, f"{location}.relation")
-            _require_bare_name(destination, f"{location}.destination")
+            _require_name(source, f"{location}.source")
+            _require_name(relation, f"{location}.relation")
+            _require_name(destination, f"{location}.destination")
         for index, node_type in enumerate(self.graph_node_types):
-            _require_bare_name(node_type, f"graph_node_types[{index}]")
+            _require_name(node_type, f"graph_node_types[{index}]")
         if len(set(self.graph_node_types)) != len(self.graph_node_types):
             raise ValueError("graph_node_types must be unique")
         if not isinstance(self.feature_schema, Mapping):
@@ -369,8 +369,8 @@ class TaskDatasetMaterializeSpec:
                 raise ValueError(
                     f"graph_edge_types[{index}] must contain three names")
             for part_index, value in enumerate(edge_type):
-                _require_bare_name(value,
-                                   f"graph_edge_types[{index}][{part_index}]")
+                _require_name(value,
+                              f"graph_edge_types[{index}][{part_index}]")
             if edge_type[0] not in self.graph_node_types or edge_type[
                     2] not in self.graph_node_types:
                 raise ValueError(
@@ -378,13 +378,9 @@ class TaskDatasetMaterializeSpec:
                 )
 
 
-def _require_bare_name(value: object, label: str) -> str:
+def _require_name(value: object, label: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{label} must be a non-empty string")
-    if "." in value:
-        raise ValueError(
-            f"{label} must be an exact unqualified portable name; got {value!r}"
-        )
     return value
 
 

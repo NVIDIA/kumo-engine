@@ -45,8 +45,8 @@ def before_validator_dict(data: Any) -> dict[str, Any]:
         f'cannot normalize {type(data).__name__!r} as configuration values')
 
 
-def _normalize_edge_type_key(edge_type: Any) -> tuple[str, str, str] | None:
-    """Normalize PyG/serialized edge-type keys to bare-name triples."""
+def _edge_type_triple(edge_type: Any) -> tuple[str, str, str] | None:
+    """Parse PyG/serialized edge-type keys to a triple of exact names."""
     try:
         if hasattr(edge_type, 'to_tuple'):
             src, rel, dst = edge_type.to_tuple()
@@ -63,6 +63,15 @@ def _normalize_edge_type_key(edge_type: Any) -> tuple[str, str, str] | None:
         return None
     if not all(isinstance(v, str) for v in (src, rel, dst)):
         return None
+    return (src, rel, dst)
+
+
+def _normalize_edge_type_key(edge_type: Any) -> tuple[str, str, str] | None:
+    """Normalize PyG/serialized edge-type keys to bare-name triples."""
+    triple = _edge_type_triple(edge_type)
+    if triple is None:
+        return None
+    src, rel, dst = triple
     return (get_table_name(src), rel, get_table_name(dst))
 
 
