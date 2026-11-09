@@ -22,12 +22,14 @@ from kumo_core.model_plan import (
     inferred_or_missing_type_to_false,
 )
 from kumo_core.resolved_task import (
+    IncompatiblePredictionPlan,
     ResolvedEncoderInput,
     ResolvedNumericalTask,
     ResolvedTaskGraph,
     ResolvedTaskSampling,
     ResolvedTaskSplit,
     ResolvedTrainTable,
+    check_prediction_plan,
     default_metrics,
     plan_validation_facts,
 )
@@ -726,3 +728,18 @@ def test_year_over_year_encoder_follows_the_task_over_a_plan_asking_for_it():
     trainer.space = plan
 
     assert trainer._get_year_over_year_encoder() is None
+
+
+@pytest.mark.parametrize("name, plan", [
+    ("lag_timesteps", dict(lag_timesteps=2, forecast_length=3)),
+    ("forecast_length", dict(lag_timesteps=1, forecast_length=4)),
+])
+def test_prediction_plan_must_match_the_fit(name, plan):
+    fitted = {"lag_timesteps": 1, "forecast_length": 3}
+    check_prediction_plan(fitted, lag_timesteps=1, forecast_length=3)
+
+    with pytest.raises(
+            IncompatiblePredictionPlan,
+            match=(f"{name} = {fitted[name]} in your Training.*"
+                   f"{name} = {plan[name]} in your Prediction")):
+        check_prediction_plan(fitted, **plan)

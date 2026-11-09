@@ -443,3 +443,27 @@ def fitted_task_options(task: Mapping[str, Any]) -> dict[str, int | None]:
                      "unix_end_offset", "unix_step_size")
     }
 
+
+class IncompatiblePredictionPlan(ValueError):
+    pass
+
+
+def check_prediction_plan(
+    fitted: Mapping[str, Any],
+    *,
+    lag_timesteps: int | None,
+    forecast_length: int | None,
+) -> None:
+    """Reject a forecast prediction plan whose lags or horizon differ from
+    the fit."""
+
+    plan = {"lag_timesteps": lag_timesteps, "forecast_length": forecast_length}
+    for name, value in plan.items():
+        if value != fitted[name]:
+            raise IncompatiblePredictionPlan(
+                "This prediction table is not compatible with the model that "
+                f"was requested. You specified {name} = {fitted[name]} in "
+                "your TrainingTableGenerationPlan when training the model, "
+                f"but you specified {name} = {value} in your "
+                "PredictionTableGenerationPlan when creating the prediction "
+                "table. These must match.")

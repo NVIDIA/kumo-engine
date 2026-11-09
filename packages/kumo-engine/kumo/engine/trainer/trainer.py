@@ -48,6 +48,7 @@ from kumo_core.pquery import (
     build_generated_training_task_dataset,
     resolve_query_forecast,
 )
+from kumo_core.resolved_task import check_prediction_plan
 from kumo_core.summaries import Note, Scalar, Summary
 from kumo_core.train.artifact_manifest import PredictionSelectionRef
 from kumo_core.training.config import FitMode
@@ -988,7 +989,7 @@ def _requested_artifacts(
 def _materialize_prediction(prediction_table: PredictionTable,
                             snapshot: GraphSnapshot, parsed: Any,
                             native_graph: Any, run_id: str, run_dir: Path,
-                            fitted_lags: int) -> Tuple[Any, Any]:
+                            task_options: Mapping[str, Any]) -> Tuple[Any, Any]:
     from kumo_core.prediction import (
         GeneratedPredictionTable,
         PredictionTableRequest,
@@ -1000,11 +1001,9 @@ def _materialize_prediction(prediction_table: PredictionTable,
     lag_offsets = compiler_options.get('lag_offsets_secs')
     lag_timesteps = (len(lag_offsets) if isinstance(lag_offsets,
                                                     (tuple, list)) else None)
-    if parsed.task_type == 'forecasting' and lag_timesteps != fitted_lags:
-        raise ValueError(
-            f'The prediction table carries {lag_timesteps} forecast lags, but '
-            f'the model was fitted with {fitted_lags}. Generate the '
-            'prediction table for this model.')
+    if parsed.task_type == 'forecasting':
+        check_prediction_plan(task_options, lag_timesteps=lag_timesteps,
+                              forecast_length=parsed.forecast_length)
     with no_encoder_inference_warnings():
         task_dataset = build_generated_training_task_dataset(
             query=parsed,
@@ -1715,7 +1714,7 @@ class Trainer:
                 parsed, native_graph, self._training_table_generation_plan)
         materialized, timestamps = _materialize_prediction(
             prediction_table, snapshot, parsed, native_graph, run_id, run_dir,
-            task_options['lag_timesteps'])
+            task_options)
         model_dir = str(
             _stage_model_bundle(
                 training_result.artifact_paths,

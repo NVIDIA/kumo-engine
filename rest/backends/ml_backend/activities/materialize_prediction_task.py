@@ -8,6 +8,10 @@ from typing import Any, Optional, Tuple
 
 from kumo_core.job_config import PredictionConfig
 from kumo_core.prediction_options import resolve_prediction_time_options
+from kumo_core.resolved_task import (
+    IncompatiblePredictionPlan,
+    check_prediction_plan,
+)
 from kumo_core.types import PredictionArtifactType, TaskType
 from kumoapi.typing import Dtype
 from temporalio import activity
@@ -866,28 +870,14 @@ def materialize_prediction_task(
     if task.train_table is not None:
         task.train_table._weight_col = None
 
-    # Validate forecasting compatibility
     if task.task_type == TaskType.FORECASTING:
-        if task.lag_timesteps != job_input.predictive_query.lag_timesteps:
-            raise IncompatiblePredictionTable(
-                message=("This prediction table is not compatible with "
-                         "the model that was requested. You specified "
-                         f"lag_timesteps = {task.lag_timesteps} in your "
-                         "TrainingTableGenerationPlan when training the "
-                         "model, but you specified lag_timesteps = "
-                         f"{job_input.predictive_query.lag_timesteps} in "
-                         "your PredictionTableGenerationPlan when "
-                         "creating the prediction table. These must match."))
-        if (task.forecast_length != job_input.predictive_query.forecast_length):
-            raise IncompatiblePredictionTable(
-                message=("This prediction table is not compatible with "
-                         "the model that was requested. You specified "
-                         f"forecast_length = {task.forecast_length} in "
-                         "your TrainingTableGenerationPlan when training "
-                         "the model, but you specified forecast_length = "
-                         f"{job_input.predictive_query.forecast_length} "
-                         "in your PredictionTableGenerationPlan when "
-                         "creating the prediction table. These must match."))
+        try:
+            check_prediction_plan(
+                vars(task),
+                lag_timesteps=job_input.predictive_query.lag_timesteps,
+                forecast_length=job_input.predictive_query.forecast_length)
+        except IncompatiblePredictionPlan as error:
+            raise IncompatiblePredictionTable(message=str(error)) from error
 
     # TODO(manan): this is a hacky way of ensuring that the graph that is
     # input at prediction time is the one that is to be used with the
