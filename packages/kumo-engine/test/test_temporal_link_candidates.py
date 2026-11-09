@@ -4,7 +4,10 @@
 
 import numpy as np
 import pandas as pd
+import pytest
+from kumo_core.diskgraph.lightning_data import DiskgraphLightningDataModule
 from kumoapi.graph import Edge
+from kumoapi.model_plan import ModelPlan
 from kumoapi.typing import Stype
 
 import kumo.engine as kumo
@@ -78,3 +81,64 @@ def test_predict_ranks_only_items_valid_at_prediction_time(
         kumo.configure(scratch_dir=previous)
 
     assert set(frame['CLASS'].astype(int)) == set(range(30))
+
+
+@pytest.fixture(scope='module', params=['context', 'two_tower'])
+def fitted(request, tmp_path_factory):
+    root = tmp_path_factory.mktemp('candidates')
+    previous = get_scratch_dir()
+    kumo.configure(scratch_dir=root / 'scratch')
+    data = root / 'data'
+    data.mkdir()
+    graph = _graph(data)
+    snapshot = graph.snapshot()
+    pquery = kumo.PredictiveQuery(graph=graph, query=QUERY)
+    plan = ModelPlan()
+    plan.training_job.num_experiments = 1
+    plan.training_job.disable_explain = True
+    plan.optimization.max_epochs = 2
+    plan.optimization.max_steps_per_epoch = 2
+    plan.model_architecture.module = request.param
+    trainer = kumo.Trainer(model_plan=plan)
+    trainer.fit(pquery.generate_training_table(snapshot), snapshot=snapshot)
+    yield trainer, pquery, snapshot, data, request.param
+    kumo.configure(scratch_dir=previous)
+
+
+def _custom_table(fitted, name, days):
+    _, pquery, snapshot, data, _ = fitted
+    pd.DataFrame({
+        'ENTITY1': np.arange(len(days)),
+        'TIMESTAMP': START + pd.to_timedelta(days, unit='D'),
+    }).to_parquet(data / name)
+    connector = kumo.FileConnector(root_dir=str(data))
+    return kumo.PredictionTable.from_source_table(connector[name], pq=pquery,
+                                                  snapshot=snapshot)
+
+
+def test_custom_table_ranks_only_items_valid_at_its_anchor(fitted, monkeypatch):
+    trainer, _, snapshot, _, module = fitted
+    item_times = []
+    make_loader = DiskgraphLightningDataModule._make_rhs_dataloader
+
+    def spy(self, seed_time, stage):
+        item_times.append(None if seed_time is None else int(seed_time[0]))
+        return make_loader(self, seed_time, stage)
+
+    monkeypatch.setattr(DiskgraphLightningDataModule, '_make_rhs_dataloader',
+                        spy)
+    table = _custom_table(fitted, 'one_anchor.parquet', [45] * 10)
+    frame = trainer.predict(table, snapshot=snapshot,
+                            num_classes_to_return=60).frame
+
+    assert set(frame['CLASS'].astype(int)) == set(range(30))
+    if module == 'two_tower':
+        assert item_times == [(START + pd.Timedelta(days=45)).value]
+
+
+def test_custom_table_with_two_anchors_is_rejected(fitted):
+    trainer, _, snapshot, _, _ = fitted
+    table = _custom_table(fitted, 'two_anchors.parquet', [45] * 5 + [110] * 5)
+
+    with pytest.raises(ValueError, match='one table per anchor time'):
+        trainer.predict(table, snapshot=snapshot, num_classes_to_return=60)
