@@ -94,7 +94,7 @@ from kumoapi.typing import (
 )
 
 from kumo.engine._events import Event, EventEmitter
-from kumo.engine._infer import _SAMPLE_ROWS
+from kumo.engine._infer import _PLAIN_NUMBER, _SAMPLE_ROWS
 from kumo.engine._manifest import (
     RECONSTRUCTED,
     BuildCost,
@@ -273,15 +273,20 @@ def _sampled_precision(values: Any) -> Tuple[int, int, int]:
     r"""The most decimal places among the values, each read as the shortest
     decimal that names it, so a declared scale no value uses does not
     count, and how many of them float32 stores as 0 and as infinity. Bytes
-    are the UTF-8 text DiskGraph decodes them to; bytes that are not UTF-8
-    fail its parse and count for nothing here either."""
+    are the UTF-8 text DiskGraph decodes them to, and text counts only in
+    the ASCII grammar its parser reads; anything else fails that parse and
+    counts for nothing here either."""
     places = underflows = overflows = 0
     for value in values.to_pylist():
         try:
             if isinstance(value, bytes):
                 value = value.decode()
+            if isinstance(value, str):
+                value = value.strip()
+                if not _PLAIN_NUMBER.fullmatch(value):
+                    continue
             number = Decimal(
-                value if isinstance(value, Decimal) else str(value).strip())
+                value if isinstance(value, Decimal) else str(value))
         except (InvalidOperation, UnicodeDecodeError):
             continue
         places = max(places, _places(number))

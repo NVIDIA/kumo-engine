@@ -939,6 +939,35 @@ def test_bytes_are_measured_as_the_text_diskgraph_decodes(tmp_path):
         ]
 
 
+def test_text_outside_diskgraphs_number_grammar_is_not_measured(tmp_path):
+    from kumo.engine import FileConnector, configure
+    from kumo.engine.graph import _sampled_precision
+
+    values = pa.array(['1_0e40', '\u0661e40', '1e40', ' 2.5 ', 'inf'])
+    assert _sampled_precision(values) == (1, 0, 1)
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            'id': range(4),
+            'v': pa.array(['1_0e40', '\u0661e40', '1e40', ' 2.5 ']),
+        }), root / 't.parquet')
+    source = Table.from_source_table(
+        FileConnector(root_dir=str(root))['t.parquet'],
+        primary_key='id').with_column('v', dtype=Dtype.float32,
+                                      stype=Stype.numerical)
+    with pytest.warns(UserWarning) as caught:
+        Graph({'t': source}).snapshot()
+    messages = [str(warning.message) for warning in caught]
+    assert ('2 invalid values found in t.v. Invalid values are parsed as '
+            'null. Please correct and retrain if needed.') in messages
+    assert ('t.v is stored as float32 but comes from string and holds 1 '
+            'sampled value(s) too large for float32, which stores them as '
+            'infinity. Declare dtype=Dtype.float64 for the column to keep '
+            'them.') in messages
+
+
 def test_values_too_large_for_float32_are_reported(tmp_path):
     from kumo.engine import FileConnector, configure
     from kumo.engine.graph import _sampled_precision
