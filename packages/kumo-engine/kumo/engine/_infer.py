@@ -61,6 +61,7 @@ from kumo.engine.connector.base import Connector
 _SAMPLE_ROWS = 10_000
 
 _PLAIN_NUMBER = re.compile(r'[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?', re.ASCII)
+_INTEGER = re.compile(r'[+-]?\d{1,19}', re.ASCII)
 _WHOLE_NUMBER = re.compile(r'[+-]?\d{1,19}(\.0+)?', re.ASCII)
 _INT64 = range(-2**63, 2**63)
 _NOT_NUMBERS = frozenset({Stype.ID, Stype.multicategorical, Stype.timestamp})
@@ -103,11 +104,12 @@ def _report_numbers_stored_as_text(
     r"""Warns for a text column whose dtype was not declared and whose
     sampled values are all numbers apart from at least one blank or
     missing-like token, naming the call that reads it as a number: int64
-    when every number is whole, a zero fraction included, as DiskGraph
-    reads it. A column of clean digits is a code, as is any value with a
-    leading zero. A CSV source is told to clear the values its read refuses
-    first, including the spellings its pandas-read sample shows as
-    missing."""
+    when every number is whole, a zero fraction included where DiskGraph
+    reads the text, but only plain integer text on CSV, whose Arrow read
+    routes a fraction through float64. A column of clean digits is a code,
+    as is any value with a leading zero. A CSV source is told to clear the
+    values its read refuses first, including the spellings its pandas-read
+    sample shows as missing."""
     csv = None
     for name, (dtype, stype) in resolved.items():
         if (dtype != Dtype.string or stype in _NOT_NUMBERS or name in declared
@@ -125,12 +127,13 @@ def _report_numbers_stored_as_text(
         missing = len(others) + len(column) - len(values)
         examples = ', '.join(
             repr(value) for value in sorted(set(others))[:_EXAMPLES])
+        csv = _reads_csv(connector, table_name, sql) if csv is None else csv
+        whole = _INTEGER if csv else _WHOLE_NUMBER
         dtype = (Dtype.int64 if all(
-            _WHOLE_NUMBER.fullmatch(value) and int(Decimal(value)) in _INT64
+            whole.fullmatch(value) and int(Decimal(value)) in _INT64
             for value in numbers) else Dtype.float64)
         call = (f"table.with_column({name!r}, dtype=Dtype.{dtype.name}, "
                 "stype=Stype.numerical)")
-        csv = _reads_csv(connector, table_name, sql) if csv is None else csv
         advice = (f"A CSV read as a number refuses {len(others)} of them, "
                   f"and any value spelled {_HIDDEN_FROM_CSV}, which the "
                   f"sample reads as missing; replace them with empty fields "
