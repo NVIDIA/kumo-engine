@@ -62,6 +62,7 @@ remote/durable cache, e.g. a Snowflake stage) -- out of scope for now.
 import json
 import logging
 import math
+import struct
 import sys
 import threading
 import time
@@ -246,10 +247,19 @@ def _places(number: Decimal) -> int:
     return places if places <= _FLOAT64_PLACES else 0
 
 
+def _float32_zero(number: Decimal) -> bool:
+    r"""Whether float32 stores the value as 0, decided by the round trip
+    itself, so a value that rounds up to the smallest subnormal does not
+    count."""
+    value = float(number) if number.is_finite() else 0.0
+    return (0 < abs(value) < _FLOAT32_SMALLEST
+            and struct.unpack('f', struct.pack('f', value))[0] == 0)
+
+
 def _sampled_precision(values: Any) -> Tuple[int, int]:
     r"""The most decimal places among the values, each read as the shortest
     decimal that names it, so a declared scale no value uses does not
-    count, and how many of them lie below the smallest float32."""
+    count, and how many of them float32 stores as 0."""
     places = underflows = 0
     for value in values.to_pylist():
         try:
@@ -258,8 +268,7 @@ def _sampled_precision(values: Any) -> Tuple[int, int]:
         except InvalidOperation:
             continue
         places = max(places, _places(number))
-        if number.is_finite() and 0 < abs(float(number)) < _FLOAT32_SMALLEST:
-            underflows += 1
+        underflows += _float32_zero(number)
     return places, underflows
 
 
@@ -367,10 +376,9 @@ def _warn_float32_narrowing(table: str, column: Mapping[str, Any],
     if underflows:
         warnings.warn(
             f"{table}.{column['name']} is stored as float32 but comes from "
-            f"{physical} and holds {underflows} sampled value(s) below "
-            f"{_FLOAT32_SMALLEST:.2g}, which float32 stores as 0. Declare "
-            "dtype=Dtype.float64 for the column to keep them.", UserWarning,
-            stacklevel=3)
+            f"{physical} and holds {underflows} sampled value(s) too small "
+            "for float32, which stores them as 0. Declare dtype=Dtype.float64 "
+            "for the column to keep them.", UserWarning, stacklevel=3)
     magnitude = _magnitude(stat)
     if magnitude is None:
         return

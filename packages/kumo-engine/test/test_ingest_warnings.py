@@ -340,8 +340,8 @@ def test_missing_like_count_is_a_lower_bound_past_the_kept_categories(tmp_path):
         'MIN': 0.0,
         'MAX': 0.0
     }, "events.amount is stored as float32 but comes from double and holds 3 "
-     "sampled value(s) below 1.4e-45, which float32 stores as 0. Declare "
-     "dtype=Dtype.float64 for the column to keep them."),
+     "sampled value(s) too small for float32, which stores them as 0. "
+     "Declare dtype=Dtype.float64 for the column to keep them."),
 ])
 def test_snapshot_reports_values_beyond_float32_precision(
         tmp_path, narrowed, stats, expected):

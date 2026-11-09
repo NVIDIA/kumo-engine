@@ -818,6 +818,13 @@ def test_a_step_finer_than_any_float64_is_no_step(tmp_path):
     assert not [w for w in caught if 'float32' in str(w.message)]
 
 
+def test_only_values_float32_rounds_to_zero_count_as_underflow():
+    from kumo.engine.graph import _sampled_precision
+
+    values = pa.array([1e-45, 1e-46, 7e-46, 2.0**-150, 0.0, 1.5])
+    assert _sampled_precision(values)[1] == 3
+
+
 def test_values_below_the_smallest_float32_are_reported(tmp_path):
     from kumo.engine import FileConnector, configure
 
@@ -839,8 +846,8 @@ def test_values_below_the_smallest_float32_are_reported(tmp_path):
         if issubclass(warning.category, UserWarning)
     ] == [
         't.rate is stored as float32 but comes from double and holds 5 '
-        'sampled value(s) below 1.4e-45, which float32 stores as 0. Declare '
-        'dtype=Dtype.float64 for the column to keep them.'
+        'sampled value(s) too small for float32, which stores them as 0. '
+        'Declare dtype=Dtype.float64 for the column to keep them.'
     ]
 
 
