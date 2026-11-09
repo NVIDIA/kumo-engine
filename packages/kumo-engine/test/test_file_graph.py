@@ -939,6 +939,20 @@ def test_the_float32_step_ignores_the_decimal_context(tmp_path):
      "call table.with_column('amount', dtype=Dtype.float64, "
      "stype=Stype.numerical); values that do not parse become missing and "
      "are counted at snapshot."),
+    ('parquet', ['9007199254740993.0', '9007199254740995.00', '12.0', ' '],
+     "Column 'amount' in table 't.parquet' is read as text, but every "
+     "non-blank value in the 4 sampled rows is a number; 1 value(s) are "
+     "blank or look like missing (for example ' '). To read it as a number "
+     "call table.with_column('amount', dtype=Dtype.int64, "
+     "stype=Stype.numerical); values that do not parse become missing and "
+     "are counted at snapshot."),
+    ('parquet', ['12.', '3', '4', ' '],
+     "Column 'amount' in table 't.parquet' is read as text, but every "
+     "non-blank value in the 4 sampled rows is a number; 1 value(s) are "
+     "blank or look like missing (for example ' '). To read it as a number "
+     "call table.with_column('amount', dtype=Dtype.float64, "
+     "stype=Stype.numerical); values that do not parse become missing and "
+     "are counted at snapshot."),
     ('parquet', ['94025', '10001', '60601', '75201', '98101', '30301'], None),
     ('parquet', ['2019', '2020', '2021', '2019', '2020', None], None),
     ('parquet', ['1', 'abc', ' ', '4', '5', '6'], None),

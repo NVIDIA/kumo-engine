@@ -43,6 +43,7 @@ import math
 import re
 import warnings
 from dataclasses import replace
+from decimal import Decimal
 from typing import Any, Collection, Dict, List, Mapping, Optional, Tuple
 
 from kumo_core.csv_rules import NA_TOKENS, has_leading_zero, looks_missing
@@ -60,7 +61,7 @@ from kumo.engine.connector.base import Connector
 _SAMPLE_ROWS = 10_000
 
 _PLAIN_NUMBER = re.compile(r'[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?', re.ASCII)
-_WHOLE_NUMBER = re.compile(r'[+-]?\d{1,19}', re.ASCII)
+_WHOLE_NUMBER = re.compile(r'[+-]?\d{1,19}(\.0+)?', re.ASCII)
 _INT64 = range(-2**63, 2**63)
 _NOT_NUMBERS = frozenset({Stype.ID, Stype.multicategorical, Stype.timestamp})
 _EXAMPLES = 3
@@ -101,10 +102,12 @@ def _report_numbers_stored_as_text(
 ) -> None:
     r"""Warns for a text column whose dtype was not declared and whose
     sampled values are all numbers apart from at least one blank or
-    missing-like token, naming the call that reads it as a number. A column
-    of clean digits is a code, as is any value with a leading zero. A CSV
-    source is told to clear the values its read refuses first, including
-    the spellings its pandas-read sample shows as missing."""
+    missing-like token, naming the call that reads it as a number: int64
+    when every number is whole, a zero fraction included, as DiskGraph
+    reads it. A column of clean digits is a code, as is any value with a
+    leading zero. A CSV source is told to clear the values its read refuses
+    first, including the spellings its pandas-read sample shows as
+    missing."""
     csv = None
     for name, (dtype, stype) in resolved.items():
         if (dtype != Dtype.string or stype in _NOT_NUMBERS or name in declared
@@ -123,7 +126,7 @@ def _report_numbers_stored_as_text(
         examples = ', '.join(
             repr(value) for value in sorted(set(others))[:_EXAMPLES])
         dtype = (Dtype.int64 if all(
-            _WHOLE_NUMBER.fullmatch(value) and int(value) in _INT64
+            _WHOLE_NUMBER.fullmatch(value) and int(Decimal(value)) in _INT64
             for value in numbers) else Dtype.float64)
         call = (f"table.with_column({name!r}, dtype=Dtype.{dtype.name}, "
                 "stype=Stype.numerical)")
