@@ -524,6 +524,7 @@ def _install_fake_diskgraph(
 
     stub.RuntimeIndex = _StubRuntimeIndex  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "diskgraph", stub)
+    monkeypatch.setitem(sys.modules, "diskgraph.runtime_batch_iterator", stub)
     return calls
 
 
@@ -3199,6 +3200,7 @@ def _install_grouped_fake_diskgraph(
 
     stub.RuntimeIndex = _StubRuntimeIndex  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "diskgraph", stub)
+    monkeypatch.setitem(sys.modules, "diskgraph.runtime_batch_iterator", stub)
     # Grouping is gated on a TEMPORAL RHS (see ``_rhs_is_temporal``). These
     # grouping tests use a fake manifest with no index metadata, so force the
     # RHS-temporal signal True to isolate the grouping behaviour under test.
@@ -3264,6 +3266,7 @@ def _install_grouped_fake_diskgraph_per_stage(
 
     stub.RuntimeIndex = _StubRuntimeIndex  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "diskgraph", stub)
+    monkeypatch.setitem(sys.modules, "diskgraph.runtime_batch_iterator", stub)
     # See _install_grouped_fake_diskgraph: force the RHS-temporal gate True.
     monkeypatch.setattr(DiskgraphLightningDataModule, "_rhs_is_temporal",
                         property(lambda self: True))
@@ -3424,6 +3427,7 @@ def _install_plain_fake_diskgraph(
 
     stub.RuntimeIndex = _StubRuntimeIndex  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "diskgraph", stub)
+    monkeypatch.setitem(sys.modules, "diskgraph.runtime_batch_iterator", stub)
     return calls
 
 
