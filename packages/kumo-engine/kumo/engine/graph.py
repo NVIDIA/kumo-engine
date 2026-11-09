@@ -239,20 +239,18 @@ def _places(number: Decimal) -> int:
     return max(0, -(exponent + zeros))
 
 
-def _decimal_places(parquet: Any, column: str) -> int:
-    r"""The most decimal places among the column's first ``_SAMPLE_ROWS``
-    values, each read as the shortest decimal that names it, so a declared
-    scale no value uses does not count."""
+def _decimal_places(values: Any) -> int:
+    r"""The most decimal places among the values, each read as the shortest
+    decimal that names it, so a declared scale no value uses does not
+    count."""
     places = 0
-    for batch in parquet.iter_batches(_SAMPLE_ROWS, columns=[column]):
-        for value in batch.column(0).to_pylist():
-            try:
-                number = Decimal(
-                    value if isinstance(value, Decimal) else str(value).strip())
-            except InvalidOperation:
-                continue
-            places = max(places, _places(number))
-        break
+    for value in values.to_pylist():
+        try:
+            number = Decimal(
+                value if isinstance(value, Decimal) else str(value).strip())
+        except InvalidOperation:
+            continue
+        places = max(places, _places(number))
     return places
 
 
@@ -260,9 +258,10 @@ def _narrowed_float_columns(
         alias: str, table: Table, paths: Sequence[str],
         source_path: Any) -> Dict[Tuple[str, str], Tuple[str, int]]:
     r"""Each float32 column staged from a wider type, with that type and the
-    decimal places its sampled values are written with. A backend that
-    names a directory instead of its parts has it globbed, only when the
-    table has a float32 column."""
+    decimal places its values are written with, read from the table's first
+    ``_SAMPLE_ROWS`` rows across its parts, all such columns together. A
+    backend that names a directory instead of its parts has it globbed,
+    only when the table has a float32 column."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -274,20 +273,32 @@ def _narrowed_float_columns(
     if not columns:
         return {}
     narrowed: Dict[Tuple[str, str], Tuple[str, int]] = {}
+    budget = _SAMPLE_ROWS
     for path in paths or sorted(
             str(part) for part in Path(source_path).rglob('*.parquet')):
         parquet = pq.ParquetFile(path)
         schema = parquet.schema_arrow
+        sampled = []
         for column in columns:
             if column not in schema.names:
                 continue
             physical = schema.field(column).type
             if pa.types.is_float32(physical) or pa.types.is_float16(physical):
                 continue
-            places = (0 if pa.types.is_integer(physical) else _decimal_places(
-                parquet, column))
-            if places >= narrowed.get((alias, column), ('', -1))[1]:
-                narrowed[alias, column] = (str(physical), places)
+            narrowed.setdefault((alias, column), (str(physical), 0))
+            if not pa.types.is_integer(physical):
+                sampled.append(column)
+        if budget <= 0 or not sampled:
+            continue
+        for batch in parquet.iter_batches(budget, columns=sampled):
+            for column in sampled:
+                physical, places = narrowed[alias, column]
+                narrowed[alias,
+                         column] = (physical,
+                                    max(places,
+                                        _decimal_places(batch.column(column))))
+            budget -= batch.num_rows
+            break
     return narrowed
 
 

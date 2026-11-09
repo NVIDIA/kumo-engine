@@ -755,6 +755,45 @@ def test_decimal_columns_beyond_float32_precision_are_reported(tmp_path):
     assert fetched.column('wide_cents').to_pylist() == [131072.01, 0.25]
 
 
+@pytest.mark.parametrize('first_rows, reads', [(1, 3), (10_000, 1)])
+def test_the_float32_step_is_sampled_on_one_budget_per_table(
+        first_rows, reads, tmp_path, monkeypatch):
+    from kumo.engine import FileConnector
+    from kumo.engine.graph import _narrowed_float_columns
+
+    root = tmp_path / 'source' / 't'
+    root.mkdir(parents=True)
+    paths = []
+    for part, rows in enumerate((first_rows, 1, 1)):
+        path = root / f'part{part}.parquet'
+        pq.write_table(
+            pa.table({
+                'id': pa.array(range(rows), pa.int64()),
+                'a': pa.array([1.5] * rows),
+                'b': pa.array([2.25] * rows),
+                'n': pa.array([7] * rows, pa.int64()),
+            }), path)
+        paths.append(str(path))
+    table = Table.from_source_table(
+        FileConnector(root_dir=str(tmp_path / 'source'))['t'], primary_key='id')
+    for name in ('a', 'b', 'n'):
+        table = table.with_column(name, dtype=Dtype.float32)
+    requested = []
+    original = pq.ParquetFile.iter_batches
+
+    def recording(self, *args, **kwargs):
+        requested.append(sorted(kwargs.get('columns') or []))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(pq.ParquetFile, 'iter_batches', recording)
+    assert _narrowed_float_columns('t', table, paths, root) == {
+        ('t', 'a'): ('double', 1),
+        ('t', 'b'): ('double', 2),
+        ('t', 'n'): ('int64', 0),
+    }
+    assert requested == [['a', 'b']] * reads
+
+
 def test_the_float32_step_ignores_the_decimal_context(tmp_path):
     import decimal
 
@@ -764,17 +803,18 @@ def test_the_float32_step_ignores_the_decimal_context(tmp_path):
     pq.write_table(
         pa.table({
             'cents':
-            pa.array([Decimal('131072.01'), Decimal('200.00')],
-                     pa.decimal128(10, 2)),
+            pa.array(
+                [Decimal('131072.01'), Decimal('200.00')], pa.decimal128(10,
+                                                                         2)),
             'dollars':
             pa.array([131072.01, 200.0]),
             'text':
             pa.array(['131072.01', '200.00']),
         }), path)
-    parquet = pq.ParquetFile(path)
+    values = pq.read_table(path)
     with decimal.localcontext(prec=6, traps=[decimal.Inexact]):
         assert [
-            _decimal_places(parquet, column)
+            _decimal_places(values.column(column))
             for column in ('cents', 'dollars', 'text')
         ] == [2, 2, 2]
 
