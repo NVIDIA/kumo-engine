@@ -846,6 +846,27 @@ def test_slash_dates_without_one_order_are_refused(tmp_path, extension, values,
 
 
 @pytest.mark.parametrize('extension', ['csv', 'parquet'])
+def test_a_mixed_timezone_column_with_an_unread_shape_is_left_to_diskgraph(
+        tmp_path, extension):
+    values = ['2024-01-15T08:00:00Z', '2024-1-16T09:00:00', '2024-01-17T10:00:00']
+    with pytest.warns(
+            UserWarning, match=re.escape(
+                'Time column events.ts holds 1 value in a shape the scan does '
+                'not read (e.g. 2024-1-16T09:00:00), so its format is left to '
+                "DiskGraph's own reading. Set timestamp_format on the column "
+                'to decide it.')) as caught:
+        column, stats, ingest = _time_snapshot(tmp_path, extension,
+                                               pa.array(values, pa.string()))
+    assert len(_user_warnings(caught)) == 1
+    assert column.get('timestamp_format') != '%Y-%m-%d %H:%M:%S%.f%#z'
+    assert ingest['total_nodes'] == 3
+    assert ingest['dropped_rows_counts'] == {}
+    assert (stats['min_secs'],
+            stats['max_secs']) == (_secs('2024-01-15 08:00:00'),
+                                   _secs('2024-01-17 10:00:00'))
+
+
+@pytest.mark.parametrize('extension', ['csv', 'parquet'])
 @pytest.mark.parametrize('values', [
     ['2024-01-16 10:00:00', '2024-01-15 10:00:00+02:00', '2024-01-17 10:00:00Z'],
     [

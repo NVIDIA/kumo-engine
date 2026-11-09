@@ -175,7 +175,7 @@ def test_mixed_timezones_are_staged_with_one_separator(tmp_path):
         tmp_path,
         pa.array([
             '2024-01-16T10:00:00', '2024-01-15 10:00:00+02:00',
-            '2024-01-17T10:00:00.250z', 'not a time', None
+            '2024-01-17T10:00:00.250z', None
         ]))
     with pytest.warns(UserWarning, match='mixes 2 values with a timezone'):
         formats, rewritten = resolve_time_columns('events', _definition(),
@@ -183,7 +183,7 @@ def test_mixed_timezones_are_staged_with_one_separator(tmp_path):
     assert (formats, rewritten) == ({'ts': '%Y-%m-%d %H:%M:%S%.f%#z'}, ['ts'])
     assert pq.read_table(path).column('ts').to_pylist() == [
         '2024-01-16 10:00:00', '2024-01-15 10:00:00+02:00',
-        '2024-01-17 10:00:00.250Z', 'not a time', None
+        '2024-01-17 10:00:00.250Z', None
     ]
 
 
@@ -417,18 +417,25 @@ def test_other_shapes_are_left_to_diskgraph(tmp_path, values):
     assert path.read_bytes() == before
 
 
-@pytest.mark.parametrize('values', [
-    pa.array(['13/01/2024', '14/01/2024', 'unknown']),
-    pa.array(['1705276800', '2023', 'unknown']),
+@pytest.mark.parametrize('values, example', [
+    (pa.array(['13/01/2024', '14/01/2024', 'unknown']), 'unknown'),
+    (pa.array(['1705276800', '2023', 'unknown']), 'unknown'),
+    (pa.array([
+        '2024-01-15T08:00:00Z', '2024-1-16T09:00:00', '2024-01-17T10:00:00'
+    ]), '2024-1-16T09:00:00'),
+    (pa.array([
+        '2024-01-16T10:00:00', '2024-01-15 10:00:00+02:00', 'not a time'
+    ]), 'not a time'),
 ])
 def test_a_shape_the_scan_does_not_read_leaves_the_column_to_diskgraph(
-        tmp_path, values):
+        tmp_path, values, example):
     path = _part(tmp_path, values)
     before = path.read_bytes()
     with pytest.warns(
             UserWarning, match=re.escape(
-                'Time column events.ts holds 1 value in a shape the scan does '
-                'not read (e.g. unknown), so its format is left to DiskGraph')):
+                f'Time column events.ts holds 1 value in a shape the scan '
+                f'does not read (e.g. {example}), so its format is left to '
+                'DiskGraph')):
         formats, rewritten = resolve_time_columns('events', _definition(),
                                                   [str(path)])
     assert (formats, rewritten) == ({}, [])

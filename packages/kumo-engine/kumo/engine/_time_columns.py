@@ -16,7 +16,9 @@ the nanosecond timestamp range (1677-09-21 to 2262-04-11) is made missing in
 the staged data and counted, never moved to a neighbouring date. Bare
 timestamps are read as UTC and zoned ones converted to UTC; a column mixing
 the two is reported, staged in one shape (a space before a full time part)
-and given a format that reads both.
+and given a format that reads both. A column that also holds a value in a
+shape the scan does not read is left to DiskGraph's own reading, with the
+value named, wherever the scan would otherwise have declared a format.
 """
 
 import os
@@ -590,7 +592,14 @@ class _Column:
             return
         known = {k: v for k, v in scan.families.items() if v and k != 'other'}
         other = scan.families.get('other', 0)
-        if other and set(known) in ({'digits'}, {'slash'}):
+        decide = None
+        if set(known) == {'digits'}:
+            decide = self._decide_numbers
+        elif set(known) == {'slash'}:
+            decide = self._decide_slash
+        elif set(known) == {'iso'} and scan.zoned and scan.bare:
+            decide = self._decide_zones
+        if decide is not None and other:
             warnings.warn(
                 f"Time column {self.alias}.{self.name} holds {other} "
                 f"value{'s' if other != 1 else ''} in a shape the scan does "
@@ -600,21 +609,8 @@ class _Column:
                 UserWarning,
                 stacklevel=5,
             )
-        elif set(known) == {'digits'}:
-            self._decide_numbers()
-        elif set(known) == {'slash'}:
-            self._decide_slash()
-        elif set(known) == {'iso'} and scan.zoned and scan.bare:
-            self.decision = _Decision('%Y-%m-%d %H:%M:%S%.f%#z', one_shape=True)
-            warnings.warn(
-                f"Time column {self.alias}.{self.name} mixes {scan.zoned} "
-                f"value{'s' if scan.zoned != 1 else ''} with a timezone, "
-                f"converted to UTC, and {scan.bare} without one, read as "
-                f"UTC (e.g. {scan.zoned_example} and {scan.bare_example}). "
-                "Declare one timezone at the source so the events line up.",
-                UserWarning,
-                stacklevel=5,
-            )
+        elif decide is not None:
+            decide()
         self._report(self._settled('impossible'),
                      'are not dates on the calendar',
                      'is not a date on the calendar',
@@ -624,6 +620,19 @@ class _Column:
             f'falls outside {_RANGE}',
             'Replace placeholder dates with nulls at the source to '
             '{keep}')
+
+    def _decide_zones(self) -> None:
+        scan = self.scan
+        self.decision = _Decision('%Y-%m-%d %H:%M:%S%.f%#z', one_shape=True)
+        warnings.warn(
+            f"Time column {self.alias}.{self.name} mixes {scan.zoned} "
+            f"value{'s' if scan.zoned != 1 else ''} with a timezone, "
+            f"converted to UTC, and {scan.bare} without one, read as "
+            f"UTC (e.g. {scan.zoned_example} and {scan.bare_example}). "
+            "Declare one timezone at the source so the events line up.",
+            UserWarning,
+            stacklevel=5,
+        )
 
     def _decide_numbers(self) -> None:
         scan = self.scan
