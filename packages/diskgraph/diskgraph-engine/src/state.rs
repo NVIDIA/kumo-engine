@@ -62,26 +62,16 @@ impl SamplingStats {
     }
 
     pub fn record_node(&mut self, hop: usize, type_id: usize) {
-        if self.nodes_per_type.len() <= type_id {
-            self.nodes_per_type.resize(type_id + 1, Vec::new());
-        }
-        let counts = &mut self.nodes_per_type[type_id];
-        if counts.len() <= hop {
-            counts.resize(hop + 1, 0);
-        }
-        counts[hop] += 1;
+        debug_assert!(type_id < self.nodes_per_type.len());
+        debug_assert!(hop < self.nodes_per_type[type_id].len());
+        self.nodes_per_type[type_id][hop] += 1;
         self.total_nodes += 1;
     }
 
     pub fn record_edge(&mut self, hop: usize, rel_id: usize) {
-        if self.edges_per_type.len() <= rel_id {
-            self.edges_per_type.resize(rel_id + 1, Vec::new());
-        }
-        let counts = &mut self.edges_per_type[rel_id];
-        if counts.len() <= hop {
-            counts.resize(hop + 1, 0);
-        }
-        counts[hop] += 1;
+        debug_assert!(rel_id < self.edges_per_type.len());
+        debug_assert!(hop < self.edges_per_type[rel_id].len());
+        self.edges_per_type[rel_id][hop] += 1;
         self.total_edges += 1;
     }
 }
@@ -125,6 +115,12 @@ pub struct TypeState {
     /// Nodes to be processed in the next hop for this type
     pub next_frontier: Vec<NodeRecord>,
 
+    /// Empty backing store exchanged with `next_frontier` when a hop begins.
+    /// This is a double buffer: sampling can append the next hop while the
+    /// current hop is still being consumed, without discarding either Vec's
+    /// capacity at the end of every layer.
+    pub frontier_spare: Vec<NodeRecord>,
+
     /// Pooled Arrow Builders for fused feature fetching.
     pub builders: Option<Vec<Box<dyn arrow_array::builder::ArrayBuilder>>>,
     /// Number of rows currently accumulated in builders.
@@ -145,6 +141,7 @@ impl TypeState {
             index_map: GxHashMap::with_capacity(1024),
             nodes: Vec::with_capacity(1024),
             next_frontier: Vec::with_capacity(1024),
+            frontier_spare: Vec::with_capacity(1024),
             builders: None,
             builder_rows: 0,
             builder_bytes: 0,
@@ -154,18 +151,28 @@ impl TypeState {
     /// Resets the state, releasing memory if capacity exceeds the threshold.
     /// Threshold is number of items.
     pub fn adaptive_reset(&mut self, threshold: usize) {
+        // Keep the common working set. Shrinking as soon as capacity crosses
+        // `threshold` makes a stable large frontier free and regrow the same
+        // buffers on every request. A 4x trigger preserves the memory bound
+        // for outliers while adding enough hysteresis for normal batches.
+        let shrink_trigger = threshold.saturating_mul(4);
         self.nodes.clear();
-        if self.nodes.capacity() > threshold {
+        if self.nodes.capacity() > shrink_trigger {
             self.nodes.shrink_to(threshold);
         }
 
         self.next_frontier.clear();
-        if self.next_frontier.capacity() > threshold {
+        if self.next_frontier.capacity() > shrink_trigger {
             self.next_frontier.shrink_to(threshold);
         }
 
+        self.frontier_spare.clear();
+        if self.frontier_spare.capacity() > shrink_trigger {
+            self.frontier_spare.shrink_to(threshold);
+        }
+
         self.index_map.clear();
-        if self.index_map.capacity() > threshold {
+        if self.index_map.capacity() > shrink_trigger {
             self.index_map.shrink_to(threshold);
         }
 
@@ -246,6 +253,20 @@ pub struct SamplingState {
     // Scratch buffer for Reservoir Sampling
     pub reservoir_scratch: Vec<u64>,
 
+    /// Explicit-I/O request scratch. Shard groups own copied `NodeRecord`s so
+    /// their backing buffers are lifetime-free and reusable across requests.
+    pub(crate) shard_groups: Vec<Vec<NodeRecord>>,
+    pub(crate) explicit_raw_edges: Vec<RawEdge>,
+    pub(crate) explicit_shard_plans: Vec<Option<crate::engine::ExplicitShardPlan>>,
+    pub(crate) explicit_read_ranges: Vec<(u64, u64)>,
+    pub(crate) explicit_headers: Vec<diskgraph_index::reader::ParsedNodeHeader>,
+    pub(crate) explicit_header_plans: Vec<Option<diskgraph_index::reader::HeaderReadPlan>>,
+
+    /// Per-root count of distinct neighbors admitted by capped BFS. The outer
+    /// index is the root node type and the inner index is `seed_index`.
+    /// Buffers are retained by StatePool between requests.
+    pub(crate) capped_neighbor_counts: Vec<Vec<u32>>,
+
     /// Scratch space for RowPack decoding (shared across types).
     pub decode_scratch: diskgraph_rowpack::RowPackDecodeScratch,
 
@@ -312,6 +333,13 @@ impl SamplingState {
             dst_scratch: Vec::with_capacity(1024),
             key_scratch: Vec::with_capacity(1024),
             reservoir_scratch: Vec::with_capacity(128),
+            shard_groups: Vec::new(),
+            explicit_raw_edges: Vec::new(),
+            explicit_shard_plans: Vec::new(),
+            explicit_read_ranges: Vec::new(),
+            explicit_headers: Vec::new(),
+            explicit_header_plans: Vec::new(),
+            capped_neighbor_counts: Vec::new(),
             decode_scratch: diskgraph_rowpack::RowPackDecodeScratch::default(),
             stats: SamplingStats::new(),
             seed_slot_base: Vec::new(),
@@ -330,6 +358,21 @@ impl SamplingState {
         self.dst_scratch.clear();
         self.key_scratch.clear();
         self.reservoir_scratch.clear();
+        for group in &mut self.shard_groups {
+            group.clear();
+        }
+        self.explicit_raw_edges.clear();
+        if self.explicit_raw_edges.capacity() > RESET_THRESHOLD.saturating_mul(4) {
+            self.explicit_raw_edges.shrink_to(RESET_THRESHOLD);
+        }
+        for plan in self.explicit_shard_plans.iter_mut().flatten() {
+            plan.clear();
+        }
+        self.explicit_read_ranges.clear();
+        self.explicit_headers.clear();
+        for counts in &mut self.capped_neighbor_counts {
+            counts.clear();
+        }
         self.stats.reset();
         self.seed_slot_base.clear();
         self.seed_slots = 0;

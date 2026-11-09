@@ -5,6 +5,7 @@
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,9 @@ import yaml
 
 WORKFLOW = Path(__file__).resolve().parents[2] / (
     '.github/workflows/kumo-engine-pr.yml')
-JOBS = yaml.safe_load(WORKFLOW.read_text())['jobs']
+# This standalone bootstrap suite runs before io_utils is installed.
+WORKFLOW_CONFIG = yaml.safe_load(WORKFLOW.read_text())
+JOBS = WORKFLOW_CONFIG['jobs']
 HEAD = 'a' * 40
 
 
@@ -152,3 +155,52 @@ def test_required_check_only_accepts_a_pr_exemption_or_both_successful_jobs(
     result = _run('required', EVENT_NAME=event, CHANGES_RESULT=changes,
                   GPU_REQUIRED=required, WHEEL_RESULT=wheel, GPU_RESULT=gpu)
     assert result.returncode == expected, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize('backend', [None, 'mmap', 'buffered', 'direct',
+                                     '', 'Direct', ' direct', 'unknown'])
+def test_gpu_backend_environment(backend):
+    events = (WORKFLOW_CONFIG.get('on') or
+              WORKFLOW_CONFIG[True])  # PyYAML's YAML 1.1 "on".
+    choice = events['workflow_dispatch']['inputs']['edge_backend']
+    assert choice['type'] == 'choice'
+    assert choice['default'] == 'mmap'
+    assert choice['options'] == ['mmap', 'buffered', 'direct']
+    caller = next(step for step in JOBS['gpu']['steps']
+                  if step.get('uses') == './.github/actions/engine-gpu-smoke')
+    assert caller['env']['DG_EDGE_BACKEND'] == "${{ inputs.edge_backend || 'mmap' }}"
+    action = yaml.safe_load((WORKFLOW.parents[1] /
+                             'actions/engine-gpu-smoke/action.yml').read_text())
+    script = next(step['run'] for step in action['runs']['steps']
+                  if step.get('name') == 'Run the eight GPU tasks outside the checkout')
+    # Exercise the actual shell and an isolated Python interpreter. Replace
+    # filesystem setup and the model runner only; no GPU/cloud work is needed.
+    probe = '''
+mkdir() { :; }
+cp() { :; }
+cd() { :; }
+function /proof/engine-smoke-venv/bin/python() {
+  "$GPU_TEST_PYTHON" -I -c 'import json, os; print(json.dumps({
+    "backend": os.environ.get("DG_EDGE_BACKEND"),
+    "cache": os.environ.get("DG_DIRECT_CACHE_GB")}))'
+}
+'''
+    environment = {
+        'PATH': os.environ['PATH'], 'RUNNER_TEMP': '/proof',
+        'GPU_TEST_PYTHON': sys.executable, 'RELOAD_ATOL': '.005',
+        'ENGINE_SMOKE_VERSION': 'test', 'DG_DIRECT_CACHE_GB': '.5',
+    }
+    if backend is not None:
+        environment['DG_EDGE_BACKEND'] = backend
+    result = subprocess.run(['bash', '-c', probe + script],
+                            capture_output=True, text=True, env=environment)
+    if backend not in (None, 'mmap', 'buffered', 'direct'):
+        assert result.returncode == 2
+        assert 'Unsupported DG_EDGE_BACKEND' in result.stderr
+        assert '"backend"' not in result.stdout
+    else:
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout.splitlines()[-1]) == {
+            'backend': backend or 'mmap',
+            'cache': '1' if backend == 'direct' else '.5',
+        }

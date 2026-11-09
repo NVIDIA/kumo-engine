@@ -14,9 +14,20 @@ pub struct DatasetConfig {
     pub batch_size: usize,
     #[serde(default = "default_row_group_size")]
     pub row_group_size: usize,
+    #[serde(default)]
+    pub parquet_compression: ParquetCompression,
     pub tables: Vec<TableConfig>,
     #[serde(default)]
     pub relationships: Vec<RelationshipConfig>,
+}
+
+#[derive(Debug, Default, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ParquetCompression {
+    #[default]
+    Uncompressed,
+    Snappy,
+    Zstd,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,6 +137,30 @@ pub enum FkDistribution {
         hot_fraction: f64,
         hot_share: f64,
     },
+    /// A deterministic broken-power-law degree distribution.
+    ///
+    /// `minimum_degree` first assigns every referenced key that many rows.
+    /// Remaining rows follow the power-law segments by popularity rank. The
+    /// rank-to-key permutation prevents popular keys from occupying one
+    /// contiguous primary-key range, while generation remains stateless and
+    /// can be split across arbitrary Parquet shards.
+    Organic {
+        #[serde(default)]
+        minimum_degree: u64,
+        permutation_seed: u64,
+        segments: Vec<PowerLawSegment>,
+    },
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct PowerLawSegment {
+    /// Inclusive upper bound of this popularity-rank interval. A value of
+    /// 0.5 means that residual edges are assigned only to the most popular
+    /// half of the keys unless another segment extends the range.
+    pub end_fraction: f64,
+    /// Density within the interval is proportional to rank^-exponent.
+    pub exponent: f64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -245,4 +280,51 @@ fn default_step_days() -> i32 {
 
 fn default_true_ratio() -> f64 {
     0.5
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DatasetConfig, FkDistribution, ParquetCompression};
+
+    #[test]
+    fn parquet_compression_defaults_to_uncompressed() {
+        let config: DatasetConfig = serde_json::from_str(r#"{"total_rows":0,"tables":[]}"#)
+            .expect("minimal dataset config");
+        assert_eq!(config.parquet_compression, ParquetCompression::Uncompressed);
+    }
+
+    #[test]
+    fn parquet_compression_parses_zstd() {
+        let config: DatasetConfig =
+            serde_json::from_str(r#"{"total_rows":0,"parquet_compression":"zstd","tables":[]}"#)
+                .expect("zstd dataset config");
+        assert_eq!(config.parquet_compression, ParquetCompression::Zstd);
+    }
+
+    #[test]
+    fn organic_relationship_distribution_parses() {
+        let distribution: FkDistribution = serde_json::from_str(
+            r#"{
+                "type":"organic",
+                "minimum_degree":1,
+                "permutation_seed":7,
+                "segments":[
+                    {"end_fraction":0.01,"exponent":0.3},
+                    {"end_fraction":0.5,"exponent":0.8}
+                ]
+            }"#,
+        )
+        .expect("organic distribution");
+        let FkDistribution::Organic {
+            minimum_degree,
+            permutation_seed,
+            segments,
+        } = distribution
+        else {
+            panic!("expected organic distribution")
+        };
+        assert_eq!(minimum_degree, 1);
+        assert_eq!(permutation_seed, 7);
+        assert_eq!(segments.len(), 2);
+    }
 }
