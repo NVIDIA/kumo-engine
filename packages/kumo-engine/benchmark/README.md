@@ -27,12 +27,23 @@ it does not add unreferenced padding. Actual index bytes are in the manifest.
 Preparation records source hashes, generator configuration, index files, physical
 training rows and stage timings. It must finish before resource-constrained runs.
 
+Every cell requires a new private copy. Public `Trainer.fit` ingests a task
+extension beneath its snapshot, so using the shared preparation directly would
+mutate it. Copy only the prepared manifest's file whitelist, using independent
+inodes; hardlinks would share page cache. Clone setup runs outside fit timers
+and outside the constrained scope, and its duration is recorded separately:
+
+```bash
+python packages/kumo-engine/benchmark/native_io_isolation.py \
+  --prepared-dir /local/prepared/binary --destination /local/trials/binary-mmap-0
+```
+
 Run a cell in a fresh interpreter with a new output filename:
 
 ```bash
 PYTHONHASHSEED=0 DG_DIRECT_CACHE_GB=1 DG_IO_RINGS=2 DG_IO_QD=32 \
 python packages/kumo-engine/benchmark/native_io_tasks.py \
-  --task binary --backend mmap --prepared-dir /local/prepared/binary \
+  --task binary --backend mmap --prepared-dir /local/trials/binary-mmap-0 \
   --output /local/results/binary-mmap-0.json --steps 128 \
   --batch-size 64 --workers 0 --threads 4 --rayon-threads 4 --seed 0
 ```
@@ -59,6 +70,22 @@ source generation, snapshot creation and training-table generation are excluded
 and reported separately. No per-batch CUDA synchronization is installed.
 Use `--build-provenance` to attach release/compiler/wheel/source hashes; the
 runner rejects a native module that differs from that record before timing.
+
+The benchmark fixes distinct task namespaces for fit, first prediction, repeat
+and reload. Production currently includes each fit's random UUID in its seeded
+row-shuffle key; two fits with identical model seeds can therefore train on
+different rows. The benchmark overrides only task materialization namespaces,
+preserving public run IDs and bundle IDs. It performs four fresh ingests in
+the private index and verifies their published manifests. This control is
+recorded in the result; it is not a production reproducibility fix.
+
+Results retain the original manifest hash, source file hashes and sizes,
+private copy mode and cloning time. After each run, baseline inventory, inode
+identities, modification times and small metadata hashes must remain unchanged.
+The matrix pins pristine file hashes across trials and deletes successful trial
+copies only after saving results/resources and verifying the baseline. Failed
+trial copies remain for investigation. `--cleanup-work` removes only that
+runner's own successful model-work directory after all measurements and checks.
 
 An uncontrolled run does not establish disk-bound performance. Use the matrix
 driver to control CPU/memory limits, verify cache residency before each cell,

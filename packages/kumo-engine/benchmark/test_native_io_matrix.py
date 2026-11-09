@@ -157,7 +157,8 @@ def test_resume_requires_matching_work(changed):
     fields = ('task', 'backend', 'regime', 'repeat', 'prepared_dir', 'memory_bytes',
               'steps', 'batch_size', 'workers', 'threads', 'torch_threads',
               'model_seed', 'python', 'runner', 'direct_cache_gib', 'io_rings',
-              'io_qd', 'cpus', 'loader_mode', 'prepared_manifest_sha256')
+              'io_qd', 'cpus', 'loader_mode', 'cleanup_work', 'build_provenance_sha256',
+              'prepared_manifest_sha256')
     spec = {field: 1 for field in fields}
     row = result('direct', 0, 10)
     row['matrix_spec'] = {**spec, changed: 2}
@@ -188,8 +189,12 @@ def test_loader_mode_forwarded():
               'model_seed', 'repeat', 'regime')
     spec = {field: '1' for field in fields}
     spec['loader_mode'] = 'standalone'
+    spec.update(runtime_prepared_dir='/private/trial', cleanup_work=True,
+                build_provenance=None)
     command = runner_command(spec)
     assert command[command.index('--loader-mode') + 1] == 'standalone'
+    assert command[command.index('--prepared-dir') + 1] == '/private/trial'
+    assert '--cleanup-work' in command
     spec['loader_mode'] = 'auto'
     command = runner_command(spec)
     assert command[command.index('--loader-mode') + 1] == 'auto'

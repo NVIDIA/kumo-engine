@@ -12,7 +12,7 @@ import random
 import sys
 import time
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -21,6 +21,12 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
+from native_io_isolation import (
+    file_hash,
+    file_tree,
+    validate_clone,
+    verify_baseline,
+)
 from native_io_resources import cgroup_path, group_snapshot
 
 from io_utils import fsutil
@@ -47,24 +53,6 @@ HORIZONS = {'binary': 7, 'regression': 30, 'temporal_link': 7}
 def json_write(path: Path, value) -> None:
     fsutil.write_text(str(path), json.dumps(value, indent=2, allow_nan=False)
                       + '\n')
-
-
-def file_hash(path: str) -> str:
-    digest = hashlib.sha256()
-    with fsutil.get_binary_handle(path, 'rb') as stream:
-        for block in iter(lambda: stream.read(8 << 20), b''):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def file_tree(root: str) -> list[str]:
-    result = []
-    for path in fsutil.listdir(root):
-        if fsutil.isdir(path):
-            result.extend(file_tree(path))
-        else:
-            result.append(path)
-    return sorted(result)
 
 
 def write_table(path: Path, table: pa.Table) -> None:
@@ -230,6 +218,10 @@ def prepare(args) -> None:
                   'generation_plan': asdict(training.generation_plan)},
         inputs=str(inputs), ids=ids, anchor=anchor.isoformat(),
         heldout_entities=heldout_entities,
+        pristine_owned_files=[{
+            'path': str(Path(path).relative_to(directory)),
+            'size': fsutil.filesize(path), 'sha256': file_hash(path),
+        } for path in all_files],
         index_files=index_files, owned_files=all_files,
         index_bytes=sum(fsutil.filesize(path) for path in index_files),
         training_rows=rows.num_rows,
@@ -261,13 +253,16 @@ def controlled_plan(task: str, steps: int, batch_size: int):
 
 
 @contextmanager
-def observe_work(state: dict, workers: int, threads: int, mode: str):
+def observe_work(state: dict, workers: int, threads: int, mode: str,
+                 namespace: str):
     """Count completed batches without synchronizing individual CUDA batches."""
     import diskgraph
     import pytorch_lightning as pl
+    from kumo_core.prediction import materialize_prediction_task
     from kumo_core.train.diskgraph_nested_trainer import (
         _ttng_diskgraph_runtime_config,
     )
+    from kumo_core.training.workflow import materialize_generated_training_task
 
     class Proof(pl.Callback):
         def on_fit_start(self, trainer, module):
@@ -315,9 +310,34 @@ def observe_work(state: dict, workers: int, threads: int, mode: str):
         state['loaders'].append({'automatic': automatic, 'effective': config})
         return config
 
+    def materialize(request, task_dataset, generated, *, tt_id, runtime=None):
+        actual = f'{namespace}-fit'
+        if fsutil.exists(f'{request.prepared_graph.index_path}/train_tables/{actual}'):
+            raise ValueError('Controlled training task namespace already exists')
+        state['task_namespaces'].append({'phase': 'fit', 'namespace': actual})
+        return materialize_generated_training_task(
+            request, task_dataset, generated, tt_id=actual, runtime=runtime)
+
+    def materialize_prediction(request, generated, *, graph_index_id,
+                               runtime=None):
+        phase = state['phase']
+        if phase not in {'predict', 'repeat', 'reload'}:
+            raise ValueError(f'Unexpected prediction materialization phase: {phase}')
+        actual = f'{namespace}-{phase}'
+        if fsutil.exists(f'{request.index_path}/train_tables/{actual}'):
+            raise ValueError('Controlled prediction task namespace already exists')
+        state['task_namespaces'].append({'phase': phase, 'namespace': actual})
+        return materialize_prediction_task(
+            replace(request, tt_id=actual), replace(generated, tt_id=actual),
+            graph_index_id=graph_index_id, runtime=runtime)
+
     with patch.object(pl, 'Trainer', ObservedTrainer), patch(
             'kumo_core.train.diskgraph_nested_trainer._ttng_diskgraph_runtime_config',
-            configured):
+            configured), patch(
+                'kumo_core.training.workflow.materialize_generated_training_task',
+                materialize), patch(
+                    'kumo_core.prediction.materialize_prediction_task',
+                    materialize_prediction):
         yield
 
 
@@ -347,6 +367,7 @@ def run(args) -> dict:
     manifest = json.loads(fsutil.read_text(str(args.prepared_dir / 'manifest.json')))
     if manifest['task'] != args.task:
         raise ValueError('Prepared task differs from selected task')
+    validate_clone(manifest, str(args.prepared_dir))
     build = (None if args.build_provenance is None else json.loads(
         fsutil.read_text(str(args.build_provenance))))
     native_sha256 = file_hash(native.__file__)
@@ -377,9 +398,10 @@ def run(args) -> dict:
         required_stages=tuple(saved['required_stages']),
         generation_plan=from_json_dict(saved['generation_plan'],
                                        TrainingTableGenerationPlan))
+    namespace = f'tt-native-io-benchmark-{args.task}-v1'
     state = dict(fits=0, completed_fits=0, optimizer_steps=0, train_batches=0,
                  phase='fit', predict_batches={name: 0 for name in (
-                     'predict', 'repeat', 'reload')}, loaders=[])
+                     'predict', 'repeat', 'reload')}, loaders=[], task_namespaces=[])
     seconds, counters, resources_per_phase = {}, {}, {}
     group = cgroup_path()
 
@@ -441,9 +463,14 @@ def run(args) -> dict:
         return values, prediction_decisions(
             args.task, frame, manifest['ids']), None
 
-    with observe_work(state, args.workers, args.rayon_threads, args.loader_mode):
+    with observe_work(state, args.workers, args.rayon_threads, args.loader_mode,
+                      namespace):
         plan = controlled_plan(args.task, args.steps, args.batch_size)
         plan.training_job.manual_seed = args.seed
+        requested_model_plan = asdict(plan)
+        requested_plan_sha = hashlib.sha256(json.dumps(
+            requested_model_plan, sort_keys=True, separators=(',', ':'),
+            allow_nan=False).encode()).hexdigest()
         trainer = kumo.Trainer(plan, accelerator='cpu')
         started = time.perf_counter()
         fitted = measure('fit', lambda: trainer.fit(training, snapshot=snapshot))
@@ -456,6 +483,14 @@ def run(args) -> dict:
         after, after_decisions, after_classes = measure(
             'reload', lambda: predict(restored, 'reload'))
     check_work(state, args.steps)
+    expected_namespaces = [{'phase': phase, 'namespace': f'{namespace}-{phase}'}
+                           for phase in ('fit', 'predict', 'repeat', 'reload')]
+    if state['task_namespaces'] != expected_namespaces:
+        raise ValueError('Trial did not ingest four distinct controlled task namespaces')
+    for record in expected_namespaces:
+        path = snapshot.index_path / 'train_tables' / record['namespace']
+        if not fsutil.exists(str(path / 'manifest.json')):
+            raise ValueError('Trial did not publish its task inside the private index')
     checkpoint = str(local_path(str(fitted.artifact_paths['selected_checkpoint'])))
     checkpoint_steps = load_kumo_checkpoint(
         checkpoint, map_location='cpu')['global_step']
@@ -473,7 +508,20 @@ def run(args) -> dict:
     if not (np.array_equal(classes, repeat_classes)
             and np.array_equal(classes, after_classes)):
         raise ValueError('Reload/repeat changed the recommended item identities')
-    schemas = [path for path in file_tree(str(work))
+    work_files = file_tree(str(work))
+    runtime_paths = set()
+    for path in work_files:
+        if path.endswith('/runtime_manifest.json'):
+            runtime = json.loads(fsutil.read_text(path))
+            for stage in runtime['stages'].values():
+                physical = Path(stage['index_path']).resolve()
+                if not (physical.is_relative_to(args.prepared_dir.resolve())
+                        or physical.is_relative_to(work)):
+                    raise ValueError('Runtime reads a stage outside the private trial')
+                runtime_paths.add(str(physical))
+    if not runtime_paths:
+        raise ValueError('Trial produced no runtime stage provenance')
+    schemas = [path for path in work_files
                if path.endswith('/feature_schema.json')]
     if not schemas:
         raise ValueError('Training produced no materialized feature schema')
@@ -488,9 +536,12 @@ def run(args) -> dict:
     config = dict(prepared=manifest['config_sha256'], steps=args.steps,
                   batch_size=args.batch_size, workers=args.workers,
                   threads=args.threads, rayon_threads=args.rayon_threads,
-                  seed=args.seed, loader_mode=args.loader_mode)
+                  seed=args.seed, loader_mode=args.loader_mode,
+                  task_namespace=namespace,
+                  requested_model_plan_sha256=requested_plan_sha)
     result = dict(
         version=1, status='PASS', task=args.task, backend=args.backend,
+        requested_model_plan=requested_model_plan,
         regime=args.regime, repeat=args.repeat, phase_seconds=seconds,
         config_sha256=hashlib.sha256(json.dumps(config, sort_keys=True).encode()
                                      ).hexdigest(),
@@ -501,10 +552,12 @@ def run(args) -> dict:
               'selected_checkpoint_steps': checkpoint_steps,
               'selected_checkpoint_sha256': file_hash(checkpoint),
               'verified_feature_tables': ['users', 'items', 'events'],
+              'runtime_stage_paths': sorted(runtime_paths),
               'train_batches': state['train_batches'],
               'predict_rows': len(manifest['ids']),
               'predict_batches': state['predict_batches'],
               'loaders': state['loaders'],
+              'materialization_calls': state['task_namespaces'],
               'training_interval': state['training_interval']},
         predictions={'values': before.tolist(),
                      'decisions': None if decisions is None else decisions.tolist(),
@@ -515,12 +568,14 @@ def run(args) -> dict:
                     'diskgraph_version': importlib.metadata.version('diskgraph'),
                     'python': sys.version, 'torch': torch.__version__,
                     'build': build,
+                    'isolation': manifest['isolation'],
                     'prepared_manifest': str(args.prepared_dir / 'manifest.json'),
                     'index_bytes': manifest['index_bytes'],
                     'environment': {key: os.environ.get(key) for key in (
                         'DG_EDGE_BACKEND', 'DG_DIRECT_CACHE_GB', 'DG_IO_RINGS',
                         'DG_IO_QD', 'RAYON_NUM_THREADS', 'PYTHONHASHSEED')}},
     )
+    verify_baseline(manifest)
     json_write(output, result)
     if args.cleanup_work:
         fsutil.rm(str(work))

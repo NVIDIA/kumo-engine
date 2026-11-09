@@ -3,18 +3,27 @@
 # SPDX-License-Identifier: Apache-2.0
 """Contract checks for controlled-work training and prediction benchmarks."""
 
+import json
+import os
 import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+from io_utils import fsutil
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark'))
+from native_io_isolation import (  # noqa: E402
+    clone_prepared,
+    file_hash,
+    file_tree,
+    validate_clone,
+    verify_baseline,
+)
 from native_io_tasks import (  # noqa: E402
     arguments,
     check_work,
-    file_hash,
-    file_tree,
     generate_data,
     read_table,
 )
@@ -73,3 +82,56 @@ def test_missing_outputs():
     with pytest.raises(SystemExit):
         arguments(['--task', 'binary', '--prepared-dir', '/tmp/prepared',
                    '--prepare'])
+
+
+def test_private_trial_copy(tmp_path):
+    baseline, trial = tmp_path / 'baseline', tmp_path / 'trial'
+    fsutil.makedirs(str(baseline / 'index'))
+    data = str(baseline / 'index/data.bin')
+    fsutil.write_text(data, 'original graph bytes')
+    stage = str(baseline / 'index/stage.json')
+    fsutil.write_text(stage, '{"path":"data.bin"}')
+    original = dict(
+        config_sha256='fixed', source='/separate/immutable/source',
+        snapshot={'index_path': str(baseline / 'index')},
+        training={'staging_dir': str(baseline / 'index'),
+                  'train_table_path': data, 'manifest_path': stage},
+        inputs=data, owned_files=[data, stage], index_files=[data, stage],
+    )
+    manifest_path = str(baseline / 'manifest.json')
+    fsutil.write_text(manifest_path, json.dumps(original))
+    before = file_hash(manifest_path)
+    with pytest.raises(ValueError, match='exactly cover'):
+        clone_prepared(str(baseline), str(tmp_path / 'partial'), {
+            'index/data.bin': file_hash(data),
+        })
+    manifest = clone_prepared(str(baseline), str(trial))
+    validate_clone(manifest, str(trial))
+    assert manifest['config_sha256'] == 'fixed'
+    assert manifest['source'] == original['source']
+    assert manifest['training']['manifest_path'] == str(trial / 'index/stage.json')
+    assert manifest['isolation']['source_manifest_sha256'] == before
+    assert os.stat(data).st_ino != os.stat(trial / 'index/data.bin').st_ino
+    fsutil.write_text(str(trial / 'index/data.bin'), 'trial may modify this')
+    verify_baseline(manifest)
+    assert fsutil.read_text(data) == 'original graph bytes'
+    assert file_hash(manifest_path) == before
+    fsutil.write_text(data, 'modified graph bytes')
+    with pytest.raises(ValueError, match='baseline changed'):
+        verify_baseline(manifest)
+    fsutil.write_text(data, 'original graph bytes')
+    fsutil.write_text(str(baseline / 'new-unexpected-file'), 'mutation')
+    with pytest.raises(ValueError, match='baseline changed'):
+        verify_baseline(manifest)
+
+
+def test_clone_rejects_escape(tmp_path):
+    baseline = tmp_path / 'baseline'
+    fsutil.makedirs(str(baseline))
+    outside = str(tmp_path / 'not-owned')
+    fsutil.write_text(outside, 'unrelated')
+    fsutil.write_text(str(baseline / 'manifest.json'), json.dumps({
+        'owned_files': [outside],
+    }))
+    with pytest.raises(ValueError, match='escapes the baseline'):
+        clone_prepared(str(baseline), str(tmp_path / 'trial'))

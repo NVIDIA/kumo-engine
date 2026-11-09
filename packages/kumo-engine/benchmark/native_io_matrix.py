@@ -22,6 +22,7 @@ import time
 import uuid
 from pathlib import Path
 
+from native_io_isolation import clone_prepared, verify_baseline
 from native_io_resources import (
     cgroup_path,
     evict_files,
@@ -43,7 +44,8 @@ REGIMES = ('resident', 'constrained')
 
 def source_provenance(runner: str) -> dict:
     files = [str(Path(__file__).resolve()), runner,
-             str(Path(__file__).with_name('native_io_resources.py').resolve())]
+             str(Path(__file__).with_name('native_io_resources.py').resolve()),
+             str(Path(__file__).with_name('native_io_isolation.py').resolve())]
     hashes = {path: hashlib.sha256(fsutil.read_binary(path)).hexdigest()
               for path in files}
     git_sha = subprocess.run(['git', 'rev-parse', 'HEAD'], check=True,
@@ -175,13 +177,15 @@ def reuse_trial(row: dict, spec: dict, expected_native: str) -> None:
     fields = ('task', 'backend', 'regime', 'repeat', 'prepared_dir', 'memory_bytes',
               'steps', 'batch_size', 'workers', 'threads', 'torch_threads',
               'model_seed', 'python', 'runner', 'direct_cache_gib', 'io_rings',
-              'io_qd', 'cpus', 'loader_mode', 'prepared_manifest_sha256')
+              'io_qd', 'cpus', 'loader_mode', 'cleanup_work', 'build_provenance_sha256',
+              'prepared_manifest_sha256')
     if any(previous[key] != spec[key] for key in fields):
         raise ValueError('Existing trial parameters differ from requested parameters')
     if previous['source_provenance'] != spec['source_provenance']:
         raise ValueError('Existing trial source differs from current source')
     if not expected_native or row['provenance']['native_sha256'] != expected_native:
         raise ValueError('Resume requires the matching --expected-native-sha256')
+    verify_baseline({'isolation': row['provenance']['isolation']})
     validate_native(row, spec)
 
 
@@ -202,14 +206,19 @@ def stop_scope(unit: str) -> None:
 
 
 def runner_command(spec: dict) -> list[str]:
-    return [spec['python'], spec['runner'], '--task', spec['task'],
-            '--backend', spec['backend'], '--prepared-dir', spec['prepared_dir'],
-            '--output', spec['result'], '--steps', str(spec['steps']),
-            '--batch-size', str(spec['batch_size']), '--workers',
-            str(spec['workers']), '--threads', str(spec['torch_threads']),
-            '--rayon-threads', str(spec['threads']), '--seed',
-            str(spec['model_seed']), '--repeat', str(spec['repeat']),
-            '--regime', spec['regime'], '--loader-mode', spec['loader_mode']]
+    command = [spec['python'], spec['runner'], '--task', spec['task'],
+               '--backend', spec['backend'], '--prepared-dir',
+               spec['runtime_prepared_dir'], '--output', spec['result'],
+               '--steps', str(spec['steps']), '--batch-size', str(spec['batch_size']),
+               '--workers', str(spec['workers']), '--threads',
+               str(spec['torch_threads']), '--rayon-threads', str(spec['threads']),
+               '--seed', str(spec['model_seed']), '--repeat', str(spec['repeat']),
+               '--regime', spec['regime'], '--loader-mode', spec['loader_mode']]
+    if spec['cleanup_work']:
+        command.append('--cleanup-work')
+    if spec['build_provenance'] is not None:
+        command.extend(['--build-provenance', spec['build_provenance']])
+    return command
 
 
 def summarize(rows: list[dict], repetitions: int, seed: int,
@@ -262,8 +271,11 @@ def summarize(rows: list[dict], repetitions: int, seed: int,
 
 def run_cell(spec: dict) -> None:
     """This controller and its child share the fresh systemd scope."""
-    prepared = spec['prepared_dir']
+    prepared = spec['runtime_prepared_dir']
     manifest = read_json(f'{prepared}/manifest.json')
+    if (manifest['isolation']['source_manifest_sha256'] !=
+            spec['prepared_manifest_sha256']):
+        raise ValueError('Private trial copy came from a different baseline')
     files = owned_files(manifest, prepared)
     group = cgroup_path()
     before = group_snapshot(group)
@@ -331,6 +343,8 @@ def run_cell(spec: dict) -> None:
                 before['memory_events'].get(event, 0)):
             raise RuntimeError(f'Trial had a cgroup {event} event')
     result = read_json(spec['result'])
+    if result['provenance']['isolation'] != manifest['isolation']:
+        raise ValueError('Runner did not report the selected private trial copy')
     validate_native(result, spec)
     if not spec['pilot'] and 'training_interval' not in result['work']:
         raise RuntimeError('Formal trial has no actual training interval evidence')
@@ -352,6 +366,8 @@ def run_cell(spec: dict) -> None:
 def run_matrix(args: argparse.Namespace) -> None:
     if args.repetitions < 5 and not args.pilot:
         raise ValueError('Use at least five repetitions or label --pilot')
+    if not args.pilot and args.build_provenance is None:
+        raise ValueError('Formal trials require --build-provenance')
     output = str(Path(args.output_dir).resolve())
     fsutil.makedirs(output, exist_ok=True)
     script = str(Path(__file__).resolve())
@@ -366,7 +382,17 @@ def run_matrix(args: argparse.Namespace) -> None:
         for regime in regimes:
             prepared = str(Path(args.prepared_root, task).resolve())
             manifest = read_json(f'{prepared}/manifest.json')
-            files = owned_files(manifest, prepared)
+            owned_files(manifest, prepared)
+            pinned = manifest.get('pristine_owned_files')
+            if not args.pilot and pinned is None:
+                raise ValueError('Formal baseline is missing its pristine file oracle')
+            expected_sha = (None if pinned is None else
+                            {entry['path']: entry['sha256'] for entry in pinned})
+            if expected_sha is not None:
+                expected_paths = {str(Path(path).relative_to(prepared))
+                                  for path in manifest['owned_files']}
+                if set(expected_sha) != expected_paths or len(pinned) != len(expected_sha):
+                    raise ValueError('Pristine oracle does not cover every owned file')
             memory_gib = (args.resident_memory_gib if regime == 'resident'
                           else args.constrained_memory_gib)
             memory_bytes = memory_gib * 1024**3
@@ -379,6 +405,7 @@ def run_matrix(args: argparse.Namespace) -> None:
                 spec = dict(
                     task=task, regime=regime, repeat=repeat, backend=backend,
                     prepared_dir=prepared, memory_bytes=memory_bytes,
+                    runtime_prepared_dir=f'{output}/{name}-prepared',
                     steps=args.steps, batch_size=args.batch_size,
                     workers=args.workers, threads=args.threads,
                     torch_threads=args.torch_threads,
@@ -391,6 +418,11 @@ def run_matrix(args: argparse.Namespace) -> None:
                     io_rings=args.io_rings, io_qd=args.io_qd, cpus=args.cpus,
                     source_provenance=source,
                     pilot=args.pilot, min_training_seconds=args.min_training_seconds,
+                    cleanup_work=not args.keep_work,
+                    build_provenance=args.build_provenance,
+                    build_provenance_sha256=(None if args.build_provenance is None
+                                             else hashlib.sha256(fsutil.read_binary(
+                                                 args.build_provenance)).hexdigest()),
                     prepared_manifest_sha256=hashlib.sha256(
                         fsutil.read_binary(f'{prepared}/manifest.json')).hexdigest(),
                 )
@@ -402,7 +434,13 @@ def run_matrix(args: argparse.Namespace) -> None:
                     print(f'REUSE {name}', flush=True)
                     rows.append(row)
                     continue
-                spec['eviction'] = evict_files(files)
+                clone_manifest = clone_prepared(
+                    prepared, spec['runtime_prepared_dir'], expected_sha256=expected_sha)
+                clone_files = owned_files(clone_manifest, spec['runtime_prepared_dir'])
+                spec['eviction'] = evict_files(clone_files)
+                spec['runtime_manifest_sha256'] = hashlib.sha256(
+                    fsutil.read_binary(f'{spec["runtime_prepared_dir"]}/manifest.json')
+                ).hexdigest()
                 spec_file = f'{output}/{name}-spec.json'
                 write_json(spec_file, spec)
                 environment = {
@@ -431,10 +469,16 @@ def run_matrix(args: argparse.Namespace) -> None:
                                    timeout=args.timeout + 600)
                 finally:
                     stop_scope(unit)
+                    verify_baseline(clone_manifest)
                 row = read_json(result)
                 rows.append(row)
+                selected = [trial for trial in rows if trial['task'] == task
+                            and trial['regime'] == regime]
+                validate_work(selected)
+                validate_predictions(selected, args.prediction_atol)
                 write_json(f'{output}/summary.json',
                            summarize_partial(rows, args))
+                fsutil.rm(spec['runtime_prepared_dir'])
     summary = summarize(rows, args.repetitions, args.order_seed,
                         args.prediction_atol)
     summary.update(pilot=args.pilot, arguments=vars(args), source_provenance=source)
@@ -478,6 +522,8 @@ def main() -> None:
     matrix.add_argument('--prepared-root', required=True)
     matrix.add_argument('--output-dir', required=True)
     matrix.add_argument('--runner', required=True)
+    matrix.add_argument('--build-provenance')
+    matrix.add_argument('--keep-work', action='store_true')
     matrix.add_argument('--python', default=sys.executable)
     matrix.add_argument('--tasks', default=','.join(TASKS))
     matrix.add_argument('--regimes', default=','.join(REGIMES))
