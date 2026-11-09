@@ -1012,6 +1012,19 @@ class Graph:
                             connector, name, sql, error.version,
                             record_sources=record_sources)
                     continue
+                if table.typed_without_rows:
+                    typed = ', '.join(f'{col.name} ({col.stype.value})'
+                                      for col in table.definition.cols
+                                      if col.name in table.typed_without_rows)
+                    warnings.warn(
+                        f"Table {alias} was typed from no rows and now has "
+                        f"rows; {len(table.typed_without_rows)} column(s) "
+                        f"{typed} keep the type an empty sample gave them. "
+                        "Rebuild the table with Table.from_source_table() or "
+                        "infer_metadata() to type them from the data.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
                 if prepared.credentials is not None:
                     raise NotImplementedError(
                         "TODO(local-sdk): scoped per-table ingest credentials "

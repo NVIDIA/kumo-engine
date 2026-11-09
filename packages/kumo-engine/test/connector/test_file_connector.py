@@ -138,6 +138,7 @@ def test_empty_parquet_table_is_typed_from_its_schema_with_a_warning(
         'amount': Stype.categorical,
         'active': Stype.categorical,
     }
+    assert table.typed_without_rows == ('name', 'amount')
 
 
 def test_read_symlinks_and_overlap(local, tmp_path):

@@ -40,7 +40,7 @@ else untouched.
 """
 
 from dataclasses import dataclass, replace
-from typing import List, Mapping, Optional, Union
+from typing import List, Mapping, Optional, Tuple, Union
 
 from kumo_core.stype_inference import multicategorical_separator
 from kumoapi.source_table import CustomSQLSourceTable
@@ -69,11 +69,17 @@ class Table:
             point `infer_metadata()` needs to discover a schema from
             scratch -- without a default here, there would be no way to
             construct that starting point at all.
+        typed_without_rows: The columns whose stype came from a sample with
+            no rows, typed categorical for want of statistics. `with_column`
+            with a `stype` clears a column from it; `Graph.snapshot()` warns
+            when such a table has rows, since the data may type those
+            columns differently.
     """
 
     connector: Connector
     table_name: str
     definition: Optional[Union[TableDefinition, HostedTableDefinition]] = None
+    typed_without_rows: Tuple[str, ...] = ()
 
     @classmethod
     def from_source_table(
@@ -121,7 +127,7 @@ class Table:
         """
         from kumo.engine._infer import resolve_table_columns
 
-        columns = resolve_table_columns(
+        columns, typed_without_rows = resolve_table_columns(
             source_table.connector,
             source_table.table_name,
             source_table.column_dict,
@@ -140,7 +146,8 @@ class Table:
             end_time_col=end_time_column,
         )
         return cls(connector=source_table.connector,
-                   table_name=source_table.table_name, definition=definition)
+                   table_name=source_table.table_name, definition=definition,
+                   typed_without_rows=tuple(typed_without_rows))
 
     @classmethod
     def from_sql(
@@ -220,7 +227,7 @@ class Table:
 
         assert self.definition is not None
         source = self._source_table()
-        stype = resolve_table_columns(
+        columns, _ = resolve_table_columns(
             source.connector,
             source.table_name,
             source.column_dict,
@@ -230,7 +237,8 @@ class Table:
             end_time_column=None,
             sql=source.sql,
             dtypes={name: dtype},
-        )[0].stype
+        )
+        stype = columns[0].stype
         assert stype is not None
         return stype
 
@@ -305,4 +313,7 @@ class Table:
                 f"Table {self.table_name!r} has no column {name!r}.")
 
         definition = replace(self.definition, cols=columns)
-        return replace(self, definition=definition)
+        typed_without_rows = tuple(column for column in self.typed_without_rows
+                                   if stype is None or column != name)
+        return replace(self, definition=definition,
+                       typed_without_rows=typed_without_rows)

@@ -678,6 +678,7 @@ def test_a_table_with_no_rows_is_left_out_of_the_snapshot(tmp_path):
         'item_id': Stype.ID,
         'amount': Stype.categorical,
     }
+    assert items.typed_without_rows == ('amount', )
     graph = Graph({
         'users': users,
         'orders': orders,
@@ -753,9 +754,29 @@ def test_a_table_with_no_rows_is_left_out_of_the_snapshot(tmp_path):
         'amount': [1.0, 2.0, 3.0, 4.0, 5.0]
     }))
     assert rewritten.source_changes(graph)['items']['status'] == 'changed'
-    full = graph.snapshot()
+    with pytest.warns(
+            UserWarning,
+            match=r'Table items was typed from no rows and now has rows; 1 '
+            r'column\(s\) amount \(categorical\) keep the type an empty '
+            r'sample gave them\. Rebuild the table with '
+            r'Table\.from_source_table\(\) or infer_metadata\(\) to type '
+            r'them from the data\.'):
+        full = graph.snapshot()
     assert [table['table_name'] for table in full.graph_config['tables']
             ] == ['users', 'orders', 'items']
+    assert {
+        col['name']: col['stype']
+        for table in full.graph_config['tables']
+        if table['table_name'] == 'items' for col in table['cols']
+    } == {
+        'amount': 'categorical'
+    }
+    retyped = items.infer_metadata()
+    assert retyped.typed_without_rows == ()
+    assert {col.name: col.stype
+            for col in retyped.definition.cols}['amount'] == Stype.numerical
+    assert items.with_column('amount',
+                             stype=Stype.numerical).typed_without_rows == ()
     ranking = ('PREDICT LIST_DISTINCT(orders.item_id, 0, 30, days) '
                'RANK TOP 2 FOR EACH users.id')
     with pytest.raises(
