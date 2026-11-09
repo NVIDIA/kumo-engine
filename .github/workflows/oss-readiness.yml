@@ -34,9 +34,10 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Python and uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           python-version: "3.14"
+          prune-cache: true
 
       - name: Test repository readiness checks
         run: |
@@ -49,8 +50,12 @@ jobs:
             test/scripts/test_check_oss_readiness.py \
             test/scripts/test_check_secrets.py \
             test/scripts/test_engine_gpu_smoke.py \
+            test/scripts/test_engine_e2e_case_hardware.py \
             test/scripts/test_engine_pr_workflow.py \
             test/scripts/test_engine_wheel_workflow.py
+
+      - name: Test the Engine runner pool without AWS
+        run: node --test test/scripts/test-engine-e2e-pool.cjs
 
       # Pull requests check only the files they change. Pushes to main check
       # the whole tree, so a recorded public-reference count that is no longer

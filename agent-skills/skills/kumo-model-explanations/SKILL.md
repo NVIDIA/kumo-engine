@@ -13,9 +13,9 @@ with its in-process `kumo.engine` runtime and retained local run files.
 ## Establish the run and question
 
 - Reuse the user's task, model, graph, and run identity. Do not restart training intake.
-- For a fresh `training_result`, `Path(training_result.bundle_dir).parent` identifies that fit's
-  run directory in the reviewed implementation. Otherwise use the retained run directory the
-  user supplied. A downloaded model bundle is not the original training run.
+- For a fresh `training_result`, use `training_result.explanations`. Otherwise reopen the
+  explicit retained run with `kumo.TrainingExplanations.load(run_dir)`. A downloaded model
+  bundle is not the original training run.
 - If several runs or trainer/refit directories exist, list candidates and resolve which one
   the user means. Never silently select the newest directory or combine different runs.
 - Identify the task type, target/positive class, explanation stage, and fit/refit used.
@@ -45,8 +45,9 @@ from the existence of `disable_explain`.
   column-analysis workflow; forecasting is not in the reviewed producer's column-analysis list.
 - Gradient scoring supports more task types, but the shared trainer skips TWO_TOWER link models.
   The runtime's explainer task list can narrow support further.
-- There is no public `kumo.Trainer.explain()` or `training_result.explanations` accessor in
-  this API. Do not call private trainers or enable prediction-time XAI through invented options.
+- `training_result.explanations` retrieves retained TEST-stage artifacts and provides gradient
+  and cohort plots. There is no public `kumo.Trainer.explain()` or standalone regeneration API.
+  Do not call private trainers or enable prediction-time XAI through invented options.
 - An inspection request does not authorize another fit. If required files are absent, diagnose
   the reason first. Generate an additional fit only when the user has requested that run.
 

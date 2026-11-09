@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -17,7 +18,6 @@ from torch_frame import TensorFrame
 from torch_geometric.data.feature_store import _FieldStatus
 from torch_geometric.utils.mixin import CastMixin
 
-import logging
 from kumo_core.encoders.tensor_mapper import TensorMapper
 from kumo_core.types.features import FeatureStoreData
 
@@ -168,6 +168,9 @@ class FeatureStore(torch_geometric.data.FeatureStore, ABC):  # type: ignore
         for table_name in self.table_names:
             if self.get_time_col_name(table_name) is not None:
                 attrs.append(FeatureStoreAttr(table_name, 'time'))
+
+        if self.train_table_name is None:
+            return attrs
 
         attrs.append(FeatureStoreAttr(self.train_table_name, 'tf'))
         attrs.append(FeatureStoreAttr(self.train_table_name, 'fkey'))

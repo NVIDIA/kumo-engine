@@ -45,14 +45,15 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python and uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           python-version: "3.14"
+          prune-cache: true
 
       # Builds every host package and fails on any reference it does not ship, and checks that
       # every Kumo module and SDK name the skills cite still exists.
       - name: Test skill packaging and scripts
         run: |
-          uvx --python 3.14 --from pytest==9.0.3 \
+          uvx --python 3.14 --from pytest==9.0.3 --with filelock==3.29.5 \
             python -m pytest -c /dev/null --confcutdir=agent-skills/tests \
             -p no:cacheprovider -q agent-skills/tests

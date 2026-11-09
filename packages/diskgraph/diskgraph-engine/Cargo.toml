@@ -14,7 +14,7 @@ diskgraph-index = { path = "../diskgraph-index" }
 diskgraph-rowpack = { path = "../diskgraph-rowpack" }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
-parquet = { version = "59.3.2", features = ["arrow"] }
+parquet = { version = "60.1.0", features = ["arrow"] }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 half = { workspace = true }
@@ -40,8 +40,8 @@ serde_json = { workspace = true }
 uuid_simd = { package = "uuid-simd", version = "0.8.0", default-features = false, features = ["std"] }
 rayon = "1.11.0"
 uuid = { workspace = true, features = ["v4", "serde"] }
-arrow = "59.3.2"
-arrow-select = "59.3.2"
+arrow = "60.1.0"
+arrow-select = "60.1.0"
 
 [features]
 default = []
