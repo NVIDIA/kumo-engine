@@ -433,3 +433,13 @@ def resolve_task_options(
         "unix_step_size": step,
     }
 
+
+def fitted_task_options(task: Mapping[str, Any]) -> dict[str, int | None]:
+    """The temporal task scalars stored with a fitted task."""
+
+    return {
+        name: task[name]
+        for name in ("forecast_length", "lag_timesteps", "unix_start_offset",
+                     "unix_end_offset", "unix_step_size")
+    }
+
