@@ -91,6 +91,12 @@ _SLASH_ONE_SHAPE = {
     2: ((_SLASH_DATE, r'\1 00:00:00'),
         (r'^(\d{1,2}/\d{1,2}/\d{4} \d{1,2}:\d{2})$', r'\1:00')),
 }
+_YEAR_SLASH_DATE = r'^(\d{4}/\d{1,2}/\d{1,2})$'
+_YEAR_SLASH_ONE_SHAPE = {
+    1: ((_YEAR_SLASH_DATE, r'\1 00:00'), ),
+    2: ((_YEAR_SLASH_DATE, r'\1 00:00:00'),
+        (r'^(\d{4}/\d{1,2}/\d{1,2} \d{1,2}:\d{2})$', r'\1:00')),
+}
 
 
 @dataclass
@@ -159,6 +165,9 @@ class _Scan:
     padded_parts: set = field(default_factory=set)
     text_shapes: Counter = field(default_factory=Counter)
     awkward: int = 0
+    year_parts: Dict[int, set] = field(
+        default_factory=lambda: {k: set()
+                                 for k in _SLASH_SHAPES})
     slash_dm: _Tally = field(default_factory=_Tally)
     slash_md: _Tally = field(default_factory=_Tally)
     slash_both: _Tally = field(default_factory=_Tally)
@@ -186,6 +195,7 @@ class _Decision:
     reading: Optional[str] = None
     one_shape: bool = False
     slash_shape: int = 0
+    year_shape: int = 0
 
 
 def _number(parts: pa.Array, name: str) -> pa.Array:
@@ -552,6 +562,9 @@ class _Column:
             for value, count in zip(
                     *pc.value_counts(pc.filter(shape, matched)).flatten()):
                 self.scan.text_shapes[value.as_py()] += count.as_py()
+            if kind == 'year_slash':
+                for value in pc.unique(pc.filter(depth, matched)).to_pylist():
+                    self.scan.year_parts[value].add(part)
             self._tally('fixed', part, text, pc.and_(matched, pc.invert(valid)),
                         'impossible')
             self._tally(
@@ -665,8 +678,9 @@ class _Column:
         in is handed to DiskGraph with its format declared, since DiskGraph
         otherwise decides the format from a part's first rows and refuses a
         column whose sample the scan has made all null: the exact format of
-        the one shape every value has, or the one-shape staging when ISO
-        shapes differ.
+        the one shape every value has, or the one-shape staging when shapes
+        differ (ISO values in a space-separated full time part, year-first
+        slashes in the fullest time part any value has).
         """
         scan = self.scan
         family = 'iso' if scan.families.get('iso') else 'year_slash'
@@ -677,6 +691,10 @@ class _Column:
             self.decision = _Decision(base + (sep + time if time else ''))
         elif family == 'iso':
             self.decision = _Decision('%Y-%m-%d %H:%M:%S%.f%#z', one_shape=True)
+        else:
+            depth = max(int(key.split('|')[1]) for key in scan.text_shapes)
+            self.decision = _Decision(base + ' ' + times[depth],
+                                      year_shape=depth)
 
     def _decide_zones(self) -> None:
         scan = self.scan
@@ -815,6 +833,9 @@ class _Column:
         for shape, held in self.scan.slash_parts.items():
             if shape < self.decision.slash_shape:
                 parts |= held
+        for shape, held in self.scan.year_parts.items():
+            if shape < self.decision.year_shape:
+                parts |= held
         return parts
 
     def rewritten(self, values: pa.Array) -> pa.Array:
@@ -829,6 +850,7 @@ class _Column:
         invalid = self.invalid(values)
         reshapes = list(_ONE_SHAPE) if self.decision.one_shape else []
         reshapes += _SLASH_ONE_SHAPE.get(self.decision.slash_shape, ())
+        reshapes += _YEAR_SLASH_ONE_SHAPE.get(self.decision.year_shape, ())
         for pattern, replacement in reshapes:
             values = pc.replace_substring_regex(values, pattern, replacement)
         if self.decision.reading and _strings(values) is not None:
