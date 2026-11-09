@@ -1,0 +1,360 @@
+{
+  "id": "C-CALC-001",
+  "contract": {
+    "$type": "DataLoaderSpec",
+    "schema": {
+      "$type": "DataSchema",
+      "tables": [
+        {
+          "$type": "TableSpec",
+          "name": "users",
+          "primary_key": "id",
+          "columns": {
+            "id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "a": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "b": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": {
+            "$type": "NonTemporal"
+          }
+        }
+      ],
+      "relations": []
+    },
+    "sample": {
+      "$type": "SampleSpec",
+      "entity": {
+        "$type": "EntitySpec",
+        "table": "users",
+        "entity_type": "users",
+        "filters": [],
+        "available_from": null
+      },
+      "entity_values": {
+        "magnitude": {
+          "$type": "Derived",
+          "operation": "abs",
+          "inputs": [
+            "difference"
+          ],
+          "dtype": {
+            "$type": "DType",
+            "name": "int64",
+            "unit": null,
+            "timezone": null,
+            "precision": null,
+            "scale": null
+          }
+        },
+        "difference": {
+          "$type": "Derived",
+          "operation": "subtract",
+          "inputs": [
+            "a",
+            "b"
+          ],
+          "dtype": {
+            "$type": "DType",
+            "name": "int64",
+            "unit": null,
+            "timezone": null,
+            "precision": null,
+            "scale": null
+          }
+        },
+        "reverse": {
+          "$type": "Derived",
+          "operation": "subtract",
+          "inputs": [
+            "b",
+            "a"
+          ],
+          "dtype": {
+            "$type": "DType",
+            "name": "int64",
+            "unit": null,
+            "timezone": null,
+            "precision": null,
+            "scale": null
+          }
+        },
+        "b": {
+          "$type": "Field",
+          "column": "b",
+          "path": [],
+          "selection": "one",
+          "time_column": null,
+          "reference_time": "sample"
+        },
+        "a": {
+          "$type": "Field",
+          "column": "a",
+          "path": [],
+          "selection": "one",
+          "time_column": null,
+          "reference_time": "sample"
+        },
+        "half": {
+          "$type": "Constant",
+          "value": 0.5,
+          "dtype": {
+            "$type": "DType",
+            "name": "float64",
+            "unit": null,
+            "timezone": null,
+            "precision": null,
+            "scale": null
+          }
+        },
+        "mixed": {
+          "$type": "Derived",
+          "operation": "add",
+          "inputs": [
+            "a",
+            "half"
+          ],
+          "dtype": {
+            "$type": "DType",
+            "name": "float64",
+            "unit": null,
+            "timezone": null,
+            "precision": null,
+            "scale": null
+          }
+        }
+      },
+      "dated_entity_values": {},
+      "events": {},
+      "current_events": {},
+      "neighborhoods": {},
+      "targets": {},
+      "candidate_sets": {}
+    },
+    "batch": {
+      "$type": "BatchSpec",
+      "inputs": {
+        "entity": {
+          "$type": "Input",
+          "source": {
+            "$type": "EntitySource"
+          },
+          "representation": {
+            "$type": "Fields",
+            "fields": [
+              {
+                "$type": "Encode",
+                "field": "magnitude",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              },
+              {
+                "$type": "Encode",
+                "field": "difference",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              },
+              {
+                "$type": "Encode",
+                "field": "reverse",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              },
+              {
+                "$type": "Encode",
+                "field": "b",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              },
+              {
+                "$type": "Encode",
+                "field": "a",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              },
+              {
+                "$type": "Encode",
+                "field": "mixed",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              }
+            ],
+            "row": {
+              "$type": "Columns"
+            },
+            "history": {
+              "$type": "Grouped"
+            },
+            "field_names": null,
+            "field_space": null,
+            "forbidden_fields": []
+          },
+          "layout": {
+            "$type": "Separate"
+          }
+        }
+      },
+      "targets": {},
+      "encodings": {},
+      "id_spaces": {},
+      "field_names": {},
+      "batching": {
+        "$type": "Batching",
+        "max_samples": null,
+        "max_tokens": null,
+        "length_input": null,
+        "bucket_by_length": false,
+        "drop_last": false
+      }
+    },
+    "version": 3
+  },
+  "tables": {
+    "users": [
+      {
+        "id": 1,
+        "a": 10,
+        "b": 3
+      }
+    ]
+  },
+  "anchors": [
+    {
+      "sample_id": "u1",
+      "entity_id": 1,
+      "as_of_time": 100
+    }
+  ],
+  "expected": {
+    "u1": {
+      "entity_values": {
+        "a": 10,
+        "b": 3,
+        "difference": 7,
+        "reverse": -7,
+        "magnitude": 7,
+        "half": 0.5,
+        "mixed": 10.5
+      }
+    }
+  },
+  "reason": "a=10 and b=3. difference=a-b=7; reverse=b-a=-7; magnitude=abs(difference)=7. magnitude is declared before difference, and difference before a/b. Name dependencies determine evaluation, not map placement. All five results have int64 type. Integer a=10 plus the typed float constant 0.5 produces float64 mixed=10.5.",
+  "batch": {
+    "inputs": {
+      "entity": {
+        "magnitude": {
+          "values": {
+            "dtype": "int64",
+            "shape": [
+              1
+            ],
+            "values": [
+              7
+            ]
+          },
+          "valid": {
+            "dtype": "bool",
+            "shape": [
+              1
+            ],
+            "values": [
+              true
+            ]
+          }
+        },
+        "difference": {
+          "values": {
+            "dtype": "int64",
+            "shape": [
+              1
+            ],
+            "values": [
+              7
+            ]
+          },
+          "valid": {
+            "dtype": "bool",
+            "shape": [
+              1
+            ],
+            "values": [
+              true
+            ]
+          }
+        },
+        "reverse": {
+          "values": {
+            "dtype": "int64",
+            "shape": [
+              1
+            ],
+            "values": [
+              -7
+            ]
+          },
+          "valid": {
+            "dtype": "bool",
+            "shape": [
+              1
+            ],
+            "values": [
+              true
+            ]
+          }
+        },
+        "mixed": {
+          "values": {
+            "dtype": "float64",
+            "shape": [
+              1
+            ],
+            "values": [
+              10.5
+            ]
+          },
+          "valid": {
+            "dtype": "bool",
+            "shape": [
+              1
+            ],
+            "values": [
+              true
+            ]
+          }
+        }
+      }
+    }
+  }
+}

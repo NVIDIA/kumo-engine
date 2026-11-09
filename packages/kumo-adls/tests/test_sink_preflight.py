@@ -11,6 +11,7 @@ from kumo_adls import native_output
 from kumo_adls.session import CLOUDS
 from kumo_adls.sink import ADLSSinkBackend
 from kumoapi.data_source import ADLSIdentityConfig
+from kumoapi.jobs import WriteMode
 
 
 @pytest.mark.parametrize('cloud', list(CLOUDS))
@@ -39,7 +40,43 @@ def test_supported_preflight_constructs_no_clients(monkeypatch, connector,
         target = f'abfss://curated@companylake.{suffix}/orders/{target}'
     before = dict(os.environ)
 
-    backend.preflight_write_files(connector(suffix=suffix), target)
+    backend.preflight_write_files(connector(suffix=suffix), target,
+                                  write_mode=WriteMode.OVERWRITE)
 
     forbidden.assert_not_called()
     assert dict(os.environ) == before
+
+
+def test_default_write_policy_checks_occupancy_but_overwrite_preserves_behavior(
+        service, connector):
+    from kumo_core.artifact_export import ArtifactDestinationConflict
+
+    backend = ADLSSinkBackend()
+    target = connector()
+    backend.preflight_write_files(target, 'out/')
+    service.files['curated/orders/out/part.parquet'] = b'data'
+    service.directories.add('curated/orders/out')
+    with pytest.raises(ArtifactDestinationConflict, match='already contains'):
+        backend.preflight_write_files(target, 'out/')
+    backend.preflight_write_files(target, 'out/',
+                                  write_mode=WriteMode.OVERWRITE)
+    with pytest.raises(NotImplementedError, match='OVERWRITE'):
+        backend.preflight_write_files(target, 'out/',
+                                      write_mode=WriteMode.APPEND)
+
+
+@pytest.mark.parametrize('mode', [None, WriteMode.OVERWRITE])
+@pytest.mark.parametrize('path', ['out/', 'scores.parquet'])
+def test_preflight_resolves_once_and_only_opens_storage_for_occupancy(
+        service, connector, monkeypatch, mode, path):
+    backend = ADLSSinkBackend()
+    target = connector()
+    resolve = Mock(wraps=backend._resolved)
+    filesystem = Mock(wraps=backend._filesystem)
+    monkeypatch.setattr(backend, '_resolved', resolve)
+    monkeypatch.setattr(backend, '_filesystem', filesystem)
+
+    backend.preflight_write_files(target, path, write_mode=mode)
+
+    resolve.assert_called_once_with(target, path)
+    assert filesystem.call_count == int(mode is None and path.endswith('/'))

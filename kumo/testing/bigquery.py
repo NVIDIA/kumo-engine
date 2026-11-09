@@ -2,161 +2,144 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import asyncio
-import functools
 import json
 import os
-from collections.abc import Callable
-from typing import Optional
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
+from enum import Enum
 
-from io_utils import logging
-from io_utils.secrets import get_secrets
+import pytest
+
+from io_utils import fsutil
 from kumo.connector.bigquery_connector import (
     ENV_GCS_KUMO_BUCKET,
-    ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH,
     ENV_GOOGLE_CREDENTIALS_JSON,
 )
+from service_framework.env_var import EnvVar
 
-logger = logging.getLogger(__name__)
+ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT = 'GOOGLE_IMPERSONATE_SERVICE_ACCOUNT'
+ENV_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT = 'GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT'
+ENV_BIGQUERY_NO_JOB_SERVICE_ACCOUNT = 'GCP_BIGQUERY_NO_JOB_SERVICE_ACCOUNT'
+ENV_BIGQUERY_NO_TABLE_CREDENTIALS = 'GCP_BIGQUERY_NO_TABLE_CREDENTIALS'
+ENV_BIGQUERY_NO_JOB_CREDENTIALS = 'GCP_BIGQUERY_NO_JOB_CREDENTIALS'
+GCP_WORKERS_STARTED = pytest.StashKey[bool]()
 
-DEFAULT_BIGQUERY_KEY = "kumo-test-bigquery-service-account-key"
-
-# Missing required table read permission
-FAIL_TABLE_PERMISSION_BIGQUERY_KEY = "kumo-test-permission-fail-bigquery-service-account-key-2"
-# Missing required jobs.create permission
-FAIL_PROJECT_PERMISSION_BIGQUERY_KEY = "kumo-test-permission-fail-bigquery-service-account-key"
-
-# Keyless CI maps the two legacy negative-test identities to deliberately
-# restricted service accounts.  The names remain keyed by the old secret
-# identifiers so callers do not need to know how credentials are sourced.
-ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT = "GOOGLE_IMPERSONATE_SERVICE_ACCOUNT"
-ENV_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT = (
-    "GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT")
-ENV_BIGQUERY_NO_JOB_SERVICE_ACCOUNT = "GCP_BIGQUERY_NO_JOB_SERVICE_ACCOUNT"
-
-_IMPERSONATION_ENV_BY_KEY = {
-    FAIL_TABLE_PERMISSION_BIGQUERY_KEY: ENV_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT,
-    FAIL_PROJECT_PERMISSION_BIGQUERY_KEY: ENV_BIGQUERY_NO_JOB_SERVICE_ACCOUNT,
-}
+_CREDENTIAL_ENV_VARS = (
+    'GOOGLE_APPLICATION_CREDENTIALS',
+    ENV_GOOGLE_CREDENTIALS_JSON,
+    ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT,
+    ENV_GCS_KUMO_BUCKET.name,
+    'GCP_PROJECT_ID',
+)
 
 
-def _configure_application_default_credentials(
-        service_account_key: str) -> bool:
-    """Configure an existing ADC file for BigQuery connector tests.
-
-    GitHub's OIDC authentication action writes an ``external_account`` ADC
-    file and exports ``GOOGLE_APPLICATION_CREDENTIALS``.  Negative permission
-    tests select a restricted service account through IAM impersonation rather
-    than loading a second private key.
-    """
-    credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
-    if not credentials_path or not os.path.exists(credentials_path):
-        return False
-
-    impersonation_env = _IMPERSONATION_ENV_BY_KEY.get(service_account_key)
-    if impersonation_env is None:
-        os.environ.pop(ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT, None)
-    else:
-        target = os.getenv(impersonation_env)
-        if not target:
-            raise RuntimeError(
-                f"{impersonation_env} must be configured for the restricted "
-                "BigQuery permission test identity")
-        os.environ[ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT] = target
-
-    os.environ[ENV_GOOGLE_CREDENTIALS_JSON] = credentials_path
-    project_id = (os.getenv('GCP_PROJECT_ID')
-                  or os.getenv('GOOGLE_CLOUD_PROJECT'))
-    if project_id:
-        os.environ['GCP_PROJECT_ID'] = project_id
-    logger.info("Using Application Default Credentials for BigQuery tests")
-    return True
+class BigQueryIdentity(Enum):
+    DEFAULT = 'default'
+    NO_TABLE = 'no_table'
+    NO_JOB = 'no_job'
 
 
-def setup_bigquery_credentials(service_account_key: Optional[str] = None):
-    # Set env var for GCS kumo bucket for testing.
-    os.environ[ENV_GCS_KUMO_BUCKET.name] = 'kumo-test-bucket'
-    service_account_key = service_account_key or DEFAULT_BIGQUERY_KEY
+class CredentialKind(Enum):
+    FEDERATED = 'external_account'
+    USER = 'authorized_user'
+    IMPERSONATED = 'impersonated_service_account'
+    KEY = 'service_account'
 
-    # Prefer short-lived ADC supplied by Workload Identity Federation.  This
-    # keeps GitHub Actions from reading any stored GCP service-account key.
-    if _configure_application_default_credentials(service_account_key):
-        return
 
+def credential_kind(path: str) -> CredentialKind:
+    if '://' in path:
+        raise RuntimeError('Google test credentials require a local ADC file')
+    if not fsutil.exists(path) or fsutil.isdir(path):
+        raise RuntimeError('Configured BigQuery credential file does not exist')
     try:
-        # Get the GCloud secrets from AWS secrets manager and store it in the
-        # default file. This remains a local/deployment fallback; CI supplies
-        # ADC above and never reaches this path.
-        secrets = get_secrets(service_account_key)
-        file_path = os.path.join(os.getcwd(), ".google_credential.json")
-        with open(file_path, 'w') as f:
-            json.dump(secrets, f)
-
-        with open(ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH, 'w') as f:
-            # This is a hack. allows big query connector
-            # to fall back to default credentials
-            json.dump(secrets, f)
-        os.environ[ENV_GOOGLE_CREDENTIALS_JSON] = file_path
-        # Also set the standard ADC env var so any google-cloud-* client
-        # built without explicit credentials (e.g. fsutil's GCS client
-        # used by integration tests to verify EXPORT DATA output) picks
-        # up the same service account.
-        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = file_path
-    except Exception as e:
-        # Use built-in credentials if this env doesn't have access to read the
-        # secrets from AWS
-        logger.exception(e)
+        document = json.loads(fsutil.read_text(path))
+        if not isinstance(document, dict):
+            raise ValueError('credential document must be a JSON object')
+        return CredentialKind(document.get('type'))
+    except (ValueError, TypeError) as error:
+        raise RuntimeError('BigQuery credential file has an invalid or '
+                           'unsupported credential type') from error
 
 
-def withBigQueryCredentials(func: Optional[Callable] = None,
-                            service_account_key: Optional[str] = None):
-    import pytest
+def resolve_credentials(identity: BigQueryIdentity) -> tuple[str, str | None]:
+    """Resolve explicit inputs without changing the environment or files."""
+    if not isinstance(identity, BigQueryIdentity):
+        raise TypeError('BigQuery credentials require a BigQueryIdentity')
+    path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
+    if not path:
+        raise RuntimeError('BigQuery tests require explicit '
+                           'GOOGLE_APPLICATION_CREDENTIALS')
+    kind = credential_kind(path)
+    require_wif = EnvVar(
+        'KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED', bool, default_value=False).parse_value()
+    if require_wif and kind != CredentialKind.FEDERATED:
+        raise RuntimeError('Workload exchange BigQuery tests require '
+                           'external_account ADC')
+    if identity == BigQueryIdentity.DEFAULT:
+        return path, None
 
-    def decorator(inner_func: Callable):
-        def _setup():
-            setup_bigquery_credentials(service_account_key)
-            if (not os.getenv(ENV_GOOGLE_CREDENTIALS_JSON) and
-                    not os.path.exists(ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH)):
-                pytest.skip("No BigQuery credentials found")
+    if kind == CredentialKind.KEY:
+        variable = {
+            BigQueryIdentity.NO_TABLE: ENV_BIGQUERY_NO_TABLE_CREDENTIALS,
+            BigQueryIdentity.NO_JOB: ENV_BIGQUERY_NO_JOB_CREDENTIALS,
+        }[identity]
+        restricted_path = os.environ.get(variable)
+        if not restricted_path:
+            raise RuntimeError(f'{variable} must identify the restricted '
+                               'BigQuery service-account credential file')
+        if credential_kind(restricted_path) != CredentialKind.KEY:
+            raise RuntimeError(f'{variable} must contain service_account '
+                               'credentials')
+        return restricted_path, None
 
-        if asyncio.iscoroutinefunction(inner_func):
+    variable = {
+        BigQueryIdentity.NO_TABLE: ENV_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT,
+        BigQueryIdentity.NO_JOB: ENV_BIGQUERY_NO_JOB_SERVICE_ACCOUNT,
+    }[identity]
+    target = os.environ.get(variable)
+    if not target:
+        raise RuntimeError(f'{variable} must be configured for '
+                           'the restricted BigQuery test identity')
+    return path, target
 
-            async def async_wrapper(*args, **kwargs):
-                previous_target = os.environ.get(
-                    ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT)
-                try:
-                    _setup()
-                    return await inner_func(*args, **kwargs)
-                finally:
-                    if previous_target is None:
-                        os.environ.pop(ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT,
-                                       None)
-                    else:
-                        os.environ[ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT] = (
-                            previous_target)
 
-            wrapper = async_wrapper
+@contextmanager
+def setup_bigquery_credentials(
+    identity: BigQueryIdentity = BigQueryIdentity.DEFAULT,
+) -> Generator[None, None, None]:
+    """Scope explicit ADC to a test or session; input files remain read-only."""
+    path, target = resolve_credentials(identity)
+    with pytest.MonkeyPatch.context() as environment:
+        for name in _CREDENTIAL_ENV_VARS:
+            previous = os.environ.get(name)
+            environment.setenv(name, previous or '')
+            if previous is None:
+                environment.delenv(name)
+
+        environment.setenv('GOOGLE_APPLICATION_CREDENTIALS', path)
+        environment.setenv(ENV_GOOGLE_CREDENTIALS_JSON, path)
+        if target:
+            environment.setenv(ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT, target)
         else:
+            environment.delenv(ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT,
+                               raising=False)
+        environment.setenv(
+            ENV_GCS_KUMO_BUCKET.name,
+            os.environ.get(ENV_GCS_KUMO_BUCKET.name) or 'kumo-test-bucket')
+        project = (os.environ.get('GCP_PROJECT_ID')
+                   or os.environ.get('GOOGLE_CLOUD_PROJECT'))
+        if project:
+            environment.setenv('GCP_PROJECT_ID', project)
+        yield
 
-            def sync_wrapper(*args, **kwargs):
-                previous_target = os.environ.get(
-                    ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT)
-                try:
-                    _setup()
-                    return inner_func(*args, **kwargs)
-                finally:
-                    if previous_target is None:
-                        os.environ.pop(ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT,
-                                       None)
-                    else:
-                        os.environ[ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT] = (
-                            previous_target)
 
-            wrapper = sync_wrapper
+def withBigQueryCredentials(
+    func: Callable | None = None,
+    *,
+    identity: BigQueryIdentity = BigQueryIdentity.DEFAULT,
+):
+    """Declare credentials without performing auth or wrapping the test body."""
+    def decorator(inner_func: Callable):
+        return pytest.mark.bigquery_credentials(identity)(inner_func)
 
-        return functools.wraps(inner_func)(wrapper)
-
-    if func is None:
-        return decorator
-    else:
-        return decorator(func)
+    return decorator if func is None else decorator(func)

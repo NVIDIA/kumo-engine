@@ -33,14 +33,15 @@ from kumo.engine.trainer.output_config import ModelOutputConfig
 from kumo.engine.trainer.trainer import Trainer, TrainingResult
 
 
-def _fake_published_bundle(root: Path) -> Path:
+def _fake_published_bundle(root: Path, metrics: Optional[dict] = None) -> Path:
     r"""A bundle shaped like `kumo_core.artifacts.VitalArtifactPublicationPolicy`
     publishes: a `publication-manifest.json` naming a few artifact files.
     """
     bundle = root / 'published-model'
     (bundle / 'model').mkdir(parents=True)
     (bundle / 'model' / 'config.json').write_text('{}')
-    (bundle / 'metrics.json').write_text(json.dumps({'auc': 0.9}))
+    (bundle / 'metrics.json').write_text(
+        json.dumps({'auc': 0.9} if metrics is None else metrics))
     manifest = {
         'schema_version':
         1,
@@ -351,7 +352,8 @@ def test_load_from_connector_fetches_then_uses_local_loader(
     assert loaded._training_result.bundle_dir != bundle.resolve()
     assert loaded._training_result.bundle_dir.name == 'fetched-model'
     assert loaded.result.registered_model == PublishedModel(
-        name='CHURN_GNN', version='V1', uri='fake://CHURN_GNN@latest')
+        name='CHURN_GNN', version='V1', uri='fake://CHURN_GNN@latest',
+        metrics={'auc': 0.9})
     assert loaded.result.registered_alias is None
 
 
@@ -594,8 +596,8 @@ def _export(sink, bundle, location):
             location=location, serving_snapshot=None, serving_options=None))
 
 
-def _specced_bundle(tmp_path: Path) -> Path:
-    bundle = _fake_published_bundle(tmp_path)
+def _specced_bundle(tmp_path: Path, metrics: Optional[dict] = None) -> Path:
+    bundle = _fake_published_bundle(tmp_path, metrics)
     write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
                         model_plan=ModelPlan(), snapshot_id='snap-123',
                         training_table_generation=_generation_plan())
@@ -603,11 +605,12 @@ def _specced_bundle(tmp_path: Path) -> Path:
 
 
 class _AliasingSink(_FakeSink):
-    def __init__(self, recorded: Optional[str] = None,
-                 fail: bool = False) -> None:
+    def __init__(self, recorded: Optional[str] = None, fail: bool = False,
+                 metrics: Optional[dict] = None) -> None:
         super().__init__()
         self.recorded = recorded
         self.fail = fail
+        self.metrics = metrics or {}
         self.aliases: dict = {}
 
     def set_model_alias(self, connector, location, alias) -> None:
@@ -619,7 +622,8 @@ class _AliasingSink(_FakeSink):
         shutil.copytree(self.published['CHURN_GNN@latest'], local_dir,
                         dirs_exist_ok=True)
         return PublishedModel(name='CHURN_GNN', version='V1', uri='fake://',
-                              metadata={'kumo_bundle_id': self.recorded})
+                              metadata={'kumo_bundle_id': self.recorded},
+                              metrics=self.metrics)
 
 
 @pytest.mark.parametrize('sink,warning', [
@@ -655,6 +659,20 @@ def test_load_by_alias_warns_on_recorded_bundle_mismatch(
             _FakeConnector(sink),
             location=ModelRegistryLocation('CHURN_GNN', alias='prod'))
     assert loaded.result.id == Trainer.load(bundle).result.id
+
+
+def test_a_model_loaded_by_alias_reports_its_registered_metrics(
+        tmp_path: Path) -> None:
+    raw = {'test_auroc': .7, 'test_refit_auroc': .8}
+    bundle = _specced_bundle(tmp_path, raw)
+    sink = _AliasingSink(metrics=raw)
+    sink.publish_model(None, str(bundle),
+                       location=ModelRegistryLocation('CHURN_GNN'))
+    loaded = Trainer.load_from_connector(
+        _FakeConnector(sink),
+        location=ModelRegistryLocation('CHURN_GNN', alias='prod'))
+    assert loaded.result.registered_model.metrics == {
+        'test/auroc': .8, 'before_refit/auroc': .7}
 
 
 def test_training_result_exports_like_its_trainer(tmp_path: Path) -> None:

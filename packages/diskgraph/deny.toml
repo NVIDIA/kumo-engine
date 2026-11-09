@@ -10,7 +10,7 @@ targets = [
 all-features = true
 
 # CI runs only `cargo deny check licenses`, so this section is not enforced.
-# The epserde backport removes maligned. The optional terminal tools resolve
+# Upstream epserde 0.13 removes maligned. The optional terminal tools resolve
 # lru 0.18.2 or newer. Neither finding needs an advisory exception.
 [advisories]
 ignore = []
