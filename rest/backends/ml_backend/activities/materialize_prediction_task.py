@@ -7,6 +7,7 @@ import os.path as osp
 from typing import Any, Optional, Tuple
 
 from kumo_core.job_config import PredictionConfig
+from kumo_core.prediction import link_prediction_anchor
 from kumo_core.prediction_options import resolve_prediction_time_options
 from kumo_core.resolved_task import (
     IncompatiblePredictionPlan,
@@ -391,22 +392,6 @@ def _materialize_ttng_prediction_task_dataset(
         predict_staging_tt_id,
         ttng_staging_dir,
     )
-
-    # Prediction anchor: deterministic max target date (matches the BP-gen
-    # anchor); empty for static queries.
-    bp_gen = pquery.get_batch_pred_table_generator()
-    pred_time = None
-    if bp_gen.query_type == QueryType.TEMPORAL:
-        pred_time = bp_gen.generate_pred_timestamp()
-    timestamps = [int(pred_time.value)] if pred_time else []  # ns
-
-    # Predict seed time (int64-ns) for the RHS MIPS NodeRange loader (else it
-    # seeds rhs_seed_time=None and the engine raises). Temporal -> anchor,
-    # static -> 0. LP-only.
-    predict_seed_time_ns: Optional[int] = None
-    if is_link_pred:
-        predict_seed_time_ns = timestamps[0] if timestamps else 0
-
     from kumo.data.generic.diskgraph_train_table import (
         TTNGBundleError,
         assert_ttng_bundle_complete,
@@ -435,6 +420,21 @@ def _materialize_ttng_prediction_task_dataset(
     if not had_complete_local_bundle:
         log.info('[TT-NG] BP restored predict staging from durable %s -> %s',
                  durable_staging_dir, predict_staging_dir)
+
+    # Predict seed time (int64-ns) for the RHS MIPS NodeRange loader and the
+    # candidate filter. LP-only; a static query seeds 0. A generated table is
+    # anchored at the query's prediction time, a custom table at its rows'.
+    predict_seed_time_ns: Optional[int] = None
+    if is_link_pred:
+        predict_seed_time_ns = 0
+        bp_gen = pquery.get_batch_pred_table_generator()
+        if (bp_gen.query_type == QueryType.TEMPORAL
+                and job_input.config.custom_pred_table_source is not None):
+            predict_seed_time_ns = link_prediction_anchor(
+                (), osp.join(predict_staging_dir, 'tt.parquet'))
+        elif bp_gen.query_type == QueryType.TEMPORAL:
+            pred_time = bp_gen.generate_pred_timestamp()
+            predict_seed_time_ns = int(pred_time.value) if pred_time else 0
 
     handle = DiskgraphHandle(
         graph_key=job_input.graph_data_compute_input.graph_key,

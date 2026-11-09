@@ -24,6 +24,7 @@ from typing import (
     Mapping,
     NamedTuple,
     Optional,
+    Sequence,
     Tuple,
 )
 from uuid import uuid4
@@ -238,7 +239,7 @@ def generate_custom_prediction_table(
     )
 
 
-def _anchor_range(table_path: str) -> tuple[int, int]:
+def table_anchor_range(table_path: str) -> tuple[int, int]:
     """First and last anchor of a prediction table, in nanoseconds.
 
     Reads the Parquet footer statistics, and a row group's anchor column
@@ -279,6 +280,18 @@ def _anchor_range(table_path: str) -> tuple[int, int]:
     return first, last
 
 
+def link_prediction_anchor(timestamps: Sequence[int], table_path: str) -> int:
+    """The one anchor of a temporal link-prediction table, in nanoseconds.
+
+    A generated table carries its anchor in ``timestamps``; a custom table
+    carries it in its own rows.
+    """
+    first, last = ((min(timestamps), max(timestamps))
+                   if timestamps else table_anchor_range(table_path))
+    require_single_anchor(first, last)
+    return first
+
+
 def materialize_prediction_task(
     request: PredictionTableRequest,
     generated: GeneratedPredictionTable,
@@ -292,9 +305,8 @@ def materialize_prediction_task(
     forecasting = (request.query.task_type == "forecasting"
                    and request.compiler_options is not None)
     anchors = request.timestamps
-    if not anchors and request.query.task_type == "temporal_link_prediction":
-        anchors = _anchor_range(generated.table_path)
-        require_single_anchor(*anchors)
+    if request.query.task_type == "temporal_link_prediction":
+        anchors = (link_prediction_anchor(anchors, generated.table_path), )
     ingested = runtime.execute_tt_ingest(
         staging_dir=generated.staging_dir,
         index_path=request.index_path,
@@ -395,8 +407,10 @@ __all__ = [
     "PredictionTableRequest",
     "generate_prediction_table",
     "generate_custom_prediction_table",
+    "link_prediction_anchor",
     "materialize_prediction_task",
     "score_prediction",
+    "table_anchor_range",
 ]
 
 

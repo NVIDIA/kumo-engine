@@ -368,7 +368,7 @@ def test_anchor_range_reads_footers_and_unindexed_row_groups(tmp_path):
     _write_parts(table, ([5, 3], "ns", True), ([], "ns", True),
                  ([2], "us", False))
 
-    assert prediction._anchor_range(str(table)) == (3, 2000)
+    assert prediction.table_anchor_range(str(table)) == (3, 2000)
 
 
 def test_anchor_range_requires_the_anchor_column(tmp_path):
@@ -380,7 +380,7 @@ def test_anchor_range_requires_the_anchor_column(tmp_path):
     pq.write_table(pa.table({"ENTITY1": [1]}), table / "part-00000.parquet")
 
     with pytest.raises(ValueError, match="no TIMESTAMP column"):
-        prediction._anchor_range(str(table))
+        prediction.table_anchor_range(str(table))
 
 
 def _link_request(tmp_path):
