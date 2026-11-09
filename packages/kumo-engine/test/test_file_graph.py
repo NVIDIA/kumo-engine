@@ -737,11 +737,10 @@ def test_decimal_columns_beyond_float32_precision_are_reported(tmp_path):
     ('csv', ['1', '2', ' ', 'N/A', None, '3.5'],
      "Column 'amount' in table 't.csv' is read as text, but every non-blank "
      "value in the 6 sampled rows is a number; 3 value(s) are blank or look "
-     "like missing "
-     "(for example ' '). To read it as a number call "
+     "like missing (for example ' '). A CSV read as a number refuses 1 of "
+     "them; replace them with empty fields at the source, then call "
      "table.with_column('amount', dtype=Dtype.float64, "
-     "stype=Stype.numerical); values that do not parse become missing and "
-     "are counted at snapshot."),
+     "stype=Stype.numerical)."),
     ('parquet', ['1', '2', 'none', 'NULL ', '3', '4'],
      "Column 'amount' in table 't.parquet' is read as text, but every "
      "non-blank value in the 6 sampled rows is a number; 2 value(s) are "
@@ -796,6 +795,38 @@ def test_numbers_stored_as_text_are_reported_at_inference(
     assert columns['amount'].dtype == Dtype.string
     messages = [str(warning.message) for warning in caught]
     assert messages == ([expected] if expected else [])
+
+
+def test_the_csv_advice_reads_the_column_once_followed(tmp_path):
+    from kumo_core.sources.errors import PermanentSourceError
+
+    from kumo.engine import FileConnector, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    values = ['1', '2', ' ', 'N/A', None, '3.5']
+
+    def write(amount):
+        csv.write_csv(
+            pa.table({
+                'id': range(6),
+                'amount': pa.array(amount, pa.string())
+            }), root / 't.csv')
+
+    write(values)
+    with pytest.warns(UserWarning, match='refuses 1 of them'):
+        table = Table.from_source_table(
+            FileConnector(root_dir=str(root))['t.csv'], primary_key='id')
+    table = table.with_column('amount', dtype=Dtype.float64,
+                              stype=Stype.numerical)
+    with pytest.raises(PermanentSourceError):
+        Graph({'t': table}).snapshot()
+    write([value if value != ' ' else '' for value in values])
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        snapshot = Graph({'t': table}).snapshot()
+    assert snapshot.invalid_value_counts == {}
 
 
 def test_a_declared_text_column_of_numbers_is_not_reported(tmp_path):
