@@ -244,10 +244,12 @@ def _decimal_places(parquet: Any, column: str) -> int:
 
 
 def _narrowed_float_columns(
-        alias: str, table: Table,
-        paths: Sequence[str]) -> Dict[Tuple[str, str], Tuple[str, int]]:
+        alias: str, table: Table, paths: Sequence[str],
+        source_path: Any) -> Dict[Tuple[str, str], Tuple[str, int]]:
     r"""Each float32 column staged from a wider type, with that type and the
-    decimal places its sampled values are written with."""
+    decimal places its sampled values are written with. A backend that
+    names a directory instead of its parts has it globbed, only when the
+    table has a float32 column."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -256,8 +258,11 @@ def _narrowed_float_columns(
         column.name for column in table.definition.cols
         if column.dtype in _FLOAT32_DTYPES
     ]
+    if not columns:
+        return {}
     narrowed: Dict[Tuple[str, str], Tuple[str, int]] = {}
-    for path in paths if columns else ():
+    for path in paths or sorted(
+            str(part) for part in Path(source_path).rglob('*.parquet')):
         parquet = pq.ParquetFile(path)
         schema = parquet.schema_arrow
         for column in columns:
@@ -1145,10 +1150,8 @@ class Graph:
                     source_paths[alias] = str(
                         prepared.source.get('path') or dest_dir)
                 narrowed.update(
-                    _narrowed_float_columns(
-                        alias, table, paths or sorted(
-                            str(part) for part in Path(
-                                source_paths[alias]).rglob('*.parquet'))))
+                    _narrowed_float_columns(alias, table, paths,
+                                            source_paths[alias]))
 
             version_parts = [
                 json.dumps(table_data_versions, sort_keys=True).encode()
