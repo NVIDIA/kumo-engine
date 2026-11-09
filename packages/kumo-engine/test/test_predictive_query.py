@@ -334,15 +334,33 @@ def test_generated_temporal_split_requires_time_column(graph_snapshot,
                     split='TemporalSplit([0.6, 0.3, 0.1])'))
 
 
-@pytest.mark.parametrize('start,end,message', [
-    ('NaT', '2025-01-21', 'valid timestamp'),
-    ('2025-01-21', '2025-01-02', 'smaller than'),
-    ('2025-01-02', -1, 'both be offsets'),
+@pytest.mark.parametrize('flag', [None, 'false'])
+@pytest.mark.parametrize('options,message', [
+    ({'start_time': 'NaT', 'end_time': '2025-01-21'}, 'valid timestamp'),
+    ({'start_time': '2025-01-21', 'end_time': '2025-01-02'}, 'smaller than'),
+    ({'start_time': '2025-01-02', 'end_time': -1}, 'both be offsets'),
+    ({'start_time': '2025-01-02', 'train_start_offset': 10},
+     'Cannot specify both'),
+    ({'end_time': '2025-01-21', 'train_end_offset': 1},
+     'Cannot specify both'),
+    ({'start_time': '2025-01-02',
+      'split': "TimeRangeSplit([('2025-01-02', '2025-01-10'), "
+               "('2025-01-10', '2025-01-21')])"},
+     'cannot be combined'),
+    ({'end_time': '2025-01-21',
+      'split': 'DateOffsetSplit([-4, -2], timeframe=1)'},
+     'cannot be combined'),
+    ({'end_time': '2025-01-21',
+      'split': 'TimeSplit([0.6, 0.2, 0.2])'},
+     'TimeSplit'),
 ])
 def test_generated_invalid_bounds_fail_before_artifacts(
-        graph_snapshot, monkeypatch, start, end, message):
+        graph_snapshot, monkeypatch, options, message, flag):
     graph, snapshot = graph_snapshot
-    monkeypatch.delenv('USE_DECOUPLED_SPLITS', raising=False)
+    if flag is None:
+        monkeypatch.delenv('USE_DECOUPLED_SPLITS', raising=False)
+    else:
+        monkeypatch.setenv('USE_DECOUPLED_SPLITS', flag)
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.new_run_id',
         lambda: pytest.fail('allocated a bounded-generation run id'),
@@ -354,12 +372,7 @@ def test_generated_invalid_bounds_fail_before_artifacts(
             'PREDICT COUNT(orders.*, 0, 1, days) > 0 FOR EACH users.id',
         ).generate_training_table(
             snapshot,
-            TrainingTableGenerationPlan(
-                start_time=start,
-                end_time=end,
-                timeframe_step=1,
-                split='ApproxDateOffsetSplit([0.6, 0.2, 0.2])',
-            ),
+            TrainingTableGenerationPlan(timeframe_step=1, **options),
         )
 
 

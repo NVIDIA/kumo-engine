@@ -619,19 +619,32 @@ class TrainingTableGenerationPlan(PlanMixin):
         like to migrate this parameter to end_time.
         **Supported Task Types:** Temporal
 
-    :ivar start_time: (``int`` | ``"inferred"`` | ``str``) Defines the absolute
-        start time to use for generating training data. Can be specified
-        either as a pandas Timestamp compatible string (e.g. '2024-04-01') or
-        as a non-positive integer offset in days from the current time
-        (e.g. -30 for 30 days ago) (*default:* ``"inferred"``).
-        **Supported Task Types:** Temporal
+    :ivar start_time: (``int`` | ``"inferred"`` | ``str``) Inclusive lower
+        bound on generated prediction anchors. Temporal node tasks accept
+        pandas Timestamp compatible strings (e.g. '2024-04-01') with default
+        splits. Timezone-aware strings are normalized to UTC; naive strings
+        are read as UTC. ``"inferred"`` or ``"-INF"`` uses the available-data
+        lower bound. Bounds are intersected with available label data.
+        Direct absolute bounds cannot be combined with train_start_offset,
+        train_end_offset, or explicit date/offset window splits. Ratio splits
+        remain subject to existing task restrictions.
+        Non-positive integer offsets retain the decoupled-splits gate and
+        are relative to the latest label data, in the aggregation's time unit.
+        (*default:* ``"inferred"``).
+        **Supported Task Types:** Temporal node tasks by default; temporal
+        link prediction retains its existing decoupled-splits requirement.
 
-    :ivar end_time: (``int`` | ``"inferred"`` | ``str``) Defines the absolute
-        end time to use for generating training data. Can be specified either
-        as a pandas Timestamp compatible string (e.g. '2024-04-01') or as a
-        non-positive integer offset in days from the current time
-        (e.g. -30 for 30 days ago) (*default:* ``"inferred"``).
-        **Supported Task Types:** Temporal
+    :ivar end_time: (``int`` | ``"inferred"`` | ``str``) Label observation
+        cutoff, rather than the latest prediction anchor. Each generated
+        example must fit its complete target horizon before this cutoff,
+        including every future label for forecasting. Accepts the same
+        timestamp strings and gated integer offsets as start_time;
+        ``"inferred"`` uses available label data. Either absolute bound can
+        be omitted. Empty intersections or windows too short for a complete
+        example fail generation. Existing time-unit and split constraints
+        continue to apply. (*default:* ``"inferred"``).
+        **Supported Task Types:** Temporal node tasks by default; temporal
+        link prediction retains its existing decoupled-splits requirement.
 
     :ivar timeframe_step: (``int`` | ``"inferred"``) Defines the step size of
         generating time intervals for training table generation

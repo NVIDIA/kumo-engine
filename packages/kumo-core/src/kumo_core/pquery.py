@@ -756,6 +756,13 @@ def resolve_query_forecast(
     )
 
 
+def _forecast_offsets(query: ValidatedNativeQuery) -> tuple[int, ...]:
+    """The exact future shifts passed to the native label compiler."""
+    timeframe = query.query.get_combined_date_offset_range().timeframe
+    step_seconds = int(timeframe.total_seconds())
+    return tuple(step_seconds * index for index in range(query.forecast_length))
+
+
 def _forecast_options(
     query: ValidatedNativeQuery,
     options: TrainingTableGenerationPlan,
@@ -774,8 +781,7 @@ def _forecast_options(
     step_seconds = int(timeframe.total_seconds())
     lag_offsets = tuple(-step_seconds * index
                         for index in range(int(lag_timesteps), 0, -1))
-    future_offsets = tuple(step_seconds * index
-                           for index in range(query.forecast_length))
+    future_offsets = _forecast_offsets(query)
     compiler_options = {
         "future_offsets_secs": future_offsets,
         "lag_offsets_secs": lag_offsets,
@@ -1072,13 +1078,26 @@ def _temporal_timestamps(
         start_time = max(start_time, minimum)
     if absolute_bounds and isinstance(end_time, Timestamp):
         end_time = min(end_time, maximum)
+    label_cutoff = end_time if isinstance(end_time, Timestamp) else maximum
+    lower = start_time if isinstance(start_time, Timestamp) else minimum
+    empty_bounds = (
+        "No usable training examples within start_time/end_time and "
+        "the available label data. Widen the bounds or provide more data "
+        "for the target horizon.")
+    if absolute_bounds and lower >= label_cutoff:
+        raise PredictiveQueryPlanError(empty_bounds)
+    future_shift = Timedelta(0)
     if absolute_bounds and query.task_type == "forecasting":
-        horizon = query.forecast_length - 1
-        if horizon > 0:
-            timeframe = DateOffsetRange.date_offset_subtract(
-                offset.end_date_offset, date_offset(int(offset.start or 0)))
-            cutoff = end_time if isinstance(end_time, Timestamp) else maximum
-            end_time = cutoff - horizon * timeframe
+        future_shift = Timedelta(seconds=max(_forecast_offsets(query)))
+        if label_cutoff.value - lower.value <= future_shift.value:
+            raise PredictiveQueryPlanError(empty_bounds)
+        shifted_cutoff = label_cutoff - future_shift
+        if not isinstance(shifted_cutoff, Timestamp):
+            raise PredictiveQueryPlanError(empty_bounds)
+        end_time = shifted_cutoff
+    cutoff = end_time if isinstance(end_time, Timestamp) else maximum
+    if absolute_bounds and lower >= cutoff:
+        raise PredictiveQueryPlanError(empty_bounds)
 
     step_count = int(
         inferred_or_missing_type_to_none(options.timeframe_step)
@@ -1116,17 +1135,12 @@ def _temporal_timestamps(
     if absolute_bounds:
         # Inferred offset splits may extend their first range to fill a stage.
         # Absolute label bounds remain authoritative over that adjustment.
-        lower = start_time if isinstance(start_time, Timestamp) else minimum
-        cutoff = end_time if isinstance(end_time, Timestamp) else maximum
-        upper = cutoff - offset.end_date_offset
         timestamps = [
-            timestamp for timestamp in timestamps if lower <= timestamp <= upper
+            timestamp for timestamp in timestamps if timestamp >= lower
+            and timestamp + future_shift + offset.end_date_offset <= label_cutoff
         ]
     if absolute_bounds and not timestamps:
-        raise PredictiveQueryPlanError(
-            "No usable training examples within start_time/end_time and "
-            "the available label data. Widen the bounds or provide more data "
-            "for the target horizon.")
+        raise PredictiveQueryPlanError(empty_bounds)
     return tuple(timestamp.value for timestamp in timestamps), fixed_boundaries
 
 

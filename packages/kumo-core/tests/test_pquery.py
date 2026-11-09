@@ -773,6 +773,8 @@ def test_absolute_bounds_intersect_available_labels(
     ('2024-02-01', '2024-02-10'),
     ('2023-12-01', '2023-12-10'),
     ('2024-01-19', '2024-01-20'),
+    ('1678-01-01', '1679-01-01'),
+    ('2260-01-01', '2261-01-01'),
 ])
 def test_absolute_bounds_require_usable_windows(monkeypatch, start, end):
     from pandas import Timestamp
@@ -835,6 +837,51 @@ def test_absolute_forecast_bounds_reserve_full_horizon(monkeypatch, end):
     assert newest == cutoff - DateOffset(days=7)
     assert all(Timestamp(value) >= Timestamp('2024-01-05')
                for value in timestamps)
+
+
+@pytest.mark.parametrize('minimum,maximum', [
+    ('2024-01-01', '2024-01-20'),
+    ('1677-09-22', '1677-09-23'),
+])
+def test_forecast_bounds_rejected_before_horizon_underflow(
+        monkeypatch, minimum, maximum):
+    from pandas import Timestamp
+
+    graph = normalize_graph(forecasting_graph_config())
+    query = parse_and_validate_query(
+        'PREDICT COUNT(events.*, 0, 1, days) FORECAST 3 TIMEFRAMES '
+        'FOR EACH articles.aid', graph)
+    monkeypatch.setattr(
+        'kumo_core.pquery._temporal_target_time_range',
+        lambda *_args: (Timestamp(minimum), Timestamp(maximum), None))
+    with pytest.raises(PredictiveQueryPlanError, match='No usable training'):
+        _temporal_timestamps(
+            query, '/synthetic-index', TrainingTableGenerationPlan(
+                start_time='1677-09-22', end_time='1677-09-23'),
+            {}, 'DateOffsetSplit', ())
+
+
+def test_absolute_monthly_forecast_uses_compiled_future_shifts(monkeypatch):
+    from kumo_core.pquery import _forecast_options
+    from pandas import DateOffset, Timedelta, Timestamp
+
+    graph = normalize_graph(forecasting_graph_config())
+    query = parse_and_validate_query(
+        'PREDICT COUNT(events.*, 0, 1, months) FORECAST 3 TIMEFRAMES '
+        'FOR EACH articles.aid', graph)
+    monkeypatch.setattr(
+        'kumo_core.pquery._temporal_target_time_range',
+        lambda *_args: (Timestamp('2023-01-01'), Timestamp('2024-12-31'), None))
+    options = TrainingTableGenerationPlan(
+        start_time='2023-01-01', end_time='2024-05-31', timeframe_step=1)
+    split, family = _split_options(query, graph, options)
+    timestamps, _ = _temporal_timestamps(
+        query, '/synthetic-index', options, split, family, ())
+    _, compiler = _forecast_options(query, options)
+    assert compiler['future_offsets_secs'] == (0, 31 * 86400, 62 * 86400)
+    assert timestamps
+    assert all(Timestamp(value) + Timedelta(days=62) + DateOffset(months=1)
+               <= Timestamp('2024-05-31') for value in timestamps)
 
 
 def test_latest_temporal_timestamp_uses_source_maximum(tmp_path, monkeypatch):

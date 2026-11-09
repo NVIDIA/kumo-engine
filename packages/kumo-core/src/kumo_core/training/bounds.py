@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Validation and UTC normalization for temporal label-window bounds."""
 
-from pandas import Timestamp, isna
+from pandas import Timestamp
 
 
 def parse_time_bound(value: int | str | None,
@@ -17,12 +17,14 @@ def parse_time_bound(value: int | str | None,
         return value
     try:
         timestamp = Timestamp(value)
-        if isna(timestamp):
+        if not isinstance(timestamp, Timestamp):
             raise ValueError('timestamp is NaT')
         if timestamp.tzinfo is not None:
             timestamp = timestamp.tz_convert('UTC').tz_localize(None)
         # Generation stores timestamps as signed nanoseconds.
         timestamp = Timestamp(timestamp.value)
+        if not isinstance(timestamp, Timestamp):
+            raise ValueError('timestamp is NaT')
     except (ValueError, TypeError, OverflowError) as error:
         raise ValueError(f"'{name}' must be a valid timestamp: {value!r}") from error
     return timestamp
