@@ -111,7 +111,7 @@ session = get_active_session()   # first line of work: before any Kumo connector
 from pathlib import Path
 
 import kumo.engine as kumo
-from kumoapi.jobs import PredictionArtifactType, WriteMode
+from kumoapi.jobs import MetadataField, PredictionArtifactType, WriteMode
 
 # Literals from the Node 1d restatement, written into this file (replace each placeholder).
 WAREHOUSE = '<warehouse>'
@@ -146,14 +146,38 @@ pq.validate()
 snapshot = graph.snapshot()
 population = pq.generate_prediction_table(
     snapshot, plan=loaded.training_table_generation_plan)   # add prediction_time= if the user gave one
+
+def catalog_name(declared):
+    # The writer's rule for the database and schema: an unquoted name is stored upper-case, a
+    # double-quoted one as written. The table it writes under exactly OUTPUT_TABLE.
+    return declared[1:-1].replace('""', '"') if declared.startswith('"') else declared.upper()
+
+def quoted(name):
+    return '"' + name.replace('"', '""') + '"'
+
+OUT_DB, OUT_SCHEMA = catalog_name(OUTPUT_DATABASE), catalog_name(OUTPUT_SCHEMA)
+
+def count_output():
+    # 0 before the first APPEND, which creates the table.
+    found = session.sql(
+        f'SELECT COUNT(*) FROM {quoted(OUT_DB)}.INFORMATION_SCHEMA.TABLES '
+        'WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?', params=[OUT_SCHEMA, OUTPUT_TABLE]).collect()
+    if not found[0][0]:
+        return 0
+    return session.sql(f'SELECT COUNT(*) FROM {quoted(OUT_DB)}.{quoted(OUT_SCHEMA)}.'
+                       f'{quoted(OUTPUT_TABLE)}').collect()[0][0]
+
+before = count_output() if WRITE_MODE == WriteMode.APPEND else 0
 result = loaded.predict(
     population, snapshot=snapshot, binary_classification_threshold=THRESHOLD,
     output_config=kumo.PredictionOutputConfig(
         connector=output, artifact_type=PredictionArtifactType.PREDICTIONS,
-        table_name=OUTPUT_TABLE, write_mode=WRITE_MODE),
+        table_name=OUTPUT_TABLE, write_mode=WRITE_MODE,
+        extra_fields=([MetadataField.JOB_TIMESTAMP, MetadataField.ANCHOR_TIMESTAMP]   # JOB_TIMESTAMP alone
+                      if WRITE_MODE == WriteMode.APPEND else [])),   # for a query with no time window (§8)
 )
-written = session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA, OUTPUT_TABLE]).count()
-print('predicted rows:', result.num_rows, 'table rows:', written)
+written = count_output() - before   # OVERWRITE: the table total; APPEND: the rows this run added
+print('predicted rows:', result.num_rows, 'rows written:', written)
 assert written == result.num_rows, 'write-back row count does not match'
 ```
 
@@ -217,8 +241,7 @@ if status is not None:
     if status != 'DONE':
         print(job.get_logs(limit=200))
         raise RuntimeError(f'ML Job {job.id} ended {status}')
-    written = session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA, OUTPUT_TABLE]).count()
-    print('table rows:', written)
+    # DONE means the script's own row-count check against the table passed (§5).
 ```
 
 - `KUMO_JOB_RUNTIME` and `KUMO_JOB_REQUIREMENTS` are the host's (`adapter.md` §10). Pass them
@@ -304,8 +327,11 @@ Settle each of these in the proposal before anything is created:
 
 - **Scoring time moves forward.** The script omits `prediction_time`, so each run anchors at the
   latest data. A date fixed in the script would score the same day forever.
-- **Write mode for repeated runs.** OVERWRITE keeps only the latest run. APPEND keeps history, but
-  a retried run adds a second copy of its rows. If the user already chose a mode, restate it with
+- **Write mode for repeated runs.** OVERWRITE keeps only the latest run. APPEND keeps history:
+  each row carries `JOB_TIMESTAMP` and `ANCHOR_TIMESTAMP`, and a retried run adds a second copy of
+  its rows under a second `JOB_TIMESTAMP`. An existing table without those columns fails the
+  write after scoring; settle it at the gate (`kumoai-reference/references/outputs.md` *Write
+  predictions*). If the user already chose a mode, restate it with
   that consequence. Otherwise ask which they want.
 - **The model version stays pinned.** A new version reaches the schedule only through an explicit
   change.

@@ -50,7 +50,7 @@ use crossbeam_channel::Sender;
 use diskgraph_core::accumulators::{
     HyperLogLog, LocalColumnCounts, SharedColumnCounts, TDigestEstimator, WelfordAccumulator,
 };
-use diskgraph_core::time::{convert_trunc, Abs, TimeUnit, UnitSystem};
+use diskgraph_core::time::{add_offset, convert_trunc, Abs, TimeUnit, UnitSystem};
 use diskgraph_core::tt_builder::{PredictionType, Value};
 use diskgraph_index::pkmap;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -1303,6 +1303,12 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
             continue;
         }
         let ts_ticks = ts.raw();
+        let target_create_ref = source
+            .target_window_end
+            .and_then(|(end, unit)| add_offset(ts, unit, end))
+            .unwrap_or(ts)
+            .raw()
+            .max(ts_ticks);
 
         for (col_idx, name) in &sequence_feature_indices {
             let entry = processor
@@ -1459,19 +1465,19 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                 // declares a `custom_target_pk_table`, TARGET1 is an FK whose
                 // value was read straight from the customer parquet. Drop the
                 // row if that value isn't a member of the target table's PK
-                // map (or isn't temporally valid at the anchor ts). Mirrors
-                // the PQL ListDistinct RHS-target filter
-                // (`ttgen_executor.rs:2836-2849`) — without it, orphan RHS
-                // ids silently mis-resolve at ingest (the external-parent MPH
-                // does not verify). Train-only: predict carries no target.
+                // map or is temporally invalid. Creation uses the label-window
+                // end; expiry uses the anchor, matching PQL ListDistinct.
+                // Unknown targets must not reach the external-parent MPH,
+                // which does not verify them. Train-only: predict has no target.
                 if let Some(pk_table) = plan.custom_target_pk_table.as_ref() {
                     if !targets.is_empty() {
                         let primary = &targets[0];
                         let keep = if plan.custom_target_temporal_create_col_idx.is_some()
                             || plan.custom_target_temporal_end_col_idx.is_some()
                         {
-                            pk_table.contains_pk_value_temporal(
+                            pk_table.contains_pk_value_valid_between(
                                 primary,
+                                target_create_ref,
                                 ts_ticks,
                                 plan.custom_target_temporal_create_col_idx,
                                 plan.custom_target_temporal_end_col_idx,
@@ -1598,8 +1604,9 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                             if plan.custom_target_temporal_create_col_idx.is_some()
                                 || plan.custom_target_temporal_end_col_idx.is_some() =>
                         {
-                            pk_table.contains_pk_value_temporal(
+                            pk_table.contains_pk_value_valid_between(
                                 &target,
+                                target_create_ref,
                                 ts_ticks,
                                 plan.custom_target_temporal_create_col_idx,
                                 plan.custom_target_temporal_end_col_idx,

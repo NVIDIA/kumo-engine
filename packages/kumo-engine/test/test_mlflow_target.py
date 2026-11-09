@@ -4,6 +4,7 @@
 r"""How `MlflowTracking` reaches its server."""
 
 import os
+import sys
 import threading
 from types import SimpleNamespace
 
@@ -44,6 +45,67 @@ def test_no_target_reads_mlflows_own_uris_once(tracking_uri):
         'http://mlflow:5000/#/experiments/1/runs/r')
     assert resolve(ARN).platform == 'sagemaker'
     assert resolve(server) is server
+
+
+def _open_uc_storage(kind):
+    from mlflow.protos.databricks_uc_registry_messages_pb2 import (
+        TemporaryCredentials,
+    )
+    from mlflow.utils._unity_catalog_utils import (
+        get_artifact_repo_from_storage_info,
+    )
+
+    token = TemporaryCredentials()
+    getattr(token, kind).SetInParent()
+    get_artifact_repo_from_storage_info('s3://bucket/model', token,
+                                        lambda: token)
+
+
+@pytest.mark.parametrize('module,kind,extra', [
+    ('boto3', 'aws_temp_credentials', 's3'),
+    ('azure.core.credentials', 'azure_user_delegation_sas', 'adls'),
+    ('google.cloud.storage', 'gcp_oauth_token', 'gcs')])
+def test_unity_catalog_names_the_extra_its_storage_needs(
+        monkeypatch, module, kind, extra):
+    monkeypatch.setitem(sys.modules, module, None)
+    with pytest.raises(ImportError, match=(
+            rf"MLflow needs '{module}[\w.]*' to reach this model's files in "
+            rf"Unity Catalog, and it is not installed. Install it with: pip "
+            rf"install 'kumo-engine\[{extra}\]'")):
+        with target_module.Target('databricks', 'databricks-uc').scope():
+            _open_uc_storage(kind)
+
+
+@pytest.mark.parametrize('module,extra', [
+    ('boto3', 's3'), ('azure', 'adls'), ('google', 'gcs')])
+def test_an_unwrapped_missing_client_names_its_extra_too(module, extra):
+    with pytest.raises(ImportError,
+                       match=rf"pip install 'kumo-engine\[{extra}\]'"):
+        with target_module.Target('databricks', 'databricks-uc').scope():
+            raise ModuleNotFoundError(name=module)
+
+
+def test_other_missing_modules_pass_through(monkeypatch):
+    monkeypatch.setitem(sys.modules, 'boto3', None)
+    with pytest.raises(mlflow.exceptions.MlflowException):
+        with target_module.Target('databricks', 'databricks').scope():
+            _open_uc_storage('aws_temp_credentials')
+    with pytest.raises(RuntimeError):
+        with target_module.Target('databricks', 'databricks-uc').scope():
+            raise RuntimeError() from ModuleNotFoundError(name='snowflake')
+    for registry, module in (('databricks-uc', 'snowflake'),
+                             ('databricks-uc', 'google.protobuf'),
+                             ('databricks', 'boto3')):
+        with pytest.raises(ModuleNotFoundError) as raised:
+            with target_module.Target('databricks', registry).scope():
+                raise ModuleNotFoundError(name=module)
+        assert type(raised.value) is ModuleNotFoundError
+    nested = RuntimeError()
+    nested.__cause__ = ModuleNotFoundError(name='boto3')
+    for cause in (None, nested):
+        with pytest.raises(RuntimeError):
+            with target_module.Target('databricks', 'databricks-uc').scope():
+                raise RuntimeError() from cause
 
 
 def test_ambient_identities_set_no_credentials(monkeypatch, tracking_uri):
@@ -353,6 +415,58 @@ def test_registering_a_registered_bundle_reuses_its_version(
     assert len(client.search_model_versions("name = 'churn'")) == 2
     assert str(client.get_model_version_by_alias('churn',
                                                  'champion').version) == '2'
+
+
+def test_a_registry_reference_downloads_from_the_target_registry(
+        tracking_uri, tmp_path):
+    from kumo.engine.integrations.mlflow import _download
+
+    uri = f'sqlite:///{tmp_path / "target.db"}'
+    mlflow.set_tracking_uri(uri)
+    client = mlflow.MlflowClient(tracking_uri=uri, registry_uri=uri)
+    experiment = client.create_experiment(
+        'e', artifact_location=str(tmp_path / 'artifacts'))
+    model = client.create_logged_model(experiment, name='m')
+    (tmp_path / 'bundle').mkdir()
+    (tmp_path / 'bundle' / 'MLmodel').write_text('kumo')
+    client.log_model_artifacts(model.model_id, str(tmp_path / 'bundle'))
+    client.create_registered_model('m')
+    client.create_model_version('m', model.model_uri, model_id=model.model_id)
+    client.set_registered_model_alias('m', 'champion', '1')
+    mlflow.set_tracking_uri(tracking_uri)
+
+    for name, reference in (('alias', 'm@champion'), ('version', 'm/1'),
+                            ('latest', 'm/latest'), ('id', model.model_id)):
+        local = _download(mlflow, resolve(uri), f'models:/{reference}',
+                          tmp_path / name)
+        assert open(f'{local}/MLmodel').read() == 'kumo'
+    local = _download(mlflow, resolve(uri), 'models:/m@champion/MLmodel',
+                      tmp_path / 'file')
+    assert open(local).read() == 'kumo'
+
+
+def test_a_nested_path_goes_before_the_location_query():
+    from kumo.engine.integrations.mlflow import _registry_download_uri
+
+    client = SimpleNamespace(
+        get_model_version_download_uri=lambda name, version: 's3://b/m?x=y')
+    assert _registry_download_uri(
+        client, 'models:/m/1/MLmodel') == 's3://b/m/MLmodel?x=y'
+
+
+@pytest.mark.parametrize('registry',
+                         ['databricks-uc', 'databricks', 'uc:http://uc:8080'])
+def test_a_databricks_or_unity_catalog_reference_stays_on_mlflow_path(
+        registry, tmp_path):
+    from kumo.engine.integrations.mlflow import _download
+
+    calls = []
+    fake = SimpleNamespace(artifacts=SimpleNamespace(
+        download_artifacts=lambda **kwargs: calls.append(kwargs) or ''))
+    target = target_module.Target('http://tracking:5000', registry)
+    _download(fake, target, 'models:/main.s.m@champion', tmp_path)
+
+    assert calls[0]['artifact_uri'] == 'models:/main.s.m@champion'
 
 
 def test_the_smoke_script_compiles(tmp_path):

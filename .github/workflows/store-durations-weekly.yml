@@ -5,9 +5,7 @@
 name: Weekly pytest-split Durations Refresh
 
 # Runs testing.yml weekly in store-durations mode and opens a PR that
-# updates the committed `.test_durations` file. PR will not trigger CI
-# (GITHUB_TOKEN-authored pushes don't fire workflows); merge directly —
-# `.test_durations` is a data file with no code impact.
+# updates the committed `.test_durations` file.
 
 on:  # yamllint disable-line rule:truthy
   schedule:
@@ -24,10 +22,10 @@ jobs:
     # dispatched from a non-main ref, this job (and open-pr) is skipped.
     if: github.ref_name == 'main'
     permissions:
-      # Reusable-workflow validation checks nested job permissions up front.
-      # testing.yml defines a coverage job with `contents: write`, even though
-      # that path stays skipped for store_durations runs.
+      # Reusable-workflow validation requires contents: write for coverage
+      # and id-token: write for pytest authentication, even for skipped paths.
       contents: write
+      id-token: write
     uses: ./.github/workflows/testing.yml
     with:
       store_durations: true
@@ -50,7 +48,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download merged durations
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: test-durations-merged
           path: .
@@ -78,5 +76,5 @@ jobs:
               --base main \
               --head "$BRANCH" \
               --title "Refresh pytest-split durations" \
-              --body "Automated weekly refresh of \`.test_durations\` from the latest testing.yml run in store-durations mode. Safe to merge without CI — this is a data file that only affects pytest-split shard balancing."
+              --body "Automated weekly refresh of \`.test_durations\` from the latest testing.yml run in store-durations mode."
           fi

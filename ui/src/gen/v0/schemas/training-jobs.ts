@@ -138,10 +138,6 @@ export const getTrainingJobsByIdResponseAdvancedOptionsOneOptimizationMinStepsPe
 
 export const getTrainingJobsByIdResponseAdvancedOptionsOneOptimizationMaxStepsPerEpochOneExclusiveMin = 0;
 
-export const getTrainingJobsByIdResponseAdvancedOptionsOneOptimizationMaxValStepsOneMax = 8000;
-
-export const getTrainingJobsByIdResponseAdvancedOptionsOneOptimizationMaxTestStepsOneMax = 8000;
-
 export const getTrainingJobsByIdResponseAdvancedOptionsOneOptimizationLossOneItemTwoAlphaDefault = 0.25;
 export const getTrainingJobsByIdResponseAdvancedOptionsOneOptimizationLossOneItemTwoAlphaExclusiveMin = 0;
 export const getTrainingJobsByIdResponseAdvancedOptionsOneOptimizationLossOneItemTwoAlphaExclusiveMax = 1;
@@ -1596,28 +1592,20 @@ export const GetTrainingJobsByIdResponse = zod.object({
                             .optional(),
                         "max_val_steps": zod
                             .union([
-                                zod
-                                    .int()
-                                    .min(1)
-                                    .max(
-                                        getTrainingJobsByIdResponseAdvancedOptionsOneOptimizationMaxValStepsOneMax
-                                    ),
+                                zod.int().min(1),
                                 zod.enum({
                                     "???": "???"
-                                })
+                                }),
+                                zod.null()
                             ])
                             .optional(),
                         "max_test_steps": zod
                             .union([
-                                zod
-                                    .int()
-                                    .min(1)
-                                    .max(
-                                        getTrainingJobsByIdResponseAdvancedOptionsOneOptimizationMaxTestStepsOneMax
-                                    ),
+                                zod.int().min(1),
                                 zod.enum({
                                     "???": "???"
-                                })
+                                }),
+                                zod.null()
                             ])
                             .optional(),
                         "loss": zod
@@ -2556,10 +2544,6 @@ export const createTrainingJobsTrainBodyModelPlanOptimizationMaxEpochsOneExclusi
 export const createTrainingJobsTrainBodyModelPlanOptimizationMinStepsPerEpochOneMax = 4000;
 
 export const createTrainingJobsTrainBodyModelPlanOptimizationMaxStepsPerEpochOneExclusiveMin = 0;
-
-export const createTrainingJobsTrainBodyModelPlanOptimizationMaxValStepsOneMax = 8000;
-
-export const createTrainingJobsTrainBodyModelPlanOptimizationMaxTestStepsOneMax = 8000;
 
 export const createTrainingJobsTrainBodyModelPlanOptimizationLossOneItemTwoAlphaDefault = 0.25;
 export const createTrainingJobsTrainBodyModelPlanOptimizationLossOneItemTwoAlphaExclusiveMin = 0;
@@ -3997,28 +3981,20 @@ export const CreateTrainingJobsTrainBody = zod
                         .optional(),
                     "max_val_steps": zod
                         .union([
-                            zod
-                                .int()
-                                .min(1)
-                                .max(
-                                    createTrainingJobsTrainBodyModelPlanOptimizationMaxValStepsOneMax
-                                ),
+                            zod.int().min(1),
                             zod.enum({
                                 "???": "???"
-                            })
+                            }),
+                            zod.null()
                         ])
                         .optional(),
                     "max_test_steps": zod
                         .union([
-                            zod
-                                .int()
-                                .min(1)
-                                .max(
-                                    createTrainingJobsTrainBodyModelPlanOptimizationMaxTestStepsOneMax
-                                ),
+                            zod.int().min(1),
                             zod.enum({
                                 "???": "???"
-                            })
+                            }),
+                            zod.null()
                         ])
                         .optional(),
                     "loss": zod
@@ -4953,10 +4929,6 @@ export const getTrainingJobsWorkflowByIdResponseTrainingJobAdvancedOptionsOneOpt
 export const getTrainingJobsWorkflowByIdResponseTrainingJobAdvancedOptionsOneOptimizationMinStepsPerEpochOneMax = 4000;
 
 export const getTrainingJobsWorkflowByIdResponseTrainingJobAdvancedOptionsOneOptimizationMaxStepsPerEpochOneExclusiveMin = 0;
-
-export const getTrainingJobsWorkflowByIdResponseTrainingJobAdvancedOptionsOneOptimizationMaxValStepsOneMax = 8000;
-
-export const getTrainingJobsWorkflowByIdResponseTrainingJobAdvancedOptionsOneOptimizationMaxTestStepsOneMax = 8000;
 
 export const getTrainingJobsWorkflowByIdResponseTrainingJobAdvancedOptionsOneOptimizationLossOneItemTwoAlphaDefault = 0.25;
 export const getTrainingJobsWorkflowByIdResponseTrainingJobAdvancedOptionsOneOptimizationLossOneItemTwoAlphaExclusiveMin = 0;
@@ -6877,28 +6849,20 @@ export const GetTrainingJobsWorkflowByIdResponse = zod.object({
                                 .optional(),
                             "max_val_steps": zod
                                 .union([
-                                    zod
-                                        .int()
-                                        .min(1)
-                                        .max(
-                                            getTrainingJobsWorkflowByIdResponseTrainingJobAdvancedOptionsOneOptimizationMaxValStepsOneMax
-                                        ),
+                                    zod.int().min(1),
                                     zod.enum({
                                         "???": "???"
-                                    })
+                                    }),
+                                    zod.null()
                                 ])
                                 .optional(),
                             "max_test_steps": zod
                                 .union([
-                                    zod
-                                        .int()
-                                        .min(1)
-                                        .max(
-                                            getTrainingJobsWorkflowByIdResponseTrainingJobAdvancedOptionsOneOptimizationMaxTestStepsOneMax
-                                        ),
+                                    zod.int().min(1),
                                     zod.enum({
                                         "???": "???"
-                                    })
+                                    }),
+                                    zod.null()
                                 ])
                                 .optional(),
                             "loss": zod

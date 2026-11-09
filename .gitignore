@@ -112,6 +112,8 @@ examples/*_prediction
 
 # Any test notebooks
 *.ipynb
+# Example notebooks of the experimental kumo-pytorch package are source.
+!packages/experimental/kumo-pytorch/examples/*/walkthrough.ipynb
 
 
 
@@ -173,3 +175,6 @@ docker/compose/config/generated/
 pytest-of-*/
 
 /public-reports/
+
+# Built by packages/kumo-engine/setup.py from agent-skills/; ships in the wheel.
+packages/kumo-engine/kumo/engine/_skills/

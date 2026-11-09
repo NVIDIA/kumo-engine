@@ -132,6 +132,11 @@ class ObjectStoreSessions(ABC):
         return (parsed.netloc, parsed.netloc, unquote(parsed.path).lstrip('/'),
                 None)
 
+    def _resolved_directory(self, connector: SourceConnector,
+                            coordinate: str) -> Tuple[str, str, Optional[str]]:
+        """Resolve an artifact directory without creating storage clients."""
+        return self._resolved(connector, coordinate)
+
     def _resolved(self, connector: SourceConnector,
                   coordinate: str) -> Tuple[str, str, Optional[str]]:
         target = self._root_for(connector)

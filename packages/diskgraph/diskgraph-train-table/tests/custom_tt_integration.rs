@@ -871,6 +871,7 @@ fn test_custom_tt_target_only_node() {
     let plan = make_custom_tt_target_only_node_plan();
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -951,6 +952,7 @@ fn test_custom_tt_static_train_synthesizes_sentinel_timestamp() {
     let plan = make_custom_tt_target_only_node_plan(); // is_prediction = false
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -987,6 +989,7 @@ fn test_custom_tt_static_predict_synthesizes_sentinel_timestamp() {
     plan.is_prediction = true;
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -1025,6 +1028,7 @@ fn test_custom_tt_present_timestamp_uses_real_values() {
     let plan = make_custom_tt_target_only_node_plan();
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -1065,6 +1069,7 @@ fn test_custom_tt_complete_forecasting_passthrough() {
     let plan = make_custom_tt_complete_forecasting_plan();
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -1120,6 +1125,7 @@ fn test_custom_tt_forecasting_date_offset_split_routes_all_stages() {
     plan.split = Some(date_offset_split_spec());
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq,
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -1174,6 +1180,7 @@ fn test_custom_tt_unknown_entity_pk_skipped() {
     let plan = make_custom_tt_target_only_node_plan();
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -1244,6 +1251,7 @@ fn test_custom_tt_manual_split_column_routes_and_drops() {
 
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -1303,6 +1311,7 @@ fn test_custom_tt_manual_split_column_no_sidecar_needed() {
 
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -1411,6 +1420,7 @@ fn test_dispatch_summary_keys_preserved() {
     let plan = make_custom_tt_target_only_node_plan();
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -1489,6 +1499,7 @@ fn test_custom_tt_manifest_records_source_mode() {
     let plan = make_custom_tt_target_only_node_plan();
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -1706,6 +1717,7 @@ fn test_custom_tt_multi_entity_reads_all_entities() {
     let plan = make_custom_tt_target_only_node_plan();
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -1770,6 +1782,7 @@ fn test_custom_tt_multi_target_emits_all_targets() {
     let plan = make_custom_tt_target_only_node_plan();
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -1835,6 +1848,7 @@ fn test_custom_tt_multi_entity_unknown_pk_in_one_skipped() {
     let plan = make_custom_tt_target_only_node_plan();
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -1900,6 +1914,7 @@ fn test_custom_tt_multi_entity_missing_column_errors() {
     let plan = make_custom_tt_target_only_node_plan();
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -2087,6 +2102,7 @@ fn test_weight_column_emitted_when_weight_col_set() {
 
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -2140,6 +2156,7 @@ fn test_weight_column_absent_when_weight_col_unset() {
     let plan = make_custom_tt_target_only_node_plan(); // weight_col = None
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -2187,6 +2204,7 @@ fn test_weight_column_skips_orphan_rows() {
 
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -2238,6 +2256,7 @@ fn test_weight_column_correct_under_interleaved_split() {
 
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -2301,6 +2320,7 @@ fn test_custom_tt_lp_drops_orphan_target_rows() {
     let plan = make_custom_tt_lp_node_plan(Some("products"));
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -2336,6 +2356,7 @@ fn test_custom_tt_lp_keeps_all_targets_without_target_entity_table() {
     let plan = make_custom_tt_lp_node_plan(None);
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -2379,6 +2400,7 @@ fn test_custom_tt_passthrough_skips_orphan_entity() {
 
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -2506,6 +2528,7 @@ fn test_custom_tt_lp_ingests_samplable_extension() {
 
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -2615,6 +2638,7 @@ fn test_custom_tt_pred_passthrough_ingests_predict_stage() {
 
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -2714,6 +2738,7 @@ fn test_custom_tt_node_predict_emits_no_target_column() {
     plan.is_prediction = true;
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -2752,6 +2777,7 @@ fn test_custom_tt_node_train_still_emits_target_column() {
     let plan = make_custom_tt_target_only_node_plan(); // is_prediction = false
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -2794,6 +2820,7 @@ fn test_custom_tt_lp_predict_emits_no_target_column() {
     }]);
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -2851,6 +2878,7 @@ fn test_lp_weight_column_is_per_element() {
 
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -2882,6 +2910,7 @@ fn test_lp_weight_length_mismatch_is_rejected() {
 
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -2946,6 +2975,7 @@ fn test_lp_weights_follow_their_link_across_a_split() {
 
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -3070,6 +3100,7 @@ impl NodeRows {
 
 fn source(pq: &Path, on_error: IngestOnError) -> CustomTtSource {
     CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.to_path_buf(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         on_error,

@@ -109,10 +109,22 @@ class ObjectStoreSinkBackend(ABC):
         filesystem, resolved = self._model_destination(connector, path)
         return filesystem, resolved.rstrip('/')
 
+    def _resolved_directory(
+        self,
+        connector: SourceConnector,
+        coordinate: str,
+    ) -> Optional[Tuple[str, str, Optional[str]]]:
+        """Return resolved storage coordinates, or defer to ``_destination``."""
+        return None
+
     def _model_destination(self, connector: SourceConnector,
                            coordinate: str) -> Tuple[FileSystem, str]:
         """Resolve a model directory, which may have provider-specific roots."""
-        return self._destination(connector, coordinate)
+        resolved = self._resolved_directory(connector, coordinate)
+        if resolved is None:
+            return self._destination(connector, coordinate)
+        bucket, path, region = resolved
+        return self._filesystem(connector, bucket, region), path
 
     def _uri(self, path: str) -> str:
         return f'{self.scheme}://{path}'
@@ -174,11 +186,15 @@ class ObjectStoreSinkBackend(ABC):
         return self._uri(output)
 
     def preflight_write_files(self, connector, table_name, write_mode=None):
-        from pyarrow.fs import FileSelector
-
         if write_mode is WriteMode.OVERWRITE or not table_name.endswith('/'):
             return
         filesystem, path = self._destination(connector, table_name)
+        self._require_empty_destination(filesystem, path)
+
+    def _require_empty_destination(self, filesystem: FileSystem,
+                                   path: str) -> None:
+        from pyarrow.fs import FileSelector
+
         if filesystem.get_file_info(
                 FileSelector(path.rstrip('/'), allow_not_found=True)):
             raise self._conflict(path)

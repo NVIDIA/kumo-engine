@@ -42,6 +42,7 @@ from kumoapi.plugin import BUNDLE_ID_KEY, ModelRegistryLocation, PublishedModel
 
 from kumo.engine import _card
 from kumo.engine._events import Event
+from kumo.engine._manifest import PATH_CONNECTORS
 from kumo.engine._mlops import full_error
 from kumo.engine._run_names import (
     is_dated_fit,
@@ -91,12 +92,14 @@ _HTTP_LIMITS = {
     'MLFLOW_HTTP_REQUEST_TIMEOUT': '30',
 }
 _UPLOAD_HTTP = {'MLFLOW_HTTP_REQUEST_TIMEOUT': '600'}
-_PATH_CONNECTORS = ('LOCAL_FILE', 'S3', 'GCS')
 _SAGEMAKER_MODEL = re.compile(r'[a-zA-Z0-9](-*[a-zA-Z0-9]){0,56}')
 _UC_FORBIDDEN = re.compile(r'[ /\x00-\x1f\x7f]')
 _HINTED: set = set()
 _BATCH_METRICS = 1000
 _SYSTEM_METRICS_FAILURES = 6
+# A concurrent run inserted the same dataset first (SQLite, Postgres, MySQL,
+# SQL Server).
+_DUPLICATE = re.compile(r'(?i)unique constraint|duplicate (entry|key)')
 _COLUMN_TYPES = {'int64': 'long', 'int32': 'integer', 'float64': 'double',
                  'float32': 'float', 'bool': 'boolean', 'date': 'datetime',
                  'time': 'datetime'}
@@ -790,7 +793,12 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
         datasets = [d for d in map(self._dataset_input, summaries) if d]
         if datasets:
             with self.target.scope():
-                self._client.log_inputs(run_id, datasets=datasets)
+                try:
+                    self._client.log_inputs(run_id, datasets=datasets)
+                except self._mlflow.exceptions.MlflowException as e:
+                    if not _DUPLICATE.search(str(e)):
+                        raise
+                    self._client.log_inputs(run_id, datasets=datasets)
 
     def _dataset_input(self, summary: Dataset) -> Any:
         source = _dataset_source(summary.source)
@@ -1202,9 +1210,40 @@ def _download(mlflow: Any, target: Any, model_uri: str,
             repository = target.artifact_repository(location)
             if repository is not None:
                 return repository.download_artifacts('', str(destination))
+    elif (target.platform == 'mlflow' and model_uri.startswith('models:/')
+          and _plain_registry(target.registry_uri)):
+        model_uri = _registry_download_uri(target.client(), model_uri)
     return mlflow.artifacts.download_artifacts(
         artifact_uri=model_uri, dst_path=str(destination),
         tracking_uri=target.tracking_uri, registry_uri=target.registry_uri)
+
+
+def _plain_registry(registry_uri: Optional[str]) -> bool:
+    r"""Whether MLflow reads models:/ in this registry without a
+    registry-specific artifact repository (Databricks, Unity Catalog)."""
+    uri = import_provider('mlflow.utils.uri', 'mlflow')
+    registry = registry_uri or ''
+    return not (uri.is_databricks_uri(registry)
+                or uri.is_databricks_unity_catalog_uri(registry)
+                or uri.is_oss_unity_catalog_uri(registry))
+
+
+def _registry_download_uri(client: Any, model_uri: str) -> str:
+    r"""MLflow's own models:/ resolution, against the target's registry.
+
+    MLflow resolves models:/ with the process-wide registry URI and ignores
+    the one passed to download_artifacts.
+    """
+    models = import_provider('mlflow.store.artifact.utils.models', 'mlflow')
+    repository = import_provider('mlflow.store.artifact.models_artifact_repo',
+                                 'mlflow').ModelsArtifactRepository
+    model_uri, path = repository.split_models_uri(model_uri)
+    resolved = models.get_model_name_and_version(client, model_uri)
+    location = (client.get_logged_model(resolved[0]).artifact_location
+                if len(resolved) == 1 else
+                client.get_model_version_download_uri(*resolved))
+    uri = import_provider('mlflow.utils.uri', 'mlflow')
+    return uri.append_to_uri_path(location, path) if path else location
 
 
 def _logged_model_name(registered: Optional[str], manifest: Any) -> str:
@@ -1270,7 +1309,8 @@ def _log_model(target: Any, client: Any, bundle_dir: Path,
                 input_example=example,
                 metadata=pointers,
                 pip_requirements=[
-                    _requirement(_encoders(bundle_dir))
+                    _requirement(_encoders(bundle_dir), manifest=manifest,
+                                 serving_snapshot=serving_snapshot)
                 ],
             )
             with target.scope():
@@ -1299,10 +1339,18 @@ def _id(manifest: Optional['ModelManifest']) -> Optional[str]:
     return None if manifest is None else manifest.id
 
 
-def _requirement(config: Any) -> str:
+def _requirement(config: Any, *, manifest: Optional['ModelManifest'] = None,
+                 serving_snapshot: Optional[str] = None) -> str:
     from kumoapi.encoder import TextEmbedding
 
     extras = ['s3', 'gcs']
+    locations = [serving_snapshot]
+    if manifest is not None:
+        locations.append(manifest.location)
+        locations.extend(item.location for item in manifest.dependencies or ())
+    if any(location and urlparse(location).scheme == 'abfss'
+           for location in locations):
+        extras.append('adls')
     if config is not None and any(
             isinstance(encoder, TextEmbedding)
             for table in config.encoders.values()
@@ -1445,7 +1493,7 @@ def _dataset_source(entry: Mapping[str, Optional[str]]) -> Any:
                                       for part in parts) or location,
             delta_table_version=int(head) if entry.get('version_kind')
             == 'exact' and head.isdigit() else None)
-    if connector in _PATH_CONNECTORS:
+    if connector in PATH_CONNECTORS:
         registry = import_provider('mlflow.data.dataset_source_registry',
                                    'mlflow')
         with warnings.catch_warnings():

@@ -5,30 +5,29 @@ import pathlib
 from types import SimpleNamespace
 from typing import Any
 
+import kumo_core.modeling.context as modeling_context
 import pandas as pd
 import torch
+from kumo_core.diskgraph.metadata import DiskgraphSchema
+from kumo_core.diskgraph.stores import DiskgraphFeatureStore
+from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
+from kumo_core.explain.gradient_explainer import GradientExplainer
+from kumo_core.io.json import load_json
 from kumoapi.encoder import Encoder
 from kumoapi.explain import GraphGradientScore
 from kumoapi.task import TaskType
 from kumoapi.train import TrainingStage
+from tests.support.fixtures import user_store_batch
 from torch import Tensor
 from torch_geometric.testing import withCUDA
-
-import kumo_core.modeling.context as modeling_context
-from kumo_core.io.json import load_json
-from kumo_core.features.stores.in_memory_feature import InMemoryFeatureStore
-from tests.support.in_memory_graph import InMemoryGraphStore
-from tests.support.fixtures import user_store_batch
-from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
-from kumo_core.explain.gradient_explainer import GradientExplainer
 
 
 @withCUDA
 def test_gradient(
     tmp_path: pathlib.Path,
     user_store_graph: tuple[
-        InMemoryFeatureStore,
-        InMemoryGraphStore,
+        DiskgraphFeatureStore,
+        DiskgraphSchema,
         dict[str, dict[str, Encoder]],
     ],
     device: torch.device,
@@ -118,8 +117,8 @@ def test_gradient(
 def test_gradient_forecasting(
     tmp_path: pathlib.Path,
     user_store_graph: tuple[
-        InMemoryFeatureStore,
-        InMemoryGraphStore,
+        DiskgraphFeatureStore,
+        DiskgraphSchema,
         dict[str, dict[str, Encoder]],
     ],
     device: torch.device,

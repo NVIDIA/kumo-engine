@@ -5,11 +5,11 @@
 use anyhow::{anyhow, Result};
 use diskgraph_core::metadata::PrimaryKeyMap;
 use epserde::prelude::{Deserialize as EpDeserialize, Flags as EpFlags};
-#[cfg(not(feature = "pkhash128"))]
 use gxhash::GxHasher;
 use memmap2::Mmap;
 #[cfg(feature = "pkhash128")]
 use ptr_hash::hash::GxHash128;
+#[cfg(not(feature = "pkhash128"))]
 use ptr_hash::hash::PkHash;
 use ptr_hash::DefaultPtrHash;
 use std::fs::File;
@@ -130,20 +130,11 @@ impl PkDataHeader {
     }
 }
 
-type MphfInt =
-    epserde::prelude::MemCase<epserde::prelude::DeserType<'static, DefaultPtrHash<PkPtrHash, u64>>>;
-type MphfBytes = epserde::prelude::MemCase<
-    epserde::prelude::DeserType<'static, DefaultPtrHash<PkPtrHash, Vec<u8>>>,
->;
-type MphfUuid = epserde::prelude::MemCase<
-    epserde::prelude::DeserType<'static, DefaultPtrHash<PkPtrHash, [u8; 16]>>,
->;
-type MphfUuid256 = epserde::prelude::MemCase<
-    epserde::prelude::DeserType<'static, DefaultPtrHash<PkPtrHash, [u8; 32]>>,
->;
-type MphfIp = epserde::prelude::MemCase<
-    epserde::prelude::DeserType<'static, DefaultPtrHash<PkPtrHash, [u8; 16]>>,
->;
+type MphfInt = epserde::prelude::MemCase<DefaultPtrHash<PkPtrHash, u64>>;
+type MphfBytes = epserde::prelude::MemCase<DefaultPtrHash<PkPtrHash, Vec<u8>>>;
+type MphfUuid = epserde::prelude::MemCase<DefaultPtrHash<PkPtrHash, [u8; 16]>>;
+type MphfUuid256 = epserde::prelude::MemCase<DefaultPtrHash<PkPtrHash, [u8; 32]>>;
+type MphfIp = epserde::prelude::MemCase<DefaultPtrHash<PkPtrHash, [u8; 16]>>;
 
 enum PkHashMphf {
     Int(MphfInt),
@@ -157,40 +148,40 @@ impl PkHashMphf {
     fn index(&self, key: &Key) -> Option<usize> {
         match (self, key) {
             (PkHashMphf::Int(mphf), Key::Int(value)) => {
-                let slot = mphf.index_no_remap(value);
-                if slot >= mphf.max_index() {
+                let slot = mphf.uncase().index_no_remap(value);
+                if slot >= mphf.uncase().max_index() {
                     None
                 } else {
                     Some(slot)
                 }
             }
             (PkHashMphf::Bytes(mphf), Key::Bytes(bytes)) => {
-                let slot = mphf.index_no_remap(bytes);
-                if slot >= mphf.max_index() {
+                let slot = mphf.uncase().index_no_remap(bytes);
+                if slot >= mphf.uncase().max_index() {
                     None
                 } else {
                     Some(slot)
                 }
             }
             (PkHashMphf::Uuid(mphf), Key::Uuid(value)) => {
-                let slot = mphf.index_no_remap(value);
-                if slot >= mphf.max_index() {
+                let slot = mphf.uncase().index_no_remap(value);
+                if slot >= mphf.uncase().max_index() {
                     None
                 } else {
                     Some(slot)
                 }
             }
             (PkHashMphf::Uuid256(mphf), Key::Uuid256(value)) => {
-                let slot = mphf.index_no_remap(value);
-                if slot >= mphf.max_index() {
+                let slot = mphf.uncase().index_no_remap(value);
+                if slot >= mphf.uncase().max_index() {
                     None
                 } else {
                     Some(slot)
                 }
             }
             (PkHashMphf::Ip(mphf), Key::Ip(value)) => {
-                let slot = mphf.index_no_remap(value);
-                if slot >= mphf.max_index() {
+                let slot = mphf.uncase().index_no_remap(value);
+                if slot >= mphf.uncase().max_index() {
                     None
                 } else {
                     Some(slot)
@@ -231,42 +222,50 @@ impl PkHashShard {
         }
         let entry_len = 4;
         let lookup_fn = lookup_id_only;
-        let mphf = match key_type {
-            KeyType::Int64 => {
-                let mphf: MphfInt =
-                    DefaultPtrHash::<PkPtrHash, u64>::load_mmap(hash_path, EpFlags::SEQUENTIAL)
-                        .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
-                PkHashMphf::Int(mphf)
-            }
-            KeyType::VarBytes => {
-                let mphf: MphfBytes =
-                    DefaultPtrHash::<PkPtrHash, Vec<u8>>::load_mmap(hash_path, EpFlags::SEQUENTIAL)
-                        .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
-                PkHashMphf::Bytes(mphf)
-            }
-            KeyType::Uuid => {
-                let mphf: MphfUuid = DefaultPtrHash::<PkPtrHash, [u8; 16]>::load_mmap(
-                    hash_path,
-                    EpFlags::SEQUENTIAL,
-                )
-                .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
-                PkHashMphf::Uuid(mphf)
-            }
-            KeyType::Uuid256 => {
-                let mphf: MphfUuid256 = DefaultPtrHash::<PkPtrHash, [u8; 32]>::load_mmap(
-                    hash_path,
-                    EpFlags::SEQUENTIAL,
-                )
-                .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
-                PkHashMphf::Uuid256(mphf)
-            }
-            KeyType::Ip => {
-                let mphf: MphfIp = DefaultPtrHash::<PkPtrHash, [u8; 16]>::load_mmap(
-                    hash_path,
-                    EpFlags::SEQUENTIAL,
-                )
-                .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
-                PkHashMphf::Ip(mphf)
+        // File-backed mmap preserves the exact length; load_mmap zero-pads
+        // its allocation and can accept truncated hash payloads.
+        // SAFETY: hash files are immutable artifacts produced by our typed
+        // PtrHash serializer; their mappings outlive all borrowed views.
+        let mphf = unsafe {
+            match key_type {
+                KeyType::Int64 => {
+                    let mphf: MphfInt =
+                        DefaultPtrHash::<PkPtrHash, u64>::mmap(hash_path, EpFlags::SEQUENTIAL)
+                            .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                    PkHashMphf::Int(mphf)
+                }
+                KeyType::VarBytes => {
+                    let mphf: MphfBytes = DefaultPtrHash::<PkPtrHash, Vec<u8>>::mmap(
+                        hash_path,
+                        EpFlags::SEQUENTIAL,
+                    )
+                    .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                    PkHashMphf::Bytes(mphf)
+                }
+                KeyType::Uuid => {
+                    let mphf: MphfUuid = DefaultPtrHash::<PkPtrHash, [u8; 16]>::mmap(
+                        hash_path,
+                        EpFlags::SEQUENTIAL,
+                    )
+                    .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                    PkHashMphf::Uuid(mphf)
+                }
+                KeyType::Uuid256 => {
+                    let mphf: MphfUuid256 = DefaultPtrHash::<PkPtrHash, [u8; 32]>::mmap(
+                        hash_path,
+                        EpFlags::SEQUENTIAL,
+                    )
+                    .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                    PkHashMphf::Uuid256(mphf)
+                }
+                KeyType::Ip => {
+                    let mphf: MphfIp = DefaultPtrHash::<PkPtrHash, [u8; 16]>::mmap(
+                        hash_path,
+                        EpFlags::SEQUENTIAL,
+                    )
+                    .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                    PkHashMphf::Ip(mphf)
+                }
             }
         };
         Ok(Self {
@@ -466,3 +465,52 @@ fn advise_random(map: &Mmap) {
 
 #[cfg(windows)]
 fn advise_random(_map: &Mmap) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use epserde::prelude::Serialize;
+    use ptr_hash::{PtrHashParams, PtrHashScratch};
+
+    #[test]
+    fn load_rejects_truncated_current_hash_files() -> Result<()> {
+        let keys: std::collections::HashMap<u64, ()> = (0..10_000).map(|key| (key, ())).collect();
+        let index = DefaultPtrHash::<PkPtrHash, u64>::try_new_from_source_with_scratch(
+            &keys,
+            PtrHashParams::default(),
+            &mut PtrHashScratch::new(),
+        )
+        .expect("hash construction failed");
+        let mut hash_bytes = Vec::new();
+        // SAFETY: construction initialized every field of the hash.
+        unsafe { index.serialize(&mut hash_bytes)? };
+        let mut data = Vec::with_capacity(PK_DATA_HEADER_LEN + 4 * index.max_index());
+        data.extend_from_slice(PK_DATA_MAGIC);
+        data.extend_from_slice(&PK_DATA_VERSION.to_le_bytes());
+        data.push(0);
+        data.extend_from_slice(&8_u32.to_le_bytes());
+        data.extend_from_slice(&(index.max_index() as u64).to_le_bytes());
+        data.resize(PK_DATA_HEADER_LEN + 4 * index.max_index(), 0xff);
+        for key in keys.keys() {
+            let offset = PK_DATA_HEADER_LEN + 4 * index.index_no_remap(key);
+            data[offset..offset + 4].copy_from_slice(&(*key as u32).to_le_bytes());
+        }
+        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../target/test-artifacts/pkmap-truncation");
+        std::fs::create_dir_all(&output)?;
+        let data_path = output.join("data.bin");
+        let hash_path = output.join("complete.bin");
+        std::fs::write(&data_path, data)?;
+        std::fs::write(&hash_path, &hash_bytes)?;
+        let shard = PkHashShard::load(&hash_path, &data_path, KeyType::Int64)?;
+        for key in keys.keys() {
+            assert_eq!(shard.lookup(&Key::Int(*key)), Some(*key as u32));
+        }
+        for missing in [1, 2, 16, 32] {
+            let truncated = output.join(format!("truncated-{missing}.bin"));
+            std::fs::write(&truncated, &hash_bytes[..hash_bytes.len() - missing])?;
+            assert!(PkHashShard::load(&truncated, &data_path, KeyType::Int64).is_err());
+        }
+        Ok(())
+    }
+}
