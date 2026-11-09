@@ -242,7 +242,6 @@ def test_genie_scoring_reads_the_graph_from_the_published_bundle() -> None:
         assert gone not in section.lower().replace('wrapped for mlflow', ''), gone
 
 
-
 def test_genie_threshold_survives_in_the_bundle_and_scoring_reads_it() -> None:
     """With no separate record, a confirmed threshold must go into the bundle as
     `scoring-defaults.json` (`fit(scoring_defaults=...)`) and §6.1 must read it back."""
@@ -271,6 +270,7 @@ def test_custom_populations_allow_signed_temporal_link_weights_after_rescaling()
     assert ('finite and nonnegative, except the signed weights temporal link prediction '
             'permits above') in reference
     assert 'disallowed negative weight' in reference
+
 
 def test_genie_no_code_rule_names_its_scope_and_agrees_with_inspection_skills() -> None:
     """Explanations ask for plotting code in the reply and graph visualization needs no intake;
