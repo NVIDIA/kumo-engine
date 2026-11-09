@@ -7,7 +7,8 @@ every value that has one: a `YYYYMMDD` or `YYYYMMDDHHMMSS` date shape, or
 epoch seconds, milliseconds, microseconds or nanoseconds told apart by
 digit count; a value with no reading (a placeholder `0`, a number too small
 or too wide to be a date) is made missing and counted. A column of slash
-dates takes the one day and month order the data allows.
+dates takes the one day and month order the data allows and is staged in
+the fullest time shape any value has.
 Either decision is declared as the column's `timestamp_format`, so DiskGraph
 applies it to every value instead of voting on a sample. A value that no
 calendar holds (`2024-02-30`, hour 25, `0000-00-00`) or that falls outside
@@ -66,6 +67,12 @@ _ONE_SHAPE = (
 )
 _INT64_MAX = '9223372036854775807'
 _SLASH_SHAPES = {0: '', 1: ' %H:%M', 2: ' %H:%M:%S'}
+_SLASH_DATE = r'^(\d{1,2}/\d{1,2}/\d{4})$'
+_SLASH_ONE_SHAPE = {
+    1: ((_SLASH_DATE, r'\1 00:00'), ),
+    2: ((_SLASH_DATE, r'\1 00:00:00'),
+        (r'^(\d{1,2}/\d{1,2}/\d{4} \d{1,2}:\d{2})$', r'\1:00')),
+}
 
 
 @dataclass
@@ -138,6 +145,9 @@ class _Scan:
     shapes: Dict[str, Counter] = field(
         default_factory=lambda: {k: Counter()
                                  for k in ('md', 'dm')})
+    slash_parts: Dict[int, set] = field(
+        default_factory=lambda: {k: set()
+                                 for k in _SLASH_SHAPES})
     impossible: Dict[str, _Tally] = field(
         default_factory=lambda: {k: _Tally()
                                  for k in ('fixed', 'md', 'dm')})
@@ -155,6 +165,7 @@ class _Decision:
     order: str = 'fixed'
     reading: Optional[str] = None
     one_shape: bool = False
+    slash_shape: int = 0
 
 
 def _number(parts: pa.Array, name: str) -> pa.Array:
@@ -532,6 +543,8 @@ class _Column:
         time_ok = _valid_time(hour, minute, second)
         shape = pc.add(pc.cast(pc.is_valid(_number(parts, 'H')), pa.int64()),
                        pc.cast(pc.is_valid(_number(parts, 'S')), pa.int64()))
+        for value in pc.unique(pc.filter(shape, matched)).to_pylist():
+            self.scan.slash_parts[value].add(part)
         orders = {
             'md': (_valid_date(y, a,
                                b), _epoch_seconds(y, a, b, hour, minute,
@@ -676,9 +689,10 @@ class _Column:
                 "both ways. Set timestamp_format on the column to "
                 "'%d/%m/%Y' or '%m/%d/%Y'.")
         order, settled = ('dm', dm) if dm.count else ('md', md)
-        shape = _SLASH_SHAPES[scan.shapes[order].most_common(1)[0][0]]
-        fmt = ('%d/%m/%Y' if order == 'dm' else '%m/%d/%Y') + shape
-        self.decision = _Decision(fmt, order=order)
+        shape = max(scan.shapes[order])
+        base = '%d/%m/%Y' if order == 'dm' else '%m/%d/%Y'
+        fmt = base + _SLASH_SHAPES[shape]
+        self.decision = _Decision(fmt, order=order, slash_shape=shape)
         warnings.warn(
             f"Time column {self.alias}.{self.name} holds slash dates read "
             f"{'day' if order == 'dm' else 'month'} first ({fmt}) because "
@@ -730,21 +744,25 @@ class _Column:
             parts |= self.scan.reshape_parts
         if self.decision.reading:
             parts |= self.scan.unread_parts | self.scan.padded_parts
+        for shape, held in self.scan.slash_parts.items():
+            if shape < self.decision.slash_shape:
+                parts |= held
         return parts
 
     def rewritten(self, values: pa.Array) -> pa.Array:
         r"""The column as the decision stages it: invalid values null; ISO
         values in one shape, a space before a full time part, when the
         column mixes bare and zoned ones, so one chrono format reads them
-        all (a date alone is its midnight); and digit strings as the plain
-        whole number they spell when the column is read as numbers, since
-        the declared format reads no padding or zero fraction.
+        all (a date alone is its midnight); slash dates in the fullest time
+        shape any value has, for the same reason; and digit strings as the
+        plain whole number they spell when the column is read as numbers,
+        since the declared format reads no padding or zero fraction.
         """
         invalid = self.invalid(values)
-        if self.decision.one_shape:
-            for pattern, replacement in _ONE_SHAPE:
-                values = pc.replace_substring_regex(values, pattern,
-                                                    replacement)
+        reshapes = list(_ONE_SHAPE) if self.decision.one_shape else []
+        reshapes += _SLASH_ONE_SHAPE.get(self.decision.slash_shape, ())
+        for pattern, replacement in reshapes:
+            values = pc.replace_substring_regex(values, pattern, replacement)
         if self.decision.reading and _strings(values) is not None:
             digits = pc.fill_null(pc.match_substring_regex(values, _DIGITS),
                                   False)

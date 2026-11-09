@@ -128,7 +128,7 @@ def test_dates_not_on_the_calendar_are_made_missing(tmp_path, values, missing):
     ]
 
 
-def test_slash_shapes_are_voted_among_the_values_that_are_dates(tmp_path):
+def test_slash_shapes_are_taken_from_the_values_that_are_dates(tmp_path):
     path = _part(tmp_path,
                  pa.array(['13/01/2024 10:30:00', '30/02/2024', '31/02/2024']))
     with pytest.warns(UserWarning) as caught:
@@ -142,6 +142,32 @@ def test_slash_shapes_are_voted_among_the_values_that_are_dates(tmp_path):
     assert pq.read_table(path).column('ts').to_pylist() == [
         '13/01/2024 10:30:00', None, None
     ]
+
+
+@pytest.mark.parametrize('parts, fmt, stored', [
+    ([['1/13/2024', '1/14/2024', '1/15/2024 10:00']], '%m/%d/%Y %H:%M',
+     [['1/13/2024 00:00', '1/14/2024 00:00', '1/15/2024 10:00']]),
+    ([['13/01/2024 10:00:00'], ['14/01/2024', '15/01/2024 10:00', None]],
+     '%d/%m/%Y %H:%M:%S',
+     [None, ['14/01/2024 00:00:00', '15/01/2024 10:00:00', None]]),
+])
+def test_slash_dates_are_staged_in_the_fullest_time_shape(
+        tmp_path, parts, fmt, stored):
+    paths = [
+        _part(tmp_path, pa.array(values, pa.string()), f'part-{i}.parquet')
+        for i, values in enumerate(parts)
+    ]
+    before = [path.read_bytes() for path in paths]
+    with pytest.warns(UserWarning) as caught:
+        formats, rewritten = resolve_time_columns('events', _definition(),
+                                                  [str(p) for p in paths])
+    assert (formats, rewritten) == ({'ts': fmt}, ['ts'])
+    assert len(caught) == 1
+    for path, untouched, expected in zip(paths, before, stored):
+        if expected is None:
+            assert path.read_bytes() == untouched
+        else:
+            assert pq.read_table(path).column('ts').to_pylist() == expected
 
 
 def test_mixed_timezones_are_staged_with_one_separator(tmp_path):

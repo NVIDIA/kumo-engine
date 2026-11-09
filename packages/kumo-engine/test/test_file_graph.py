@@ -802,6 +802,9 @@ def test_impossible_and_far_dates_in_the_time_column_drop_their_rows(
     (['05/03/1990 10:30:00', '13/01/1990 08:00:00'], '%d/%m/%Y %H:%M:%S',
      'day first', '1 of 2 values (e.g. 13/01/1990 08:00:00)',
      '1990-01-13 08:00:00', '1990-03-05 10:30:00'),
+    (['1/13/2024', '1/14/2024', '1/15/2024 10:00'], '%m/%d/%Y %H:%M',
+     'month first', '3 of 3 values (e.g. 1/13/2024)', '2024-01-13',
+     '2024-01-15 10:00'),
 ])
 def test_slash_dates_take_the_one_order_every_value_allows(
         tmp_path, extension, values, fmt, order, settled, first, last):
