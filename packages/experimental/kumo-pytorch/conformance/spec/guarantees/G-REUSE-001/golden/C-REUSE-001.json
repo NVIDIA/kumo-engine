@@ -1,0 +1,208 @@
+{
+  "id": "C-REUSE-001",
+  "contract": {
+    "$type": "DataLoaderSpec",
+    "schema": {
+      "$type": "DataSchema",
+      "tables": [
+        {
+          "$type": "TableSpec",
+          "name": "users",
+          "primary_key": "id",
+          "columns": {
+            "id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "currency": {
+              "$type": "DType",
+              "name": "string",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": {
+            "$type": "NonTemporal"
+          }
+        }
+      ],
+      "relations": []
+    },
+    "sample": {
+      "$type": "SampleSpec",
+      "entity": {
+        "$type": "EntitySpec",
+        "table": "users",
+        "entity_type": "users",
+        "filters": [],
+        "available_from": null
+      },
+      "entity_values": {
+        "currency": {
+          "$type": "Field",
+          "column": "currency",
+          "path": [],
+          "selection": "one",
+          "time_column": null,
+          "reference_time": "sample"
+        }
+      },
+      "dated_entity_values": {},
+      "events": {},
+      "current_events": {},
+      "neighborhoods": {},
+      "targets": {},
+      "candidate_sets": {}
+    },
+    "batch": {
+      "$type": "BatchSpec",
+      "inputs": {
+        "entity": {
+          "$type": "Input",
+          "source": {
+            "$type": "EntitySource"
+          },
+          "representation": {
+            "$type": "Fields",
+            "fields": [
+              {
+                "$type": "Encode",
+                "field": "currency",
+                "encoding": {
+                  "$type": "Vocabulary",
+                  "values": [
+                    [
+                      "USD",
+                      2
+                    ],
+                    [
+                      "EUR",
+                      3
+                    ]
+                  ],
+                  "max_size": null,
+                  "min_frequency": 1,
+                  "missing_id": 0,
+                  "unknown_id": 1
+                },
+                "id_space": null
+              }
+            ],
+            "row": {
+              "$type": "Columns"
+            },
+            "history": {
+              "$type": "Grouped"
+            },
+            "field_names": null,
+            "field_space": null,
+            "forbidden_fields": []
+          },
+          "layout": {
+            "$type": "Separate"
+          }
+        }
+      },
+      "targets": {},
+      "encodings": {},
+      "id_spaces": {},
+      "field_names": {},
+      "batching": {
+        "$type": "Batching",
+        "max_samples": null,
+        "max_tokens": null,
+        "length_input": null,
+        "bucket_by_length": false,
+        "drop_last": false
+      }
+    },
+    "version": 3
+  },
+  "tables": {
+    "users": [
+      {
+        "id": 1,
+        "currency": "USD"
+      },
+      {
+        "id": 2,
+        "currency": "EUR"
+      },
+      {
+        "id": 3,
+        "currency": "GBP"
+      }
+    ]
+  },
+  "anchors": [
+    {
+      "sample_id": "u1",
+      "entity_id": 1,
+      "as_of_time": 100
+    },
+    {
+      "sample_id": "u2",
+      "entity_id": 2,
+      "as_of_time": 100
+    },
+    {
+      "sample_id": "u3",
+      "entity_id": 3,
+      "as_of_time": 100
+    }
+  ],
+  "expected": {
+    "u1": {
+      "entity_values": {
+        "currency": "USD"
+      }
+    },
+    "u2": {
+      "entity_values": {
+        "currency": "EUR"
+      }
+    },
+    "u3": {
+      "entity_values": {
+        "currency": "GBP"
+      }
+    }
+  },
+  "reason": "The supplied ordinary mapping is USD -> 2 and EUR -> 3. It is not enlarged by observed GBP, which is present but maps to unknown ID 1. Reserved missing ID 0 remains distinct. Companion public lifecycle tests require compatible saved state to apply without fitting or changed allocations.",
+  "batch": {
+    "inputs": {
+      "entity": {
+        "currency": {
+          "values": {
+            "dtype": "int64",
+            "shape": [
+              3
+            ],
+            "values": [
+              2,
+              3,
+              1
+            ]
+          },
+          "valid": {
+            "dtype": "bool",
+            "shape": [
+              3
+            ],
+            "values": [
+              true,
+              true,
+              true
+            ]
+          }
+        }
+      }
+    }
+  }
+}

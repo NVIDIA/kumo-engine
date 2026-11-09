@@ -1,0 +1,618 @@
+{
+  "$type": "DataLoaderSpec",
+  "batch": {
+    "$type": "BatchSpec",
+    "batching": {
+      "$type": "Batching",
+      "bucket_by_length": false,
+      "drop_last": false,
+      "length_input": null,
+      "max_samples": 128,
+      "max_tokens": null
+    },
+    "encodings": {
+      "currency": {
+        "$type": "Vocabulary",
+        "max_size": null,
+        "min_frequency": 1,
+        "missing_id": 0,
+        "unknown_id": 1,
+        "values": null
+      }
+    },
+    "field_names": {
+      "fields": {
+        "$type": "FieldNames"
+      }
+    },
+    "id_spaces": {
+      "tokens": {
+        "$type": "IdSpace",
+        "specials": {
+          "entity": "[ENTITY]",
+          "event": "[EVENT]",
+          "mask": "[MASK]",
+          "missing": "[MISSING]",
+          "pad": "[PAD]",
+          "unknown": "[UNKNOWN]"
+        }
+      }
+    },
+    "inputs": {
+      "history": {
+        "$type": "Input",
+        "layout": {
+          "$type": "Nested",
+          "events": {
+            "$type": "Padded"
+          },
+          "fields": {
+            "$type": "Packed"
+          }
+        },
+        "representation": {
+          "$type": "Fields",
+          "field_names": "fields",
+          "field_space": "tokens",
+          "fields": [
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "Buckets",
+                "bins": 16,
+                "boundaries": null,
+                "separate_zero": false
+              },
+              "field": "amount",
+              "id_space": "tokens"
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "UseEncoding",
+                "name": "currency"
+              },
+              "field": "currency",
+              "id_space": "tokens"
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "Vocabulary",
+                "max_size": null,
+                "min_frequency": 1,
+                "missing_id": 0,
+                "unknown_id": 1,
+                "values": null
+              },
+              "field": "channel",
+              "id_space": "tokens"
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "Vocabulary",
+                "max_size": null,
+                "min_frequency": 1,
+                "missing_id": 0,
+                "unknown_id": 1,
+                "values": null
+              },
+              "field": "merchant",
+              "id_space": "tokens"
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "Vocabulary",
+                "max_size": null,
+                "min_frequency": 1,
+                "missing_id": 0,
+                "unknown_id": 1,
+                "values": null
+              },
+              "field": "hour",
+              "id_space": "tokens"
+            }
+          ],
+          "forbidden_fields": [],
+          "history": {
+            "$type": "Grouped"
+          },
+          "row": {
+            "$type": "Tokens",
+            "keep": "first",
+            "max_tokens": null,
+            "missing": "omit",
+            "occurrence_order": "fields"
+          }
+        },
+        "source": {
+          "$type": "EventSource",
+          "collection": "history",
+          "events": [
+            "transactions"
+          ],
+          "keep": "last",
+          "max_events": 32,
+          "order": "ascending"
+        }
+      },
+      "history_timing": {
+        "$type": "Input",
+        "layout": {
+          "$type": "Padded"
+        },
+        "representation": {
+          "$type": "Fields",
+          "field_names": null,
+          "field_space": null,
+          "fields": [
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "Raw"
+              },
+              "field": "age_days",
+              "id_space": null
+            }
+          ],
+          "forbidden_fields": [],
+          "history": {
+            "$type": "Grouped"
+          },
+          "row": {
+            "$type": "Columns"
+          }
+        },
+        "source": {
+          "$type": "EventsOf",
+          "input": "history"
+        }
+      },
+      "profile": {
+        "$type": "Input",
+        "layout": {
+          "$type": "Padded"
+        },
+        "representation": {
+          "$type": "Fields",
+          "field_names": "fields",
+          "field_space": "tokens",
+          "fields": [
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "Vocabulary",
+                "max_size": null,
+                "min_frequency": 1,
+                "missing_id": 0,
+                "unknown_id": 1,
+                "values": null
+              },
+              "field": "country",
+              "id_space": "tokens"
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "UseEncoding",
+                "name": "currency"
+              },
+              "field": "home_currency",
+              "id_space": "tokens"
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "Vocabulary",
+                "max_size": null,
+                "min_frequency": 1,
+                "missing_id": 0,
+                "unknown_id": 1,
+                "values": null
+              },
+              "field": "risk_segment",
+              "id_space": "tokens"
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "Buckets",
+                "bins": 8,
+                "boundaries": null,
+                "separate_zero": false
+              },
+              "field": "birth_year",
+              "id_space": "tokens"
+            },
+            {
+              "$type": "Encode",
+              "encoding": {
+                "$type": "Vocabulary",
+                "max_size": null,
+                "min_frequency": 1,
+                "missing_id": 0,
+                "unknown_id": 1,
+                "values": null
+              },
+              "field": "devices_7d",
+              "id_space": "tokens"
+            }
+          ],
+          "forbidden_fields": [],
+          "history": {
+            "$type": "Grouped"
+          },
+          "row": {
+            "$type": "Tokens",
+            "keep": "first",
+            "max_tokens": null,
+            "missing": "omit",
+            "occurrence_order": "fields"
+          }
+        },
+        "source": {
+          "$type": "EntitySource"
+        }
+      }
+    },
+    "targets": {
+      "fraud": {
+        "$type": "LabelTarget",
+        "encoding": {
+          "$type": "Raw"
+        },
+        "id_space": null,
+        "source": "fraud_next_week"
+      }
+    }
+  },
+  "sample": {
+    "$type": "SampleSpec",
+    "candidate_sets": {},
+    "current_events": {},
+    "dated_entity_values": {},
+    "entity": {
+      "$type": "EntitySpec",
+      "available_from": null,
+      "entity_type": "user",
+      "filters": [],
+      "table": "users"
+    },
+    "entity_values": {
+      "birth_year": {
+        "$type": "Field",
+        "column": "birth_year",
+        "path": [],
+        "reference_time": "sample",
+        "selection": "one",
+        "time_column": null
+      },
+      "country": {
+        "$type": "Field",
+        "column": "country",
+        "path": [],
+        "reference_time": "sample",
+        "selection": "one",
+        "time_column": null
+      },
+      "devices_7d": {
+        "$type": "Aggregate",
+        "column": "device_id",
+        "dtype": {
+          "$type": "DType",
+          "name": "int64",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "operation": "count_distinct",
+        "source": {
+          "$type": "Rows",
+          "active": null,
+          "distinct": true,
+          "filters": [],
+          "path": [
+            "user_transactions"
+          ],
+          "time": {
+            "$type": "TimeWindow",
+            "column": "occurred_at",
+            "start": -604800,
+            "stop": 0
+          }
+        }
+      },
+      "home_currency": {
+        "$type": "Field",
+        "column": "home_currency",
+        "path": [],
+        "reference_time": "sample",
+        "selection": "one",
+        "time_column": null
+      },
+      "risk_segment": {
+        "$type": "Field",
+        "column": "risk_segment",
+        "path": [],
+        "reference_time": "sample",
+        "selection": "one",
+        "time_column": null
+      }
+    },
+    "events": {
+      "transactions": {
+        "$type": "EventSpec",
+        "fields": {
+          "age_days": {
+            "$type": "EventTimeDelta",
+            "dtype": {
+              "$type": "DType",
+              "name": "float64",
+              "precision": null,
+              "scale": null,
+              "timezone": null,
+              "unit": null
+            },
+            "unit": "days"
+          },
+          "amount": {
+            "$type": "Field",
+            "column": "amount",
+            "path": [],
+            "reference_time": "sample",
+            "selection": "one",
+            "time_column": null
+          },
+          "channel": {
+            "$type": "Field",
+            "column": "channel",
+            "path": [],
+            "reference_time": "sample",
+            "selection": "one",
+            "time_column": null
+          },
+          "currency": {
+            "$type": "Field",
+            "column": "currency",
+            "path": [],
+            "reference_time": "sample",
+            "selection": "one",
+            "time_column": null
+          },
+          "hour": {
+            "$type": "Derived",
+            "dtype": {
+              "$type": "DType",
+              "name": "int64",
+              "precision": null,
+              "scale": null,
+              "timezone": null,
+              "unit": null
+            },
+            "inputs": [
+              "time"
+            ],
+            "operation": {
+              "$type": "CalendarPart",
+              "part": "hour",
+              "timezone": "UTC"
+            }
+          },
+          "merchant": {
+            "$type": "Field",
+            "column": "merchant_id",
+            "path": [],
+            "reference_time": "sample",
+            "selection": "one",
+            "time_column": null
+          },
+          "time": {
+            "$type": "Field",
+            "column": "occurred_at",
+            "path": [],
+            "reference_time": "sample",
+            "selection": "one",
+            "time_column": null
+          }
+        },
+        "limit": null,
+        "order": "ascending",
+        "rows": {
+          "$type": "Rows",
+          "active": null,
+          "distinct": true,
+          "filters": [],
+          "path": [
+            "user_transactions"
+          ],
+          "time": {
+            "$type": "TimeWindow",
+            "column": "occurred_at",
+            "start": null,
+            "stop": 0
+          }
+        }
+      }
+    },
+    "neighborhoods": {},
+    "targets": {
+      "fraud_next_week": {
+        "$type": "Aggregate",
+        "column": "is_fraud",
+        "dtype": {
+          "$type": "DType",
+          "name": "int64",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "operation": "sum",
+        "source": {
+          "$type": "Rows",
+          "active": null,
+          "distinct": true,
+          "filters": [],
+          "path": [
+            "user_transactions"
+          ],
+          "time": {
+            "$type": "TimeWindow",
+            "column": "occurred_at",
+            "start": 0,
+            "stop": 604800
+          }
+        }
+      }
+    }
+  },
+  "schema": {
+    "$type": "DataSchema",
+    "relations": [
+      {
+        "$type": "RelationSpec",
+        "left_key": "user_id",
+        "left_table": "users",
+        "name": "user_transactions",
+        "right_key": "user_id",
+        "right_table": "transactions"
+      }
+    ],
+    "tables": [
+      {
+        "$type": "TableSpec",
+        "columns": {
+          "amount": {
+            "$type": "DType",
+            "name": "float64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "channel": {
+            "$type": "DType",
+            "name": "string",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "currency": {
+            "$type": "DType",
+            "name": "string",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "device_id": {
+            "$type": "DType",
+            "name": "int64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "is_fraud": {
+            "$type": "DType",
+            "name": "int64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "merchant_id": {
+            "$type": "DType",
+            "name": "int64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "occurred_at": {
+            "$type": "DType",
+            "name": "timestamp",
+            "precision": null,
+            "scale": null,
+            "timezone": "UTC",
+            "unit": "s"
+          },
+          "transaction_id": {
+            "$type": "DType",
+            "name": "int64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "user_id": {
+            "$type": "DType",
+            "name": "int64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          }
+        },
+        "name": "transactions",
+        "primary_key": "transaction_id",
+        "time_column": "occurred_at"
+      },
+      {
+        "$type": "TableSpec",
+        "columns": {
+          "birth_year": {
+            "$type": "DType",
+            "name": "int64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "country": {
+            "$type": "DType",
+            "name": "string",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "home_currency": {
+            "$type": "DType",
+            "name": "string",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "risk_segment": {
+            "$type": "DType",
+            "name": "string",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "user_id": {
+            "$type": "DType",
+            "name": "int64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          }
+        },
+        "name": "users",
+        "primary_key": "user_id",
+        "time_column": {
+          "$type": "NonTemporal"
+        }
+      }
+    ]
+  },
+  "version": 3
+}

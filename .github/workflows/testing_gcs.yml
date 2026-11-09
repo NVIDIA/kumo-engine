@@ -8,7 +8,6 @@ on:  # yamllint disable-line rule:truthy
   push:
     branches:
       - main
-    paths-ignore: ["ui/**", "tools/**"]
   pull_request:
   merge_group:
   workflow_dispatch:
@@ -45,12 +44,11 @@ jobs:
       deployment: false
     name: gcs-e2e-tests
     runs-on: ubuntu-24.04
-    continue-on-error: true
     permissions:
       contents: read
       id-token: write
     env:
-      KUMO_RUN_GCP_TESTS: ${{ github.repository == 'kumo-ai/kumo' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
+      KUMO_RUN_GCP_TESTS: ${{ github.repository == 'NVIDIA/kumo-engine' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       GCP_TEST_SERVICE_ACCOUNT: ${{ vars.GCP_TEST_SERVICE_ACCOUNT }}
 
@@ -70,54 +68,35 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 40
 
-      - name: Get GCS related changes
-        id: gcs-files-changed
-        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
-        with:
-          files: |
-            .github/actions/setup/action.yml
-            .github/workflows/testing_gcs.yml
-            kumo/connector/**
-            kumo/testing/gcs.py
-            io_utils/**
-            rest/**
-            setup.py
-            test/rest/integ/test_gcs_e2e.py
-            test/rest/integ/test_bigquery_diskgraph_e2e.py
-            test/rest/integ/test_bigquery_ingestion_diskgraph_e2e.py
-            test/rest/integ/test_cases/test_bigquery_e2e_fixtures.json
-            rest/devserver/configs/diskgraph-test.json
-            kumo/testing/bigquery.py
-            kumo/testing/rest.py
-
+      # Run every PR: shared package, fixture, and workflow changes can affect
+      # these integrations, not just connector and REST source paths.
       - name: Set up Python
-        if: steps.gcs-files-changed.outputs.any_changed == 'true'
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       - name: Configure AWS credentials
-        if: steps.gcs-files-changed.outputs.any_changed == 'true'
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
         with:
           role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
           aws-region: us-west-2
 
       - name: Set up packages
-        if: steps.gcs-files-changed.outputs.any_changed == 'true' && !contains(matrix.test_dir, 'diskgraph')
+        if: ${{ !contains(matrix.test_dir, 'diskgraph') }}
         uses: ./.github/actions/setup
         with:
           github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
 
       - name: Set up packages (with diskgraph)
-        if: steps.gcs-files-changed.outputs.any_changed == 'true' && contains(matrix.test_dir, 'diskgraph')
+        if: contains(matrix.test_dir, 'diskgraph')
         uses: ./.github/actions/setup
         with:
           github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
 
       - name: Authenticate to Google Cloud with GitHub OIDC
-        if: steps.gcs-files-changed.outputs.any_changed == 'true' && env.KUMO_RUN_GCP_TESTS == '1'
+        if: env.KUMO_RUN_GCP_TESTS == '1'
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3
         with:
           project_id: ${{ vars.GCP_PROJECT_ID }}
@@ -125,7 +104,6 @@ jobs:
           service_account: ${{ vars.GCP_TEST_SERVICE_ACCOUNT }}
 
       - name: Run E2E tests
-        if: steps.gcs-files-changed.outputs.any_changed == 'true'
         timeout-minutes: 60
         run: |
           set -o pipefail

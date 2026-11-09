@@ -56,6 +56,25 @@ def test_a_long_heading_is_cut():
     assert len(long) == _card.HEADLINE_CHARS and long.endswith('x…')
 
 
+@pytest.mark.parametrize('scheme', ['abfss', 'ABFSS'])
+@pytest.mark.parametrize('suffix,portal', [
+    ('dfs.core.windows.net', 'https://portal.azure.com'),
+    ('dfs.core.usgovcloudapi.net', 'https://portal.azure.us'),
+    ('dfs.core.chinacloudapi.cn', 'https://portal.azure.cn'),
+])
+def test_adls_locations_keep_the_path_and_link_to_their_cloud_portal(
+        scheme, suffix, portal):
+    uri = f'{scheme}://artifacts@companylake.{suffix}/root/space%20name|part'
+    assert _card._location(uri) == (
+        f"`{uri.replace('|', '%7C')}` ([Azure Storage accounts]({portal}"
+        '/#browse/Microsoft.Storage%2FStorageAccounts))')
+
+
+def test_an_unknown_adls_endpoint_has_no_portal_link():
+    uri = 'abfss://artifacts@companylake.dfs.example.com/root'
+    assert _card._location(uri) == f'`{uri}`'
+
+
 def test_a_fit_says_what_it_trained_and_where_its_numbers_come_from():
     tags = {**MODEL, 'kumo.task_type': 'binary_classification',
             'kumo.entity': 'users',
@@ -170,6 +189,8 @@ def test_a_prediction_names_the_model_and_its_fit_run():
                              'kumo.monitor': 'drift',
                              'kumo.bundle_id': 'b' * 64}) == (
         'Drift check of the scores of bundle `bbbbbbbb`.')
+    named = {'kumo.model_name': 'CHURN_GNN', 'kumo.model_version': 'V1'}
+    assert _card.model_line(named) == 'Scores of `CHURN_GNN` V1.'
 
 
 def test_a_version_headline_leads_with_the_tuned_metric_then_logloss():

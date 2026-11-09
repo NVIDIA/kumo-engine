@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterator, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple
 
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.model_plan import TrainingTableGenerationPlan
@@ -131,13 +131,44 @@ class TrainingTable:
     def load_from_connector(cls, connector: Any, *, path: str,
                             pquery: "PredictiveQuery",  # noqa: F821
                             snapshot: GraphSnapshot) -> "TrainingTable":
-        r"""Load a table written by :meth:`export` against ``snapshot``."""
-        from kumo.engine._mlops import on_root
+        r"""Load a table written by :meth:`export` against ``snapshot``.
 
+        A folder must be a complete export (with ``_SUCCESS``); load other
+        folders with :meth:`from_source_table`.
+        """
+        import shutil
+
+        from kumo_core.sources.object_store import _source_version
+
+        from kumo.engine._mlops import MLOps, on_root
+        from kumo.engine.connector import FileConnector
+        from kumo.engine.trainer.trainer import _fetch_dir, fetch_parquet
+
+        location = (connector.root.uri(path.lstrip('/'))
+                    if isinstance(connector, MLOps) else path)
         connector, path = on_root(connector, path)
-        return cls.from_source_table(connector[path],
-                                     TrainingTableSpec(split_col='SPLIT'),
-                                     pq=pquery, snapshot=snapshot)
+        spec = TrainingTableSpec(split_col='SPLIT')
+        stored = _stored_parts(connector, path)
+        if stored is None:
+            return cls.from_source_table(connector[path], spec, pq=pquery,
+                                         snapshot=snapshot)
+        filesystem, root, files = stored
+        parts = [info for info in files if info.path.endswith('.parquet')]
+        version = _source_version(root, parts)
+        local = _fetch_dir('fetched-training-table-')
+        try:
+            fetch_parquet(filesystem, root, local / 'rows', parts)
+            if _signature(_listed(filesystem, root)) != _signature(files):
+                raise RuntimeError(f'Training table at {location} changed '
+                                   f'while it was being loaded; retry.')
+            return cls._from_rows(
+                FileConnector(root_dir=str(local))['rows'], spec, pq=pquery,
+                snapshot=snapshot, version=version,
+                source=provenance.stored_table(
+                    connector, location, version,
+                    record_sources=_record_sources(snapshot)))
+        finally:
+            shutil.rmtree(local, ignore_errors=True)
 
     def _store(self, settings: Any) -> None:
         from pyarrow.fs import FileType
@@ -205,7 +236,26 @@ class TrainingTable:
         graph through its own required ``snapshot=`` argument. With MLOps on
         (``mlops=`` or a ``kumo.mlops`` block), the table is also stored
         under the artifact root.
+
+        Temporal link targets use the same creation-time and expiry checks
+        as generated training rows.
         """
+        return cls._from_rows(source_table, spec, pq=pq, snapshot=snapshot,
+                              plan=plan, mlops=mlops)
+
+    @classmethod
+    def _from_rows(
+        cls,
+        source_table: SourceTable,
+        spec: TrainingTableSpec,
+        *,
+        pq: "PredictiveQuery",  # noqa: F821
+        snapshot: GraphSnapshot,
+        plan: Optional[PublicGenerationPlan] = None,
+        mlops: Optional[Any] = None,
+        version: Any = None,
+        source: Optional[SourceTableEntry] = None,
+    ) -> "TrainingTable":
         # Local imports keep the immutable descriptor cheap to import and
         # avoid pquery -> trainer -> pquery cycles.
         from kumo_core.io.json import from_json_dict
@@ -245,8 +295,12 @@ class TrainingTable:
         started = start()
         run_id = new_run_id()
         run_dir = train_table_scratch_dir(run_id)
-        rows_path, version = stage_source_table(source_table,
-                                                run_dir / "source-table")
+        rows_path, staged = stage_source_table(source_table,
+                                               run_dir / "source-table")
+        version = version or staged
+        source = source or provenance.source_table(
+            source_table.connector, source_table.table_name, source_table.sql,
+            version, record_sources=_record_sources(snapshot))
         generation_plan = from_json_dict(
             to_json_dict(public_plan),
             TrainingTableGenerationPlan,
@@ -313,11 +367,43 @@ class TrainingTable:
         )
         return finish_generated(
             table, snapshot, task_plan.train_table, mlops,
-            source_table=provenance.source_table(
-                source_table.connector, source_table.table_name,
-                source_table.sql, version,
-                record_sources=_record_sources(snapshot)),
-            source_version=version, started=started)
+            source_table=source, source_version=version, started=started)
+
+
+def _stored_parts(connector: Any,
+                  path: str) -> Optional[Tuple[Any, str, List[Any]]]:
+    from pyarrow.fs import FileType
+
+    from kumo.engine.connector import file_store
+    from kumo.engine.trainer.trainer import _require_success
+
+    store = file_store(connector, path)
+    if store is None:
+        return None
+    filesystem, root = store[0], store[1].rstrip('/')
+    if filesystem.get_file_info(root).type is not FileType.Directory:
+        return None
+    files = _listed(filesystem, root)
+    _require_success(filesystem, root, path)
+    if filesystem.type_name == 'local' or not any(
+            info.path.endswith('.parquet') for info in files):
+        return None
+    return filesystem, root, files
+
+
+def _listed(filesystem: Any, root: str) -> List[Any]:
+    from pyarrow.fs import FileSelector, FileType
+
+    return [
+        info for info in filesystem.get_file_info(FileSelector(root))
+        if info.type == FileType.File
+    ]
+
+
+def _signature(files: List[Any]) -> List[Tuple[str, int, Any]]:
+    return sorted((info.path, info.size, info.mtime) for info in files
+                  if info.path.endswith('.parquet')
+                  or info.base_name == '_SUCCESS')
 
 
 def _move_each(filesystem: Any, parts: Iterator[str], output: str) -> None:

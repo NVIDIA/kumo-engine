@@ -135,8 +135,11 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
     champion = kumo.Trainer.load_from_connector(
         cfg, location=kumo.ModelRegistryLocation('m', alias='champion'))
     assert champion.result.id == result.id
-    assert champion.result.registered_model == PublishedModel(
+    registered = champion.result.registered_model
+    assert (registered.name, registered.version, registered.uri) == (
         'm', str(version.version), f'models:/m/{version.version}')
+    assert 'test/mae' in registered.metrics
+    assert registered.metrics.items() <= result.registered_model.metrics.items()
     assert (champion.result.registered_alias,
             result.registered_alias) == ('champion', 'champion')
     assert champion.export(cfg).version == str(version.version)
@@ -406,6 +409,29 @@ def test_a_model_with_text_columns_requires_the_text_extra():
         f'kumo-engine[s3,gcs]=={kumo.__version__}')
     assert requirement({'age': Numerical(), 'bio': TextEmbedding('words')
                         }) == f'kumo-engine[s3,gcs,text]=={kumo.__version__}'
+
+
+@pytest.mark.parametrize('scheme,extra', [
+    ('s3', ''),
+    ('gs', ''),
+    ('file', ''),
+    ('abfss', ',adls'),
+    ('ABFSS', ',adls'),
+])
+@pytest.mark.parametrize('where', ['model', 'asset', 'snapshot'])
+def test_serving_dependencies_only_add_adls_for_adls_locations(
+        scheme, extra, where):
+    from kumo.engine._manifest import Dependency, ModelManifest
+    from kumo.engine.integrations.mlflow import _requirement
+
+    uri = f'{scheme}://artifacts/root'
+    manifest = ModelManifest(
+        id='model', location=uri if where == 'model' else None,
+        dependencies=[Dependency(kind='asset', name='words', location=uri)]
+        if where == 'asset' else [])
+    assert _requirement(
+        None, manifest=manifest, serving_snapshot=uri if where == 'snapshot'
+        else None) == (f'kumo-engine[s3,gcs{extra}]=={kumo.__version__}')
 
 
 def test_a_tracker_dropped_earlier_says_the_model_was_not_logged():

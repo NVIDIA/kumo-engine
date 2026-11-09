@@ -8,6 +8,21 @@ from typing import Any
 
 import numpy as np
 import torch
+from kumoapi.train import TrainingStage
+from torch import Tensor
+from torch_frame import TensorFrame
+from torch_geometric.data import FeatureStore as PyGFeatureStore
+from torch_geometric.data import GraphStore as PyGGraphStore
+from torch_geometric.data import HeteroData
+from torch_geometric.data.lightning.datamodule import LightningData
+from torch_geometric.loader import NodeLoader, ZipLoader
+from torch_geometric.sampler import BaseSampler
+from torch_geometric.typing import EdgeType, NodeType
+
+from kumo_core.encoders.target.base import TargetEncoder
+from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
+from kumo_core.modeling.gnn.hetero import HeteroGNN
+from kumo_core.modeling.heads.node_prediction import NodePredHead
 from kumo_core.train.base_node_module import (
     DEFAULT_LR_SCHEDULER,
     DEFAULT_LR_SCHEDULER_INTERVAL,
@@ -15,20 +30,6 @@ from kumo_core.train.base_node_module import (
     BaseNodeLightningModule,
 )
 from kumo_core.types import TaskType
-from kumoapi.train import TrainingStage
-from kumo_core.features.stores.feature import FeatureStore
-from kumo_core.features.stores.graph import GraphStore
-from kumo_core.modeling.gnn.hetero import HeteroGNN
-from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
-from kumo_core.encoders.target.base import TargetEncoder
-from kumo_core.modeling.heads.node_prediction import NodePredHead
-from torch import Tensor
-from torch_frame import TensorFrame
-from torch_geometric.data import HeteroData
-from torch_geometric.data.lightning.datamodule import LightningData
-from torch_geometric.loader import NodeLoader, ZipLoader
-from torch_geometric.sampler import BaseSampler
-from torch_geometric.typing import EdgeType, NodeType
 
 
 class HyperedgeLightningData(LightningData):
@@ -37,8 +38,7 @@ class HyperedgeLightningData(LightningData):
     return separate subgraphs for each node in a hyperedge.
 
     Args:
-        data (Tuple[:class:`FeatureStore`, :class:`GraphStore`]): The feature
-            store and graph store to operate on.
+        data: PyG feature and graph stores used by the node loaders.
         node_sampler (BaseSampler): The node sampler to use.
         input_train_fkeys (List[Tuple[str, torch.Tensor]): The node types and
             foreign keys of training hyperedges.
@@ -57,7 +57,7 @@ class HyperedgeLightningData(LightningData):
     """
     def __init__(
         self,
-        data: tuple[FeatureStore, GraphStore],
+        data: tuple[PyGFeatureStore, PyGGraphStore],
         graph_sampler: BaseSampler,
         input_train_fkeys: list[tuple[NodeType, Tensor]],
         input_train_time: Tensor | None = None,

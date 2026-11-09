@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Kumo Engine nightly
+
+on:  # yamllint disable-line rule:truthy
+  schedule:
+    - cron: '17 0 * * *'
+      timezone: America/Los_Angeles
+  workflow_dispatch:
+    inputs:
+      run_controls:
+        description: Also run shuffled-target control cases
+        type: boolean
+        default: false
+      write_reference:
+        description: Explicitly replace the stored reference after review
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+  id-token: write
+
+concurrency:
+  group: engine-nightly
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  nightly:
+    if: github.ref == 'refs/heads/main' && vars.ENGINE_E2E_ENABLED == 'true'
+    uses: ./.github/workflows/kumo-engine-e2e.yml
+    with:
+      tier: nightly
+      scales: '["100M", "1B"]'
+      run_controls: ${{ inputs.run_controls || false }}
+      write_reference: ${{ inputs.write_reference || false }}

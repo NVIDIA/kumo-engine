@@ -494,6 +494,69 @@ def test_the_pyfunc_reads_a_volume_snapshot_through_assets_from(
     assert loads[1][0] is not volume and loads[1][1] == 'version'
 
 
+def test_adls_assets_and_snapshots_use_the_explicit_connector(
+        tmp_path, monkeypatch):
+    pytest.importorskip('mlflow')
+    from kumo.engine.integrations import _mlflow_model
+
+    uri = 'abfss://artifacts@companylake.dfs.core.windows.net/root'
+    connector = kumo.ADLSConnector(
+        root_dir=uri, identity=kumo.ADLSIdentity(tenant_id='tenant',
+                                                 client_id='client'))
+    record = _deps.Dependency(kind='asset', name='vocab', asset_kind='toy',
+                              sha256='a' * 64,
+                              location=f'{uri}/assets/toy/{"a" * 64}')
+    manifest = ModelManifest(id='m', dependencies=[record])
+    assert _deps.connector_roots(manifest,
+                                 connector) == [(connector, f'{uri}/assets')]
+    seen = []
+    monkeypatch.setattr(
+        'kumo.engine._predictor.load_predictor', lambda bundle: seen.append(
+            Dependencies.of(manifest).candidates(record)[0]))
+    monkeypatch.setattr('kumo.engine.trainer._provenance.read_provenance',
+                        lambda bundle: manifest)
+    monkeypatch.setattr(_mlflow_model, 'snapshot_location',
+                        lambda uri: pytest.fail('ambient snapshot identity'))
+    loads = []
+    monkeypatch.setattr(
+        kumo.GraphSnapshot, 'load_from_connector',
+        lambda supplied, *, path: loads.append((supplied, path)))
+    model = _mlflow_model.KumoModel()
+    model.load_context(
+        SimpleNamespace(
+            artifacts={'bundle': str(tmp_path)}, model_config={
+                'columns': [],
+                'assets_from': connector,
+                'snapshot': f'{uri}/snapshots/g/v'
+            }))
+    assert seen == [(connector, record.location)]
+    assert loads == [(connector, f'{uri}/snapshots/g/v')]
+
+
+def test_missing_adls_serving_files_name_the_required_connector(monkeypatch):
+    pytest.importorskip('mlflow')
+    from kumo.engine.integrations import _mlflow_model
+    from kumo.engine.integrations.mlflow import _target_hint
+
+    uri = 'abfss://artifacts@companylake.dfs.core.windows.net/root'
+    record = _deps.Dependency(kind='asset', name='vocab', asset_kind='toy',
+                              sha256='a' * 64,
+                              location=f'{uri}/assets/toy/{"a" * 64}')
+    monkeypatch.setattr(_deps.Dependencies, 'candidates', lambda *a: [])
+    with _deps.asset_locations([], _target_hint):
+        with pytest.raises(MissingDependencyError, match='ADLSConnector'):
+            Dependencies(records=[record]).resolve('toy', 'vocab')
+
+    def missing(connector, *, path):
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(kumo.GraphSnapshot, 'load_from_connector', missing)
+    model = _mlflow_model.KumoModel()
+    model._snapshots, model._reader = {}, None
+    with pytest.raises(FileNotFoundError, match='assets_from.*ADLSConnector'):
+        model._snapshot(f'{uri}/snapshots/g/v')
+
+
 def test_a_volume_snapshot_without_assets_from_names_the_argument(
         monkeypatch):
     from kumo.engine.graph import GraphSnapshot
@@ -553,3 +616,50 @@ def test_a_stage_root_registers_versions_that_serve_its_snapshot(tmp_path):
     with pytest.raises(ValueError, match=r"Unknown serving_options \['cuda'\]"):
         kumo.ModelOutputConfig(stage, location=location,
                                serving_options={'cuda': '12.6'})
+
+
+@pytest.mark.parametrize('root', [
+    'abfss://artifacts@otherlake.dfs.core.windows.net/root',
+    'abfss://otherfs@companylake.dfs.core.windows.net/root',
+    'abfss://artifacts@companylake.dfs.core.windows.net/root-other',
+])
+def test_pyfunc_falls_back_for_an_unrelated_adls_reader(monkeypatch, root):
+    pytest.importorskip('mlflow')
+    from kumo.engine.integrations import _mlflow_model
+
+    uri = 'ABFSS://artifacts@companylake.dfs.core.windows.net/root/snapshots/g/v'
+    unrelated = kumo.ADLSConnector(root_dir=root)
+    fallback = kumo.ADLSConnector(root_dir=uri.rsplit('/', 1)[0])
+    monkeypatch.setattr(_mlflow_model, 'snapshot_location',
+                        lambda location: (fallback, 'v'))
+    loads = []
+    monkeypatch.setattr(
+        kumo.GraphSnapshot, 'load_from_connector',
+        lambda connector, *, path: loads.append((connector, path)))
+    model = _mlflow_model.KumoModel()
+    model._snapshots, model._reader = {}, unrelated
+    model._snapshot(uri)
+    assert loads == [(fallback, 'v')]
+    assert _mlflow_model._remote_reader(uri) == 'ADLSConnector'
+
+
+@pytest.mark.parametrize('scheme', ['abfss', 'ABFSS'])
+def test_rootless_adls_serving_does_not_fall_back_to_ambient_identity(
+        monkeypatch, scheme):
+    pytest.importorskip('mlflow')
+    from kumo.engine.integrations import _mlflow_model
+
+    rootless = kumo.ADLSConnector(
+        identity=kumo.ADLSIdentity(tenant_id='tenant', client_id='client'))
+    uri = f'{scheme}://artifacts@companylake.dfs.core.windows.net/root/snapshots/g/v'
+    monkeypatch.setattr(
+        _mlflow_model, 'snapshot_location',
+        lambda location: pytest.fail('fell back to ambient snapshot identity'))
+    monkeypatch.setattr(
+        kumo.GraphSnapshot, 'load_from_connector',
+        lambda *args, **kwargs: pytest.fail('attempted snapshot I/O'))
+    model = _mlflow_model.KumoModel()
+    model._snapshots, model._reader = {}, rootless
+    with pytest.raises(NotImplementedError, match='Rootless ADLS.*source-only'):
+        model._snapshot(uri)
+    assert model._snapshots == {}

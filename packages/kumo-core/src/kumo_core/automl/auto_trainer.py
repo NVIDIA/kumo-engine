@@ -258,20 +258,12 @@ class AutoTrainer:
         self.diskgraph_task_dataset_bundle_dir: str | None = kwargs.pop(
             'diskgraph_task_dataset_bundle_dir', None)
 
-        # Seed fs/gs as None: TT-NG always seeds them so consumers that
-        # forward them as kwargs don't AttributeError. The ``hasattr``
-        # guards in ``fit()`` / ``get_best_trainer`` then see them present.
-        self.feature_store = None
-        self.graph_store = None
-
         # AutoTune-related variables:
         self.tune_metric = space.training_job.tune_metric
         self.num_experiments = space.training_job.num_experiments
         self.max_epochs = space.optimization.max_epochs
         self.min_steps_per_epoch = space.optimization.min_steps_per_epoch
         self.max_steps_per_epoch = space.optimization.max_steps_per_epoch
-        self.max_val_steps = space.optimization.max_val_steps
-        self.max_test_steps = space.optimization.max_test_steps
         self.refit_trainval = space.training_job.refit_trainval
         self.refit_full = space.training_job.refit_full
         self.disable_compilation = space.training_job.disable_compilation
@@ -695,13 +687,11 @@ class AutoTrainer:
                 max_epochs=self.max_epochs,
                 min_steps_per_epoch=self.min_steps_per_epoch,
                 max_steps_per_epoch=self.max_steps_per_epoch,
-                max_val_steps=self.max_val_steps,
-                max_test_steps=self.max_test_steps,
+                max_val_steps=cfg.optimization.max_val_steps,
+                max_test_steps=cfg.optimization.max_test_steps,
                 # General arguments:
                 metrics_client_job_name=metrics_client_job_name,
                 raise_fake_trial_error_msg=self._raise_fake_trial_error_msg,
-                feature_store=self.feature_store,
-                graph_store=self.graph_store,
                 encoders=self.encoders,
                 enable_compile=not self.disable_compilation,
                 trial=status.trials[-1] if status is not None else None,
@@ -1004,13 +994,20 @@ class AutoTrainer:
                f"{try_idx + 1}/{self.max_tries} tries")
 
         if try_idx < self.max_tries:
-            batch_size = cfg.optimization.batch_size[0] // 2
+            previous_batch_size = cfg.optimization.batch_size[0]
+            batch_size = previous_batch_size // 2
             if batch_size < self.min_retry_batch_size:
                 logger.warning(f"{msg}. Cannot re-run by reducing the batch "
                                f"size to {batch_size}. The minimum retry "
                                f"batch size is {self.min_retry_batch_size}.")
                 return None
 
+            for field in ('max_val_steps', 'max_test_steps'):
+                steps = getattr(cfg.optimization, field)
+                if steps is not None and not isinstance(steps, MissingType):
+                    setattr(cfg.optimization, field,
+                            (steps * previous_batch_size + batch_size - 1) //
+                            batch_size)
             cfg.optimization.batch_size = [batch_size]
             logger.warning(f"{msg}. Trying to re-run by "
                            f"reducing the batch size by half.")
@@ -1083,6 +1080,7 @@ class AutoTrainer:
         r"""Obtains the top-k trials from an experiment analysis."""
         run_dirs = filesystem.listdir(self.log_dir)
         trials = []
+        nan_trials = 0
         for run_dir in run_dirs:
             ckpt_dir = osp.join(run_dir, 'checkpoint')
             if not filesystem.exists(ckpt_dir):
@@ -1097,6 +1095,7 @@ class AutoTrainer:
 
                 result = df[self.val_tune_metric].values[0]
                 if pd.isna(result):
+                    nan_trials += 1
                     continue
 
                 path = osp.join(run_dir, 'model_plan.json')
@@ -1112,8 +1111,18 @@ class AutoTrainer:
         trials = sorted(trials, key=lambda d: d.result, reverse=reverse)
 
         if len(trials) == 0:
-            raise RuntimeError("No valid trials found")
-        elif len(trials) < k:
+            message = "No valid trials found"
+            if nan_trials > 0:
+                message += (f": '{self.val_tune_metric}' is NaN in all "
+                            f"{nan_trials} completed trials.")
+                if self.tune_metric.split('_')[0] in ('auroc', 'ap', 'auprc'):
+                    message += (" It is undefined when the validation rows "
+                                "contain a single class, for example when "
+                                "'max_val_steps' caps validation too low. "
+                                "Increase 'max_val_steps' or set "
+                                "'tune_metric' to 'loss'.")
+            raise RuntimeError(message)
+        if len(trials) < k:
             logger.warning(f"Expected {k} valid trials (got {len(trials)})")
 
         return trials[:k]
