@@ -96,11 +96,16 @@ whole-second UTC timestamps, and decimal128/256. Arrays and structs are not
 supported scalar column declarations. Every table names its time column (its
 clock) or declares `NON_TEMPORAL`.
 
-Entity and candidate lookup use the chosen table's primary key. Relations join
+Entity and candidate lookup require the chosen table's declared primary key.
+Other tables may set `primary_key=None`; identical source rows remain separate
+occurrences. Their internal IDs and equal-time order are local to the index,
+so tied limits can select different rows after a rebuild or in a serving subset.
+Relations join
 one column on each side; composite keys and arbitrary join predicates are not
 expressible. DiskGraph applies its native ingestion rules: rows it rejects,
 such as rows with a NULL clock, are dropped, and building the index reports how
-many were dropped. The in-memory engine requires unique, non-NULL primary keys.
+many were dropped. The in-memory test engine requires declared primary keys to
+be unique and non-NULL.
 
 A column's type doesn't choose its encoding; you do. Values keep their declared
 type: kumo-pytorch won't turn numbers into strings, parse numeric strings, or
@@ -120,7 +125,8 @@ or infinity; encoders that require finite observations reject them.
   after zero.
 - A current event (`SampleSpec.current_events`) is the event stored at the
   anchor's own second, so its window must be exactly `(-1, 0]` with `limit=1`.
-- Equal-time merged events sort by component name and primary key.
+- Equal-time merged events sort by component name and primary key, or by local
+  internal identity for a keyless table.
 - Calendar calculations use UTC. `EventTimeDelta` is anchor minus event time,
   in its declared unit; it is not relative to the latest event.
 - Graph sampling needs a time column both to filter neighbors by time

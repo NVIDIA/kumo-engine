@@ -454,8 +454,9 @@ contract to see what it looks like, or train a small model on a toy dataset.
 The tests use it too. It is not meant for real data or production use; use
 `DiskGraphEngine` for that. It evaluates the sampling rules with plain Python
 scans. Stored values keep their
-declared types, and primary keys must be unique and non-NULL. Equal-time graph
-neighbors at a fanout limit are ordered by the `repr` of their primary keys.
+declared types, and declared primary keys must be unique and non-NULL.
+Equal-time graph neighbors at a fanout limit are ordered by the `repr` of
+their primary keys, or by source occurrence ordinal for a keyless table.
 
 #### `InMemoryEngine.check_sources`
 
