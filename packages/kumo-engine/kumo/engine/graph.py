@@ -225,6 +225,20 @@ def _float32_limit(places: int) -> float:
     return float(2**(_FLOAT32_EXACT_BITS - math.ceil(places * math.log2(10))))
 
 
+def _places(number: Decimal) -> int:
+    r"""Decimal places after the trailing zeros, read off the digits so the
+    caller's decimal context cannot round or trap."""
+    digits, exponent = number.as_tuple()[1:]
+    if not number.is_finite() or not any(digits):
+        return 0
+    zeros = 0
+    for digit in reversed(digits):
+        if digit:
+            break
+        zeros += 1
+    return max(0, -(exponent + zeros))
+
+
 def _decimal_places(parquet: Any, column: str) -> int:
     r"""The most decimal places among the column's first ``_SAMPLE_ROWS``
     values, each read as the shortest decimal that names it, so a declared
@@ -237,8 +251,7 @@ def _decimal_places(parquet: Any, column: str) -> int:
                     value if isinstance(value, Decimal) else str(value).strip())
             except InvalidOperation:
                 continue
-            if number.is_finite():
-                places = max(places, -number.normalize().as_tuple().exponent)
+            places = max(places, _places(number))
         break
     return places
 

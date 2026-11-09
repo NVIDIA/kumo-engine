@@ -755,6 +755,30 @@ def test_decimal_columns_beyond_float32_precision_are_reported(tmp_path):
     assert fetched.column('wide_cents').to_pylist() == [131072.01, 0.25]
 
 
+def test_the_float32_step_ignores_the_decimal_context(tmp_path):
+    import decimal
+
+    from kumo.engine.graph import _decimal_places
+
+    path = tmp_path / 't.parquet'
+    pq.write_table(
+        pa.table({
+            'cents':
+            pa.array([Decimal('131072.01'), Decimal('200.00')],
+                     pa.decimal128(10, 2)),
+            'dollars':
+            pa.array([131072.01, 200.0]),
+            'text':
+            pa.array(['131072.01', '200.00']),
+        }), path)
+    parquet = pq.ParquetFile(path)
+    with decimal.localcontext(prec=6, traps=[decimal.Inexact]):
+        assert [
+            _decimal_places(parquet, column)
+            for column in ('cents', 'dollars', 'text')
+        ] == [2, 2, 2]
+
+
 @pytest.mark.parametrize('extension, values, expected', [
     ('parquet', ['1', '2', ' ', 'N/A', None, '3.5'],
      "Column 'amount' in table 't.parquet' is read as text, but every "
