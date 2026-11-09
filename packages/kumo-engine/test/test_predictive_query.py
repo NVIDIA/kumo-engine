@@ -334,8 +334,13 @@ def test_generated_temporal_split_requires_time_column(graph_snapshot,
                     split='TemporalSplit([0.6, 0.3, 0.1])'))
 
 
-def test_generated_absolute_bounds_name_supported_alternative(
-        graph_snapshot, monkeypatch):
+@pytest.mark.parametrize('start,end,message', [
+    ('NaT', '2025-01-21', 'valid timestamp'),
+    ('2025-01-21', '2025-01-02', 'smaller than'),
+    ('2025-01-02', -1, 'both be offsets'),
+])
+def test_generated_invalid_bounds_fail_before_artifacts(
+        graph_snapshot, monkeypatch, start, end, message):
     graph, snapshot = graph_snapshot
     monkeypatch.delenv('USE_DECOUPLED_SPLITS', raising=False)
     monkeypatch.setattr(
@@ -343,17 +348,15 @@ def test_generated_absolute_bounds_name_supported_alternative(
         lambda: pytest.fail('allocated a bounded-generation run id'),
     )
 
-    with pytest.raises(
-            ValueError,
-            match="Use 'train_start_offset' and 'train_end_offset' instead"):
+    with pytest.raises(ValueError, match=message):
         PredictiveQuery(
             graph,
             'PREDICT COUNT(orders.*, 0, 1, days) > 0 FOR EACH users.id',
         ).generate_training_table(
             snapshot,
             TrainingTableGenerationPlan(
-                start_time='2025-01-02T12:00:00',
-                end_time='2025-01-21T12:00:00',
+                start_time=start,
+                end_time=end,
                 timeframe_step=1,
                 split='ApproxDateOffsetSplit([0.6, 0.2, 0.2])',
             ),

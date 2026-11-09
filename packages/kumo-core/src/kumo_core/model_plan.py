@@ -796,11 +796,14 @@ class TrainingTableGenerationPlan(api.TrainingTableGenerationPlan, PlanMixin):
                                        has_train_table_weight_col):
             return False
 
-        # Check split-related options based on decoupled splits setting
-        # When using decoupled splits, only allow start/end time
-        # When using legacy splits, only allow train start/end offset
+        # Absolute node bounds also work with the default split path.
+        # Relative start/end offsets retain the decoupled-splits gate.
         if name in ['start_time', 'end_time']:
-            return _use_decoupled_splits()
+            value = self.start_time if name == 'start_time' else self.end_time
+            return (_use_decoupled_splits()
+                    or (task_type.is_node_pred and isinstance(value, str)
+                        and not _is_missing(value)
+                        and not _is_inferred(value)))
         if name in ['train_start_offset', 'train_end_offset']:
             return not _use_decoupled_splits()
 

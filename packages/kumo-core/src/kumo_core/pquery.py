@@ -59,6 +59,7 @@ from .train.autoregression import (
     PADDING_SIZE,
     YOY_COL,
 )
+from .training.bounds import validate_time_bounds
 from .training.splits import (
     SplitArguments,
     TrainTableTime,
@@ -1032,18 +1033,52 @@ def _temporal_timestamps(
     )
     if error is not None:
         raise PredictiveQueryPlanError(f"{error.title}. {error.message}")
-    if explicit:
-        return (tuple(_timestamp_ns(value) for value in explicit),
-                "flexible_boundaries" in split)
-    minimum, maximum, filter_buffer = _temporal_target_time_range(
-        query, index_path)
 
-    def relative(value: Any) -> DateOffset | Timestamp | None:
+    def relative(value: int | str | None) -> DateOffset | Timestamp | None:
         if value is None or value == "-INF":
             return None
         if isinstance(value, Integral):
             return date_offset(int(value))
         return Timestamp(Timestamp(value).value)
+
+    start_time: DateOffset | Timestamp | int | None
+    end_time: DateOffset | Timestamp | int | None
+    node_bounds = query.task_type in TaskType.get_node_pred_tasks()
+    if not node_bounds:
+        start_time = relative(
+            inferred_or_missing_type_to_none(options.start_time))
+        end_time = relative(inferred_or_missing_type_to_none(options.end_time))
+    else:
+        try:
+            start_time, end_time = validate_time_bounds(
+                inferred_or_missing_type_to_none(options.start_time),
+                inferred_or_missing_type_to_none(options.end_time),
+                train_start_offset=train_start,
+                train_end_offset=train_end,
+                split_family=(split_family
+                              if inferred_or_missing_type_to_none(
+                                  options.split) is not None else None),
+            )
+        except ValueError as error:
+            raise PredictiveQueryPlanError(str(error)) from error
+    if explicit:
+        return (tuple(_timestamp_ns(value) for value in explicit),
+                "flexible_boundaries" in split)
+    minimum, maximum, filter_buffer = _temporal_target_time_range(
+        query, index_path)
+    absolute_bounds = (isinstance(start_time, Timestamp)
+                       or isinstance(end_time, Timestamp)) and node_bounds
+    if absolute_bounds and isinstance(start_time, Timestamp):
+        start_time = max(start_time, minimum)
+    if absolute_bounds and isinstance(end_time, Timestamp):
+        end_time = min(end_time, maximum)
+    if absolute_bounds and query.task_type == "forecasting":
+        horizon = query.forecast_length - 1
+        if horizon > 0:
+            timeframe = DateOffsetRange.date_offset_subtract(
+                offset.end_date_offset, date_offset(int(offset.start or 0)))
+            cutoff = end_time if isinstance(end_time, Timestamp) else maximum
+            end_time = cutoff - horizon * timeframe
 
     step_count = int(
         inferred_or_missing_type_to_none(options.timeframe_step)
@@ -1072,11 +1107,26 @@ def _temporal_timestamps(
             int(train_start))),
         train_end_offset=(None if train_end is None else date_offset(
             int(train_end))),
-        start_time=relative(
-            inferred_or_missing_type_to_none(options.start_time)),
-        end_time=relative(inferred_or_missing_type_to_none(options.end_time)),
+        start_time=(date_offset(start_time)
+                    if isinstance(start_time, int) else start_time),
+        end_time=(date_offset(end_time)
+                  if isinstance(end_time, int) else end_time),
         drop_earliest=True,
     )
+    if absolute_bounds:
+        # Inferred offset splits may extend their first range to fill a stage.
+        # Absolute label bounds remain authoritative over that adjustment.
+        lower = start_time if isinstance(start_time, Timestamp) else minimum
+        cutoff = end_time if isinstance(end_time, Timestamp) else maximum
+        upper = cutoff - offset.end_date_offset
+        timestamps = [
+            timestamp for timestamp in timestamps if lower <= timestamp <= upper
+        ]
+    if absolute_bounds and not timestamps:
+        raise PredictiveQueryPlanError(
+            "No usable training examples within start_time/end_time and "
+            "the available label data. Widen the bounds or provide more data "
+            "for the target horizon.")
     return tuple(timestamp.value for timestamp in timestamps), fixed_boundaries
 
 

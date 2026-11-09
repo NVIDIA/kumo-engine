@@ -69,8 +69,12 @@ def test_integer_bounds_keep_gate(flag, expected_errors, monkeypatch):
 
 
 @pytest.mark.parametrize('task_type', TaskType.get_node_pred_tasks())
-def test_node_bound_validation(task_type, monkeypatch):
-    monkeypatch.setenv('USE_DECOUPLED_SPLITS', 'true')
+@pytest.mark.parametrize('flag', [None, 'false', 'true'])
+def test_node_bound_validation(task_type, flag, monkeypatch):
+    if flag is None:
+        monkeypatch.delenv('USE_DECOUPLED_SPLITS', raising=False)
+    else:
+        monkeypatch.setenv('USE_DECOUPLED_SPLITS', flag)
     plan = TrainingTableGenerationPlan(
         start_time='2024-01-01T00:00:00-06:00',
         end_time='2024-01-02T00:00:00-06:00',
@@ -83,6 +87,18 @@ def test_node_bound_validation(task_type, monkeypatch):
     )
     assert not errors
     assert plan.start_time == '2024-01-01T00:00:00-06:00'
+
+
+def test_link_bounds_keep_gate(monkeypatch):
+    monkeypatch.delenv('USE_DECOUPLED_SPLITS', raising=False)
+    errors, _ = TrainingTableGenerationPlan(start_time='2024-01-01').validate(
+        task_type=TaskType.TEMPORAL_LINK_PREDICTION,
+        query_type=QueryType.TEMPORAL,
+        has_train_table_time_col=True,
+        run_mode=RunMode.FAST,
+    )
+    assert any("'start_time' field is not supported" in str(error)
+               for error in errors)
 
 
 @pytest.mark.parametrize('options,message', [

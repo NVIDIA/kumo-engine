@@ -703,11 +703,6 @@ def test_plan_rejects_explicit_timestamps_on_a_static_query(tmp_path):
         "start_time": "-INF",
         "end_time": -10
     }, 1, 29),
-    ({
-        "train_end_offset": 10,
-        "start_time": "2024-01-11",
-        "end_time": "2024-01-21"
-    }, 0, 29),
 ])
 def test_generation_plan_time_bounds(tmp_path, monkeypatch, options, first_day,
                                      last_day, unit):
@@ -740,6 +735,106 @@ def test_generation_plan_time_bounds(tmp_path, monkeypatch, options, first_day,
         scratch_dir=str(tmp_path), artifact_dir=str(tmp_path))
     assert plan.train_table.timestamps == tuple(
         start + day * index for index in range(last_day, first_day - 1, -1))
+
+
+@pytest.mark.parametrize('start,end,step,window,expected', [
+    ('2024-01-05', '2024-01-15', 3, (0, 3), [12, 9, 6]),
+    ('2023-12-01', '2024-02-01', 3, (0, 3), [17, 14, 11, 8, 5, 2]),
+    ('2024-01-05', None, 3, (0, 3), [17, 14, 11, 8, 5]),
+    (None, '2024-01-15', 3, (0, 3), [12, 9, 6]),
+    ('2024-01-05', '2024-01-16', 4, (0, 3), [13, 9, 5]),
+    ('2024-01-05', '2024-01-15', 2, (1, 3), [12, 10, 8, 6]),
+    ('2024-01-05T01:00:00+01:00', '2024-01-15T01:00:00+01:00',
+     3, (0, 3), [12, 9, 6]),
+])
+def test_absolute_bounds_intersect_available_labels(
+        monkeypatch, start, end, step, window, expected):
+    from pandas import Timestamp
+
+    graph = normalize_graph(forecasting_graph_config())
+    query = parse_and_validate_query(
+        f'PREDICT COUNT(events.*, {window[0]}, {window[1]}, days) '
+        'FOR EACH articles.aid', graph)
+    monkeypatch.setattr(
+        'kumo_core.pquery._temporal_target_time_range',
+        lambda *_args: (Timestamp('2024-01-01'), Timestamp('2024-01-20'), None))
+    options = TrainingTableGenerationPlan(timeframe_step=step)
+    if start is not None:
+        options.start_time = start
+    if end is not None:
+        options.end_time = end
+    timestamps, _ = _temporal_timestamps(
+        query, '/synthetic-index', options, {}, 'ApproxDateOffsetSplit', ())
+    assert timestamps == tuple(
+        Timestamp(f'2024-01-{day:02}').value for day in expected)
+
+
+@pytest.mark.parametrize('start,end', [
+    ('2024-02-01', '2024-02-10'),
+    ('2023-12-01', '2023-12-10'),
+    ('2024-01-19', '2024-01-20'),
+])
+def test_absolute_bounds_require_usable_windows(monkeypatch, start, end):
+    from pandas import Timestamp
+
+    graph = normalize_graph(forecasting_graph_config())
+    query = parse_and_validate_query(
+        'PREDICT COUNT(events.*, 0, 3, days) FOR EACH articles.aid', graph)
+    monkeypatch.setattr(
+        'kumo_core.pquery._temporal_target_time_range',
+        lambda *_args: (Timestamp('2024-01-01'), Timestamp('2024-01-20'), None))
+    with pytest.raises(PredictiveQueryPlanError, match='No usable training'):
+        _temporal_timestamps(
+            query, '/synthetic-index', TrainingTableGenerationPlan(
+                start_time=start, end_time=end), {}, 'ApproxDateOffsetSplit', ())
+
+
+@pytest.mark.parametrize('options', [
+    {'start_time': 'NaT'},
+    {'start_time': '2024-01-11', 'end_time': '2024-01-21',
+     'train_end_offset': 10},
+    {'start_time': '2024-01-11',
+     'split': "TimeRangeSplit([('2024-01-01', '2024-02-01')])"},
+])
+@pytest.mark.parametrize('explicit', [(), (1704067200000000000,)])
+def test_invalid_absolute_bounds_rejected_before_stats(
+        monkeypatch, options, explicit):
+    graph = normalize_graph(forecasting_graph_config())
+    query = parse_and_validate_query(
+        'PREDICT COUNT(events.*, 0, 1, days) FOR EACH articles.aid', graph)
+    monkeypatch.setattr(
+        'kumo_core.pquery._temporal_target_time_range',
+        lambda *_args: pytest.fail('Read stats before rejecting invalid bounds'))
+    with pytest.raises(PredictiveQueryPlanError):
+        _temporal_timestamps(
+            query, '/synthetic-index', TrainingTableGenerationPlan(**options),
+            {}, 'TimeRangeSplit' if 'split' in options else 'ApproxDateOffsetSplit',
+            explicit)
+
+
+@pytest.mark.parametrize('end', [None, '2024-01-15'])
+def test_absolute_forecast_bounds_reserve_full_horizon(monkeypatch, end):
+    from pandas import DateOffset, Timestamp
+
+    graph = normalize_graph(forecasting_graph_config())
+    query = parse_and_validate_query(
+        'PREDICT COUNT(events.*, 1, 3, days) FORECAST 3 TIMEFRAMES '
+        'FOR EACH articles.aid', graph)
+    monkeypatch.setattr(
+        'kumo_core.pquery._temporal_target_time_range',
+        lambda *_args: (Timestamp('2024-01-01'), Timestamp('2024-01-20'), None))
+    options = TrainingTableGenerationPlan(
+        start_time='2024-01-05', timeframe_step=2)
+    if end is not None:
+        options.end_time = end
+    split, family = _split_options(query, graph, options)
+    timestamps, _ = _temporal_timestamps(
+        query, '/synthetic-index', options, split, family, ())
+    cutoff = Timestamp(end or '2024-01-20')
+    newest = Timestamp(timestamps[0])
+    assert newest == cutoff - DateOffset(days=7)
+    assert all(Timestamp(value) >= Timestamp('2024-01-05')
+               for value in timestamps)
 
 
 def test_latest_temporal_timestamp_uses_source_maximum(tmp_path, monkeypatch):
@@ -972,8 +1067,9 @@ def test_date_offset_split_uses_bounded_range_for_each_phase(
         graph_index_path=str(tmp_path / "index"), scratch_dir=str(tmp_path),
         artifact_dir=str(tmp_path))
 
+    # Reserve all three future labels before restarting steps at each split.
     assert plan.train_table.timestamps == tuple(
-        (origin + index * day).value for index in (9, 7, 6, 4, 3, 1))
+        (origin + index * day).value for index in (7, 5, 4, 2, 1))
 
 
 def test_nonzero_target_offset_restarts_step_at_each_split_boundary(

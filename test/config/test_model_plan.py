@@ -2368,18 +2368,15 @@ def test_model_plan_decoupled_splits(monkeypatch):
         plan.training_table_generation.train_start_offset == InferredType.VALUE)
     assert plan.training_table_generation.start_time == MissingType.VALUE
 
-    # Verify validation names the supported relative-bound alternative.
+    # Absolute bounds are supported alongside inferred legacy defaults.
     plan.training_table_generation.start_time = "2024-01-01"
     plan.training_table_generation.end_time = "2024-02-01"
-    with pytest.raises(ValueError) as error:
-        plan.validate(
-            task_type=TaskType.BINARY_CLASSIFICATION,
-            query_type=QueryType.TEMPORAL,
-            has_train_table_time_col=True,
-            run_mode=RunMode.FAST,
-        )
-    assert str(error.value).count(
-        "Use 'train_start_offset' and 'train_end_offset' instead.") == 2
+    plan.validate(
+        task_type=TaskType.BINARY_CLASSIFICATION,
+        query_type=QueryType.TEMPORAL,
+        has_train_table_time_col=True,
+        run_mode=RunMode.FAST,
+    )
 
     # Static queries cannot use either absolute or relative bounds.
     static_plan = ModelPlan.from_default(
