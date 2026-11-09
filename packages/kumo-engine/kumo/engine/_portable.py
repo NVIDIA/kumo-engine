@@ -77,7 +77,9 @@ class PortableGraphError(ValueError):
     """
 
 
-_INTEGER_RANGES = {
+# Inclusive value range of each integer dtype as DiskGraph ingests it; `byte`
+# is unsigned there.
+_INTEGER_RANGE = {
     Dtype.byte: (0, 2**8 - 1),
     Dtype.int16: (-2**15, 2**15 - 1),
     Dtype.int32: (-2**31, 2**31 - 1),
@@ -141,7 +143,7 @@ def key_conversions(
                 continue
             settled.setdefault(alias, {})[name] = KeyConversion(
                 source, target, '.'.join(linked[0]),
-                _INTEGER_RANGES.get(target))
+                _INTEGER_RANGE.get(target))
         if settled == result:
             return result
         result, previous = settled, result
