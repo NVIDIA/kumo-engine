@@ -849,6 +849,27 @@ def test_the_float32_step_sample_reads_pages_not_the_whole_chunk(
     assert Counting.read_bytes < 4_000_000
 
 
+def test_a_column_diskgraph_cannot_read_as_a_number_is_not_sampled(tmp_path):
+    from kumo.engine import FileConnector, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            'id': range(4),
+            'day': pa.array([3_000_000, 1, 2, 3], pa.date32()),
+        }), root / 't.parquet')
+    source = Table.from_source_table(
+        FileConnector(root_dir=str(root))['t.parquet'],
+        primary_key='id').with_column('day', dtype=Dtype.float32,
+                                      stype=Stype.numerical)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        Graph({'t': source}).snapshot()
+    assert not [w for w in caught if 'float32' in str(w.message)]
+
+
 def test_a_step_finer_than_any_float64_is_no_step(tmp_path):
     from kumo.engine import FileConnector, configure
     from kumo.engine.graph import _sampled_precision

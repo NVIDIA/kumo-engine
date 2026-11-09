@@ -273,17 +273,33 @@ def _sampled_precision(values: Any) -> Tuple[int, int]:
     return places, underflows
 
 
+def _reads_as_number(physical: Any) -> bool:
+    r"""Whether DiskGraph parses the physical type into a float32 column:
+    numbers, decimals and text or bytes it decodes as text. Anything else,
+    such as a date, becomes missing with a parse-failure count of its own,
+    and the sampler cannot read every value of it either."""
+    import pyarrow as pa
+
+    if pa.types.is_dictionary(physical):
+        return _reads_as_number(physical.value_type)
+    return (pa.types.is_floating(physical) or pa.types.is_integer(physical)
+            or pa.types.is_decimal(physical) or pa.types.is_string(physical)
+            or pa.types.is_large_string(physical)
+            or pa.types.is_binary(physical)
+            or pa.types.is_large_binary(physical))
+
+
 def _narrowed_float_columns(
         alias: str, table: Table, paths: Sequence[str],
         source_path: Any) -> Dict[Tuple[str, str], Tuple[str, int, int]]:
-    r"""Each float32 column staged from a wider type, with that type, the
-    decimal places its values are written with and how many lie below the
-    smallest float32, read from the table's first ``_SAMPLE_ROWS`` rows
-    across its parts, all such columns together and through a bounded
-    buffer rather than whole column chunks. A backend that names a
-    directory instead of its parts has it globbed, only when the table has
-    a float32 column; a part of any other kind, such as the CSV a custom
-    backend may stage, is left to DiskGraph's own reading."""
+    r"""Each float32 column staged from a wider type DiskGraph reads as a
+    number, with that type, the decimal places its values are written with
+    and how many lie below the smallest float32, read from the table's
+    first ``_SAMPLE_ROWS`` rows across its parts, all such columns together
+    and through a bounded buffer rather than whole column chunks. A backend
+    that names a directory instead of its parts has it globbed, only when
+    the table has a float32 column; a part of any other kind, such as the
+    CSV a custom backend may stage, is left to DiskGraph's own reading."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -309,7 +325,8 @@ def _narrowed_float_columns(
             if column not in schema.names:
                 continue
             physical = schema.field(column).type
-            if pa.types.is_float32(physical) or pa.types.is_float16(physical):
+            if (pa.types.is_float32(physical) or pa.types.is_float16(physical)
+                    or not _reads_as_number(physical)):
                 continue
             narrowed.setdefault((alias, column), (str(physical), 0, 0))
             if not pa.types.is_integer(physical):
