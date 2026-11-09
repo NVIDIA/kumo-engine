@@ -282,7 +282,8 @@ def _narrowed_float_columns(
     across its parts, all such columns together and through a bounded
     buffer rather than whole column chunks. A backend that names a
     directory instead of its parts has it globbed, only when the table has
-    a float32 column."""
+    a float32 column; a part of any other kind, such as the CSV a custom
+    backend may stage, is left to DiskGraph's own reading."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -295,8 +296,11 @@ def _narrowed_float_columns(
         return {}
     narrowed: Dict[Tuple[str, str], Tuple[str, int, int]] = {}
     budget = _SAMPLE_ROWS
-    for path in paths or sorted(
-            str(part) for part in Path(source_path).rglob('*.parquet')):
+    parts = [path for path in paths if Path(path).suffix.lower() == '.parquet']
+    if not paths:
+        parts = sorted(
+            str(part) for part in Path(source_path).rglob('*.parquet'))
+    for path in parts:
         parquet = pq.ParquetFile(path, pre_buffer=False,
                                  buffer_size=_SAMPLE_BUFFER_SIZE)
         schema = parquet.schema_arrow

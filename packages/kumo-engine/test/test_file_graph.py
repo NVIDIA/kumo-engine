@@ -1110,3 +1110,28 @@ def test_a_declared_text_column_of_numbers_is_not_reported(tmp_path):
             FileConnector(root_dir=str(root))['t.parquet'], primary_key='id',
             dtypes={'amount': Dtype.string})
     assert table.definition.cols[1].dtype == Dtype.string
+
+
+def test_the_float32_step_reads_only_parquet_parts(tmp_path):
+    from kumo.engine import FileConnector
+    from kumo.engine.graph import _narrowed_float_columns
+
+    root = tmp_path / 'source' / 't'
+    root.mkdir(parents=True)
+    parquet = root / 'part0.parquet'
+    pq.write_table(
+        pa.table({
+            'id': pa.array([1, 2], pa.int64()),
+            'a': pa.array([1.5, 2.25]),
+        }), parquet)
+    csv = tmp_path / 'part1.csv'
+    csv.write_text('id,a\n3,0.125\n')
+    table = Table.from_source_table(
+        FileConnector(root_dir=str(tmp_path / 'source'))['t'], primary_key='id')
+    table = table.with_column('a', dtype=Dtype.float32)
+
+    assert _narrowed_float_columns('t', table, [str(csv), str(parquet)],
+                                   root) == {
+                                       ('t', 'a'): ('double', 2, 0),
+                                   }
+    assert _narrowed_float_columns('t', table, [str(csv)], root) == {}
