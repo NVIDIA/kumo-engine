@@ -169,6 +169,8 @@ def _warn_low_fk_match_rates(stats: Dict[str, Any],
 _FLOAT32_EXACT_BITS = 24
 _FLOAT32_DTYPES = frozenset({Dtype.float, Dtype.float32})
 _FLOAT64_DIGITS = sys.float_info.dig
+_FLOAT64_PLACES = math.ceil(-math.log10(sys.float_info.min *
+                                        sys.float_info.epsilon))
 _NUMERICAL = 'kumo.numerical'
 
 
@@ -229,8 +231,8 @@ def _float32_limit(places: int) -> float:
 
 def _places(number: Decimal) -> int:
     r"""Decimal places after the trailing zeros, read off the digits so the
-    caller's decimal context cannot round or trap, and at most the digits
-    float64 keeps, since a finer step is lost in the wider type too."""
+    caller's decimal context cannot round or trap. A step below the smallest
+    float64 is zero in every float and so is no step."""
     digits, exponent = number.as_tuple()[1:]
     if not number.is_finite() or not any(digits):
         return 0
@@ -239,7 +241,8 @@ def _places(number: Decimal) -> int:
         if digit:
             break
         zeros += 1
-    return min(max(0, -(exponent + zeros)), _FLOAT64_DIGITS)
+    places = max(0, -(exponent + zeros))
+    return places if places <= _FLOAT64_PLACES else 0
 
 
 def _decimal_places(values: Any) -> int:
@@ -365,9 +368,11 @@ def _warn_float32_narrowing(table: str, column: Mapping[str, Any],
         return
     step = ('every whole number'
             if places == 0 else f"steps of {10**-places:g}")
+    reaches = (f"{magnitude:,.{places}f}" if places <= _FLOAT64_DIGITS else
+               f"{magnitude:.{_FLOAT64_DIGITS}g}")
     warnings.warn(
         f"{table}.{column['name']} is stored as float32 but comes from "
-        f"{physical} and reaches {magnitude:,.{places}f}; from {limit:,.0f} on "
+        f"{physical} and reaches {reaches}; from {limit:,.0f} on "
         f"float32 no longer resolves {step}, so values are rounded. Declare "
         "dtype=Dtype.float64 for the column to keep full precision.",
         UserWarning, stacklevel=3)

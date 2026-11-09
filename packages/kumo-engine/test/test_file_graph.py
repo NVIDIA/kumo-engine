@@ -794,11 +794,11 @@ def test_the_float32_step_is_sampled_on_one_budget_per_table(
     assert requested == [['a', 'b']] * reads
 
 
-def test_a_step_finer_than_float64_does_not_break_the_warning(tmp_path):
+def test_a_step_finer_than_any_float64_is_no_step(tmp_path):
     from kumo.engine import FileConnector, configure
     from kumo.engine.graph import _decimal_places
 
-    assert _decimal_places(pa.array(['1e-2147483648', '1e-300', '0.5'])) == 15
+    assert _decimal_places(pa.array(['1e-2147483648', '1e-300', '0.5'])) == 300
     configure(scratch_dir=str(tmp_path / 'scratch'))
     root = tmp_path / 'source'
     root.mkdir()
@@ -811,7 +811,34 @@ def test_a_step_finer_than_float64_does_not_break_the_warning(tmp_path):
         FileConnector(root_dir=str(root))['t.parquet'],
         primary_key='id').with_column('text', dtype=Dtype.float32,
                                       stype=Stype.numerical)
-    with pytest.warns(UserWarning, match='steps of 1e-15'):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        Graph({'t': source}).snapshot()
+    assert not [w for w in caught if 'float32' in str(w.message)]
+
+
+def test_a_tiny_decimal_step_lost_in_float32_is_reported(tmp_path):
+    from kumo.engine import FileConnector, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            'id':
+            range(4),
+            'rate':
+            pa.array([
+                Decimal('1.00000001e-20'),
+                Decimal('1.00000002e-20'),
+                Decimal('0'),
+                Decimal('0')
+            ], pa.decimal128(38, 28)),
+        }), root / 't.parquet')
+    source = Table.from_source_table(
+        FileConnector(root_dir=str(root))['t.parquet'], primary_key='id')
+    assert source.definition.cols[1].dtype == Dtype.float32
+    with pytest.warns(UserWarning, match='steps of 1e-28'):
         Graph({'t': source}).snapshot()
 
 
