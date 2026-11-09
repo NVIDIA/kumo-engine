@@ -96,7 +96,7 @@ def test_snapshot_discards_only_owned_staging(tmp_path, monkeypatch, failure):
                         connector=SimpleNamespace(
                             source_backend=source,
                             validate_scratch_dir=lambda path: None,
-                        ))
+                        ), typed_without_rows=())
         for name in ('first', 'second')
     ]
     graph = Graph(tables=tables)

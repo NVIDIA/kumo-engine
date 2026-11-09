@@ -40,7 +40,7 @@ else untouched.
 """
 
 from dataclasses import dataclass, replace
-from typing import List, Mapping, Optional, Union
+from typing import List, Mapping, Optional, Tuple, Union
 
 from kumo_core.stype_inference import multicategorical_separator
 from kumoapi.source_table import CustomSQLSourceTable
@@ -69,11 +69,18 @@ class Table:
             point `infer_metadata()` needs to discover a schema from
             scratch -- without a default here, there would be no way to
             construct that starting point at all.
+        typed_without_rows: The columns whose stype came from a sample with
+            no rows, typed categorical for want of statistics. `with_column`
+            with a `stype` clears a column from it, and with a `dtype` for
+            a column the source cannot type adds it when the sample has no
+            rows; `Graph.snapshot()` warns when such a table has rows, since
+            the data may type those columns differently.
     """
 
     connector: Connector
     table_name: str
     definition: Optional[Union[TableDefinition, HostedTableDefinition]] = None
+    typed_without_rows: Tuple[str, ...] = ()
 
     @classmethod
     def from_source_table(
@@ -121,7 +128,7 @@ class Table:
         """
         from kumo.engine._infer import resolve_table_columns
 
-        columns = resolve_table_columns(
+        columns, typed_without_rows = resolve_table_columns(
             source_table.connector,
             source_table.table_name,
             source_table.column_dict,
@@ -140,7 +147,8 @@ class Table:
             end_time_col=end_time_column,
         )
         return cls(connector=source_table.connector,
-                   table_name=source_table.table_name, definition=definition)
+                   table_name=source_table.table_name, definition=definition,
+                   typed_without_rows=tuple(typed_without_rows))
 
     @classmethod
     def from_sql(
@@ -215,12 +223,14 @@ class Table:
         return (self.connector.sql(source.sql) if isinstance(
             source, CustomSQLSourceTable) else self.connector[self.table_name])
 
-    def _inferred_stype(self, name: str, dtype: Dtype) -> Stype:
+    def _inferred_stype(self, name: str, dtype: Dtype) -> Tuple[Stype, bool]:
+        r"""The stype a sample of the source implies for `name` read as
+        `dtype`, and whether that sample had no rows."""
         from kumo.engine._infer import resolve_table_columns
 
         assert self.definition is not None
         source = self._source_table()
-        stype = resolve_table_columns(
+        columns, typed_without_rows = resolve_table_columns(
             source.connector,
             source.table_name,
             source.column_dict,
@@ -230,9 +240,10 @@ class Table:
             end_time_column=None,
             sql=source.sql,
             dtypes={name: dtype},
-        )[0].stype
+        )
+        stype = columns[0].stype
         assert stype is not None
-        return stype
+        return stype, name in typed_without_rows
 
     def with_column(
         self,
@@ -267,12 +278,17 @@ class Table:
                 "call from_source_table() or infer_metadata() first.")
 
         columns: List[Column] = list(self.definition.cols)
+        typed_without_rows = tuple(column for column in self.typed_without_rows
+                                   if stype is None or column != name)
         for i, column in enumerate(columns):
             if column.name == name:
                 resolved_stype = stype if stype is not None else column.stype
                 if (stype is None and dtype is not None
                         and resolved_stype == Stype.unsupported):
-                    resolved_stype = self._inferred_stype(name, dtype)
+                    resolved_stype, without_rows = self._inferred_stype(
+                        name, dtype)
+                    if without_rows and name not in typed_without_rows:
+                        typed_without_rows += (name, )
                 resolved_dtype = dtype if dtype is not None else column.dtype
                 delimiter = (multicategorical_delimiter
                              if multicategorical_delimiter is not None else
@@ -305,4 +321,5 @@ class Table:
                 f"Table {self.table_name!r} has no column {name!r}.")
 
         definition = replace(self.definition, cols=columns)
-        return replace(self, definition=definition)
+        return replace(self, definition=definition,
+                       typed_without_rows=typed_without_rows)

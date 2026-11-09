@@ -55,7 +55,8 @@ def _graph():
         table_name='events',
         definition=SimpleNamespace(cols=[], source_table=None),
         connector=SimpleNamespace(source_backend=Source(),
-                                  validate_scratch_dir=lambda path: None))
+                                  validate_scratch_dir=lambda path: None),
+        typed_without_rows=())
     return Graph(tables=[table])
 
 

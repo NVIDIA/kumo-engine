@@ -140,6 +140,54 @@ def test_graph_validation_keeps_valid_edges(tables):
     assert portable_tables['events']['fkeys'][0]['dst_table'] == 'users'
 
 
+def test_graph_aliases_that_break_downstream_names_are_refused(tables):
+    graph = Graph(dict(zip(('User', 'user'), tables)))
+
+    with pytest.raises(ValueError,
+                       match=r"aliases 'User' and 'user' differ only by case"):
+        graph.validate()
+
+
+def test_names_a_query_cannot_use_are_reported_once():
+    from unittest import mock
+
+    users, events = _s3_tables()
+    unusable = ['user id', 'a.b', 'first-name', '1st', 'say "hi"', '\u00fcber']
+    usable = ['MixedCase', '_x', 'a1', 'predict']
+    users = replace(
+        users, definition=replace(
+            users.definition, cols=[
+                *users.definition.cols,
+                *(Column(name, Stype.numerical, Dtype.int64)
+                  for name in unusable + usable),
+            ]))
+    graph = Graph({
+        'users': users,
+        'my events': events
+    }, [Edge('my events', 'user_id', 'users')])
+
+    with pytest.warns(UserWarning) as records:
+        graph.validate()
+        graph.native_graph
+        with mock.patch.object(Graph, '_snapshot_no_lock'):
+            graph.snapshot()
+
+    messages = [
+        str(record.message) for record in records
+        if 'predictive query' in str(record.message)
+    ]
+    assert len(messages) == 2
+    columns = next(message for message in messages
+                   if message.startswith('Table users has 6 column(s)'))
+    assert all(repr(name) in columns for name in unusable)
+    assert not any(repr(name) in columns for name in usable)
+    assert columns.endswith('Rename them at the source to use them as a '
+                            'target, entity or filter.')
+    assert any(
+        message.startswith("Graph alias 'my events' cannot be named")
+        for message in messages)
+
+
 def test_graph_validation_rejects_destination_without_primary_key(tables):
     users, events = tables
     users = replace(users, definition=replace(users.definition, pkey=None))

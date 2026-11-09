@@ -11,6 +11,7 @@ from unittest import mock
 
 import pytest
 from kumo_core.sources.errors import (
+    EmptySourceError,
     PermanentSourceError,
     ReconnectRequiredError,
     RowCountMismatchError,
@@ -942,6 +943,8 @@ def _raise_from_ingest(error: Exception) -> TableIngestionError:
 
 
 SAFE_SOURCE_ERROR_CASES = [
+    pytest.param(EmptySourceError(VENDOR_TEXT, table='orders', version='v1'),
+                 "Table 'orders' has no rows", id='empty_source'),
     pytest.param(
         RowCountMismatchError(expected=1000, actual=997, table='orders'),
         "Table 'orders' was read incompletely: the source returned 997 rows "

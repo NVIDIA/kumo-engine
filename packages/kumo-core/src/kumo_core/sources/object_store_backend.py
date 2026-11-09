@@ -16,7 +16,7 @@ from kumoapi.source_table import (
 from kumoapi.typing import Dtype
 
 from .backend import ingest_result, select_columns, source_columns
-from .errors import PermanentSourceError
+from .errors import EmptySourceError
 from .layout import staging_dir
 from .object_store import ObjectStoreSourceReader, require_no_sql
 from .object_store_sessions import ObjectStoreRoot
@@ -159,9 +159,9 @@ class ObjectStoreSourceBackend(ABC):
         staged = read_table(reader, name, str(destination), columns=columns,
                             mode=self.mode, version=data_version)
         if not staged.num_rows:
-            raise PermanentSourceError(
+            raise EmptySourceError(
                 f'Reading {table_name} produced no rows. An empty source '
                 f'table cannot be ingested; DiskGraph needs at least one row '
-                f'to infer an encoding.')
+                f'to infer an encoding.', version=staged.version)
 
         return ingest_result(staged)

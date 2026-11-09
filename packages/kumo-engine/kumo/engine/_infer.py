@@ -39,6 +39,7 @@ cheap pass left ambiguous):
   call.
 """
 
+import warnings
 from dataclasses import replace
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -210,11 +211,12 @@ def resolve_table_columns(
     end_time_column: Optional[str],
     sql: Optional[str] = None,
     dtypes: Optional[Mapping[str, Dtype]] = None,
-) -> List[Column]:
+) -> Tuple[List[Column], List[str]]:
     r"""Finishes what `infer_source_columns`'s cheap pass left open: applies
     the primary-key/time-column stype override, then -- only if something is
     still ambiguous -- samples the source (`_sample`) to resolve it. Backs
-    `Table.from_source_table`.
+    `Table.from_source_table`. Returns the resolved columns and the names of
+    those typed from a sample with no rows.
 
     Args:
         connector: read through `connector.source_backend` if sampling is
@@ -235,14 +237,14 @@ def resolve_table_columns(
         dtypes: declared dtypes that replace the source's, including for
             columns whose source type has no Kumo dtype.
 
+    A sample with no rows types each still-ambiguous column from empty
+    statistics (categorical) and warns; `Graph.snapshot()` leaves such a
+    table out of the index, and warns again once it has rows, since the data
+    may type those columns differently.
+
     Raises:
         ValueError: if `column_names` matches nothing, or a selected
             column's dtype/stype still can't be resolved after sampling.
-        PermanentSourceError: if the source sample came back with zero
-            rows and a column is still ambiguous -- no amount of sampling
-            resolves that, and DiskGraph can't ingest an empty table
-            anyway, so this names the real constraint instead of the
-            generic "cannot be resolved" guidance above.
     """
     selected = [
         col for name, col in columns.items()
@@ -271,6 +273,7 @@ def resolve_table_columns(
         for col in selected
     }
     delimiters = {col.name: col.multicategorical_delimiter for col in selected}
+    typed_without_rows: List[str] = []
     if any(stype is None or (stype == Stype.multicategorical and dtype ==
                              Dtype.string and delimiters[name] is None)
            for name, (dtype, stype) in resolved.items()):
@@ -297,18 +300,21 @@ def resolve_table_columns(
                     num_unique_multi = len(
                         multicategorical_token_counts(values, delimiter))
             if stype is None:
-                stype = _stype_for_column(dtype, statistics.get(col.name),
-                                          num_unique_multi, delimiter
-                                          is not None, name=col.name)
+                stype = _stype_for_column(
+                    dtype,
+                    statistics.get(col.name, (0, 0.0) if is_empty else None),
+                    num_unique_multi, delimiter is not None, name=col.name)
+                if is_empty and stype is not None:
+                    typed_without_rows.append(col.name)
             if stype == Stype.multicategorical and dtype == Dtype.string:
                 delimiters[col.name] = delimiter
             resolved[col.name] = (dtype, stype)
-        if is_empty and any(stype is None for _, stype in resolved.values()):
-            from kumo_core.sources.errors import PermanentSourceError
-            raise PermanentSourceError(
-                f"Table {table_name!r} returned no rows. An empty source "
-                f"table cannot be ingested; DiskGraph needs at least one "
-                f"row to infer an encoding.")
+        if is_empty:
+            warnings.warn(
+                f"Table {table_name!r} has no rows; columns without "
+                f"statistics are typed categorical, and Graph.snapshot() "
+                f"leaves the table out. Add rows or leave the table out of "
+                f"the graph.", UserWarning, stacklevel=3)
 
     result: List[Column] = []
     for col in selected:
@@ -329,4 +335,4 @@ def resolve_table_columns(
                 dtype=dtype,
                 multicategorical_delimiter=delimiters[col.name],
             ))
-    return result
+    return result, typed_without_rows

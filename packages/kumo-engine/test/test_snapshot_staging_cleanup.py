@@ -23,6 +23,7 @@ def _fake_table(dest_writes: bool = True, credentials=None):
         connector=SimpleNamespace(source_backend=SimpleNamespace(
             prepare_ingest=prepare_ingest)),
         table_name='t',
+        typed_without_rows=(),
     )
 
 

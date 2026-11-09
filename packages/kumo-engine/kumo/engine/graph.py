@@ -61,6 +61,7 @@ remote/durable cache, e.g. a Snowflake stage) -- out of scope for now.
 
 import json
 import logging
+import re
 import threading
 import time
 import warnings
@@ -130,6 +131,50 @@ def _warn_if_network_scratch(root: Path) -> None:
 
 
 _LOW_FK_MATCH_RATE = 0.5
+_PQL_NAME = re.compile(r'[_a-zA-Z][_a-zA-Z0-9]*')
+
+
+def _warn_unqueryable_names(tables: Mapping[str, Table]) -> None:
+    r"""The PQL grammar (`kumopql/grammar/PQLGrammar.g4`, rule `ID`) names a
+    table or column with letters, digits and underscores, not starting with
+    a digit, and has no quoting; any other name loads but cannot be written
+    in a query."""
+    for alias, table in tables.items():
+        if _PQL_NAME.fullmatch(alias) is None:
+            warnings.warn(
+                f"Graph alias {alias!r} cannot be named in a predictive "
+                "query, which accepts letters, digits and underscores not "
+                "starting with a digit; the table still loads and links "
+                "through its edges. Alias it differently to query it.",
+                UserWarning,
+                stacklevel=7,
+            )
+        names = [
+            col.name for col in table.definition.cols
+            if _PQL_NAME.fullmatch(col.name) is None
+        ]
+        if names:
+            warnings.warn(
+                f"Table {alias} has {len(names)} column(s) a predictive "
+                f"query cannot name: {', '.join(map(repr, names))}; they "
+                "still load as features. Rename them at the source to use "
+                "them as a target, entity or filter.",
+                UserWarning,
+                stacklevel=7,
+            )
+
+
+def _refuse_unusable_aliases(aliases: Sequence[str]) -> None:
+    r"""DiskGraph names tables in lowercase, so two aliases differing only by
+    case collide and fail later with no hint; they are refused here."""
+    lowered: Dict[str, str] = {}
+    for alias in aliases:
+        other = lowered.setdefault(alias.lower(), alias)
+        if other != alias:
+            raise ValueError(
+                f"Graph aliases {other!r} and {alias!r} differ only by case; "
+                "DiskGraph stores table names in lowercase. Use aliases that "
+                "differ in more than case.")
 
 
 def _warn_low_fk_match_rates(stats: Dict[str, Any],
@@ -266,6 +311,23 @@ def _changed_columns(before: List[str], after: List[str]) -> str:
     names = sorted(name for name in old.keys() | new.keys()
                    if old.get(name) != new.get(name))
     return f" ({', '.join(names)})" if names else ''
+
+
+def tables_and_edges(config: Mapping[str, Any]) -> Dict[str, Any]:
+    r"""`config` reduced to the tables it materialized and the edges between
+    them. Two snapshots of one graph key share every declared field, so this
+    is all that can differ between them: a table with no rows is left out
+    with its edges."""
+    return {
+        'tables': [{
+            'table_name':
+            table['table_name'],
+            'fkeys': [{
+                'name': fkey['name'],
+                'dst_table': fkey['dst_table']
+            } for fkey in table['fkeys']],
+        } for table in config['tables']]
+    }
 
 
 def report_other_graph(message: str, before: Optional[Mapping[str, Any]],
@@ -681,12 +743,51 @@ class Graph:
         from kumo.engine._infer import refuse_unsupported_columns
         from kumo.engine._portable import portable_graph_config
 
+        _refuse_unusable_aliases(list(self._named_tables))
         for table in self._named_tables.values():
             if table.definition is not None:
                 refuse_unsupported_columns(table.connector, table.table_name,
                                            table.definition.cols)
-        return portable_graph_config(self._named_tables, self.edges,
-                                     name=self.id)
+        config = portable_graph_config(self._named_tables, self.edges,
+                                       name=self.id)
+        _warn_unqueryable_names(self._named_tables)
+        return config
+
+    def _config_without(self, empty: Sequence[str],
+                        graph_key: str) -> Dict[str, Any]:
+        r"""The portable graph without the tables in `empty`, which have no
+        rows, and without the edges that touch them; the kept tables keep
+        their columns as the full graph typed them, so a key column whose
+        edge is dropped stays an ID. Every table empty is an error; each
+        left-out table is reported once."""
+        kept = [
+            table for table in self._graph_config['tables']
+            if table['table_name'] not in empty
+        ]
+        if not kept:
+            raise ValueError(
+                f"Every table in the graph has no rows ({', '.join(empty)}); "
+                "a snapshot needs at least one row.")
+        for alias in empty:
+            dropped = [
+                f'{edge.src_table}.{edge.fkey} -> {edge.dst_table}'
+                for edge in self.edges
+                if alias in (edge.src_table, edge.dst_table)
+            ]
+            edges = (f" with {len(dropped)} edge(s) ({', '.join(dropped)})"
+                     if dropped else '')
+            warnings.warn(
+                f"Table {alias} has no rows and is left out of the snapshot"
+                f"{edges}; a query that names it fails. Add rows or remove "
+                "the table from the graph.",
+                UserWarning,
+                stacklevel=4,
+            )
+        tables = [{
+            **table, 'fkeys':
+            [fkey for fkey in table['fkeys'] if fkey['dst_table'] not in empty]
+        } for table in kept]
+        return {**self._graph_config, 'name': graph_key, 'tables': tables}
 
     @cached_property
     def native_graph(self) -> NativeGraph:
@@ -863,6 +964,7 @@ class Graph:
             check_diskgraph_output,
         )
         from kumo_core.diskgraph.stores import diskgraph_index_size_bytes
+        from kumo_core.sources.errors import EmptySourceError
         from kumo_core.sources.layout import staging_dir
         from kumo_core.sources.transfer import discard_destination
         from kumoapi.source_table import CustomSQLSourceTable
@@ -875,6 +977,7 @@ class Graph:
         table_data_versions: Dict[str, str] = {}
         source_paths: Dict[str, str] = {}
         source_tables: Dict[str, SourceTableEntry] = {}
+        left_out: Dict[str, Optional[str]] = {}
 
         started = start() if timed else None
         try:
@@ -891,16 +994,37 @@ class Graph:
                 if isinstance(source, CustomSQLSourceTable):
                     checked = checked_sql(connector, source.sql)
                     name, sql = checked.table, checked.sql
-                prepared = source_backend.prepare_ingest(
-                    connector,
-                    name,
-                    str(dest_dir),
-                    dtypes={
-                        col.name: col.dtype
-                        for col in table.definition.cols
-                    },
-                    sql=sql,
-                )
+                try:
+                    prepared = source_backend.prepare_ingest(
+                        connector,
+                        name,
+                        str(dest_dir),
+                        dtypes={
+                            col.name: col.dtype
+                            for col in table.definition.cols
+                        },
+                        sql=sql,
+                    )
+                except EmptySourceError as error:
+                    left_out[alias] = error.version
+                    if error.version is not None:
+                        source_tables[alias] = source_table(
+                            connector, name, sql, error.version,
+                            record_sources=record_sources)
+                    continue
+                if table.typed_without_rows:
+                    typed = ', '.join(f'{col.name} ({col.stype.value})'
+                                      for col in table.definition.cols
+                                      if col.name in table.typed_without_rows)
+                    warnings.warn(
+                        f"Table {alias} was typed from no rows and now has "
+                        f"rows; {len(table.typed_without_rows)} column(s) "
+                        f"{typed} keep the type an empty sample gave them. "
+                        "Rebuild the table with Table.from_source_table() or "
+                        "infer_metadata() to type them from the data.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
                 if prepared.credentials is not None:
                     raise NotImplementedError(
                         "TODO(local-sdk): scoped per-table ingest credentials "
@@ -932,6 +1056,10 @@ class Graph:
             version_parts = [
                 json.dumps(table_data_versions, sort_keys=True).encode()
             ]
+            if left_out:
+                graph_config = self._config_without(list(left_out), graph_key)
+                version_parts.append(
+                    json.dumps(left_out, sort_keys=True).encode())
             if timestamp_precision != 'seconds':
                 version_parts.append(timestamp_precision.encode())
             data_version = fingerprint(*version_parts)

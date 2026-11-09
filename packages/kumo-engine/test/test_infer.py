@@ -27,12 +27,13 @@ def test_inference_uses_bounded_sample_and_counts_null_rows():
                 table_name=table_name, cols=[column],
                 sample_rows=frame.to_json(orient='table'))
 
-    columns = resolve_table_columns(SimpleNamespace(source_backend=Source()),
-                                    'events', {'measurement': column},
-                                    column_names=None, primary_key=None,
-                                    time_column=None, end_time_column=None)
+    columns, typed_without_rows = resolve_table_columns(
+        SimpleNamespace(source_backend=Source()), 'events',
+        {'measurement': column}, column_names=None, primary_key=None,
+        time_column=None, end_time_column=None)
 
     assert calls == [('events', 10_000)]
+    assert typed_without_rows == []
     assert columns[0].dtype == Dtype.int64
     assert columns[0].stype == Stype.categorical
 
@@ -61,19 +62,21 @@ def test_native_list_sample_does_not_require_hashable_values():
                 table_name=table_name, cols=[column],
                 sample_rows=frame.to_json(orient='table'))
 
-    columns = resolve_table_columns(SimpleNamespace(source_backend=Source()),
-                                    'events', {'labels': column},
-                                    column_names=None, primary_key=None,
-                                    time_column=None, end_time_column=None)
+    columns, _ = resolve_table_columns(SimpleNamespace(source_backend=Source()),
+                                       'events', {'labels': column},
+                                       column_names=None, primary_key=None,
+                                       time_column=None, end_time_column=None)
 
     assert columns[0].dtype == Dtype.stringlist
     assert columns[0].stype == Stype.multicategorical
 
 
-def test_empty_sample_reports_the_diskgraph_row_requirement():
-    column = SourceColumn(name='measurement', dtype=Dtype.int64, stype=None,
+@pytest.mark.parametrize(
+    'dtype', [Dtype.int64, Dtype.float64, Dtype.string, Dtype.binary])
+def test_an_empty_sample_types_columns_from_zero_statistics_and_warns(dtype):
+    column = SourceColumn(name='measurement', dtype=dtype, stype=None,
                           is_primary=False)
-    frame = pd.DataFrame({'measurement': pd.Series([], dtype='Int64')})
+    frame = pd.DataFrame({'measurement': pd.Series([], dtype='object')})
 
     class Source:
         def get_sample(self, connector, table_name, sample_rows, sql=None):
@@ -81,13 +84,19 @@ def test_empty_sample_reports_the_diskgraph_row_requirement():
                 table_name=table_name, cols=[column],
                 sample_rows=frame.to_json(orient='table'))
 
-    from kumo_core.sources.errors import PermanentSourceError
+    with pytest.warns(
+            UserWarning,
+            match=r"Table 'events' has no rows; columns without statistics "
+            r"are typed categorical, and Graph\.snapshot\(\) leaves the "
+            r"table out\. Add rows or leave the table out of the graph\."):
+        columns, typed_without_rows = resolve_table_columns(
+            SimpleNamespace(source_backend=Source()), 'events',
+            {'measurement': column}, column_names=None, primary_key=None,
+            time_column=None, end_time_column=None)
 
-    with pytest.raises(PermanentSourceError, match='at least one row'):
-        resolve_table_columns(SimpleNamespace(source_backend=Source()),
-                              'events', {'measurement': column},
-                              column_names=None, primary_key=None,
-                              time_column=None, end_time_column=None)
+    assert columns[0].dtype == dtype
+    assert columns[0].stype == Stype.categorical
+    assert typed_without_rows == ['measurement']
 
 
 def test_unresolved_column_error_names_its_table():
@@ -136,10 +145,10 @@ def test_scalar_multicat_inference_persists_detected_delimiter(delimiter):
                 table_name=table_name, cols=[source_column],
                 sample_rows=frame.to_json(orient='table'))
 
-    columns = resolve_table_columns(SimpleNamespace(source_backend=Source()),
-                                    'users', {'tags': source_column},
-                                    column_names=None, primary_key=None,
-                                    time_column=None, end_time_column=None)
+    columns, _ = resolve_table_columns(SimpleNamespace(source_backend=Source()),
+                                       'users', {'tags': source_column},
+                                       column_names=None, primary_key=None,
+                                       time_column=None, end_time_column=None)
     assert columns[0].stype == Stype.multicategorical
     assert columns[0].multicategorical_delimiter == delimiter
     assert calls == [10_000]
@@ -283,10 +292,10 @@ def test_identifier_name_inference_preserves_explicit_types(
                 table_name=table_name, cols=[column],
                 sample_rows=frame.to_json(orient='table'))
 
-    columns = resolve_table_columns(SimpleNamespace(source_backend=Source()),
-                                    'events', {name: column}, column_names=None,
-                                    primary_key=None, time_column=None,
-                                    end_time_column=None)
+    columns, _ = resolve_table_columns(SimpleNamespace(source_backend=Source()),
+                                       'events', {name: column}, column_names=None,
+                                       primary_key=None, time_column=None,
+                                       end_time_column=None)
     assert columns[0].stype == expected
     assert calls == (['events'] if declared is None
                      and expected == Stype.numerical else [])
@@ -299,9 +308,9 @@ def test_explicit_column_roles_take_precedence_over_id_names(role, expected):
                           stype=Stype.numerical, is_primary=False)
     roles = dict(primary_key=None, time_column=None, end_time_column=None)
     roles[role] = 'user_id'
-    columns = resolve_table_columns(SimpleNamespace(), 'events',
-                                    {'user_id': column}, column_names=None,
-                                    **roles)
+    columns, _ = resolve_table_columns(SimpleNamespace(), 'events',
+                                       {'user_id': column}, column_names=None,
+                                       **roles)
     assert columns[0].stype == expected
 
 
@@ -314,7 +323,7 @@ def test_explicit_column_roles_take_precedence_over_id_names(role, expected):
 ])
 def test_named_types_resolve_without_sampling(name, dtype, expected):
     column = SourceColumn(name=name, dtype=dtype, stype=None, is_primary=False)
-    columns = resolve_table_columns(SimpleNamespace(), 'events', {name: column},
-                                    column_names=None, primary_key=None,
-                                    time_column=None, end_time_column=None)
+    columns, _ = resolve_table_columns(SimpleNamespace(), 'events', {name: column},
+                                       column_names=None, primary_key=None,
+                                       time_column=None, end_time_column=None)
     assert columns[0].stype == expected
