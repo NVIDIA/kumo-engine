@@ -749,28 +749,31 @@ def test_decimal_columns_beyond_float32_precision_are_reported(tmp_path):
      "as a number call table.with_column('amount', dtype=Dtype.int64, "
      "stype=Stype.numerical); values that do not parse become missing and "
      "are counted at snapshot."),
-    ('parquet', ['7', '8', '9', '10', '11', '12'],
+    ('parquet', ['7', '8', '9', '10', '11', ''],
      "Column 'amount' in table 't.parquet' is read as text, but every "
-     "non-blank value in the 6 sampled rows is a number. To read it as a "
-     "number call "
-     "table.with_column('amount', dtype=Dtype.int64, "
+     "non-blank value in the 6 sampled rows is a number; 1 value(s) are "
+     "blank or look like missing (for example ''). To read it as a number "
+     "call table.with_column('amount', dtype=Dtype.int64, "
      "stype=Stype.numerical); values that do not parse become missing and "
      "are counted at snapshot."),
-    ('parquet', ['9223372036854775808', '1', '2', '3', '4', '5'],
+    ('parquet', ['9223372036854775808', '1', '2', '3', '4', ' '],
      "Column 'amount' in table 't.parquet' is read as text, but every "
-     "non-blank value in the 6 sampled rows is a number. To read it as a "
-     "number call table.with_column('amount', dtype=Dtype.float64, "
+     "non-blank value in the 6 sampled rows is a number; 1 value(s) are "
+     "blank or look like missing (for example ' '). To read it as a number "
+     "call table.with_column('amount', dtype=Dtype.float64, "
      "stype=Stype.numerical); values that do not parse become missing and "
      "are counted at snapshot."),
-    ('parquet', ['1', 'abc', '3', '4', '5', '6'], None),
-    ('parquet', ['9' * 5000, '1', '2', '3', '4', '5'], None),
-    ('parquet', ['1', '9' * 10000 + 'x', '3', '4', '5', '6'], None),
-    ('parquet', ['01234', '00987', '01111', '1', '2', '3'], None),
-    ('csv', ['01234', '00987', '01111', '1', '2', '3'], None),
+    ('parquet', ['94025', '10001', '60601', '75201', '98101', '30301'], None),
+    ('parquet', ['2019', '2020', '2021', '2019', '2020', None], None),
+    ('parquet', ['1', 'abc', ' ', '4', '5', '6'], None),
+    ('parquet', ['9' * 5000, '1', ' ', '3', '4', '5'], None),
+    ('parquet', ['1', '9' * 10000 + 'x', ' ', '4', '5', '6'], None),
+    ('parquet', ['01234', '00987', '01111', '1', '2', ' '], None),
+    ('csv', ['01234', '00987', '01111', '1', '2', ' '], None),
     ('parquet', ['NA', 'US', 'DE', 'FR', 'IT', 'ES'], None),
-    ('parquet', ['\u0661', '\u0662', '\u0663', '\u0664', '\u0665', '\u0666'
-                 ], None),
-    ('parquet', ['1', '2', '3', 'inf', '5', '6'], None),
+    ('parquet', ['\u0661', '\u0662', '\u0663', '\u0664', '\u0665', ' '],
+     None),
+    ('parquet', ['1', '2', '3', 'inf', '5', ' '], None),
 ])
 def test_numbers_stored_as_text_are_reported_at_inference(
         extension, values, expected, tmp_path):
@@ -793,3 +796,21 @@ def test_numbers_stored_as_text_are_reported_at_inference(
     assert columns['amount'].dtype == Dtype.string
     messages = [str(warning.message) for warning in caught]
     assert messages == ([expected] if expected else [])
+
+
+def test_a_declared_text_column_of_numbers_is_not_reported(tmp_path):
+    from kumo.engine import FileConnector
+
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            'id': range(4),
+            'amount': pa.array(['1', '2', ' ', 'N/A'], pa.string())
+        }), root / 't.parquet')
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        table = Table.from_source_table(
+            FileConnector(root_dir=str(root))['t.parquet'], primary_key='id',
+            dtypes={'amount': Dtype.string})
+    assert table.definition.cols[1].dtype == Dtype.string
