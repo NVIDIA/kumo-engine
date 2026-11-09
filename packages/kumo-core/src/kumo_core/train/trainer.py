@@ -74,6 +74,7 @@ from kumo_core.training.config import (
     RefitConfig,
     SamplerKwargs,
     TrainerConfig,
+    _normalize_edge_type_key,
 )
 from kumo_core.training.options import allow_array_targets
 from kumo_core.training.runtime import (
@@ -767,6 +768,8 @@ class Trainer(PortableConfigMixin):
         assert self.feature_store is not None
         assert self.graph_store is not None
 
+        self.sampler_kwargs.num_neighbors = _resolve_num_neighbors(
+            self.sampler_kwargs.num_neighbors, self.graph_store.edge_types)
         with timing("trainer.init.create_graph_sampler"):
             if self.data_runtime is None:
                 raise RuntimeError(
@@ -3412,6 +3415,33 @@ def _restore_num_neighbors_key(
         return old_key
     src, rel, dst = old_key.to_tuple()
     return EdgeTypeStr(get_table_name(src), rel, get_table_name(dst))
+
+
+def _resolve_num_neighbors(
+    num_neighbors: NumNeighbors,
+    edge_types: Sequence[EdgeType],
+) -> NumNeighbors:
+    r"""Per-edge-type fanouts keyed as the graph names its edge types. A
+    saved key the graph holds is kept; a key it lacks, such as a legacy
+    fully qualified name loaded without a graph, is matched by its
+    stripped form to the one edge type with that form, as the DiskGraph
+    plan builder matches it; any other key is kept as saved."""
+    if not isinstance(num_neighbors.values, dict):
+        return num_neighbors
+    exact = {
+        str(EdgeTypeStr(*edge_type)): tuple(edge_type)
+        for edge_type in edge_types
+    }
+    stripped: dict[Any, list[EdgeType]] = {}
+    for edge_type in edge_types:
+        stripped.setdefault(_normalize_edge_type_key(edge_type),
+                            []).append(tuple(edge_type))
+    values = {}
+    for key, value in num_neighbors.values.items():
+        candidates = stripped.get(_normalize_edge_type_key(key), [])
+        values[exact.get(str(key)) or (candidates[0] if len(candidates) == 1
+                                       else key.to_tuple())] = value
+    return NumNeighbors(values, num_neighbors.default)
 
 
 def _get_versions(root_dir: str) -> list[int]:

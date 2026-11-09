@@ -5,8 +5,19 @@
 from types import SimpleNamespace
 
 import pytest
+from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
+from kumo_core.io.json import save_json
+from kumo_core.modeling.gnn.hetero import HeteroGNN
+from kumo_core.modeling.heads.node_prediction import NodePredHead
+from kumo_core.resolved_task import (
+    ResolvedNumericalTask,
+    ResolvedTaskGraph,
+    ResolvedTrainTable,
+)
 from kumo_core.train import diskgraph_nested_trainer as trainer
-from kumo_core.train.trainer import _restore_num_neighbors_key
+from kumo_core.train.trainer import Trainer, _restore_num_neighbors_key
+from kumo_core.training.config import SamplerKwargs
+from kumo_core.types import TaskType
 from torch_geometric.sampler.base import NumNeighbors
 from torch_geometric.typing import EdgeTypeStr
 
@@ -84,3 +95,63 @@ def test_restored_sampler_keys_keep_matching_edge_types_exactly():
     assert _restore_num_neighbors_key(
         EdgeTypeStr("crm.events", "user_id", "users"), {}).to_tuple() == (
             "crm.events", "user_id", "users")
+
+
+def test_plain_sampler_path_recovers_a_legacy_key_loaded_without_a_graph(
+        tmp_path, monkeypatch):
+    task = ResolvedNumericalTask(
+        name="test",
+        task_type=TaskType.BINARY_CLASSIFICATION,
+        metrics=["auroc"],
+        graph=ResolvedTaskGraph(node_types=("users", ), edge_types=(),
+                                seed_node_type="users",
+                                target_node_type="users"),
+        train_table=ResolvedTrainTable(name="train_table",
+                                       target_column="TARGET",
+                                       time_column=None, weight_column=None),
+    )
+    saved = Trainer(
+        task=task,
+        encoder=HeteroTensorFrameEncoder(),
+        model=HeteroGNN(channels=8, num_mp_layers=2),
+        head=NodePredHead(),
+        root_dir=str(tmp_path),
+        sampler_kwargs=SamplerKwargs(num_neighbors=NumNeighbors(
+            {("ds.orders", "user_id", "ds.users"): [10, 5]}, default=[3, 3])),
+    )
+    save_json(saved.config(), str(tmp_path / "config.json"))
+    fanouts = {}
+
+    class Sampled(Exception):
+        pass
+
+    def create_graph_sampler(feature_store, graph_store, sampler_kwargs,
+                             **kwargs):
+        fanouts.update(
+            sampler_kwargs.num_neighbors.get_values(graph_store.edge_types))
+        raise Sampled
+
+    loaded = Trainer.load(
+        task, str(tmp_path), infer_config_path=False,
+        data_runtime=SimpleNamespace(create_graph_sampler=create_graph_sampler))
+
+    assert loaded.sampler_kwargs.num_neighbors.values == {
+        EdgeTypeStr("ds.orders", "user_id", "ds.users"): [10, 5]
+    }
+
+    loaded.feature_store = SimpleNamespace(
+        table_names=["orders", "users"], train_table_name="train_table",
+        has_train_table_time_col=False, time_col_dict={},
+        entity_table_names=["users"])
+    loaded.graph_store = SimpleNamespace(edge_types=[
+        ("orders", "user_id", "users"), ("users", "rev_user_id", "orders")
+    ])
+    monkeypatch.setattr(Trainer, "initialize_model",
+                        lambda self, **kwargs: None)
+    with pytest.raises(Sampled):
+        loaded.init()
+
+    assert fanouts == {
+        ("orders", "user_id", "users"): [10, 5],
+        ("users", "rev_user_id", "orders"): [3, 3],
+    }
