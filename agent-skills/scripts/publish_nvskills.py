@@ -22,9 +22,10 @@ Three kinds of file sit in the published directory:
 * the package, rebuilt from `agent-skills/skills/` on every run;
 * the catalog files that NVSkills requires and that we write: `skill-card.md` and
   `evals/*.json`. Their source is `agent-skills/nvskills/kumo-data-science/`, and they are
-  copied in on every run;
+  copied in on every run. A catalog file may not replace a package file;
 * `BENCHMARK.md` and `skill.oms.sig`, which NVSkills CI writes into the pull request. They are
-  never edited here. A refresh leaves them in place, so they describe the previous content until
+  never edited here, and the build fails if the package or the catalog files carry either
+  name at any depth. A refresh leaves them in place, so they describe the previous content until
   NVSkills CI runs again. The catalog then keeps serving the last signed version rather than
   dropping the skill.
 
@@ -61,13 +62,19 @@ def build(out: Path, catalog_files: Path = CATALOG_FILES) -> Path:
     errors = package_skill.unresolved(pkg)
     if errors:
         raise SystemExit(f'{HOST}: {len(errors)} unresolved reference(s): {errors[:3]}')
+    # A signed name in the package would overwrite what NVSkills CI wrote, unseen by --check.
+    signed = [p.relative_to(pkg).as_posix() for p in pkg.rglob('*') if p.name in SIGNED]
+    if signed:
+        raise SystemExit(f'{HOST} package ships {signed}: written by NVSkills CI, not by hand')
     if catalog_files.is_dir():
         for path in sorted(catalog_files.rglob('*')):
             if path.is_file():
                 rel = path.relative_to(catalog_files)
-                if rel.as_posix() in SIGNED:
+                if path.name in SIGNED:
                     raise SystemExit(f'{path}: {rel} is written by NVSkills CI, not by hand')
                 target = pkg / rel
+                if target.exists():
+                    raise SystemExit(f'{path}: {rel} is already in the {HOST} package')
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(path, target)
     return pkg

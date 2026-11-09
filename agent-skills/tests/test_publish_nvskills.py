@@ -64,10 +64,37 @@ def test_check_ignores_the_build_stamp_but_not_content(tmp_path: Path, catalog: 
     assert publish_nvskills.stale(dest, catalog) == ['~ SKILL.md']
 
 
-def test_catalog_files_cannot_supply_signed_files(tmp_path: Path, catalog: Path) -> None:
-    (catalog / 'skill.oms.sig').write_text('forged\n')
+@pytest.mark.parametrize('rel', ['skill.oms.sig', 'evals/skill.oms.sig', 'evals/BENCHMARK.md'])
+def test_catalog_files_cannot_supply_signed_files(tmp_path: Path, catalog: Path,
+                                                  rel: str) -> None:
+    (catalog / rel).write_text('forged\n')
     with pytest.raises(SystemExit, match='written by NVSkills CI'):
         publish_nvskills.publish(tmp_path / 'kumo-data-science', catalog)
+
+
+@pytest.mark.parametrize('rel', ['SKILL.md', 'hosts/generic/adapter.md'])
+def test_catalog_files_cannot_replace_package_files(tmp_path: Path, catalog: Path,
+                                                    rel: str) -> None:
+    (catalog / rel).parent.mkdir(parents=True, exist_ok=True)
+    (catalog / rel).write_text('replaced\n')
+    with pytest.raises(SystemExit, match='already in the generic package'):
+        publish_nvskills.publish(tmp_path / 'kumo-data-science', catalog)
+
+
+def test_the_package_cannot_ship_signed_files(tmp_path: Path, catalog: Path,
+                                              monkeypatch: pytest.MonkeyPatch) -> None:
+    build = publish_nvskills.package_skill.build
+
+    def with_signature(host: str, dist: Path) -> Path:
+        pkg = build(host, dist)
+        (pkg / 'kumoai-reference' / 'BENCHMARK.md').write_text('forged\n')
+        return pkg
+
+    monkeypatch.setattr(publish_nvskills.package_skill, 'build', with_signature)
+    dest = tmp_path / 'kumo-data-science'
+    with pytest.raises(SystemExit, match='written by NVSkills CI'):
+        publish_nvskills.publish(dest, catalog)
+    assert not dest.exists()
 
 
 def test_the_published_copy_matches_the_source() -> None:
