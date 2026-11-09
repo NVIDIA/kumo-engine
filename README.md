@@ -14,11 +14,19 @@
   <a href="https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/get-started-with-kumo-engine/overview"><img src="https://img.shields.io/badge/docs-1.0.0-76B900" alt="Documentation for version 1.0.0"></a>
 </p>
 
-**An open accelerator for context generation over structured data.**
+**The dataloader for structured-data models: connected, time-correct context for every prediction, served from NVMe instead of RAM.**
 
-NVIDIA Kumo Engine prepares connected records and their history for predictive modeling at scale. Its Rust-based DiskGraph engine indexes data on local SSDs and retrieves time-correct neighborhoods for training and batch prediction, without keeping the full graph index in RAM.
+Models that predict from tables, relationships, and event histories need connected context for every prediction. Databases are slow at producing it, and holding a large graph in memory is expensive. Kumo Engine converts your tables into a compressed, NVMe-optimized graph (Rust-based DiskGraph) and streams time-correct neighborhoods to the GPU for training and batch prediction.
 
-Define your tables, relationships, and prediction task in Python. Kumo Engine handles ingestion, graph construction, context sampling, training, evaluation, and prediction.
+| Proof point | Result |
+| --- | --- |
+| Context generation, 3 hops, 1M entities, 50B-node graph | **19 seconds** vs 5.3 minutes for DuckDB (about 17x faster; 10-48x across 2-4 hops) |
+| Index larger than RAM | 2.6 TiB index served from NVMe on a machine with 1 TiB RAM |
+| Training on a 111M-node graph, 15 epochs | **41 min** vs 64 min for matched-model PyG (about 36% less time; test accuracy 63.26% vs 63.93%) |
+
+Warm caches, one AWS instance per run, and preparation costs are detailed in the [full benchmark report](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/resources/benchmarks). Results depend on the workload and configuration.
+
+Define your tables, relationships, and prediction task in Python. Kumo Engine handles ingestion from the data lake, graph construction, context sampling, training, evaluation, and prediction for use cases such as recommendations, fraud detection, churn prediction, propensity modeling, and risk scoring.
 
 For example, to predict whether a customer will order in the next 30 days, Kumo Engine connects the customer to their order history and samples eligible records as model inputs.
 
@@ -29,7 +37,7 @@ For example, to predict whether a customer will order in the next 30 days, Kumo 
 
 *Schematic example: the model plan determines sampling, and future outcomes remain outside the model inputs.*
 
-**Benchmark highlight:** [One million three-hop neighborhoods in 19 seconds](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/resources/benchmarks).
+**Requirements:** Linux x86-64, an NVIDIA GPU, and local SSD working storage. Refer to [Installation](#installation) for details.
 
 **[Documentation](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/get-started-with-kumo-engine/overview)**<br>
 **[Installation](#installation)**<br>
@@ -65,7 +73,7 @@ For complete walkthroughs, follow the [Google Colab](https://docs.nvidia.com/sdg
 NVIDIA Kumo is a family of open models, libraries, and tools for predictive AI across tabular, relational, and time-series data, and a core part of the NVIDIA Agent Knowledge Foundation.
 
 - **NVIDIA Kumo Structured:** pretrained foundation models (Kumo Tabular, Kumo Relational, Kumo Forecast, and Kumo Anomaly) that make predictions without training a model per task. Refer to [NVIDIA/structured-data-models](https://github.com/NVIDIA/structured-data-models).
-- **NVIDIA Kumo Engine (this repository):** an open accelerator for preparing connected structured data and training predictive models at production scale.
+- **NVIDIA Kumo Engine (this repository):** the open dataloader and training engine that prepares connected structured data and trains predictive models at production scale.
 
 ## Installation
 
