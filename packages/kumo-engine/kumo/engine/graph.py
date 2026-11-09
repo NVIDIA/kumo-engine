@@ -371,14 +371,6 @@ def _integer_literals(values: Any, low: int, high: int) -> tuple[Any, Any]:
                                               pa.scalar('', text))
 
 
-def _staged_parquet_parts(paths: Sequence[str]) -> list[Path]:
-    return [
-        file for path in paths for file in
-        (sorted(Path(path).rglob('*.parquet')) if Path(path).is_dir() else
-         [Path(path)])
-    ]
-
-
 def _stored_types(files: Sequence[Path], name: str) -> Dict[Path, Any]:
     import pyarrow as pa
     import pyarrow.parquet as pq
