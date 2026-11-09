@@ -154,6 +154,88 @@ _INTEGER_RANGE = {
 }
 
 
+def _inexact_key_values(values: pa.Array, target: Dtype) -> int:
+    r"""How many values of a staged key column, in any physical type a part
+    can hold, DiskGraph cannot convert to the integer `target` exactly. A
+    dictionary is read through its values, as DiskGraph reads it. A float
+    counts when it is a fraction, at or beyond its type's mantissa (2**53
+    for a double, 2**24 for a float32, 2**11 for a float16, from which
+    neighbouring integers collapse), infinite, or outside the target's
+    range; a NaN is missing, like a null, except in an unsigned key, which
+    DiskGraph reads as 0. A decimal is checked at its own precision,
+    widened to 76 digits so `floor` has room for every scale; with no
+    integer digit at all zero is its only whole value, and with too few to
+    reach a bound every value fits it. A string counts unless it spells an
+    integer the way DiskGraph's parser accepts: an optional sign, digits,
+    an optional all-zero fraction, whitespace around it. Any other type is
+    left to DiskGraph's own conversion.
+    """
+    from decimal import Decimal
+
+    import pyarrow.compute as pc
+
+    if pa.types.is_dictionary(values.type):
+        values = values.dictionary_decode()
+    stored = values.type
+    low, high = _INTEGER_RANGE[target]
+    missing = pc.is_null(values)
+    if pa.types.is_string(stored) or pa.types.is_large_string(stored):
+        text = pc.replace_substring_regex(pc.utf8_trim_whitespace(values),
+                                          r'\.0+$', '')
+        text = pc.replace_substring_regex(text, r'^([+-]?)0+([0-9])', r'\1\2')
+        integer = pc.and_(pc.match_substring_regex(text, r'^[+-]?[0-9]+$'),
+                          pc.less_equal(pc.utf8_length(text), 20))
+        exact = pc.if_else(integer, text,
+                           pa.scalar(None,
+                                     text.type)).cast(pa.decimal256(76, 0))
+        whole = pc.and_(
+            pc.greater_equal(exact, pa.scalar(Decimal(low), exact.type)),
+            pc.less_equal(exact, pa.scalar(Decimal(high), exact.type)))
+    elif pa.types.is_decimal(stored):
+        wide = pa.decimal256(76, stored.scale)
+        exact = values.cast(wide)
+        if 76 - stored.scale < len(str(max(-low, high))):
+            in_range = pc.invert(missing) if low < 0 else pc.greater_equal(
+                exact, pa.scalar(Decimal(0), wide))
+        else:
+            in_range = pc.and_(
+                pc.greater_equal(exact, pa.scalar(Decimal(low), wide)),
+                pc.less_equal(exact, pa.scalar(Decimal(high), wide)))
+        floored = (pa.scalar(Decimal(0), wide)
+                   if stored.scale >= 76 else pc.floor(exact))
+        whole = pc.and_(pc.equal(floored, exact), in_range)
+    elif pa.types.is_floating(stored):
+        exact = values.cast(pa.float64())
+        in_range = pc.and_(
+            pc.less(pc.abs(exact), 2.0**_MANTISSA_BITS[stored.id]),
+            pc.and_(pc.greater_equal(exact, float(low)),
+                    pc.less_equal(exact, float(high))))
+        whole = pc.and_(pc.equal(pc.floor(exact), exact), in_range)
+        if low < 0:
+            missing = pc.or_kleene(missing, pc.is_nan(exact))
+    else:
+        return 0
+    invalid = pc.and_(pc.invert(missing), pc.invert(pc.fill_null(whole, False)))
+    return pc.sum(invalid).as_py() or 0
+
+
+def _count_inexact_keys(files: Sequence[Path], name: str, target: Dtype) -> int:
+    r"""`_inexact_key_values` summed over the staged parquet parts holding
+    `name`, each read one batch at a time in its own physical type, so a
+    wider part is not narrowed to the first part's schema.
+    """
+    import pyarrow.parquet as pq
+
+    count = 0
+    for file in files:
+        parquet = pq.ParquetFile(file)
+        if name not in parquet.schema_arrow.names:
+            continue
+        for batch in parquet.iter_batches(columns=[name]):
+            count += _inexact_key_values(batch.column(0), target)
+    return count
+
+
 def _warn_low_fk_match_rates(stats: Dict[str, Any],
                              tables: Dict[str, Any]) -> None:
     edges = stats.get('edge_counts', {})
@@ -717,94 +799,32 @@ class Graph:
         return tables
 
     def _refuse_fractional_keys(self, alias: str, paths: Sequence[str]) -> None:
-        r"""Raises if a float key column declared `int64` by `_ingest_tables`
-        holds a value that has no exact integer: a fraction, a float at or
-        beyond its type's mantissa (2**53 for a double, 2**24 for a float32,
-        2**11 for a float16, from which neighbouring integers collapse), an
-        infinity, or a value outside the integer dtype the key is declared
-        as. A NaN is missing, like a null, except in an unsigned key, which
-        DiskGraph would read as 0. DiskGraph would parse a fraction as
+        r"""Raises if a float key column declared an integer by
+        `_ingest_tables` holds a value DiskGraph cannot convert to it
+        exactly (`_inexact_key_values`): DiskGraph would parse the value as
         null and drop or unlink its row, and a wide float would merge
-        identities. Reads that column of each staged parquet part one batch
-        at a time, in the part's own physical type, so a wider part is not
-        narrowed to the first part's schema. Decimals, which the source
-        reader also reports as floats, are checked at their own precision
-        when the connector stages them as decimals; a warehouse connector
-        that stages a scaled decimal through a double (kumo-databricks does
-        for more than 18 digits) hides any fraction below the double's
-        precision, and such a key converts by its double value. A part
-        staged under any other type is left to DiskGraph's own conversion.
+        identities. Decimals, which the source reader also reports as
+        floats, are checked at their own precision when the connector
+        stages them as decimals; a warehouse connector that stages a scaled
+        decimal through a double (kumo-databricks does for more than 18
+        digits) hides any fraction below the double's precision, and such a
+        key converts by its double value.
         """
-        from decimal import Decimal
-
-        import pyarrow.compute as pc
-        import pyarrow.parquet as pq
-
         files = [
             file for path in paths for file in
             (sorted(Path(path).rglob('*.parquet')) if Path(path).is_dir() else
              [Path(path)])
         ]
         for name, (dtype, target) in self._float_keys.get(alias, {}).items():
-            low, high = _INTEGER_RANGE[target]
-            count = 0
-            for file in files:
-                parquet = pq.ParquetFile(file)
-                if name not in parquet.schema_arrow.names:
-                    continue
-                stored = parquet.schema_arrow.field(name).type
-                if not (pa.types.is_floating(stored)
-                        or pa.types.is_decimal(stored)):
-                    continue
-                for batch in parquet.iter_batches(columns=[name]):
-                    values = batch.column(0)
-                    if pa.types.is_decimal(stored):
-                        # Widened so `floor` has room for every scale and
-                        # every decimal width shares one kernel.
-                        wide = pa.decimal256(76, stored.scale)
-                        exact = values.cast(wide)
-                        missing = pc.is_null(exact)
-                        if 76 - stored.scale < len(str(max(-low, high))):
-                            # Too few integer digits to reach the bounds:
-                            # every value fits, and a bound would not. An
-                            # unsigned target still refuses the negatives.
-                            in_range = pc.invert(
-                                missing) if low < 0 else pc.greater_equal(
-                                    exact, pa.scalar(Decimal(0), wide))
-                        else:
-                            in_range = pc.and_(
-                                pc.greater_equal(exact,
-                                                 pa.scalar(Decimal(low), wide)),
-                                pc.less_equal(exact,
-                                              pa.scalar(Decimal(high), wide)))
-                    else:
-                        exact = values.cast(pa.float64())
-                        in_range = pc.and_(
-                            pc.less(pc.abs(exact),
-                                    2.0**_MANTISSA_BITS[stored.id]),
-                            pc.and_(pc.greater_equal(exact, float(low)),
-                                    pc.less_equal(exact, float(high))))
-                        missing = pc.is_null(exact)
-                        if low < 0:
-                            missing = pc.or_kleene(missing, pc.is_nan(exact))
-                    if pa.types.is_decimal(stored) and stored.scale >= 76:
-                        # No integer digit at all: zero is the only whole
-                        # value, and `floor` has nowhere to put a result.
-                        floored = pa.scalar(Decimal(0), exact.type)
-                    else:
-                        floored = pc.floor(exact)
-                    whole = pc.and_(pc.equal(floored, exact), in_range)
-                    invalid = pc.and_(pc.invert(missing),
-                                      pc.invert(pc.fill_null(whole, False)))
-                    count += pc.sum(invalid).as_py() or 0
+            count = _count_inexact_keys(files, name, target)
             if count:
                 raise ValueError(
                     f"Key column {alias}.{name} is stored as {dtype.value} "
                     f"and {count} of its values cannot be converted to an "
-                    "integer exactly (a fraction, a float too wide for its "
-                    f"type's mantissa, or a value outside {target.value}), "
-                    "so it cannot be an integer key. Use an integer or "
-                    "string key.")
+                    "integer exactly (a fraction, an infinity, a float too "
+                    "wide for its type's mantissa, text that is not a whole "
+                    f"number, or a value outside {target.value}), so it "
+                    "cannot be an integer key. Use an integer or string key.")
 
     @cached_property
     def id(self) -> str:
