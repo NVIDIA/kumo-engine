@@ -5,7 +5,7 @@ Observable symptom → likely cause → fix. Ordered by when the agent hits them
 This file is the signal set as previously compiled. It is **not** re-verifiable against the published Kumo documentation, which is stale for this version of the local SDK and is not a source here — do not cite it, fetch it, or reconcile against it.
 
 > No verbatim Kumo exception text is established for this SDK. Entries below are keyed on the **observable condition**, not on a quoted message. **Do not fabricate Kumo error strings.**
-> The four messages quoted in §1a are the exceptions: they are the SDK's own text, read from its source.
+> The five messages quoted in §1a are the exceptions: they are the SDK's own text, read from its source.
 
 **Who applies a fix.** A fix that changes the data — casting a column, deduplicating, flattening,
 filling or filtering values, combining columns into a key, normalising key types — is the user's
