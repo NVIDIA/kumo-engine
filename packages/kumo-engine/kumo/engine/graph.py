@@ -720,8 +720,10 @@ class Graph:
         r"""Raises if a float key column declared `int64` by `_ingest_tables`
         holds a value that has no exact integer: a fraction, a float at or
         beyond its type's mantissa (2**53 for a double, 2**24 for a float32,
-        2**11 for a float16, from which neighbouring integers collapse), or a
-        value outside the integer dtype the key is declared as. DiskGraph would parse a fraction as
+        2**11 for a float16, from which neighbouring integers collapse), an
+        infinity, or a value outside the integer dtype the key is declared
+        as. A NaN is missing, like a null, except in an unsigned key, which
+        DiskGraph would read as 0. DiskGraph would parse a fraction as
         null and drop or unlink its row, and a wide float would merge
         identities. Reads that column of each staged parquet part one batch
         at a time, in the part's own physical type, so a wider part is not
@@ -761,13 +763,14 @@ class Graph:
                         # every decimal width shares one kernel.
                         wide = pa.decimal256(76, stored.scale)
                         exact = values.cast(wide)
-                        finite = pc.is_valid(exact)
+                        missing = pc.is_null(exact)
                         if 76 - stored.scale < len(str(max(-low, high))):
                             # Too few integer digits to reach the bounds:
                             # every value fits, and a bound would not. An
                             # unsigned target still refuses the negatives.
-                            in_range = finite if low < 0 else pc.greater_equal(
-                                exact, pa.scalar(Decimal(0), wide))
+                            in_range = pc.invert(
+                                missing) if low < 0 else pc.greater_equal(
+                                    exact, pa.scalar(Decimal(0), wide))
                         else:
                             in_range = pc.and_(
                                 pc.greater_equal(exact,
@@ -781,7 +784,9 @@ class Graph:
                                     2.0**_MANTISSA_BITS[stored.id]),
                             pc.and_(pc.greater_equal(exact, float(low)),
                                     pc.less_equal(exact, float(high))))
-                        finite = pc.fill_null(pc.is_finite(exact), False)
+                        missing = pc.is_null(exact)
+                        if low < 0:
+                            missing = pc.or_kleene(missing, pc.is_nan(exact))
                     if pa.types.is_decimal(stored) and stored.scale >= 76:
                         # No integer digit at all: zero is the only whole
                         # value, and `floor` has nowhere to put a result.
@@ -789,14 +794,8 @@ class Graph:
                     else:
                         floored = pc.floor(exact)
                     whole = pc.and_(pc.equal(floored, exact), in_range)
-                    invalid = pc.and_(finite,
+                    invalid = pc.and_(pc.invert(missing),
                                       pc.invert(pc.fill_null(whole, False)))
-                    if low == 0:
-                        # DiskGraph reads a non-finite float into an unsigned
-                        # key as 0 rather than as missing.
-                        invalid = pc.or_(
-                            invalid, pc.and_(pc.is_valid(exact),
-                                             pc.invert(finite)))
                     count += pc.sum(invalid).as_py() or 0
             if count:
                 raise ValueError(
