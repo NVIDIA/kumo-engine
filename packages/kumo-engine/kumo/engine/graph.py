@@ -718,9 +718,9 @@ class Graph:
 
     def _refuse_fractional_keys(self, alias: str, paths: Sequence[str]) -> None:
         r"""Raises if a float key column declared `int64` by `_ingest_tables`
-        holds a value that has no exact integer: a fraction, a float beyond
-        its type's mantissa (2**53 for a double, 2**24 for a float32, 2**11
-        for a float16, past which neighbouring integers collapse), or a
+        holds a value that has no exact integer: a fraction, a float at or
+        beyond its type's mantissa (2**53 for a double, 2**24 for a float32,
+        2**11 for a float16, from which neighbouring integers collapse), or a
         value outside the integer dtype the key is declared as. DiskGraph would parse a fraction as
         null and drop or unlink its row, and a wide float would merge
         identities. Reads that column of each staged parquet part one batch
@@ -777,8 +777,8 @@ class Graph:
                     else:
                         exact = values.cast(pa.float64())
                         in_range = pc.and_(
-                            pc.less_equal(pc.abs(exact),
-                                          2.0**_MANTISSA_BITS[stored.id]),
+                            pc.less(pc.abs(exact),
+                                    2.0**_MANTISSA_BITS[stored.id]),
                             pc.and_(pc.greater_equal(exact, float(low)),
                                     pc.less_equal(exact, float(high))))
                         finite = pc.fill_null(pc.is_finite(exact), False)

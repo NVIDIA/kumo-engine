@@ -739,8 +739,10 @@ def test_float_key_with_fractional_values_is_refused(
 
 
 @pytest.mark.parametrize('target, parts, refused', [
-    ('int64', [pa.array([-2.0**53], pa.float64()),
-               pa.array([0.0, 2.0**53], pa.float64())], 0),
+    ('int64', [pa.array([-2.0**53 + 1], pa.float64()),
+               pa.array([0.0, 2.0**53 - 1], pa.float64())], 0),
+    ('int64', [pa.array([2.0**53, -2.0**53], pa.float64()),
+               pa.array([2.0**53 + 2], pa.float64())], 3),
     ('int64', [pa.array([2.0**53 + 2, -2.0**53 - 2], pa.float64()),
                pa.array([1.0, float('inf'), float('nan'), None],
                         pa.float64())], 2),
@@ -750,9 +752,10 @@ def test_float_key_with_fractional_values_is_refused(
                pa.array([16777216.5], pa.float64())], 1),
     ('int64', [pa.array(['x'], pa.string()), pa.array([2.5], pa.float64())],
      1),
-    ('int64', [pa.array([16777216.0], pa.float32()),
-               pa.array([16777220.0], pa.float32())], 1),
-    ('int64', [pa.array(np.array([2048.0, 2050.0], np.float16))], 1),
+    ('int64', [pa.array([16777215.0, 16777216.0], pa.float32()),
+               pa.array([16777220.0], pa.float32())], 2),
+    ('int64', [pa.array(np.array([2047.0, 2048.0, 2050.0], np.float16))],
+     2),
     ('int64', [pa.array([Decimal('7.00'), None], pa.decimal128(10, 2))], 0),
     ('int64', [pa.array([Decimal('2.50'), Decimal('7.00')],
                         pa.decimal128(10, 2))], 1),
