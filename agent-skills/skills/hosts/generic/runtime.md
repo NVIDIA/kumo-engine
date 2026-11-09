@@ -69,7 +69,7 @@ connector = kumo.GCSConnector(root_dir=SOURCE_URI)           # 'gs://bucket/pref
 # credential. No billing_project_id (§1). location= is the dataset's own, read by bq_location below.
 connector = kumo.BigQueryConnector(project_id=PROJECT_ID, dataset_id=DATASET_ID,
                                    identity=kumo.BigQueryIdentity(),
-                                   location=bq_location(DATASET_ID))
+                                   location=bq_location(PROJECT_ID, DATASET_ID))
 # Databricks — exactly one of warehouse_id / cluster_id
 connector = kumo.DatabricksConnector(
     catalog=CATALOG, schema_name=SCHEMA, identity=kumo.DatabricksIdentity(),
@@ -90,15 +90,20 @@ else — `EU`, or a single region such as `us-central1`, which is not `US` — f
 not-found, and the prediction write only after training, at the sink's location check. Whenever
 any connector in the notebook is BigQuery — source, population or destination — define this
 once, in the connect step before the first connector, and pass
-`location=bq_location(<its dataset>)` to every `BigQueryConnector`:
+`location=bq_location(<its project>, <its dataset>)` to every `BigQueryConnector`:
 
 ```python
 from google.cloud import bigquery
 
-def bq_location(dataset):
+def bq_location(project, dataset):
     """The location a dataset lives in; the dataset must already exist."""
-    return bigquery.Client(project=PROJECT_ID).get_dataset(f'{PROJECT_ID}.{dataset}').location
+    return bigquery.Client(project=project).get_dataset(f'{project}.{dataset}').location
 ```
+
+Each BigQuery location keeps the project it was confirmed with: `PROJECT_ID` for the source,
+`OUTPUT_PROJECT` and `POP_PROJECT` for the destination and the population, equal to `PROJECT_ID`
+only when the confirmed names say so. Use that project for its connector, location, staging query
+and read-back.
 
 Name file and object-store tables without their suffix — `connector['accounts']` for
 `accounts.parquet` — and use those names in the tables, edges and PQL (`adapter.md` §3).
@@ -110,6 +115,17 @@ whose **name** is a config-cell constant — never a literal, never a value aske
 ```python
 identity = kumo.S3Identity(access_key_id=os.environ[AWS_KEY_ID_VAR],
                            secret_access_key=os.environ[AWS_SECRET_VAR])
+```
+
+Arrow does not see that identity. Every `pyarrow` read or write of S3 in §3 and §3.1 then takes
+the same keys, with the path written without `s3://`:
+
+```python
+import pyarrow.fs
+s3 = pyarrow.fs.S3FileSystem(access_key=os.environ[AWS_KEY_ID_VAR],
+                             secret_key=os.environ[AWS_SECRET_VAR])
+written = ds.dataset(OUTPUT_LOCATION.removeprefix('s3://'), format=OUTPUT_FORMAT,
+                     filesystem=s3).count_rows()
 ```
 
 The Snowflake factory `from_spcs_env` and Snowflake's notebook secret store belong to
@@ -144,8 +160,9 @@ output_config = kumo.PredictionOutputConfig(
 OUTPUT_LOCATION = OUTPUT_PARENT + OUTPUT_LEAF                   # the confirmed path, for read-back
 ```
 
-A BigQuery destination's connector is scoped to `OUTPUT_DATASET` and takes
-`location=bq_location(OUTPUT_DATASET)` (§2), which may differ from the source's.
+A BigQuery destination's connector is scoped to `OUTPUT_PROJECT` and `OUTPUT_DATASET` and takes
+`location=bq_location(OUTPUT_PROJECT, OUTPUT_DATASET)` (§2), which may differ from the source's.
+A Databricks destination's connector is scoped to `OUTPUT_CATALOG` and `OUTPUT_SCHEMA`.
 
 Rooting the connector at the destination itself and passing a `table_name` writes one level
 below it, to a path the user never confirmed. A directory destination must be empty or absent;
@@ -163,8 +180,8 @@ written = ds.dataset(OUTPUT_LOCATION, format=OUTPUT_FORMAT).count_rows()  # full
 
 # BigQuery
 from google.cloud import bigquery
-written = next(iter(bigquery.Client(project=PROJECT_ID).query(
-    f'SELECT COUNT(*) FROM `{PROJECT_ID}.{OUTPUT_DATASET}.{OUTPUT_TABLE}`').result()))[0]
+written = next(iter(bigquery.Client(project=OUTPUT_PROJECT).query(
+    f'SELECT COUNT(*) FROM `{OUTPUT_PROJECT}.{OUTPUT_DATASET}.{OUTPUT_TABLE}`').result()))[0]
 
 # Databricks — with the confirmed SQL warehouse; wait_timeout is at most '50s', so poll
 import time
@@ -178,25 +195,28 @@ def q(*parts):
 ws = WorkspaceClient()
 r = ws.statement_execution.execute_statement(
     warehouse_id=DATABRICKS_WAREHOUSE_ID, wait_timeout='50s',
-    statement=f'SELECT COUNT(*) FROM {q(CATALOG, OUTPUT_SCHEMA, OUTPUT_TABLE)}')
+    statement=f'SELECT COUNT(*) FROM {q(OUTPUT_CATALOG, OUTPUT_SCHEMA, OUTPUT_TABLE)}')
 while r.status.state in (StatementState.PENDING, StatementState.RUNNING):
     time.sleep(5)
     r = ws.statement_execution.get_statement(r.statement_id)
 assert r.status.state == StatementState.SUCCEEDED, r.status
 written = int(r.result.data_array[0][0])
 
-# Snowflake — through the same connections.toml entry
+# Snowflake — through the same connections.toml entry and warehouse. Kumo keeps the table
+# name's case, so quote it (kumo_finetuning_sdk.md §9.1); database and schema as in §2.
 import snowflake.connector
-with snowflake.connector.connect(connection_name=SNOWFLAKE_CONNECTION) as conn:
+with snowflake.connector.connect(connection_name=SNOWFLAKE_CONNECTION,
+                                 warehouse=SNOWFLAKE_WAREHOUSE) as conn:
+    table = '"' + OUTPUT_TABLE.replace('"', '""') + '"'
     written = conn.cursor().execute(
-        f'SELECT COUNT(*) FROM {OUTPUT_DATABASE}.{OUTPUT_SCHEMA}.{OUTPUT_TABLE}').fetchone()[0]
+        f'SELECT COUNT(*) FROM {OUTPUT_DATABASE}.{OUTPUT_SCHEMA}.{table}').fetchone()[0]
 
 assert written == prediction_result.num_rows, (written, prediction_result.num_rows)
 ```
 
 - `OUTPUT_LOCATION` for files, S3 and GCS is the confirmed destination itself.
 - A Databricks destination is passed to Kumo as `'<schema>__kumo__<table>'` and read back as
-  `<catalog>.<schema>.<table>`. With a cluster and no SQL warehouse, there is no read-back here:
+  `<catalog>.<schema>.<table>`, in its own catalog. With a cluster and no SQL warehouse, there is no read-back here:
   say so in the artifact and in your reply.
 - Report the destination in its own form, unchanged — `DB.SCHEMA.TABLE`, or the path.
 
@@ -229,15 +249,16 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   keep = {ENTITY_KEY: 'ENTITY1'}
   if ENTITY_TIME:                                             # the entity Table's time_column, else None
       keep[ENTITY_TIME] = 'TIMESTAMP'
-  population = ds.dataset(ENTITY_SOURCE, format=ENTITY_FORMAT).to_table(columns=list(keep))
-  population = population.rename_columns([keep[c] for c in population.column_names])
-  if 'TIMESTAMP' in population.column_names:                  # a DATE anchor reads as null
-      i = population.column_names.index('TIMESTAMP')
-      population = population.set_column(i, 'TIMESTAMP',
-                                         pc.cast(population['TIMESTAMP'], pa.timestamp('us')))
+  scanner = ds.dataset(ENTITY_SOURCE, format=ENTITY_FORMAT).scanner(columns=list(keep))
+  schema = pa.schema([(keep[f.name], pa.timestamp('us') if keep[f.name] == 'TIMESTAMP' else f.type)
+                      for f in scanner.projected_schema])     # a DATE anchor reads as null: cast
   if '://' not in POPULATION_PATH:
       os.makedirs(POPULATION_PATH, exist_ok=True)              # object stores need no directory
-  papq.write_table(population, POPULATION_PATH + 'population.parquet')
+  with papq.ParquetWriter(POPULATION_PATH + 'population.parquet', schema) as writer:
+      for batch in scanner.to_batches():                     # in batches: bounded memory
+          writer.write_batch(pa.RecordBatch.from_arrays(
+              [pc.cast(batch[f.name], t.type) for f, t in zip(batch.schema, schema)],
+              schema=schema))
   if POPULATION_PATH.startswith('s3://'):                     # the source's kind, in the §2 forms
       population_connector = kumo.S3Connector(root_dir=POPULATION_PATH)
   elif POPULATION_PATH.startswith('gs://'):
@@ -251,14 +272,15 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   `ENTITY_SOURCE` is the entity table's file or directory as preflight listed it, and
   `ENTITY_FORMAT` its format as preflight found it, `'csv'` or `'parquet'`. The population is
   written as Parquet either way. `POPULATION_PATH` is the confirmed path, ending in `/`, in the
-  source's file system or bucket.
+  source's file system or bucket. Each run replaces its `population.parquet`, as Node 1d says.
 - **Snowflake source:** the §7.1 SQL, run through
-  `snowflake.connector.connect(connection_name=SNOWFLAKE_CONNECTION)` as in the read-back above,
+  `snowflake.connector.connect(connection_name=SNOWFLAKE_CONNECTION, warehouse=SNOWFLAKE_WAREHOUSE)`
+  as in the read-back above,
   and the `PredictionTable` built from a `SnowflakeConnector` made as in §2 but scoped to the
   population's database and schema.
 - **Databricks source:** create the table through the source's SQL warehouse with the statement
   API, wait for it, and build the `PredictionTable` from a `DatabricksConnector` scoped to the
-  population's schema. A source reached through a cluster has no SQL warehouse: say at Node 1d
+  population's catalog and schema, `POP_CATALOG` and `POP_SCHEMA`. A source reached through a cluster has no SQL warehouse: say at Node 1d
   that staging is not covered there, and offer the rows whose target is NULL instead. The same `TIMESTAMP` rule applies: project `CAST(<time> AS TIMESTAMP) AS
   TIMESTAMP` only when the entity table has a time column, and drop it otherwise. `wait_timeout`
   is at most `'50s'` (Databricks rejects more), so poll until the statement finishes:
@@ -276,7 +298,7 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   time_col = f', CAST({q(ENTITY_TIME)} AS TIMESTAMP) AS TIMESTAMP' if ENTITY_TIME else ''
   r = ws.statement_execution.execute_statement(
       warehouse_id=DATABRICKS_WAREHOUSE_ID, wait_timeout='50s',
-      statement=(f'CREATE OR REPLACE TABLE {q(CATALOG, POP_SCHEMA, POP_TABLE)} AS '
+      statement=(f'CREATE OR REPLACE TABLE {q(POP_CATALOG, POP_SCHEMA, POP_TABLE)} AS '
                  f'SELECT {q(ENTITY_KEY)} AS ENTITY1{time_col} '
                  f'FROM {q(CATALOG, SCHEMA, ENTITY_TABLE)}'))
   while r.status.state in (StatementState.PENDING, StatementState.RUNNING):
@@ -296,13 +318,13 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   from google.cloud import bigquery
 
   time_col = f', CAST({ENTITY_TIME} AS TIMESTAMP) AS `TIMESTAMP`' if ENTITY_TIME else ''
-  bigquery.Client(project=PROJECT_ID).query(
-      f'CREATE OR REPLACE TABLE `{PROJECT_ID}.{POP_DATASET}.{POP_TABLE}` AS '
+  bigquery.Client(project=POP_PROJECT).query(
+      f'CREATE OR REPLACE TABLE `{POP_PROJECT}.{POP_DATASET}.{POP_TABLE}` AS '
       f'SELECT {ENTITY_KEY} AS ENTITY1{time_col} '
       f'FROM `{PROJECT_ID}.{DATASET_ID}.{ENTITY_TABLE}`').result()   # waits; raises on failure
-  population_connector = kumo.BigQueryConnector(project_id=PROJECT_ID, dataset_id=POP_DATASET,
+  population_connector = kumo.BigQueryConnector(project_id=POP_PROJECT, dataset_id=POP_DATASET,
                                                  identity=kumo.BigQueryIdentity(),
-                                                 location=bq_location(POP_DATASET))
+                                                 location=bq_location(POP_PROJECT, POP_DATASET))
   prediction_table = kumo.PredictionTable.from_source_table(
       population_connector[POP_TABLE], pq=pquery, snapshot=snapshot)
   ```
