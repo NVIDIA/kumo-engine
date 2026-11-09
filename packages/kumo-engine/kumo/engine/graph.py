@@ -717,7 +717,11 @@ class Graph:
         width, so the link still passes the lossless-widening rule. A key
         shared by several edges takes the narrowest destination, and a
         destination that is itself converted counts with its converted
-        width, so the widths settle in a few passes over the edges.
+        width, so the widths settle in a few passes over the edges. That
+        is the widest width every link of the column accepts; when none
+        does, because an integer foreign key wider than that width links
+        to a converted primary key, the graph is refused with both links
+        named, since any width would fail one of them.
         """
         tables = self._named_tables
         dtypes = {
@@ -763,6 +767,30 @@ class Graph:
             if settled == effective:
                 break
             effective = settled
+        for edge in self.edges:
+            destination = tables.get(edge.dst_table)
+            if (destination is None or destination.definition is None
+                    or edge.src_table not in effective):
+                continue
+            pkey = destination.definition.pkey
+            target = targets.get(edge.dst_table, {}).get(pkey)
+            incoming = effective[edge.src_table].get(edge.fkey)
+            if (target is None or incoming is None or not incoming.is_int() or
+                    _INTEGER_RANGE[incoming][1] <= _INTEGER_RANGE[target][1]):
+                continue
+            narrowing = next(
+                (other.dst_table, tables[other.dst_table].definition.pkey)
+                for other in self.edges
+                if other.src_table == edge.dst_table and other.fkey == pkey
+                and other.dst_table in effective and effective[other.dst_table].
+                get(tables[other.dst_table].definition.pkey) == target)
+            raise ValueError(
+                f"Key column {edge.dst_table}.{pkey} is stored as "
+                f"{dtypes[edge.dst_table][pkey].value}; it links to "
+                f"{'.'.join(narrowing)} ({target.value}) and "
+                f"{edge.src_table}.{edge.fkey} ({incoming.value}) links to "
+                "it, so no integer width fits every link. Declare these keys "
+                "with one integer width at the source.")
         return {
             alias: {
                 name: (dtypes[alias][name], target)

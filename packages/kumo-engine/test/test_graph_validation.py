@@ -945,9 +945,23 @@ def test_float_key_columns_are_declared_int64_with_a_warning(table_name, key):
                 if col.name == key).dtype == Dtype.float64
 
 
-@pytest.mark.parametrize('shape', ['direct', 'shared', 'shared_reversed',
-                                   'chained'])
-def test_float_foreign_keys_take_the_destination_key_width(shape):
+@pytest.mark.parametrize('shape, widths', [
+    ('direct', {'events.user_id': 'int32'}),
+    ('shared', {'events.user_id': 'int32'}),
+    ('shared_reversed', {'events.user_id': 'int32'}),
+    ('incoming', {'bridge.id': 'int64'}),
+    ('chained', {'events.user_id': 'int32', 'bridge.id': 'int32'}),
+    ('chained_narrow_incoming', {
+        'events.user_id': 'int32',
+        'bridge.id': 'int32'
+    }),
+    ('chained_float_incoming', {
+        'events.user_id': 'int32',
+        'bridge.id': 'int32',
+        'orders.bridge_id': 'int32'
+    }),
+])
+def test_float_keys_take_the_width_every_link_accepts(shape, widths):
     users, events = _s3_tables()
     narrow = _keyed(users, [Column('id', Stype.ID, Dtype.int32)], 'id')
     wide = _keyed(users, [Column('id', Stype.ID, Dtype.int64)], 'id')
@@ -956,6 +970,11 @@ def test_float_foreign_keys_take_the_destination_key_width(shape):
         Column('event_id', Stype.ID, Dtype.int64),
         Column('user_id', Stype.ID, Dtype.float64),
     ], 'event_id')
+    incoming = {
+        'incoming': Dtype.int64,
+        'chained_narrow_incoming': Dtype.int16,
+        'chained_float_incoming': Dtype.float64,
+    }.get(shape)
     tables = {'narrow': narrow, 'events': events}
     edges = [Edge('events', 'user_id', 'narrow')]
     if shape.startswith('shared'):
@@ -963,16 +982,58 @@ def test_float_foreign_keys_take_the_destination_key_width(shape):
         edges.append(Edge('events', 'user_id', 'wide'))
         if shape == 'shared_reversed':
             edges.reverse()
-    if shape == 'chained':
+    if shape.startswith('chained'):
         tables['bridge'] = bridge
         edges = [Edge('bridge', 'id', 'narrow'),
                  Edge('events', 'user_id', 'bridge')]
+    if shape == 'incoming':
+        tables, edges = {'bridge': bridge}, []
+    if incoming is not None:
+        tables['orders'] = _keyed(events, [
+            Column('order_id', Stype.ID, Dtype.int64),
+            Column('bridge_id', Stype.ID, incoming),
+        ], 'order_id')
+        edges.append(Edge('orders', 'bridge_id', 'bridge'))
     graph = Graph(tables, edges)
 
     with pytest.warns(UserWarning) as caught:
         graph.validate()
-    assert all('converted to int32' in str(w.message) for w in caught)
+    assert {str(w.message).split(' is stored')[0]
+            for w in caught} == {f'Key column {column}'
+                                 for column in widths}
     config = {t['table_name']: t for t in graph._graph_config['tables']}
-    assert {fk['dtype'] for fk in config['events']['fkeys']} == {'int32'}
-    if shape == 'chained':
-        assert config['bridge']['pkey']['dtype'] == 'int32'
+    keys = {}
+    for name, table in config.items():
+        keys[f"{name}.{table['pkey']['name']}"] = table['pkey']['dtype']
+        for fkey in table['fkeys']:
+            keys[f"{name}.{fkey['name']}"] = fkey['dtype']
+            assert Dtype(fkey['dtype']).can_link_to_dtype(
+                Dtype(config[fkey['dst_table']]['pkey']['dtype']))
+    assert {column: keys[column] for column in widths} == widths
+
+
+def test_float_key_with_no_width_for_every_link_is_refused():
+    users, events = _s3_tables()
+    graph = Graph(
+        {
+            'narrow':
+            _keyed(users, [Column('id', Stype.ID, Dtype.int32)], 'id'),
+            'bridge':
+            _keyed(users, [Column('id', Stype.ID, Dtype.float64)], 'id'),
+            'orders':
+            _keyed(events, [
+                Column('order_id', Stype.ID, Dtype.int64),
+                Column('bridge_id', Stype.ID, Dtype.int64),
+            ], 'order_id'),
+        },
+        [Edge('bridge', 'id', 'narrow'),
+         Edge('orders', 'bridge_id', 'bridge')])
+
+    with pytest.raises(
+            ValueError,
+            match=(r"Key column bridge\.id is stored as float64; it links to "
+                   r"narrow\.id \(int32\) and orders\.bridge_id \(int64\) "
+                   r"links to it, so no integer width fits every link\. "
+                   r"Declare these keys with one integer width at the "
+                   r"source\.")):
+        graph.validate()
