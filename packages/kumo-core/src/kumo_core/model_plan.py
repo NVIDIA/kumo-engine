@@ -23,6 +23,7 @@ from typing import (
 import kumoapi.encoder as encoder_api
 import kumoapi.model_plan as api
 from kumo_core.errors import TrainingValidationError as ValidationException
+from kumo_core.training.bounds import validate_time_bounds
 from kumo_core.types import TaskType
 from kumoapi.common import ValidationWarning
 from kumoapi.encoder import (
@@ -838,6 +839,7 @@ class TrainingTableGenerationPlan(api.TrainingTableGenerationPlan, PlanMixin):
                              "model plan.")))
         errors.extend(unsupported_entity_candidate_errors(self))
 
+        split = None
         if self.split != InferredType.VALUE:
             try:
                 split = self.get_split(self.split)
@@ -954,6 +956,19 @@ class TrainingTableGenerationPlan(api.TrainingTableGenerationPlan, PlanMixin):
                             f"Forecasting requires a {acceptable_splits} "
                             f"split. Please choose one of these splits or "
                             f"set `split` to `inferred`."))
+        if query_type == QueryType.TEMPORAL and task_type.is_node_pred:
+            try:
+                validate_time_bounds(
+                    inferred_or_missing_type_to_none(self.start_time),
+                    inferred_or_missing_type_to_none(self.end_time),
+                    train_start_offset=inferred_or_missing_type_to_none(
+                        self.train_start_offset),
+                    train_end_offset=inferred_or_missing_type_to_none(
+                        self.train_end_offset),
+                    split_family=None if split is None else split.name,
+                )
+            except ValueError as error:
+                errors.append(error)
         return errors, warnings
 
     @classmethod

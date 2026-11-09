@@ -1,0 +1,104 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+import pytest
+from kumo_core.model_plan import TrainingTableGenerationPlan
+from kumo_core.training.bounds import validate_time_bounds
+from kumo_core.types.enums import TaskType
+from kumoapi.model_plan import RunMode
+from kumoapi.pquery import QueryType
+from pandas import Timestamp
+
+
+@pytest.mark.parametrize('start,end,message', [
+    ('invalid-date', None, 'valid timestamp'),
+    (None, 'NaT', 'valid timestamp'),
+    ('2024-01-02', '2024-01-02', 'smaller than'),
+    ('2024-01-03', '2024-01-02', 'smaller than'),
+    (-2, '2024-01-02', 'both be offsets'),
+    (1, None, 'non-positive'),
+    (None, 1, 'non-positive'),
+    (-1, -2, 'smaller than'),
+    (None, '3000-01-01', 'valid timestamp'),
+])
+def test_invalid_bounds(start, end, message):
+    with pytest.raises(ValueError, match=message):
+        validate_time_bounds(start, end)
+
+
+def test_bounds_normalize_utc():
+    assert validate_time_bounds(
+        '2024-01-01T00:00:00-06:00',
+        '2024-01-01T08:00:00+01:00',
+    ) == (Timestamp('2024-01-01T06:00:00'),
+          Timestamp('2024-01-01T07:00:00'))
+    assert validate_time_bounds('-INF', '2024-01-02') == (
+        None, Timestamp('2024-01-02'))
+    assert validate_time_bounds(None, -1) == (None, -1)
+
+
+@pytest.mark.parametrize('split',
+                         ['BacktestingSplit', 'DateOffsetSplit',
+                          'TimeRangeSplit'])
+def test_absolute_split_conflict(split):
+    with pytest.raises(ValueError, match='cannot be combined'):
+        validate_time_bounds(None, '2024-01-02', split_family=split)
+
+
+@pytest.mark.parametrize('split',
+                         ['ApproxDateOffsetSplit', 'RandomSplit',
+                          'TemporalSplit'])
+def test_absolute_ratio_split(split):
+    assert validate_time_bounds('2024-01-01', None, split_family=split) == (
+        Timestamp('2024-01-01'), None)
+
+
+@pytest.mark.parametrize('flag,expected_errors', [
+    ('false', True), ('true', False),
+])
+def test_integer_bounds_keep_gate(flag, expected_errors, monkeypatch):
+    monkeypatch.setenv('USE_DECOUPLED_SPLITS', flag)
+    errors, _ = TrainingTableGenerationPlan(start_time=-10, end_time=0).validate(
+        task_type=TaskType.BINARY_CLASSIFICATION,
+        query_type=QueryType.TEMPORAL,
+        has_train_table_time_col=True,
+        run_mode=RunMode.FAST,
+    )
+    assert bool(errors) == expected_errors
+
+
+@pytest.mark.parametrize('task_type', TaskType.get_node_pred_tasks())
+def test_node_bound_validation(task_type, monkeypatch):
+    monkeypatch.setenv('USE_DECOUPLED_SPLITS', 'true')
+    plan = TrainingTableGenerationPlan(
+        start_time='2024-01-01T00:00:00-06:00',
+        end_time='2024-01-02T00:00:00-06:00',
+    )
+    errors, _ = plan.validate(
+        task_type=task_type,
+        query_type=QueryType.TEMPORAL,
+        has_train_table_time_col=True,
+        run_mode=RunMode.FAST,
+    )
+    assert not errors
+    assert plan.start_time == '2024-01-01T00:00:00-06:00'
+
+
+@pytest.mark.parametrize('options,message', [
+    ({'start_time': 'NaT'}, 'valid timestamp'),
+    ({'start_time': '2024-01-01', 'train_start_offset': 2},
+     'Cannot specify both'),
+    ({'start_time': '2024-01-01',
+      'split': "TimeRangeSplit([('2024-01-01', '2024-01-02')])"},
+     'cannot be combined'),
+])
+def test_plan_rejects_invalid_bounds(options, message, monkeypatch):
+    monkeypatch.setenv('USE_DECOUPLED_SPLITS', 'true')
+    errors, _ = TrainingTableGenerationPlan(**options).validate(
+        task_type=TaskType.BINARY_CLASSIFICATION,
+        query_type=QueryType.TEMPORAL,
+        has_train_table_time_col=True,
+        run_mode=RunMode.FAST,
+    )
+    assert any(message in str(error) for error in errors)
