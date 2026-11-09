@@ -229,6 +229,11 @@ def invalid_value_counts(kumo_stats_dir: Any,
 
 
 def _float32_limit(places: int) -> float:
+    r"""The magnitude from which float32 no longer resolves a step of
+    ``places`` decimal places; 0 when the step is finer than float32's
+    fixed subnormal spacing, which no magnitude escapes."""
+    if 10**-places < _FLOAT32_SMALLEST:
+        return 0.0
     return float(2**(_FLOAT32_EXACT_BITS - math.ceil(places * math.log2(10))))
 
 
@@ -433,10 +438,8 @@ def _warn_float32_narrowing(
             "dtype=Dtype.float64 for the column to keep them.", UserWarning,
             stacklevel=3)
     magnitude = _magnitude(stat)
-    if magnitude is None:
-        return
     limit = _float32_limit(places)
-    if magnitude < limit:
+    if not magnitude or magnitude < limit:
         return
     step = ('every whole number'
             if places == 0 else f"steps of {10**-places:g}")

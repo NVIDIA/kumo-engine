@@ -968,6 +968,24 @@ def test_text_outside_diskgraphs_number_grammar_is_not_measured(tmp_path):
             'them.') in messages
 
 
+def test_a_step_below_float32s_subnormal_spacing_is_reported(tmp_path):
+    from kumo.engine import FileConnector, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            'id': range(4),
+            'rate': pa.array([1.03e-43, 1.04e-43, 1.05e-43, 1.06e-43]),
+        }), root / 't.parquet')
+    source = Table.from_source_table(
+        FileConnector(root_dir=str(root))['t.parquet'],
+        primary_key='id').with_column('rate', dtype=Dtype.float32)
+    with pytest.warns(UserWarning, match='steps of 1e-45'):
+        Graph({'t': source}).snapshot()
+
+
 def test_values_too_large_for_float32_are_reported(tmp_path):
     from kumo.engine import FileConnector, configure
     from kumo.engine.graph import _sampled_precision

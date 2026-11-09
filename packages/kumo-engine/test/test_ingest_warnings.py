@@ -350,6 +350,15 @@ def test_missing_like_count_is_a_lower_bound_past_the_kept_categories(tmp_path):
     }, "events.amount is stored as float32 but comes from double and holds 2 "
      "sampled value(s) too large for float32, which stores them as "
      "infinity. Declare dtype=Dtype.float64 for the column to keep them."),
+    ({
+        ('events', 'amount'): ('double', 45, 0, 0)
+    }, {
+        'MIN': 1.03e-43,
+        'MAX': 1.04e-43
+    }, "events.amount is stored as float32 but comes from double and reaches "
+     "1.04e-43; from 0 on float32 no longer resolves steps of 1e-45, so "
+     "values are rounded. Declare dtype=Dtype.float64 for the column to "
+     "keep full precision."),
 ])
 def test_snapshot_reports_values_beyond_float32_precision(
         tmp_path, narrowed, stats, expected):
