@@ -297,19 +297,32 @@ def test_a_non_nullable_staged_column_still_takes_the_nulls(tmp_path):
     assert not stored.schema.field('id').nullable
 
 
-@pytest.mark.parametrize('values, outcome', [
+@pytest.mark.parametrize('values, outcome, stored', [
     (pa.array([' 1705276800 ', '1705363200']), {
         'ts': 's'
-    }),
-    (pa.array([' 1705276800 ', '1705276800000']), ValueError),
+    }, ['1705276800', '1705363200']),
+    (pa.array([' 1705276800 ', '1705276800000']), ValueError, None),
     (pa.array([' 20240115', '20240116 ']), {
         'ts': '%Y%m%d'
-    }),
+    }, ['20240115', '20240116']),
     (pa.array(['1705276800.0', '1705363200.0']), {
         'ts': 's'
-    }),
+    }, ['1705276800', '1705363200']),
+    (pa.array(['20240115.0', ' 20240116', '20240117', None]), {
+        'ts': '%Y%m%d'
+    }, ['20240115', '20240116', '20240117', None]),
+    (pa.array(['020240115', '20240116'], pa.large_string()), {
+        'ts': '%Y%m%d'
+    }, ['20240115', '20240116']),
+    (pa.array(['20240115.0', '20240116']).dictionary_encode(), {
+        'ts': '%Y%m%d'
+    }, ['20240115', '20240116']),
+    (pa.array(['1705276800.0', '0']), {
+        'ts': 's'
+    }, ['1705276800', None]),
 ])
-def test_padded_digit_strings_count_as_numbers(tmp_path, values, outcome):
+def test_padded_digit_strings_are_staged_as_the_numbers_they_spell(
+        tmp_path, values, outcome, stored):
     path = _part(tmp_path, values)
     if outcome is ValueError:
         with pytest.raises(ValueError, match='no single reading'):
@@ -317,7 +330,12 @@ def test_padded_digit_strings_count_as_numbers(tmp_path, values, outcome):
         return
     with pytest.warns(UserWarning, match='holds whole numbers'):
         assert resolve_time_columns('events', _definition(),
-                                    [str(path)]) == (outcome, [])
+                                    [str(path)]) == (outcome, ['ts'])
+    column = pq.read_table(path).column('ts')
+    assert column.to_pylist() == stored
+    kind = values.type
+    assert column.type == (kind.value_type
+                           if pa.types.is_dictionary(kind) else kind)
 
 
 def test_a_declared_format_is_left_alone(tmp_path):

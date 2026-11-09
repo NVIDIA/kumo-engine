@@ -131,6 +131,7 @@ class _Scan:
     reshape_parts: set = field(default_factory=set)
     unread: _Tally = field(default_factory=_Tally)
     unread_parts: set = field(default_factory=set)
+    padded_parts: set = field(default_factory=set)
     slash_dm: _Tally = field(default_factory=_Tally)
     slash_md: _Tally = field(default_factory=_Tally)
     slash_both: _Tally = field(default_factory=_Tally)
@@ -371,6 +372,13 @@ def _text_numbers(text: pa.Array, digits: pa.Array) -> pa.Array:
     return pc.cast(pc.if_else(fits, plain, None), pa.int64())
 
 
+def _spelled(numbers: pa.Array, kind: pa.DataType) -> pa.Array:
+    r"""The whole numbers written out in plain digits, the one spelling
+    DiskGraph's format parser reads; null where there is no number.
+    """
+    return pc.cast(numbers, kind)
+
+
 def _strings(values: pa.Array) -> Optional[pa.Array]:
     kind = values.type
     if pa.types.is_dictionary(kind):
@@ -463,8 +471,10 @@ class _Column:
             self.scan.other_example = pc.filter(text, other)[0].as_py()
 
         if pc.sum(families['digits']).as_py():
-            self._observe_numbers(part, text, families['digits'],
-                                  _text_numbers(text, families['digits']))
+            numbers = _text_numbers(text, families['digits'])
+            self._observe_numbers(part, text, families['digits'], numbers)
+            if pc.any(pc.not_equal(_spelled(numbers, text.type), text)).as_py():
+                self.scan.padded_parts.add(part)
 
         for parts, kind in ((iso, 'iso'), (year_slash, 'year_slash')):
             matched = pc.fill_null(pc.is_valid(parts), False)
@@ -719,20 +729,27 @@ class _Column:
         if self.decision.one_shape:
             parts |= self.scan.reshape_parts
         if self.decision.reading:
-            parts |= self.scan.unread_parts
+            parts |= self.scan.unread_parts | self.scan.padded_parts
         return parts
 
     def rewritten(self, values: pa.Array) -> pa.Array:
-        r"""The column as the decision stages it: invalid values null, and
-        ISO values in one shape, a space before a full time part, when the
+        r"""The column as the decision stages it: invalid values null; ISO
+        values in one shape, a space before a full time part, when the
         column mixes bare and zoned ones, so one chrono format reads them
-        all. A date alone is its midnight.
+        all (a date alone is its midnight); and digit strings as the plain
+        whole number they spell when the column is read as numbers, since
+        the declared format reads no padding or zero fraction.
         """
         invalid = self.invalid(values)
         if self.decision.one_shape:
             for pattern, replacement in _ONE_SHAPE:
                 values = pc.replace_substring_regex(values, pattern,
                                                     replacement)
+        if self.decision.reading and _strings(values) is not None:
+            digits = pc.fill_null(pc.match_substring_regex(values, _DIGITS),
+                                  False)
+            spelled = _spelled(_text_numbers(values, digits), values.type)
+            values = pc.if_else(pc.is_valid(spelled), spelled, values)
         return pc.if_else(invalid, None, values)
 
     def invalid(self, values: pa.Array) -> pa.Array:

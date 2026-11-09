@@ -741,6 +741,22 @@ def test_integer_time_columns_drop_the_values_without_the_reading(
                                                       _secs(kept[1]))
 
 
+def test_padded_digit_strings_reach_diskgraph_as_the_numbers_they_spell(
+        tmp_path):
+    with pytest.warns(
+            UserWarning, match=re.escape(
+                'its 3 values are read as YYYYMMDD dates (20240115.0 is '
+                '2024-01-15 00:00:00)')) as caught:
+        column, stats, ingest = _time_snapshot(
+            tmp_path, 'parquet',
+            pa.array(['20240115.0', ' 20240116', '20240117']))
+    assert len(_user_warnings(caught)) == 1
+    assert column['timestamp_format'] == '%Y%m%d'
+    assert ingest['total_nodes'] == 3
+    assert (stats['min_secs'], stats['max_secs']) == (_secs('2024-01-15'),
+                                                      _secs('2024-01-17'))
+
+
 @pytest.mark.parametrize('extension', ['csv', 'parquet'])
 @pytest.mark.parametrize('values, impossible, far, last', [
     ([
