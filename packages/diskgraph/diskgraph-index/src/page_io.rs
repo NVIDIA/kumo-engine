@@ -220,6 +220,22 @@ pub struct PageIoStats {
     pub cache_entries: u64,
 }
 
+pub struct PageIoRuntimeState {
+    pub runtime_initialized: bool,
+    pub cache_initialized: bool,
+    pub runtime_rings: usize,
+}
+
+/// Inspect initialized process-owned resources without starting I/O owners.
+pub fn runtime_state() -> PageIoRuntimeState {
+    let state = process_state();
+    PageIoRuntimeState {
+        runtime_initialized: state.runtime.get().is_some(),
+        cache_initialized: state.cache.get().is_some_and(Result::is_ok),
+        runtime_rings: state.runtime.get().map_or(0, |runtime| runtime.senders.len()),
+    }
+}
+
 static COUNTERS: Counters = Counters {
     submitted: AtomicU64::new(0),
     io_ops: AtomicU64::new(0),

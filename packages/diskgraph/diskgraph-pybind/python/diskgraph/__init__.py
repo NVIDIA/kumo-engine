@@ -5,6 +5,8 @@
 from ._c import (
     __version__,
     BUILD_COMMIT,
+    PageIoSnapshot,
+    page_io_stats,
     StringLookup,
     pack_token_stream,
     export_tt_artifacts,
@@ -116,6 +118,8 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
+    "PageIoSnapshot",
+    "page_io_stats",
     "StringLookup",
     "pack_token_stream",
     "export_tt_artifacts",
