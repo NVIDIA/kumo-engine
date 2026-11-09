@@ -950,26 +950,24 @@ class Graph:
                     record_sources=record_sources)
 
                 paths = prepared.source.get('paths') or []
-                formats, rewritten = resolve_time_columns(
+                if paths and len({str(Path(path).parent)
+                                  for path in paths}) != 1:
+                    raise NotImplementedError(
+                        "TODO(local-sdk): a table staged across multiple "
+                        "directories isn't handled here (mirrors "
+                        "kumoai/backend/local/graph.py's create_snapshot, "
+                        "which also refuses this case).")
+                formats, rewritten, located = resolve_time_columns(
                     alias, table.definition, paths
-                    or [str(prepared.source.get('path') or dest_dir)])
+                    or [str(prepared.source.get('path') or dest_dir)],
+                    str(dest_dir))
                 if formats or rewritten:
                     settled[alias] = {
                         'formats': formats,
                         'rewritten': rewritten
                     }
-                if paths:
-                    parents = {str(Path(path).parent) for path in paths}
-                    if len(parents) != 1:
-                        raise NotImplementedError(
-                            "TODO(local-sdk): a table staged across multiple "
-                            "directories isn't handled here (mirrors "
-                            "kumoai/backend/local/graph.py's create_snapshot, "
-                            "which also refuses this case).")
-                    source_paths[alias] = parents.pop()
-                else:
-                    source_paths[alias] = str(
-                        prepared.source.get('path') or dest_dir)
+                source_paths[alias] = (str(Path(located[0]).parent)
+                                       if paths else located[0])
 
             version_parts = [
                 json.dumps(table_data_versions, sort_keys=True).encode()

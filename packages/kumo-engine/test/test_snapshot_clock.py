@@ -81,8 +81,9 @@ def test_a_settled_time_column_has_its_own_snapshot(ingests, monkeypatch):
     }, []), ({}, ['ts']), ({
         'ts': 's'
     }, ['ts'])])
-    monkeypatch.setattr(graph_module, 'resolve_time_columns',
-                        lambda *args: next(outcomes))
+    monkeypatch.setattr(
+        graph_module, 'resolve_time_columns',
+        lambda alias, definition, paths, dest_dir: (*next(outcomes), paths))
     ids = [_graph().snapshot().id for _ in range(4)]
     assert len(set(ids)) == 4
     data_version = fingerprint(
