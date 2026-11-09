@@ -1896,3 +1896,5 @@ def test_task_window_is_the_whole_target_range(pql):
         target.start, target.unit)
     assert options["unix_end_offset"] == compute_unix_step(
         target.end, target.unit)
+    assert options["unix_step_size"] == compute_unix_step(
+        target.end - target.start, target.unit)
