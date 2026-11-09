@@ -1,0 +1,9 @@
+{
+  "tool": "gitleaks",
+  "version": "8.30.1",
+  "authority": "advisory, non-canonical",
+  "result": "pass",
+  "scope": "All changed notebooks, documentation, and advisory scan artifacts. This is the repository check, not a substitute for Pulse.",
+  "timestamp": "2026-11-09T19:23:00.822133+00:00",
+  "findings": []
+}
