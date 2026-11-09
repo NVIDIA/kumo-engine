@@ -36,12 +36,27 @@ from io_utils import fsutil
 
 
 def result(backend: str, repeat: int, seconds: float) -> dict:
+    controls = dict(
+        memory_bytes=4 * 1024**3, cpus='0-3', steps=128, batch_size=256,
+        workers=0, threads=4, torch_threads=1, loader_mode='standalone',
+        model_seed=0, direct_cache_gib=1, io_rings=2, io_qd=32,
+        io_batch_mult=1, pilot=False, min_training_seconds=30,
+        source_provenance=dict(git_sha='source', file_sha256={'runner.py': 'hash'}),
+        build_provenance_sha256='build', prepared_manifest_sha256='manifest')
     return dict(task='binary', regime='resident', backend=backend,
                 repeat=repeat, status='PASS', config_sha256='fixed',
                 predictions=dict(values=[[.1, .9]], decisions=[True]),
-                provenance=dict(native_sha256='a' * 64),
+                provenance=dict(
+                    native_sha256='a' * 64, build=dict(profile='release'),
+                    python='3.14', torch='2.12', engine_version='test',
+                    diskgraph_version='test', environment=dict(
+                        DG_EDGE_BACKEND=backend, DG_IO_BATCH_MULT='1'),
+                    isolation=dict(source_manifest_sha256='manifest',
+                                   pristine_files=[dict(path='index', size=1,
+                                                        sha256='data')])),
                 config=dict(loader_mode='standalone'),
-                matrix_spec=dict(io_batch_mult=1),
+                requested_io_config=dict(io_batch_mult=1),
+                matrix_spec=controls,
                 work=dict(optimizer_steps=128, train_batches=128,
                           logical_seed_sha256='a' * 64,
                           predict_rows=1000, predict_batches=4),
@@ -96,7 +111,7 @@ def test_incomplete_matrix_rejected():
 def test_aggregate_retained_trial_directory(tmp_path):
     fsutil.makedirs(str(tmp_path / 'preserved-clone.json'))
     row = result('mmap', 0, 20)
-    row['matrix_spec'] = dict(pilot=True, io_batch_mult=1)
+    row['matrix_spec']['pilot'] = True
     fsutil.write_text(str(tmp_path / 'mmap.json'), json.dumps(row))
     fsutil.write_text(str(tmp_path / 'notes.txt'), 'not JSON')
     args = Namespace(results_dir=str(tmp_path), output=str(tmp_path / 'out.json'),
@@ -120,6 +135,88 @@ def test_paired_speedups():
     assert direct['median_speedup'] == 2.
     assert direct['speedup_bootstrap_95'] == [2., 2.]
     assert len(summary['trials']) == 15
+    assert summary['comparison_status'] == 'REPEATED_PAIRS'
+    assert not summary['pilot']
+
+
+@pytest.mark.parametrize('repetitions', (1, 2, 3, 4))
+def test_small_samples_exploratory(repetitions):
+    rows = [result(backend, repeat, 10) for repeat in range(repetitions)
+            for backend in BACKENDS]
+    summary = summarize(rows, repetitions, 12)
+    assert summary['status'] == 'PASS'
+    assert summary['comparison_status'] == 'EXPLORATORY'
+    assert not summary['pilot']
+    assert confidence_interval([1.] * repetitions, 12) is None
+    assert all(phase['speedup_bootstrap_95'] is None
+               for backend in summary['groups']['binary/resident'].values()
+               for phase in backend.values())
+
+
+def test_repeated_pilot_exploratory():
+    rows = [result(backend, repeat, 10) for repeat in range(5)
+            for backend in BACKENDS]
+    for row in rows:
+        row['matrix_spec']['pilot'] = True
+    summary = summarize(rows, 5, 12)
+    assert summary['comparison_status'] == 'EXPLORATORY'
+    assert summary['pilot']
+    assert summary['groups']['binary/resident']['direct']['fit'][
+        'speedup_bootstrap_95'] == [1., 1.]
+
+
+@pytest.mark.parametrize('field,value', [
+    ('source_provenance', dict(git_sha='changed')),
+    ('direct_cache_gib', 2), ('memory_bytes', 8 * 1024**3),
+    ('build_provenance_sha256', 'other-build'),
+    ('prepared_manifest_sha256', 'other-manifest'),
+    ('cpus', '4-7'), ('io_rings', 4), ('io_qd', 64), ('model_seed', 1),
+])
+def test_mixed_trial_controls_rejected(field, value):
+    rows = [result(backend, repeat, 10) for repeat in range(2)
+            for backend in BACKENDS]
+    for row in rows:
+        if row['repeat'] == 1:
+            row['matrix_spec'][field] = value
+    with pytest.raises(ValueError, match='different trial controls or provenance'):
+        summarize(rows, 2, 12)
+
+
+@pytest.mark.parametrize('area,field,value', [
+    ('provenance', 'build', dict(profile='debug')),
+    ('provenance', 'torch', 'different'),
+    ('provenance', 'environment', dict(DG_IO_BATCH_MULT='8')),
+    ('isolation', 'source_manifest_sha256', 'different'),
+    ('isolation', 'pristine_files', [dict(path='index', size=1, sha256='other')]),
+])
+def test_mixed_trial_evidence_rejected(area, field, value):
+    rows = [result(backend, 0, 10) for backend in BACKENDS]
+    provenance = rows[-1]['provenance']
+    target = provenance if area == 'provenance' else provenance['isolation']
+    target[field] = value
+    with pytest.raises(ValueError, match='different trial controls or provenance'):
+        summarize(rows, 1, 12)
+
+
+def test_unique_trial_paths_accepted():
+    rows = [result(backend, repeat, 10) for repeat in range(2)
+            for backend in BACKENDS]
+    for index, row in enumerate(rows):
+        row['matrix_spec'].update(
+            runtime_prepared_dir=f'/trial/{index}', result=f'/result/{index}',
+            log=f'/log/{index}', resources=f'/resources/{index}',
+            runtime_manifest_sha256=f'unique-clone-{index}',
+            eviction=dict(resident_pages=index))
+        row['provenance']['isolation'].update(
+            trial_root=f'/trial/{index}', clone_seconds=index)
+    assert summarize(rows, 2, 12)['status'] == 'PASS'
+
+
+def test_mixed_native_build_rejected():
+    rows = [result(backend, 0, 10) for backend in BACKENDS]
+    rows[-1]['provenance']['native_sha256'] = 'b' * 64
+    with pytest.raises(ValueError, match='different native candidate builds'):
+        summarize(rows, 1, 12)
 
 
 def test_wrong_predictions_rejected():

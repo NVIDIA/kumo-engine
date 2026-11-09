@@ -79,10 +79,12 @@ def trial_order(repetitions: int, seed: int) -> list[tuple[int, str]]:
     return result
 
 
-def confidence_interval(values: list[float], seed: int) -> list[float]:
+def confidence_interval(values: list[float], seed: int) -> list[float] | None:
     """Percentile bootstrap over paired repetition-level speedups."""
     if not values or any(not math.isfinite(x) or x <= 0 for x in values):
         raise ValueError('Speedups must be finite and positive')
+    if len(values) < 5:
+        return None
     rng = random.Random(seed)
     medians = sorted(statistics.median(rng.choices(values, k=len(values)))
                      for _ in range(10000))
@@ -231,6 +233,34 @@ def runner_command(spec: dict) -> list[str]:
     return command
 
 
+def trial_signature(row: dict) -> str:
+    spec = row['matrix_spec']
+    provenance = row['provenance']
+    isolation = provenance['isolation']
+    fields = ('memory_bytes', 'cpus', 'steps', 'batch_size', 'workers',
+              'threads', 'torch_threads', 'loader_mode', 'model_seed',
+              'direct_cache_gib', 'io_rings', 'io_qd', 'io_batch_mult',
+              'pilot', 'min_training_seconds')
+    signature = dict(
+        controls={key: spec[key] for key in fields},
+        source=spec['source_provenance'],
+        build_sha256=spec['build_provenance_sha256'],
+        build=provenance['build'],
+        prepared_manifest_sha256=spec['prepared_manifest_sha256'],
+        source_manifest_sha256=isolation['source_manifest_sha256'],
+        pristine_files=sorted(isolation['pristine_files'],
+                              key=lambda item: item['path']),
+        model_config=row['config'],
+        requested_io_config=row['requested_io_config'],
+        runtime={key: provenance[key] for key in (
+            'python', 'torch', 'engine_version', 'diskgraph_version')},
+        environment={key: value for key, value in provenance['environment'].items()
+                     if key != 'DG_EDGE_BACKEND'},
+    )
+    return json.dumps(signature, sort_keys=True, separators=(',', ':'),
+                      allow_nan=False)
+
+
 def summarize(rows: list[dict], repetitions: int, seed: int,
               prediction_atol: float = 1e-6) -> dict:
     if not rows:
@@ -245,6 +275,9 @@ def summarize(rows: list[dict], repetitions: int, seed: int,
             if any(row['matrix_spec']['io_batch_mult'] !=
                    selected[0]['matrix_spec']['io_batch_mult'] for row in selected):
                 raise ValueError('Cannot pool different native I/O batch multipliers')
+            signature = trial_signature(selected[0])
+            if any(trial_signature(row) != signature for row in selected[1:]):
+                raise ValueError('Cannot pool different trial controls or provenance')
             validate_work(selected)
             validate_predictions(selected, prediction_atol)
             cells = {(row['repeat'], row['backend']): row for row in selected}
@@ -277,10 +310,15 @@ def summarize(rows: list[dict], repetitions: int, seed: int,
                     }
                 group[backend] = phases
             summary[f'{task}/{regime}'] = group
-    return dict(status='PASS', repetitions=repetitions,
+    pilot = any(row['matrix_spec']['pilot'] for row in rows)
+    return dict(status='PASS', repetitions=repetitions, pilot=pilot,
+                comparison_status=('EXPLORATORY' if pilot or repetitions < 5
+                                   else 'REPEATED_PAIRS'),
                 prediction_atol=prediction_atol,
                 speedup_definition='mmap / candidate',
-                uncertainty='paired percentile bootstrap; exploratory at n=5',
+                uncertainty=('unavailable below five paired repetitions'
+                             if repetitions < 5 else
+                             'paired percentile bootstrap; exploratory at n=5'),
                 groups=summary, trials=rows)
 
 
