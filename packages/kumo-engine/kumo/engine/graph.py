@@ -173,6 +173,7 @@ _FLOAT64_DIGITS = sys.float_info.dig
 _FLOAT64_PLACES = math.ceil(
     (sys.float_info.mant_dig - sys.float_info.min_exp) * math.log10(2))
 _FLOAT32_SMALLEST = 2.0**-149
+_SAMPLE_BUFFER_SIZE = 1 << 20
 _NUMERICAL = 'kumo.numerical'
 
 
@@ -278,7 +279,8 @@ def _narrowed_float_columns(
     r"""Each float32 column staged from a wider type, with that type, the
     decimal places its values are written with and how many lie below the
     smallest float32, read from the table's first ``_SAMPLE_ROWS`` rows
-    across its parts, all such columns together. A backend that names a
+    across its parts, all such columns together and through a bounded
+    buffer rather than whole column chunks. A backend that names a
     directory instead of its parts has it globbed, only when the table has
     a float32 column."""
     import pyarrow as pa
@@ -295,7 +297,8 @@ def _narrowed_float_columns(
     budget = _SAMPLE_ROWS
     for path in paths or sorted(
             str(part) for part in Path(source_path).rglob('*.parquet')):
-        parquet = pq.ParquetFile(path)
+        parquet = pq.ParquetFile(path, pre_buffer=False,
+                                 buffer_size=_SAMPLE_BUFFER_SIZE)
         schema = parquet.schema_arrow
         sampled = []
         for column in columns:
@@ -309,7 +312,8 @@ def _narrowed_float_columns(
                 sampled.append(column)
         if budget <= 0 or not sampled:
             continue
-        for batch in parquet.iter_batches(budget, columns=sampled):
+        for batch in parquet.iter_batches(budget, columns=sampled,
+                                          use_threads=False):
             for column in sampled:
                 physical, places, underflows = narrowed[alias, column]
                 more, below = _sampled_precision(batch.column(column))

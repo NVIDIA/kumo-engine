@@ -794,6 +794,61 @@ def test_the_float32_step_is_sampled_on_one_budget_per_table(
     assert requested == [['a', 'b']] * reads
 
 
+def test_the_float32_step_sample_reads_pages_not_the_whole_chunk(
+        tmp_path, monkeypatch):
+    import io
+
+    from kumo.engine import FileConnector
+    from kumo.engine.graph import _narrowed_float_columns
+
+    root = tmp_path / 'source'
+    root.mkdir()
+    path = root / 't.parquet'
+    rows = 1_000_000
+    pq.write_table(
+        pa.table({
+            'id': pa.array(range(rows), pa.int64()),
+            'x': np.random.default_rng(0).random(rows),
+        }), path, row_group_size=rows)
+    table = Table.from_source_table(
+        FileConnector(root_dir=str(root))['t.parquet'],
+        primary_key='id').with_column('x', dtype=Dtype.float32)
+
+    class Counting(io.RawIOBase):
+        read_bytes = 0
+
+        def __init__(self):
+            self.file = open(path, 'rb')
+
+        def readable(self):
+            return True
+
+        def seekable(self):
+            return True
+
+        def seek(self, offset, whence=0):
+            return self.file.seek(offset, whence)
+
+        def tell(self):
+            return self.file.tell()
+
+        def readinto(self, buffer):
+            count = self.file.readinto(buffer)
+            Counting.read_bytes += count or 0
+            return count
+
+        def size(self):
+            return path.stat().st_size
+
+    original = pq.ParquetFile
+    monkeypatch.setattr(
+        pq, 'ParquetFile', lambda source, **kwargs: original(
+            pa.PythonFile(Counting(), mode='r'), **kwargs))
+    narrowed = _narrowed_float_columns('t', table, [str(path)], root)
+    assert narrowed[('t', 'x')][0] == 'double'
+    assert Counting.read_bytes < 4_000_000
+
+
 def test_a_step_finer_than_any_float64_is_no_step(tmp_path):
     from kumo.engine import FileConnector, configure
     from kumo.engine.graph import _sampled_precision
