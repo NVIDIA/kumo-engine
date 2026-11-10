@@ -1026,6 +1026,22 @@ fn flush_value_list_buf_with_field(
             }
             Arc::new(builder.finish())
         }
+        DataType::Float32 => {
+            let mut builder = ListBuilder::new(arrow_array::builder::Float32Builder::new())
+                .with_field(inner_field.clone());
+            for list in &lists {
+                for v in list {
+                    let f = match v {
+                        Value::Float(f) => *f as f32,
+                        Value::Int(i) => *i as f32,
+                        _ => 0.0,
+                    };
+                    builder.values().append_value(f);
+                }
+                builder.append(true);
+            }
+            Arc::new(builder.finish())
+        }
         DataType::Float64 => {
             let mut builder = ListBuilder::new(
                 arrow_array::builder::Float64Builder::new(),
@@ -1126,6 +1142,33 @@ mod tests {
     use super::*;
     use crossbeam_channel::bounded;
     use diskgraph_core::time::Seconds;
+
+    #[test]
+    fn test_flush_float32_list_preserves_field_and_values() {
+        use arrow_array::{Array, Float32Array, ListArray};
+
+        let field = Field::new("element", DataType::Float32, true);
+        let output = flush_value_list_buf_with_field(
+            vec![
+                vec![Value::Float(1.25), Value::Int(2), Value::Float(-3.5)],
+                vec![],
+                vec![Value::Float(0.125)],
+            ],
+            &field,
+        );
+
+        assert_eq!(output.data_type(), &DataType::List(Arc::new(field)));
+        let lists = output.as_any().downcast_ref::<ListArray>().unwrap();
+        assert_eq!(lists.len(), 3);
+        assert_eq!(lists.null_count(), 0);
+        assert_eq!(lists.value_offsets(), &[0, 3, 3, 4]);
+        let values = lists
+            .values()
+            .as_any()
+            .downcast_ref::<Float32Array>()
+            .unwrap();
+        assert_eq!(values.values().as_ref(), &[1.25, 2.0, -3.5, 0.125]);
+    }
 
     /// Helper: create a ChannelBatchWriter with a bounded channel and return
     /// both the writer and the receiver for collecting output batches.

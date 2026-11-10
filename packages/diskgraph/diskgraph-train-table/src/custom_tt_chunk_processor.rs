@@ -436,8 +436,8 @@ fn read_timestamp_ticks(
     None
 }
 
-/// Read a list cell as `Value::List(Vec<Value>)`. Supports inner Float64,
-/// Int64, and Utf8. Returns `None` if the cell is null or the array shape is
+/// Read a list cell as `Value::List(Vec<Value>)`. Supports inner Float32,
+/// Float64, Int64, and Utf8. Returns `None` if the cell is null or the array shape is
 /// unsupported.
 fn read_list_cell<O: arrow_array::OffsetSizeTrait>(
     arr: &arrow_array::GenericListArray<O>,
@@ -455,6 +455,16 @@ fn read_list_cell<O: arrow_array::OffsetSizeTrait>(
                 out.push(Value::Float(f64::NAN));
             } else {
                 out.push(Value::Float(f.value(j)));
+            }
+        }
+        return Some(Value::List(out));
+    }
+    if let Some(f) = list.as_any().downcast_ref::<Float32Array>() {
+        for j in 0..n {
+            if f.is_null(j) {
+                out.push(Value::Float(f64::NAN));
+            } else {
+                out.push(Value::Float(f64::from(f.value(j))));
             }
         }
         return Some(Value::List(out));
@@ -2000,6 +2010,28 @@ mod contract_tests {
             (Some("string"), "large_list", Arc::new(large_str.finish())),
             (Some("float64"), "fixed_size_list", Arc::new(fixed.finish())),
         ]
+    }
+
+    #[test]
+    fn read_float32_list_preserves_values_and_nulls() {
+        let mut builder = ListBuilder::new(Float32Builder::new());
+        builder.values().append_value(1.25);
+        builder.values().append_null();
+        builder.values().append_value(-3.5);
+        builder.append(true);
+        builder.append(true);
+        builder.append(false);
+        let array = builder.finish();
+
+        let Some(Value::List(values)) = read_list_cell(&array, 0) else {
+            panic!("Float32 list must be readable");
+        };
+        assert_eq!(values.len(), 3);
+        assert_eq!(values[0], Value::Float(1.25));
+        assert!(matches!(values[1], Value::Float(value) if value.is_nan()));
+        assert_eq!(values[2], Value::Float(-3.5));
+        assert_eq!(read_list_cell(&array, 1), Some(Value::List(vec![])));
+        assert_eq!(read_list_cell(&array, 2), None);
     }
 
     #[test]

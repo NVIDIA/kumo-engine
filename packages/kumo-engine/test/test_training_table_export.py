@@ -7,6 +7,7 @@ import os
 from collections import Counter
 from dataclasses import replace
 from functools import partial
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -53,6 +54,7 @@ def graph(tmp_path_factory):
         'TS':
         pd.Timestamp('2024-01-01') +
         pd.to_timedelta(rng.integers(0, 120, 3000), unit='D'),
+        'VAL': rng.random(3000).astype(np.float32),
     }).to_parquet(data / 'events.parquet')
     connector = kumo.FileConnector(root_dir=str(data))
     ents = kumo.Table.from_source_table(connector['ents.parquet'],
@@ -223,27 +225,48 @@ def test_link_export_roundtrip(graph, reload, window, invalid_targets,
         assert _rows(again[key], columns) == _rows(seed, columns)
 
 
-def test_forecasting_export_roundtrip(graph):
-    _, snapshot, connector, out = graph
-    query = ('PREDICT COUNT(events.*, 0, 7, days) FORECAST 3 TIMEFRAMES '
-             'FOR EACH ents.ID')
-    pquery, table, exported = _export(graph, query, 'forecast')
+@pytest.mark.parametrize(
+    "aggregate, target", [("COUNT", "events.*"), ("SUM", "events.VAL")]
+)
+def test_forecasting_export_roundtrip(
+    graph: tuple[kumo.Graph, kumo.GraphSnapshot, kumo.FileConnector, Path],
+    aggregate: str,
+    target: str,
+) -> None:
+    """Restore numeric forecasts without changing values or split membership."""
+    _, snapshot, connector, _ = graph
+    query = (
+        f"PREDICT {aggregate}({target}, 0, 7, days) FORECAST 3 TIMEFRAMES "
+        "FOR EACH ents.ID"
+    )
+    pquery, table, exported = _export(graph, query, f"forecast_{aggregate.lower()}")
     seeds, counts = _seeds(table)
     columns = [
-        'ENTITY1', 'TIMESTAMP', 'TARGET1', 'autoregression_labels',
-        'future_labels'
+        "ENTITY1",
+        "TIMESTAMP",
+        "TARGET1",
+        "autoregression_labels",
+        "future_labels",
     ]
-    assert exported.schema.names == columns + ['SPLIT']
+    assert exported.schema.names == columns + ["SPLIT"]
     assert _rows(exported, columns) == sum(
-        (_rows(seed, columns) for seed in seeds.values()), Counter())
+        (_rows(seed, columns) for seed in seeds.values()), Counter()
+    )
     for key, split in SPLITS.items():
-        assert exported['SPLIT'].to_pylist().count(split) == counts[key]
+        assert exported["SPLIT"].to_pylist().count(split) == counts[key]
 
-    exported.to_pandas().to_parquet(out / 'forecast_w.parquet')
     reimported = kumo.TrainingTable.from_source_table(
-        connector['forecast_w.parquet'], TrainingTableSpec(),
-        pq=pquery, snapshot=snapshot)
-    assert _seeds(reimported)[1] == counts
+        connector[f"forecast_{aggregate.lower()}"],
+        TrainingTableSpec(split_col="SPLIT"),
+        pq=pquery,
+        snapshot=snapshot,
+    )
+    restored, restored_counts = _seeds(reimported)
+    assert restored_counts == counts
+    for key, seed in seeds.items():
+        actual = restored[key].select(columns)
+        expected = seed.select(columns).cast(actual.schema)
+        assert _rows(actual, columns) == _rows(expected, columns)
 
 
 def test_reexport_and_trailing_slash(graph, monkeypatch, caplog):
