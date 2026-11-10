@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Installed engine wheel CPU smoke
+description: Verify and train/predict with the wheel in runner.temp/platform-wheel/artifacts.
+inputs:
+  platform:
+    description: Expected runtime platform.
+    required: true
+  python-version:
+    description: Python version for the clean test environment.
+    required: true
+  commit:
+    description: Candidate source revision.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Qualify the installed candidate wheel
+      shell: bash
+      env:
+        SMOKE_PLATFORM: ${{ inputs.platform }}
+        SMOKE_PYTHON: ${{ inputs.python-version }}
+        CANDIDATE_SHA: ${{ inputs.commit }}
+        PYTHONUNBUFFERED: '1'
+        PYTHONPATH: ''
+        PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        CUDA_VISIBLE_DEVICES: ''
+        UV_LINK_MODE: copy
+        UV_NO_CONFIG: 'true'
+      run: |
+        set -euo pipefail
+        unset PYTHONPATH
+        stage="$RUNNER_TEMP/platform-wheel"
+        if [ "$RUNNER_OS" = Windows ]; then
+          stage="$(cygpath -u "$stage")"
+        fi
+        mkdir -p "$stage/results" "$stage/test"
+        cp packages/kumo-engine/test/smoke_platform.py "$stage/test/"
+        cp packages/kumo-engine/scripts/verify_installed_wheel.py "$stage/test/"
+        cd "$stage"
+        wheels=(artifacts/kumo_engine-*.whl)
+        if [ "${#wheels[@]}" -ne 1 ] || [ ! -f "${wheels[0]}" ]; then
+          echo 'Expected exactly one candidate engine wheel.' >&2
+          exit 1
+        fi
+        uv venv --python "$SMOKE_PYTHON" --seed venv
+        if [ "$RUNNER_OS" = Windows ]; then
+          python="$stage/venv/Scripts/python.exe"
+        else
+          python="$stage/venv/bin/python"
+        fi
+        uv pip install --python "$python" --torch-backend=cpu \
+          "${wheels[0]}" pytest 2>&1 | tee results/install.log
+        uv pip check --python "$python" 2>&1 | tee results/dependencies.log
+        "$python" test/verify_installed_wheel.py \
+          --wheel "${wheels[0]}" --platform "$SMOKE_PLATFORM" \
+          --python-version "$SMOKE_PYTHON" --commit "$CANDIDATE_SHA" \
+          --output results/environment.json
+        cd test
+        "$python" -m pytest -q -s --confcutdir=. \
+          --junitxml=../results/junit.xml smoke_platform.py \
+          2>&1 | tee ../results/smoke.log

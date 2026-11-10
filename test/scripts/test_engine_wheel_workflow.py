@@ -12,11 +12,11 @@ import pytest
 import yaml
 
 WORKFLOW = Path(__file__).resolve().parents[2] / (
-    ".github/workflows/kumo-engine-wheel.yml"
-)
+    ".github/workflows/kumo-engine-wheel.yml")
 JOBS = yaml.safe_load(WORKFLOW.read_text())["jobs"]
 BUILDS = JOBS["build"]["strategy"]["matrix"]["include"]
-PORTAL_WORKFLOW = yaml.safe_load((WORKFLOW.parent / "kitmaker-portal.yml").read_text())
+PORTAL_WORKFLOW = yaml.safe_load(
+    (WORKFLOW.parent / "kitmaker-portal.yml").read_text())
 PORTAL_JOBS = PORTAL_WORKFLOW["jobs"]
 
 
@@ -55,8 +55,8 @@ def test_checkout_preserves_notice_bytes(tmp_path):
     checkout_env = _step('build', 'Checkout repository')['env']
     source.unlink()
     subprocess.run(['git', 'checkout-index', '--force', 'notice.txt'],
-                   cwd=tmp_path, env=dict(os.environ, **checkout_env),
-                   check=True)
+                   cwd=tmp_path, env=dict(os.environ,
+                                          **checkout_env), check=True)
     assert source.read_bytes() == canonical
     configured = subprocess.check_output(
         ['git', 'config', '--local', 'core.autocrlf'], cwd=tmp_path, text=True)
@@ -88,19 +88,17 @@ def test_build_step_selects_native_platform_and_release_mode(
         assert command['target'] == '14.0'
 
 
-@pytest.mark.parametrize('job,step_name,build', [
-    (job, step_name, build)
-    for job, step_name in [
+@pytest.mark.parametrize(
+    'job,step_name,build',
+    [(job, step_name, build) for job, step_name in [
         ('check-requirements', 'Resolve the wheel and each extra from PyPI'),
         ('kitmaker', 'Release through Kitmaker'),
-    ]
-    for build in BUILDS
-    if build['arch'] in {row['arch'] for row in JOBS[job][
-        'strategy']['matrix']['include']}
-])
+    ] for build in BUILDS if build['arch'] in
+     {row['arch']
+      for row in JOBS[job]['strategy']['matrix']['include']}])
 def test_release_steps_use_the_matching_platform_and_wheel(
-    tmp_path: Path, job: str, step_name: str, build: dict[str, str]
-) -> None:
+        tmp_path: Path, job: str, step_name: str, build: dict[str,
+                                                              str]) -> None:
     """Execute a matrix-selected command with its candidate wheel.
 
     Args:
@@ -109,23 +107,13 @@ def test_release_steps_use_the_matching_platform_and_wheel(
         step_name: Command step in the engine workflow.
         build: Build matrix entry for the candidate platform.
     """
-    row = next(
-        row
-        for row in JOBS[job]["strategy"]["matrix"]["include"]
-        if row["arch"] == build["arch"]
-    )
-    step = (
-        _step(job, step_name)
-        if job != "kitmaker"
-        else next(
-            step for step in PORTAL_JOBS["portal"]["steps"] if step["name"] == step_name
-        )
-    )
-    download = (
-        _step(job, "Download wheel")["with"]["name"]
-        if job != "kitmaker"
-        else JOBS[job]["with"]["artifact"]
-    )
+    row = next(row for row in JOBS[job]["strategy"]["matrix"]["include"]
+               if row["arch"] == build["arch"])
+    step = (_step(job, step_name) if job != "kitmaker" else next(
+        step for step in PORTAL_JOBS["portal"]["steps"]
+        if step["name"] == step_name))
+    download = (_step(job, "Download wheel")["with"]["name"]
+                if job != "kitmaker" else JOBS[job]["with"]["artifact"])
     upload = _step("build", "Upload wheel")["with"]["name"]
     assert download == upload
     if job == "kitmaker":
@@ -139,7 +127,8 @@ def test_release_steps_use_the_matching_platform_and_wheel(
     wheel.parent.mkdir()
     wheel.touch()
     capture = tmp_path / "command.json"
-    _capture_command(tmp_path / ("uv" if job == "kitmaker" else "python3"), capture)
+    _capture_command(tmp_path / ("uv" if job == "kitmaker" else "python3"),
+                     capture)
     subprocess.run(
         ["bash", "-e", "-c", step["run"]],
         cwd=tmp_path,
@@ -154,8 +143,7 @@ def test_release_steps_use_the_matching_platform_and_wheel(
             PROJECT_ID="6903",
             UPLOAD="true",
             MACOSX_DEPLOYMENT_TARGET=step.get("env", {}).get(
-                "MACOSX_DEPLOYMENT_TARGET", ""
-            ),
+                "MACOSX_DEPLOYMENT_TARGET", ""),
         ),
         check=True,
     )
@@ -186,14 +174,15 @@ def test_all_platforms_require_validation_and_release_environment() -> None:
     if "aarch64" in release_arches:
         assert "platform-qualification" in JOBS["attach-to-release"]["needs"]
     for job in ["attach-to-release", "kitmaker"]:
-        published = {row["arch"] for row in JOBS[job]["strategy"]["matrix"]["include"]}
+        published = {
+            row["arch"]
+            for row in JOBS[job]["strategy"]["matrix"]["include"]
+        }
         assert published == release_arches
         if job == "kitmaker":
-            download = next(
-                step["with"]
-                for step in PORTAL_JOBS["portal"]["steps"]
-                if step["name"] == "Download wheel"
-            )
+            download = next(step["with"]
+                            for step in PORTAL_JOBS["portal"]["steps"]
+                            if step["name"] == "Download wheel")
             assert download["name"] == "${{ inputs.artifact }}"
             artifact = JOBS[job]["with"]["artifact"]
         else:
@@ -212,37 +201,29 @@ def test_all_platforms_require_validation_and_release_environment() -> None:
     assert JOBS["kitmaker"]["needs"] == ["attach-to-release"]
     portal = PORTAL_JOBS["portal"]
     assert portal["environment"] == "kumo-engine-release"
-    assert portal["if"] == (
-        "${{ github.event_name == 'release' "
-        "|| (github.event_name == 'workflow_dispatch' "
-        "&& github.ref == 'refs/heads/main') }}"
-    )
-    assert (
-        PORTAL_WORKFLOW[True]["workflow_call"]["secrets"]["KITMAKER_API_TOKEN"][
-            "required"
-        ]
-        is True
-    )
+    assert portal["if"] == ("${{ github.event_name == 'release' "
+                            "|| (github.event_name == 'workflow_dispatch' "
+                            "&& github.ref == 'refs/heads/main') }}")
+    assert (PORTAL_WORKFLOW[True]["workflow_call"]["secrets"]
+            ["KITMAKER_API_TOKEN"]["required"] is True)
     glove = yaml.safe_load(
-        (WORKFLOW.parent / "kumo-glove-6b-50d-wheel.yml").read_text()
-    )
+        (WORKFLOW.parent / "kumo-glove-6b-50d-wheel.yml").read_text())
     for caller in [JOBS["kitmaker"], glove["jobs"]["kitmaker"]]:
         assert caller["secrets"] == {
             "KITMAKER_API_TOKEN": "${{ secrets.KITMAKER_API_TOKEN }}"
         }
     assert portal["env"]["RELEASE_TAG"] == "${{ inputs.release_tag }}"
     assert JOBS["kitmaker"]["with"]["release_tag"] == (
-        "${{ github.event.release.tag_name }}"
-    )
+        "${{ github.event.release.tag_name }}")
     for step in portal["steps"]:
         if step["name"] in {"Download wheel", "Release through Kitmaker"}:
             assert step["if"] == "${{ github.event_name == 'release' }}"
-    assert _step("build", "Checkout repository")["with"]["persist-credentials"] is False
+    assert _step("build",
+                 "Checkout repository")["with"]["persist-credentials"] is False
     for job in ["attach-to-release", "kitmaker"]:
         assert JOBS[job]["if"] == "${{ github.event_name == 'release' }}"
     smoke = yaml.safe_load(
-        (WORKFLOW.parent / "kumo-engine-wheel-smoke.yml").read_text()
-    )
+        (WORKFLOW.parent / "kumo-engine-wheel-smoke.yml").read_text())
     assert set(smoke[True]) == {"workflow_call"}
 
 
@@ -279,21 +260,33 @@ def test_cpu_qualification_uses_candidate_artifacts_on_all_pythons():
     job = workflow['jobs']['smoke']
     matrix = job['strategy']['matrix']
     assert set(matrix['python']) == {'3.11', '3.12', '3.13', '3.14'}
-    assert len(matrix['target']) == 3
-    assert {row['platform']: row['artifact'] for row in matrix['target']} == {
-        'windows-native': 'windows-x86_64', 'windows-wsl': 'x86_64',
+    assert len(matrix['target']) == 4
+    assert {
+        row['platform']: row['artifact']
+        for row in matrix['target']
+    } == {
+        'windows-native': 'windows-x86_64',
+        'windows-wsl': 'x86_64',
         'linux-arm64': 'aarch64',
+        'macos-arm64': 'arm64',
     }
-    assert {row['artifact'] for row in matrix['target']} <= {
-        build['arch'] for build in BUILDS}
-    assert job['env']['CUDA_VISIBLE_DEVICES'] == ''
-    download = next(step for step in job['steps']
-                    if step.get('uses', '').startswith(
-                        'actions/download-artifact@'))
+    assert {row['artifact']
+            for row in matrix['target']} <= {build['arch']
+                                             for build in BUILDS}
+    action = yaml.safe_load((WORKFLOW.parents[1] /
+                             'actions/engine-cpu-smoke/action.yml').read_text())
+    assert action['runs']['steps'][0]['env']['CUDA_VISIBLE_DEVICES'] == ''
+    smoke = next(step for step in job['steps']
+                 if step.get('uses') == './.github/actions/engine-cpu-smoke')
+    assert smoke['with']['commit'] == '${{ github.sha }}'
+    download = next(
+        step for step in job['steps']
+        if step.get('uses', '').startswith('actions/download-artifact@'))
     assert download['with'] == {
         'name': ('kumo-engine-wheel-${{ matrix.target.artifact }}-'
                  '${{ github.sha }}'),
-        'path': '${{ runner.temp }}/platform-wheel/artifacts',
+        'path':
+        '${{ runner.temp }}/platform-wheel/artifacts',
     }
     # Supplying another run or token here could accidentally qualify a stale
     # artifact while publishing the current build.

@@ -51,6 +51,13 @@ It does not rebuild the wheel. Failure blocks release attachment and Kitmaker
 publication. The macOS wheel has no GPU smoke check. The GPU job has a 22-minute
 limit.
 
+The platform CPU matrix also qualifies the finished macOS ARM64 wheel on
+`macos-15` with Python 3.11–3.14. It uses the same clean-install action and
+train/predict fixture as Linux ARM64 and Windows: verify wheel provenance and
+dependencies, observe four optimizer steps, predict 100 held-out entities, and
+reload the saved model. The manual **Kumo Engine - macOS ARM64 smoke** workflow
+builds and tests just this platform on a selected Python version.
+
 The job uses the same [GPU test script](../../packages/kumo-engine/test/wheel_gpu_smoke.py)
 and [setup action](../../.github/actions/engine-gpu-smoke/action.yml) as the PR
 check. The action installs the selected wheel in a fresh environment outside the

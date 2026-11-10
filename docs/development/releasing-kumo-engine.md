@@ -123,8 +123,8 @@ platform's `release-version`.
      build's wheel without rebuilding it. Repeat and reload scores use the
      shared absolute tolerance of `0.005` with zero relative tolerance.
      Labels and ranks can change only when their scores justify the change
-     within that bound. The macOS wheel has no GPU smoke
-     check. See the [test criteria](testing.md#finished-kumo-engine-wheel).
+     within that bound. macOS ARM64 also runs the shared installed-wheel CPU
+     train/predict smoke on Python 3.11–3.14; it has no GPU smoke check. See the [test criteria](testing.md#finished-kumo-engine-wheel).
    - attaches the Linux x86_64/ARM64 and macOS ARM64 wheels to the GitHub
      release; the Linux x86_64 wheel also serves WSL2. Native Windows upload
      routes remain disabled despite experimental build/test coverage.
@@ -305,3 +305,14 @@ project reads for 6903 and 6904, POST access to each project's `/releases`, and
 the corresponding release tag refs. Preserve the error response's request ID
 for tracing. A denied read alone does not establish whether Portal credentials
 are valid.
+
+
+### macOS ARM64 smoke trial
+
+Run **Actions → Kumo Engine - macOS ARM64 smoke → Run workflow** and select
+`main` after merging, or the feature branch during validation. Choose the Python
+version to test. The workflow builds a native development wheel on `macos-15`,
+checks its payload, then runs the same clean-install and CPU train/predict smoke
+as the release platform matrix. It does not publish packages or use cloud secrets.
+The `engine-wheel-cpu-macos-arm64-*` artifact contains dependency checks,
+installed-module origins, wheel hash, training output, and JUnit results.

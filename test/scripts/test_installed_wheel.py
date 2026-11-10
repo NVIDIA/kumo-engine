@@ -27,6 +27,7 @@ def test_installed_origin_accepted(tmp_path):
     ('windows-native', 'Windows', 'AMD64', '2022'),
     ('windows-wsl', 'Linux', 'x86_64', '6.6-microsoft-standard-WSL2'),
     ('linux-arm64', 'Linux', 'aarch64', '6.8'),
+    ('macos-arm64', 'Darwin', 'arm64', '24.0'),
 ])
 def test_platform_accepted(expected, system, machine, release):
     HELPER['check_platform'](expected, system, machine, release)
@@ -60,3 +61,10 @@ def test_install_rejects_remote_artifact(tmp_path):
     with pytest.raises(ValueError, match='not from a local'):
         HELPER['check_install']('{"url":"https://example.com/engine.whl"}',
                                 tmp_path / 'engine.whl')
+
+
+@pytest.mark.parametrize('system,machine', [('Darwin', 'x86_64'),
+                                            ('Linux', 'aarch64')])
+def test_macos_requires_native_apple_silicon(system, machine):
+    with pytest.raises(ValueError, match='Unexpected runtime'):
+        HELPER['check_platform']('macos-arm64', system, machine, '24.0')
