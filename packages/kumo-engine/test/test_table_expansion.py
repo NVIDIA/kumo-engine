@@ -195,6 +195,30 @@ def test_expansion_falls_back_for_incompatible_changes(fixture, change):
         assert features(result, name) == features(full, name)
 
 
+def test_new_foreign_key_reorders_converter_columns(fixture):
+    graph, write, _, events = fixture
+    write('events', events.append_column('device_id', pa.array([1, 2, 3])))
+    connector = graph._named_tables['events'].connector
+    tables = dict(graph._named_tables)
+    tables['events'] = Table.from_source_table(
+        connector['events'], primary_key='id', time_column='time'
+    ).with_column('user_id', dtype='string').with_column('device_id', stype='ID')
+    parent = Graph(tables=tables, edges=graph.edges).snapshot(enable_expansion=True)
+    before = hashes(parent.index_path)
+    write('devices', pa.table({'id': [1, 2, 3]}))
+    tables['devices'] = Table.from_source_table(connector['devices'], primary_key='id')
+    expanded = Graph(tables=tables, edges=[Edge('events', 'device_id', 'devices'), *graph.edges])
+    result = expanded.snapshot(previous_snapshot=parent)
+    full = expanded.snapshot()
+    assert (result.index_path / '_expansion/lineage.json').is_file()
+    assert hashes(parent.index_path) == before
+    for name in tables:
+        assert features(result, name) == features(full, name)
+        for row in features(result, name):
+            for fused in (False, True):
+                assert sample_edges(result, name, row['id'], fused=fused)[1] == sample_edges(full, name, row['id'], fused=fused)[1]
+
+
 def test_multiple_and_repeated_expansions(fixture, tmp_path):
     from kumo_core.diskgraph.snapshot import (
         DiskgraphLocalConfig,

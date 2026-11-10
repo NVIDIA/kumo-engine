@@ -151,7 +151,9 @@ def try_expansion(graph, parent, fingerprints):
                 ignored = {'source', 'source_size', 'data_version', 'fkeys'}
 
                 def schema(table):
-                    return {k: v for k, v in table.items() if k not in ignored}
+                    result = {k: v for k, v in table.items() if k not in ignored}
+                    result['columns'] = sorted(result['columns'], key=lambda c: c['name'])
+                    return result
                 if schema(old) != schema(current):
                     return None
                 if any(fk not in current.get('fkeys', []) for fk in old.get('fkeys', [])):
