@@ -35,16 +35,14 @@ def configure(*, scratch_dir: Optional[Union[str, "os.PathLike[str]"]] = None) -
     """Sets process-wide settings. `None` leaves a setting unchanged.
 
     Call it once, early: paths already derived from the scratch directory are
-    not recomputed. A configured scratch directory is created if missing.
+    not recomputed.
 
     Raises:
         ValueError: if `scratch_dir` is not a local filesystem path.
     """
     global _configured
     if scratch_dir is not None:
-        path = _local_path(scratch_dir)
-        path.mkdir(parents=True, exist_ok=True)
-        _configured = path
+        _configured = _local_path(scratch_dir)
 
 
 def scratch_dir() -> Path:
