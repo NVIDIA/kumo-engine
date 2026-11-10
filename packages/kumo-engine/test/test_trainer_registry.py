@@ -546,6 +546,8 @@ def test_predict_works_after_load_without_refitting(snapshot: GraphSnapshot,
         SimpleNamespace(manifest_path='task', bundle_dir='bundle'))
     monkeypatch.setattr('kumo.engine.trainer.trainer._stage_model_bundle',
                         lambda *a: tmp_path)
+    monkeypatch.setattr('kumo.engine.trainer.trainer.bundle_task_options',
+                        lambda *a: {'lag_timesteps': 0})
     (tmp_path / 'config.json').write_text('{}')
     monkeypatch.setattr(
         DiskgraphTaskManifest, 'load', lambda *a: SimpleNamespace(

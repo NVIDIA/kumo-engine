@@ -507,6 +507,13 @@ def bundle_task_type(artifacts: Mapping[str, str]) -> TaskType:
     return TaskType(schema['task_type'])
 
 
+def bundle_task_options(artifacts: Mapping[str, str]) -> dict[str, Any]:
+    """The temporal task scalars a bundle's model was fitted with."""
+    from .resolved_task import fitted_task_options
+
+    return fitted_task_options(load_json(artifacts['input_manifest'], dict))
+
+
 def stage_model_bundle(artifacts: Mapping[str, str], dest: Path) -> Path:
     r"""Copies a trained run's artifacts into the layout scoring expects.
 
