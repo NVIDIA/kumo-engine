@@ -133,22 +133,22 @@ class PredictionQueryContract(NamedTuple):
     entity: tuple[str, str]
     candidate_table: str | None
     forecast_length: int
-    paths: tuple[tuple[tuple[str, ...], ...], ...]
-
-
-_CONTRACT_PARTS = (
-    "target",
-    "target filter",
-    "task type",
-    "FOR EACH entity",
-    "candidate table",
-    "forecast length",
-    "graph paths from the target to the entity",
-)
+    target_to_entity_paths: tuple[tuple[tuple[str, ...], ...], ...]
 
 
 def _shown(value: Any) -> str:
     return "none" if value is None else repr(value)
+
+
+def _parsed(query: str, graph_config: Mapping[str, Any]) -> Any:
+    from kumo_core.pquery import normalize_graph, parse_and_validate_query
+
+    graph = normalize_graph(graph_config)
+    return parse_and_validate_query(query, graph), graph
+
+
+def _full_target(query: str, graph_config: Mapping[str, Any]) -> str:
+    return str(_parsed(query, graph_config)[0].query.target_ast)
 
 
 def prediction_query_contract(
@@ -162,14 +162,9 @@ def prediction_query_contract(
     connecting the target to that entity must still match the model.
     """
     from kumo_core.link_candidates import target_contract
-    from kumo_core.pquery import (
-        normalize_graph,
-        parse_and_validate_query,
-        target_to_entity_paths,
-    )
+    from kumo_core.pquery import target_to_entity_paths
 
-    graph = normalize_graph(graph_config)
-    parsed = parse_and_validate_query(query, graph)
+    parsed, graph = _parsed(query, graph_config)
     paths = tuple(
         tuple(tuple(edge) for edge in path)
         for path in target_to_entity_paths(parsed, graph))
@@ -181,7 +176,7 @@ def prediction_query_contract(
         entity=(parsed.entity_table, parsed.entity_column),
         candidate_table=parsed.rhs_node_type,
         forecast_length=parsed.forecast_length,
-        paths=paths,
+        target_to_entity_paths=paths,
     )
 
 
@@ -194,16 +189,20 @@ def prediction_task_type(training_query: str | None, query: str,
         raise ValueError("This model has no training query to score "
                          "a prediction query against")
     trained = prediction_query_contract(training_query, graph_config)
-    for part, expected, actual in zip(_CONTRACT_PARTS, trained, predicted):
-        if expected != actual:
-            editable = "the FOR EACH filter"
-            if predicted.candidate_table is not None:
-                editable += (" and target-filter conditions on table "
-                             f"{predicted.candidate_table!r}")
-            raise ValueError(
-                f"The prediction query's {part} is {_shown(actual)}, but the "
-                f"model was trained with {_shown(expected)}. Only {editable} "
-                "can change at prediction.")
+    for name, expected, actual in zip(predicted._fields, trained, predicted):
+        if expected == actual:
+            continue
+        if name == "target":
+            expected = _full_target(training_query, graph_config)
+            actual = _full_target(query, graph_config)
+        editable = "the FOR EACH filter"
+        if predicted.candidate_table is not None:
+            editable += (" and target-filter conditions on table "
+                         f"{predicted.candidate_table!r}")
+        raise ValueError(
+            f"The prediction query's {name.replace('_', ' ')} is "
+            f"{_shown(actual)}, but the model was trained with "
+            f"{_shown(expected)}. Only {editable} can change at prediction.")
     return predicted.task_type
 
 
