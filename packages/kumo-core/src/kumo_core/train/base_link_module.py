@@ -32,6 +32,16 @@ logger = logging.getLogger(__name__)
 _WARNED_ARRAY_EMPTY_COO = False
 
 
+def sorted_membership(values: Tensor, sorted_ids: Tensor) -> Tensor:
+    r"""Whether each of ``values`` is one of the sorted ``sorted_ids``."""
+    positions = torch.searchsorted(sorted_ids, values)
+    found = positions < sorted_ids.numel()
+    if sorted_ids.numel():
+        probe = positions.clamp_max(sorted_ids.numel() - 1)
+        found &= sorted_ids[probe] == values
+    return found
+
+
 class BaseLinkLightningModule(BaseLightningModule, ABC):
     r"""A common base class for all link prediction modules.
 
@@ -121,6 +131,10 @@ class BaseLinkLightningModule(BaseLightningModule, ABC):
         return self.rhs_name
 
     @property
+    def datamodule(self) -> Any:
+        return self.trainer.datamodule
+
+    @property
     def lp_train_table(self) -> "DiskgraphValidRHS":
         r"""Returns the DiskGraph RHS validity helper attached to the module."""
         if hasattr(self, '_lp_train_table'):
@@ -179,13 +193,31 @@ class BaseLinkLightningModule(BaseLightningModule, ABC):
         consistently. Prediction also keeps only the candidates its query's
         target filter admits."""
         valid = self._rhs_valid_at_stage_time(stage)
-        candidates = (self.datamodule.predict_candidates
-                      if stage == TrainingStage.PRED else None)
-        if candidates is None:
+        if stage != TrainingStage.PRED:
             return valid
-        candidates = candidates.to(self.device)
-        return (candidates if valid is None else valid[torch.isin(
-            valid, candidates)])
+        candidates = self.datamodule.predict_candidates
+        if candidates is not None:
+            candidates = candidates.to(self.device)
+            if valid is None:
+                valid = candidates
+            else:
+                valid = valid[sorted_membership(valid, candidates)]
+        if valid is not None and not valid.numel():
+            raise ValueError(
+                self._no_candidates_message(candidates is not None))
+        return valid
+
+    def _no_candidates_message(self, filtered: bool) -> str:
+        message = ("The prediction has no candidates from table "
+                   f"{self.rhs_name!r}.")
+        if filtered:
+            message += (" Check that the target filter's conditions on it "
+                        "are not overly restrictive.")
+        anchor = self.datamodule.predict_time
+        if (self.task_type == TaskType.TEMPORAL_LINK_PREDICTION
+                and anchor is not None):
+            message += self.lp_train_table.validity_hint(int(anchor[0]))
+        return message
 
     def _rhs_valid_at_stage_time(self, stage: "Any") -> "Tensor | None":
         from kumoapi.train import TrainingStage
@@ -221,12 +253,7 @@ class BaseLinkLightningModule(BaseLightningModule, ABC):
         canonical = self._canonical_rhs_node_ids(device)
         if valid is None or canonical is None:
             return canonical if valid is None else valid
-        positions = torch.searchsorted(canonical, valid)
-        in_range = positions < canonical.numel()
-        if canonical.numel():
-            probe = positions.clamp_max(canonical.numel() - 1)
-            in_range &= canonical[probe] == valid
-        return valid[in_range]
+        return valid[sorted_membership(valid, canonical)]
 
     # Top-K prediction ########################################################
 
