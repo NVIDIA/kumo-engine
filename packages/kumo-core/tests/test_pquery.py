@@ -29,7 +29,10 @@ from kumo_core.pquery import (
     to_api_graph,
     to_plan_graph,
 )
+from kumo_core.resolved_task import resolve_task_options
 from kumo_core.training.splits import TrainTableTime
+from kumo_core.types import TaskType
+from kumo_core.utils.time import compute_unix_step
 from kumoapi.typing import Stype, TimeUnit
 
 
@@ -1865,3 +1868,33 @@ def test_clean_query_has_empty_validation_response():
                                       graph_config())
     assert parsed.validation_response.ok
     assert parsed.validation_response.empty()
+
+
+@pytest.mark.parametrize("pql", [
+    "PREDICT COUNT(events.*, 0, 7, days) > 0 FOR EACH articles.aid",
+    "PREDICT COUNT(events.*, 0, 7, days) > 0 AND "
+    "SUM(events.val, 0, 30, days) > 1 FOR EACH articles.aid",
+    "PREDICT COUNT(events.* WHERE events.val > 1, 0, 7, days) "
+    "FOR EACH articles.aid",
+    "PREDICT COUNT(events.*, 3, 7, days) FOR EACH articles.aid",
+])
+def test_task_window_is_the_whole_target_range(pql):
+    config = forecasting_graph_config()
+    config["tables"][1]["cols"] = [{
+        "name": "val",
+        "dtype": "float64",
+        "stype": "numerical",
+    }]
+    query = parse_and_validate_query(pql, normalize_graph(config)).query
+    target = query.target_ast.date_offset_range
+
+    options = resolve_task_options(query, task_type=TaskType.REGRESSION,
+                                   timeframe_step=None, lag_timesteps=None,
+                                   forecast_length=1)
+
+    assert options["unix_start_offset"] == compute_unix_step(
+        target.start, target.unit)
+    assert options["unix_end_offset"] == compute_unix_step(
+        target.end, target.unit)
+    assert options["unix_step_size"] == compute_unix_step(
+        target.end - target.start, target.unit)

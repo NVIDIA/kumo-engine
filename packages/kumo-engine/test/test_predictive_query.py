@@ -444,7 +444,6 @@ def test_prediction_compiler_uses_plan_forecast_horizon(graph_snapshot,
     assert request.query.forecast_length == 4
     assert request.timestamps == (1_711_843_200_000_000_000, )
     assert request.task_dataset.task_type == 'forecasting'
-    assert request.forecast_timeframe_step == 2
     assert request.compiler_options['future_offsets_secs'] == (0, 86400, 172800,
                                                                259200)
 
@@ -569,7 +568,6 @@ def test_prediction_generation_accepts_restored_training_plan(
         timestamps=(123, ),
         task_dataset=SimpleNamespace(required_stages=('predict', )),
         compiler_options={'lag_offsets_secs': (-1, -2, -3)},
-        forecast_timeframe_step=2,
     )
     generated = SimpleNamespace(
         table_path=str(tmp_path / 'prediction.parquet'),
@@ -598,7 +596,6 @@ def test_prediction_generation_accepts_restored_training_plan(
 
     assert captured['generation_plan'] is fitted_plan
     assert table.compiler_options == {'lag_offsets_secs': (-1, -2, -3)}
-    assert table.forecast_timeframe_step == 2
 
 
 @pytest.mark.parametrize('operation', ['validate', 'snapshot'])
@@ -637,7 +634,6 @@ def test_custom_prediction_table_materializes_exact_source_rows(
         tt_id='custom-prediction',
         task_dataset=SimpleNamespace(required_stages=('train', 'val')),
         compiler_options={'lag_offsets_secs': (-1, -2, -3)},
-        forecast_timeframe_step=2,
     )
     captured = {}
     monkeypatch.setattr('kumo.engine.pquery._custom_source.stage_source_table',
