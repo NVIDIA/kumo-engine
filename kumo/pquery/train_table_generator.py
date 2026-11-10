@@ -288,12 +288,8 @@ class TrainingTableGeneratorV2:
                 or isinstance(train_end_offset, DateOffset))
         self.train_end_offset = train_end_offset
 
-        parsed_start = parse_time_bound(start_time, 'start_time')
-        parsed_end = parse_time_bound(end_time, 'end_time')
-        self.start_time = (self.get_date_offset(parsed_start)
-                           if isinstance(parsed_start, int) else parsed_start)
-        self.end_time = (self.get_date_offset(parsed_end)
-                         if isinstance(parsed_end, int) else parsed_end)
+        self.start_time = parse_time_bound(start_time, 'start_time')
+        self.end_time = parse_time_bound(end_time, 'end_time')
 
         self.timeframe_step = None
         if timeframe_step is not None:

@@ -59,7 +59,7 @@ from .train.autoregression import (
     PADDING_SIZE,
     YOY_COL,
 )
-from .training.bounds import validate_time_bounds
+from .training.bounds import parse_time_bound, validate_time_bounds
 from .training.splits import (
     SplitArguments,
     TrainTableTime,
@@ -84,6 +84,12 @@ from .types import TaskType
 
 class PredictiveQueryPlanError(ValueError):
     """A notebook graph/query cannot be converted to a native task plan."""
+
+
+class TaskPlanPurpose(str, Enum):
+    TRAINING = 'training'
+    PREDICTION = 'prediction'
+    LABELS = 'labels'
 
 
 _NATIVE_TRAINING_TASK_TYPES = frozenset({
@@ -1025,7 +1031,12 @@ def _temporal_timestamps(
     split: Mapping[str, Any],
     split_family: str,
     explicit: tuple[int, ...],
+    *,
+    purpose: TaskPlanPurpose = TaskPlanPurpose.TRAINING,
 ) -> tuple[tuple[int, ...], bool]:
+    if purpose is not TaskPlanPurpose.TRAINING:
+        return (tuple(_timestamp_ns(value) for value in explicit),
+                'flexible_boundaries' in split)
     offset = query.query.get_combined_date_offset_range()
 
     def date_offset(value: int) -> DateOffset:
@@ -1041,22 +1052,17 @@ def _temporal_timestamps(
     if error is not None:
         raise PredictiveQueryPlanError(f"{error.title}. {error.message}")
 
-    def relative(value: int | str | None) -> DateOffset | Timestamp | None:
-        if value is None or value == "-INF":
-            return None
-        if isinstance(value, Integral):
-            return date_offset(int(value))
-        return Timestamp(Timestamp(value).value)
-
-    start_time: DateOffset | Timestamp | int | None
-    end_time: DateOffset | Timestamp | int | None
+    start_time: DateOffset | Timestamp | None
+    end_time: DateOffset | Timestamp | None
     node_bounds = query.task_type in TaskType.get_node_pred_tasks()
-    if not node_bounds:
-        start_time = relative(
-            inferred_or_missing_type_to_none(options.start_time))
-        end_time = relative(inferred_or_missing_type_to_none(options.end_time))
-    else:
-        try:
+    try:
+        if not node_bounds:
+            start_time = parse_time_bound(
+                inferred_or_missing_type_to_none(options.start_time),
+                'start_time')
+            end_time = parse_time_bound(
+                inferred_or_missing_type_to_none(options.end_time), 'end_time')
+        else:
             start_time, end_time = validate_time_bounds(
                 inferred_or_missing_type_to_none(options.start_time),
                 inferred_or_missing_type_to_none(options.end_time),
@@ -1066,8 +1072,8 @@ def _temporal_timestamps(
                               if inferred_or_missing_type_to_none(
                                   options.split) is not None else None),
             )
-        except ValueError as error:
-            raise PredictiveQueryPlanError(str(error)) from error
+    except ValueError as error:
+        raise PredictiveQueryPlanError(str(error)) from error
     absolute_bounds = (isinstance(start_time, Timestamp)
                        or isinstance(end_time, Timestamp)) and node_bounds
     if explicit and not absolute_bounds:
@@ -1075,10 +1081,6 @@ def _temporal_timestamps(
                 "flexible_boundaries" in split)
     minimum, maximum, filter_buffer = _temporal_target_time_range(
         query, index_path)
-    start_time = (date_offset(start_time)
-                  if isinstance(start_time, int) else start_time)
-    end_time = (date_offset(end_time)
-                if isinstance(end_time, int) else end_time)
     try:
         window = (resolve_training_window(start_time, end_time, minimum, maximum)
                   if absolute_bounds else None)
@@ -1448,6 +1450,7 @@ def build_native_pquery_task_plan(
         graph_index_id: str | None = None,
         timestamps: tuple[int, ...] = (),
         supplied_rows: bool = False,
+        purpose: TaskPlanPurpose = TaskPlanPurpose.TRAINING,
 ) -> NativePqueryTaskPlan:
     """Resolve task inputs for generated or already-supplied rows.
 
@@ -1481,6 +1484,7 @@ def build_native_pquery_task_plan(
                 split,
                 split_family,
                 timestamps,
+                purpose=purpose,
             )
             if fixed_boundaries:
                 split = {**split, "flexible_boundaries": False}

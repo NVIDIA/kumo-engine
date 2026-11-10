@@ -275,7 +275,7 @@ def test_generated_weight_rejected_before_artifacts(connector_kind, tmp_path,
     )
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.build_training_task_plan',
-        lambda workflow: pytest.fail('built a weighted native task plan'),
+        lambda workflow, *, purpose: pytest.fail('built a weighted native task plan'),
     )
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.generate_train_table',
@@ -306,7 +306,7 @@ def test_generated_weight_rejected_before_artifacts(connector_kind, tmp_path,
                         lambda: 'unweighted')
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.build_training_task_plan',
-        lambda workflow: native_plan,
+        lambda workflow, *, purpose: native_plan,
     )
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.generate_train_table',
@@ -338,7 +338,7 @@ def test_generated_temporal_split_requires_time_column(graph_snapshot,
 @pytest.mark.parametrize('options,message', [
     ({'start_time': 'NaT', 'end_time': '2025-01-21'}, 'valid timestamp'),
     ({'start_time': '2025-01-21', 'end_time': '2025-01-02'}, 'smaller than'),
-    ({'start_time': '2025-01-02', 'end_time': -1}, 'both be offsets'),
+    ({'start_time': '2025-01-02', 'end_time': -1}, 'Integer'),
     ({'start_time': '2025-01-02', 'train_start_offset': 10},
      'Cannot specify both'),
     ({'end_time': '2025-01-21', 'train_end_offset': 1},
@@ -409,7 +409,7 @@ def test_forecast_generation_retains_effective_plan(graph_snapshot, tmp_path,
     )
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.build_training_task_plan',
-        lambda workflow: native_plan,
+        lambda workflow, *, purpose: native_plan,
     )
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.generate_train_table',

@@ -12,6 +12,7 @@ import pytest
 from kumo_core.model_plan import TrainingTableGenerationPlan
 from kumo_core.pquery import (
     PredictiveQueryPlanError,
+    TaskPlanPurpose,
     _column_stats,
     _default_split,
     _split_options,
@@ -688,10 +689,6 @@ def test_plan_rejects_explicit_timestamps_on_a_static_query(tmp_path):
         "train_end_offset": 10
     }, 20, 29),
     ({
-        "start_time": -20,
-        "end_time": -10
-    }, 20, 29),
-    ({
         "start_time": "2024-01-11",
         "end_time": "2024-01-21"
     }, 10, 19),
@@ -699,10 +696,6 @@ def test_plan_rejects_explicit_timestamps_on_a_static_query(tmp_path):
         "start_time": "2024-01-11T00:00:00Z",
         "end_time": "2024-01-21T00:00:00Z"
     }, 10, 19),
-    ({
-        "start_time": "-INF",
-        "end_time": -10
-    }, 1, 29),
 ])
 def test_generation_plan_time_bounds(tmp_path, monkeypatch, options, first_day,
                                      last_day, unit):
@@ -850,15 +843,41 @@ def test_explicit_absolute_anchors_respect_available_labels(
         assert timestamps == tuple(Timestamp(value).value for value in expected)
 
 
+@pytest.mark.parametrize('purpose', [
+    TaskPlanPurpose.PREDICTION, TaskPlanPurpose.LABELS,
+])
+def test_prediction_anchors_ignore_training_window(monkeypatch, purpose):
+    from pandas import Timestamp
+
+    graph = normalize_graph(forecasting_graph_config())
+    query = parse_and_validate_query(
+        'PREDICT COUNT(events.*, 0, 1, days) > 0 FOR EACH articles.aid', graph)
+    monkeypatch.setattr(
+        'kumo_core.pquery._temporal_target_time_range',
+        lambda *_args: pytest.fail('Prediction read training label bounds'))
+    options = TrainingTableGenerationPlan(
+        start_time='2024-01-05', end_time='2024-01-15')
+    explicit = tuple(Timestamp(value).value for value in [
+        '2025-01-01', '2023-01-01', '2025-01-01'])
+    timestamps, _ = _temporal_timestamps(
+        query, '/synthetic-index', options, {}, 'ApproxDateOffsetSplit',
+        explicit, purpose=purpose)
+    assert timestamps == explicit
+    assert options.start_time == '2024-01-05'
+    assert options.end_time == '2024-01-15'
+
+
 @pytest.mark.parametrize('options', [
     {'start_time': 'NaT'},
+    {'start_time': -20, 'end_time': -10},
+    {'start_time': '-INF', 'end_time': -10},
     {'start_time': '2024-01-11', 'end_time': '2024-01-21',
      'train_end_offset': 10},
     {'start_time': '2024-01-11',
      'split': "TimeRangeSplit([('2024-01-01', '2024-02-01')])"},
 ])
 @pytest.mark.parametrize('explicit', [(), (1704067200000000000,)])
-def test_invalid_absolute_bounds_rejected_before_stats(
+def test_invalid_bounds_rejected_before_stats(
         monkeypatch, options, explicit):
     graph = normalize_graph(forecasting_graph_config())
     query = parse_and_validate_query(
@@ -1987,8 +2006,6 @@ def test_invalid_offsets_rejected_before_reading_source_stats(
         ("2023-04-29", {}, (0, 1), ["2023-03-29", "2023-02-28"]),
         ("2024-06-30", {"timeframe_step": 2}, (0, 1),
          ["2024-05-30", "2024-03-30"]),
-        ("2024-06-30", {"start_time": -3, "end_time": -1}, (0, 1),
-         ["2024-04-30", "2024-03-30"]),
         ("2024-06-30", {"train_start_offset": 3, "train_end_offset": 1},
          (0, 1), ["2024-04-30", "2024-03-30"]),
         ("2024-06-30", {"start_time": "2024-01-31"}, (1, 2),

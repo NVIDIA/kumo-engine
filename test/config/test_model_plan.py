@@ -82,6 +82,8 @@ training_table_generation:
   split: inferred
   train_start_offset: ???
   train_end_offset: ???
+  start_time: ???
+  end_time: ???
   timeframe_step: ???
 training_job:
   num_experiments: ???

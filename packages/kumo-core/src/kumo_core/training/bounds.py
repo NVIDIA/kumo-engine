@@ -7,14 +7,15 @@ from pandas import DateOffset, Timestamp
 
 
 def parse_time_bound(value: int | str | DateOffset | Timestamp | None,
-                     name: str) -> int | DateOffset | Timestamp | None:
-    """Keep relative offsets numerical and normalize absolute times to UTC."""
+                     name: str) -> DateOffset | Timestamp | None:
+    """Normalize absolute times to UTC and retain parsed internal offsets."""
     if value is None or (name == 'start_time' and value == '-INF'):
         return None
     if isinstance(value, int):
-        if value > 0:
-            raise ValueError(f"'{name}' must be a non-positive relative offset")
-        return value
+        raise ValueError(
+            f"Integer '{name}' bounds are not supported. Use timestamp strings "
+            "or 'inferred'; use train_start_offset/train_end_offset for "
+            "relative training bounds.")
     if isinstance(value, DateOffset):
         if Timestamp('1970-01-01') + value > Timestamp('1970-01-01'):
             raise ValueError(f"'{name}' must be a non-positive relative offset")
@@ -41,8 +42,7 @@ def validate_time_bounds(
     train_start_offset: int | DateOffset | None = None,
     train_end_offset: int | DateOffset | None = None,
     split_family: str | None = None,
-) -> tuple[int | DateOffset | Timestamp | None,
-           int | DateOffset | Timestamp | None]:
+) -> tuple[DateOffset | Timestamp | None, DateOffset | Timestamp | None]:
     """Validate explicit parameters without changing their serialized form."""
     if ((start is not None or end is not None)
             and (train_start_offset is not None
@@ -56,11 +56,9 @@ def validate_time_bounds(
                 != isinstance(parsed_end, Timestamp)):
             raise ValueError('start_time and end_time must both be offsets '
                              'or both be timestamps.')
-        if ((isinstance(parsed_start, int) and isinstance(parsed_end, int)
+        if ((isinstance(parsed_start, Timestamp)
+             and isinstance(parsed_end, Timestamp)
              and parsed_start >= parsed_end)
-                or (isinstance(parsed_start, Timestamp)
-                    and isinstance(parsed_end, Timestamp)
-                    and parsed_start >= parsed_end)
                 or (isinstance(parsed_start, DateOffset)
                     and isinstance(parsed_end, DateOffset)
                     and Timestamp('1970-01-01') + parsed_start

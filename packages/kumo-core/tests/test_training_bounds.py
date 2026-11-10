@@ -11,7 +11,7 @@ from kumoapi.model_plan import InferredType, RunMode
 from kumoapi.model_plan import \
     TrainingTableGenerationPlan as PublicGenerationPlan
 from kumoapi.pquery import QueryType
-from pandas import Timestamp
+from pandas import DateOffset, Timestamp
 
 
 @pytest.mark.parametrize('start,end,message', [
@@ -19,10 +19,10 @@ from pandas import Timestamp
     (None, 'NaT', 'valid timestamp'),
     ('2024-01-02', '2024-01-02', 'smaller than'),
     ('2024-01-03', '2024-01-02', 'smaller than'),
-    (-2, '2024-01-02', 'both be offsets'),
-    (1, None, 'non-positive'),
-    (None, 1, 'non-positive'),
-    (-1, -2, 'smaller than'),
+    (-2, '2024-01-02', 'Integer'),
+    (1, None, 'Integer'),
+    (None, 1, 'Integer'),
+    (-1, -2, 'Integer'),
     (None, '3000-01-01', 'valid timestamp'),
 ])
 def test_invalid_bounds(start, end, message):
@@ -38,7 +38,8 @@ def test_bounds_normalize_utc():
           Timestamp('2024-01-01T07:00:00'))
     assert validate_time_bounds('-INF', '2024-01-02') == (
         None, Timestamp('2024-01-02'))
-    assert validate_time_bounds(None, -1) == (None, -1)
+    offset = DateOffset(days=-1)
+    assert validate_time_bounds(None, offset) == (None, offset)
 
 
 @pytest.mark.parametrize('split',
@@ -57,18 +58,20 @@ def test_absolute_ratio_split(split):
         Timestamp('2024-01-01'), None)
 
 
-@pytest.mark.parametrize('flag,expected_errors', [
-    ('false', True), ('true', False),
+@pytest.mark.parametrize('flag', ['false', 'true'])
+@pytest.mark.parametrize('task', [
+    TaskType.BINARY_CLASSIFICATION, TaskType.TEMPORAL_LINK_PREDICTION,
 ])
-def test_integer_bounds_keep_gate(flag, expected_errors, monkeypatch):
+def test_integer_bounds_rejected(flag, task, monkeypatch):
     monkeypatch.setenv('USE_DECOUPLED_SPLITS', flag)
     errors, _ = TrainingTableGenerationPlan(start_time=-10, end_time=0).validate(
-        task_type=TaskType.BINARY_CLASSIFICATION,
+        task_type=task,
         query_type=QueryType.TEMPORAL,
         has_train_table_time_col=True,
         run_mode=RunMode.FAST,
     )
-    assert bool(errors) == expected_errors
+    assert any("Integer 'start_time' bounds are not supported" in str(error)
+               for error in errors)
 
 
 @pytest.mark.parametrize('task_type', TaskType.get_node_pred_tasks())

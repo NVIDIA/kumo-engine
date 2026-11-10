@@ -23,7 +23,7 @@ from typing import (
 import kumoapi.encoder as encoder_api
 import kumoapi.model_plan as api
 from kumo_core.errors import TrainingValidationError as ValidationException
-from kumo_core.training.bounds import validate_time_bounds
+from kumo_core.training.bounds import parse_time_bound, validate_time_bounds
 from kumo_core.types import TaskType
 from kumoapi.common import ValidationWarning
 from kumoapi.encoder import (
@@ -796,13 +796,9 @@ class TrainingTableGenerationPlan(api.TrainingTableGenerationPlan, PlanMixin):
                                        has_train_table_weight_col):
             return False
 
-        # Absolute node bounds also work with the default split path.
-        # Relative start/end offsets retain the decoupled-splits gate.
+        # Absolute node bounds are available independently of split routing.
         if name in ['start_time', 'end_time']:
-            value = self.start_time if name == 'start_time' else self.end_time
-            return (_use_decoupled_splits()
-                    or (task_type.is_node_pred and isinstance(value, str)
-                        and not _is_missing(value)))
+            return _use_decoupled_splits() or task_type.is_node_pred
         if name in ['train_start_offset', 'train_end_offset']:
             return not _use_decoupled_splits()
 
@@ -971,6 +967,16 @@ class TrainingTableGenerationPlan(api.TrainingTableGenerationPlan, PlanMixin):
                 )
             except ValueError as error:
                 errors.append(error)
+        elif query_type == QueryType.TEMPORAL:
+            # Preserve existing link routing while rejecting public integer
+            # bounds consistently with temporal node plans.
+            for name, value in (('start_time', self.start_time),
+                                ('end_time', self.end_time)):
+                if isinstance(value, int):
+                    try:
+                        parse_time_bound(value, name)
+                    except ValueError as error:
+                        errors.append(error)
         return errors, warnings
 
     @classmethod

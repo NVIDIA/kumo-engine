@@ -59,6 +59,7 @@ from kumo_core.model_plan import (
 from kumo_core.model_plan_conversion import public_model_plan_from_internal
 from kumo_core.pquery import (
     NativeGraph,
+    TaskPlanPurpose,
     ValidatedNativeQuery,
     parse_and_validate_query,
     query_is_temporal,
@@ -323,7 +324,8 @@ class PredictiveQuery:
 
     def _generate(self, snapshot: GraphSnapshot, options: CoreGenerationPlan,
                   run_dir: Path, *, timestamps: tuple[int, ...] = (),
-                  validate_targets: bool = True) -> tuple:
+                  validate_targets: bool = True,
+                  purpose: TaskPlanPurpose = TaskPlanPurpose.TRAINING) -> tuple:
         workflow = TrainingWorkflowRequest.from_spec(
             graph=snapshot.graph_config,
             predictive_query=self.query,
@@ -338,7 +340,7 @@ class PredictiveQuery:
             timestamps=timestamps,
         )
         with no_encoder_inference_warnings():
-            task_plan = build_training_task_plan(workflow)
+            task_plan = build_training_task_plan(workflow, purpose=purpose)
         return workflow, task_plan, generate_train_table(
             task_plan.train_table, validate_targets=validate_targets)
 
@@ -350,21 +352,20 @@ class PredictiveQuery:
 
         from kumo_core.io.json import from_json_dict
 
-        # Fit windows and split ranges do not constrain evaluation anchors.
+        # The fit's split ranges do not cover later evaluation anchors.
         options = CoreGenerationPlan()
         if plan is not None:
             options = replace(from_json_dict(to_json_dict(plan),
                                              CoreGenerationPlan),
-                              split=options.split,
-                              start_time=options.start_time,
-                              end_time=options.end_time)
+                              split=options.split)
         run_dir = train_table_scratch_dir(new_run_id())
         run_dir.mkdir(parents=True, exist_ok=True)
         staging = None
         try:
             _, _, generated = self._generate(snapshot, options, run_dir,
                                              timestamps=timestamps,
-                                             validate_targets=False)
+                                             validate_targets=False,
+                                             purpose=TaskPlanPurpose.LABELS)
             staging = Path(generated.staging_dir)
             yield sorted(str(part) for part in Path(
                 generated.train_table_path).glob('*.parquet'))

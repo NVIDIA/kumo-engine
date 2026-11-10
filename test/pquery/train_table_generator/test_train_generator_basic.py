@@ -916,9 +916,9 @@ def test_generate_time_intervals_start_end_time_absolute(
     assert task_type == TaskType.BINARY_CLASSIFICATION
 
 
-def test_generate_time_intervals_start_end_time_relative(
+def test_generate_time_intervals_legacy_offsets(
         create_node_pred_graph, tempdir):
-    """Test using relative offsets for start_time and end_time"""
+    """Legacy offsets remain relative to the latest label data."""
     graph = create_node_pred_graph('test_graph', tempdir.name)
     query = ('PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 1) > 30 '
              'FOR EACH USERS.USER_ID')
@@ -929,8 +929,8 @@ def test_generate_time_intervals_start_end_time_relative(
         graph,
         validated_query,
         split,
-        start_time=-4,  # 4 days before latest date
-        end_time=-1  # 1 day before latest date
+        train_start_offset=4,
+        train_end_offset=1,
     )
     task_type = generator.task_type
 
@@ -989,40 +989,19 @@ def test_generate_time_intervals_invalid_start_end_time(create_node_pred_graph,
     assert ('start_time must be smaller than end_time.'
             in validation_response.error_message())
 
-    # Test with relative offsets
-    generator = TrainingTableGeneratorV2(
-        graph,
-        validated_query,
-        split,
-        start_time=-1,  # 1 day before latest
-        end_time=-3  # 3 days before latest
-    )
-    validation_response = generator.validate_pre_train_table_generate()
-    assert not validation_response.ok
-    assert ('start_time must be smaller than end_time.'
-            in validation_response.error_message())
 
-
-def test_generate_time_intervals_mixed_types_error(create_node_pred_graph,
-                                                   tempdir):
-    """Test error when mixing absolute and relative timestamps"""
+def test_generate_time_intervals_integer_bound_rejected(create_node_pred_graph,
+                                                        tempdir):
+    """Integer start bounds have an actionable error before generation."""
     graph = create_node_pred_graph('test_graph', tempdir.name)
     query = ('PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 1) > 30 '
              'FOR EACH USERS.USER_ID')
     validated_query = get_validated_query(graph, query)
 
     split = DateOffsetSplit([-1, 0], unit=TimeUnit.DAYS, timeframe=1)
-    generator = TrainingTableGeneratorV2(
-        graph,
-        validated_query,
-        split,
-        start_time=-2,  # Relative offset
-        end_time='1990-01-04'  # Absolute timestamp
-    )
-    validation_response = generator.validate_pre_train_table_generate()
-    assert not validation_response.ok
-    assert ("start_time and end_time must both be offsets or both be timestamps"
-            in validation_response.error_message())
+    with pytest.raises(ValueError, match="Integer 'start_time' bounds"):
+        TrainingTableGeneratorV2(
+            graph, validated_query, split, start_time=-2, end_time='1990-01-04')
 
 
 def test_generate_time_intervals_with_legacy_params_error(
@@ -1159,9 +1138,9 @@ def test_generate_timestamps_v2_with_start_end_time(create_node_pred_graph,
     assert task_type == TaskType.BINARY_CLASSIFICATION
 
 
-def test_generate_timestamps_v2_with_relative_start_end_time(
+def test_generate_timestamps_v2_integer_bound_rejected(
         create_node_pred_graph, tempdir):
-    """Test generate_timestamps_v2 with relative start_time and end_time"""
+    """Decoupled routing also rejects integer end bounds."""
     graph = create_node_pred_graph('test_graph', tempdir.name)
     query = ('PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 8, hours) > 30 '
              'FOR EACH USERS.USER_ID')
@@ -1173,24 +1152,10 @@ def test_generate_timestamps_v2_with_relative_start_end_time(
         anchor_start_offset=0,
         timeframe_size=8,
     )
-    generator = TrainingTableGeneratorV2(
-        graph,
-        validated_query,
-        split,
-        start_time=-48,  # 2 days before latest date
-        end_time=-24,  # 1 day before latest date
-        timeframe_step=8,  # 24 hour steps
-    )
-    task_type = generator.task_type
-
-    timestamps = generator.generate_timestamps_v2()
-    # Should only include timestamps between max_date-3 and max_date-1
-    assert timestamps == [
-        pd.Timestamp('1990-01-03 16:00:00'),  # Test
-        pd.Timestamp('1990-01-03 08:00:00'),  # Val
-        pd.Timestamp('1990-01-03 00:00:00'),  # Train
-    ]
-    assert task_type == TaskType.BINARY_CLASSIFICATION
+    with pytest.raises(ValueError, match="Integer 'end_time' bounds"):
+        TrainingTableGeneratorV2(
+            graph, validated_query, split, start_time='1990-01-02', end_time=-24,
+            timeframe_step=8, use_decoupled_splits=True)
 
 
 def test_generate_timestamps_v2_legacy_params_error(create_node_pred_graph,

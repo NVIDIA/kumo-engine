@@ -146,10 +146,11 @@ bounds or an explicit temporal window split (`TimeRangeSplit`,
 `DateOffsetSplit`, or `BacktestingSplit`) separately. Direct bounds also cannot
 be combined with `train_start_offset` or `train_end_offset`. Existing task,
 time-unit, and split restrictions continue to apply. Integer `start_time` and
-`end_time` offsets retain their existing decoupled-splits gate and measure
-backward from the latest label data in the aggregation's time unit. Temporal
-link prediction retains its existing gate. Fit and saved model bundles retain
-the effective generation plan.
+`end_time` bounds are not supported. Use `train_start_offset` and
+`train_end_offset` for relative windows measured backward from the latest label
+data in the aggregation's time unit. Absolute bounds for temporal link
+prediction are outside this feature's scope. Fit and saved model bundles
+retain the effective generation plan.
 
 ## Agent skills
 

@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
 from kumo_core.model_plan import \
     TrainingTableGenerationPlan as CoreGenerationPlan
 from kumo_core.pquery import (
+    TaskPlanPurpose,
     ValidatedNativeQuery,
     build_native_pquery_task_plan,
     latest_temporal_timestamp,
@@ -189,12 +190,7 @@ def _build_prediction_table_request(
         from kumo_core.io.json import from_json_dict
         from kumoapi.json_serde import to_json_dict
 
-        # Prediction anchors do not inherit the fitted label window.
-        options = replace(
-            from_json_dict(to_json_dict(generation_plan), CoreGenerationPlan),
-            start_time=options.start_time,
-            end_time=options.end_time,
-        )
+        options = from_json_dict(to_json_dict(generation_plan), CoreGenerationPlan)
 
     parsed = resolve_query_forecast(parsed, native_graph, options)
     with no_encoder_inference_warnings():
@@ -209,6 +205,7 @@ def _build_prediction_table_request(
             graph_index_id=snapshot.id,
             timestamps=timestamps,
             supplied_rows=supplied_rows,
+            purpose=TaskPlanPurpose.PREDICTION,
         )
     forecast_timeframe_step = None
     if parsed.task_type == 'forecasting' and generation_plan is not None:
