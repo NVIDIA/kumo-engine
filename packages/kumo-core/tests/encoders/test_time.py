@@ -5,15 +5,15 @@ import math
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pytest
 import torch
-from torch import Tensor
-from torch_geometric.testing import withCUDA
-from torch_geometric.utils import one_hot
-
 from kumo_core.encoders.tensor_mapper import TimestampTensorMapper
 from kumo_core.encoders.time import TimeEncoder
 from kumo_core.types.features import NANOSECONDS_IN_DAY
+from torch import Tensor
+from torch_geometric.testing import withCUDA
+from torch_geometric.utils import one_hot
 
 
 @withCUDA
@@ -68,7 +68,9 @@ def test_time_encoder(
             expected_np[length + 2 * padding_size +
                         i] += j * np.timedelta64(unix_step_size, 'ns')
 
-    expected = TimestampTensorMapper()(pd.Series(expected_np), device=device)
+    expected = TimestampTensorMapper()(
+        pa.array(pd.Series(expected_np), from_pandas=True), device=device
+    )
     assert isinstance(expected, Tensor)
     index = TimestampTensorMapper.index
     expected = expected[:, [

@@ -50,7 +50,7 @@ def _ref_from_arrow(self, arr, *, device=None):
                 offset=torch.tensor([0, self.max_length], device=device),
             )
 
-    return self.forward(arr.to_pandas(), device=device)
+    return self._forward_pandas(arr.to_pandas(), device=device)
 
 
 def _ref_post_forward(self, array, device=None):
@@ -239,7 +239,7 @@ def test_fixed_size_list_matches_pandas_path(name, value_type, max_length,
     for a in (arr, chunked, arr.slice(1)):
         ref_mapper = SequenceTensorMapper(min_length=0, max_length=max_length)
         mapper = SequenceTensorMapper(min_length=0, max_length=max_length)
-        ref = ref_mapper.forward(a.to_pandas())
+        ref = ref_mapper._forward_pandas(a.to_pandas())
         _assert_identical(ref, mapper(a))
 
 

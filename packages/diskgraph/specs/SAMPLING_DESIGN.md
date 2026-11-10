@@ -281,8 +281,7 @@ The client binding (implemented in Rust/PyO3) consumes the Flight stream and exp
 *   **Input**: Calls `diskgraph-gateway` via Flight with a `BatchFeatureRequest`.
 *   **Processing**:
     *   Receives a stream of `RecordBatch`es where columns correspond to features.
-    *   Converts these batches into a `dict[str, pa.Array]` (or `pa.Table`).
-    *   Passes this dictionary directly to `TensorMappers.convert_raw_to_tensor_frame`.
+    *   Passes the Arrow batches or tables to `kumo_core.encoders.tensor_frame.get_tf` with per-column mappers.
 *   **Compatibility**: This format is natively compatible with Kumo's existing feature processing pipeline, which already operates on PyArrow arrays. This eliminates the legacy overhead of decoding Protobuf byte blobs.
 
 ### 6.3. Defaults & Configuration
@@ -348,7 +347,7 @@ A lightweight **Stats Batch** is sent in the final message's `app_metadata`. It 
 The `SortKey` packs `Timestamp` (MSB) and `Weight` (LSB) into a single `u64`. This physical sorting on disk enables **$O(1)$ temporal sampling** (best-case), as the sampler can stop reading an adjacency list as soon as it hits the time horizon or fanout limit.
 
 ### **7. Native Feature Fetching Integration**
-Feature fetching uses the same Arrow Flight transport. The response format (`RecordBatch` with native types) is designed to plug directly into Kumo's existing `TensorMappers`, removing the need for legacy Protobuf blob decoding.
+Feature fetching uses the same Arrow Flight transport. The response format (`RecordBatch` with native types) is designed to plug directly into Kumo's Arrow-based tensor-frame encoding (`get_tf`), removing the need for legacy Protobuf blob decoding.
 
 ### **8. Full Parity & Correctness**
 Supports all legacy flags: `disjoint` (for temporal correctness), `replace` (for fixed tensor sizes), and `directed`. Handles **Heterogeneous Graphs** natively by maintaining type-local index spaces, matching PyTorch Geometric's `HeteroData` requirements.
