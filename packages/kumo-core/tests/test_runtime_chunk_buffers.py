@@ -10,7 +10,7 @@ import pytest
 import torch
 from kumo_core.diskgraph.lightning_data import DiskgraphLightningDataModule
 from kumo_core.diskgraph.runtime_adapter import (
-    _record_batches_to_table,
+    _collect_raw_features,
     _values_to_tensor,
     attach_tensor_frames,
     engine_int64_to_ns,
@@ -31,7 +31,9 @@ def test_feature_batches_preserve_original_buffers(empty: bool) -> None:
         pa.record_batch({"feature": column.slice(1)}),
     ]
 
-    table = _record_batches_to_table(batches)
+    table = _collect_raw_features({"nodes": {"record_batches": batches}}, {}).tables[
+        "nodes"
+    ]
 
     assert isinstance(table, pa.Table)
     assert table.num_rows == len(column)
@@ -48,7 +50,9 @@ def test_single_feature_batch_is_wrapped_without_copying() -> None:
     """A lone RecordBatch uses the same table representation and source buffer."""
     batch = pa.record_batch({"feature": [1.0]})
 
-    table = _record_batches_to_table([batch])
+    table = _collect_raw_features({"nodes": {"record_batches": [batch]}}, {}).tables[
+        "nodes"
+    ]
 
     assert isinstance(table, pa.Table)
     assert table.num_rows == 1
@@ -65,7 +69,7 @@ def test_runtime_encodes_original_feature_chunks() -> None:
     ]
     mapper = NumericalTensorMapper()
     hetero = HeteroData()
-    table = _record_batches_to_table(batches)
+    table = pa.Table.from_batches(batches)
 
     with patch.object(mapper, "forward", wraps=mapper.forward) as forward:
         attach_tensor_frames(

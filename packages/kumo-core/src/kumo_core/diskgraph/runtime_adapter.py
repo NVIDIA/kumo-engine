@@ -1231,7 +1231,7 @@ def _collect_raw_features(
         record_batches = block.get("record_batches") or []
         if not record_batches:
             continue
-        out.tables[namespace] = _record_batches_to_table(record_batches)
+        out.tables[namespace] = pa.Table.from_batches(record_batches)
         ids = block.get("node_ids")
         if ids is None:
             ids = node_ids.get(namespace)
@@ -1277,10 +1277,3 @@ def _alias_forecasting_seed_features(
     raw_feature_tables[train_table_name] = raw_feature_tables[namespace]
     if namespace in raw_feature_row_ids:
         raw_feature_row_ids[train_table_name] = raw_feature_row_ids[namespace]
-
-
-def _record_batches_to_table(
-    batches: list[pa.RecordBatch],
-) -> pa.Table:
-    """Preserve incoming feature buffers and chunk boundaries for encoding."""
-    return pa.Table.from_batches(batches)
