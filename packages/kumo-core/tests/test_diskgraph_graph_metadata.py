@@ -8,8 +8,8 @@ from unittest.mock import mock_open, patch
 
 import pytest
 from kumo_core.diskgraph.metadata import DiskgraphSchema, load_diskgraph_schema
-from kumo_core.diskgraph.stores import DiskgraphFeatureStore
 from kumo_core.encoders.config import EncodersConfig
+from kumo_core.features.reads import DiskgraphFeatureContext
 from kumo_core.training.runtime import LocalDiskgraphTrainingRuntime
 
 
@@ -100,21 +100,22 @@ def test_foreign_keys_use_parsed_forward_specs(
 def test_runtime_builds_feature_access_and_schema(metadata: str) -> None:
     """RHS/explanation setup returns usable schema metadata without a sampler."""
     with patch("builtins.open", mock_open(read_data=metadata)) as open_metadata:
-        feature_store, schema = (
-            LocalDiskgraphTrainingRuntime().create_feature_store_and_schema(
+        feature_store = (
+            LocalDiskgraphTrainingRuntime().create_feature_context(
                 index_path="/snapshot",
                 encoders=EncodersConfig(),
                 entity_table_names=["users", "products"],
                 time_col_dict={},
             )
         )
+    schema = feature_store.schema
     open_metadata.assert_called_once()
     assert schema.num_nodes_dict == {"orders": 3, "users": 3, "products": 3}
-    assert isinstance(feature_store, DiskgraphFeatureStore)
+    assert isinstance(feature_store, DiskgraphFeatureContext)
     assert isinstance(schema, DiskgraphSchema)
     assert feature_store._engine is None
     assert feature_store.entity_table_names == ["users", "products"]
-    assert feature_store.get_tensor_size("orders", "tf") == (3,)
+    assert schema.num_nodes_dict["orders"] == 3
     assert schema.get_foreign_keys("orders") == [
         ("user_id", "users"),
         ("product_id", "products"),
@@ -134,14 +135,15 @@ def test_collector_recovers_foreign_keys_from_schema(metadata: str) -> None:
     from torch_geometric.data import HeteroData
 
     with patch("builtins.open", mock_open(read_data=metadata)):
-        feature_store, schema = (
-            LocalDiskgraphTrainingRuntime().create_feature_store_and_schema(
+        feature_store = (
+            LocalDiskgraphTrainingRuntime().create_feature_context(
                 index_path="/snapshot",
                 encoders=EncodersConfig(),
                 entity_table_names=["users"],
                 time_col_dict={},
             )
         )
+    schema = feature_store.schema
     batch = HeteroData()
     for name, key in [("users", 42), ("orders", 100), ("products", 7)]:
         batch[name].num_nodes = 1

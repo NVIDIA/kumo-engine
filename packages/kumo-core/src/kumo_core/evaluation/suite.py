@@ -42,6 +42,7 @@ from typing_extensions import Self
 
 import logging
 from kumo_core.features.stores.feature import FeatureStore
+from kumo_core.features.reads import DiskgraphFeatureContext, read_tensor_frame
 from kumo_core.evaluation.classification import BinaryAUPRC, BinaryAUROC, BinaryAveragePrecision, MultilabelAUPRC, MultilabelAUROC, MultilabelAveragePrecision
 from kumo_core.evaluation.distribution import LogNormalDistribution, NegativeBinomialDistribution, NormalDistribution
 from kumo_core.evaluation.ranking import MulticlassMRR
@@ -564,15 +565,21 @@ class MetricStore(torch.nn.Module):
                         stacklevel=2)
                     continue
                 feature_store = module.datamodule.feature_store
-                assert isinstance(feature_store, FeatureStore)
+                assert isinstance(feature_store,
+                                  (FeatureStore, DiskgraphFeatureContext))
                 assert isinstance(module.entity_table_names, tuple | list)
                 table_name = module.entity_table_names[1]
                 batch_size = 16_000
                 # NOTE This may be expensive to run :(
                 logger.info(f"Fetching '{table_name}' features with a "
                             f"mini-batch size of {batch_size}")
-                with feature_store.safe_batch_mode(batch_size=batch_size):
-                    rhs_tf = feature_store[table_name, 'tf', :]
+                if isinstance(feature_store, DiskgraphFeatureContext):
+                    rhs_tf = read_tensor_frame(
+                        feature_store, table_name,
+                        torch.arange(feature_store.schema.num_nodes_dict[table_name]))
+                else:
+                    with feature_store.safe_batch_mode(batch_size=batch_size):
+                        rhs_tf = feature_store[table_name, 'tf', :]
 
             # Compute RHS category that is used as diversity measure:
             if (issubclass(metric_type.cls, LinkPredDiversity)

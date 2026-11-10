@@ -10,11 +10,13 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 import torch
+from kumo_core.diskgraph.metadata import DiskgraphSchema
 from kumo_core.diskgraph.runtime_adapter import _attach_graph_topology
 from kumo_core.encoders import TensorMapper
 from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
 from kumo_core.explain import SubgraphCollector
 from kumo_core.explain.subgraph_collector import get_target_rhs_id
+from kumo_core.features.reads import DiskgraphFeatureContext
 from kumo_core.features.stores import FeatureStoreTableSchema
 from kumo_core.modeling.gnn.hetero import HeteroGNN
 from kumo_core.modeling.heads.link_prediction import LinkPredHead
@@ -28,19 +30,44 @@ from kumoapi.typing import Stype
 from torch_frame import TensorFrame
 from torch_geometric.data import HeteroData
 
-from tests.support.diskgraph_feature_store import make_diskgraph_feature_store
+from tests.support.diskgraph_feature_store import make_feature_context
+
+
+def _feature_context(
+    table_schemas: dict[str, FeatureStoreTableSchema],
+) -> DiskgraphFeatureContext:
+    """Build metadata for collector tests without opening a native engine."""
+    return DiskgraphFeatureContext(
+        index_path="/index",
+        schema=DiskgraphSchema(
+            table_names=list(table_schemas),
+            pkey_dict={
+                name: schema.pkey_name
+                for name, schema in table_schemas.items()
+                if schema.pkey_name is not None
+            },
+            fk_specs=[],
+            raw_edge_types=[],
+            edge_types=[],
+            edge_type_remap={},
+        ),
+        table_schema_dict=table_schemas,
+        entity_table_names=list(table_schemas),
+    )
 
 
 def test_collector_serializes_unencoded_temporal_columns(tmp_path):
-    frame = pd.DataFrame({
-        'id': ['event-1'],
-        'created_at': pd.to_datetime(['2026-01-02']),
-        'ended_at': pd.to_datetime(['2026-02-03']),
-    })
+    frame = pd.DataFrame(
+        {
+            "id": ["event-1"],
+            "created_at": pd.to_datetime(["2026-01-02"]),
+            "ended_at": pd.to_datetime(["2026-02-03"]),
+        }
+    )
     schema = FeatureStoreTableSchema(mapper_dict={}, pkey_name='id',
                                      time_col_name='created_at',
                                      end_time_col_name='ended_at')
-    store = make_diskgraph_feature_store({'events': frame}, {'events': schema})
+    store = _feature_context({'events': schema})
     batch = HeteroData()
     batch['events'].num_nodes = 1
     batch['events'].batch_size = 1
@@ -51,7 +78,7 @@ def test_collector_serializes_unencoded_temporal_columns(tmp_path):
                                   formats=['nested_json'])
     collector.format_subgraph_json(
         batch, ['event-1'], {'events': frame}, {}, TrainingStage.TEST, store,
-        SimpleNamespace(get_foreign_keys=lambda _: []), torch.nn.Identity())
+        store.schema, torch.nn.Identity())
     output = json.loads((tmp_path / 'test/nested_json/0.json').read_text())
     columns = {column['name']: column for column in output['cols']}
     assert columns['created_at']['stype'] == Stype.timestamp.value
@@ -60,12 +87,13 @@ def test_collector_serializes_unencoded_temporal_columns(tmp_path):
     assert columns['ended_at']['value'] == '2026-02-03T00:00:00'
     assert (tmp_path / 'test/subgraph_json/0.json').stat().st_size > 0
     # Explanation metadata must not add new encoded model inputs.
-    assert store._table_schema_dict['events'].mapper_dict == {}
+    assert store.table_schema_dict['events'].mapper_dict == {}
     with pytest.raises(KeyError):
         store.get_tensor_mapper('events', 'missing_column')
 
 
-def test_collector_tolerates_unreached_temporal_table(tmp_path):
+@pytest.mark.parametrize('with_foreign_key', [False, True])
+def test_collector_tolerates_unreached_temporal_table(tmp_path, with_foreign_key):
     # The runtime adapter attaches ``time`` only to node types the sampler
     # reached; an unreached type is an empty block with ``pkey`` but no
     # ``time``, even though its table has a time column.
@@ -74,9 +102,7 @@ def test_collector_tolerates_unreached_temporal_table(tmp_path):
                                       time_col_name='created_at')
         for name in ('lots', 'bids')
     }
-    frame = pd.DataFrame({'id': [], 'created_at': pd.to_datetime([])})
-    store = make_diskgraph_feature_store({name: frame
-                                   for name in schemas}, schemas)
+    store = _feature_context(schemas)
     batch = HeteroData()
     batch['lots'].pkey = np.array(['lot-1'], dtype=object)
     batch['lots'].tf = TensorFrame({}, {}, num_rows=1)
@@ -88,8 +114,16 @@ def test_collector_tolerates_unreached_temporal_table(tmp_path):
     batch['bids'].pkey = np.array([], dtype=object)
     batch['bids'].tf = TensorFrame({}, {}, num_rows=0)
     batch['bids'].batch = torch.empty(0, dtype=torch.long)
-    datamodule = SimpleNamespace(data=(
-        store, SimpleNamespace(get_foreign_keys=lambda _: [])))
+    edge_types = ([('bids', 'lot_id', 'lots'), ('lots', 'rev_lot_id', 'bids')]
+                  if with_foreign_key else [])
+    for edge_type in edge_types:
+        batch[edge_type].edge_index = torch.empty((2, 0), dtype=torch.long)
+    graph_schema = DiskgraphSchema(
+        table_names=list(schemas), pkey_dict={name: 'id' for name in schemas},
+        fk_specs=[('bids.lot_id', 'lots.id')] if with_foreign_key else [],
+        raw_edge_types=edge_types, edge_types=edge_types,
+        edge_type_remap={})
+    datamodule = SimpleNamespace(data=(store, graph_schema))
 
     collector = SubgraphCollector(TaskType.REGRESSION, str(tmp_path),
                                   formats=['csv'])
@@ -102,16 +136,16 @@ def test_collector_tolerates_unreached_temporal_table(tmp_path):
         'created_at': '2026-01-02'
     }]
     bids = pd.read_csv(tmp_path / 'test/csv/0/bids.csv')
-    assert list(bids.columns) == ['id', 'created_at'] and bids.empty
+    expected_columns = (['id', 'lot_id', 'created_at'] if with_foreign_key
+                        else ['id', 'created_at'])
+    assert list(bids.columns) == expected_columns and bids.empty
 
 
 def test_explicit_temporal_mapper_is_preserved():
     mapper = TensorMapper.from_encoder(Datetime())
     schema = FeatureStoreTableSchema(mapper_dict={'created_at': mapper},
                                      time_col_name='created_at')
-    store = make_diskgraph_feature_store(
-        {'events': pd.DataFrame({'created_at': pd.to_datetime([])})},
-        {'events': schema})
+    store = _feature_context({'events': schema})
     assert store.get_tensor_mapper('events', 'created_at') is mapper
 
 
@@ -173,7 +207,7 @@ def _format_rfm(tmp_path, batch, pred, y_idx, y_batch,
         num_rhs_nodes=10,
         rhs_emb_mode='lookup',
     )
-    store = make_diskgraph_feature_store(
+    store = make_feature_context(
         {
             'lots': pd.DataFrame({'id': ['lot-a', 'lot-b']}),
             'users': pd.DataFrame({'id': [7, 8, 9]}),
@@ -323,7 +357,7 @@ def test_historical_items_interleaved_seeds(tmp_path):
             [('transactions', 'SALE_LOT_KEY', 'lots')],
             [('transactions', 'PARTY_ID_MAIN_CLIENT', 'users')],
         ])
-    store = make_diskgraph_feature_store(
+    store = make_feature_context(
         {'users': pd.DataFrame({'id': []})},
         {'users': FeatureStoreTableSchema(mapper_dict={}, pkey_name='id')})
     collector.format_historical_items(batch, ['lot-a', 'lot-b'],

@@ -11,12 +11,15 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Protocol, Tuple
 
 import psutil
 
-from kumo_core.diskgraph.metadata import DiskgraphSchema, load_diskgraph_schema
+from kumo_core.diskgraph.metadata import load_diskgraph_schema
 from kumo_core.diskgraph.stores import (
-    DiskgraphFeatureStore,
     diskgraph_auto_config,
     diskgraph_index_size_bytes,
 )
+from kumo_core.encoders.config import EncodersConfig
+from kumo_core.encoders.tensor_mapper import TensorMapper
+from kumo_core.features.reads import DiskgraphFeatureContext
+from kumo_core.features.stores.feature import FeatureStoreTableSchema
 
 if TYPE_CHECKING:
     from kumo_core.embedding_models import EmbeddingModelStore
@@ -41,19 +44,19 @@ class DiskgraphTrainingRuntime(Protocol):
     ) -> dict[str, Any]:
         ...
 
-    def create_feature_store_and_schema(
+    def create_feature_context(
         self,
         *,
         index_path: str,
-        encoders: Any,
+        encoders: EncodersConfig,
         entity_table_names: list[str],
         time_col_dict: dict[str, str],
-    ) -> tuple[DiskgraphFeatureStore, DiskgraphSchema]:
+    ) -> DiskgraphFeatureContext:
         ...
 
 
 class LocalDiskgraphTrainingRuntime:
-    """Construct feature access and schema metadata for a local snapshot."""
+    """Provide DiskGraph configuration and metadata for a local snapshot."""
     def auto_config(
         self,
         *,
@@ -67,23 +70,43 @@ class LocalDiskgraphTrainingRuntime:
             estimated_edges=estimated_edges,
         )
 
-    def create_feature_store_and_schema(
+    def create_feature_context(
         self,
         *,
         index_path: str,
-        encoders: Any,
+        encoders: EncodersConfig,
         entity_table_names: list[str],
         time_col_dict: dict[str, str],
-    ) -> tuple[DiskgraphFeatureStore, DiskgraphSchema]:
+    ) -> DiskgraphFeatureContext:
+        """Prepare metadata for direct node reads without opening the engine.
+
+        Args:
+            index_path: Directory containing the DiskGraph index.
+            encoders: Fitted encoders used to decode features.
+            entity_table_names: Entity tables used by the task.
+            time_col_dict: Mapping from table names to time columns.
+
+        Returns:
+            Schema and fitted mappers for explicit DiskGraph reads.
+
+        Raises:
+            FileNotFoundError: If the index metadata does not exist.
+        """
         schema = load_diskgraph_schema(index_path)
-        feature_store = DiskgraphFeatureStore.for_explain(
-            index_path=index_path,
-            encoders=encoders,
-            entity_table_names=entity_table_names,
-            time_col_dict=time_col_dict,
-            schema=schema,
+        table_schema_dict = {
+            table_name: FeatureStoreTableSchema(
+                mapper_dict={
+                    name: TensorMapper.from_encoder(encoder)
+                    for name, encoder in encoders.encoders.get(table_name, {}).items()
+                },
+                pkey_name=schema.pkey_dict.get(table_name),
+                time_col_name=time_col_dict.get(table_name),
+            )
+            for table_name in schema.table_names
+        }
+        return DiskgraphFeatureContext(
+            index_path, schema, table_schema_dict, list(entity_table_names)
         )
-        return feature_store, schema
 
 
 class LocalTrainingArtifactRuntime:

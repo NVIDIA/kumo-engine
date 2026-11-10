@@ -7,16 +7,21 @@ import pandas as pd
 import pytest
 import torch
 from kumo_core.diskgraph.metadata import DiskgraphSchema
-from kumo_core.diskgraph.stores import DiskgraphFeatureStore
 from kumo_core.encoders.selection import compute_missing_stats_
 from kumo_core.encoders.tensor_mapper import TensorMapper
+from kumo_core.features.reads import (
+    DiskgraphFeatureContext,
+    read_node_times,
+    read_primary_keys,
+    read_tensor_frame,
+)
 from kumo_core.features.stores.feature import FeatureStoreTableSchema
 from kumo_core.features.time import to_datetime
 from kumoapi.encoder import Encoder
 from kumoapi.typing import Stype
 from torch_geometric.data import HeteroData
 
-from tests.support.diskgraph_feature_store import make_diskgraph_feature_store
+from tests.support.diskgraph_feature_store import make_feature_context
 from tests.support.encoders import get_encoder
 
 
@@ -33,7 +38,7 @@ def create_graph_data(
     df_dict: dict[str, pd.DataFrame],
     schema_dict: dict[str, TestTableSchema],
 ) -> tuple[
-        DiskgraphFeatureStore,
+        DiskgraphFeatureContext,
         DiskgraphSchema,
         dict[str, dict[str, Encoder]],
 ]:
@@ -73,7 +78,7 @@ def create_graph_data(
         for table_name, schema in schema_dict.items()
     }
 
-    feature_store = make_diskgraph_feature_store(
+    feature_store = make_feature_context(
         df_dict=df_dict,
         table_schema_dict=fs_table_schema_dict,
     )
@@ -115,7 +120,7 @@ def create_graph_data(
 
 @pytest.fixture()
 def user_store_graph() -> tuple[
-    DiskgraphFeatureStore,
+    DiskgraphFeatureContext,
     DiskgraphSchema,
     dict[str, dict[str, Encoder]],
 ]:
@@ -191,7 +196,7 @@ def user_store_graph() -> tuple[
 
 @pytest.fixture()
 def large_user_store_graph() -> tuple[
-    DiskgraphFeatureStore,
+    DiskgraphFeatureContext,
     DiskgraphSchema,
     dict[str, dict[str, Encoder]],
 ]:
@@ -267,7 +272,7 @@ def large_user_store_graph() -> tuple[
 
 
 def user_store_batch(
-    feature_store: DiskgraphFeatureStore,
+    feature_store: DiskgraphFeatureContext,
     num_hops: int = 2,
 ) -> HeteroData:
     """Fixed temporal batch for explanation and edge-exclusion tests.
@@ -294,10 +299,11 @@ def user_store_batch(
         store.num_nodes = len(ids)
         store.batch = torch.tensor(roots, dtype=torch.long)
         store.num_sampled_nodes = counts[:num_hops + 1]
-        for attr in feature_store.get_all_tensor_attrs():
-            if attr.table_name == table:
-                store[attr.attr_name] = feature_store.get_tensor(
-                    table, attr.attr_name, store.n_id)
+        store.tf = read_tensor_frame(feature_store, table, store.n_id)
+        if feature_store.get_pkey_name(table) is not None:
+            store.pkey = read_primary_keys(feature_store, table, store.n_id)
+        if feature_store.get_time_col_name(table) is not None:
+            store.time = read_node_times(feature_store, table, store.n_id)
 
     data['USERS'].input_id = torch.arange(4)
     data['USERS'].seed_time = torch.full(

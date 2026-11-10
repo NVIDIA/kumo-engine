@@ -260,8 +260,12 @@ def handle_gpu_oom(func):
                                f"exiting the prediction.")
                 rhs_n_limit, rhs_dim_limit = RHS_NUM_EMB_SIZE_LIMIT
                 dim = self.head.embedding_dim
-                rhs_name = self.feature_store.entity_table_names[-1]
-                num_rhs_nodes = self.feature_store.get_tensor_size(rhs_name)[0]
+                if self.feature_store is None:
+                    rhs_name = self.pl_model.entity_table_names[-1]
+                    num_rhs_nodes = self.pl_model.num_rhs_nodes
+                else:
+                    rhs_name = self.feature_store.entity_table_names[-1]
+                    num_rhs_nodes = self.feature_store.get_tensor_size(rhs_name)[0]
                 raise TrainingValidationError(
                     title="GPU out-of-memory error",
                     message=f"Table '{rhs_name}' contains {num_rhs_nodes} "
@@ -2241,7 +2245,7 @@ class Trainer(PortableConfigMixin):
             input_id = input_id[:max_num_batches * eval_batch_size]
         seed_nodes, strategy_mappings = self._explain_runtime.select_input_nodes(
             self.task.task_type,
-            self.feature_store,
+            self.datamodule.data[0],
             input_nodes,
             input_id,
             outputs,

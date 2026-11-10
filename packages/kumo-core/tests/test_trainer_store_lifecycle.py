@@ -123,7 +123,7 @@ def test_load_recovers_legacy_edge_names_from_task(
     } == set(task.graph.edge_types)
 
 
-def test_explain_creates_feature_store_and_schema_together(
+def test_explain_prepares_native_context_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Create both resources once and restore data after repeated explanations."""
@@ -134,8 +134,9 @@ def test_explain_creates_feature_store_and_schema_together(
     previous_data = object()
     trainer.datamodule = SimpleNamespace(_data=previous_data, time_col_dict={})
     feature_store, schema = Mock(), Mock()
+    feature_store.schema = schema
     runtime = Mock()
-    runtime.create_feature_store_and_schema.return_value = feature_store, schema
+    runtime.create_feature_context.return_value = feature_store
     trainer.diskgraph_runtime = runtime
     manifest = SimpleNamespace(
         graph_runtime_metadata={"graph_index_path": "index"},
@@ -155,11 +156,11 @@ def test_explain_creates_feature_store_and_schema_together(
     trainer.explain()
     trainer.explain()
 
-    assert trainer.feature_store is feature_store
-    assert trainer.graph_schema is schema
+    assert trainer._feature_context is feature_store
+    assert trainer._feature_context.schema is schema
     assert observed == [(feature_store, schema)] * 2
     assert trainer.datamodule._data is previous_data
-    runtime.create_feature_store_and_schema.assert_called_once_with(
+    runtime.create_feature_context.assert_called_once_with(
         index_path="index",
         encoders=None,
         entity_table_names=["users"],

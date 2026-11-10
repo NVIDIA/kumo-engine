@@ -38,6 +38,7 @@ from kumo_core.io.json import save_json
 from kumo_core.encoders.tensor_mapper import CategoricalTensorMapper, MultiCategoricalTensorMapper
 from kumo_core.explain.base import Explainer, continue_on_error
 from kumo_core.features.time import to_datetime
+from kumo_core.features.reads import read_primary_keys, read_tensor_frame
 from kumo_core.explain.schemas import (
     ColumnData,
     EntityOutput,
@@ -51,7 +52,7 @@ from kumo_core.explain.schemas import Subgraph as OldSubgraph
 
 if TYPE_CHECKING:
     from kumo_core.diskgraph.metadata import DiskgraphSchema
-    from kumo_core.features.stores.feature import FeatureStore
+    from kumo_core.features.reads import FeatureSource
 
 FORMAT = Literal['csv', 'nested_json', 'output', 'historical_items', 'rfm']
 
@@ -142,7 +143,7 @@ class SubgraphCollector(Explainer):
     ) -> None:
         df_dict: dict[str, pd.DataFrame] = {}
         grad_dict: dict[str, dict[str, Tensor]] = {}
-        feature_store: FeatureStore = datamodule.data[0]
+        feature_store: FeatureSource = datamodule.data[0]
         graph_schema: DiskgraphSchema = datamodule.data[1]
 
         # Gradients ###########################################################
@@ -239,8 +240,7 @@ class SubgraphCollector(Explainer):
                 y_idx, y_batch = y_idx.cpu(), y_batch.cpu()
             rhs_idx = pred_idx if y_idx is None else torch.cat(
                 [y_idx, pred_idx]).unique()
-            with feature_store.safe_batch_mode(batch_size=50_000):
-                rhs_arr = feature_store[rhs_name, 'pkey', rhs_idx]
+            rhs_arr = read_primary_keys(feature_store, rhs_name, rhs_idx)
 
             # Use n_id as the index for the index mapping
             rhs_index_map = pd.DataFrame(
@@ -248,7 +248,7 @@ class SubgraphCollector(Explainer):
                 index=rhs_idx.numpy())
 
             # Retrieve raw prediction RHS features ############################
-            tf = feature_store[rhs_name, 'tf', pred_idx]
+            tf = read_tensor_frame(feature_store, rhs_name, pred_idx)
             pred_df = _tf_to_df(tf, rhs_name, feature_store)
             unsupported_feat_dict = getattr(tf, '_unsupported_feat_dict', {})
             for col_name, data in unsupported_feat_dict.items():
@@ -345,7 +345,7 @@ class SubgraphCollector(Explainer):
         df_dict: dict[str, pd.DataFrame],
         grad_dict: dict[str, dict[str, Tensor]],
         stage: TrainingStage,
-        feature_store: FeatureStore,
+        feature_store: FeatureSource,
         graph_schema: DiskgraphSchema,
         module: torch.nn.Module,
         rhs_index_map: pd.DataFrame | None = None,
@@ -808,7 +808,7 @@ class SubgraphCollector(Explainer):
     def format_rfm(
         self,
         seed_table: str,
-        feature_store: FeatureStore,
+        feature_store: FeatureSource,
         batch: HeteroData,
         seed_entities: list[Any],
         stage: TrainingStage,
@@ -867,7 +867,7 @@ class SubgraphCollector(Explainer):
         seed_entities: list[Any],
         step_output: dict[str, Tensor],
         stage: TrainingStage,
-        feature_store: FeatureStore,
+        feature_store: FeatureSource,
         rhs_index_map: pd.DataFrame | None = None,
         pred: Tensor | None = None,
         pred_df: pd.DataFrame | None = None,
@@ -934,7 +934,7 @@ class SubgraphCollector(Explainer):
             assert y_idx is not None
             assert y_batch is not None
             assert rhs_index_map is not None
-            tf = feature_store[rhs_table_name, 'tf', y_idx]
+            tf = read_tensor_frame(feature_store, rhs_table_name, y_idx)
             y_df = _tf_to_df(tf, rhs_table_name, feature_store)
             unsupported_feat_dict = getattr(tf, '_unsupported_feat_dict', {})
             for col_name, data in unsupported_feat_dict.items():
@@ -1030,7 +1030,7 @@ class SubgraphCollector(Explainer):
         seed_entities: list[Any],
         df_dict: dict[str, pd.DataFrame],
         stage: TrainingStage,
-        feature_store: FeatureStore,
+        feature_store: FeatureSource,
     ) -> None:
         # TODO: Remove Task dependency from this method.
         assert self.target_to_entity_paths is not None
@@ -1105,7 +1105,7 @@ def _set_column_values(
 def _tf_to_df(
     tf: TensorFrame,
     table_name: str,
-    feature_store: FeatureStore,
+    feature_store: FeatureSource,
 ) -> pd.DataFrame:
     data = {}
     for stype, feats in tf.feat_dict.items():
@@ -1195,7 +1195,7 @@ def get_unique_counts(
     batch: HeteroData,
     seed_id: int,
     seed_table: str,
-    feature_store: FeatureStore,
+    feature_store: FeatureSource,
 ) -> dict[str, dict[str, int | float]]:
     r"""Get the second-hop unique counts for items in node prediction task."""
     unique_counts: dict[str, dict[str, int | float]] = {}

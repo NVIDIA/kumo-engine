@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""DiskGraph stores backed by mocked Arrow reads for component tests."""
+"""Native read contexts backed by mocked Arrow tables for component tests."""
 
 from collections.abc import Mapping
 from typing import Any, TypedDict
@@ -9,7 +9,8 @@ from unittest.mock import Mock
 
 import pandas as pd
 import pyarrow as pa
-from kumo_core.diskgraph.stores import DiskgraphFeatureStore
+from kumo_core.diskgraph.metadata import DiskgraphSchema
+from kumo_core.features.reads import DiskgraphFeatureContext
 from kumo_core.features.stores.feature import FeatureStoreTableSchema
 
 
@@ -21,12 +22,12 @@ class FeatureRequest(TypedDict):
     feature_names: list[str]
 
 
-def make_diskgraph_feature_store(
+def make_feature_context(
     df_dict: Mapping[str, pd.DataFrame | pa.Table],
     table_schema_dict: Mapping[str, FeatureStoreTableSchema | dict[str, Any]],
     entity_table_names: list[str] | None = None,
-) -> DiskgraphFeatureStore:
-    """Build a real store with a mocked engine reading the supplied tables.
+) -> DiskgraphFeatureContext:
+    """Build a native read context with a mocked engine for supplied tables.
 
     Args:
         df_dict: Tables in DiskGraph node-ID order.
@@ -34,7 +35,7 @@ def make_diskgraph_feature_store(
         entity_table_names: Entity tables in task order, if needed by the test.
 
     Returns:
-        A store exercising production metadata, query, and feature-mapping code.
+        A context exercising production metadata and feature-mapping code.
 
     Raises:
         KeyError: If a schema has no corresponding input table.
@@ -47,10 +48,22 @@ def make_diskgraph_feature_store(
         name: frame if isinstance(frame, pa.Table) else pa.Table.from_pandas(frame)
         for name, frame in df_dict.items()
     }
-    store = DiskgraphFeatureStore(
+    store = DiskgraphFeatureContext(
         index_path="/mock-snapshot",
+        schema=DiskgraphSchema(
+            table_names=list(schemas),
+            pkey_dict={
+                name: schema.pkey_name
+                for name, schema in schemas.items()
+                if schema.pkey_name is not None
+            },
+            fk_specs=[],
+            raw_edge_types=[],
+            edge_types=[],
+            edge_type_remap={},
+            num_nodes_dict={name: len(tables[name]) for name in schemas},
+        ),
         table_schema_dict=schemas,
-        diskgraph_num_nodes={name: len(tables[name]) for name in schemas},
         entity_table_names=entity_table_names or [],
     )
 

@@ -14,7 +14,7 @@ from kumo_core.modeling.embedding import Embedding
 from kumo_core.modeling.retrieval.rhs_embedding import RHSEmbedding
 from kumoapi.encoder import Index, Numerical
 from kumoapi.model_plan import RHSEmbeddingMode
-from tests.support.diskgraph_feature_store import make_diskgraph_feature_store
+from tests.support.diskgraph_feature_store import make_feature_context
 from torch_frame.data import MultiEmbeddingTensor, MultiNestedTensor
 from torch_geometric.testing import onlyCUDA, withCUDA
 
@@ -124,7 +124,7 @@ def test_rhs_embedding(
         col_name: TensorMapper.from_encoder(encoder)
         for col_name, encoder in encoder_dict.items()
     }
-    feature_store = make_diskgraph_feature_store(
+    feature_store = make_feature_context(
         df_dict={'RHS': df},
         table_schema_dict={'RHS': dict(mapper_dict=mapper_dict)},
     )
@@ -300,7 +300,7 @@ def test_sorted_rhs_filter_uses_bounded_implicit_mapping(
 @withCUDA
 @pytest.mark.parametrize('emb_mode', list(RHSEmbeddingMode))
 def test_no_features(emb_mode: RHSEmbeddingMode, device: torch.device) -> None:
-    feature_store = make_diskgraph_feature_store(
+    feature_store = make_feature_context(
         df_dict={'RHS': pd.DataFrame({'INDEX': range(5)})},
         table_schema_dict={'RHS': dict(mapper_dict={})},
     )
@@ -333,7 +333,7 @@ def test_no_features(emb_mode: RHSEmbeddingMode, device: torch.device) -> None:
 @pytest.mark.parametrize('distance_measure', ['dot_product', 'cosine'])
 def test_distance_measure(distance_measure: Literal['dot_product', 'cosine'],
                           device: torch.device) -> None:
-    feature_store = make_diskgraph_feature_store(
+    feature_store = make_feature_context(
         df_dict={'RHS': pd.DataFrame({'INDEX': range(5)})},
         table_schema_dict={'RHS': dict(mapper_dict={})},
     )
@@ -419,7 +419,7 @@ def test_fusion_on_the_fly(filter: bool, device: torch.device) -> None:
     encoder_dict = {'A': compute_missing_stats_(Numerical(), df['A'])}
     mapper_dict = {'A': NumericalTensorMapper()}
 
-    feature_store = make_diskgraph_feature_store(
+    feature_store = make_feature_context(
         df_dict={'RHS': df},
         table_schema_dict={'RHS': dict(mapper_dict=mapper_dict)},
     )

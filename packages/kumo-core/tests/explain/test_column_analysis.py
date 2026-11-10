@@ -9,11 +9,11 @@ from typing import Any, Literal
 import pytest
 import torch
 from kumo_core.diskgraph.metadata import DiskgraphSchema
-from kumo_core.diskgraph.stores import DiskgraphFeatureStore
 from kumo_core.encoders.target.categorical import CategoricalTargetEncoder
 from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
 from kumo_core.encoders.tensor_mapper import CategoricalTensorMapper
 from kumo_core.explain.column_analysis import ColumnAnalysis
+from kumo_core.features.reads import DiskgraphFeatureContext
 from kumo_core.io.json import load_json
 from kumoapi.encoder import Encoder
 from kumoapi.explain import ColumnAnalysisOutput
@@ -29,7 +29,7 @@ from torch_geometric.testing import withCUDA
 def test_column_analysis(
     tmp_path: pathlib.Path,
     user_store_graph: tuple[
-        DiskgraphFeatureStore,
+        DiskgraphFeatureContext,
         DiskgraphSchema,
         dict[str, dict[str, Encoder]],
     ],

@@ -20,6 +20,8 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import torch
+from kumo_core.encoders.config import EncodersConfig
+from kumo_core.features.reads import DiskgraphFeatureContext
 from kumo_core.diskgraph.lightning_data import (
     DiskgraphLightningDataModule,
     suppress_batch_indices_warning,
@@ -481,7 +483,7 @@ def _has_train_table_weight_column(tm: "DiskgraphTaskManifest") -> bool:
     return bool(weight_column)
 
 
-def _uses_rhs_feature_store(module_kwargs: Any) -> bool:
+def _uses_rhs_features(module_kwargs: Any) -> bool:
     rhs_emb_mode = getattr(module_kwargs, "rhs_emb_mode", None)
     if getattr(rhs_emb_mode, "use_rhs_feature", False):
         return True
@@ -629,21 +631,21 @@ def _rhs_primary_key_catalog(
     return node_ids[:offset], primary_keys[:offset]
 
 
-def _build_runtime_feature_store(
+def _build_runtime_feature_context(
     *,
     runtime: DiskgraphTrainingRuntime,
     tm: DiskgraphTaskManifest,
-    encoders: Any,
+    encoders: EncodersConfig,
     entity_table_names: list[str],
-) -> tuple[Any, Any]:
-    """Build indexed feature access and schema metadata for RHS feature reads."""
+) -> DiskgraphFeatureContext:
+    """Prepare metadata for direct RHS feature reads."""
     index_path = (tm.graph_runtime_metadata or {}).get("graph_index_path")
     if not index_path:
         raise RuntimeError(
             "[TT-NG] RHS feature mode requires graph_runtime_metadata."
             "graph_index_path; got None")
 
-    return runtime.create_feature_store_and_schema(
+    return runtime.create_feature_context(
         index_path=index_path,
         encoders=encoders,
         entity_table_names=entity_table_names,
@@ -1080,18 +1082,19 @@ class DiskgraphNestedTrainer(Trainer):
         if is_lp and rhs_table_name:
             entity_table_names.append(rhs_table_name)
 
-        if is_lp and _uses_rhs_feature_store(
+        if is_lp and _uses_rhs_features(
                 getattr(self, "module_kwargs", None)):
             if self.diskgraph_runtime is None:
                 raise RuntimeError(
                     "diskgraph_runtime is required for RHS feature mode")
-            self.feature_store, self.graph_schema = _build_runtime_feature_store(
+            self._feature_context = _build_runtime_feature_context(
                 runtime=self.diskgraph_runtime,
                 tm=tm,
                 encoders=self.encoders,
                 entity_table_names=entity_table_names,
             )
-            self.datamodule._data = (self.feature_store, self.graph_schema)
+            self.datamodule._data = (
+                self._feature_context, self._feature_context.schema)
 
         # Lookup embeddings must be keyed by raw primary key in checkpoints.
         # DiskGraph node IDs can change between graph snapshots, so an identity
@@ -1155,10 +1158,10 @@ class DiskgraphNestedTrainer(Trainer):
         return self
 
     def explain(self, *args: Any, **kwargs: Any) -> None:
-        """Attach feature access and schema metadata for ``Trainer.explain``."""
+        """Attach direct-read metadata for the duration of explanation."""
         # Idempotent across repeat ``explain()`` calls on the same
         # trainer instance.
-        if getattr(self, 'feature_store', None) is None:
+        if getattr(self, '_feature_context', None) is None:
             tm = DiskgraphTaskManifest.load(
                 osp.join(self.diskgraph_task_dataset_bundle_dir,
                          'manifest.json'))
@@ -1174,17 +1177,18 @@ class DiskgraphNestedTrainer(Trainer):
             if self.diskgraph_runtime is None:
                 raise RuntimeError(
                     "diskgraph_runtime is required for DiskGraph explain")
-            self.feature_store, self.graph_schema = (
-                self.diskgraph_runtime.create_feature_store_and_schema(
+            self._feature_context = (
+                self.diskgraph_runtime.create_feature_context(
                     index_path=index_path,
                     encoders=self.encoders,
                     entity_table_names=[entity_table_name],
                     time_col_dict=time_col_dict,
                 ))
 
-        # The collector reads feature access and foreign-key metadata from .data.
+        # Expose feature metadata and the graph schema to SubgraphCollector.
         prev_data = self.datamodule._data
-        self.datamodule._data = (self.feature_store, self.graph_schema)
+        self.datamodule._data = (
+            self._feature_context, self._feature_context.schema)
         try:
             return super().explain(*args, **kwargs)
         finally:

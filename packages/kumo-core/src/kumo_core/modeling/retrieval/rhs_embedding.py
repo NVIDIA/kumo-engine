@@ -14,12 +14,12 @@ from torch import Tensor
 from torch_frame.nn.models.resnet import FCResidualBlock
 from torch_frame.typing import TensorData
 from torch_frame.utils import num_bytes
-from torch_geometric.data import FeatureStore
 from typing_extensions import Self
 
 import kumo_core.modeling.context as modeling_context
 import logging
 from kumo_core.encoders.tensor_frame_encoder import TensorFrameEncoder
+from kumo_core.features.reads import FeatureSource, read_tensor_frame
 from kumo_core.modeling.retrieval.mips import MIPSFaiss, require_faiss
 from kumo_core.modeling.embedding import Embedding
 
@@ -233,10 +233,15 @@ class RHSEmbedding(torch.nn.Module):
 
     def fetch_feats(
         self,
-        feature_store: FeatureStore,
+        feature_store: FeatureSource,
         table_name: str,
     ) -> None:
-        r"""Fetches raw RHS features from a :class:`FeatureStore` instance."""
+        """Fetch raw RHS features from DiskGraph or an in-memory source.
+
+        Args:
+            feature_store: Native read context or legacy feature store.
+            table_name: Table containing the RHS features.
+        """
         if not self.emb_mode.use_rhs_feature:
             return  # Nothing to do.
 
@@ -255,7 +260,7 @@ class RHSEmbedding(torch.nn.Module):
         feat_device = self.device
         batches: list[list[TensorData]] = []
         for i, _index in enumerate(index.split(FS_BATCH_SIZE)):
-            tf = feature_store[table_name, 'tf', _index].to(self.device)
+            tf = read_tensor_frame(feature_store, table_name, _index).to(self.device)
             assert self.encoder is not None
             feats = self.encoder.forward_fixed(tf)
 
@@ -288,7 +293,7 @@ class RHSEmbedding(torch.nn.Module):
     @torch.no_grad()
     def cache_output(
         self,
-        feature_store: FeatureStore | None = None,
+        feature_store: FeatureSource | None = None,
         table_name: str | None = None,
     ) -> None:
         r"""Caches the RHS output embeddings for evaluation and prediction."""
@@ -322,7 +327,7 @@ class RHSEmbedding(torch.nn.Module):
     @torch.no_grad()
     def get_mips_index(
         self,
-        feature_store: FeatureStore | None = None,
+        feature_store: FeatureSource | None = None,
         table_name: str | None = None,
     ) -> MIPSFaiss:
         r"""Returns a MIPS index from RHS output embeddings."""
@@ -354,7 +359,7 @@ class RHSEmbedding(torch.nn.Module):
     def forward(
         self,
         index: Tensor | None = None,
-        feature_store: FeatureStore | None = None,
+        feature_store: FeatureSource | None = None,
         table_name: str | None = None,
     ) -> Tensor:
         r"""Returns the RHS output embeddings.
@@ -420,7 +425,7 @@ class RHSEmbedding(torch.nn.Module):
 
                 batches: list[list[TensorData]] = []
                 for _index in index.cpu().split(FS_BATCH_SIZE):
-                    tf = feature_store[table_name, 'tf', _index]
+                    tf = read_tensor_frame(feature_store, table_name, _index)
                     tf = tf.to(self.device)
                     assert self.encoder is not None
                     batches.append(self.encoder.forward_fixed(tf))

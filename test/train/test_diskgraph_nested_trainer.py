@@ -1546,7 +1546,7 @@ def test_build_ttng_sampling_plan_dict_all_neighbors_and_zero() -> None:
     assert plan["layers"][1]["default_fanout"] is None
 
 
-def test_init_attaches_runtime_feature_store_for_rhs_feature_mode(
+def test_init_attaches_runtime_feature_context_for_rhs_feature_mode(
         monkeypatch: pytest.MonkeyPatch) -> None:
     import kumo_core.train.diskgraph_nested_trainer as dg_nested_mod
     from kumo_core.training.config import LinkPredModuleType
@@ -1567,14 +1567,16 @@ def test_init_attaches_runtime_feature_store_for_rhs_feature_mode(
 
     captured: dict[str, Any] = {}
 
-    def _fake_build_runtime_feature_store(**kwargs: Any) -> tuple[str, str]:
+    context = SimpleNamespace(schema="graph-schema")
+
+    def _fake_build_runtime_feature_context(**kwargs: Any) -> SimpleNamespace:
         captured.update(kwargs)
-        return "feature-store", "graph-schema"
+        return context
 
     monkeypatch.setattr(
         dg_nested_mod,
-        "_build_runtime_feature_store",
-        _fake_build_runtime_feature_store,
+        "_build_runtime_feature_context",
+        _fake_build_runtime_feature_context,
     )
 
     _run_init(stub, monkeypatch=monkeypatch, fake_manifest=manifest)
@@ -1583,12 +1585,11 @@ def test_init_attaches_runtime_feature_store_for_rhs_feature_mode(
     assert captured["runtime"] is stub.diskgraph_runtime
     assert captured["encoders"] is stub.encoders
     assert captured["entity_table_names"] == ["my_customers", "articles"]
-    assert stub.feature_store == "feature-store"
-    assert stub.graph_schema == "graph-schema"
-    assert stub.datamodule._data == ("feature-store", "graph-schema")
+    assert stub._feature_context is context
+    assert stub.datamodule._data == (context, "graph-schema")
 
 
-def test_init_does_not_attach_runtime_feature_store_for_rhs_lookup_mode(
+def test_init_does_not_attach_runtime_feature_context_for_rhs_lookup_mode(
         monkeypatch: pytest.MonkeyPatch) -> None:
     import kumo_core.train.diskgraph_nested_trainer as dg_nested_mod
     from kumo_core.training.config import LinkPredModuleType
@@ -1608,14 +1609,13 @@ def test_init_does_not_attach_runtime_feature_store_for_rhs_lookup_mode(
 
     monkeypatch.setattr(
         dg_nested_mod,
-        "_build_runtime_feature_store",
-        lambda **_: pytest.fail("lookup mode should not build feature_store"),
+        "_build_runtime_feature_context",
+        lambda **_: pytest.fail("lookup mode should not prepare feature reads"),
     )
 
     _run_init(stub, monkeypatch=monkeypatch, fake_manifest=manifest)
 
-    assert not hasattr(stub, "feature_store")
-    assert not hasattr(stub, "graph_schema")
+    assert not hasattr(stub, "_feature_context")
     assert not hasattr(stub.datamodule, "_data")
 
 

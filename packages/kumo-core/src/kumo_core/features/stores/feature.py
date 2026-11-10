@@ -81,17 +81,6 @@ class FeatureStoreAttr(CastMixin):
 
 
 class FeatureStore(torch_geometric.data.FeatureStore, ABC):  # type: ignore
-    @abstractmethod
-    def _get_tensor(self, attr: FeatureStoreAttr) -> FeatureStoreData | None:
-        r"""Obtains tensor data from the feature store."""
-
-    @abstractmethod
-    def _get_tensor_size(
-        self,
-        attr: FeatureStoreAttr,
-    ) -> tuple[int, ...] | None:
-        r"""Obtains tensor data sizes from the feature store."""
-
     @property
     @abstractmethod
     def table_names(self) -> list[str]:

@@ -14,8 +14,10 @@ from kumoapi.explain import EntityMappings
 from kumoapi.train import TrainingStage
 from torch import Tensor
 
+from kumo_core.features.reads import read_node_times, read_primary_keys
+
 if TYPE_CHECKING:
-    from kumo_core.features.stores import FeatureStore
+    from kumo_core.features.reads import FeatureSource
 
 EVAL_NUM_SELECTION_NODES = 50
 PRED_NUM_SELECTION_NODES = 1000
@@ -346,7 +348,7 @@ def select_link_prediction(
 
 def select_input_nodes(
     task_type: TaskType,
-    feature_store: FeatureStore,
+    feature_store: FeatureSource,
     input_nodes: Tensor,
     input_id: Tensor | None,
     outputs: dict[str, Tensor],
@@ -383,8 +385,7 @@ def select_input_nodes(
     entity_table_name = feature_store.entity_table_names[0]
     input_time: Tensor | None = None
     if entity_table_name in feature_store.time_col_dict.keys():
-        with feature_store.safe_batch_mode(batch_size=50_000):
-            input_time = feature_store[entity_table_name, 'time', input_nodes]
+        input_time = read_node_times(feature_store, entity_table_name, input_nodes)
 
     topk = EVAL_NUM_SELECTION_NODES
     if stage == TrainingStage.PRED:
@@ -472,7 +473,7 @@ def select_input_nodes(
     for i, strategy in enumerate(strategies):
         strategy_nodes: Tensor = nodes[i].cpu()
         seed_entities = \
-            feature_store[entity_table_name, 'pkey', strategy_nodes].tolist()
+            read_primary_keys(feature_store, entity_table_name, strategy_nodes).tolist()
         if len(n_ids) > 0:
             input_ids = n_ids[i].cpu()
             assert input_ids is not None

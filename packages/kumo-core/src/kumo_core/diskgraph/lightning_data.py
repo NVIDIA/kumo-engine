@@ -1918,8 +1918,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             'batch_size': self.eval_batch_size,
         }
 
-        # Feature access and graph schema for the explainer; populated only during
-        # DiskgraphNestedTrainer.explain.
+        # (feature_context, graph_schema) for RHS reads and explanations.
         self._data: tuple[Any, Any] | None = None
 
         # Stage-stable cache for ``stage_inputs``: stage -> (input_type,
@@ -2703,12 +2702,12 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
 
     @property
     def data(self) -> tuple[Any, Any]:
-        """Feature access and graph schema, populated only during
+        """``(feature_context, graph_schema)``, populated only during
         RHS feature reads or ``Trainer.explain``; raises otherwise."""
         if self._data is None:
             raise RuntimeError(
                 "DiskgraphLightningDataModule.data is only populated "
-                "when runtime feature access and graph metadata are attached.")
+                "when runtime feature metadata is attached.")
         return self._data
 
     @property
