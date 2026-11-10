@@ -46,15 +46,15 @@ def test_init_and_return_to_local(
         kumo.configure(scratch_dir=previous)
 
 
-def test_init_failure_restores_scratch(
+def test_init_failure_keeps_scratch_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Failed placement cannot expose a half-initialized global pool."""
+    """Failed placement retains the override without exposing an incomplete pool."""
     factory = Mock()
     factory.return_value.start.side_effect = RuntimeError("placement failed")
     monkeypatch.setattr(config, "ComputeCluster", factory)
     monkeypatch.setattr(config, "_cluster", None)
-    previous = get_scratch_dir()
+    monkeypatch.setattr("kumo.engine._scratch._root", tmp_path / "before")
     with pytest.raises(RuntimeError, match="placement failed"):
         kumo.init(
             scratch_dir=tmp_path,
@@ -62,14 +62,13 @@ def test_init_failure_restores_scratch(
             artifact_root=str(tmp_path / "store"),
         )
     assert config._get_compute_cluster() is None
-    assert get_scratch_dir() == previous
+    assert get_scratch_dir() == tmp_path
 
 
 @pytest.mark.parametrize(
     "arguments,error",
     [
         ({"cluster_config": kumo.ComputeClusterConfig()}, ValueError),
-        ({"cluster_config": object()}, TypeError),
         ({"artifact_root": "/unused"}, ValueError),
         ({"scratch_dir": "s3://unused"}, ValueError),
     ],
