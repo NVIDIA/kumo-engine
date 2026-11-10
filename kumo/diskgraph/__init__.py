@@ -21,7 +21,6 @@ from kumo.diskgraph.service import (
     DiskgraphService,
     IngestResult,
     MaterializeResult,
-    PredTableResult,
     TrainTableResult,
 )
 from service_framework._raw_deploy_config import DiskgraphConfig
@@ -46,7 +45,6 @@ __all__ = [
     'IngestResult',
     'MaterializeResult',
     'MAX_EDGES_PER_EDGE_TYPE',
-    'PredTableResult',
     'TrainTableResult',
     'get_service',
 ]
