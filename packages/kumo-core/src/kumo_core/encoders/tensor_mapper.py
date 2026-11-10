@@ -253,50 +253,6 @@ class TensorMapper(ABC, Generic[T]):
         """
 
     @classmethod
-    def from_stype(cls, stype: Stype, ser: pd.Series) -> TensorMapper:
-        r"""Creates a tensor mapper for a given :class:`pandas.Series` and
-        semantic type.
-        """
-        import kumo_core.features.stats
-
-        if stype == Stype.unsupported:
-            return UnsupportedTensorMapper()
-
-        if stype == Stype.image:
-            return ImageTensorMapper()
-
-        if stype == Stype.numerical:
-            return NumericalTensorMapper()
-
-        if stype in {Stype.categorical, Stype.ID}:
-            category_counts = kumo_core.features.stats.category_count(ser)
-            return CategoricalTensorMapper(category_counts=category_counts)
-
-        if stype == Stype.multicategorical:
-            sep = kumo_core.features.stats.sep_multi(ser)
-            ser = ser.astype(str).split(sep) if sep is not None else ser
-            ser = ser.explode()
-            category_counts = kumo_core.features.stats.category_count(ser)
-            return MultiCategoricalTensorMapper(
-                category_counts=category_counts,
-                sep=sep,
-            )
-
-        if stype == Stype.sequence:
-            return SequenceTensorMapper(
-                min_length=kumo_core.features.stats.sequence_min_length(ser),
-                max_length=kumo_core.features.stats.sequence_max_length(ser),
-            )
-
-        if stype == Stype.timestamp:
-            return TimestampTensorMapper()
-
-        if stype == Stype.text:
-            return TextTensorMapper()
-
-        raise ValueError(f"Unsupported semantic type '{stype}'")
-
-    @classmethod
     def from_encoder(cls, encoder: Encoder) -> TensorMapper:
         r"""Creates a tensor mapper from an encoder."""
         if isinstance(encoder, Null):
