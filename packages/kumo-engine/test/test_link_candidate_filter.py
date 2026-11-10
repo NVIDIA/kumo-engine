@@ -5,6 +5,8 @@
 import numpy as np
 import pandas as pd
 import pytest
+from kumo_core.pquery import PredictiveQueryPlanError
+from kumo_core.prediction_options import prediction_task_type
 from kumoapi.graph import Edge
 from kumoapi.model_plan import ModelPlan
 from kumoapi.typing import Stype
@@ -70,7 +72,7 @@ def snapshot(graph):
     return graph.snapshot()
 
 
-@pytest.mark.parametrize('trained_filter', [ACTIVE])
+@pytest.mark.parametrize('trained_filter', ['', ACTIVE])
 @pytest.mark.parametrize('module', ['context', 'two_tower', 'pairwise'])
 def test_prediction_ranks_only_candidates_that_pass_the_filter(
         graph, snapshot, module, trained_filter):
@@ -98,3 +100,43 @@ def test_prediction_ranks_only_candidates_that_pass_the_filter(
         if module != 'pairwise':
             assert (frame.groupby('ENTITY').size() == min(
                 count, len(candidates))).all()
+
+
+@pytest.mark.parametrize('trained_filter, predicted_filter', [
+    ('', ACTIVE),
+    (' WHERE orders.AMOUNT > 5',
+     ' WHERE orders.AMOUNT > 5 AND stores.IS_ACTIVE = true'),
+])
+def test_candidate_conditions_may_change(snapshot, trained_filter,
+                                         predicted_filter):
+    assert prediction_task_type(
+        QUERY.format(trained_filter), QUERY.format(predicted_filter),
+        snapshot.graph_config) == 'temporal_link_prediction'
+
+
+@pytest.mark.parametrize('trained_filter, predicted_filter', [
+    ('', ' WHERE orders.AMOUNT > 5'),
+    (' WHERE orders.AMOUNT > 5',
+     ' WHERE orders.AMOUNT > 5 OR stores.IS_ACTIVE = true'),
+])
+def test_other_target_conditions_must_match(snapshot, trained_filter,
+                                            predicted_filter):
+    with pytest.raises(ValueError, match="query's target filter is"):
+        prediction_task_type(QUERY.format(trained_filter),
+                             QUERY.format(predicted_filter),
+                             snapshot.graph_config)
+
+
+def test_entity_table_condition_is_rejected(snapshot):
+    with pytest.raises(PredictiveQueryPlanError, match='Entity table users'):
+        prediction_task_type(QUERY.format(''),
+                             QUERY.format(' WHERE users.USER_ID = 1'),
+                             snapshot.graph_config)
+
+
+def test_node_task_target_filter_must_match(snapshot):
+    query = ('PREDICT COUNT(orders.*{}, 0, 7, days) > 0 '
+             'FOR EACH users.USER_ID')
+    with pytest.raises(ValueError, match="query's target is"):
+        prediction_task_type(query.format(''), query.format(ACTIVE),
+                             snapshot.graph_config)

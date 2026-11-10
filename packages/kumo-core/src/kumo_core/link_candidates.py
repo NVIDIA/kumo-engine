@@ -11,12 +11,34 @@ from copy import deepcopy
 from typing import Any
 
 import numpy as np
-from kumoapi.pquery.AST import Filter
+from kumoapi.pquery.AST import Filter, Join
 from kumopql.rewriting import BPFilterTransformer
 
 from .pquery import NativeGraph, ValidatedNativeQuery, to_api_graph
 from .sources.cpu import cpu_budget
 from .types import TaskType
+
+
+def target_contract(query: ValidatedNativeQuery) -> tuple[str, str | None]:
+    r"""The target without its filter, and the filter conditions a
+    prediction query must keep.
+
+    A link-prediction query may change the conditions on its candidate
+    table; they choose what is ranked, not what the model learned.
+    """
+    if query.task_family != "link_prediction":
+        return str(query.query.target_ast), None
+    target = deepcopy(query.query.target_ast)
+    aggregation = target.rhs_target if isinstance(target, Join) else target
+    if not isinstance(aggregation.target, Filter):
+        return str(target), None
+    split = BPFilterTransformer().split_target_filter(query.query.target_ast,
+                                                      query.entity_table,
+                                                      query.rhs_node_type)
+    kept = (split.non_applicable_filter
+            if split.non_applicable_is_valid else aggregation.target.condition)
+    aggregation.target = aggregation.target.target
+    return str(target), None if kept is None else str(kept)
 
 
 def candidate_node_ids(

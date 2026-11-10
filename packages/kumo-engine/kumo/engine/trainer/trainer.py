@@ -963,16 +963,10 @@ _F = TypeVar('_F', bound=Callable[..., Any])
 
 def _prediction_task_type(training_query: Optional[str], query: str,
                           graph_config: Any) -> Any:
-    from kumo_core.prediction_options import prediction_query_contract
+    from kumo_core.prediction_options import prediction_task_type
     from kumo_core.types import TaskType
 
-    contract = prediction_query_contract(query, graph_config)
-    if training_query is None or prediction_query_contract(
-            training_query, graph_config) != contract:
-        raise ValueError(
-            'Prediction query target/entity contract differs from the trained model'
-        )
-    return TaskType(contract[1])
+    return TaskType(prediction_task_type(training_query, query, graph_config))
 
 
 def _requested_artifacts(
