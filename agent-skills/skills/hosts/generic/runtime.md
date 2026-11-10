@@ -315,3 +315,11 @@ Run only on explicit request (router Step 3), in this session's own Python, and 
 `import kumo.engine` works here and the connect step resolves credentials. If either fails, report
 it and stop: making this session able to run Kumo is not your job. `fit` blocks for as long as
 training takes — tell the user before starting.
+
+## Graph visualization
+
+Notebook calls display an interactive HTML view.
+For scripts, save an SVG and report its path on the Python runtime, which may be remote.
+Retrieve exports through that environment's file tools.
+
+Source: shipped package (`kumo.engine.graph.Graph.visualize`, `kumo.engine._visualization.SVG`)

@@ -35,6 +35,9 @@ _NAMED = ('source_table', 'prediction_output')
 _STEPS = {'snapshot': 'Graph snapshot', 'training_table': 'Training table'}
 _CONSOLES = {'s3': 'https://s3.console.aws.amazon.com/s3/buckets/{}?prefix={}/',
              'gs': 'https://console.cloud.google.com/storage/browser/{}/{}'}
+_AZURE_PORTALS = {'dfs.core.windows.net': 'https://portal.azure.com',
+                  'dfs.core.usgovcloudapi.net': 'https://portal.azure.us',
+                  'dfs.core.chinacloudapi.cn': 'https://portal.azure.cn'}
 
 
 @dataclass(frozen=True)
@@ -317,6 +320,13 @@ def _location(location: str) -> str:
     scheme, _, path = location.partition('://')
     bucket, _, key = path.partition('/')
     text = f"`{location.replace('|', '%7C')}`"
+    if scheme.lower() == 'abfss':
+        suffix = bucket.partition('@')[2].partition('.')[2]
+        portal = _AZURE_PORTALS.get(suffix)
+        if portal:
+            # An ADLS URI has no subscription or resource-group ID.
+            return (f'{text} ([Azure Storage accounts]({portal}/#browse/'
+                    'Microsoft.Storage%2FStorageAccounts))')
     console = _CONSOLES.get(scheme)
     return (f'[{text}]({console.format(bucket, quote(key.rstrip("/")))})'
             if console and bucket else text)

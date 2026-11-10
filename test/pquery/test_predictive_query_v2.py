@@ -414,7 +414,7 @@ def test_predictive_query_time_range_validation(basic_test_graph, tempdir):
     )
     validate_response = pquery.get_validate_response()
     assert not validate_response.ok
-    assert validate_response.errors[0].title == 'Incompatible time parameters'
+    assert validate_response.errors[0].title == 'Invalid training time bounds'
 
     # Test validation when end_time is before start_time
     pquery = PredictiveQueryV2(
@@ -426,7 +426,7 @@ def test_predictive_query_time_range_validation(basic_test_graph, tempdir):
     )
     validate_response = pquery.get_validate_response()
     assert not validate_response.ok
-    assert validate_response.errors[0].title == 'Invalid timestamp range'
+    assert validate_response.errors[0].title == 'Invalid training time bounds'
 
 
 def test_get_default_split_with_decoupled_splits(basic_test_graph):

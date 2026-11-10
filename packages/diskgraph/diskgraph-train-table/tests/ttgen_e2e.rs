@@ -802,6 +802,7 @@ fn e2e_custom_tt_passthrough_full_pipeline() {
 
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: DGTimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
@@ -1299,6 +1300,7 @@ fn e2e_custom_tt_manual_split_column_full_pipeline() {
 
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: DGTimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::SkipRowOnError,
@@ -1407,6 +1409,7 @@ fn e2e_custom_tt_manual_split_column_multi_part_full_pipeline() {
     let out_dir = tempfile::tempdir().unwrap();
     // Pass the DIRECTORY (not a single part) as the custom-TT source.
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: src_dir.clone(),
         input_timestamp_unit: DGTimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::SkipRowOnError,
@@ -1544,6 +1547,7 @@ fn e2e_multi_entity_multi_target_pipeline() {
 
     let out_dir = tempfile::tempdir().unwrap();
     let custom = CustomTtSource {
+        target_window_end: None,
         parquet_path: pq.clone(),
         input_timestamp_unit: DGTimeUnit::Nanoseconds,
         on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,

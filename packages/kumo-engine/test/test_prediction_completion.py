@@ -47,6 +47,8 @@ def prepared_prediction(snapshot, tmp_path, monkeypatch):
                         property(lambda _: tmp_path))
     monkeypatch.setattr('kumo.engine.trainer.trainer._stage_model_bundle',
                         lambda *a: tmp_path)
+    monkeypatch.setattr('kumo.engine.trainer.trainer.bundle_task_options',
+                        lambda *a: {'lag_timesteps': 0})
     (tmp_path / 'config.json').write_text('{}')
     monkeypatch.setattr(
         prediction,
@@ -356,3 +358,78 @@ def test_retained_outputs_retry_after_partial_embedding_export(
         frame = pd.concat(
             pd.read_parquet(path) for path in directory.glob('*.parquet'))
         assert sorted(frame.ENTITY) == list(range(8))
+
+
+@pytest.mark.parametrize('provider', ['s3', 'gcs', 'adls'])
+def test_object_store_retry_keeps_export_identity_and_bypasses_preflight(
+        prepared_prediction, tmp_path, monkeypatch, provider):
+    from kumo_core.artifact_export import (
+        EXPORT_MARKER_NAME,
+        ArtifactDestinationConflict,
+        export_marker,
+    )
+    from kumo_core.object_store_sink import _ArrowExportFiles
+    from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
+
+    from kumo.engine import (
+        ADLSConnector,
+        GCSConnector,
+        PredictionOutputConfig,
+        S3Connector,
+    )
+
+    trainer, table, _, snapshot = prepared_prediction
+    result = trainer.predict(table, snapshot=snapshot, num_workers=2,
+                             binary_classification_threshold=.5)
+    connectors = {
+        's3':
+        lambda: S3Connector(root_dir='s3://bucket/root'),
+        'gcs':
+        lambda: GCSConnector(root_dir='gs://bucket/root'),
+        'adls':
+        lambda: ADLSConnector(
+            root_dir='abfss://curated@companylake.dfs.core.windows.net/root'),
+    }
+    connector = connectors[provider]()
+    sink = connector.sink_backend
+    directory = tmp_path / 'remote'
+    directory.mkdir()
+    filesystem = SubTreeFileSystem(str(directory), LocalFileSystem())
+    monkeypatch.setattr(sink, '_filesystem', lambda *args: filesystem)
+    monkeypatch.setattr(sink, 'preflight_write_files',
+                        lambda *a, **kw: pytest.fail('preflight during retry'))
+    output = PredictionOutputConfig(connector, path='out/')
+    assert output.write_mode is None
+    _, destination = sink._destination(connector, 'out/')
+    target = directory / destination
+    copy = _ArrowExportFiles.copy_file
+    copied = []
+
+    def interrupt(storage, source, path, **kwargs):
+        copied.append(path)
+        if len(copied) == 2:
+            raise RuntimeError('interrupted copy')
+        return copy(storage, source, path, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(_ArrowExportFiles, 'copy_file', interrupt)
+        with pytest.raises(RuntimeError, match='interrupted copy'):
+            result.export(output)
+    marker = (target / EXPORT_MARKER_NAME).read_bytes()
+    assert result.id is not None
+    assert marker == export_marker(f'{result.id}-PREDICTIONS').encode()
+    assert not (target / '_SUCCESS').exists()
+    assert len(list(target.glob('*.parquet'))) == 1
+    result.export(output)
+    with pytest.raises(ArtifactDestinationConflict):
+        sink.write_files(connector, 'out/', list(result.files),
+                         export_id='another-run')
+    assert (target / EXPORT_MARKER_NAME).read_bytes() == marker
+    assert (target / '_SUCCESS').exists()
+    assert sorted(path.read_bytes()
+                  for path in target.glob('*.parquet')) == sorted(
+                      Path(path).read_bytes() for path in result.files)
+    monkeypatch.setattr(
+        _ArrowExportFiles, 'copy_file',
+        lambda *a, **kw: pytest.fail('recopied a complete export'))
+    result.export(output)

@@ -3,10 +3,69 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shared temporal anchor enumeration for hosted and portable generation."""
 
-from typing import Any, Callable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any, Callable, Mapping, Sequence, TypeVar
 
-from kumoapi.pquery.AST import DateOffsetRange
+from kumoapi.pquery.AST.date_offset_range import DateOffsetRange
 from pandas import DateOffset, Timedelta, Timestamp
+from pandas.errors import OutOfBoundsDatetime
+
+Anchor = TypeVar('Anchor', int, Timestamp)
+_EMPTY_WINDOW = ('No usable training examples within start_time/end_time and '
+                 'the available label data. Widen the bounds or provide more '
+                 'data for the target horizon.')
+
+
+@dataclass(frozen=True)
+class TrainingWindow:
+    """Available base label windows; native routing owns forecast tails."""
+
+    start: DateOffset | Timestamp | None
+    end: DateOffset | Timestamp | None
+    lower: Timestamp
+    cutoff: Timestamp
+
+    def filter(self, timestamps: Sequence[Anchor],
+               target_end: DateOffset) -> list[Anchor]:
+        result = [
+            value for value in timestamps if self.contains(
+                value.value if isinstance(value, Timestamp) else value,
+                target_end)
+        ]
+        if not result:
+            raise ValueError(_EMPTY_WINDOW)
+        return result
+
+    def contains(self, value: int, target_end: DateOffset) -> bool:
+        if value < self.lower.value or value > self.cutoff.value:
+            return False
+        try:
+            return Timestamp(value) + target_end <= self.cutoff
+        except (OutOfBoundsDatetime, OverflowError):
+            return False
+
+
+def resolve_training_window(
+    start: DateOffset | Timestamp | None,
+    end: DateOffset | Timestamp | None,
+    minimum: Timestamp,
+    maximum: Timestamp,
+) -> TrainingWindow | None:
+    if not isinstance(start, Timestamp) and not isinstance(end, Timestamp):
+        return None
+    start = max(start, minimum) if isinstance(start, Timestamp) else start
+    end = min(end, maximum) if isinstance(end, Timestamp) else end
+    lower = start if isinstance(start, Timestamp) else minimum
+    cutoff = end if isinstance(end, Timestamp) else maximum
+    if lower >= cutoff:
+        raise ValueError(_EMPTY_WINDOW)
+    return TrainingWindow(start, end, lower, cutoff)
+
+
+def forecast_offsets(timeframe: Timedelta, length: int) -> tuple[int, ...]:
+    """Future shifts shared by hosted and portable native compilers."""
+    step_seconds = int(timeframe.total_seconds())
+    return tuple(step_seconds * index for index in range(length))
 
 
 def end_anchored_timestamps(

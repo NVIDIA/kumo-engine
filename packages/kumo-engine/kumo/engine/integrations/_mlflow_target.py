@@ -20,6 +20,8 @@ _NO_LINKS = 'MLFLOW_SUPPRESS_PRINTING_URL_TO_STDOUT'
 _HEADERS = logging.getLogger('mlflow.tracking.request_header.registry')
 _quiet = 0
 _QUIET_LOCK = threading.Lock()
+_UC_STORAGE = {'boto3': 's3', 'botocore': 's3', 'azure.core': 'adls',
+               'azure.storage': 'adls', 'google.cloud': 'gcs'}
 
 
 def _no_header_error(record: logging.LogRecord) -> bool:
@@ -105,12 +107,30 @@ class Target:
     def scope(self) -> Iterator[None]:
         r"""Runs the block with this target's credentials."""
         links = {_NO_LINKS: 'true'} if self.platform == 'sagemaker' else {}
-        with _without_header_warnings(), environ(links):
-            if self._swap is None:
-                yield
-            else:
-                with _LOCK, self._swap():
+        try:
+            with _without_header_warnings(), environ(links):
+                if self._swap is None:
                     yield
+                else:
+                    with _LOCK, self._swap():
+                        yield
+        except Exception as error:
+            missing = (error if isinstance(error, ModuleNotFoundError) else
+                       error.__cause__)
+            if not isinstance(missing, ModuleNotFoundError):
+                raise
+            name = missing.name or ''
+            extra = _uc_extra(name)
+            if extra is None:
+                raise
+            uri = import_provider('mlflow.utils.uri', 'mlflow')
+            registry = self.registry_uri or ''
+            if not uri.is_databricks_unity_catalog_uri(registry):
+                raise
+            raise ImportError(
+                f"MLflow needs {name!r} to reach this model's files in Unity "
+                f"Catalog, and it is not installed. Install it with: pip "
+                f"install 'kumo-engine[{extra}]'") from missing
 
     def client(self) -> Any:
         mlflow = import_provider('mlflow', 'mlflow')
@@ -126,6 +146,14 @@ class Target:
         return s3.S3ArtifactRepository(uri, access_key_id=frozen.access_key,
                                        secret_access_key=frozen.secret_key,
                                        session_token=frozen.token)
+
+
+def _uc_extra(name: str) -> Optional[str]:
+    for client, extra in _UC_STORAGE.items():
+        if (name == client or name.startswith(f'{client}.')
+                or client.startswith(f'{name}.')):
+            return extra
+    return None
 
 
 def resolve(target: Any) -> Target:

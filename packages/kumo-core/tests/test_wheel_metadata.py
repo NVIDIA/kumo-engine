@@ -45,6 +45,7 @@ def _wheel_requirements(tmp_path: Path) -> dict[str, Requirement]:
 def test_wheel_owns_training_dependency_closure(tmp_path: Path) -> None:
     requirements = _wheel_requirements(tmp_path)
 
+    assert "orjson" not in requirements
     assert {
         "diskgraph",
         "filelock",

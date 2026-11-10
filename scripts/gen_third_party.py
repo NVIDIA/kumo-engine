@@ -54,6 +54,7 @@ FIRST_PARTY_DISTRIBUTIONS = {
     "kumo-s3",
     "kumo-snowflake",
     "kumo-engine",
+    "kumo-pytorch",
     "kumo-glove-6b-50d",
 }
 NATIVE_DISTRIBUTIONS = {"diskgraph"}

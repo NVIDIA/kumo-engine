@@ -3,9 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Schema metadata replaces the DiskGraph graph-store adapter."""
 
+import json
 from unittest.mock import mock_open, patch
 
-import orjson
 import pytest
 from kumo_core.diskgraph.metadata import DiskgraphSchema, load_diskgraph_schema
 from kumo_core.diskgraph.stores import DiskgraphFeatureStore
@@ -14,7 +14,7 @@ from kumo_core.training.runtime import LocalDiskgraphTrainingRuntime
 
 
 @pytest.fixture
-def metadata() -> bytes:
+def metadata() -> str:
     """Return snapshot metadata with two foreign keys and their reverse edges."""
     relations = [
         ("orders", "orders_user_id_to_users_id", "users"),
@@ -22,7 +22,7 @@ def metadata() -> bytes:
         ("orders", "orders_product_id_to_products_id", "products"),
         ("products", "orders_product_id_to_products_id_reverse", "orders"),
     ]
-    return orjson.dumps(
+    return json.dumps(
         {
             "node_types": [
                 {"name": name, "max_id": 2, "primary_key_map": {"column": "id"}}
@@ -46,7 +46,7 @@ def metadata() -> bytes:
     ],
 )
 def test_foreign_keys_from_snapshot_metadata(
-    metadata: bytes,
+    metadata: str,
     table_name: str,
     expected: list[tuple[str, str]],
 ) -> None:
@@ -58,9 +58,48 @@ def test_foreign_keys_from_snapshot_metadata(
     assert ("users", "rev_user_id", "orders") in schema.edge_types
 
 
-def test_runtime_builds_feature_access_and_schema(metadata: bytes) -> None:
-    """RHS/explanation setup returns usable schema metadata without a sampler."""
+@pytest.mark.parametrize(
+    "source_table, column, destination_table",
+    [
+        ("orders", "user_id", "users"),
+        ("orders", "rev_user_id", "users"),
+        ("catalog.orders", "rev_user_id", "catalog.users"),
+    ],
+)
+def test_foreign_keys_use_parsed_forward_specs(
+    source_table: str,
+    column: str,
+    destination_table: str,
+) -> None:
+    """Keep rev_-prefixed forward keys and exclude unparsed and reverse edges."""
+    forward_relation = f"{source_table}_{column}_to_{destination_table}_id"
+    relations = [
+        (source_table, forward_relation, destination_table),
+        (destination_table, f"{forward_relation}_reverse", source_table),
+        (source_table, "unparsed_relation", destination_table),
+        (destination_table, "unparsed_relation_reverse", source_table),
+    ]
+    metadata = json.dumps(
+        {
+            "edge_relations": [
+                {"src_type": source, "name": relation, "dst_type": destination}
+                for source, relation, destination in relations
+            ],
+        }
+    )
+
     with patch("builtins.open", mock_open(read_data=metadata)):
+        schema = load_diskgraph_schema("/snapshot")
+
+    assert schema.get_foreign_keys(source_table) == [(column, destination_table)]
+    assert schema.get_foreign_keys(destination_table) == []
+    assert schema.get_foreign_keys("missing") == []
+    assert (source_table, "unparsed_relation", destination_table) in schema.edge_types
+
+
+def test_runtime_builds_feature_access_and_schema(metadata: str) -> None:
+    """RHS/explanation setup returns usable schema metadata without a sampler."""
+    with patch("builtins.open", mock_open(read_data=metadata)) as open_metadata:
         feature_store, schema = (
             LocalDiskgraphTrainingRuntime().create_feature_store_and_schema(
                 index_path="/snapshot",
@@ -69,6 +108,8 @@ def test_runtime_builds_feature_access_and_schema(metadata: bytes) -> None:
                 time_col_dict={},
             )
         )
+    open_metadata.assert_called_once()
+    assert schema.num_nodes_dict == {"orders": 3, "users": 3, "products": 3}
     assert isinstance(feature_store, DiskgraphFeatureStore)
     assert isinstance(schema, DiskgraphSchema)
     assert feature_store._engine is None
@@ -80,7 +121,7 @@ def test_runtime_builds_feature_access_and_schema(metadata: bytes) -> None:
     ]
 
 
-def test_collector_recovers_foreign_keys_from_schema(metadata: bytes) -> None:
+def test_collector_recovers_foreign_keys_from_schema(metadata: str) -> None:
     """Explanation reconstructs foreign-key values using schema and batch edges."""
     from types import SimpleNamespace
 

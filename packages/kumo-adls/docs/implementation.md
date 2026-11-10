@@ -102,7 +102,7 @@ the same account/root fencing and relative-path validation. Model reload reads
 all files under that directory, so use a dedicated bundle location.
 A native filesystem is reused within one sink access, with thread-safe first
 construction; it is not cached across accesses or identities. The provider
-requires Arrow 24, the version whose native credential/URI APIs are validated.
+accepts pyarrow 16 through 24; CI runs its suite at both ends of that range.
 
 Without an explicit identity, writes use Arrow's C++ ambient credential chain;
 reads use Python Azure Identity. These chains can select different ambient

@@ -38,7 +38,7 @@ from kumo_core.train.mapping import (
     NODE_INDEX_COLUMN,
     TTNG_RHS_PRIMARY_KEY_INDEX_NAME,
 )
-from kumo_core.train.output import ArrowPredOutput
+from kumo_core.train.output import ArrowPredOutput, EvalFrames
 from kumo_core.train.trainer import (
     _MAX_EVAL_TOP_K,
     Trainer,
@@ -61,6 +61,8 @@ from kumo_core.utils.names import get_table_name
 from kumo_core.utils.registry import register
 
 logger = logging.getLogger(__name__)
+
+_EVAL_CHUNK_ROWS = 1 << 16
 
 
 def _defer_predict_worker_shutdown(
@@ -394,6 +396,22 @@ def _bool_key(value: Any) -> bool | None:
         if lowered in {"false", "0"}:
             return False
     return None
+
+
+def _slice_rows(value: Any, start: int, stop: int) -> Any:
+    if isinstance(value, dict):
+        return {k: _slice_rows(v, start, stop) for k, v in value.items()}
+    if value is None:
+        return None
+    return value[start:stop]
+
+
+def _set_global_index(frame: pd.DataFrame, entity_start: int,
+                      row_start: int) -> None:
+    if isinstance(frame.index, pd.RangeIndex):
+        frame.index = pd.RangeIndex(row_start, row_start + len(frame))
+    else:
+        frame.index = frame.index + entity_start
 
 
 def _pkey_frame(pkey: Any, fkey_names: list[str]) -> pd.DataFrame:
@@ -1180,7 +1198,8 @@ class DiskgraphNestedTrainer(Trainer):
         target_edges: Sequence[float] = (),
     ) -> Any:
         """Run PL validate/test, then build the formatted EvalOutput
-        (``_build_eval_df`` reconstructs the per-row df from ``pl_model.outputs``).
+        (``_build_eval_frames`` builds the per-row frames from
+        ``pl_model.outputs`` in chunks).
         """
         from kumo_core.train.output import EvalOutput
         from kumoapi.train import TrainingStage
@@ -1247,13 +1266,27 @@ class DiskgraphNestedTrainer(Trainer):
             return EvalOutput(metrics, None, None,
                               None if spill is None else spill.counts())
 
-        df = self._build_eval_df(outputs)
+        frames = self._build_eval_frames(outputs)
         counts = None
-        if stage == TrainingStage.TEST and df is not None:
-            counts = self._test_counts(outputs, df,
+        if stage == TrainingStage.TEST and frames is not None:
+            counts = self._test_counts(outputs, frames,
                                        binary_classification_threshold,
                                        target_edges)
-        return EvalOutput(metrics, df, None, counts)
+        return EvalOutput(metrics, None, None, counts, frames=frames)
+
+    def _build_eval_frames(self, outputs: Any) -> EvalFrames | None:
+        if self.encoders.target is None or self.encoders.target.encoder is None:
+            return None
+        frames = EvalFrames()
+        num_rows = len(outputs['pkey'])
+        written = 0
+        for start in range(0, max(num_rows, 1), _EVAL_CHUNK_ROWS):
+            chunk = _slice_rows(outputs, start, start + _EVAL_CHUNK_ROWS)
+            frame = self._build_eval_df(chunk)
+            _set_global_index(frame, start, written)
+            frames.append(frame)
+            written += len(frame)
+        return frames
 
     def _build_eval_df(self, outputs: Any) -> pd.DataFrame | None:
         from kumo_core.train.formatting import format_prediction

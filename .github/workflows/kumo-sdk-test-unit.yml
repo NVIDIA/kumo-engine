@@ -48,9 +48,9 @@ jobs:
         run: |
           # Trigger full matrix on main and PRs with the ci-full label.
           if [[ ${{ contains(github.event.pull_request.labels.*.name, 'ci-full') }} == true || ${{ github.ref_name }} == main ]]; then
-            echo 'matrix={"os": ["ubuntu-22.04", "macos-14", "windows-2022"], "python-version": ["3.11", "3.12", "3.13", "3.14"]}' >> $GITHUB_OUTPUT
+            echo 'matrix={"os": ["ubuntu-22.04", "macos-15", "windows-2022"], "python-version": ["3.11", "3.12", "3.13", "3.14"]}' >> $GITHUB_OUTPUT
           else
-            echo 'matrix={"os": ["ubuntu-22.04", "macos-14", "windows-2022"], "python-version": ["3.11"]}' >> $GITHUB_OUTPUT
+            echo 'matrix={"os": ["ubuntu-22.04", "macos-15", "windows-2022"], "python-version": ["3.11"]}' >> $GITHUB_OUTPUT
           fi
 
   build-wheels:
@@ -76,14 +76,14 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: ${{ matrix.python-version }}
           activate-environment: true
           prune-cache: true
 
       - name: Download a wheel
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: wheels-${{ github.sha }}-${{ github.run_id }}
           path: ./packages/kumo-sdk/dist

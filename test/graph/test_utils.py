@@ -13,9 +13,7 @@ from kumoapi.graph import ColumnKey, ColumnKeyGroup, GraphDefinition
 from kumoapi.source_table import UnavailableSourceTable
 from kumoapi.table import Column as ColumnDefinition
 from kumoapi.table import TableDefinition
-from kumoapi.typing import Dtype
-from kumoapi.typing import Stype
-from kumoapi.typing import Stype as KumoStype
+from kumoapi.typing import Dtype, Stype
 
 from kumo.graph.column import Column
 from kumo.graph.table import Table
@@ -217,7 +215,7 @@ def _make_mock_table():
 def _make_int_target_column():
     return Column(
         name='target',
-        stype=KumoStype.categorical,
+        stype=Stype.categorical,
         dtype=Dtype.int64,
         encoder=Index(min_occ=1, na_strategy="separate"),
     )
@@ -284,7 +282,7 @@ def test_fetch_and_set_encoder_stats_preserves_string_labels_through_fetch():
     # branch with a string dtype.
     col = Column(
         name='name',
-        stype=KumoStype.categorical,
+        stype=Stype.categorical,
         dtype=Dtype.string,
         encoder=Index(min_occ=1, na_strategy="separate"),
     )

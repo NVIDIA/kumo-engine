@@ -2,13 +2,13 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import pickle
 import sys
 from types import SimpleNamespace
 from unittest.mock import Mock, mock_open, patch
 
 import numpy as np
-import orjson
 import pyarrow as pa
 import pytest
 import torch
@@ -17,6 +17,7 @@ from kumo_core.encoders.config import EncodersConfig
 from kumo_core.modeling.retrieval.rhs_embedding import RHSEmbedding
 from kumoapi.encoder import NAStrategy, Numerical
 from kumoapi.model_plan import RHSEmbeddingMode
+from kumoapi.typing import Stype
 from torch_frame import TensorFrame
 
 
@@ -29,12 +30,18 @@ def mock_native_sampler(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def store() -> DiskgraphFeatureStore:
     """Return a metadata-only store with mocked snapshot files."""
-    schema = SimpleNamespace(table_names=["items"], pkey_dict={"items": "id"})
-    metadata = '{"node_types": [{"name": "items", "max_id": 5}]}'
-    with (
-        patch("kumo_core.diskgraph.stores.load_diskgraph_schema", return_value=schema),
-        patch("builtins.open", mock_open(read_data=metadata)),
-    ):
+    metadata = json.dumps(
+        {
+            "node_types": [
+                {
+                    "name": "items",
+                    "max_id": 5,
+                    "primary_key_map": {"column": "id"},
+                }
+            ]
+        }
+    )
+    with patch("builtins.open", mock_open(read_data=metadata)):
         return DiskgraphFeatureStore.for_explain(
             index_path="/snapshot",
             encoders=EncodersConfig({"items": {"value": Numerical()}}),
@@ -59,12 +66,18 @@ def test_metadata_and_lazy_engine(store: DiskgraphFeatureStore) -> None:
 @pytest.mark.parametrize("max_id", [None, -1])
 def test_empty_table_metadata(max_id: int | None) -> None:
     """Empty tables keep their size without an in-memory fallback."""
-    schema = SimpleNamespace(table_names=["items"], pkey_dict={"items": "id"})
-    metadata = orjson.dumps({"node_types": [{"name": "items", "max_id": max_id}]})
-    with (
-        patch("kumo_core.diskgraph.stores.load_diskgraph_schema", return_value=schema),
-        patch("builtins.open", mock_open(read_data=metadata)),
-    ):
+    metadata = json.dumps(
+        {
+            "node_types": [
+                {
+                    "name": "items",
+                    "max_id": max_id,
+                    "primary_key_map": {"column": "id"},
+                }
+            ]
+        }
+    )
+    with patch("builtins.open", mock_open(read_data=metadata)):
         empty_store = DiskgraphFeatureStore.for_explain(
             index_path="/snapshot",
             encoders=EncodersConfig(),
@@ -225,12 +238,86 @@ def test_pickle_drops_native_engine(store: DiskgraphFeatureStore) -> None:
     assert store._engine is not None
 
 
-def test_missing_feature_events_fail(store: DiskgraphFeatureStore) -> None:
-    """Missing rows must not produce fabricated primary keys."""
+@pytest.mark.parametrize("attribute", ["tf", "pkey", "time", "end_time"])
+@pytest.mark.parametrize("response", ["no_events", "missing_column"])
+def test_missing_reads_preserve_legacy_fallbacks(
+    store: DiskgraphFeatureStore,
+    attribute: str,
+    response: str,
+) -> None:
+    """Missing events or columns retain the old per-attribute placeholders."""
     engine = Mock()
-    engine.fetch_features.return_value = []
-    with (
-        patch("diskgraph.SamplerEngine", return_value=engine),
-        pytest.raises(RuntimeError, match="returned no features"),
-    ):
-        store["items", "pkey", torch.tensor([4, 1])]
+    engine.fetch_features.return_value = (
+        []
+        if response == "no_events"
+        else [{"type": "feature", "batch": pa.record_batch({"unrequested": [4, 1]})}]
+    )
+    store._engine = engine
+
+    result = store["items", attribute, torch.tensor([4, 1])]
+
+    if attribute == "tf":
+        assert isinstance(result, TensorFrame)
+        assert result.num_rows == 0
+        assert result.col_names_dict == {Stype.numerical: ["value"]}
+    elif attribute == "pkey":
+        np.testing.assert_array_equal(result, np.arange(2))
+    else:
+        torch.testing.assert_close(result, torch.zeros(2, dtype=torch.long))
+
+
+@pytest.mark.parametrize("attribute", ["tf", "pkey", "time", "end_time"])
+def test_partial_responses_preserve_returned_rows(
+    store: DiskgraphFeatureStore,
+    attribute: str,
+) -> None:
+    """Skipped node IDs retain the legacy shorter response without raising."""
+    column = {
+        "tf": "value",
+        "pkey": "id",
+        "time": "created_at",
+        "end_time": "ended_at",
+    }[attribute]
+    values = (
+        pa.array([123], pa.timestamp("s"))
+        if attribute in {"time", "end_time"}
+        else pa.array([4.0])
+    )
+    engine = Mock()
+    engine.fetch_features.return_value = [
+        {"type": "feature", "batch": pa.record_batch({column: values})}
+    ]
+    store._engine = engine
+
+    result = store["items", attribute, torch.tensor([4, 1])]
+
+    assert len(result) == 1
+    if attribute == "tf":
+        torch.testing.assert_close(
+            next(iter(result.feat_dict.values())).flatten(), torch.tensor([4.0])
+        )
+    elif attribute == "pkey":
+        np.testing.assert_array_equal(result, [4.0])
+    else:
+        torch.testing.assert_close(result, torch.tensor([123_000_000_000]))
+
+
+def test_partial_feature_columns_preserve_available_mappers(
+    store: DiskgraphFeatureStore,
+) -> None:
+    """Missing feature columns do not prevent encoding the returned columns."""
+    schema = store._table_schema_dict["items"]
+    schema.mapper_dict["missing"] = schema.mapper_dict["value"]
+    engine = Mock()
+    engine.fetch_features.return_value = [
+        {"type": "feature", "batch": pa.record_batch({"value": [4.0, 1.0]})}
+    ]
+    store._engine = engine
+
+    result = store["items", "tf", torch.tensor([4, 1])]
+
+    assert result.num_rows == 2
+    assert result.col_names_dict == {Stype.numerical: ["value"]}
+    torch.testing.assert_close(
+        next(iter(result.feat_dict.values())).flatten(), torch.tensor([4.0, 1.0])
+    )

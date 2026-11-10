@@ -243,11 +243,10 @@ class GloVeVectors(_VocabularyModel):
                                 or not isinstance(dim, int)):
             raise TypeError(f"dim must be an int, e.g. dim=50 (got {dim!r}).")
         if self.path.is_file() and zipfile.is_zipfile(self.path):
-            cache_dir = self._cache()
-            if cache_dir is None:
+            if self._cache() is None:
                 raise ValueError(f"There is no home directory to convert "
                                  f"{given} into; pass cache_dir=.")
-            self._digest = _archive_digest(self.path, cache_dir)
+            self._digest = _archive_digest(self.path, self._cache())
             if self._digest not in RELEASES:
                 known = ", ".join(
                     dict.fromkeys(r.archive for r in RELEASES.values()))

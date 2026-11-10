@@ -37,7 +37,8 @@ class _Root:
         return f'{base}/{relative}' if base else relative
 
     def uri(self, relative: str) -> str:
-        return f"{self._uri.rstrip('/')}/{relative}"
+        base = self._uri.rstrip('/')
+        return f'{base}/{relative}' if base else relative
 
 
 @dataclass(frozen=True)
@@ -152,15 +153,15 @@ def _require_within_root(connector: Any, path: str) -> None:
     if not isinstance(sink, ObjectStoreSessions):
         return
     try:
-        sink._resolved(connector, path)
+        sink._resolved_directory(connector, path)
     except ValueError as error:
         target = sink._root_for(connector)
         within = (f'root_dir {sink.scheme}://{target.path}'
                   if target is not None else 'target')
         name = type(connector).__name__
         raise ValueError(
-            f'artifact_root {path!r} is outside this {name}\'s {within} '
-            f'({error}); give it a connector that contains it.') from error
+            f'Invalid artifact_root {path!r} for {name} ({within}): '
+            f'{error}') from error
 
 
 def _require_writable(root: _Root) -> None:

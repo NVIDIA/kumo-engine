@@ -22,6 +22,8 @@ import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
+from multiprocessing import queues as mp_queues
+from multiprocessing.reduction import ForkingPickler
 from typing import Any, Iterator, Mapping
 
 import pytorch_lightning as pl
@@ -31,6 +33,7 @@ from kumo_core.diskgraph.runtime_adapter import (
     runtime_batch_to_hetero,
 )
 from kumo_core.task_dataset import DiskgraphTaskManifest
+from torch._utils import ExceptionWrapper
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
 logger = logging.getLogger(__name__)
@@ -1697,8 +1700,35 @@ def _exit_when_parent_exits() -> None:
     os._exit(0)
 
 
+_python_feeder_error = mp_queues.Queue._on_queue_feeder_error
+
+
+def _send_feeder_error(queue: Any, error: Exception, item: Any) -> None:
+    """Fail the batch a worker could not pickle instead of dropping it.
+
+    Sent before anything queued after the batch, so a later end-of-stream
+    marker cannot make the main process skip it.
+    """
+    if not (isinstance(item, tuple) and len(item) == 2
+            and isinstance(item[0], int)):
+        _python_feeder_error(error, item)
+        return
+    wrapper = ExceptionWrapper(
+        (type(error), error, error.__traceback__),
+        where=f'in DataLoader worker process {get_worker_info().id}')
+    try:
+        payload = ForkingPickler.dumps((item[0], wrapper))
+    except Exception:
+        wrapper.exc_type = RuntimeError
+        payload = ForkingPickler.dumps((item[0], wrapper))
+    queue._sem.acquire()
+    with queue._wlock:
+        queue._writer.send_bytes(payload)
+
+
 def _init_diskgraph_worker(_worker_id: int) -> None:
-    """Start logical-parent death detection in a DataLoader worker."""
+    """Start parent-death detection and fail unsendable batches loudly."""
+    mp_queues.Queue._on_queue_feeder_error = _send_feeder_error
     threading.Thread(
         target=_exit_when_parent_exits,
         daemon=True,
@@ -2136,6 +2166,13 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         from kumoapi.train import TrainingStage
         pred = self._stage_seed_time(TrainingStage.PRED)
         return pred if pred is not None else self.test_time
+
+    def require_single_predict_anchor(self) -> None:
+        from kumo_core.training.validation import require_single_anchor
+        from kumoapi.train import TrainingStage
+        anchors = self._stage_time_dict.get(TrainingStage.PRED)
+        if anchors is not None:
+            require_single_anchor(*anchors)
 
     def _seed_time_to_index_unit(self, seed_time: "Any | None") -> int | None:
         """Collapse a stage seed-time tensor to the single int the engine's

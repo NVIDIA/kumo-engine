@@ -11,14 +11,13 @@ import sys
 from typing import TYPE_CHECKING, Any, Iterator, Optional
 
 import numpy as np
-import orjson
 import pandas as pd
 import pyarrow as pa
 import torch
 from kumoapi.encoder import Datetime
 from torch_frame import TensorFrame
 
-from kumo_core.diskgraph.metadata import load_diskgraph_schema
+from kumo_core.diskgraph.metadata import DiskgraphSchema, load_diskgraph_schema
 from kumo_core.encoders.config import EncodersConfig
 from kumo_core.encoders.tensor_frame import get_tf
 from kumo_core.encoders.tensor_mapper import TensorMapper
@@ -397,6 +396,7 @@ class DiskgraphFeatureStore(FeatureStore):
         entity_table_names: list[str],
         time_col_dict: dict[str, str] | None = None,
         end_time_col_dict: dict[str, str] | None = None,
+        schema: DiskgraphSchema | None = None,
     ) -> "DiskgraphFeatureStore":
         """Build a store for RHS reads and explanation without loading graph tables.
 
@@ -406,6 +406,7 @@ class DiskgraphFeatureStore(FeatureStore):
             entity_table_names: Entity tables in task order.
             time_col_dict: Table creation-time columns.
             end_time_col_dict: Table expiration-time columns.
+            schema: Already loaded snapshot metadata, if available.
 
         Returns:
             A store with metadata and lazy indexed feature reads.
@@ -416,14 +417,10 @@ class DiskgraphFeatureStore(FeatureStore):
         time_col_dict = time_col_dict or {}
         end_time_col_dict = end_time_col_dict or {}
 
-        schema = load_diskgraph_schema(index_path)
+        if schema is None:
+            schema = load_diskgraph_schema(index_path)
 
         table_schema_dict: dict[str, FeatureStoreTableSchema] = {}
-        diskgraph_num_nodes: dict[str, int] = {}
-
-        with open(os.path.join(index_path, "index_metadata.json"), "rb") as file:
-            index_meta = orjson.loads(file.read())
-        node_type_to_meta = {nt["name"]: nt for nt in index_meta.get("node_types", [])}
 
         for table_name in schema.table_names:
             encoder_dict = encoders.encoders.get(table_name, {})
@@ -437,16 +434,11 @@ class DiskgraphFeatureStore(FeatureStore):
                 time_col_name=time_col_dict.get(table_name),
                 end_time_col_name=end_time_col_dict.get(table_name),
             )
-            nt_meta = node_type_to_meta.get(table_name, {})
-            max_id = nt_meta.get("max_id")
-            diskgraph_num_nodes[table_name] = (
-                max_id + 1 if isinstance(max_id, int) and max_id >= 0 else 0
-            )
 
         return cls(
             index_path=index_path,
             table_schema_dict=table_schema_dict,
-            diskgraph_num_nodes=diskgraph_num_nodes,
+            diskgraph_num_nodes=schema.num_nodes_dict,
             entity_table_names=entity_table_names,
         )
 
@@ -512,7 +504,15 @@ class DiskgraphFeatureStore(FeatureStore):
                 for name, mapper in schema.mapper_dict.items()
                 if name in table.column_names
             }
+            if not mappers:
+                return get_tf(
+                    pa.table({name: [] for name in feature_names}), schema.mapper_dict
+                )
             return get_tf(table, mappers)
+        if feature_names[0] not in table.column_names:
+            if attr.attr_name == "pkey":
+                return np.arange(len(node_ids))
+            return torch.zeros(len(node_ids), dtype=torch.long)
         column = table.column(feature_names[0])
         if attr.attr_name == "pkey":
             return column.to_numpy(zero_copy_only=False).copy()
@@ -551,6 +551,4 @@ class DiskgraphFeatureStore(FeatureStore):
                 if event["type"] == "feature":
                     batches.append(event["batch"])
 
-        if not batches:
-            raise RuntimeError(f"DiskGraph returned no features for '{table_name}'")
-        return pa.Table.from_batches(batches)
+        return pa.Table.from_batches(batches) if batches else pa.table({})

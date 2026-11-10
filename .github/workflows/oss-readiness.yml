@@ -22,17 +22,19 @@ jobs:
   repository-checks:
     runs-on: ubuntu-24.04
     steps:
-      # Test the merge tree used by the workflow, including new base-branch tests.
-      # Fetch full history and blobs so scans can also read the PR head offline.
+      # A blob-less clone without persisted credentials cannot fetch file
+      # contents later, so check out the commit the scans read (the PR head,
+      # not the merge commit) to download its file contents up front.
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+          filter: blob:none
           fetch-depth: 0
 
       - name: Set up Python and uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           python-version: "3.14"
           prune-cache: true
@@ -48,8 +50,12 @@ jobs:
             test/scripts/test_check_oss_readiness.py \
             test/scripts/test_check_secrets.py \
             test/scripts/test_engine_gpu_smoke.py \
+            test/scripts/test_engine_e2e_case_hardware.py \
             test/scripts/test_engine_pr_workflow.py \
             test/scripts/test_engine_wheel_workflow.py
+
+      - name: Test the Engine runner pool without AWS
+        run: node --test test/scripts/test-engine-e2e-pool.cjs
 
       # Pull requests check only the files they change. Pushes to main check
       # the whole tree, so a recorded public-reference count that is no longer

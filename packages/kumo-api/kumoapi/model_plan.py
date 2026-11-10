@@ -608,30 +608,39 @@ class TrainingTableGenerationPlan(PlanMixin):
     :ivar train_start_offset: (``int`` | ``"inferred``") Defines the numerical
         offset from the most recent entry to use to generate training data
         labels. Unless a custom time unit is specified in the aggregation, this
-        value is in days (*default:* ``"inferred"``). Eventually we would
-        like to migrate this parameter to start_time.
+        value is in days (*default:* ``"inferred"``).
         **Supported Task Types:** Temporal
 
     :ivar train_end_offset: (``int`` | ``"inferred"``) Defines the numerical
         offset from the most recent entry to not use to generate training data
         labels. Unless a custom time unit is specified in the aggregation, this
-        value is in days (*default:* ``"inferred"``). Eventually we would
-        like to migrate this parameter to end_time.
+        value is in days (*default:* ``"inferred"``).
         **Supported Task Types:** Temporal
 
-    :ivar start_time: (``int`` | ``"inferred"`` | ``str``) Defines the absolute
-        start time to use for generating training data. Can be specified
-        either as a pandas Timestamp compatible string (e.g. '2024-04-01') or
-        as a non-positive integer offset in days from the current time
-        (e.g. -30 for 30 days ago) (*default:* ``"inferred"``).
-        **Supported Task Types:** Temporal
+    :ivar start_time: (``"inferred"`` | ``str``) Inclusive lower
+        bound on generated prediction anchors. Temporal node tasks accept
+        pandas Timestamp compatible strings (e.g. '2024-04-01') with default
+        splits. Timezone-aware strings are normalized to UTC; naive strings
+        are read as UTC. ``"inferred"`` or ``"-INF"`` uses the available-data
+        lower bound. Bounds are intersected with available label data.
+        Direct absolute bounds cannot be combined with train_start_offset,
+        train_end_offset, or explicit date/offset window splits.
+        For relative training windows, use train_start_offset/train_end_offset
+        in the aggregation's time unit.
+        (*default:* ``"inferred"``).
+        **Supported Task Types:** Temporal node classification, regression,
+        ranking, and forecasting.
 
-    :ivar end_time: (``int`` | ``"inferred"`` | ``str``) Defines the absolute
-        end time to use for generating training data. Can be specified either
-        as a pandas Timestamp compatible string (e.g. '2024-04-01') or as a
-        non-positive integer offset in days from the current time
-        (e.g. -30 for 30 days ago) (*default:* ``"inferred"``).
-        **Supported Task Types:** Temporal
+    :ivar end_time: (``"inferred"`` | ``str``) Label observation
+        cutoff, rather than the latest prediction anchor. Each generated
+        example must fit its complete target horizon by this cutoff,
+        including every future label for forecasting. Accepts the same
+        timestamp strings as start_time;
+        ``"inferred"`` uses available label data. Either absolute bound can
+        be omitted. Empty intersections or windows too short for a complete
+        example fail generation. (*default:* ``"inferred"``).
+        **Supported Task Types:** Temporal node classification, regression,
+        ranking, and forecasting.
 
     :ivar timeframe_step: (``int`` | ``"inferred"``) Defines the step size of
         generating time intervals for training table generation
@@ -1056,6 +1065,9 @@ class OptimizationPlan(PlanMixin):
     `Kumo documentation <https://docs.kumo.ai/docs/advanced-operations
     #optimization>`_ for more information.
 
+    GPU memory retries increase evaluation step limits as batches shrink to
+    preserve the configured evaluation row budget.
+
     :ivar max_epochs: (``int``) The maximum number of epochs to train a model
         for (*default:* ``run_mode``-dependent).
         **Supported Task Types:** All
@@ -1169,17 +1181,15 @@ class OptimizationPlan(PlanMixin):
         metadata=Metadata(),
     )
 
-    max_val_steps: Union[conint(ge=1, le=8000), MissingType,
-                         None] = compat_field(
-                             default_factory=lambda: MissingType.VALUE,
-                             metadata=Metadata(),
-                         )
+    max_val_steps: Union[conint(ge=1), MissingType, None] = compat_field(
+        default_factory=lambda: MissingType.VALUE,
+        metadata=Metadata(),
+    )
 
-    max_test_steps: Union[conint(ge=1, le=8000), MissingType,
-                          None] = compat_field(
-                              default_factory=lambda: MissingType.VALUE,
-                              metadata=Metadata(),
-                          )
+    max_test_steps: Union[conint(ge=1), MissingType, None] = compat_field(
+        default_factory=lambda: MissingType.VALUE,
+        metadata=Metadata(),
+    )
 
     loss: Union[compat_conlist(
         Union[

@@ -13,11 +13,12 @@ with its in-process `kumo.engine` runtime and retained local run files.
 ## Establish the run and question
 
 - Reuse the user's task, model, graph, and run identity. Do not restart training intake.
-- For a fresh `training_result`, `Path(training_result.bundle_dir).parent` identifies that fit's
-  run directory in the reviewed implementation. Otherwise use the retained run directory the
-  user supplied. A downloaded model bundle is not the original training run.
-- If several runs or trainer/refit directories exist, list candidates and resolve which one
-  the user means. Never silently select the newest directory or combine different runs.
+- For a fresh `training_result`, use `training_result.explanations`. Otherwise reopen the
+  explicit retained run with `kumo.TrainingExplanations.load(run_dir)`. A downloaded model
+  bundle is not the original training run.
+- If several runs or trainer/refit directories exist, list candidates with their paths and ask
+  which one the user means, before showing any score. Never silently select the newest
+  directory or combine different runs.
 - Identify the task type, target/positive class, explanation stage, and fit/refit used.
   Record unknowns explicitly. These determine what the scores can mean.
 
@@ -45,8 +46,9 @@ from the existence of `disable_explain`.
   column-analysis workflow; forecasting is not in the reviewed producer's column-analysis list.
 - Gradient scoring supports more task types, but the shared trainer skips TWO_TOWER link models.
   The runtime's explainer task list can narrow support further.
-- There is no public `kumo.Trainer.explain()` or `training_result.explanations` accessor in
-  this API. Do not call private trainers or enable prediction-time XAI through invented options.
+- `training_result.explanations` retrieves retained TEST-stage artifacts and provides gradient
+  and cohort plots. There is no public `kumo.Trainer.explain()` or standalone regeneration API.
+  Do not call private trainers or enable prediction-time XAI through invented options.
 - An inspection request does not authorize another fit. If required files are absent, diagnose
   the reason first. Generate an additional fit only when the user has requested that run.
 
@@ -71,8 +73,18 @@ is a lead to investigate, not proof of leakage or a causal mechanism.
 
 ## Return a useful answer
 
-Give the run, task, stage, selected trainer/refit, and exact file paths used; a bounded ranking
-of table-column gradient scores; and the relevant cohort comparisons with population shares.
+Every answer, however short, carries:
+
+- the run, task, stage, selected trainer/refit and the exact file paths read;
+- gradient scores named as Kumo gradient attribution over the processed test subset, normalized
+  across the graph as observed (the default producer, when the total is positive), and never
+  called drivers, probabilities or percentages;
+- for cohorts, each cohort's population share beside its mean prediction and, when the file
+  records one, mean target, read from column analysis;
+- for a plot, the plotting code in the reply, reading the selected run's files, titled with the
+  table, column, run and test stage;
+- when evidence is missing, that no fit was started, and whether the user wants one.
+
 Distinguish observations, hypotheses, and missing evidence. Do not promise individual prediction
 explanations from aggregate files; sampled subgraphs cover only the sampled test entities (see the
 reference's *Sampled subgraphs*). If only one explanation family is present, analyze that family
