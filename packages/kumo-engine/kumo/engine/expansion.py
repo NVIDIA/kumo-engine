@@ -48,6 +48,54 @@ def retain_sources(output, name, paths):
             shutil.copyfile(path, target)
 
 
+def consolidate(snapshot):
+    """Use ordinary ingestion on the snapshot's own retained sources."""
+    from kumo_core.diskgraph.ingest import (
+        DiskgraphIngestSpec,
+        execute_diskgraph_ingest,
+    )
+    from kumo_core.diskgraph.runner import IngestExecutionConfig
+    from kumo_core.diskgraph.snapshot import DiskgraphIngestResult
+
+    from kumo.engine.graph import GraphSnapshot
+
+    if not (snapshot.index_path / '_expansion/relations.json').exists():
+        return snapshot
+    fingerprints = json.loads((snapshot.index_path / '_expansion/source_fingerprints.json').read_text())
+    sources = {t['table_name']: sorted((snapshot.index_path / '_expansion/sources' / t['table_name']).glob('*.parquet'))
+               for t in snapshot.graph_config['tables']}
+    if not all(sources.values()):
+        raise ValueError('Consolidation requires retained sources for every table')
+    output = snapshot.index_path.parent / uuid4().hex
+    with tempfile.TemporaryDirectory(prefix='consolidate-', dir=output.parent) as staging:
+        build = Path(staging) / 'index'
+        execute_diskgraph_ingest(snapshot.graph_config, DiskgraphIngestSpec(
+            data_persist_dir=str(snapshot.index_path / '_expansion/sources'),
+            table_data_versions=fingerprints,
+            output_dir=str(build),
+            source_paths={name: str(paths[0].parent) for name, paths in sources.items()},
+            execution=IngestExecutionConfig(
+                extra_args=('--enable-expansion',),
+                success_marker_content=DiskgraphIngestResult.for_index(output).to_json()),
+        ))
+        for name, paths in sources.items():
+            retain_sources(build, name, paths)
+        (build / '_expansion/source_fingerprints.json').write_text(json.dumps(fingerprints))
+        write_manifest(build)
+        build.rename(output)
+    return GraphSnapshot(f'{snapshot.id.split("@")[0]}@{output.name}', output, snapshot.graph_config)
+
+
+def write_manifest(output):
+    """Include the final files, rather than the parent's ingestion inventory."""
+    path = output / '_MANIFEST.json'
+    manifest = json.loads(path.read_text())
+    manifest['files'] = [{'rel_path': p.relative_to(output).as_posix(), 'size_bytes': p.stat().st_size}
+                         for p in sorted(output.rglob('*'))
+                         if p.is_file() and p not in (path, output / '_SUCCESS')]
+    path.write_text(json.dumps(manifest))
+
+
 def try_expansion(graph, parent, fingerprints):
     from diskgraph import DiskgraphConfigConverter, expand_snapshot
     from kumo_core.diskgraph.ingest import prepare_diskgraph_converter_config
@@ -58,6 +106,8 @@ def try_expansion(graph, parent, fingerprints):
 
     from kumo.engine.graph import GraphSnapshot, _warn_ingest_data_loss
 
+    if not (parent.index_path / '_SUCCESS').is_file():
+        raise ValueError('Parent snapshot is incomplete: missing _SUCCESS')
     started = time.perf_counter()
     previous = json.loads((parent.index_path / '_expansion/source_fingerprints.json').read_text())
     old_names = set(previous)
@@ -136,12 +186,13 @@ def try_expansion(graph, parent, fingerprints):
             'reused_tables': sorted(old_names), 'duration_seconds': time.perf_counter() - started,
         }))
         result = DiskgraphIngestResult.for_index(output)
+        write_manifest(output)
         write_diskgraph_success_marker(str(output), result)
         _warn_ingest_data_loss(result, graph._graph_config)
         return GraphSnapshot(f'{graph.id}@{output.name}', output, graph._graph_config)
-    except Exception as error:
+    except BaseException as error:
         if output.exists():
             shutil.rmtree(output)
-        if 'requires full table encoding' in str(error):
+        if isinstance(error, Exception) and 'requires full table encoding' in str(error):
             return None
         raise

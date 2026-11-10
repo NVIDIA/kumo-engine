@@ -245,6 +245,14 @@ definitions, and preserved existing links. Unsupported changes use ordinary
 ingestion. Existing-table row/feature changes are picked up by a normal
 `graph.snapshot()` call.
 
+After repeated additions, `consolidated = snapshot.consolidate()` rebuilds the
+snapshot's retained data into the normal graph format without additional
+relationship logs. This is an explicit full rebuild: allow time and disk space
+for a second snapshot. It does not reread the original source files or modify
+the old snapshot. Internal node IDs may change; use primary keys to identify
+records. The result supports further table expansion. Calling it on an already
+consolidated snapshot returns that snapshot unchanged.
+
 ## License
 
 Kumo Engine is licensed under the [Apache License 2.0](https://github.com/NVIDIA/kumo-engine/blob/main/LICENSE). The wheel also bundles third-party components under their own licenses, listed in [THIRD-PARTY.txt](https://github.com/NVIDIA/kumo-engine/blob/main/THIRD-PARTY.txt).

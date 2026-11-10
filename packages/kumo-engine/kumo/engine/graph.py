@@ -216,6 +216,17 @@ class GraphSnapshot:
     index_path: Path
     graph_config: Dict[str, Any]
 
+    def consolidate(self) -> 'GraphSnapshot':
+        """Rebuild this snapshot's retained data without relationship logs.
+
+        Returns a new immutable snapshot that supports further expansion.
+        Original source files are not reread. Internal node IDs may change.
+        Returns this snapshot unchanged if it is already consolidated.
+        """
+        from kumo.engine.expansion import consolidate
+
+        return consolidate(self)
+
 
 @dataclass(frozen=True)
 class Graph:

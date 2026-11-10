@@ -38,7 +38,10 @@ fn clone_tree(source: &Path, destination: &Path) -> Result<()> {
         fs::create_dir_all(destination.parent().context("missing output parent")?)?;
         if source.extension().is_some_and(|ext| ext == "json")
             || fs::hard_link(source, destination).is_err() {
-            fs::copy(source, destination)?;
+            let mut input = fs::File::open(source)?;
+            let mut output = fs::File::options().write(true).create_new(true).open(destination)?;
+            output.set_permissions(input.metadata()?.permissions())?;
+            std::io::copy(&mut input, &mut output)?;
         }
     }
     Ok(())
@@ -125,6 +128,9 @@ pub struct ExpansionRequest {
 
 pub fn expand(request: &ExpansionRequest) -> Result<()> {
     let started = std::time::Instant::now();
+    let mut source = request.expansion.clone();
+    source.normalize_multicat_pseudo_list();
+    source.validate()?;
     let parent = request.parent.canonicalize()?;
     ensure!(!request.output.exists(), "expansion output already exists");
     let output = std::env::current_dir()?.join(&request.output);
@@ -133,7 +139,6 @@ pub fn expand(request: &ExpansionRequest) -> Result<()> {
     ensure!(!ancestor.starts_with(&parent), "expansion output must not be inside its parent");
     let original = GraphIndexReader::open(&parent.join("index_metadata.json"), &parent)?;
     let old: ExpansionState = serde_json::from_value(read(&parent, "_expansion/state.json")?)?;
-    let source = &request.expansion;
     let mut metadata = original.metadata().clone();
     let mut deltas = DeltaManifest::load(&parent)?.unwrap_or_default();
     for node in &metadata.node_types {
@@ -145,8 +150,7 @@ pub fn expand(request: &ExpansionRequest) -> Result<()> {
     }
     clone_tree(&parent, &request.output)?;
     let existing: HashSet<_> = old.source.tables.iter().map(|t| t.name.clone()).collect();
-    let declared = source;
-    let mut source = source.clone();
+    let declared = &request.expansion;
     for table in source.tables.iter().filter(|t| existing.contains(&t.name)) {
         let crate::graph_config::DataSource::Parquet { paths } = &table.source else {
             return Err(anyhow!(
@@ -477,4 +481,42 @@ pub fn expand(request: &ExpansionRequest) -> Result<()> {
         }),
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn clone_tree_preserves_copy_permissions() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir()?;
+        let source = root.path().join("source.json");
+        let destination = root.path().join("destination.json");
+        fs::write(&source, b"private metadata")?;
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o600))?;
+        clone_tree(&source, &destination)?;
+        assert_eq!(fs::metadata(&destination)?.permissions().mode() & 0o777, 0o600);
+        assert_eq!(fs::read(&destination)?, b"private metadata");
+        Ok(())
+    }
+
+    #[test]
+    fn clone_tree_rejects_existing_parent_links() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        for extension in ["bin", "json"] {
+            let parent = root.path().join(format!("parent.{extension}"));
+            let child = root.path().join(format!("child.{extension}"));
+            let added = root.path().join(format!("added.{extension}"));
+            fs::write(&parent, b"parent")?;
+            fs::write(&added, b"new table")?;
+            fs::hard_link(&parent, &child)?;
+            assert!(clone_tree(&added, &child).is_err());
+            assert_eq!(fs::read(&parent)?, b"parent");
+            assert_eq!(fs::read(&child)?, b"parent");
+        }
+        Ok(())
+    }
 }
