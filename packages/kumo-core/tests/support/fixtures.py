@@ -6,9 +6,9 @@ from dataclasses import dataclass, field
 import pandas as pd
 import pytest
 import torch
+from encoder_stats import fit_encoder_stats
 from kumo_core.diskgraph.metadata import DiskgraphSchema
 from kumo_core.diskgraph.stores import DiskgraphFeatureStore
-from kumo_core.encoders.selection import compute_missing_stats_
 from kumo_core.encoders.tensor_mapper import TensorMapper
 from kumo_core.features.stores.feature import FeatureStoreTableSchema
 from kumo_core.features.time import to_datetime
@@ -56,7 +56,7 @@ def create_graph_data(
         table_encoder_dict[table_name] = {}
         table_mapper_dict[table_name] = {}
         for col_name, stype in schema.stypes.items():
-            encoder = compute_missing_stats_(get_encoder(stype), df[col_name])
+            encoder = fit_encoder_stats(get_encoder(stype), df[col_name])
             table_encoder_dict[table_name][col_name] = encoder
             mapper = TensorMapper.from_encoder(encoder)
             table_mapper_dict[table_name][col_name] = mapper

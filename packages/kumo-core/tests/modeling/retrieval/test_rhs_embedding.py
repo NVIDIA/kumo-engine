@@ -8,7 +8,7 @@ import kumo_core.modeling.embedding as embedding_module
 import pandas as pd
 import pytest
 import torch
-from kumo_core.encoders.selection import compute_missing_stats_
+from encoder_stats import fit_encoder_stats
 from kumo_core.encoders.tensor_mapper import NumericalTensorMapper, TensorMapper
 from kumo_core.modeling.embedding import Embedding
 from kumo_core.modeling.retrieval.rhs_embedding import RHSEmbedding
@@ -117,8 +117,8 @@ def test_rhs_embedding(
         'B': [0, 1, 0, 1, 0],
     })
     encoder_dict = {
-        'A': compute_missing_stats_(Numerical(), df['A']),
-        'B': compute_missing_stats_(Index(), df['B']),
+        'A': fit_encoder_stats(Numerical(), df['A']),
+        'B': fit_encoder_stats(Index(), df['B']),
     }
     mapper_dict = {
         col_name: TensorMapper.from_encoder(encoder)
@@ -416,7 +416,7 @@ def test_cache_device_dtype() -> None:
 @pytest.mark.parametrize('filter', [False, True])
 def test_fusion_on_the_fly(filter: bool, device: torch.device) -> None:
     df = pd.DataFrame({'A': [0.1, 0.2, 0.3, 0.4, 0.5]})
-    encoder_dict = {'A': compute_missing_stats_(Numerical(), df['A'])}
+    encoder_dict = {'A': fit_encoder_stats(Numerical(), df['A'])}
     mapper_dict = {'A': NumericalTensorMapper()}
 
     feature_store = make_diskgraph_feature_store(

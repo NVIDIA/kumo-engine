@@ -4,6 +4,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+from encoder_stats import fit_encoder_stats
 from kumoapi.encoder import (
     Datetime,
     Hash,
@@ -17,7 +18,6 @@ from kumoapi.encoder import (
 )
 from kumoapi.typing import ColStatType, Stype
 
-from kumo_core.encoders.selection import compute_missing_stats_
 from tests.support.encoders import get_encoder
 
 
@@ -27,7 +27,7 @@ def test_get_numerical_encoder(i: int) -> None:
     assert isinstance(encoder, Numerical | MinLogNumerical | MaxLogNumerical)
 
     ser = pd.Series([0.1, 0.5, None])
-    encoder = compute_missing_stats_(encoder, ser, force_refresh=True)
+    encoder = fit_encoder_stats(encoder, ser, force_refresh=True)
     assert set(encoder._stats.keys()) == encoder.required_stats
     assert encoder._stats.get(ColStatType.MEAN, 0.3) == 0.3
     assert encoder._stats.get(ColStatType.STD, 0.2) == 0.2
@@ -37,7 +37,7 @@ def test_get_numerical_encoder(i: int) -> None:
                               (0.2, 0.3, 0.4)) == (0.2, 0.3, 0.4)
 
     ser = pd.Series([None])
-    encoder = compute_missing_stats_(encoder, ser, force_refresh=True)
+    encoder = fit_encoder_stats(encoder, ser, force_refresh=True)
     assert set(encoder._stats.keys()) == encoder.required_stats
     assert encoder._stats.get(ColStatType.MEAN, 0) == 0
     assert encoder._stats.get(ColStatType.STD, 1) == 1
@@ -46,7 +46,7 @@ def test_get_numerical_encoder(i: int) -> None:
     assert encoder._stats.get(ColStatType.QUANTILES, (0, 0, 0)) == (0, 0, 0)
 
     ser = pd.Series([], dtype=float)
-    encoder = compute_missing_stats_(encoder, ser, force_refresh=True)
+    encoder = fit_encoder_stats(encoder, ser, force_refresh=True)
     assert set(encoder._stats.keys()) == encoder.required_stats
     assert encoder._stats.get(ColStatType.MEAN, 0) == 0
     assert encoder._stats.get(ColStatType.STD, 1) == 1
@@ -66,17 +66,17 @@ def test_get_categorical_encoder(i: int, stype: Stype) -> None:
         assert encoder.num_components >= 1 and encoder.num_components <= 10
 
     ser = pd.Series(['A', 'A', 'B', None])
-    encoder = compute_missing_stats_(encoder, ser, force_refresh=True)
+    encoder = fit_encoder_stats(encoder, ser, force_refresh=True)
     assert set(encoder._stats.keys()) == encoder.required_stats
     assert encoder._stats[ColStatType.CATEGORY_COUNTS] == [['A', 2], ['B', 1]]
 
     ser = pd.Series([None], dtype=str)
-    encoder = compute_missing_stats_(encoder, ser, force_refresh=True)
+    encoder = fit_encoder_stats(encoder, ser, force_refresh=True)
     assert set(encoder._stats.keys()) == encoder.required_stats
     assert encoder._stats[ColStatType.CATEGORY_COUNTS] == []
 
     ser = pd.Series([], dtype=str)
-    encoder = compute_missing_stats_(encoder, ser, force_refresh=True)
+    encoder = fit_encoder_stats(encoder, ser, force_refresh=True)
     assert set(encoder._stats.keys()) == encoder.required_stats
     assert encoder._stats[ColStatType.CATEGORY_COUNTS] == []
 
@@ -88,7 +88,7 @@ def test_get_multi_categorical_encoder(i: int) -> None:
     assert encoder.min_occ >= 1 and encoder.min_occ <= 10
 
     ser = pd.Series(['A|B', 'A', 'B|A', None])
-    encoder = compute_missing_stats_(encoder, ser, force_refresh=True)
+    encoder = fit_encoder_stats(encoder, ser, force_refresh=True)
     assert set(encoder._stats.keys()) == encoder.required_stats
     assert encoder._stats[ColStatType.MULTI_CATEGORIES_SEPARATOR] == '|'
     assert encoder._stats[ColStatType.MULTI_CATEGORY_COUNTS] == [
@@ -103,7 +103,7 @@ def test_get_multi_categorical_encoder(i: int) -> None:
         ['A', 'C'],  # list, not an array
         None,
     ])
-    encoder = compute_missing_stats_(encoder, ser, force_refresh=True)
+    encoder = fit_encoder_stats(encoder, ser, force_refresh=True)
     assert set(encoder._stats.keys()) == encoder.required_stats
     assert encoder._stats[ColStatType.MULTI_CATEGORY_COUNTS] == [
         ['A', 4],
@@ -112,13 +112,13 @@ def test_get_multi_categorical_encoder(i: int) -> None:
     ]
 
     ser = pd.Series([None], dtype=str)
-    encoder = compute_missing_stats_(encoder, ser, force_refresh=True)
+    encoder = fit_encoder_stats(encoder, ser, force_refresh=True)
     assert set(encoder._stats.keys()) == encoder.required_stats
     assert encoder._stats[ColStatType.MULTI_CATEGORIES_SEPARATOR] is None
     assert encoder._stats[ColStatType.MULTI_CATEGORY_COUNTS] == []
 
     ser = pd.Series([], dtype=str)
-    encoder = compute_missing_stats_(encoder, ser, force_refresh=True)
+    encoder = fit_encoder_stats(encoder, ser, force_refresh=True)
     assert set(encoder._stats.keys()) == encoder.required_stats
     assert encoder._stats[ColStatType.MULTI_CATEGORIES_SEPARATOR] is None
     assert encoder._stats[ColStatType.MULTI_CATEGORY_COUNTS] == []
@@ -129,7 +129,7 @@ def test_get_timestamp_encoder() -> None:
     assert isinstance(encoder, Datetime)
 
     ser = pd.Series(['2018-01-05', '2019-01-05', '', None])
-    encoder = compute_missing_stats_(encoder, ser, force_refresh=True)
+    encoder = fit_encoder_stats(encoder, ser, force_refresh=True)
     assert set(encoder._stats.keys()) == encoder.required_stats
     assert (encoder._stats[ColStatType.MIN] ==
             'kumo_timestamp_2018-01-05 00:00:00')
@@ -137,7 +137,7 @@ def test_get_timestamp_encoder() -> None:
             'kumo_timestamp_2019-01-05 00:00:00')
 
     ser = pd.Series(['', None], dtype=str)
-    encoder = compute_missing_stats_(encoder, ser, force_refresh=True)
+    encoder = fit_encoder_stats(encoder, ser, force_refresh=True)
     assert set(encoder._stats.keys()) == encoder.required_stats
     assert (encoder._stats[ColStatType.MIN] ==
             'kumo_timestamp_1970-01-01 00:00:00')
@@ -145,7 +145,7 @@ def test_get_timestamp_encoder() -> None:
             'kumo_timestamp_1970-01-01 00:00:00')
 
     ser = pd.Series([], dtype=str)
-    encoder = compute_missing_stats_(encoder, ser, force_refresh=True)
+    encoder = fit_encoder_stats(encoder, ser, force_refresh=True)
     assert set(encoder._stats.keys()) == encoder.required_stats
     assert (encoder._stats[ColStatType.MIN] ==
             'kumo_timestamp_1970-01-01 00:00:00')
@@ -158,17 +158,17 @@ def test_get_text_encoder() -> None:
     assert isinstance(encoder, TextEmbedding)
 
     ser = pd.Series(['get old', 'get', '', None])
-    encoder = compute_missing_stats_(encoder, ser, force_refresh=True)
+    encoder = fit_encoder_stats(encoder, ser, force_refresh=True)
     assert set(encoder._stats.keys()) == encoder.required_stats
     assert len(encoder.required_stats) == 0
 
     ser = pd.Series([None], dtype=str)
-    encoder = compute_missing_stats_(encoder, ser, force_refresh=True)
+    encoder = fit_encoder_stats(encoder, ser, force_refresh=True)
     assert set(encoder._stats.keys()) == encoder.required_stats
     assert len(encoder.required_stats) == 0
 
     ser = pd.Series([], dtype=str)
-    encoder = compute_missing_stats_(encoder, ser, force_refresh=True)
+    encoder = fit_encoder_stats(encoder, ser, force_refresh=True)
     assert set(encoder._stats.keys()) == encoder.required_stats
     assert len(encoder.required_stats) == 0
 
@@ -178,25 +178,25 @@ def test_get_sequence_encoder() -> None:
     assert isinstance(encoder, NumericalList)
 
     ser = pd.Series([[0.1, 0.2], [0.3], None])
-    encoder = compute_missing_stats_(encoder, ser, force_refresh=True)
+    encoder = fit_encoder_stats(encoder, ser, force_refresh=True)
     assert set(encoder._stats.keys()) == encoder.required_stats
     assert encoder._stats[ColStatType.SEQUENCE_MIN_LENGTH] == 1
     assert encoder._stats[ColStatType.SEQUENCE_MAX_LENGTH] == 2
 
     ser = pd.Series(['[0.1, 0.2]', '[0.3]', None])
-    encoder = compute_missing_stats_(encoder, ser, force_refresh=True)
+    encoder = fit_encoder_stats(encoder, ser, force_refresh=True)
     assert set(encoder._stats.keys()) == encoder.required_stats
     assert encoder._stats[ColStatType.SEQUENCE_MIN_LENGTH] == 1
     assert encoder._stats[ColStatType.SEQUENCE_MAX_LENGTH] == 2
 
     ser = pd.Series([None], dtype=str)
-    encoder = compute_missing_stats_(encoder, ser, force_refresh=True)
+    encoder = fit_encoder_stats(encoder, ser, force_refresh=True)
     assert set(encoder._stats.keys()) == encoder.required_stats
     assert encoder._stats[ColStatType.SEQUENCE_MIN_LENGTH] == 0
     assert encoder._stats[ColStatType.SEQUENCE_MAX_LENGTH] == 0
 
     ser = pd.Series([], dtype=str)
-    encoder = compute_missing_stats_(encoder, ser, force_refresh=True)
+    encoder = fit_encoder_stats(encoder, ser, force_refresh=True)
     assert set(encoder._stats.keys()) == encoder.required_stats
     assert encoder._stats[ColStatType.SEQUENCE_MIN_LENGTH] == 0
     assert encoder._stats[ColStatType.SEQUENCE_MAX_LENGTH] == 0
@@ -204,7 +204,7 @@ def test_get_sequence_encoder() -> None:
     # test NumericalList with Standard
     encoder = NumericalList(scaler='standard')
     ser = pd.Series([[0.1, 0.2], [0.3], None])
-    encoder = compute_missing_stats_(encoder, ser, force_refresh=True)
+    encoder = fit_encoder_stats(encoder, ser, force_refresh=True)
     assert set(encoder._stats.keys()) == encoder.required_stats
     assert encoder._stats[ColStatType.SEQUENCE_MIN_LENGTH] == 1
     assert encoder._stats[ColStatType.SEQUENCE_MAX_LENGTH] == 2

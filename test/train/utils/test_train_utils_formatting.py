@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import torch
-from kumo_core.encoders.selection import compute_missing_stats_
+from encoder_stats import fit_encoder_stats
 from kumo_core.encoders.target.base import TargetEncoder
 from kumo_core.encoders.target.numerical import NumericalTargetEncoder
 from kumo_core.train.formatting import format_embeddings, format_prediction
@@ -110,7 +110,7 @@ def test_format_prediction_binary_classification():
     pred = tensor([False, True, False])
     prob = tensor([[0.9, 0.1], [0.2, 0.8], [0.7, 0.3]])
     encoder_cfg = Index()
-    compute_missing_stats_(encoder_cfg, pd.Series([False, True]))
+    fit_encoder_stats(encoder_cfg, pd.Series([False, True]))
     encoder = TargetEncoder.from_encoder(
         TaskType.BINARY_CLASSIFICATION,
         encoder_cfg,
@@ -142,7 +142,7 @@ def test_format_prediction_multilabel():
     })
     # Assume there are 3 categories in the dataset: {0, 1, 2} - string type
     encoder_config = MultiCategorical()
-    compute_missing_stats_(encoder_config, pd.Series(['0', '1,2']))
+    fit_encoder_stats(encoder_config, pd.Series(['0', '1,2']))
     encoder = TargetEncoder.from_encoder(
         TaskType.MULTILABEL_CLASSIFICATION,
         encoder_config,
@@ -225,7 +225,7 @@ def test_format_prediction_multi_class_top_k():
     })
     encoder_cfg = Index()
     # Assume that there are 3 classes in the dataset: {0, 1, 2}
-    compute_missing_stats_(encoder_cfg, pd.Series([1, 0, 2]))
+    fit_encoder_stats(encoder_cfg, pd.Series([1, 0, 2]))
     encoder = TargetEncoder.from_encoder(
         TaskType.MULTICLASS_CLASSIFICATION,
         encoder_cfg,

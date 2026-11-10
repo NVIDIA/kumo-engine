@@ -7,8 +7,8 @@ from collections import defaultdict
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+from encoder_stats import fit_encoder_stats
 from kumo_core.encoders.config import EncodersConfig
-from kumo_core.encoders.selection import compute_missing_stats_
 from kumo_core.encoders.tensor_frame import get_tf
 from kumo_core.encoders.tensor_mapper import TensorMapper
 from kumoapi.typing import Stype
@@ -79,7 +79,7 @@ def test_all_dtypes() -> None:
     encoders = EncodersConfig.from_stypes(df_dict, stypes)
     mappers = {
         name: TensorMapper.from_encoder(
-            compute_missing_stats_(encoder, df_dict["test"][name])
+            fit_encoder_stats(encoder, df_dict["test"][name])
         )
         for name, encoder in encoders["test"].items()
     }
