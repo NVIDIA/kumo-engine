@@ -48,7 +48,7 @@ jobs:
             echo '::warning::Could not list the changed files; running the kumo-pytorch checks.'
             echo affected=true >> "$GITHUB_OUTPUT"
           elif (( changed_files > 3000 )) || grep -q -E \
-            '^(packages/experimental/kumo-pytorch/|packages/diskgraph/|\.github/actions/kumo-pytorch-setup/|scripts/diskgraph$|\.github/workflows/_diskgraph-wheel\.yml$|\.github/workflows/kumo-pytorch-[^/]+\.yml$|\.github/scripts/kumo-pytorch-policy\.py$|pyproject\.toml$|uv\.lock$)' \
+            '^(packages/experimental/kumo-pytorch/|packages/diskgraph/|\.github/actions/kumo-pytorch-setup/|scripts/diskgraph$|\.github/workflows/_diskgraph-wheel\.yml$|\.github/workflows/kumo-pytorch-[^/]+\.yml$|\.github/scripts/kumo-pytorch-[^/]+\.py$|pyproject\.toml$|uv\.lock$)' \
             <<< "$files"; then
             echo affected=true >> "$GITHUB_OUTPUT"
           else
@@ -60,20 +60,16 @@ jobs:
     name: CPU
     needs: changes
     if: needs.changes.outputs.affected == 'true'
-    # The called workflow's alert job needs issues: write; it runs only on main.
     permissions:
       contents: read
-      issues: write
     uses: ./.github/workflows/kumo-pytorch-tests.yml
 
   diskgraph:
     name: DiskGraph
     needs: changes
     if: needs.changes.outputs.affected == 'true'
-    # The called workflow's alert job needs issues: write; it runs only on main.
     permissions:
       contents: read
-      issues: write
     uses: ./.github/workflows/kumo-pytorch-diskgraph.yml
 
   policy:

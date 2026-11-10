@@ -146,21 +146,3 @@ jobs:
         run: |
           ../fresh/bin/python -m pytest -p no:cacheprovider -m notebook --require-imports -q \
             --durations=0 tests/test_notebooks.py
-
-  notify:
-    name: Alert on a failure on main
-    needs: [diskgraph-wheel, diskgraph, notebooks, install]
-    # Main pushes and the schedule only; a call from kumo-pytorch-gate has the PR's event.
-    if: ${{ failure() && (github.event_name == 'push' || github.event_name == 'schedule') }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      issues: write
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/kumo-pytorch-alert
-        with:
-          github-token: ${{ github.token }}

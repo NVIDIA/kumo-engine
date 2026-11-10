@@ -39,7 +39,7 @@ enforced; where another document describes more, this guide governs.
 | **Rules** | Decision rules (S, V, D, C, X) and escalation triggers (E1–E6) | [rules.md](rules.md) | Each rule names its enforcement: CI, the independent reviewer, or the harness owners' approval |
 | **Instructions** | `AGENTS.md` as the index; this guide; the self-review loop and its notes; the independent reviewer's brief | `AGENTS.md`, `harness/` | Human review of each PR; the reviewer agent runs inside the self-review loop |
 | **Ownership** | Package owners for the whole package; harness owners for the guarantees, goldens, conformance machinery, these instructions and the kumo-pytorch CI | [/CODEOWNERS](../../../../CODEOWNERS) | kumo-engine's branch rules: code-owner approval on every PR |
-| **Checks after merge** | The kumo-pytorch workflows on `main` and nightly; a failure opens or updates an issue labeled `kumo-pytorch-ci` | `/.github/workflows/kumo-pytorch-*.yml` | The author of the failing commit fixes or reverts it ([How a PR merges](#how-a-pr-merges)) |
+| **Checks after merge** | The kumo-pytorch workflows on `main` and nightly; a failed run is retried once, and the team channel hears when a workflow starts failing and when it recovers | `/.github/workflows/kumo-pytorch-*.yml`, `/.github/scripts/kumo-pytorch-alert.py` | The author of the failing commit fixes or reverts it ([How a PR merges](#how-a-pr-merges)) |
 
 ## Start here
 
@@ -334,9 +334,10 @@ workspace's `pyproject.toml` and `uv.lock` runs the kumo-pytorch tests,
 DiskGraph and end-to-end workflows again, and the nightly workflow runs every
 day. These catch two PRs that pass alone but fail together, a PR whose checks
 ran against an older `main`, and changes elsewhere that break kumo-pytorch. A
-failed run opens an issue labeled `kumo-pytorch-ci` for that workflow, or
-comments on the open one. The author of the first failing commit fixes it; a
-commit still failing after one working day is reverted. Nightly failures are
+failed run's failed jobs are retried once. If they still fail, the team
+channel gets one message when the workflow starts failing and one when it
+recovers. The author of the first failing commit fixes it; a commit still
+failing after one working day is reverted. Nightly failures are
 triaged by the maintainer on point that week.
 
 ## PR evidence and checks
@@ -398,7 +399,7 @@ only GPU skips remain.
 **`kumo-pytorch-gate`** (`/.github/workflows/kumo-pytorch-gate.yml`) runs on
 every PR. Its first job decides whether the PR can affect kumo-pytorch: a
 change to this package, `/packages/diskgraph`, `/scripts/diskgraph`, the
-kumo-pytorch workflows, actions and policy script, the DiskGraph wheel
+kumo-pytorch workflows, setup action and scripts, the DiskGraph wheel
 workflow, or the workspace's `pyproject.toml` or `uv.lock`. If so, it runs:
 
 - **`CPU / kumo-pytorch-tests`** (`kumo-pytorch-tests.yml`): conformance on the
