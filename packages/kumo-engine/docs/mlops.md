@@ -6,15 +6,9 @@ Install the engine wheel by path, `pip install "<wheel dir>/<kumo_engine wheel>[
 
 ## Remote artifact preparation
 
-`MLOps` is a settings object. The existing `kumo.mlops(settings)` wrapper
-activates it for calls in a block. `ComputeCluster` takes no MLOps settings.
-`ComputeCluster` uses an already initialized Ray runtime. It places one actor
-on every eligible remote node by default, excluding the driver's node. Set
-`num_workers` to select fewer nodes. Install the wheel's `compute`
-extra and the same engine, DiskGraph and connector dependencies on every node.
-The cluster does not provision machines or shut down the caller's Ray runtime.
-Pass it explicitly to `graph.snapshot(cluster=cluster)`; omitting `cluster`
-always builds locally.
+Configure remote artifact preparation once with `kumo.init`. Install the wheel's
+`compute` extra and matching engine, DiskGraph and connector dependencies on every
+node. Initialize Ray first; Kumo does not provision machines or shut down Ray.
 
 ```python
 import ray
@@ -22,73 +16,88 @@ import kumo.engine as kumo
 from kumoapi.model_plan import ModelPlan
 
 ray.init(address="auto")
-mlops = kumo.MLOps("s3://<bucket>/artifacts")
-with kumo.ComputeCluster(
-    worker_root="/local_nvme/kumo",
-    resources={"artifact_worker": 1},
-) as cluster:
-    with kumo.mlops(mlops):
-        snapshot = graph.snapshot(cluster=cluster)
-        table = pquery.generate_training_table(snapshot)
-        trainer = kumo.Trainer(ModelPlan())
-        prepared = trainer.prepare_artifacts(table, snapshot=snapshot)
+kumo.init(
+    scratch_dir="/shared/kumo-driver",
+    cluster_config=kumo.ComputeClusterConfig(
+        worker_root="/local_nvme/kumo",
+        resources={"artifact_worker": 1},
+    ),
+    artifact_root=kumo.ArtifactRoot(location="s3://<bucket>/artifacts"),
+)
+snapshot = graph.snapshot()
+table = pquery.generate_training_table(snapshot)
+trainer = kumo.Trainer(ModelPlan())
+prepared = trainer.prepare_artifacts(table, snapshot=snapshot)
+
+# Release the pool and return future snapshots to local execution.
+kumo.init()
 ```
 
-Snapshot creation, table generation, and table ingestion each resolve the MLOps
-settings active when their method is called. An explicit `mlops=` argument on
-that method overrides the active context. Snapshot creation requires `snapshot`
-export; table generation and ingestion require `training_table` export. Each
-operation uses its own resolved artifact root for publication and replica
-downloads. Different calls can use different roots; later calls reuse the graph
-and table already on workers without uploading them again to the new root.
+`cluster_config=None` (the default) selects local execution. `configure` still
+configures scratch space as before. Reinitializing closes the old pool and
+invalidates its remote handles, preserving cached files. There is no cluster
+context manager or per-call `cluster` argument.
 
-Each selected node must advertise the custom resources supplied in `resources`
-and have enough local disk for source staging, graph indexes, generated rows
-and fit extensions. Each actor reserves its node's full Ray CPU capacity by
-default; set `cpus_per_worker` to reserve a smaller amount. The artifact root and
-source connectors must be accessible
-from every worker. A local `FileConnector` artifact root requires a location
-visible to all nodes; worker scratch directories belong on local disk.
+Cluster storage is independent of MLOps configuration. `artifact_root` accepts an
+`ArtifactRoot`, URI/path, or `(connector, path)` pair. For explicit authentication,
+pass an existing connector with its identity, for example
+`ArtifactRoot(location="artifacts", connector=s3_connector)`. Sources and artifact
+storage must be accessible from every worker. A local artifact root must be on a
+filesystem shared by all nodes. Cluster calls reject per-call `mlops` overrides;
+the existing local MLOps API is unchanged.
 
-Local fits and worker preparation both use
-`kumo_core.training.preparation.prepare_training_task()` for plan validation,
-feature inference, ingestion, task materialization, and test-split checks. Local
-fits also validate the trainer's embedding-model store before ingestion.
+The pool selects all eligible remote nodes by default, excluding the trainer's
+node. Use `num_workers` to select fewer nodes. Each selected node must advertise
+the requested custom resources and have enough local disk for source staging,
+indexes, generated rows and fit extensions. Each actor reserves its node's full
+Ray CPU capacity by default; `cpus_per_worker` can reserve less. Worker scratch
+paths are stable across pool restarts on the same node.
 
-The first actor owns graph construction, table generation and fit-specific
-training-table ingestion. It publishes through the MLOps artifact root. Each
-successful file upload immediately queues verified downloads to the other
-actors without waiting for replica downloads. Download completion and failures
-are checked at the final readiness barrier, after uploads finish. Downloads write
-temporary files, verify size and SHA-256, then install them atomically. Readiness
-requires the complete inventory; a failed transfer prevents further work in that
-cluster.
-Worker-specific JSON paths are rebased without changing binary data.
+Snapshot creation preserves local `graph.snapshot()` identity and index reuse.
+One randomly selected worker stages sources to resolve the exact connector data
+versions, including timestamp precision, without building an index. The head
+checks for the matching committed export in the artifact root first:
 
-For generated tables, local and remote MLOps calls store one native staging
-bundle under
-`training_tables/<id>/native/<generation>/files/`, including `tt.parquet` and
-its ingestion sidecars. When using a cluster, the same uploads notify replica
-workers. Snapshot and table writers share the MLOps transfer and retry machinery;
-the cluster supplies download callbacks. `TrainingTable.load_from_connector()`
-recognizes the committed native bundle as well as existing portable exports.
-Explicit `TrainingTable.export()`
-continues to produce Parquet rows with a `SPLIT` column.
+- If present, each worker reuses its valid local index or downloads the export.
+- Otherwise, the head checks all workers' persistent index caches. A worker with
+  a valid copy becomes the producer; if none has one, the staging worker produces
+  the index from the already staged rows.
+- The producer uploads the snapshot, then the head tells all workers to reuse or
+  download it. Every worker must be ready before `snapshot()` returns.
 
-Ingested table extensions and fit metadata are published together under
-`training_tables/ingested/<generation>/` by the MLOps table writer. Graph indexes
-and generated rows already on the workers are not uploaded again for ingestion.
+Training-table generation uses the existing SDK table identity. The graph owner
+resolves the query, effective generation settings and split seed without producing
+rows, then computes the same table ID used by local MLOps. The head checks
+`training_tables/<table_id>/_SUCCESS` first. A completed portable export is restored
+without rerunning query generation. Otherwise, a worker with complete local staging
+can publish it; only a total miss generates new rows.
 
-`prepare_artifacts()` returns only task metadata and worker locations. Snapshot
-and table paths refer to the producer's disk; their files are not downloaded
-to the driver. Every preparation uses a fresh fit identity so earlier table
-extensions remain intact. Context exit releases actors and preserves artifact
-files. Operations on a closed cluster fail explicitly.
+The producer uses the unchanged MLOps portable exporter, including `SPLIT`
+(`0=train`, `1=validation`, `2=test`). Peers reconstruct local staging only when
+they lack a completed copy of that table ID. The descriptor retains the original
+query, effective settings, required stages and provenance. There is no separate
+request-key index or native staging-bundle publication.
 
-Training execution and remote sampling are outside this API's current scope.
-For a remote snapshot, `Trainer.fit()` performs the same artifact preparation,
-sets `trainer.prepared_artifacts`, then raises `NotImplementedError` at the
-training boundary. Use `prepare_artifacts()` when only preparing artifacts.
+Training-table ingestion runs again for every fit, with a fresh extension ID,
+matching the existing local training path. The producer publishes that fit's
+extension and task metadata through the existing transfer machinery: uploaded
+files queue verified peer downloads followed by a complete-inventory barrier.
+Binary files remain unchanged and worker-specific JSON paths are rebased.
+Transfer failure prevents further work on the pool.
+
+Local fits and worker preparation share plan validation, feature inference,
+ingestion, task materialization and test-split checks. Local fits also validate
+the trainer's embedding-model store before ingestion. Local MLOps storage and
+explicit `TrainingTable.export()` retain upstream portable export behavior.
+
+`prepare_artifacts()` returns task metadata and worker locations. Snapshot and
+table paths refer to worker disks; their files are not downloaded to the driver.
+Each preparation uses a fresh fit identity and a separate ingested extension,
+preserving earlier fits.
+Training execution and remote sampling remain outside this API's current scope.
+For remote snapshots, `Trainer.fit()` prepares artifacts, sets
+`trainer.prepared_artifacts`, then raises `NotImplementedError`. Use
+`prepare_artifacts()` for artifact preparation alone.
 
 ## Quickstart
 

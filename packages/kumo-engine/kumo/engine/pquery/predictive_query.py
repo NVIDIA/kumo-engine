@@ -49,16 +49,16 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from kumo_core.model_plan import ModelPlan as CoreModelPlan
-from kumo_core.model_plan import ModelPlanValueError
-from kumo_core.model_plan import \
-    TrainingTableGenerationPlan as CoreGenerationPlan
 from kumo_core.model_plan import (
+    ModelPlanValueError,
     inferred_or_missing_type_to_none,
     unsupported_entity_candidate_errors,
 )
+from kumo_core.model_plan import TrainingTableGenerationPlan as CoreGenerationPlan
 from kumo_core.model_plan_conversion import public_model_plan_from_internal
 from kumo_core.pquery import (
     NativeGraph,
+    NativePqueryTaskPlan,
     TaskPlanPurpose,
     ValidatedNativeQuery,
     parse_and_validate_query,
@@ -97,6 +97,38 @@ from kumo.engine.pquery.prediction_table import (
 from kumo.engine.pquery.training_table import TrainingTable, finish_generated
 
 logger = logging.getLogger(__name__)
+
+
+def _effective_generation_plan(
+    workflow: TrainingWorkflowRequest,
+    task_plan: NativePqueryTaskPlan,
+    options: CoreGenerationPlan,
+) -> CoreGenerationPlan:
+    generation_plan = options
+    if workflow.query.query_type == "temporal":
+        offset = workflow.query.query.get_combined_date_offset_range()
+        timeframe_step = inferred_or_missing_type_to_none(
+            generation_plan.timeframe_step
+        )
+        generation_plan = replace(
+            generation_plan,
+            timeframe_step=(
+                int(timeframe_step)
+                if timeframe_step is not None
+                else int(offset.end) - int(offset.start or 0)
+            ),
+        )
+    if workflow.query.task_type == "forecasting":
+        generation_plan = replace(
+            generation_plan,
+            forecast_length=workflow.query.forecast_length,
+            lag_timesteps=task_plan.train_table.lag_timesteps,
+            year_over_year=(
+                "yoy_offsets_secs" in (task_plan.train_table.compiler_options or {})
+            ),
+        )
+
+    return generation_plan
 
 
 @dataclass(frozen=True)
@@ -253,20 +285,51 @@ class PredictiveQuery:
         """
         self._require_matching_snapshot(snapshot)
         if snapshot._compute is not None:
-            from kumo.engine._mlops import resolve
+            if mlops is not None:
+                raise ValueError(
+                    'Configure cluster storage through '
+                    'kumo.init(artifact_root=...)')
+            return snapshot._compute._training_table_generate(self, snapshot, plan)
+        options = self._generation_options(plan)
 
-            return snapshot._compute._training_table_generate(
-                self, snapshot, plan, resolve(mlops))
-        for name in ('train_table_path_override', 'task_path_override'):
+        started = start()
+        run_dir = train_table_scratch_dir(new_run_id())
+        run_dir.mkdir(parents=True, exist_ok=True)
+        workflow, task_plan, generated = self._generate(
+            snapshot, options, run_dir)
+
+        generation_plan = _effective_generation_plan(workflow, task_plan, options)
+
+        table = TrainingTable(
+            query=self.query,
+            train_table_path=Path(generated.train_table_path),
+            manifest_path=Path(generated.manifest_path),
+            staging_dir=Path(generated.staging_dir),
+            required_stages=task_plan.task_dataset.required_stages,
+            generation_plan=generation_plan,
+        )
+        return finish_generated(table, snapshot, task_plan.train_table,
+                                mlops, started=started)
+
+    def _generation_options(
+        self,
+        plan: Optional[TrainingTableGenerationPlan],
+    ) -> CoreGenerationPlan:
+        """Resolve and validate generation inputs without producing rows."""
+        for name in ("train_table_path_override", "task_path_override"):
             if plan is not None and getattr(plan, name) is not None:
                 raise ValueError(
                     f"'{name}' is not supported by native training-table "
                     "generation; use TrainingTable.from_source_table() to "
-                    "train on existing labeled rows.")
+                    "train on existing labeled rows."
+                )
         from kumo_core.io.json import from_json_dict
 
-        options = (CoreGenerationPlan() if plan is None else from_json_dict(
-            to_json_dict(plan), CoreGenerationPlan))
+        options = (
+            CoreGenerationPlan()
+            if plan is None
+            else from_json_dict(to_json_dict(plan), CoreGenerationPlan)
+        )
         value = inferred_or_missing_type_to_none(options.split)
         if value is not None:
             split = resolve_query_split(self._parsed, value)
@@ -289,48 +352,38 @@ class PredictiveQuery:
         if errors:
             raise ModelPlanValueError(errors)
 
-        started = start()
-        run_dir = train_table_scratch_dir(new_run_id())
-        run_dir.mkdir(parents=True, exist_ok=True)
-        workflow, task_plan, generated = self._generate(
-            snapshot, options, run_dir)
+        return options
 
-        generation_plan = options
-        if workflow.query.query_type == 'temporal':
-            offset = workflow.query.query.get_combined_date_offset_range()
-            timeframe_step = inferred_or_missing_type_to_none(
-                generation_plan.timeframe_step)
-            generation_plan = replace(
-                generation_plan,
-                timeframe_step=(int(timeframe_step) if timeframe_step
-                                is not None else int(offset.end) -
-                                int(offset.start or 0)),
-            )
-        if workflow.query.task_type == 'forecasting':
-            generation_plan = replace(
-                generation_plan,
-                forecast_length=workflow.query.forecast_length,
-                lag_timesteps=task_plan.train_table.lag_timesteps,
-                year_over_year=('yoy_offsets_secs'
-                                in (task_plan.train_table.compiler_options
-                                    or {})),
-            )
-
-        table = TrainingTable(
-            query=self.query,
-            train_table_path=Path(generated.train_table_path),
-            manifest_path=Path(generated.manifest_path),
-            staging_dir=Path(generated.staging_dir),
-            required_stages=task_plan.task_dataset.required_stages,
-            generation_plan=generation_plan,
+    def _generate(
+        self,
+        snapshot: GraphSnapshot,
+        options: CoreGenerationPlan,
+        run_dir: Path,
+        *,
+        timestamps: tuple[int, ...] = (),
+        validate_targets: bool = True,
+        purpose: TaskPlanPurpose = TaskPlanPurpose.TRAINING,
+    ) -> tuple:
+        workflow, task_plan = self._plan_generation(
+            snapshot, options, run_dir, timestamps=timestamps, purpose=purpose
         )
-        return finish_generated(table, snapshot, task_plan.train_table,
-                                mlops, started=started)
+        return (
+            workflow,
+            task_plan,
+            generate_train_table(
+                task_plan.train_table, validate_targets=validate_targets
+            ),
+        )
 
-    def _generate(self, snapshot: GraphSnapshot, options: CoreGenerationPlan,
-                  run_dir: Path, *, timestamps: tuple[int, ...] = (),
-                  validate_targets: bool = True,
-                  purpose: TaskPlanPurpose = TaskPlanPurpose.TRAINING) -> tuple:
+    def _plan_generation(
+        self,
+        snapshot: GraphSnapshot,
+        options: CoreGenerationPlan,
+        run_dir: Path,
+        *,
+        timestamps: tuple[int, ...] = (),
+        purpose: TaskPlanPurpose = TaskPlanPurpose.TRAINING,
+    ) -> tuple[TrainingWorkflowRequest, NativePqueryTaskPlan]:
         workflow = TrainingWorkflowRequest.from_spec(
             graph=snapshot.graph_config,
             predictive_query=self.query,
@@ -346,8 +399,45 @@ class PredictiveQuery:
         )
         with no_encoder_inference_warnings():
             task_plan = build_training_task_plan(workflow, purpose=purpose)
-        return workflow, task_plan, generate_train_table(
-            task_plan.train_table, validate_targets=validate_targets)
+        return workflow, task_plan
+
+    def _describe_training_table(
+        self,
+        snapshot: GraphSnapshot,
+        plan: Optional[TrainingTableGenerationPlan],
+    ) -> TrainingTable:
+        """Resolve the existing table identity without generating training rows."""
+        from kumo.engine.pquery.training_table import _RANDOM_SPLITS, _table_id
+
+        options = self._generation_options(plan)
+        workflow, task_plan = self._plan_generation(
+            snapshot, options, train_table_scratch_dir("planning")
+        )
+        generation_plan = _effective_generation_plan(workflow, task_plan, options)
+        placeholder = train_table_scratch_dir("planning")
+        table = TrainingTable(
+            self.query,
+            placeholder,
+            placeholder,
+            placeholder,
+            task_plan.task_dataset.required_stages,
+            generation_plan,
+        )
+        request = task_plan.train_table
+        seed = (
+            (request.split_config or {}).get("rnd_seed") or 0
+            if request.split_family in _RANDOM_SPLITS
+            else None
+        )
+        table_id = _table_id(table, snapshot, seed, None, custom=False)
+        staging = train_table_scratch_dir(table_id)
+        return replace(
+            table,
+            id=table_id,
+            staging_dir=staging,
+            train_table_path=staging / "tt.parquet",
+            manifest_path=staging / "manifest.json",
+        )
 
     @contextmanager
     def _label_parts(
