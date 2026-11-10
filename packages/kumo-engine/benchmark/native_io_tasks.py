@@ -27,6 +27,7 @@ from native_io_isolation import (
     validate_clone,
     verify_baseline,
 )
+from native_io_phases import PhaseRecorder
 from native_io_resources import cgroup_path, group_snapshot
 from torch_geometric.data import HeteroData
 
@@ -302,7 +303,7 @@ def logical_seed_hash(batch: HeteroData) -> str:
 
 @contextmanager
 def observe_work(state: dict, workers: int, threads: int, mode: str,
-                 namespace: str, num_shards: int | None):
+                 namespace: str, num_shards: int | None, phases: PhaseRecorder):
     """Count completed batches without synchronizing individual CUDA batches."""
     import diskgraph
     import pytorch_lightning as pl
@@ -318,16 +319,19 @@ def observe_work(state: dict, workers: int, threads: int, mode: str,
 
         def on_train_start(self, trainer, module):
             state['optimizer_count'] = len(trainer.optimizers)
+            started_ns = phases.begin('training')
             state['training_interval'] = {
-                'started': time.perf_counter(),
+                'started': started_ns / 1e9, 'started_ns': started_ns,
                 'native_before': diskgraph.page_io_stats().to_dict(),
                 'resources_before': group_snapshot(cgroup_path()),
             }
 
         def on_train_end(self, trainer, module):
             interval = state['training_interval']
+            ended_ns = phases.end('training')
             interval.update(
-                seconds=time.perf_counter() - interval['started'],
+                seconds=(ended_ns - interval['started_ns']) / 1e9,
+                ended_ns=ended_ns,
                 native_after=diskgraph.page_io_stats().to_dict(),
                 resources_after=group_snapshot(cgroup_path()))
 
@@ -472,15 +476,17 @@ def run(args) -> dict:
                  tt_ingest_calls=[], tt_ingest_layouts=[],
                  logical_seed_stream=hashlib.sha256())
     seconds, counters, resources_per_phase = {}, {}, {}
+    phases = PhaseRecorder.from_environment()
     group = cgroup_path()
 
     def measure(phase, function):
         state['phase'] = phase
         before = diskgraph.page_io_stats().to_dict()
         resource_before = group_snapshot(group)
-        started = time.perf_counter()
+        started_ns = phases.begin(phase)
         value = function()
-        seconds[phase] = time.perf_counter() - started
+        ended_ns = phases.end(phase)
+        seconds[phase] = (ended_ns - started_ns) / 1e9
         after = diskgraph.page_io_stats().to_dict()
         resource_after = group_snapshot(group)
         resources_per_phase[phase] = dict(before=resource_before,
@@ -534,7 +540,7 @@ def run(args) -> dict:
 
     tt_num_shards = 3 if args.task == 'temporal_link' else None
     with observe_work(state, args.workers, args.rayon_threads, args.loader_mode,
-                      namespace, tt_num_shards):
+                      namespace, tt_num_shards, phases):
         plan = controlled_plan(args.task, args.steps, args.batch_size)
         plan.training_job.manual_seed = args.seed
         requested_model_plan = asdict(plan)
@@ -542,11 +548,12 @@ def run(args) -> dict:
             requested_model_plan, sort_keys=True, separators=(',', ':'),
             allow_nan=False).encode()).hexdigest()
         trainer = kumo.Trainer(plan, accelerator='cpu')
-        started = time.perf_counter()
+        started_ns = phases.begin('e2e')
         fitted = measure('fit', lambda: trainer.fit(training, snapshot=snapshot))
         before, decisions, classes = measure(
             'predict', lambda: predict(trainer, 'first'))
-        seconds['e2e'] = time.perf_counter() - started
+        ended_ns = phases.end('e2e')
+        seconds['e2e'] = (ended_ns - started_ns) / 1e9
         repeated, repeat_decisions, repeat_classes = measure(
             'repeat', lambda: predict(trainer, 'repeat'))
         restored = kumo.Trainer.load(fitted.bundle_dir, accelerator='cpu')
@@ -618,11 +625,16 @@ def run(args) -> dict:
                   tt_ingest_context_threads=1, tt_ingest_encode_threads=1,
                   tt_ingest_num_shards=tt_num_shards,
                   requested_model_plan_sha256=requested_plan_sha)
+    phases.validate()
     result = dict(
         version=1, status='PASS', task=args.task, backend=args.backend,
         requested_model_plan=requested_model_plan,
         requested_io_config={'io_batch_mult': io_batch_multiplier()},
         regime=args.regime, repeat=args.repeat, phase_seconds=seconds,
+        phase_intervals_ns=phases.intervals, iops_phase_markers=phases.markers,
+        phase_io_devices={phase: {name: asdict(snapshot)
+                                  for name, snapshot in positions.items()}
+                          for phase, positions in phases.device_io.items()},
         config_sha256=hashlib.sha256(json.dumps(config, sort_keys=True).encode()
                                      ).hexdigest(),
         config=config, native_io=counters,
@@ -657,7 +669,7 @@ def run(args) -> dict:
                     'environment': {key: os.environ.get(key) for key in (
                         'DG_EDGE_BACKEND', 'DG_DIRECT_CACHE_GB', 'DG_IO_RINGS',
                         'DG_IO_QD', 'DG_IO_BATCH_MULT', 'RAYON_NUM_THREADS',
-                        'PYTHONHASHSEED')}},
+                        'PYTHONHASHSEED', 'DG_IOPS_PHASE_MARKERS')}},
     )
     verify_baseline(manifest)
     json_write(output, result)
