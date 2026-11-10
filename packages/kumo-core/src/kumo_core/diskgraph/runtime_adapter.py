@@ -340,11 +340,11 @@ def runtime_batch_to_hetero(
 
 def attach_tensor_frames(
     hetero: HeteroData,
-    raw_feature_tables: Mapping[str, pa.RecordBatch | pa.Table],
+    raw_feature_tables: Mapping[str, pa.Table],
     mapper_bank: MapperBank,
     feature_schema: FeatureSchema,
 ) -> None:
-    """Lower per-namespace Arrow tables or batches into ``TensorFrame`` as
+    """Lower per-namespace Arrow tables into ``TensorFrame`` as
     ``hetero[ns].tf`` (in place). Namespaces with no ``mapper_key`` are skipped;
     the placeholder pass fills them.
 
@@ -403,7 +403,7 @@ def attach_tensor_frames(
 
 def _attach_pkeys_and_times(
     hetero: HeteroData,
-    raw_feature_tables: Mapping[str, pa.RecordBatch | pa.Table],
+    raw_feature_tables: Mapping[str, pa.Table],
     pk_col_dict: Mapping[str, str],
     time_col_dict: Mapping[str, str],
     *,

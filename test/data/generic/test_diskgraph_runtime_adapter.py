@@ -771,7 +771,7 @@ def _user_feature_schema() -> dict[str, Any]:
 
 def test_attach_tensor_frames_populates_hetero_tf() -> None:
     """The bridge resolves mapper_key -> mapper_dict, converts the
-    RecordBatch via get_tf, and attaches hetero[ns].tf."""
+    Table via get_tf, and attaches hetero[ns].tf."""
     batch = _populated_batch()
     hetero, raw_features, _ = runtime_batch_to_hetero(
         batch, train_table_name="train_table")
@@ -781,7 +781,7 @@ def test_attach_tensor_frames_populates_hetero_tf() -> None:
         [pa.array([41, 22, 35, 19], type=pa.int64())],
         schema=pa.schema([("age", pa.int64())]),
     )
-    raw_features["User"] = age_only
+    raw_features["User"] = pa.Table.from_batches([age_only])
 
     attach_tensor_frames(
         hetero,
@@ -1047,7 +1047,7 @@ def test_attach_tensor_frames_skips_namespace_without_mapper_key() -> None:
     schema = pa.schema([("x", pa.int64())])
     raw_features = {
         "edge_namespace":
-        pa.RecordBatch.from_arrays([pa.array([1, 2, 3], type=pa.int64())],
+        pa.Table.from_arrays([pa.array([1, 2, 3], type=pa.int64())],
                                    schema=schema)
     }
     hetero = HeteroData()
@@ -1074,7 +1074,7 @@ def test_attach_tensor_frames_raises_on_unknown_mapper_key() -> None:
     schema = pa.schema([("age", pa.int64())])
     raw_features = {
         "User":
-        pa.RecordBatch.from_arrays([pa.array([41, 22], type=pa.int64())],
+        pa.Table.from_arrays([pa.array([41, 22], type=pa.int64())],
                                    schema=schema)
     }
     hetero = HeteroData()
@@ -1093,12 +1093,12 @@ def test_attach_tensor_frames_raises_on_unknown_mapper_key() -> None:
                              feature_schema)
 
 
-def test_attach_tensor_frames_handles_empty_record_batch() -> None:
-    """An empty (zero-row) record batch still produces a TensorFrame
+def test_attach_tensor_frames_handles_empty_table() -> None:
+    """An empty (zero-row) table still produces a TensorFrame
     with the mapper-known schema, so downstream encoders see a
     consistent shape."""
     schema = pa.schema([("age", pa.int64())])
-    empty = pa.RecordBatch.from_arrays([pa.array([], type=pa.int64())],
+    empty = pa.Table.from_arrays([pa.array([], type=pa.int64())],
                                        schema=schema)
     raw_features = {"User": empty}
     hetero = HeteroData()
@@ -1643,7 +1643,7 @@ def test_attach_pkeys_backfills_empty_unreached_blocks_with_empty_pkey(
     hetero["train_table"].n_id = torch.tensor([0], dtype=torch.long)
 
     raw_feature_tables = {
-        "trans": pa.RecordBatch.from_pydict({"TRANS_ID": pa.array(["a", "b"])}),
+        "trans": pa.Table.from_pydict({"TRANS_ID": pa.array(["a", "b"])}),
     }
     pk_col_dict = {"trans": "TRANS_ID", "loan": "LOAN_ID"}
 
