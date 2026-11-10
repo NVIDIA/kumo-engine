@@ -14,7 +14,6 @@ from kumoapi.pquery import QueryType
 from kumoapi.pquery.validated_predictive_query import ValidatedPredictiveQuery
 from pandas import Timestamp
 
-from common_utils.kumo_timing import kumo_timing
 from io_utils import fsutil, logging
 from kumo.data.generic.diskgraph_staging import (
     predict_staging_tt_id,
@@ -22,12 +21,7 @@ from kumo.data.generic.diskgraph_staging import (
     ttng_staging_dir,
 )
 from kumo.graph import Graph
-from kumo.pquery.generator_utils import map_to_api_graph_definition
-from kumo.pquery.utils import (
-    get_lag_timestamps,
-    get_rhs_lp_table,
-    get_yoy_timestamps,
-)
+from kumo.pquery.utils import get_lag_timestamps, get_yoy_timestamps
 from kumo.validation.train_table_validation import TrainingTableGenerationError
 from temporalio_commons.process_pool_utils import diskgraph_subprocess
 
@@ -76,422 +70,6 @@ def _raise_empty_prediction_table(
         "value blank for rows you want Kumo to fill, loosen the filters, or "
         "provide a prediction table with the rows to score.",
     )
-
-
-@diskgraph_subprocess
-def generate_batch_pred_table_via_diskgraph(
-    query: ValidatedPredictiveQuery,
-    task_type: core_types.TaskType,
-    graph: Graph,
-    timestamps: List[int],
-    forecast_length: int,
-    lag_timesteps: Optional[int],
-    use_yoy_labels: bool,
-    list_distinct_target_is_array: bool,
-    index_path: str,
-    output_root: str,
-    input_timestamp_unit: TimeUnit,
-    target_stype: str,
-    entity_time_col: Optional[str],
-    target_output_root: Optional[str] = None,
-    lp_bp_layout: Optional[str] = None,
-) -> Tuple[int, int]:
-    """Compile and execute a diskgraph Batch Prediction plan.
-
-    Handles Node Prediction, LP (separate or HStack), and Forecasting.
-    Returns (total_rows, total_partitions).
-    """
-    try:
-        from diskgraph import DiskGraphPlanCompiler
-    except Exception as e:
-        raise RuntimeError('Failed to import diskgraph runtime.') from e
-
-    if not index_path:
-        raise RuntimeError('diskgraph index path is required')
-
-    with kumo_timing("batch_pred_table.create_plan_compiler"):
-        compiler = DiskGraphPlanCompiler(index_path=index_path)
-
-    # Determine execution mode
-    if task_type == core_types.TaskType.FORECASTING:
-        return _execute_forecasting(compiler, query, task_type, timestamps,
-                                    lag_timesteps, forecast_length,
-                                    use_yoy_labels, index_path, output_root,
-                                    input_timestamp_unit=input_timestamp_unit,
-                                    target_stype=target_stype,
-                                    entity_time_col=entity_time_col)
-
-    if task_type.is_link_pred:
-        return _execute_link_prediction(
-            compiler, query, graph, task_type, timestamps,
-            list_distinct_target_is_array, lp_bp_layout, index_path,
-            output_root, target_output_root,
-            input_timestamp_unit=input_timestamp_unit,
-            target_stype=target_stype, entity_time_col=entity_time_col)
-
-    # Default: Node Prediction
-    return _execute_node_prediction(compiler, query, task_type, timestamps,
-                                    index_path, output_root,
-                                    input_timestamp_unit=input_timestamp_unit,
-                                    target_stype=target_stype,
-                                    entity_time_col=entity_time_col)
-
-
-def _execute_node_prediction(
-    compiler,
-    query: ValidatedPredictiveQuery,
-    task_type: core_types.TaskType,
-    timestamps: List[int],
-    index_path: str,
-    output_root: str,
-    input_timestamp_unit: TimeUnit,
-    target_stype: str,
-    entity_time_col: Optional[str],
-) -> Tuple[int, int]:
-    with kumo_timing("batch_pred_table.node.compile_plan"):
-        plan_json = compiler.compile(
-            query=query,
-            timestamps=timestamps,
-            task_type=task_type.value,
-            input_timestamp_unit=input_timestamp_unit,
-            is_prediction=True,
-            target_stype=target_stype,
-            entity_time_col=entity_time_col,
-        )
-
-    output_path = osp.join(output_root, "part-00000.parquet")
-    with kumo_timing("batch_pred_table.node.stream_to_parquet"):
-        return _stream_to_parquet(plan_json, index_path, output_path,
-                                  query_type=query.query_type,
-                                  task_type=task_type)
-
-
-def _execute_forecasting(
-    compiler,
-    query: ValidatedPredictiveQuery,
-    task_type: core_types.TaskType,
-    timestamps: List[int],
-    lag_timesteps: Optional[int],
-    forecast_length: int,
-    use_yoy_labels: bool,
-    index_path: str,
-    output_root: str,
-    input_timestamp_unit: TimeUnit,
-    target_stype: str,
-    entity_time_col: Optional[str],
-) -> Tuple[int, int]:
-    # Rebuild the anchor pd.Timestamp in its own unit so non-nanos callers
-    # don't anchor to 1970.
-    from diskgraph import TimeUnit
-    _pd_unit = {
-        TimeUnit.Nanoseconds: 'ns',
-        TimeUnit.Microseconds: 'us',
-        TimeUnit.Milliseconds: 'ms',
-        TimeUnit.Seconds: 's',
-    }[input_timestamp_unit]
-    pt = Timestamp(timestamps[0], unit=_pd_unit)
-
-    # Same timeframe step logic as Spark's batch_pred_table_generator.py.
-    time_range = query.get_combined_date_offset_range()
-    step = time_range.timeframe
-    assert step is not None
-
-    lag_ts = get_lag_timestamps(pt, lag_timesteps, step)
-    lag_offsets_secs = [int((t - pt).total_seconds()) for t in lag_ts]
-
-    yoy_offsets_secs = None
-    if use_yoy_labels:
-        yoy_ts, _ = get_yoy_timestamps(pt, forecast_length, step)
-        yoy_offsets_secs = [int((t - pt).total_seconds()) for t in yoy_ts]
-
-    plan_json = compiler.compile(
-        query=query,
-        timestamps=timestamps,
-        task_type=task_type.value,
-        input_timestamp_unit=input_timestamp_unit,
-        is_prediction=True,
-        target_stype=target_stype,
-        entity_time_col=entity_time_col,
-        lag_offsets_secs=lag_offsets_secs,
-        yoy_offsets_secs=yoy_offsets_secs,
-    )
-
-    output_path = osp.join(output_root, "part-00000.parquet")
-    return _stream_to_parquet(
-        plan_json,
-        index_path,
-        output_path,
-        query_type=query.query_type,
-        task_type=task_type,
-    )
-
-
-def _execute_link_prediction(
-    compiler,
-    original_query: ValidatedPredictiveQuery,
-    graph: Graph,
-    task_type: core_types.TaskType,
-    timestamps: List[int],
-    list_distinct_target_is_array: bool,
-    lp_bp_layout: Optional[str],
-    index_path: str,
-    output_root: str,
-    target_output_root: Optional[str],
-    input_timestamp_unit: TimeUnit,
-    target_stype: str,
-    entity_time_col: Optional[str],
-) -> Tuple[int, int]:
-    from diskgraph import execute_tt_plan
-    from kumopql.rewriting import BPFilterTransformer
-
-    tt_str = task_type.value
-    resolved_lp_bp_layout = _resolve_lp_bp_layout(
-        list_distinct_target_is_array,
-        lp_bp_layout,
-    )
-    uses_separate_lhs_rhs = (
-        resolved_lp_bp_layout == LP_BP_LAYOUT_SEPARATE_LHS_RHS)
-
-    lhs_plan = compiler.compile(
-        query=original_query,
-        timestamps=timestamps,
-        task_type=tt_str,
-        input_timestamp_unit=input_timestamp_unit,
-        is_prediction=True,
-        target_stype=target_stype,
-        entity_time_col=entity_time_col,
-        lp_prediction_mode="LHS",
-        list_distinct_target_is_array=list_distinct_target_is_array,
-        lp_bp_layout=resolved_lp_bp_layout,
-    )
-    # Sanitize the query AST for RHS candidate extraction.
-    bp_transformer = BPFilterTransformer()
-    graph_def = map_to_api_graph_definition(graph)
-    transformed_query = bp_transformer.generate_bp_query(
-        original_query, task_type, graph_def)
-
-    dst_table = get_rhs_lp_table(transformed_query, graph)
-    target_table = dst_table.split('.')[-1]
-    rhs_entity_pkey = graph.table(dst_table).pkey
-    target_pk = rhs_entity_pkey.name
-
-    rhs_plan = compiler.compile(
-        query=transformed_query,
-        timestamps=timestamps,
-        task_type=tt_str,
-        input_timestamp_unit=input_timestamp_unit,
-        is_prediction=True,
-        target_stype=target_stype,
-        entity_time_col=entity_time_col,
-        lp_prediction_mode="RHS",
-        lp_rhs_entity_table=target_table,
-        lp_rhs_entity_column=target_pk,
-        list_distinct_target_is_array=list_distinct_target_is_array,
-        lp_bp_layout=resolved_lp_bp_layout,
-    )
-    if uses_separate_lhs_rhs:
-        output_path = osp.join(output_root, "part-00000.parquet")
-        _stream_to_parquet(lhs_plan, index_path, output_path,
-                           query_type=original_query.query_type,
-                           task_type=task_type,
-                           list_distinct_target_is_array=True)
-
-        if target_output_root is not None:
-            _stream_to_parquet(rhs_plan, index_path, target_output_root,
-                               query_type=original_query.query_type,
-                               task_type=task_type, is_rhs=True)
-
-        return 0, 1
-
-    # Legacy HStack mode. Drain RHS before opening the LHS iterator: two live
-    # TTPlanIterators deadlock (each __next__ joins a GIL-needing thread).
-    output_path = osp.join(output_root, "part-00000.parquet")
-
-    # ParquetWriter is local-only: write to a temp file then copy when remote.
-    is_remote = not fsutil.is_local(output_path)
-    if is_remote:
-        tmp_dir = tempfile.mkdtemp(prefix='diskgraph_bp_')
-        local_path = osp.join(tmp_dir, "part-00000.parquet")
-    else:
-        local_path = output_path
-        fsutil.makedirs(output_root, exist_ok=True)
-
-    rhs_batches = list(execute_tt_plan(rhs_plan, index_path))
-
-    if not rhs_batches or sum(b.num_rows for b in rhs_batches) == 0:
-        raise TrainingTableGenerationError(
-            "No candidates to rank",
-            "Link Prediction batch prediction produced no candidates for the "
-            "requested time window. This usually means your query matched no "
-            "candidate items, or your filters removed every candidate. To "
-            "continue, loosen the candidate-side filters or widen the "
-            "prediction time window.",
-        )
-
-    first_rhs_batch = rhs_batches[0]
-    first_rhs_val = first_rhs_batch.column(
-        'ENTITY')[0] if first_rhs_batch.num_rows > 0 else None
-    rhs_iter = iter(rhs_batches)
-
-    # --- Now create LHS iterator (streams, not buffered) ---
-    lhs_iter = execute_tt_plan(lhs_plan, index_path)
-
-    try:
-        first_lhs_batch = next(lhs_iter)
-
-        def iter_with_first(first, rest):
-            yield first
-            yield from rest
-
-        lhs_iter = iter_with_first(first_lhs_batch, lhs_iter)
-        first_lhs_val = first_lhs_batch.column(
-            'ENTITY')[0] if first_lhs_batch.num_rows > 0 else None
-    except StopIteration:
-        raise TrainingTableGenerationError(
-            "No entities to predict",
-            "Link Prediction batch prediction produced no entities for the "
-            "requested time window. This usually means your query matched no "
-            "entities, or your filters removed every entity. To continue, "
-            "loosen the entity-side filters or widen the prediction time "
-            "window.",
-        )
-
-    writer = None
-    total_rows = 0
-    global_arange_offset = 0
-
-    lhs_exhausted = False
-    rhs_exhausted = False
-
-    current_lhs_batch = None
-    current_rhs_batch = None
-    lhs_offset = 0
-    rhs_offset = 0
-
-    try:
-        while not (lhs_exhausted and rhs_exhausted):
-            if current_lhs_batch is None or lhs_offset >= current_lhs_batch.num_rows:
-                try:
-                    current_lhs_batch = next(lhs_iter)
-                    lhs_offset = 0
-                except StopIteration:
-                    lhs_exhausted = True
-                    current_lhs_batch = None
-
-            if current_rhs_batch is None or rhs_offset >= current_rhs_batch.num_rows:
-                try:
-                    current_rhs_batch = next(rhs_iter)
-                    rhs_offset = 0
-                except StopIteration:
-                    rhs_exhausted = True
-                    current_rhs_batch = None
-
-            if lhs_exhausted and rhs_exhausted:
-                break
-
-            lhs_avail = current_lhs_batch.num_rows - lhs_offset if current_lhs_batch else float(
-                'inf')
-            rhs_avail = current_rhs_batch.num_rows - rhs_offset if current_rhs_batch else float(
-                'inf')
-
-            if lhs_exhausted:
-                batch_size = rhs_avail
-            elif rhs_exhausted:
-                batch_size = lhs_avail
-            else:
-                batch_size = min(lhs_avail, rhs_avail)
-
-            # Build the base batch from LHS and add TARGET from RHS
-            if lhs_exhausted:
-                # Pad LHS with first LHS value
-                pad_val = first_lhs_val.as_py(
-                ) if first_lhs_val is not None else None
-                lhs_array = pa.array([pad_val] * batch_size,
-                                     type=first_lhs_batch.column('ENTITY').type)
-
-                # Construct a dummy batch with the required columns
-                base_arrays = [lhs_array]
-                base_names = ['ENTITY']
-
-                # Forward fill the timestamp if it exists in the first batch
-                if 'TIMESTAMP' in first_lhs_batch.schema.names and original_query.query_type != QueryType.STATIC:
-                    ts_type = first_lhs_batch.column('TIMESTAMP').type
-                    ts_val = first_lhs_batch.column('TIMESTAMP')[0].as_py()
-                    base_arrays.append(
-                        pa.array([ts_val] * batch_size, type=ts_type))
-                    base_names.append('TIMESTAMP')
-
-                # Forward-fill PSEUDO_TIMESTAMP on padded batches so the writer
-                # schema (set from the first real batch) stays consistent.
-                if 'PSEUDO_TIMESTAMP' in first_lhs_batch.schema.names:
-                    pts_type = first_lhs_batch.column('PSEUDO_TIMESTAMP').type
-                    pts_val = first_lhs_batch.column(
-                        'PSEUDO_TIMESTAMP')[0].as_py()
-                    base_arrays.append(
-                        pa.array([pts_val] * batch_size, type=pts_type))
-                    base_names.append('PSEUDO_TIMESTAMP')
-
-                base_batch = pa.RecordBatch.from_arrays(base_arrays,
-                                                        names=base_names)
-            else:
-                # Slice the entire batch from LHS
-                base_batch = current_lhs_batch.slice(lhs_offset, batch_size)
-                lhs_offset += batch_size
-
-            # Get the TARGET column from RHS
-            if rhs_exhausted:
-                pad_val = first_rhs_val.as_py(
-                ) if first_rhs_val is not None else None
-                rhs_array = pa.array([pad_val] * batch_size,
-                                     type=first_rhs_batch.column('ENTITY').type)
-            else:
-                rhs_array = current_rhs_batch.column('ENTITY').slice(
-                    rhs_offset, batch_size)
-                rhs_offset += batch_size
-
-            # Legacy LP uses PSEUDO_TIMESTAMP, so the TIMESTAMP check is a no-op
-            # today; kept for safety.
-            drop_cols = []
-            if 'TARGET' in base_batch.schema.names:
-                drop_cols.append('TARGET')
-            if (original_query.query_type == QueryType.STATIC
-                    and task_type.is_link_pred
-                    and 'TIMESTAMP' in base_batch.schema.names):
-                drop_cols.append('TIMESTAMP')
-            if drop_cols:
-                base_batch = base_batch.drop_columns(drop_cols)
-
-            # Add the TARGET column explicitly from RHS
-            base_batch = base_batch.append_column('TARGET', rhs_array)
-
-            arange_array = pa.array(
-                range(global_arange_offset, global_arange_offset + batch_size),
-                type=pa.int64())
-            base_batch = base_batch.append_column('arange', arange_array)
-            global_arange_offset += batch_size
-
-            if writer is None:
-                # Padded batches (on side exhaustion) are nullable even though
-                # DG columns are not-null.
-                nullable_schema = pa.schema(
-                    [f.with_nullable(True) for f in base_batch.schema])
-                writer = pq.ParquetWriter(local_path, nullable_schema,
-                                          compression='snappy')
-
-            if base_batch.schema != writer.schema:
-                base_batch = base_batch.cast(writer.schema)
-            writer.write_batch(base_batch)
-            total_rows += batch_size
-    finally:
-        if writer:
-            writer.close()
-
-    if is_remote:
-        fsutil.makedirs(output_root, exist_ok=True)
-        fsutil.copy_file(local_path, output_path, overwrite=True)
-        fsutil.rm(tmp_dir)
-
-    return total_rows, 1
 
 
 # DG emits slot-0 ENTITY1/TARGET1; kumo's customer-facing pred table names them
@@ -615,115 +193,6 @@ def _write_serving_pred_parquet_from_bundle(
     return total_rows
 
 
-def _stream_to_parquet(
-    plan_json: str,
-    index_path: str,
-    output_path: str,
-    query_type: Optional[QueryType] = None,
-    task_type: Optional[core_types.TaskType] = None,
-    list_distinct_target_is_array: bool = False,
-    is_rhs: bool = False,
-) -> Tuple[int, int]:
-    """Helper to stream a single-pass plan to parquet with arange."""
-    from diskgraph import execute_tt_plan
-
-    # Write a file inside a directory output path.
-    if output_path.endswith('/'):
-        output_path = osp.join(output_path, "part-00000.parquet")
-    elif not output_path.endswith('.parquet'):
-        output_path = osp.join(output_path, "part-00000.parquet")
-
-    # ParquetWriter is local-only: write to a temp file then copy when remote.
-    is_remote = not fsutil.is_local(output_path)
-    tmp_dir = None
-    if is_remote:
-        tmp_dir = tempfile.mkdtemp(prefix='diskgraph_bp_')
-        local_path = osp.join(tmp_dir, "part-00000.parquet")
-    else:
-        local_path = output_path
-        fsutil.makedirs(osp.dirname(output_path), exist_ok=True)
-
-    writer = None
-    total_rows = 0
-    batch_count = 0
-    try:
-        with kumo_timing("batch_pred_table.stream.execute_tt_plan"):
-            for batch in execute_tt_plan(plan_json, index_path):
-                num_rows = batch.num_rows
-                batch_count += 1
-
-                if is_rhs:
-                    if 'ENTITY' in batch.schema.names:
-                        idx = batch.schema.get_field_index('ENTITY')
-                        batch = batch.set_column(idx, 'TARGET',
-                                                 batch.column('ENTITY'))
-                else:
-                    # Drop TARGET for Node/Ranking/Forecasting or modern-LP LHS.
-                    should_drop_target = False
-                    if task_type and not task_type.is_link_pred:
-                        should_drop_target = True
-                    elif list_distinct_target_is_array:
-                        should_drop_target = True
-
-                    if should_drop_target:
-                        drop_cols = []
-                        if 'TARGET' in batch.schema.names:
-                            drop_cols.append('TARGET')
-                        if drop_cols:
-                            batch = batch.drop_columns(drop_cols)
-
-                    # Drop TIMESTAMP only for static array-target LP
-                    # ("modern LP", GE final_cols = {ENTITY, TARGET}). Static
-                    # node-pred keeps it; static legacy LP names it
-                    # PSEUDO_TIMESTAMP so won't match here.
-                    is_static_lp_modern = (query_type
-                                           and query_type.name == "STATIC"
-                                           and task_type
-                                           and task_type.is_link_pred
-                                           and list_distinct_target_is_array)
-                    if (is_static_lp_modern
-                            and 'TIMESTAMP' in batch.schema.names):
-                        batch = batch.drop_columns(['TIMESTAMP'])
-
-                # Inject arange
-                arange_array = pa.array(
-                    range(total_rows, total_rows + num_rows), type=pa.int64())
-                batch = batch.append_column("arange", arange_array)
-
-                if writer is None:
-                    writer = pq.ParquetWriter(local_path, batch.schema,
-                                              compression='snappy')
-
-                writer.write_batch(batch)
-                total_rows += num_rows
-    finally:
-        if writer:
-            writer.close()
-
-    if total_rows == 0:
-        _raise_empty_prediction_table(
-            is_remote=is_remote,
-            local_path=local_path,
-            tmp_dir=tmp_dir,
-        )
-
-    if is_remote:
-        with kumo_timing("batch_pred_table.stream.copy_remote_output",
-                         total_rows=total_rows, batch_count=batch_count):
-            fsutil.makedirs(osp.dirname(output_path), exist_ok=True)
-            fsutil.copy_file(local_path, output_path, overwrite=True)
-            fsutil.rm(tmp_dir)
-
-    return total_rows, 1
-
-
-# ---------------------------------------------------------------------------
-# TT-NG sibling functions. Separate from the master helpers above (which keep
-# working against the master wheel) so both paths coexist during the dual-path
-# window.
-# ---------------------------------------------------------------------------
-
-
 @diskgraph_subprocess
 def generate_batch_pred_table_via_diskgraph_ttng(
     query: ValidatedPredictiveQuery,
@@ -743,10 +212,9 @@ def generate_batch_pred_table_via_diskgraph_ttng(
     lp_bp_layout: Optional[str] = None,
     job_id: Optional[str] = None,
 ) -> Tuple[int, int]:
-    """TT-NG sibling of :func:`generate_batch_pred_table_via_diskgraph`.
-
-    ``job_id`` names the kept predict staging dir so ``materialize_prediction_task``
-    ingests this gen instead of re-running it (one-gen predict, like train).
+    """``job_id`` names the kept predict staging dir so
+    ``materialize_prediction_task`` ingests this gen instead of re-running it
+    (one-gen predict, like train).
     """
     try:
         from diskgraph import DiskGraphPlanCompiler
@@ -793,8 +261,8 @@ def _execute_node_prediction_ttng(
     job_id: Optional[str] = None,
     output_root: Optional[str] = None,
 ) -> Tuple[int, int]:
-    """TT-NG sibling of :func:`_execute_node_prediction` — one-gen predict into
-    the KEPT staging dir named by ``job_id``; materialize ingests it directly."""
+    """One-gen predict into the KEPT staging dir named by ``job_id``;
+    materialize ingests it directly."""
     if not job_id:
         raise RuntimeError(
             "TT-NG node-prediction batch prediction requires job_id to name "
@@ -900,10 +368,10 @@ def _execute_link_prediction_ttng(
     job_id: Optional[str] = None,
     output_root: Optional[str] = None,
 ) -> Tuple[int, int]:
-    """TT-NG sibling of :func:`_execute_link_prediction`. FK-free (array-target)
-    LP only: gens LHS predict seeds once into the kept staging dir named by
-    ``job_id``. RHS candidates are seeded at ingest, so no RHS parquet or HStack
-    cross-product is materialized; non-array layouts raise.
+    """FK-free (array-target) LP only: gens LHS predict seeds once into the kept
+    staging dir named by ``job_id``. RHS candidates are seeded at ingest, so no
+    RHS parquet or HStack cross-product is materialized; non-array layouts
+    raise.
     """
     resolved_lp_bp_layout = _resolve_lp_bp_layout(
         list_distinct_target_is_array,
@@ -1021,10 +489,10 @@ def _stream_to_parquet_ttng(
     list_distinct_target_is_array: bool = False,
     is_rhs: bool = False,
 ) -> Tuple[int, int]:
-    """TT-NG sibling of :func:`_stream_to_parquet`, iterating the wheel's
-    ``tt.parquet`` and applying BP post-processing (column drops + arange) per
-    batch. Renames slot-0 ENTITY1/TARGET1 -> ENTITY/TARGET (a temporary alias
-    that disappears once kumo adopts DG's multi-entity schema).
+    """Iterate the wheel's ``tt.parquet``, applying BP post-processing (column
+    drops + arange) per batch. Renames slot-0 ENTITY1/TARGET1 -> ENTITY/TARGET
+    (a temporary alias that disappears once kumo adopts DG's multi-entity
+    schema).
     """
     from diskgraph import execute_tt_gen, read_tt_parquet_batches
 

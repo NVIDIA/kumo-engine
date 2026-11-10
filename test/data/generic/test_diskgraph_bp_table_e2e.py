@@ -2,8 +2,8 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""End-to-end harness for ``generate_batch_pred_table_via_diskgraph`` against
-multicategorical sources and FK link-prediction targets.
+"""End-to-end harness for ``generate_batch_pred_table_via_diskgraph_ttng``
+against multicategorical sources and FK link-prediction targets.
 
 Drives the kumo PQL → ``PredictiveQueryValidator`` → ``DiskGraphPlanCompiler``
 (``is_prediction=True``) → ``execute_tt_plan`` chain through a real diskgraph
@@ -30,19 +30,19 @@ Coverage:
     +-------------+--------------------------+---------------------------------+
     | task        | source / target shape    | writer arm exercised            |
     +-------------+--------------------------+---------------------------------+
-    | node-pred   | multicat utf8_delim      | _execute_node_prediction        |
-    | node-pred   | multicat string_array    | _execute_node_prediction        |
-    | node-pred   | multicat int64_array     | _execute_node_prediction        |
-    | link-pred   | FK product_id, modern    | _execute_link_prediction (array)|
-    | link-pred   | FK product_id, hstack    | _execute_link_prediction (legacy)|
+    | node-pred   | multicat utf8_delim      | _execute_node_prediction_ttng   |
+    | node-pred   | multicat string_array    | _execute_node_prediction_ttng   |
+    | node-pred   | multicat int64_array     | _execute_node_prediction_ttng   |
+    | link-pred   | FK product_id, modern    | _execute_link_prediction_ttng   |
+    | link-pred   | FK product_id, hstack    | _execute_link_prediction_ttng   |
+    |             |                          | (raises NotImplementedError)    |
     +-------------+--------------------------+---------------------------------+
 
 The node-pred cases exercise the multicategorical per-token observation
 path at BP plan time (the source-side feature read still observes per token
 even though BP drops the TARGET column from the output parquet). The two
-link-pred cases exercise both LP write arms reachable from kumo PQL — the
-``list_distinct_target_is_array=True`` modern arm (LHS+RHS to separate
-parquets) and the legacy HStack arm (zipped LHS×RHS into one parquet).
+link-pred cases cover the ``list_distinct_target_is_array=True`` arm and the
+guard that rejects the HStack layout.
 
 Fixture builders (canonical 3-user / 4-order multicat layout and 3-table FK
 link-pred graph) are imported from the sibling TT-gen e2e file rather than
