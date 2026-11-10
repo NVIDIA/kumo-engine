@@ -126,6 +126,7 @@ def _patch_common(monkeypatch, calls, encoders=None):
         'restore_durable_ttng_bundle',
         lambda _durable, local: local,
     )
+    monkeypatch.setattr(mpt, '_link_prediction_candidates', lambda *_: None)
     _patch_feature_schema(monkeypatch)
 
 

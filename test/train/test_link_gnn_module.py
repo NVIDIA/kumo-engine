@@ -10,6 +10,7 @@ tests assert that a masked placeholder negative does NOT change the loss
 relative to a batch that omits it, for each loss variant, and that the
 no-mask path is unchanged.
 """
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
@@ -223,7 +224,9 @@ def test_static_two_tower_uses_canonical_rhs_catalog() -> None:
     canonical = torch.tensor([0, 2, 4])
     model.register_buffer('canonical_rhs_node_idx', canonical, persistent=False)
 
-    valid = model.tt_ng_valid_rhs_for_stage(TrainingStage.PRED)
+    with patch.object(LinkGNNLightningModule, 'datamodule',
+                      SimpleNamespace(predict_candidates=None)):
+        valid = model.tt_ng_valid_rhs_for_stage(TrainingStage.PRED)
 
     assert valid is not None
     assert torch.equal(valid, canonical)
