@@ -3,8 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Raw sampling features retain Arrow chunks through tensor encoding."""
 
+from unittest.mock import Mock
+
 import pyarrow as pa
 import pytest
+from kumo_core.diskgraph import runtime_adapter
 from kumo_core.diskgraph.runtime_adapter import (
     RawFeatureBlock,
     _collect_raw_features,
@@ -65,3 +68,27 @@ def test_raw_feature_table_encodes_all_batches() -> None:
     assert hetero["User"].tf.feat_dict[Stype.numerical].tolist() == [[1.0], [2.0]]
     assert raw.row_ids["User"].tolist() == [10, 20]
     assert raw.tables["User"].column("age").num_chunks == 2
+
+
+def test_missing_raw_features_use_an_empty_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unsampled node types pass an empty Arrow table to the feature mapper."""
+    table_to_tf = Mock(wraps=runtime_adapter._table_to_tf)
+    monkeypatch.setattr(runtime_adapter, "_table_to_tf", table_to_tf)
+    hetero = HeteroData()
+    hetero["User"].num_nodes = 0
+
+    attach_tensor_frames(
+        hetero,
+        {},
+        {"User": {"age": NumericalTensorMapper()}},
+        {"node_types": {"User": {"mapper_key": "User"}}},
+    )
+
+    table_to_tf.assert_called_once()
+    table = table_to_tf.call_args.args[0]
+    assert isinstance(table, pa.Table)
+    assert table.num_rows == 0
+    assert table.column_names == ["age"]
+    assert hetero["User"].tf.feat_dict[Stype.numerical].shape == (0, 1)

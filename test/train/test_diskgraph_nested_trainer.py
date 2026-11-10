@@ -348,7 +348,7 @@ def test_mapper_bank_drops_null_encoded_columns() -> None:
     ``_build_mapper_bank_from_encoders`` filters out Null encoders and drops it from the bank -- consumers
     (``DiskgraphLightningDataModule._feature_projection``, ``attach_tensor_frames``)
     then read the bank at face value, since keeping it would put a column that
-    contributes no feature into the contract ``_record_batch_to_tf`` enforces
+    contributes no feature into the contract ``_table_to_tf`` enforces
     and into the projection derived from the bank.
     """
     from kumoapi.encoder import Null, Numerical
@@ -391,7 +391,7 @@ def test_mapper_bank_respects_selected_features() -> None:
 
 def test_all_null_table_yields_an_empty_mapper() -> None:
     """Every column ``Null`` => the pure-link-table state, which
-    ``_record_batch_to_tf``'s ``if not mapper_dict`` branch already handles."""
+    ``_table_to_tf``'s ``if not mapper_dict`` branch already handles."""
     from kumoapi.encoder import Null
 
     bank = dg_nested_mod._build_mapper_bank_from_encoders(

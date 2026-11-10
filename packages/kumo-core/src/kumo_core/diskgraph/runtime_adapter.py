@@ -331,7 +331,7 @@ def runtime_batch_to_hetero(
 
 def attach_tensor_frames(
     hetero: HeteroData,
-    raw_feature_tables: Mapping[str, pa.RecordBatch | pa.Table],
+    raw_feature_tables: Mapping[str, pa.Table],
     mapper_bank: MapperBank,
     feature_schema: FeatureSchema,
 ) -> None:
@@ -349,7 +349,7 @@ def attach_tensor_frames(
     Featureless types retain the topology's node count when decoding is skipped.
     """
     nodes_meta = feature_schema.get("node_types") or {}
-    for namespace, record_batch in raw_feature_tables.items():
+    for namespace, table in raw_feature_tables.items():
         node_meta = nodes_meta.get(namespace) or {}
         mapper_key = node_meta.get("mapper_key")
         if mapper_key is None:
@@ -360,8 +360,8 @@ def attach_tensor_frames(
                 f"for namespace {namespace!r}, but mapper_bank has no "
                 f"such key.  Available: {sorted(mapper_bank)}")
         mapper_dict = dict(mapper_bank[mapper_key])
-        hetero[namespace].tf = _record_batch_to_tf(
-            record_batch, mapper_dict, namespace=namespace
+        hetero[namespace].tf = _table_to_tf(
+            table, mapper_dict, namespace=namespace
         )
 
     # Schema types present (back-filled) but without raw features: build an
@@ -384,17 +384,17 @@ def attach_tensor_frames(
                 {}, {}, num_rows=hetero[namespace].num_nodes or 0
             )
             continue
-        empty_rb = pa.RecordBatch.from_pydict(
+        empty_table = pa.Table.from_pydict(
             {col: pa.array([], type=pa.string())
              for col in mapper_dict})
-        hetero[namespace].tf = _record_batch_to_tf(
-            empty_rb, mapper_dict, namespace=namespace
+        hetero[namespace].tf = _table_to_tf(
+            empty_table, mapper_dict, namespace=namespace
         )
 
 
 def _attach_pkeys_and_times(
     hetero: HeteroData,
-    raw_feature_tables: Mapping[str, pa.RecordBatch | pa.Table],
+    raw_feature_tables: Mapping[str, pa.Table],
     pk_col_dict: Mapping[str, str],
     time_col_dict: Mapping[str, str],
     *,
@@ -412,12 +412,12 @@ def _attach_pkeys_and_times(
     column is misaligned with ``task.seed_node_ids``; not compensated here —
     the fix lands wheel-side.
     """
-    for namespace, record_batch in raw_feature_tables.items():
-        column_names = set(record_batch.column_names)
+    for namespace, table in raw_feature_tables.items():
+        column_names = set(table.column_names)
 
         pk_col = pk_col_dict.get(namespace)
         if attach_pkeys and pk_col is not None and pk_col in column_names:
-            pk_values = record_batch.column(pk_col)
+            pk_values = table.column(pk_col)
             # numpy object array (not a list): supports both SubgraphCollector
             # patterns (fancy indexing + .tolist()) and string/numeric PKs.
             import numpy as np
@@ -431,7 +431,7 @@ def _attach_pkeys_and_times(
             # canonical), so the temporal encoder's ``rel_time = node.time -
             # seed_time`` is computed in a single (ns) unit. torch.as_tensor
             # rejects datetime64, so we go through int64.
-            time_arr = record_batch.column(time_col)
+            time_arr = table.column(time_col)
             if isinstance(time_arr, pa.ChunkedArray):
                 time_arr = time_arr.combine_chunks()
             if pa.types.is_timestamp(time_arr.type):
@@ -485,8 +485,8 @@ def _attach_placeholder_tensor_frames(
         block.tf = TensorFrame({}, {}, num_rows=num_rows)
 
 
-def _record_batch_to_tf(
-    record_batch: pa.RecordBatch | pa.Table,
+def _table_to_tf(
+    table: pa.Table,
     mapper_dict: dict[str, TensorMapper],
     *,
     namespace: str | None = None,
@@ -494,29 +494,29 @@ def _record_batch_to_tf(
     """Encode mapper columns, ignoring auxiliary time and primary key columns.
 
     Args:
-        record_batch: Features and optional auxiliary columns for one namespace.
+        table: Features and optional auxiliary columns for one namespace.
         mapper_dict: Fitted mappers defining the required encoder inputs.
         namespace: Node type included in missing-column diagnostics.
 
     Returns:
-        Encoded features preserving the batch row count, including types without
+        Encoded features preserving the table row count, including types without
         fitted encoders.
 
     Raises:
-        RuntimeError: If a required encoder column is absent from the batch.
+        RuntimeError: If a required encoder column is absent from the table.
     """
-    missing = sorted(set(mapper_dict) - set(record_batch.schema.names))
+    missing = sorted(set(mapper_dict) - set(table.schema.names))
     if missing:
         raise RuntimeError(
             f"feature batch for namespace {namespace or '<unknown>'!r} is "
             f"missing {len(missing)} column(s) the fitted encoders require: "
-            f"{missing!r}. Present: {record_batch.schema.names!r}. Either the "
+            f"{missing!r}. Present: {table.schema.names!r}. Either the "
             "projection handed to RuntimeIndex.iter() omits an encoder "
             "column, or the graph snapshot lacks a fitted encoder column."
         )
     if not mapper_dict:
-        return TensorFrame({}, {}, num_rows=record_batch.num_rows)
-    return get_tf(record_batch, dict(mapper_dict))
+        return TensorFrame({}, {}, num_rows=table.num_rows)
+    return get_tf(table, dict(mapper_dict))
 
 
 def _channel(batch: RuntimeBatch, channel: str) -> GraphChannel:
@@ -1254,9 +1254,9 @@ def _alias_forecasting_seed_features(
         return
 
     candidates = [
-        namespace for namespace, record_batch in raw_feature_tables.items()
+        namespace for namespace, table in raw_feature_tables.items()
         if namespace not in nodes_meta
-        and expected.intersection(record_batch.column_names)
+        and expected.intersection(table.column_names)
     ]
     if len(candidates) != 1:
         return

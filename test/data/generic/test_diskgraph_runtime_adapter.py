@@ -771,13 +771,13 @@ def _user_feature_schema() -> dict[str, Any]:
 
 def test_attach_tensor_frames_populates_hetero_tf() -> None:
     """The bridge resolves mapper_key -> mapper_dict, converts the
-    RecordBatch via get_tf, and attaches hetero[ns].tf."""
+    Table via get_tf, and attaches hetero[ns].tf."""
     batch = _populated_batch()
     hetero, raw_features, _ = runtime_batch_to_hetero(
         batch, train_table_name="train_table")
-    # Replace the sample RecordBatch with an `age`-only one so the
+    # Replace the sample table with an `age`-only one so the
     # mapper bank fitted above lines up.
-    age_only = pa.RecordBatch.from_arrays(
+    age_only = pa.Table.from_arrays(
         [pa.array([41, 22, 35, 19], type=pa.int64())],
         schema=pa.schema([("age", pa.int64())]),
     )
@@ -816,9 +816,9 @@ def test_runtime_batch_to_hetero_attaches_tf_when_mapper_bank_passed() -> None:
     assert hetero["User"].tf.num_rows == 4
 
 
-def test_record_batch_to_tf_uses_arrow_mapper_contract(
+def test_table_to_tf_uses_arrow_mapper_contract(
         monkeypatch: pytest.MonkeyPatch) -> None:
-    record_batch = pa.RecordBatch.from_arrays(
+    table = pa.Table.from_arrays(
         [pa.array([41, 22], type=pa.int64())],
         names=['age'],
     )
@@ -827,19 +827,18 @@ def test_record_batch_to_tf_uses_arrow_mapper_contract(
 
     def fake_get_tf(frame, mapper_dict):
         calls.append(frame)
-        assert isinstance(frame, (pa.RecordBatch, pa.Table))
+        assert isinstance(frame, pa.Table)
         assert frame.column('age').to_pylist() == [41, 22]
         assert list(mapper_dict) == ['age']
         return expected
 
     monkeypatch.setattr(runtime_adapter, 'get_tf', fake_get_tf)
 
-    assert runtime_adapter._record_batch_to_tf(record_batch,
-                                               {'age': object()}) is expected
+    assert runtime_adapter._table_to_tf(table, {'age': object()}) is expected
     assert len(calls) == 1
 
 
-def test_record_batch_to_tf_ignores_columns_no_mapper_claims() -> None:
+def test_table_to_tf_ignores_columns_no_mapper_claims() -> None:
     """The batch is EXPECTED to carry non-encoder columns -- the node time
     column always, the primary key on the eval path -- and they must not reach
     the TensorFrame.
@@ -849,7 +848,7 @@ def test_record_batch_to_tf_ignores_columns_no_mapper_claims() -> None:
     the removed ``.select()`` used to appear to provide, so that deleting it
     stays safe if ``get_tf`` is ever reimplemented.
     """
-    record_batch = pa.RecordBatch.from_arrays(
+    table = pa.Table.from_arrays(
         [
             pa.array([41.0, 22.0], type=pa.float64()),
             pa.array([1_700_000_000, 1_700_000_100], type=pa.int64()),
@@ -857,15 +856,15 @@ def test_record_batch_to_tf_ignores_columns_no_mapper_claims() -> None:
         ],
         names=["age", "created_at", "user_id"],
     )
-    tf = runtime_adapter._record_batch_to_tf(
-        record_batch, {"age": _numerical_mapper([18.0, 25.0, 30.0, 50.0])}
+    tf = runtime_adapter._table_to_tf(
+        table, {"age": _numerical_mapper([18.0, 25.0, 30.0, 50.0])}
     )
 
     assert [c for cols in tf.col_names_dict.values() for c in cols] == ["age"]
     assert tf.num_rows == 2
 
 
-def test_record_batch_to_tf_raises_when_a_mapper_column_is_missing() -> None:
+def test_table_to_tf_raises_when_a_mapper_column_is_missing() -> None:
     """A projection narrower than the mapper bank must FAIL, not silently
     encode fewer features than the model was fitted on.
 
@@ -875,14 +874,14 @@ def test_record_batch_to_tf_raises_when_a_mapper_column_is_missing() -> None:
     invisible -- no exception, no log line, just a model quietly training on
     fewer inputs.
     """
-    record_batch = pa.RecordBatch.from_arrays(
+    table = pa.Table.from_arrays(
         [pa.array([41.0, 22.0], type=pa.float64())], names=["age"]
     )
     mapper = _numerical_mapper([18.0, 25.0, 30.0, 50.0])
 
     with pytest.raises(RuntimeError, match="income"):
-        runtime_adapter._record_batch_to_tf(
-            record_batch,
+        runtime_adapter._table_to_tf(
+            table,
             {
                 "age": mapper,
                 "income": mapper,
@@ -892,13 +891,13 @@ def test_record_batch_to_tf_raises_when_a_mapper_column_is_missing() -> None:
 
 
 @pytest.mark.parametrize("num_rows", [0, 2])
-def test_record_batch_to_tf_empty_mapper_preserves_row_count(num_rows: int) -> None:
+def test_table_to_tf_empty_mapper_preserves_row_count(num_rows: int) -> None:
     """Featureless frames retain sampled rows, including empty batches."""
-    record_batch = pa.RecordBatch.from_arrays(
+    table = pa.Table.from_arrays(
         [pa.array(range(num_rows), type=pa.int64())], names=["ownership_id"]
     )
 
-    tf = runtime_adapter._record_batch_to_tf(record_batch, {}, namespace="Ownership")
+    tf = runtime_adapter._table_to_tf(table, {}, namespace="Ownership")
     assert len(tf.feat_dict) == 0
     assert tf.num_rows == num_rows
 
@@ -910,8 +909,8 @@ def test_empty_mapper_preserves_relative_time_attribution() -> None:
     from kumo_core.explain.base import Explainer
     from kumoapi.encoder import Null
 
-    record_batch = pa.record_batch({"created_at": [86400, 172800, 259200]})
-    frame = runtime_adapter._record_batch_to_tf(record_batch, {}, namespace="Events")
+    table = pa.table({"created_at": [86400, 172800, 259200]})
+    frame = runtime_adapter._table_to_tf(table, {}, namespace="Events")
     encoder = TensorFrameEncoder(
         name="Events",
         col_encoder_dict={"unused": Null()},
@@ -924,7 +923,7 @@ def test_empty_mapper_preserves_relative_time_attribution() -> None:
     with modeling_context.explaining():
         logits = encoder.forward_fixed_and_learnable(
             frame,
-            batch=torch.zeros(record_batch.num_rows, dtype=torch.long),
+            batch=torch.zeros(table.num_rows, dtype=torch.long),
             seed_time=torch.tensor([345600 * 1_000_000_000]),
             time=torch.tensor([86400, 172800, 259200]) * 1_000_000_000,
         )
@@ -935,12 +934,12 @@ def test_empty_mapper_preserves_relative_time_attribution() -> None:
     )
 
     assert "created_at" in gradients.get("Events", {})
-    assert gradients["Events"]["created_at"].numel() == record_batch.num_rows
+    assert gradients["Events"]["created_at"].numel() == table.num_rows
 
 
 def test_backfilled_type_with_mapper_gets_empty_shaped_tf() -> None:
     """A schema type with a ``mapper_key`` that the batch did NOT sample (so it
-    is parity back-filled as an empty block, with no raw RecordBatch) must still
+    is parity back-filled as an empty block, with no raw feature table) must still
     receive a MAPPER-SHAPED empty TF — i.e. its ``feat_dict`` carries the
     encoder's expected stypes at zero rows. A bare ``TensorFrame({}, {})`` would
     KeyError in the feature encoder (``tf.feat_dict[stype]``)."""
@@ -1047,7 +1046,7 @@ def test_attach_tensor_frames_skips_namespace_without_mapper_key() -> None:
     schema = pa.schema([("x", pa.int64())])
     raw_features = {
         "edge_namespace":
-        pa.RecordBatch.from_arrays([pa.array([1, 2, 3], type=pa.int64())],
+        pa.Table.from_arrays([pa.array([1, 2, 3], type=pa.int64())],
                                    schema=schema)
     }
     hetero = HeteroData()
@@ -1074,7 +1073,7 @@ def test_attach_tensor_frames_raises_on_unknown_mapper_key() -> None:
     schema = pa.schema([("age", pa.int64())])
     raw_features = {
         "User":
-        pa.RecordBatch.from_arrays([pa.array([41, 22], type=pa.int64())],
+        pa.Table.from_arrays([pa.array([41, 22], type=pa.int64())],
                                    schema=schema)
     }
     hetero = HeteroData()
@@ -1093,12 +1092,12 @@ def test_attach_tensor_frames_raises_on_unknown_mapper_key() -> None:
                              feature_schema)
 
 
-def test_attach_tensor_frames_handles_empty_record_batch() -> None:
-    """An empty (zero-row) record batch still produces a TensorFrame
+def test_attach_tensor_frames_handles_empty_table() -> None:
+    """An empty (zero-row) table still produces a TensorFrame
     with the mapper-known schema, so downstream encoders see a
     consistent shape."""
     schema = pa.schema([("age", pa.int64())])
-    empty = pa.RecordBatch.from_arrays([pa.array([], type=pa.int64())],
+    empty = pa.Table.from_arrays([pa.array([], type=pa.int64())],
                                        schema=schema)
     raw_features = {"User": empty}
     hetero = HeteroData()

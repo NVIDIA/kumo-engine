@@ -4418,7 +4418,7 @@ def test_null_encoded_column_is_not_projected(tmp_path) -> None:
     drops the column outright. Requesting it anyway would decode a column and
     ship it across pybind for a feature the model cannot see -- and the
     projection must stay in lockstep with the bank, which is the contract
-    ``_record_batch_to_tf`` enforces.
+    ``_table_to_tf`` enforces.
     """
     bank = _projection_mapper_bank()
     # `country` had a Null encoder -> absent from the bank, still in
@@ -4434,14 +4434,14 @@ def test_null_encoded_column_is_not_projected(tmp_path) -> None:
         f"a Null-encoded column must not be requested; got {projection['User']}"
     )
     # ...and the request is still a subset of the bank + time/pkey, which is
-    # the invariant that makes `_record_batch_to_tf` unable to fire.
+    # the invariant that makes `_table_to_tf` unable to fire.
     assert set(projection["User"]) <= set(bank["users_v1"])
 
 
 def test_all_null_table_collapses_to_the_skip_state(tmp_path) -> None:
     """Every column ``Null`` => empty mapper => the pure-link-table path.
 
-    The empty mapper is what makes ``_record_batch_to_tf`` take its
+    The empty mapper is what makes ``_table_to_tf`` take its
     ``if not mapper_dict`` branch instead of erroring, and the matching
     projection is ``[]`` -- SKIP, not "select all".
     """
