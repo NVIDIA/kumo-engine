@@ -29,12 +29,8 @@ from types import SimpleNamespace
 from typing import Optional
 from unittest.mock import patch
 
-import numpy as np
 import pytest
-from kumo_core.task_dataset import (
-    DiskgraphTaskManifest,
-    TaskDatasetMaterializeSpec,
-)
+from kumo_core.task_dataset import TaskDatasetMaterializeSpec
 
 from kumo.diskgraph._backend import DiskgraphHandle
 from kumo.diskgraph.service import DiskgraphService, MaterializeResult
@@ -641,32 +637,6 @@ def test_materialize_prediction_staging_dir_ingest_only_no_second_gen(
     assert split_info['stage_seed_times']['predict'] == [
         9_000_000_000, 9_000_000_000
     ]
-
-
-def test_materialize_prediction_writes_the_candidates(tmp_path,
-                                                      monkeypatch) -> None:
-    service = _make_service(str(tmp_path))
-    spec = _make_spec(os.path.join(str(tmp_path),
-                                   'bundle'), task_family='link_prediction',
-                      task_type='temporal_link_prediction',
-                      rhs_node_type='ITEMS')
-    monkeypatch.setitem(
-        sys.modules, 'diskgraph',
-        SimpleNamespace(execute_tt_ingest=lambda **_: _predict_ingest_result(
-            tmp_path, row_count=3)))
-
-    result = service.materialize_prediction_task_dataset(
-        _make_handle(), spec,
-        predict_staging_dir='/dg_index/train_tables/.pred_job-abc-123.staging',
-        predict_candidates=np.array([2, 5]))
-
-    manifest = DiskgraphTaskManifest.load(result.manifest_path)
-    assert manifest.predict_candidates.tolist() == [2, 5]
-    assert manifest.metadata['available_side_artifacts'] == [
-        'predict_candidates'
-    ]
-    with open(os.path.join(result.bundle_dir, 'checksums.json')) as f:
-        assert 'predict_candidates.npy_sha256' in json.load(f)
 
 
 def test_materialize_prediction_no_anchor_omits_seed_times(

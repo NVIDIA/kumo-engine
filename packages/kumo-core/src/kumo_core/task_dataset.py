@@ -217,9 +217,7 @@ class DiskgraphTaskManifest:
 
     @property
     def predict_candidates(self) -> np.ndarray | None:
-        """RHS node IDs the prediction query's target filter admits, or
-        ``None`` when it admits every candidate."""
-
+        """RHS node IDs the target filter admits; ``None`` admits all."""
         relative_path = self.manifest.get("side_artifacts",
                                           {}).get(PREDICT_CANDIDATES)
         if not relative_path:
@@ -636,8 +634,7 @@ def write_thin_manifest(
 ) -> str:
     """Write the bundle sidecars. ``column_stats`` writes the per-column
     encoder statistics, which only encoder fitting reads, to their own
-    sidecar; prediction bundles omit them. ``predict_candidates`` are the
-    RHS node IDs a link prediction may rank."""
+    sidecar; prediction bundles omit them."""
     side_artifacts = ([]
                       if predict_candidates is None else [PREDICT_CANDIDATES])
     metadata = {

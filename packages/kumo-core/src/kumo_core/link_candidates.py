@@ -6,8 +6,7 @@
 from __future__ import annotations
 
 import shutil
-from collections import deque
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from typing import Any
 
@@ -24,12 +23,8 @@ from .types import TaskType
 
 
 def target_contract(query: ValidatedNativeQuery) -> tuple[str, str | None]:
-    r"""The target without its filter, and the filter conditions a
-    prediction query must keep.
-
-    A link-prediction query may change the conditions on its candidate
-    table; they choose what is ranked, not what the model learned.
-    """
+    r"""The target without its filter, and the conditions a prediction
+    must keep."""
     if query.task_family != "link_prediction":
         return str(query.query.target_ast), None
     target = deepcopy(query.query.target_ast)
@@ -54,11 +49,7 @@ def candidate_node_ids(
     tt_id: str,
     runtime: Any,
 ) -> np.ndarray | None:
-    r"""Sorted RHS node IDs that pass the query's candidate-table
-    conditions, or ``None`` when it has none.
-
-    Hosted and local batch prediction both rank only these candidates.
-    """
+    r"""Sorted RHS node IDs passing the candidate-table conditions."""
     if not task_type.is_link_pred or not isinstance(
             query.get_final_target_aggregation().target, Filter):
         return None
@@ -89,23 +80,14 @@ def candidate_node_ids(
             return np.asarray(engine.lookup_node_ids(table, batch.column(0)),
                               dtype=np.int64)
 
-        workers = cpu_budget()
-        parts: list[np.ndarray] = [np.empty(0, dtype=np.int64)]
-        pending: deque[Future[np.ndarray]] = deque()
-        with ThreadPoolExecutor(workers) as pool:
-            for batch in runtime.read_tt_parquet_batches(
-                    generated["tt_parquet_path"], ["ENTITY1"]):
-                pending.append(pool.submit(lookup, batch))
-                if len(pending) > 2 * workers:
-                    parts.append(pending.popleft().result())
-            parts.extend(future.result() for future in pending)
+        batches = runtime.read_tt_parquet_batches(generated["tt_parquet_path"],
+                                                  ["ENTITY1"])
+        with ThreadPoolExecutor(cpu_budget()) as pool:
+            parts = [np.empty(0, dtype=np.int64), *pool.map(lookup, batches)]
     finally:
         shutil.rmtree(generated["staging_dir"], ignore_errors=True)
     node_ids = np.sort(np.concatenate(parts))
     if not node_ids.size:
-        raise ValueError(
-            f"The prediction has no candidates from table {table!r}: no "
-            f"row passes the target filter's conditions on it "
-            f"({target.condition}). Check that they are not overly "
-            "restrictive.")
+        raise ValueError(f"No row of table {table!r} passes "
+                         f"{target.condition}; loosen the target filter.")
     return node_ids[np.r_[True, node_ids[1:] != node_ids[:-1]]]

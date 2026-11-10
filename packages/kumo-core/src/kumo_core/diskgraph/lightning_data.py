@@ -1235,22 +1235,6 @@ class DiskgraphValidRHS:
         assert per_time is not None
         return per_time[int(time_or_stage)].to(device)
 
-    def validity_hint(self, seed_time: int) -> str:
-        """How a candidate must be timed to be valid at ``seed_time``."""
-        import pandas as pd
-
-        rhs_time = self._rhs_time
-        rules = []
-        if rhs_time.create_time is not None:
-            created = pd.Timestamp(seed_time + rhs_time.unix_end_offset)
-            rules.append(f"created at or before {created}")
-        if rhs_time.end_time is not None:
-            ends = pd.Timestamp(seed_time + rhs_time.unix_start_offset)
-            rules.append(f"without an end time or ending after {ends}")
-        if not rules:
-            return ""
-        return f" Ensure some of its rows are {' and '.join(rules)}."
-
 
 def _interleave_stage_batches(targets: Mapping[str, int]) -> list[str]:
     """Spread each stage's allocated batches across the epoch."""
@@ -2185,8 +2169,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
 
     @property
     def predict_candidates(self) -> "Any | None":
-        """RHS node IDs the prediction query's target filter admits, or
-        ``None`` when it admits every candidate."""
+        """RHS node IDs the target filter admits; ``None`` admits all."""
         import torch
         node_ids = self.task_manifest.predict_candidates
         return None if node_ids is None else torch.from_numpy(node_ids)

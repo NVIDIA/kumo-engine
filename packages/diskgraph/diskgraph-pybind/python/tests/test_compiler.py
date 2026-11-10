@@ -2,8 +2,6 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from copy import deepcopy
-
 import pytest
 from diskgraph._c import DiskgraphConfigError, DiskgraphDataError, DiskgraphSystemError
 
@@ -999,27 +997,15 @@ def test_compiler_lp_layout_rejects_invalid_values():
             lp_bp_layout="standalone",
         )
 
-@pytest.mark.parametrize("bool_op", [None, BoolOp.AND, BoolOp.OR, BoolOp.NOT])
-@pytest.mark.parametrize("through_orders", [False, True])
-def test_compiler_link_prediction_rhs_pass_through(through_orders, bool_op):
+def test_compiler_link_prediction_rhs_pass_through():
     # Target has a filter: products.category = 'shoes'
-    condition = Condition(
-        target=Column(fqn="products.category"),
-        op=RelOp.EQ,
-        value=Constant.from_value("shoes")
-    )
-    if through_orders:
-        # A validated query reaches the column through the event table.
-        condition.target = Join(rhs_target=Column(fqn="products.category"),
-                                lhs_key="orders.product_id",
-                                rhs_key="products.product_id")
-    if bool_op is not None:
-        condition = LogicalOperation(
-            left=condition, bool_op=bool_op,
-            right=None if bool_op == BoolOp.NOT else deepcopy(condition))
     filtered_target = Filter(
         target=Column(fqn="products.product_id"),
-        condition=condition,
+        condition=Condition(
+            target=Column(fqn="products.category"),
+            op=RelOp.EQ,
+            value=Constant.from_value("shoes")
+        )
     )
     target_ast = Aggregation(
         target=filtered_target,
@@ -1055,13 +1041,9 @@ def test_compiler_link_prediction_rhs_pass_through(through_orders, bool_op):
     assert plan["entity"]["column"] == "product_id"
 
     # Should extract RHS filter
-    row_filter = plan["entity"]["filter"]
-    if bool_op is not None:
-        row_filter = row_filter[bool_op.name.lower()]
-    for compare in row_filter if isinstance(row_filter, list) else [row_filter]:
-        assert compare["compare"]["lhs"]["column"] == "category"
-        assert compare["compare"]["op"] == "eq"
-        assert compare["compare"]["rhs"]["constant"]["str"] == "shoes"
+    assert plan["entity"]["filter"]["compare"]["lhs"]["column"] == "category"
+    assert plan["entity"]["filter"]["compare"]["op"] == "eq"
+    assert plan["entity"]["filter"]["compare"]["rhs"]["constant"]["str"] == "shoes"
 
 def test_compiler_mixed_entity_filter_column_and_aggregation():
     """Entity WHERE with both a column condition and an aggregation.

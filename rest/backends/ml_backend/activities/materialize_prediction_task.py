@@ -479,7 +479,6 @@ def _materialize_ttng_prediction_task_dataset(
 def _link_prediction_candidates(pquery: Any, task_type: TaskType,
                                 index_path: str,
                                 job_id: str) -> Optional[np.ndarray]:
-    """The RHS node IDs the query's candidate-table conditions admit."""
     import diskgraph
 
     from kumo.graph.utils import map_to_api_graph_definition

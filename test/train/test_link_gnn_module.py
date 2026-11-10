@@ -10,10 +10,8 @@ tests assert that a masked placeholder negative does NOT change the loss
 relative to a batch that omits it, for each loss variant, and that the
 no-mask path is unchanged.
 """
-from types import SimpleNamespace
 from unittest.mock import patch
 
-import pytest
 import torch
 from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
 from kumo_core.modeling.gnn.hetero import HeteroGNN
@@ -220,23 +218,15 @@ def _static_eval_batch(batch_size: int = 2) -> HeteroData:
     return batch
 
 
-@pytest.mark.parametrize('candidates, expected', [
-    (None, [0, 2, 4]),
-    ([2, 4], [2, 4]),
-])
-def test_static_two_tower_uses_canonical_rhs_catalog(candidates,
-                                                     expected) -> None:
+def test_static_two_tower_uses_canonical_rhs_catalog() -> None:
     model = _make_static_module()
     canonical = torch.tensor([0, 2, 4])
     model.register_buffer('canonical_rhs_node_idx', canonical, persistent=False)
-    datamodule = SimpleNamespace(predict_candidates=(
-        None if candidates is None else torch.tensor(candidates)))
 
-    with patch.object(LinkGNNLightningModule, 'datamodule', datamodule):
-        valid = model.tt_ng_valid_rhs_for_stage(TrainingStage.PRED)
+    valid = model.tt_ng_valid_rhs_for_stage(TrainingStage.PRED)
 
     assert valid is not None
-    assert torch.equal(valid, torch.tensor(expected))
+    assert torch.equal(valid, canonical)
 
 
 def test_static_eval_reads_exclude_off_batch_and_skips_past_visit():

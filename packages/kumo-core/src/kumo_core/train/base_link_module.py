@@ -33,7 +33,6 @@ _WARNED_ARRAY_EMPTY_COO = False
 
 
 def sorted_membership(values: Tensor, sorted_ids: Tensor) -> Tensor:
-    r"""Whether each of ``values`` is one of the sorted ``sorted_ids``."""
     positions = torch.searchsorted(sorted_ids, values)
     found = positions < sorted_ids.numel()
     if sorted_ids.numel():
@@ -190,8 +189,7 @@ class BaseLinkLightningModule(BaseLightningModule, ABC):
         """TT-NG temporal LP: RHS node-ids valid at ``stage``'s seed time, or
         ``None`` (static LP / no temporal info -> rank the full catalog).
         Shared by eval AND predict across LP families so both filter
-        consistently. Prediction also keeps only the candidates its query's
-        target filter admits."""
+        consistently. Prediction also applies the target filter."""
         valid = self._rhs_valid_at_stage_time(stage)
         if stage != TrainingStage.PRED:
             return valid
@@ -204,20 +202,10 @@ class BaseLinkLightningModule(BaseLightningModule, ABC):
                 valid = valid[sorted_membership(valid, candidates)]
         if valid is not None and not valid.numel():
             raise ValueError(
-                self._no_candidates_message(candidates is not None))
+                f"No candidate from table {self.rhs_name!r} is valid at the "
+                "prediction time; check its create and end times"
+                f"{'' if candidates is None else ' and the target filter'}.")
         return valid
-
-    def _no_candidates_message(self, filtered: bool) -> str:
-        message = ("The prediction has no candidates from table "
-                   f"{self.rhs_name!r}.")
-        if filtered:
-            message += (" Check that the target filter's conditions on it "
-                        "are not overly restrictive.")
-        anchor = self.datamodule.predict_time
-        if (self.task_type == TaskType.TEMPORAL_LINK_PREDICTION
-                and anchor is not None):
-            message += self.lp_train_table.validity_hint(int(anchor[0]))
-        return message
 
     def _rhs_valid_at_stage_time(self, stage: "Any") -> "Tensor | None":
         from kumoapi.train import TrainingStage

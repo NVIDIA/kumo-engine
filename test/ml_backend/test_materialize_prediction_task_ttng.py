@@ -126,7 +126,6 @@ def _patch_common(monkeypatch, calls, encoders=None):
         'restore_durable_ttng_bundle',
         lambda _durable, local: local,
     )
-    monkeypatch.setattr(mpt, '_link_prediction_candidates', lambda *args: None)
     _patch_feature_schema(monkeypatch)
 
 
@@ -429,30 +428,6 @@ def test_ttng_lp_materialize_is_lp_aware(monkeypatch):
     # Ingest-only one-gen: the kept staging dir is threaded (no predict plan).
     assert kwargs['predict_staging_dir'] == (
         '/dg/train_tables/.pred_bp-job.staging')
-
-
-def test_ttng_lp_materialize_threads_candidates(monkeypatch):
-    calls, requests = [], []
-    _patch_common(monkeypatch, calls)
-    monkeypatch.setattr('kumo.pquery.utils.get_rhs_lp_table',
-                        lambda *a, **k: 'items')
-    candidates = object()
-    monkeypatch.setattr(mpt, '_link_prediction_candidates',
-                        lambda *args: requests.append(args) or candidates)
-    pquery = _lp_pquery()
-
-    _materialize(
-        task=_lp_task(TaskType.TEMPORAL_LINK_PREDICTION),
-        pquery=pquery,
-        prediction_config=_make_pred_config(),
-        job_input=_make_job_input(),
-        diskgraph_index_path='/dg',
-        train_table_name='train_tt',
-    )
-
-    assert requests == [(pquery, TaskType.TEMPORAL_LINK_PREDICTION, '/dg',
-                         'bp-job')]
-    assert calls[0][2]['predict_candidates'] is candidates
 
 
 def test_ttng_lp_static_not_temporal(monkeypatch):

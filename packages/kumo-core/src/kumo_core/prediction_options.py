@@ -136,35 +136,18 @@ class PredictionQueryContract(NamedTuple):
     target_to_entity_paths: tuple[tuple[tuple[str, ...], ...], ...]
 
 
-def _shown(value: Any) -> str:
-    return "none" if value is None else repr(value)
-
-
-def _parsed(query: str, graph_config: Mapping[str, Any]) -> Any:
-    from kumo_core.pquery import normalize_graph, parse_and_validate_query
-
-    graph = normalize_graph(graph_config)
-    return parse_and_validate_query(query, graph), graph
-
-
-def _full_target(query: str, graph_config: Mapping[str, Any]) -> str:
-    return str(_parsed(query, graph_config)[0].query.target_ast)
-
-
 def prediction_query_contract(
         query: str, graph_config: Mapping[str, Any]) -> PredictionQueryContract:
-    r"""Return the parsed fields that determine what the model scores.
-
-    A prediction table may select a different population in its ``WHERE``
-    clause, and a link-prediction table may change the target-filter
-    conditions on its candidate table. Its target, other target-filter
-    conditions, task, ``FOR EACH`` entity, forecast length, and graph paths
-    connecting the target to that entity must still match the model.
-    """
+    r"""The parsed fields a prediction query must share with the model."""
     from kumo_core.link_candidates import target_contract
-    from kumo_core.pquery import target_to_entity_paths
+    from kumo_core.pquery import (
+        normalize_graph,
+        parse_and_validate_query,
+        target_to_entity_paths,
+    )
 
-    parsed, graph = _parsed(query, graph_config)
+    graph = normalize_graph(graph_config)
+    parsed = parse_and_validate_query(query, graph)
     paths = tuple(
         tuple(tuple(edge) for edge in path)
         for path in target_to_entity_paths(parsed, graph))
@@ -182,27 +165,18 @@ def prediction_query_contract(
 
 def prediction_task_type(training_query: str | None, query: str,
                          graph_config: Mapping[str, Any]) -> str:
-    r"""Return the task type of a prediction query the trained model can
-    score, naming the first part that differs otherwise."""
+    r"""The task type, if the trained model can score ``query``."""
     predicted = prediction_query_contract(query, graph_config)
     if training_query is None:
-        raise ValueError("This model has no training query to score "
-                         "a prediction query against")
+        raise ValueError("This model has no training query")
     trained = prediction_query_contract(training_query, graph_config)
     for name, expected, actual in zip(predicted._fields, trained, predicted):
-        if expected == actual:
-            continue
-        if name == "target":
-            expected = _full_target(training_query, graph_config)
-            actual = _full_target(query, graph_config)
-        editable = "the FOR EACH filter"
-        if predicted.candidate_table is not None:
-            editable += (" and target-filter conditions on table "
-                         f"{predicted.candidate_table!r}")
-        raise ValueError(
-            f"The prediction query's {name.replace('_', ' ')} is "
-            f"{_shown(actual)}, but the model was trained with "
-            f"{_shown(expected)}. Only {editable} can change at prediction.")
+        if expected != actual:
+            raise ValueError(
+                f"The prediction query's {name.replace('_', ' ')} is "
+                f"{actual!r}, but the model was trained with {expected!r}. "
+                "Only the FOR EACH filter and target-filter conditions on "
+                "the candidate table can change.")
     return predicted.task_type
 
 

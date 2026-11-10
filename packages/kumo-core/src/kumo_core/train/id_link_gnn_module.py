@@ -290,11 +290,8 @@ class IDLinkGNNLightningModule(BaseLinkLightningModule):
         super().on_predict_start()
         if self.datamodule.predict_candidates is not None:
             raise ValueError(
-                "A pairwise model ranks the items in each row's sampled "
-                "subgraph, so it cannot restrict them to the target filter's "
-                f"conditions on table {self.rhs_name!r}. Remove those "
-                "conditions from the prediction query, or train another "
-                "link-prediction module.")
+                "A pairwise model cannot apply target-filter conditions on "
+                f"table {self.rhs_name!r}; remove them from the query.")
 
     def predict_step(
         self,
