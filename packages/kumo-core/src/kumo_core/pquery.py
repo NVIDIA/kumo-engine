@@ -39,7 +39,6 @@ from kumoapi.typing import ColStatType, Dtype, Stype
 from kumopql.parser import PQLParser
 from kumopql.validator import PredictiveQueryValidator
 from pandas import DateOffset, Timedelta, Timestamp
-from pandas.errors import OutOfBoundsDatetime
 from pydantic import TypeAdapter
 
 from .encoder_selection import (
@@ -75,7 +74,9 @@ from .training.table import (
 )
 from .training.timestamps import (
     default_target_time_range,
+    forecast_offsets,
     generate_legacy_timestamps,
+    resolve_training_window,
 )
 from .training.validation import validate_train_offsets
 from .types import TaskType
@@ -760,8 +761,7 @@ def resolve_query_forecast(
 def _forecast_offsets(query: ValidatedNativeQuery) -> tuple[int, ...]:
     """The exact future shifts passed to the native label compiler."""
     timeframe = query.query.get_combined_date_offset_range().timeframe
-    step_seconds = int(timeframe.total_seconds())
-    return tuple(step_seconds * index for index in range(query.forecast_length))
+    return forecast_offsets(timeframe, query.forecast_length)
 
 
 def _forecast_options(
@@ -1075,45 +1075,25 @@ def _temporal_timestamps(
                 "flexible_boundaries" in split)
     minimum, maximum, filter_buffer = _temporal_target_time_range(
         query, index_path)
-    if absolute_bounds and isinstance(start_time, Timestamp):
-        start_time = max(start_time, minimum)
-    if absolute_bounds and isinstance(end_time, Timestamp):
-        end_time = min(end_time, maximum)
-    label_cutoff = end_time if isinstance(end_time, Timestamp) else maximum
-    lower = start_time if isinstance(start_time, Timestamp) else minimum
-    empty_bounds = (
-        "No usable training examples within start_time/end_time and "
-        "the available label data. Widen the bounds or provide more data "
-        "for the target horizon.")
-    if absolute_bounds and lower >= label_cutoff:
-        raise PredictiveQueryPlanError(empty_bounds)
-    future_shift = Timedelta(0)
-    if absolute_bounds and query.task_type == "forecasting":
-        future_shift = Timedelta(seconds=max(_forecast_offsets(query)))
-        if label_cutoff.value - lower.value <= future_shift.value:
-            raise PredictiveQueryPlanError(empty_bounds)
-        shifted_cutoff = label_cutoff - future_shift
-        if not isinstance(shifted_cutoff, Timestamp):
-            raise PredictiveQueryPlanError(empty_bounds)
-        end_time = shifted_cutoff
-    cutoff = end_time if isinstance(end_time, Timestamp) else maximum
-    if absolute_bounds and lower >= cutoff:
-        raise PredictiveQueryPlanError(empty_bounds)
-
-    def within_bounds(value: int) -> bool:
-        shifted = value + future_shift.value
-        if value < lower.value or shifted > label_cutoff.value:
-            return False
-        try:
-            return (Timestamp(shifted) + offset.end_date_offset <= label_cutoff)
-        except (OutOfBoundsDatetime, OverflowError):
-            return False
+    start_time = (date_offset(start_time)
+                  if isinstance(start_time, int) else start_time)
+    end_time = (date_offset(end_time)
+                if isinstance(end_time, int) else end_time)
+    try:
+        window = (resolve_training_window(start_time, end_time, minimum, maximum)
+                  if absolute_bounds else None)
+    except ValueError as error:
+        raise PredictiveQueryPlanError(str(error)) from error
+    if window is not None:
+        start_time, end_time = window.start, window.end
 
     def bounded(values: Sequence[int]) -> tuple[int, ...]:
-        result = tuple(value for value in values if within_bounds(value))
-        if not result:
-            raise PredictiveQueryPlanError(empty_bounds)
-        return result
+        if window is None:
+            return tuple(values)
+        try:
+            return tuple(window.filter(values, offset.end_date_offset))
+        except ValueError as error:
+            raise PredictiveQueryPlanError(str(error)) from error
 
     if explicit:
         return (bounded(tuple(_timestamp_ns(value) for value in explicit)),
@@ -1146,10 +1126,8 @@ def _temporal_timestamps(
             int(train_start))),
         train_end_offset=(None if train_end is None else date_offset(
             int(train_end))),
-        start_time=(date_offset(start_time)
-                    if isinstance(start_time, int) else start_time),
-        end_time=(date_offset(end_time)
-                  if isinstance(end_time, int) else end_time),
+        start_time=start_time,
+        end_time=end_time,
         drop_earliest=True,
     )
     if absolute_bounds:

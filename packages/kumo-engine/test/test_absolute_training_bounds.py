@@ -153,6 +153,7 @@ def test_forecast_complete_horizon(temporal_graph, tmp_path, monkeypatch,
     cutoff = END if override else SOURCE_END
     assert not rows.empty
     assert rows['TIMESTAMP'].max() + pd.Timedelta(days=6) <= cutoff
+    assert rows['TIMESTAMP'].max() == cutoff - pd.Timedelta(days=6)
     assert table.generation_plan.forecast_length == 3
 
 

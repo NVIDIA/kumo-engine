@@ -3,16 +3,20 @@
 # SPDX-License-Identifier: Apache-2.0
 """Validation and UTC normalization for temporal label-window bounds."""
 
-from pandas import Timestamp
+from pandas import DateOffset, Timestamp
 
 
-def parse_time_bound(value: int | str | None,
-                     name: str) -> int | Timestamp | None:
+def parse_time_bound(value: int | str | DateOffset | Timestamp | None,
+                     name: str) -> int | DateOffset | Timestamp | None:
     """Keep relative offsets numerical and normalize absolute times to UTC."""
     if value is None or (name == 'start_time' and value == '-INF'):
         return None
     if isinstance(value, int):
         if value > 0:
+            raise ValueError(f"'{name}' must be a non-positive relative offset")
+        return value
+    if isinstance(value, DateOffset):
+        if Timestamp('1970-01-01') + value > Timestamp('1970-01-01'):
             raise ValueError(f"'{name}' must be a non-positive relative offset")
         return value
     try:
@@ -31,13 +35,14 @@ def parse_time_bound(value: int | str | None,
 
 
 def validate_time_bounds(
-    start: int | str | None,
-    end: int | str | None,
+    start: int | str | DateOffset | Timestamp | None,
+    end: int | str | DateOffset | Timestamp | None,
     *,
-    train_start_offset: int | None = None,
-    train_end_offset: int | None = None,
+    train_start_offset: int | DateOffset | None = None,
+    train_end_offset: int | DateOffset | None = None,
     split_family: str | None = None,
-) -> tuple[int | Timestamp | None, int | Timestamp | None]:
+) -> tuple[int | DateOffset | Timestamp | None,
+           int | DateOffset | Timestamp | None]:
     """Validate explicit parameters without changing their serialized form."""
     if ((start is not None or end is not None)
             and (train_start_offset is not None
@@ -47,14 +52,19 @@ def validate_time_bounds(
     parsed_start = parse_time_bound(start, 'start_time')
     parsed_end = parse_time_bound(end, 'end_time')
     if parsed_start is not None and parsed_end is not None:
-        if isinstance(parsed_start, int) != isinstance(parsed_end, int):
+        if (isinstance(parsed_start, Timestamp)
+                != isinstance(parsed_end, Timestamp)):
             raise ValueError('start_time and end_time must both be offsets '
                              'or both be timestamps.')
         if ((isinstance(parsed_start, int) and isinstance(parsed_end, int)
              and parsed_start >= parsed_end)
                 or (isinstance(parsed_start, Timestamp)
                     and isinstance(parsed_end, Timestamp)
-                    and parsed_start >= parsed_end)):
+                    and parsed_start >= parsed_end)
+                or (isinstance(parsed_start, DateOffset)
+                    and isinstance(parsed_end, DateOffset)
+                    and Timestamp('1970-01-01') + parsed_start
+                    >= Timestamp('1970-01-01') + parsed_end)):
             raise ValueError('start_time must be smaller than end_time.')
     if (isinstance(parsed_start, Timestamp)
             or isinstance(parsed_end, Timestamp)) and split_family in {

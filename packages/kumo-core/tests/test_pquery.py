@@ -793,7 +793,7 @@ def test_absolute_bounds_require_usable_windows(monkeypatch, start, end):
 
 @pytest.mark.parametrize('clause,expected', [
     (' > 0', [13, 5, 12, 5]),
-    (' FORECAST 3 TIMEFRAMES', [5, 12, 5]),
+    (' FORECAST 3 TIMEFRAMES', [13, 5, 12, 5]),
 ])
 @pytest.mark.parametrize('split', [{}, {'flexible_boundaries': False}])
 def test_absolute_bounds_filter_explicit_training_anchors(
@@ -874,7 +874,7 @@ def test_invalid_absolute_bounds_rejected_before_stats(
 
 
 @pytest.mark.parametrize('end', [None, '2024-01-15'])
-def test_absolute_forecast_bounds_reserve_full_horizon(monkeypatch, end):
+def test_absolute_forecast_candidates_fit_base_window(monkeypatch, end):
     from pandas import DateOffset, Timestamp
 
     graph = normalize_graph(forecasting_graph_config())
@@ -893,36 +893,15 @@ def test_absolute_forecast_bounds_reserve_full_horizon(monkeypatch, end):
         query, '/synthetic-index', options, split, family, ())
     cutoff = Timestamp(end or '2024-01-20')
     newest = Timestamp(timestamps[0])
-    assert newest == cutoff - DateOffset(days=7)
+    # Native generation reserves the remaining forecast tail once.
+    assert newest == cutoff - DateOffset(days=3)
     assert all(Timestamp(value) >= Timestamp('2024-01-05')
                for value in timestamps)
 
 
-@pytest.mark.parametrize('minimum,maximum', [
-    ('2024-01-01', '2024-01-20'),
-    ('1677-09-22', '1677-09-23'),
-])
-def test_forecast_bounds_rejected_before_horizon_underflow(
-        monkeypatch, minimum, maximum):
-    from pandas import Timestamp
-
-    graph = normalize_graph(forecasting_graph_config())
-    query = parse_and_validate_query(
-        'PREDICT COUNT(events.*, 0, 1, days) FORECAST 3 TIMEFRAMES '
-        'FOR EACH articles.aid', graph)
-    monkeypatch.setattr(
-        'kumo_core.pquery._temporal_target_time_range',
-        lambda *_args: (Timestamp(minimum), Timestamp(maximum), None))
-    with pytest.raises(PredictiveQueryPlanError, match='No usable training'):
-        _temporal_timestamps(
-            query, '/synthetic-index', TrainingTableGenerationPlan(
-                start_time='1677-09-22', end_time='1677-09-23'),
-            {}, 'DateOffsetSplit', ())
-
-
-def test_absolute_monthly_forecast_uses_compiled_future_shifts(monkeypatch):
+def test_absolute_monthly_forecast_keeps_base_candidates(monkeypatch):
     from kumo_core.pquery import _forecast_options
-    from pandas import DateOffset, Timedelta, Timestamp
+    from pandas import DateOffset, Timestamp
 
     graph = normalize_graph(forecasting_graph_config())
     query = parse_and_validate_query(
@@ -939,7 +918,7 @@ def test_absolute_monthly_forecast_uses_compiled_future_shifts(monkeypatch):
     _, compiler = _forecast_options(query, options)
     assert compiler['future_offsets_secs'] == (0, 31 * 86400, 62 * 86400)
     assert timestamps
-    assert all(Timestamp(value) + Timedelta(days=62) + DateOffset(months=1)
+    assert all(Timestamp(value) + DateOffset(months=1)
                <= Timestamp('2024-05-31') for value in timestamps)
 
 
@@ -1173,9 +1152,10 @@ def test_date_offset_split_uses_bounded_range_for_each_phase(
         graph_index_path=str(tmp_path / "index"), scratch_dir=str(tmp_path),
         artifact_dir=str(tmp_path))
 
-    # Reserve all three future labels before restarting steps at each split.
+    # Candidate steps restart at each split; native generation reserves the
+    # complete future-label horizon.
     assert plan.train_table.timestamps == tuple(
-        (origin + index * day).value for index in (7, 5, 4, 2, 1))
+        (origin + index * day).value for index in (9, 7, 6, 4, 3, 1))
 
 
 def test_nonzero_target_offset_restarts_step_at_each_split_boundary(
