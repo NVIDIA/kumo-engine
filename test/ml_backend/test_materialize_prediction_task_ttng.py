@@ -431,6 +431,30 @@ def test_ttng_lp_materialize_is_lp_aware(monkeypatch):
         '/dg/train_tables/.pred_bp-job.staging')
 
 
+def test_ttng_lp_materialize_threads_candidates(monkeypatch):
+    calls, requests = [], []
+    _patch_common(monkeypatch, calls)
+    monkeypatch.setattr('kumo.pquery.utils.get_rhs_lp_table',
+                        lambda *a, **k: 'items')
+    candidates = object()
+    monkeypatch.setattr(mpt, '_link_prediction_candidates',
+                        lambda *args: requests.append(args) or candidates)
+    pquery = _lp_pquery()
+
+    _materialize(
+        task=_lp_task(TaskType.TEMPORAL_LINK_PREDICTION),
+        pquery=pquery,
+        prediction_config=_make_pred_config(),
+        job_input=_make_job_input(),
+        diskgraph_index_path='/dg',
+        train_table_name='train_tt',
+    )
+
+    assert requests == [(pquery, TaskType.TEMPORAL_LINK_PREDICTION, '/dg',
+                         'bp-job')]
+    assert calls[0][2]['predict_candidates'] is candidates
+
+
 def test_ttng_lp_static_not_temporal(monkeypatch):
     """Static LP is link_prediction but is_temporal False."""
     calls = []
