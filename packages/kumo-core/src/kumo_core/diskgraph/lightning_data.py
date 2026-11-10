@@ -3022,9 +3022,6 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
     ) -> DataLoader:
         """Eval DataLoader for the XAI second pass over selected stage ids."""
         runtime_stage = "predict" if stage == "pred" else stage
-        if runtime_stage == "predict" and self._is_link_pred:
-            return self._make_dataloader("predict")
-
         if hasattr(seed_nodes, 'tolist'):
             selected_stage_node_ids = seed_nodes.tolist()
         else:
@@ -3040,13 +3037,14 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             selected_stage_node_ids,
             **self._pseudo_time_options(runtime_stage),
         }
-        if (runtime_stage != "predict"
-                and self.resolve_entity_node_type is not None):
+        if self.resolve_entity_node_type is not None:
             runtime_options = {
                 **runtime_options,
                 'entity_node_type': self.resolve_entity_node_type,
-                'target_node_type': self.resolve_target_node_type,
             }
+            if runtime_stage != "predict":
+                runtime_options['target_node_type'] = (
+                    self.resolve_target_node_type)
         iterable = DiskgraphTaskBatchIterable(
             manifest_path=self.task_manifest.runtime_manifest_path,
             stage=runtime_stage,
