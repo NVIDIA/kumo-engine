@@ -275,7 +275,7 @@ def test_generated_weight_rejected_before_artifacts(connector_kind, tmp_path,
     )
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.build_training_task_plan',
-        lambda workflow: pytest.fail('built a weighted native task plan'),
+        lambda workflow, *, purpose: pytest.fail('built a weighted native task plan'),
     )
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.generate_train_table',
@@ -306,7 +306,7 @@ def test_generated_weight_rejected_before_artifacts(connector_kind, tmp_path,
                         lambda: 'unweighted')
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.build_training_task_plan',
-        lambda workflow: native_plan,
+        lambda workflow, *, purpose: native_plan,
     )
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.generate_train_table',
@@ -334,8 +334,17 @@ def test_generated_temporal_split_requires_time_column(graph_snapshot,
                     split='TemporalSplit([0.6, 0.3, 0.1])'))
 
 
-def test_generated_absolute_bounds_name_supported_alternative(
-        graph_snapshot, monkeypatch):
+@pytest.mark.parametrize('options,message', [
+    ({'start_time': 'NaT', 'end_time': '2025-01-21'}, 'valid timestamp'),
+    ({'start_time': '2025-01-02', 'train_start_offset': 10},
+     'Cannot specify both'),
+    ({'start_time': '2025-01-02',
+      'split': "TimeRangeSplit([('2025-01-02', '2025-01-10'), "
+               "('2025-01-10', '2025-01-21')])"},
+     'cannot be combined'),
+])
+def test_generated_invalid_bounds_fail_before_artifacts(
+        graph_snapshot, monkeypatch, options, message):
     graph, snapshot = graph_snapshot
     monkeypatch.delenv('USE_DECOUPLED_SPLITS', raising=False)
     monkeypatch.setattr(
@@ -343,20 +352,13 @@ def test_generated_absolute_bounds_name_supported_alternative(
         lambda: pytest.fail('allocated a bounded-generation run id'),
     )
 
-    with pytest.raises(
-            ValueError,
-            match="Use 'train_start_offset' and 'train_end_offset' instead"):
+    with pytest.raises(ValueError, match=message):
         PredictiveQuery(
             graph,
             'PREDICT COUNT(orders.*, 0, 1, days) > 0 FOR EACH users.id',
         ).generate_training_table(
             snapshot,
-            TrainingTableGenerationPlan(
-                start_time='2025-01-02T12:00:00',
-                end_time='2025-01-21T12:00:00',
-                timeframe_step=1,
-                split='ApproxDateOffsetSplit([0.6, 0.2, 0.2])',
-            ),
+            TrainingTableGenerationPlan(timeframe_step=1, **options),
         )
 
 
@@ -393,7 +395,7 @@ def test_forecast_generation_retains_effective_plan(graph_snapshot, tmp_path,
     )
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.build_training_task_plan',
-        lambda workflow: native_plan,
+        lambda workflow, *, purpose: native_plan,
     )
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.generate_train_table',
@@ -446,6 +448,64 @@ def test_prediction_compiler_uses_plan_forecast_horizon(graph_snapshot,
     assert request.task_dataset.task_type == 'forecasting'
     assert request.compiler_options['future_offsets_secs'] == (0, 86400, 172800,
                                                                259200)
+
+
+def test_evaluate_prediction_after_absolute_training_bounds(
+        graph, tmp_path, monkeypatch, request):
+    import pandas as pd
+    import torch
+
+    from kumo.engine._scratch import get_scratch_dir
+
+    monkeypatch.delenv('USE_DECOUPLED_SPLITS', raising=False)
+    previous = get_scratch_dir()
+    configure(scratch_dir=tmp_path / 'scratch')
+    request.addfinalizer(lambda: configure(scratch_dir=previous))
+    threads = torch.get_num_threads()
+    torch.set_num_threads(2)
+    request.addfinalizer(lambda: torch.set_num_threads(threads))
+    snapshot = graph.snapshot()
+    query = PredictiveQuery(
+        graph, 'PREDICT COUNT(events.*, 0, 7, days) > 0 FOR EACH users.ID')
+    table = query.generate_training_table(
+        snapshot, TrainingTableGenerationPlan(
+            start_time='2024-01-10', end_time='2024-02-20', timeframe_step=2))
+    plan = ModelPlan()
+    plan.training_job.num_experiments = 1
+    plan.training_job.disable_explain = True
+    plan.training_job.refit_trainval = False
+    plan.optimization.max_epochs = 1
+    plan.optimization.max_steps_per_epoch = 2
+    plan.optimization.batch_size = [32]
+    plan.model_architecture.channels = [16]
+    trainer = Trainer(plan, accelerator='cpu')
+    training_result = trainer.fit(table, snapshot=snapshot)
+    fitted = to_json_dict(trainer.training_table_generation_plan)
+    assert fitted == to_json_dict(table.generation_plan)
+    prediction = query.generate_prediction_table(
+        snapshot, prediction_time=pd.Timestamp('2024-03-01').to_pydatetime(),
+        plan=trainer.training_table_generation_plan)
+    run = trainer.predict(prediction, snapshot=snapshot,
+                          binary_classification_threshold=0.5)
+    result = trainer.evaluate(run, labels_snapshot=snapshot)
+    assert result.matured
+    assert result.labelled_fraction == 1.0
+    assert pd.Timestamp(result.anchors[0]).tz_convert(None) == pd.Timestamp(
+        '2024-03-01')
+    future_anchor = pd.Timestamp('2025-01-01')
+    future = query.generate_prediction_table(
+        snapshot, prediction_time=future_anchor.to_pydatetime(),
+        plan=trainer.training_table_generation_plan)
+    assert future.timestamps == (future_anchor.value,)
+    assert future.row_count == 50
+    assert to_json_dict(trainer.training_table_generation_plan) == fitted
+    restored = Trainer.load(training_result.bundle_dir, accelerator='cpu')
+    assert to_json_dict(restored.training_table_generation_plan) == fitted
+    reloaded_run = restored.predict(
+        prediction, snapshot=snapshot, binary_classification_threshold=0.5)
+    assert len(reloaded_run.frame) == 50
+    pd.testing.assert_frame_equal(run.frame, reloaded_run.frame,
+                                  atol=0.005, rtol=0)
 
 
 def test_custom_training_table_materializes_weight_and_manual_split(

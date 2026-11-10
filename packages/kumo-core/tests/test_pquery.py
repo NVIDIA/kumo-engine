@@ -12,6 +12,7 @@ import pytest
 from kumo_core.model_plan import TrainingTableGenerationPlan
 from kumo_core.pquery import (
     PredictiveQueryPlanError,
+    TaskPlanPurpose,
     _column_stats,
     _default_split,
     _split_options,
@@ -691,10 +692,6 @@ def test_plan_rejects_explicit_timestamps_on_a_static_query(tmp_path):
         "train_end_offset": 10
     }, 20, 29),
     ({
-        "start_time": -20,
-        "end_time": -10
-    }, 20, 29),
-    ({
         "start_time": "2024-01-11",
         "end_time": "2024-01-21"
     }, 10, 19),
@@ -702,15 +699,6 @@ def test_plan_rejects_explicit_timestamps_on_a_static_query(tmp_path):
         "start_time": "2024-01-11T00:00:00Z",
         "end_time": "2024-01-21T00:00:00Z"
     }, 10, 19),
-    ({
-        "start_time": "-INF",
-        "end_time": -10
-    }, 1, 29),
-    ({
-        "train_end_offset": 10,
-        "start_time": "2024-01-11",
-        "end_time": "2024-01-21"
-    }, 0, 29),
 ])
 def test_generation_plan_time_bounds(tmp_path, monkeypatch, options, first_day,
                                      last_day, unit):
@@ -743,6 +731,85 @@ def test_generation_plan_time_bounds(tmp_path, monkeypatch, options, first_day,
         scratch_dir=str(tmp_path), artifact_dir=str(tmp_path))
     assert plan.train_table.timestamps == tuple(
         start + day * index for index in range(last_day, first_day - 1, -1))
+
+
+@pytest.mark.parametrize('start,end,step,expected', [
+    ('2023-12-01', '2024-02-01', 3, [17, 14, 11, 8, 5, 2]),
+    ('2024-01-05', None, 3, [17, 14, 11, 8, 5]),
+    (None, '2024-01-15', 3, [12, 9, 6]),
+    ('2024-01-05', '2024-01-16', 4, [13, 9, 5]),
+    ('2024-01-05T01:00:00+01:00', '2024-01-15T01:00:00+01:00',
+     3, [12, 9, 6]),
+    ('2024-02-01', '2024-02-10', 3, None),
+])
+def test_absolute_bounds_intersect_available_labels(
+        monkeypatch, start, end, step, expected):
+    from pandas import Timestamp
+
+    graph = normalize_graph(forecasting_graph_config())
+    query = parse_and_validate_query(
+        'PREDICT COUNT(events.*, 1, 3, days) FOR EACH articles.aid', graph)
+    monkeypatch.setattr(
+        'kumo_core.pquery._temporal_target_time_range',
+        lambda *_args: (Timestamp('2024-01-01'), Timestamp('2024-01-20'), None))
+    options = TrainingTableGenerationPlan(timeframe_step=step)
+    if start is not None:
+        options.start_time = start
+    if end is not None:
+        options.end_time = end
+    if expected is None:
+        with pytest.raises(PredictiveQueryPlanError, match='No usable training'):
+            _temporal_timestamps(
+                query, '/synthetic-index', options, {},
+                'ApproxDateOffsetSplit', ())
+    else:
+        timestamps, _ = _temporal_timestamps(
+            query, '/synthetic-index', options, {}, 'ApproxDateOffsetSplit', ())
+        assert timestamps == tuple(
+            Timestamp(f'2024-01-{day:02}').value for day in expected)
+
+
+@pytest.mark.parametrize('purpose', list(TaskPlanPurpose))
+def test_explicit_anchors_follow_planning_purpose(monkeypatch, caplog, purpose):
+    from pandas import Timestamp
+
+    graph = normalize_graph(forecasting_graph_config())
+    query = parse_and_validate_query(
+        'PREDICT COUNT(events.*, 0, 1, days) > 0 FOR EACH articles.aid', graph)
+
+    def available_bounds(query, index_path):
+        assert purpose is TaskPlanPurpose.TRAINING
+        return Timestamp('2024-01-01'), Timestamp('2024-01-20'), None
+
+    monkeypatch.setattr('kumo_core.pquery._temporal_target_time_range',
+                        available_bounds)
+    off_grid = Timestamp('2024-01-06T12:34:56.123456789').value
+    explicit = (off_grid,) + tuple(
+        Timestamp(f'2024-01-{day:02}').value for day in [19, 4, 5, 20, 25, 5])
+    options = TrainingTableGenerationPlan(
+        start_time='2024-01-05', end_time='2024-02-01', timeframe_step=99)
+    timestamps, fixed = _temporal_timestamps(
+        query, '/synthetic-index', options,
+        {'flexible_boundaries': False}, 'ApproxDateOffsetSplit', explicit,
+        purpose=purpose)
+    expected = ((off_grid,) + tuple(
+        Timestamp(f'2024-01-{day:02}').value for day in [19, 5, 5])
+        if purpose is TaskPlanPurpose.TRAINING else explicit)
+    assert timestamps == expected
+    assert fixed
+    messages = [record.getMessage() for record in caplog.records
+                if record.name == 'kumo_core.pquery']
+    assert messages == ([
+        'Dropped 3 of 7 explicit training anchors outside '
+        'start_time/end_time or available label data.'
+    ] if purpose is TaskPlanPurpose.TRAINING else [])
+    if purpose is TaskPlanPurpose.TRAINING:
+        caplog.clear()
+        with pytest.raises(PredictiveQueryPlanError, match='No usable training'):
+            _temporal_timestamps(
+                query, '/synthetic-index', options, {}, 'ApproxDateOffsetSplit',
+                (Timestamp('2024-01-25').value,))
+        assert not caplog.records
 
 
 def test_latest_temporal_timestamp_uses_source_maximum(tmp_path, monkeypatch):
@@ -975,6 +1042,8 @@ def test_date_offset_split_uses_bounded_range_for_each_phase(
         graph_index_path=str(tmp_path / "index"), scratch_dir=str(tmp_path),
         artifact_dir=str(tmp_path))
 
+    # Candidate steps restart at each split; native generation reserves the
+    # complete future-label horizon.
     assert plan.train_table.timestamps == tuple(
         (origin + index * day).value for index in (9, 7, 6, 4, 3, 1))
 
@@ -1808,9 +1877,9 @@ def test_invalid_offsets_rejected_before_reading_source_stats(
         ("2023-04-29", {}, (0, 1), ["2023-03-29", "2023-02-28"]),
         ("2024-06-30", {"timeframe_step": 2}, (0, 1),
          ["2024-05-30", "2024-03-30"]),
-        ("2024-06-30", {"start_time": -3, "end_time": -1}, (0, 1),
-         ["2024-04-30", "2024-03-30"]),
         ("2024-06-30", {"train_start_offset": 3, "train_end_offset": 1},
+         (0, 1), ["2024-04-30", "2024-03-30"]),
+        ("2024-06-30", {"start_time": -3, "end_time": -1},
          (0, 1), ["2024-04-30", "2024-03-30"]),
         ("2024-06-30", {"start_time": "2024-01-31"}, (1, 2),
          ["2024-04-30", "2024-03-30", "2024-02-29"]),
@@ -1820,6 +1889,7 @@ def test_month_planning_preserves_calendar_windows(
         monkeypatch, maximum, options, window, expected):
     from pandas import Timestamp
 
+    monkeypatch.setenv('USE_DECOUPLED_SPLITS', 'true')
     graph = normalize_graph(forecasting_graph_config())
     query = parse_and_validate_query(
         f"PREDICT COUNT(events.*, {window[0]}, {window[1]}, months) "
