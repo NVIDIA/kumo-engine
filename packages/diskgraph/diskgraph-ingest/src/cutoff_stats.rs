@@ -11,7 +11,7 @@
 
 use std::borrow::Borrow;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -66,6 +66,14 @@ impl Stat {
             Stat::Bins => "bins",
         }
     }
+}
+
+/// The statistics ingest computes in the same pass, one file set per cutoff.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IngestRequests {
+    pub cutoffs: Vec<Option<i64>>,
+    pub requests: Vec<(String, String, Stat)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -974,6 +982,55 @@ impl<'a> CutoffFiles<'a> {
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
+
+impl IngestRequests {
+    /// One empty [`TableStats`] per requested table; rejects unknown tables,
+    /// edge tables, unknown columns and unsupported column types up front.
+    pub(crate) fn tables(
+        &self,
+        tables: &[crate::graph_config::TableSpec],
+        clock: TimeUnit,
+    ) -> Result<HashMap<String, TableStats>> {
+        let mut by_table: BTreeMap<&str, Vec<(&str, Stat)>> = BTreeMap::new();
+        for (table, column, stat) in &self.requests {
+            by_table.entry(table).or_default().push((column, *stat));
+        }
+        by_table
+            .into_iter()
+            .map(|(name, requests)| {
+                let table = tables
+                    .iter()
+                    .find(|table| table.name == name)
+                    .filter(|table| table.edge_table.is_none())
+                    .ok_or_else(|| anyhow!("column statistics need a node table, got {name}"))?;
+                let columns = crate::rowpack_columns(table)?;
+                let stats = TableStats::new(
+                    name,
+                    columns.iter().map(|c| (c.name.as_str(), c.logical_type)),
+                    table.create_time.as_deref(),
+                    requests,
+                    &self.cutoffs,
+                    clock,
+                )?;
+                Ok((name.to_string(), stats))
+            })
+            .collect()
+    }
+}
+
+/// Publishes what ingest collected, after `index_metadata.json` is final.
+pub(crate) fn publish_ingested(
+    tables: &HashMap<String, TableStats>,
+    index_dir: &Path,
+    index_id: &str,
+) -> Result<()> {
+    for stats in tables.values() {
+        for idx in 0..stats.cutoffs.len() {
+            stats.publish(idx, index_dir, index_id)?;
+        }
+    }
+    Ok(())
+}
 
 /// Rescans `table`'s stored rows, decoding only the needed columns, in
 /// parallel over chunks of every shard.

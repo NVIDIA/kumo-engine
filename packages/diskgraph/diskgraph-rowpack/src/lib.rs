@@ -2126,6 +2126,53 @@ pub trait ColumnValueObserver {
     fn row_stored(&mut self) {}
 }
 
+impl<A: ColumnValueObserver, B: ColumnValueObserver> ColumnValueObserver for (A, B) {
+    fn observe_i64(&mut self, col_idx: usize, value: i64) {
+        self.0.observe_i64(col_idx, value);
+        self.1.observe_i64(col_idx, value);
+    }
+    fn observe_f64(&mut self, col_idx: usize, value: f64) {
+        self.0.observe_f64(col_idx, value);
+        self.1.observe_f64(col_idx, value);
+    }
+    fn observe_string(&mut self, col_idx: usize, value: &str) {
+        self.0.observe_string(col_idx, value);
+        self.1.observe_string(col_idx, value);
+    }
+    fn observe_timestamp(&mut self, col_idx: usize, secs: i64) {
+        self.0.observe_timestamp(col_idx, secs);
+        self.1.observe_timestamp(col_idx, secs);
+    }
+    fn observe_float_list(&mut self, col_idx: usize, view: &FloatListView) {
+        self.0.observe_float_list(col_idx, view);
+        self.1.observe_float_list(col_idx, view);
+    }
+    fn observe_int64_list(&mut self, col_idx: usize, view: &IntListView) {
+        self.0.observe_int64_list(col_idx, view);
+        self.1.observe_int64_list(col_idx, view);
+    }
+    fn observe_string_list(&mut self, col_idx: usize, view: &StringListView) {
+        self.0.observe_string_list(col_idx, view);
+        self.1.observe_string_list(col_idx, view);
+    }
+    fn observe_null(&mut self, col_idx: usize) {
+        self.0.observe_null(col_idx);
+        self.1.observe_null(col_idx);
+    }
+    fn observe_parse_failure(&mut self, col_idx: usize) {
+        self.0.observe_parse_failure(col_idx);
+        self.1.observe_parse_failure(col_idx);
+    }
+    fn observe_beyond_clock(&mut self, col_idx: usize) {
+        self.0.observe_beyond_clock(col_idx);
+        self.1.observe_beyond_clock(col_idx);
+    }
+    fn row_stored(&mut self) {
+        self.0.row_stored();
+        self.1.row_stored();
+    }
+}
+
 /// Zero-sized observer that does nothing. LLVM eliminates all calls via monomorphization.
 pub struct NoOpObserver;
 

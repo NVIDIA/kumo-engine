@@ -351,6 +351,7 @@ fn run_worker(args: Args) -> Result<()> {
         index_threads: supervisor_thread_override("INDEX").or(args.index_threads),
         parent_index_path: args.parent_index_path.clone(),
         resolve_columns: Vec::new(),
+        col_stats_requests: None,
     };
     let dest = match args.dest {
         DestArg::Local => Dest::Local,
