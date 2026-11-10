@@ -1029,6 +1029,7 @@
                 Some("predict".to_string()),
                 None,
                 None,
+                None,
             )
             .unwrap();
             let d = d.bind(py);
@@ -1448,6 +1449,7 @@
                 Some("predict".to_string()),
                 None,
                 None,
+                None,
             )
             .unwrap();
             let d = d.bind(py);
@@ -1564,8 +1566,17 @@
 
         let tt_ext = pyo3::Python::attach(|py| {
             // No predict_stage_name → split path. NEW dir-API: pass the dir.
-            let d =
-                execute_tt_ingest(py, &staging, index.to_str().unwrap(), "tttrain", None, None, None).unwrap();
+            let d = execute_tt_ingest(
+                py,
+                &staging,
+                index.to_str().unwrap(),
+                "tttrain",
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
             let d = d.bind(py);
             let ext: String = d.get_item("tt_extension_path").unwrap().extract().unwrap();
             ext
@@ -1726,10 +1737,145 @@
             for (loaders, encoders) in [(Some(0), None), (None, Some(0))] {
                 let error = execute_tt_ingest(
                     py, "missing-stage", "missing-index", "test", None, loaders, encoders,
+                    None,
                 ).unwrap_err();
                 assert!(error.to_string().contains("must be positive"));
             }
         });
+    }
+
+    #[test]
+    fn tt_ingest_rejects_zero_shards() {
+        pyo3::Python::initialize();
+        pyo3::Python::attach(|py| {
+            let error = execute_tt_ingest(
+                py,
+                "missing-stage",
+                "missing-index",
+                "test",
+                None,
+                None,
+                None,
+                Some(0),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("num_shards must be positive"));
+        });
+    }
+
+    #[test]
+    fn tt_ingest_shards_roundtrip() {
+        fn source_files(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+            fn collect(
+                root: &Path,
+                directory: &Path,
+                files: &mut std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+            ) {
+                for entry in std::fs::read_dir(directory).unwrap() {
+                    let path = entry.unwrap().path();
+                    if path.is_dir() {
+                        collect(root, &path, files);
+                    } else {
+                        files.insert(
+                            path.strip_prefix(root).unwrap().to_path_buf(),
+                            std::fs::read(path).unwrap(),
+                        );
+                    }
+                }
+            }
+            let mut files = std::collections::BTreeMap::new();
+            collect(root, root, &mut files);
+            files
+        }
+
+        pyo3::Python::initialize();
+        let dir = tempfile::tempdir().unwrap();
+        let index = t_build_graph(dir.path());
+        let plan_json = serde_json::to_string(&t_node_plan(true)).unwrap();
+        let (staging, row_count): (String, u64) = pyo3::Python::attach(|py| {
+            let generated =
+                execute_tt_gen(py, &plan_json, index.to_str().unwrap(), "shards").unwrap();
+            let generated = generated.bind(py);
+            (
+                generated
+                    .get_item("staging_dir")
+                    .unwrap()
+                    .extract()
+                    .unwrap(),
+                generated.get_item("row_count").unwrap().extract().unwrap(),
+            )
+        });
+        let source = source_files(Path::new(&staging));
+        let mut fixed_payloads = Vec::new();
+        for requested in [None, Some(3), Some(3)] {
+            let extension: String = pyo3::Python::attach(|py| {
+                execute_tt_ingest(
+                    py,
+                    &staging,
+                    index.to_str().unwrap(),
+                    "shards",
+                    None,
+                    Some(1),
+                    Some(1),
+                    requested,
+                )
+                .unwrap()
+                .bind(py)
+                .get_item("tt_extension_path")
+                .unwrap()
+                .extract()
+                .unwrap()
+            });
+            let extension = Path::new(&extension);
+            let config: Value = serde_json::from_slice(
+                &std::fs::read(extension.join("diskgraph_config.json")).unwrap(),
+            )
+            .unwrap();
+            let expected = requested.unwrap_or(1);
+            assert_eq!(config["num_shards"].as_u64(), Some(expected as u64));
+            let metadata: Value = serde_json::from_slice(
+                &std::fs::read(extension.join("index_metadata.json")).unwrap(),
+            )
+            .unwrap();
+            let stages = metadata["node_types"].as_array().unwrap();
+            assert_eq!(stages.len(), 1);
+            assert_eq!(stages[0]["shards"].as_array().unwrap().len(), expected);
+            let reader = diskgraph_index::graph::GraphIndexReader::open(
+                &extension.join("index_metadata.json"),
+                extension,
+            )
+            .unwrap();
+            let table = reader.table("predict_seeds").unwrap();
+            assert_eq!(table.node_count(), row_count);
+            for id in 0..row_count {
+                let view = table.edges_for_node(id).unwrap();
+                let row = table.decode_node_data_json(&view).unwrap().unwrap();
+                assert!(row["entity_node_id"].as_u64().is_some());
+            }
+            if requested.is_some() {
+                let mut payloads =
+                    vec![
+                        std::fs::read(extension.join("nodes/predict_seeds/node_data.ctx")).unwrap(),
+                    ];
+                for shard in 0..expected {
+                    for name in ["edges.bin", "offsets.bin"] {
+                        payloads.push(
+                            std::fs::read(
+                                extension
+                                    .join(format!("nodes/predict_seeds/shard-{shard:05}/{name}")),
+                            )
+                            .unwrap(),
+                        );
+                    }
+                }
+                fixed_payloads.push(payloads);
+            }
+            assert_eq!(source_files(Path::new(&staging)), source);
+        }
+        assert_eq!(
+            fixed_payloads[0], fixed_payloads[1],
+            "fixed shard replay must preserve physical rows"
+        );
     }
 
     #[test]
@@ -1761,25 +1907,47 @@
         let stages = [diskgraph_ingest::StageSpec {
             stage_table_name: "train_seeds".to_string(), parquet_paths: parts,
         }];
-        let mut results = Vec::new();
-        for name in ["first", "second"] {
-            let output = dir.path().join(name);
-            let result = diskgraph_ingest::ingest_stage_extension_with_resolution_and_sidecars(
-                "replay", &output, &index, &stages, Default::default(), columns.clone(),
-                vec![], &[diskgraph_ingest::ResolveSpec {
-                    src_col: PRIMARY_ENTITY_COL.to_string(), dst_table: "users".to_string(),
-                    kind: diskgraph_ingest::ResolveKind::Scalar, node_id_col: "entity_node_id".to_string(),
-                }], Some(1), false, false, Some(1), Some(1),
-            ).unwrap();
-            assert_eq!(result.counts, vec![("train_seeds".to_string(), 210_000)]);
-            results.push(output);
-        }
-        for relative in ["nodes/train_seeds/node_data.ctx", "nodes/train_seeds/shard-00000/edges.bin", "nodes/train_seeds/shard-00000/offsets.bin"] {
-            assert_eq!(
-                std::fs::read(results[0].join(relative)).unwrap(),
-                std::fs::read(results[1].join(relative)).unwrap(),
-                "physical seed-row layout changed across identical multipart ingests: {relative}",
-            );
+        for num_shards in [1, 3] {
+            let mut results = Vec::new();
+            for name in ["first", "second"] {
+                let output = dir.path().join(format!("{num_shards}-{name}"));
+                let result = diskgraph_ingest::ingest_stage_extension_with_resolution_and_sidecars(
+                    "replay",
+                    &output,
+                    &index,
+                    &stages,
+                    Default::default(),
+                    columns.clone(),
+                    vec![],
+                    &[diskgraph_ingest::ResolveSpec {
+                        src_col: PRIMARY_ENTITY_COL.to_string(),
+                        dst_table: "users".to_string(),
+                        kind: diskgraph_ingest::ResolveKind::Scalar,
+                        node_id_col: "entity_node_id".to_string(),
+                    }],
+                    Some(num_shards),
+                    false,
+                    false,
+                    Some(1),
+                    Some(1),
+                )
+                .unwrap();
+                assert_eq!(result.counts, vec![("train_seeds".to_string(), 210_000)]);
+                results.push(output);
+            }
+            let mut payloads = vec!["nodes/train_seeds/node_data.ctx".to_string()];
+            for shard in 0..num_shards {
+                for name in ["edges.bin", "offsets.bin"] {
+                    payloads.push(format!("nodes/train_seeds/shard-{shard:05}/{name}"));
+                }
+            }
+            for relative in payloads {
+                assert_eq!(
+                    std::fs::read(results[0].join(&relative)).unwrap(),
+                    std::fs::read(results[1].join(&relative)).unwrap(),
+                    "physical seed-row layout changed across identical multipart ingests: {relative}",
+                );
+            }
         }
     }
 
@@ -2579,6 +2747,7 @@
                 Some("predict".to_string()),
                 None,
                 None,
+                None,
             )
             .expect(
                 "execute_tt_ingest must consume the custom gen bundle — fails today \
@@ -2675,6 +2844,7 @@
                 index.to_str().unwrap(),
                 ingest_tt_id,
                 None, // split path
+                None,
                 None,
                 None,
             )
@@ -2920,6 +3090,7 @@
                 index.to_str().unwrap(),
                 target_tt_id,
                 Some("predict".to_string()),
+                None,
                 None,
                 None,
             )

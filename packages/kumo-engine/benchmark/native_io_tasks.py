@@ -263,6 +263,20 @@ def controlled_plan(task: str, steps: int, batch_size: int):
     return plan
 
 
+def tt_shard_layout(root: Path, requested: int | None) -> dict:
+    config = json.loads(fsutil.read_text(str(root / 'diskgraph_config.json')))
+    metadata = json.loads(fsutil.read_text(str(root / 'index_metadata.json')))
+    actual = config['num_shards']
+    stages = {node['name']: len(node['shards']) for node in metadata['node_types']}
+    if not isinstance(actual, int) or actual < 1 or not stages or any(
+            count != actual for count in stages.values()):
+        raise ValueError('Published task shard metadata is inconsistent')
+    if requested is not None and actual != requested:
+        raise ValueError('Task shard memory floor changed the requested layout')
+    return dict(requested_num_shards=requested, actual_num_shards=actual,
+                stage_shards=stages)
+
+
 def logical_seed_hash(batch: HeteroData) -> str:
     """Fingerprint logical CPU training work, excluding neighbor features."""
     store = batch['train_table']
@@ -288,7 +302,7 @@ def logical_seed_hash(batch: HeteroData) -> str:
 
 @contextmanager
 def observe_work(state: dict, workers: int, threads: int, mode: str,
-                 namespace: str):
+                 namespace: str, num_shards: int | None):
     """Count completed batches without synchronizing individual CUDA batches."""
     import diskgraph
     import pytorch_lightning as pl
@@ -371,12 +385,17 @@ def observe_work(state: dict, workers: int, threads: int, mode: str,
     def ingest(staging_dir, index_path, tt_id, predict_stage_name=None):
         state['tt_ingest_calls'].append({
             'phase': state['phase'], 'namespace': tt_id,
-            'context_threads': 1, 'encode_threads': 1,
+            'context_threads': 1, 'encode_threads': 1, 'num_shards': num_shards,
         })
-        return original_ingest(
+        result = original_ingest(
             staging_dir=staging_dir, index_path=index_path, tt_id=tt_id,
             predict_stage_name=predict_stage_name,
-            context_threads=1, encode_threads=1)
+            context_threads=1, encode_threads=1, num_shards=num_shards)
+        layout = tt_shard_layout(Path(index_path) / 'train_tables' / tt_id,
+                                 num_shards)
+        state['tt_ingest_layouts'].append({
+            'phase': state['phase'], 'namespace': tt_id, **layout})
+        return result
 
     with patch.object(pl, 'Trainer', ObservedTrainer), patch(
             'kumo_core.train.diskgraph_nested_trainer._ttng_diskgraph_runtime_config',
@@ -450,7 +469,8 @@ def run(args) -> dict:
     state = dict(fits=0, completed_fits=0, optimizer_steps=0, train_batches=0,
                  phase='fit', predict_batches={name: 0 for name in (
                      'predict', 'repeat', 'reload')}, loaders=[], task_namespaces=[],
-                 tt_ingest_calls=[], logical_seed_stream=hashlib.sha256())
+                 tt_ingest_calls=[], tt_ingest_layouts=[],
+                 logical_seed_stream=hashlib.sha256())
     seconds, counters, resources_per_phase = {}, {}, {}
     group = cgroup_path()
 
@@ -512,8 +532,9 @@ def run(args) -> dict:
         return values, prediction_decisions(
             args.task, frame, manifest['ids']), None
 
+    tt_num_shards = 3 if args.task == 'temporal_link' else None
     with observe_work(state, args.workers, args.rayon_threads, args.loader_mode,
-                      namespace):
+                      namespace, tt_num_shards):
         plan = controlled_plan(args.task, args.steps, args.batch_size)
         plan.training_job.manual_seed = args.seed
         requested_model_plan = asdict(plan)
@@ -536,10 +557,13 @@ def run(args) -> dict:
                            for phase in ('fit', 'predict', 'repeat', 'reload')]
     if state['task_namespaces'] != expected_namespaces:
         raise ValueError('Trial did not ingest four distinct controlled task namespaces')
-    expected_calls = [{**record, 'context_threads': 1, 'encode_threads': 1}
+    expected_calls = [{**record, 'context_threads': 1, 'encode_threads': 1,
+                       'num_shards': tt_num_shards}
                       for record in expected_namespaces]
     if state['tt_ingest_calls'] != expected_calls:
         raise ValueError('Trial did not perform four complete controlled task ingests')
+    if len(state['tt_ingest_layouts']) != 4:
+        raise ValueError('Trial did not verify all four published task shard layouts')
     for record in expected_namespaces:
         path = snapshot.index_path / 'train_tables' / record['namespace']
         if not fsutil.exists(str(path / 'manifest.json')):
@@ -592,6 +616,7 @@ def run(args) -> dict:
                   seed=args.seed, loader_mode=args.loader_mode,
                   task_namespace=namespace,
                   tt_ingest_context_threads=1, tt_ingest_encode_threads=1,
+                  tt_ingest_num_shards=tt_num_shards,
                   requested_model_plan_sha256=requested_plan_sha)
     result = dict(
         version=1, status='PASS', task=args.task, backend=args.backend,
@@ -615,6 +640,7 @@ def run(args) -> dict:
               'loaders': state['loaders'],
               'materialization_calls': state['task_namespaces'],
               'tt_ingest_calls': state['tt_ingest_calls'],
+              'tt_ingest_layouts': state['tt_ingest_layouts'],
               'training_interval': state['training_interval']},
         predictions={'values': before.tolist(),
                      'decisions': None if decisions is None else decisions.tolist(),

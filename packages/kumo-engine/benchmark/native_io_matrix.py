@@ -104,6 +104,8 @@ def validate_work(rows: list[dict]) -> None:
             raise ValueError('Completed trial has no valid logical training stream hash')
         if logical != reference['work'].get('logical_seed_sha256'):
             raise ValueError('Backends completed different logical training streams')
+        if row['work']['tt_ingest_layouts'] != reference['work']['tt_ingest_layouts']:
+            raise ValueError('Backends used different task shard layouts')
         fields = ('optimizer_steps', 'train_batches', 'predict_rows',
                   'predict_batches')
         if any(row['work'][key] != reference['work'][key] for key in fields):

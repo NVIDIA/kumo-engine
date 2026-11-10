@@ -61,6 +61,7 @@ fn ingest_rebuilds_fact_visibility_on_destination_graph() {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
         });
@@ -78,6 +79,7 @@ fn ingest_rebuilds_fact_visibility_on_destination_graph() {
                 staging.to_str().unwrap(),
                 source.to_str().unwrap(),
                 "tt",
+                None,
                 None,
                 None,
                 None,
@@ -104,6 +106,7 @@ fn ingest_rebuilds_fact_visibility_on_destination_graph() {
                 staging.to_str().unwrap(),
                 destination.to_str().unwrap(),
                 "missing_spec",
+                None,
                 None,
                 None,
                 None,

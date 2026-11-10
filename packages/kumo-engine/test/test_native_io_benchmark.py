@@ -30,6 +30,7 @@ from native_io_tasks import (  # noqa: E402
     io_batch_multiplier,
     logical_seed_hash,
     read_table,
+    tt_shard_layout,
 )
 
 
@@ -98,6 +99,27 @@ def test_io_batch_multiplier(monkeypatch):
         monkeypatch.setenv('DG_IO_BATCH_MULT', value)
         with pytest.raises(ValueError, match='DG_IO_BATCH_MULT'):
             io_batch_multiplier()
+
+
+def test_published_shard_layout(tmp_path):
+    def publish(actual, stage_count):
+        fsutil.write_text(str(tmp_path / 'diskgraph_config.json'),
+                          json.dumps(dict(num_shards=actual)))
+        fsutil.write_text(str(tmp_path / 'index_metadata.json'), json.dumps(
+            dict(node_types=[dict(name=stage, shards=[{}] * stage_count)
+                             for stage in ('train_seeds', 'val_seeds')])))
+
+    publish(3, 3)
+    layout = tt_shard_layout(tmp_path, 3)
+    assert layout['actual_num_shards'] == 3
+    assert layout['stage_shards'] == dict(train_seeds=3, val_seeds=3)
+    publish(4, 4)
+    assert tt_shard_layout(tmp_path, None)['requested_num_shards'] is None
+    with pytest.raises(ValueError, match='memory floor'):
+        tt_shard_layout(tmp_path, 3)
+    publish(3, 2)
+    with pytest.raises(ValueError, match='inconsistent'):
+        tt_shard_layout(tmp_path, 3)
 
 
 def test_logical_seed_fingerprint():

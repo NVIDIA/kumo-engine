@@ -59,6 +59,9 @@ def result(backend: str, repeat: int, seconds: float) -> dict:
                 matrix_spec=controls,
                 work=dict(optimizer_steps=128, train_batches=128,
                           logical_seed_sha256='a' * 64,
+                          tt_ingest_layouts=[dict(
+                              phase='fit', actual_num_shards=1,
+                              stage_shards=dict(train_seeds=1))],
                           predict_rows=1000, predict_batches=4),
                 phase_seconds=dict(fit=seconds, predict=seconds / 10,
                                    e2e=seconds * 1.1))
@@ -85,6 +88,13 @@ def test_config_mismatch_rejected():
     rows = [result('mmap', 0, 20), result('direct', 0, 10)]
     rows[1]['config_sha256'] = 'different'
     with pytest.raises(ValueError, match='different model'):
+        validate_work(rows)
+
+
+def test_shard_layout_mismatch_rejected():
+    rows = [result('mmap', 0, 20), result('direct', 0, 10)]
+    rows[1]['work']['tt_ingest_layouts'][0]['actual_num_shards'] = 3
+    with pytest.raises(ValueError, match='different task shard layouts'):
         validate_work(rows)
 
 

@@ -81,10 +81,10 @@ source generation, snapshot creation and training-table generation are excluded
 and reported separately. No per-batch CUDA synchronization is installed.
 Use `--build-provenance` to attach release/compiler/wheel/source hashes; the
 runner rejects a native module that differs from that record before timing.
-The experiment pins the release native wheel to `b9aa15d9`. Python-only
-benchmark changes can reuse it after verifying no native source difference
-with `git diff --exit-code b9aa15d9 -- packages/diskgraph`. Record the
-benchmark revision separately from the wheel's build revision and binary hashes.
+Attach the native wheel's exact build revision and binary hashes. Native API
+changes require rebuilding the wheel. Later Python-only benchmark changes can
+reuse it after verifying no native source difference from that build revision.
+Record the benchmark revision separately from the native build provenance.
 
 The benchmark fixes distinct task namespaces for fit, first prediction, repeat
 and reload. Production currently includes each fit's random UUID in its seeded
@@ -104,6 +104,14 @@ requested budget.
 Every completed training batch contributes logical seed IDs, timestamps and
 available targets to `work.logical_seed_sha256`. Cross-backend comparisons
 require that hash to match as well as work counts and predictions.
+
+Temporal link prediction also requests `num_shards=3` for all four task ingests
+in both memory regimes. Automatic sizing produced one shard at 64 GiB and three
+at 4 GiB from identical staged rows, changing their physical-to-logical mapping.
+The native option is a lower bound: the ingest memory-safety floor can raise it.
+The benchmark verifies the published count and every stage's layout, rejecting
+an override above three. Scalar tasks retain automatic sizing. Requested and
+actual layouts are recorded, and matched comparisons require equal layouts.
 
 The primary CPU comparison uses one Torch/OMP/MKL/OpenBLAS thread and four
 sampler threads. A 128-batch binary diagnostic diverged with four Torch threads
