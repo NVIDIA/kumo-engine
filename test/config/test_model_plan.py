@@ -2345,6 +2345,16 @@ def test_model_plan_decoupled_splits(monkeypatch):
     assert (
         plan.training_table_generation.train_start_offset == MissingType.VALUE)
 
+    plan.training_table_generation.start_time = -10
+    with pytest.raises(ValueError, match="Integer 'start_time' bounds"):
+        plan.validate(
+            task_type=TaskType.BINARY_CLASSIFICATION,
+            query_type=QueryType.TEMPORAL,
+            has_train_table_time_col=True,
+            run_mode=RunMode.FAST,
+        )
+    plan.training_table_generation.start_time = InferredType.VALUE
+
     # Verify validation fails if train_start_offset is set
     plan.training_table_generation.train_start_offset = 10
     with pytest.raises(ValueError, match="field is not supported"):

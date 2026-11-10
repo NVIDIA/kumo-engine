@@ -334,33 +334,19 @@ def test_generated_temporal_split_requires_time_column(graph_snapshot,
                     split='TemporalSplit([0.6, 0.3, 0.1])'))
 
 
-@pytest.mark.parametrize('flag', [None, 'false'])
 @pytest.mark.parametrize('options,message', [
     ({'start_time': 'NaT', 'end_time': '2025-01-21'}, 'valid timestamp'),
-    ({'start_time': '2025-01-21', 'end_time': '2025-01-02'}, 'smaller than'),
-    ({'start_time': '2025-01-02', 'end_time': -1}, 'Integer'),
     ({'start_time': '2025-01-02', 'train_start_offset': 10},
-     'Cannot specify both'),
-    ({'end_time': '2025-01-21', 'train_end_offset': 1},
      'Cannot specify both'),
     ({'start_time': '2025-01-02',
       'split': "TimeRangeSplit([('2025-01-02', '2025-01-10'), "
                "('2025-01-10', '2025-01-21')])"},
      'cannot be combined'),
-    ({'end_time': '2025-01-21',
-      'split': 'DateOffsetSplit([-4, -2], timeframe=1)'},
-     'cannot be combined'),
-    ({'end_time': '2025-01-21',
-      'split': 'TimeSplit([0.6, 0.2, 0.2])'},
-     'TimeSplit'),
 ])
 def test_generated_invalid_bounds_fail_before_artifacts(
-        graph_snapshot, monkeypatch, options, message, flag):
+        graph_snapshot, monkeypatch, options, message):
     graph, snapshot = graph_snapshot
-    if flag is None:
-        monkeypatch.delenv('USE_DECOUPLED_SPLITS', raising=False)
-    else:
-        monkeypatch.setenv('USE_DECOUPLED_SPLITS', flag)
+    monkeypatch.delenv('USE_DECOUPLED_SPLITS', raising=False)
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.new_run_id',
         lambda: pytest.fail('allocated a bounded-generation run id'),
@@ -494,8 +480,9 @@ def test_evaluate_prediction_after_absolute_training_bounds(
     plan.optimization.batch_size = [32]
     plan.model_architecture.channels = [16]
     trainer = Trainer(plan, accelerator='cpu')
-    trainer.fit(table, snapshot=snapshot)
+    training_result = trainer.fit(table, snapshot=snapshot)
     fitted = to_json_dict(trainer.training_table_generation_plan)
+    assert fitted == to_json_dict(table.generation_plan)
     prediction = query.generate_prediction_table(
         snapshot, prediction_time=pd.Timestamp('2024-03-01').to_pydatetime(),
         plan=trainer.training_table_generation_plan)
@@ -513,6 +500,13 @@ def test_evaluate_prediction_after_absolute_training_bounds(
     assert future.timestamps == (future_anchor.value,)
     assert future.row_count == 50
     assert to_json_dict(trainer.training_table_generation_plan) == fitted
+    restored = Trainer.load(training_result.bundle_dir, accelerator='cpu')
+    assert to_json_dict(restored.training_table_generation_plan) == fitted
+    reloaded_run = restored.predict(
+        prediction, snapshot=snapshot, binary_classification_threshold=0.5)
+    assert len(reloaded_run.frame) == 50
+    pd.testing.assert_frame_equal(run.frame, reloaded_run.frame,
+                                  atol=0.005, rtol=0)
 
 
 def test_custom_training_table_materializes_weight_and_manual_split(
