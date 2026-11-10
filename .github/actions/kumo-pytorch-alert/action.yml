@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: kumo-pytorch alert
+description: >-
+  Reports a failed kumo-pytorch workflow run on main: opens an issue titled
+  "kumo-pytorch: <workflow> failing on main" and labeled kumo-pytorch-ci, or
+  comments on the open one.
+inputs:
+  github-token:
+    description: Token with issues write permission.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Open or update the issue
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_REPO: ${{ github.repository }}
+        WORKFLOW: ${{ github.workflow }}
+        COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -euo pipefail
+        label=kumo-pytorch-ci
+        title="kumo-pytorch: $WORKFLOW failing on main"
+        body=$(printf 'Workflow: %s\nCommit: %s\nRun: %s\n' "$WORKFLOW" "$COMMIT_URL" "$RUN_URL")
+        gh label create "$label" --color d93f0b --description 'kumo-pytorch CI failing on main' --force
+        number=$(gh issue list --state open --search "in:title \"$title\"" --json number,title |
+          jq -r --arg title "$title" 'map(select(.title == $title)) | first | .number // empty')
+        if [ -n "$number" ]; then
+          gh issue comment "$number" --body "$body"
+        else
+          gh issue create --title "$title" --label "$label" --body "$body"
+        fi
