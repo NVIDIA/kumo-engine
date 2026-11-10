@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import random
@@ -15,7 +16,6 @@ from tempfile import TemporaryDirectory
 from typing import Any, Literal
 from uuid import uuid4
 
-import orjson
 from kumo_core.diskgraph.sampling_artifacts import (
     ArtifactBundle,
     ArtifactFile,
@@ -396,7 +396,7 @@ class _ComputeWorker:
             if local.id != snapshot.id or local._data_version != snapshot._data_version:
                 raise ValueError("Downloaded snapshot has a different data version")
             output = Path(
-                orjson.loads((local.index_path / "ingest_stats.json").read_bytes())[
+                json.loads((local.index_path / "ingest_stats.json").read_bytes())[
                     "stats"
                 ]["output"]
             )

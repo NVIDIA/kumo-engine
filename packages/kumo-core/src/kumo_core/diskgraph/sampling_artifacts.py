@@ -6,12 +6,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
-import orjson
 from pyarrow.fs import FileSystem
 
 _CHUNK_BYTES = 8 << 20
@@ -145,23 +145,23 @@ def relocate_artifacts(
         if path.name == "checksums.json":
             checksums.append(path)
             continue
-        value = orjson.loads(path.read_bytes())
+        value = json.loads(path.read_bytes())
         relocated = _relocate(value, bundle.source_root, replacement)
         if relocated != value:
-            path.write_bytes(orjson.dumps(relocated))
+            path.write_bytes(json.dumps(relocated).encode("utf-8"))
     for path in checksums:
-        values = orjson.loads(path.read_bytes())
+        values = json.loads(path.read_bytes())
         for key in values:
             if not key.endswith("_sha256"):
                 raise ValueError("Invalid sidecar checksum entry")
             sidecar = path.parent / relative_artifact_path(key.removesuffix("_sha256"))
             with sidecar.open("rb") as reader:
                 values[key] = hashlib.file_digest(reader, "sha256").hexdigest()
-        path.write_bytes(orjson.dumps(values))
+        path.write_bytes(json.dumps(values).encode("utf-8"))
     for path in manifests:
-        value = orjson.loads(path.read_bytes())
+        value = json.loads(path.read_bytes())
         for entry in value["files"]:
             entry["size_bytes"] = (
                 (path.parent / relative_artifact_path(entry["rel_path"])).stat().st_size
             )
-        path.write_bytes(orjson.dumps(value))
+        path.write_bytes(json.dumps(value).encode("utf-8"))
