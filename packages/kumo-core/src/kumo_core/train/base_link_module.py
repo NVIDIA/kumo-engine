@@ -167,6 +167,8 @@ class BaseLinkLightningModule(BaseLightningModule, ABC):
 
     def on_predict_start(self):
         super().on_predict_start()
+        if self.task_type == TaskType.TEMPORAL_LINK_PREDICTION:
+            self.trainer.datamodule.require_single_predict_anchor()
         if self._valid_rhs_node_idx is not None:
             self._valid_rhs_node_idx = self._valid_rhs_node_idx.to(self.device)
 

@@ -2175,6 +2175,13 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         pred = self._stage_seed_time(TrainingStage.PRED)
         return pred if pred is not None else self.test_time
 
+    def require_single_predict_anchor(self) -> None:
+        from kumo_core.training.validation import require_single_anchor
+        from kumoapi.train import TrainingStage
+        anchors = self._stage_time_dict.get(TrainingStage.PRED)
+        if anchors is not None:
+            require_single_anchor(*anchors)
+
     def _seed_time_to_index_unit(self, seed_time: "Any | None") -> int | None:
         """Collapse a stage seed-time tensor to the single int the engine's
         NodeRange ``rhs_seed_time`` expects, converting Kumo's ns-canonical

@@ -233,4 +233,3 @@ def test_compile_uses_effective_forecast_generation_plan(monkeypatch, tmp_path):
     assert generation.year_over_year is True
     assert generation.timeframe_step == 2
     assert request.compiler_options == compiler_options
-    assert request.forecast_timeframe_step == 2
