@@ -23,9 +23,9 @@ ACTIVE = ' WHERE stores.IS_ACTIVE = true'
 @pytest.fixture(scope='module')
 def data(tmp_path_factory):
     # Even stores are active. With a day-50 anchor and a 7-day window, store
-    # 0 ends at the anchor and store 2 a second later; stores 50-54 open on
-    # day 53, store 56 at the window end, store 58 a second after it and
-    # stores 55, 57 and 59 on day 100.
+    # 0 ends at the anchor and store 2 a second later; store 4 has no create
+    # time, stores 50-54 open on day 53, store 56 at the window end, store 58
+    # a second after it and stores 55, 57 and 59 on day 100.
     root = tmp_path_factory.mktemp('candidate_filter')
     previous = get_scratch_dir()
     kumo.configure(scratch_dir=root / 'scratch')
@@ -39,6 +39,7 @@ def data(tmp_path_factory):
     created[[55, 57, 59]] = START + pd.Timedelta(days=100)
     created[56] = anchor + pd.Timedelta(days=7)
     created[58] = anchor + pd.Timedelta(days=7) + second
+    created[4] = pd.NaT
     ended = pd.Series(pd.NaT, index=range(60), dtype='datetime64[ns]')
     ended[0], ended[2] = anchor, anchor + second
     pd.DataFrame({
@@ -118,7 +119,7 @@ def test_prediction_ranks_only_candidates_that_pass_the_filter(
         graph, snapshot, module, trained_filter):
     trainer = _fit(graph, snapshot, QUERY.format(trained_filter), module)
 
-    candidates = set(range(2, 55, 2)) | {56}
+    candidates = (set(range(2, 55, 2)) - {4}) | {56}
     for count in (12, 60):
         frame = _predict(trainer, graph, snapshot, QUERY.format(ACTIVE), count,
                          prediction_time=START + pd.Timedelta(days=50))
@@ -143,7 +144,7 @@ def test_prediction_without_the_trained_filter_ranks_every_valid_store(
     frame = _predict(trainer, graph, snapshot, QUERY.format(''), 60,
                      prediction_time=START + pd.Timedelta(days=50))
 
-    valid = set(range(1, 55)) | {56}
+    valid = (set(range(1, 55)) - {4}) | {56}
     assert set(frame['CLASS'].astype(int)) == valid
     assert (frame.groupby('ENTITY').size() == len(valid)).all()
 
