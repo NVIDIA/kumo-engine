@@ -436,9 +436,9 @@ def test_multi_categorical_tensor_mapper_list(
     assert out.device == device
     assert out.dtype == torch.long
     assert out.values.equal(
-        torch.tensor([-1, 0, 1, 1, -1, -1, 0, -1, -1, 0, 0], device=device))
+        torch.tensor([-1, 0, 1, 1, -1, -1, 0, -1, -1, -1, 0, 0], device=device))
     assert out.offset.equal(
-        torch.tensor([0, 1, 3, 6, 7, 7, 8, 8, 9, 11], device=device))
+        torch.tensor([0, 1, 3, 6, 7, 7, 8, 9, 10, 12], device=device))
 
     out = mapper.backward(out)
     pd.testing.assert_series_equal(
