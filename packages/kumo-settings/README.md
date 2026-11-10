@@ -12,7 +12,7 @@ kumo.settings.scratch_dir()  # PosixPath('/mnt/nvme/kumo')
 
 The scratch directory resolves, first match wins, from a `kumo.settings.scoped(scratch_dir=...)`
 block, then `configure(scratch_dir=...)`, then the `KUMO_SCRATCH_DIR` environment variable, then
-`~/.cache/kumo-engine`. It must be a local filesystem path; `configure` creates it if missing.
+`~/.cache/kumo-engine`. It must be a local filesystem path; whatever writes under it creates it.
 
 From the monorepo root, run the tests with:
 

@@ -35,14 +35,12 @@ def test_resolution_order(monkeypatch, tmp_path):
     assert kumo.settings.scratch_dir() == tmp_path / "configured"
 
 
-def test_only_a_configured_scratch_dir_is_created(monkeypatch, tmp_path):
-    monkeypatch.setenv(kumo.settings.SCRATCH_DIR_ENV, str(tmp_path / "env"))
-    kumo.settings.scratch_dir()
+def test_resolving_creates_nothing(monkeypatch, tmp_path):
+    kumo.settings.configure(scratch_dir=Path("~/configured"))
+    assert kumo.settings.scratch_dir() == tmp_path / "home" / "configured"
     with kumo.settings.scoped(scratch_dir=tmp_path / "scoped"):
         kumo.settings.scratch_dir()
-    assert not (tmp_path / "env").exists() and not (tmp_path / "scoped").exists()
-    kumo.settings.configure(scratch_dir=Path("~/a/b"))
-    assert (tmp_path / "home" / "a" / "b").is_dir()
+    assert not (tmp_path / "home").exists() and not (tmp_path / "scoped").exists()
 
 
 @pytest.mark.parametrize("path", ["s3://bucket/scratch", "@stage/scratch"])
