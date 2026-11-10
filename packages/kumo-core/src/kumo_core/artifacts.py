@@ -455,7 +455,6 @@ def resolve_vital_artifact_sources(
     save_json(best_trainer.target_encoder,
               str(source_dir / "target-encoder.json"))
     from .automl.runtime import inherit_warm_start_model_plan
-    from .callbacks.train_progress_logger import AutoTrainingProgressLogger
     from .model_plan import ModelPlan
 
     resolved_plan = copy.deepcopy(training_input.model_plan)
@@ -477,7 +476,7 @@ def resolve_vital_artifact_sources(
     # Evaluation changes fit_mode; publish the mode hosted prediction and
     # warm start select, rather than whichever mode was evaluated last.
     best_trainer._set_fit_mode_to_use()
-    history = Path(auto_trainer.log_dir) / AutoTrainingProgressLogger.FILE_NAME
+    history = Path(auto_trainer.training_progress_file_path)
     return VitalArtifactSources(
         selected_checkpoint=local_path(best_trainer.best_ckpt),
         trainer_config=Path(best_trainer.original_log_dir) / "config.json",

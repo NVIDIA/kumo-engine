@@ -172,10 +172,22 @@ jobs:
     if: ${{ !inputs.build_only && !cancelled() && needs.wheel.result == 'success' && (github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
     env: {CUDA_VISIBLE_DEVICES: '', OMP_NUM_THREADS: '2', MKL_NUM_THREADS: '2', OPENBLAS_NUM_THREADS: '2'}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with: {persist-credentials: false}
+        with: {ref: "${{ github.sha }}", persist-credentials: false}
+      - name: Require the current candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_PR: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          pr="${INPUT_PR:-${GITHUB_REF_NAME#pull-request/}}"
+          [[ "$pr" =~ ^[1-9][0-9]*$ ]]
+          test "$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq .head.sha)" = "$GITHUB_SHA"
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with: {python-version: '3.12'}
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
@@ -187,7 +199,10 @@ jobs:
           for name in ${!PIP_@} ${!UV_@}; do unset "$name"; done
           export PIP_CONFIG_FILE=/dev/null
           wheels=("$RUNNER_TEMP"/pr-wheel/*.whl)
-          test "${#wheels[@]}" -eq 1 && test -f "${wheels[0]}"
+          if [ "${#wheels[@]}" -ne 1 ] || [ ! -f "${wheels[0]}" ]; then
+            echo 'Expected exactly one candidate engine wheel.' >&2
+            exit 1
+          fi
           wheel="${wheels[0]}"
           version="${wheel##*/}"
           version="${version#kumo_engine-}"
@@ -206,7 +221,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
-          name: engine-pr-cpu-lifecycle-${{ github.sha }}
+          name: engine-pr-cpu-lifecycle-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/engine-cpu-lifecycle
           retention-days: 14
 

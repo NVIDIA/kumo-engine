@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -158,6 +159,22 @@ def test_filesystem_publisher_returns_exact_published_role_paths(
     assert all(Path(path).is_file() for path in paths.values())
 
 
+def test_vital_policy_publishes_without_metric_history(tmp_path: Path) -> None:
+    sources, _ = _vital_sources(tmp_path)
+    sources = replace(sources, metric_history=None)
+    destination = tmp_path / "published"
+
+    publication = VitalArtifactPublicationPolicy().publish(sources, destination)
+
+    assert {artifact.role for artifact in publication.artifacts} == set(
+        sources.as_dict())
+    assert not (destination / "metric-history.json").exists()
+    verify_model_bundle(destination)
+    paths = FilesystemVitalArtifactPublisher(tmp_path / "second").publish(
+        sources)
+    assert "metric_history" not in paths
+
+
 def test_vital_policy_requires_every_allowlisted_file(tmp_path: Path) -> None:
     sources, _ = _vital_sources(tmp_path)
     sources.metrics.unlink()
@@ -235,7 +252,8 @@ def test_vital_source_resolution_is_core_owned(tmp_path: Path, refit) -> None:
 
     sources = resolve_vital_artifact_sources(
         training_input,
-        SimpleNamespace(log_dir=str(automl)),
+        SimpleNamespace(log_dir=str(automl),
+                        training_progress_file_path=str(history)),
         SourceTrainer(
             fit_mode=FitMode.fit,
             refit_cfg=SimpleNamespace(fitted=True, refitted_trainval=bool(refit),

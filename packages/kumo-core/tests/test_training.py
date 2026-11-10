@@ -250,11 +250,32 @@ def test_full_callable_flow_returns_mlflow_ready_result(monkeypatch, history):
         "test_accuracy": 0.8,
         "train_loss": 0.2,
     }
-    assert set(result.artifact_paths) == set(sources.as_dict())
+    expected_roles = set(VitalArtifactSources.roles())
+    if not history:
+        expected_roles.discard("metric_history")
+    assert set(result.artifact_paths) == expected_roles
     assert result.model_uri == "/published/selected_checkpoint"
     assert auto_trainer.analysis_paths == ["/artifacts/automl/analyze"]
     assert calls[-1][0] == "publish"
     json.dumps(result.to_stage_output(), allow_nan=False)
+
+
+def test_publisher_must_return_exactly_the_source_roles(monkeypatch):
+    calls = []
+    task = SimpleNamespace(task_type="binary_classification")
+    auto_trainer = AutoTrainer(Trainer())
+    bindings = make_bindings(task, auto_trainer, calls, monkeypatch)
+    sources = replace(vital_sources(), metric_history=None)
+    publisher = SimpleNamespace(publish=lambda _: {
+        role: f"/published/{role}"
+        for role in VitalArtifactSources.roles()
+    })
+    bindings = replace(bindings,
+                       resolve_vital_artifacts=lambda *args: sources,
+                       artifact_publisher=publisher)
+
+    with pytest.raises(ValueError, match="exactly the vital artifact roles"):
+        run_callable_training(resolved(task), bindings=bindings)
 
 
 def test_callable_flow_omits_non_finite_metrics(monkeypatch):
