@@ -1,0 +1,194 @@
+[1m============================= test session starts ==============================[0m
+platform linux -- Python 3.14.7, pytest-9.0.3, pluggy-1.6.0 -- /tmp/dg424-benchmark-venv/bin/python
+cachedir: .pytest_cache
+benchmark: 4.0.0 (defaults: timer=time.perf_counter disable_gc=False min_rounds=5 min_time=0.000005 max_time=1.0 calibration_precision=10 warmup=False warmup_iterations=100000)
+rootdir: /home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine
+configfile: pyproject.toml
+plugins: mock-3.15.1, env-0.6.2, timeout-2.4.0, cov-7.1.0, benchmark-4.0.0, split-0.11.0, anyio-4.14.2, typeguard-4.6.0, respx-0.22.0, asyncio-1.3.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+[1mcollecting ... [0mcollected 65 items
+
+packages/kumo-engine/test/test_native_io_benchmark.py::test_generated_workloads [32mPASSED[0m
+packages/kumo-engine/test/test_native_io_benchmark.py::test_completed_work [32mPASSED[0m
+packages/kumo-engine/test/test_native_io_benchmark.py::test_invalid_budget[--steps] usage: python -m pytest [-h] [--prepare]
+                        --task {binary,regression,temporal_link}
+                        [--backend {mmap,buffered,direct}]
+                        --prepared-dir PREPARED_DIR [--data-root DATA_ROOT]
+                        [--output OUTPUT]
+                        [--build-provenance BUILD_PROVENANCE] [--cleanup-work]
+                        [--scale SCALE] [--feature-width FEATURE_WIDTH]
+                        [--prediction-entities PREDICTION_ENTITIES]
+                        [--steps STEPS] [--batch-size BATCH_SIZE]
+                        [--workers WORKERS] [--loader-mode {auto,standalone}]
+                        [--threads THREADS] [--rayon-threads RAYON_THREADS]
+                        [--seed SEED] [--repeat REPEAT] [--regime REGIME]
+python -m pytest: error: --steps must be positive
+[32mPASSED[0m
+packages/kumo-engine/test/test_native_io_benchmark.py::test_invalid_budget[--scale] usage: python -m pytest [-h] [--prepare]
+                        --task {binary,regression,temporal_link}
+                        [--backend {mmap,buffered,direct}]
+                        --prepared-dir PREPARED_DIR [--data-root DATA_ROOT]
+                        [--output OUTPUT]
+                        [--build-provenance BUILD_PROVENANCE] [--cleanup-work]
+                        [--scale SCALE] [--feature-width FEATURE_WIDTH]
+                        [--prediction-entities PREDICTION_ENTITIES]
+                        [--steps STEPS] [--batch-size BATCH_SIZE]
+                        [--workers WORKERS] [--loader-mode {auto,standalone}]
+                        [--threads THREADS] [--rayon-threads RAYON_THREADS]
+                        [--seed SEED] [--repeat REPEAT] [--regime REGIME]
+python -m pytest: error: --scale must be positive
+[32mPASSED[0m
+packages/kumo-engine/test/test_native_io_benchmark.py::test_invalid_budget[--feature-width] usage: python -m pytest [-h] [--prepare]
+                        --task {binary,regression,temporal_link}
+                        [--backend {mmap,buffered,direct}]
+                        --prepared-dir PREPARED_DIR [--data-root DATA_ROOT]
+                        [--output OUTPUT]
+                        [--build-provenance BUILD_PROVENANCE] [--cleanup-work]
+                        [--scale SCALE] [--feature-width FEATURE_WIDTH]
+                        [--prediction-entities PREDICTION_ENTITIES]
+                        [--steps STEPS] [--batch-size BATCH_SIZE]
+                        [--workers WORKERS] [--loader-mode {auto,standalone}]
+                        [--threads THREADS] [--rayon-threads RAYON_THREADS]
+                        [--seed SEED] [--repeat REPEAT] [--regime REGIME]
+python -m pytest: error: --feature-width must be positive
+[32mPASSED[0m
+packages/kumo-engine/test/test_native_io_benchmark.py::test_invalid_budget[--threads] usage: python -m pytest [-h] [--prepare]
+                        --task {binary,regression,temporal_link}
+                        [--backend {mmap,buffered,direct}]
+                        --prepared-dir PREPARED_DIR [--data-root DATA_ROOT]
+                        [--output OUTPUT]
+                        [--build-provenance BUILD_PROVENANCE] [--cleanup-work]
+                        [--scale SCALE] [--feature-width FEATURE_WIDTH]
+                        [--prediction-entities PREDICTION_ENTITIES]
+                        [--steps STEPS] [--batch-size BATCH_SIZE]
+                        [--workers WORKERS] [--loader-mode {auto,standalone}]
+                        [--threads THREADS] [--rayon-threads RAYON_THREADS]
+                        [--seed SEED] [--repeat REPEAT] [--regime REGIME]
+python -m pytest: error: --threads must be positive
+[32mPASSED[0m
+packages/kumo-engine/test/test_native_io_benchmark.py::test_invalid_budget[--rayon-threads] usage: python -m pytest [-h] [--prepare]
+                        --task {binary,regression,temporal_link}
+                        [--backend {mmap,buffered,direct}]
+                        --prepared-dir PREPARED_DIR [--data-root DATA_ROOT]
+                        [--output OUTPUT]
+                        [--build-provenance BUILD_PROVENANCE] [--cleanup-work]
+                        [--scale SCALE] [--feature-width FEATURE_WIDTH]
+                        [--prediction-entities PREDICTION_ENTITIES]
+                        [--steps STEPS] [--batch-size BATCH_SIZE]
+                        [--workers WORKERS] [--loader-mode {auto,standalone}]
+                        [--threads THREADS] [--rayon-threads RAYON_THREADS]
+                        [--seed SEED] [--repeat REPEAT] [--regime REGIME]
+python -m pytest: error: --rayon-threads must be positive
+[32mPASSED[0m
+packages/kumo-engine/test/test_native_io_benchmark.py::test_invalid_budget[--batch-size] usage: python -m pytest [-h] [--prepare]
+                        --task {binary,regression,temporal_link}
+                        [--backend {mmap,buffered,direct}]
+                        --prepared-dir PREPARED_DIR [--data-root DATA_ROOT]
+                        [--output OUTPUT]
+                        [--build-provenance BUILD_PROVENANCE] [--cleanup-work]
+                        [--scale SCALE] [--feature-width FEATURE_WIDTH]
+                        [--prediction-entities PREDICTION_ENTITIES]
+                        [--steps STEPS] [--batch-size BATCH_SIZE]
+                        [--workers WORKERS] [--loader-mode {auto,standalone}]
+                        [--threads THREADS] [--rayon-threads RAYON_THREADS]
+                        [--seed SEED] [--repeat REPEAT] [--regime REGIME]
+python -m pytest: error: --batch-size must be positive
+[32mPASSED[0m
+packages/kumo-engine/test/test_native_io_benchmark.py::test_missing_outputs usage: python -m pytest [-h] [--prepare]
+                        --task {binary,regression,temporal_link}
+                        [--backend {mmap,buffered,direct}]
+                        --prepared-dir PREPARED_DIR [--data-root DATA_ROOT]
+                        [--output OUTPUT]
+                        [--build-provenance BUILD_PROVENANCE] [--cleanup-work]
+                        [--scale SCALE] [--feature-width FEATURE_WIDTH]
+                        [--prediction-entities PREDICTION_ENTITIES]
+                        [--steps STEPS] [--batch-size BATCH_SIZE]
+                        [--workers WORKERS] [--loader-mode {auto,standalone}]
+                        [--threads THREADS] [--rayon-threads RAYON_THREADS]
+                        [--seed SEED] [--repeat REPEAT] [--regime REGIME]
+python -m pytest: error: A measured run requires --output
+usage: python -m pytest [-h] [--prepare]
+                        --task {binary,regression,temporal_link}
+                        [--backend {mmap,buffered,direct}]
+                        --prepared-dir PREPARED_DIR [--data-root DATA_ROOT]
+                        [--output OUTPUT]
+                        [--build-provenance BUILD_PROVENANCE] [--cleanup-work]
+                        [--scale SCALE] [--feature-width FEATURE_WIDTH]
+                        [--prediction-entities PREDICTION_ENTITIES]
+                        [--steps STEPS] [--batch-size BATCH_SIZE]
+                        [--workers WORKERS] [--loader-mode {auto,standalone}]
+                        [--threads THREADS] [--rayon-threads RAYON_THREADS]
+                        [--seed SEED] [--repeat REPEAT] [--regime REGIME]
+python -m pytest: error: --prepare requires --data-root
+[32mPASSED[0m
+packages/kumo-engine/test/test_native_io_benchmark.py::test_io_batch_multiplier [32mPASSED[0m
+packages/kumo-engine/test/test_native_io_benchmark.py::test_published_shard_layout [32mPASSED[0m
+packages/kumo-engine/test/test_native_io_benchmark.py::test_logical_seed_fingerprint [32mPASSED[0m
+packages/kumo-engine/test/test_native_io_benchmark.py::test_private_trial_copy [32mPASSED[0m
+packages/kumo-engine/test/test_native_io_benchmark.py::test_clone_rejects_escape [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_balanced_order [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_work_mismatch_rejected [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_config_mismatch_rejected [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_shard_layout_mismatch_rejected [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_equal_predictions_cannot_hide_row_drift [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_missing_logical_work_rejected [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_incomplete_matrix_rejected [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_aggregate_retained_trial_directory [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_empty_matrix_rejected [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_paired_speedups [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_small_samples_exploratory[1] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_small_samples_exploratory[2] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_small_samples_exploratory[3] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_small_samples_exploratory[4] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_repeated_pilot_exploratory [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_mixed_trial_controls_rejected[source_provenance-value0] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_mixed_trial_controls_rejected[direct_cache_gib-2] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_mixed_trial_controls_rejected[memory_bytes-8589934592] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_mixed_trial_controls_rejected[build_provenance_sha256-other-build] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_mixed_trial_controls_rejected[prepared_manifest_sha256-other-manifest] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_mixed_trial_controls_rejected[cpus-4-7] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_mixed_trial_controls_rejected[io_rings-4] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_mixed_trial_controls_rejected[io_qd-64] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_mixed_trial_controls_rejected[model_seed-1] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_mixed_trial_evidence_rejected[provenance-build-value0] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_mixed_trial_evidence_rejected[provenance-torch-different] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_mixed_trial_evidence_rejected[provenance-environment-value2] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_mixed_trial_evidence_rejected[isolation-source_manifest_sha256-different] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_mixed_trial_evidence_rejected[isolation-pristine_files-value4] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_unique_trial_paths_accepted [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_mixed_native_build_rejected [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_wrong_predictions_rejected [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_bootstrap_reproducible [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_cgroup_counters [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_owned_files_boundary [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_cache_control [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_missing_io_is_unknown [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_cache_off_rejected [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_resume_requires_matching_work[steps] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_resume_requires_matching_work[loader_mode] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_resume_requires_matching_work[io_batch_mult] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_index_size_alone_is_insufficient [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_loader_mode_forwarded [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_batch_variants_not_pooled [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_batch_override_verified [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_batch_range_rejected[0] usage: native_io_matrix.py [-h] {cell,aggregate,run} ...
+native_io_matrix.py: error: --io-batch-mult must be positive
+[32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_batch_range_rejected[33] usage: native_io_matrix.py [-h] {cell,aggregate,run} ...
+native_io_matrix.py: error: Native I/O batch multiplier must be in 1..32
+[32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_batch_range_rejected[-1] usage: native_io_matrix.py [-h] {cell,aggregate,run} ...
+native_io_matrix.py: error: --io-batch-mult must be positive
+[32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_batch_default_and_bounds[None] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_batch_default_and_bounds[1] [32mPASSED[0m
+packages/kumo-engine/benchmark/test_native_io_matrix.py::test_batch_default_and_bounds[32] [32mPASSED[0m
+
+[33m=============================== warnings summary ===============================[0m
+../../kumo/.venv/lib/python3.14/site-packages/torch/jit/_script.py:1482
+../../kumo/.venv/lib/python3.14/site-packages/torch/jit/_script.py:1482
+  /home/dmawhirter/work/kumo/.venv/lib/python3.14/site-packages/torch/jit/_script.py:1482: DeprecationWarning: `torch.jit.script` is not supported in Python 3.14+ and may break. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+[33m======================== [32m65 passed[0m, [33m[1m2 warnings[0m[33m in 1.91s[0m[33m ========================[0m

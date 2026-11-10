@@ -1,0 +1,9 @@
+.....                                                                    [100%]
+=============================== warnings summary ===============================
+../../kumo/.venv/lib/python3.14/site-packages/torch/jit/_script.py:1482
+../../kumo/.venv/lib/python3.14/site-packages/torch/jit/_script.py:1482
+  /home/dmawhirter/work/kumo/.venv/lib/python3.14/site-packages/torch/jit/_script.py:1482: DeprecationWarning: `torch.jit.script` is not supported in Python 3.14+ and may break. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+5 passed, 74 deselected, 2 warnings in 0.08s

@@ -1,0 +1,144 @@
+{
+  "status": "Explicit all20checks have baseline residual; other19PASS; CI configured traversal excludes package",
+  "tools": {
+    "flake8": "7.1.2",
+    "isort": "5.12.0"
+  },
+  "failed_file": "packages/diskgraph/diskgraph-pybind/python/diskgraph/__init__.py",
+  "file_origin": {
+    "baseline_blob": "6c258e239b6bdd59a9dbedebc84fddb27d422092",
+    "same_blob_commits": [
+      "329e2ef5c0a0ff4a61c9122193c25261e3367ff3",
+      "5fd6218243f4a71be2923d09e39ed485df5b1686",
+      "2643ad774756069ed6076947081f2c7ad33944c0"
+    ],
+    "benchmark_blob": "8c92e0c25c70a265f79d7ecdd86217f0b582964e",
+    "benchmark_delta": "Only adds PageIoSnapshot/page_io_stats imports and __all__ entries (b1ae754f); core port did not change file.",
+    "flake8": "Same7F401s in upstream and benchmark; E302/E305 shift60\u219262 and118\u2192120 solely from2added import lines.",
+    "isort": "Both versions fail; diagnostic imports join an already unsorted baseline block. No claim that new names are individually sorted."
+  },
+  "ci_config": {
+    "workflow_path": ".github/workflows/linting.yml",
+    "workflow_commands": [
+      "flake8 --extend-exclude .venv .",
+      "isort --extend-skip .venv --check-only ."
+    ],
+    "setup_cfg_lines": {
+      "61": "exclude=kumo/pquery/grammar,.nodeenv,packages/diskgraph,packages/experimental/kumo-pytorch,packages/kumo-api,packages/kumo-core,packages/kumo-pql/kumopql/grammar,packages/kumo-sdk",
+      "69": "skip=.gitignore,__init__.py,kumo/pquery/grammar,packages/diskgraph,packages/experimental/kumo-pytorch,packages/kumo-api,packages/kumo-core,packages/kumo-pql/kumopql/grammar,packages/kumo-sdk",
+      "70": "skip_glob=packages/diskgraph/**,packages/experimental/kumo-pytorch/**,packages/kumo-api/**,packages/kumo-core/**,packages/kumo-pql/kumopql/grammar/**",
+      "73": "exclude=kumo/pquery/grammar,packages/diskgraph,packages/experimental/kumo-pytorch,packages/kumo-api,packages/kumo-core,packages/kumo-pql/kumopql/grammar,packages/kumo-sdk"
+    },
+    "same_exclusion_lines_in_upstream": true,
+    "interpretation": "Repository traversal applies exclusions. Explicit files bypass discovery exclusions (isort --filter-files applies skips). Full CI root checks not rerun here.",
+    "source_anchors": {
+      ".github/workflows/linting.yml": [
+        54,
+        87
+      ],
+      "setup.cfg": [
+        61,
+        69,
+        70
+      ]
+    }
+  },
+  "other19_files": [
+    "packages/diskgraph/diskgraph-pybind/python/tests/test_backend_portability.py",
+    "packages/diskgraph/diskgraph-pybind/python/tests/test_native_io_readiness.py",
+    "packages/diskgraph/diskgraph-pybind/python/tests/test_page_io_stats.py",
+    "packages/diskgraph/scripts/evict_file_cache.py",
+    "packages/kumo-core/src/kumo_core/diskgraph/lightning_data.py",
+    "packages/kumo-core/src/kumo_core/diskgraph/stores.py",
+    "packages/kumo-core/tests/test_diskgraph_auto_config.py",
+    "packages/kumo-engine/benchmark/native_io_isolation.py",
+    "packages/kumo-engine/benchmark/native_io_matrix.py",
+    "packages/kumo-engine/benchmark/native_io_resources.py",
+    "packages/kumo-engine/benchmark/native_io_results.py",
+    "packages/kumo-engine/benchmark/native_io_tasks.py",
+    "packages/kumo-engine/benchmark/test_native_io_matrix.py",
+    "packages/kumo-engine/test/test_native_io_benchmark.py",
+    "packages/kumo-engine/test/test_native_io_tasks.py",
+    "packages/kumo-engine/test/wheel_gpu_smoke.py",
+    "test/scripts/test_engine_pr_workflow.py",
+    "test/train/datamodule/test_diskgraph_lightning_data.py",
+    "tools/migrations/diskgraph/check_native_runtime.py"
+  ],
+  "other19_checks": [
+    {
+      "tool": "flake8",
+      "command": [
+        "/tmp/dg424-benchmark-venv/bin/python",
+        "-m",
+        "flake8",
+        "--jobs=1",
+        "packages/diskgraph/diskgraph-pybind/python/tests/test_backend_portability.py",
+        "packages/diskgraph/diskgraph-pybind/python/tests/test_native_io_readiness.py",
+        "packages/diskgraph/diskgraph-pybind/python/tests/test_page_io_stats.py",
+        "packages/diskgraph/scripts/evict_file_cache.py",
+        "packages/kumo-core/src/kumo_core/diskgraph/lightning_data.py",
+        "packages/kumo-core/src/kumo_core/diskgraph/stores.py",
+        "packages/kumo-core/tests/test_diskgraph_auto_config.py",
+        "packages/kumo-engine/benchmark/native_io_isolation.py",
+        "packages/kumo-engine/benchmark/native_io_matrix.py",
+        "packages/kumo-engine/benchmark/native_io_resources.py",
+        "packages/kumo-engine/benchmark/native_io_results.py",
+        "packages/kumo-engine/benchmark/native_io_tasks.py",
+        "packages/kumo-engine/benchmark/test_native_io_matrix.py",
+        "packages/kumo-engine/test/test_native_io_benchmark.py",
+        "packages/kumo-engine/test/test_native_io_tasks.py",
+        "packages/kumo-engine/test/wheel_gpu_smoke.py",
+        "test/scripts/test_engine_pr_workflow.py",
+        "test/train/datamodule/test_diskgraph_lightning_data.py",
+        "tools/migrations/diskgraph/check_native_runtime.py"
+      ],
+      "exit_code": 0,
+      "log": "/tmp/dg424-style-origin-other19-flake8.log"
+    },
+    {
+      "tool": "isort",
+      "command": [
+        "/tmp/dg424-benchmark-venv/bin/python",
+        "-m",
+        "isort",
+        "--check-only",
+        "packages/diskgraph/diskgraph-pybind/python/tests/test_backend_portability.py",
+        "packages/diskgraph/diskgraph-pybind/python/tests/test_native_io_readiness.py",
+        "packages/diskgraph/diskgraph-pybind/python/tests/test_page_io_stats.py",
+        "packages/diskgraph/scripts/evict_file_cache.py",
+        "packages/kumo-core/src/kumo_core/diskgraph/lightning_data.py",
+        "packages/kumo-core/src/kumo_core/diskgraph/stores.py",
+        "packages/kumo-core/tests/test_diskgraph_auto_config.py",
+        "packages/kumo-engine/benchmark/native_io_isolation.py",
+        "packages/kumo-engine/benchmark/native_io_matrix.py",
+        "packages/kumo-engine/benchmark/native_io_resources.py",
+        "packages/kumo-engine/benchmark/native_io_results.py",
+        "packages/kumo-engine/benchmark/native_io_tasks.py",
+        "packages/kumo-engine/benchmark/test_native_io_matrix.py",
+        "packages/kumo-engine/test/test_native_io_benchmark.py",
+        "packages/kumo-engine/test/test_native_io_tasks.py",
+        "packages/kumo-engine/test/wheel_gpu_smoke.py",
+        "test/scripts/test_engine_pr_workflow.py",
+        "test/train/datamodule/test_diskgraph_lightning_data.py",
+        "tools/migrations/diskgraph/check_native_runtime.py"
+      ],
+      "exit_code": 0,
+      "log": "/tmp/dg424-style-origin-other19-isort.log"
+    }
+  ],
+  "baseline_comparison_logs": [
+    "/tmp/dg424-style-origin-upstream329-flake8.log",
+    "/tmp/dg424-style-origin-upstream329-isort.log",
+    "/tmp/dg424-style-origin-benchmark75ca-flake8.log",
+    "/tmp/dg424-style-origin-benchmark75ca-isort.log"
+  ],
+  "report_wording": "flake8 --jobs=1 and isort --check-only pass on19remaining changedPythonfiles. Explicit checks of all20fail only on upstream-existing DiskGraph __init__.py findings, excluded by rootCI discovery; no all20clean or fullCIgreen claim.",
+  "execution_note": "Default flake8 multiprocessing encountered sandbox socketEPERM; serial --jobs=1 removes multiprocessing only.",
+  "tracked_edits": "none",
+  "parent_reported_final_checks": {
+    "authority": "Root independently executed; conveyed in delegated task message",
+    "flake8": "flake8 --jobs=1 on12CI-applicable changed files:PASS",
+    "isort": "isort --filter-files --check-only onall20changedPythonfiles:PASS (8skipped byexistingconfiguration)",
+    "explicit_all20": "Only DiskGraph __init__.py has9flake8findings andisortunsorted baseline; allother19PASS"
+  }
+}

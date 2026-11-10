@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "profile": "release",
+  "optimization": "Both staged ingest and PyO3 log Finished release profile [optimized]",
+  "compiler": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+  "cargo": "cargo 1.96.1 (356927216 2026-06-26)",
+  "toolchain_override": "RUSTUP_TOOLCHAIN=stable (installed1.96.1; repository pins1.99.1)",
+  "rustflags": "-C target-feature=+aes,+neon",
+  "build_commit_override": "75ca0e2fd6797827feda61d637b59b75e2d6f678",
+  "cargo_target_dir": "/tmp/diskgraph-424-baseline-target",
+  "source_root": "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks",
+  "source_git_head": "75ca0e2fd6797827feda61d637b59b75e2d6f678",
+  "source_state": "clean signed merge of upstream main329e2ef5",
+  "source_parents": [
+    "a3332d2700269a384f821c08cf98bc54df455537",
+    "329e2ef5c0a0ff4a61c9122193c25261e3367ff3"
+  ],
+  "source_files_sha256": {
+    "packages/diskgraph/diskgraph-index/src/page_io.rs": "9c9b924dec239b494eae3ae5d6c4ea441bb63ac0fb927e9f37afbc825e696c37",
+    "packages/diskgraph/diskgraph-pybind/src/page_io_diagnostics.rs": "8dd661e2be11bbbb2ad84de76c096a142eb46ad0317590ac3a888e901741949a",
+    "packages/diskgraph/diskgraph-pybind/src/lib.rs": "596f8cddff18c68fad02f402d92cb4cb393c1976591c0fd7343c83edabe63138",
+    "packages/diskgraph/diskgraph-pybind/python/diskgraph/__init__.py": "af686fa938070621bc7a47ac06fcca34ef56fb3d6c677c9b397d62582441fded",
+    "packages/kumo-engine/benchmark/native_io_tasks.py": "bceb00bae17b5e8da8913f04be895b1a00d26712d89277170404a629c3fa350a",
+    "packages/kumo-engine/benchmark/native_io_isolation.py": "9b4ea3ca9e03e55c886ffa1c7bac63a4477f42d1c550194836bfd42d7d6554e3",
+    "packages/kumo-engine/benchmark/native_io_matrix.py": "4e7dec70a7ab4ae7402109493294a7e4ccac6928b9ad95fe328870125446c0f4",
+    "packages/kumo-engine/benchmark/native_io_resources.py": "924d16ae178cbe06766e8bd0840065bea8f22e3a63554692b9537e32e3d8240f",
+    "packages/diskgraph/diskgraph-ingest/src/stage_extension.rs": "49230c8a68032f29b6590789d0f970c0e47b63b1e59cc118856ad1bf372b7634",
+    "packages/diskgraph/diskgraph-pybind/src/tt_executor.rs": "26453f6cbb10373666499ac1b8805f25d6ada4d8f36cb2ce3554cb8ffeefc4bd",
+    "packages/diskgraph/diskgraph-pybind/src/tt_executor/tests.rs": "b867410b97293711d78d45ed7da8de7ef589aeb4b0ad95931f68db724eab1a1a",
+    "packages/diskgraph/diskgraph-pybind/src/tt_executor/pseudo_time_tests.rs": "8952817919a3b8cc850f745e16fb5df5d1bb19f17985025c25afcfd03e4a2882",
+    "packages/diskgraph/diskgraph-pybind/src/tt_executor/pseudo_time_cross_graph_tests.rs": "3db98c045dd92716592de35ea4ffeaf12f1e72f13ca90443f6cbb080abcee5b7",
+    "packages/kumo-core/src/kumo_core/artifacts.py": "087e59d09d23f814008dc33b05e83c1f2ffb18345d23b76a80026ee05628a965",
+    "packages/kumo-core/src/kumo_core/diskgraph/lightning_data.py": "ae46af185aa2a3d484c3635c5cb97400f5008328cdf132bed40618cf0d17f1c1",
+    "packages/kumo-core/src/kumo_core/prediction.py": "d9de2d741a0eca15bcf1fe8f9bf189ccf06c25b18842e505f95b53d18b762d20",
+    "packages/kumo-core/src/kumo_core/resolved_task.py": "caec3cfae1df80542b5498f42b2b2290bc164a2041b640d621f7467f43dea476",
+    "packages/kumo-core/src/kumo_core/train/base_link_module.py": "780a137c1ddecb2545c2b310bdaff7f0753bc7f26d85f83c33a92a6fe4f173b1",
+    "packages/kumo-core/src/kumo_core/training/validation.py": "a14404246f34f69b76565b918d1adaf115b5f57a7bb2f23f8e9f9675b00bacc6",
+    "packages/kumo-core/src/kumo_core/training/workflow.py": "d37a593f56e4b95c129ad93d48cd0ae3d4400376a3628936c596c1d31460c143",
+    "packages/kumo-engine/kumo/engine/pquery/prediction_table.py": "320f069104324a5a9191f9eba1766b7deef8b346a13e8d7fba4b2847f67aaf6e",
+    "packages/kumo-engine/kumo/engine/pquery/predictive_query.py": "e1b1f6d6f7c7dc1f277e82f87a639ab2fcab8cbaa7e8fbf8060d98a7cb3a787e",
+    "packages/kumo-engine/kumo/engine/trainer/trainer.py": "12ef7dea98cb036c1e4abee06dde10c2ec67c8d3a9becdff2cd41146334f363e"
+  },
+  "wheel": {
+    "path": "/tmp/dg424-benchmark-release-75ca0e2f-wheels/diskgraph-0.1.0-cp311-abi3-linux_aarch64.whl",
+    "sha256": "b85a88f9bf09ce88f166c882ea0e1c64e97b743e071e1d924e0552c709e8be0c"
+  },
+  "native": {
+    "path": "/tmp/dg424-benchmark-venv/lib/python3.14/site-packages/diskgraph/_c.abi3.so",
+    "sha256": "a5949f96723df2684c6cdbd5884bcc25c72129c8a629bfffa49bc36f9552140f",
+    "build_commit": "75ca0e2fd6797827feda61d637b59b75e2d6f678"
+  },
+  "ingest": {
+    "path": "/tmp/dg424-benchmark-venv/lib/python3.14/site-packages/diskgraph/bin/ingest",
+    "sha256": "074c95e4702d0df4c6bc53d26786e55e3bc6735ff20bbdf2242ca8e4d9d13fb7"
+  },
+  "python": {
+    "executable": "/tmp/dg424-benchmark-venv/bin/python",
+    "version": "3.14.7 (main, Aug 14 2026, 15:33:38) [Clang 22.1.3 ]"
+  },
+  "modules": {
+    "diskgraph": "/tmp/dg424-benchmark-venv/lib/python3.14/site-packages/diskgraph/__init__.py",
+    "diskgraph._c": "/tmp/dg424-benchmark-venv/lib/python3.14/site-packages/diskgraph/_c.abi3.so",
+    "kumo_core": "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-core/src/kumo_core/__init__.py",
+    "kumo.engine": "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/kumo/engine/__init__.py",
+    "kumoapi": "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-api/kumoapi/__init__.py",
+    "kumopql": "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-pql/kumopql/__init__.py",
+    "torch": "/home/dmawhirter/work/kumo/.venv/lib/python3.14/site-packages/torch/__init__.py",
+    "torch_geometric": "/home/dmawhirter/work/kumo/.venv/lib/python3.14/site-packages/torch_geometric/__init__.py",
+    "pyarrow": "/home/dmawhirter/work/kumo/.venv/lib/python3.14/site-packages/pyarrow/__init__.py",
+    "numpy": "/home/dmawhirter/work/kumo/.venv/lib/python3.14/site-packages/numpy/__init__.py"
+  },
+  "versions": {
+    "torch": "2.12.0+cpu",
+    "torch-geometric": "2.9.0",
+    "numpy": "2.3.3",
+    "pyarrow": "24.0.0",
+    "pydantic": "2.13.5"
+  },
+  "build_log": "/tmp/dg424-benchmark-release-75ca0e2f-build-release.log",
+  "install_log": "/tmp/dg424-benchmark-release-75ca0e2f-install.log",
+  "native_tests": "/tmp/dg424-benchmark-release-75ca0e2f-native-live-tests.log",
+  "native_tests_result": "5 passed,0 skipped",
+  "native_tests_command": "DG_TEST_NATIVE_IO=1 /tmp/dg424-benchmark-run-python -m pytest -q packages/diskgraph/diskgraph-pybind/python/tests/test_page_io_stats.py (host execution)",
+  "public_shard_api_smoke": "Installed keyword num_shards defaultNone and zero-before-I/O error verified",
+  "native_qualification_carryforward": {
+    "source_commit": "a3332d2700269a384f821c08cf98bc54df455537",
+    "artifact": "/tmp/dg424-phase6-a3332d27-native-qualification.json",
+    "native_source_tree_sha": "48609409d3b847005d2069e263c42e18491f0f42",
+    "native_and_harness_diff_empty": true,
+    "scope": "60 native tests and affected Clippy are carried from identical native source; not rerun or claimed as new-main Python integration qualification"
+  }
+}

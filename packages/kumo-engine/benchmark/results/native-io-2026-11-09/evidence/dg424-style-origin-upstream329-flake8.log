@@ -1,0 +1,9 @@
+packages/diskgraph/diskgraph-pybind/python/diskgraph/__init__.py:5:1: F401 '._c.__version__' imported but unused
+packages/diskgraph/diskgraph-pybind/python/diskgraph/__init__.py:5:1: F401 '._c.BUILD_COMMIT' imported but unused
+packages/diskgraph/diskgraph-pybind/python/diskgraph/__init__.py:5:1: F401 '._c.resolve_temporal' imported but unused
+packages/diskgraph/diskgraph-pybind/python/diskgraph/__init__.py:5:1: F401 '._c.detect_multicat_delimiter' imported but unused
+packages/diskgraph/diskgraph-pybind/python/diskgraph/__init__.py:5:1: F401 '._c.multicat_delimiter_is_proven' imported but unused
+packages/diskgraph/diskgraph-pybind/python/diskgraph/__init__.py:5:1: F401 '._c.TIMESTAMP_FORMATS' imported but unused
+packages/diskgraph/diskgraph-pybind/python/diskgraph/__init__.py:5:1: F401 '._c.MULTICAT_DELIMITERS' imported but unused
+packages/diskgraph/diskgraph-pybind/python/diskgraph/__init__.py:60:1: E302 expected 2 blank lines, found 1
+packages/diskgraph/diskgraph-pybind/python/diskgraph/__init__.py:118:1: E305 expected 2 blank lines after class or function definition, found 1

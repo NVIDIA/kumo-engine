@@ -1,0 +1,27 @@
+{
+  "measured_source": "75ca0e2fd6797827feda61d637b59b75e2d6f678",
+  "validator_hashes": {
+    "benchmark/native_io_matrix.py": "4e7dec70a7ab4ae7402109493294a7e4ccac6928b9ad95fe328870125446c0f4",
+    "benchmark/native_io_resources.py": "924d16ae178cbe06766e8bd0840065bea8f22e3a63554692b9537e32e3d8240f",
+    "benchmark/native_io_isolation.py": "9b4ea3ca9e03e55c886ffa1c7bac63a4477f42d1c550194836bfd42d7d6554e3",
+    "test/wheel_gpu_smoke.py": "ba42fc09287dbb53c1b17b052bbec7ba1e14399a40a43358d662ee648a7ddbd5"
+  },
+  "replay_requires_matching_validator_files": true,
+  "replay_requires_matching_checkout_head": false,
+  "helper_candidate": "packages/kumo-engine/benchmark/native_io_results.py",
+  "current_helper": "packages/kumo-engine/benchmark/native_io_results.py",
+  "source_tree_unchanged": true,
+  "current_helper_sha256": "d3b2c2df78e529f5223aca94bc724542d1fada6c0456026f8869dbc129b081e5",
+  "original_smoke_helper": "/tmp/dg424-package-canonical.py",
+  "formal_completion_date_utc_expected": "2026-11-10",
+  "workload_report_series_date": "2026-11-09",
+  "actual_completion_timestamp_pending": false,
+  "original_smoke_helper_sha256": "8c3e5ff9682511fe4da3814545523f5823b41c4e173a5104905a2c8f65c09d14",
+  "formal_completion_utc_minute": "2026-11-10T05:12Z",
+  "completion_proof_created_utc": "2026-11-10T05:13:53.026783+00:00",
+  "original_smoke_package_recorded_path": "../calibration",
+  "packages": {
+    "formal": "formal",
+    "calibration": "calibration"
+  }
+}

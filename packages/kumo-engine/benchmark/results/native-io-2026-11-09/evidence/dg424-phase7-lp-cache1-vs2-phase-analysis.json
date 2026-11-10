@@ -1,0 +1,664 @@
+{
+  "scope": "Two n=1 exploratory pilots; no pooled timings or CI",
+  "checks": {
+    "config": true,
+    "requested_model_plan": true,
+    "predictions": true,
+    "logical_stream": true,
+    "layouts": true
+  },
+  "trials": {
+    "cache1": {
+      "path": "/tmp/dg424-phase7-lp-pressure-pilot-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-constrained-b256-cache1-n1-pilot/temporal_link-constrained-0-direct.json",
+      "phase_seconds": {
+        "fit": 101.45612645498477,
+        "predict": 2.925481091020629,
+        "e2e": 104.38276890898123,
+        "repeat": 2.8881676378659904,
+        "reload": 11.964379103155807,
+        "training": 69.33301671803929
+      },
+      "sampled_peaks_full_process": {
+        "anon": 3143294976,
+        "file": 1157849088,
+        "memory_current": 4293148672
+      },
+      "phases": {
+        "fit": {
+          "seconds": 101.45612645498477,
+          "cpu_user_seconds": 72.980746,
+          "cpu_system_seconds": 8.380713,
+          "physical_read_bytes": 5204787200,
+          "physical_write_bytes": 490127360,
+          "major_faults": 107201,
+          "minor_faults": 1959231,
+          "pgscan": 0,
+          "file_refaults": 0,
+          "memory_events_delta": {
+            "low": 0,
+            "high": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0
+          },
+          "memory_before": {
+            "memory_current": 676990976,
+            "memory_peak": 691683328
+          },
+          "memory_after": {
+            "memory_current": 3890065408,
+            "memory_peak": 3904040960
+          },
+          "anon_before_after": [
+            670740480,
+            2821287936
+          ],
+          "file_before_after": [
+            0,
+            1034522624
+          ],
+          "native_delta": {
+            "bytes": 4569005207,
+            "io_ops": 798532,
+            "submitted": 1115511,
+            "runtime_jobs": 17220,
+            "runtime_batches": 15210,
+            "cache_hits": 1547910,
+            "cache_misses": 1115511,
+            "evictions": 816387,
+            "frames_allocated": 44783,
+            "frames_reused": 1070728,
+            "frames_dropped": 6318
+          },
+          "native_gauges_before_after": {
+            "cache_capacity_pages": [
+              0,
+              262144
+            ],
+            "cache_entries": [
+              0,
+              262073
+            ]
+          }
+        },
+        "predict": {
+          "seconds": 2.925481091020629,
+          "cpu_user_seconds": 2.261955999999998,
+          "cpu_system_seconds": 0.7612439999999996,
+          "physical_read_bytes": 480907264,
+          "physical_write_bytes": 45101056,
+          "major_faults": 0,
+          "minor_faults": 265135,
+          "pgscan": 0,
+          "file_refaults": 0,
+          "memory_events_delta": {
+            "low": 0,
+            "high": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0
+          },
+          "memory_before": {
+            "memory_current": 3890061312,
+            "memory_peak": 3904040960
+          },
+          "memory_after": {
+            "memory_current": 4063801344,
+            "memory_peak": 4129751040
+          },
+          "anon_before_after": [
+            2821287936,
+            2948665344
+          ],
+          "file_before_after": [
+            1034522624,
+            1079562240
+          ],
+          "native_delta": {
+            "bytes": 480861660,
+            "io_ops": 43168,
+            "submitted": 117405,
+            "runtime_jobs": 521,
+            "runtime_batches": 492,
+            "cache_hits": 25267,
+            "cache_misses": 117405,
+            "evictions": 113114,
+            "frames_allocated": 5692,
+            "frames_reused": 111713,
+            "frames_dropped": 6369
+          },
+          "native_gauges_before_after": {
+            "cache_capacity_pages": [
+              262144,
+              262144
+            ],
+            "cache_entries": [
+              262073,
+              262121
+            ]
+          }
+        },
+        "repeat": {
+          "seconds": 2.8881676378659904,
+          "cpu_user_seconds": 2.301992999999996,
+          "cpu_system_seconds": 0.6832119999999993,
+          "physical_read_bytes": 480907264,
+          "physical_write_bytes": 45109248,
+          "major_faults": 24,
+          "minor_faults": 236508,
+          "pgscan": 1546,
+          "file_refaults": 60,
+          "memory_events_delta": {
+            "low": 0,
+            "high": 0,
+            "max": 24,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0
+          },
+          "memory_before": {
+            "memory_current": 4063801344,
+            "memory_peak": 4129751040
+          },
+          "memory_after": {
+            "memory_current": 4169728000,
+            "memory_peak": 4294967296
+          },
+          "anon_before_after": [
+            2948665344,
+            3013570560
+          ],
+          "file_before_after": [
+            1079562240,
+            1118502912
+          ],
+          "native_delta": {
+            "bytes": 480632284,
+            "io_ops": 43110,
+            "submitted": 117349,
+            "runtime_jobs": 521,
+            "runtime_batches": 495,
+            "cache_hits": 25323,
+            "cache_misses": 117349,
+            "evictions": 113147,
+            "frames_allocated": 5012,
+            "frames_reused": 112337,
+            "frames_dropped": 7594
+          },
+          "native_gauges_before_after": {
+            "cache_capacity_pages": [
+              262144,
+              262144
+            ],
+            "cache_entries": [
+              262121,
+              262135
+            ]
+          }
+        },
+        "reload": {
+          "seconds": 11.964379103155807,
+          "cpu_user_seconds": 2.5167709999999914,
+          "cpu_system_seconds": 0.9565029999999997,
+          "physical_read_bytes": 575098880,
+          "physical_write_bytes": 45105152,
+          "major_faults": 22968,
+          "minor_faults": 229518,
+          "pgscan": 24306,
+          "file_refaults": 22968,
+          "memory_events_delta": {
+            "low": 0,
+            "high": 0,
+            "max": 337,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0
+          },
+          "memory_before": {
+            "memory_current": 4169728000,
+            "memory_peak": 4294967296
+          },
+          "memory_after": {
+            "memory_current": 4235796480,
+            "memory_peak": 4294967296
+          },
+          "anon_before_after": [
+            3013570560,
+            3038691328
+          ],
+          "file_before_after": [
+            1118502912,
+            1158045696
+          ],
+          "native_delta": {
+            "bytes": 480992732,
+            "io_ops": 43200,
+            "submitted": 117437,
+            "runtime_jobs": 521,
+            "runtime_batches": 490,
+            "cache_hits": 25235,
+            "cache_misses": 117437,
+            "evictions": 113143,
+            "frames_allocated": 5414,
+            "frames_reused": 112023,
+            "frames_dropped": 5418
+          },
+          "native_gauges_before_after": {
+            "cache_capacity_pages": [
+              262144,
+              262144
+            ],
+            "cache_entries": [
+              262135,
+              262142
+            ]
+          }
+        },
+        "training": {
+          "seconds": 69.33301671803929,
+          "cpu_user_seconds": 62.659999,
+          "cpu_system_seconds": 6.290373,
+          "physical_read_bytes": 3769905152,
+          "physical_write_bytes": 43622400,
+          "major_faults": 117,
+          "minor_faults": 1452724,
+          "pgscan": 0,
+          "file_refaults": 0,
+          "memory_events_delta": {
+            "low": 0,
+            "high": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0
+          },
+          "memory_before": {
+            "memory_current": 2397908992,
+            "memory_peak": 2440245248
+          },
+          "memory_after": {
+            "memory_current": 3732811776,
+            "memory_peak": 3776393216
+          },
+          "anon_before_after": [
+            1436532736,
+            2710859776
+          ],
+          "file_before_after": [
+            933847040,
+            990785536
+          ],
+          "native_delta": {
+            "bytes": 3756499191,
+            "io_ops": 740485,
+            "submitted": 917130,
+            "runtime_jobs": 16661,
+            "runtime_batches": 14673,
+            "cache_hits": 1518462,
+            "cache_misses": 917130,
+            "evictions": 701531,
+            "frames_allocated": 0,
+            "frames_reused": 917130,
+            "frames_dropped": 0
+          },
+          "native_gauges_before_after": {
+            "cache_capacity_pages": [
+              262144,
+              262144
+            ],
+            "cache_entries": [
+              77818,
+              261901
+            ]
+          }
+        }
+      },
+      "non_training_fit_intervals": {
+        "pre_training_fit": {
+          "major_faults": 107084,
+          "physical_read_bytes": 947879936,
+          "user_seconds": 8.388090000000002,
+          "system_seconds": 1.674412,
+          "pgscan": 0,
+          "refaults": 0
+        },
+        "post_training_fit": {
+          "major_faults": 0,
+          "physical_read_bytes": 487002112,
+          "user_seconds": 1.9326569999999919,
+          "system_seconds": 0.41592800000000096,
+          "pgscan": 0,
+          "refaults": 0
+        }
+      }
+    },
+    "cache2": {
+      "path": "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-constrained-b256-cache2-n1-pilot/temporal_link-constrained-0-direct.json",
+      "phase_seconds": {
+        "fit": 125.52892801305279,
+        "predict": 18.42085531493649,
+        "e2e": 143.95099696400575,
+        "repeat": 18.85589661402628,
+        "reload": 17.869943646946922,
+        "training": 70.00600843410939
+      },
+      "sampled_peaks_full_process": {
+        "anon": 4235853824,
+        "file": 947204096,
+        "memory_current": 4294967296
+      },
+      "phases": {
+        "fit": {
+          "seconds": 125.52892801305279,
+          "cpu_user_seconds": 74.094897,
+          "cpu_system_seconds": 9.443797,
+          "physical_read_bytes": 4912967680,
+          "physical_write_bytes": 490135552,
+          "major_faults": 173175,
+          "minor_faults": 2242340,
+          "pgscan": 200739,
+          "file_refaults": 66012,
+          "memory_events_delta": {
+            "low": 0,
+            "high": 0,
+            "max": 2537,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0
+          },
+          "memory_before": {
+            "memory_current": 676503552,
+            "memory_peak": 691453952
+          },
+          "memory_after": {
+            "memory_current": 4281073664,
+            "memory_peak": 4294967296
+          },
+          "anon_before_after": [
+            670740480,
+            3768643584
+          ],
+          "file_before_after": [
+            0,
+            482668544
+          ],
+          "native_delta": {
+            "bytes": 4006816357,
+            "io_ops": 678994,
+            "submitted": 978254,
+            "runtime_jobs": 16881,
+            "runtime_batches": 15056,
+            "cache_hits": 1685167,
+            "cache_misses": 978254,
+            "evictions": 449009,
+            "frames_allocated": 45715,
+            "frames_reused": 932539,
+            "frames_dropped": 15219
+          },
+          "native_gauges_before_after": {
+            "cache_capacity_pages": [
+              0,
+              524288
+            ],
+            "cache_entries": [
+              0,
+              505175
+            ]
+          }
+        },
+        "predict": {
+          "seconds": 18.42085531493649,
+          "cpu_user_seconds": 2.4322859999999906,
+          "cpu_system_seconds": 1.3116009999999996,
+          "physical_read_bytes": 823975936,
+          "physical_write_bytes": 45105152,
+          "major_faults": 68499,
+          "minor_faults": 266422,
+          "pgscan": 143405,
+          "file_refaults": 83810,
+          "memory_events_delta": {
+            "low": 0,
+            "high": 0,
+            "max": 2214,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0
+          },
+          "memory_before": {
+            "memory_current": 4281073664,
+            "memory_peak": 4294967296
+          },
+          "memory_after": {
+            "memory_current": 4239933440,
+            "memory_peak": 4294967296
+          },
+          "anon_before_after": [
+            3768643584,
+            3929604096
+          ],
+          "file_before_after": [
+            482668544,
+            283623424
+          ],
+          "native_delta": {
+            "bytes": 480640476,
+            "io_ops": 43114,
+            "submitted": 117351,
+            "runtime_jobs": 522,
+            "runtime_batches": 492,
+            "cache_hits": 25321,
+            "cache_misses": 117351,
+            "evictions": 104682,
+            "frames_allocated": 7806,
+            "frames_reused": 109545,
+            "frames_dropped": 6298
+          },
+          "native_gauges_before_after": {
+            "cache_capacity_pages": [
+              524288,
+              524288
+            ],
+            "cache_entries": [
+              505175,
+              513682
+            ]
+          }
+        },
+        "repeat": {
+          "seconds": 18.85589661402628,
+          "cpu_user_seconds": 2.380797000000001,
+          "cpu_system_seconds": 1.1730279999999986,
+          "physical_read_bytes": 896434176,
+          "physical_write_bytes": 45113344,
+          "major_faults": 71006,
+          "minor_faults": 198415,
+          "pgscan": 133956,
+          "file_refaults": 101420,
+          "memory_events_delta": {
+            "low": 0,
+            "high": 0,
+            "max": 2287,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0
+          },
+          "memory_before": {
+            "memory_current": 4239933440,
+            "memory_peak": 4294967296
+          },
+          "memory_after": {
+            "memory_current": 4245143552,
+            "memory_peak": 4294967296
+          },
+          "anon_before_after": [
+            3929604096,
+            4024512512
+          ],
+          "file_before_after": [
+            283623424,
+            195391488
+          ],
+          "native_delta": {
+            "bytes": 480980444,
+            "io_ops": 43199,
+            "submitted": 117434,
+            "runtime_jobs": 521,
+            "runtime_batches": 494,
+            "cache_hits": 25238,
+            "cache_misses": 117434,
+            "evictions": 108311,
+            "frames_allocated": 9907,
+            "frames_reused": 107527,
+            "frames_dropped": 9142
+          },
+          "native_gauges_before_after": {
+            "cache_capacity_pages": [
+              524288,
+              524288
+            ],
+            "cache_entries": [
+              513682,
+              518566
+            ]
+          }
+        },
+        "reload": {
+          "seconds": 17.869943646946922,
+          "cpu_user_seconds": 2.6030429999999996,
+          "cpu_system_seconds": 1.0077169999999995,
+          "physical_read_bytes": 910970880,
+          "physical_write_bytes": 45109248,
+          "major_faults": 71043,
+          "minor_faults": 228901,
+          "pgscan": 139552,
+          "file_refaults": 105092,
+          "memory_events_delta": {
+            "low": 0,
+            "high": 0,
+            "max": 2630,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0
+          },
+          "memory_before": {
+            "memory_current": 4288921600,
+            "memory_peak": 4294967296
+          },
+          "memory_after": {
+            "memory_current": 4225118208,
+            "memory_peak": 4294967296
+          },
+          "anon_before_after": [
+            4024512512,
+            4057747456
+          ],
+          "file_before_after": [
+            239017984,
+            142909440
+          ],
+          "native_delta": {
+            "bytes": 480476636,
+            "io_ops": 43075,
+            "submitted": 117311,
+            "runtime_jobs": 520,
+            "runtime_batches": 487,
+            "cache_hits": 25361,
+            "cache_misses": 117311,
+            "evictions": 110443,
+            "frames_allocated": 8343,
+            "frames_reused": 108968,
+            "frames_dropped": 8344
+          },
+          "native_gauges_before_after": {
+            "cache_capacity_pages": [
+              524288,
+              524288
+            ],
+            "cache_entries": [
+              518566,
+              521316
+            ]
+          }
+        },
+        "training": {
+          "seconds": 70.00600843410939,
+          "cpu_user_seconds": 62.959103999999996,
+          "cpu_system_seconds": 6.511457999999999,
+          "physical_read_bytes": 3208310784,
+          "physical_write_bytes": 43630592,
+          "major_faults": 117,
+          "minor_faults": 1734862,
+          "pgscan": 108770,
+          "file_refaults": 0,
+          "memory_events_delta": {
+            "low": 0,
+            "high": 0,
+            "max": 1730,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0
+          },
+          "memory_before": {
+            "memory_current": 2439073792,
+            "memory_peak": 2481082368
+          },
+          "memory_after": {
+            "memory_current": 4251602944,
+            "memory_peak": 4294967296
+          },
+          "anon_before_after": [
+            1475989504,
+            3673210880
+          ],
+          "file_before_after": [
+            933847040,
+            545263616
+          ],
+          "native_delta": {
+            "bytes": 3194920645,
+            "io_ops": 621097,
+            "submitted": 780022,
+            "runtime_jobs": 16322,
+            "runtime_batches": 14514,
+            "cache_hits": 1655570,
+            "cache_misses": 780022,
+            "evictions": 349499,
+            "frames_allocated": 0,
+            "frames_reused": 780022,
+            "frames_dropped": 0
+          },
+          "native_gauges_before_after": {
+            "cache_capacity_pages": [
+              524288,
+              524288
+            ],
+            "cache_entries": [
+              78353,
+              490100
+            ]
+          }
+        }
+      },
+      "non_training_fit_intervals": {
+        "pre_training_fit": {
+          "major_faults": 107084,
+          "physical_read_bytes": 947875840,
+          "user_seconds": 8.723596,
+          "system_seconds": 1.772746,
+          "pgscan": 0,
+          "refaults": 0
+        },
+        "post_training_fit": {
+          "major_faults": 65974,
+          "physical_read_bytes": 756781056,
+          "user_seconds": 2.412197000000006,
+          "system_seconds": 1.159593000000001,
+          "pgscan": 91969,
+          "refaults": 66012
+        }
+      }
+    }
+  }
+}

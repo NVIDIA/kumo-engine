@@ -1,0 +1,23 @@
+{
+  "status": "PASS",
+  "scope": "Final report/README factual review plus durable link and evidence hash audit; no graphs/models",
+  "issues": [],
+  "evidence_entries_checked": 54,
+  "relative_links_checked": 35,
+  "artifact_files": 71,
+  "report": "packages/kumo-engine/benchmark/results/native-io-2026-11-09.md",
+  "findings": [
+    "All18 training/E2E median triples match independent90rowaudit",
+    "All9 constrained training read/scan/native-eviction medians independently match",
+    "Source/native/core/upstream pins and reconstructed native build command accurate",
+    "Resident/constrained distinction, cache shared budget, processIO attribution, noGPU/auto-worker/defaultthroughput claim explicit",
+    "n5 exploratory pairedratio definition, n1 nullCI distinction, observer/toolchain/LPvalidity limitations explicit",
+    "No unsupported causality attributed toLPcache2 orTorch4 arithmetic",
+    "Baseline-lint appendix pending author incorporation; proof delivered separately"
+  ],
+  "review_limits": [
+    "Bootstrap resampling not rerun; displayed intervals checked against saved canonical summaries, not independently estimated.",
+    "Artifact final author may append baseline-style proof after this audit; timing archives and numeric tables frozen."
+  ],
+  "displayed_interval_rows_checked_against_saved_summary": 12
+}

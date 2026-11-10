@@ -1,0 +1,27 @@
+{
+  "core_commit": "5fd6218243f4a71be2923d09e39ed485df5b1686",
+  "benchmark_commit": "75ca0e2fd6797827feda61d637b59b75e2d6f678",
+  "identical_sources": {
+    "packages/diskgraph/diskgraph-engine": {
+      "core": "48d2058a7a37f6fc483d7975d03b6ff29c308519",
+      "benchmark": "48d2058a7a37f6fc483d7975d03b6ff29c308519"
+    },
+    "packages/diskgraph/diskgraph-index/src/reader.rs": {
+      "core": "d29850c6e4fd115a1cef9e8d1252d0b2a7a523f8",
+      "benchmark": "d29850c6e4fd115a1cef9e8d1252d0b2a7a523f8"
+    },
+    "packages/diskgraph/pyproject.toml": {
+      "core": "3a04915ab1c5d9e7335482b2d672bcf9ca3cfeff",
+      "benchmark": "3a04915ab1c5d9e7335482b2d672bcf9ca3cfeff"
+    }
+  },
+  "page_io_diff": "diff --git a/packages/diskgraph/diskgraph-index/src/page_io.rs b/packages/diskgraph/diskgraph-index/src/page_io.rs\nindex 61bd5087..252257e2 100644\n--- a/packages/diskgraph/diskgraph-index/src/page_io.rs\n+++ b/packages/diskgraph/diskgraph-index/src/page_io.rs\n@@ -220,6 +220,22 @@ pub struct PageIoStats {\n     pub cache_entries: u64,\n }\n \n+pub struct PageIoRuntimeState {\n+    pub runtime_initialized: bool,\n+    pub cache_initialized: bool,\n+    pub runtime_rings: usize,\n+}\n+\n+/// Inspect initialized process-owned resources without starting I/O owners.\n+pub fn runtime_state() -> PageIoRuntimeState {\n+    let state = process_state();\n+    PageIoRuntimeState {\n+        runtime_initialized: state.runtime.get().is_some(),\n+        cache_initialized: state.cache.get().is_some_and(Result::is_ok),\n+        runtime_rings: state.runtime.get().map_or(0, |runtime| runtime.senders.len()),\n+    }\n+}\n+\n static COUNTERS: Counters = Counters {\n     submitted: AtomicU64::new(0),\n     io_ops: AtomicU64::new(0),",
+  "native_added_always_on_per_page_work": false,
+  "native_diagnostic_work": "One-time module registration; accessor/metadata/atomic-counter reads only when page_io_stats explicitly called. No counter-update or sampler/reader changes.",
+  "unquantified_measurement_overhead": [
+    "Python logical-seed hashing at every training-batch callback",
+    "Phase/training-boundary diagnostics and process/cgroup snapshot reads"
+  ],
+  "controlled_ingest_caveat": "TT1/1 and LP3 are explicitly enabled benchmark controls; end-to-end ingestion timings do not claim untouched core default worker/shard behavior.",
+  "no_overhead_measurement_performed": true
+}

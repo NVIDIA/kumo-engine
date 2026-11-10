@@ -1,0 +1,1931 @@
+{
+  "scope": "Training interval process counters and cgroup/native pressure; resource peaks cover the whole trial. Gauges are not subtracted.",
+  "groups": [
+    {
+      "task": "binary",
+      "regime": "resident",
+      "backend": "mmap",
+      "repetitions": 5,
+      "memory_limit_bytes": 68719476736,
+      "direct_cache_gib": 16,
+      "training_pid_physical_read_bytes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_pgscan": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_native_evictions": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_pressure_trials": 0,
+      "native_training_counters": {
+        "io_ops": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "bytes": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "cache_hits": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "cache_misses": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evictions": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_allocated": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_reused": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_dropped": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "median_training_pid_physical_read_bytes": 0,
+      "median_training_pgscan": 0,
+      "median_training_native_evictions": 0,
+      "median_training_native_io_ops": 0,
+      "median_training_native_cache_hits": 0,
+      "cgroup_peak_bytes": [
+        12044513280,
+        12044431360,
+        12041347072,
+        12043067392,
+        12039704576
+      ],
+      "io_stat_available": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "task": "binary",
+      "regime": "resident",
+      "backend": "buffered",
+      "repetitions": 5,
+      "memory_limit_bytes": 68719476736,
+      "direct_cache_gib": 16,
+      "training_pid_physical_read_bytes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_pgscan": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_native_evictions": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_pressure_trials": 0,
+      "native_training_counters": {
+        "io_ops": [
+          10993390,
+          10993390,
+          10993390,
+          10993390,
+          10993390
+        ],
+        "bytes": [
+          52793447999,
+          52793447999,
+          52793447999,
+          52793447999,
+          52793447999
+        ],
+        "cache_hits": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "cache_misses": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evictions": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_allocated": [
+          1872,
+          1169,
+          1335,
+          1442,
+          1551
+        ],
+        "frames_reused": [
+          12887286,
+          12887989,
+          12887823,
+          12887716,
+          12887607
+        ],
+        "frames_dropped": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "median_training_pid_physical_read_bytes": 0,
+      "median_training_pgscan": 0,
+      "median_training_native_evictions": 0,
+      "median_training_native_io_ops": 10993390,
+      "median_training_native_cache_hits": 0,
+      "cgroup_peak_bytes": [
+        12180684800,
+        12208873472,
+        12115791872,
+        12124483584,
+        12127158272
+      ],
+      "io_stat_available": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "task": "binary",
+      "regime": "resident",
+      "backend": "direct",
+      "repetitions": 5,
+      "memory_limit_bytes": 68719476736,
+      "direct_cache_gib": 16,
+      "training_pid_physical_read_bytes": [
+        7454388224,
+        7454400512,
+        7454375936,
+        7454355456,
+        7454367744
+      ],
+      "training_pgscan": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_native_evictions": [
+        69557,
+        69558,
+        69553,
+        69553,
+        69560
+      ],
+      "training_pressure_trials": 0,
+      "native_training_counters": {
+        "io_ops": [
+          1398225,
+          1398228,
+          1398222,
+          1398218,
+          1398220
+        ],
+        "bytes": [
+          7454362004,
+          7454374292,
+          7454349716,
+          7454329236,
+          7454341524
+        ],
+        "cache_hits": [
+          11069239,
+          11069236,
+          11069242,
+          11069247,
+          11069244
+        ],
+        "cache_misses": [
+          1819919,
+          1819922,
+          1819916,
+          1819911,
+          1819914
+        ],
+        "evictions": [
+          69557,
+          69558,
+          69553,
+          69553,
+          69560
+        ],
+        "frames_allocated": [
+          980,
+          1609,
+          370,
+          908,
+          864
+        ],
+        "frames_reused": [
+          1818939,
+          1818313,
+          1819546,
+          1819003,
+          1819050
+        ],
+        "frames_dropped": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "median_training_pid_physical_read_bytes": 7454375936,
+      "median_training_pgscan": 0,
+      "median_training_native_evictions": 69557,
+      "median_training_native_io_ops": 1398222,
+      "median_training_native_cache_hits": 11069242,
+      "cgroup_peak_bytes": [
+        20005216256,
+        20002471936,
+        20010250240,
+        20158701568,
+        20008579072
+      ],
+      "io_stat_available": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "task": "binary",
+      "regime": "constrained",
+      "backend": "mmap",
+      "repetitions": 5,
+      "memory_limit_bytes": 4294967296,
+      "direct_cache_gib": 2,
+      "training_pid_physical_read_bytes": [
+        9978015744,
+        9980612608,
+        9969074176,
+        9978290176,
+        9980506112
+      ],
+      "training_pgscan": [
+        1739695,
+        1744751,
+        1738415,
+        1741210,
+        1742118
+      ],
+      "training_native_evictions": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_pressure_trials": 5,
+      "native_training_counters": {
+        "io_ops": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "bytes": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "cache_hits": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "cache_misses": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evictions": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_allocated": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_reused": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_dropped": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "median_training_pid_physical_read_bytes": 9978290176,
+      "median_training_pgscan": 1741210,
+      "median_training_native_evictions": 0,
+      "median_training_native_io_ops": 0,
+      "median_training_native_cache_hits": 0,
+      "cgroup_peak_bytes": [
+        4294967296,
+        4294967296,
+        4294967296,
+        4294967296,
+        4294967296
+      ],
+      "io_stat_available": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "task": "binary",
+      "regime": "constrained",
+      "backend": "buffered",
+      "repetitions": 5,
+      "memory_limit_bytes": 4294967296,
+      "direct_cache_gib": 2,
+      "training_pid_physical_read_bytes": [
+        9080332288,
+        9085526016,
+        9085956096,
+        9081057280,
+        9085194240
+      ],
+      "training_pgscan": [
+        1534589,
+        1537559,
+        1537864,
+        1536753,
+        1537158
+      ],
+      "training_native_evictions": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_pressure_trials": 5,
+      "native_training_counters": {
+        "io_ops": [
+          10993390,
+          10993390,
+          10993390,
+          10993390,
+          10993390
+        ],
+        "bytes": [
+          52793447999,
+          52793447999,
+          52793447999,
+          52793447999,
+          52793447999
+        ],
+        "cache_hits": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "cache_misses": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evictions": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_allocated": [
+          2231,
+          1700,
+          1328,
+          1958,
+          1412
+        ],
+        "frames_reused": [
+          12886927,
+          12887458,
+          12887830,
+          12887200,
+          12887746
+        ],
+        "frames_dropped": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "median_training_pid_physical_read_bytes": 9085194240,
+      "median_training_pgscan": 1537158,
+      "median_training_native_evictions": 0,
+      "median_training_native_io_ops": 10993390,
+      "median_training_native_cache_hits": 0,
+      "cgroup_peak_bytes": [
+        4294967296,
+        4294967296,
+        4294967296,
+        4294967296,
+        4294967296
+      ],
+      "io_stat_available": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "task": "binary",
+      "regime": "constrained",
+      "backend": "direct",
+      "repetitions": 5,
+      "memory_limit_bytes": 4294967296,
+      "direct_cache_gib": 2,
+      "training_pid_physical_read_bytes": [
+        12154286080,
+        12154814464,
+        12154626048,
+        12154683392,
+        12154580992
+      ],
+      "training_pgscan": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_native_evictions": [
+        2450074,
+        2450212,
+        2450156,
+        2450153,
+        2450128
+      ],
+      "training_pressure_trials": 5,
+      "native_training_counters": {
+        "io_ops": [
+          2295727,
+          2295852,
+          2295781,
+          2295819,
+          2295790
+        ],
+        "bytes": [
+          12136512364,
+          12137040748,
+          12136852332,
+          12136909676,
+          12136807276
+        ],
+        "cache_hits": [
+          9926123,
+          9925994,
+          9926040,
+          9926026,
+          9926051
+        ],
+        "cache_misses": [
+          2963035,
+          2963164,
+          2963118,
+          2963132,
+          2963107
+        ],
+        "evictions": [
+          2450074,
+          2450212,
+          2450156,
+          2450153,
+          2450128
+        ],
+        "frames_allocated": [
+          1968,
+          1110,
+          1034,
+          2202,
+          1286
+        ],
+        "frames_reused": [
+          2961067,
+          2962054,
+          2962084,
+          2960930,
+          2961821
+        ],
+        "frames_dropped": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "median_training_pid_physical_read_bytes": 12154626048,
+      "median_training_pgscan": 0,
+      "median_training_native_evictions": 2450153,
+      "median_training_native_io_ops": 2295790,
+      "median_training_native_cache_hits": 9926040,
+      "cgroup_peak_bytes": [
+        4002439168,
+        3890003968,
+        3997392896,
+        3895296000,
+        4015665152
+      ],
+      "io_stat_available": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "task": "regression",
+      "regime": "resident",
+      "backend": "mmap",
+      "repetitions": 5,
+      "memory_limit_bytes": 68719476736,
+      "direct_cache_gib": 16,
+      "training_pid_physical_read_bytes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_pgscan": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_native_evictions": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_pressure_trials": 0,
+      "native_training_counters": {
+        "io_ops": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "bytes": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "cache_hits": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "cache_misses": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evictions": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_allocated": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_reused": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_dropped": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "median_training_pid_physical_read_bytes": 0,
+      "median_training_pgscan": 0,
+      "median_training_native_evictions": 0,
+      "median_training_native_io_ops": 0,
+      "median_training_native_cache_hits": 0,
+      "cgroup_peak_bytes": [
+        11865989120,
+        11871899648,
+        11895902208,
+        11942248448,
+        11860090880
+      ],
+      "io_stat_available": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "task": "regression",
+      "regime": "resident",
+      "backend": "buffered",
+      "repetitions": 5,
+      "memory_limit_bytes": 68719476736,
+      "direct_cache_gib": 16,
+      "training_pid_physical_read_bytes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_pgscan": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_native_evictions": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_pressure_trials": 0,
+      "native_training_counters": {
+        "io_ops": [
+          10434617,
+          10434617,
+          10434617,
+          10434617,
+          10434617
+        ],
+        "bytes": [
+          51589420694,
+          51589420694,
+          51589420694,
+          51589420694,
+          51589420694
+        ],
+        "cache_hits": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "cache_misses": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evictions": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_allocated": [
+          1006,
+          867,
+          857,
+          853,
+          909
+        ],
+        "frames_reused": [
+          12594132,
+          12594271,
+          12594281,
+          12594285,
+          12594229
+        ],
+        "frames_dropped": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "median_training_pid_physical_read_bytes": 0,
+      "median_training_pgscan": 0,
+      "median_training_native_evictions": 0,
+      "median_training_native_io_ops": 10434617,
+      "median_training_native_cache_hits": 0,
+      "cgroup_peak_bytes": [
+        11941847040,
+        11997585408,
+        12019228672,
+        12042792960,
+        12023554048
+      ],
+      "io_stat_available": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "task": "regression",
+      "regime": "resident",
+      "backend": "direct",
+      "repetitions": 5,
+      "memory_limit_bytes": 68719476736,
+      "direct_cache_gib": 16,
+      "training_pid_physical_read_bytes": [
+        7520731136,
+        7520722944,
+        7520956416,
+        7520731136,
+        7520870400
+      ],
+      "training_pgscan": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_native_evictions": [
+        68384,
+        68383,
+        68386,
+        68386,
+        68384
+      ],
+      "training_pressure_trials": 0,
+      "native_training_counters": {
+        "io_ops": [
+          1400581,
+          1400579,
+          1400621,
+          1400581,
+          1400600
+        ],
+        "bytes": [
+          7520706106,
+          7520697914,
+          7520931386,
+          7520706106,
+          7520845370
+        ],
+        "cache_hits": [
+          10759022,
+          10759024,
+          10758967,
+          10759022,
+          10758988
+        ],
+        "cache_misses": [
+          1836116,
+          1836114,
+          1836171,
+          1836116,
+          1836150
+        ],
+        "evictions": [
+          68384,
+          68383,
+          68386,
+          68386,
+          68384
+        ],
+        "frames_allocated": [
+          405,
+          464,
+          445,
+          455,
+          226
+        ],
+        "frames_reused": [
+          1835711,
+          1835650,
+          1835726,
+          1835661,
+          1835924
+        ],
+        "frames_dropped": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "median_training_pid_physical_read_bytes": 7520731136,
+      "median_training_pgscan": 0,
+      "median_training_native_evictions": 68384,
+      "median_training_native_io_ops": 1400581,
+      "median_training_native_cache_hits": 10759022,
+      "cgroup_peak_bytes": [
+        19606982656,
+        19592073216,
+        19699920896,
+        19602313216,
+        19607732224
+      ],
+      "io_stat_available": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "task": "regression",
+      "regime": "constrained",
+      "backend": "mmap",
+      "repetitions": 5,
+      "memory_limit_bytes": 4294967296,
+      "direct_cache_gib": 2,
+      "training_pid_physical_read_bytes": [
+        9935859712,
+        9939861504,
+        9941233664,
+        9934671872,
+        9931984896
+      ],
+      "training_pgscan": [
+        1674282,
+        1678118,
+        1677482,
+        1677290,
+        1670826
+      ],
+      "training_native_evictions": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_pressure_trials": 5,
+      "native_training_counters": {
+        "io_ops": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "bytes": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "cache_hits": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "cache_misses": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evictions": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_allocated": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_reused": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_dropped": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "median_training_pid_physical_read_bytes": 9935859712,
+      "median_training_pgscan": 1677290,
+      "median_training_native_evictions": 0,
+      "median_training_native_io_ops": 0,
+      "median_training_native_cache_hits": 0,
+      "cgroup_peak_bytes": [
+        4294967296,
+        4294967296,
+        4294967296,
+        4294967296,
+        4294967296
+      ],
+      "io_stat_available": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "task": "regression",
+      "regime": "constrained",
+      "backend": "buffered",
+      "repetitions": 5,
+      "memory_limit_bytes": 4294967296,
+      "direct_cache_gib": 2,
+      "training_pid_physical_read_bytes": [
+        9313828864,
+        9322733568,
+        9324802048,
+        9325731840,
+        9323257856
+      ],
+      "training_pgscan": [
+        1532337,
+        1536186,
+        1535299,
+        1537311,
+        1536751
+      ],
+      "training_native_evictions": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_pressure_trials": 5,
+      "native_training_counters": {
+        "io_ops": [
+          10434617,
+          10434617,
+          10434617,
+          10434617,
+          10434617
+        ],
+        "bytes": [
+          51589420694,
+          51589420694,
+          51589420694,
+          51589420694,
+          51589420694
+        ],
+        "cache_hits": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "cache_misses": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evictions": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_allocated": [
+          1760,
+          1516,
+          1485,
+          1507,
+          1768
+        ],
+        "frames_reused": [
+          12593378,
+          12593622,
+          12593653,
+          12593631,
+          12593370
+        ],
+        "frames_dropped": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "median_training_pid_physical_read_bytes": 9323257856,
+      "median_training_pgscan": 1536186,
+      "median_training_native_evictions": 0,
+      "median_training_native_io_ops": 10434617,
+      "median_training_native_cache_hits": 0,
+      "cgroup_peak_bytes": [
+        4294967296,
+        4294967296,
+        4294967296,
+        4294967296,
+        4294967296
+      ],
+      "io_stat_available": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "task": "regression",
+      "regime": "constrained",
+      "backend": "direct",
+      "repetitions": 5,
+      "memory_limit_bytes": 4294967296,
+      "direct_cache_gib": 2,
+      "training_pid_physical_read_bytes": [
+        11747385344,
+        11746385920,
+        11747094528,
+        11747217408,
+        11747540992
+      ],
+      "training_pgscan": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_native_evictions": [
+        2344195,
+        2344185,
+        2344252,
+        2344228,
+        2344257
+      ],
+      "training_pressure_trials": 5,
+      "native_training_counters": {
+        "io_ops": [
+          2168460,
+          2168273,
+          2168446,
+          2168421,
+          2168543
+        ],
+        "bytes": [
+          11730256043,
+          11729256619,
+          11729965227,
+          11730088107,
+          11730411691
+        ],
+        "cache_hits": [
+          9731288,
+          9731532,
+          9731359,
+          9731329,
+          9731250
+        ],
+        "cache_misses": [
+          2863850,
+          2863606,
+          2863779,
+          2863809,
+          2863888
+        ],
+        "evictions": [
+          2344195,
+          2344185,
+          2344252,
+          2344228,
+          2344257
+        ],
+        "frames_allocated": [
+          744,
+          599,
+          502,
+          576,
+          438
+        ],
+        "frames_reused": [
+          2863106,
+          2863007,
+          2863277,
+          2863233,
+          2863450
+        ],
+        "frames_dropped": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "median_training_pid_physical_read_bytes": 11747217408,
+      "median_training_pgscan": 0,
+      "median_training_native_evictions": 2344228,
+      "median_training_native_io_ops": 2168446,
+      "median_training_native_cache_hits": 9731329,
+      "cgroup_peak_bytes": [
+        3710775296,
+        3841150976,
+        3705376768,
+        3685302272,
+        3706064896
+      ],
+      "io_stat_available": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "task": "temporal_link",
+      "regime": "resident",
+      "backend": "mmap",
+      "repetitions": 5,
+      "memory_limit_bytes": 68719476736,
+      "direct_cache_gib": 16,
+      "training_pid_physical_read_bytes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_pgscan": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_native_evictions": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_pressure_trials": 0,
+      "native_training_counters": {
+        "io_ops": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "bytes": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "cache_hits": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "cache_misses": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evictions": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_allocated": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_reused": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_dropped": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "median_training_pid_physical_read_bytes": 0,
+      "median_training_pgscan": 0,
+      "median_training_native_evictions": 0,
+      "median_training_native_io_ops": 0,
+      "median_training_native_cache_hits": 0,
+      "cgroup_peak_bytes": [
+        13031862272,
+        13072728064,
+        13085372416,
+        13026291712,
+        13024161792
+      ],
+      "io_stat_available": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "task": "temporal_link",
+      "regime": "resident",
+      "backend": "buffered",
+      "repetitions": 5,
+      "memory_limit_bytes": 68719476736,
+      "direct_cache_gib": 16,
+      "training_pid_physical_read_bytes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_pgscan": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_native_evictions": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_pressure_trials": 0,
+      "native_training_counters": {
+        "io_ops": [
+          1861779,
+          1861779,
+          1861779,
+          1861779,
+          1861779
+        ],
+        "bytes": [
+          9976087523,
+          9976087523,
+          9976087523,
+          9976087523,
+          9976087523
+        ],
+        "cache_hits": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "cache_misses": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evictions": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_allocated": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_reused": [
+          2435592,
+          2435592,
+          2435592,
+          2435592,
+          2435592
+        ],
+        "frames_dropped": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "median_training_pid_physical_read_bytes": 0,
+      "median_training_pgscan": 0,
+      "median_training_native_evictions": 0,
+      "median_training_native_io_ops": 1861779,
+      "median_training_native_cache_hits": 0,
+      "cgroup_peak_bytes": [
+        13501100032,
+        13468172288,
+        13523001344,
+        13534121984,
+        13631053824
+      ],
+      "io_stat_available": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "task": "temporal_link",
+      "regime": "resident",
+      "backend": "direct",
+      "repetitions": 5,
+      "memory_limit_bytes": 68719476736,
+      "direct_cache_gib": 16,
+      "training_pid_physical_read_bytes": [
+        2854191104,
+        2854244352,
+        2854064128,
+        2854678528,
+        2854072320
+      ],
+      "training_pgscan": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_native_evictions": [
+        1342,
+        1342,
+        1342,
+        1342,
+        1342
+      ],
+      "training_pressure_trials": 0,
+      "native_training_counters": {
+        "io_ops": [
+          545387,
+          545400,
+          545356,
+          545506,
+          545358
+        ],
+        "bytes": [
+          2854158136,
+          2854211384,
+          2854031160,
+          2854645560,
+          2854039352
+        ],
+        "cache_hits": [
+          1738768,
+          1738755,
+          1738799,
+          1738649,
+          1738797
+        ],
+        "cache_misses": [
+          696824,
+          696837,
+          696793,
+          696943,
+          696795
+        ],
+        "evictions": [
+          1342,
+          1342,
+          1342,
+          1342,
+          1342
+        ],
+        "frames_allocated": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_reused": [
+          696824,
+          696837,
+          696793,
+          696943,
+          696795
+        ],
+        "frames_dropped": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "median_training_pid_physical_read_bytes": 2854191104,
+      "median_training_pgscan": 0,
+      "median_training_native_evictions": 1342,
+      "median_training_native_io_ops": 545387,
+      "median_training_native_cache_hits": 1738768,
+      "cgroup_peak_bytes": [
+        18369482752,
+        18378248192,
+        18517839872,
+        18494902272,
+        18384232448
+      ],
+      "io_stat_available": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "task": "temporal_link",
+      "regime": "constrained",
+      "backend": "mmap",
+      "repetitions": 5,
+      "memory_limit_bytes": 4294967296,
+      "direct_cache_gib": 1,
+      "training_pid_physical_read_bytes": [
+        2462740480,
+        2464833536,
+        2466418688,
+        2465243136,
+        2470916096
+      ],
+      "training_pgscan": [
+        153459,
+        146035,
+        147571,
+        154225,
+        163708
+      ],
+      "training_native_evictions": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_pressure_trials": 5,
+      "native_training_counters": {
+        "io_ops": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "bytes": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "cache_hits": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "cache_misses": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evictions": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_allocated": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_reused": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_dropped": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "median_training_pid_physical_read_bytes": 2465243136,
+      "median_training_pgscan": 153459,
+      "median_training_native_evictions": 0,
+      "median_training_native_io_ops": 0,
+      "median_training_native_cache_hits": 0,
+      "cgroup_peak_bytes": [
+        4294967296,
+        4294967296,
+        4294967296,
+        4294967296,
+        4294967296
+      ],
+      "io_stat_available": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "task": "temporal_link",
+      "regime": "constrained",
+      "backend": "buffered",
+      "repetitions": 5,
+      "memory_limit_bytes": 4294967296,
+      "direct_cache_gib": 1,
+      "training_pid_physical_read_bytes": [
+        2327429120,
+        2332315648,
+        2330959872,
+        2318753792,
+        2325471232
+      ],
+      "training_pgscan": [
+        199161,
+        211168,
+        205503,
+        196640,
+        205292
+      ],
+      "training_native_evictions": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_pressure_trials": 5,
+      "native_training_counters": {
+        "io_ops": [
+          1861779,
+          1861779,
+          1861779,
+          1861779,
+          1861779
+        ],
+        "bytes": [
+          9976087523,
+          9976087523,
+          9976087523,
+          9976087523,
+          9976087523
+        ],
+        "cache_hits": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "cache_misses": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evictions": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_allocated": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_reused": [
+          2435592,
+          2435592,
+          2435592,
+          2435592,
+          2435592
+        ],
+        "frames_dropped": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "median_training_pid_physical_read_bytes": 2327429120,
+      "median_training_pgscan": 205292,
+      "median_training_native_evictions": 0,
+      "median_training_native_io_ops": 1861779,
+      "median_training_native_cache_hits": 0,
+      "cgroup_peak_bytes": [
+        4294967296,
+        4294967296,
+        4294967296,
+        4294967296,
+        4294967296
+      ],
+      "io_stat_available": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "task": "temporal_link",
+      "regime": "constrained",
+      "backend": "direct",
+      "repetitions": 5,
+      "memory_limit_bytes": 4294967296,
+      "direct_cache_gib": 1,
+      "training_pid_physical_read_bytes": [
+        3770466304,
+        3770376192,
+        3769933824,
+        3770281984,
+        3770564608
+      ],
+      "training_pgscan": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "training_native_evictions": [
+        701582,
+        701643,
+        701596,
+        701551,
+        701614
+      ],
+      "training_pressure_trials": 5,
+      "native_training_counters": {
+        "io_ops": [
+          740608,
+          740587,
+          740498,
+          740582,
+          740657
+        ],
+        "bytes": [
+          3757060343,
+          3756970231,
+          3756527863,
+          3756876023,
+          3757158647
+        ],
+        "cache_hits": [
+          1518325,
+          1518347,
+          1518455,
+          1518370,
+          1518301
+        ],
+        "cache_misses": [
+          917267,
+          917245,
+          917137,
+          917222,
+          917291
+        ],
+        "evictions": [
+          701582,
+          701643,
+          701596,
+          701551,
+          701614
+        ],
+        "frames_allocated": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "frames_reused": [
+          917267,
+          917245,
+          917137,
+          917222,
+          917291
+        ],
+        "frames_dropped": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "median_training_pid_physical_read_bytes": 3770376192,
+      "median_training_pgscan": 0,
+      "median_training_native_evictions": 701596,
+      "median_training_native_io_ops": 740587,
+      "median_training_native_cache_hits": 1518347,
+      "cgroup_peak_bytes": [
+        4294967296,
+        4294967296,
+        4294967296,
+        4294967296,
+        4294967296
+      ],
+      "io_stat_available": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    }
+  ]
+}

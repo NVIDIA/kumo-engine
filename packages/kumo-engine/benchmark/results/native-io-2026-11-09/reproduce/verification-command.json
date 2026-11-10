@@ -1,0 +1,12 @@
+[
+  "/tmp/dg424-benchmark-run-python",
+  "/tmp/dg424-final-result-verification.py",
+  "--repo-root",
+  "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks",
+  "--package",
+  "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/results/native-io-2026-11-09/formal",
+  "--scratch",
+  "/tmp/dg424-final-five-negatives-v1",
+  "--output",
+  "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/results/native-io-2026-11-09/evidence/package-verification.json"
+]

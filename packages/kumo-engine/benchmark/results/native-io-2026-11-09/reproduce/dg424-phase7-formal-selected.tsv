@@ -1,0 +1,8 @@
+#LP constrained cache1 selected after cache2 all-phase pressure regression; other caches await root selection
+#task	regime	batches	cache_GiB	repetitions	class
+binary	resident	1280	16	5	formal
+binary	constrained	1280	2	5	formal
+regression	resident	1280	16	5	formal
+regression	constrained	1280	2	5	formal
+temporal_link	resident	256	16	5	formal
+temporal_link	constrained	256	1	5	formal

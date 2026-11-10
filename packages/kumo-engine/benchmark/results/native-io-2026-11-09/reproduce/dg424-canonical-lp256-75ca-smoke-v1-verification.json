@@ -1,0 +1,36 @@
+{
+  "status": "PASS",
+  "package": "/tmp/dg424-canonical-lp256-75ca-smoke-v1",
+  "raw_objects_exact": 3,
+  "comparison_status": "EXPLORATORY",
+  "all_confidence_intervals_null": true,
+  "rejections": [
+    {
+      "name": "archive_corruption",
+      "status": "PASS",
+      "reason": "Raw archive hash mismatch"
+    },
+    {
+      "name": "controls_reconstruction_even_with_updated_file_hash",
+      "status": "PASS",
+      "reason": "Reconstructed control oracle differs"
+    },
+    {
+      "name": "executed_command_reconstruction",
+      "status": "PASS",
+      "reason": "Control or executed-command replay differs: lp256"
+    },
+    {
+      "name": "formal_short_training",
+      "status": "PASS",
+      "reason": "Formal trial did not meet training duration"
+    },
+    {
+      "name": "formal_missing_training_pressure",
+      "status": "PASS",
+      "reason": "Formal constrained training lacks measured pressure"
+    }
+  ],
+  "archive_bytes": 720914,
+  "heavy_work_complete": true
+}

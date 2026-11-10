@@ -1,0 +1,2308 @@
+{
+  "schema_version": 2,
+  "diagnostic": false,
+  "canonical_code": {
+    "benchmark/native_io_matrix.py": "4e7dec70a7ab4ae7402109493294a7e4ccac6928b9ad95fe328870125446c0f4",
+    "benchmark/native_io_resources.py": "924d16ae178cbe06766e8bd0840065bea8f22e3a63554692b9537e32e3d8240f",
+    "benchmark/native_io_isolation.py": "9b4ea3ca9e03e55c886ffa1c7bac63a4477f42d1c550194836bfd42d7d6554e3",
+    "test/wheel_gpu_smoke.py": "ba42fc09287dbb53c1b17b052bbec7ba1e14399a40a43358d662ee648a7ddbd5"
+  },
+  "helper_sha256": "d3b2c2df78e529f5223aca94bc724542d1fada6c0456026f8869dbc129b081e5",
+  "repetitions": 1,
+  "order_seed": 20261109,
+  "prediction_atol": 1e-06,
+  "archive_sha256": "f01ffba48465f534763a010f28be9c10830a09e7b3ea5376c43f3f70a2dab467",
+  "archive_records": 21,
+  "variants": {
+    "binary-resident-b1280-cache16-n1-pilot": {
+      "status": "VALIDATED",
+      "input_dir": "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n1-pilot",
+      "summary": {
+        "status": "PASS",
+        "repetitions": 1,
+        "pilot": true,
+        "comparison_status": "EXPLORATORY",
+        "prediction_atol": 1e-06,
+        "speedup_definition": "mmap / candidate",
+        "uncertainty": "unavailable below five paired repetitions",
+        "groups": {
+          "binary/resident": {
+            "mmap": {
+              "fit": {
+                "seconds": [
+                  41.410156816011295
+                ],
+                "median_seconds": 41.410156816011295,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              },
+              "predict": {
+                "seconds": [
+                  1.7434442860540003
+                ],
+                "median_seconds": 1.7434442860540003,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              },
+              "e2e": {
+                "seconds": [
+                  43.154820032883435
+                ],
+                "median_seconds": 43.154820032883435,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              },
+              "training": {
+                "seconds": [
+                  36.047331602079794
+                ],
+                "median_seconds": 36.047331602079794,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              }
+            },
+            "buffered": {
+              "fit": {
+                "seconds": [
+                  52.99095822800882
+                ],
+                "median_seconds": 52.99095822800882,
+                "paired_speedups": [
+                  0.7814570296659328
+                ],
+                "median_speedup": 0.7814570296659328,
+                "speedup_bootstrap_95": null
+              },
+              "predict": {
+                "seconds": [
+                  1.7898187160026282
+                ],
+                "median_seconds": 1.7898187160026282,
+                "paired_speedups": [
+                  0.9740898731620148
+                ],
+                "median_speedup": 0.9740898731620148,
+                "speedup_bootstrap_95": null
+              },
+              "e2e": {
+                "seconds": [
+                  54.78198792412877
+                ],
+                "median_seconds": 54.78198792412877,
+                "paired_speedups": [
+                  0.7877556413734278
+                ],
+                "median_speedup": 0.7877556413734278,
+                "speedup_bootstrap_95": null
+              },
+              "training": {
+                "seconds": [
+                  47.53859635209665
+                ],
+                "median_seconds": 47.53859635209665,
+                "paired_speedups": [
+                  0.758275051604252
+                ],
+                "median_speedup": 0.758275051604252,
+                "speedup_bootstrap_95": null
+              }
+            },
+            "direct": {
+              "fit": {
+                "seconds": [
+                  64.19302741787396
+                ],
+                "median_seconds": 64.19302741787396,
+                "paired_speedups": [
+                  0.6450880801499792
+                ],
+                "median_speedup": 0.6450880801499792,
+                "speedup_bootstrap_95": null
+              },
+              "predict": {
+                "seconds": [
+                  1.867645151913166
+                ],
+                "median_seconds": 1.867645151913166,
+                "paired_speedups": [
+                  0.9334986810894255
+                ],
+                "median_speedup": 0.9334986810894255,
+                "speedup_bootstrap_95": null
+              },
+              "e2e": {
+                "seconds": [
+                  66.06184924487025
+                ],
+                "median_seconds": 66.06184924487025,
+                "paired_speedups": [
+                  0.6532487438085824
+                ],
+                "median_speedup": 0.6532487438085824,
+                "speedup_bootstrap_95": null
+              },
+              "training": {
+                "seconds": [
+                  58.53754689707421
+                ],
+                "median_seconds": 58.53754689707421,
+                "paired_speedups": [
+                  0.6157984663324095
+                ],
+                "median_speedup": 0.6157984663324095,
+                "speedup_bootstrap_95": null
+              }
+            }
+          }
+        },
+        "training_pressure": [
+          {
+            "task": "binary",
+            "regime": "resident",
+            "backend": "buffered",
+            "repeat": 0,
+            "evidence": {
+              "interval_seconds": 47.53859635209665,
+              "training_pid": 3750678,
+              "pid_physical_read_bytes": 0,
+              "physical_read_scope": "training process; excludes unobserved child I/O",
+              "cgroup_pgscan": 0,
+              "native_cache_evictions": 0,
+              "index_to_memory_ratio": 0.15368288992613088,
+              "has_pressure_evidence": false
+            }
+          },
+          {
+            "task": "binary",
+            "regime": "resident",
+            "backend": "direct",
+            "repeat": 0,
+            "evidence": {
+              "interval_seconds": 58.53754689707421,
+              "training_pid": 3751857,
+              "pid_physical_read_bytes": 7454392320,
+              "physical_read_scope": "training process; excludes unobserved child I/O",
+              "cgroup_pgscan": 0,
+              "native_cache_evictions": 69558,
+              "index_to_memory_ratio": 0.15368288992613088,
+              "has_pressure_evidence": false
+            }
+          },
+          {
+            "task": "binary",
+            "regime": "resident",
+            "backend": "mmap",
+            "repeat": 0,
+            "evidence": {
+              "interval_seconds": 36.047331602079794,
+              "training_pid": 3751273,
+              "pid_physical_read_bytes": 0,
+              "physical_read_scope": "training process; excludes unobserved child I/O",
+              "cgroup_pgscan": 0,
+              "native_cache_evictions": 0,
+              "index_to_memory_ratio": 0.15368288992613088,
+              "has_pressure_evidence": false
+            }
+          }
+        ]
+      },
+      "control_oracles": {
+        "binary/resident": "8667ab72803a93d70f2d77e514dcd3aa8e6b68538a5d5760c7a9e55e8d16ff44"
+      },
+      "trials": [
+        {
+          "task": "binary",
+          "regime": "resident",
+          "backend": "buffered",
+          "repeat": 0,
+          "command": [
+            "/tmp/dg424-benchmark-run-python",
+            "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/native_io_tasks.py",
+            "--task",
+            "binary",
+            "--backend",
+            "buffered",
+            "--prepared-dir",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n1-pilot/binary-resident-0-buffered-prepared",
+            "--output",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n1-pilot/binary-resident-0-buffered.json",
+            "--steps",
+            "1280",
+            "--batch-size",
+            "256",
+            "--workers",
+            "0",
+            "--threads",
+            "1",
+            "--rayon-threads",
+            "4",
+            "--seed",
+            "0",
+            "--repeat",
+            "0",
+            "--regime",
+            "resident",
+            "--loader-mode",
+            "standalone",
+            "--cleanup-work",
+            "--build-provenance",
+            "/tmp/dg424-benchmark-release-75ca0e2f-provenance.json"
+          ]
+        },
+        {
+          "task": "binary",
+          "regime": "resident",
+          "backend": "direct",
+          "repeat": 0,
+          "command": [
+            "/tmp/dg424-benchmark-run-python",
+            "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/native_io_tasks.py",
+            "--task",
+            "binary",
+            "--backend",
+            "direct",
+            "--prepared-dir",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n1-pilot/binary-resident-0-direct-prepared",
+            "--output",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n1-pilot/binary-resident-0-direct.json",
+            "--steps",
+            "1280",
+            "--batch-size",
+            "256",
+            "--workers",
+            "0",
+            "--threads",
+            "1",
+            "--rayon-threads",
+            "4",
+            "--seed",
+            "0",
+            "--repeat",
+            "0",
+            "--regime",
+            "resident",
+            "--loader-mode",
+            "standalone",
+            "--cleanup-work",
+            "--build-provenance",
+            "/tmp/dg424-benchmark-release-75ca0e2f-provenance.json"
+          ]
+        },
+        {
+          "task": "binary",
+          "regime": "resident",
+          "backend": "mmap",
+          "repeat": 0,
+          "command": [
+            "/tmp/dg424-benchmark-run-python",
+            "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/native_io_tasks.py",
+            "--task",
+            "binary",
+            "--backend",
+            "mmap",
+            "--prepared-dir",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n1-pilot/binary-resident-0-mmap-prepared",
+            "--output",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n1-pilot/binary-resident-0-mmap.json",
+            "--steps",
+            "1280",
+            "--batch-size",
+            "256",
+            "--workers",
+            "0",
+            "--threads",
+            "1",
+            "--rayon-threads",
+            "4",
+            "--seed",
+            "0",
+            "--repeat",
+            "0",
+            "--regime",
+            "resident",
+            "--loader-mode",
+            "standalone",
+            "--cleanup-work",
+            "--build-provenance",
+            "/tmp/dg424-benchmark-release-75ca0e2f-provenance.json"
+          ]
+        }
+      ]
+    },
+    "binary-constrained-b1280-cache2-n1-pilot": {
+      "status": "VALIDATED",
+      "input_dir": "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n1-pilot",
+      "summary": {
+        "status": "PASS",
+        "repetitions": 1,
+        "pilot": true,
+        "comparison_status": "EXPLORATORY",
+        "prediction_atol": 1e-06,
+        "speedup_definition": "mmap / candidate",
+        "uncertainty": "unavailable below five paired repetitions",
+        "groups": {
+          "binary/constrained": {
+            "mmap": {
+              "fit": {
+                "seconds": [
+                  343.2808193359524
+                ],
+                "median_seconds": 343.2808193359524,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              },
+              "predict": {
+                "seconds": [
+                  5.141122453846037
+                ],
+                "median_seconds": 5.141122453846037,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              },
+              "e2e": {
+                "seconds": [
+                  348.4231029609218
+                ],
+                "median_seconds": 348.4231029609218,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              },
+              "training": {
+                "seconds": [
+                  327.1791056909133
+                ],
+                "median_seconds": 327.1791056909133,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              }
+            },
+            "buffered": {
+              "fit": {
+                "seconds": [
+                  61.879479471128434
+                ],
+                "median_seconds": 61.879479471128434,
+                "paired_speedups": [
+                  5.547571218599527
+                ],
+                "median_speedup": 5.547571218599527,
+                "speedup_bootstrap_95": null
+              },
+              "predict": {
+                "seconds": [
+                  1.7949832340236753
+                ],
+                "median_seconds": 1.7949832340236753,
+                "paired_speedups": [
+                  2.8641618241311257
+                ],
+                "median_speedup": 2.8641618241311257,
+                "speedup_bootstrap_95": null
+              },
+              "e2e": {
+                "seconds": [
+                  63.67563432501629
+                ],
+                "median_seconds": 63.67563432501629,
+                "paired_speedups": [
+                  5.471843455574915
+                ],
+                "median_speedup": 5.471843455574915,
+                "speedup_bootstrap_95": null
+              },
+              "training": {
+                "seconds": [
+                  50.30914102005772
+                ],
+                "median_seconds": 50.30914102005772,
+                "paired_speedups": [
+                  6.50337292700884
+                ],
+                "median_speedup": 6.50337292700884,
+                "speedup_bootstrap_95": null
+              }
+            },
+            "direct": {
+              "fit": {
+                "seconds": [
+                  70.31882572290488
+                ],
+                "median_seconds": 70.31882572290488,
+                "paired_speedups": [
+                  4.881776904077849
+                ],
+                "median_speedup": 4.881776904077849,
+                "speedup_bootstrap_95": null
+              },
+              "predict": {
+                "seconds": [
+                  1.8457278420682997
+                ],
+                "median_seconds": 1.8457278420682997,
+                "paired_speedups": [
+                  2.7854174037299884
+                ],
+                "median_speedup": 2.7854174037299884,
+                "speedup_bootstrap_95": null
+              },
+              "e2e": {
+                "seconds": [
+                  72.16569822491147
+                ],
+                "median_seconds": 72.16569822491147,
+                "paired_speedups": [
+                  4.828098550020636
+                ],
+                "median_speedup": 4.828098550020636,
+                "speedup_bootstrap_95": null
+              },
+              "training": {
+                "seconds": [
+                  58.29182561207563
+                ],
+                "median_seconds": 58.29182561207563,
+                "paired_speedups": [
+                  5.612778502911315
+                ],
+                "median_speedup": 5.612778502911315,
+                "speedup_bootstrap_95": null
+              }
+            }
+          }
+        },
+        "training_pressure": [
+          {
+            "task": "binary",
+            "regime": "constrained",
+            "backend": "buffered",
+            "repeat": 0,
+            "evidence": {
+              "interval_seconds": 50.30914102005772,
+              "training_pid": 3748372,
+              "pid_physical_read_bytes": 9080143872,
+              "physical_read_scope": "training process; excludes unobserved child I/O",
+              "cgroup_pgscan": 1533743,
+              "native_cache_evictions": 0,
+              "index_to_memory_ratio": 2.458926238818094,
+              "has_pressure_evidence": true
+            }
+          },
+          {
+            "task": "binary",
+            "regime": "constrained",
+            "backend": "direct",
+            "repeat": 0,
+            "evidence": {
+              "interval_seconds": 58.29182561207563,
+              "training_pid": 3749977,
+              "pid_physical_read_bytes": 12154007552,
+              "physical_read_scope": "training process; excludes unobserved child I/O",
+              "cgroup_pgscan": 0,
+              "native_cache_evictions": 2450028,
+              "index_to_memory_ratio": 2.458926238818094,
+              "has_pressure_evidence": true
+            }
+          },
+          {
+            "task": "binary",
+            "regime": "constrained",
+            "backend": "mmap",
+            "repeat": 0,
+            "evidence": {
+              "interval_seconds": 327.1791056909133,
+              "training_pid": 3748967,
+              "pid_physical_read_bytes": 9974870016,
+              "physical_read_scope": "training process; excludes unobserved child I/O",
+              "cgroup_pgscan": 1738650,
+              "native_cache_evictions": 0,
+              "index_to_memory_ratio": 2.458926238818094,
+              "has_pressure_evidence": true
+            }
+          }
+        ]
+      },
+      "control_oracles": {
+        "binary/constrained": "b3d6181753ab1b958b80f0e8b22b46a8f636edf3aca0087534abbe947bd8e1a3"
+      },
+      "trials": [
+        {
+          "task": "binary",
+          "regime": "constrained",
+          "backend": "buffered",
+          "repeat": 0,
+          "command": [
+            "/tmp/dg424-benchmark-run-python",
+            "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/native_io_tasks.py",
+            "--task",
+            "binary",
+            "--backend",
+            "buffered",
+            "--prepared-dir",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n1-pilot/binary-constrained-0-buffered-prepared",
+            "--output",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n1-pilot/binary-constrained-0-buffered.json",
+            "--steps",
+            "1280",
+            "--batch-size",
+            "256",
+            "--workers",
+            "0",
+            "--threads",
+            "1",
+            "--rayon-threads",
+            "4",
+            "--seed",
+            "0",
+            "--repeat",
+            "0",
+            "--regime",
+            "constrained",
+            "--loader-mode",
+            "standalone",
+            "--cleanup-work",
+            "--build-provenance",
+            "/tmp/dg424-benchmark-release-75ca0e2f-provenance.json"
+          ]
+        },
+        {
+          "task": "binary",
+          "regime": "constrained",
+          "backend": "direct",
+          "repeat": 0,
+          "command": [
+            "/tmp/dg424-benchmark-run-python",
+            "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/native_io_tasks.py",
+            "--task",
+            "binary",
+            "--backend",
+            "direct",
+            "--prepared-dir",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n1-pilot/binary-constrained-0-direct-prepared",
+            "--output",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n1-pilot/binary-constrained-0-direct.json",
+            "--steps",
+            "1280",
+            "--batch-size",
+            "256",
+            "--workers",
+            "0",
+            "--threads",
+            "1",
+            "--rayon-threads",
+            "4",
+            "--seed",
+            "0",
+            "--repeat",
+            "0",
+            "--regime",
+            "constrained",
+            "--loader-mode",
+            "standalone",
+            "--cleanup-work",
+            "--build-provenance",
+            "/tmp/dg424-benchmark-release-75ca0e2f-provenance.json"
+          ]
+        },
+        {
+          "task": "binary",
+          "regime": "constrained",
+          "backend": "mmap",
+          "repeat": 0,
+          "command": [
+            "/tmp/dg424-benchmark-run-python",
+            "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/native_io_tasks.py",
+            "--task",
+            "binary",
+            "--backend",
+            "mmap",
+            "--prepared-dir",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n1-pilot/binary-constrained-0-mmap-prepared",
+            "--output",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n1-pilot/binary-constrained-0-mmap.json",
+            "--steps",
+            "1280",
+            "--batch-size",
+            "256",
+            "--workers",
+            "0",
+            "--threads",
+            "1",
+            "--rayon-threads",
+            "4",
+            "--seed",
+            "0",
+            "--repeat",
+            "0",
+            "--regime",
+            "constrained",
+            "--loader-mode",
+            "standalone",
+            "--cleanup-work",
+            "--build-provenance",
+            "/tmp/dg424-benchmark-release-75ca0e2f-provenance.json"
+          ]
+        }
+      ]
+    },
+    "regression-resident-b1280-cache16-n1-pilot": {
+      "status": "VALIDATED",
+      "input_dir": "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n1-pilot",
+      "summary": {
+        "status": "PASS",
+        "repetitions": 1,
+        "pilot": true,
+        "comparison_status": "EXPLORATORY",
+        "prediction_atol": 1e-06,
+        "speedup_definition": "mmap / candidate",
+        "uncertainty": "unavailable below five paired repetitions",
+        "groups": {
+          "regression/resident": {
+            "mmap": {
+              "fit": {
+                "seconds": [
+                  38.97140493290499
+                ],
+                "median_seconds": 38.97140493290499,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              },
+              "predict": {
+                "seconds": [
+                  1.6255360320210457
+                ],
+                "median_seconds": 1.6255360320210457,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              },
+              "e2e": {
+                "seconds": [
+                  40.598080600844696
+                ],
+                "median_seconds": 40.598080600844696,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              },
+              "training": {
+                "seconds": [
+                  36.10488066705875
+                ],
+                "median_seconds": 36.10488066705875,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              }
+            },
+            "buffered": {
+              "fit": {
+                "seconds": [
+                  49.70987305394374
+                ],
+                "median_seconds": 49.70987305394374,
+                "paired_speedups": [
+                  0.783977156622676
+                ],
+                "median_speedup": 0.783977156622676,
+                "speedup_bootstrap_95": null
+              },
+              "predict": {
+                "seconds": [
+                  1.785523105878383
+                ],
+                "median_seconds": 1.785523105878383,
+                "paired_speedups": [
+                  0.9103976457483971
+                ],
+                "median_speedup": 0.9103976457483971,
+                "speedup_bootstrap_95": null
+              },
+              "e2e": {
+                "seconds": [
+                  51.49659590702504
+                ],
+                "median_seconds": 51.49659590702504,
+                "paired_speedups": [
+                  0.788364354687499
+                ],
+                "median_speedup": 0.788364354687499,
+                "speedup_bootstrap_95": null
+              },
+              "training": {
+                "seconds": [
+                  46.78359844000079
+                ],
+                "median_seconds": 46.78359844000079,
+                "paired_speedups": [
+                  0.7717422744503649
+                ],
+                "median_speedup": 0.7717422744503649,
+                "speedup_bootstrap_95": null
+              }
+            },
+            "direct": {
+              "fit": {
+                "seconds": [
+                  60.20745887584053
+                ],
+                "median_seconds": 60.20745887584053,
+                "paired_speedups": [
+                  0.6472853307639439
+                ],
+                "median_speedup": 0.6472853307639439,
+                "speedup_bootstrap_95": null
+              },
+              "predict": {
+                "seconds": [
+                  1.856461653020233
+                ],
+                "median_seconds": 1.856461653020233,
+                "paired_speedups": [
+                  0.8756098082481263
+                ],
+                "median_speedup": 0.8756098082481263,
+                "speedup_bootstrap_95": null
+              },
+              "e2e": {
+                "seconds": [
+                  62.06510317302309
+                ],
+                "median_seconds": 62.06510317302309,
+                "paired_speedups": [
+                  0.6541208912142896
+                ],
+                "median_speedup": 0.6541208912142896,
+                "speedup_bootstrap_95": null
+              },
+              "training": {
+                "seconds": [
+                  57.13483259594068
+                ],
+                "median_seconds": 57.13483259594068,
+                "paired_speedups": [
+                  0.6319241525111939
+                ],
+                "median_speedup": 0.6319241525111939,
+                "speedup_bootstrap_95": null
+              }
+            }
+          }
+        },
+        "training_pressure": [
+          {
+            "task": "regression",
+            "regime": "resident",
+            "backend": "buffered",
+            "repeat": 0,
+            "evidence": {
+              "interval_seconds": 46.78359844000079,
+              "training_pid": 3755928,
+              "pid_physical_read_bytes": 0,
+              "physical_read_scope": "training process; excludes unobserved child I/O",
+              "cgroup_pgscan": 0,
+              "native_cache_evictions": 0,
+              "index_to_memory_ratio": 0.1533932784368517,
+              "has_pressure_evidence": false
+            }
+          },
+          {
+            "task": "regression",
+            "regime": "resident",
+            "backend": "direct",
+            "repeat": 0,
+            "evidence": {
+              "interval_seconds": 57.13483259594068,
+              "training_pid": 3757175,
+              "pid_physical_read_bytes": 7520927744,
+              "physical_read_scope": "training process; excludes unobserved child I/O",
+              "cgroup_pgscan": 0,
+              "native_cache_evictions": 68385,
+              "index_to_memory_ratio": 0.1533932784368517,
+              "has_pressure_evidence": false
+            }
+          },
+          {
+            "task": "regression",
+            "regime": "resident",
+            "backend": "mmap",
+            "repeat": 0,
+            "evidence": {
+              "interval_seconds": 36.10488066705875,
+              "training_pid": 3756520,
+              "pid_physical_read_bytes": 0,
+              "physical_read_scope": "training process; excludes unobserved child I/O",
+              "cgroup_pgscan": 0,
+              "native_cache_evictions": 0,
+              "index_to_memory_ratio": 0.1533932784368517,
+              "has_pressure_evidence": false
+            }
+          }
+        ]
+      },
+      "control_oracles": {
+        "regression/resident": "217df9369f994c1707ba9a4f6e14797b74ac2ca3855bb59cebe3bae75aa8c3ac"
+      },
+      "trials": [
+        {
+          "task": "regression",
+          "regime": "resident",
+          "backend": "buffered",
+          "repeat": 0,
+          "command": [
+            "/tmp/dg424-benchmark-run-python",
+            "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/native_io_tasks.py",
+            "--task",
+            "regression",
+            "--backend",
+            "buffered",
+            "--prepared-dir",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n1-pilot/regression-resident-0-buffered-prepared",
+            "--output",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n1-pilot/regression-resident-0-buffered.json",
+            "--steps",
+            "1280",
+            "--batch-size",
+            "256",
+            "--workers",
+            "0",
+            "--threads",
+            "1",
+            "--rayon-threads",
+            "4",
+            "--seed",
+            "0",
+            "--repeat",
+            "0",
+            "--regime",
+            "resident",
+            "--loader-mode",
+            "standalone",
+            "--cleanup-work",
+            "--build-provenance",
+            "/tmp/dg424-benchmark-release-75ca0e2f-provenance.json"
+          ]
+        },
+        {
+          "task": "regression",
+          "regime": "resident",
+          "backend": "direct",
+          "repeat": 0,
+          "command": [
+            "/tmp/dg424-benchmark-run-python",
+            "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/native_io_tasks.py",
+            "--task",
+            "regression",
+            "--backend",
+            "direct",
+            "--prepared-dir",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n1-pilot/regression-resident-0-direct-prepared",
+            "--output",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n1-pilot/regression-resident-0-direct.json",
+            "--steps",
+            "1280",
+            "--batch-size",
+            "256",
+            "--workers",
+            "0",
+            "--threads",
+            "1",
+            "--rayon-threads",
+            "4",
+            "--seed",
+            "0",
+            "--repeat",
+            "0",
+            "--regime",
+            "resident",
+            "--loader-mode",
+            "standalone",
+            "--cleanup-work",
+            "--build-provenance",
+            "/tmp/dg424-benchmark-release-75ca0e2f-provenance.json"
+          ]
+        },
+        {
+          "task": "regression",
+          "regime": "resident",
+          "backend": "mmap",
+          "repeat": 0,
+          "command": [
+            "/tmp/dg424-benchmark-run-python",
+            "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/native_io_tasks.py",
+            "--task",
+            "regression",
+            "--backend",
+            "mmap",
+            "--prepared-dir",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n1-pilot/regression-resident-0-mmap-prepared",
+            "--output",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n1-pilot/regression-resident-0-mmap.json",
+            "--steps",
+            "1280",
+            "--batch-size",
+            "256",
+            "--workers",
+            "0",
+            "--threads",
+            "1",
+            "--rayon-threads",
+            "4",
+            "--seed",
+            "0",
+            "--repeat",
+            "0",
+            "--regime",
+            "resident",
+            "--loader-mode",
+            "standalone",
+            "--cleanup-work",
+            "--build-provenance",
+            "/tmp/dg424-benchmark-release-75ca0e2f-provenance.json"
+          ]
+        }
+      ]
+    },
+    "regression-constrained-b1280-cache2-n1-pilot": {
+      "status": "VALIDATED",
+      "input_dir": "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n1-pilot",
+      "summary": {
+        "status": "PASS",
+        "repetitions": 1,
+        "pilot": true,
+        "comparison_status": "EXPLORATORY",
+        "prediction_atol": 1e-06,
+        "speedup_definition": "mmap / candidate",
+        "uncertainty": "unavailable below five paired repetitions",
+        "groups": {
+          "regression/constrained": {
+            "mmap": {
+              "fit": {
+                "seconds": [
+                  341.8013785008807
+                ],
+                "median_seconds": 341.8013785008807,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              },
+              "predict": {
+                "seconds": [
+                  3.570871336152777
+                ],
+                "median_seconds": 3.570871336152777,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              },
+              "e2e": {
+                "seconds": [
+                  345.3734036970418
+                ],
+                "median_seconds": 345.3734036970418,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              },
+              "training": {
+                "seconds": [
+                  329.11792080895975
+                ],
+                "median_seconds": 329.11792080895975,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              }
+            },
+            "buffered": {
+              "fit": {
+                "seconds": [
+                  61.82293533696793
+                ],
+                "median_seconds": 61.82293533696793,
+                "paired_speedups": [
+                  5.528714814944989
+                ],
+                "median_speedup": 5.528714814944989,
+                "speedup_bootstrap_95": null
+              },
+              "predict": {
+                "seconds": [
+                  1.842454046010971
+                ],
+                "median_seconds": 1.842454046010971,
+                "paired_speedups": [
+                  1.9381060514827702
+                ],
+                "median_speedup": 1.9381060514827702,
+                "speedup_bootstrap_95": null
+              },
+              "e2e": {
+                "seconds": [
+                  63.66650450718589
+                ],
+                "median_seconds": 63.66650450718589,
+                "paired_speedups": [
+                  5.424726963894496
+                ],
+                "median_speedup": 5.424726963894496,
+                "speedup_bootstrap_95": null
+              },
+              "training": {
+                "seconds": [
+                  49.911734434077516
+                ],
+                "median_seconds": 49.911734434077516,
+                "paired_speedups": [
+                  6.5939988770306615
+                ],
+                "median_speedup": 6.5939988770306615,
+                "speedup_bootstrap_95": null
+              }
+            },
+            "direct": {
+              "fit": {
+                "seconds": [
+                  68.10451696300879
+                ],
+                "median_seconds": 68.10451696300879,
+                "paired_speedups": [
+                  5.018776929091668
+                ],
+                "median_speedup": 5.018776929091668,
+                "speedup_bootstrap_95": null
+              },
+              "predict": {
+                "seconds": [
+                  1.7510728270281106
+                ],
+                "median_seconds": 1.7510728270281106,
+                "paired_speedups": [
+                  2.039247757737864
+                ],
+                "median_speedup": 2.039247757737864,
+                "speedup_bootstrap_95": null
+              },
+              "e2e": {
+                "seconds": [
+                  69.85670556896366
+                ],
+                "median_seconds": 69.85670556896366,
+                "paired_speedups": [
+                  4.944026502310271
+                ],
+                "median_speedup": 4.944026502310271,
+                "speedup_bootstrap_95": null
+              },
+              "training": {
+                "seconds": [
+                  56.779427751898766
+                ],
+                "median_seconds": 56.779427751898766,
+                "paired_speedups": [
+                  5.7964289856365045
+                ],
+                "median_speedup": 5.7964289856365045,
+                "speedup_bootstrap_95": null
+              }
+            }
+          }
+        },
+        "training_pressure": [
+          {
+            "task": "regression",
+            "regime": "constrained",
+            "backend": "buffered",
+            "repeat": 0,
+            "evidence": {
+              "interval_seconds": 49.911734434077516,
+              "training_pid": 3752502,
+              "pid_physical_read_bytes": 9329135616,
+              "physical_read_scope": "training process; excludes unobserved child I/O",
+              "cgroup_pgscan": 1537614,
+              "native_cache_evictions": 0,
+              "index_to_memory_ratio": 2.454292454989627,
+              "has_pressure_evidence": true
+            }
+          },
+          {
+            "task": "regression",
+            "regime": "constrained",
+            "backend": "direct",
+            "repeat": 0,
+            "evidence": {
+              "interval_seconds": 56.779427751898766,
+              "training_pid": 3755186,
+              "pid_physical_read_bytes": 11746820096,
+              "physical_read_scope": "training process; excludes unobserved child I/O",
+              "cgroup_pgscan": 0,
+              "native_cache_evictions": 2344167,
+              "index_to_memory_ratio": 2.454292454989627,
+              "has_pressure_evidence": true
+            }
+          },
+          {
+            "task": "regression",
+            "regime": "constrained",
+            "backend": "mmap",
+            "repeat": 0,
+            "evidence": {
+              "interval_seconds": 329.11792080895975,
+              "training_pid": 3753123,
+              "pid_physical_read_bytes": 9937747968,
+              "physical_read_scope": "training process; excludes unobserved child I/O",
+              "cgroup_pgscan": 1675178,
+              "native_cache_evictions": 0,
+              "index_to_memory_ratio": 2.454292454989627,
+              "has_pressure_evidence": true
+            }
+          }
+        ]
+      },
+      "control_oracles": {
+        "regression/constrained": "1d7566ed6e701850495396c7193841118424cd3b2313013820446df688e70489"
+      },
+      "trials": [
+        {
+          "task": "regression",
+          "regime": "constrained",
+          "backend": "buffered",
+          "repeat": 0,
+          "command": [
+            "/tmp/dg424-benchmark-run-python",
+            "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/native_io_tasks.py",
+            "--task",
+            "regression",
+            "--backend",
+            "buffered",
+            "--prepared-dir",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n1-pilot/regression-constrained-0-buffered-prepared",
+            "--output",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n1-pilot/regression-constrained-0-buffered.json",
+            "--steps",
+            "1280",
+            "--batch-size",
+            "256",
+            "--workers",
+            "0",
+            "--threads",
+            "1",
+            "--rayon-threads",
+            "4",
+            "--seed",
+            "0",
+            "--repeat",
+            "0",
+            "--regime",
+            "constrained",
+            "--loader-mode",
+            "standalone",
+            "--cleanup-work",
+            "--build-provenance",
+            "/tmp/dg424-benchmark-release-75ca0e2f-provenance.json"
+          ]
+        },
+        {
+          "task": "regression",
+          "regime": "constrained",
+          "backend": "direct",
+          "repeat": 0,
+          "command": [
+            "/tmp/dg424-benchmark-run-python",
+            "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/native_io_tasks.py",
+            "--task",
+            "regression",
+            "--backend",
+            "direct",
+            "--prepared-dir",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n1-pilot/regression-constrained-0-direct-prepared",
+            "--output",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n1-pilot/regression-constrained-0-direct.json",
+            "--steps",
+            "1280",
+            "--batch-size",
+            "256",
+            "--workers",
+            "0",
+            "--threads",
+            "1",
+            "--rayon-threads",
+            "4",
+            "--seed",
+            "0",
+            "--repeat",
+            "0",
+            "--regime",
+            "constrained",
+            "--loader-mode",
+            "standalone",
+            "--cleanup-work",
+            "--build-provenance",
+            "/tmp/dg424-benchmark-release-75ca0e2f-provenance.json"
+          ]
+        },
+        {
+          "task": "regression",
+          "regime": "constrained",
+          "backend": "mmap",
+          "repeat": 0,
+          "command": [
+            "/tmp/dg424-benchmark-run-python",
+            "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/native_io_tasks.py",
+            "--task",
+            "regression",
+            "--backend",
+            "mmap",
+            "--prepared-dir",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n1-pilot/regression-constrained-0-mmap-prepared",
+            "--output",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n1-pilot/regression-constrained-0-mmap.json",
+            "--steps",
+            "1280",
+            "--batch-size",
+            "256",
+            "--workers",
+            "0",
+            "--threads",
+            "1",
+            "--rayon-threads",
+            "4",
+            "--seed",
+            "0",
+            "--repeat",
+            "0",
+            "--regime",
+            "constrained",
+            "--loader-mode",
+            "standalone",
+            "--cleanup-work",
+            "--build-provenance",
+            "/tmp/dg424-benchmark-release-75ca0e2f-provenance.json"
+          ]
+        }
+      ]
+    },
+    "temporal_link-resident-b256-cache16-n1-pilot": {
+      "status": "VALIDATED",
+      "input_dir": "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-resident-b256-cache16-n1-pilot",
+      "summary": {
+        "status": "PASS",
+        "repetitions": 1,
+        "pilot": true,
+        "comparison_status": "EXPLORATORY",
+        "prediction_atol": 1e-06,
+        "speedup_definition": "mmap / candidate",
+        "uncertainty": "unavailable below five paired repetitions",
+        "groups": {
+          "temporal_link/resident": {
+            "mmap": {
+              "fit": {
+                "seconds": [
+                  72.05387478182092
+                ],
+                "median_seconds": 72.05387478182092,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              },
+              "predict": {
+                "seconds": [
+                  2.64889330486767
+                ],
+                "median_seconds": 2.64889330486767,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              },
+              "e2e": {
+                "seconds": [
+                  74.70391033007763
+                ],
+                "median_seconds": 74.70391033007763,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              },
+              "training": {
+                "seconds": [
+                  62.54364207107574
+                ],
+                "median_seconds": 62.54364207107574,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              }
+            },
+            "buffered": {
+              "fit": {
+                "seconds": [
+                  75.04387857601978
+                ],
+                "median_seconds": 75.04387857601978,
+                "paired_speedups": [
+                  0.9601565930368329
+                ],
+                "median_speedup": 0.9601565930368329,
+                "speedup_bootstrap_95": null
+              },
+              "predict": {
+                "seconds": [
+                  2.842264652950689
+                ],
+                "median_seconds": 2.842264652950689,
+                "paired_speedups": [
+                  0.9319657485511522
+                ],
+                "median_speedup": 0.9319657485511522,
+                "speedup_bootstrap_95": null
+              },
+              "e2e": {
+                "seconds": [
+                  77.88730814494193
+                ],
+                "median_seconds": 77.88730814494193,
+                "paired_speedups": [
+                  0.9591281571968022
+                ],
+                "median_speedup": 0.9591281571968022,
+                "speedup_bootstrap_95": null
+              },
+              "training": {
+                "seconds": [
+                  65.4004044958856
+                ],
+                "median_seconds": 65.4004044958856,
+                "paired_speedups": [
+                  0.956318887523248
+                ],
+                "median_speedup": 0.956318887523248,
+                "speedup_bootstrap_95": null
+              }
+            },
+            "direct": {
+              "fit": {
+                "seconds": [
+                  79.57036046800204
+                ],
+                "median_seconds": 79.57036046800204,
+                "paired_speedups": [
+                  0.9055366138600849
+                ],
+                "median_speedup": 0.9055366138600849,
+                "speedup_bootstrap_95": null
+              },
+              "predict": {
+                "seconds": [
+                  2.9509761000517756
+                ],
+                "median_seconds": 2.9509761000517756,
+                "paired_speedups": [
+                  0.897632923838724
+                ],
+                "median_speedup": 0.897632923838724,
+                "speedup_bootstrap_95": null
+              },
+              "e2e": {
+                "seconds": [
+                  82.52252212283202
+                ],
+                "median_seconds": 82.52252212283202,
+                "paired_speedups": [
+                  0.9052548129695231
+                ],
+                "median_speedup": 0.9052548129695231,
+                "speedup_bootstrap_95": null
+              },
+              "training": {
+                "seconds": [
+                  69.80625141505152
+                ],
+                "median_seconds": 69.80625141505152,
+                "paired_speedups": [
+                  0.8959604734998013
+                ],
+                "median_speedup": 0.8959604734998013,
+                "speedup_bootstrap_95": null
+              }
+            }
+          }
+        },
+        "training_pressure": [
+          {
+            "task": "temporal_link",
+            "regime": "resident",
+            "backend": "buffered",
+            "repeat": 0,
+            "evidence": {
+              "interval_seconds": 65.4004044958856,
+              "training_pid": 3746176,
+              "pid_physical_read_bytes": 0,
+              "physical_read_scope": "training process; excludes unobserved child I/O",
+              "cgroup_pgscan": 0,
+              "native_cache_evictions": 0,
+              "index_to_memory_ratio": 0.1557179720402928,
+              "has_pressure_evidence": false
+            }
+          },
+          {
+            "task": "temporal_link",
+            "regime": "resident",
+            "backend": "direct",
+            "repeat": 0,
+            "evidence": {
+              "interval_seconds": 69.80625141505152,
+              "training_pid": 3747712,
+              "pid_physical_read_bytes": 2854481920,
+              "physical_read_scope": "training process; excludes unobserved child I/O",
+              "cgroup_pgscan": 0,
+              "native_cache_evictions": 1342,
+              "index_to_memory_ratio": 0.1557179720402928,
+              "has_pressure_evidence": false
+            }
+          },
+          {
+            "task": "temporal_link",
+            "regime": "resident",
+            "backend": "mmap",
+            "repeat": 0,
+            "evidence": {
+              "interval_seconds": 62.54364207107574,
+              "training_pid": 3746948,
+              "pid_physical_read_bytes": 0,
+              "physical_read_scope": "training process; excludes unobserved child I/O",
+              "cgroup_pgscan": 0,
+              "native_cache_evictions": 0,
+              "index_to_memory_ratio": 0.1557179720402928,
+              "has_pressure_evidence": false
+            }
+          }
+        ]
+      },
+      "control_oracles": {
+        "temporal_link/resident": "b8e3cd347a3519652a587f3ac974e56e439c6cb6f4a12063fbb89af0308f4665"
+      },
+      "trials": [
+        {
+          "task": "temporal_link",
+          "regime": "resident",
+          "backend": "buffered",
+          "repeat": 0,
+          "command": [
+            "/tmp/dg424-benchmark-run-python",
+            "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/native_io_tasks.py",
+            "--task",
+            "temporal_link",
+            "--backend",
+            "buffered",
+            "--prepared-dir",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-resident-b256-cache16-n1-pilot/temporal_link-resident-0-buffered-prepared",
+            "--output",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-resident-b256-cache16-n1-pilot/temporal_link-resident-0-buffered.json",
+            "--steps",
+            "256",
+            "--batch-size",
+            "256",
+            "--workers",
+            "0",
+            "--threads",
+            "1",
+            "--rayon-threads",
+            "4",
+            "--seed",
+            "0",
+            "--repeat",
+            "0",
+            "--regime",
+            "resident",
+            "--loader-mode",
+            "standalone",
+            "--cleanup-work",
+            "--build-provenance",
+            "/tmp/dg424-benchmark-release-75ca0e2f-provenance.json"
+          ]
+        },
+        {
+          "task": "temporal_link",
+          "regime": "resident",
+          "backend": "direct",
+          "repeat": 0,
+          "command": [
+            "/tmp/dg424-benchmark-run-python",
+            "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/native_io_tasks.py",
+            "--task",
+            "temporal_link",
+            "--backend",
+            "direct",
+            "--prepared-dir",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-resident-b256-cache16-n1-pilot/temporal_link-resident-0-direct-prepared",
+            "--output",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-resident-b256-cache16-n1-pilot/temporal_link-resident-0-direct.json",
+            "--steps",
+            "256",
+            "--batch-size",
+            "256",
+            "--workers",
+            "0",
+            "--threads",
+            "1",
+            "--rayon-threads",
+            "4",
+            "--seed",
+            "0",
+            "--repeat",
+            "0",
+            "--regime",
+            "resident",
+            "--loader-mode",
+            "standalone",
+            "--cleanup-work",
+            "--build-provenance",
+            "/tmp/dg424-benchmark-release-75ca0e2f-provenance.json"
+          ]
+        },
+        {
+          "task": "temporal_link",
+          "regime": "resident",
+          "backend": "mmap",
+          "repeat": 0,
+          "command": [
+            "/tmp/dg424-benchmark-run-python",
+            "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/native_io_tasks.py",
+            "--task",
+            "temporal_link",
+            "--backend",
+            "mmap",
+            "--prepared-dir",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-resident-b256-cache16-n1-pilot/temporal_link-resident-0-mmap-prepared",
+            "--output",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-resident-b256-cache16-n1-pilot/temporal_link-resident-0-mmap.json",
+            "--steps",
+            "256",
+            "--batch-size",
+            "256",
+            "--workers",
+            "0",
+            "--threads",
+            "1",
+            "--rayon-threads",
+            "4",
+            "--seed",
+            "0",
+            "--repeat",
+            "0",
+            "--regime",
+            "resident",
+            "--loader-mode",
+            "standalone",
+            "--cleanup-work",
+            "--build-provenance",
+            "/tmp/dg424-benchmark-release-75ca0e2f-provenance.json"
+          ]
+        }
+      ]
+    },
+    "temporal_link-constrained-b256-cache1-n1-pilot": {
+      "status": "VALIDATED",
+      "input_dir": "/tmp/dg424-phase7-lp-pressure-pilot-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-constrained-b256-cache1-n1-pilot",
+      "summary": {
+        "status": "PASS",
+        "repetitions": 1,
+        "pilot": true,
+        "comparison_status": "EXPLORATORY",
+        "prediction_atol": 1e-06,
+        "speedup_definition": "mmap / candidate",
+        "uncertainty": "unavailable below five paired repetitions",
+        "groups": {
+          "temporal_link/constrained": {
+            "mmap": {
+              "fit": {
+                "seconds": [
+                  172.36111566401087
+                ],
+                "median_seconds": 172.36111566401087,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              },
+              "predict": {
+                "seconds": [
+                  4.929459277074784
+                ],
+                "median_seconds": 4.929459277074784,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              },
+              "e2e": {
+                "seconds": [
+                  177.29176262486726
+                ],
+                "median_seconds": 177.29176262486726,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              },
+              "training": {
+                "seconds": [
+                  139.00555800599977
+                ],
+                "median_seconds": 139.00555800599977,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              }
+            },
+            "buffered": {
+              "fit": {
+                "seconds": [
+                  107.35050441510975
+                ],
+                "median_seconds": 107.35050441510975,
+                "paired_speedups": [
+                  1.6055920426560266
+                ],
+                "median_speedup": 1.6055920426560266,
+                "speedup_bootstrap_95": null
+              },
+              "predict": {
+                "seconds": [
+                  3.2204855328891426
+                ],
+                "median_seconds": 3.2204855328891426,
+                "paired_speedups": [
+                  1.5306571716384942
+                ],
+                "median_speedup": 1.5306571716384942,
+                "speedup_bootstrap_95": null
+              },
+              "e2e": {
+                "seconds": [
+                  110.57223187107593
+                ],
+                "median_seconds": 110.57223187107593,
+                "paired_speedups": [
+                  1.6034022251769722
+                ],
+                "median_speedup": 1.6034022251769722,
+                "speedup_bootstrap_95": null
+              },
+              "training": {
+                "seconds": [
+                  67.60568333696574
+                ],
+                "median_seconds": 67.60568333696574,
+                "paired_speedups": [
+                  2.0561223723330624
+                ],
+                "median_speedup": 2.0561223723330624,
+                "speedup_bootstrap_95": null
+              }
+            },
+            "direct": {
+              "fit": {
+                "seconds": [
+                  101.45612645498477
+                ],
+                "median_seconds": 101.45612645498477,
+                "paired_speedups": [
+                  1.6988734114591497
+                ],
+                "median_speedup": 1.6988734114591497,
+                "speedup_bootstrap_95": null
+              },
+              "predict": {
+                "seconds": [
+                  2.925481091020629
+                ],
+                "median_seconds": 2.925481091020629,
+                "paired_speedups": [
+                  1.6850080802795468
+                ],
+                "median_speedup": 1.6850080802795468,
+                "speedup_bootstrap_95": null
+              },
+              "e2e": {
+                "seconds": [
+                  104.38276890898123
+                ],
+                "median_seconds": 104.38276890898123,
+                "paired_speedups": [
+                  1.6984772915868955
+                ],
+                "median_speedup": 1.6984772915868955,
+                "speedup_bootstrap_95": null
+              },
+              "training": {
+                "seconds": [
+                  69.33301671803929
+                ],
+                "median_seconds": 69.33301671803929,
+                "paired_speedups": [
+                  2.004897011351777
+                ],
+                "median_speedup": 2.004897011351777,
+                "speedup_bootstrap_95": null
+              }
+            }
+          }
+        },
+        "training_pressure": [
+          {
+            "task": "temporal_link",
+            "regime": "constrained",
+            "backend": "buffered",
+            "repeat": 0,
+            "evidence": {
+              "interval_seconds": 67.60568333696574,
+              "training_pid": 3740167,
+              "pid_physical_read_bytes": 2326859776,
+              "physical_read_scope": "training process; excludes unobserved child I/O",
+              "cgroup_pgscan": 200490,
+              "native_cache_evictions": 0,
+              "index_to_memory_ratio": 2.491487552644685,
+              "has_pressure_evidence": true
+            }
+          },
+          {
+            "task": "temporal_link",
+            "regime": "constrained",
+            "backend": "direct",
+            "repeat": 0,
+            "evidence": {
+              "interval_seconds": 69.33301671803929,
+              "training_pid": 3741846,
+              "pid_physical_read_bytes": 3769905152,
+              "physical_read_scope": "training process; excludes unobserved child I/O",
+              "cgroup_pgscan": 0,
+              "native_cache_evictions": 701531,
+              "index_to_memory_ratio": 2.491487552644685,
+              "has_pressure_evidence": true
+            }
+          },
+          {
+            "task": "temporal_link",
+            "regime": "constrained",
+            "backend": "mmap",
+            "repeat": 0,
+            "evidence": {
+              "interval_seconds": 139.00555800599977,
+              "training_pid": 3741075,
+              "pid_physical_read_bytes": 2461728768,
+              "physical_read_scope": "training process; excludes unobserved child I/O",
+              "cgroup_pgscan": 153199,
+              "native_cache_evictions": 0,
+              "index_to_memory_ratio": 2.491487552644685,
+              "has_pressure_evidence": true
+            }
+          }
+        ]
+      },
+      "control_oracles": {
+        "temporal_link/constrained": "3b74b4e9642834cfc4a8b3630a4fec95ea7789a7fc0c0b3c4a51fce1ce0c4759"
+      },
+      "trials": [
+        {
+          "task": "temporal_link",
+          "regime": "constrained",
+          "backend": "buffered",
+          "repeat": 0,
+          "command": [
+            "/tmp/dg424-benchmark-run-python",
+            "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/native_io_tasks.py",
+            "--task",
+            "temporal_link",
+            "--backend",
+            "buffered",
+            "--prepared-dir",
+            "/tmp/dg424-phase7-lp-pressure-pilot-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-constrained-b256-cache1-n1-pilot/temporal_link-constrained-0-buffered-prepared",
+            "--output",
+            "/tmp/dg424-phase7-lp-pressure-pilot-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-constrained-b256-cache1-n1-pilot/temporal_link-constrained-0-buffered.json",
+            "--steps",
+            "256",
+            "--batch-size",
+            "256",
+            "--workers",
+            "0",
+            "--threads",
+            "1",
+            "--rayon-threads",
+            "4",
+            "--seed",
+            "0",
+            "--repeat",
+            "0",
+            "--regime",
+            "constrained",
+            "--loader-mode",
+            "standalone",
+            "--cleanup-work",
+            "--build-provenance",
+            "/tmp/dg424-benchmark-release-75ca0e2f-provenance.json"
+          ]
+        },
+        {
+          "task": "temporal_link",
+          "regime": "constrained",
+          "backend": "direct",
+          "repeat": 0,
+          "command": [
+            "/tmp/dg424-benchmark-run-python",
+            "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/native_io_tasks.py",
+            "--task",
+            "temporal_link",
+            "--backend",
+            "direct",
+            "--prepared-dir",
+            "/tmp/dg424-phase7-lp-pressure-pilot-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-constrained-b256-cache1-n1-pilot/temporal_link-constrained-0-direct-prepared",
+            "--output",
+            "/tmp/dg424-phase7-lp-pressure-pilot-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-constrained-b256-cache1-n1-pilot/temporal_link-constrained-0-direct.json",
+            "--steps",
+            "256",
+            "--batch-size",
+            "256",
+            "--workers",
+            "0",
+            "--threads",
+            "1",
+            "--rayon-threads",
+            "4",
+            "--seed",
+            "0",
+            "--repeat",
+            "0",
+            "--regime",
+            "constrained",
+            "--loader-mode",
+            "standalone",
+            "--cleanup-work",
+            "--build-provenance",
+            "/tmp/dg424-benchmark-release-75ca0e2f-provenance.json"
+          ]
+        },
+        {
+          "task": "temporal_link",
+          "regime": "constrained",
+          "backend": "mmap",
+          "repeat": 0,
+          "command": [
+            "/tmp/dg424-benchmark-run-python",
+            "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/native_io_tasks.py",
+            "--task",
+            "temporal_link",
+            "--backend",
+            "mmap",
+            "--prepared-dir",
+            "/tmp/dg424-phase7-lp-pressure-pilot-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-constrained-b256-cache1-n1-pilot/temporal_link-constrained-0-mmap-prepared",
+            "--output",
+            "/tmp/dg424-phase7-lp-pressure-pilot-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-constrained-b256-cache1-n1-pilot/temporal_link-constrained-0-mmap.json",
+            "--steps",
+            "256",
+            "--batch-size",
+            "256",
+            "--workers",
+            "0",
+            "--threads",
+            "1",
+            "--rayon-threads",
+            "4",
+            "--seed",
+            "0",
+            "--repeat",
+            "0",
+            "--regime",
+            "constrained",
+            "--loader-mode",
+            "standalone",
+            "--cleanup-work",
+            "--build-provenance",
+            "/tmp/dg424-benchmark-release-75ca0e2f-provenance.json"
+          ]
+        }
+      ]
+    },
+    "temporal_link-constrained-b256-cache2-n1-pilot": {
+      "status": "VALIDATED",
+      "input_dir": "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-constrained-b256-cache2-n1-pilot",
+      "summary": {
+        "status": "PASS",
+        "repetitions": 1,
+        "pilot": true,
+        "comparison_status": "EXPLORATORY",
+        "prediction_atol": 1e-06,
+        "speedup_definition": "mmap / candidate",
+        "uncertainty": "unavailable below five paired repetitions",
+        "groups": {
+          "temporal_link/constrained": {
+            "mmap": {
+              "fit": {
+                "seconds": [
+                  167.28976680501364
+                ],
+                "median_seconds": 167.28976680501364,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              },
+              "predict": {
+                "seconds": [
+                  4.8565717888996005
+                ],
+                "median_seconds": 4.8565717888996005,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              },
+              "e2e": {
+                "seconds": [
+                  172.1474958760664
+                ],
+                "median_seconds": 172.1474958760664,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              },
+              "training": {
+                "seconds": [
+                  133.9593352950178
+                ],
+                "median_seconds": 133.9593352950178,
+                "paired_speedups": [
+                  1.0
+                ],
+                "median_speedup": 1.0,
+                "speedup_bootstrap_95": null
+              }
+            },
+            "buffered": {
+              "fit": {
+                "seconds": [
+                  98.1275095930323
+                ],
+                "median_seconds": 98.1275095930323,
+                "paired_speedups": [
+                  1.7048202639486156
+                ],
+                "median_speedup": 1.7048202639486156,
+                "speedup_bootstrap_95": null
+              },
+              "predict": {
+                "seconds": [
+                  3.4421072229743004
+                ],
+                "median_seconds": 3.4421072229743004,
+                "paired_speedups": [
+                  1.4109298387001064
+                ],
+                "median_speedup": 1.4109298387001064,
+                "speedup_bootstrap_95": null
+              },
+              "e2e": {
+                "seconds": [
+                  101.57077088393271
+                ],
+                "median_seconds": 101.57077088393271,
+                "paired_speedups": [
+                  1.694852705930364
+                ],
+                "median_speedup": 1.694852705930364,
+                "speedup_bootstrap_95": null
+              },
+              "training": {
+                "seconds": [
+                  66.47467601718381
+                ],
+                "median_seconds": 66.47467601718381,
+                "paired_speedups": [
+                  2.015193504070469
+                ],
+                "median_speedup": 2.015193504070469,
+                "speedup_bootstrap_95": null
+              }
+            },
+            "direct": {
+              "fit": {
+                "seconds": [
+                  125.52892801305279
+                ],
+                "median_seconds": 125.52892801305279,
+                "paired_speedups": [
+                  1.3326790043775285
+                ],
+                "median_speedup": 1.3326790043775285,
+                "speedup_bootstrap_95": null
+              },
+              "predict": {
+                "seconds": [
+                  18.42085531493649
+                ],
+                "median_seconds": 18.42085531493649,
+                "paired_speedups": [
+                  0.26364529257019165
+                ],
+                "median_speedup": 0.26364529257019165,
+                "speedup_bootstrap_95": null
+              },
+              "e2e": {
+                "seconds": [
+                  143.95099696400575
+                ],
+                "median_seconds": 143.95099696400575,
+                "paired_speedups": [
+                  1.1958756764922651
+                ],
+                "median_speedup": 1.1958756764922651,
+                "speedup_bootstrap_95": null
+              },
+              "training": {
+                "seconds": [
+                  70.00600843410939
+                ],
+                "median_seconds": 70.00600843410939,
+                "paired_speedups": [
+                  1.913540541610827
+                ],
+                "median_speedup": 1.913540541610827,
+                "speedup_bootstrap_95": null
+              }
+            }
+          }
+        },
+        "training_pressure": [
+          {
+            "task": "temporal_link",
+            "regime": "constrained",
+            "backend": "buffered",
+            "repeat": 0,
+            "evidence": {
+              "interval_seconds": 66.47467601718381,
+              "training_pid": 3743239,
+              "pid_physical_read_bytes": 2328862720,
+              "physical_read_scope": "training process; excludes unobserved child I/O",
+              "cgroup_pgscan": 211489,
+              "native_cache_evictions": 0,
+              "index_to_memory_ratio": 2.491487552644685,
+              "has_pressure_evidence": true
+            }
+          },
+          {
+            "task": "temporal_link",
+            "regime": "constrained",
+            "backend": "direct",
+            "repeat": 0,
+            "evidence": {
+              "interval_seconds": 70.00600843410939,
+              "training_pid": 3744846,
+              "pid_physical_read_bytes": 3208310784,
+              "physical_read_scope": "training process; excludes unobserved child I/O",
+              "cgroup_pgscan": 108770,
+              "native_cache_evictions": 349499,
+              "index_to_memory_ratio": 2.491487552644685,
+              "has_pressure_evidence": true
+            }
+          },
+          {
+            "task": "temporal_link",
+            "regime": "constrained",
+            "backend": "mmap",
+            "repeat": 0,
+            "evidence": {
+              "interval_seconds": 133.9593352950178,
+              "training_pid": 3743994,
+              "pid_physical_read_bytes": 2472456192,
+              "physical_read_scope": "training process; excludes unobserved child I/O",
+              "cgroup_pgscan": 160636,
+              "native_cache_evictions": 0,
+              "index_to_memory_ratio": 2.491487552644685,
+              "has_pressure_evidence": true
+            }
+          }
+        ]
+      },
+      "control_oracles": {
+        "temporal_link/constrained": "20b64e73ac9864946e6dc3dbd2f18b5aa7adf72476ee58ef7d27c8b1f11fa512"
+      },
+      "trials": [
+        {
+          "task": "temporal_link",
+          "regime": "constrained",
+          "backend": "buffered",
+          "repeat": 0,
+          "command": [
+            "/tmp/dg424-benchmark-run-python",
+            "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/native_io_tasks.py",
+            "--task",
+            "temporal_link",
+            "--backend",
+            "buffered",
+            "--prepared-dir",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-constrained-b256-cache2-n1-pilot/temporal_link-constrained-0-buffered-prepared",
+            "--output",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-constrained-b256-cache2-n1-pilot/temporal_link-constrained-0-buffered.json",
+            "--steps",
+            "256",
+            "--batch-size",
+            "256",
+            "--workers",
+            "0",
+            "--threads",
+            "1",
+            "--rayon-threads",
+            "4",
+            "--seed",
+            "0",
+            "--repeat",
+            "0",
+            "--regime",
+            "constrained",
+            "--loader-mode",
+            "standalone",
+            "--cleanup-work",
+            "--build-provenance",
+            "/tmp/dg424-benchmark-release-75ca0e2f-provenance.json"
+          ]
+        },
+        {
+          "task": "temporal_link",
+          "regime": "constrained",
+          "backend": "direct",
+          "repeat": 0,
+          "command": [
+            "/tmp/dg424-benchmark-run-python",
+            "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/native_io_tasks.py",
+            "--task",
+            "temporal_link",
+            "--backend",
+            "direct",
+            "--prepared-dir",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-constrained-b256-cache2-n1-pilot/temporal_link-constrained-0-direct-prepared",
+            "--output",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-constrained-b256-cache2-n1-pilot/temporal_link-constrained-0-direct.json",
+            "--steps",
+            "256",
+            "--batch-size",
+            "256",
+            "--workers",
+            "0",
+            "--threads",
+            "1",
+            "--rayon-threads",
+            "4",
+            "--seed",
+            "0",
+            "--repeat",
+            "0",
+            "--regime",
+            "constrained",
+            "--loader-mode",
+            "standalone",
+            "--cleanup-work",
+            "--build-provenance",
+            "/tmp/dg424-benchmark-release-75ca0e2f-provenance.json"
+          ]
+        },
+        {
+          "task": "temporal_link",
+          "regime": "constrained",
+          "backend": "mmap",
+          "repeat": 0,
+          "command": [
+            "/tmp/dg424-benchmark-run-python",
+            "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-engine/benchmark/native_io_tasks.py",
+            "--task",
+            "temporal_link",
+            "--backend",
+            "mmap",
+            "--prepared-dir",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-constrained-b256-cache2-n1-pilot/temporal_link-constrained-0-mmap-prepared",
+            "--output",
+            "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-constrained-b256-cache2-n1-pilot/temporal_link-constrained-0-mmap.json",
+            "--steps",
+            "256",
+            "--batch-size",
+            "256",
+            "--workers",
+            "0",
+            "--threads",
+            "1",
+            "--rayon-threads",
+            "4",
+            "--seed",
+            "0",
+            "--repeat",
+            "0",
+            "--regime",
+            "constrained",
+            "--loader-mode",
+            "standalone",
+            "--cleanup-work",
+            "--build-provenance",
+            "/tmp/dg424-benchmark-release-75ca0e2f-provenance.json"
+          ]
+        }
+      ]
+    }
+  },
+  "controls_sha256": "c585a3f0f64ca4a9eaaf75f67fdfb4450748614c5e00c545ba8a70dcdd41502b"
+}

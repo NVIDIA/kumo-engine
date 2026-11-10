@@ -1,0 +1,234 @@
+{
+  "status": "PASS",
+  "created_utc": "2026-11-10T04:08:10.617923+00:00",
+  "source_sha": "75ca0e2fd6797827feda61d637b59b75e2d6f678",
+  "prediction_atol": 1e-06,
+  "validation": [
+    "validate_work(all30)",
+    "validate_predictions(all30,1e-6)"
+  ],
+  "tasks": {
+    "binary": {
+      "status": "PASS",
+      "rows": 30,
+      "logical_seed_sha256": "2a0c40bd333638ae172f7fb51c4d93f22edae0b671898fe998267505bc94963a",
+      "config_sha256": "a07394dd5b0b965f707accd1094f8acc6a9e15949a5add7eb7a10635606641c6",
+      "native_sha256": "a5949f96723df2684c6cdbd5884bcc25c72129c8a629bfffa49bc36f9552140f",
+      "tt_ingest_layouts": [
+        {
+          "phase": "fit",
+          "namespace": "tt-native-io-benchmark-binary-v1-fit",
+          "requested_num_shards": null,
+          "actual_num_shards": 1,
+          "stage_shards": {
+            "train_seeds": 1,
+            "val_seeds": 1,
+            "test_seeds": 1
+          }
+        },
+        {
+          "phase": "predict",
+          "namespace": "tt-native-io-benchmark-binary-v1-predict",
+          "requested_num_shards": null,
+          "actual_num_shards": 1,
+          "stage_shards": {
+            "predict_seeds": 1
+          }
+        },
+        {
+          "phase": "repeat",
+          "namespace": "tt-native-io-benchmark-binary-v1-repeat",
+          "requested_num_shards": null,
+          "actual_num_shards": 1,
+          "stage_shards": {
+            "predict_seeds": 1
+          }
+        },
+        {
+          "phase": "reload",
+          "namespace": "tt-native-io-benchmark-binary-v1-reload",
+          "requested_num_shards": null,
+          "actual_num_shards": 1,
+          "stage_shards": {
+            "predict_seeds": 1
+          }
+        }
+      ],
+      "raw_paths": [
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n5-formal/binary-resident-0-mmap.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n5-formal/binary-resident-0-buffered.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n5-formal/binary-resident-0-direct.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n5-formal/binary-resident-1-mmap.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n5-formal/binary-resident-1-buffered.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n5-formal/binary-resident-1-direct.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n5-formal/binary-resident-2-mmap.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n5-formal/binary-resident-2-buffered.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n5-formal/binary-resident-2-direct.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n5-formal/binary-resident-3-mmap.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n5-formal/binary-resident-3-buffered.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n5-formal/binary-resident-3-direct.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n5-formal/binary-resident-4-mmap.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n5-formal/binary-resident-4-buffered.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-resident-b1280-cache16-n5-formal/binary-resident-4-direct.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n5-formal/binary-constrained-0-mmap.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n5-formal/binary-constrained-0-buffered.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n5-formal/binary-constrained-0-direct.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n5-formal/binary-constrained-1-mmap.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n5-formal/binary-constrained-1-buffered.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n5-formal/binary-constrained-1-direct.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n5-formal/binary-constrained-2-mmap.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n5-formal/binary-constrained-2-buffered.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n5-formal/binary-constrained-2-direct.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n5-formal/binary-constrained-3-mmap.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n5-formal/binary-constrained-3-buffered.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n5-formal/binary-constrained-3-direct.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n5-formal/binary-constrained-4-mmap.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n5-formal/binary-constrained-4-buffered.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/binary-constrained-b1280-cache2-n5-formal/binary-constrained-4-direct.json"
+      ],
+      "prediction_sha256": [
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea",
+        "4d5dba1a0c1beb335184d4fa94bfa2edefaa4f948295069ba3c79495bf2a72ea"
+      ]
+    },
+    "regression": {
+      "status": "PASS",
+      "rows": 30,
+      "logical_seed_sha256": "1ef777379b5e9dae921523ff08d7c029a58e79eaf33bff40c29677990a8cfd52",
+      "config_sha256": "ec74b0081471cf633e332a21d5d62f6fa81391df64a987f05617a83668dadc7f",
+      "native_sha256": "a5949f96723df2684c6cdbd5884bcc25c72129c8a629bfffa49bc36f9552140f",
+      "tt_ingest_layouts": [
+        {
+          "phase": "fit",
+          "namespace": "tt-native-io-benchmark-regression-v1-fit",
+          "requested_num_shards": null,
+          "actual_num_shards": 1,
+          "stage_shards": {
+            "train_seeds": 1,
+            "val_seeds": 1,
+            "test_seeds": 1
+          }
+        },
+        {
+          "phase": "predict",
+          "namespace": "tt-native-io-benchmark-regression-v1-predict",
+          "requested_num_shards": null,
+          "actual_num_shards": 1,
+          "stage_shards": {
+            "predict_seeds": 1
+          }
+        },
+        {
+          "phase": "repeat",
+          "namespace": "tt-native-io-benchmark-regression-v1-repeat",
+          "requested_num_shards": null,
+          "actual_num_shards": 1,
+          "stage_shards": {
+            "predict_seeds": 1
+          }
+        },
+        {
+          "phase": "reload",
+          "namespace": "tt-native-io-benchmark-regression-v1-reload",
+          "requested_num_shards": null,
+          "actual_num_shards": 1,
+          "stage_shards": {
+            "predict_seeds": 1
+          }
+        }
+      ],
+      "raw_paths": [
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n5-formal/regression-resident-0-mmap.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n5-formal/regression-resident-0-buffered.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n5-formal/regression-resident-0-direct.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n5-formal/regression-resident-1-mmap.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n5-formal/regression-resident-1-buffered.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n5-formal/regression-resident-1-direct.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n5-formal/regression-resident-2-mmap.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n5-formal/regression-resident-2-buffered.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n5-formal/regression-resident-2-direct.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n5-formal/regression-resident-3-mmap.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n5-formal/regression-resident-3-buffered.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n5-formal/regression-resident-3-direct.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n5-formal/regression-resident-4-mmap.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n5-formal/regression-resident-4-buffered.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-resident-b1280-cache16-n5-formal/regression-resident-4-direct.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n5-formal/regression-constrained-0-mmap.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n5-formal/regression-constrained-0-buffered.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n5-formal/regression-constrained-0-direct.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n5-formal/regression-constrained-1-mmap.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n5-formal/regression-constrained-1-buffered.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n5-formal/regression-constrained-1-direct.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n5-formal/regression-constrained-2-mmap.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n5-formal/regression-constrained-2-buffered.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n5-formal/regression-constrained-2-direct.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n5-formal/regression-constrained-3-mmap.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n5-formal/regression-constrained-3-buffered.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n5-formal/regression-constrained-3-direct.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n5-formal/regression-constrained-4-mmap.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n5-formal/regression-constrained-4-buffered.json",
+        "/tmp/dg424-phase7-formal-selected-75ca-v1/75ca0e2f-a5949f96-8x256-m1/regression-constrained-b1280-cache2-n5-formal/regression-constrained-4-direct.json"
+      ],
+      "prediction_sha256": [
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585",
+        "9c7bc8f3f71da963054683fc195214164c38742b5ed10ea53df73d5efd823585"
+      ]
+    }
+  }
+}

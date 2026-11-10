@@ -1,0 +1,77 @@
+{
+  "physical_ids_equal": true,
+  "fields": {
+    "seed_node_ids": {
+      "different_rows": 4,
+      "examples": [
+        {
+          "physical_id": 262144,
+          "old": 84407,
+          "new": 84448
+        },
+        {
+          "physical_id": 1048576,
+          "old": 30134,
+          "new": 21771
+        },
+        {
+          "physical_id": 2097152,
+          "old": 77086,
+          "new": 39906
+        }
+      ]
+    },
+    "seed_timestamps": {
+      "different_rows": 4,
+      "examples": [
+        {
+          "physical_id": 262144,
+          "old": 1600819200,
+          "new": 1612310400
+        },
+        {
+          "physical_id": 1048576,
+          "old": 1595980800,
+          "new": 1614124800
+        },
+        {
+          "physical_id": 2097152,
+          "old": 1595376000,
+          "new": 1614124800
+        }
+      ]
+    },
+    "target": {
+      "different_rows": 3,
+      "examples": [
+        {
+          "physical_id": 262144,
+          "old": {
+            "TARGET1": false
+          },
+          "new": {
+            "TARGET1": true
+          }
+        },
+        {
+          "physical_id": 2097152,
+          "old": {
+            "TARGET1": false
+          },
+          "new": {
+            "TARGET1": true
+          }
+        },
+        {
+          "physical_id": 6684671,
+          "old": {
+            "TARGET1": false
+          },
+          "new": {
+            "TARGET1": true
+          }
+        }
+      ]
+    }
+  }
+}

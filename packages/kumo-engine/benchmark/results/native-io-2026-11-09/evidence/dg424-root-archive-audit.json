@@ -1,0 +1,18 @@
+{
+  "status": "PASS",
+  "records": 111,
+  "archives": [
+    {
+      "directory": "packages/kumo-engine/benchmark/results/native-io-2026-11-09/formal",
+      "records": 90,
+      "archive_sha256": "76b3879dbc6959c9e660a5abfabc88f45a7039049c96a0442e287844ecbc6f17",
+      "status": "PASS"
+    },
+    {
+      "directory": "packages/kumo-engine/benchmark/results/native-io-2026-11-09/calibration",
+      "records": 21,
+      "archive_sha256": "f01ffba48465f534763a010f28be9c10830a09e7b3ea5376c43f3f70a2dab467",
+      "status": "PASS"
+    }
+  ]
+}

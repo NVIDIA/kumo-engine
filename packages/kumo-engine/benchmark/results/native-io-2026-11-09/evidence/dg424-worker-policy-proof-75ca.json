@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "claim": "Current LocalDiskgraphTrainingRuntime supplies host CPU count and host total RAM to DiskGraph automatic worker/thread sizing, without cgroup CPU/memory bounds. A separate /dev/shm capacity cap exists.",
+  "current_source_sha": "75ca0e2fd6797827feda61d637b59b75e2d6f678",
+  "historical_source_sha": "19a4618e617bcf5930eda4dfd2cecfcc5ea00a04",
+  "current_source_verified_against_historical": "All four relevant function texts are identical; file hashes retained independently.",
+  "source_evidence": [
+    {
+      "repo_relative_path": "packages/kumo-core/src/kumo_core/training/runtime.py",
+      "absolute_path": "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-core/src/kumo_core/training/runtime.py",
+      "current_file_sha256": "c63b9ba1c564e2e09ad55d8d7a15a517e1a98ee45414d45cb846d9d2a2ab4c6c",
+      "historical_file_sha256": "c63b9ba1c564e2e09ad55d8d7a15a517e1a98ee45414d45cb846d9d2a2ab4c6c",
+      "whole_file_identical_to_historical": true,
+      "functions": [
+        {
+          "first_line": 57,
+          "last_line": 68,
+          "content": "def auto_config(\n        self,\n        *,\n        index_path: str,\n        estimated_edges: int,\n    ) -> dict[str, Any]:\n        return diskgraph_auto_config(\n            cpu_count=os.cpu_count() or 1,\n            ram_bytes=psutil.virtual_memory().total,\n            index_bytes=diskgraph_index_size_bytes(index_path),\n            estimated_edges=estimated_edges,\n        )",
+          "function_sha256": "23231dafb8428e27d3d33510cd32a59e3033faa2984ce7c42db78a531898df0b",
+          "historical_function_sha256": "23231dafb8428e27d3d33510cd32a59e3033faa2984ce7c42db78a531898df0b",
+          "function_identical_to_historical": true
+        }
+      ]
+    },
+    {
+      "repo_relative_path": "packages/kumo-core/src/kumo_core/diskgraph/stores.py",
+      "absolute_path": "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-core/src/kumo_core/diskgraph/stores.py",
+      "current_file_sha256": "fefd8ba51275b6ad336de22ad528723e9839d495efc42fde2ed6d09911928213",
+      "historical_file_sha256": "fefd8ba51275b6ad336de22ad528723e9839d495efc42fde2ed6d09911928213",
+      "whole_file_identical_to_historical": true,
+      "functions": [
+        {
+          "first_line": 65,
+          "last_line": 130,
+          "content": "def diskgraph_auto_config(\n    cpu_count: int,\n    ram_bytes: int,\n    index_bytes: int,\n    estimated_edges: int,\n) -> dict:\n    \"\"\"Auto-configure diskgraph sampling parameters.\n\n    Returns dict with keys:\n    - ``mode``: ``\"fused\"`` or ``\"standalone\"``\n    - ``num_workers``: recommended DataLoader workers\n    - ``rayon_threads``: rayon threads per worker\n\n    ``estimated_edges`` is the per-batch I/O volume estimate:\n    ``batch_size * per_seed_fanout * 0.25`` (dedup/sparsity factor).\n\n    Heuristic based on empirical sweep data across subgraph sizes,\n    worker counts, and rayon thread counts on a production ranking job's\n    graph (500GB index, 64 vCPUs, 500GB RAM).\n    \"\"\"\n    backend = os.environ.get(\"DG_EDGE_BACKEND\", \"mmap\")\n    if backend not in {\"mmap\", \"buffered\", \"direct\"}:\n        raise ValueError(\n            \"DG_EDGE_BACKEND must be mmap|buffered|direct, \"\n            f\"got `{backend}`\")\n    # This selects an automatic mode, not a caller's explicit fused request.\n    # Native readers use this same setting when each worker opens its index.\n    small_mode = \"fused\" if backend == \"mmap\" else \"standalone\"\n    # On non-Linux platforms (macOS, Windows) multiprocessing uses 'spawn',\n    # where re-importing the whole module graph per worker makes worker startup\n    # expensive enough that single-process loading is the better default. The\n    # Native handles are recreated in workers, so this is a cost heuristic,\n    # not a correctness guard.\n    if multiprocessing.get_start_method(allow_none=True) in (None, 'spawn') \\\n            and sys.platform != 'linux':\n        return {\"mode\": small_mode, \"num_workers\": 0, \"rayon_threads\": 1}\n\n    if estimated_edges < 5_000:\n        return {\n            \"mode\": small_mode,\n            \"num_workers\": shm_safe_num_workers(max(2, min(cpu_count // 4,\n                                                           16))),\n            \"rayon_threads\": 1,\n        }\n\n    usable_memory = int(ram_bytes * 0.7)\n    cache_ratio = usable_memory / max(index_bytes, 1)\n    effective_cpus = (int(cpu_count *\n                          0.85) if cache_ratio > 0.9 else int(cpu_count * 0.5))\n\n    if estimated_edges < 100_000:\n        num_workers = min(effective_cpus // 2, 16)\n    else:\n        num_workers = min(effective_cpus // 4, 8)\n    num_workers = max(2, num_workers)\n\n    rayon_threads = max(2, min(effective_cpus // num_workers, 8))\n    num_workers = shm_safe_num_workers(num_workers)\n    if num_workers > 0:\n        rayon_threads = max(2, min(effective_cpus // num_workers, 8))\n\n    return {\n        \"mode\": \"standalone\",\n        \"num_workers\": num_workers,\n        \"rayon_threads\": rayon_threads,\n    }",
+          "function_sha256": "0792d7593250b01091f6eed0b9311f276dba8d9fa5903866e3fb7dbd002a66f4",
+          "historical_function_sha256": "0792d7593250b01091f6eed0b9311f276dba8d9fa5903866e3fb7dbd002a66f4",
+          "function_identical_to_historical": true
+        }
+      ]
+    },
+    {
+      "repo_relative_path": "packages/kumo-core/src/kumo_core/training/config.py",
+      "absolute_path": "/home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks/packages/kumo-core/src/kumo_core/training/config.py",
+      "current_file_sha256": "0f4a9e87da988ec5978648ccba1687259ae050507ff07cfd5adb8e1fd2732d7e",
+      "historical_file_sha256": "0f4a9e87da988ec5978648ccba1687259ae050507ff07cfd5adb8e1fd2732d7e",
+      "whole_file_identical_to_historical": true,
+      "functions": [
+        {
+          "first_line": 250,
+          "last_line": 255,
+          "content": "def _dev_shm_bytes() -> int | None:\n    try:\n        stat = os.statvfs('/dev/shm')\n    except OSError:\n        return None\n    return stat.f_blocks * stat.f_frsize",
+          "function_sha256": "7fed90695bc569c93981d2ca4bdd0238990d1664089369f7d83f910d3adc8258",
+          "historical_function_sha256": "7fed90695bc569c93981d2ca4bdd0238990d1664089369f7d83f910d3adc8258",
+          "function_identical_to_historical": true
+        },
+        {
+          "first_line": 258,
+          "last_line": 277,
+          "content": "def shm_safe_num_workers(num_workers: int) -> int:\n    \"\"\"Reduce ``num_workers`` to what ``/dev/shm`` can hold.\n\n    DataLoader workers pass batches through shared memory, so too little\n    ``/dev/shm`` kills them mid-epoch (kumo-ai/kumo#29547). 0 means the main\n    process loads inline and needs none.\n    \"\"\"\n    shm_bytes = _dev_shm_bytes()\n    if num_workers <= 0 or shm_bytes is None:\n        return num_workers\n    affordable = shm_bytes // _SHM_BYTES_PER_WORKER\n    if affordable >= num_workers:\n        return num_workers\n    resolved = affordable if affordable >= 2 else 0\n    warnings.warn(\n        f\"/dev/shm is only {shm_bytes // 1024**2} MiB; reducing DataLoader \"\n        f\"num_workers {num_workers} -> {resolved}. Start the container with \"\n        f\"--ipc=host or --shm-size=8g to restore full parallel loading.\",\n        RuntimeWarning, stacklevel=2)\n    return resolved",
+          "function_sha256": "8f526c2b5b59ce30e10eb826b3f2aa436e6cac33f722219c6d3ffac8c7eed499",
+          "historical_function_sha256": "8f526c2b5b59ce30e10eb826b3f2aa436e6cac33f722219c6d3ffac8c7eed499",
+          "function_identical_to_historical": true
+        }
+      ]
+    }
+  ],
+  "historical_actual_recommendations": [
+    {
+      "regime": "resident",
+      "path": "/tmp/dg424-default-geometry-binary1280-8x256-mult1-cache1/binary-resident-0-mmap.json",
+      "file_sha256": "bc7548415c85274a451e7fcad1293216891e7ef4d874485b2a12b70ff010c505",
+      "historical_run_source_sha": "19a4618e617bcf5930eda4dfd2cecfcc5ea00a04",
+      "historical_native_sha256": "a5670a9529c03bf1e7893d61223cfe8f1424d613c86fc9e0a5af3eceb4121f25",
+      "requested_memory_max_bytes": 68719476736,
+      "observed_scope_memory_max": "68719476736",
+      "loader_records": 5,
+      "unique_automatic_recommendations": [
+        {
+          "mode": "standalone",
+          "num_workers": 8,
+          "rayon_threads": 2
+        }
+      ],
+      "unique_effective_settings": [
+        {
+          "mode": "standalone",
+          "num_workers": 0,
+          "rayon_threads": 4
+        }
+      ],
+      "scope": "Saved recommendation metadata only; benchmark overrode workers before actual loading. No auto-worker fit/OOM/performance inference."
+    },
+    {
+      "regime": "constrained",
+      "path": "/tmp/dg424-default-geometry-binary1280-8x256-mult1-cache1/binary-constrained-0-mmap.json",
+      "file_sha256": "dde869eece381753fe05eba49fcd0f3937d98c5584ec8c96949d50b7cc9ae73d",
+      "historical_run_source_sha": "19a4618e617bcf5930eda4dfd2cecfcc5ea00a04",
+      "historical_native_sha256": "a5670a9529c03bf1e7893d61223cfe8f1424d613c86fc9e0a5af3eceb4121f25",
+      "requested_memory_max_bytes": 4294967296,
+      "observed_scope_memory_max": "4294967296",
+      "loader_records": 5,
+      "unique_automatic_recommendations": [
+        {
+          "mode": "standalone",
+          "num_workers": 8,
+          "rayon_threads": 2
+        }
+      ],
+      "unique_effective_settings": [
+        {
+          "mode": "standalone",
+          "num_workers": 0,
+          "rayon_threads": 4
+        }
+      ],
+      "scope": "Saved recommendation metadata only; benchmark overrode workers before actual loading. No auto-worker fit/OOM/performance inference."
+    }
+  ],
+  "finding": "Both64GiB and4GiB scopes recorded automatic8 workers\u00d72Rayon; actual benchmark loading used0 workers\u00d74Rayon. The identical recommendation is not evidence that automatic workers are safe or unsafe under either limit.",
+  "unmeasured": [
+    "A full fit using automatic workers in the constrained scope",
+    "Automatic-worker memory/OOM outcomes",
+    "Automatic-worker performance or backend ranking",
+    "GPU or distributed worker/cache behavior"
+  ],
+  "production_action": "Use explicitly qualified worker/thread settings for opt-in; separately budget parent+workers+per-process native cache against effective cgroup memory and CPUs before enabling automatic policy.",
+  "measurement_method": "Read saved JSON and current/git historical source text only on efficiency CPU0; no imports of model/native code, no model/build/fetch/compression/graph reads."
+}

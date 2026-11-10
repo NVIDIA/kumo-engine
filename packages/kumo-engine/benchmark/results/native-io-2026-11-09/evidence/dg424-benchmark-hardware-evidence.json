@@ -1,0 +1,77 @@
+{
+  "client_date": "2026-11-09",
+  "kind": "read-only host inventory plus previously executed capability probes",
+  "commands": [
+    {
+      "argv": [
+        "uname",
+        "-srmo"
+      ],
+      "exit": 0,
+      "stdout": "Linux 6.17.0-1026-nvidia aarch64 GNU/Linux\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "lscpu",
+        "-e=CPU,CORE,MAXMHZ,MINMHZ"
+      ],
+      "exit": 0,
+      "stdout": "CPU CORE    MAXMHZ    MINMHZ\n  0    0 2808.0000  338.0000\n  1    1 2808.0000  338.0000\n  2    2 2808.0000  338.0000\n  3    3 2808.0000  338.0000\n  4    4 2808.0000  338.0000\n  5    0 3900.0000 1378.0000\n  6    1 3900.0000 1378.0000\n  7    2 3900.0000 1378.0000\n  8    3 3900.0000 1378.0000\n  9    4 3900.0000 1378.0000\n 10    5 2808.0000  338.0000\n 11    6 2808.0000  338.0000\n 12    7 2808.0000  338.0000\n 13    8 2808.0000  338.0000\n 14    9 2808.0000  338.0000\n 15    5 3900.0000 1378.0000\n 16    6 3900.0000 1378.0000\n 17    7 3900.0000 1378.0000\n 18    8 3900.0000 1378.0000\n 19    9 3900.0000 1378.0000\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "free",
+        "-h"
+      ],
+      "exit": 0,
+      "stdout": "               total        used        free      shared  buff/cache   available\nMem:           121Gi       3.9Gi        32Gi       4.7Mi        86Gi       117Gi\nSwap:           15Gi       819Mi        15Gi\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "df",
+        "-h",
+        "/tmp"
+      ],
+      "exit": 0,
+      "stdout": "Filesystem      Size  Used Avail Use% Mounted on\n/dev/nvme0n1p2  3.7T  2.4T  1.1T  69% /tmp\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "findmnt",
+        "-T",
+        "/tmp",
+        "-o",
+        "TARGET,SOURCE,FSTYPE,OPTIONS"
+      ],
+      "exit": 0,
+      "stdout": "TARGET SOURCE               FSTYPE OPTIONS\n/tmp   /dev/nvme0n1p2[/tmp] ext4   rw,nosuid,nodev,relatime,errors=remount-ro\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "nvidia-smi",
+        "--query-gpu=name,memory.total,driver_version",
+        "--format=csv,noheader"
+      ],
+      "exit": 9,
+      "stdout": "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver. Make sure that the latest NVIDIA driver is installed and running.\n\n",
+      "stderr": ""
+    }
+  ],
+  "verified_capabilities": {
+    "temporary_user_scope_memory_max": 2147483648,
+    "temporary_user_scope_swap_max": 0,
+    "scope_probe_success": true,
+    "io_uring_setup_outside_sandbox": true,
+    "aligned_O_DIRECT_read_bytes": 4096,
+    "per_file_fadvise_mincore_resident_pages_before": 16,
+    "per_file_fadvise_mincore_resident_pages_after": 0,
+    "sandbox_limitation": "io_uring_setup and user systemd bus return EPERM inside sandbox; both verified outside sandbox",
+    "probe_source": "/tmp/dg424-benchmark-capabilities.c",
+    "probe_binary": "/tmp/dg424-benchmark-capabilities"
+  }
+}

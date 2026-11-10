@@ -1,0 +1,77 @@
+[
+  {
+    "name": "2x32_m1_old",
+    "source": "0abc64ffeda024a13a7ffe9b09d21c8891c771a5",
+    "seconds": 51.43923171097413,
+    "user": 45.365044,
+    "system": 16.786716000000002,
+    "native": {
+      "frames_allocated": 7773955,
+      "frames_reused": 5115203,
+      "frames_recycled": 5115136,
+      "frames_dropped": 7773955,
+      "runtime_jobs": 85385,
+      "runtime_batches": 35361,
+      "submitted": 12889158,
+      "io_ops": 10993390,
+      "bytes": 52793447999
+    },
+    "max_batch_pages": 1286
+  },
+  {
+    "name": "8x256_m1_default",
+    "source": "19a4618e617bcf5930eda4dfd2cecfcc5ea00a04",
+    "seconds": 47.620969822164625,
+    "user": 43.387077000000005,
+    "system": 22.840849000000002,
+    "native": {
+      "frames_allocated": 1550,
+      "frames_reused": 12887608,
+      "frames_recycled": 12888320,
+      "frames_dropped": 0,
+      "runtime_jobs": 85385,
+      "runtime_batches": 80948,
+      "submitted": 12889158,
+      "io_ops": 10993390,
+      "bytes": 52793447999
+    },
+    "max_batch_pages": 470
+  },
+  {
+    "name": "2x32_m8",
+    "source": "19a4618e617bcf5930eda4dfd2cecfcc5ea00a04",
+    "seconds": 50.80104616098106,
+    "user": 43.409992,
+    "system": 16.95495,
+    "native": {
+      "frames_allocated": 72,
+      "frames_reused": 12889086,
+      "frames_recycled": 12888064,
+      "frames_dropped": 0,
+      "runtime_jobs": 85385,
+      "runtime_batches": 35131,
+      "submitted": 12889158,
+      "io_ops": 10993390,
+      "bytes": 52793447999
+    },
+    "max_batch_pages": 1286
+  },
+  {
+    "name": "2x256_m1",
+    "source": "19a4618e617bcf5930eda4dfd2cecfcc5ea00a04",
+    "seconds": 51.54420135822147,
+    "user": 43.913436999999995,
+    "system": 17.164336000000002,
+    "native": {
+      "frames_allocated": 72,
+      "frames_reused": 12889086,
+      "frames_dropped": 0,
+      "runtime_jobs": 85385,
+      "runtime_batches": 34877,
+      "submitted": 12889158,
+      "io_ops": 10993390,
+      "bytes": 52793447999
+    },
+    "max_batch_pages": 1286
+  }
+]

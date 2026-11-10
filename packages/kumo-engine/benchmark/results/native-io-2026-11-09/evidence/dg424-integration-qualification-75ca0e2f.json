@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "status": "PASS",
+  "source_git_head": "75ca0e2fd6797827feda61d637b59b75e2d6f678",
+  "merged_upstream": "329e2ef5c0a0ff4a61c9122193c25261e3367ff3",
+  "prior_source": "a3332d2700269a384f821c08cf98bc54df455537",
+  "total_passed": 83,
+  "checks": [
+    {
+      "name": "harness",
+      "passed": 65,
+      "log": "/tmp/dg424-upstream254-harness65-tests.log",
+      "log_sha256": "aab2ede3cbf40ed51a5f83e2274eed7614b9f5607888375cad39fbeb5a06adcb",
+      "command": "taskset -c 0-4,10-14 /tmp/dg424-benchmark-run-python -m pytest -q packages/kumo-engine/test/test_native_io_benchmark.py packages/kumo-engine/benchmark/test_native_io_matrix.py",
+      "exit_code": 0,
+      "execution": "sandbox"
+    },
+    {
+      "name": "temporal_link_candidates",
+      "passed": 5,
+      "log": "/tmp/dg424-upstream254-lp-tests.log",
+      "log_sha256": "a4ac46dfcfac4b1b6e99d2aa7bcb177522391e0df6bb1d8d0c61e69e4fa5fdd0",
+      "command": "/tmp/dg424-benchmark-run-python -m pytest -q packages/kumo-engine/test/test_temporal_link_candidates.py",
+      "exit_code": 0,
+      "execution": "outside_sandbox"
+    },
+    {
+      "name": "fitted_scalars_plan",
+      "passed": 8,
+      "log": "/tmp/dg424-upstream254-scalars-tests.log",
+      "log_sha256": "f09a2e95e49ade649bb3c6f009079625e9534e1ab1768029a6073317692e231f",
+      "command": "/tmp/dg424-benchmark-run-python -m pytest -q packages/kumo-core/tests/test_resolved_task.py packages/kumo-core/tests/test_prediction.py packages/kumo-core/tests/test_workflow.py -k 'prediction_plan_must_match or link_prediction_anchor or scalar or task_options'",
+      "exit_code": 0,
+      "execution": "sandbox"
+    },
+    {
+      "name": "prediction_anchor_materialization",
+      "passed": 5,
+      "log": "/tmp/dg424-upstream254-anchor-tests.log",
+      "log_sha256": "fea73139122354309cbe8a186e9158c015f70c7cd837b34ccdf5d9c93629fc24",
+      "command": "/tmp/dg424-benchmark-run-python -m pytest -q packages/kumo-core/tests/test_prediction.py -k 'anchor_range or custom_link_prediction or materialize_prediction_writes_predict_only_bundle'",
+      "exit_code": 0,
+      "execution": "sandbox"
+    }
+  ],
+  "unchanged_trees": [
+    {
+      "path": "packages/diskgraph",
+      "base_object": "48609409d3b847005d2069e263c42e18491f0f42",
+      "merged_object": "48609409d3b847005d2069e263c42e18491f0f42",
+      "equal": true
+    },
+    {
+      "path": "packages/kumo-engine/benchmark",
+      "base_object": "b57c6755aa4ac30a85531cb09b608e36e9aefdb8",
+      "merged_object": "b57c6755aa4ac30a85531cb09b608e36e9aefdb8",
+      "equal": true
+    },
+    {
+      "path": "packages/kumo-engine/test/test_native_io_benchmark.py",
+      "base_object": "db36a1a5c3293f05b0b570e34a334f5572caea17",
+      "merged_object": "db36a1a5c3293f05b0b570e34a334f5572caea17",
+      "equal": true
+    }
+  ],
+  "working_tree_clean": true,
+  "qualification_scope": "Integration tests only; no performance or post-merge model proof inferred",
+  "notes": [
+    "Scalar/anchor/integration checks ran on the conflict-free merged files before the signed merge commit; no source content changed before commit. Harness65 reran at signed HEAD.",
+    "Initial sandbox LP target failed only because DataLoader IPC socket creation is prohibited; identical target passed outside sandbox.",
+    "Benchmark items have no temporal validity columns; dedicated upstream LP tests cover validity filtering, not benchmark performance."
+  ]
+}

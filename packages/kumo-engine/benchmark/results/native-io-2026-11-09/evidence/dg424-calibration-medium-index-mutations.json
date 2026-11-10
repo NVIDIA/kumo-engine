@@ -1,0 +1,16 @@
+{
+  "original_files": 45,
+  "changed_original": [],
+  "missing_original": [],
+  "new_files": 73,
+  "new_bytes": 3954077,
+  "new_top_paths": {
+    "train_tables": 73
+  },
+  "new_namespaces": [
+    "pred_22e2133171af42f9a412bb6c05a92f0e-c52b02d1f8a944dd8fe8ab2d3d632ccb-predict-f6b95926d157421eb536486e23277e6b",
+    "pred_87ecf066fde14a269aa26dfac53cdc72-2bab548ebf3641029c50e23480a1d325-predict-f880d8e4002e44acb43ba5538cee9910",
+    "pred_9f446351185241cbbca44879ae88e8a3-c52b02d1f8a944dd8fe8ab2d3d632ccb-predict-a5820d9f63394855b11279a8df267bef",
+    "tt-c52b02d1f8a944dd8fe8ab2d3d632ccb-fit-b57b103c5b214e47960a514e4ce1e5c7"
+  ]
+}

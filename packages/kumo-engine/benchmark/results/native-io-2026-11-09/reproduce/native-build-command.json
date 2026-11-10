@@ -1,0 +1,23 @@
+{
+  "role": "Native release rebuild recipe",
+  "capture": "Reconstructed from the command executed by the build agent and recorded release provenance; not an original argv log.",
+  "working_directory": "packages/diskgraph",
+  "environment": {
+    "RUSTUP_TOOLCHAIN": "stable",
+    "CARGO_TARGET_DIR": "/tmp/diskgraph-424-baseline-target",
+    "RUSTFLAGS": "-C target-feature=+aes,+neon",
+    "DISKGRAPH_BUILD_COMMIT": "75ca0e2fd6797827feda61d637b59b75e2d6f678",
+    "PYO3_PYTHON": "/tmp/dg424-native-venv/bin/python",
+    "PYTHONPATH": "diskgraph-pybind"
+  },
+  "argv": [
+    "/tmp/dg424-native-venv/bin/python",
+    "-c",
+    "import diskgraph_build_backend as backend; print(backend.build_wheel(\"/tmp/dg424-benchmark-release-75ca0e2f-wheels\"))"
+  ],
+  "notes": [
+    "Installed stable resolved to rustc/cargo1.96.1; verify that version or use a separately installed exact1.96.1 toolchain when rebuilding.",
+    "The package-local backend automatically stages an optimized ingest executable and a release PyO3 wheel; no extra --release argument was used.",
+    "Adapt local environment/output paths explicitly, record the new build proof and treat binary changes as a new variant."
+  ]
+}

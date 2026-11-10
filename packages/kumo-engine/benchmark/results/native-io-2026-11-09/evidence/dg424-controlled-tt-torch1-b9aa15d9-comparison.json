@@ -1,0 +1,82 @@
+{
+  "batch_count": 128,
+  "identical_batches_by_field": {
+    "physical_stage_node_ids": 128,
+    "seed_nodes": 128,
+    "seed_times": 128,
+    "labels": 128,
+    "batch_tensors": 128,
+    "state_before": 128,
+    "state_after": 128,
+    "rng_before": 128,
+    "rng_after": 128,
+    "gradients": 128,
+    "optimizer": 128
+  },
+  "logical_stream_sha256": [
+    "03b2354b9837030ebcbe2815216d151305b3f50e7b302129a1ca653c78330d39",
+    "03b2354b9837030ebcbe2815216d151305b3f50e7b302129a1ca653c78330d39"
+  ],
+  "prediction_max_abs_difference": 0.0,
+  "prediction_decisions_equal": true,
+  "native_sha256": [
+    "a5670a9529c03bf1e7893d61223cfe8f1424d613c86fc9e0a5af3eceb4121f25",
+    "a5670a9529c03bf1e7893d61223cfe8f1424d613c86fc9e0a5af3eceb4121f25"
+  ],
+  "ingests": [
+    [
+      {
+        "phase": "fit",
+        "namespace": "tt-native-io-benchmark-binary-v1-fit",
+        "context_threads": 1,
+        "encode_threads": 1
+      },
+      {
+        "phase": "predict",
+        "namespace": "tt-native-io-benchmark-binary-v1-predict",
+        "context_threads": 1,
+        "encode_threads": 1
+      },
+      {
+        "phase": "repeat",
+        "namespace": "tt-native-io-benchmark-binary-v1-repeat",
+        "context_threads": 1,
+        "encode_threads": 1
+      },
+      {
+        "phase": "reload",
+        "namespace": "tt-native-io-benchmark-binary-v1-reload",
+        "context_threads": 1,
+        "encode_threads": 1
+      }
+    ],
+    [
+      {
+        "phase": "fit",
+        "namespace": "tt-native-io-benchmark-binary-v1-fit",
+        "context_threads": 1,
+        "encode_threads": 1
+      },
+      {
+        "phase": "predict",
+        "namespace": "tt-native-io-benchmark-binary-v1-predict",
+        "context_threads": 1,
+        "encode_threads": 1
+      },
+      {
+        "phase": "repeat",
+        "namespace": "tt-native-io-benchmark-binary-v1-repeat",
+        "context_threads": 1,
+        "encode_threads": 1
+      },
+      {
+        "phase": "reload",
+        "namespace": "tt-native-io-benchmark-binary-v1-reload",
+        "context_threads": 1,
+        "encode_threads": 1
+      }
+    ]
+  ],
+  "diagnostic_only": true,
+  "status": "PASS"
+}

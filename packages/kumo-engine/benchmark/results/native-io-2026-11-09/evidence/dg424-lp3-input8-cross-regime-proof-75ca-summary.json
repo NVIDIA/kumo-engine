@@ -1,0 +1,644 @@
+{
+  "status": "PASS",
+  "source_git_head": "75ca0e2fd6797827feda61d637b59b75e2d6f678",
+  "prefixes": [
+    "/tmp/dg424-lp3-input8-resident-75ca-v1",
+    "/tmp/dg424-lp3-input8-constrained-75ca-v1"
+  ],
+  "logical_sha": "63ecf2f715b20db4ea9b975bf98d58586ee52c58e32d8c474599e405e6be634a",
+  "traced_batches": 8,
+  "optimizer_steps": [
+    16,
+    16
+  ],
+  "predictions_exact": true,
+  "config_exact": true,
+  "layouts": [
+    {
+      "phase": "fit",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "requested_num_shards": 3,
+      "actual_num_shards": 3,
+      "stage_shards": {
+        "train_seeds": 3,
+        "val_seeds": 3,
+        "test_seeds": 3
+      }
+    },
+    {
+      "phase": "predict",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-predict",
+      "requested_num_shards": 3,
+      "actual_num_shards": 3,
+      "stage_shards": {
+        "predict_seeds": 3
+      }
+    },
+    {
+      "phase": "repeat",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-repeat",
+      "requested_num_shards": 3,
+      "actual_num_shards": 3,
+      "stage_shards": {
+        "predict_seeds": 3
+      }
+    },
+    {
+      "phase": "reload",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-reload",
+      "requested_num_shards": 3,
+      "actual_num_shards": 3,
+      "stage_shards": {
+        "predict_seeds": 3
+      }
+    }
+  ],
+  "all_fields_exact": true,
+  "all_positive_order_multiset_sets_exact": true,
+  "source_after_hashes": [
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/_provenance.json",
+      "sha256": "c1f50f046ca38423f0b45d7a31ddf8f11317d4e574c2a0206497de58e2f2886b",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/manifest.json",
+      "sha256": "c668a90740a3ff89dbba49838ed2336d976b4730b5b26d1b7cfe68ca32b674c9",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/split_stats.json",
+      "sha256": "4cc47f1aec4609a268d67eb5a233f786e5d45d79816e2d35a8360090c0c19c5e",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/stats.json",
+      "sha256": "b1c5e9276cd0b5b9274b0877bf0ff4901be35bfe9c526333ea02eea57c3a6b1b",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/test_seeds/part-00000.parquet",
+      "sha256": "b37091bd02b93ce33dedbab55f26b55972269c776ecf0ad6555691f53f399575",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/test_seeds/part-00001.parquet",
+      "sha256": "41053d739d842b5c2e1bc7f124296b9d12e696e7526d739b868c741cd249f5c3",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/test_seeds/part-00002.parquet",
+      "sha256": "723ba3ef8f74dcfc9001735c3735a50ebb6a9ca58f2e41aa84a166b7f451c0c4",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/test_seeds/part-00003.parquet",
+      "sha256": "fffacdce5b7d951ab7956acc299b4f7610123273791aea067ca4216eff25bf29",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/test_seeds/part-00004.parquet",
+      "sha256": "01f5c06c095a3f6872d5aa91ca22ed261a64f4ca8187eaf32c7423a8cbb962fe",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/train_seeds/part-00000.parquet",
+      "sha256": "37f90f3eddd6747be99808cf4ef20d894982442006ef7246783bc2e4d11134e0",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/train_seeds/part-00001.parquet",
+      "sha256": "8b76bf846f51d08175591aa31694db6337f3411a589336836d0e897c78d98d17",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/train_seeds/part-00002.parquet",
+      "sha256": "31c091614d82360d48b155092b459fc66ff677b870245245db0a6fcbead57adc",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/train_seeds/part-00003.parquet",
+      "sha256": "05be37b74d2c72c32d9e3698c6afe8023c609257d0f0afc07406d8f903d37152",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/train_seeds/part-00004.parquet",
+      "sha256": "fc3e64491a07861c619f34eb44b7f37b830d884a56e2c2585e9d63bfd9747acc",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/tt.parquet/part-00000.parquet",
+      "sha256": "05e1c040caa0928223d60c448c83358c55bc7ad01cb468786c85eec19f35560b",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/tt_ingest_spec.json",
+      "sha256": "15738580e5dbf6f0a5cba1d50bab77942e4d2e0693173cc4ea745a40f25e527f",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/val_seeds/part-00000.parquet",
+      "sha256": "c9519aae3cef6f316d12a932ec6a641ede89334401274722891f5e733dc82669",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/val_seeds/part-00001.parquet",
+      "sha256": "705c457455f9f5928ab7e31ed56649d2ed314b50ec740d86c000913a2f1beea9",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/val_seeds/part-00002.parquet",
+      "sha256": "30f86955be053c2d80b531da017519aae3c267c77321660cd92a141525cea133",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/val_seeds/part-00003.parquet",
+      "sha256": "128d53a407291ccf3092a569d6d9f16214ddea752ba81082e9fff9dd85df9714",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/val_seeds/part-00004.parquet",
+      "sha256": "e2146ddcdbfb7aed4599f89b6ee7421c236bf4a4cfd13aa0d78503c156b82d6f",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-predict",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-work/scratch/prediction_tables/5ca24d942229405da7e743eecf741ec8/source-table/parts.artifacts/manifest.json",
+      "sha256": "f4697dda4fdb2d5e3c5e168f3d6d5e570cfc769b85ff048043ddac28397c3f6e",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-predict",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-work/scratch/prediction_tables/5ca24d942229405da7e743eecf741ec8/source-table/parts.artifacts/stats.json",
+      "sha256": "6e7c12ca9bb02f7e3ee4bb244bdfdbd310b7d3b2a6ab0dbf8844cbede831ab81",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-predict",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-work/scratch/prediction_tables/5ca24d942229405da7e743eecf741ec8/source-table/parts.artifacts/tt.parquet/part-00000.parquet",
+      "sha256": "45df62a0a28b0d56852194d16535395f6eaf7d12b68d0c9577496e7f570d891e",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-predict",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-work/scratch/prediction_tables/5ca24d942229405da7e743eecf741ec8/source-table/parts.artifacts/tt_ingest_spec.json",
+      "sha256": "4a858c0605d7139890b2ebc89a080248e77771eda380be3074e9aa59aaf4d321",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-repeat",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-work/scratch/prediction_tables/716df2e645bf454baf19911c9a62a1d4/source-table/parts.artifacts/manifest.json",
+      "sha256": "f4697dda4fdb2d5e3c5e168f3d6d5e570cfc769b85ff048043ddac28397c3f6e",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-repeat",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-work/scratch/prediction_tables/716df2e645bf454baf19911c9a62a1d4/source-table/parts.artifacts/stats.json",
+      "sha256": "6e7c12ca9bb02f7e3ee4bb244bdfdbd310b7d3b2a6ab0dbf8844cbede831ab81",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-repeat",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-work/scratch/prediction_tables/716df2e645bf454baf19911c9a62a1d4/source-table/parts.artifacts/tt.parquet/part-00000.parquet",
+      "sha256": "45df62a0a28b0d56852194d16535395f6eaf7d12b68d0c9577496e7f570d891e",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-repeat",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-work/scratch/prediction_tables/716df2e645bf454baf19911c9a62a1d4/source-table/parts.artifacts/tt_ingest_spec.json",
+      "sha256": "4f2fbd08f26af813c44483ea1f38a5a442091ee718819c7e3e9703b5bee7927a",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-reload",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-work/scratch/prediction_tables/251881f1f7574b4187c0e9e15311fdfb/source-table/parts.artifacts/manifest.json",
+      "sha256": "f4697dda4fdb2d5e3c5e168f3d6d5e570cfc769b85ff048043ddac28397c3f6e",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-reload",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-work/scratch/prediction_tables/251881f1f7574b4187c0e9e15311fdfb/source-table/parts.artifacts/stats.json",
+      "sha256": "6e7c12ca9bb02f7e3ee4bb244bdfdbd310b7d3b2a6ab0dbf8844cbede831ab81",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-reload",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-work/scratch/prediction_tables/251881f1f7574b4187c0e9e15311fdfb/source-table/parts.artifacts/tt.parquet/part-00000.parquet",
+      "sha256": "45df62a0a28b0d56852194d16535395f6eaf7d12b68d0c9577496e7f570d891e",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-resident-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-reload",
+      "path": "/tmp/dg424-lp3-input8-resident-75ca-v1-work/scratch/prediction_tables/251881f1f7574b4187c0e9e15311fdfb/source-table/parts.artifacts/tt_ingest_spec.json",
+      "sha256": "34320514165deda8b9ec38707ac5a48ae2f9cafa0fc602c0b5b28b45adb90fa8",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/_provenance.json",
+      "sha256": "c1f50f046ca38423f0b45d7a31ddf8f11317d4e574c2a0206497de58e2f2886b",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/manifest.json",
+      "sha256": "c668a90740a3ff89dbba49838ed2336d976b4730b5b26d1b7cfe68ca32b674c9",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/split_stats.json",
+      "sha256": "4cc47f1aec4609a268d67eb5a233f786e5d45d79816e2d35a8360090c0c19c5e",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/stats.json",
+      "sha256": "b1c5e9276cd0b5b9274b0877bf0ff4901be35bfe9c526333ea02eea57c3a6b1b",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/test_seeds/part-00000.parquet",
+      "sha256": "b37091bd02b93ce33dedbab55f26b55972269c776ecf0ad6555691f53f399575",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/test_seeds/part-00001.parquet",
+      "sha256": "41053d739d842b5c2e1bc7f124296b9d12e696e7526d739b868c741cd249f5c3",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/test_seeds/part-00002.parquet",
+      "sha256": "723ba3ef8f74dcfc9001735c3735a50ebb6a9ca58f2e41aa84a166b7f451c0c4",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/test_seeds/part-00003.parquet",
+      "sha256": "fffacdce5b7d951ab7956acc299b4f7610123273791aea067ca4216eff25bf29",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/test_seeds/part-00004.parquet",
+      "sha256": "01f5c06c095a3f6872d5aa91ca22ed261a64f4ca8187eaf32c7423a8cbb962fe",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/train_seeds/part-00000.parquet",
+      "sha256": "37f90f3eddd6747be99808cf4ef20d894982442006ef7246783bc2e4d11134e0",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/train_seeds/part-00001.parquet",
+      "sha256": "8b76bf846f51d08175591aa31694db6337f3411a589336836d0e897c78d98d17",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/train_seeds/part-00002.parquet",
+      "sha256": "31c091614d82360d48b155092b459fc66ff677b870245245db0a6fcbead57adc",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/train_seeds/part-00003.parquet",
+      "sha256": "05be37b74d2c72c32d9e3698c6afe8023c609257d0f0afc07406d8f903d37152",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/train_seeds/part-00004.parquet",
+      "sha256": "fc3e64491a07861c619f34eb44b7f37b830d884a56e2c2585e9d63bfd9747acc",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/tt.parquet/part-00000.parquet",
+      "sha256": "05e1c040caa0928223d60c448c83358c55bc7ad01cb468786c85eec19f35560b",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/tt_ingest_spec.json",
+      "sha256": "15738580e5dbf6f0a5cba1d50bab77942e4d2e0693173cc4ea745a40f25e527f",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/val_seeds/part-00000.parquet",
+      "sha256": "c9519aae3cef6f316d12a932ec6a641ede89334401274722891f5e733dc82669",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/val_seeds/part-00001.parquet",
+      "sha256": "705c457455f9f5928ab7e31ed56649d2ed314b50ec740d86c000913a2f1beea9",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/val_seeds/part-00002.parquet",
+      "sha256": "30f86955be053c2d80b531da017519aae3c267c77321660cd92a141525cea133",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/val_seeds/part-00003.parquet",
+      "sha256": "128d53a407291ccf3092a569d6d9f16214ddea752ba81082e9fff9dd85df9714",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-prepared/scratch/snapshots/869ce653b080afb31e52183b0e93eb58fe6647d7dd668066137644789d65f96d/91d47a3cfaee7d2338ff7b86f1f634d38cf505c05e39a9a3b2b1f059f5af8c6d/train_tables/.tt-adc8cfcfafee450daee2e532d50dde14.staging/val_seeds/part-00004.parquet",
+      "sha256": "e2146ddcdbfb7aed4599f89b6ee7421c236bf4a4cfd13aa0d78503c156b82d6f",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-predict",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-work/scratch/prediction_tables/da04815da956406d8428c976f04a3d8d/source-table/parts.artifacts/manifest.json",
+      "sha256": "f4697dda4fdb2d5e3c5e168f3d6d5e570cfc769b85ff048043ddac28397c3f6e",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-predict",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-work/scratch/prediction_tables/da04815da956406d8428c976f04a3d8d/source-table/parts.artifacts/stats.json",
+      "sha256": "6e7c12ca9bb02f7e3ee4bb244bdfdbd310b7d3b2a6ab0dbf8844cbede831ab81",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-predict",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-work/scratch/prediction_tables/da04815da956406d8428c976f04a3d8d/source-table/parts.artifacts/tt.parquet/part-00000.parquet",
+      "sha256": "45df62a0a28b0d56852194d16535395f6eaf7d12b68d0c9577496e7f570d891e",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-predict",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-work/scratch/prediction_tables/da04815da956406d8428c976f04a3d8d/source-table/parts.artifacts/tt_ingest_spec.json",
+      "sha256": "490e4a7c5a584b627c954349201d5fbac57e53ff6af04d7d24460b089f5eb37d",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-repeat",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-work/scratch/prediction_tables/5c7bdfcedfb84a62a6fbd15a988a5da1/source-table/parts.artifacts/manifest.json",
+      "sha256": "f4697dda4fdb2d5e3c5e168f3d6d5e570cfc769b85ff048043ddac28397c3f6e",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-repeat",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-work/scratch/prediction_tables/5c7bdfcedfb84a62a6fbd15a988a5da1/source-table/parts.artifacts/stats.json",
+      "sha256": "6e7c12ca9bb02f7e3ee4bb244bdfdbd310b7d3b2a6ab0dbf8844cbede831ab81",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-repeat",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-work/scratch/prediction_tables/5c7bdfcedfb84a62a6fbd15a988a5da1/source-table/parts.artifacts/tt.parquet/part-00000.parquet",
+      "sha256": "45df62a0a28b0d56852194d16535395f6eaf7d12b68d0c9577496e7f570d891e",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-repeat",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-work/scratch/prediction_tables/5c7bdfcedfb84a62a6fbd15a988a5da1/source-table/parts.artifacts/tt_ingest_spec.json",
+      "sha256": "895295dd79450725580f4b23f6f3054f65f02f3d86a6b65763907f450d09cc5a",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-reload",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-work/scratch/prediction_tables/4822297ca057424e82ff3a0093b6c782/source-table/parts.artifacts/manifest.json",
+      "sha256": "f4697dda4fdb2d5e3c5e168f3d6d5e570cfc769b85ff048043ddac28397c3f6e",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-reload",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-work/scratch/prediction_tables/4822297ca057424e82ff3a0093b6c782/source-table/parts.artifacts/stats.json",
+      "sha256": "6e7c12ca9bb02f7e3ee4bb244bdfdbd310b7d3b2a6ab0dbf8844cbede831ab81",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-reload",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-work/scratch/prediction_tables/4822297ca057424e82ff3a0093b6c782/source-table/parts.artifacts/tt.parquet/part-00000.parquet",
+      "sha256": "45df62a0a28b0d56852194d16535395f6eaf7d12b68d0c9577496e7f570d891e",
+      "unchanged": true
+    },
+    {
+      "prefix": "/tmp/dg424-lp3-input8-constrained-75ca-v1",
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-reload",
+      "path": "/tmp/dg424-lp3-input8-constrained-75ca-v1-work/scratch/prediction_tables/4822297ca057424e82ff3a0093b6c782/source-table/parts.artifacts/tt_ingest_spec.json",
+      "sha256": "e490c06b2452bc19b3ff155858e19826a2d8df3721d652583b67d9de3a356ecb",
+      "unchanged": true
+    }
+  ],
+  "source_after_hashes_verified_by": "Completed quiet post-run full SHA256 reread of all66 source files before performance handoff",
+  "ingest_inventory_comparison": [
+    {
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-fit",
+      "source": {
+        "left_files": 21,
+        "right_files": 21,
+        "left_only": [],
+        "right_only": [],
+        "byte_differences": [],
+        "normalized_json_differences": []
+      },
+      "extension": {
+        "left_files": 54,
+        "right_files": 54,
+        "left_only": [],
+        "right_only": [],
+        "byte_differences": [
+          "diskgraph_config.json",
+          "diskgraph_manifest.json",
+          "ingest_stats.json"
+        ],
+        "normalized_json_differences": [
+          "ingest_stats.json"
+        ]
+      }
+    },
+    {
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-predict",
+      "source": {
+        "left_files": 4,
+        "right_files": 4,
+        "left_only": [],
+        "right_only": [],
+        "byte_differences": [
+          "tt_ingest_spec.json"
+        ],
+        "normalized_json_differences": [
+          "tt_ingest_spec.json"
+        ]
+      },
+      "extension": {
+        "left_files": 19,
+        "right_files": 19,
+        "left_only": [],
+        "right_only": [],
+        "byte_differences": [
+          "diskgraph_config.json",
+          "diskgraph_manifest.json",
+          "ingest_stats.json"
+        ],
+        "normalized_json_differences": [
+          "diskgraph_config.json",
+          "ingest_stats.json"
+        ]
+      }
+    },
+    {
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-repeat",
+      "source": {
+        "left_files": 4,
+        "right_files": 4,
+        "left_only": [],
+        "right_only": [],
+        "byte_differences": [
+          "tt_ingest_spec.json"
+        ],
+        "normalized_json_differences": [
+          "tt_ingest_spec.json"
+        ]
+      },
+      "extension": {
+        "left_files": 19,
+        "right_files": 19,
+        "left_only": [],
+        "right_only": [],
+        "byte_differences": [
+          "diskgraph_config.json",
+          "diskgraph_manifest.json",
+          "ingest_stats.json"
+        ],
+        "normalized_json_differences": [
+          "diskgraph_config.json",
+          "ingest_stats.json"
+        ]
+      }
+    },
+    {
+      "namespace": "tt-native-io-benchmark-temporal_link-v1-reload",
+      "source": {
+        "left_files": 4,
+        "right_files": 4,
+        "left_only": [],
+        "right_only": [],
+        "byte_differences": [
+          "tt_ingest_spec.json"
+        ],
+        "normalized_json_differences": [
+          "tt_ingest_spec.json"
+        ]
+      },
+      "extension": {
+        "left_files": 19,
+        "right_files": 19,
+        "left_only": [],
+        "right_only": [],
+        "byte_differences": [
+          "diskgraph_config.json",
+          "diskgraph_manifest.json",
+          "ingest_stats.json"
+        ],
+        "normalized_json_differences": [
+          "diskgraph_config.json",
+          "ingest_stats.json"
+        ]
+      }
+    }
+  ],
+  "notes": [
+    "Fit21 source files byte-identical. Prediction spec tt_id carries original random generation UUID; controlled published namespaces match. Config paths and ingest timings also differ. Every non-JSON encoded output payload matches."
+  ],
+  "diagnostic_only": true
+}

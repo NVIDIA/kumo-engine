@@ -1,0 +1,29 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 203, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/dmawhirter/work/kumo/.venv/lib/python3.14/site-packages/isort/__main__.py", line 3, in <module>
+    main()
+    ~~~~^^
+  File "/home/dmawhirter/work/kumo/.venv/lib/python3.14/site-packages/isort/main.py", line 1132, in main
+    incorrectly_sorted = not api.check_stream(
+                             ~~~~~~~~~~~~~~~~^
+        input_stream=input_stream,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+        extension=ext_format,
+        ^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/dmawhirter/work/kumo/.venv/lib/python3.14/site-packages/isort/api.py", line 264, in check_stream
+    changed: bool = sort_stream(
+                    ~~~~~~~~~~~^
+        input_stream=input_stream,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+        disregard_skip=disregard_skip,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/dmawhirter/work/kumo/.venv/lib/python3.14/site-packages/isort/api.py", line 189, in sort_stream
+    raise FileSkipSetting(content_source)
+isort.exceptions.FileSkipSetting: packages/diskgraph/diskgraph-pybind/python/diskgraph/__init__.py was skipped as it's listed in 'skip' setting or matches a glob in 'skip_glob' setting

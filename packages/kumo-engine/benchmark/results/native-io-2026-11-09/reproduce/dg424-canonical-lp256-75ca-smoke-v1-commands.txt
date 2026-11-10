@@ -1,0 +1,2 @@
+taskset -c 0-4,10-14 /tmp/dg424-benchmark-run-python /tmp/dg424-package-canonical.py --repo-root /home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks --variant lp256=/tmp/dg424-phase7-lp-pressure-pilot-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-constrained-b256-cache1-n1-pilot --output-dir /tmp/dg424-canonical-lp256-75ca-smoke-v1 --repetitions 1
+taskset -c 0-4,10-14 /tmp/dg424-benchmark-run-python /tmp/dg424-package-canonical.py --repo-root /home/dmawhirter/work/subtrees/kumo-engine-native-io-benchmarks --replay /tmp/dg424-canonical-lp256-75ca-smoke-v1

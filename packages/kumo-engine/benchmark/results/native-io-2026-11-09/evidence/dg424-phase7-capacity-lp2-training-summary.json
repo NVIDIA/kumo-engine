@@ -1,0 +1,204 @@
+{
+  "status": "EXPLORATORY",
+  "repetitions": 1,
+  "rows": [
+    {
+      "task": "temporal_link",
+      "regime": "constrained",
+      "backend": "buffered",
+      "phase_seconds": {
+        "fit": 98.1275095930323,
+        "predict": 3.4421072229743004,
+        "e2e": 101.57077088393271,
+        "repeat": 2.792010441189632,
+        "reload": 2.75316123990342,
+        "training": 66.47467601718381
+      },
+      "training_native_delta": {
+        "submitted": 2435592,
+        "io_ops": 1861779,
+        "multi_page_ops": 511914,
+        "multi_page_pages": 1085727,
+        "runtime_jobs": 21336,
+        "runtime_envelopes": 21336,
+        "runtime_batches": 19653,
+        "cache_hits": 0,
+        "cache_misses": 0,
+        "coalesced": 0,
+        "evictions": 0,
+        "bytes": 9976087523,
+        "frames_allocated": 0,
+        "frames_reused": 2435592,
+        "frames_recycled": 2434816,
+        "frames_dropped": 0
+      },
+      "training_process_delta": {
+        "user_seconds": 60.56786400000001,
+        "system_seconds": 8.020327,
+        "major_faults": 120,
+        "minor_faults": 1166802
+      },
+      "pressure": {
+        "interval_seconds": 66.47467601718381,
+        "training_pid": 3743239,
+        "pid_physical_read_bytes": 2328862720,
+        "physical_read_scope": "training process; excludes unobserved child I/O",
+        "cgroup_pgscan": 211489,
+        "native_cache_evictions": 0,
+        "index_to_memory_ratio": 2.491487552644685,
+        "has_pressure_evidence": true
+      },
+      "cgroup_peak_bytes": 4294967296,
+      "cgroup_physical_read_bytes": null,
+      "work": {
+        "logical_seed_sha256": "e8f29fe16fc39bdb3e2ecc507228a7874f0866f955c44ae7110efeeb79cc1f4f",
+        "optimizer_steps": 512,
+        "train_batches": 256,
+        "selected_checkpoint_steps": 512
+      },
+      "controls": {
+        "memory_bytes": 4294967296,
+        "io_rings": 8,
+        "io_qd": 256,
+        "io_batch_mult": 1,
+        "direct_cache_gib": 2,
+        "threads": 4,
+        "torch_threads": 1,
+        "workers": 0
+      },
+      "raw_path": "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-constrained-b256-cache2-n1-pilot/temporal_link-constrained-0-buffered.json"
+    },
+    {
+      "task": "temporal_link",
+      "regime": "constrained",
+      "backend": "direct",
+      "phase_seconds": {
+        "fit": 125.52892801305279,
+        "predict": 18.42085531493649,
+        "e2e": 143.95099696400575,
+        "repeat": 18.85589661402628,
+        "reload": 17.869943646946922,
+        "training": 70.00600843410939
+      },
+      "training_native_delta": {
+        "submitted": 780022,
+        "io_ops": 621097,
+        "multi_page_ops": 150999,
+        "multi_page_pages": 309924,
+        "runtime_jobs": 16322,
+        "runtime_envelopes": 16322,
+        "runtime_batches": 14514,
+        "cache_hits": 1655570,
+        "cache_misses": 780022,
+        "coalesced": 18776,
+        "evictions": 349499,
+        "bytes": 3194920645,
+        "frames_allocated": 0,
+        "frames_reused": 780022,
+        "frames_recycled": 779264,
+        "frames_dropped": 0
+      },
+      "training_process_delta": {
+        "user_seconds": 62.959103999999996,
+        "system_seconds": 6.511457999999999,
+        "major_faults": 117,
+        "minor_faults": 1734862
+      },
+      "pressure": {
+        "interval_seconds": 70.00600843410939,
+        "training_pid": 3744846,
+        "pid_physical_read_bytes": 3208310784,
+        "physical_read_scope": "training process; excludes unobserved child I/O",
+        "cgroup_pgscan": 108770,
+        "native_cache_evictions": 349499,
+        "index_to_memory_ratio": 2.491487552644685,
+        "has_pressure_evidence": true
+      },
+      "cgroup_peak_bytes": 4294967296,
+      "cgroup_physical_read_bytes": null,
+      "work": {
+        "logical_seed_sha256": "e8f29fe16fc39bdb3e2ecc507228a7874f0866f955c44ae7110efeeb79cc1f4f",
+        "optimizer_steps": 512,
+        "train_batches": 256,
+        "selected_checkpoint_steps": 512
+      },
+      "controls": {
+        "memory_bytes": 4294967296,
+        "io_rings": 8,
+        "io_qd": 256,
+        "io_batch_mult": 1,
+        "direct_cache_gib": 2,
+        "threads": 4,
+        "torch_threads": 1,
+        "workers": 0
+      },
+      "raw_path": "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-constrained-b256-cache2-n1-pilot/temporal_link-constrained-0-direct.json"
+    },
+    {
+      "task": "temporal_link",
+      "regime": "constrained",
+      "backend": "mmap",
+      "phase_seconds": {
+        "fit": 167.28976680501364,
+        "predict": 4.8565717888996005,
+        "e2e": 172.1474958760664,
+        "repeat": 2.909536609891802,
+        "reload": 2.8311477398965508,
+        "training": 133.9593352950178
+      },
+      "training_native_delta": {
+        "submitted": 0,
+        "io_ops": 0,
+        "multi_page_ops": 0,
+        "multi_page_pages": 0,
+        "runtime_jobs": 0,
+        "runtime_envelopes": 0,
+        "runtime_batches": 0,
+        "cache_hits": 0,
+        "cache_misses": 0,
+        "coalesced": 0,
+        "evictions": 0,
+        "bytes": 0,
+        "frames_allocated": 0,
+        "frames_reused": 0,
+        "frames_recycled": 0,
+        "frames_dropped": 0
+      },
+      "training_process_delta": {
+        "user_seconds": 63.014796,
+        "system_seconds": 12.634871,
+        "major_faults": 600508,
+        "minor_faults": 1432393
+      },
+      "pressure": {
+        "interval_seconds": 133.9593352950178,
+        "training_pid": 3743994,
+        "pid_physical_read_bytes": 2472456192,
+        "physical_read_scope": "training process; excludes unobserved child I/O",
+        "cgroup_pgscan": 160636,
+        "native_cache_evictions": 0,
+        "index_to_memory_ratio": 2.491487552644685,
+        "has_pressure_evidence": true
+      },
+      "cgroup_peak_bytes": 4294967296,
+      "cgroup_physical_read_bytes": null,
+      "work": {
+        "logical_seed_sha256": "e8f29fe16fc39bdb3e2ecc507228a7874f0866f955c44ae7110efeeb79cc1f4f",
+        "optimizer_steps": 512,
+        "train_batches": 256,
+        "selected_checkpoint_steps": 512
+      },
+      "controls": {
+        "memory_bytes": 4294967296,
+        "io_rings": 8,
+        "io_qd": 256,
+        "io_batch_mult": 1,
+        "direct_cache_gib": 2,
+        "threads": 4,
+        "torch_threads": 1,
+        "workers": 0
+      },
+      "raw_path": "/tmp/dg424-phase7-capacity-pilots-75ca-v1/75ca0e2f-a5949f96-8x256-m1/temporal_link-constrained-b256-cache2-n1-pilot/temporal_link-constrained-0-mmap.json"
+    }
+  ]
+}

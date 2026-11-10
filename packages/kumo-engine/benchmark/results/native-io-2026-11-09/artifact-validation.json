@@ -1,0 +1,16 @@
+{
+  "status": "PASS",
+  "markdown_links_checked": 37,
+  "indexed_evidence_hashes_checked": 62,
+  "helper_sha256": "d3b2c2df78e529f5223aca94bc724542d1fada6c0456026f8869dbc129b081e5",
+  "helper_flake8": "PASS --jobs 1",
+  "helper_isort": "PASS --check-only",
+  "positive_replays": {
+    "formal": 90,
+    "calibration": 21
+  },
+  "negative_checks": 5,
+  "independent_root_archive_audit": "PASS111byte-exactobjects",
+  "independent_formal_audit": "PASS90withoutcanonicalvalidator",
+  "compressed_source_whitespace_fix": "Three original evidence byte streams preserved exactly; stored/decompressed SHA256 checked"
+}
