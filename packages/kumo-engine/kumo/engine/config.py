@@ -24,7 +24,8 @@ def init(
 
     Call before creating snapshots or trainers. Reinitializing releases the old
     workers and invalidates their remote handles, preserving cached files and Ray.
-    Omitting cluster_config selects local execution.
+    Omitting cluster_config selects local execution. Scratch overrides remain
+    applied if worker startup fails.
 
     Args:
         scratch_dir: Local driver scratch path; None keeps the current path.
@@ -34,17 +35,10 @@ def init(
             Required for remote execution; independent of MLOps configuration.
 
     Raises:
-        ValueError: If scratch_dir is remote or a cluster has no artifact root.
-        TypeError: If cluster_config has an unsupported type.
+        ValueError: If scratch_dir is remote or cluster/artifact settings conflict.
         RuntimeError: If Ray is uninitialized or worker placement fails.
         PermissionError: If the artifact root is not writable.
     """
-    from kumo.engine._scratch import get_scratch_dir, set_scratch_dir
-
-    if cluster_config is not None and not isinstance(
-        cluster_config, ComputeClusterConfig
-    ):
-        raise TypeError("cluster_config must be a ComputeClusterConfig or None")
     if cluster_config is not None and artifact_root is None:
         raise ValueError("ComputeCluster requires artifact_root in kumo.init")
     if cluster_config is None and artifact_root is not None:
@@ -59,19 +53,13 @@ def init(
         if cluster_config is not None and artifact_root is not None
         else None
     )
-    previous_scratch = get_scratch_dir()
-    if scratch_dir is not None:
-        set_scratch_dir(scratch_dir)
+    configure(scratch_dir=scratch_dir)
     global _cluster
     if _cluster is not None:
         _cluster.close()
     _cluster = None
-    try:
-        if candidate is not None:
-            candidate.start()
-    except BaseException:
-        set_scratch_dir(previous_scratch)
-        raise
+    if candidate is not None:
+        candidate.start()
     _cluster = candidate
 
 
