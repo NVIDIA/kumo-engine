@@ -15,7 +15,6 @@ from kumo_core.train.base_link_module import (
     DEFAULT_LR_SCHEDULER_INTERVAL,
     DEFAULT_OPTIMIZER,
     BaseLinkLightningModule,
-    sorted_membership,
 )
 from kumo_core.types import TaskType
 from kumoapi.model_plan import WeightMode
@@ -88,7 +87,6 @@ class IDLinkGNNLightningModule(BaseLinkLightningModule):
         self.train_table_name = train_table_name
 
         self.identity_awareness = torch.nn.Embedding(1, model.channels)
-        self._predict_candidates: Tensor | None = None
 
     # Model Execution #########################################################
 
@@ -290,8 +288,15 @@ class IDLinkGNNLightningModule(BaseLinkLightningModule):
 
     def on_predict_start(self):
         super().on_predict_start()
-        self._predict_candidates = self.tt_ng_valid_rhs_for_stage(
-            TrainingStage.PRED)
+        if self.datamodule.predict_candidates is not None:
+            raise ValueError(
+                "A pairwise model ranks the items in each row's sampled "
+                "subgraph, so it cannot restrict them to the target filter's "
+                f"conditions on table {self.rhs_name!r}. Remove those "
+                "conditions from the prediction query, or train another "
+                "link-prediction module.")
+        # Rejects an empty catalog; pairwise ranks its sampled items.
+        self.tt_ng_valid_rhs_for_stage(TrainingStage.PRED)
 
     def predict_step(
         self,
@@ -302,10 +307,6 @@ class IDLinkGNNLightningModule(BaseLinkLightningModule):
         assert self.pred_top_k is not None
         pred_top_k = min(self.pred_top_k, self.num_rhs_nodes)
         logits, rhs_index, lhs_batch = self.common_step(batch)
-        if self._predict_candidates is not None:
-            keep = sorted_membership(rhs_index, self._predict_candidates)
-            logits, rhs_index, lhs_batch = (logits[keep], rhs_index[keep],
-                                            lhs_batch[keep])
 
         batch_size = batch[self.lhs_name].batch_size
         lhs_pkey = batch[self.lhs_name].pkey[:batch_size]

@@ -113,7 +113,7 @@ def _predict(trainer, graph, snapshot, query, count, **kwargs):
 
 
 @pytest.mark.parametrize('trained_filter', ['', ACTIVE])
-@pytest.mark.parametrize('module', ['context', 'two_tower', 'pairwise'])
+@pytest.mark.parametrize('module', ['context', 'two_tower'])
 def test_prediction_ranks_only_candidates_that_pass_the_filter(
         graph, snapshot, module, trained_filter):
     trainer = _fit(graph, snapshot, QUERY.format(trained_filter), module)
@@ -123,15 +123,17 @@ def test_prediction_ranks_only_candidates_that_pass_the_filter(
         frame = _predict(trainer, graph, snapshot, QUERY.format(ACTIVE), count,
                          prediction_time=START + pd.Timedelta(days=50))
 
-        classes = set(frame['CLASS'].dropna().astype(int))
-        if module == 'pairwise':
-            # Pairwise ranks its sampled stores, padded with nulls, and has no
-            # time rule.
-            assert all(store % 2 == 0 for store in classes)
-        else:
-            assert classes <= candidates
-            assert (frame.groupby('ENTITY').size() == min(
-                count, len(candidates))).all()
+        assert set(frame['CLASS'].astype(int)) <= candidates
+        assert (frame.groupby('ENTITY').size() == min(count,
+                                                      len(candidates))).all()
+
+
+def test_pairwise_prediction_rejects_the_filter(graph, snapshot):
+    trainer = _fit(graph, snapshot, QUERY.format(''), 'pairwise')
+
+    with pytest.raises(ValueError, match='pairwise model ranks the items'):
+        _predict(trainer, graph, snapshot, QUERY.format(ACTIVE), 12,
+                 prediction_time=START + pd.Timedelta(days=50))
 
 
 def test_prediction_without_the_trained_filter_ranks_every_valid_store(
