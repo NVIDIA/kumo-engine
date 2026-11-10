@@ -449,11 +449,13 @@ class MultiCategoricalTensorMapper(TensorMapper[MultiNestedTensor]):
         if is_list and pa.types.is_integer(array.type.value_type):
             offsets_np = array.offsets.to_numpy(zero_copy_only=False)
             values = array.values
-            # Defer null rows and sliced child buffers to the parsing fallback.
+            # The pandas fallback preserves the legacy -1 token for empty lists.
+            no_empty_rows = bool((offsets_np[1:] > offsets_np[:-1]).all())
             if (
                 array.null_count == 0
                 and offsets_np[0] == 0
                 and offsets_np[-1] == len(values)
+                and no_empty_rows
             ):
                 self._is_string_dtype = False
                 if values.null_count == 0:

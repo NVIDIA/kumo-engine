@@ -136,12 +136,43 @@ def test_multicategorical_null_arrow_matches_pandas() -> None:
     _assert_same(_pandas_reference(mapper, ser), mapper(arr))
 
 
-def test_multicategorical_empty_list_arrow_matches_pandas() -> None:
-    # Empty lists produce no values, matching the pandas list encoder.
-    mapper = MultiCategoricalTensorMapper(category_counts=[[1, 2], [2, 1]], sep=None)
-    arr = pa.array([[1], [], [2, 1]], type=pa.list_(pa.int64()))
-    assert arr.null_count == 0
-    _assert_same(_pandas_reference(mapper, arr.to_pandas()), mapper(arr))
+@pytest.mark.parametrize("categories", [("a", "b"), (1, 2)])
+@pytest.mark.parametrize("large_list", [False, True])
+@pytest.mark.parametrize("with_null", [False, True])
+@pytest.mark.parametrize("chunked", [False, True])
+def test_multicategorical_empty_lists_preserve_legacy_tokens(
+    categories: tuple[str, str] | tuple[int, int],
+    large_list: bool,
+    with_null: bool,
+    chunked: bool,
+) -> None:
+    """Empty Arrow lists retain one -1 token, just like null rows on main."""
+    first, second = categories
+    mapper = MultiCategoricalTensorMapper([[first, 2], [second, 1]], sep=None)
+    rows = [[first], [], [second, first]]
+    value_type = pa.string() if isinstance(first, str) else pa.int64()
+    list_type = pa.large_list(value_type) if large_list else pa.list_(value_type)
+    array = pa.array(rows + [None] if with_null else rows, type=list_type)
+    source = pa.chunked_array([array[:2], array[2:]]) if chunked else array
+
+    result = mapper(source)
+
+    assert result.offset.tolist() == ([0, 1, 2, 4, 5] if with_null else [0, 1, 2, 4])
+    assert result.values.tolist() == ([0, -1, 1, 0, -1] if with_null else [0, -1, 1, 0])
+
+
+@pytest.mark.parametrize("value_type", [pa.string(), pa.int64()])
+def test_multicategorical_all_empty_lists_preserve_legacy_tokens(
+    value_type: pa.DataType,
+) -> None:
+    """All-empty rows still emit missing tokens when the vocabulary is empty."""
+    mapper = MultiCategoricalTensorMapper([], sep=None)
+    array = pa.array([[], []], type=pa.list_(value_type))
+
+    result = mapper(array)
+
+    assert result.offset.tolist() == [0, 1, 2]
+    assert result.values.tolist() == [-1, -1]
 
 
 def test_multicategorical_sliced_list_arrow_matches_pandas() -> None:
