@@ -64,7 +64,10 @@ from kumo.engine.explain.errors import (
     InvalidExplanationError,
     InvalidRunError,
 )
-from kumo.engine.explain.results import TrainingExplanations
+from kumo.engine.explain.results import (
+    PredictionExplanations,
+    TrainingExplanations,
+)
 from kumo.engine.graph import Graph, GraphSnapshot
 from kumo.engine.pquery import PredictionTable, PredictiveQuery, TrainingTable
 from kumo.engine.table import Table
@@ -125,6 +128,7 @@ __all__ = [
     "Trainer",
     "TrainingResult",
     "TrainingExplanations",
+    "PredictionExplanations",
     "ExplanationUnavailableError",
     "InvalidExplanationError",
     "InvalidRunError",

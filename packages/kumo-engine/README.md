@@ -265,7 +265,7 @@ if explanations.availability["gradient"].available:
 ```
 
 Retain the training run separately from its published model bundle. See the
-[training explanation guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/explainability.md)
+[training and batch prediction explanation guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/explainability.md)
 for reopening a run, choosing cohort classes, loading sampled graphs, and
 interpreting availability and scores.
 
