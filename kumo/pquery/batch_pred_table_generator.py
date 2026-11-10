@@ -238,8 +238,7 @@ class PredictionTableGeneratorV2:
         entity_time_col = (entity_table.time_col.name
                            if entity_table.time_col is not None else None)
 
-        # Bypass the service and call the TT-NG sibling directly. Lazy-import
-        # TimeUnit and the sibling.
+        # Lazy-import TimeUnit and the TT-NG generator.
         from diskgraph import TimeUnit
 
         # isort: off

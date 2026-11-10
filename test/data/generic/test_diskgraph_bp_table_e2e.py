@@ -6,22 +6,19 @@
 against multicategorical sources and FK link-prediction targets.
 
 Drives the kumo PQL → ``PredictiveQueryValidator`` → ``DiskGraphPlanCompiler``
-(``is_prediction=True``) → ``execute_tt_plan`` chain through a real diskgraph
+(``is_prediction=True``) → ``execute_tt_gen`` chain through a real diskgraph
 wheel against small synthetic parquet, parametrized over the source-column
 on-disk shape and the link-prediction writer arm. Runs in seconds, no
 Temporal infrastructure required.
 
 Why this layer is needed:
 
-- ``test_diskgraph_batch_pred.py`` mocks the wheel and ``DiskGraphPlanCompiler``
-  — it never exercises a real BP plan against real parquet and cannot detect
-  plan-shape regressions surfaced only at execution time.
 - ``test/rest/integ/test_diskgraph_e2e.py`` runs BP through the real wheel
   but is Temporal-backed REST (5–15 min/run) tied to one hardcoded regression
   PQL with no multicategorical or LP-writer-arm coverage.
 - BP-specific compile kwargs (``is_prediction=True``,
-  ``lp_prediction_mode='LHS'``/``'RHS'``, ``lp_rhs_entity_table``,
-  ``lp_rhs_entity_column``, ``target_stype``, ``list_distinct_target_is_array``)
+  ``lp_prediction_mode='LHS'``, ``target_stype``,
+  ``list_distinct_target_is_array``)
   are not exercised by TT-gen tests; wire breaks in those kwargs surface
   only at BP execution time.
 

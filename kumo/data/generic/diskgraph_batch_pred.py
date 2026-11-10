@@ -98,10 +98,8 @@ def _postprocess_bp_batch(
     is_rhs: bool,
 ) -> pa.RecordBatch:
     """Apply the shared batch-prediction post-processing to one DG batch:
-    slot-0 rename, per-task column drops, and the ``arange`` row index. Shared by
-    the streaming (``_stream_to_parquet*``) and the bundle-replay
-    (``_write_serving_pred_parquet_from_bundle``) paths so the customer-facing
-    pred-table schema is identical regardless of how the table was produced."""
+    slot-0 rename, per-task column drops, and the ``arange`` row index, as used by
+    ``_write_serving_pred_parquet_from_bundle``."""
     batch = _rename_dg_to_kumo(batch)
     num_rows = batch.num_rows
 
