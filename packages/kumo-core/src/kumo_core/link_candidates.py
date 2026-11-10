@@ -6,15 +6,19 @@
 from __future__ import annotations
 
 import shutil
-from concurrent.futures import ThreadPoolExecutor
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from copy import deepcopy
 from typing import Any
 
 import numpy as np
+from kumoapi.graph import GraphDefinition
+from kumoapi.pquery import ValidatedPredictiveQuery
 from kumoapi.pquery.AST import Filter, Join
 from kumopql.rewriting import BPFilterTransformer
+from kumopql.validator.utils import get_rhs_lp_table
 
-from .pquery import NativeGraph, ValidatedNativeQuery, to_api_graph
+from .pquery import ValidatedNativeQuery
 from .sources.cpu import cpu_budget
 from .types import TaskType
 
@@ -42,33 +46,39 @@ def target_contract(query: ValidatedNativeQuery) -> tuple[str, str | None]:
 
 
 def candidate_node_ids(
-    query: ValidatedNativeQuery,
-    graph: NativeGraph,
+    query: ValidatedPredictiveQuery,
+    graph: GraphDefinition,
     *,
+    task_type: TaskType,
     index_path: str,
     tt_id: str,
     runtime: Any,
 ) -> np.ndarray | None:
     r"""Sorted RHS node IDs that pass the query's candidate-table
-    conditions, or ``None`` when it has none."""
-    if query.task_family != "link_prediction":
+    conditions, or ``None`` when it has none.
+
+    Hosted and local batch prediction both rank only these candidates.
+    """
+    if not task_type.is_link_pred:
         return None
     candidate_query = BPFilterTransformer().generate_bp_query(
-        deepcopy(query.query), TaskType(query.task_type), to_api_graph(graph))
+        deepcopy(query), task_type, graph)
     target = candidate_query.get_final_target_aggregation().target
     if not isinstance(target, Filter):
         return None
-    table = graph.table(query.rhs_node_type)
+    table = get_rhs_lp_table(candidate_query, graph)
+    primary_key = graph.tables[table].pkey
+    table = table.rsplit(".", 1)[-1]
     plan = runtime.DiskGraphPlanCompiler(index_path=index_path).compile(
         query=candidate_query,
         timestamps=[],
-        task_type=query.task_type,
+        task_type=task_type.value,
         input_timestamp_unit="nanoseconds",
         is_prediction=True,
-        target_stype=query.target_stype,
+        target_stype=candidate_query.target_stype.value,
         lp_prediction_mode="RHS",
-        lp_rhs_entity_table=table.name,
-        lp_rhs_entity_column=table.primary_key,
+        lp_rhs_entity_table=table,
+        lp_rhs_entity_column=primary_key,
         list_distinct_target_is_array=True,
     )
     generated = runtime.execute_tt_gen(plan, index_path, tt_id)
@@ -76,22 +86,26 @@ def candidate_node_ids(
         engine = runtime.SamplerEngine(index_path)
 
         def lookup(batch: Any) -> np.ndarray:
-            return np.asarray(
-                engine.lookup_node_ids(table.name, batch.column(0)),
-                dtype=np.int64)
+            return np.asarray(engine.lookup_node_ids(table, batch.column(0)),
+                              dtype=np.int64)
 
-        # Each lookup releases the GIL.
-        with ThreadPoolExecutor(cpu_budget()) as pool:
-            parts = list(
-                pool.map(
-                    lookup,
-                    runtime.read_tt_parquet_batches(
-                        generated["tt_parquet_path"], ["ENTITY1"])))
+        workers = cpu_budget()
+        parts: list[np.ndarray] = [np.empty(0, dtype=np.int64)]
+        pending: deque[Future[np.ndarray]] = deque()
+        with ThreadPoolExecutor(workers) as pool:
+            for batch in runtime.read_tt_parquet_batches(
+                    generated["tt_parquet_path"], ["ENTITY1"]):
+                pending.append(pool.submit(lookup, batch))
+                if len(pending) > 2 * workers:
+                    parts.append(pending.popleft().result())
+            parts.extend(future.result() for future in pending)
     finally:
         shutil.rmtree(generated["staging_dir"], ignore_errors=True)
-    node_ids = np.sort(np.concatenate([np.empty(0, dtype=np.int64), *parts]))
+    node_ids = np.sort(np.concatenate(parts))
     if not node_ids.size:
         raise ValueError(
-            f"No {table.name} rows pass the prediction query's target "
-            f"filter {target.condition}, so there is nothing to rank.")
+            f"The prediction has no candidates from table {table!r}: no "
+            f"row passes the target filter's conditions on it "
+            f"({target.condition}). Check that they are not overly "
+            "restrictive.")
     return node_ids[np.r_[True, node_ids[1:] != node_ids[:-1]]]
