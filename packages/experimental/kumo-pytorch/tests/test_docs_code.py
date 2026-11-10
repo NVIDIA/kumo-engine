@@ -35,10 +35,7 @@ import pytest
 
 ROOT = Path(__file__).parents[1]
 CODE_PAGES = (ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md")))
-EXCLUDED_FROM_EXPORT = (
-    "harness/",
-    "AGENTS.md",
-    "CLAUDE.md",
+NOT_IN_REPOSITORY = (
     "docs/internal/",
     "demos/",
     "benchmarks/",
@@ -218,8 +215,8 @@ def _check_links(source: Path, text: str) -> list[str]:
         file_part, _, anchor = target.partition("#")
         resolved = (source.parent / file_part).resolve() if file_part else source
         relative = resolved.relative_to(ROOT).as_posix() if resolved.is_relative_to(ROOT) else ""
-        if any(relative.startswith(excluded) for excluded in EXCLUDED_FROM_EXPORT):
-            problems.append(f"{where}: links to a file that is not exported")
+        if any(relative.startswith(excluded) for excluded in NOT_IN_REPOSITORY):
+            problems.append(f"{where}: links to a file that is not in this repository")
         elif not resolved.exists():
             problems.append(f"{where}: no such file")
         elif anchor and resolved.suffix in {".md", ".ipynb"} and anchor not in _anchors(resolved):
