@@ -226,7 +226,8 @@ class DiskgraphTaskManifest:
             return None
         artifact_root = self.manifest.get("artifact_root") or os.path.dirname(
             os.path.abspath(self.manifest_path))
-        return np.load(os.path.join(artifact_root, str(relative_path)))
+        return np.load(os.path.join(artifact_root, str(relative_path)),
+                       mmap_mode="r")
 
     def _split_info(self) -> Mapping[str, Any]:
         relative_path = self.manifest.get("split_info_path")
@@ -638,6 +639,8 @@ def write_thin_manifest(
     encoder statistics, which only encoder fitting reads, to their own
     sidecar; prediction bundles omit them. ``predict_candidates`` are the
     RHS node IDs a link prediction may rank."""
+    side_artifacts = ([]
+                      if predict_candidates is None else [PREDICT_CANDIDATES])
     metadata = {
         "schema_version": "v1",
         "task_family": spec.task_family,
@@ -661,7 +664,7 @@ def write_thin_manifest(
             "foreign_key_columns": (["ENTITY", "TARGET"] if spec.task_family
                                     == "link_prediction" else ["ENTITY"]),
         },
-        "available_side_artifacts": [],
+        "available_side_artifacts": side_artifacts,
         "runtime_capabilities": [],
         "feature_spec_version": "v1",
         "metadata": {},
@@ -756,10 +759,11 @@ def write_thin_manifest(
             _write_json(path, value)
             checksums[f"{name}_sha256"] = _sha256(path)
         if predict_candidates is not None:
-            np.save(os.path.join(staging, f"{PREDICT_CANDIDATES}.npy"),
-                    predict_candidates)
-            manifest["side_artifacts"][PREDICT_CANDIDATES] = (
-                f"{PREDICT_CANDIDATES}.npy")
+            name = f"{PREDICT_CANDIDATES}.npy"
+            path = os.path.join(staging, name)
+            np.save(path, predict_candidates)
+            checksums[f"{name}_sha256"] = _sha256(path)
+            manifest["side_artifacts"][PREDICT_CANDIDATES] = name
         _write_json(os.path.join(staging, "checksums.json"), checksums)
         manifest["checksums_path"] = "checksums.json"
         _write_json(os.path.join(staging, "manifest.json"), manifest)
