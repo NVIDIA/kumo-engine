@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypeAlias
 
+import kumo.settings
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
@@ -48,7 +49,6 @@ from kumo.engine import (
     Trainer,
     TrainingTable,
     TrainingTableOutputConfig,
-    configure,
 )
 from kumoapi.graph import Edge
 from kumoapi.json_serde import from_json
@@ -379,7 +379,7 @@ def main() -> None:
     found = (dataset.metadata.scale, dataset.metadata.seed, dataset.metadata.generator_version)
     if found != (args.scale, args.data_seed, GENERATOR_VERSION):
         raise RuntimeError(f"{data_root} holds a different dataset {found}; delete it")
-    configure(scratch_dir=args.work / "kumo-scratch")
+    kumo.settings.configure(scratch_dir=args.work / "kumo-scratch")
     anchors = anchor_frame(dataset)
     rows = write_rows(anchors, args.work / "rows")
     graph = build_graph(dataset)
