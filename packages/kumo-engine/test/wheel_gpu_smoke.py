@@ -10,6 +10,7 @@ import hashlib
 import importlib.metadata
 import json
 import math
+import os
 import random
 import shutil
 import sys
@@ -617,7 +618,8 @@ def main():
     args.output_dir = args.output_dir.resolve()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     report = dict(status='RUNNING', tasks=[], reload_atol=args.reload_atol,
-                  reload_rtol=0.)
+                  reload_rtol=0.,
+                  edge_backend=os.environ.get('DG_EDGE_BACKEND', 'mmap'))
     started = time.monotonic()
     try:
         import numpy as np

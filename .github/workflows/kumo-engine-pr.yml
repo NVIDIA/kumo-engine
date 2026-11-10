@@ -14,6 +14,12 @@ on:  # yamllint disable-line rule:truthy
         description: Pull request whose current head is tested
         required: true
         type: string
+      edge_backend:
+        description: Native edge I/O backend for all eight GPU tasks
+        required: false
+        type: choice
+        default: mmap
+        options: [mmap, buffered]
   workflow_call:
     inputs:
       build_only:
@@ -204,6 +210,8 @@ jobs:
           name: engine-pr-wheel-${{ github.sha }}
           path: ${{ runner.temp }}/pr-wheel
       - uses: ./.github/actions/engine-gpu-smoke
+        env:
+          DG_EDGE_BACKEND: ${{ inputs.edge_backend || 'mmap' }}
         with:
           wheel-path: ${{ runner.temp }}/pr-wheel/*.whl
           reload-atol: '0.005'

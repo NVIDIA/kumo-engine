@@ -396,6 +396,39 @@ jobs:
           workspaces: packages/diskgraph -> target
           key: rust-tests-py${{ steps.python.outputs.version }}
       - run: cargo test --locked --workspace
+      - name: Check native I/O and fork lifecycle
+        run: bash scripts/check_native_io.sh
+
+  diskgraph-macos:
+    permissions:
+      contents: read
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+    defaults:
+      run:
+        working-directory: packages/diskgraph
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust-toolchain
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: '3.12'
+          activate-environment: true
+          enable-cache: false
+      - name: Build and install the candidate macOS wheel
+        run: |
+          uv build --wheel --out-dir dist
+          uv pip install --no-deps dist/*.whl
+          uv pip install pytest pyarrow==24.0.0
+      - name: Import the installed wheel and exercise default mmap ingestion and sampling
+        run: |
+          python -m pytest -q -c /dev/null \
+            --confcutdir=diskgraph-pybind/python/tests \
+            diskgraph-pybind/python/tests/test_backend_portability.py
 
   diskgraph-clippy:
     permissions:
@@ -509,6 +542,93 @@ jobs:
           ingest = Path(diskgraph.__file__).parent / 'bin' / 'ingest'
           assert os.access(ingest, os.X_OK), ingest
           subprocess.run([str(ingest), '--help'], check=True)
+          PY
+
+  diskgraph-cpu-tasks:
+    # Exercise the candidate wheel through real source Engine training without
+    # hosted-service credentials or a GPU dependency profile.
+    needs: [diskgraph-wheel]
+    if: ${{ !cancelled() && needs.diskgraph-wheel.result == 'success' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      GITHUB_TOKEN: ''
+      AWS_EC2_METADATA_DISABLED: 'true'
+      SETUPTOOLS_SCM_PRETEND_VERSION: '0.0.0'
+      DG_TEST_NATIVE_TASKS: '1'
+      DG_TEST_NATIVE_IO: '1'
+      DG_TEST_CORE_IO: '1'
+      DG_IO_RINGS: '2'
+      DG_IO_QD: '8'
+      RAYON_NUM_THREADS: '2'
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      MPLCONFIGDIR: /tmp/diskgraph-cpu-matplotlib
+      PYTHONPATH: ${{ github.workspace }}/packages/kumo-engine:${{ github.workspace }}/packages/kumo-core/src:${{ github.workspace }}/packages/kumo-api:${{ github.workspace }}/packages/kumo-pql:${{ github.workspace }}/packages/kumo-engine/test:${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          python-version-file: .python-version
+          activate-environment: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8
+        with:
+          name: diskgraph-wheel
+          path: dist
+      - name: Install candidate native wheel and workspace CPU dependencies
+        run: |
+          sha256sum dist/diskgraph-*.whl
+          uv pip install --no-deps dist/diskgraph-*.whl
+          # Keep the prebuilt candidate; the root CPU profile installs the
+          # workspace Core/API/PQL and CPU Faiss, without Engine's GPU extra.
+          uv sync --active --frozen --inexact --extra cpu --extra test \
+            --no-install-package diskgraph
+          python - <<'PY'
+          import hashlib
+          import sys
+          import zipfile
+          from importlib.metadata import distributions
+          from pathlib import Path
+
+          import diskgraph._c as native
+          import torch
+          from io_utils import fsutil
+
+          faiss = {d.metadata['Name'] for d in distributions()} & {'faiss-cpu', 'faiss-gpu'}
+          assert faiss == {'faiss-cpu'}, faiss
+          assert torch.version.cuda is None, torch.version.cuda
+          assert Path(native.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
+          [wheel] = fsutil.listdir('dist', suffix='.whl')
+          with fsutil.get_binary_handle(wheel, 'rb') as stream, zipfile.ZipFile(stream) as archive:
+              [extension] = [name for name in archive.namelist() if name.endswith('/_c.abi3.so')]
+              expected = hashlib.sha256(archive.read(extension)).hexdigest()
+          actual = hashlib.sha256(fsutil.read_binary(native.__file__)).hexdigest()
+          assert actual == expected, 'workspace sync replaced the candidate extension'
+          print(sys.version, native.__file__, actual)
+          PY
+      - name: Train, predict and reload all eight tasks on two backends
+        run: |
+          python -m pytest -q -s -c /dev/null \
+            --confcutdir=packages/kumo-engine/test \
+            packages/kumo-engine/test/test_native_io_tasks.py
+      - name: Verify native Python ownership, parity and seeded sampling
+        run: |
+          python -m pytest -q -c /dev/null \
+            --confcutdir=packages/diskgraph/diskgraph-pybind/python/tests \
+            --junitxml=/tmp/diskgraph-native-python.xml \
+            packages/diskgraph/diskgraph-pybind/python/tests/test_native_io_readiness.py
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+
+          from io_utils import fsutil
+
+          suites = ET.fromstring(fsutil.read_text('/tmp/diskgraph-native-python.xml'))
+          assert sum(int(suite.get('skipped', '0')) for suite in suites) == 0
           PY
 
   pyarrow-range:
