@@ -999,9 +999,9 @@ def test_compiler_lp_layout_rejects_invalid_values():
             lp_bp_layout="standalone",
         )
 
-@pytest.mark.parametrize("compound", [False, True])
+@pytest.mark.parametrize("bool_op", [None, BoolOp.AND, BoolOp.OR, BoolOp.NOT])
 @pytest.mark.parametrize("through_orders", [False, True])
-def test_compiler_link_prediction_rhs_pass_through(through_orders, compound):
+def test_compiler_link_prediction_rhs_pass_through(through_orders, bool_op):
     # Target has a filter: products.category = 'shoes'
     condition = Condition(
         target=Column(fqn="products.category"),
@@ -1013,9 +1013,10 @@ def test_compiler_link_prediction_rhs_pass_through(through_orders, compound):
         condition.target = Join(rhs_target=Column(fqn="products.category"),
                                 lhs_key="orders.product_id",
                                 rhs_key="products.product_id")
-    if compound:
-        condition = LogicalOperation(left=condition, bool_op=BoolOp.AND,
-                                     right=deepcopy(condition))
+    if bool_op is not None:
+        condition = LogicalOperation(
+            left=condition, bool_op=bool_op,
+            right=None if bool_op == BoolOp.NOT else deepcopy(condition))
     filtered_target = Filter(
         target=Column(fqn="products.product_id"),
         condition=condition,
@@ -1055,7 +1056,9 @@ def test_compiler_link_prediction_rhs_pass_through(through_orders, compound):
 
     # Should extract RHS filter
     row_filter = plan["entity"]["filter"]
-    for compare in row_filter["and"] if compound else [row_filter]:
+    if bool_op is not None:
+        row_filter = row_filter[bool_op.name.lower()]
+    for compare in row_filter if isinstance(row_filter, list) else [row_filter]:
         assert compare["compare"]["lhs"]["column"] == "category"
         assert compare["compare"]["op"] == "eq"
         assert compare["compare"]["rhs"]["constant"]["str"] == "shoes"
