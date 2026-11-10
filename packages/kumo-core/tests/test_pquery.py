@@ -767,7 +767,7 @@ def test_absolute_bounds_intersect_available_labels(
 
 
 @pytest.mark.parametrize('purpose', list(TaskPlanPurpose))
-def test_explicit_anchors_follow_planning_purpose(monkeypatch, purpose):
+def test_explicit_anchors_follow_planning_purpose(monkeypatch, caplog, purpose):
     from pandas import Timestamp
 
     graph = normalize_graph(forecasting_graph_config())
@@ -783,9 +783,10 @@ def test_explicit_anchors_follow_planning_purpose(monkeypatch, purpose):
     off_grid = Timestamp('2024-01-06T12:34:56.123456789').value
     explicit = (off_grid,) + tuple(
         Timestamp(f'2024-01-{day:02}').value for day in [19, 4, 5, 20, 25, 5])
+    options = TrainingTableGenerationPlan(
+        start_time='2024-01-05', end_time='2024-02-01', timeframe_step=99)
     timestamps, fixed = _temporal_timestamps(
-        query, '/synthetic-index', TrainingTableGenerationPlan(
-            start_time='2024-01-05', end_time='2024-02-01', timeframe_step=99),
+        query, '/synthetic-index', options,
         {'flexible_boundaries': False}, 'ApproxDateOffsetSplit', explicit,
         purpose=purpose)
     expected = ((off_grid,) + tuple(
@@ -793,6 +794,19 @@ def test_explicit_anchors_follow_planning_purpose(monkeypatch, purpose):
         if purpose is TaskPlanPurpose.TRAINING else explicit)
     assert timestamps == expected
     assert fixed
+    messages = [record.getMessage() for record in caplog.records
+                if record.name == 'kumo_core.pquery']
+    assert messages == ([
+        'Dropped 3 of 7 explicit training anchors outside '
+        'start_time/end_time or available label data.'
+    ] if purpose is TaskPlanPurpose.TRAINING else [])
+    if purpose is TaskPlanPurpose.TRAINING:
+        caplog.clear()
+        with pytest.raises(PredictiveQueryPlanError, match='No usable training'):
+            _temporal_timestamps(
+                query, '/synthetic-index', options, {}, 'ApproxDateOffsetSplit',
+                (Timestamp('2024-01-25').value,))
+        assert not caplog.records
 
 
 def test_latest_temporal_timestamp_uses_source_maximum(tmp_path, monkeypatch):

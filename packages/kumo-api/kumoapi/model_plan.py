@@ -608,15 +608,13 @@ class TrainingTableGenerationPlan(PlanMixin):
     :ivar train_start_offset: (``int`` | ``"inferred``") Defines the numerical
         offset from the most recent entry to use to generate training data
         labels. Unless a custom time unit is specified in the aggregation, this
-        value is in days (*default:* ``"inferred"``). Eventually we would
-        like to migrate this parameter to start_time.
+        value is in days (*default:* ``"inferred"``).
         **Supported Task Types:** Temporal
 
     :ivar train_end_offset: (``int`` | ``"inferred"``) Defines the numerical
         offset from the most recent entry to not use to generate training data
         labels. Unless a custom time unit is specified in the aggregation, this
-        value is in days (*default:* ``"inferred"``). Eventually we would
-        like to migrate this parameter to end_time.
+        value is in days (*default:* ``"inferred"``).
         **Supported Task Types:** Temporal
 
     :ivar start_time: (``"inferred"`` | ``str``) Inclusive lower
@@ -626,8 +624,7 @@ class TrainingTableGenerationPlan(PlanMixin):
         are read as UTC. ``"inferred"`` or ``"-INF"`` uses the available-data
         lower bound. Bounds are intersected with available label data.
         Direct absolute bounds cannot be combined with train_start_offset,
-        train_end_offset, or explicit date/offset window splits. Ratio splits
-        remain subject to existing task restrictions.
+        train_end_offset, or explicit date/offset window splits.
         Integer bounds are not supported. For relative training windows,
         use train_start_offset/train_end_offset in the aggregation's time unit.
         (*default:* ``"inferred"``).
@@ -641,8 +638,7 @@ class TrainingTableGenerationPlan(PlanMixin):
         timestamp strings as start_time;
         ``"inferred"`` uses available label data. Either absolute bound can
         be omitted. Empty intersections or windows too short for a complete
-        example fail generation. Existing time-unit and split constraints
-        continue to apply. (*default:* ``"inferred"``).
+        example fail generation. (*default:* ``"inferred"``).
         **Supported Task Types:** Temporal node classification, regression,
         ranking, and forecasting.
 

@@ -27,9 +27,7 @@ def parse_time_bound(value: int | str | DateOffset | Timestamp | None,
         if timestamp.tzinfo is not None:
             timestamp = timestamp.tz_convert('UTC').tz_localize(None)
         # Generation stores timestamps as signed nanoseconds.
-        timestamp = Timestamp(timestamp.value)
-        if not isinstance(timestamp, Timestamp):
-            raise ValueError('timestamp is NaT')
+        _ = timestamp.value
     except (ValueError, TypeError, OverflowError) as error:
         raise ValueError(f"'{name}' must be a valid timestamp: {value!r}") from error
     return timestamp
@@ -43,7 +41,7 @@ def validate_time_bounds(
     train_end_offset: int | DateOffset | None = None,
     split_family: str | None = None,
 ) -> tuple[DateOffset | Timestamp | None, DateOffset | Timestamp | None]:
-    """Validate explicit parameters without changing their serialized form."""
+    """Parse start/end bounds and reject invalid combinations."""
     if ((start is not None or end is not None)
             and (train_start_offset is not None
                  or train_end_offset is not None)):

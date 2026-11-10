@@ -114,44 +114,6 @@ To use your own data, point `FileConnector` at a directory of CSV or Parquet fil
 
 `graph.snapshot()` ingests the tables into an on-disk graph index under the scratch directory, which also holds training runs, model bundles, and predictions. It defaults to `~/.cache/kumo-engine`; to put it on a large local disk, call `kumo.engine.configure(scratch_dir=...)` first.
 
-## Absolute training bounds
-
-For temporal node classification, regression, ranking, and forecasting, pass
-absolute bounds when generating the training table:
-
-```python
-from kumoapi.model_plan import TrainingTableGenerationPlan
-
-table = pquery.generate_training_table(
-    snapshot,
-    TrainingTableGenerationPlan(
-        start_time="2024-01-01T00:00:00Z",
-        end_time="2024-07-01T00:00:00Z",
-    ),
-)
-training_result = trainer.fit(table, snapshot=snapshot)
-```
-
-`start_time` includes prediction anchors at that timestamp. `end_time` limits
-the label observation window: a 30-day target needs an anchor at least 30 days
-before the cutoff. Forecasting reserves the complete future-label horizon.
-Bounds are intersected with available label data; generation fails when no
-complete examples fit. Omit either bound, or use `"inferred"`, to infer it from
-the data. `start_time="-INF"` also uses the available lower bound. Aware
-timestamps are normalized to UTC; naive timestamps are read as UTC.
-
-The bounds cover all generated train, validation, and test stages. Default
-splits and supported ratio splits operate within that window. Choose direct
-bounds or an explicit temporal window split (`TimeRangeSplit`,
-`DateOffsetSplit`, or `BacktestingSplit`) separately. Direct bounds also cannot
-be combined with `train_start_offset` or `train_end_offset`. Existing task,
-time-unit, and split restrictions continue to apply. Integer `start_time` and
-`end_time` bounds are not supported. Use `train_start_offset` and
-`train_end_offset` for relative windows measured backward from the latest label
-data in the aggregation's time unit. Absolute bounds for temporal link
-prediction are outside this feature's scope. Fit and saved model bundles
-retain the effective generation plan.
-
 ## Agent skills
 
 Kumo Engine ships an agent skill, `kumo-data-science`, that teaches a coding agent to build, train, and run Kumo models with this version of the SDK. Install it for your agent:

@@ -97,7 +97,11 @@ def test_temporal_node_bounds(temporal_graph, tmp_path, monkeypatch, task,
     assert table.generation_plan.end_time == END.isoformat()
     if task == 'forecasting':
         assert table.generation_plan.forecast_length == 3
-        assert rows['TIMESTAMP'].max() == END - pd.Timedelta(days=6)
+        stage_horizon = pd.Timedelta(days=2 * 3)
+        # Each default forecast stage owns one complete forecast horizon.
+        expected = {stage: END - (3 - stage) * stage_horizon
+                    for stage in range(3)}
+        assert rows.groupby('SPLIT')['TIMESTAMP'].max().to_dict() == expected
     if task == 'binary_classification':
         events = temporal_graph[2]
         for row in rows.itertuples():

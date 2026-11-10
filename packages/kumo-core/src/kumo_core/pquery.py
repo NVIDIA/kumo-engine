@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -80,6 +81,8 @@ from .training.timestamps import (
 )
 from .training.validation import validate_train_offsets
 from .types import TaskType
+
+logger = logging.getLogger(__name__)
 
 
 class PredictiveQueryPlanError(ValueError):
@@ -1098,8 +1101,14 @@ def _temporal_timestamps(
             raise PredictiveQueryPlanError(str(error)) from error
 
     if explicit:
-        return (bounded(tuple(_timestamp_ns(value) for value in explicit)),
-                "flexible_boundaries" in split)
+        timestamps = bounded(tuple(_timestamp_ns(value) for value in explicit))
+        dropped = len(explicit) - len(timestamps)
+        if dropped:
+            logger.warning(
+                'Dropped %d of %d explicit training anchors outside '
+                'start_time/end_time or available label data.',
+                dropped, len(explicit))
+        return timestamps, "flexible_boundaries" in split
 
     step_count = int(
         inferred_or_missing_type_to_none(options.timeframe_step)
