@@ -17,10 +17,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
+use arrow_array::cast::AsArray;
+use arrow_array::types::*;
+use arrow_array::{Array, ArrayRef, ArrowPrimitiveType};
+use arrow_schema::DataType;
 use diskgraph_core::time::TimeUnit;
 use diskgraph_index::graph::{temporal_value_in_clock, write_durable, GraphIndexReader};
 use diskgraph_rowpack::{
-    ColumnValueObserver, FloatListView, IngestedType, IntListView, StringListView, ValueRef,
+    ColumnValueObserver, FloatListView, IngestedType, IntListView, RowAccess, RowAccessHints,
+    RowAccessStats, StringListView, ValueRef,
 };
 use num_bigint::BigInt;
 use num_traits::{ToPrimitive, Zero};
@@ -1119,6 +1124,144 @@ pub fn ensure_col_stats(
         files,
         seconds: start.elapsed().as_secs_f64(),
     })
+}
+
+/// The ingested type a natively typed Arrow array holds.
+fn arrow_ingested_type(data_type: &DataType) -> Result<IngestedType> {
+    Ok(match data_type {
+        DataType::Boolean => IngestedType::Bool,
+        DataType::Int8 => IngestedType::Int8,
+        DataType::Int16 => IngestedType::Int16,
+        DataType::Int32 => IngestedType::Int32,
+        DataType::Int64 => IngestedType::Int64,
+        DataType::UInt8 => IngestedType::UInt8,
+        DataType::UInt16 => IngestedType::UInt16,
+        DataType::UInt32 => IngestedType::UInt32,
+        DataType::UInt64 => IngestedType::UInt64,
+        DataType::Float32 => IngestedType::Float32,
+        DataType::Float64 => IngestedType::Float64,
+        DataType::Utf8 | DataType::LargeUtf8 => IngestedType::String,
+        DataType::Date32 => IngestedType::Date,
+        DataType::Timestamp(_, _) => IngestedType::Timestamp,
+        other => bail!("column statistics are unsupported for Arrow {other}"),
+    })
+}
+
+/// Each row's value as ingest stores it.
+fn arrow_values(array: &ArrayRef, clock: TimeUnit) -> Result<Vec<Value<'_>>> {
+    fn map<T: ArrowPrimitiveType>(
+        array: &dyn Array,
+        f: impl Fn(T::Native) -> Value<'static>,
+    ) -> Vec<Value<'_>> {
+        let array = array.as_primitive::<T>();
+        array.iter().map(|v| v.map_or(Value::Null, &f)).collect()
+    }
+    Ok(match array.data_type() {
+        DataType::Boolean => array
+            .as_boolean()
+            .iter()
+            .map(|v| v.map_or(Value::Null, |v| Value::Int(v.into())))
+            .collect(),
+        DataType::Int8 => map::<Int8Type>(array, |v| Value::Int(v.into())),
+        DataType::Int16 => map::<Int16Type>(array, |v| Value::Int(v.into())),
+        DataType::Int32 => map::<Int32Type>(array, |v| Value::Int(v.into())),
+        DataType::Int64 => map::<Int64Type>(array, Value::Int),
+        DataType::UInt8 => map::<UInt8Type>(array, |v| Value::Int(v.into())),
+        DataType::UInt16 => map::<UInt16Type>(array, |v| Value::Int(v.into())),
+        DataType::UInt32 => map::<UInt32Type>(array, |v| Value::Int(v.into())),
+        DataType::UInt64 => map::<UInt64Type>(array, |v| Value::Int(v as i64)),
+        DataType::Float32 => map::<Float32Type>(array, |v| Value::Float(v.into())),
+        DataType::Float64 => map::<Float64Type>(array, Value::Float),
+        DataType::Utf8 => array
+            .as_string::<i32>()
+            .iter()
+            .map(|v| v.map_or(Value::Null, Value::Str))
+            .collect(),
+        DataType::LargeUtf8 => array
+            .as_string::<i64>()
+            .iter()
+            .map(|v| v.map_or(Value::Null, Value::Str))
+            .collect(),
+        DataType::Date32 => map::<Date32Type>(array, |v| Value::Int(v.into())),
+        DataType::Timestamp(_, _) => {
+            let mut access =
+                RowAccess::new(vec![RowAccessHints::default()], RowAccessStats::new(None))
+                    .with_clock(clock);
+            access.set_cols(std::slice::from_ref(array));
+            (0..array.len())
+                .map(|row| {
+                    access.set_row(row);
+                    access
+                        .get_timestamp(0)
+                        .ok()
+                        .flatten()
+                        .map_or(Value::Null, Value::Int)
+                })
+                .collect()
+        }
+        other => bail!("column statistics are unsupported for Arrow {other}"),
+    })
+}
+
+/// `stats` of `values` over the rows whose `create_time` (ticks of `clock`,
+/// or Arrow dates/timestamps) is at or before `cutoff`; rows with a null
+/// create time are skipped and `None` counts every row. Values and create
+/// times convert to `clock` as ingest converts them. Returns each stat's
+/// data JSON, as its file would hold it.
+pub fn stats_from_arrow(
+    values: &ArrayRef,
+    create_time: Option<&ArrayRef>,
+    cutoff: Option<i64>,
+    stats: &[Stat],
+    clock: TimeUnit,
+) -> Result<Vec<(Stat, String)>> {
+    let value_type = arrow_ingested_type(values.data_type())?;
+    let create_time_type = match create_time {
+        Some(array) if array.data_type() == &DataType::Date32 => IngestedType::Date,
+        Some(array) if array.data_type() == &DataType::Int64 => IngestedType::Timestamp,
+        Some(array) => match arrow_ingested_type(array.data_type())? {
+            IngestedType::Timestamp => IngestedType::Timestamp,
+            other => bail!("create_time must be int64 ticks, a date or a timestamp, got {other:?}"),
+        },
+        None => IngestedType::Timestamp,
+    };
+    if let Some(array) = create_time {
+        ensure!(
+            array.len() == values.len(),
+            "create_time has {} rows, values has {}",
+            array.len(),
+            values.len()
+        );
+    }
+    let mut table = TableStats::new(
+        "",
+        [("values", value_type), ("create_time", create_time_type)],
+        create_time.map(|_| "create_time"),
+        stats.iter().map(|stat| ("values", *stat)),
+        &[cutoff],
+        clock,
+    )?;
+    let times = create_time
+        .map(|array| arrow_values(array, clock))
+        .transpose()?;
+    for (row, value) in arrow_values(values, clock)?.into_iter().enumerate() {
+        if let Some(times) = &times {
+            if matches!(times[row], Value::Null) {
+                continue;
+            }
+            table.set(1, times[row]);
+        }
+        table.set(0, value);
+        table.row_stored();
+    }
+    let column = &table.stats[0];
+    let mut requested: Vec<Stat> = stats.to_vec();
+    requested.sort_unstable();
+    requested.dedup();
+    requested
+        .into_iter()
+        .map(|stat| Ok((stat, column.data(stat)?)))
+        .collect()
 }
 
 #[cfg(test)]
