@@ -176,7 +176,7 @@ def test_all_platforms_require_validation_and_release_environment() -> None:
         row["arch"]
         for row in JOBS["check-requirements"]["strategy"]["matrix"]["include"]
     } == arches
-    assert "windows-x86_64" in arches
+    assert arches == {"x86_64", "arm64", "aarch64"}
     release_arches = {
         row["arch"]
         for row in JOBS["attach-to-release"]["strategy"]["matrix"]["include"]
@@ -221,8 +221,9 @@ def test_all_platforms_require_validation_and_release_environment() -> None:
         PORTAL_WORKFLOW[True]["workflow_call"]["secrets"]["KITMAKER_API_TOKEN"][
             "required"
         ]
-        is True
+        is False
     )
+    assert portal["env"]["KITMAKER_API_TOKEN"] == "${{ secrets.KITMAKER_API_TOKEN }}"
     glove = yaml.safe_load(
         (WORKFLOW.parent / "kumo-glove-6b-50d-wheel.yml").read_text()
     )
@@ -279,10 +280,9 @@ def test_cpu_qualification_uses_candidate_artifacts_on_all_pythons():
     job = workflow['jobs']['smoke']
     matrix = job['strategy']['matrix']
     assert set(matrix['python']) == {'3.11', '3.12', '3.13', '3.14'}
-    assert len(matrix['target']) == 3
+    assert len(matrix['target']) == 2
     assert {row['platform']: row['artifact'] for row in matrix['target']} == {
-        'windows-native': 'windows-x86_64', 'windows-wsl': 'x86_64',
-        'linux-arm64': 'aarch64',
+        'windows-wsl': 'x86_64', 'linux-arm64': 'aarch64',
     }
     assert {row['artifact'] for row in matrix['target']} <= {
         build['arch'] for build in BUILDS}

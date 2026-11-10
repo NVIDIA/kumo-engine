@@ -43,15 +43,13 @@ publish them to PyPI and pypi.nvidia.com. No workflow here uploads to PyPI or
 holds PyPI credentials.
 
 The build matrix targets `cp311-abi3-manylinux_2_34_x86_64` and
-`cp311-abi3-manylinux_2_34_aarch64` for Linux with glibc >= 2.34,
-`cp311-abi3-win_amd64` for native Windows x86-64, and
+`cp311-abi3-manylinux_2_34_aarch64` for Linux with glibc >= 2.34, and
 `cp311-abi3-macosx_14_0_arm64` for Apple Silicon with macOS >= 14.0.
 WSL uses the Linux x86-64 wheel. All require CPython >= 3.11
 (DiskGraph's stable-ABI floor), with classifiers for 3.11–3.14. Adding build
 targets does not establish published availability or installed-wheel runtime
-qualification. Native Windows builds and tests are experimental: their wheels
-remain CI artifacts and are excluded from public release attachments and
-Kitmaker publication. The supported Windows route for this release is WSL2.
+qualification. Native Windows builds, tests, and publication are outside this
+release workflow. The supported Windows route for this release is WSL2.
 The merger reads
 every bundled wheel's `Requires-Python` and writes their intersection into the
 final wheel.
@@ -126,8 +124,7 @@ platform's `release-version`.
      within that bound. The macOS wheel has no GPU smoke
      check. See the [test criteria](testing.md#finished-kumo-engine-wheel).
    - attaches the Linux x86_64/ARM64 and macOS ARM64 wheels to the GitHub
-     release; the Linux x86_64 wheel also serves WSL2. Native Windows upload
-     routes remain disabled despite experimental build/test coverage.
+     release; the Linux x86_64 wheel also serves WSL2.
 5. **Publish through Kitmaker.** The `kitmaker` job runs in the
    `kumo-engine-release` environment and waits for approval from
    `kumo-engineers`. The person who starts the run cannot approve it.
@@ -201,9 +198,9 @@ wheel on a macOS ARM64 runner with the same deployment target.
 
 ### Experimental native Windows builds
 
-These instructions are for development and CI qualification, not a supported
-installation route for this release. Use WSL2 and the Linux x86-64 wheel on
-Windows. Native Windows release uploads are disabled.
+These instructions are for local development. The release workflow excludes
+native Windows builds and tests. Use WSL2 and the Linux x86-64 wheel on Windows
+for this release.
 
 Experimental native Windows x64 installations require a Microsoft Visual C++ v14 runtime
 at least as recent as the build tools used for the wheel. If the runtime is
@@ -217,8 +214,7 @@ the Rust MSVC toolchain, CMake, and an activated Visual Studio x64 C++/Windows
 SDK environment. Set `PYTHON=python` if `python3` is not available. Zig and
 ELF/glibc checks are disabled; the builder requires DiskGraph's `win_amd64`
 tag. `--verify-image` is not supported for Windows: qualify the installed
-wheel natively. The workflow activates the image's existing MSVC tools;
-it does not install system toolchains.
+wheel natively.
 The checkout must preserve committed LF line endings: notice and Cargo lock
 hashes verify exact source bytes. For a fresh local clone, use
 `git -c core.autocrlf=false clone <repository-url>`. CI applies this setting
@@ -255,7 +251,9 @@ The engine and GloVe release jobs call
 It runs on GitHub-hosted Ubuntu, opens a Teleport application tunnel to Charon
 Ferry, and authenticates each Portal request with a fresh GitHub OIDC token
 plus the Kitmaker bearer token. Both release callers explicitly forward
-`KITMAKER_API_TOKEN`, which the reusable workflow declares as required.
+`KITMAKER_API_TOKEN`. The reusable workflow accepts an optional caller token so
+its release job can use the environment secret. Portal authentication still
+requires the token.
 Portal credentials stay in the `kumo-engine-release` environment. Charon/Teleport must authorize this repository,
 workflow, and ref; authorization for cuOpt does not grant access to Kumo.
 The tunnel uses `ext-nv-prd-apps.teleport.sh:443`. The original cuOpt PR

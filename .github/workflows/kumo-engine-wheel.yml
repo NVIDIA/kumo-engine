@@ -2,8 +2,9 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Builds Linux x86_64/ARM64, Windows x86_64 and macOS ARM64 wheels with
+# Builds Linux x86_64/ARM64 and macOS ARM64 wheels with
 # packages/kumo-engine/scripts/build_wheel.sh.
+# Windows uses the Linux x86_64 wheel through WSL2 for this release.
 #
 # Release flow:
 #   1. Change the root VERSION file and run scripts/stamp_version.py, merge it.
@@ -67,10 +68,6 @@ jobs:
             machine: aarch64
             runner: ubuntu-24.04-arm
             platform: manylinux_2_34_aarch64
-          - arch: windows-x86_64
-            machine: x86_64
-            runner: windows-2022
-            platform: win_amd64
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
@@ -106,27 +103,6 @@ jobs:
 
       - name: Set up Rust
         uses: ./.github/actions/rust-toolchain
-
-      - name: Activate installed MSVC build tools
-        if: ${{ runner.os == 'Windows' }}
-        shell: pwsh
-        run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if ($LASTEXITCODE -ne 0 -or -not $installation) {
-            throw 'Runner image needs Visual Studio x64 C++ tools and the Windows SDK.'
-          }
-          & "$installation\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
-          foreach ($name in @('cl', 'link', 'cmake')) {
-            Get-Command $name -ErrorAction Stop | Select-Object Name, Source
-          }
-          foreach ($name in @('PATH', 'INCLUDE', 'LIB', 'LIBPATH')) {
-            $value = [Environment]::GetEnvironmentVariable($name)
-            "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          }
-          # Git Bash also has link.exe; Rust must use Microsoft's linker.
-          $linker = (Get-Command link.exe -ErrorAction Stop).Source
-          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       # cargo-zigbuild shells out to `zig`; without it on PATH it falls back
       # to `python -m ziglang`, which needs the ziglang package installed.
@@ -167,20 +143,7 @@ jobs:
           packages/kumo-engine/dist/kumo_engine-*.whl
           --platform-tag "${WHEEL_PLATFORM}"
 
-      - name: Test Windows path validation
-        if: ${{ runner.os == 'Windows' }}
-        run: |
-          cargo --config packages/diskgraph/.cargo/config.toml \
-            test --manifest-path packages/diskgraph/Cargo.toml \
-            --release --locked -p diskgraph-ingest --lib \
-            disk_manager::path_safety::tests
-          cargo --config packages/diskgraph/.cargo/config.toml \
-            test --manifest-path packages/diskgraph/Cargo.toml \
-            --release --locked -p diskgraph-ingest --lib \
-            rejects_windows_profiling_before_output_changes
-
       # GitHub-hosted artifact storage, not S3: no AWS role to provision.
-      # Native Windows wheels are experimental internal CI artifacts only.
       - name: Upload wheel
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -231,8 +194,6 @@ jobs:
             platform: aarch64-apple-darwin
           - arch: aarch64
             platform: aarch64-manylinux_2_34
-          - arch: windows-x86_64
-            platform: x86_64-pc-windows-msvc
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
@@ -282,8 +243,6 @@ jobs:
           - arch: x86_64
           - arch: arm64
           - arch: aarch64
-          # Native Windows remains experimental; Windows releases use WSL.
-          # - arch: windows-x86_64
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -325,9 +284,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Native Windows remains experimental; Windows releases use WSL.
-          # - arch: windows-x86_64
-          #   platform: win_amd64
           - arch: aarch64
             platform: manylinux_2_34_aarch64
           - arch: x86_64
