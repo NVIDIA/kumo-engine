@@ -17,8 +17,8 @@ from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
 import numpy as np
-import pandas as pd
 import pyarrow as pa
+import pyarrow.compute as pc
 import torch
 from torch_frame import TensorFrame
 from torch_frame.data import MultiNestedTensor
@@ -28,7 +28,14 @@ from torch_geometric.sampler.base import HeteroSamplerOutput
 from kumo_core.diskgraph.metadata import normalize_diskgraph_edge_type
 from kumo_core.encoders.target.base import TargetEncoder
 from kumo_core.encoders.tensor_frame import get_tf
-from kumo_core.encoders.tensor_mapper import TensorMapper
+from kumo_core.encoders.tensor_mapper import (
+    CategoricalTensorMapper,
+    MultiCategoricalTensorMapper,
+    TensorMapper,
+    _category_codes,
+    _is_list,
+    _list_values_offsets,
+)
 
 # A column value as handed across the diskgraph FFI boundary: the wheel
 # always builds these through pyarrow (see diskgraph-pybind's py_*_array
@@ -1060,7 +1067,7 @@ def _attach_lp_exclude(
 
 
 def _shape_target(
-    target: ArrowArray,
+    target: pa.Array | pa.ChunkedArray,
     task_type: str | None,
     target_encoder: TargetEncoder | None = None,
 ) -> torch.Tensor | MultiNestedTensor:
@@ -1073,59 +1080,75 @@ def _shape_target(
     # LP targets are int64 RHS node ids — keep 1-D; get_ground_truth reads
     # ``batch[lhs].y`` as node ids.
     if task_type in _LINK_PRED_TASK_TYPES:
-        return _values_to_tensor(target, dtype=torch.long).view(-1)
+        return _arrow_array_to_tensor(target, dtype=torch.long).view(-1)
     if task_type in {"multilabel_classification", "multilabel_ranking"}:
         return _shape_multilabel_target(target, target_encoder)
 
-    if (task_type is not None and task_type in _CLASSIFICATION_TASK_TYPES
-            and target_encoder is not None):
-        return _categorical_indices(target, target_encoder).long().view(-1, 1)
+    if (
+        task_type is not None
+        and task_type in _CLASSIFICATION_TASK_TYPES
+        and target_encoder is not None
+    ):
+        return _categorical_indices(target, target_encoder).view(-1, 1)
 
-    y = _arrow_array_to_tensor(target)
+    dtype = torch.long if task_type in _CLASSIFICATION_TASK_TYPES else torch.float32
+    y = _arrow_array_to_tensor(target, dtype=dtype)
 
     if task_type is None:
         return y
     if task_type in _CLASSIFICATION_TASK_TYPES:
-        return y.long().view(-1, 1)
+        return y.view(-1, 1)
     if y.dim() == 1:
-        return y.to(dtype=torch.float32).view(-1, 1)
-    return y.to(dtype=torch.float32)
+        return y.view(-1, 1)
+    return y
 
 
 def _shape_multilabel_target(
-    target: ArrowArray,
+    target: pa.Array | pa.ChunkedArray,
     target_encoder: TargetEncoder | None,
 ) -> MultiNestedTensor:
-    sep = None
+    mapper = None
     if target_encoder is not None:
-        sep = getattr(target_encoder.tensor_mapper, "sep", None)
-    values = _array_to_multilabel_lists(target, sep=sep or "|")
-    if target_encoder is None:
-        mapped = [[int(v) for v in row] for row in values]
-    else:
-        mapping = target_encoder.tensor_mapper.mapping
-        mapped = []
-        for row in values:
-            labels, indices = _target_label_indices(list(row), mapping)
-            if (indices < 0).any():
-                unknown = [
-                    labels[i] for i, idx in enumerate(indices) if idx < 0
-                ]
-                raise ValueError(
-                    "TT-NG multilabel target contains labels not present in "
-                    f"target encoder mapping: {unknown[:5]}")
-            mapped.append([int(i) for i in indices])
-
-    flat: list[int] = []
-    offsets = [0]
-    for row in mapped:
-        flat.extend(row)
-        offsets.append(len(flat))
+        mapper = target_encoder.tensor_mapper
+        assert isinstance(mapper, MultiCategoricalTensorMapper)
+    sep = (mapper.sep if mapper is not None else None) or "|"
+    chunks = target.chunks if isinstance(target, pa.ChunkedArray) else [target]
+    prepared = [_multilabel_values_offsets(chunk, sep) for chunk in chunks]
+    total_values = sum(len(values) for values, _ in prepared)
+    destination = torch.empty(total_values, dtype=torch.long)
+    offset = torch.empty(len(target) + 1, dtype=torch.long)
+    offset[0] = 0
+    row = 0
+    cursor = 0
+    for values, offsets in prepared:
+        if mapper is None:
+            if pa.types.is_floating(values.type):
+                values = pc.trunc(values)
+            try:
+                integers = pc.cast(values, pa.int64())
+            except pa.ArrowInvalid:
+                indices: np.ndarray = np.fromiter(
+                    (int(value.as_py()) for value in values),
+                    dtype=np.int64,
+                    count=len(values),
+                )
+                encoded = torch.from_numpy(indices)
+            else:
+                encoded = _values_to_tensor(integers, dtype=torch.long)
+        else:
+            indices = _target_label_indices(values, mapper._vocabulary, "multilabel")
+            encoded = torch.from_numpy(indices)
+        destination[cursor : cursor + len(values)].copy_(encoded)
+        num_rows = len(offsets) - 1
+        offset[row : row + num_rows + 1].copy_(torch.from_numpy(offsets))
+        offset[row : row + num_rows + 1].add_(cursor)
+        row += num_rows
+        cursor += len(values)
     return MultiNestedTensor(
-        num_rows=len(mapped),
+        num_rows=len(target),
         num_cols=1,
-        values=torch.tensor(flat, dtype=torch.long),
-        offset=torch.tensor(offsets, dtype=torch.long),
+        values=destination,
+        offset=offset,
     )
 
 
@@ -1147,68 +1170,106 @@ def _coerce_numeric_label(value: Any) -> Any:
 
 
 def _target_label_indices(
-    values: list[Any],
-    mapping: pd.Index,
-) -> tuple[list[Any], np.ndarray]:
-    candidates = [values]
-    string_values = [str(v) for v in values]
-    if string_values != values:
-        candidates.append(string_values)
-    numeric_values = [_coerce_numeric_label(v) for v in values]
-    if numeric_values != values:
-        candidates.append(numeric_values)
+    values: pa.Array,
+    vocabulary: pa.Array,
+    kind: str,
+) -> np.ndarray:
+    """Resolve target labels with legacy string/numeric coercion and strict errors."""
+    indices = _category_codes(values, vocabulary)
+    if (indices >= 0).all():
+        return indices
 
-    indices = mapping.get_indexer(values)
-    for candidate in candidates:
-        candidate_indices = mapping.get_indexer(candidate)
+    labels = values.to_pylist()
+    for coerce in (str, _coerce_numeric_label):
+        candidate = [coerce(value) for value in labels]
+        if candidate == labels:
+            continue
+        try:
+            array = pa.array(candidate)
+        except (pa.ArrowInvalid, pa.ArrowTypeError, OverflowError):
+            continue
+        candidate_indices = _category_codes(array, vocabulary)
         if (candidate_indices >= 0).all():
-            return candidate, candidate_indices
-    return values, indices
+            return candidate_indices
+    unknown = pc.filter(values, pa.array(indices < 0)).slice(0, 5).to_pylist()
+    raise ValueError(
+        f"TT-NG {kind} target contains labels not present in target "
+        f"encoder mapping: {unknown}"
+    )
 
 
 def _categorical_indices(
-    target: ArrowArray,
+    target: pa.Array | pa.ChunkedArray,
     target_encoder: TargetEncoder,
 ) -> torch.Tensor:
-    values = _arrow_array_to_pylist(target)
+    mapper = target_encoder.tensor_mapper
+    assert isinstance(mapper, CategoricalTensorMapper)
+    destination = torch.empty(len(target), dtype=torch.long)
+    chunks = target.chunks if isinstance(target, pa.ChunkedArray) else [target]
+    row = 0
+    for chunk in chunks:
+        indices = _target_label_indices(chunk, mapper._vocabulary, "categorical")
+        destination[row : row + len(chunk)].copy_(torch.from_numpy(indices))
+        row += len(chunk)
+    return destination
 
-    mapping = target_encoder.tensor_mapper.mapping
-    values, indices = _target_label_indices(values, mapping)
-    if (indices < 0).any():
-        unknown = [values[i] for i, idx in enumerate(indices) if idx < 0]
-        raise ValueError(
-            "TT-NG categorical target contains labels not present in target "
-            f"encoder mapping: {unknown[:5]}")
-    return torch.tensor(indices, dtype=torch.long)
+
+def _multilabel_values_offsets(
+    array: pa.Array,
+    sep: str,
+) -> tuple[pa.Array, np.ndarray]:
+    """Flatten target rows, dropping null labels and empty split-string tokens."""
+    array = pc.dictionary_decode(array)
+    strings = pa.types.is_string(array.type) or pa.types.is_large_string(array.type)
+    if strings:
+        array = pc.split_pattern(pc.fill_null(array, ""), pattern=sep)
+    if _is_list(array):
+        values, offsets = _list_values_offsets(array)
+    else:
+        values = array
+        offsets = np.arange(len(array) + 1, dtype=np.int64)
+    if not strings and not values.null_count:
+        return values, offsets
+    keep = pc.is_valid(values)
+    if strings:
+        keep = pc.and_(keep, pc.fill_null(pc.not_equal(values, ""), False))
+    prefix: np.ndarray = np.empty(len(values) + 1, dtype=np.int64)
+    prefix[0] = 0
+    np.cumsum(keep.to_numpy(zero_copy_only=False), out=prefix[1:])
+    return pc.filter(values, keep), prefix[offsets]
 
 
-def _array_to_multilabel_lists(values: ArrowArray, *,
-                               sep: str) -> list[list[Any]]:
-    py_values = values.to_pylist()
-
-    out: list[list[Any]] = []
-    for value in py_values:
-        if value is None:
-            out.append([])
-        elif isinstance(value, str):
-            out.append([v for v in value.split(sep) if v != ""])
-        elif isinstance(value, (list, tuple, np.ndarray)):
-            out.append([v for v in list(value) if v is not None])
+def _arrow_array_to_tensor(
+    values: pa.Array | pa.ChunkedArray,
+    *,
+    dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+    """Write scalar or rectangular list chunks into an owned target tensor."""
+    chunks = values.chunks if isinstance(values, pa.ChunkedArray) else [values]
+    first = next((chunk for chunk in chunks if len(chunk)), None)
+    width = None
+    if first is not None and _is_list(first):
+        width = pc.list_value_length(first)[0].as_py()
+        if width is None:
+            raise ValueError("Numerical target rows cannot be null")
+    shape = (len(values),) if width is None else (len(values), width)
+    destination = torch.empty(shape, dtype=dtype)
+    row = 0
+    for chunk in chunks:
+        if not len(chunk):
+            continue
+        if width is None:
+            encoded = _values_to_tensor(chunk, dtype=dtype)
         else:
-            out.append([value])
-    return out
-
-
-def _arrow_array_to_tensor(values: ArrowArray) -> torch.Tensor:
-    if isinstance(values, (pa.Array, pa.ChunkedArray)) and pa.types.is_list(
-        values.type
-    ):
-        return torch.tensor(values.to_pylist(), dtype=torch.float32)
-    return _values_to_tensor(values, dtype=torch.float32)
-
-
-def _arrow_array_to_pylist(values: ArrowArray) -> list[Any]:
-    return values.to_pylist()
+            if chunk.null_count:
+                raise ValueError("Numerical target rows cannot be null")
+            flat, offsets = _list_values_offsets(chunk)
+            if not np.all(np.diff(offsets) == width):
+                raise ValueError("Numerical target rows must have equal lengths")
+            encoded = _values_to_tensor(flat, dtype=dtype).view(len(chunk), width)
+        destination[row : row + len(chunk)].copy_(encoded)
+        row += len(chunk)
+    return destination
 
 
 def _all_present(values: ArrowArray) -> bool:
