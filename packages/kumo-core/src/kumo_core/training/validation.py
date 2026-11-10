@@ -61,6 +61,17 @@ def validate_anchor_time(
     )
 
 
+def require_single_anchor(first: int, last: int) -> None:
+    """Link prediction ranks one candidate set per prediction table, so the
+    table's rows must share one anchor time."""
+    if first != last:
+        raise ValueError(
+            "Link prediction requires predicting a single timestamp, but "
+            "this prediction table's anchor times run from "
+            f"{pd.Timestamp(first)} to {pd.Timestamp(last)}. Split it into "
+            "one table per anchor time.")
+
+
 def validate_target_classes(
     num_classes: int,
     classes: Sequence[Any],

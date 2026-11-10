@@ -24,6 +24,7 @@ from typing import (
     Mapping,
     NamedTuple,
     Optional,
+    Sequence,
     Tuple,
 )
 from uuid import uuid4
@@ -46,7 +47,7 @@ from .task_dataset import (
 )
 from .train.autoregression import FUTURE_LABELS_COL
 from .training.table import apply_reference_resolution
-from .training.validation import validate_anchor_time
+from .training.validation import require_single_anchor, validate_anchor_time
 from .types.enums import PredictionArtifactType
 
 if TYPE_CHECKING:
@@ -67,7 +68,6 @@ class PredictionTableRequest:
     tt_id: str
     task_dataset: TaskDatasetMaterializeSpec
     compiler_options: Mapping[str, Any] | None = None
-    forecast_timeframe_step: int | None = None
 
 
 @dataclass(frozen=True)
@@ -92,46 +92,11 @@ class PreparedCustomPredictionTable:
             raise ValueError("custom prediction table requires a path")
 
 
-def forecast_task_options(
-    request: PredictionTableRequest, ) -> Dict[str, int] | None:
-    """Return the resolved-task scalars required to replay a forecast.
-
-    Prediction-table compilation owns the temporal query and the exact lag
-    features it emitted. Passing these small values to every scoring process
-    keeps spawned workers aligned with the fitted checkpoint.
-    """
-    if request.query.task_type != "forecasting":
-        return None
-    options = dict(request.compiler_options or {})
-    lag_offsets = options.get("lag_offsets_secs")
-    if not isinstance(lag_offsets, (list, tuple)) or not lag_offsets:
-        raise ValueError("Forecast prediction requires historical lag offsets")
-    offset = request.query.query.get_combined_date_offset_range()
-    start = int(offset.start or 0)
-    end = int(offset.end)
-    step = request.forecast_timeframe_step or end - start
-    from .utils.time import compute_unix_step
-    return {
-        "forecast_length": int(request.query.forecast_length),
-        "lag_timesteps": len(lag_offsets),
-        "unix_start_offset": int(compute_unix_step(start, offset.unit)),
-        "unix_end_offset": int(compute_unix_step(end, offset.unit)),
-        "unix_step_size": int(compute_unix_step(step, offset.unit)),
-    }
-
-
 def _validate_forecast_checkpoint(trainer: Any, task: Any) -> None:
     """Reject a checkpoint whose fitted forecast inputs differ from task."""
-    past_encoder = trainer.past_encoder
-    trained_lags = (getattr(past_encoder, "length", None)
-                    if past_encoder is not None else getattr(
-                        trainer.head, "past_channels", None))
-    if (trained_lags != task.lag_timesteps
-            or (trainer.year_over_year_encoder is not None)
-            != task.has_year_over_year_labels or getattr(
-                trainer.head, "unix_step_size", None) != task.unix_step_size):
-        raise ValueError(
-            "Forecast checkpoint lag/year-over-year/timing mismatch")
+    if ((trainer.year_over_year_encoder is not None)
+            != task.has_year_over_year_labels):
+        raise ValueError("Forecast checkpoint year-over-year mismatch")
     fitted = (trainer.encoders.encoders.get(task.train_table.name)
               if trainer.encoders is not None else None)
     if fitted is None or any(
@@ -274,6 +239,59 @@ def generate_custom_prediction_table(
     )
 
 
+def table_anchor_range(table_path: str) -> tuple[int, int]:
+    """First and last anchor of a prediction table, in nanoseconds.
+
+    Reads the Parquet footer statistics, and a row group's anchor column
+    only when its footer has none, so memory does not grow with the rows.
+    """
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    import pyarrow.dataset as ds
+    import pyarrow.parquet as pq
+
+    first: int | None = None
+    last: int | None = None
+    for path in ds.dataset(table_path, format="parquet").files:
+        table = pq.ParquetFile(path)
+        column = table.schema_arrow.get_field_index("TIMESTAMP")
+        if column < 0:
+            raise ValueError("prediction table has no TIMESTAMP column")
+        kind = table.schema_arrow.field(column).type
+        for group in range(table.metadata.num_row_groups):
+            if table.metadata.row_group(group).num_rows == 0:
+                continue
+            stats = table.metadata.row_group(group).column(column).statistics
+            if stats is not None and stats.has_min_max:
+                low = pa.scalar(stats.min_raw, kind)
+                high = pa.scalar(stats.max_raw, kind)
+            else:
+                bounds = pc.min_max(
+                    table.read_row_group(group, ["TIMESTAMP"]).column(0))
+                low, high = bounds["min"], bounds["max"]
+            if not low.is_valid:
+                continue
+            low = low.cast(pa.timestamp("ns")).value
+            high = high.cast(pa.timestamp("ns")).value
+            first = low if first is None else min(first, low)
+            last = high if last is None else max(last, high)
+    if first is None or last is None:
+        raise ValueError("prediction table has no anchor times")
+    return first, last
+
+
+def link_prediction_anchor(timestamps: Sequence[int], table_path: str) -> int:
+    """The one anchor of a temporal link-prediction table, in nanoseconds.
+
+    A generated table carries its anchor in ``timestamps``; a custom table
+    carries it in its own rows.
+    """
+    first, last = ((min(timestamps), max(timestamps))
+                   if timestamps else table_anchor_range(table_path))
+    require_single_anchor(first, last)
+    return first
+
+
 def materialize_prediction_task(
     request: PredictionTableRequest,
     generated: GeneratedPredictionTable,
@@ -286,6 +304,9 @@ def materialize_prediction_task(
     runtime = runtime or diskgraph
     forecasting = (request.query.task_type == "forecasting"
                    and request.compiler_options is not None)
+    anchors = request.timestamps
+    if request.query.task_type == "temporal_link_prediction":
+        anchors = (link_prediction_anchor(anchors, generated.table_path), )
     ingested = runtime.execute_tt_ingest(
         staging_dir=generated.staging_dir,
         index_path=request.index_path,
@@ -348,11 +369,8 @@ def materialize_prediction_task(
         }
     }
     stage_seed_times = None
-    if request.timestamps:
-        stage_seed_times = {
-            "predict": [min(request.timestamps),
-                        max(request.timestamps)]
-        }
+    if anchors:
+        stage_seed_times = {"predict": [min(anchors), max(anchors)]}
     manifest_path = write_thin_manifest(
         spec,
         graph_index_id=graph_index_id,
@@ -387,11 +405,12 @@ __all__ = [
     "GeneratedPredictionTable",
     "PreparedCustomPredictionTable",
     "PredictionTableRequest",
-    "forecast_task_options",
     "generate_prediction_table",
     "generate_custom_prediction_table",
+    "link_prediction_anchor",
     "materialize_prediction_task",
     "score_prediction",
+    "table_anchor_range",
 ]
 
 
@@ -519,7 +538,7 @@ class _PredictionWorkerConfig(NamedTuple):
     source_config_sha256: str
     runtime_config_sha256: str
     binary_threshold: Optional[float]
-    forecast_options: Optional[Dict[str, int]]
+    task_options: Optional[Dict[str, Optional[int]]]
     embedding_models: Optional[EmbeddingModelStore] = None
     ignore_time_col: bool = False
     accelerator: str = 'auto'
@@ -549,7 +568,7 @@ def _score_prediction_shard(
     task = ResolvedNumericalTask.from_manifest(
         manifest,
         name=config.run_id,
-        **(config.forecast_options or {}),
+        **(config.task_options or {}),
     )
     load_options = {'accelerator': config.accelerator}
     device = config.devices[worker_id]
@@ -568,7 +587,7 @@ def _score_prediction_shard(
         embedding_models=config.embedding_models,
         **load_options,
     )
-    if config.forecast_options is not None:
+    if manifest.task_type == "forecasting":
         _validate_forecast_checkpoint(trainer, task)
     from kumo_core.score_counts import Counts
     from kumo_core.train.artifact_stats import PredictionArtifactStatsCollector
@@ -631,7 +650,7 @@ def score_prediction(
     graph_snapshot_id: str,
     source_config_sha256: str,
     binary_threshold: float | None = None,
-    forecast_options: Mapping[str, int] | None = None,
+    task_options: Mapping[str, int | None] | None = None,
     embedding_models: EmbeddingModelStore | None = None,
     encoders: Any = None,
     accelerator: str = 'auto',
@@ -706,8 +725,8 @@ def score_prediction(
         source_config_sha256=source_config_sha256,
         runtime_config_sha256=runtime_config_sha256,
         binary_threshold=binary_threshold,
-        forecast_options=(dict(forecast_options)
-                          if forecast_options is not None else None),
+        task_options=(dict(task_options)
+                      if task_options is not None else None),
         embedding_models=embedding_models,
         accelerator=accelerator,
         count_edges=None if count_edges is None else dict(count_edges),
