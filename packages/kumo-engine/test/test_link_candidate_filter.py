@@ -2,6 +2,8 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import shutil
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -61,8 +63,7 @@ def data(tmp_path_factory):
     kumo.configure(scratch_dir=previous)
 
 
-@pytest.fixture(scope='module')
-def graph(data):
+def _graph(data):
     connector = kumo.FileConnector(root_dir=str(data))
 
     def table(name, key, **kwargs):
@@ -83,6 +84,11 @@ def graph(data):
             Edge(src_table='orders', fkey='USER_ID', dst_table='users'),
             Edge(src_table='orders', fkey='STORE_ID', dst_table='stores'),
         ])
+
+
+@pytest.fixture(scope='module')
+def graph(data):
+    return _graph(data)
 
 
 @pytest.fixture(scope='module')
@@ -135,6 +141,23 @@ def test_pairwise_prediction_rejects_the_filter(graph, snapshot):
     with pytest.raises(ValueError, match='pairwise model ranks the items'):
         _predict(trainer, graph, snapshot, QUERY.format(ACTIVE), 12,
                  prediction_time=START + pd.Timedelta(days=50))
+
+
+def test_pairwise_prediction_without_a_filter_ranks_ended_stores(
+        data, tmp_path):
+    ended = tmp_path / 'data'
+    shutil.copytree(data, ended)
+    stores = pd.read_parquet(ended / 'stores.parquet')
+    stores['ENDED'] = START + pd.Timedelta(days=40)
+    stores.to_parquet(ended / 'stores.parquet')
+    graph = _graph(ended)
+    snapshot = graph.snapshot()
+    trainer = _fit(graph, snapshot, QUERY.format(''), 'pairwise')
+
+    frame = _predict(trainer, graph, snapshot, QUERY.format(''), 12,
+                     prediction_time=START + pd.Timedelta(days=50))
+
+    assert len(frame) == 600 and frame['CLASS'].notna().all()
 
 
 def test_prediction_without_the_trained_filter_ranks_every_valid_store(

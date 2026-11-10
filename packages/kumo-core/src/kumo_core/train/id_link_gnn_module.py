@@ -295,8 +295,6 @@ class IDLinkGNNLightningModule(BaseLinkLightningModule):
                 f"conditions on table {self.rhs_name!r}. Remove those "
                 "conditions from the prediction query, or train another "
                 "link-prediction module.")
-        # Rejects an empty catalog; pairwise ranks its sampled items.
-        self.tt_ng_valid_rhs_for_stage(TrainingStage.PRED)
 
     def predict_step(
         self,
