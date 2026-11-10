@@ -305,6 +305,7 @@ class Task(
     anchors_fingerprint: str,
     fit: Mapping[str, FitRecord | None],
     has_targets: bool = True,
+    hosted: HostedBatches | None = None,
 )
 ```
 
@@ -451,6 +452,7 @@ class TaskBatches(
     *,
     task_fingerprint: str,
     config: Mapping[str, Any],
+    seek: Callable[[int], Iterator[Batch]] | None = None,
 )
 ```
 

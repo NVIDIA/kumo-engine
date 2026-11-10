@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from kumo.pytorch.anchors import AnchorTable, SplitSelection
 from kumo.pytorch.contract.sample import BuiltSample, SampleRequest, SampleSpec
@@ -36,12 +36,20 @@ from kumo.pytorch.contract.schema import DataSchema
 from kumo.pytorch.data.model import ModelSourceBatch
 from kumo.pytorch.dataset import Dataset
 
+if TYPE_CHECKING:
+    from kumo.pytorch.artifact import FittedState
+    from kumo.pytorch.contract.batch import Batch
+    from kumo.pytorch.spec import DataLoaderSpec
+    from kumo.pytorch.task import Task
+
 __all__ = [
     "Engine",
     "GraphRoot",
+    "HostedBatches",
     "AnchorTask",
     "ModelSampleSource",
     "SampleSource",
+    "TaskHost",
     "available_engines",
     "engine_from_name",
     "register_engine",
@@ -171,6 +179,37 @@ class ModelSampleSource(Protocol):
         requests: Sequence[SampleRequest],
     ) -> ModelSourceBatch:
         """Build one model-facing source batch without per-value Python records."""
+        ...
+
+
+@runtime_checkable
+class HostedBatches(Protocol):
+    """Where a hosted task's batches come from: ``Task.batches`` arguments in, batches out."""
+
+    def host_batches(self, arguments: Mapping[str, object], start: int) -> Iterator[Batch]:
+        """Batches ``start`` onward of the pass ``arguments`` describe."""
+        ...
+
+
+@runtime_checkable
+class TaskHost(Protocol):
+    """Optional extension: materialize and iterate tasks where the source's data lives.
+
+    `Plan.materialize` hands the whole materialization to a source that has it, and
+    gets back an ordinary `Task` whose batches stream from that host.
+    """
+
+    def host_materialize(
+        self,
+        contract: DataLoaderSpec,
+        anchors: AnchorTable | Sequence[SampleRequest],
+        *,
+        fit_split: object,
+        fitted: FittedState | None,
+        inference: bool,
+        plan_inference: bool,
+    ) -> Task:
+        """Materialize on the host; the returned task's batches come from it too."""
         ...
 
 

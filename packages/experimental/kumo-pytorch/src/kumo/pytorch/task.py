@@ -39,7 +39,7 @@ from kumo.pytorch.artifact import Artifact, FitRecord, FittedState
 from kumo.pytorch.assembly import PreparedBatchPlan, PreviewResult, _fingerprint, preview_plan
 from kumo.pytorch.contract.batch import Batch
 from kumo.pytorch.contract.sample import SampleRequest
-from kumo.pytorch.engine import AnchorTask
+from kumo.pytorch.engine import AnchorTask, HostedBatches
 from kumo.pytorch.spec import DataLoaderSpec
 
 __all__ = ["Task", "TaskBatches"]
@@ -60,8 +60,10 @@ class TaskBatches(Iterator[Batch]):
         *,
         task_fingerprint: str,
         config: Mapping[str, Any],
+        seek: Callable[[int], Iterator[Batch]] | None = None,
     ) -> None:
         self._produce = produce
+        self._seek = seek
         self._task_fingerprint = task_fingerprint
         self._config = dict(config)
         self._iterator: Iterator[Batch] | None = None
@@ -72,6 +74,8 @@ class TaskBatches(Iterator[Batch]):
         return self
 
     def __next__(self) -> Batch:
+        if self._iterator is None and self._seek is not None:
+            self._iterator = self._seek(self._skip)
         if self._iterator is None:
             self._iterator = self._produce()
             for _ in range(self._skip):
@@ -130,8 +134,10 @@ class Task:
         anchors_fingerprint: str,
         fit: Mapping[str, FitRecord | None],
         has_targets: bool = True,
+        hosted: HostedBatches | None = None,
     ) -> None:
         self.contract = contract
+        self._hosted = hosted
         self._assembler = assembler
         self._anchors = anchors
         serialized = assembler.fitted_state
@@ -309,6 +315,27 @@ class Task:
                     output_format=output_format,
                 )
 
+        if self._hosted is not None:
+            hosted = self._hosted
+            arguments: dict[str, object] = {
+                "requests": None if requests is None else tuple(requests),
+                "split": split,
+                "batch_size": batch_size,
+                "epoch": epoch,
+                "seed": seed,
+                "shuffle": shuffle,
+                "rank": rank,
+                "world_size": world_size,
+                "drop_last": drop_last,
+                "chunk_batches": chunk_batches,
+                "output_format": output_format,
+            }
+            return TaskBatches(
+                lambda: hosted.host_batches(arguments, 0),
+                task_fingerprint=self.fingerprints["task"],
+                config=config,
+                seek=lambda start: hosted.host_batches(arguments, start),
+            )
         return TaskBatches(produce, task_fingerprint=self.fingerprints["task"], config=config)
 
     def _anchor_batches(

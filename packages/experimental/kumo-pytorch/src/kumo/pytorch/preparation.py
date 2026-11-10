@@ -31,7 +31,7 @@ from kumo.pytorch.artifact import FitRecord, FittedState
 from kumo.pytorch.assembly import PreviewResult, _fingerprint, _InputState, fit_plan
 from kumo.pytorch.contract.sample import SampleRequest
 from kumo.pytorch.dataset import Dataset, TableSource
-from kumo.pytorch.engine import AnchorTask, Engine, SampleSource
+from kumo.pytorch.engine import AnchorTask, Engine, SampleSource, TaskHost
 from kumo.pytorch.spec import (
     DataLoaderSpec,
     ValidationError,
@@ -213,6 +213,16 @@ class Plan:
             )
             if issues:
                 raise ValidationError(issues)
+        if isinstance(source, TaskHost):
+            return source.host_materialize(
+                self.contract,
+                anchors,
+                fit_split=fit_split,
+                fitted=fitted,
+                inference=inference,
+                plan_inference=self.inference,
+            )
+        if isinstance(anchors, AnchorTable):
             declares_splits = anchors.split is not None
             task_anchors: AnchorTask = self.engine.materialize_anchors(anchors)
             anchors_fingerprint = _fingerprint(anchors)
