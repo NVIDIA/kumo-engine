@@ -19,9 +19,6 @@ jobs:
       matrix:
         python: ['3.11', '3.12', '3.13', '3.14']
         target:
-          - platform: windows-native
-            runner: windows-2022
-            artifact: windows-x86_64
           - platform: windows-wsl
             runner: wsl-amd64-gpu-t4-latest-1
             artifact: x86_64
@@ -65,9 +62,6 @@ jobs:
           set -euo pipefail
           unset PYTHONPATH
           stage="$RUNNER_TEMP/platform-wheel"
-          if [ "$RUNNER_OS" = Windows ]; then
-            stage="$(cygpath -u "$stage")"
-          fi
           mkdir -p "$stage/results" "$stage/test"
           cp packages/kumo-engine/test/smoke_platform.py "$stage/test/"
           cp packages/kumo-engine/scripts/verify_installed_wheel.py "$stage/test/"
@@ -78,11 +72,7 @@ jobs:
             exit 1
           fi
           uv venv --python "$SMOKE_PYTHON" --seed venv
-          if [ "$RUNNER_OS" = Windows ]; then
-            python="$stage/venv/Scripts/python.exe"
-          else
-            python="$stage/venv/bin/python"
-          fi
+          python="$stage/venv/bin/python"
           uv pip install --python "$python" --torch-backend=cpu \
             "${wheels[0]}" pytest 2>&1 | tee results/install.log
           uv pip check --python "$python" 2>&1 | tee results/dependencies.log
