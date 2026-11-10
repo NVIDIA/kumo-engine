@@ -120,7 +120,7 @@ When training completes, the example prints the first five predictions:
 4     752        False    0.939077   0.060923
 ```
 
-`result.frame` has one row per user, with the predicted label `TARGET_PRED` and the class probabilities `False_PROB` and `True_PROB`. Exact values can differ between runs. To use your own data, point `FileConnector` at a directory of CSV or Parquet files.
+`result.frame` has one row per user, with the predicted label `TARGET_PRED` and the class probabilities `False_PROB` and `True_PROB`. The prediction time defaults to the latest `order_time` in the snapshot, so predictions cover the 30 days after it. Exact values can differ between runs. To use your own data, point `FileConnector` at a directory of CSV or Parquet files.
 
 Next steps:
 
@@ -157,7 +157,9 @@ See the [benchmark report](https://docs.nvidia.com/sdgm/kumo-engine/resources/be
 > [!NOTE]
 > This Kumo Studio information is prerelease and is not yet supported. Stay tuned for the Docker and Kubernetes releases.
 
-Kumo Studio is a self-hosted application with a web UI, a REST API, and a Python client (`kumoai_studio`). Its source, [Docker Compose topology](docker/compose/README.md), and [Helm charts](helm/README.md) are in this repository. See the [preliminary documentation](https://docs.nvidia.com/sdgm/kumo-engine/kumo-studio-guide-coming-soon/preliminary-documentation/installation/requirements).
+Kumo Studio allows enterprise teams to build and run predictive models together. Users can connect data sources, train and evaluate models, run batch predictions, and review job history, all through a web UI or Python SDK. Admins control access to data and models with role-based access control.
+
+Deploy Studio on Kubernetes via [Helm](helm/README.md) or on any compatible Linux host with [Docker Compose](docker/compose/README.md). See the [preliminary documentation](https://docs.nvidia.com/sdgm/kumo-engine/kumo-studio-guide-coming-soon/preliminary-documentation/installation/requirements) for prerequisites and setup.
 
 ## Development and Support
 
