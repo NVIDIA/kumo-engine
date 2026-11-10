@@ -31,9 +31,7 @@ import pytorch_lightning as pl
 import torch
 from kumo_core.encoders.tensor_frame import get_tf
 from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
-from kumo_core.encoders.tensor_mapper import (
-    NumericalTensorMapper,
-)
+from kumo_core.encoders.tensor_mapper import NumericalTensorMapper
 from kumo_core.explain.base import Explainer
 from kumo_core.modeling.gnn.hetero import HeteroGNN
 from kumo_core.modeling.heads.node_prediction import NodePredHead

@@ -324,3 +324,29 @@ def test_invalid_vocabulary_is_rejected(
             MultiCategoricalTensorMapper(counts, None)
         else:
             CategoricalTensorMapper(counts)
+
+
+@pytest.mark.parametrize("format", [None, "%Y-%m-%dT%H:%M:%S.%f"])
+def test_timestamp_parser_checks_nanosecond_boundaries(format: str | None) -> None:
+    """Preserve boundary precision and reject wraparound in older Arrow releases."""
+    from kumo_core.encoders.tensor_mapper import _timestamp_nanoseconds
+
+    values = pa.array(
+        [
+            "1677-09-21T00:12:43.145224193",
+            "1677-09-21T00:12:43.145224191",
+            "2262-04-11T23:47:16.854775807",
+            "2262-04-11T23:47:16.854775808",
+            "2000-01-01T00:00:00.000000001",
+        ]
+    )
+
+    result = _timestamp_nanoseconds(values, format)
+
+    assert result.tolist() == [
+        -(2**63) + 1,
+        -(2**63),
+        2**63 - 1,
+        -(2**63),
+        946684800000000001,
+    ]

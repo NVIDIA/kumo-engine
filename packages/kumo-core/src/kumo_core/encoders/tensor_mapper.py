@@ -123,23 +123,33 @@ def _timestamp_nanoseconds(array: pa.Array, format: str | None) -> np.ndarray:
     """Normalize typed timestamps or parsed text to nanoseconds."""
     array = pc.dictionary_decode(array)
     if pa.types.is_string(array.type) or pa.types.is_large_string(array.type):
-        if format is not None and "%f" not in format:
-            array = pc.strptime(array, format=format, unit="ns", error_is_null=True)
-        elif format is not None:
-            array = pa.array(
-                [_parse_timestamp(value, format) for value in array.to_pylist()],
-                type=pa.int64(),
-            ).cast(pa.timestamp("ns"))
-        else:
-            first = next((value.as_py() for value in array if value.is_valid), "")
-            tz = "UTC" if re.search(r"(?:Z|[+-]\d{2}:?\d{2})$", first) else None
-            try:
-                array = pc.cast(array, pa.timestamp("ns", tz=tz))
-            except pa.ArrowInvalid:
+        try:
+            if format is not None and "%f" not in format:
+                array = pc.strptime(
+                    array, format=format, unit="us", error_is_null=True
+                ).cast(pa.timestamp("ns"))
+            elif format is not None:
                 parsed = [
                     _parse_timestamp(value, format) for value in array.to_pylist()
                 ]
                 array = pa.array(parsed, type=pa.int64()).cast(pa.timestamp("ns"))
+            else:
+                first = next((value.as_py() for value in array if value.is_valid), "")
+                tz = "UTC" if re.search(r"(?:Z|[+-]\d{2}:?\d{2})$", first) else None
+                microseconds = pc.cast(array, pa.timestamp("us", tz=tz))
+                bounds = pc.call_function(
+                    "min_max", [pc.cast(microseconds, pa.int64())]
+                ).as_py()
+                # Arrow 16 parses out-of-range nanoseconds with integer wraparound.
+                if bounds["min"] is not None and (
+                    bounds["min"] <= np.iinfo(np.int64).min // 1_000
+                    or bounds["max"] >= np.iinfo(np.int64).max // 1_000
+                ):
+                    raise pa.ArrowInvalid("Timestamp needs a checked scalar conversion")
+                array = pc.cast(array, pa.timestamp("ns", tz=tz))
+        except pa.ArrowInvalid:
+            parsed = [_parse_timestamp(value, format) for value in array.to_pylist()]
+            array = pa.array(parsed, type=pa.int64()).cast(pa.timestamp("ns"))
     elif pa.types.is_null(array.type) or pa.types.is_time(array.type):
         return np.full(len(array), np.iinfo(np.int64).min, dtype=np.int64)
     elif pa.types.is_floating(array.type):
@@ -158,7 +168,16 @@ def _parse_timestamp(value: str | None, format: str | None) -> int | None:
     if format is None:
         for arrow_type in (pa.timestamp("ns"), pa.timestamp("ns", tz="UTC")):
             try:
-                return pa.scalar(value).cast(arrow_type).cast(pa.int64()).as_py()
+                scalar = pa.scalar(value)
+                nanoseconds = scalar.cast(arrow_type).cast(pa.int64()).as_py()
+                microseconds = (
+                    scalar.cast(pa.timestamp("us", tz=arrow_type.tz))
+                    .cast(pa.int64())
+                    .as_py()
+                )
+                if abs(nanoseconds - microseconds * 1_000) < 1_000:
+                    return nanoseconds
+                return None
             except pa.ArrowInvalid:
                 pass
     remainder = 0
@@ -174,7 +193,12 @@ def _parse_timestamp(value: str | None, format: str | None) -> int | None:
             else parse_datetime(text, default=datetime(1, 1, 1))
         )
         timestamp = pa.scalar(parsed)
-        return timestamp.cast(pa.timestamp("ns")).cast(pa.int64()).as_py() + remainder
+        nanoseconds = (
+            timestamp.cast(pa.timestamp("us")).cast(pa.int64()).as_py() * 1_000
+            + remainder
+        )
+        limits = np.iinfo(np.int64)
+        return nanoseconds if limits.min <= nanoseconds <= limits.max else None
     except (ValueError, OverflowError, pa.ArrowInvalid):
         return None
 

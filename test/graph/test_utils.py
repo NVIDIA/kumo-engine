@@ -13,7 +13,8 @@ from kumoapi.graph import ColumnKey, ColumnKeyGroup, GraphDefinition
 from kumoapi.source_table import UnavailableSourceTable
 from kumoapi.table import Column as ColumnDefinition
 from kumoapi.table import TableDefinition
-from kumoapi.typing import Dtype, Stype
+from kumoapi.typing import Dtype
+from kumoapi.typing import Stype
 from kumoapi.typing import Stype as KumoStype
 
 from kumo.graph.column import Column

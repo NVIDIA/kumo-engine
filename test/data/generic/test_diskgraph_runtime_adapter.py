@@ -1038,8 +1038,9 @@ def test_attach_tensor_frames_skips_namespace_without_mapper_key() -> None:
     schema = pa.schema([("x", pa.int64())])
     raw_features = {
         "edge_namespace":
-        pa.Table.from_arrays([pa.array([1, 2, 3], type=pa.int64())],
-                                   schema=schema)
+        pa.Table.from_arrays(
+            [pa.array([1, 2, 3], type=pa.int64())], schema=schema
+        )
     }
     hetero = HeteroData()
     feature_schema = {
@@ -1065,8 +1066,9 @@ def test_attach_tensor_frames_raises_on_unknown_mapper_key() -> None:
     schema = pa.schema([("age", pa.int64())])
     raw_features = {
         "User":
-        pa.Table.from_arrays([pa.array([41, 22], type=pa.int64())],
-                                   schema=schema)
+        pa.Table.from_arrays(
+            [pa.array([41, 22], type=pa.int64())], schema=schema
+        )
     }
     hetero = HeteroData()
     feature_schema = {
@@ -1089,8 +1091,9 @@ def test_attach_tensor_frames_handles_empty_table() -> None:
     with the mapper-known schema, so downstream encoders see a
     consistent shape."""
     schema = pa.schema([("age", pa.int64())])
-    empty = pa.Table.from_arrays([pa.array([], type=pa.int64())],
-                                       schema=schema)
+    empty = pa.Table.from_arrays(
+        [pa.array([], type=pa.int64())], schema=schema
+    )
     raw_features = {"User": empty}
     hetero = HeteroData()
     attach_tensor_frames(
