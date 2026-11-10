@@ -9,16 +9,9 @@ name: kumo-pytorch DiskGraph
 # on DiskGraph built from this commit's packages/diskgraph. A third job builds
 # the package and runs the README quick start and the notebooks from its wheel,
 # installed with DiskGraph's into a fresh environment. Runs on DiskGraph changes
-# too: the package builds against the workspace DiskGraph.
+# too: the package builds against the workspace DiskGraph. Pull requests run
+# it through kumo-pytorch-gate.
 on:  # yamllint disable-line rule:truthy
-  pull_request:
-    paths:
-      - 'packages/experimental/kumo-pytorch/**'
-      - 'packages/diskgraph/**'
-      - 'scripts/diskgraph'
-      - '.github/workflows/_diskgraph-wheel.yml'
-      - '.github/actions/kumo-pytorch-setup/**'
-      - '.github/workflows/kumo-pytorch-diskgraph.yml'
   push:
     branches: [main]
     paths:
@@ -28,13 +21,16 @@ on:  # yamllint disable-line rule:truthy
       - '.github/workflows/_diskgraph-wheel.yml'
       - '.github/actions/kumo-pytorch-setup/**'
       - '.github/workflows/kumo-pytorch-diskgraph.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: kumo-pytorch-diskgraph-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

@@ -1,0 +1,133 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: kumo-pytorch gate
+
+# Reports kumo-pytorch-gate on every pull request, so it can be a required
+# check. A PR that can affect kumo-pytorch runs its CPU and DiskGraph checks and
+# the content policy; any other PR passes in under a minute.
+on:  # yamllint disable-line rule:truthy
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    name: Check whether kumo-pytorch is affected
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      affected: ${{ steps.match.outputs.affected }}
+    steps:
+      - name: Match the changed files
+        id: match
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" != pull_request ]]; then
+            echo affected=true >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          pr_url="repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER"
+          # The files API lists at most 3000 files; an unknown answer runs the checks.
+          if ! files="$(gh api --paginate "$pr_url/files" --jq '.[] | .filename, (.previous_filename // empty)')" ||
+            ! changed_files="$(gh api "$pr_url" --jq '.changed_files')"; then
+            echo '::warning::Could not list the changed files; running the kumo-pytorch checks.'
+            echo affected=true >> "$GITHUB_OUTPUT"
+          elif (( changed_files > 3000 )) || grep -q -E \
+            '^(packages/experimental/kumo-pytorch/|packages/diskgraph/|\.github/actions/kumo-pytorch-setup/|scripts/diskgraph$|\.github/workflows/_diskgraph-wheel\.yml$|\.github/workflows/kumo-pytorch-[^/]+\.yml$|\.github/scripts/kumo-pytorch-policy\.py$|pyproject\.toml$|uv\.lock$)' \
+            <<< "$files"; then
+            echo affected=true >> "$GITHUB_OUTPUT"
+          else
+            echo 'No changed file affects kumo-pytorch.'
+            echo affected=false >> "$GITHUB_OUTPUT"
+          fi
+
+  cpu:
+    name: CPU
+    needs: changes
+    if: needs.changes.outputs.affected == 'true'
+    # The called workflow's alert job needs issues: write; it runs only on main.
+    permissions:
+      contents: read
+      issues: write
+    uses: ./.github/workflows/kumo-pytorch-tests.yml
+
+  diskgraph:
+    name: DiskGraph
+    needs: changes
+    if: needs.changes.outputs.affected == 'true'
+    # The called workflow's alert job needs issues: write; it runs only on main.
+    permissions:
+      contents: read
+      issues: write
+    uses: ./.github/workflows/kumo-pytorch-diskgraph.yml
+
+  policy:
+    name: kumo-pytorch-policy
+    needs: changes
+    if: needs.changes.outputs.affected == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Expectations and golden examples follow the content rules
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.repository.default_branch }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 .github/scripts/kumo-pytorch-policy.py --base "origin/$BASE_REF" --head "$HEAD_SHA"
+
+  gate:
+    name: kumo-pytorch-gate
+    needs: [changes, cpu, diskgraph, policy]
+    # A failed or cancelled dependency must fail this check rather than skip it.
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require an unaffected PR or passing kumo-pytorch checks
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          AFFECTED: ${{ needs.changes.outputs.affected }}
+          CPU_RESULT: ${{ needs.cpu.result }}
+          DISKGRAPH_RESULT: ${{ needs.diskgraph.result }}
+          POLICY_RESULT: ${{ needs.policy.result }}
+        run: |
+          set -euo pipefail
+          if [[ "$CHANGES_RESULT" != success ]]; then
+            echo "::error::Changed-file detection did not succeed ($CHANGES_RESULT)."
+            exit 1
+          fi
+          case "$AFFECTED" in
+            false)
+              echo 'No changed file affects kumo-pytorch.'
+              exit 0
+              ;;
+            true) ;;
+            *)
+              echo '::error::Changed-file detection did not report whether kumo-pytorch is affected.'
+              exit 1
+              ;;
+          esac
+          if [[ "$CPU_RESULT" != success || "$DISKGRAPH_RESULT" != success || "$POLICY_RESULT" != success ]]; then
+            echo "::error::kumo-pytorch checks must pass (cpu=$CPU_RESULT, diskgraph=$DISKGRAPH_RESULT, policy=$POLICY_RESULT)."
+            exit 1
+          fi
+          echo 'kumo-pytorch checks passed.'
