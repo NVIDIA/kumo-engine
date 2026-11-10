@@ -12,7 +12,7 @@
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::hash::Hash;
+use std::hash::{BuildHasher, Hash, RandomState};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
@@ -27,7 +27,7 @@ use diskgraph_rowpack::{
     ColumnValueObserver, FloatListView, IngestedType, IntListView, RowAccess, RowAccessHints,
     RowAccessStats, StringListView, ValueRef,
 };
-use num_bigint::BigInt;
+use num_bigint::{BigInt, BigUint, Sign};
 use num_traits::{ToPrimitive, Zero};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -242,9 +242,21 @@ impl ExactSum {
     }
 }
 
-/// `value · 2^lsb` rounded once to the nearest double, ties to even.
-fn round_scaled(value: &BigInt, lsb: i64) -> f64 {
-    let magnitude = value.magnitude();
+/// `value / n · 2^lsb` rounded once to the nearest double, ties to even.
+fn round_quotient(value: &BigInt, n: u64, lsb: i64) -> f64 {
+    let scaled = value.magnitude() << 128u32;
+    // The remainder sits far below the rounding bit, so a sticky bit stands in for it.
+    let magnitude = (&scaled / n) | BigUint::from(u8::from(!(&scaled % n).is_zero()));
+    let rounded = round_scaled(&magnitude, lsb - 128);
+    if value.sign() == Sign::Minus {
+        -rounded
+    } else {
+        rounded
+    }
+}
+
+/// `magnitude · 2^lsb` rounded once to the nearest double, ties to even.
+fn round_scaled(magnitude: &BigUint, lsb: i64) -> f64 {
     let Some(trailing) = magnitude.trailing_zeros() else {
         return 0.0;
     };
@@ -258,12 +270,7 @@ fn round_scaled(value: &BigInt, lsb: i64) -> f64 {
         exponent @ -1022.. => f64::from_bits(((exponent + 1023) as u64) << 52),
         exponent => f64::from_bits(1 << (exponent + 1074)),
     };
-    let rounded = mantissa as f64 * scale;
-    if value.sign() == num_bigint::Sign::Minus {
-        -rounded
-    } else {
-        rounded
-    }
+    mantissa as f64 * scale
 }
 
 /// Exact Σx and Σx² of finite doubles.
@@ -302,7 +309,8 @@ impl Moments {
         self.squares.merge(&other.squares);
     }
 
-    /// The mean and the population sum of squared deviations, `(n·Σx² − (Σx)²) / n`.
+    /// The mean and the population sum of squared deviations, `(n·Σx² − (Σx)²) / n`,
+    /// each rounded once.
     fn mean_m2(&self, n: u64) -> (f64, f64) {
         if n == 0 {
             return (0.0, 0.0);
@@ -310,8 +318,8 @@ impl Moments {
         let (sum, squares) = (self.sum.value(), self.squares.value());
         let deviations = squares * n - &sum * &sum;
         (
-            round_scaled(&sum, SUM_LSB) / n as f64,
-            round_scaled(&deviations, SQUARE_LSB) / n as f64,
+            round_quotient(&sum, n, SUM_LSB),
+            round_quotient(&deviations, n, SQUARE_LSB),
         )
     }
 }
@@ -858,6 +866,16 @@ fn cutoff_id(index_id: &str, cutoff: Option<i64>, clock: TimeUnit) -> Result<Str
     Ok(sha256_hex(&serde_json::to_vec(&canonical)?)[..16].to_string())
 }
 
+fn ensure_file_names(table: &str, column: &str) -> Result<()> {
+    for name in [table, column] {
+        ensure!(
+            !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\']),
+            "{name:?} cannot name a statistics file"
+        );
+    }
+    Ok(())
+}
+
 /// One cutoff's directory under an index.
 struct CutoffFiles<'a> {
     index_dir: &'a Path,
@@ -889,12 +907,7 @@ impl<'a> CutoffFiles<'a> {
     }
 
     fn stats_path(&self, table: &str, column: &str, stat: Stat) -> Result<PathBuf> {
-        for name in [table, column] {
-            ensure!(
-                !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\']),
-                "{name:?} cannot name a statistics file"
-            );
-        }
+        ensure_file_names(table, column)?;
         Ok(self
             .dir
             .join(table)
@@ -969,11 +982,8 @@ impl<'a> CutoffFiles<'a> {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("");
-        let tmp = path.with_file_name(format!(
-            ".{name}.{}.{}.tmp",
-            std::process::id(),
-            NEXT.fetch_add(1, AtomicOrdering::Relaxed)
-        ));
+        let nonce = RandomState::new().hash_one(NEXT.fetch_add(1, AtomicOrdering::Relaxed));
+        let tmp = path.with_file_name(format!(".{name}.{}.{nonce:x}.tmp", std::process::id()));
         write_durable(path, &tmp, &bytes, self.index_dir)
             .with_context(|| format!("publish {}", path.display()))
     }
@@ -993,6 +1003,7 @@ impl IngestRequests {
     ) -> Result<HashMap<String, TableStats>> {
         let mut by_table: BTreeMap<&str, Vec<(&str, Stat)>> = BTreeMap::new();
         for (table, column, stat) in &self.requests {
+            ensure_file_names(table, column)?;
             by_table.entry(table).or_default().push((column, *stat));
         }
         by_table
@@ -1077,7 +1088,9 @@ fn scan_table(
             |(mut stats, mut scratch), (shard, start, end)| {
                 let shard = table_reader.shard(shard).expect("shard in range");
                 for node in start..end {
-                    let Some(row) = shard.edges_for_node(node)?.node_data()? else {
+                    // Rows stored without node data, oversized ones included, were never observed.
+                    let view = shard.edges_for_node(node)?;
+                    let Some(row) = view.node_data()?.filter(|row| !row.is_empty()) else {
                         continue;
                     };
                     decoder.for_each_value(row, &mask, &mut scratch, |idx, value| {
@@ -1272,6 +1285,9 @@ pub fn stats_from_arrow(
     stats: &[Stat],
     clock: TimeUnit,
 ) -> Result<Vec<(Stat, String)>> {
+    if stats.is_empty() {
+        return Ok(Vec::new());
+    }
     let value_type = arrow_ingested_type(values.data_type())?;
     let create_time_type = match create_time {
         Some(array) if array.data_type() == &DataType::Date32 => IngestedType::Date,
@@ -1335,9 +1351,10 @@ mod tests {
 
     #[test]
     fn exact_sum_matches_integer_reference() {
-        // k · 2^-10 with |k| < 2^40: Σk and n·Σk² − (Σk)² are exact in i128.
+        // k · 2^-10 with |k| < 2^40: Σk and n·Σk² − (Σk)² are exact in i128, and
+        // dividing by n = 2^12 is exact too.
         let mut state = 0x2545_F491_4F6C_DD1Du64;
-        let ks: Vec<i64> = (0..5000)
+        let ks: Vec<i64> = (0..4096)
             .map(|_| {
                 state ^= state << 13;
                 state ^= state >> 7;
@@ -1364,19 +1381,26 @@ mod tests {
         assert_eq!(exact(&[1e-200, 1e-200]), (1e-200, 0.0));
         assert_eq!(exact(&[3.0, 3.0, 3.0]), (3.0, 0.0));
         assert_eq!(exact(&[]), (0.0, 0.0));
-        // 0.1 + 0.2 + 0.3 is 0.6000000000000001 in floats; the exact sum rounds to 0.6.
-        assert_eq!(exact(&[0.1, 0.2, 0.3]).0, 0.6 / 3.0);
+        // Σx and n·Σx² overflow doubles; the quotients by n do not.
+        assert_eq!(exact(&[1e308, 1e308]).0, 1e308);
+        let big = 2f64.powi(511);
+        assert_eq!(exact(&[big, -big]), (0.0, 2f64.powi(1023)));
     }
 
     #[test]
-    fn round_scaled_rounds_once_to_nearest_even() {
-        let r = |v: i64, lsb| round_scaled(&BigInt::from(v), lsb);
+    fn quotients_round_once_to_nearest_even() {
+        let r = |v: i64, lsb| round_quotient(&BigInt::from(v), 1, lsb);
         assert_eq!(r((1 << 53) + 1, 0), 9007199254740992.0);
         assert_eq!(r((1 << 53) + 3, 0), 9007199254740996.0);
         assert_eq!(r(-((1 << 54) + 3), 0), -18014398509481988.0);
         assert_eq!(r(3, -1075), 1e-323);
         assert_eq!(r(1, -1075), 0.0);
         assert_eq!(r(1, 1024), f64::INFINITY);
+        let q = |v: i64, n| round_quotient(&BigInt::from(v), n, 0);
+        assert_eq!(q(-10, 3), -10.0 / 3.0);
+        // An exact tie rounds to even; a remainder just past it rounds up.
+        assert_eq!(q((1 << 54) + 2, 2), 9007199254740992.0);
+        assert_eq!(q((1 << 55) + 13, 4), 9007199254740996.0);
     }
 
     #[test]
