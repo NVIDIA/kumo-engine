@@ -6,9 +6,10 @@ from __future__ import annotations
 import re
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import datetime
-from typing import Any, ClassVar, Generic, NamedTuple, TypeVar
+from itertools import chain
+from typing import Any, ClassVar, Generic, NamedTuple, TypeVar, cast
 
 import numpy as np
 import pandas as pd
@@ -37,7 +38,7 @@ from torch_geometric.index import index2ptr, ptr2index
 
 from kumo_core.embedding_models import TokenEmbeddingModel, resolve_encoder
 from kumo_core.features.time import TimestampHelper
-from kumo_core.types.features import SECONDS_IN_DAY
+from kumo_core.types.features import SECONDS_IN_DAY, TensorData
 
 T = TypeVar("T", Tensor, MultiNestedTensor, MultiEmbeddingTensor)
 
@@ -183,13 +184,23 @@ class TensorMapper(ABC, Generic[T]):
         *,
         device: torch.device | None = None,
     ) -> T:
-        """Encode raw Arrow values, combining chunks before conversion.
+        """Encode Arrow chunks into owned destination buffers.
+
+        Args:
+            array: Raw column values, optionally split across Arrow chunks.
+            device: Destination device, or the default device when omitted.
+
+        Returns:
+            The column's compact tensor representation.
 
         Raises:
             TypeError: If the input is not an Arrow array or chunked array.
         """
         if isinstance(array, pa.ChunkedArray):
-            array = array.combine_chunks()
+            result = _encode_columns([(self, array)], device=device)
+            if isinstance(result, Tensor) and result.ndim == 3:
+                result = result.squeeze(1)
+            return cast(T, result)
         elif not isinstance(array, pa.Array):
             raise TypeError(
                 "TensorMapper input must be an Arrow array or chunked array"
@@ -545,7 +556,7 @@ class MultiCategoricalTensorMapper(TensorMapper[MultiNestedTensor]):
 
         if pa.types.is_string(values.type) or pa.types.is_large_string(values.type):
             keep = pc.fill_null(pc.not_equal(values, ""), True)
-            prefix = np.empty(len(values) + 1, dtype=np.int64)
+            prefix: np.ndarray = np.empty(len(values) + 1, dtype=np.int64)
             prefix[0] = 0
             np.cumsum(keep.to_numpy(zero_copy_only=False), out=prefix[1:])
             offsets = prefix[offsets]
@@ -639,7 +650,7 @@ class SequenceTensorMapper(TensorMapper[MultiEmbeddingTensor]):
             )
         if pa.types.is_string(array.type) or pa.types.is_large_string(array.type):
             dtype = str(torch.get_default_dtype()).split(".")[-1]
-            rows = [
+            rows: list[np.ndarray | None] = [
                 np.fromstring(row.strip("[]"), sep=",", dtype=dtype)
                 if row is not None
                 else None
@@ -769,7 +780,7 @@ class TimestampTensorMapper(TensorMapper[Tensor]):
         unix = torch.from_numpy(_timestamp_nanoseconds(array, self.format)).to(device)
         na_mask = unix == torch.iinfo(torch.int64).min
         unix[na_mask] = 0
-        min_date = np.datetime64("1678-01-01", "ns").astype(np.int64).item()
+        min_date: int = np.datetime64("1678-01-01", "ns").astype(np.int64).item()
         unix = unix.clamp(min=min_date)
 
         unix = unix // 10**9  # Convert to seconds.
@@ -1019,6 +1030,123 @@ def _tiled_mask(
     tiles = torch.stack((pos_count, neg_count)).t().flatten()
     mask = torch.BoolTensor([True, False]).to(device).repeat(len(pos_count))
     return torch.repeat_interleave(mask, tiles)
+
+
+def _encoded_chunks(
+    mapper: TensorMapper,
+    array: pa.Array | pa.ChunkedArray,
+    device: torch.device | None,
+) -> Iterator[tuple[int, TensorData]]:
+    """Encode visible chunks once, retaining row positions and empty schemas."""
+    chunks = array.chunks if isinstance(array, pa.ChunkedArray) else [array]
+    row = 0
+    if not len(array):
+        empty = chunks[0] if chunks else pa.array([], type=array.type)
+        yield 0, mapper.forward(empty, device=device)
+        return
+    for chunk in chunks:
+        if len(chunk):
+            yield row, mapper.forward(chunk, device=device)
+            row += len(chunk)
+
+
+def _encode_columns(
+    columns: Sequence[tuple[TensorMapper, pa.Array | pa.ChunkedArray]],
+    *,
+    device: torch.device | None = None,
+) -> TensorData:
+    """Write one semantic type's chunks into its final TensorFrame buffers."""
+    num_rows = len(columns[0][1])
+    num_cols = len(columns)
+    encoded = (
+        (col, row, result)
+        for col, (mapper, array) in enumerate(columns)
+        for row, result in _encoded_chunks(mapper, array, device)
+    )
+    first = next(encoded)
+    sample = first[2]
+    scalar = columns[0][0].stype in {Stype.numerical, Stype.categorical, Stype.ID}
+    if num_cols == 1 and len(sample) == num_rows:
+        if isinstance(sample, Tensor) and not scalar:
+            return sample.unsqueeze(1)
+        return sample
+    chunks = chain([first], encoded)
+    if isinstance(sample, MultiNestedTensor):
+        return _assemble_nested(chunks, num_rows, num_cols)
+    if isinstance(sample, MultiEmbeddingTensor):
+        widths = [
+            cast(SequenceTensorMapper, mapper).max_length for mapper, _ in columns
+        ]
+        offsets = [0]
+        for width in widths:
+            offsets.append(offsets[-1] + width)
+        values = sample.values.new_empty((num_rows, offsets[-1]))
+        for col, row, result in chunks:
+            assert isinstance(result, MultiEmbeddingTensor)
+            values[row : row + result.num_rows, offsets[col] : offsets[col + 1]].copy_(
+                result.values
+            )
+        return MultiEmbeddingTensor(
+            num_rows=num_rows,
+            num_cols=num_cols,
+            values=values,
+            offset=torch.tensor(offsets, dtype=torch.long, device=values.device),
+        )
+
+    assert isinstance(sample, Tensor)
+    shape = (num_rows, num_cols) if scalar else (num_rows, num_cols, sample.size(1))
+    destination = sample.new_empty(shape)
+    for col, row, result in chunks:
+        assert isinstance(result, Tensor)
+        source = result.view(-1) if scalar else result
+        destination[row : row + len(result), col].copy_(source)
+    return destination
+
+
+def _assemble_nested(
+    chunks: Iterator[tuple[int, int, TensorData]],
+    num_rows: int,
+    num_cols: int,
+) -> MultiNestedTensor:
+    """Size ragged buffers once and scatter tokens into row-major column order."""
+    parts: list[tuple[int, int, MultiNestedTensor]] = []
+    total_values = 0
+    for col, row, result in chunks:
+        assert isinstance(result, MultiNestedTensor)
+        parts.append((col, row, result))
+        total_values += result.values.numel()
+    sample = parts[0][2]
+    offset = sample.offset.new_empty(num_rows * num_cols + 1)
+    offset[0] = 0
+    lengths = offset[1:].view(num_rows, num_cols)
+    for col, row, result in parts:
+        torch.sub(
+            result.offset[1:],
+            result.offset[:-1],
+            out=lengths[row : row + result.num_rows, col],
+        )
+    torch.cumsum(offset[1:], dim=0, out=offset[1:])
+    values = sample.values.new_empty(total_values)
+    cursor = 0
+    for col, row, result in parts:
+        count = result.values.numel()
+        if num_cols == 1:
+            values[cursor : cursor + count].copy_(result.values)
+            cursor += count
+        else:
+            starts = offset[
+                row * num_cols + col : (row + result.num_rows) * num_cols : num_cols
+            ]
+            positions = torch.repeat_interleave(
+                starts - result.offset[:-1],
+                result.offset.diff(),
+                output_size=count,
+            )
+            positions += torch.arange(count, device=values.device)
+            values[positions] = result.values
+    return MultiNestedTensor(
+        num_rows=num_rows, num_cols=num_cols, values=values, offset=offset
+    )
 
 
 STYPE_TO_TENSOR_MAPPER = {

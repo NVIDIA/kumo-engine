@@ -11,7 +11,7 @@ from torch import Tensor
 from torch_frame import TensorFrame
 from torch_frame.data import MultiEmbeddingTensor, MultiNestedTensor
 
-from kumo_core.encoders.tensor_mapper import TensorMapper
+from kumo_core.encoders.tensor_mapper import TensorMapper, _encode_columns
 from kumo_core.types.features import TensorData
 
 
@@ -49,7 +49,7 @@ def get_tf(
     table: pa.RecordBatch | pa.Table,
     mapper_dict: dict[str, TensorMapper],
 ) -> TensorFrame:
-    """Encode Arrow columns into a tensor frame.
+    """Encode Arrow chunks directly into the tensor frame's destination buffers.
 
     Args:
         table: Raw Arrow data, with one row per example.
@@ -61,7 +61,9 @@ def get_tf(
     Raises:
         KeyError: If a supported mapper column is missing from the input.
     """
-    feats_dict: dict[Stype, list[TensorData]] = defaultdict(list)
+    columns: dict[Stype, list[tuple[TensorMapper, pa.Array | pa.ChunkedArray]]] = (
+        defaultdict(list)
+    )
     col_names_dict: dict[Stype, list[str]] = defaultdict(list)
 
     for col_name, mapper in mapper_dict.items():
@@ -69,8 +71,8 @@ def get_tf(
             continue
 
         col = table.column(col_name)
-        feats_dict[mapper.stype].append(mapper(col))
+        columns[mapper.stype].append((mapper, col))
         col_names_dict[mapper.stype].append(col_name)
 
-    feat_dict = combine_feats(feats_dict)
+    feat_dict = {stype: _encode_columns(group) for stype, group in columns.items()}
     return TensorFrame(feat_dict, col_names_dict, num_rows=table.num_rows)

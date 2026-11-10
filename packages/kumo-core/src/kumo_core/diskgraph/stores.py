@@ -206,7 +206,11 @@ def _iter_node_column(
             raise RuntimeError(
                 f"DiskGraph returned {values.num_rows} '{table_name}.{column}' "
                 f'values for {len(node_ids)} requested node IDs')
-        yield chunk_start, values.column(column).combine_chunks()
+        row = chunk_start
+        for chunk in values.column(column).chunks:
+            if len(chunk):
+                yield row, chunk
+                row += len(chunk)
 
 
 def _node_column_engine(index_path: str) -> Any:

@@ -12,8 +12,9 @@ is populated.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping, TypedDict
+from typing import Any, TypedDict
 
 import numpy as np
 import pandas as pd
@@ -178,18 +179,27 @@ class NormalizedTask:
 
 @dataclass
 class RawFeatures:
-    tables: dict[str, pa.RecordBatch] = field(default_factory=dict)
+    """Original Arrow feature buffers and their corresponding node IDs."""
+
+    tables: dict[str, pa.RecordBatch | pa.Table] = field(default_factory=dict)
     row_ids: dict[str, torch.Tensor] = field(default_factory=dict)
 
 
-def engine_int64_to_ns(arr: "pa.Array | pa.ChunkedArray",
-                       index_np_time_unit: str) -> "pa.Array":
-    """Scale an int64 engine-unit timestamp Arrow array to int64 NANOSECONDS,
-    vectorized. ``ns`` is a no-op. NULLs are preserved (propagate through
-    ``pa.compute.multiply``)."""
+def engine_int64_to_ns(
+    arr: pa.Array | pa.ChunkedArray,
+    index_np_time_unit: str,
+) -> pa.Array | pa.ChunkedArray:
+    """Scale Arrow timestamp ticks to nanoseconds, preserving nulls.
+
+    Args:
+        arr: Timestamp ticks, optionally split across Arrow chunks.
+        index_np_time_unit: Engine timestamp resolution; unknown units use ns.
+
+    Returns:
+        Nanosecond ticks without combining the source chunks. Nanosecond input
+        is returned unchanged.
+    """
     import pyarrow.compute as pc
-    if isinstance(arr, pa.ChunkedArray):
-        arr = arr.combine_chunks()
     factor = _NP_UNIT_TO_NS_FACTOR.get(index_np_time_unit, 1)
     if factor == 1:
         return arr
@@ -211,7 +221,7 @@ def runtime_batch_to_hetero(
     index_np_time_unit: str = "s",
     bidirectional_output: bool = False,
     attach_pkeys: bool = True,
-) -> tuple[HeteroData, dict[str, pa.RecordBatch], dict[str, torch.Tensor]]:
+) -> tuple[HeteroData, dict[str, pa.RecordBatch | pa.Table], dict[str, torch.Tensor]]:
     """Convert one native runtime batch into ``HeteroData`` + raw features.
 
     When ``mapper_bank`` + ``feature_schema`` are supplied, ``hetero[ns].tf`` is
@@ -330,11 +340,11 @@ def runtime_batch_to_hetero(
 
 def attach_tensor_frames(
     hetero: HeteroData,
-    raw_feature_tables: Mapping[str, pa.RecordBatch],
+    raw_feature_tables: Mapping[str, pa.RecordBatch | pa.Table],
     mapper_bank: MapperBank,
     feature_schema: FeatureSchema,
 ) -> None:
-    """Lower per-namespace raw ``RecordBatch``es into ``TensorFrame`` as
+    """Lower per-namespace Arrow tables or batches into ``TensorFrame`` as
     ``hetero[ns].tf`` (in place). Namespaces with no ``mapper_key`` are skipped;
     the placeholder pass fills them.
 
@@ -393,7 +403,7 @@ def attach_tensor_frames(
 
 def _attach_pkeys_and_times(
     hetero: HeteroData,
-    raw_feature_tables: Mapping[str, pa.RecordBatch],
+    raw_feature_tables: Mapping[str, pa.RecordBatch | pa.Table],
     pk_col_dict: Mapping[str, str],
     time_col_dict: Mapping[str, str],
     *,
@@ -431,8 +441,6 @@ def _attach_pkeys_and_times(
             # seed_time`` is computed in a single (ns) unit. torch.as_tensor
             # rejects datetime64, so we go through int64.
             time_arr = record_batch.column(time_col)
-            if isinstance(time_arr, pa.ChunkedArray):
-                time_arr = time_arr.combine_chunks()
             if pa.types.is_timestamp(time_arr.type):
                 # A real timestamp carries its resolution, so cast straight to
                 # ns; this is resolution-stable regardless of the engine unit.
@@ -485,7 +493,7 @@ def _attach_placeholder_tensor_frames(
 
 
 def _record_batch_to_tf(
-    record_batch: pa.RecordBatch,
+    record_batch: pa.RecordBatch | pa.Table,
     mapper_dict: dict[str, TensorMapper],
     *,
     namespace: str | None = None,
@@ -607,7 +615,25 @@ def _values_to_tensor(values: ArrowArray, *,
     if values is None:
         return torch.empty((0, ), dtype=dtype or torch.long)
     if isinstance(values, pa.ChunkedArray):
-        values = values.combine_chunks()
+        if values.num_chunks == 0:
+            return _values_to_tensor(pa.array([], type=values.type), dtype=dtype)
+        chunks = iter(values.chunks)
+        first = next(chunks)
+        encoded = _values_to_tensor(first, dtype=dtype)
+        output_dtype = dtype or encoded.dtype
+        if dtype is None and values.null_count and pa.types.is_integer(values.type):
+            output_dtype = torch.float64
+        destination = torch.empty(
+            (len(values), *encoded.shape[1:]), dtype=output_dtype
+        )
+        destination[: len(first)].copy_(encoded)
+        row = len(first)
+        for chunk in chunks:
+            destination[row : row + len(chunk)].copy_(
+                _values_to_tensor(chunk, dtype=dtype)
+            )
+            row += len(chunk)
+        return destination
     # Arrow-backed numpy views are read-only; these tensors are only ever
     # read (indexed into / passed to ops), never written in place, so the
     # copy torch would otherwise recommend is unnecessary. Suppress the
@@ -625,8 +651,6 @@ def _values_to_tensor(values: ArrowArray, *,
 def _values_to_list(values: ArrowArray) -> list[Any]:
     if values is None:
         return []
-    if isinstance(values, pa.ChunkedArray):
-        values = values.combine_chunks()
     return values.to_pylist()
 
 
@@ -1160,8 +1184,6 @@ def _categorical_indices(
 
 def _array_to_multilabel_lists(values: ArrowArray, *,
                                sep: str) -> list[list[Any]]:
-    if isinstance(values, pa.ChunkedArray):
-        values = values.combine_chunks()
     py_values = values.to_pylist()
 
     out: list[list[Any]] = []
@@ -1178,16 +1200,14 @@ def _array_to_multilabel_lists(values: ArrowArray, *,
 
 
 def _arrow_array_to_tensor(values: ArrowArray) -> torch.Tensor:
-    if isinstance(values, pa.ChunkedArray):
-        values = values.combine_chunks()
-    if isinstance(values, pa.Array) and pa.types.is_list(values.type):
+    if isinstance(values, (pa.Array, pa.ChunkedArray)) and pa.types.is_list(
+        values.type
+    ):
         return torch.tensor(values.to_pylist(), dtype=torch.float32)
     return _values_to_tensor(values, dtype=torch.float32)
 
 
 def _arrow_array_to_pylist(values: ArrowArray) -> list[Any]:
-    if isinstance(values, pa.ChunkedArray):
-        values = values.combine_chunks()
     return values.to_pylist()
 
 
@@ -1259,13 +1279,10 @@ def _alias_forecasting_seed_features(
         raw_feature_row_ids[train_table_name] = raw_feature_row_ids[namespace]
 
 
-def _concat_record_batches(batches: list[pa.RecordBatch], ) -> pa.RecordBatch:
+def _concat_record_batches(
+    batches: list[pa.RecordBatch],
+) -> pa.RecordBatch | pa.Table:
+    """Preserve incoming feature buffers and chunk boundaries for encoding."""
     if len(batches) == 1:
         return batches[0]
-    table = pa.Table.from_batches(batches)
-    combined = table.combine_chunks()
-    out = combined.to_batches()
-    if not out:
-        # All-empty batches concatenate to nothing; return the first input.
-        return batches[0]
-    return out[0]
+    return pa.Table.from_batches(batches)

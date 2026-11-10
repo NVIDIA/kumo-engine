@@ -29,6 +29,7 @@ from typing import Any, Iterator, Mapping
 import pytorch_lightning as pl
 from kumo_core.diskgraph.runtime_adapter import (
     MapperBank,
+    _values_to_tensor,
     engine_int64_to_ns,
     runtime_batch_to_hetero,
 )
@@ -2288,15 +2289,14 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         if seed_ts is not None and target_node_type in hetero.node_types:
             block = hetero[target_node_type]
             if "seed_time" not in block:
-                if isinstance(seed_ts, pa.ChunkedArray):
-                    seed_ts = seed_ts.combine_chunks()
-                if isinstance(seed_ts, pa.Array):
+                if isinstance(seed_ts, (pa.Array, pa.ChunkedArray)):
                     # Engine-unit -> ns (Kumo canonical), matching the seed_time
                     # the shared adapter stamps on the LHS seed block.
                     seed_ts = engine_int64_to_ns(seed_ts,
                                                  self.index_np_time_unit)
-                    seed_ts = seed_ts.to_numpy(zero_copy_only=False)
-                block.seed_time = torch.as_tensor(seed_ts, dtype=torch.long)
+                    block.seed_time = _values_to_tensor(seed_ts, dtype=torch.long)
+                else:
+                    block.seed_time = torch.as_tensor(seed_ts, dtype=torch.long)
         return hetero
 
     def _make_dataloader(
