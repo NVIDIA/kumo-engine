@@ -59,7 +59,8 @@ def candidate_node_ids(
 
     Hosted and local batch prediction both rank only these candidates.
     """
-    if not task_type.is_link_pred:
+    if not task_type.is_link_pred or not isinstance(
+            query.get_final_target_aggregation().target, Filter):
         return None
     candidate_query = BPFilterTransformer().generate_bp_query(
         deepcopy(query), task_type, graph)
@@ -68,7 +69,6 @@ def candidate_node_ids(
         return None
     table = get_rhs_lp_table(candidate_query, graph)
     primary_key = graph.tables[table].pkey
-    table = table.rsplit(".", 1)[-1]
     plan = runtime.DiskGraphPlanCompiler(index_path=index_path).compile(
         query=candidate_query,
         timestamps=[],

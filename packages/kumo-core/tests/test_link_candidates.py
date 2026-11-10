@@ -133,3 +133,13 @@ def test_candidates_are_the_keyed_rows_passing_candidate_conditions(
 def test_no_passing_candidate_is_rejected(index):
     with pytest.raises(ValueError, match="no candidates from table 'stores'"):
         _candidates(index, 'stores.RATING > 100')
+
+
+def test_query_without_a_target_filter_is_not_rewritten(index, monkeypatch):
+    monkeypatch.setattr('kumo_core.link_candidates.BPFilterTransformer', None)
+    parsed = parse_and_validate_query(QUERY.replace(' WHERE {}', ''), GRAPH)
+
+    assert candidate_node_ids(parsed.query, to_api_graph(GRAPH),
+                              task_type=TaskType(parsed.task_type),
+                              index_path=index, tt_id='candidates',
+                              runtime=diskgraph) is None
