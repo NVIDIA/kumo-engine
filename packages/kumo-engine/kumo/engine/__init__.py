@@ -1,17 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Local, in-process relational deep learning with Kumo.
+r"""Relational deep learning with optional remote artifact preparation.
 
-ComputeCluster optionally offloads artifact production to Ray workers.
-There is nothing to call analogous to the cloud SDK's
-`kumoai_studio.init(url=..., api_key=...)`: connectors and tables are constructed
-and threaded through directly (`Table`, `Graph`, `Connector` subclasses), and
-`Graph`/`Trainer` objects carry their own scratch-directory identity, so no
-process-wide setup call is *required* before use. `configure(...)` is the one
-*optional* one -- see `kumo.engine.config` -- for pointing the shared scratch-
-directory root (DiskGraph ingest, GNN training) at, e.g., a local NVMe SSD
-mount.
+Use ``init`` to configure scratch space and a ComputeCluster. Without a cluster,
+execution stays local. Connectors carry their own source and storage identities.
 """
 
 import sys
@@ -36,14 +29,16 @@ from kumo.engine._manifest import (
     TrainingTableManifest,
 )
 from kumo.engine._mlops import MLOps, mlops
-from kumo.engine.cluster import (
-    ArtifactReplica,
-    ComputeCluster,
-    PreparedTrainingArtifacts,
-)
 from kumo.engine._monitoring import DriftReport, EvaluationResult
 from kumo.engine._version import __version__
-from kumo.engine.config import configure
+from kumo.engine.cluster import (
+    ArtifactReplica,
+    ArtifactRoot,
+    ComputeCluster,
+    ComputeClusterConfig,
+    PreparedTrainingArtifacts,
+)
+from kumo.engine.config import configure, init
 from kumo.engine.connector import (
     ADLSConnector,
     ADLSIdentity,
@@ -88,6 +83,7 @@ __all__ = [
     "ADLSIdentity",
     "__version__",
     "configure",
+    "init",
     "install_skills",
     "EvaluationResult",
     "DriftReport",
@@ -119,6 +115,8 @@ __all__ = [
     "GraphSnapshot",
     "MLOps",
     "ComputeCluster",
+    "ComputeClusterConfig",
+    "ArtifactRoot",
     "ArtifactReplica",
     "PreparedTrainingArtifacts",
     "mlops",
