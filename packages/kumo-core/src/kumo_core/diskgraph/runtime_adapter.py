@@ -655,12 +655,6 @@ def _values_to_tensor(values: ArrowArray, *,
     return tensor.to(dtype=dtype) if dtype is not None else tensor
 
 
-def _values_to_list(values: ArrowArray) -> list[Any]:
-    if values is None:
-        return []
-    return values.to_pylist()
-
-
 def _attach_graph_topology(
     hetero: HeteroData,
     main: GraphChannel,
@@ -815,8 +809,8 @@ def _graph_channel_to_sampler_output(
         col[edge_type] = edge_index[1]
         edge[edge_type] = None
 
-    num_sampled_nodes = {
-        node_type: _values_to_list(counts)
+    num_sampled_nodes: dict[str, list[int]] = {
+        node_type: counts.to_pylist() if counts is not None else []
         for node_type, counts in (
             main.get("num_sampled_nodes_dict") or {}).items()
     }
@@ -867,7 +861,8 @@ def _decode_sampled_edge_counts(
     key = entry["edge_type"]
     edge_type = normalize_diskgraph_edge_type(key["src"], key["rel"],
                                               key["dst"])
-    return edge_type, _values_to_list(entry.get("counts"))
+    counts = entry.get("counts")
+    return edge_type, counts.to_pylist() if counts is not None else []
 
 
 def _attach_seed_table(
