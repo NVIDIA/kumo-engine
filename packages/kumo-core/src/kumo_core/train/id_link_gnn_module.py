@@ -286,6 +286,12 @@ class IDLinkGNNLightningModule(BaseLinkLightningModule):
 
     # Prediction Callbacks ####################################################
 
+    def on_predict_start(self):
+        super().on_predict_start()
+        candidates = self.trainer.datamodule.predict_candidates
+        self._predict_candidates = (None if candidates is None else
+                                    candidates.to(self.device))
+
     def predict_step(
         self,
         batch: HeteroData,
@@ -295,6 +301,10 @@ class IDLinkGNNLightningModule(BaseLinkLightningModule):
         assert self.pred_top_k is not None
         pred_top_k = min(self.pred_top_k, self.num_rhs_nodes)
         logits, rhs_index, lhs_batch = self.common_step(batch)
+        if self._predict_candidates is not None:
+            keep = torch.isin(rhs_index, self._predict_candidates)
+            logits, rhs_index, lhs_batch = (logits[keep], rhs_index[keep],
+                                            lhs_batch[keep])
 
         batch_size = batch[self.lhs_name].batch_size
         lhs_pkey = batch[self.lhs_name].pkey[:batch_size]

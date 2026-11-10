@@ -14,11 +14,13 @@ import tempfile
 from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
 
+import numpy as np
 from kumo_core.encoder_selection import _EncoderStat, select_target_encoder
 from kumoapi.encoder import EncoderType
 from kumoapi.typing import ColStatType, Stype
 from pydantic import TypeAdapter
 
+PREDICT_CANDIDATES = "predict_candidates"
 _NODE_TASK_TYPES = frozenset({
     "binary_classification",
     "multiclass_classification",
@@ -212,6 +214,19 @@ class DiskgraphTaskManifest:
             if isinstance(bounds, (list, tuple)) and len(bounds) == 2:
                 result[str(stage)] = (int(bounds[0]), int(bounds[1]))
         return result
+
+    @property
+    def predict_candidates(self) -> np.ndarray | None:
+        """RHS node IDs the prediction query's target filter admits, or
+        ``None`` when it admits every candidate."""
+
+        relative_path = self.manifest.get("side_artifacts",
+                                          {}).get(PREDICT_CANDIDATES)
+        if not relative_path:
+            return None
+        artifact_root = self.manifest.get("artifact_root") or os.path.dirname(
+            os.path.abspath(self.manifest_path))
+        return np.load(os.path.join(artifact_root, str(relative_path)))
 
     def _split_info(self) -> Mapping[str, Any]:
         relative_path = self.manifest.get("split_info_path")
@@ -617,10 +632,12 @@ def write_thin_manifest(
     has_weight: bool,
     stage_seed_times: dict[str, tuple[int, int]] | None = None,
     column_stats: bool = True,
+    predict_candidates: np.ndarray | None = None,
 ) -> str:
     """Write the bundle sidecars. ``column_stats`` writes the per-column
     encoder statistics, which only encoder fitting reads, to their own
-    sidecar; prediction bundles omit them."""
+    sidecar; prediction bundles omit them. ``predict_candidates`` are the
+    RHS node IDs a link prediction may rank."""
     metadata = {
         "schema_version": "v1",
         "task_family": spec.task_family,
@@ -738,6 +755,11 @@ def write_thin_manifest(
             path = os.path.join(staging, name)
             _write_json(path, value)
             checksums[f"{name}_sha256"] = _sha256(path)
+        if predict_candidates is not None:
+            np.save(os.path.join(staging, f"{PREDICT_CANDIDATES}.npy"),
+                    predict_candidates)
+            manifest["side_artifacts"][PREDICT_CANDIDATES] = (
+                f"{PREDICT_CANDIDATES}.npy")
         _write_json(os.path.join(staging, "checksums.json"), checksums)
         manifest["checksums_path"] = "checksums.json"
         _write_json(os.path.join(staging, "manifest.json"), manifest)

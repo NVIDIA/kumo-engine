@@ -33,6 +33,7 @@ import diskgraph
 import numpy as np
 from pandas import Timestamp
 
+from .link_candidates import candidate_node_ids
 from .pquery import (
     NativeGraph,
     ValidatedNativeQuery,
@@ -307,6 +308,10 @@ def materialize_prediction_task(
     anchors = request.timestamps
     if request.query.task_type == "temporal_link_prediction":
         anchors = (link_prediction_anchor(anchors, generated.table_path), )
+    candidates = candidate_node_ids(request.query, request.graph,
+                                    index_path=request.index_path,
+                                    tt_id=f"{request.tt_id}-candidates",
+                                    runtime=runtime)
     ingested = runtime.execute_tt_ingest(
         staging_dir=generated.staging_dir,
         index_path=request.index_path,
@@ -382,6 +387,7 @@ def materialize_prediction_task(
         has_time=True,
         has_weight=False,
         column_stats=False,
+        predict_candidates=candidates,
     )
     bundle_dir = os.path.dirname(manifest_path)
     runtime_manifest_path = write_flat_manifest(

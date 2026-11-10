@@ -2167,6 +2167,14 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         pred = self._stage_seed_time(TrainingStage.PRED)
         return pred if pred is not None else self.test_time
 
+    @property
+    def predict_candidates(self) -> "Any | None":
+        """RHS node IDs the prediction query's target filter admits, or
+        ``None`` when it admits every candidate."""
+        import torch
+        node_ids = self.task_manifest.predict_candidates
+        return None if node_ids is None else torch.from_numpy(node_ids)
+
     def require_single_predict_anchor(self) -> None:
         from kumo_core.training.validation import require_single_anchor
         from kumoapi.train import TrainingStage

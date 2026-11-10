@@ -176,7 +176,18 @@ class BaseLinkLightningModule(BaseLightningModule, ABC):
         """TT-NG temporal LP: RHS node-ids valid at ``stage``'s seed time, or
         ``None`` (static LP / no temporal info -> rank the full catalog).
         Shared by eval AND predict across LP families so both filter
-        consistently."""
+        consistently. Prediction also keeps only the candidates its query's
+        target filter admits."""
+        valid = self._rhs_valid_at_stage_time(stage)
+        candidates = (self.datamodule.predict_candidates
+                      if stage == TrainingStage.PRED else None)
+        if candidates is None:
+            return valid
+        candidates = candidates.to(self.device)
+        return (candidates if valid is None else valid[torch.isin(
+            valid, candidates)])
+
+    def _rhs_valid_at_stage_time(self, stage: "Any") -> "Tensor | None":
         from kumoapi.train import TrainingStage
 
         canonical = self._canonical_rhs_node_ids(self.device)
