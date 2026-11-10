@@ -62,13 +62,6 @@ class TensorMapper(ABC, Generic[T]):
     ) -> T:
         """Encode raw Arrow values, combining chunks before conversion.
 
-        Args:
-            array: Raw column values.
-            device: Destination device, or the default device when omitted.
-
-        Returns:
-            The column's compact tensor representation.
-
         Raises:
             TypeError: If the input is not an Arrow array or chunked array.
         """
@@ -210,15 +203,7 @@ class UnsupportedTensorMapper(TensorMapper[Tensor]):
         *,
         device: torch.device | None = None,
     ) -> Tensor:
-        """Return an empty feature tensor with the Arrow input's row count.
-
-        Args:
-            array: Raw values as a single Arrow array.
-            device: Destination device, or the default device when omitted.
-
-        Returns:
-            The column's compact tensor representation.
-        """
+        """Return an empty feature tensor with the Arrow input's row count."""
         return torch.empty((len(array), 0), device=device)
 
     def backward(self, tensor: Tensor) -> pd.Series:
@@ -247,15 +232,7 @@ class ImageTensorMapper(TensorMapper[Tensor]):
         *,
         device: torch.device | None = None,
     ) -> Tensor:
-        """Return an empty feature tensor with the Arrow input's row count.
-
-        Args:
-            array: Raw values as a single Arrow array.
-            device: Destination device, or the default device when omitted.
-
-        Returns:
-            The column's compact tensor representation.
-        """
+        """Return an empty feature tensor with the Arrow input's row count."""
         return torch.empty((len(array), 0), device=device)
 
     def backward(self, tensor: Tensor) -> pd.Series:
@@ -290,15 +267,7 @@ class NumericalTensorMapper(TensorMapper[Tensor]):
         *,
         device: torch.device | None = None,
     ) -> Tensor:
-        """Encode numerical Arrow values, normalizing durations to seconds.
-
-        Args:
-            array: Raw values as a single Arrow array.
-            device: Destination device, or the default device when omitted.
-
-        Returns:
-            The column's compact tensor representation.
-        """
+        """Encode numerical Arrow values, normalizing durations to seconds."""
         values = (
             array.to_pandas().dt.total_seconds().to_numpy()
             if pa.types.is_duration(array.type)
@@ -356,15 +325,7 @@ class CategoricalTensorMapper(TensorMapper[Tensor]):
         *,
         device: torch.device | None = None,
     ) -> Tensor:
-        """Map Arrow categories to cached vocabulary indices; unknowns become -1.
-
-        Args:
-            array: Raw values as a single Arrow array.
-            device: Destination device, or the default device when omitted.
-
-        Returns:
-            The column's compact tensor representation.
-        """
+        """Map Arrow categories to cached vocabulary indices; unknowns become -1."""
         if pa.types.is_dictionary(array.type):
             # Dictionary columns store integer codes into a small dictionary of
             # unique values; hash only the K unique values, then gather.
@@ -480,15 +441,7 @@ class MultiCategoricalTensorMapper(TensorMapper[MultiNestedTensor]):
         *,
         device: torch.device | None = None,
     ) -> MultiNestedTensor:
-        """Encode Arrow lists directly, retaining parsing fallbacks.
-
-        Args:
-            array: Raw values as a single Arrow array.
-            device: Destination device, or the default device when omitted.
-
-        Returns:
-            The column's compact tensor representation.
-        """
+        """Encode Arrow lists directly, retaining parsing fallbacks."""
         # An Arrow ``list<int>`` column is already the ``(rowptr, index)`` CSR
         # layout of ``MultiNestedTensor``: map the flat values and reuse the
         # offsets, skipping the explode / index2ptr machinery.
@@ -651,15 +604,7 @@ class SequenceTensorMapper(TensorMapper[MultiEmbeddingTensor]):
         *,
         device: torch.device | None = None,
     ) -> MultiEmbeddingTensor:
-        """Encode Arrow lists directly, retaining parsing fallbacks.
-
-        Args:
-            array: Raw values as a single Arrow array.
-            device: Destination device, or the default device when omitted.
-
-        Returns:
-            The column's compact tensor representation.
-        """
+        """Encode Arrow lists directly, retaining parsing fallbacks."""
         is_list = isinstance(array, (pa.ListArray, pa.LargeListArray))
         if is_list and len(array) > 0:
             offsets_np = array.offsets.to_numpy(zero_copy_only=False)
@@ -803,15 +748,7 @@ class TimestampTensorMapper(TensorMapper[Tensor]):
         *,
         device: torch.device | None = None,
     ) -> Tensor:
-        """Encode Arrow timestamps as calendar, holiday, and UNIX features.
-
-        Args:
-            array: Raw values as a single Arrow array.
-            device: Destination device, or the default device when omitted.
-
-        Returns:
-            The column's compact tensor representation.
-        """
+        """Encode Arrow timestamps as calendar, holiday, and UNIX features."""
         ser = to_datetime(array.to_pandas(), format=self.format)
 
         unix = torch.from_numpy(ser.astype("int64").to_numpy()).to(device)
@@ -973,13 +910,6 @@ class TextTensorMapper(TensorMapper[MultiNestedTensor]):
         device: torch.device | None = None,
     ) -> MultiNestedTensor:
         """Tokenize Arrow text through the configured embedding model.
-
-        Args:
-            array: Raw text values as a single Arrow array.
-            device: Destination device, or the default device when omitted.
-
-        Returns:
-            Token indices and row offsets as a nested tensor.
 
         Raises:
             ValueError: If tokenization returns an invalid row-pointer count.
