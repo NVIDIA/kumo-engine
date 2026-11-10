@@ -110,7 +110,10 @@ from kumo.engine._tracking import (
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.explain._artifacts import explanation_trial
-from kumo.engine.explain.results import TrainingExplanations
+from kumo.engine.explain.results import (
+    PredictionExplanations,
+    TrainingExplanations,
+)
 from kumo.engine.graph import (
     GraphSnapshot,
     index_timestamp_precision,
@@ -325,6 +328,9 @@ class PredictionResult:
                                              repr=False)
     _exported: Optional['_Export'] = field(default=None, compare=False,
                                            repr=False)
+
+    explanations: PredictionExplanations = field(
+        default_factory=PredictionExplanations.unavailable)
 
     @property
     def tracking(self) -> Optional[TrackingRef]:
@@ -1559,6 +1565,7 @@ class Trainer:
         binary_classification_threshold: Optional[float] = None,
         prediction_table: Optional[PredictionTable] = None,
         mlops: Optional[Any] = None,
+        explanations: bool = False,
     ) -> PredictionResult:
         r"""Score a snapshot and return durable file-backed results.
 
@@ -1585,8 +1592,17 @@ class Trainer:
 
         Omitted arguments fall back to the bundle's :attr:`scoring_defaults`.
 
+        ``explanations=True`` replays a bounded sample of these prediction
+        inputs to generate column cohorts and sampled graphs when supported.
+        The optional replay adds computation. Its failure leaves predictions
+        available and is recorded on ``result.explanations``. Retain that
+        object's ``run_root`` separately; exports do not include diagnostics.
+
         With MLOps on, the run is stored under ``predictions/<id>/``.
         """
+        if not isinstance(explanations, bool):
+            raise ValueError('explanations must be a boolean')
+
         from kumo_core.prediction_options import (
             validate_num_classes_to_return,
             validate_prediction_workers,
@@ -1627,7 +1643,7 @@ class Trainer:
                 num_workers=num_workers,
                 binary_classification_threshold=(
                     binary_classification_threshold),
-                settings=settings)
+                settings=settings, explanations=explanations)
 
     def _prediction_table(self, snapshot: GraphSnapshot,
                           entities: Optional[SourceTable],
@@ -1667,6 +1683,7 @@ class Trainer:
         binary_classification_threshold: Optional[float] = None,
         settings: Optional[Any] = None,
         extra_fields: Sequence[str] = (),
+        explanations: bool = False,
     ) -> PredictionResult:
         from kumo_core.pquery import normalize_graph, parse_and_validate_query
         from kumo_core.prediction import score_prediction
@@ -1761,9 +1778,34 @@ class Trainer:
             count_edges=count_edges(training_result.manifest, task_type),
         )
 
-        del encoders
-        _collect_garbage('predict')
-        result = PredictionResult(selection, artifact_type)
+        explanation_result = PredictionExplanations.from_run(run_dir)
+        try:
+            if explanations:
+                from kumo_core.prediction_explanations import (
+                    explain_prediction,
+                )
+
+                support = explain_prediction(
+                    materialized=materialized, model_dir=model_dir,
+                    run_id=run_id, output_dir=str(run_dir / 'xai'),
+                    top_k=num_classes_to_return, binary_threshold=threshold,
+                    task_options=task_options,
+                    embedding_models=self._embedding_models,
+                    encoders=encoders, accelerator=self._accelerator)
+                explanation_result = PredictionExplanations.from_run(
+                    run_dir, enabled=True, cohorts_supported=support.cohorts,
+                    samples_supported=support.samples)
+        except Exception as error:
+            logger.exception(
+                'Prediction succeeded, but explanations failed for run %s. '
+                'Prediction outputs remain available.', run_id)
+            explanation_result = PredictionExplanations.from_run(
+                run_dir, enabled=True, failure=f'{type(error).__name__}: {error}')
+        finally:
+            del encoders
+            _collect_garbage('predict')
+        result = PredictionResult(selection, artifact_type,
+                                  explanations=explanation_result)
         manifest = _run_manifest.start(
             result=result, trainer=self, snapshot=snapshot,
             prediction_table=prediction_table,

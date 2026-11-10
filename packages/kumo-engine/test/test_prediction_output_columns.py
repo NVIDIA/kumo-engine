@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from kumo_core.io import filesystem
 from kumoapi.graph import Edge
 from kumoapi.jobs import MetadataField
 from kumoapi.model_plan import ModelPlan
@@ -457,3 +458,60 @@ def test_mlops_counts_forecast_horizons_recommended_items_and_top_scores(
         np.searchsorted(edges, top, 'right'), minlength=len(edges) + 1).tolist()
     assert counts.extents['top_score'] == (top.min(), top.max())
     assert score_drift(counts, holdout) is not None
+
+
+@pytest.mark.parametrize('name', ['classifier', 'link'])
+def test_loaded_prediction_explanations_use_current_inputs(graph, name,
+                                                           request):
+    """Real producers must explain the supplied snapshot, not training seeds."""
+    fitted = request.getfixturevalue(name)
+    graph_object, previous_snapshot, root = graph
+    ents_path = root / 'data/ents.parquet'
+    events_path = root / 'data/events.parquet'
+    with filesystem.open_file(str(ents_path), 'rb') as source:
+        ents = pd.read_parquet(source)
+    with filesystem.open_file(str(events_path), 'rb') as source:
+        events = pd.read_parquet(source)
+    current_ents, current_events = ents.copy(), events.copy()
+    current_ents['ID'] += 1000
+    current_events['ENT_ID'] += 1000
+    try:
+        with filesystem.open_file(str(ents_path), 'wb') as destination:
+            current_ents.to_parquet(destination)
+        with filesystem.open_file(str(events_path), 'wb') as destination:
+            current_events.to_parquet(destination)
+        snapshot = graph_object.snapshot()
+        assert snapshot.id != previous_snapshot.id
+        trainer = kumo.Trainer.load(fitted[0].result.bundle_dir,
+                                    accelerator='cpu')
+        table = fitted[1].generate_prediction_table(snapshot)
+        result = trainer.predict(
+            table, snapshot=snapshot, explanations=True,
+            num_classes_to_return=3 if name == 'link' else None)
+        xai = result.explanations
+        assert xai.availability['samples'].available
+        references = xai.samples()
+        assert len(references) == len(ents)
+        for reference in references:
+            assert reference.original_ids['first'] >= 1000
+            sample = xai.sample(reference.artifact_id)
+            store = sample.subgraph_store
+            assert (store.nodes[store.root_id].pkey ==
+                    reference.original_ids['first'])
+        if name == 'classifier':
+            assert xai.availability['cohorts'].available
+            assert xai.column_analysis().cohorts
+            assert all(cohort.targets is None
+                       for cohort in xai.column_analysis().cohorts)
+        else:
+            assert xai.availability['cohorts'].reason == 'unsupported'
+        reopened = kumo.PredictionExplanations.load(xai.run_root)
+        assert reopened.samples() == references
+        assert reopened.sample(references[0].artifact_id) == xai.sample(
+            references[0].artifact_id)
+        assert len(result.frame) == len(ents) * (3 if name == 'link' else 1)
+    finally:
+        with filesystem.open_file(str(ents_path), 'wb') as destination:
+            ents.to_parquet(destination)
+        with filesystem.open_file(str(events_path), 'wb') as destination:
+            events.to_parquet(destination)
