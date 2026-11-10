@@ -181,6 +181,8 @@ pub struct IngestOptions {
     /// pkmap) and written as rowpack columns with NO FK edge. Empty (default)
     /// preserves the existing edge-materializing behaviour.
     pub resolve_columns: Vec<ResolveColumnSpec>,
+    /// Exact per-cutoff column statistics to publish under `col_stats/`.
+    pub col_stats_requests: Option<crate::cutoff_stats::IngestRequests>,
 }
 
 impl Default for IngestOptions {
@@ -202,6 +204,7 @@ impl Default for IngestOptions {
             index_threads: None,
             parent_index_path: None,
             resolve_columns: Vec::new(),
+            col_stats_requests: None,
         }
     }
 }

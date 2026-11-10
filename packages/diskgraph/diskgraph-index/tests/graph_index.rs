@@ -161,6 +161,7 @@ fn graph_builder_and_reader_multi_table() {
                 reverse_of: None,
             },
         ],
+        index_id: None,
     };
 
     let meta_path = root.join("index_metadata.json");
@@ -275,6 +276,7 @@ fn resumable_jobs_reuse_only_committed_shards_and_cleanup_is_idempotent() {
             format: diskgraph_core::metadata::EdgeStorageFormat::Binary,
             reverse_of: None,
         }],
+        index_id: None,
     };
     let builder = GraphIndexBuilder::from_metadata(
         metadata,

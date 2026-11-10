@@ -188,6 +188,7 @@ mod bp_evaluate;
 mod exact_quantiles;
 mod col_stats_export;
 mod custom_tt_entry;
+mod cutoff_stats;
 mod index_metadata;
 mod success_marker;
 mod string_lookup;
@@ -1337,6 +1338,7 @@ pub fn convert_kumo_config(
     edges_map_threads=None,
     index_threads=None,
     parent_index_path=None,
+    col_stats_requests=None,
 ))]
 #[tracing::instrument(
     level = "info",
@@ -1362,6 +1364,7 @@ pub fn ingest(
     edges_map_threads: Option<usize>,
     index_threads: Option<usize>,
     parent_index_path: Option<&str>,
+    col_stats_requests: Option<&str>,
 ) -> PyResult<String> {
     let start_time = std::time::Instant::now();
     info!(
@@ -1414,6 +1417,12 @@ pub fn ingest(
         index_threads,
         parent_index_path: parent_index_path.map(std::path::PathBuf::from),
         resolve_columns: Vec::new(),
+        col_stats_requests: col_stats_requests
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|e| {
+                DiskgraphConfigError::new_err(format!("Invalid col_stats_requests JSON: {e}"))
+            })?,
     };
 
     let output_dir = output_dir.to_string();
@@ -1865,6 +1874,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     temporal::register(m)?;
+    cutoff_stats::register(m)?;
     token_stream::register(m)?;
     custom_tt_contract::register(m)?;
     Ok(())

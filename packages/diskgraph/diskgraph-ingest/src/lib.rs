@@ -12,6 +12,7 @@ pub mod column_inference;
 pub mod config;
 pub mod config_converter;
 pub mod consts;
+pub mod cutoff_stats;
 pub mod diagnostics;
 pub mod disk_manager;
 pub mod errors;
@@ -957,6 +958,9 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     // sees its own predecessors' output.
     if let Some(rfp) = resume_from_phase {
         if rfp > IngestPhase::Encode {
+            if ctx.col_stats_requests.is_some() {
+                tracing::warn!("resumed after Encode: col_stats_requests are not published");
+            }
             ctx.restore_encode_state()?;
             ctx.repopulate_table_contexts_from_source()?;
             ctx.repopulate_node_stats_from_meta()?;
@@ -1147,6 +1151,11 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     let ts_groupings = ctx.run_ts_grouping()?;
     let sample_weight_indexes = ctx.run_sample_weight_indexes()?;
     let binary_label_indexes = ctx.run_binary_label_indexes()?;
+    let index_id = index_metadata
+        .index_id
+        .as_deref()
+        .expect("finalized index id");
+    crate::cutoff_stats::publish_ingested(&ctx.cutoff_stats, &local_root, index_id)?;
     let finalize_wall = finalize_start.elapsed();
     ctx.set_peak_stage(None);
     tracing::info!(
@@ -1937,6 +1946,8 @@ mod tests_repopulate_helpers {
             text_sample_stats: HashMap::new(),
             parent_index_path: None,
             resolve_columns: Vec::new(),
+            col_stats_requests: None,
+            cutoff_stats: HashMap::new(),
         }
     }
 
@@ -2756,6 +2767,9 @@ struct IngestContext {
     /// reference value(s) to graph node-ids and writes them as rowpack columns
     /// (no FK edge). Empty (default) preserves the edge-materializing path.
     resolve_columns: Vec<crate::config::ResolveColumnSpec>,
+    col_stats_requests: Option<crate::cutoff_stats::IngestRequests>,
+    /// Per-cutoff statistics collected by this run's Encode, by table.
+    cutoff_stats: HashMap<String, crate::cutoff_stats::TableStats>,
 }
 
 const ENCODE_STATE_VERSION: u32 = 2;
@@ -7340,6 +7354,8 @@ impl IngestContext {
             text_sample_stats: HashMap::new(),
             parent_index_path: options.parent_index_path,
             resolve_columns: options.resolve_columns,
+            col_stats_requests: options.col_stats_requests,
+            cutoff_stats: HashMap::new(),
         })
     }
 
@@ -7421,6 +7437,10 @@ impl IngestContext {
             std::sync::Arc<crate::col_stats::TableCategoryCounts>,
         > = HashMap::new();
         let mut table_col_stats: HashMap<String, crate::col_stats::FileColStats> = HashMap::new();
+        let cutoff_tables = match &self.col_stats_requests {
+            Some(requests) => requests.tables(&tables, clock)?,
+            None => HashMap::new(),
+        };
         // FK-free LP resolution mode: load the parent pkmap(s) ONCE here, before
         // the parallel encode pass, and share read-only via Arc so each encode
         // worker can resolve PK reference columns to graph node-ids inline (no
@@ -7747,6 +7767,7 @@ impl IngestContext {
                         )
                         .chain(&mut stream);
                     let table_cat = table_cat_counts.get(&table.name).cloned();
+                    let cutoff_table = cutoff_tables.get(&table.name);
                     let encode_table: &TableSpec = table;
                     let results = run_encode_batch_workers(
                         replay,
@@ -7755,8 +7776,9 @@ impl IngestContext {
                         Arc::clone(&validation),
                         |batches| {
                             let mut key_failures = KeyFailureState::default();
+                            let cutoff = cutoff_table.cloned().unwrap_or_default();
                             if col_stats_enabled {
-                                let mut observer = if let Some(categories) = &table_cat {
+                                let file_stats = if let Some(categories) = &table_cat {
                                     crate::col_stats::FileColStats::new_with_categories(
                                         &encode_table.columns,
                                         Arc::clone(categories),
@@ -7764,6 +7786,7 @@ impl IngestContext {
                                 } else {
                                     crate::col_stats::FileColStats::new(&encode_table.columns)
                                 };
+                                let mut observer = (file_stats, cutoff);
                                 let node = Self::build_temp_node_batches(
                                     encode_table,
                                     batches,
@@ -7784,9 +7807,11 @@ impl IngestContext {
                                     &mut observer,
                                     clock,
                                 )?;
-                                observer.flush_categories();
-                                Ok((node, key_failures, Some(observer)))
+                                let (mut file_stats, cutoff) = observer;
+                                file_stats.flush_categories();
+                                Ok((node, key_failures, Some(file_stats), cutoff))
                             } else {
+                                let mut observer = (diskgraph_rowpack::NoOpObserver, cutoff);
                                 let node = Self::build_temp_node_batches(
                                     encode_table,
                                     batches,
@@ -7804,17 +7829,21 @@ impl IngestContext {
                                     &resolve_columns,
                                     ref_resolver.as_deref(),
                                     &sidecars,
-                                    &mut diskgraph_rowpack::NoOpObserver,
+                                    &mut observer,
                                     clock,
                                 )?;
-                                Ok((node, key_failures, None))
+                                Ok((node, key_failures, None, observer.1))
                             }
                         },
                     )?;
                     let mut total_rows = 0u64;
                     let mut node_data_dropped = 0u64;
                     let mut merged_stats: Option<crate::col_stats::FileColStats> = None;
-                    for (node, key_failures, file_stats) in results {
+                    let mut merged_cutoff = cutoff_table.cloned();
+                    for (node, key_failures, file_stats, cutoff) in results {
+                        if let Some(merged) = &mut merged_cutoff {
+                            merged.merge(&cutoff);
+                        }
                         total_rows = total_rows.saturating_add(node.total_rows);
                         node_data_dropped =
                             node_data_dropped.saturating_add(node.node_data_dropped);
@@ -7834,6 +7863,9 @@ impl IngestContext {
                     }
                     if let Some(stats) = merged_stats {
                         table_col_stats.insert(table.name.clone(), stats);
+                    }
+                    if let Some(merged) = merged_cutoff {
+                        self.cutoff_stats.insert(table.name.clone(), merged);
                     }
                 }
                 validation.finish()?;
@@ -8971,6 +9003,7 @@ impl IngestContext {
                 batcher.push_empty_node(shard)?;
             } else {
                 batcher.push_encoded_node(shard, lens, node_tags, node_bools, node_data)?;
+                observer.row_stored();
             }
             // Record the grouping timestamp 1:1 with the node just pushed (both
             // the normal and oversized-empty paths emit a node). The two
@@ -12028,6 +12061,7 @@ impl IngestContext {
             dataset_name: self.source.dataset_name.clone(),
             node_types,
             edge_relations,
+            index_id: None,
         };
         Ok(index_metadata)
     }
@@ -12046,6 +12080,7 @@ impl IngestContext {
                 shard.path.clear();
             }
         }
+        metadata.index_id = Some(crate::index_metadata::ingest_index_id(&self.source)?);
         let json = serde_json::to_vec_pretty(&metadata)?;
         self.target.write_bytes("index_metadata.json", json)?;
 

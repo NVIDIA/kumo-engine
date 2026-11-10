@@ -540,20 +540,20 @@ impl ReservoirSamplerL {
 pub use diskgraph_core::accumulators::TDigestEstimator;
 pub use diskgraph_core::accumulators::WelfordAccumulator;
 
-/// Exact counts on fixed bins, eight per power of two, in an open-addressing table.
+/// Exact counts on fixed bins, `2^(52 - SHIFT)` per power of two, in an open-addressing table.
 #[derive(Clone, Default)]
-pub struct ValueBins {
+pub struct ValueBins<const SHIFT: u32 = 49> {
     bins: Vec<i32>,
     counts: Vec<u64>,
     len: usize,
 }
 
-impl ValueBins {
+impl<const SHIFT: u32> ValueBins<SHIFT> {
     const EMPTY: i32 = i32::MIN;
 
     #[inline]
-    fn add(&mut self, value: f64) {
-        let bin = (value.abs().to_bits() >> 49) as i32;
+    pub(crate) fn add(&mut self, value: f64) {
+        let bin = (value.abs().to_bits() >> SHIFT) as i32;
         self.add_count(if value < 0.0 { -bin - 1 } else { bin }, 1);
     }
 
@@ -593,25 +593,31 @@ impl ValueBins {
             .map(|(bin, count)| (*bin, *count))
     }
 
-    fn merge(&mut self, other: &ValueBins) {
+    pub(crate) fn merge(&mut self, other: &Self) {
         for (bin, count) in other.iter() {
             self.add_count(bin, count);
         }
     }
 
-    /// `[start, count]` pairs in value order; a negative bin starts below its values.
-    fn to_json(&self) -> JsonValue {
+    /// `(bin, count)` pairs in bin order, which is value order.
+    pub(crate) fn sorted(&self) -> Vec<(i32, u64)> {
         let mut bins: Vec<_> = self.iter().collect();
         bins.sort_unstable();
+        bins
+    }
+
+    /// `[start, count]` pairs in value order; a negative bin starts below its values.
+    fn to_json(&self) -> JsonValue {
         let start = |bin: i32| {
-            let magnitude = |bits: i32| f64::from_bits((bits as u64) << 49);
+            let magnitude = |bits: i32| f64::from_bits((bits as u64) << SHIFT);
             if bin < 0 {
                 -magnitude(-bin)
             } else {
                 magnitude(bin)
             }
         };
-        bins.into_iter()
+        self.sorted()
+            .into_iter()
             .map(|(bin, count)| json!([start(bin), count]))
             .collect()
     }
@@ -4065,7 +4071,7 @@ mod tests {
             json!([[-3.25, 1], [0.0, 2], [1.0, 3], [1.125, 1]])
         );
 
-        let mut wide = ValueBins::default();
+        let mut wide = ValueBins::<49>::default();
         for exponent in -100..100 {
             wide.add(2f64.powi(exponent));
             wide.add(2f64.powi(exponent));

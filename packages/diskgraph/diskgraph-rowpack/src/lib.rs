@@ -2122,6 +2122,55 @@ pub trait ColumnValueObserver {
     fn observe_beyond_clock(&mut self, col_idx: usize) {
         self.observe_parse_failure(col_idx);
     }
+    /// The row just observed was stored with its node data.
+    fn row_stored(&mut self) {}
+}
+
+impl<A: ColumnValueObserver, B: ColumnValueObserver> ColumnValueObserver for (A, B) {
+    fn observe_i64(&mut self, col_idx: usize, value: i64) {
+        self.0.observe_i64(col_idx, value);
+        self.1.observe_i64(col_idx, value);
+    }
+    fn observe_f64(&mut self, col_idx: usize, value: f64) {
+        self.0.observe_f64(col_idx, value);
+        self.1.observe_f64(col_idx, value);
+    }
+    fn observe_string(&mut self, col_idx: usize, value: &str) {
+        self.0.observe_string(col_idx, value);
+        self.1.observe_string(col_idx, value);
+    }
+    fn observe_timestamp(&mut self, col_idx: usize, secs: i64) {
+        self.0.observe_timestamp(col_idx, secs);
+        self.1.observe_timestamp(col_idx, secs);
+    }
+    fn observe_float_list(&mut self, col_idx: usize, view: &FloatListView) {
+        self.0.observe_float_list(col_idx, view);
+        self.1.observe_float_list(col_idx, view);
+    }
+    fn observe_int64_list(&mut self, col_idx: usize, view: &IntListView) {
+        self.0.observe_int64_list(col_idx, view);
+        self.1.observe_int64_list(col_idx, view);
+    }
+    fn observe_string_list(&mut self, col_idx: usize, view: &StringListView) {
+        self.0.observe_string_list(col_idx, view);
+        self.1.observe_string_list(col_idx, view);
+    }
+    fn observe_null(&mut self, col_idx: usize) {
+        self.0.observe_null(col_idx);
+        self.1.observe_null(col_idx);
+    }
+    fn observe_parse_failure(&mut self, col_idx: usize) {
+        self.0.observe_parse_failure(col_idx);
+        self.1.observe_parse_failure(col_idx);
+    }
+    fn observe_beyond_clock(&mut self, col_idx: usize) {
+        self.0.observe_beyond_clock(col_idx);
+        self.1.observe_beyond_clock(col_idx);
+    }
+    fn row_stored(&mut self) {
+        self.0.row_stored();
+        self.1.row_stored();
+    }
 }
 
 /// Zero-sized observer that does nothing. LLVM eliminates all calls via monomorphization.
@@ -5526,6 +5575,56 @@ impl RowPackDecoder {
             decode_value_skip(col, tag, &mut data, self.dict_values[idx].as_ref())?;
         }
         Err(anyhow!("rowpack column index out of range"))
+    }
+
+    /// Calls `f` with each requested column's value of `row`, in column order.
+    pub fn for_each_value(
+        &self,
+        row: &[u8],
+        requested: &[bool],
+        scratch: &mut RowPackDecodeScratch,
+        mut f: impl FnMut(usize, ValueRef<'_>),
+    ) -> Result<()> {
+        let mut reader = BitReader::new(row);
+        scratch.tags.clear();
+        for _ in 0..self.ctx.columns.len() {
+            scratch.tags.push(reader.read_bits(2)?);
+        }
+        reader.align_to_byte();
+        scratch.bools.clear();
+        for (idx, col) in self.ctx.columns.iter().enumerate() {
+            if matches!(col.encoding, ColumnEncoding::Bool) && scratch.tags[idx] != 0 {
+                scratch.bools.push(reader.read_bits(1)? != 0);
+            }
+        }
+        reader.align_to_byte();
+        let mut data = &row[row.len() - reader.remaining_bytes()..];
+        let mut bool_cursor = 0;
+        for (idx, col) in self.ctx.columns.iter().enumerate() {
+            let tag = scratch.tags[idx];
+            if tag > 2 {
+                return Err(anyhow!("rowpack invalid tag {}", tag));
+            }
+            if tag == 0 {
+                if requested[idx] {
+                    f(idx, ValueRef::Null);
+                }
+            } else if matches!(col.encoding, ColumnEncoding::Bool) {
+                let value = scratch.bools[bool_cursor];
+                bool_cursor += 1;
+                if requested[idx] {
+                    f(idx, ValueRef::Bool(value));
+                }
+            } else if requested[idx] {
+                let mut rest = data;
+                let dict = self.dict_values[idx].as_ref();
+                f(idx, decode_value_ref(col, tag, &mut rest, dict, scratch)?);
+                data = &data[data.len() - rest.len()..];
+            } else {
+                decode_value_skip(col, tag, &mut data, self.dict_values[idx].as_ref())?;
+            }
+        }
+        Ok(())
     }
 
     pub fn decode_row_to_builders(
