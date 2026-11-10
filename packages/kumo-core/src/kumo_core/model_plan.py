@@ -802,8 +802,7 @@ class TrainingTableGenerationPlan(api.TrainingTableGenerationPlan, PlanMixin):
             value = self.start_time if name == 'start_time' else self.end_time
             return (_use_decoupled_splits()
                     or (task_type.is_node_pred and isinstance(value, str)
-                        and not _is_missing(value)
-                        and not _is_inferred(value)))
+                        and not _is_missing(value)))
         if name in ['train_start_offset', 'train_end_offset']:
             return not _use_decoupled_splits()
 

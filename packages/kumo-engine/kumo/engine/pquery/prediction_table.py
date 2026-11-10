@@ -188,9 +188,12 @@ def _build_prediction_table_request(
     if generation_plan is not None:
         from kumo_core.io.json import from_json_dict
         from kumoapi.json_serde import to_json_dict
-        options = from_json_dict(
-            to_json_dict(generation_plan),
-            CoreGenerationPlan,
+
+        # Prediction anchors do not inherit the fitted label window.
+        options = replace(
+            from_json_dict(to_json_dict(generation_plan), CoreGenerationPlan),
+            start_time=options.start_time,
+            end_time=options.end_time,
         )
 
     parsed = resolve_query_forecast(parsed, native_graph, options)

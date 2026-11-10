@@ -350,12 +350,14 @@ class PredictiveQuery:
 
         from kumo_core.io.json import from_json_dict
 
-        # The fit's split ranges would not cover later anchors.
+        # Fit windows and split ranges do not constrain evaluation anchors.
         options = CoreGenerationPlan()
         if plan is not None:
             options = replace(from_json_dict(to_json_dict(plan),
                                              CoreGenerationPlan),
-                              split=options.split)
+                              split=options.split,
+                              start_time=options.start_time,
+                              end_time=options.end_time)
         run_dir = train_table_scratch_dir(new_run_id())
         run_dir.mkdir(parents=True, exist_ok=True)
         staging = None

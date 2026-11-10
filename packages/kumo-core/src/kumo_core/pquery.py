@@ -39,6 +39,7 @@ from kumoapi.typing import ColStatType, Dtype, Stype
 from kumopql.parser import PQLParser
 from kumopql.validator import PredictiveQueryValidator
 from pandas import DateOffset, Timedelta, Timestamp
+from pandas.errors import OutOfBoundsDatetime
 from pydantic import TypeAdapter
 
 from .encoder_selection import (
@@ -1067,13 +1068,13 @@ def _temporal_timestamps(
             )
         except ValueError as error:
             raise PredictiveQueryPlanError(str(error)) from error
-    if explicit:
+    absolute_bounds = (isinstance(start_time, Timestamp)
+                       or isinstance(end_time, Timestamp)) and node_bounds
+    if explicit and not absolute_bounds:
         return (tuple(_timestamp_ns(value) for value in explicit),
                 "flexible_boundaries" in split)
     minimum, maximum, filter_buffer = _temporal_target_time_range(
         query, index_path)
-    absolute_bounds = (isinstance(start_time, Timestamp)
-                       or isinstance(end_time, Timestamp)) and node_bounds
     if absolute_bounds and isinstance(start_time, Timestamp):
         start_time = max(start_time, minimum)
     if absolute_bounds and isinstance(end_time, Timestamp):
@@ -1098,6 +1099,25 @@ def _temporal_timestamps(
     cutoff = end_time if isinstance(end_time, Timestamp) else maximum
     if absolute_bounds and lower >= cutoff:
         raise PredictiveQueryPlanError(empty_bounds)
+
+    def within_bounds(value: int) -> bool:
+        shifted = value + future_shift.value
+        if value < lower.value or shifted > label_cutoff.value:
+            return False
+        try:
+            return (Timestamp(shifted) + offset.end_date_offset <= label_cutoff)
+        except (OutOfBoundsDatetime, OverflowError):
+            return False
+
+    def bounded(values: Sequence[int]) -> tuple[int, ...]:
+        result = tuple(value for value in values if within_bounds(value))
+        if not result:
+            raise PredictiveQueryPlanError(empty_bounds)
+        return result
+
+    if explicit:
+        return (bounded(tuple(_timestamp_ns(value) for value in explicit)),
+                "flexible_boundaries" in split)
 
     step_count = int(
         inferred_or_missing_type_to_none(options.timeframe_step)
@@ -1135,12 +1155,8 @@ def _temporal_timestamps(
     if absolute_bounds:
         # Inferred offset splits may extend their first range to fill a stage.
         # Absolute label bounds remain authoritative over that adjustment.
-        timestamps = [
-            timestamp for timestamp in timestamps if timestamp >= lower
-            and timestamp + future_shift + offset.end_date_offset <= label_cutoff
-        ]
-    if absolute_bounds and not timestamps:
-        raise PredictiveQueryPlanError(empty_bounds)
+        return (bounded(tuple(timestamp.value for timestamp in timestamps)),
+                fixed_boundaries)
     return tuple(timestamp.value for timestamp in timestamps), fixed_boundaries
 
 

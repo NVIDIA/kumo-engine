@@ -3,10 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
+from kumo_core.io.json import from_json_dict, to_json_dict
 from kumo_core.model_plan import TrainingTableGenerationPlan
 from kumo_core.training.bounds import validate_time_bounds
 from kumo_core.types.enums import TaskType
-from kumoapi.model_plan import RunMode
+from kumoapi.model_plan import InferredType, RunMode
+from kumoapi.model_plan import \
+    TrainingTableGenerationPlan as PublicGenerationPlan
 from kumoapi.pquery import QueryType
 from pandas import Timestamp
 
@@ -87,6 +90,30 @@ def test_node_bound_validation(task_type, flag, monkeypatch):
     )
     assert not errors
     assert plan.start_time == '2024-01-01T00:00:00-06:00'
+
+
+@pytest.mark.parametrize('flag', [None, 'false', 'true'])
+@pytest.mark.parametrize('inferred', ['inferred', InferredType.VALUE])
+@pytest.mark.parametrize('bound', ['start_time', 'end_time'])
+def test_public_inferred_bound(flag, inferred, bound, monkeypatch):
+    if flag is None:
+        monkeypatch.delenv('USE_DECOUPLED_SPLITS', raising=False)
+    else:
+        monkeypatch.setenv('USE_DECOUPLED_SPLITS', flag)
+    public = PublicGenerationPlan(**{
+        'start_time': '2024-01-01',
+        'end_time': '2024-02-01',
+        bound: inferred,
+    })
+    # Match generate_training_table's public-plan preflight conversion.
+    plan = from_json_dict(to_json_dict(public), TrainingTableGenerationPlan)
+    errors, _ = plan.validate(
+        task_type=TaskType.BINARY_CLASSIFICATION,
+        query_type=QueryType.TEMPORAL,
+        has_train_table_time_col=True,
+        run_mode=RunMode.FAST,
+    )
+    assert not errors
 
 
 def test_link_bounds_keep_gate(monkeypatch):

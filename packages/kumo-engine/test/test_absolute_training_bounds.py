@@ -117,6 +117,8 @@ def test_temporal_node_bounds(temporal_graph, tmp_path, monkeypatch, task,
     {'start_time': '2023-12-01', 'end_time': '2024-04-01'},
     {'start_time': '2024-01-10'},
     {'end_time': '2024-02-20'},
+    {'start_time': '2024-01-10', 'end_time': 'inferred'},
+    {'start_time': 'inferred', 'end_time': '2024-02-20'},
     {'start_time': '-INF', 'end_time': '2024-02-20'},
 ])
 def test_partial_and_clipped_bounds(temporal_graph, tmp_path, monkeypatch,
@@ -126,9 +128,11 @@ def test_partial_and_clipped_bounds(temporal_graph, tmp_path, monkeypatch,
                            'COUNT(events.*, 0, 2, days)', **bounds)
     lower = max(pd.Timestamp('2024-01-01'),
                 pd.Timestamp(bounds['start_time'])
-                if bounds.get('start_time') not in {None, '-INF'} else
+                if bounds.get('start_time') not in {None, '-INF', 'inferred'} else
                 pd.Timestamp('2024-01-01'))
-    upper = min(SOURCE_END, pd.Timestamp(bounds.get('end_time', SOURCE_END)))
+    end = bounds.get('end_time', 'inferred')
+    upper = min(SOURCE_END, pd.Timestamp(end) if end != 'inferred' else
+                SOURCE_END)
     assert not rows.empty
     assert rows['TIMESTAMP'].min() >= lower
     assert rows['TIMESTAMP'].max() + pd.Timedelta(days=2) <= upper

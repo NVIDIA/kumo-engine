@@ -465,6 +465,56 @@ def test_prediction_compiler_uses_plan_forecast_horizon(graph_snapshot,
                                                                259200)
 
 
+def test_evaluate_prediction_after_absolute_training_bounds(
+        graph, tmp_path, monkeypatch, request):
+    import pandas as pd
+    import torch
+
+    from kumo.engine._scratch import get_scratch_dir
+
+    monkeypatch.delenv('USE_DECOUPLED_SPLITS', raising=False)
+    previous = get_scratch_dir()
+    configure(scratch_dir=tmp_path / 'scratch')
+    request.addfinalizer(lambda: configure(scratch_dir=previous))
+    threads = torch.get_num_threads()
+    torch.set_num_threads(2)
+    request.addfinalizer(lambda: torch.set_num_threads(threads))
+    snapshot = graph.snapshot()
+    query = PredictiveQuery(
+        graph, 'PREDICT COUNT(events.*, 0, 7, days) > 0 FOR EACH users.ID')
+    table = query.generate_training_table(
+        snapshot, TrainingTableGenerationPlan(
+            start_time='2024-01-10', end_time='2024-02-20', timeframe_step=2))
+    plan = ModelPlan()
+    plan.training_job.num_experiments = 1
+    plan.training_job.disable_explain = True
+    plan.training_job.refit_trainval = False
+    plan.optimization.max_epochs = 1
+    plan.optimization.max_steps_per_epoch = 2
+    plan.optimization.batch_size = [32]
+    plan.model_architecture.channels = [16]
+    trainer = Trainer(plan, accelerator='cpu')
+    trainer.fit(table, snapshot=snapshot)
+    fitted = to_json_dict(trainer.training_table_generation_plan)
+    prediction = query.generate_prediction_table(
+        snapshot, prediction_time=pd.Timestamp('2024-03-01').to_pydatetime(),
+        plan=trainer.training_table_generation_plan)
+    run = trainer.predict(prediction, snapshot=snapshot,
+                          binary_classification_threshold=0.5)
+    result = trainer.evaluate(run, labels_snapshot=snapshot)
+    assert result.matured
+    assert result.labelled_fraction == 1.0
+    assert pd.Timestamp(result.anchors[0]).tz_convert(None) == pd.Timestamp(
+        '2024-03-01')
+    future_anchor = pd.Timestamp('2025-01-01')
+    future = query.generate_prediction_table(
+        snapshot, prediction_time=future_anchor.to_pydatetime(),
+        plan=trainer.training_table_generation_plan)
+    assert future.timestamps == (future_anchor.value,)
+    assert future.row_count == 50
+    assert to_json_dict(trainer.training_table_generation_plan) == fitted
+
+
 def test_custom_training_table_materializes_weight_and_manual_split(
         graph_snapshot, tmp_path, monkeypatch):
     graph, snapshot = graph_snapshot
