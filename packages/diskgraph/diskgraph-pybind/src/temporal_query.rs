@@ -22,7 +22,7 @@ use arrow::array::{
 };
 use arrow::pyarrow::ToPyArrow;
 use arrow_array::{RecordBatch, RecordBatchOptions};
-use diskgraph_core::metadata::{EdgeRelationMetadata, EdgeSortKeyMetadata};
+use diskgraph_core::metadata::EdgeSortKeyMetadata;
 use diskgraph_core::time::{Abs, Seconds, TimeUnit};
 use diskgraph_core::tt_builder::AggFunc;
 use diskgraph_train_table::ttgen_resolve::{resolve_named_path, resolve_aggregate_input, ResolvedEdge};
