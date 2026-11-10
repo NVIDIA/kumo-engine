@@ -350,7 +350,7 @@ def attach_tensor_frames(
 
     A schema node type with fitted mappers that is present in ``hetero`` (e.g.
     a parity back-filled empty block from ``_attach_graph_topology``) but has no
-    raw RecordBatch still gets a mapper-shaped empty TF here. The adapter builds the
+    raw Table still gets a mapper-shaped empty TF here. The adapter builds the
     encoder-correct ``feat_dict`` stypes at zero rows from the mapper. Without
     this the placeholder pass would attach a bare ``TensorFrame({}, {})`` whose
     empty ``feat_dict`` makes the feature encoder ``tf.feat_dict[stype]``
@@ -393,11 +393,11 @@ def attach_tensor_frames(
                 {}, {}, num_rows=hetero[namespace].num_nodes or 0
             )
             continue
-        empty_rb = pa.RecordBatch.from_pydict(
+        empty_table = pa.Table.from_pydict(
             {col: pa.array([], type=pa.string())
              for col in mapper_dict})
         hetero[namespace].tf = _record_batch_to_tf(
-            empty_rb, mapper_dict, namespace=namespace
+            empty_table, mapper_dict, namespace=namespace
         )
 
 
@@ -493,7 +493,7 @@ def _attach_placeholder_tensor_frames(
 
 
 def _record_batch_to_tf(
-    record_batch: pa.RecordBatch | pa.Table,
+    table: pa.Table,
     mapper_dict: dict[str, TensorMapper],
     *,
     namespace: str | None = None,
@@ -501,29 +501,29 @@ def _record_batch_to_tf(
     """Encode mapper columns, ignoring auxiliary time and primary key columns.
 
     Args:
-        record_batch: Features and optional auxiliary columns for one namespace.
+        table: Features and optional auxiliary columns for one namespace.
         mapper_dict: Fitted mappers defining the required encoder inputs.
         namespace: Node type included in missing-column diagnostics.
 
     Returns:
-        Encoded features preserving the batch row count, including types without
+        Encoded features preserving the table row count, including types without
         fitted encoders.
 
     Raises:
         RuntimeError: If a required encoder column is absent from the batch.
     """
-    missing = sorted(set(mapper_dict) - set(record_batch.schema.names))
+    missing = sorted(set(mapper_dict) - set(table.schema.names))
     if missing:
         raise RuntimeError(
             f"feature batch for namespace {namespace or '<unknown>'!r} is "
             f"missing {len(missing)} column(s) the fitted encoders require: "
-            f"{missing!r}. Present: {record_batch.schema.names!r}. Either the "
+            f"{missing!r}. Present: {table.schema.names!r}. Either the "
             "projection handed to RuntimeIndex.iter() omits an encoder "
             "column, or the graph snapshot lacks a fitted encoder column."
         )
     if not mapper_dict:
-        return TensorFrame({}, {}, num_rows=record_batch.num_rows)
-    return get_tf(record_batch, dict(mapper_dict))
+        return TensorFrame({}, {}, num_rows=table.num_rows)
+    return get_tf(table, dict(mapper_dict))
 
 
 def _channel(batch: RuntimeBatch, channel: str) -> GraphChannel:
