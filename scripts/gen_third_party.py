@@ -52,6 +52,7 @@ FIRST_PARTY_DISTRIBUTIONS = {
     "kumo-adls",
     "kumo-pql",
     "kumo-s3",
+    "kumo-settings",
     "kumo-snowflake",
     "kumo-engine",
     "kumo-pytorch",

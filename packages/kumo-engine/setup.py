@@ -88,6 +88,7 @@ setup(
         # kumo-core -- and the Torch/PyG/DiskGraph stack it pulls in -- is a
         # plain, required dependency here.
         "kumo-core>=0.1.0.dev1",
+        "kumo-settings>=0.1.0.dev1",
         # Select one Faiss distribution: both provide the `faiss` module.
         # Keep platform markers on these external dependencies so wheel
         # merging preserves them when the bundled core reference is removed.
