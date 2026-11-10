@@ -640,7 +640,7 @@ jobs:
         # `-rs` prints the skip reasons so an empty live tier stays visible.
         run: |
           status=0
-          for package in kumo-pql kumo-core kumo-snowflake kumo-bigquery \
+          for package in kumo-settings kumo-pql kumo-core kumo-snowflake kumo-bigquery \
                          kumo-databricks kumo-s3 kumo-gcs kumo-adls; do
             echo "::group::pytest packages/$package"
             if [ "$package" = kumo-core ]; then

@@ -62,6 +62,7 @@ members = [
     "kumo-pql",
     "kumo-pytorch",
     "kumo-s3",
+    "kumo-settings",
     "kumo-snowflake",
     "kumoai-studio",
 ]
@@ -3761,6 +3762,20 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.11" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=7.4" },
 ]
+provides-extras = ["test"]
+
+[[package]]
+name = "kumo-settings"
+version = "0.1.0.dev1"
+source = { editable = "packages/kumo-settings" }
+
+[package.optional-dependencies]
+test = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pytest", marker = "extra == 'test'", specifier = ">=7.4" }]
 provides-extras = ["test"]
 
 [[package]]
