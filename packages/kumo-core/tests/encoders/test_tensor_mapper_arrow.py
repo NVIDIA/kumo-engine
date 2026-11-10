@@ -75,7 +75,7 @@ def test_numerical_arrow_matches_pandas() -> None:
     ser_i = pd.Series([1, 2, None, 4])
     arr_i = pa.array([1, 2, None, 4], type=pa.int64())
     _assert_same(_pandas_reference(mapper, ser_i), mapper(arr_i))
-    # ChunkedArray input is combined before the numpy conversion.
+    # ChunkedArray input preserves the same values and row order.
     chunked = pa.chunked_array([[1.0, 2.0], [None, 4.0]], type=pa.float64())
     _assert_same(_pandas_reference(mapper, ser), mapper(chunked))
 

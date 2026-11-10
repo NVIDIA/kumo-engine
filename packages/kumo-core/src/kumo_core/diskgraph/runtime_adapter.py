@@ -12,8 +12,9 @@ is populated.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping, TypedDict
+from typing import Any, TypedDict
 
 import numpy as np
 import pandas as pd
@@ -123,7 +124,7 @@ class RawTask(TypedDict, total=False):
 
 
 class RawFeatureBlock(TypedDict, total=False):
-    record_batches: list[pa.RecordBatch]
+    record_batches: list[pa.RecordBatch] | pa.RecordBatch
     node_ids: ArrowArray
 
 
@@ -178,12 +179,12 @@ class NormalizedTask:
 
 @dataclass
 class RawFeatures:
-    tables: dict[str, pa.RecordBatch] = field(default_factory=dict)
+    tables: dict[str, pa.Table] = field(default_factory=dict)
     row_ids: dict[str, torch.Tensor] = field(default_factory=dict)
 
 
-def engine_int64_to_ns(arr: "pa.Array | pa.ChunkedArray",
-                       index_np_time_unit: str) -> "pa.Array":
+def engine_int64_to_ns(arr: pa.Array | pa.ChunkedArray,
+                       index_np_time_unit: str) -> pa.Array:
     """Scale an int64 engine-unit timestamp Arrow array to int64 NANOSECONDS,
     vectorized. ``ns`` is a no-op. NULLs are preserved (propagate through
     ``pa.compute.multiply``)."""
@@ -211,7 +212,7 @@ def runtime_batch_to_hetero(
     index_np_time_unit: str = "s",
     bidirectional_output: bool = False,
     attach_pkeys: bool = True,
-) -> tuple[HeteroData, dict[str, pa.RecordBatch], dict[str, torch.Tensor]]:
+) -> tuple[HeteroData, dict[str, pa.Table], dict[str, torch.Tensor]]:
     """Convert one native runtime batch into ``HeteroData`` + raw features.
 
     When ``mapper_bank`` + ``feature_schema`` are supplied, ``hetero[ns].tf`` is
@@ -330,17 +331,17 @@ def runtime_batch_to_hetero(
 
 def attach_tensor_frames(
     hetero: HeteroData,
-    raw_feature_tables: Mapping[str, pa.RecordBatch],
+    raw_feature_tables: Mapping[str, pa.RecordBatch | pa.Table],
     mapper_bank: MapperBank,
     feature_schema: FeatureSchema,
 ) -> None:
-    """Lower per-namespace raw ``RecordBatch``es into ``TensorFrame`` as
+    """Lower per-namespace raw Arrow tables into ``TensorFrame`` as
     ``hetero[ns].tf`` (in place). Namespaces with no ``mapper_key`` are skipped;
     the placeholder pass fills them.
 
     A schema node type with fitted mappers that is present in ``hetero`` (e.g.
     a parity back-filled empty block from ``_attach_graph_topology``) but has no
-    raw RecordBatch still gets a mapper-shaped empty TF here. The adapter builds the
+    raw feature table still gets a mapper-shaped empty TF here. The adapter builds
     encoder-correct ``feat_dict`` stypes at zero rows from the mapper. Without
     this the placeholder pass would attach a bare ``TensorFrame({}, {})`` whose
     empty ``feat_dict`` makes the feature encoder ``tf.feat_dict[stype]``
@@ -393,7 +394,7 @@ def attach_tensor_frames(
 
 def _attach_pkeys_and_times(
     hetero: HeteroData,
-    raw_feature_tables: Mapping[str, pa.RecordBatch],
+    raw_feature_tables: Mapping[str, pa.RecordBatch | pa.Table],
     pk_col_dict: Mapping[str, str],
     time_col_dict: Mapping[str, str],
     *,
@@ -485,7 +486,7 @@ def _attach_placeholder_tensor_frames(
 
 
 def _record_batch_to_tf(
-    record_batch: pa.RecordBatch,
+    record_batch: pa.RecordBatch | pa.Table,
     mapper_dict: dict[str, TensorMapper],
     *,
     namespace: str | None = None,
@@ -1208,10 +1209,16 @@ def _collect_raw_features(
 ) -> RawFeatures:
     out = RawFeatures()
     for namespace, block in raw_features.items():
-        record_batches = block.get("record_batches") or []
-        if not record_batches:
+        record_batches = block.get("record_batches")
+        if record_batches is None or (
+            isinstance(record_batches, list) and not record_batches
+        ):
             continue
-        out.tables[namespace] = _concat_record_batches(record_batches)
+        out.tables[namespace] = pa.Table.from_batches(
+            [record_batches]
+            if isinstance(record_batches, pa.RecordBatch)
+            else record_batches
+        )
         ids = block.get("node_ids")
         if ids is None:
             ids = node_ids.get(namespace)
@@ -1257,15 +1264,3 @@ def _alias_forecasting_seed_features(
     raw_feature_tables[train_table_name] = raw_feature_tables[namespace]
     if namespace in raw_feature_row_ids:
         raw_feature_row_ids[train_table_name] = raw_feature_row_ids[namespace]
-
-
-def _concat_record_batches(batches: list[pa.RecordBatch], ) -> pa.RecordBatch:
-    if len(batches) == 1:
-        return batches[0]
-    table = pa.Table.from_batches(batches)
-    combined = table.combine_chunks()
-    out = combined.to_batches()
-    if not out:
-        # All-empty batches concatenate to nothing; return the first input.
-        return batches[0]
-    return out[0]

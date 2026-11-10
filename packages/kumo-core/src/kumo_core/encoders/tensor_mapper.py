@@ -42,6 +42,18 @@ from kumo_core.types.features import SECONDS_IN_DAY
 T = TypeVar("T", Tensor, MultiNestedTensor, MultiEmbeddingTensor)
 
 
+def _arrow_chunks(array: pa.Array | pa.ChunkedArray) -> list[pa.Array]:
+    """Return original chunks without concatenating their buffers."""
+    return array.chunks if isinstance(array, pa.ChunkedArray) else [array]
+
+
+def _copy_numpy(destination: Tensor, values: np.ndarray) -> None:
+    """Copy a NumPy view into owned tensor storage, converting during the copy."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*non-writable.*")
+        destination.copy_(torch.from_numpy(values))
+
+
 def _canonical_categories(array: pa.Array) -> pa.Array:
     """Give signed floating zeros a single hash representation."""
     if pa.types.is_floating(array.type):
@@ -53,7 +65,7 @@ def _category_codes(array: pa.Array, vocabulary: pa.Array) -> np.ndarray:
     """Look up Arrow categories without coercing strings into numeric values."""
     if pa.types.is_dictionary(array.type):
         codes = pa.array(_category_codes(array.dictionary, vocabulary))
-        return pc.take(codes, array.indices).fill_null(-1).to_numpy().copy()
+        return pc.take(codes, array.indices).fill_null(-1).to_numpy()
     if not len(vocabulary) or array.null_count == len(array):
         return np.full(len(array), -1, dtype=np.int64)
     array = _canonical_categories(array)
@@ -61,12 +73,19 @@ def _category_codes(array: pa.Array, vocabulary: pa.Array) -> np.ndarray:
         codes = pc.index_in(array, value_set=vocabulary)
     except (pa.ArrowTypeError, pa.ArrowNotImplementedError):
         return np.full(len(array), -1, dtype=np.int64)
-    return pc.cast(codes.fill_null(-1), pa.int64()).to_numpy().copy()
+    return codes.fill_null(-1).to_numpy()
 
 
-def _is_list(array: pa.Array) -> bool:
+def _is_list(array: pa.Array | pa.ChunkedArray) -> bool:
     """Recognize variable- and fixed-width Arrow list columns."""
-    return isinstance(array, (pa.ListArray, pa.LargeListArray, pa.FixedSizeListArray))
+    value_type = array.type
+    if pa.types.is_dictionary(value_type):
+        value_type = value_type.value_type
+    return (
+        pa.types.is_list(value_type)
+        or pa.types.is_large_list(value_type)
+        or pa.types.is_fixed_size_list(value_type)
+    )
 
 
 def _list_values_offsets(array: pa.Array) -> tuple[pa.Array, np.ndarray]:
@@ -101,7 +120,7 @@ def _nested_from_arrow(
 
 
 def _timestamp_nanoseconds(array: pa.Array, format: str | None) -> np.ndarray:
-    """Normalize typed timestamps or parsed text to writable nanoseconds."""
+    """Normalize typed timestamps or parsed text to nanoseconds."""
     array = pc.dictionary_decode(array)
     if pa.types.is_string(array.type) or pa.types.is_large_string(array.type):
         if format is not None and "%f" not in format:
@@ -129,9 +148,7 @@ def _timestamp_nanoseconds(array: pa.Array, format: str | None) -> np.ndarray:
         )
     else:
         array = pc.cast(array, pa.timestamp("ns"))
-    return (
-        pc.cast(array, pa.int64()).fill_null(np.iinfo(np.int64).min).to_numpy().copy()
-    )
+    return pc.cast(array, pa.int64()).fill_null(np.iinfo(np.int64).min).to_numpy()
 
 
 def _parse_timestamp(value: str | None, format: str | None) -> int | None:
@@ -183,14 +200,19 @@ class TensorMapper(ABC, Generic[T]):
         *,
         device: torch.device | None = None,
     ) -> T:
-        """Encode raw Arrow values, combining chunks before conversion.
+        """Encode Arrow values chunk by chunk into owned destination storage.
+
+        Args:
+            array: Raw column values, retaining their Arrow chunk boundaries.
+            device: Destination device, or the default device when omitted.
+
+        Returns:
+            The column's compact tensor representation.
 
         Raises:
             TypeError: If the input is not an Arrow array or chunked array.
         """
-        if isinstance(array, pa.ChunkedArray):
-            array = array.combine_chunks()
-        elif not isinstance(array, pa.Array):
+        if not isinstance(array, (pa.Array, pa.ChunkedArray)):
             raise TypeError(
                 "TensorMapper input must be an Arrow array or chunked array"
             )
@@ -199,14 +221,14 @@ class TensorMapper(ABC, Generic[T]):
     @abstractmethod
     def forward(
         self,
-        array: pa.Array,
+        array: pa.Array | pa.ChunkedArray,
         *,
         device: torch.device | None = None,
     ) -> T:
         """Encode an Arrow array into a compact tensor representation.
 
         Args:
-            array: Raw column values in a single Arrow array.
+            array: Raw column values in Arrow chunks.
             device: Destination device, or the default device when omitted.
 
         Returns:
@@ -322,7 +344,7 @@ class UnsupportedTensorMapper(TensorMapper[Tensor]):
 
     def forward(
         self,
-        array: pa.Array,
+        array: pa.Array | pa.ChunkedArray,
         *,
         device: torch.device | None = None,
     ) -> Tensor:
@@ -351,7 +373,7 @@ class ImageTensorMapper(TensorMapper[Tensor]):
 
     def forward(
         self,
-        array: pa.Array,
+        array: pa.Array | pa.ChunkedArray,
         *,
         device: torch.device | None = None,
     ) -> Tensor:
@@ -386,21 +408,37 @@ class NumericalTensorMapper(TensorMapper[Tensor]):
 
     def forward(
         self,
-        array: pa.Array,
+        array: pa.Array | pa.ChunkedArray,
         *,
         device: torch.device | None = None,
     ) -> Tensor:
         """Encode numerical Arrow values, normalizing durations to seconds."""
-        array = pc.dictionary_decode(array)
-        if pa.types.is_duration(array.type):
-            scale = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}
-            values = pc.cast(array, pa.int64()).to_numpy(zero_copy_only=False)
-            values = values / scale[array.type.unit]
-        else:
-            values = array.to_numpy(zero_copy_only=False)
-        dtype = str(torch.get_default_dtype()).split(".")[-1]
-        value = torch.from_numpy(values.astype(dtype))
-        return value.to(device).view(-1, 1)
+        result = torch.empty((len(array), 1), device=device)
+        row = 0
+        for chunk in _arrow_chunks(array):
+            chunk = pc.dictionary_decode(chunk)
+            duration = pa.types.is_duration(chunk.type)
+            values = (pc.cast(chunk, pa.int64()) if duration else chunk).to_numpy(
+                zero_copy_only=False
+            )
+            if values.dtype.kind == "O":
+                values = values.astype(str(torch.get_default_dtype()).split(".")[-1])
+            destination = result[row : row + len(chunk), 0]
+            if duration:
+                scale = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}
+                if destination.device.type == "cpu":
+                    np.divide(
+                        values,
+                        scale[chunk.type.unit],
+                        out=destination.numpy(),
+                        casting="unsafe",
+                    )
+                else:
+                    _copy_numpy(destination, values / scale[chunk.type.unit])
+            else:
+                _copy_numpy(destination, values)
+            row += len(chunk)
+        return result
 
     def post_forward(
         self,
@@ -443,13 +481,20 @@ class CategoricalTensorMapper(TensorMapper[Tensor]):
 
     def forward(
         self,
-        array: pa.Array,
+        array: pa.Array | pa.ChunkedArray,
         *,
         device: torch.device | None = None,
     ) -> Tensor:
         """Map Arrow categories to cached vocabulary indices; unknowns become -1."""
-        index = torch.from_numpy(_category_codes(array, self._vocabulary))
-        return index.to(device).view(-1, 1)
+        result = torch.empty((len(array), 1), dtype=torch.long, device=device)
+        row = 0
+        for chunk in _arrow_chunks(array):
+            _copy_numpy(
+                result[row : row + len(chunk), 0],
+                _category_codes(chunk, self._vocabulary),
+            )
+            row += len(chunk)
+        return result
 
     def post_forward(
         self,
@@ -516,15 +561,43 @@ class MultiCategoricalTensorMapper(TensorMapper[MultiNestedTensor]):
 
     def forward(
         self,
-        array: pa.Array,
+        array: pa.Array | pa.ChunkedArray,
         *,
         device: torch.device | None = None,
     ) -> MultiNestedTensor:
         """Encode Arrow lists and strings without constructing pandas objects."""
+        if self._is_string_dtype is None and len(array):
+            self._is_string_dtype = not _is_list(array) and array.null_count < len(
+                array
+            )
+        chunks = [self._prepare_chunk(chunk) for chunk in _arrow_chunks(array)]
+        encoded_values = torch.empty(
+            sum(len(values) for values, _ in chunks), dtype=torch.long, device=device
+        )
+        encoded_offsets = torch.empty(len(array) + 1, dtype=torch.long, device=device)
+        row = value_start = 0
+        encoded_offsets[0] = 0
+        for values, offsets in chunks:
+            _copy_numpy(
+                encoded_values[value_start : value_start + len(values)],
+                _category_codes(values, self._vocabulary),
+            )
+            destination = encoded_offsets[row + 1 : row + len(offsets)]
+            _copy_numpy(destination, offsets[1:])
+            destination.add_(value_start)
+            row += len(offsets) - 1
+            value_start += len(values)
+        return MultiNestedTensor(
+            num_rows=len(array),
+            num_cols=1,
+            values=encoded_values,
+            offset=encoded_offsets,
+        )
+
+    def _prepare_chunk(self, array: pa.Array) -> tuple[pa.Array, np.ndarray]:
+        """Prepare category values and row offsets before sizing the destination."""
         array = pc.dictionary_decode(array)
         is_list = _is_list(array)
-        if self._is_string_dtype is None and len(array):
-            self._is_string_dtype = not is_list and array.null_count < len(array)
         if is_list:
             if isinstance(array, pa.FixedSizeListArray):
                 array = pc.cast(array, pa.list_(array.type.value_type))
@@ -545,19 +618,14 @@ class MultiCategoricalTensorMapper(TensorMapper[MultiNestedTensor]):
 
         if pa.types.is_string(values.type) or pa.types.is_large_string(values.type):
             keep = pc.fill_null(pc.not_equal(values, ""), True)
-            prefix = np.empty(len(values) + 1, dtype=np.int64)
-            prefix[0] = 0
-            np.cumsum(keep.to_numpy(zero_copy_only=False), out=prefix[1:])
-            offsets = prefix[offsets]
-            values = pc.filter(values, keep)
-        return MultiNestedTensor(
-            num_rows=len(array),
-            num_cols=1,
-            values=torch.from_numpy(_category_codes(values, self._vocabulary)).to(
-                device
-            ),
-            offset=torch.from_numpy(offsets).to(device),
-        )
+            keep_np = keep.to_numpy(zero_copy_only=False)
+            if not keep_np.all():
+                prefix = np.empty(len(values) + 1, dtype=np.int64)
+                prefix[0] = 0
+                np.cumsum(keep_np, out=prefix[1:])
+                offsets = prefix[offsets]
+                values = pc.filter(values, keep)
+        return values, offsets
 
     def post_forward(
         self,
@@ -627,16 +695,30 @@ class SequenceTensorMapper(TensorMapper[MultiEmbeddingTensor]):
 
     def forward(
         self,
-        array: pa.Array,
+        array: pa.Array | pa.ChunkedArray,
         *,
         device: torch.device | None = None,
     ) -> MultiEmbeddingTensor:
         """Encode Arrow lists and strings without constructing pandas objects."""
-        array = pc.dictionary_decode(array)
         if self._is_string_dtype is None and len(array):
             self._is_string_dtype = not _is_list(array) and array.null_count < len(
                 array
             )
+        result = torch.empty((len(array), self.max_length), device=device)
+        row = 0
+        for chunk in _arrow_chunks(array):
+            self._encode_chunk(chunk, result[row : row + len(chunk)])
+            row += len(chunk)
+        return MultiEmbeddingTensor(
+            num_rows=len(array),
+            num_cols=1,
+            values=result,
+            offset=torch.tensor([0, self.max_length], device=device),
+        )
+
+    def _encode_chunk(self, array: pa.Array, destination: Tensor) -> None:
+        """Encode sequence rows directly into a slice of the destination."""
+        array = pc.dictionary_decode(array)
         if pa.types.is_string(array.type) or pa.types.is_large_string(array.type):
             dtype = str(torch.get_default_dtype()).split(".")[-1]
             rows = [
@@ -649,8 +731,8 @@ class SequenceTensorMapper(TensorMapper[MultiEmbeddingTensor]):
         if pa.types.is_null(array.type):
             array = pa.array([None] * len(array), type=pa.list_(pa.float64()))
         values, offsets = _list_values_offsets(array)
-        return self._pad_or_truncate(
-            values.to_numpy(zero_copy_only=False), offsets, device
+        self._write_sequences(
+            values.to_numpy(zero_copy_only=False), offsets, destination
         )
 
     def post_forward(
@@ -674,6 +756,20 @@ class SequenceTensorMapper(TensorMapper[MultiEmbeddingTensor]):
         offsets_np: np.ndarray,
         device: torch.device | None,
     ) -> MultiEmbeddingTensor:
+        result = torch.empty((len(offsets_np) - 1, self.max_length), device=device)
+        self._write_sequences(values_np, offsets_np, result)
+        return MultiEmbeddingTensor(
+            num_rows=len(offsets_np) - 1,
+            num_cols=1,
+            values=result,
+            offset=torch.tensor([0, self.max_length], device=device),
+        )
+
+    def _write_sequences(
+        self, values_np: np.ndarray, offsets_np: np.ndarray, result: Tensor
+    ) -> None:
+        """Pad or truncate Arrow value views into the final sequence storage."""
+        device = result.device
         if values_np.dtype.kind == "O":
             dtype = str(torch.get_default_dtype()).split(".")[-1]
             values_np = values_np.astype(dtype)
@@ -686,34 +782,28 @@ class SequenceTensorMapper(TensorMapper[MultiEmbeddingTensor]):
         full = seq_len_np == row_len
         dense = path == "dense"
         uniform = path != "ragged"
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=".*non-writable.*")
-            # Never alias Arrow memory.
-            values = torch.from_numpy(values_np).to(
-                device, torch.get_default_dtype(), copy=dense
-            )
-
         if dense:
-            result = values.view(n_rows, L)
+            _copy_numpy(result, values_np.reshape(n_rows, L))
         elif uniform:
+            result.fill_(float("NaN"))
             k = min(row_len, L)
-            rows = values.view(int(full.sum()), row_len)[:, :k]
-            result = torch.full((n_rows, L), float("NaN"), device=device)
-            result[torch.from_numpy(full).to(device), :k] = rows
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*non-writable.*")
+                rows = torch.from_numpy(values_np).view(int(full.sum()), row_len)
+            result[torch.from_numpy(full).to(device), :k] = rows[:, :k].to(
+                device, result.dtype
+            )
         else:
+            result.fill_(float("NaN"))
             seq_len = torch.from_numpy(seq_len_np.astype(np.int64)).to(device)
             drop_count = (seq_len - L).clamp(min=0)
             seq_len = seq_len.clamp(max=L)
-            values = values[_tiled_mask(seq_len, drop_count)]
-            result = torch.full((n_rows * L,), float("NaN"), device=device)
-            result[_tiled_mask(seq_len, L - seq_len)] = values
-
-        return MultiEmbeddingTensor(
-            num_rows=n_rows,
-            num_cols=1,
-            values=result.view(n_rows, L),
-            offset=torch.tensor([0, L], device=device),
-        )
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*non-writable.*")
+                values = torch.from_numpy(values_np).to(device, result.dtype)
+            result.view(-1)[_tiled_mask(seq_len, L - seq_len)] = values[
+                _tiled_mask(seq_len, drop_count)
+            ]
 
     def __repr__(self) -> str:
         return (
@@ -761,18 +851,29 @@ class TimestampTensorMapper(TensorMapper[Tensor]):
 
     def forward(
         self,
-        array: pa.Array,
+        array: pa.Array | pa.ChunkedArray,
         *,
         device: torch.device | None = None,
     ) -> Tensor:
         """Encode Arrow timestamps as calendar, holiday, and UNIX features."""
-        unix = torch.from_numpy(_timestamp_nanoseconds(array, self.format)).to(device)
+        result = torch.empty(
+            (len(array), len(self.index)), dtype=torch.long, device=device
+        )
+        row = 0
+        for chunk in _arrow_chunks(array):
+            self._encode_chunk(chunk, result[row : row + len(chunk)])
+            row += len(chunk)
+        return result
+
+    def _encode_chunk(self, array: pa.Array, destination: Tensor) -> None:
+        """Write calendar, holiday, and UNIX features into destination rows."""
+        unix = destination[:, self.index["unix"]]
+        _copy_numpy(unix, _timestamp_nanoseconds(array, self.format))
         na_mask = unix == torch.iinfo(torch.int64).min
         unix[na_mask] = 0
         min_date = np.datetime64("1678-01-01", "ns").astype(np.int64).item()
-        unix = unix.clamp(min=min_date)
-
-        unix = unix // 10**9  # Convert to seconds.
+        unix.clamp_(min=min_date)
+        unix.div_(10**9, rounding_mode="floor")
 
         year_offset = self.helper.year_offset.to(unix.device)
         year_index = (
@@ -832,7 +933,7 @@ class TimestampTensorMapper(TensorMapper[Tensor]):
 
         closest_holiday = self.get_closest_holiday(day=unix // SECONDS_IN_DAY)
 
-        tensor = torch.stack(
+        for column, feature in enumerate(
             [
                 minute,
                 hour,
@@ -850,13 +951,10 @@ class TimestampTensorMapper(TensorMapper[Tensor]):
                 closest_holiday.to_holiday_name,
                 closest_holiday.from_holiday_name,
                 unix,  # Used for rel_time computation
-            ],
-            dim=-1,
-        )
-
-        tensor[na_mask] = -1
-
-        return tensor
+            ]
+        ):
+            destination[:, column].copy_(feature)
+        destination[na_mask] = -1
 
     def get_closest_holiday(self, day: Tensor) -> ClosestHoliday:
         r"""Returns the number of days and name of the closest previous and
@@ -930,7 +1028,7 @@ class TextTensorMapper(TensorMapper[MultiNestedTensor]):
 
     def forward(
         self,
-        array: pa.Array,
+        array: pa.Array | pa.ChunkedArray,
         *,
         device: torch.device | None = None,
     ) -> MultiNestedTensor:
@@ -939,20 +1037,36 @@ class TextTensorMapper(TensorMapper[MultiNestedTensor]):
         Raises:
             ValueError: If tokenization returns an invalid row-pointer count.
         """
-        rowptr, index = (
-            torch.as_tensor(x, dtype=torch.long) for x in self.model.tokenize(array)
-        )
-        if rowptr.numel() != len(array) + 1:
-            raise ValueError(
-                f"{self.model!r}.tokenize() returned {rowptr.numel()} row "
-                f"pointers for {len(array)} texts; it must return "
-                f"len(texts) + 1."
+        chunks: list[tuple[Tensor, Tensor]] = []
+        for chunk in _arrow_chunks(array):
+            rowptr, index = (
+                torch.as_tensor(x, dtype=torch.long) for x in self.model.tokenize(chunk)
             )
+            if rowptr.numel() != len(chunk) + 1:
+                raise ValueError(
+                    f"{self.model!r}.tokenize() returned {rowptr.numel()} row "
+                    f"pointers for {len(chunk)} texts; it must return "
+                    f"len(texts) + 1."
+                )
+            chunks.append((rowptr, index))
+        encoded_values = torch.empty(
+            sum(index.numel() for _, index in chunks), dtype=torch.long, device=device
+        )
+        encoded_offsets = torch.empty(len(array) + 1, dtype=torch.long, device=device)
+        row = value_start = 0
+        encoded_offsets[0] = 0
+        for rowptr, index in chunks:
+            encoded_values[value_start : value_start + index.numel()].copy_(index)
+            destination = encoded_offsets[row + 1 : row + rowptr.numel()]
+            destination.copy_(rowptr[1:])
+            destination.add_(value_start)
+            row += rowptr.numel() - 1
+            value_start += index.numel()
         return MultiNestedTensor(
-            num_rows=rowptr.numel() - 1,
+            num_rows=len(array),
             num_cols=1,
-            values=index.to(device),
-            offset=rowptr.to(device),
+            values=encoded_values,
+            offset=encoded_offsets,
         )
 
     def backward(self, tensor: MultiNestedTensor) -> pd.Series:
