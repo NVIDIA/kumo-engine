@@ -687,10 +687,14 @@ jobs:
           python -c "import importlib.util; assert importlib.util.find_spec('kumo.engine') is None"
           uv build --wheel packages/kumo-engine \
             --out-dir "$RUNNER_TEMP/kumo-engine-dist"
+          uv build --wheel packages/kumo-settings \
+            --out-dir "$RUNNER_TEMP/kumo-engine-dist"
           wheel=$(find "$RUNNER_TEMP/kumo-engine-dist" -maxdepth 1 \
             -name 'kumo_engine-*.whl' -print -quit)
-          test -n "$wheel"
-          uv pip install --no-deps "$wheel"
+          settings=$(find "$RUNNER_TEMP/kumo-engine-dist" -maxdepth 1 \
+            -name 'kumo_settings-*.whl' -print -quit)
+          test -n "$wheel" && test -n "$settings"
+          uv pip install --no-deps "$wheel" "$settings"
           python - <<'PY'
           from pathlib import Path
 
@@ -737,11 +741,12 @@ jobs:
               -c "$KUMO_ENGINE_SOURCE_ROOT/pyproject.toml" -rs \
               "$KUMO_ENGINE_SOURCE_ROOT/test"
           ) || status=$?
-          uv pip uninstall kumo-engine
+          uv pip uninstall kumo-engine kumo-settings
           python - <<'PY'
           import importlib.util
 
           assert importlib.util.find_spec('kumo.engine') is None
+          assert importlib.util.find_spec('kumo.settings') is None
           PY
           exit $status
 
@@ -802,7 +807,7 @@ jobs:
 
       - name: Run the MLflow suites at the mlflow extra's floor
         run: |
-          uv pip install --no-deps -e packages/kumo-engine
+          uv pip install --no-deps -e packages/kumo-engine -e packages/kumo-settings
           # mlflow 3.5.0 pins a pyarrow with no wheel for this Python; the
           # extra installs mlflow-skinny, which holds the client and stores.
           uv pip uninstall mlflow mlflow-skinny mlflow-tracing

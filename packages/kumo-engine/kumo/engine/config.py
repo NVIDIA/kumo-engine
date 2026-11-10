@@ -8,7 +8,7 @@ Everything else in `kumo.engine` is constructed and threaded through directly, n
 `Backend`/`kumoai_studio.init(...)` needed. Scratch-directory placement is the
 one exception: `Graph.snapshot()`'s DiskGraph ingest and `Trainer.fit`/`predict`
 all read and write a shared local filesystem root
-(`kumo.engine._scratch.get_scratch_dir()`, default `~/.cache/kumo-engine`)
+(`kumo.settings.scratch_dir()`, default `~/.cache/kumo-engine`)
 directly, for the same reason `kumo_core.config.NativeRuntimeConfig` keeps
 `scratch_root` explicit rather than hardcoded -- so it can be pointed at a
 local NVMe SSD mount instead.
@@ -22,12 +22,16 @@ in-progress `Graph`/`Trainer`.
 from pathlib import Path
 from typing import Optional, Union
 
+import kumo.settings
+
 
 def configure(
     *,
     scratch_dir: Optional[Union[str, Path]] = None,
 ) -> None:
-    r"""Sets process-wide configuration for this package.
+    r"""Sets process-wide configuration for this package. Same as
+    `kumo.settings.configure`, which also documents the `KUMO_SCRATCH_DIR`
+    environment variable.
 
     Args:
         scratch_dir: where `Graph.snapshot()`'s DiskGraph ingest and
@@ -42,7 +46,4 @@ def configure(
     Raises:
         ValueError: if `scratch_dir` isn't a local filesystem path.
     """
-    if scratch_dir is not None:
-        from kumo.engine._scratch import set_scratch_dir
-
-        set_scratch_dir(scratch_dir)
+    kumo.settings.configure(scratch_dir=scratch_dir)
