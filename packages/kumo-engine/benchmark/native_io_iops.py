@@ -170,6 +170,28 @@ def validate_ready(ready: dict, gate: dict) -> None:
         raise RuntimeError('Collector attached to a different service')
 
 
+def collector_group_alive(pid: int) -> bool:
+    try:
+        os.killpg(pid, 0)  # Process-group metadata has no fsutil equivalent.
+        return True
+    except PermissionError:
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def kill_collector(collector: subprocess.Popen) -> None:
+    # Popen creates this unique session; kill its root collector descendants too.
+    subprocess.run(['sudo', '-n', 'kill', '-KILL', '--', f'-{collector.pid}'],
+                   capture_output=True, timeout=10, check=False)
+    collector.wait(timeout=10)
+    deadline = time.monotonic() + 5
+    while collector_group_alive(collector.pid) and time.monotonic() < deadline:
+        time.sleep(.05)
+    if collector_group_alive(collector.pid):
+        raise RuntimeError('Owned collector process group survived cleanup')
+
+
 def stop_collector(collector: subprocess.Popen, drain_seconds: float) -> None:
     try:
         collector.wait(timeout=drain_seconds + 90)
@@ -178,11 +200,11 @@ def stop_collector(collector: subprocess.Popen, drain_seconds: float) -> None:
         try:
             collector.wait(timeout=30)
         except subprocess.TimeoutExpired as error:
-            # Popen creates this unique session; kill its root collector descendants too.
-            subprocess.run(['sudo', '-n', 'kill', '-KILL', '--', f'-{collector.pid}'],
-                           capture_output=True, timeout=10, check=False)
-            collector.wait(timeout=10)
+            kill_collector(collector)
             raise RuntimeError('Collector required forced termination; reject trial') from error
+    if collector_group_alive(collector.pid):
+        kill_collector(collector)
+        raise RuntimeError('Collector left an orphan process group; reject trial')
 
 
 def validate_trace(spec: dict, row: dict) -> dict:

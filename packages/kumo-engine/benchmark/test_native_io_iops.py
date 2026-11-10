@@ -248,6 +248,7 @@ def test_collector_stops_after_service_cleanup_failure(tmp_path, monkeypatch):
     finished = []
 
     class Process:
+        pid = 87654
         returncode = None
 
         def poll(self):
@@ -269,6 +270,7 @@ def test_collector_stops_after_service_cleanup_failure(tmp_path, monkeypatch):
         raise RuntimeError('service cleanup failure')
 
     monkeypatch.setattr(native_io_iops, 'stop_service', fail_stop)
+    monkeypatch.setattr(native_io_iops, 'collector_group_alive', lambda pid: False)
     with pytest.raises(RuntimeError, match='service cleanup failure'):
         native_io_iops.run_service(spec, 'dmawhirter')
     assert processes[1] in finished
@@ -293,9 +295,26 @@ def test_wedged_collector_is_killed(monkeypatch):
 
     monkeypatch.setattr(native_io_iops.subprocess, 'run',
                         lambda command, **kwargs: calls.append(command))
+    monkeypatch.setattr(native_io_iops, 'collector_group_alive', lambda pid: False)
     with pytest.raises(RuntimeError, match='forced termination'):
         stop_collector(Process(), 10)
     assert calls == [2, ['sudo', '-n', 'kill', '-KILL', '--', '-87654']]
+
+
+def test_normal_collector_exit_needs_no_signals(monkeypatch):
+    class Process:
+        pid = 87654
+
+        def wait(self, timeout):
+            return 0
+
+        def send_signal(self, signal):
+            pytest.fail('Normal collector exit must not send signals')
+
+    monkeypatch.setattr(native_io_iops, 'collector_group_alive', lambda pid: False)
+    monkeypatch.setattr(native_io_iops, 'kill_collector',
+                        lambda process: pytest.fail('Normal exit must not force termination'))
+    stop_collector(Process(), 10)
 
 
 def test_wedged_owned_service_is_killed(monkeypatch):
