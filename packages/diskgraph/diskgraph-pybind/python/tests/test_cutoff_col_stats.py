@@ -142,14 +142,22 @@ def _ensure_all(index: str) -> dict:
             for cutoff in CUTOFFS}
 
 
-@pytest.fixture(scope="module", params=[(1, 1), (4, 3)], ids=["t1-s1", "t4-s3"])
-def built(request, data_dir, tmp_path_factory):
-    threads, shards = request.param
-    index = _ingest(data_dir, tmp_path_factory.mktemp(f"index_t{threads}_s{shards}"),
-                    threads, shards)
-    ingested = _files(index)
-    shutil.rmtree(pathlib.Path(index) / "col_stats")
-    return index, ingested, _ensure_all(index)
+@pytest.fixture(scope="module")
+def builds(data_dir, tmp_path_factory) -> dict:
+    """Per (encode/index threads, shards): the index, its ingested files, its rescans."""
+    out = {}
+    for threads, shards in [(1, 1), (1, 3), (4, 1), (4, 3)]:
+        index = _ingest(data_dir, tmp_path_factory.mktemp(f"index_t{threads}_s{shards}"),
+                        threads, shards)
+        ingested = _files(index)
+        shutil.rmtree(pathlib.Path(index) / "col_stats")
+        out[threads, shards] = index, ingested, _ensure_all(index)
+    return out
+
+
+@pytest.fixture(scope="module")
+def built(builds):
+    return builds[1, 1]
 
 
 def _data(files: dict) -> dict:
@@ -163,25 +171,25 @@ def _data(files: dict) -> dict:
     return out
 
 
-def test_ingest_and_recompute_write_identical_files(built):
-    index, ingested, ensured = built
-    assert _files(index) == ingested
-    assert len(_data(ingested)) == len(CUTOFFS) * len(REQUEST_LIST)
-    for cutoff, result in ensured.items():
-        assert {f["source"] for f in result["files"].values()} == {"recompute"}
-        stored = json.loads(pathlib.Path(result["files"]["users/score.moments"]["path"])
-                            .read_text())
-        assert (stored["cutoff_id"], stored["index_id"]) == (result["cutoff_id"],
-                                                             result["index_id"])
-        assert stored["cutoff"] == {"value": cutoff, "unit": "seconds", "inclusive": True}
-        again = diskgraph.ensure_col_stats(index, cutoff, REQUEST_LIST)
-        assert {f["source"] for f in again["files"].values()} == {"existing"}
-    assert result["index_id"] == diskgraph.col_stats_index_id(index)
+def test_ingest_and_recompute_write_identical_files(builds):
+    for index, ingested, ensured in builds.values():
+        assert _files(index) == ingested
+        assert len(_data(ingested)) == len(CUTOFFS) * len(REQUEST_LIST)
+        for cutoff, result in ensured.items():
+            assert {f["source"] for f in result["files"].values()} == {"recompute"}
+            stored = json.loads(pathlib.Path(result["files"]["users/score.moments"]["path"])
+                                .read_text())
+            assert (stored["cutoff_id"], stored["index_id"]) == (result["cutoff_id"],
+                                                                 result["index_id"])
+            assert stored["cutoff"] == {"value": cutoff, "unit": "seconds", "inclusive": True}
+            again = diskgraph.ensure_col_stats(index, cutoff, REQUEST_LIST)
+            assert {f["source"] for f in again["files"].values()} == {"existing"}
+        assert result["index_id"] == diskgraph.col_stats_index_id(index)
 
 
-def test_thread_and_shard_counts_do_not_change_data(data_dir, built, tmp_path_factory):
-    index = _ingest(data_dir, tmp_path_factory.mktemp("index_t4_s1"), 4, 1)
-    assert _data(_files(index)) == _data(built[1])
+def test_thread_and_shard_counts_do_not_change_data(builds):
+    data = [_data(ingested) for _, ingested, _ in builds.values()]
+    assert all(d == data[0] for d in data[1:])
 
 
 def _arrow_tables(data_dir):
@@ -221,8 +229,8 @@ def test_statistics_are_exact(data_dir, built):
         "count": n,
         "nulls": scores.count(None),
         "non_finite": len(scores) - n - scores.count(None),
-        "mean": math.fsum(finite) / n,
-        "m2": float(n * exact_squares - exact_sum ** 2) / n,
+        "mean": float(exact_sum / n),
+        "m2": float((n * exact_squares - exact_sum ** 2) / n),
     }
 
     tiers = collections.Counter(users["tier"][i] for i in rows)
@@ -273,3 +281,4 @@ def test_rejects_unsupported_requests(built):
         diskgraph.ensure_col_stats(built[0], None, [["users", "missing", "counts"]])
     with pytest.raises(Exception, match="unknown column statistic"):
         diskgraph.col_stats_from_arrow(pa.array([1]), None, None, ["median"])
+    assert diskgraph.col_stats_from_arrow(pa.array([1]), None, None, []) == {}
