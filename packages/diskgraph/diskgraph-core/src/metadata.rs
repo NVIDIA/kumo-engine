@@ -164,6 +164,8 @@ pub struct DatasetMetadata {
     pub timestamp_unit: TimeUnit,
     pub node_types: Vec<NodeTypeMetadata>,
     pub edge_relations: Vec<EdgeRelationMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_id: Option<String>,
 }
 
 impl DatasetMetadata {

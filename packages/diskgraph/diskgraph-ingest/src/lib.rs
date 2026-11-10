@@ -12028,6 +12028,7 @@ impl IngestContext {
             dataset_name: self.source.dataset_name.clone(),
             node_types,
             edge_relations,
+            index_id: None,
         };
         Ok(index_metadata)
     }
@@ -12046,6 +12047,7 @@ impl IngestContext {
                 shard.path.clear();
             }
         }
+        metadata.index_id = Some(crate::index_metadata::ingest_index_id(&self.source)?);
         let json = serde_json::to_vec_pretty(&metadata)?;
         self.target.write_bytes("index_metadata.json", json)?;
 

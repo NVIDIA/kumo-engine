@@ -1137,6 +1137,7 @@ fn load_finds_lowercase_node_dir() {
             }],
         }],
         edge_relations: vec![],
+        index_id: None,
     };
 
     let meta_path = dir.path().join("index_metadata.json");
