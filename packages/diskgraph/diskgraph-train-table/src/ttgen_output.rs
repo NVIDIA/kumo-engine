@@ -1082,7 +1082,7 @@ fn flush_value_list_buf_with_field(
     }
 }
 
-/// Convert a buffer of `Value` entities to the correct Arrow array based on dtype.
+/// Convert scalar entity or target values to the declared Arrow dtype.
 fn flush_entity_buf(buf: &mut Vec<Value>, dtype: &DataType) -> Arc<dyn arrow_array::Array> {
     let entities = std::mem::take(buf);
     match dtype {
@@ -1096,6 +1096,29 @@ fn flush_entity_buf(buf: &mut Vec<Value>, dtype: &DataType) -> Arc<dyn arrow_arr
                 })
                 .collect();
             Arc::new(Int64Array::from(values))
+        }
+        DataType::Boolean => {
+            let values: Vec<bool> = entities
+                .into_iter()
+                .map(|v| match v {
+                    Value::Bool(b) => b,
+                    Value::Int(i) => i != 0,
+                    Value::Float(f) => f != 0.0,
+                    _ => false,
+                })
+                .collect();
+            Arc::new(BooleanArray::from(values))
+        }
+        DataType::Float32 => {
+            let values: Vec<f32> = entities
+                .into_iter()
+                .map(|v| match v {
+                    Value::Float(f) => f as f32,
+                    Value::Int(i) => i as f32,
+                    _ => 0.0,
+                })
+                .collect();
+            Arc::new(arrow_array::Float32Array::from(values))
         }
         DataType::Float64 => {
             let values: Vec<f64> = entities
@@ -1213,6 +1236,81 @@ mod tests {
     /// Drain all batches from the receiver into a Vec (test-only).
     fn collect_batches(receiver: crossbeam_channel::Receiver<BatchMessage>) -> Vec<RecordBatch> {
         receiver.iter().collect()
+    }
+
+    fn assert_scalar_target_output(
+        dtype: DataType,
+        targets: [Value; 2],
+        expected: Arc<dyn arrow_array::Array>,
+    ) -> TTGenResult<()> {
+        for mode in [
+            OutputMode::Node {
+                target_dtypes: vec![dtype.clone(), dtype.clone()],
+            },
+            OutputMode::Forecasting {
+                target_dtypes: vec![dtype.clone(), dtype.clone()],
+                autoregression_dtype: DataType::List(Arc::new(Field::new(
+                    "item",
+                    DataType::Float64,
+                    true,
+                ))),
+                future_labels_dtype: None,
+                yoy_dtype: None,
+            },
+        ] {
+            let forecasting = matches!(&mode, OutputMode::Forecasting { .. });
+            let (mut writer, receiver) = test_writer(mode, false, DataType::Int64);
+            for (row, target) in targets.iter().enumerate() {
+                let entities = [Value::Int(row as i64)];
+                let timestamp = Abs::from_raw(row as i64);
+                if forecasting {
+                    writer.write_row_forecasting_wide(
+                        &entities,
+                        timestamp,
+                        Some(target),
+                        std::slice::from_ref(target),
+                        vec![],
+                        None,
+                        None,
+                        ExtraValueRef::Scalar(None),
+                        true,
+                    )?;
+                } else {
+                    writer.write_row_wide(
+                        &entities,
+                        timestamp,
+                        &[target.clone(), target.clone()],
+                        ExtraValueRef::Scalar(None),
+                        true,
+                    )?;
+                }
+            }
+            assert_eq!(writer.finish()?, 2);
+            let batches = collect_batches(receiver);
+            assert_eq!(batches.len(), 1);
+            for column in 2..4 {
+                assert_eq!(batches[0].column(column).to_data(), expected.to_data());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_scalar_target_float32_output() -> TTGenResult<()> {
+        assert_scalar_target_output(
+            DataType::Float32,
+            [Value::Float(-1.25), Value::Int(2)],
+            Arc::new(arrow_array::Float32Array::from(vec![-1.25, 2.0])),
+        )
+    }
+
+    #[test]
+    fn test_scalar_target_boolean_output() -> TTGenResult<()> {
+        assert_scalar_target_output(
+            DataType::Boolean,
+            [Value::Bool(true), Value::Bool(false)],
+            Arc::new(BooleanArray::from(vec![true, false])),
+        )
     }
 
     #[test]
