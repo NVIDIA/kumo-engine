@@ -445,5 +445,5 @@ def test_get_tf_preserves_empty_lists() -> None:
     assert result.feat_dict[Stype.numerical][2].isnan().all()
     multi = result.feat_dict[Stype.multicategorical]
     assert isinstance(multi, MultiNestedTensor)
-    assert multi.offset.tolist() == [0, 1, 1, 2]
-    assert multi.values.tolist() == [0, 1]
+    assert multi.offset.tolist() == [0, 1, 2, 3]
+    assert multi.values.tolist() == [0, -1, 1]

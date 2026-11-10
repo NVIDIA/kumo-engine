@@ -106,8 +106,9 @@ class Mapper:
             rowptr = torch.tensor([0], dtype=torch.long)
         elif index is not None and pd.api.types.is_list_like(data[index]):
             data = data.reset_index(drop=True)
-            # Filter empty lists:
-            mask = data.apply(lambda x: not pd.api.types.is_list_like(x) or len(x) > 0)
+            # Keep empty Arrow-derived NumPy arrays so explode emits the legacy
+            # -1 token; only empty Python lists are filtered.
+            mask = data.apply(lambda x: not isinstance(x, list) or len(x) > 0)
             masked_data = data[mask]
             exploded_data = masked_data.explode()
             index = self.map(exploded_data)
