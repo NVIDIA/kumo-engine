@@ -5,13 +5,13 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-import orjson
 from kumo_core.diskgraph.sampling_artifacts import (
     ArtifactBundle,
     ArtifactFile,
@@ -67,4 +67,8 @@ def store_prepared(
     )
     on_files_uploaded()
     bundle = ArtifactBundle(str(root), entries)
-    _write(filesystem, f"{prefix}/manifest.json", orjson.dumps(asdict(bundle)))
+    _write(
+        filesystem,
+        f"{prefix}/manifest.json",
+        json.dumps(asdict(bundle)).encode("utf-8"),
+    )

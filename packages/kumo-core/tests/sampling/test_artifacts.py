@@ -4,9 +4,9 @@
 """Download integrity and worker-local metadata relocation."""
 
 import hashlib
+import json
 from pathlib import Path
 
-import orjson
 import pytest
 from kumo_core.diskgraph.sampling_artifacts import (
     ArtifactBundle,
@@ -56,14 +56,18 @@ def test_relocates_paths_and_refreshes_checksums(tmp_path: Path) -> None:
         "rows": [str(source / "rows.bin")],
         "query": "SELECT /source/rows",
     }
-    (source / "metadata.json").write_bytes(orjson.dumps(metadata))
+    (source / "metadata.json").write_bytes(json.dumps(metadata).encode("utf-8"))
     (source / "checksums.json").write_bytes(
-        orjson.dumps({"metadata.json_sha256": "old"})
+        json.dumps({"metadata.json_sha256": "old"}).encode("utf-8")
     )
     (source / "_MANIFEST.json").write_bytes(
-        orjson.dumps({"files": [{"rel_path": "metadata.json", "size_bytes": 0}]})
+        json.dumps({"files": [{"rel_path": "metadata.json", "size_bytes": 0}]}).encode(
+            "utf-8"
+        )
     )
-    (source / "_SUCCESS").write_bytes(orjson.dumps({"index_path": str(source)}))
+    (source / "_SUCCESS").write_bytes(
+        json.dumps({"index_path": str(source)}).encode("utf-8")
+    )
     local = tmp_path / "worker-with-different-length-root"
     local.mkdir()
     entries = []
@@ -77,18 +81,18 @@ def test_relocates_paths_and_refreshes_checksums(tmp_path: Path) -> None:
 
     relocate_artifacts(bundle, local)
 
-    value = orjson.loads((local / "metadata.json").read_bytes())
+    value = json.loads((local / "metadata.json").read_bytes())
     assert value == {**metadata, "graph": str(local), "rows": [str(local / "rows.bin")]}
-    assert orjson.loads((local / "checksums.json").read_bytes()) == {
+    assert json.loads((local / "checksums.json").read_bytes()) == {
         "metadata.json_sha256": hashlib.sha256(
             (local / "metadata.json").read_bytes()
         ).hexdigest()
     }
-    manifest = orjson.loads((local / "_MANIFEST.json").read_bytes())
+    manifest = json.loads((local / "_MANIFEST.json").read_bytes())
     assert (
         manifest["files"][0]["size_bytes"] == (local / "metadata.json").stat().st_size
     )
-    assert orjson.loads((local / "_SUCCESS").read_bytes())["index_path"] == str(local)
+    assert json.loads((local / "_SUCCESS").read_bytes())["index_path"] == str(local)
 
 
 def test_relocation_rebases_sibling_source_paths(tmp_path: Path) -> None:
@@ -101,7 +105,7 @@ def test_relocation_rebases_sibling_source_paths(tmp_path: Path) -> None:
         "index": str(producer / "snapshots/graph/version"),
         "source": str(producer / "snapshots/graph/source_tables/users.parquet"),
     }
-    data = orjson.dumps(metadata)
+    data = json.dumps(metadata).encode("utf-8")
     (index / "diskgraph_config.json").write_bytes(data)
     entry = ArtifactFile(
         "diskgraph_config.json", len(data), hashlib.sha256(data).hexdigest()
@@ -111,7 +115,7 @@ def test_relocation_rebases_sibling_source_paths(tmp_path: Path) -> None:
         ArtifactBundle(str(producer), (entry,)), index, destination_root=replica
     )
 
-    assert orjson.loads((index / "diskgraph_config.json").read_bytes()) == {
+    assert json.loads((index / "diskgraph_config.json").read_bytes()) == {
         "index": str(index),
         "source": str(replica / "snapshots/graph/source_tables/users.parquet"),
     }

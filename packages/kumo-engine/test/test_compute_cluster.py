@@ -4,11 +4,11 @@
 """Artifact orchestration and integrity without provisioning a Ray cluster."""
 
 import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-import orjson
 import pytest
 from kumo_core.diskgraph.sampling_artifacts import ArtifactBundle, ArtifactFile
 
@@ -75,7 +75,7 @@ def test_receive_verifies_before_commit_and_relocates_metadata(
     worker.begin("publication", kumo.MLOps(str(tmp_path / "store")))
     source = tmp_path / "store" / "objects"
     source.mkdir(parents=True)
-    data = orjson.dumps({"path": "/producer/graph/index.bin"})
+    data = json.dumps({"path": "/producer/graph/index.bin"}).encode("utf-8")
     (source / "metadata.json").write_bytes(data)
     entry = ArtifactFile("metadata.json", len(data), hashlib.sha256(data).hexdigest())
     bundle = ArtifactBundle("/producer", (entry,))
@@ -87,7 +87,7 @@ def test_receive_verifies_before_commit_and_relocates_metadata(
     assert replica.publication == "publication"
     assert "publication" not in worker.received
     assert "publication" not in worker._stores
-    assert orjson.loads((worker.root / "graph/metadata.json").read_bytes()) == {
+    assert json.loads((worker.root / "graph/metadata.json").read_bytes()) == {
         "path": str(worker.root / "graph/index.bin")
     }
 

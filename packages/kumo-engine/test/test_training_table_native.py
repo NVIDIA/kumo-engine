@@ -3,10 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Portable worker publications retain metadata without uploading native staging."""
 
+import json
 from pathlib import Path
 from unittest.mock import Mock
 
-import orjson
 import pytest
 from kumo_core.model_plan import TrainingTableGenerationPlan
 
@@ -44,11 +44,11 @@ def test_relocation_rewrites_paths_and_preserves_binary(tmp_path: Path) -> None:
     destination = tmp_path / "restored"
     destination.mkdir()
     (destination / "spec.json").write_bytes(
-        orjson.dumps({"path": "/original/rows.parquet"})
+        json.dumps({"path": "/original/rows.parquet"}).encode("utf-8")
     )
     (destination / "rows.parquet").write_bytes(b"parquet payload")
     _relocate_tree(Path("/original"), destination, destination)
-    assert orjson.loads((destination / "spec.json").read_bytes()) == {
+    assert json.loads((destination / "spec.json").read_bytes()) == {
         "path": str(destination / "rows.parquet")
     }
     assert (destination / "rows.parquet").read_bytes() == b"parquet payload"
@@ -127,7 +127,7 @@ def test_portable_restore_preserves_settings_and_weights(
     generated_dir = worker.root / "generated"
     generated_dir.mkdir()
     (generated_dir / "manifest.json").write_bytes(
-        orjson.dumps({"path": str(generated_dir / "tt.parquet")})
+        json.dumps({"path": str(generated_dir / "tt.parquet")}).encode("utf-8")
     )
     (generated_dir / "tt.parquet").write_bytes(b"staged rows")
     restored = kumo.TrainingTable(
@@ -159,6 +159,6 @@ def test_portable_restore_preserves_settings_and_weights(
     assert result.generation_plan == plan
     assert result.required_stages == original.required_stages
     assert result.staging_dir == worker.root / "train_tables" / "original"
-    assert orjson.loads(result.manifest_path.read_bytes())["path"] == str(
+    assert json.loads(result.manifest_path.read_bytes())["path"] == str(
         result.train_table_path
     )
