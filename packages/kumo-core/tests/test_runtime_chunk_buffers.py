@@ -10,7 +10,7 @@ import pytest
 import torch
 from kumo_core.diskgraph.lightning_data import DiskgraphLightningDataModule
 from kumo_core.diskgraph.runtime_adapter import (
-    _concat_record_batches,
+    _record_batches_to_table,
     _values_to_tensor,
     attach_tensor_frames,
     engine_int64_to_ns,
@@ -31,7 +31,7 @@ def test_feature_batches_preserve_original_buffers(empty: bool) -> None:
         pa.record_batch({"feature": column.slice(1)}),
     ]
 
-    table = _concat_record_batches(batches)
+    table = _record_batches_to_table(batches)
 
     assert isinstance(table, pa.Table)
     assert table.num_rows == len(column)
@@ -44,11 +44,17 @@ def test_feature_batches_preserve_original_buffers(empty: bool) -> None:
         ]
 
 
-def test_single_feature_batch_is_reused() -> None:
-    """A lone RecordBatch does not need a Table wrapper."""
+def test_single_feature_batch_is_wrapped_without_copying() -> None:
+    """A lone RecordBatch uses the same table representation and source buffer."""
     batch = pa.record_batch({"feature": [1.0]})
 
-    assert _concat_record_batches([batch]) is batch
+    table = _record_batches_to_table([batch])
+
+    assert isinstance(table, pa.Table)
+    assert table.num_rows == 1
+    column = table.column("feature")
+    assert column.num_chunks == 1
+    assert column.chunk(0).buffers()[1].address == batch.column(0).buffers()[1].address
 
 
 def test_runtime_encodes_original_feature_chunks() -> None:
@@ -59,7 +65,7 @@ def test_runtime_encodes_original_feature_chunks() -> None:
     ]
     mapper = NumericalTensorMapper()
     hetero = HeteroData()
-    table = _concat_record_batches(batches)
+    table = _record_batches_to_table(batches)
 
     with patch.object(mapper, "forward", wraps=mapper.forward) as forward:
         attach_tensor_frames(

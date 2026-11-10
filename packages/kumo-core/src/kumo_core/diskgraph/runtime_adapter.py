@@ -181,7 +181,7 @@ class NormalizedTask:
 class RawFeatures:
     """Original Arrow feature buffers and their corresponding node IDs."""
 
-    tables: dict[str, pa.RecordBatch | pa.Table] = field(default_factory=dict)
+    tables: dict[str, pa.Table] = field(default_factory=dict)
     row_ids: dict[str, torch.Tensor] = field(default_factory=dict)
 
 
@@ -221,7 +221,7 @@ def runtime_batch_to_hetero(
     index_np_time_unit: str = "s",
     bidirectional_output: bool = False,
     attach_pkeys: bool = True,
-) -> tuple[HeteroData, dict[str, pa.RecordBatch | pa.Table], dict[str, torch.Tensor]]:
+) -> tuple[HeteroData, dict[str, pa.Table], dict[str, torch.Tensor]]:
     """Convert one native runtime batch into ``HeteroData`` + raw features.
 
     When ``mapper_bank`` + ``feature_schema`` are supplied, ``hetero[ns].tf`` is
@@ -1231,7 +1231,7 @@ def _collect_raw_features(
         record_batches = block.get("record_batches") or []
         if not record_batches:
             continue
-        out.tables[namespace] = _concat_record_batches(record_batches)
+        out.tables[namespace] = _record_batches_to_table(record_batches)
         ids = block.get("node_ids")
         if ids is None:
             ids = node_ids.get(namespace)
@@ -1279,10 +1279,8 @@ def _alias_forecasting_seed_features(
         raw_feature_row_ids[train_table_name] = raw_feature_row_ids[namespace]
 
 
-def _concat_record_batches(
+def _record_batches_to_table(
     batches: list[pa.RecordBatch],
-) -> pa.RecordBatch | pa.Table:
+) -> pa.Table:
     """Preserve incoming feature buffers and chunk boundaries for encoding."""
-    if len(batches) == 1:
-        return batches[0]
     return pa.Table.from_batches(batches)

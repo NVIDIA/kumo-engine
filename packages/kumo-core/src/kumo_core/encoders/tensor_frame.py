@@ -52,7 +52,8 @@ def get_tf(
     """Encode Arrow chunks directly into the tensor frame's destination buffers.
 
     Args:
-        table: Raw Arrow data, with one row per example.
+        table: Raw Arrow data, with one row per example. Record batches are
+            wrapped as tables without copying their buffers.
         mapper_dict: Column encoders; unsupported columns are skipped.
 
     Returns:
@@ -61,6 +62,9 @@ def get_tf(
     Raises:
         KeyError: If a supported mapper column is missing from the input.
     """
+    if isinstance(table, pa.RecordBatch):
+        table = pa.Table.from_batches([table])
+
     columns: dict[Stype, list[tuple[TensorMapper, pa.Array | pa.ChunkedArray]]] = (
         defaultdict(list)
     )
