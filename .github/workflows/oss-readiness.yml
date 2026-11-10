@@ -22,13 +22,15 @@ jobs:
   repository-checks:
     runs-on: ubuntu-24.04
     steps:
-      # Test the merge tree used by the workflow, including new base-branch tests.
-      # Fetch full history and blobs so scans can also read the PR head offline.
+      # A blob-less clone without persisted credentials cannot fetch file
+      # contents later, so check out the commit the scans read (the PR head,
+      # not the merge commit) to download its file contents up front.
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+          filter: blob:none
           fetch-depth: 0
 
       - name: Set up Python and uv
