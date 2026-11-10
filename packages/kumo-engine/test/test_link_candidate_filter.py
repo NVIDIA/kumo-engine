@@ -14,17 +14,17 @@ from kumo.engine._scratch import get_scratch_dir
 
 START = pd.Timestamp('2024-01-01')
 ANCHOR = START + pd.Timedelta(days=50)
-QUERY = ('PREDICT LIST_DISTINCT(orders.STORE_ID{}, 0, 7, days) '
-         'RANK TOP 12 FOR EACH users.USER_ID')
-ACTIVE = ' WHERE stores.IS_ACTIVE = true'
-# Even stores are active. Odd stores 1-29 end on day 40, store 0 at the
-# anchor and store 2 a second later; store 4 has no create time; stores
-# 50-54 open on day 53, store 56 at the window end, store 58 a second later
+QUERY = ('PREDICT LIST_DISTINCT(purchases.PRODUCT_ID{}, 0, 7, days) '
+         'RANK TOP 12 FOR EACH customers.CUSTOMER_ID')
+AVAILABLE = ' WHERE products.IS_AVAILABLE = true'
+# Even products are available. Odd products 1-29 end on day 40, product 0
+# at the anchor and 2 a second later; product 4 has no create time;
+# products 50-54 open on day 53, 56 at the window end, 58 a second later
 # and 55, 57 and 59 on day 100.
 ENDED = set(range(1, 30, 2))
 VALID = (set(range(1, 55)) - ENDED - {4}) | {56}
-VALID_ACTIVE = {store for store in VALID if store % 2 == 0}
-RATED = {store for store in VALID_ACTIVE if store > 30}
+VALID_AVAILABLE = {product for product in VALID if product % 2 == 0}
+RATED = {product for product in VALID_AVAILABLE if product > 30}
 
 
 @pytest.fixture(scope='module')
@@ -44,22 +44,23 @@ def graph(tmp_path_factory):
     ended = pd.Series(pd.NaT, index=range(60), dtype='datetime64[ns]')
     ended[list(ENDED)] = START + pd.Timedelta(days=40)
     ended[[0, 2]] = ANCHOR + pd.to_timedelta([0, 1], unit='s')
-    pd.DataFrame({'USER_ID': range(50)}).to_parquet(data / 'users.parquet')
+    customers = pd.DataFrame({'CUSTOMER_ID': range(50)})
+    customers.to_parquet(data / 'customers.parquet')
     pd.DataFrame({
-        'STORE_ID': range(60),
-        'IS_ACTIVE': np.arange(60) % 2 == 0,
+        'PRODUCT_ID': range(60),
+        'IS_AVAILABLE': np.arange(60) % 2 == 0,
         'RATING': np.arange(60) / 10,
         'CREATED': created,
         'ENDED': ended,
-    }).to_parquet(data / 'stores.parquet')
+    }).to_parquet(data / 'products.parquet')
     days = pd.to_timedelta(rng.integers(0, 60, 4000), unit='D')
     pd.DataFrame({
-        'ORDER_ID': range(4000),
-        'USER_ID': rng.integers(0, 50, 4000),
-        'STORE_ID': rng.integers(0, 60, 4000),
+        'PURCHASE_ID': range(4000),
+        'CUSTOMER_ID': rng.integers(0, 50, 4000),
+        'PRODUCT_ID': rng.integers(0, 60, 4000),
         'AMOUNT': rng.uniform(0, 10, 4000),
         'TS': START + days,
-    }).to_parquet(data / 'orders.parquet')
+    }).to_parquet(data / 'purchases.parquet')
     connector = kumo.FileConnector(root_dir=str(data))
 
     def table(name, key, **kwargs):
@@ -67,18 +68,20 @@ def graph(tmp_path_factory):
                                             primary_key=key,
                                             **kwargs).infer_metadata()
 
-    orders = table('orders', 'ORDER_ID', time_column='TS').with_column(
-        'USER_ID', stype=Stype.ID).with_column('STORE_ID', stype=Stype.ID)
-    stores = table('stores', 'STORE_ID', time_column='CREATED',
-                   end_time_column='ENDED')
+    purchases = table('purchases', 'PURCHASE_ID', time_column='TS').with_column(
+        'CUSTOMER_ID', stype=Stype.ID).with_column('PRODUCT_ID', stype=Stype.ID)
+    products = table('products', 'PRODUCT_ID', time_column='CREATED',
+                     end_time_column='ENDED')
     yield kumo.Graph(
         tables={
-            'users': table('users', 'USER_ID'),
-            'stores': stores,
-            'orders': orders,
+            'customers': table('customers', 'CUSTOMER_ID'),
+            'products': products,
+            'purchases': purchases,
         }, edges=[
-            Edge(src_table='orders', fkey='USER_ID', dst_table='users'),
-            Edge(src_table='orders', fkey='STORE_ID', dst_table='stores'),
+            Edge(src_table='purchases', fkey='CUSTOMER_ID',
+                 dst_table='customers'),
+            Edge(src_table='purchases', fkey='PRODUCT_ID',
+                 dst_table='products'),
         ])
     kumo.configure(scratch_dir=previous)
 
@@ -112,15 +115,15 @@ def predict(graph):
 
 
 @pytest.mark.parametrize('module, trained, predicted, expected', [
-    ('context', '', ACTIVE, VALID_ACTIVE),
-    ('context', ACTIVE, ACTIVE, VALID_ACTIVE),
-    ('two_tower', '', ACTIVE, VALID_ACTIVE),
-    ('context', '', ACTIVE + ' AND stores.RATING > 3', RATED),
-    ('context', ACTIVE, '', VALID),
-    ('context', '', ' WHERE orders.AMOUNT > 5', 'target filter is'),
-    ('context', '', ' WHERE stores.RATING > 100', 'No row of table'),
-    ('context', '', ' WHERE stores.RATING = 5.8', 'valid at the prediction'),
-    ('pairwise', '', ACTIVE, 'pairwise model'),
+    ('context', '', AVAILABLE, VALID_AVAILABLE),
+    ('context', AVAILABLE, AVAILABLE, VALID_AVAILABLE),
+    ('two_tower', '', AVAILABLE, VALID_AVAILABLE),
+    ('context', '', AVAILABLE + ' AND products.RATING > 3', RATED),
+    ('context', AVAILABLE, '', VALID),
+    ('context', '', ' WHERE purchases.AMOUNT > 5', 'target filter is'),
+    ('context', '', ' WHERE products.RATING > 100', 'No row of table'),
+    ('context', '', ' WHERE products.RATING = 5.8', 'valid at the prediction'),
+    ('pairwise', '', AVAILABLE, 'pairwise model'),
 ])
 def test_prediction_ranks_valid_passing_candidates(predict, module, trained,
                                                    predicted, expected):
