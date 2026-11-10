@@ -206,6 +206,17 @@ class TrainingResult:
         return self.bundle_id
 
     @property
+    def metric_history(self) -> Optional[Dict[str, Any]]:
+        """Per-epoch metrics for every trial, or ``None`` for older bundles.
+
+        Uses the existing training progress record. It needs no tracker or
+        training scratch directory and remains available after re-export.
+        """
+        path = self.artifact_paths.get('metric_history')
+        return (None if path is None else
+                json.loads(Path(path).read_text(encoding='utf-8')))
+
+    @property
     def manifest(self) -> Optional[ModelManifest]:
         """The bundle manifest, if any."""
         return read_provenance(self.bundle_dir)

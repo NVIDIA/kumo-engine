@@ -68,6 +68,10 @@ def _vital_sources(
         "input_manifest": b'{"snapshot": "snapshot-1"}\n',
         "metrics": b'{"accuracy": 0.75}\n',
         "prediction_schema": b'{"prediction": "float"}\n',
+        "metric_history": (
+            b'{"trial_progress":{"a":{"metrics":{"0":{"train_metrics":'
+            b'{"train_loss":1}},"1":{"train_metrics":{"train_loss":0}}}},'
+            b'"b":{"metrics":{"0":{"validation_metrics":{"val_auroc":0.8}}}}}}\n'),
     }
     paths = {}
     for role, value in values.items():
@@ -109,6 +113,7 @@ def test_vital_policy_publishes_only_allowlisted_artifacts(
         "manifests/input.json",
         "metrics.json",
         "prediction-schema.json",
+        "metric-history.json",
     }
     published_paths = {
         str(path.relative_to(destination))
@@ -129,6 +134,9 @@ def test_vital_policy_publishes_only_allowlisted_artifacts(
 
     manifest = json.loads(
         (destination / "publication-manifest.json").read_text())
+    (destination / "metric-history.json").write_text("{}")
+    with pytest.raises(ValueError, match="metric-history.json"):
+        verify_model_bundle(destination)
     assert manifest["schema_version"] == 1
     assert manifest["excluded_by_default"] == [
         "trial_logs",
@@ -190,6 +198,9 @@ def test_vital_source_resolution_is_core_owned(tmp_path: Path, refit) -> None:
     trainer = tmp_path / "trainer"
     automl.mkdir()
     trainer.mkdir()
+    history = automl / "auto_train_progress.json"
+    if refit:
+        history.write_text('{"trial_progress": {}}')
     (automl / "encoders.json").write_text("{}", encoding="utf-8")
     (trainer / "config.json").write_text("{}", encoding="utf-8")
     from kumo_core.io.json import load_json, save_json
@@ -240,6 +251,8 @@ def test_vital_source_resolution_is_core_owned(tmp_path: Path, refit) -> None:
     assert training_input.model_plan.model_architecture.channels != [16]
     assert sources.selected_checkpoint == checkpoints[selected_mode]
     assert sources.graph_manifest == bundle / "graph.json"
+    assert sources.metric_history == (history if refit else None)
+    assert ("metric_history" in sources.as_dict()) == bool(refit)
     assert json.loads(sources.metrics.read_text()) == {"test_accuracy": 0.8}
 
 

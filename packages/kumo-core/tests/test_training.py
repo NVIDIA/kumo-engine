@@ -109,7 +109,7 @@ class ArtifactPublisher:
         self.calls.append(("publish", sources))
         return {
             role: f"/published/{role}"
-            for role in VitalArtifactSources.roles()
+            for role in sources.as_dict()
         }
 
 
@@ -225,13 +225,17 @@ def test_selected_node_and_link_task_families(task_type, family):
     assert resolve_training_task_family(task) is family
 
 
-def test_full_callable_flow_returns_mlflow_ready_result(monkeypatch):
+@pytest.mark.parametrize("history", [False, True])
+def test_full_callable_flow_returns_mlflow_ready_result(monkeypatch, history):
     calls = []
     task = SimpleNamespace(task_type="binary_classification")
     trainer = Trainer()
     auto_trainer = AutoTrainer(trainer)
     bindings = make_bindings(task, auto_trainer, calls, monkeypatch)
     config = resolved(task)
+    sources = replace(vital_sources(), metric_history="/history" if history
+                      else None)
+    bindings = replace(bindings, resolve_vital_artifacts=lambda *args: sources)
 
     result = run_callable_training(config, bindings=bindings)
 
@@ -246,7 +250,7 @@ def test_full_callable_flow_returns_mlflow_ready_result(monkeypatch):
         "test_accuracy": 0.8,
         "train_loss": 0.2,
     }
-    assert set(result.artifact_paths) == set(VitalArtifactSources.roles())
+    assert set(result.artifact_paths) == set(sources.as_dict())
     assert result.model_uri == "/published/selected_checkpoint"
     assert auto_trainer.analysis_paths == ["/artifacts/automl/analyze"]
     assert calls[-1][0] == "publish"

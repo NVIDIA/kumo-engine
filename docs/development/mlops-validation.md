@@ -3,7 +3,8 @@
 Run a small Linux CPU lifecycle against an installed candidate wheel using a
 local SQLite MLflow tracker and registry. The fixture has 60 users and 1,500
 events; it trains two versions for two epochs each, with two steps per epoch.
-Each worker sets both ambient MLflow URIs to the attempt's SQLite database.
+An untracked fit also tries two candidates and records two epochs each.
+Tracked phases set both ambient MLflow URIs to the attempt's SQLite database.
 
 ## Scenario
 
@@ -51,7 +52,7 @@ Build the wheel using the [release guide](releasing-kumo-engine.md).
 ```sh
 python3 -m venv /tmp/mlops-venv
 /tmp/mlops-venv/bin/python -m pip --isolated install \
-  '/absolute/path/kumo_engine-CANDIDATE.whl[mlflow]' 'mlflow>=3.5,<4'
+  '/absolute/path/kumo_engine-CANDIDATE.whl[mlflow,cpu]' 'mlflow>=3.5,<4'
 mlops_tools_dir="$(mktemp -d /tmp/mlops-tools-XXXXXX)"
 cp packages/kumo-engine/test/wheel_mlops_lifecycle.py \
   packages/kumo-engine/test/wheel_gpu_smoke.py "$mlops_tools_dir/"
@@ -67,9 +68,10 @@ environment isolation and `pip check`. Each phase writes a log and JSON receipt.
 and runtime. Worker receipts record CPU threads and Linux process and terminated
 child RSS maxima separately, not simultaneous process-tree memory.
 
-Full epoch history is currently unavailable in model exports. Tracker curves
-alone do not satisfy that artifact requirement: the summary records it as
-`not implemented`, leaves overall qualification `blocked` and exits nonzero.
+The bundle retains recorded epochs in `metric-history.json`.
+The final phase loads and re-exports history with tracker imports blocked.
+Older bundles remain readable and return `None` for `metric_history`.
+The optional CPU job reuses the candidate-wheel build.
 Installation/access prerequisites are `blocked`; incorrect behavior is `failed`.
 Unreached phases remain `blocked`.
 

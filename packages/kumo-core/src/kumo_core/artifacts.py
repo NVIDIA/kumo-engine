@@ -98,17 +98,21 @@ class VitalArtifactSources:
     input_manifest: Path
     metrics: Path
     prediction_schema: Path
+    metric_history: Path | None = None
 
     def __post_init__(self) -> None:
         for role in self.roles():
-            object.__setattr__(self, role, Path(getattr(self, role)))
+            value = getattr(self, role)
+            if role != 'metric_history' or value is not None:
+                object.__setattr__(self, role, Path(value))
 
     @classmethod
     def roles(cls) -> tuple[str, ...]:
         return tuple(cls.__dataclass_fields__)
 
     def as_dict(self) -> dict[str, Path]:
-        return {role: getattr(self, role) for role in self.roles()}
+        return {role: getattr(self, role) for role in self.roles()
+                if getattr(self, role) is not None}
 
 
 @dataclass(frozen=True)
@@ -179,6 +183,7 @@ class VitalArtifactPublicationPolicy:
         "input_manifest": "manifests/input.json",
         "metrics": "metrics.json",
         "prediction_schema": "prediction-schema.json",
+        "metric_history": "metric-history.json",
     }
 
     def publish(
@@ -450,6 +455,7 @@ def resolve_vital_artifact_sources(
     save_json(best_trainer.target_encoder,
               str(source_dir / "target-encoder.json"))
     from .automl.runtime import inherit_warm_start_model_plan
+    from .callbacks.train_progress_logger import AutoTrainingProgressLogger
     from .model_plan import ModelPlan
 
     resolved_plan = copy.deepcopy(training_input.model_plan)
@@ -471,6 +477,7 @@ def resolve_vital_artifact_sources(
     # Evaluation changes fit_mode; publish the mode hosted prediction and
     # warm start select, rather than whichever mode was evaluated last.
     best_trainer._set_fit_mode_to_use()
+    history = Path(auto_trainer.log_dir) / AutoTrainingProgressLogger.FILE_NAME
     return VitalArtifactSources(
         selected_checkpoint=local_path(best_trainer.best_ckpt),
         trainer_config=Path(best_trainer.original_log_dir) / "config.json",
@@ -482,6 +489,7 @@ def resolve_vital_artifact_sources(
         input_manifest=source_dir / "input.json",
         metrics=source_dir / "metrics.json",
         prediction_schema=source_dir / "prediction-schema.json",
+        metric_history=history if history.is_file() else None,
     )
 
 
@@ -496,6 +504,7 @@ _BUNDLE_LAYOUT = {
     'input_manifest': 'manifests/input.json',
     'prediction_schema': 'prediction-schema.json',
     'metrics': 'metrics.json',
+    'metric_history': 'metric-history.json',
 }
 
 
