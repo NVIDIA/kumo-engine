@@ -188,6 +188,7 @@ mod bp_evaluate;
 mod exact_quantiles;
 mod col_stats_export;
 mod custom_tt_entry;
+mod cutoff_stats;
 mod index_metadata;
 mod success_marker;
 mod string_lookup;
@@ -1865,6 +1866,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     temporal::register(m)?;
+    cutoff_stats::register(m)?;
     token_stream::register(m)?;
     custom_tt_contract::register(m)?;
     Ok(())
