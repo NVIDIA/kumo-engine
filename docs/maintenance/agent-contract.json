@@ -3,7 +3,8 @@
     ".",
     "ui",
     "io_utils/fsutil",
-    "kumo/pquery"
+    "kumo/pquery",
+    "packages/experimental/kumo-pytorch"
   ],
   "skill_adapter": ".claude/commands",
   "skill_source": ".agents/skills",
