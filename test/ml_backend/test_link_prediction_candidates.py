@@ -143,7 +143,8 @@ def _local(index_path, condition):
     ('orders.AMOUNT > 5 OR stores.IS_ACTIVE = true', None),
     ('NOT (orders.AMOUNT > 5 OR stores.IS_ACTIVE = false)', [0, 2]),
 ])
-def test_hosted_and_local_rank_the_same_candidates(indexed, condition, stores):
+def test_hosted_and_local_inputs_give_the_same_candidates(
+        indexed, condition, stores):
     graph, index_path = indexed
     hosted = _hosted(graph, index_path, condition)
     local = _local(index_path, condition)

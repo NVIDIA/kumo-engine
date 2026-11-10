@@ -226,8 +226,7 @@ class DiskgraphTaskManifest:
             return None
         artifact_root = self.manifest.get("artifact_root") or os.path.dirname(
             os.path.abspath(self.manifest_path))
-        return np.load(os.path.join(artifact_root, str(relative_path)),
-                       mmap_mode="r")
+        return np.load(os.path.join(artifact_root, str(relative_path)))
 
     def _split_info(self) -> Mapping[str, Any]:
         relative_path = self.manifest.get("split_info_path")

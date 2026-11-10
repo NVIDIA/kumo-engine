@@ -2189,7 +2189,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         ``None`` when it admits every candidate."""
         import torch
         node_ids = self.task_manifest.predict_candidates
-        return None if node_ids is None else torch.tensor(node_ids)
+        return None if node_ids is None else torch.from_numpy(node_ids)
 
     def require_single_predict_anchor(self) -> None:
         from kumo_core.training.validation import require_single_anchor
