@@ -12,6 +12,7 @@ pub mod column_inference;
 pub mod config;
 pub mod config_converter;
 pub mod consts;
+pub mod cutoff_stats;
 pub mod diagnostics;
 pub mod disk_manager;
 pub mod errors;
