@@ -69,7 +69,9 @@ Add these lines to the restatement:
 ```
 
 Submitting is execution: it happens only when the user asks for it (router Step 3), after this
-confirmation. Writing the job notebook and the submission cell is Step 2.
+confirmation. Writing the job notebook and the submission cell is Step 2, also after this
+confirmation (`adapter.md` §0). A request that already says "write a job" or names the cluster to
+run on is not that confirmation: reply with the restatement and stop.
 
 ## 4. Cluster
 
@@ -93,6 +95,7 @@ here; a CPU run has not been verified.
 | No cluster named; the interactive notebook is on a GPU cluster | Propose that one `[inferred]` |
 | No cluster named; other GPU clusters are visible (`clusters.list()`) | Propose one `[inferred]`, preferring one that is running |
 | No GPU cluster visible | Say so and stop. Providing one is for the user or an administrator |
+| The user asks for a new job cluster ("let it spin up a new cluster") | A job cluster is a cluster created for the run, with a default runtime that has no GPU and no Kumo. Say that this skill runs jobs on an existing GPU cluster, which has both — a correction, not a refusal — propose the GPU cluster from the rows above, and ask to confirm submitting there. Never submit a run that creates its own cluster |
 
 Report the cluster's `state`. A `TERMINATED` cluster starts when the run is submitted (§9).
 
@@ -108,7 +111,7 @@ the graph itself. For scoring a pinned model, its cells are:
    `WRITE_MODE`, the scoring options, and `TRAINED_QUERY`.
 2. The connect step and `run_sql` (`runtime.md` §2, §3), and the registry connector (§5).
 3. `Trainer.load_from_connector` with the explicit version (`runtime.md` §5.2).
-4. The recorded tables, column lists and edges rebuilt into `graph`
+4. The bundle's `graph_config` tables, column lists and edges rebuilt into `graph`
    (`kumo-model-persistence/references/reuse.md`), then `PredictiveQuery`, `snapshot`, and
    `generate_prediction_table(snapshot, plan=loaded.training_table_generation_plan)` — add
    `prediction_time=` only if the user gave a scoring time.
@@ -160,7 +163,7 @@ print(run.run_page_url, run.state.life_cycle_state, run.state.result_state)
 ```
 
 - A run still going at the deadline is **not** cancelled: report its id and page, and that it is
-  still running. Cancel (`ws.jobs.cancel_run(run_id)`) only when the user asks.
+  still running. Cancel (`ws.jobs.cancel_run(run_id)`) only after the user confirms.
 - `result_state` `SUCCESS` is the only success. On any other, read the error (§7) before saying
   anything about the cause.
 - `timeout_seconds` is the run's own limit, enforced by Databricks: it must cover cluster start-up
@@ -192,8 +195,22 @@ a saved job's runs; a one-time run is found from its page or its id as printed a
 | `life_cycle_state` `PENDING` for minutes | The cluster is starting. Not a failure |
 | `INTERNAL_ERROR`, or a cluster that failed to start | Platform-side. Report the `state_message` |
 
-Propose the specific fix. Never resubmit on your own: every submission is a new GPU run. Never
-delete a run or a job, because that discards its output.
+Propose the specific fix: say what to change in the job notebook and ask only whether to make
+that change ("Shall I set `MODEL_VERSION = 1` in the job notebook?"). A yes edits that job
+notebook, which this skill generated; it is the one edit of an existing notebook the user can
+approve here. Resubmitting is a separate confirmation, asked after the edit; never "then rerun".
+Tell a repair from a change first. Correcting `MODEL_VERSION` to the version the user already
+confirmed (a typo, a stale value) is a repair: the edit above, then the resubmission ask. Moving
+it to a different version is a new scoring request: re-read that version's bundle (`adapter.md` §6.1), show the `adapter.md` §6.1 restatement for it, and resubmit only after
+the user confirms that restatement.
+Never edit the notebook or resubmit on your own: every submission is a new GPU run. Never delete a run or a job, because
+that discards its output.
+
+**"Does the cluster have Kumo? Do I need to add libraries?"** Kumo is present on the GPU cluster
+the notebook runs on (`adapter.md`); the job adds no libraries and no requirements. An empty
+cluster library list is expected: Kumo is part of the cluster's environment, not a job library.
+Answer that, and point to the `ModuleNotFoundError` row above for what a run on a cluster without
+it would show.
 
 ## 8. Recurring runs
 
@@ -232,7 +249,33 @@ the proposal before anything is created:
   the notebook uses.
 - **Cost recurs.** Each run pays for cluster start-up, scoring and the cluster's idle time (§9).
 
-Pausing (`pause_status=PAUSED`) or deleting the job is the user's call.
+Deleting the job is the user's call.
+
+A saved job already in the workspace for this scoring — one you find, or one an earlier session
+created — gets the same proposal. Changing its schedule, unpausing it or editing its task is
+done only after the user confirms that proposal; finding the job is not that confirmation.
+
+### Pausing
+
+A pause the user asks for in plain words ("pause the nightly scoring job") runs at once, with no
+confirmation turn, when the request names the job or exactly one job matches. Pausing only stops
+future triggers; nothing is lost and unpausing restores it. Set `pause_status=PAUSED` on the
+job's existing schedule (or trigger), leaving the rest of it as it is:
+
+```python
+j = ws.jobs.get(job_id)                             # a trigger-based job: same, on settings.trigger
+prev = j.settings.schedule.pause_status            # UNPAUSED, or already PAUSED
+sched = j.settings.schedule
+sched.pause_status = jobs.PauseStatus.PAUSED
+ws.jobs.update(job_id, new_settings=jobs.JobSettings(schedule=sched))
+```
+
+Then report: the job's name and id, its previous state, that it is now paused, and that unpausing
+it needs the user's confirmation. If more than one job matches, or none does, list the candidates
+and ask; pause nothing. A job you merely find is not a pause request. Everything else about a job
+stays confirmed: unpausing, scheduling, editing, repairing a run. Cancelling an active run
+discards work, so it is not part of a pause: if the user also asks to stop a running run, pause
+the schedule now and ask to confirm cancelling the run.
 
 > Not run in this workspace: a scheduled job of this skill's notebook. Say so when proposing it.
 

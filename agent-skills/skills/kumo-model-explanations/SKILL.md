@@ -16,8 +16,9 @@ with its in-process `kumo.engine` runtime and retained local run files.
 - For a fresh `training_result`, use `training_result.explanations`. Otherwise reopen the
   explicit retained run with `kumo.TrainingExplanations.load(run_dir)`. A downloaded model
   bundle is not the original training run.
-- If several runs or trainer/refit directories exist, list candidates and resolve which one
-  the user means. Never silently select the newest directory or combine different runs.
+- If several runs or trainer/refit directories exist, list candidates with their paths and ask
+  which one the user means, before showing any score. Never silently select the newest
+  directory or combine different runs.
 - Identify the task type, target/positive class, explanation stage, and fit/refit used.
   Record unknowns explicitly. These determine what the scores can mean.
 
@@ -72,8 +73,18 @@ is a lead to investigate, not proof of leakage or a causal mechanism.
 
 ## Return a useful answer
 
-Give the run, task, stage, selected trainer/refit, and exact file paths used; a bounded ranking
-of table-column gradient scores; and the relevant cohort comparisons with population shares.
+Every answer, however short, carries:
+
+- the run, task, stage, selected trainer/refit and the exact file paths read;
+- gradient scores named as Kumo gradient attribution over the processed test subset, normalized
+  across the graph as observed (the default producer, when the total is positive), and never
+  called drivers, probabilities or percentages;
+- for cohorts, each cohort's population share beside its mean prediction and, when the file
+  records one, mean target, read from column analysis;
+- for a plot, the plotting code in the reply, reading the selected run's files, titled with the
+  table, column, run and test stage;
+- when evidence is missing, that no fit was started, and whether the user wants one.
+
 Distinguish observations, hypotheses, and missing evidence. Do not promise individual prediction
 explanations from aggregate files; sampled subgraphs cover only the sampled test entities (see the
 reference's *Sampled subgraphs*). If only one explanation family is present, analyze that family
