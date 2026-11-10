@@ -197,6 +197,8 @@ jobs:
           python -m venv "$RUNNER_TEMP/lifecycle-env"
           uv --no-config pip install --python "$RUNNER_TEMP/lifecycle-env/bin/python" \
             --default-index https://pypi.org/simple --torch-backend cpu "$wheel[mlflow]" 'mlflow>=3.5,<4' 2>&1 | tee "$work/install.log"
+          # uv omits archive hashes; pip records the selected wheel's identity.
+          "$RUNNER_TEMP/lifecycle-env/bin/python" -I -m pip --isolated install --no-index --no-deps --force-reinstall "$wheel"
           cp "$GITHUB_WORKSPACE"/packages/kumo-engine/test/wheel_{mlops_lifecycle,gpu_smoke}.py "$work/"
           cd "$work"
           "$RUNNER_TEMP/lifecycle-env/bin/python" -I wheel_mlops_lifecycle.py \
