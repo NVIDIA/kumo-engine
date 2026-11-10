@@ -8,6 +8,7 @@ import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from datetime import datetime
+from functools import cached_property
 from typing import Any, ClassVar, Generic, NamedTuple, TypeVar
 
 import numpy as np
@@ -446,9 +447,11 @@ class CategoricalTensorMapper(TensorMapper[Tensor]):
     def __init__(self, category_counts: Sequence[Sequence[Any]]) -> None:
         category_counts = _sort_category_counts(category_counts)
         self.mapping = _create_mapping_from_category_counts(category_counts)
-        self._vocabulary = _canonical_categories(
-            pa.array([value for value, _ in category_counts])
-        )
+
+    @cached_property
+    def _vocabulary(self) -> pa.Array:
+        """Build the Arrow vocabulary only when raw values need encoding."""
+        return _canonical_categories(pa.array(self.mapping.to_numpy()))
 
     def backward(self, tensor: Tensor) -> pd.Series:
         if len(self.mapping) == 0:
@@ -507,11 +510,13 @@ class MultiCategoricalTensorMapper(TensorMapper[MultiNestedTensor]):
     ) -> None:
         category_counts = _sort_category_counts(category_counts)
         self.mapping = _create_mapping_from_category_counts(category_counts)
-        self._vocabulary = _canonical_categories(
-            pa.array([value for value, _ in category_counts])
-        )
         self.sep = sep
         self._is_string_dtype: bool | None = None
+
+    @cached_property
+    def _vocabulary(self) -> pa.Array:
+        """Build the Arrow vocabulary only when raw values need encoding."""
+        return _canonical_categories(pa.array(self.mapping.to_numpy()))
 
     def backward(self, tensor: MultiNestedTensor) -> pd.Series:
         assert tensor.num_cols == 1

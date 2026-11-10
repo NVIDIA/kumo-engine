@@ -159,3 +159,24 @@ def test_chunks_write_into_final_storage(
             call.args[0].untyped_storage().data_ptr()
             == values.untyped_storage().data_ptr()
         )
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_mixed_class_labels_decode_without_arrow_encoding(nested: bool) -> None:
+    """Metadata and reverse decoding preserve mixed-type class labels."""
+    counts = [(1, 2), ("two", 1)]
+    if nested:
+        mapper = tm.MultiCategoricalTensorMapper(counts, sep=None)
+        tensor = MultiNestedTensor(
+            num_rows=2,
+            num_cols=1,
+            values=torch.tensor([0, 1]),
+            offset=torch.tensor([0, 1, 2]),
+        )
+    else:
+        mapper = tm.CategoricalTensorMapper(counts)
+        tensor = torch.tensor([[0], [1]])
+
+    result = mapper.backward(tensor)
+
+    assert result.tolist() == [1, "two"]
