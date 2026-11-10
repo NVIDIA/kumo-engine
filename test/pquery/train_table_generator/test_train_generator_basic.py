@@ -991,8 +991,9 @@ def test_generate_time_intervals_invalid_start_end_time(create_node_pred_graph,
 
 
 def test_generate_time_intervals_integer_bound_rejected(create_node_pred_graph,
-                                                        tempdir):
+                                                        tempdir, monkeypatch):
     """Integer start bounds have an actionable error before generation."""
+    monkeypatch.setenv('USE_DECOUPLED_SPLITS', 'false')
     graph = create_node_pred_graph('test_graph', tempdir.name)
     query = ('PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 1) > 30 '
              'FOR EACH USERS.USER_ID')
@@ -1002,6 +1003,11 @@ def test_generate_time_intervals_integer_bound_rejected(create_node_pred_graph,
     with pytest.raises(ValueError, match="Integer 'start_time' bounds"):
         TrainingTableGeneratorV2(
             graph, validated_query, split, start_time=-2, end_time='1990-01-04')
+    monkeypatch.setenv('USE_DECOUPLED_SPLITS', 'true')
+    with pytest.raises(ValueError, match="Integer 'start_time' bounds"):
+        TrainingTableGeneratorV2(
+            graph, validated_query, split, start_time=-2, end_time='1990-01-04',
+            use_decoupled_splits=False)
 
 
 def test_generate_time_intervals_with_legacy_params_error(
@@ -1138,9 +1144,10 @@ def test_generate_timestamps_v2_with_start_end_time(create_node_pred_graph,
     assert task_type == TaskType.BINARY_CLASSIFICATION
 
 
-def test_generate_timestamps_v2_integer_bound_rejected(
-        create_node_pred_graph, tempdir):
-    """Decoupled routing also rejects integer end bounds."""
+def test_generate_timestamps_v2_with_relative_start_end_time(
+        create_node_pred_graph, tempdir, monkeypatch):
+    """Decoupled integer bounds use the aggregation's time unit."""
+    monkeypatch.setenv('USE_DECOUPLED_SPLITS', 'true')
     graph = create_node_pred_graph('test_graph', tempdir.name)
     query = ('PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 8, hours) > 30 '
              'FOR EACH USERS.USER_ID')
@@ -1152,10 +1159,15 @@ def test_generate_timestamps_v2_integer_bound_rejected(
         anchor_start_offset=0,
         timeframe_size=8,
     )
-    with pytest.raises(ValueError, match="Integer 'end_time' bounds"):
-        TrainingTableGeneratorV2(
-            graph, validated_query, split, start_time='1990-01-02', end_time=-24,
-            timeframe_step=8, use_decoupled_splits=True)
+    generator = TrainingTableGeneratorV2(
+        graph, validated_query, split, start_time=-48, end_time=-24,
+        timeframe_step=8, use_decoupled_splits=True)
+    assert generator.generate_timestamps_v2() == [
+        pd.Timestamp('1990-01-03 16:00:00'),
+        pd.Timestamp('1990-01-03 08:00:00'),
+        pd.Timestamp('1990-01-03 00:00:00'),
+    ]
+    assert generator.task_type == TaskType.BINARY_CLASSIFICATION
 
 
 def test_generate_timestamps_v2_legacy_params_error(create_node_pred_graph,

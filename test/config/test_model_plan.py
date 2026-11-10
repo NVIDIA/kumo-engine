@@ -2346,7 +2346,23 @@ def test_model_plan_decoupled_splits(monkeypatch):
         plan.training_table_generation.train_start_offset == MissingType.VALUE)
 
     plan.training_table_generation.start_time = -10
-    with pytest.raises(ValueError, match="Integer 'start_time' bounds"):
+    plan.training_table_generation.end_time = -1
+    plan.validate(
+        task_type=TaskType.BINARY_CLASSIFICATION,
+        query_type=QueryType.TEMPORAL,
+        has_train_table_time_col=True,
+        run_mode=RunMode.FAST,
+    )
+    plan.training_table_generation.end_time = -20
+    with pytest.raises(ValueError, match="start_time must be smaller"):
+        plan.validate(
+            task_type=TaskType.BINARY_CLASSIFICATION,
+            query_type=QueryType.TEMPORAL,
+            has_train_table_time_col=True,
+            run_mode=RunMode.FAST,
+        )
+    plan.training_table_generation.end_time = '2024-02-01'
+    with pytest.raises(ValueError, match="both be offsets"):
         plan.validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
             query_type=QueryType.TEMPORAL,
@@ -2354,6 +2370,22 @@ def test_model_plan_decoupled_splits(monkeypatch):
             run_mode=RunMode.FAST,
         )
     plan.training_table_generation.start_time = InferredType.VALUE
+    plan.training_table_generation.end_time = InferredType.VALUE
+
+    link_plan = ModelPlan.from_default(
+        task_type=TaskType.TEMPORAL_LINK_PREDICTION,
+        query_type=QueryType.TEMPORAL,
+        has_train_table_time_col=True,
+        run_mode=RunMode.FAST,
+    )
+    link_plan.training_table_generation.start_time = -10
+    link_plan.training_table_generation.end_time = -1
+    link_plan.validate(
+        task_type=TaskType.TEMPORAL_LINK_PREDICTION,
+        query_type=QueryType.TEMPORAL,
+        has_train_table_time_col=True,
+        run_mode=RunMode.FAST,
+    )
 
     # Verify validation fails if train_start_offset is set
     plan.training_table_generation.train_start_offset = 10
@@ -2379,6 +2411,22 @@ def test_model_plan_decoupled_splits(monkeypatch):
     assert (
         plan.training_table_generation.train_start_offset == InferredType.VALUE)
     assert plan.training_table_generation.start_time == MissingType.VALUE
+
+    plan.training_table_generation.start_time = -10
+    with pytest.raises(ValueError, match="Integer 'start_time' bounds"):
+        plan.validate(
+            task_type=TaskType.BINARY_CLASSIFICATION,
+            query_type=QueryType.TEMPORAL,
+            has_train_table_time_col=True,
+            run_mode=RunMode.FAST,
+        )
+    with pytest.raises(ValueError, match="Integer 'start_time' bounds"):
+        link_plan.validate(
+            task_type=TaskType.TEMPORAL_LINK_PREDICTION,
+            query_type=QueryType.TEMPORAL,
+            has_train_table_time_col=True,
+            run_mode=RunMode.FAST,
+        )
 
     # Absolute bounds are supported alongside inferred legacy defaults.
     plan.training_table_generation.start_time = "2024-01-01"

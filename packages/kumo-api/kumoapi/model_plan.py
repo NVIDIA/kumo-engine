@@ -625,8 +625,8 @@ class TrainingTableGenerationPlan(PlanMixin):
         lower bound. Bounds are intersected with available label data.
         Direct absolute bounds cannot be combined with train_start_offset,
         train_end_offset, or explicit date/offset window splits.
-        Integer bounds are not supported. For relative training windows,
-        use train_start_offset/train_end_offset in the aggregation's time unit.
+        For relative training windows, use train_start_offset/train_end_offset
+        in the aggregation's time unit.
         (*default:* ``"inferred"``).
         **Supported Task Types:** Temporal node classification, regression,
         ranking, and forecasting.

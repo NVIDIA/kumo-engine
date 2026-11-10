@@ -68,6 +68,7 @@ from kumoapi.model_plan import (
 )
 from kumoapi.pquery import QueryType
 from kumoapi.typing import Stype, TimeUnit
+from pandas import DateOffset
 from pydantic import BaseModel, ValidationError, conlist, field_validator
 from pydantic.dataclasses import dataclass
 from pydantic_core import InitErrorDetails, PydanticCustomError
@@ -955,10 +956,19 @@ class TrainingTableGenerationPlan(api.TrainingTableGenerationPlan, PlanMixin):
                             f"split. Please choose one of these splits or "
                             f"set `split` to `inferred`."))
         if query_type == QueryType.TEMPORAL and task_type.is_node_pred:
+            start = inferred_or_missing_type_to_none(self.start_time)
+            end = inferred_or_missing_type_to_none(self.end_time)
+            # The plan has no aggregation unit. Check relative ordering here;
+            # query planning resolves integers using the actual aggregation unit.
+            if _use_decoupled_splits():
+                if isinstance(start, int):
+                    start = DateOffset(days=start)
+                if isinstance(end, int):
+                    end = DateOffset(days=end)
             try:
                 validate_time_bounds(
-                    inferred_or_missing_type_to_none(self.start_time),
-                    inferred_or_missing_type_to_none(self.end_time),
+                    start,
+                    end,
                     train_start_offset=inferred_or_missing_type_to_none(
                         self.train_start_offset),
                     train_end_offset=inferred_or_missing_type_to_none(
@@ -967,9 +977,9 @@ class TrainingTableGenerationPlan(api.TrainingTableGenerationPlan, PlanMixin):
                 )
             except ValueError as error:
                 errors.append(error)
-        elif query_type == QueryType.TEMPORAL:
-            # Preserve existing link routing while rejecting public integer
-            # bounds consistently with temporal node plans.
+        elif (query_type == QueryType.TEMPORAL
+              and not _use_decoupled_splits()):
+            # Reject integer bounds in default mode, matching temporal node plans.
             for name, value in (('start_time', self.start_time),
                                 ('end_time', self.end_time)):
                 if isinstance(value, int):

@@ -1876,6 +1876,8 @@ def test_invalid_offsets_rejected_before_reading_source_stats(
          ["2024-05-30", "2024-03-30"]),
         ("2024-06-30", {"train_start_offset": 3, "train_end_offset": 1},
          (0, 1), ["2024-04-30", "2024-03-30"]),
+        ("2024-06-30", {"start_time": -3, "end_time": -1},
+         (0, 1), ["2024-04-30", "2024-03-30"]),
         ("2024-06-30", {"start_time": "2024-01-31"}, (1, 2),
          ["2024-04-30", "2024-03-30", "2024-02-29"]),
     ],
@@ -1884,6 +1886,7 @@ def test_month_planning_preserves_calendar_windows(
         monkeypatch, maximum, options, window, expected):
     from pandas import Timestamp
 
+    monkeypatch.setenv('USE_DECOUPLED_SPLITS', 'true')
     graph = normalize_graph(forecasting_graph_config())
     query = parse_and_validate_query(
         f"PREDICT COUNT(events.*, {window[0]}, {window[1]}, months) "

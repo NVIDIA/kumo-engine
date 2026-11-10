@@ -8,6 +8,7 @@ import tempfile
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import kumo_core.types as core_types
+from kumo_core.model_plan import _use_decoupled_splits
 from kumo_core.training.bounds import parse_time_bound
 from kumo_core.training.options import allow_array_targets
 from kumo_core.training.splits import TrainTableTime, train_table_time
@@ -288,8 +289,18 @@ class TrainingTableGeneratorV2:
                 or isinstance(train_end_offset, DateOffset))
         self.train_end_offset = train_end_offset
 
-        self.start_time = parse_time_bound(start_time, 'start_time')
-        self.end_time = parse_time_bound(end_time, 'end_time')
+        self.use_decoupled_splits = (
+            _use_decoupled_splits()
+            if use_decoupled_splits is None else use_decoupled_splits)
+        start_bound: int | str | DateOffset | None = start_time
+        end_bound: int | str | DateOffset | None = end_time
+        if self.use_decoupled_splits:
+            if isinstance(start_bound, int):
+                start_bound = self.get_date_offset(start_bound)
+            if isinstance(end_bound, int):
+                end_bound = self.get_date_offset(end_bound)
+        self.start_time = parse_time_bound(start_bound, 'start_time')
+        self.end_time = parse_time_bound(end_bound, 'end_time')
 
         self.timeframe_step = None
         if timeframe_step is not None:
@@ -298,7 +309,6 @@ class TrainingTableGeneratorV2:
         self.lag_timesteps = lag_timesteps
         self.forecast_length = forecast_length
         self.year_over_year = year_over_year
-        self.use_decoupled_splits = use_decoupled_splits
         self.weight_col = normalize_weight_col(weight_col)
 
         self.task_type: core_types.TaskType = get_task_type(

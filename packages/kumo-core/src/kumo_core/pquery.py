@@ -49,6 +49,7 @@ from .encoder_selection import (
 )
 from .model_plan import (
     TrainingTableGenerationPlan,
+    _use_decoupled_splits,
     inferred_or_missing_type_to_false,
     inferred_or_missing_type_to_none,
 )
@@ -1058,17 +1059,22 @@ def _temporal_timestamps(
     start_time: DateOffset | Timestamp | None
     end_time: DateOffset | Timestamp | None
     node_bounds = query.task_type in TaskType.get_node_pred_tasks()
+    start_bound = inferred_or_missing_type_to_none(options.start_time)
+    end_bound = inferred_or_missing_type_to_none(options.end_time)
+    if isinstance(start_bound, Integral):
+        start_bound = (date_offset(int(start_bound))
+                       if _use_decoupled_splits() else int(start_bound))
+    if isinstance(end_bound, Integral):
+        end_bound = (date_offset(int(end_bound))
+                     if _use_decoupled_splits() else int(end_bound))
     try:
         if not node_bounds:
-            start_time = parse_time_bound(
-                inferred_or_missing_type_to_none(options.start_time),
-                'start_time')
-            end_time = parse_time_bound(
-                inferred_or_missing_type_to_none(options.end_time), 'end_time')
+            start_time = parse_time_bound(start_bound, 'start_time')
+            end_time = parse_time_bound(end_bound, 'end_time')
         else:
             start_time, end_time = validate_time_bounds(
-                inferred_or_missing_type_to_none(options.start_time),
-                inferred_or_missing_type_to_none(options.end_time),
+                start_bound,
+                end_bound,
                 train_start_offset=train_start,
                 train_end_offset=train_end,
                 split_family=(split_family
