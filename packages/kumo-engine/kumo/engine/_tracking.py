@@ -15,6 +15,7 @@ import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from numbers import Real
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -851,14 +852,23 @@ def tracking_ref(tracking: Any) -> Optional['TrackingRef']:
         run_name=tracker.logged_run_name)
 
 
+def _validate_finish_timeout(seconds: Any) -> float:
+    message = ('finish_timeout_seconds must be finite and positive, and no '
+               'greater than threading.TIMEOUT_MAX')
+    if isinstance(seconds, bool) or not isinstance(seconds, Real):
+        raise ValueError(message)
+    try:
+        value = float(seconds)
+    except (ValueError, OverflowError):
+        raise ValueError(message) from None
+    if not math.isfinite(value) or not 0 < value <= threading.TIMEOUT_MAX:
+        raise ValueError(message)
+    return value
+
+
 def _finish_seconds(tracker: Optional[TrackingBase]) -> float:
     seconds = None if tracker is None else tracker.finish_timeout_seconds
-    if seconds is None:
-        return FINISH_SECONDS
-    if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
-            or not math.isfinite(seconds) or seconds <= 0):
-        raise ValueError('finish_timeout_seconds must be finite and positive')
-    return seconds
+    return _validate_finish_timeout(FINISH_SECONDS if seconds is None else seconds)
 
 
 def log_run(tracker: TrackingBase,

@@ -4,7 +4,6 @@
 r"""Snowflake Experiment Tracking for `Trainer.fit`."""
 
 import logging
-import math
 import posixpath
 import re
 import tempfile
@@ -26,9 +25,11 @@ from kumo.engine._text import metric_key
 from kumo.engine._tracking import (
     DROPPED_METRICS,
     DROPPED_PARAMS,
+    FINISH_SECONDS,
     RunRecord,
     SingleRunHooks,
     TrackingBase,
+    _validate_finish_timeout,
     by_step,
     model_metrics,
 )
@@ -52,7 +53,7 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
     Args:
         source: a ``SnowflakeConnector``, or a Snowpark session (tracking only).
         finish_timeout_seconds: maximum wait for fit tracking finalization or a
-            complete prediction/monitoring tracking call; defaults to 300 seconds.
+            complete prediction/monitoring tracking call; uses the shared 30-second default.
         native_model_lineage: link models registered during the fit to its run.
         serving_options: ``ModelOutputConfig.serving_options`` for registered
             versions.
@@ -71,13 +72,9 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
         tags: Optional[Mapping[str, str]] = None,
         native_model_lineage: bool = False,
         serving_options: Optional[Mapping[str, str]] = None,
-        finish_timeout_seconds: float = 300.0,
+        finish_timeout_seconds: float = FINISH_SECONDS,
     ) -> None:
-        if (isinstance(finish_timeout_seconds, bool)
-                or not math.isfinite(finish_timeout_seconds)
-                or finish_timeout_seconds <= 0):
-            raise ValueError('finish_timeout_seconds must be finite and positive')
-        self.finish_timeout_seconds = finish_timeout_seconds
+        self.finish_timeout_seconds = _validate_finish_timeout(finish_timeout_seconds)
         from kumo.engine.connector.base import Connector
 
         self._module = import_provider('snowflake.ml.experiment', 'snowflake')

@@ -196,12 +196,12 @@ Jobs that load `alias="champion"` pick up the new version on their next run.
 - `log_model=True` logs the model on the fit run without registering it; `MLOps(registry=)` implies it.
 - Building `kumo.MLOps` creates a missing experiment; if MLflow refuses (on Databricks, the experiment's folder must exist), it raises and says so.
 
-`SnowflakeTracking(source, *, experiment_name, database=None, schema_name=None, run_name=None, tags=None, native_model_lineage=False, serving_options=None, finish_timeout_seconds=300)`:
+`SnowflakeTracking(source, *, experiment_name, database=None, schema_name=None, run_name=None, tags=None, native_model_lineage=False, serving_options=None, finish_timeout_seconds=30.0)`:
 - `source` is a `SnowflakeConnector`, whose identity opens the session and whose Snowflake Model Registry `MLOps(registry=)` registers in, or a Snowpark session, which tracks only.
 - `database` and `schema_name` default to the session's (`PUBLIC` when only `database` is given). The fit is in Snowsight under AI & ML » Experiments.
 - The registered version carries the bundle; load it with `Trainer.load_from_connector`.
 - It needs `CREATE EXPERIMENT` on the schema, or `MODIFY` on an existing experiment.
-- `finish_timeout_seconds` bounds the wait for fit tracking finalization or an entire prediction/monitoring tracking call. It must be finite and positive. A timeout still follows `MLOps(on_error=...)`; tracking may continue in the background.
+- `finish_timeout_seconds` uses the shared 30-second default. Longer waits are opt-in; the value must be a finite positive real number no greater than `threading.TIMEOUT_MAX`. A timeout follows `MLOps(on_error=...)`; tracking may continue in the background.
 - `serving_options` sets how a registered version runs in Snowflake (see [Batch inference in Snowflake](#batch-inference-in-snowflake)).
 
 ### What you'll see in MLflow and Snowsight
@@ -631,7 +631,7 @@ A tracker may also define the best-effort `log_prediction_run(record)` and `log_
 
 ### Limits
 
-- Tracker calls run on a background thread; `fit` waits at most 30 s for tracking to finish, and up to an hour for model logging and registration (600 s MLflow HTTP timeout during the upload). During a fit MLflow HTTP calls use 2 retries and a 30 s timeout unless `MLFLOW_HTTP_REQUEST_MAX_RETRIES` / `MLFLOW_HTTP_REQUEST_TIMEOUT` are set. Only global rank 0 tracks.
+- Tracker calls run on a background thread. All trackers default to a 30 s wait for fit tracking finalization or a complete prediction/monitoring tracking call. A tracker, including a custom tracker or `TrackingBase` subclass, can opt into a different wait with its `finish_timeout_seconds` attribute; `None` retains the shared default. The value must be a finite positive real number no greater than `threading.TIMEOUT_MAX`. Waiting for a run to start still uses a separate 30 s budget. Model logging and registration can take up to an hour (600 s MLflow HTTP timeout during the upload). During a fit MLflow HTTP calls use 2 retries and a 30 s timeout unless `MLFLOW_HTTP_REQUEST_MAX_RETRIES` / `MLFLOW_HTTP_REQUEST_TIMEOUT` are set. Only global rank 0 tracks.
 - MLflow rejects `@` in metric names, so the trainer's `test_map@10` is logged as `test/map_at_10` on every tracker. Params MLflow rejects are counted in `kumo.dropped_params`.
 - Snowflake keeps 200 metric names (a step series counts once) and 1000 params per run; the rest are counted in `kumo.dropped_metrics` / `kumo.dropped_params`. A taken run name gets `_2`, `_3` and so on; an active run elsewhere in the process is never resumed.
 - A fit's data are MLflow run inputs, each with its role as the context: the training table (`training examples`), the graph snapshot (`graph context`) and the snapshot's tables (`source table`). Databricks tables are Delta tables at the snapshot's version (so Unity Catalog links them to the registered model), files are URIs.

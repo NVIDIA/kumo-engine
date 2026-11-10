@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import _snowflake_experiment_fake
+import numpy as np
 import pytest
 from _snowflake_experiment_fake import FakeExperimentTracking, FakeSession
 from kumo_core.summaries import Note, Scalar, Series, Table, Tag
@@ -485,7 +486,11 @@ def test_each_monitoring_call_is_a_run_named_like_its_prediction(fake):
         'Full lineage: `_provenance.json`. Tables: `drift/inputs/orders.json`.'])
 
 
-@pytest.mark.parametrize('seconds', [0, -1, float('nan'), float('inf'), True])
+@pytest.mark.parametrize('seconds', [
+    0, -1, float('nan'), float('inf'), True, None, '300',
+    pytest.param(threading.TIMEOUT_MAX * 2, id='over-thread-limit'),
+    pytest.param(10**1000, id='overflow'),
+])
 def test_invalid_tracking_timeout_fails_before_provider_import(
         monkeypatch, seconds):
     import kumo.engine.integrations.snowflake as module
@@ -500,5 +505,10 @@ def test_invalid_tracking_timeout_fails_before_provider_import(
 
 
 def test_snowflake_tracking_finish_budget(fake):
-    assert _tracking().finish_timeout_seconds == 300.0
+    assert _tracking().finish_timeout_seconds == 30.0
     assert _tracking(finish_timeout_seconds=90.0).finish_timeout_seconds == 90.0
+
+
+@pytest.mark.parametrize('seconds', [np.int64(120), np.float64(120), threading.TIMEOUT_MAX])
+def test_snowflake_tracking_accepts_supported_real_budgets(fake, seconds):
+    assert _tracking(finish_timeout_seconds=seconds).finish_timeout_seconds == float(seconds)

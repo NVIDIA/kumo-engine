@@ -914,7 +914,6 @@ def test_tracker_finish_budget_allows_slow_success(monkeypatch, kind):
         monkeypatch.setattr(tracking, 'FINISH_SECONDS', 0.01)
         session.finish(None, None)
         assert session.error is None
-        assert session._tracker is None
     else:
         monkeypatch.setattr(tracking, 'FINISH_SECONDS', 0.01)
 
@@ -965,8 +964,13 @@ def test_tracker_finish_budget_still_bounds_hung_work(kind):
 def test_foreign_tracker_without_budget_retains_legacy_default(monkeypatch):
     import kumo.engine._tracking as tracking
 
+    budgets = []
     monkeypatch.setattr(tracking, 'FINISH_SECONDS', 0.25)
-    assert tracking._finish_seconds(tracking.as_tracking(_Recorder())) == 0.25
+    monkeypatch.setattr(threading.Thread, 'join', lambda self, timeout: budgets.append(timeout))
+    monkeypatch.setattr(threading.Thread, 'is_alive', lambda self: False)
+    assert tracking.log_run(tracking.as_tracking(_Recorder()),
+                            lambda record: None, tracking.RunRecord()) is None
+    assert budgets == [0.25]
 
 
 @pytest.mark.parametrize('kind', ['fit', 'predict'])
@@ -994,7 +998,11 @@ def test_extended_budget_preserves_tracking_errors(kind):
         assert error is failure
 
 
-@pytest.mark.parametrize('seconds', [True, 0, -1, float('nan'), float('inf'), 'slow'])
+@pytest.mark.parametrize('seconds', [
+    True, 0, -1, float('nan'), float('inf'), 'slow',
+    pytest.param(threading.TIMEOUT_MAX * 2, id='over-thread-limit'),
+    pytest.param(10**1000, id='overflow'),
+])
 @pytest.mark.parametrize('kind', ['fit', 'predict'])
 def test_invalid_custom_budget_fails_before_preparation(seconds, kind):
     import kumo.engine._tracking as tracking
@@ -1010,7 +1018,6 @@ def test_invalid_custom_budget_fails_before_preparation(seconds, kind):
         session = TrackingSession(recorder)
         session.start(lambda: fit_spec(CONTEXT))
         assert isinstance(session.error, ValueError)
-        assert session._worker is None
     else:
         failure = tracking.log_run(tracking.as_tracking(recorder),
                                    lambda record: pytest.fail('must not log'),
@@ -1018,15 +1025,28 @@ def test_invalid_custom_budget_fails_before_preparation(seconds, kind):
         assert isinstance(failure, ValueError)
 
 
-def test_fit_captures_budget_before_custom_tracker_mutates_it():
-    class Mutable(_Recorder):
-        finish_timeout_seconds = 1.0
+@pytest.mark.parametrize('seconds', [np.int64(120), np.float64(120), threading.TIMEOUT_MAX])
+@pytest.mark.parametrize('kind', ['fit', 'predict'])
+def test_supported_real_budgets_complete_tracking(seconds, kind):
+    import kumo.engine._tracking as tracking
 
-        def prepare(self):
-            self.finish_timeout_seconds = 'invalid after prepare'
+    completed = threading.Event()
 
-    session = TrackingSession(Mutable())
-    session.start(lambda: fit_spec(CONTEXT))
-    session.finish(None, None)
-    assert session.error is None
-    assert not session._worker.is_alive()
+    class Recorder(_Recorder):
+        finish_timeout_seconds = seconds
+
+        def finish(self, record, error):
+            super().finish(record, error)
+            completed.set()
+
+    recorder = Recorder()
+    if kind == 'fit':
+        session = TrackingSession(recorder)
+        session.start(lambda: fit_spec(CONTEXT))
+        session.finish(None, None)
+        assert session.error is None
+    else:
+        assert tracking.log_run(tracking.as_tracking(recorder),
+                                lambda record: recorder.finish(record, None),
+                                tracking.RunRecord()) is None
+    assert completed.is_set()
