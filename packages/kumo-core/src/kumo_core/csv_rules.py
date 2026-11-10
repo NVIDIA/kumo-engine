@@ -87,15 +87,17 @@ def has_leading_zero(value: str) -> bool:
 
 def whole_valued(values: Any) -> bool:
     """Whether a column of floats holds only integers, which is the integer
-    column a warehouse ``NUMBER`` export writes as ``1.0``. Compared with
-    ``np.isclose`` because decimal-to-binary need not land on the integer.
+    column a warehouse ``NUMBER`` export writes as ``1.0``. Compared exactly:
+    a value with a fractional part makes the column a float however large
+    the values are, where a relative tolerance let any decimal pass from
+    50,000 up.
     """
     import numpy as np
 
     array = np.asarray(values, dtype=float)
     if array.size == 0:
         return False
-    return bool(np.all(np.isclose(array, np.round(array))))
+    return bool(np.all(array == np.round(array)))
 
 
 def is_missing(value: Any) -> bool:

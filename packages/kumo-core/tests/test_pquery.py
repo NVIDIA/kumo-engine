@@ -22,6 +22,7 @@ from kumo_core.pquery import (
     latest_temporal_timestamp,
     normalize_graph,
     parse_and_validate_query,
+    query_column_names,
     query_train_table_time,
     static_link_fact,
     table_row_count,
@@ -161,6 +162,18 @@ def forecasting_graph_config():
             },
         ]
     }
+
+
+@pytest.mark.parametrize('query, columns', [
+    ("PREDICT users.label FOR EACH users.id "
+     "WHERE users.kind = 'orders.price'  # users.age",
+     {'users.label', 'users.id', 'users.kind'}),
+    ('PREDICT', set()),
+])
+def test_query_column_names_come_from_the_parser(query, columns):
+    """A literal or a comment is not a reference, and a query that does not
+    parse names nothing: its syntax error is the validator's to raise."""
+    assert set(query_column_names(query)) == columns
 
 
 def test_real_parser_accepts_an_unrelated_scalar_multicategorical_column():

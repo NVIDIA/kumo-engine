@@ -731,6 +731,17 @@ def parse_and_validate_query(
     )
 
 
+def query_column_names(query_string: str) -> list[str]:
+    """The ``table.column`` references of a query, in order, or none when it
+    does not parse: the parse error is :func:`parse_and_validate_query`'s to
+    raise."""
+    try:
+        parsed = PQLParser().to_parsed_predictive_query(query_string)
+    except ValueError:
+        return []
+    return [name for name, _ in parsed.all_query_columns_with_locations]
+
+
 def resolve_query_forecast(
     query: ValidatedNativeQuery,
     graph: NativeGraph,

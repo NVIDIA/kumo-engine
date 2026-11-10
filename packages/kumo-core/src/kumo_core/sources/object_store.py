@@ -13,12 +13,21 @@ import posixpath
 import re
 import shutil
 import threading
+import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import KW_ONLY, dataclass, replace
 from functools import partial
 from tempfile import TemporaryDirectory
-from typing import Any, Iterator, Literal, Mapping, NamedTuple, Sequence
+from typing import (
+    Any,
+    Callable,
+    Iterator,
+    Literal,
+    Mapping,
+    NamedTuple,
+    Sequence,
+)
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -120,6 +129,8 @@ def _source_version(path: str, entries: Sequence[Any],
 class _CsvSource(NamedTuple):
     dataset: ds.Dataset
     dtypes: dict
+    parts: list
+    sep: str
 
 
 @dataclass
@@ -206,13 +217,13 @@ class ObjectStoreSourceReader:
                 name: _dtype_of(arrow_type)
                 for name, arrow_type in self._csv_catalog(table, path).items()
             }
-        return column_dtypes(self.dataset(table).schema)
+        return column_dtypes(self.dataset(table, validate=False).schema)
 
     def source_types(self, table: str) -> dict[str, pa.DataType]:
         path, kind = self.resolve(table)
         if kind == layout.CSV:
             return self._csv_catalog(table, path)
-        schema = self.dataset(table).schema
+        schema = self.dataset(table, validate=False).schema
         return dict(zip(schema.names, schema.types))
 
     def _csv_catalog(self, table: str, path: str) -> dict[str, pa.DataType]:
@@ -261,21 +272,23 @@ class ObjectStoreSourceReader:
                     table=table)
 
     def head(self, table: str, rows: int) -> pa.Table:
-        """The first rows, under the types and the columns this reader
-        reports rather than the ones the dataset carries: a CSV dataset is
-        text until the projection converts it, and a Parquet dataset still
-        holds the pandas index column that :meth:`dtypes` drops.
+        """Sample rows under the types and the columns this reader reports
+        rather than the ones the dataset carries: a CSV dataset is text until
+        the projection converts it, and a Parquet dataset still holds the
+        pandas index column that :meth:`dtypes` drops, and may hold columns
+        Kumo cannot read, left out so the others can be sampled.
         """
         path, kind = self.resolve(table)
         found = self._objects(table, path)
         if kind != layout.CSV:
             dataset = self._dataset(table, path, kind, found)
-            _refuse_unsupported(table, dataset.schema)
+            unreadable = {name for name, _ in _unreadable(dataset.schema)}
             with _arrow_errors(table):
                 from .arrow_parquet import read_bounded_dataset
-                return read_bounded_dataset(dataset,
-                                            list(column_dtypes(dataset.schema)),
-                                            rows)
+                return read_bounded_dataset(dataset, [
+                    name for name in column_dtypes(dataset.schema)
+                    if name not in unreadable
+                ], rows)
         from . import csv_format, csv_preview
         parts = self._csv_parts(table, found)
         with _arrow_errors(table, "CSV"):
@@ -416,7 +429,7 @@ class ObjectStoreSourceReader:
                 return ReadOutput(paths=copied, num_rows=count_rows(copied))
         dataset = self._dataset(table, path, kind, found)
         if columns is not None:
-            _refuse_unsupported(table, dataset.schema)
+            _refuse_unsupported(table, _selected(dataset.schema, columns))
         with _arrow_errors(table):
             written = self._stream(table, dataset, dest, columns, aliases,
                                    worker_ceiling)
@@ -557,7 +570,8 @@ class ObjectStoreSourceReader:
             columns = source.dtypes
         with _arrow_errors(table, "CSV"):
             written = self._stream(table, source.dataset, dest, columns,
-                                   aliases, worker_ceiling, normalize=True)
+                                   aliases, worker_ceiling, normalize=True,
+                                   sampled=partial(self._csv_sampled, source))
         return ReadOutput(paths=written.paths, num_rows=written.rows)
 
     def _stream(
@@ -569,6 +583,7 @@ class ObjectStoreSourceReader:
         aliases: Mapping[str, str],
         worker_ceiling: int | None,
         normalize: bool = False,
+        sampled: Callable[[Sequence[str]], Mapping[str, Dtype]] | None = None,
     ) -> Any:
         null_values = (self.csv_options.null_values if self.csv_options
                        and self.csv_options.null_values is not None else
@@ -590,11 +605,16 @@ class ObjectStoreSourceReader:
                     # nulls; materialize the partition value type instead.
                     projection[field.name] = pc.field(field.name).cast(
                         field.type.value_type)
+        flags = ({} if not normalize or columns is None else _narrowing(
+            columns, null_values))
+        narrowed = _Narrowed(flags)
         sources = dataset.schema.names if columns is None else list(columns)
         fragments = list(dataset.get_fragments())
         streams = [
-            _fragment_batches(fragment, dataset.schema, projection, sources,
-                              own_types=self.ingest_converts)
+            _fragment_batches(fragment, dataset.schema, {
+                **projection,
+                **narrowed.flags
+            }, sources, own_types=self.ingest_converts, narrowed=narrowed)
             for fragment in fragments
         ]
         prebuffered, largest = _prebuffered_bytes(fragments, sources,
@@ -615,9 +635,11 @@ class ObjectStoreSourceReader:
                     workers if remote else 0):
             logger.info("Staging %s: %d parts, %d at a time, %d MiB each",
                         table, len(streams), workers, per_stream >> 20)
-            return materialize_arrow_streams(
+            written = materialize_arrow_streams(
                 streams, dest, worker_ceiling=workers,
                 uniform=not self.ingest_converts)
+        narrowed.report(table, columns or {}, sampled)
+        return written
 
     def _verbatim(
         self,
@@ -638,7 +660,7 @@ class ObjectStoreSourceReader:
             return False
         declared = list(columns)
         for schema in self._footers(found, worker_ceiling):
-            _refuse_unsupported(path, schema)
+            _refuse_unsupported(path, _selected(schema, declared))
             if list(schema.names) != declared:
                 return False
             for name, dtype in columns.items():
@@ -725,7 +747,19 @@ class ObjectStoreSourceReader:
                     format=csv_format.text_format(sep, list(columns),
                                                   _unpinned(columns),
                                                   self.csv_options)),
-                dict(columns))
+                dict(columns), parts, sep)
+
+    def _csv_sampled(self, source: _CsvSource,
+                     names: Sequence[str]) -> dict[str, Dtype]:
+        """The sampled types of ``names`` over the parts ``source`` reads,
+        for the narrowing judgement. Only those columns are typed, so an
+        unselected column Kumo cannot type does not fail the read."""
+        from . import csv_format
+        with _arrow_errors(source.parts[0], "CSV"):
+            sampled = csv_format.sampled(self.filesystem, source.parts,
+                                         source.sep, self.csv_options,
+                                         names=names)
+        return {name: _dtype_of(dtype) for name, dtype in sampled.items()}
 
 
 def require_no_sql(sql: str | None) -> None:
@@ -735,9 +769,78 @@ def require_no_sql(sql: str | None) -> None:
             "connector (Snowflake, Databricks or BigQuery).")
 
 
+_NARROWED = "\x00narrowed:"
+
+
+class _Narrowed:
+    """Values a CSV integer column has no exact integer for, counted per
+    column across every part's batches as they are projected. The flags ride
+    along the projection under reserved names and are stripped from each
+    batch before it is written."""
+    def __init__(self, flags: Mapping[str, Any]):
+        self.flags = {_NARROWED + name: flag for name, flag in flags.items()}
+        self.counts = {name: 0 for name in flags}
+        self._lock = threading.Lock()
+
+    def strip(self, batch: pa.RecordBatch) -> pa.RecordBatch:
+        if not self.flags:
+            return batch
+        with self._lock:
+            for column in self.flags:
+                self.counts[column[len(_NARROWED):]] += (pc.sum(
+                    batch.column(column)).as_py() or 0)
+        return batch.select(
+            [name for name in batch.schema.names if name not in self.flags])
+
+    def report(
+            self, table: str, columns: Mapping[str, Dtype],
+            sampled: Callable[[Sequence[str]], Mapping[str, Dtype]] | None
+    ) -> None:
+        """A column the sample showed decimals in was declared an integer
+        knowingly: its values are staged as null with a warning. One the
+        sample showed only whole numbers in got its integer type from the
+        sample, or matching it, so the type is wrong for the column and the
+        read is refused rather than losing values nobody chose to lose.
+        ``sampled`` types the narrowed columns over the parts this read used,
+        so it is taken only when a column was narrowed."""
+        counted = {name: count for name, count in self.counts.items() if count}
+        if not counted:
+            return
+        catalog = sampled(list(counted)) if sampled is not None else {}
+        refused = []
+        for name, count in counted.items():
+            dtype = Dtype(columns[name]).value
+            if name in catalog and Dtype(catalog[name]).is_int():
+                refused.append(
+                    f"{table}.{name} holds {count} value(s) with a fractional "
+                    f"part past the sampled rows, which were all whole "
+                    f"numbers, so {dtype} is the wrong type for it. Declare "
+                    f"the column float64 to keep them, or fix the source.")
+                continue
+            warnings.warn(
+                f"{table}.{name} is declared {dtype} but holds {count} "
+                f"value(s) with a fractional part; they are staged as null, "
+                f"not rounded. Declare the column float64 to keep them, or "
+                f"fix the source.", UserWarning, stacklevel=2)
+        if refused:
+            raise PermanentSourceError(" ".join(refused), table=table)
+
+
+def _narrowing(columns: Mapping[str, Dtype],
+               null_values: Sequence[str]) -> dict[str, Any]:
+    """Per CSV column declared an integer, a flag for each value with a
+    fractional part, which :func:`csv_format.convert` leaves null."""
+    from . import csv_format
+    return {
+        name: csv_format.narrowed(pc.field(name), null_values=null_values)
+        for name, dtype in columns.items() if Dtype(dtype).is_int()
+    }
+
+
 def _fragment_batches(fragment: Any, schema: pa.Schema,
-                      projection: Mapping[str, Any], sources: Sequence[str],
-                      *, own_types: bool = False) -> Iterator[Any]:
+                      projection: Mapping[str, Any], sources: Sequence[str], *,
+                      own_types: bool = False,
+                      narrowed: _Narrowed | None = None) -> Iterator[Any]:
     """A generator, so the scan starts when a worker reaches this fragment.
     Building the scanners up front starts every one: 580MB of Arrow buffers at
     60 fragments, before a single row is read.
@@ -746,8 +849,9 @@ def _fragment_batches(fragment: Any, schema: pa.Schema,
     time, 3.4GiB per worker for a Spark file's 5.7M-row groups (kumo#31439).
     """
     if not isinstance(fragment, ds.ParquetFileFragment):
-        yield from ds.Scanner.from_fragment(
-            fragment, schema=schema, columns=dict(projection)).to_batches()
+        for batch in ds.Scanner.from_fragment(
+                fragment, schema=schema, columns=dict(projection)).to_batches():
+            yield batch if narrowed is None else narrowed.strip(batch)
         return
     fields = [schema.field(name) for name in sources]
     if own_types:
@@ -907,18 +1011,30 @@ def _repeated(value: Any, dtype: pa.DataType, rows: int) -> pa.Array:
     return pa.repeat(pa.scalar(value, dtype), rows)
 
 
-def _refuse_unsupported(table: str, schema: pa.Schema) -> None:
+def _unreadable(schema: pa.Schema) -> list[tuple[str, pa.DataType]]:
     decoded = pa.schema([
         field.with_type(field.type.value_type)
         if pa.types.is_dictionary(field.type) else field for field in schema
     ])
-    offending = unsupported_columns(decoded)
+    return unsupported_columns(decoded)
+
+
+def _refuse_unsupported(table: str, schema: pa.Schema) -> None:
+    offending = _unreadable(schema)
     if not offending:
         return
     named = ", ".join(f"{name} ({dtype})" for name, dtype in offending)
     raise PermanentSourceError(
         f"{table} has columns Kumo cannot read: {named}. "
         f"{UNSUPPORTED_ADVICE}", table=table)
+
+
+def _selected(schema: pa.Schema, names: Sequence[str]) -> pa.Schema:
+    """The declared columns of ``schema``: one the file lacks is the
+    projection's to report, and one not declared is not read, whatever its
+    type."""
+    return pa.schema(
+        [schema.field(name) for name in names if name in schema.names])
 
 
 def column_dtypes(schema: pa.Schema) -> dict[str, Dtype]:

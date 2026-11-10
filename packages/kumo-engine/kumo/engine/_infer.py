@@ -39,6 +39,7 @@ cheap pass left ambiguous):
   call.
 """
 
+import warnings
 from dataclasses import replace
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -176,22 +177,34 @@ def infer_source_columns(
     }
 
 
-def refuse_unsupported_columns(connector: Connector, table_name: str,
-                               columns: List[Column]) -> None:
-    r"""Raises for columns whose source type has no Kumo dtype and that no
-    declared dtype resolved.
+def unsupported_source_types(connector: Connector, table_name: str,
+                             columns: List[Column]) -> Dict[str, Optional[str]]:
+    r"""The source type of each column whose source type has no Kumo dtype
+    and that no declared dtype resolved, by name; `None` where the source
+    reports no type.
     """
     from kumo_core.sources.object_store_backend import ObjectStoreSourceBackend
 
     names = [col.name for col in columns if col.dtype == Dtype.unsupported]
     if not names:
-        return
+        return {}
     backend = connector.source_backend
     types = (backend.source_types(connector, table_name) if isinstance(
         backend, ObjectStoreSourceBackend) else {})
+    return {name: types.get(name) for name in names}
+
+
+def refuse_unsupported_columns(connector: Connector, table_name: str,
+                               columns: List[Column]) -> None:
+    r"""Raises for columns whose source type has no Kumo dtype and that no
+    declared dtype resolved.
+    """
+    types = unsupported_source_types(connector, table_name, columns)
+    if not types:
+        return
     listed = ', '.join(
-        f"{name!r} ({types[name]})" if name in types else repr(name)
-        for name in names)
+        f"{name!r} ({source_type})" if source_type is not None else repr(name)
+        for name, source_type in types.items())
     raise ValueError(
         f"Table {table_name!r} has columns whose source type Kumo cannot "
         f"read: {listed}. Declare a dtype for them (`dtypes=` or "
@@ -300,6 +313,17 @@ def resolve_table_columns(
                 stype = _stype_for_column(dtype, statistics.get(col.name),
                                           num_unique_multi, delimiter
                                           is not None, name=col.name)
+            if (stype is None and dtype is not None and frame is not None
+                    and len(frame) and col.name in frame
+                    and frame[col.name].isna().all()):
+                stype = Stype.unsupported
+                warnings.warn(
+                    f"Column {col.name!r} in table {table_name!r} has no "
+                    f"values in the {len(frame)} sampled rows, so its "
+                    f"semantic type could not be inferred. It is left "
+                    f"untyped and out of the model's features; set a type "
+                    f"with `Table.with_column({col.name!r}, stype=...)` to "
+                    f"include it.", UserWarning, stacklevel=3)
             if stype == Stype.multicategorical and dtype == Dtype.string:
                 delimiters[col.name] = delimiter
             resolved[col.name] = (dtype, stype)
