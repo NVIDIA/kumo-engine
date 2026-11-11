@@ -1874,7 +1874,7 @@ fn test_custom_tt_missing_secondary_boolean_target() {
                 assert_eq!(rows, 5);
                 assert_eq!(columns, vec!["ENTITY1", "TIMESTAMP"]);
             } else {
-                let error = result.err().expect("missing TARGET2 must fail training");
+                let error = result.expect_err("missing TARGET2 must fail training");
                 assert!(
                     matches!(&error, TTGenError::SchemaError(message) if message.contains("TARGET2")),
                     "expected missing-target schema error, got {error}"
