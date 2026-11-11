@@ -1005,6 +1005,7 @@ fn flush_value_list_buf(
     flush_value_list_buf_with_field(lists, &inner_field)
 }
 
+/// Floating lists preserve NaNs and coerce non-numeric values to zero.
 fn flush_value_list_buf_with_field(
     lists: Vec<Vec<Value>>,
     inner_field: &Field,
@@ -1176,21 +1177,28 @@ mod tests {
                 vec![Value::Float(1.25), Value::Int(2), Value::Float(-3.5)],
                 vec![],
                 vec![Value::Float(0.125)],
+                vec![
+                    Value::Str("missing".to_string()),
+                    Value::Bool(true),
+                    Value::Float(f64::NAN),
+                ],
             ],
             &field,
         );
 
         assert_eq!(output.data_type(), &DataType::List(Arc::new(field)));
         let lists = output.as_any().downcast_ref::<ListArray>().unwrap();
-        assert_eq!(lists.len(), 3);
+        assert_eq!(lists.len(), 4);
         assert_eq!(lists.null_count(), 0);
-        assert_eq!(lists.value_offsets(), &[0, 3, 3, 4]);
+        assert_eq!(lists.value_offsets(), &[0, 3, 3, 4, 7]);
         let values = lists
             .values()
             .as_any()
             .downcast_ref::<Float32Array>()
             .unwrap();
-        assert_eq!(values.values().as_ref(), &[1.25, 2.0, -3.5, 0.125]);
+        assert_eq!(&values.values()[..6], &[1.25, 2.0, -3.5, 0.125, 0.0, 0.0]);
+        assert!(values.value(6).is_nan());
+        assert_eq!(values.null_count(), 0);
     }
 
     /// Helper: create a ChannelBatchWriter with a bounded channel and return

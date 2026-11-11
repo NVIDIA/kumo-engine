@@ -1829,6 +1829,61 @@ fn test_custom_tt_multi_target_emits_all_targets() {
     }
 }
 
+/// Missing declared labels are schema errors, while prediction remains targetless.
+#[test]
+fn test_custom_tt_missing_secondary_boolean_target() {
+    use diskgraph_train_table::custom_tt_row_errors::IngestOnError;
+    use diskgraph_train_table::errors::TTGenError;
+
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_users_only_graph(dir.path(), 5);
+    let entity_pks: Vec<i64> = (0..5).collect();
+    for is_prediction in [false, true] {
+        let pq = dir
+            .path()
+            .join(format!("missing_target_{is_prediction}.parquet"));
+        synth_static_custom_tt_parquet(&pq, &entity_pks, !is_prediction);
+        let mut plan = make_custom_tt_target_only_node_plan();
+        plan.is_prediction = is_prediction;
+        for on_error in [IngestOnError::Abort, IngestOnError::SkipRowOnError] {
+            let output_dir = tempfile::tempdir().unwrap();
+            let custom = CustomTtSource {
+                target_window_end: None,
+                parquet_path: pq.clone(),
+                input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+                on_error,
+                allow_negative_weight: false,
+                timestamp_reference: None,
+            };
+            let customizer = |resolved: &mut ResolvedPlan<Seconds>| {
+                let next_idx = resolved.target_alias_indices.last().copied().unwrap_or(0) + 1;
+                resolved.target_alias_indices.push(next_idx);
+                resolved.target_dtypes.push(DataType::Boolean);
+            };
+            let result = execute_tt_pass_with_customizer(
+                &plan,
+                &index,
+                output_dir.path(),
+                Some(custom),
+                Some(customizer),
+            );
+            if is_prediction {
+                let output = result.unwrap();
+                assert_eq!(output.rows_written, 5);
+                let (columns, rows) = read_tt_parquet_columns(&output.tt_parquet_path);
+                assert_eq!(rows, 5);
+                assert_eq!(columns, vec!["ENTITY1", "TIMESTAMP"]);
+            } else {
+                let error = result.err().expect("missing TARGET2 must fail training");
+                assert!(
+                    matches!(&error, TTGenError::SchemaError(message) if message.contains("TARGET2")),
+                    "expected missing-target schema error, got {error}"
+                );
+            }
+        }
+    }
+}
+
 /// Phase 11: behavior for unknown ENTITY1 in a multi-entity row. Documented
 /// behavior: ENTITY1 is the index lookup key; when it doesn't resolve, the
 /// row is silently skipped (matches single-entity unknown-PK behavior).

@@ -1102,13 +1102,20 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
         .map(|(idx, field)| (idx, field.name().clone()))
         .collect();
 
-    // Pre-resolve per-slot TARGETk / autoregression / yoy column indices for
-    // direct batch reads (avoids per-row name lookups). For Node prediction
-    // we read one TARGETk per declared target slot; missing TARGETk falls
-    // back to NaN (matches the previous behavior for slot 1).
+    let requires_targets =
+        !plan.is_prediction && !matches!(plan.prediction_type, PredictionType::PassThrough);
     let target_col_indices: Vec<Option<usize>> = (0..plan.target_alias_indices.len())
-        .map(|i| schema.index_of(&target_column(i)).ok())
-        .collect();
+        .map(|i| {
+            let name = target_column(i);
+            match schema.index_of(&name) {
+                Ok(index) => Ok(Some(index)),
+                Err(_) if !requires_targets => Ok(None),
+                Err(_) => Err(TTGenError::SchemaError(format!(
+                    "custom-TT parquet missing required column '{name}'"
+                ))),
+            }
+        })
+        .collect::<TTGenResult<_>>()?;
     let frequency_col_idx = schema.index_of("__kumo_internal_frequency_column__").ok();
     let autoreg_col_idx = schema.index_of(AUTOREGRESSION_OUTPUT_ALIAS).ok();
     let future_labels_col_idx = schema.index_of(FUTURE_LABELS_OUTPUT_ALIAS).ok();
@@ -1456,8 +1463,6 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                 // A PREDICTION bundle carries NO target (native predict emits
                 // `[ENTITY1, TIMESTAMP]` only). For predict, emit an empty
                 // target set so `write_row_wide` writes no TARGETk columns.
-                // TRAIN reads each TARGETk; missing → NaN (preserves the prior
-                // single-target fallback behavior).
                 let targets: Vec<Value> = if plan.is_prediction {
                     Vec::new()
                 } else {
