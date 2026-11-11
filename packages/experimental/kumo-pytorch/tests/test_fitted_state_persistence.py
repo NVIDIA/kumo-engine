@@ -372,7 +372,17 @@ def test_the_fit_record_says_where_state_was_fitted_and_survives_reuse(tmp_path:
                 "anchors": task.fingerprints["anchors"],
                 "fit_split": ["train"],
             }
-            assert task.fitted_state.fit == {"inputs": record, "targets": record}
+            statistics = task.fitted_state.fit["inputs"]["statistics"]
+            assert {name: sorted(value["files"]) for name, value in statistics.items()} == {
+                '["inputs","graph","graph","accounts","account_type"]': [
+                    "accounts/account_type.counts"
+                ],
+                '["inputs","graph","graph","card_transactions","amount"]': [
+                    "card_transactions/amount.moments"
+                ],
+            }
+            inputs = {**record, "statistics": statistics}
+            assert task.fitted_state.fit == {"inputs": inputs, "targets": record}
             trained = task.fitted_state
 
         # more anchors, same training split: the same values from different anchors
@@ -383,7 +393,7 @@ def test_the_fit_record_says_where_state_was_fitted_and_survives_reuse(tmp_path:
 
     artifact = api.Artifact.load(tmp_path / "trained")
     written = json.loads((tmp_path / "trained" / "fitted-state.json").read_text())
-    assert written["fit"] == artifact.fitted_state.fit == {"inputs": record, "targets": record}
+    assert written["fit"] == artifact.fitted_state.fit == {"inputs": inputs, "targets": record}
     assert artifact.manifest["fitted_state_fingerprint"] == trained.fingerprint
 
     rows = _fixture_rows()
@@ -394,17 +404,17 @@ def test_the_fit_record_says_where_state_was_fitted_and_survives_reuse(tmp_path:
             _with_test_anchor(_requests()), fitted=artifact.fitted_state, inference=True
         ) as task:
             assert task.fingerprints["dataset"] != record["dataset"]
-            assert task.fitted_state.fit == {"inputs": record, "targets": record}
+            assert task.fitted_state.fit == {"inputs": inputs, "targets": record}
             task.to_artifact().save(tmp_path / "scored")
         reloaded = api.Artifact.load(tmp_path / "scored").fitted_state
-        assert reloaded.fit == {"inputs": record, "targets": record}
+        assert reloaded.fit == {"inputs": inputs, "targets": record}
         assert reloaded.fingerprint == trained.fingerprint
 
         # reusing the input half only: the targets are fitted, and recorded, here
         with plan.materialize(
             _requests(), fitted=artifact.fitted_state.inputs, fit_split="train"
         ) as task:
-            assert task.fitted_state.fit["inputs"] == record
+            assert task.fitted_state.fit["inputs"] == inputs
             assert task.fitted_state.fit["targets"] == {
                 **record,
                 "dataset": task.fingerprints["dataset"],
