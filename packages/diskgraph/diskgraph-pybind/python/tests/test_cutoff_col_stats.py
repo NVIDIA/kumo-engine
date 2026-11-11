@@ -282,3 +282,51 @@ def test_rejects_unsupported_requests(built):
     with pytest.raises(Exception, match="unknown column statistic"):
         diskgraph.col_stats_from_arrow(pa.array([1]), None, None, ["median"])
     assert diskgraph.col_stats_from_arrow(pa.array([1]), None, None, []) == {}
+
+
+DAY_START = 19_700 * 86_400
+CLOCK_CUTOFF = DAY_START + 10 * 3_600  # 10:00 on day 19700
+# Milliseconds from the cutoff: 00:00 that day, 09:00, just before, at, just after, 00:00 and
+# 00:00:01 the next day.
+OFFSETS_MS = [-36_000_000, -3_600_000, -500, -1, 0, 1, 500, 1_000, 50_400_000, 50_401_000]
+
+
+@pytest.mark.parametrize("unit, ticks, kept", [
+    ("milliseconds", CLOCK_CUTOFF * 1_000, 5),
+    ("seconds", CLOCK_CUTOFF, 5),
+    # A coarser clock rounds the cutoff up to the end of its day, like the rows' times.
+    ("days", 19_701, 9),
+])
+def test_cutoff_converts_like_row_times(tmp_path, unit, ticks, kept):
+    assert diskgraph.cutoff_ticks(CLOCK_CUTOFF, unit) == ticks
+    pq.write_table(pa.table({
+        "id": pa.array(range(len(OFFSETS_MS)), pa.int64()),
+        "ts": pa.array([CLOCK_CUTOFF * 1_000 + o for o in OFFSETS_MS], pa.timestamp("ms")),
+    }), tmp_path / "events.parquet")
+    requests = [["events", "id", "counts"]]
+    diskgraph.ingest(
+        config_json=json.dumps({
+            "dataset_name": "clocks", "timestamp_unit": unit,
+            "tables": [{"name": "events", "primary_key": "id", "create_time": "ts",
+                        "columns": [{"name": "id", "ingested_dtype": "int64"},
+                                    {"name": "ts", "ingested_dtype": "timestamp"}],
+                        "source": {"type": "parquet",
+                                   "paths": [str(tmp_path / "events.parquet")]}}],
+        }),
+        output_dir=str(tmp_path / "index"),
+        col_stats_requests=json.dumps({"cutoffs": [ticks], "requests": requests}),
+    )
+    index = str(tmp_path / "index")
+    ingested = _files(index)
+    shutil.rmtree(tmp_path / "index" / "col_stats")
+    result = diskgraph.ensure_col_stats(index, ticks, requests)
+    assert result["unit"] == unit and _files(index) == ingested
+    counts = json.loads(pathlib.Path(result["files"]["events/id.counts"]["path"]).read_text())
+    assert sorted(v for v, _ in counts["data"]["values"]) == list(range(kept))
+
+
+def test_cutoff_ticks_rejects_what_the_clock_cannot_hold():
+    with pytest.raises(Exception, match="nanoseconds|Nanoseconds"):
+        diskgraph.cutoff_ticks(2**62, "nanoseconds")
+    with pytest.raises(Exception, match="unsupported timestamp_unit"):
+        diskgraph.cutoff_ticks(0, "minutes")
