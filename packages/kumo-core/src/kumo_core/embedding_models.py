@@ -96,21 +96,28 @@ class TokenEmbeddingModel(EmbeddingModel, Protocol):
     ``vocabulary()`` is a ``pd.Index`` of words; ``vectors()`` is a float32
     array of shape ``[len(vocabulary()), dim]``, row ``r`` being the vector
     of ``vocabulary()[r]``. ``tokenize(texts)`` takes an Arrow array of raw
-    column values (strings, or null) and returns ``(rowptr, rows)``, two
-    integer tensors (or arrays): the words of row ``i`` are the
+    column values (strings, token lists, or null) and returns ``(rowptr, rows)``,
+    two integer tensors (or arrays): the words of row ``i`` are the
     vocabulary rows ``rows[rowptr[i]:rowptr[i + 1]]``, so ``rowptr`` has
     ``len(texts) + 1`` entries starting at 0; unknown words are dropped.
     With vocabulary ``["red", "shoe"]``, ``["Red shoe", None, "sock"]``
     gives ``rowptr = [0, 2, 2, 2]`` and ``rows = [0, 1]``.
 
-    Encoding supplies Arrow arrays. Statistics callers may still supply a
-    ``pd.Series``; custom models must accept both input representations.
+    Chunked columns are supplied one Arrow array at a time.
 
     Models are pickled to worker processes, so define the class in a .py
     module (not a notebook), and load large data lazily instead of
     pickling it.
     """
-    def tokenize(self, texts: pa.Array | pd.Series) -> tuple[Tensor, Tensor]:
+    def tokenize(self, texts: pa.Array) -> tuple[Tensor, Tensor]:
+        """Map an Arrow array of texts or token lists to vocabulary rows.
+
+        Args:
+            texts: One raw string, token list, or null per row.
+
+        Returns:
+            Row pointers and vocabulary row indices, excluding unknown tokens.
+        """
         ...
 
     def vectors(self) -> np.ndarray:
@@ -185,7 +192,18 @@ class _VocabularyModel:
             self._index = VocabularyIndex(self.vocabulary())
         return self._index
 
-    def tokenize(self, texts: pa.Array | pd.Series) -> tuple[Tensor, Tensor]:
+    def tokenize(self, texts: pa.Array) -> tuple[Tensor, Tensor]:
+        """Tokenize Arrow values using this model's vocabulary.
+
+        Args:
+            texts: One raw string, token list, or null per row.
+
+        Returns:
+            Row pointers and physical vocabulary rows, excluding unknown tokens.
+
+        Raises:
+            TypeError: If texts is not an Arrow array.
+        """
         return self._vocabulary_index().tokenize(texts)
 
     def lookup(self, words: Any) -> tuple[Tensor, Tensor]:

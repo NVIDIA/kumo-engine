@@ -273,12 +273,10 @@ def test_arrow_text_matches_unicode_normalization() -> None:
     words = pd.Index(["ος", "οσ", "i", "i\u0307", "hello", "world"])
     index = VocabularyIndex(words)
     rows = ["ΟΣ", "İ", "Hello\u00a0world", "hello<br\u00a0/>world", None, ""]
-    expected_offsets, expected_tokens = index.tokenize(pd.Series(rows))
-
     offsets, tokens = index.tokenize(pa.array(rows))
 
-    assert offsets.equal(expected_offsets)
-    assert tokens.equal(expected_tokens)
+    assert offsets.tolist() == [0, 1, 2, 4, 6, 6, 6]
+    assert tokens.tolist() == [0, 3, 4, 5, 4, 5]
 
 
 @pytest.mark.parametrize(

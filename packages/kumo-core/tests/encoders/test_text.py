@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import pickle
 from collections.abc import Iterator
+from unittest.mock import Mock
 
 import numpy as np
 import pandas as pd
@@ -50,9 +51,9 @@ def test_normalize_text() -> None:
     assert normalized.tolist() == [["hello", "world"], ["get", "old"], []]
 
 
-def test_glove_tokenizer_preserves_non_range_rows() -> None:
+def test_glove_tokenizer_preserves_sliced_rows() -> None:
     rowptr, tokens = resolve_encoder(TextEmbedding("glove.test-10d")).tokenize(
-        pd.Series(["The invalid", "of, to"], index=[10, 20])
+        pa.array(["ignored", "The invalid", "of, to", "ignored"]).slice(1, 2)
     )
 
     assert rowptr.tolist() == [0, 1, 3]
@@ -64,7 +65,7 @@ def test_glove_lookup_skips_null_and_repeated_words(glove_with_null_words) -> No
     table = TokenEmbeddingTable(model).initialize()
 
     rowptr, tokens = model.tokenize(
-        pd.Series(["The OF to", "null nan", None, "a"])
+        pa.array(["The OF to", "null nan", None, "a"])
     )
     assert rowptr.tolist() == [0, 3, 3, 3, 4]
     assert tokens.tolist() == [0, 5, 4, 6]  # A repeated word maps to its last row.
@@ -146,7 +147,7 @@ class _NumpyModel:
     def vectors(self) -> np.ndarray:
         return np.ones((self.rows, self.dim))  # float64
 
-    def tokenize(self, texts: pa.Array | pd.Series) -> tuple[np.ndarray, np.ndarray]:
+    def tokenize(self, texts: pa.Array) -> tuple[np.ndarray, np.ndarray]:
         rowptr = [0, 2] + [2] * (len(texts) - 1 + self.extra_pointer)
         return np.array(rowptr), np.array([0, 1])
 
@@ -161,3 +162,30 @@ def test_custom_models_are_checked_where_they_are_used() -> None:
         TextTensorMapper(_NumpyModel(extra_pointer=True))(pa.array(["a", "b"]))
     with pytest.raises(ValueError, match=r"has shape \(3, 2\), but it must be \(2, 2\)"):
         TokenEmbeddingTable(_NumpyModel(rows=3)).initialize()
+
+
+def test_glove_tokenizer_rejects_pandas() -> None:
+    """Tokenizer callers must provide Arrow values explicitly."""
+    model = resolve_encoder(TextEmbedding("glove.test-10d"))
+
+    with pytest.raises(TypeError, match="Arrow array"):
+        model.tokenize(pd.Series(["the"]))  # type: ignore[arg-type]
+
+
+def test_text_statistics_supply_arrow_to_tokenizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Legacy statistics convert normalized tokens at the Arrow boundary."""
+    from kumo_core.features import stats as feature_stats
+
+    model = Mock()
+    model.tokenize.return_value = (torch.tensor([0, 1, 2]), torch.tensor([0, 1]))
+    monkeypatch.setattr(feature_stats, "resolve_encoder", Mock(return_value=model))
+
+    overlap = feature_stats.glove_overlap(pd.Series(["hello unknown", "world"]))
+
+    model.tokenize.assert_called_once()
+    values = model.tokenize.call_args.args[0]
+    assert isinstance(values, pa.Array)
+    assert values.to_pylist() == [["hello", "unknown"], ["world"]]
+    assert overlap == pytest.approx(2 / 3)

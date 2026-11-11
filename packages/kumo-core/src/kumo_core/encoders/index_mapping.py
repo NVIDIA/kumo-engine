@@ -135,28 +135,5 @@ class Mapper:
 
         return rowptr, index
 
-    def tokenize(self, data: Any) -> tuple[Tensor, Tensor]:
-        r"""Tokenize sentences in ``data`` to integer IDS in CSR
-        ``(rowptr, index)`` format based on the pre-defined mapping.
-        """
-        if not isinstance(data, pd.Series):
-            data = pd.Series(data=data)
-
-        if len(data) == 0:
-            index = torch.empty(0, dtype=torch.long)
-            rowptr = torch.tensor([0], dtype=torch.long)
-        else:
-            from kumo_core.encoders.text import normalize_text
-
-            data = normalize_text(data)
-            exploded_data = data.reset_index(drop=True).explode()
-            index = self.map(exploded_data)
-            row = torch.from_numpy(exploded_data.index.to_numpy())
-            mask = index >= 0
-            row, index = row[mask], index[mask]
-            rowptr = index2ptr(row, size=len(data))
-
-        return rowptr, index
-
     def __len__(self) -> int:
         return self._length

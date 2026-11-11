@@ -16,6 +16,7 @@ from kumo_core.encoders.tensor_mapper import TensorMapper
 from kumo_core.glove import TokenEmbeddingTable, VocabularyIndex
 from kumo_core.train.trainer import Trainer
 from kumoapi.encoder import TextEmbedding
+from torch import Tensor
 
 
 class _Words:
@@ -30,7 +31,7 @@ class _Words:
     def fingerprint(self) -> str:
         return "lifetime-words-fingerprint"
 
-    def tokenize(self, texts):
+    def tokenize(self, texts: pa.Array) -> tuple[Tensor, Tensor]:
         return VocabularyIndex(self.words).tokenize(texts)
 
     def vectors(self) -> np.ndarray:

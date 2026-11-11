@@ -10,11 +10,12 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 from kumoapi.encoder import TextEmbedding
 from kumoapi.typing import Stype
 
-from kumo_core.encoders.tensor_mapper import SequenceTensorMapper
 from kumo_core.embedding_models import resolve_encoder
+from kumo_core.encoders.tensor_mapper import SequenceTensorMapper
 from kumo_core.encoders.text import normalize_text
 
 
@@ -128,11 +129,21 @@ def avg_non_char(ser: pd.Series) -> float:
 
 
 def glove_overlap(ser: pd.Series) -> float:
+    """Measure vocabulary coverage of normalized text tokens.
+
+    Args:
+        ser: Text values or pretokenized word lists.
+
+    Returns:
+        Fraction of tokens in the configured vocabulary, or one for no tokens.
+    """
     ser = normalize_text(ser)
     num_tokens = int(ser.map(len).sum())
     if num_tokens == 0:
         return 1.0
-    _, index = resolve_encoder(TextEmbedding()).tokenize(ser)
+    _, index = resolve_encoder(TextEmbedding()).tokenize(
+        pa.array(ser, from_pandas=True)
+    )
     return index.size(0) / num_tokens
 
 
