@@ -44,3 +44,37 @@ def test_numpy_lookup_preserves_positions(index: pd.Index, expected: list[int]) 
     actual = Mapper(index).map(np.array([3, 1, 4]))
 
     assert actual.tolist() == expected
+
+
+@pytest.mark.parametrize(
+    "rows,separator,expected_offsets,expected_values",
+    [
+        (["a", "", None, "z"], None, [0, 1, 1, 2, 3], ["a", -1, "z"]),
+        (["a,b", "", None], ",", [0, 2, 2, 3], ["a", "b", "__None__"]),
+        ([[1, 2], [], None, [9]], None, [0, 2, 2, 3, 4], [1, 2, -1, 9]),
+        (
+            [np.array([1, 2]), np.array([]), None, np.array([9])],
+            None,
+            [0, 2, 3, 4, 5],
+            [1, 2, -1, -1, 9],
+        ),
+    ],
+)
+def test_prepare_multi_counts_tokens_before_mapping(
+    rows: list[object],
+    separator: str | None,
+    expected_offsets: list[int],
+    expected_values: list[str | int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Parsing sizes final storage without allocating encoded category buffers."""
+    mapper = Mapper([])
+
+    def unexpected_mapping(data: object) -> None:
+        raise AssertionError("Preparation must not encode categories")
+
+    monkeypatch.setattr(mapper, "map", unexpected_mapping)
+    offsets, values = mapper._prepare_multi(pd.Series(rows), separator)
+
+    assert offsets.tolist() == expected_offsets
+    assert [(-1 if pd.isna(value) else value) for value in values] == expected_values

@@ -93,47 +93,36 @@ class Mapper:
         return torch.from_numpy(ser.cat.codes.to_numpy().copy()).to(torch.long)
 
     def map_multi(self, data: Any, sep: str | None) -> tuple[Tensor, Tensor]:
-        r"""Maps multi-categorical values in ``data`` to integer IDs in CSR
-        ``(rowptr, index)`` format based on the pre-defined mapping.
-        """
+        r"""Map multi-categorical values to integer IDs in CSR format."""
+        rowptr, values = self._prepare_multi(data, sep)
+        return rowptr, self.map(values)
+
+    def _prepare_multi(
+        self, data: pd.Series, sep: str | None
+    ) -> tuple[Tensor, pd.Series]:
+        """Parse raw categories and count tokens before allocating encoded storage."""
         if not isinstance(data, pd.Series):
             data = pd.Series(data=data)
-
         index = data.first_valid_index()
-
         if len(data) == 0:
-            index = torch.empty(0, dtype=torch.long)
-            rowptr = torch.tensor([0], dtype=torch.long)
-        elif index is not None and pd.api.types.is_list_like(data[index]):
+            return torch.tensor([0], dtype=torch.long), data
+        if index is not None and pd.api.types.is_list_like(data[index]):
             data = data.reset_index(drop=True)
-            # Arrow list rows become NumPy arrays in pandas. Keep empty arrays
-            # so explode emits the legacy -1 token expected by existing models;
-            # only empty Python lists are filtered.
+            # Arrow rows are NumPy arrays: preserve their legacy empty token.
             mask = data.apply(lambda x: not isinstance(x, list) or len(x) > 0)
-            masked_data = data[mask]
-            exploded_data = masked_data.explode()
-            index = self.map(exploded_data)
-            row = torch.from_numpy(exploded_data.index.to_numpy())
-            mask = torch.from_numpy((exploded_data != '').to_numpy())
-            index, row = index[mask], row[mask]
-            rowptr = index2ptr(row, size=len(data))
+            values = data[mask].explode()
+            row = torch.from_numpy(values.index.to_numpy())
         elif sep is None:
-            index = self.map(data)
-            row = torch.arange(index.numel())
-            mask = torch.from_numpy((data != '').to_numpy())
-            index, row = index[mask], row[mask]
-            rowptr = index2ptr(row, size=len(data))
+            values = data
+            row = torch.arange(len(data))
         else:
-            data = data.fillna('__None__').astype(str)
-            data = data.reset_index(drop=True).str.split(sep)
-            exploded_data = data.explode()
-            index = self.map(exploded_data)
-            row = torch.from_numpy(exploded_data.index.to_numpy())
-            mask = torch.from_numpy((exploded_data != '').to_numpy())
-            index, row = index[mask], row[mask]
-            rowptr = index2ptr(row, size=len(data))
-
-        return rowptr, index
+            split = data.fillna("__None__").astype(str)
+            split = split.reset_index(drop=True).str.split(sep)
+            values = split.explode()
+            row = torch.from_numpy(values.index.to_numpy())
+        mask = (values != "").to_numpy()
+        rowptr = index2ptr(row[torch.from_numpy(mask)], size=len(data))
+        return rowptr, values[mask]
 
     def tokenize(self, data: Any) -> tuple[Tensor, Tensor]:
         r"""Tokenize sentences in ``data`` to integer IDS in CSR

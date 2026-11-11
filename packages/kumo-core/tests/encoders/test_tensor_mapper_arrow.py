@@ -68,7 +68,7 @@ def test_numerical_arrow_matches_pandas() -> None:
     ser_i = pd.Series([1, 2, None, 4])
     arr_i = pa.array([1, 2, None, 4], type=pa.int64())
     _assert_same(_pandas_reference(mapper, ser_i), mapper(arr_i))
-    # ChunkedArray input is combined before the numpy conversion.
+    # ChunkedArray input preserves the same row order and null values.
     chunked = pa.chunked_array([[1.0, 2.0], [None, 4.0]], type=pa.float64())
     _assert_same(_pandas_reference(mapper, ser), mapper(chunked))
 
@@ -257,3 +257,105 @@ def test_categorical_float_arrow_preserves_zero_and_unknown_categories() -> None
     mapped = mapper(values)
 
     assert mapped.view(-1).tolist() == [0, 0, 1, 3, -1]
+
+
+@pytest.mark.parametrize(
+    "mapper,array",
+    [
+        (NumericalTensorMapper(), pa.array([1.0, None, 3.0])),
+        (CategoricalTensorMapper([["a", 2]]), pa.array(["a", None, "z"])),
+        (MultiCategoricalTensorMapper([[1, 2]], None), pa.array([[1], [], None])),
+        (SequenceTensorMapper(0, 3), pa.array([[1.0], [], [2.0, 3.0]])),
+        (TimestampTensorMapper(), pa.array(["2000-01-01", None, "2000-01-03"])),
+        (TextTensorMapper(), pa.array(["hello", None, "world"])),
+        (ImageTensorMapper(), pa.array(["a", None, "b"])),
+        (UnsupportedTensorMapper(), pa.array([1, None, 2])),
+    ],
+)
+def test_chunk_encoding_preserves_input_chunks(
+    mapper: TensorMapper,
+    array: pa.Array,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Encode slices, empty chunks, and zero-chunk columns without combining."""
+    source = pa.chunked_array([array[:1], array[:0], array[1:]])
+    from kumo_core.encoders import tensor_mapper
+
+    expected = mapper(array)
+    original_chunks = tensor_mapper._arrow_chunks
+    seen = []
+
+    def checked_chunks(values: pa.Array | pa.ChunkedArray) -> list[pa.Array]:
+        assert values is source
+        chunks = original_chunks(values)
+        seen.extend(chunks)
+        return chunks
+
+    monkeypatch.setattr(tensor_mapper, "_arrow_chunks", checked_chunks)
+    _assert_same(expected, mapper(source))
+    assert len(seen) == (
+        0
+        if mapper.stype in {tensor_mapper.Stype.image, tensor_mapper.Stype.unsupported}
+        else 3
+    )
+    monkeypatch.undo()
+    _assert_same(mapper(array[:0]), mapper(pa.chunked_array([], type=array.type)))
+
+
+@pytest.mark.parametrize("dictionary", [False, True])
+def test_dictionary_chunks_keep_independent_vocabularies(dictionary: bool) -> None:
+    """Different per-chunk dictionary orders retain global category codes."""
+    chunks = [pa.array(["a", "b", None]), pa.array(["b", "z", "a"])]
+    if dictionary:
+        chunks = [chunk.dictionary_encode() for chunk in chunks]
+    result = CategoricalTensorMapper([["a", 2], ["b", 1]])(pa.chunked_array(chunks))
+    assert result.flatten().tolist() == [0, 1, -1, 1, -1, 0]
+
+
+@pytest.mark.parametrize("default_dtype", [torch.float32, torch.float64])
+def test_chunked_numerical_output_owns_its_memory(default_dtype: torch.dtype) -> None:
+    """Writing encoded values never mutates the Arrow source buffers."""
+    source = pa.chunked_array([[1.0, 2.0], [3.0]], type=pa.float64())
+    previous = torch.get_default_dtype()
+    try:
+        torch.set_default_dtype(default_dtype)
+        result = NumericalTensorMapper()(source)
+        assert result.dtype == default_dtype
+        result.fill_(0)
+    finally:
+        torch.set_default_dtype(previous)
+    assert source.to_pylist() == [1.0, 2.0, 3.0]
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [None, "2020-01-01", "01/02/2020"],
+        ["invalid", "2020-01-01", "01/02/2020"],
+        [None, "2020-01-01", "2020-01-02 00:00:00"],
+    ],
+)
+def test_timestamp_format_inference_spans_chunks(rows: list[str | None]) -> None:
+    """Chunk boundaries must not change pandas' column-wide format inference."""
+    array = pa.array(rows)
+    mapper = TimestampTensorMapper()
+    _assert_same(
+        mapper(array), mapper(pa.chunked_array([array[:1], array[1:2], array[2:]]))
+    )
+
+
+@pytest.mark.parametrize("sequence", [False, True])
+def test_leading_null_chunk_preserves_string_backward(sequence: bool) -> None:
+    """Missing values in the first chunk do not select list output formatting."""
+    array = pa.array([None, "[1,2]"] if sequence else [None, "a,b"])
+    mapper = (
+        SequenceTensorMapper(0, 2)
+        if sequence
+        else MultiCategoricalTensorMapper([["a", 2], ["b", 1]], ",")
+    )
+    expected = mapper(array)
+    reference = mapper.backward(expected)
+    mapper._is_string_dtype = None
+    actual = mapper(pa.chunked_array([array[:1], array[1:]]))
+    _assert_same(expected, actual)
+    pd.testing.assert_series_equal(reference, mapper.backward(actual))
