@@ -2766,6 +2766,21 @@ fn execute_stages<U: UnitSystem>(
                         position += group.len();
                         continue;
                     }
+                    // A declined group must fall back once per operation, not
+                    // retry each shrinking suffix and decode the same rows again.
+                    for aggregate in &group {
+                        aliases[aggregate.alias_idx] = execute_aggregate(
+                            plan,
+                            entity_node,
+                            aggregate,
+                            entity_cols,
+                            observation_ts,
+                            link_frequencies,
+                            link_split_values,
+                        );
+                    }
+                    position += group.len();
+                    continue;
                 }
             }
             let op = &stage.ops[position];

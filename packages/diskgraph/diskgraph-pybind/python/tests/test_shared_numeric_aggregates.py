@@ -83,9 +83,10 @@ def test_grouped_targets_preserve_cancellation_nulls_and_chunk_boundaries(numeri
     assert actual["target:mean"].to_pylist()[:3] == [1.0 / 3, None, None]
 
 
-def test_nonfinite_and_signed_zero_keep_general_numeric_policy(numeric_graph):
-    actual = query(numeric_graph, [3, 4], operations=("sum", "mean", "min", "max"))
-    reference = query(numeric_graph, [3, 4], general=True, operations=("sum", "mean", "min", "max"))
+@pytest.mark.parametrize("key", [3, 4])
+def test_nonfinite_and_signed_zero_keep_general_numeric_policy(numeric_graph, key):
+    actual = query(numeric_graph, [key], operations=("sum", "mean", "min", "max"))
+    reference = query(numeric_graph, [key], general=True, operations=("sum", "mean", "min", "max"))
     for name in actual:
         for left, right in zip(actual[name].to_pylist(), reference[name].to_pylist()):
             assert left == right or math.isnan(left) and math.isnan(right), name
