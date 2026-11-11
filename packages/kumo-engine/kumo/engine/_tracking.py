@@ -594,7 +594,7 @@ class TrackingSession:
         self._first_epoch: Dict[Any, Any] = {}
         self._search: Optional[_Search] = None
         self._jobs: 'queue.Queue[Callable[[], Any]]' = queue.Queue(QUEUE_SIZE)
-        self._admission = threading.Lock()
+        self._admission = threading.Condition()
         self._closing = False
         self._finalizer: Optional[Callable[[], None]] = None
         self._pending_abandon: 'queue.SimpleQueue[Tracking]' = queue.SimpleQueue()
@@ -695,20 +695,24 @@ class TrackingSession:
         if self._worker is None or (self._tracker is not None
                                     and self._tracker.log_model is None):
             return None, None
-        if self._closing:
-            return None, RuntimeError('experiment tracking is finishing')
         done = threading.Event()
         failed: List[BaseException] = []
         registered: List[Any] = []
+
+        def stopped_error() -> RuntimeError:
+            message = ('experiment tracking is finishing or stopped'
+                       if self.error is None else
+                       'tracking stopped after an earlier failure '
+                       f'({full_error(self.error)})')
+            error = RuntimeError(message)
+            error.__cause__ = self.error
+            return error
 
         def log() -> None:
             try:
                 tracker = self._tracker
                 if tracker is None:
-                    raise RuntimeError(
-                        'tracking stopped after an earlier failure' + (
-                            '' if self.error is None else
-                            f' ({full_error(self.error)})'))
+                    raise stopped_error()
                 registered.append(tracker.log_model(bundle_dir, manifest,
                                                     snapshot, registry))
             except BaseException as error:
@@ -718,28 +722,55 @@ class TrackingSession:
 
         worker = self._worker
         deadline = time.monotonic() + MODEL_SECONDS
-        try:
-            self._jobs.put(log, timeout=MODEL_SECONDS)
-        except queue.Full:
-            pass
-        while not done.wait(1.0):
-            if worker.is_alive() and time.monotonic() < deadline:
-                continue
-            failed.append(
-                TimeoutError(f'it did not finish within {MODEL_SECONDS:.0f}s')
-                if worker.is_alive() else
-                RuntimeError('the tracking thread stopped'))
-            tracker, self._tracker = self._tracker, None
-            if tracker is not None:
-                if getattr(tracker, '_finish_on_worker_thread', False):
+        admitted = False
+        cancel = False
+        with self._admission:
+            while True:
+                if self._closing or self._tracker is None or not worker.is_alive():
+                    failed.append(stopped_error())
+                    break
+                try:
+                    self._jobs.put_nowait(log)
+                    admitted = True
+                    break
+                except queue.Full:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        cancel = True
+                        failed.append(TimeoutError(
+                            f'it did not finish within {MODEL_SECONDS:.0f}s'))
+                        break
+                    self._admission.wait(remaining)
+
+        if admitted:
+            while not done.wait(1.0):
+                with self._admission:
+                    if self._closing or self._tracker is None:
+                        failed.append(stopped_error())
+                        break
+                if worker.is_alive() and time.monotonic() < deadline:
+                    continue
+                cancel = True
+                failed.append(
+                    TimeoutError(f'it did not finish within {MODEL_SECONDS:.0f}s')
+                    if worker.is_alive() else
+                    RuntimeError('the tracking thread stopped'))
+                break
+        if cancel:
+            with self._admission:
+                tracker, self._tracker = self._tracker, None
+                deferred = (tracker is not None and getattr(
+                    tracker, '_finish_on_worker_thread', False))
+                if deferred:
                     self._pending_abandon.put(tracker)
-                    try:
-                        self._jobs.put_nowait(lambda: None)
-                    except queue.Full:
-                        pass
-                else:
-                    _abandon(tracker)
-            break
+                self._admission.notify_all()
+            if deferred:
+                try:
+                    self._jobs.put_nowait(lambda: None)
+                except queue.Full:
+                    pass
+            elif tracker is not None:
+                _abandon(tracker)
         if failed:
             error = failed[0]
             verb = 'log'
@@ -804,6 +835,7 @@ class TrackingSession:
             if publish:
                 self._closing = True
                 self._finalizer = finish_tracker
+                self._admission.notify_all()
         if publish:
             try:
                 self._jobs.put_nowait(lambda: None)
@@ -833,13 +865,24 @@ class TrackingSession:
             self._work_jobs()
         except BaseException as error:
             self._fail(error)
-            tracker, self._tracker = self._tracker, None
+            with self._admission:
+                self._closing = True
+                self._finalizer = None
+                tracker, self._tracker = self._tracker, None
+                abandoned = [] if tracker is None else [tracker]
+                while True:
+                    try:
+                        abandoned.append(self._pending_abandon.get_nowait())
+                    except queue.Empty:
+                        break
+                self._admission.notify_all()
             try:
-                if tracker is not None:
-                    _abandon(tracker)
-            except BaseException:
-                logger.debug('Could not end tracking after worker failure',
-                             exc_info=True)
+                for tracker in abandoned:
+                    try:
+                        _abandon(tracker)
+                    except BaseException:
+                        logger.debug('Could not end tracking after worker failure',
+                                     exc_info=True)
             finally:
                 self._started.set()
             raise
@@ -847,6 +890,8 @@ class TrackingSession:
     def _work_jobs(self) -> None:
         while True:
             job = self._jobs.get()
+            with self._admission:
+                self._admission.notify_all()
             primary: Optional[BaseException] = None
             try:
                 job()
@@ -893,8 +938,13 @@ class TrackingSession:
                 'Experiment tracking failed: %s; it is off for the rest of '
                 'this run', full_error(error), exc_info=_debug())
             self._fail(error)
-            self._tracker = None
-            _abandon(tracker)
+            with self._admission:
+                owned = self._tracker is tracker
+                if owned:
+                    self._tracker = None
+                self._admission.notify_all()
+            if owned:
+                _abandon(tracker)
 
     def _fail(self, error: BaseException) -> None:
         if self.error is None:

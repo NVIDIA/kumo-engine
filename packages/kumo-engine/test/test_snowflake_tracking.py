@@ -930,3 +930,188 @@ def test_pending_cleanup_preserves_worker_exception(fake, monkeypatch, tmp_path)
     monkeypatch.setattr(fake, 'end_run', original_end)
     adapter.log_prediction_run(_prediction('2026-11-04'))
     assert list(fake._instance.runs.values())[-1]['status'] == 'FINISHED'
+
+
+@pytest.mark.parametrize('mode', ['full_queue', 'admitted', 'admitted_fast_cleanup'])
+@pytest.mark.parametrize('exception_type', [SystemExit, ValueError])
+def test_model_requests_stop_before_worker_cleanup_returns(
+        fake, monkeypatch, tmp_path, mode, exception_type):
+    import kumo.engine._tracking as module
+    from kumo.engine._tracking import RunSpec
+    from kumo.engine.integrations.snowflake import SnowflakeTracking
+
+    entered, fail, requested, cleanup, release = (
+        threading.Event() for _ in range(5))
+    primary = exception_type('event stopped tracking')
+    owners, exceptions, results, admissions = [], [], [], []
+    original_put, original_end = module.queue.Queue.put_nowait, fake.end_run
+    producer, caller = threading.current_thread(), None
+
+    def check_result(result):
+        published, error = result
+        assert published is None
+        assert type(error) is RuntimeError
+        assert error.__cause__ is primary
+        assert 'tracking stopped after an earlier failure' in str(error)
+
+    def put(self, item):
+        try:
+            result = original_put(self, item)
+        except module.queue.Full:
+            if threading.current_thread() is caller:
+                requested.set()
+            raise
+        if threading.current_thread() is caller:
+            requested.set()
+        elif threading.current_thread() is producer and entered.is_set():
+            admissions.append(self.qsize())
+        return result
+
+    def end(self, *args, **kwargs):
+        result = original_end(self, *args, **kwargs)
+        cleanup.set()
+        if mode != 'admitted_fast_cleanup':
+            assert release.wait(5)
+        return result
+
+    class InterruptedTracking(SnowflakeTracking):
+        def on_trial(self, record, event):
+            owners.append(threading.current_thread())
+            entered.set()
+            assert fail.wait(5)
+            raise primary
+
+        def log_model(self, *args):
+            pytest.fail('A disabled worker must not call the model hook')
+
+    monkeypatch.setattr(threading, 'excepthook', exceptions.append)
+    monkeypatch.setattr(module, 'MODEL_SECONDS', 60)
+    monkeypatch.setattr(module, 'QUEUE_SIZE', 2)
+    monkeypatch.setattr(module.queue.Queue, 'put_nowait', put)
+    monkeypatch.setattr(fake, 'end_run', end)
+    adapter = InterruptedTracking(FakeSession(), experiment_name='ents')
+    session = TrackingSession(adapter, warn=False)
+    session.start(lambda: RunSpec(kind='fit', name='INTERRUPTED'))
+    reference = session.pointer()
+    assert reference is not None
+    session.on_event(EVENTS[0])
+    try:
+        assert entered.wait(2)
+        admissions.clear()
+        if mode == 'full_queue':
+            session.on_event(EVENTS[0])
+            session.on_event(EVENTS[0])
+            assert admissions == [1, 2]
+        caller = threading.Thread(target=lambda: results.append(
+            session.log_model(tmp_path, None, None)))
+        caller.start()
+        assert requested.wait(2)
+        fail.set()
+        assert cleanup.wait(2)
+        caller.join(2)
+        assert not caller.is_alive()
+        assert len(results) == 1
+        check_result(results[0])
+        began = module.time.monotonic()
+        session.on_event(EVENTS[0])
+        check_result(session.log_model(tmp_path, None, None))
+        assert module.time.monotonic() - began < 1
+    finally:
+        fail.set()
+        release.set()
+        if caller is not None:
+            caller.join(3)
+        session.finish(None, None)
+    owners[0].join(3)
+    assert not owners[0].is_alive()
+    assert session.error is primary
+    assert [item.exc_value for item in exceptions] == (
+        [primary] if exception_type is SystemExit else [])
+    assert fake._instance.runs[reference.run_id]['status'] == 'FAILED'
+    check_result(session.log_model(tmp_path, None, None))
+    monkeypatch.setattr(fake, 'end_run', original_end)
+    adapter.log_prediction_run(_prediction('2026-11-05'))
+    assert list(fake._instance.runs.values())[-1]['status'] == 'FINISHED'
+
+
+def test_fatal_worker_collects_timeout_handoff_after_pending_drain(
+        fake, monkeypatch, tmp_path):
+    import kumo.engine._tracking as module
+    from kumo.engine._tracking import RunSpec
+    from kumo.engine.integrations.snowflake import SnowflakeTracking
+
+    drained, release, exited = (threading.Event() for _ in range(3))
+    owners, exceptions = [], []
+    primary = SystemExit('event stopped tracking')
+    gated = False
+    original_queue = module.queue.SimpleQueue
+
+    class GatedQueue(original_queue):
+        def get_nowait(self):
+            nonlocal gated
+            try:
+                return super().get_nowait()
+            except module.queue.Empty:
+                if threading.current_thread() in owners and not gated:
+                    gated = True
+                    drained.set()
+                    assert release.wait(5)
+                raise
+
+    def unhandled(args):
+        exceptions.append(args)
+        exited.set()
+
+    class InterruptedTracking(SnowflakeTracking):
+        def on_trial(self, record, event):
+            owners.append(threading.current_thread())
+            raise primary
+
+        def log_model(self, *args):
+            pytest.fail('The model job cannot run after a fatal callback')
+
+    monkeypatch.setattr(module.queue, 'SimpleQueue', GatedQueue)
+    monkeypatch.setattr(module, 'MODEL_SECONDS', 0.01)
+    monkeypatch.setattr(threading, 'excepthook', unhandled)
+    adapter = InterruptedTracking(FakeSession(), experiment_name='ents')
+    session = TrackingSession(adapter, warn=False)
+    session.start(lambda: RunSpec(kind='fit', name='INTERRUPTED'))
+    reference = session.pointer()
+    assert reference is not None
+    session.on_event(EVENTS[0])
+    try:
+        assert drained.wait(2)
+        published, timeout = session.log_model(tmp_path, None, None)
+        assert published is None
+        assert isinstance(timeout, TimeoutError)
+    finally:
+        release.set()
+    assert exited.wait(2)
+    owners[0].join(3)
+    assert not owners[0].is_alive()
+    assert exceptions[0].exc_value is primary
+    assert session.error is timeout
+    assert fake._instance.runs[reference.run_id]['status'] == 'FAILED'
+    adapter.log_prediction_run(_prediction('2026-11-06'))
+    assert list(fake._instance.runs.values())[-1]['status'] == 'FINISHED'
+
+
+def test_model_hook_base_exception_is_returned_unchanged(fake, tmp_path):
+    from kumo.engine._tracking import RunSpec
+    from kumo.engine.integrations.snowflake import SnowflakeTracking
+
+    failure = SystemExit('model SDK stopped')
+
+    class InterruptedTracking(SnowflakeTracking):
+        def log_model(self, *args):
+            raise failure
+
+    adapter = InterruptedTracking(FakeSession(), experiment_name='ents')
+    session = TrackingSession(adapter, warn=False)
+    session.start(lambda: RunSpec(kind='fit', name='INTERRUPTED'))
+    reference = session.pointer()
+    assert reference is not None
+    assert session.log_model(tmp_path, None, None) == (None, failure)
+    assert session.error is failure
+    session.finish(None, failure)
+    assert fake._instance.runs[reference.run_id]['status'] == 'FAILED'
