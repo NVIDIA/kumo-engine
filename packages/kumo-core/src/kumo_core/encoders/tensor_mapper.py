@@ -329,7 +329,6 @@ class NumericalTensorMapper(TensorMapper[Tensor]):
     ) -> Tensor:
         """Encode numerical Arrow chunks, normalizing durations to seconds."""
         result = torch.empty((len(array), 1), device=device)
-        nullable_integer = pa.types.is_integer(array.type) and array.null_count > 0
         start = 0
         for chunk in _arrow_chunks(array):
             if len(chunk) == 0:
@@ -341,9 +340,6 @@ class NumericalTensorMapper(TensorMapper[Tensor]):
                 self._encode_duration(chunk, destination)
             else:
                 values = chunk.to_numpy(zero_copy_only=False)
-                if nullable_integer:
-                    # Preserve column-wide rounding even for chunks without nulls.
-                    values = values.astype(np.float64, copy=False)
                 _copy_numpy(destination, values)
             start += len(chunk)
         return result
