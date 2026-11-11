@@ -675,6 +675,23 @@ def test_model_timeout_defers_subclass_cleanup_to_owner(fake, monkeypatch, tmp_p
     entered, release, returned, idle = (threading.Event() for _ in range(4))
     owner_threads, ended_threads, results = [], [], []
     original_end = fake.end_run
+    original_put = module.queue.Queue.put_nowait
+    admissions = []
+    producer = threading.current_thread()
+    overflow = threading.Event()
+    caller = None
+
+    def put(self, item):
+        try:
+            result = original_put(self, item)
+        except module.queue.Full:
+            if threading.current_thread() is caller:
+                overflow.set()
+            raise
+        if (threading.current_thread() is producer
+                and entered.is_set() and not release.is_set()):
+            admissions.append(self.qsize())
+        return result
 
     def end(self, *args, **kwargs):
         ended_threads.append(threading.current_thread())
@@ -692,6 +709,8 @@ def test_model_timeout_defers_subclass_cleanup_to_owner(fake, monkeypatch, tmp_p
     monkeypatch.setattr(fake, 'end_run', end)
     monkeypatch.setattr(module, 'MODEL_SECONDS', 0.01)
     monkeypatch.setattr(module, 'QUEUE_SIZE', 2 if state == 'full_queue' else 10)
+    if state == 'full_queue':
+        monkeypatch.setattr(module.queue.Queue, 'put_nowait', put)
     adapter = ModelTracking(FakeSession(), experiment_name='ents',
                             finish_timeout_seconds=2)
     session = TrackingSession(adapter, warn=False)
@@ -723,8 +742,11 @@ def test_model_timeout_defers_subclass_cleanup_to_owner(fake, monkeypatch, tmp_p
         if state == 'full_queue':
             session.on_event(EVENTS[0])
             session.on_event(EVENTS[0])
+            assert admissions == [1, 2]
         caller.join(3)
         assert not caller.is_alive()
+        if state == 'full_queue':
+            assert overflow.is_set()
         published, error = results[0]
         assert published is None
         assert isinstance(error, TimeoutError)
@@ -806,4 +828,105 @@ def test_finish_survives_full_queue_and_preserves_fifo(fake, monkeypatch):
     assert session.final == reference
     assert fake._instance.runs[reference.run_id]['status'] == 'FINISHED'
     adapter.log_prediction_run(_prediction('2026-11-02'))
+    assert list(fake._instance.runs.values())[-1]['status'] == 'FINISHED'
+
+
+@pytest.mark.parametrize('phase', ['start', 'event'])
+@pytest.mark.parametrize('exception_type', [SystemExit, KeyboardInterrupt])
+def test_unexpected_worker_exit_closes_its_owned_run(fake, monkeypatch, phase, exception_type):
+    from kumo.engine._tracking import RunSpec
+    from kumo.engine.integrations.snowflake import SnowflakeTracking
+
+    failure = exception_type('callback terminated worker')
+    exited = threading.Event()
+    exceptions = []
+
+    def unhandled(args):
+        exceptions.append(args)
+        exited.set()
+
+    class InterruptedTracking(SnowflakeTracking):
+        def start(self, record):
+            super().start(record)
+            if phase == 'start' and record.tags.get('kumo.kind') == 'fit':
+                raise failure
+
+        def on_trial(self, record, event):
+            raise failure
+
+    monkeypatch.setattr(threading, 'excepthook', unhandled)
+    adapter = InterruptedTracking(FakeSession(), experiment_name='ents')
+    session = TrackingSession(adapter)
+    session.start(lambda: RunSpec(kind='fit', name='INTERRUPTED'))
+    reference = session.pointer()
+    if phase == 'event':
+        assert reference is not None
+        session.on_event(EVENTS[0])
+    else:
+        assert reference is None
+    assert exited.wait(2)
+    worker = exceptions[0].thread
+    worker.join(3)
+    assert not worker.is_alive()
+    assert exceptions[0].exc_value is failure
+    assert session.error is failure
+    assert not session.enabled
+    assert next(iter(fake._instance.runs.values()))['status'] == 'FAILED'
+    # The failed callback is specific to fit; prediction still reuses this adapter.
+    adapter.log_prediction_run(_prediction('2026-11-03'))
+    assert list(fake._instance.runs.values())[-1]['status'] == 'FINISHED'
+
+
+def test_pending_cleanup_preserves_worker_exception(fake, monkeypatch, tmp_path):
+    import kumo.engine._tracking as module
+    from kumo.engine._tracking import RunSpec
+    from kumo.engine.integrations.snowflake import SnowflakeTracking
+
+    entered, release, exited = (threading.Event() for _ in range(3))
+    primary, secondary = SystemExit('callback stopped'), KeyboardInterrupt('cleanup stopped')
+    exceptions = []
+    original_end = fake.end_run
+
+    def unhandled(args):
+        exceptions.append(args)
+        exited.set()
+
+    def end(self, *args, **kwargs):
+        original_end(self, *args, **kwargs)
+        raise secondary
+
+    class InterruptedTracking(SnowflakeTracking):
+        def on_trial(self, record, event):
+            entered.set()
+            assert release.wait(5)
+            raise primary
+
+        def log_model(self, *args):
+            pytest.fail('The model hook is queued behind the interrupted event')
+
+    monkeypatch.setattr(threading, 'excepthook', unhandled)
+    monkeypatch.setattr(module, 'MODEL_SECONDS', 0.01)
+    adapter = InterruptedTracking(FakeSession(), experiment_name='ents')
+    session = TrackingSession(adapter, warn=False)
+    session.start(lambda: RunSpec(kind='fit', name='INTERRUPTED'))
+    reference = session.pointer()
+    assert reference is not None
+    session.on_event(EVENTS[0])
+    try:
+        assert entered.wait(2)
+        published, timeout = session.log_model(tmp_path, None, None)
+        assert published is None
+        assert isinstance(timeout, TimeoutError)
+        monkeypatch.setattr(fake, 'end_run', end)
+    finally:
+        release.set()
+    assert exited.wait(2)
+    worker = exceptions[0].thread
+    worker.join(3)
+    assert not worker.is_alive()
+    assert exceptions[0].exc_value is primary
+    assert session.error is timeout
+    assert fake._instance.runs[reference.run_id]['status'] == 'FAILED'
+    monkeypatch.setattr(fake, 'end_run', original_end)
+    adapter.log_prediction_run(_prediction('2026-11-04'))
     assert list(fake._instance.runs.values())[-1]['status'] == 'FINISHED'

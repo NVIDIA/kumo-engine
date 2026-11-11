@@ -829,20 +829,46 @@ class TrackingSession:
         return False
 
     def _work(self) -> None:
+        try:
+            self._work_jobs()
+        except BaseException as error:
+            self._fail(error)
+            tracker, self._tracker = self._tracker, None
+            try:
+                if tracker is not None:
+                    _abandon(tracker)
+            except BaseException:
+                logger.debug('Could not end tracking after worker failure',
+                             exc_info=True)
+            finally:
+                self._started.set()
+            raise
+
+    def _work_jobs(self) -> None:
         while True:
             job = self._jobs.get()
+            primary: Optional[BaseException] = None
             try:
                 job()
             except Exception as error:
                 logger.warning('Experiment tracking failed: %s',
                                full_error(error), exc_info=_debug())
+            except BaseException as error:
+                primary = error
+                raise
             finally:
                 while True:
                     try:
                         tracker = self._pending_abandon.get_nowait()
                     except queue.Empty:
                         break
-                    _abandon(tracker)
+                    try:
+                        _abandon(tracker)
+                    except BaseException:
+                        if primary is None:
+                            raise
+                        logger.debug('Could not end tracking after worker failure',
+                                     exc_info=True)
             with self._admission:
                 finalizer = (self._finalizer if self._closing
                              and self._jobs.empty() else None)
