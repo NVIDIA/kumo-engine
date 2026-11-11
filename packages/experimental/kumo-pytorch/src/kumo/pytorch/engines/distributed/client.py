@@ -11,7 +11,7 @@ import queue
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TypeVar
 
 import pyarrow.flight as flight
@@ -36,8 +36,8 @@ Result = TypeVar("Result")
 def _each(clients: Sequence[FeederClient], call: Callable[[FeederClient], Result]) -> list[Result]:
     """``call`` on every client at once, results in client order."""
 
-    if len(clients) == 1:
-        return [call(clients[0])]
+    if len(clients) <= 1:
+        return [call(client) for client in clients]
     with ThreadPoolExecutor(max_workers=len(clients)) as pool:
         return list(pool.map(call, clients))
 
@@ -317,7 +317,7 @@ class DistributedSource:
 
         def materialize(where: int, split: object, state: object) -> HostedTaskInfo:
             info = producers.all[where].call(
-                "materialize" if where == 0 else "install_state",
+                "materialize" if where == 0 else "open_task",
                 plan=plan_ids[where],
                 anchors=shipped_anchors,
                 fit_split=split,
@@ -343,7 +343,7 @@ class DistributedSource:
             for other in others:
                 if dict(other.fingerprints) != dict(info.fingerprints):
                     raise RuntimeError(
-                        "a producer's task does not match the one fitted on the first: "
+                        "a replica's task does not match the owner's: "
                         f"{dict(other.fingerprints)} vs {dict(info.fingerprints)}"
                     )
             task = _rebuild_task(
@@ -368,18 +368,25 @@ class DistributedSource:
         key = (contract.fingerprint, inference)
         if key not in self._plans:
 
-            def open_plan(client: FeederClient) -> str:
+            def open_plan(client: FeederClient, engine: wire.EngineSpec) -> str:
                 plan_id = client.call(
                     "open_plan",
                     contract=contract,
                     dataset=self._dataset.to_dict(),
-                    engine=self._engine,
+                    engine=engine,
                     inference=inference,
                 )
                 assert isinstance(plan_id, str)
                 return plan_id
 
-            self._plans[key] = tuple(_each(self._producers.all, open_plan))
+            owner = open_plan(self._producers.primary, self._engine)
+            replica = (
+                replace(self._engine, config={**self._engine.config, "ingest": "never"})
+                if "ingest" in self._engine.config
+                else self._engine
+            )
+            replicas = _each(self._producers.all[1:], lambda client: open_plan(client, replica))
+            self._plans[key] = (owner, *replicas)
         return self._plans[key]
 
     def close(self) -> None:

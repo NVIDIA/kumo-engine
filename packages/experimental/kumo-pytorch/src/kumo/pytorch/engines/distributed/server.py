@@ -160,7 +160,7 @@ class FeederServer(flight.FlightServerBase):
             "count": self._count,
             "close_task": self._close_task,
             "close_plan": self._close_plan,
-            "install_state": self._install_state,
+            "open_task": self._open_task,
             "close_session": self._close_session,
             "shutdown": self._shutdown,
         }
@@ -261,10 +261,10 @@ class FeederServer(flight.FlightServerBase):
             splits=tuple(task._anchors.splits()),
         )
 
-    def _install_state(self, body: Mapping[str, object]) -> HostedTaskInfo:
-        """A follower's task: the leader's fitted state, installed; it never refits."""
+    def _open_task(self, body: Mapping[str, object]) -> HostedTaskInfo:
+        """A replica's task, opened from the owner's fitted state and anchors; it never refits."""
         if body["fitted"] is None or body["fit_split"] is not None:
-            raise ValueError("install_state takes complete fitted state and no fit_split")
+            raise ValueError("open_task takes the owner's fitted state and no fit_split")
         return self._materialize(body)
 
     def _count(self, body: Mapping[str, object]) -> int:

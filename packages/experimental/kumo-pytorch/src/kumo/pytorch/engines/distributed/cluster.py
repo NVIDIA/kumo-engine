@@ -73,8 +73,8 @@ class Topology:
     replicas: int
     partitions: int = 1
 
-    def leader(self) -> FeederRef:
-        """The feeder that fits; every other feeder installs its state."""
+    def owner(self) -> FeederRef:
+        """The feeder that ingests and fits; replicas open tasks from its outputs."""
         return self.feeders[0]
 
     def group(self, group: int) -> tuple[FeederRef, ...]:
