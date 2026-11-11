@@ -228,7 +228,7 @@ def table_fingerprint(training_table, scratch):
     }
 
 
-def prediction_table(training_table, query, snapshot, args, generation):
+def prediction_table(training_table, query, snapshot, args, generation, task):
     import pyarrow as pa
     import pyarrow.parquet as parquet
 
@@ -260,40 +260,85 @@ def prediction_table(training_table, query, snapshot, args, generation):
     directory = args.scratch / "prediction-input"
     directory.mkdir()
     path = directory / "inputs.parquet"
-    parquet.write_table(pa.concat_tables(rows), path)
-    return PredictionTable.from_source_table(
+    selected = pa.concat_tables(rows)
+    parquet.write_table(selected, path)
+    keys = ["ENTITY1"] + ([] if task == "static_link" else ["TIMESTAMP"])
+    requested = selected.select(keys).to_pandas().rename(columns={
+        "ENTITY1": "ENTITY", "TIMESTAMP": "ANCHOR_TIMESTAMP"
+    })
+    population = PredictionTable.from_source_table(
         FileConnector(root_dir=directory)[path.name], pq=query,
         snapshot=snapshot, plan=generation)
+    return population, requested
 
 
-def check_predictions(first, repeat, reloaded, tolerance):
+def check_metrics(metrics, configured_metrics):
+    required = {f"{split}_{name}" for name in configured_metrics
+                for split in ("val", "test")}
+    invalid = (required - metrics.keys()) | {
+        name for name, value in metrics.items() if not math.isfinite(value)}
+    if not required or not metrics or invalid:
+        raise ValueError(f"Missing or non-finite training metrics: {sorted(invalid)}")
+    return sorted(required)
+
+
+def prediction_counts(value):
+    return {key: getattr(value, key, None)
+            for key in ("requested_rows", "scored_rows", "skipped_rows")}
+
+
+def check_population(counts, requested_rows):
+    if counts != dict(requested_rows=requested_rows, scored_rows=requested_rows,
+                      skipped_rows=0):
+        raise ValueError(f"Held-out prediction population differs: {counts}")
+
+
+def prediction_coordinates(task, query, snapshot):
+    keys = ["ENTITY"] + ([] if task == "static_link" else ["ANCHOR_TIMESTAMP"])
+    if task == "forecasting":
+        from kumo_core.pquery import normalize_graph, parse_and_validate_query
+
+        graph = normalize_graph(snapshot.graph_config)
+        parsed = parse_and_validate_query(query.query, graph)
+        keys.append(graph.table(parsed.entity_table).time_column or "TIMESTAMP")
+    elif task not in ("binary", "regression"):
+        keys.append("CLASS")
+    return keys
+
+
+def check_predictions(first, repeat, reloaded, tolerance, *, requested,
+                      coordinates):
     import numpy as np
     import pandas as pd
     frames = [
         value if isinstance(value, pd.DataFrame) else value.frame
         for value in (first, repeat, reloaded)
     ]
-    keys = [
-        key for key in ("ENTITY", "ANCHOR_TIMESTAMP", "TIMESTAMP", "CLASS")
-        if key in frames[0]
-    ]
+    keys = list(coordinates)
+    expected = set(requested.itertuples(index=False, name=None))
+    if not expected or requested.isna().any().any() or requested.duplicated().any():
+        raise ValueError("Requested coordinates must be nonempty and unique")
     score = next(key for key in ("SCORE", "True_PROB", "TARGET_PRED")
                  if key in frames[0])
     values = []
-    for frame in frames:
+    for frame, prediction in zip(frames, (first, repeat, reloaded)):
+        check_population(prediction_counts(prediction), len(requested))
         if (frame.empty or "ENTITY" not in keys or any(key not in frame
                                                        for key in keys)
                 or frame[keys].isna().any().any()
                 or frame.duplicated(keys).any()):
             raise ValueError(
                 "Prediction coordinates must be nonempty and unique")
+        if set(frame[list(requested)].itertuples(index=False, name=None)) != expected:
+            raise ValueError("Prediction coordinates differ from requested population")
         scores = frame.set_index(keys)[score].sort_index().astype(float)
         if not np.isfinite(scores.to_numpy()).all():
             raise ValueError("Prediction scores must be finite")
         values.append(scores)
     maximum = 0.0
     for current in values[1:]:
-        if not current.index.equals(values[0].index):
+        # Compare timestamp values across ns/us storage units.
+        if current.index.tolist() != values[0].index.tolist():
             raise ValueError("Repeated prediction coordinates differ")
         maximum = max(
             maximum,
@@ -444,8 +489,13 @@ def run(graph, query, split, task, overrides=None, *, args,
                 training_table, args.scratch)
         if expected is not None:
             compare_reference(result, expected, args.metric_tolerance)
-        population = prediction_table(training_table, query, snapshot, args,
-                                      split)
+        population, requested = prediction_table(training_table, query,
+                                                 snapshot, args, split, task)
+        result["prediction_population"] = dict(
+            requested_rows=population.requested_rows,
+            scored_rows=population.row_count, skipped_rows=population.skipped_rows)
+        check_population(result["prediction_population"], len(requested))
+        coordinates = prediction_coordinates(task, query, snapshot)
         plan = query.suggest_model_plan(snapshot)
         for key, value in {
                 "training_job.num_experiments": 2,
@@ -463,18 +513,20 @@ def run(graph, query, split, task, overrides=None, *, args,
         }.items():
             section, field = key.split(".", 1)
             setattr(getattr(plan, section), field, value)
+        if expected is not None:
+            check_metrics(expected.get("metrics", {}), plan.training_job.metrics)
         trainer = kumo.Trainer(plan, accelerator="gpu")
         fitted = trainer.fit(training_table, snapshot=snapshot)
         result["metrics"] = {
             key: float(value)
             for key, value in fitted.metrics.items()
         }
-        if not result["metrics"] or not all(
-                math.isfinite(value) for value in result["metrics"].values()):
-            raise ValueError("Training metrics must be nonempty and finite")
+        result["required_metrics"] = check_metrics(result["metrics"],
+                                                   plan.training_job.metrics)
+        result["predictions"] = {}
 
         def predict(model, destination):
-            return model.predict(
+            prediction = model.predict(
                 population, snapshot=snapshot,
                 **({
                     "binary_classification_threshold": .5
@@ -485,13 +537,16 @@ def run(graph, query, split, task, overrides=None, *, args,
                     output_paths={"predictions": destination},
                     extra_fields=[MetadataField.ANCHOR_TIMESTAMP]
                     if task != "static_link" else []))
+            result["predictions"][destination] = prediction_counts(prediction)
+            return prediction
 
         first, repeated = predict(trainer, "first"), predict(trainer, "repeat")
         del trainer
         restored = kumo.Trainer.load(fitted.bundle_dir, accelerator="gpu")
-        result["predictions"] = check_predictions(first, repeated,
-                                                  predict(restored, "reload"),
-                                                  args.prediction_tolerance)
+        result["predictions"].update(check_predictions(
+            first, repeated, predict(restored, "reload"),
+            args.prediction_tolerance, requested=requested,
+            coordinates=coordinates))
         if expected is not None:
             compare_reference(result, expected, args.metric_tolerance)
         result["status"] = "passed"
