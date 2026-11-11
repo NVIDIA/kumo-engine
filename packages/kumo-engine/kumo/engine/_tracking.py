@@ -595,6 +595,7 @@ class TrackingSession:
         self._search: Optional[_Search] = None
         self._jobs: 'queue.Queue[Optional[Callable[[], Any]]]' = queue.Queue(
             QUEUE_SIZE)
+        self._pending_abandon: 'queue.SimpleQueue[Tracking]' = queue.SimpleQueue()
         self._worker: Optional[threading.Thread] = None
         self._behind = False
         self._started = threading.Event()
@@ -726,7 +727,14 @@ class TrackingSession:
                 RuntimeError('the tracking thread stopped'))
             tracker, self._tracker = self._tracker, None
             if tracker is not None:
-                _abandon(tracker)
+                if getattr(tracker, '_finish_on_worker_thread', False):
+                    self._pending_abandon.put(tracker)
+                    try:
+                        self._jobs.put_nowait(lambda: None)
+                    except queue.Full:
+                        pass
+                else:
+                    _abandon(tracker)
             break
         if failed:
             error = failed[0]
@@ -821,6 +829,13 @@ class TrackingSession:
             except Exception as error:
                 logger.warning('Experiment tracking failed: %s',
                                full_error(error), exc_info=_debug())
+            finally:
+                while True:
+                    try:
+                        tracker = self._pending_abandon.get_nowait()
+                    except queue.Empty:
+                        break
+                    _abandon(tracker)
 
     def _call(self, call: Callable[[TrackingBase], Any]) -> None:
         tracker = self._tracker

@@ -664,3 +664,88 @@ def test_context_cleanup_failure_still_releases_adapter(fake, monkeypatch, durin
             adapter.log_prediction_run(_prediction('2026-10-30'))
     adapter.log_prediction_run(_prediction('2026-10-31'))
     assert list(fake._instance.runs.values())[-1]['status'] == 'FINISHED'
+
+
+@pytest.mark.parametrize('state', ['busy', 'full_queue', 'idle'])
+def test_model_timeout_defers_subclass_cleanup_to_owner(fake, monkeypatch, tmp_path, state):
+    import kumo.engine._tracking as module
+    from kumo.engine._tracking import RunSpec
+    from kumo.engine.integrations.snowflake import SnowflakeTracking
+
+    entered, release, returned, idle = (threading.Event() for _ in range(4))
+    owner_threads, ended_threads, results = [], [], []
+    original_end = fake.end_run
+
+    def end(self, *args, **kwargs):
+        ended_threads.append(threading.current_thread())
+        return original_end(self, *args, **kwargs)
+
+    class ModelTracking(SnowflakeTracking):
+        def log_model(self, *args):
+            owner_threads.append(threading.current_thread())
+            entered.set()
+            assert release.wait(5)
+            returned.set()
+            if state == 'busy':
+                raise ValueError('model logging failed after timeout')
+
+    monkeypatch.setattr(fake, 'end_run', end)
+    monkeypatch.setattr(module, 'MODEL_SECONDS', 0.01)
+    monkeypatch.setattr(module, 'QUEUE_SIZE', 2 if state == 'full_queue' else 10)
+    adapter = ModelTracking(FakeSession(), experiment_name='ents',
+                            finish_timeout_seconds=2)
+    session = TrackingSession(adapter, warn=False)
+    session.start(lambda: RunSpec(kind='fit', name='FIRST'))
+    reference = session.pointer()
+    assert reference is not None
+    caller = threading.Thread(target=lambda: results.append(
+        session.log_model(tmp_path, None, None)))
+    if state == 'idle':
+        original_get = module.queue.Queue.get
+        original_clock = module.time.monotonic
+
+        def get(self, *args, **kwargs):
+            if threading.current_thread() in owner_threads and returned.is_set():
+                idle.set()
+            return original_get(self, *args, **kwargs)
+
+        def clock():
+            if threading.current_thread() is caller and entered.is_set():
+                release.set()
+                assert idle.wait(2)
+            return original_clock()
+
+        monkeypatch.setattr(module.queue.Queue, 'get', get)
+        monkeypatch.setattr(module.time, 'monotonic', clock)
+    caller.start()
+    try:
+        assert entered.wait(2)
+        if state == 'full_queue':
+            session.on_event(EVENTS[0])
+            session.on_event(EVENTS[0])
+        caller.join(3)
+        assert not caller.is_alive()
+        published, error = results[0]
+        assert published is None
+        assert isinstance(error, TimeoutError)
+        assert session.error is error
+        if state != 'idle':
+            assert fake._instance.runs[reference.run_id]['status'] == 'RUNNING'
+            assert ended_threads == []
+            rejected = TrackingSession(adapter)
+            rejected.start(lambda: RunSpec(kind='fit', name='SECOND'))
+            assert rejected.pointer() is None
+            rejected.finish(None, None)
+            assert 'already in use' in str(rejected.error)
+        else:
+            assert idle.is_set()
+    finally:
+        release.set()
+        caller.join(3)
+        session.finish(None, None)
+    owner_threads[0].join(3)
+    assert not owner_threads[0].is_alive()
+    assert ended_threads == owner_threads
+    assert fake._instance.runs[reference.run_id]['status'] == 'FAILED'
+    adapter.log_prediction_run(_prediction('2026-11-01'))
+    assert list(fake._instance.runs.values())[-1]['status'] == 'FINISHED'
