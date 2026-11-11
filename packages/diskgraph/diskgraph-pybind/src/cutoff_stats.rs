@@ -88,7 +88,16 @@ pub fn col_stats_from_arrow(
     Ok(out.into_any().unbind())
 }
 
+/// Epoch `seconds` in ticks of the index clock `unit`, converted as ingest
+/// converts a row's `timestamp[s]` create time.
+#[pyfunction]
+pub fn cutoff_ticks(seconds: i64, unit: &str) -> PyResult<i64> {
+    let clock = crate::tt_builder::parse_index_clock(unit)?;
+    cutoff_stats::cutoff_ticks(seconds, clock).map_err(map_anyhow_err)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(cutoff_ticks, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_index_id, m)?)?;
     m.add_function(wrap_pyfunction!(ensure_col_stats, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_from_arrow, m)?)
