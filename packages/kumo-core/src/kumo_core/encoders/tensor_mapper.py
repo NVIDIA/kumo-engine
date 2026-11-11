@@ -333,14 +333,61 @@ class NumericalTensorMapper(TensorMapper[Tensor]):
         for chunk in _arrow_chunks(array):
             if len(chunk) == 0:
                 continue
-            values = (
-                chunk.to_pandas().dt.total_seconds().to_numpy()
-                if pa.types.is_duration(chunk.type)
-                else chunk.to_numpy(zero_copy_only=False)
-            )
-            _copy_numpy(result[start : start + len(chunk), 0], values)
+            destination = result[start : start + len(chunk), 0]
+            if pa.types.is_duration(chunk.type):
+                self._encode_duration(chunk, destination)
+            else:
+                _copy_numpy(destination, chunk.to_numpy(zero_copy_only=False))
             start += len(chunk)
         return result
+
+    @staticmethod
+    def _encode_duration(array: pa.Array, destination: Tensor) -> None:
+        """Divide Arrow duration ticks into final storage, preserving pandas NaT."""
+        ticks = np.frombuffer(
+            array.buffers()[1],
+            dtype=np.int64,
+            count=len(array),
+            offset=array.offset * np.dtype(np.int64).itemsize,
+        )
+        ticks_per_second = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}[
+            array.type.unit
+        ]
+        null_mask = ticks == np.iinfo(np.int64).min
+        if array.null_count:
+            byte_offset, bit_offset = divmod(array.offset, 8)
+            bitmap = np.frombuffer(
+                array.buffers()[0],
+                dtype=np.uint8,
+                offset=byte_offset,
+                count=(bit_offset + len(array) + 7) // 8,
+            )
+            valid = np.unpackbits(
+                bitmap, bitorder="little", count=bit_offset + len(array)
+            )[bit_offset:].view(np.bool_)
+            np.logical_not(valid, out=valid)
+            np.logical_or(null_mask, valid, out=null_mask)
+        if destination.device.type in {"cpu", "mps"}:
+            # MPS cannot perform the float64 division required for pandas parity.
+            output = (
+                destination.numpy()
+                if destination.device.type == "cpu"
+                else np.empty(len(array), dtype=str(destination.dtype).split(".")[-1])
+            )
+            np.divide(ticks, ticks_per_second, out=output, dtype=np.float64)
+            output[null_mask] = np.nan
+            if destination.device.type == "mps":
+                _copy_numpy(destination, output)
+        else:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*non-writable.*")
+                source = torch.from_numpy(ticks).to(
+                    device=destination.device, dtype=torch.float64
+                )
+            torch.div(source, ticks_per_second, out=destination)
+            destination[torch.from_numpy(null_mask).to(destination.device)] = float(
+                "nan"
+            )
 
     def post_forward(
         self,

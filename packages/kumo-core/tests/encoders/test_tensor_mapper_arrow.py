@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Golden tests: native ``pyarrow.Array`` mapper path == the pandas path."""
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
@@ -364,3 +365,70 @@ def test_leading_null_chunk_preserves_string_backward(sequence: bool) -> None:
     actual = mapper(pa.chunked_array([array[:1], array[1:]]))
     _assert_same(expected, actual)
     pd.testing.assert_series_equal(reference, mapper.backward(actual))
+
+
+@pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("sliced", [False, True])
+@pytest.mark.parametrize("chunked", [False, True])
+def test_duration_chunks_divide_directly_into_destination(
+    unit: str,
+    dtype: torch.dtype,
+    sliced: bool,
+    chunked: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Vectorized duration scaling matches pandas without a seconds buffer."""
+    ticks = [
+        0,
+        1,
+        -1,
+        1_234_567_891,
+        None,
+        -(2**63),
+        -(2**63) + 1,
+        2**63 - 1,
+        1,
+        None,
+        3,
+        -4,
+        None,
+        6,
+        7,
+        8,
+    ]
+    array = pa.array(ticks, type=pa.duration(unit))
+    if sliced:
+        array = array.slice(3, 12)
+    source = pa.chunked_array([array[:2], array[2:]]) if chunked else array
+    previous = torch.get_default_dtype()
+    destinations = []
+    divide = np.divide
+
+    def divide_into_destination(*args: object, **kwargs: object) -> np.ndarray:
+        output = kwargs["out"]
+        assert isinstance(output, np.ndarray)
+        destinations.append(output)
+        return divide(*args, **kwargs)
+
+    try:
+        torch.set_default_dtype(dtype)
+        mapper = NumericalTensorMapper()
+        expected = _pandas_reference(mapper, array.to_pandas())
+        monkeypatch.setattr(np, "divide", divide_into_destination)
+        actual = mapper(source)
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0, equal_nan=True)
+        assert len(destinations) == (2 if chunked else 1)
+        assert all(np.shares_memory(output, actual.numpy()) for output in destinations)
+    finally:
+        torch.set_default_dtype(previous)
+
+
+@pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
+def test_duration_chunks_without_nulls(unit: str) -> None:
+    """Duration buffers without a validity bitmap use the same vectorized path."""
+    array = pa.array([1, -1, 1_234_567_891], type=pa.duration(unit))
+    mapper = NumericalTensorMapper()
+    expected = _pandas_reference(mapper, array.to_pandas())
+    actual = mapper(pa.chunked_array([array[:1], array[1:]]))
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
