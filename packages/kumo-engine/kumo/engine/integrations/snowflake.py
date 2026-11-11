@@ -7,6 +7,7 @@ import logging
 import posixpath
 import re
 import tempfile
+import threading
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,6 +51,8 @@ _WARN_RUNS = 450
 class SnowflakeTracking(SingleRunHooks, TrackingBase):
     r"""Records each fit, prediction and monitoring call as a Snowflake run.
 
+    Direct ``start``/``finish`` hooks must run on the same thread.
+
     Args:
         source: a ``SnowflakeConnector``, or a Snowpark session (tracking only).
         finish_timeout_seconds: maximum wait for fit tracking finalization or a
@@ -60,6 +63,7 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
     """
 
     platform = 'snowflake'
+    _snapshot_ref_before_finish = True
 
     def __init__(
         self,
@@ -92,6 +96,8 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
         self.native_model_lineage = native_model_lineage
         self.serving_options = dict(serving_options or {}) or None
         self.logged_run_name: Optional[str] = None
+        self._lifecycle = threading.Lock()
+        self._owner: Optional[threading.Thread] = None
         self._reset()
 
     def _reset(self) -> None:
@@ -145,8 +151,21 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
                 f'role cannot see it.')
 
     def start(self, record: RunRecord) -> None:
-        self._reset()
-        self.run_id = self.logged_run_name = self.experiment = None
+        if not self._lifecycle.acquire(blocking=False):
+            raise RuntimeError('Snowflake ExperimentTracking is already in use '
+                               'by this tracker; wait for its run to finish.')
+        self._owner = threading.current_thread()
+        try:
+            self._start(record)
+        except BaseException:
+            try:
+                self.finish(None, None)
+            except BaseException:
+                logger.debug('Could not clean up a failed Snowflake start',
+                             exc_info=True)
+            raise
+
+    def _start(self, record: RunRecord) -> None:
         cls = self._module.ExperimentTracking
         tracking = getattr(cls, '_instance', None)
         if tracking is None:
@@ -157,6 +176,8 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
                 f'Snowflake ExperimentTracking is already in use in this '
                 f'process, so this {record.tags.get("kumo.kind")} run is not '
                 f'tracked; end that run or pass its session.')
+        self._reset()
+        self.run_id = self.logged_run_name = self.experiment = None
         self._tracking = tracking
         database, schema = self._location()
         experiment = tracking.set_experiment(self.experiment_name,
@@ -199,6 +220,19 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
 
     def finish(self, record: Optional[RunRecord],
                error: Optional[BaseException]) -> None:
+        if self._owner is not threading.current_thread():
+            return
+        try:
+            self._finish(record, error)
+        finally:
+            try:
+                self._reset()
+            finally:
+                self._owner = None
+                self._lifecycle.release()
+
+    def _finish(self, record: Optional[RunRecord],
+                error: Optional[BaseException]) -> None:
         status = 'FAILED'
         try:
             if self._run is not None and record is not None:
@@ -227,7 +261,6 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
                                status, format_error(error), exc_info=True)
             finally:
                 self._run_context.close()
-                self._reset()
 
     def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
         self._log_metrics(metrics, _EPOCH_METRICS, step=step)

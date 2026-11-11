@@ -777,8 +777,10 @@ class TrackingSession:
             tracker, self._tracker = self._tracker, None
             if tracker is not None:
                 try:
+                    snapshot = (tracking_ref(tracker) if getattr(
+                        tracker, '_snapshot_ref_before_finish', False) else None)
                     tracker.finish(record, error)
-                    self.final = tracking_ref(tracker)
+                    self.final = snapshot or tracking_ref(tracker)
                 except Exception as failure:
                     self._fail(failure)
                     raise

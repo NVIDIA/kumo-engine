@@ -1057,3 +1057,20 @@ def test_supported_real_budgets_complete_tracking(seconds, kind):
                                 lambda record: recorder.finish(record, None),
                                 tracking.RunRecord()) is None
     assert completed.is_set()
+
+
+def test_custom_tracker_can_publish_its_reference_during_finish():
+    from kumo.engine._tracking import RunSpec, TrackingBase
+
+    class Custom(TrackingBase):
+        def start(self, record):
+            pass
+
+        def finish(self, record, error):
+            self.run_id = 'published-at-finish'
+
+    session = TrackingSession(Custom())
+    session.start(lambda: RunSpec(kind='fit'))
+    assert session.pointer() is None
+    session.finish(None, None)
+    assert session.final.run_id == 'published-at-finish'

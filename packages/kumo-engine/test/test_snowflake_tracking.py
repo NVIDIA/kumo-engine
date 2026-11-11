@@ -512,3 +512,155 @@ def test_snowflake_tracking_finish_budget(fake):
 @pytest.mark.parametrize('seconds', [np.int64(120), np.float64(120), threading.TIMEOUT_MAX])
 def test_snowflake_tracking_accepts_supported_real_budgets(fake, seconds):
     assert _tracking(finish_timeout_seconds=seconds).finish_timeout_seconds == float(seconds)
+
+
+@pytest.mark.parametrize('pause_at', ['log_metrics', 'start_run', 'end_run'])
+def test_reuse_after_timeout_preserves_background_run(fake, monkeypatch, pause_at):
+    import kumo.engine._tracking as module
+    from kumo.engine._tracking import RunSpec
+
+    entered, release, finished, rejected = (threading.Event() for _ in range(4))
+    original = getattr(fake, pause_at)
+
+    def paused(self, *args, **kwargs):
+        if pause_at == 'end_run':
+            result = original(self, *args, **kwargs)
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(5)
+        if pause_at != 'end_run':
+            result = original(self, *args, **kwargs)
+        return result
+
+    monkeypatch.setattr(fake, pause_at, paused)
+    monkeypatch.setattr(module, 'FINISH_SECONDS', 2.0)
+    adapter = _tracking(finish_timeout_seconds=0.01)
+    original_finish = adapter.finish
+
+    def finish(*args):
+        try:
+            return original_finish(*args)
+        finally:
+            if threading.current_thread().name == 'kumo-tracking':
+                (finished if release.is_set() else rejected).set()
+
+    monkeypatch.setattr(adapter, 'finish', finish)
+    spec = RunSpec(kind='fit', name='FIRST', metrics={'loss': 1.0})
+    first = TrackingSession(adapter)
+    first.start(lambda: spec)
+    if pause_at != 'start_run':
+        assert first.pointer() is not None
+    else:
+        assert entered.wait(2)
+    first.finish(None, None)
+    try:
+        assert entered.wait(2)
+        assert isinstance(first.error, TimeoutError)
+        second = TrackingSession(adapter)
+        second.start(lambda: replace(spec, name='SECOND'))
+        assert rejected.wait(2)
+        assert second.pointer() is None
+        second.finish(None, None)
+        assert 'already in use' in str(second.error)
+    finally:
+        release.set()
+    assert finished.wait(3)
+    # Join only public worker threads so final ref publication has completed.
+    for worker in threading.enumerate():
+        if worker.name == 'kumo-tracking':
+            worker.join(3)
+    assert first.final is not None
+    assert fake._instance.runs[first.final.run_id]['status'] == 'FINISHED'
+    assert sum(c[0] == 'end_run' for c in fake._instance.calls) == 1
+    adapter.log_prediction_run(_prediction('2026-10-30'))
+    assert len(fake._instance.runs) == 2
+    assert all(run['status'] == 'FINISHED' for run in fake._instance.runs.values())
+
+
+@pytest.mark.parametrize('kind', ['direct', 'prediction', 'session'])
+def test_failed_start_releases_adapter_and_preserves_provider_error(fake, monkeypatch, kind):
+    from kumo.engine._tracking import RunSpec
+
+    adapter = _tracking()
+    failure = ValueError('provider rejected parameters')
+    original = fake.log_params
+
+    def fail(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(fake, 'log_params', fail)
+    if kind == 'session':
+        session = TrackingSession(adapter)
+        session.start(lambda: RunSpec(kind='fit', name='FIRST'))
+        assert session.pointer() is None
+        session.finish(None, None)
+        assert session.error is failure
+    else:
+        with pytest.raises(ValueError) as caught:
+            if kind == 'direct':
+                adapter.start(RunRecord(tags={'kumo.kind': 'fit'}))
+            else:
+                adapter.log_prediction_run(_prediction('2026-10-30'))
+        assert caught.value is failure
+    assert next(iter(fake._instance.runs.values()))['status'] == 'FAILED'
+    monkeypatch.setattr(fake, 'log_params', original)
+    adapter.log_prediction_run(_prediction('2026-10-31'))
+    assert list(fake._instance.runs.values())[-1]['status'] == 'FINISHED'
+
+
+def test_final_ref_belongs_to_completed_run_when_adapter_is_immediately_reused(fake, monkeypatch):
+    from kumo.engine._tracking import RunSpec
+
+    adapter = _tracking()
+    original = adapter.finish
+    second = RunRecord(tags={'kumo.kind': 'fit'}, name='SECOND')
+
+    def finish(record, error):
+        original(record, error)
+        adapter.start(second)
+        original(second, None)
+
+    monkeypatch.setattr(adapter, 'finish', finish)
+    session = TrackingSession(adapter)
+    session.start(lambda: RunSpec(kind='fit', name='FIRST'))
+    first = session.pointer()
+    assert first is not None
+    session.finish(None, None)
+    assert session.error is None
+    assert session.final == first
+    assert adapter.run_id != first.run_id
+
+
+@pytest.mark.parametrize('during_start', [False, True])
+def test_context_cleanup_failure_still_releases_adapter(fake, monkeypatch, during_start):
+    from contextlib import ExitStack
+
+    adapter = _tracking()
+    original_close = ExitStack.close
+    failed = False
+
+    def close(self):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise RuntimeError('context cleanup failed')
+        original_close(self)
+
+    monkeypatch.setattr(ExitStack, 'close', close)
+    if during_start:
+        provider_error = ValueError('parameters rejected')
+        original_params = fake.log_params
+
+        def params(*args, **kwargs):
+            raise provider_error
+
+        monkeypatch.setattr(fake, 'log_params', params)
+        with pytest.raises(ValueError) as caught:
+            adapter.log_prediction_run(_prediction('2026-10-30'))
+        assert caught.value is provider_error
+        monkeypatch.setattr(fake, 'log_params', original_params)
+    else:
+        with pytest.raises(RuntimeError, match='context cleanup failed'):
+            adapter.log_prediction_run(_prediction('2026-10-30'))
+    adapter.log_prediction_run(_prediction('2026-10-31'))
+    assert list(fake._instance.runs.values())[-1]['status'] == 'FINISHED'
