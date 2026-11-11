@@ -62,12 +62,47 @@ def _canonical_categories(array: pa.Array) -> pa.Array:
     return array
 
 
+def _category_type_family(dtype: pa.DataType) -> pa.DataType | str:
+    """Group compatible Arrow types without conflating categorical identities."""
+    if (
+        pa.types.is_integer(dtype)
+        or pa.types.is_floating(dtype)
+        or pa.types.is_decimal(dtype)
+    ):
+        return "number"
+    if pa.types.is_string(dtype) or pa.types.is_large_string(dtype):
+        return "string"
+    if (
+        pa.types.is_binary(dtype)
+        or pa.types.is_large_binary(dtype)
+        or pa.types.is_fixed_size_binary(dtype)
+    ):
+        return "binary"
+    if pa.types.is_timestamp(dtype):
+        return "timestamp" if dtype.tz is None else "timestamp_with_timezone"
+    if pa.types.is_date(dtype):
+        return "date"
+    if pa.types.is_time(dtype):
+        return "time"
+    if pa.types.is_duration(dtype):
+        return "duration"
+    return dtype
+
+
 def _category_codes(array: pa.Array, vocabulary: pa.Array) -> np.ndarray:
     """Look up Arrow categories without coercing strings into numeric values."""
     if pa.types.is_dictionary(array.type):
         codes = pa.array(_category_codes(array.dictionary, vocabulary))
         return pc.take(codes, array.indices).fill_null(-1).to_numpy()
-    if not len(vocabulary) or array.null_count == len(array):
+    if (
+        not len(vocabulary)
+        or array.null_count == len(array)
+        or (
+            array.type != vocabulary.type
+            and _category_type_family(array.type)
+            != _category_type_family(vocabulary.type)
+        )
+    ):
         return np.full(len(array), -1, dtype=np.int64)
     array = _canonical_categories(array)
     try:
@@ -126,9 +161,30 @@ def _timestamp_nanoseconds(array: pa.Array, format: str | None) -> np.ndarray:
     if pa.types.is_string(array.type) or pa.types.is_large_string(array.type):
         try:
             if format is not None and "%f" not in format:
-                array = pc.strptime(
-                    array, format=format, unit="us", error_is_null=True
-                ).cast(pa.timestamp("ns"))
+                parsed = pc.strptime(array, format=format, unit="s", error_is_null=True)
+                round_trip = pc.call_function(
+                    "strftime", [parsed], pc.StrftimeOptions(format=format)
+                )
+                mismatched = pc.fill_null(
+                    pc.call_function("not_equal", [round_trip, array]), False
+                )
+                if pc.call_function("any", [mismatched]).as_py():
+                    # Validate normalized dates and accept valid unpadded inputs.
+                    replacements = (
+                        pa.array(
+                            [
+                                _parse_timestamp(value, format)
+                                for value in array.filter(mismatched).to_pylist()
+                            ],
+                            type=pa.int64(),
+                        )
+                        .cast(pa.timestamp("ns"))
+                        .cast(parsed.type)
+                    )
+                    parsed = pc.call_function(
+                        "replace_with_mask", [parsed, mismatched, replacements]
+                    )
+                array = parsed.cast(pa.timestamp("ns"))
             elif format is not None:
                 parsed = [
                     _parse_timestamp(value, format) for value in array.to_pylist()
