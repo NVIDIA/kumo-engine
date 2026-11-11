@@ -135,9 +135,6 @@ def test_vital_policy_publishes_only_allowlisted_artifacts(
 
     manifest = json.loads(
         (destination / "publication-manifest.json").read_text())
-    (destination / "metric-history.json").write_text("{}")
-    with pytest.raises(ValueError, match="metric-history.json"):
-        verify_model_bundle(destination)
     assert manifest["schema_version"] == 1
     assert manifest["excluded_by_default"] == [
         "trial_logs",
@@ -145,6 +142,17 @@ def test_vital_policy_publishes_only_allowlisted_artifacts(
         "tensorboard",
         "analysis",
     ]
+
+
+def test_verify_rejects_tampered_metric_history(tmp_path: Path) -> None:
+    sources, _ = _vital_sources(tmp_path)
+    destination = tmp_path / "published"
+    VitalArtifactPublicationPolicy().publish(sources, destination)
+
+    (destination / "metric-history.json").write_text("{}")
+
+    with pytest.raises(ValueError, match="metric-history.json"):
+        verify_model_bundle(destination)
 
 
 def test_filesystem_publisher_returns_exact_published_role_paths(

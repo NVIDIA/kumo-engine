@@ -226,9 +226,10 @@ def prediction_tracking(cfg, run, expected):
             'Prediction tracking records the wrong model/run identity')
 
 
-def small_plan(seed):
+def small_plan(seed, trials=1):
     plan = gpu_helpers().make_plan('binary')
     plan.training_job.manual_seed = seed
+    plan.training_job.num_experiments = trials
     plan.optimization.max_epochs = EPOCHS
     plan.optimization.min_steps_per_epoch = 2
     plan.optimization.max_steps_per_epoch = 2
@@ -293,9 +294,7 @@ def fit(root):
     with cfg.tracking.client() as client:
         client.set_registered_model_alias(MODEL, 'champion',
                                           versions[0]['version'])
-    untracked_plan = small_plan(1)
-    untracked_plan.training_job.num_experiments = TRIALS
-    untracked = kumo.Trainer(untracked_plan, accelerator='cpu').fit(
+    untracked = kumo.Trainer(small_plan(1, TRIALS), accelerator='cpu').fit(
         table, snapshot=snapshot)
     require(untracked.tracking is None, 'Ordinary training used a tracker')
     untracked_history = untracked.metric_history

@@ -150,7 +150,7 @@ class Instrumentation:
         yield
 
 
-def make_bindings(task, auto_trainer, calls, monkeypatch):
+def make_bindings(task, auto_trainer, calls, monkeypatch, sources=None):
     monkeypatch.setattr(training_module, "AutoTrainer",
                         lambda **kwargs: auto_trainer)
     monkeypatch.setattr(
@@ -171,8 +171,8 @@ def make_bindings(task, auto_trainer, calls, monkeypatch):
         instrumentation=Instrumentation(calls),
         resolve_vital_artifacts=lambda input_, auto, trainer, metrics:
         (calls.append(
-            ("resolve_vital", input_, auto, trainer, metrics)) or vital_sources(
-            )),
+            ("resolve_vital", input_, auto, trainer, metrics)) or
+            (sources or vital_sources())),
         artifact_publisher=ArtifactPublisher(calls),
         before_evaluate=lambda: calls.append(("before_evaluate", )),
         load_validation_metrics=lambda trainer: {"val_accuracy": 0.75},
@@ -231,11 +231,11 @@ def test_full_callable_flow_returns_mlflow_ready_result(monkeypatch, history):
     task = SimpleNamespace(task_type="binary_classification")
     trainer = Trainer()
     auto_trainer = AutoTrainer(trainer)
-    bindings = make_bindings(task, auto_trainer, calls, monkeypatch)
-    config = resolved(task)
     sources = replace(vital_sources(), metric_history="/history" if history
                       else None)
-    bindings = replace(bindings, resolve_vital_artifacts=lambda *args: sources)
+    bindings = make_bindings(task, auto_trainer, calls, monkeypatch,
+                             sources=sources)
+    config = resolved(task)
 
     result = run_callable_training(config, bindings=bindings)
 
@@ -264,15 +264,14 @@ def test_publisher_must_return_exactly_the_source_roles(monkeypatch):
     calls = []
     task = SimpleNamespace(task_type="binary_classification")
     auto_trainer = AutoTrainer(Trainer())
-    bindings = make_bindings(task, auto_trainer, calls, monkeypatch)
     sources = replace(vital_sources(), metric_history=None)
-    publisher = SimpleNamespace(publish=lambda _: {
-        role: f"/published/{role}"
-        for role in VitalArtifactSources.roles()
-    })
-    bindings = replace(bindings,
-                       resolve_vital_artifacts=lambda *args: sources,
-                       artifact_publisher=publisher)
+    bindings = make_bindings(task, auto_trainer, calls, monkeypatch,
+                             sources=sources)
+    bindings = replace(bindings, artifact_publisher=SimpleNamespace(
+        publish=lambda _: {
+            role: f"/published/{role}"
+            for role in VitalArtifactSources.roles()
+        }))
 
     with pytest.raises(ValueError, match="exactly the vital artifact roles"):
         run_callable_training(resolved(task), bindings=bindings)

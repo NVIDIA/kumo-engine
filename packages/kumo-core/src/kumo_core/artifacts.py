@@ -11,7 +11,7 @@ import json
 import os
 import shutil
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import MISSING, dataclass, field
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -101,9 +101,9 @@ class VitalArtifactSources:
     metric_history: Path | None = None
 
     def __post_init__(self) -> None:
-        for role in self.roles():
+        for role, spec in self.__dataclass_fields__.items():
             value = getattr(self, role)
-            if role != 'metric_history' or value is not None:
+            if value is not None or spec.default is MISSING:
                 object.__setattr__(self, role, Path(value))
 
     @classmethod
@@ -111,8 +111,8 @@ class VitalArtifactSources:
         return tuple(cls.__dataclass_fields__)
 
     def as_dict(self) -> dict[str, Path]:
-        return {role: getattr(self, role) for role in self.roles()
-                if getattr(self, role) is not None}
+        return {role: path for role in self.roles()
+                if (path := getattr(self, role)) is not None}
 
 
 @dataclass(frozen=True)
@@ -493,17 +493,8 @@ def resolve_vital_artifact_sources(
 
 
 _BUNDLE_LAYOUT = {
-    'trainer_config': 'model/config.json',
+    **VitalArtifactPublicationPolicy._DESTINATIONS,
     'selected_checkpoint': 'model/checkpoint/step=0.ckpt',
-    'encoders': 'model/encoders.json',
-    'target_encoder': 'model/target-encoder.json',
-    'resolved_model_plan': 'model/resolved-model-plan.json',
-    'graph_manifest': 'manifests/graph.json',
-    'task_manifest': 'manifests/task.json',
-    'input_manifest': 'manifests/input.json',
-    'prediction_schema': 'prediction-schema.json',
-    'metrics': 'metrics.json',
-    'metric_history': 'metric-history.json',
 }
 
 
