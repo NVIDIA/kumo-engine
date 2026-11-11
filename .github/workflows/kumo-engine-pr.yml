@@ -279,18 +279,19 @@ jobs:
 
   required:
     name: kumo-engine-pr-ci
-    needs: [changes, wheel, gpu]
+    needs: [changes, wheel, cpu-lifecycle, gpu]
     if: ${{ !inputs.build_only && always() && (github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
     steps:
-      - name: Require an exemption or successful GPU tests
+      - name: Require an exemption or successful GPU and CPU lifecycle tests
         env:
           EVENT_NAME: ${{ github.event_name }}
           CHANGES_RESULT: ${{ needs.changes.result }}
           GPU_REQUIRED: ${{ needs.changes.outputs.gpu }}
           WHEEL_RESULT: ${{ needs.wheel.result }}
+          LIFECYCLE_RESULT: ${{ needs.cpu-lifecycle.result }}
           GPU_RESULT: ${{ needs.gpu.result }}
         run: |
           set -euo pipefail
@@ -314,8 +315,9 @@ jobs:
             echo '::error::Unexpected workflow event.'
             exit 1
           fi
-          if [[ "$WHEEL_RESULT" != success || "$GPU_RESULT" != success ]]; then
-            echo "::error::GPU tests must pass (wheel=$WHEEL_RESULT, gpu=$GPU_RESULT)."
+          if [[ "$WHEEL_RESULT" != success || "$LIFECYCLE_RESULT" != success ||
+                "$GPU_RESULT" != success ]]; then
+            echo "::error::GPU and CPU lifecycle tests must pass (wheel=$WHEEL_RESULT, cpu-lifecycle=$LIFECYCLE_RESULT, gpu=$GPU_RESULT)."
             exit 1
           fi
-          echo 'GPU tests passed.'
+          echo 'GPU and CPU lifecycle tests passed.'

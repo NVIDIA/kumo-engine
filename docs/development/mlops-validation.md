@@ -72,7 +72,7 @@ child RSS maxima separately, not simultaneous process-tree memory.
 The bundle retains recorded search-trial epochs in `metric-history.json`.
 The final phase loads and re-exports history without importing MLflow.
 Older bundles remain readable and return `None` for `metric_history`.
-The optional CPU job reuses the candidate-wheel build.
+The required CPU job reuses the candidate-wheel build.
 Installation/access prerequisites are `blocked`; incorrect behavior is `failed`.
 Unreached phases remain `blocked`.
 

@@ -6,9 +6,9 @@ Python 3.12 environment. It runs on the
 `nv-gpu-amd64-rtxpro6000-1gpu` group with the
 `linux-amd64-gpu-rtxpro6000-latest-1` label.
 
-The optional `kumo-engine-pr-cpu-lifecycle` job installs the same wheel in a
-clean CPU environment and runs the small MLflow lifecycle. It does not gate
-`kumo-engine-pr-ci`.
+The `kumo-engine-pr-cpu-lifecycle` job installs the same wheel in a clean CPU
+environment and runs the small MLflow lifecycle. A failed lifecycle fails
+`kumo-engine-pr-ci` and blocks the merge.
 
 ## Workflow selection
 
@@ -23,8 +23,8 @@ exemptions for docs, UI, Helm, tools, or benchmarks. A docs-only follow-up push
 still checks the full PR. A manual run always selects the GPU check.
 
 The `kumo-engine-pr-ci` check always runs. It requires either a successful
-exemption decision or successful build and GPU jobs. Failed selection, build,
-and GPU jobs fail this check. Pushes to `main` build the wheel and seed caches
+exemption decision or successful build, CPU lifecycle, and GPU jobs. Failed
+selection, build, CPU lifecycle, and GPU jobs fail this check. Pushes to `main` build the wheel and seed caches
 without selecting the GPU or PR-required jobs.
 
 ## Eight task checks
@@ -104,9 +104,9 @@ Run the pure output and workflow checks in the existing development environment:
 These tests need pytest, NumPy, pandas, and PyYAML. They require no GPU or cloud
 access. The existing OSS Readiness pytest job also runs them.
 
-The CPU build and GPU jobs have separate time limits. The wheel job has a
-60-minute limit, and the GPU job has a 22-minute limit. The optional CPU
-lifecycle job has a 30-minute limit. GitHub reports queue,
+The CPU build, CPU lifecycle, and GPU jobs have separate time limits. The
+wheel job has a 60-minute limit, the CPU lifecycle job has a 30-minute limit,
+and the GPU job has a 22-minute limit. GitHub reports queue,
 build, and GPU job durations.
 The workflow retains the task summary as an artifact. Source and package
 test workflows keep their existing checks.

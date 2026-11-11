@@ -36,8 +36,8 @@ It builds its prerequisites and runs without cloud credentials. The
 [test matrix](../connector-test-matrix.md) lists coverage and CI limits.
 
 The [Engine PR check](engine-pr-ci.md) builds the candidate wheel on CPU and
-runs eight small task checks on CUDA through one shared smoke action. An
-optional CPU job also runs the small MLflow lifecycle
+runs eight small task checks on CUDA through one shared smoke action. A
+required CPU job also runs the small MLflow lifecycle
 ([MLOps validation](mlops-validation.md)). Repeated
 and reloaded predictions must match within `0.005` absolute tolerance and
 zero relative tolerance for every task. Labels and ranks can change only for
