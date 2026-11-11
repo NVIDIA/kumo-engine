@@ -5,9 +5,12 @@
 //! Exact column statistics at a cutoff; see `diskgraph_ingest::cutoff_stats`.
 
 use std::path::Path;
+use std::sync::Mutex;
+use std::time::Duration;
 
-use arrow::array::{make_array, ArrayData};
-use arrow::pyarrow::FromPyArrow;
+use arrow::array::{make_array, Array, ArrayData};
+use arrow::pyarrow::{FromPyArrow, ToPyArrow};
+use diskgraph_ingest::column_scan::{self, Next};
 use diskgraph_ingest::cutoff_stats::{self, Stat};
 use diskgraph_ingest::index_metadata::{index_id, read_dataset_metadata};
 use pyo3::prelude::*;
@@ -88,6 +91,84 @@ pub fn col_stats_from_arrow(
     Ok(out.into_any().unbind())
 }
 
+/// Atomically writes `payload` at `col_stats/<cutoff_id>/<table>/<name>`
+/// and returns the path.
+#[pyfunction]
+pub fn publish_col_stats_file(
+    py: Python<'_>,
+    index_dir: &str,
+    cutoff: Option<i64>,
+    table: &str,
+    name: &str,
+    payload: &[u8],
+) -> PyResult<String> {
+    let path = py
+        .detach(|| {
+            cutoff_stats::publish_col_stats_file(Path::new(index_dir), cutoff, table, name, payload)
+        })
+        .map_err(map_anyhow_err)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Iterates a stored string column's non-null values as `pa.large_string()`
+/// arrays, in shard then node order, over the rows counted at `cutoff`.
+#[pyclass(frozen, module = "diskgraph._c")]
+pub struct ColumnScan {
+    chunks: Mutex<column_scan::ColumnScan>,
+}
+
+#[pymethods]
+impl ColumnScan {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        loop {
+            let next = py.detach(|| {
+                let scan = self.chunks.lock().expect("scan lock");
+                scan.next_within(Duration::from_millis(100))
+            });
+            match next {
+                Next::Chunk(chunk) => {
+                    let chunk = chunk.map_err(map_anyhow_err)?;
+                    return Ok(Some(chunk.to_data().to_pyarrow(py)?.unbind()));
+                }
+                Next::End => return Ok(None),
+                Next::Pending => py.check_signals()?,
+            }
+        }
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (index_dir, table, column, cutoff, *, chunk_rows=65536, num_threads=None))]
+pub fn scan_column(
+    py: Python<'_>,
+    index_dir: &str,
+    table: &str,
+    column: &str,
+    cutoff: Option<i64>,
+    chunk_rows: usize,
+    num_threads: Option<usize>,
+) -> PyResult<ColumnScan> {
+    let scan = py
+        .detach(|| {
+            column_scan::scan_column(
+                Path::new(index_dir),
+                table,
+                column,
+                cutoff,
+                chunk_rows,
+                num_threads,
+            )
+        })
+        .map_err(map_anyhow_err)?;
+    Ok(ColumnScan {
+        chunks: Mutex::new(scan),
+    })
+}
+
 /// Epoch `seconds` in ticks of the index clock `unit`, converted as ingest
 /// converts a row's `timestamp[s]` create time.
 #[pyfunction]
@@ -100,5 +181,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cutoff_ticks, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_index_id, m)?)?;
     m.add_function(wrap_pyfunction!(ensure_col_stats, m)?)?;
-    m.add_function(wrap_pyfunction!(col_stats_from_arrow, m)?)
+    m.add_function(wrap_pyfunction!(col_stats_from_arrow, m)?)?;
+    m.add_function(wrap_pyfunction!(publish_col_stats_file, m)?)?;
+    m.add_function(wrap_pyfunction!(scan_column, m)?)?;
+    m.add_class::<ColumnScan>()
 }

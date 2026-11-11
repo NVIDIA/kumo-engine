@@ -23,7 +23,10 @@ use arrow_array::types::*;
 use arrow_array::{Array, ArrayRef, ArrowPrimitiveType, TimestampSecondArray};
 use arrow_schema::DataType;
 use diskgraph_core::time::TimeUnit;
-use diskgraph_index::graph::{temporal_value_in_clock, write_durable, GraphIndexReader};
+use diskgraph_index::graph::{
+    temporal_value_in_clock, write_durable, GraphIndexReader, TableReader,
+};
+use diskgraph_index::reader::ShardReader;
 use diskgraph_rowpack::{
     ColumnValueObserver, FloatListView, IngestedType, IntListView, RowAccess, RowAccessHints,
     RowAccessStats, StringListView, ValueRef,
@@ -42,7 +45,7 @@ use crate::index_metadata::{index_id, read_dataset_metadata, INDEX_METADATA_FILE
 const SCHEMA: &str = "diskgraph.col_stats_extension.v1";
 const SPEC_VERSION: u32 = 1;
 const STATS_DIR: &str = "col_stats";
-const SCAN_CHUNK_NODES: u64 = 1 << 16;
+pub(crate) const SCAN_CHUNK_NODES: u64 = 1 << 16;
 const BINS_PER_OCTAVE: u32 = 128;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -606,6 +609,61 @@ enum Cell {
     Text,
 }
 
+/// A table's create-time column, read in index-clock ticks.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CreateTime {
+    /// The column and whether it holds dates.
+    column: Option<(usize, bool)>,
+    clock: TimeUnit,
+}
+
+impl CreateTime {
+    pub(crate) fn new(
+        columns: &[(&str, IngestedType)],
+        name: Option<&str>,
+        clock: TimeUnit,
+    ) -> Result<Self> {
+        let column = name
+            .map(|name| {
+                let idx = column_index(columns, name)?;
+                Ok::<_, anyhow::Error>((idx, columns[idx].1 == IngestedType::Date))
+            })
+            .transpose()?;
+        Ok(Self { column, clock })
+    }
+
+    pub(crate) fn is(&self, col_idx: usize) -> bool {
+        self.column.is_some_and(|(idx, _)| idx == col_idx)
+    }
+
+    pub(crate) fn ticks(&self, value: Value<'_>) -> Option<i64> {
+        match value {
+            Value::Int(days) if self.column.is_some_and(|(_, is_date)| is_date) => {
+                temporal_value_in_clock(&ValueRef::Date(days as i32), self.clock)
+            }
+            Value::Int(ticks) => Some(ticks),
+            _ => None,
+        }
+    }
+
+    /// Whether a row created at `time` counts at `cutoff`, inclusive; every
+    /// row of a table without a create time counts.
+    pub(crate) fn includes(&self, cutoff: Option<i64>, time: Option<i64>) -> bool {
+        match (cutoff, time) {
+            (Some(cutoff), Some(time)) => time <= cutoff,
+            (Some(_), None) => self.column.is_none(),
+            (None, _) => true,
+        }
+    }
+}
+
+pub(crate) fn column_index(columns: &[(&str, IngestedType)], name: &str) -> Result<usize> {
+    columns
+        .iter()
+        .position(|(column, _)| *column == name)
+        .ok_or_else(|| anyhow!("no column {name}"))
+}
+
 /// The requested statistics of one table for every cutoff. Rows arrive one
 /// column value at a time ([`TableStats::set`] or the observer methods) and
 /// count once [`ColumnValueObserver::row_stored`] confirms them.
@@ -618,9 +676,7 @@ pub(crate) struct TableStats {
     stats: Vec<ColumnStats>,
     /// Requested column position of each table column.
     slots: Vec<Option<usize>>,
-    /// The create-time column and whether it holds dates.
-    create_time: Option<(usize, bool)>,
-    clock: TimeUnit,
+    create_time: CreateTime,
     row: Vec<Cell>,
     texts: Vec<String>,
     row_time: Option<i64>,
@@ -636,12 +692,8 @@ impl TableStats {
         clock: TimeUnit,
     ) -> Result<Self> {
         let columns: Vec<_> = columns.into_iter().collect();
-        let index_of = |name: &str| {
-            columns
-                .iter()
-                .position(|(column, _)| *column == name)
-                .ok_or_else(|| anyhow!("table {table} has no column {name}"))
-        };
+        let index_of =
+            |name: &str| column_index(&columns, name).with_context(|| format!("table {table}"));
         let mut requested: BTreeMap<&str, BTreeSet<Stat>> = BTreeMap::new();
         for (column, stat) in requests {
             requested.entry(column).or_default().insert(stat);
@@ -666,9 +718,8 @@ impl TableStats {
                 stats: stats.into_iter().collect(),
             });
         }
-        let create_time = create_time
-            .map(|name| index_of(name).map(|idx| (idx, columns[idx].1 == IngestedType::Date)))
-            .transpose()?;
+        let create_time = CreateTime::new(&columns, create_time, clock)
+            .with_context(|| format!("table {table}"))?;
         let stats = cutoffs
             .iter()
             .flat_map(|_| &plans)
@@ -683,7 +734,6 @@ impl TableStats {
             stats,
             slots,
             create_time,
-            clock,
             row_time: None,
         })
     }
@@ -691,21 +741,13 @@ impl TableStats {
     /// The table columns a row must supply: requested ones and the create time.
     fn read_mask(&self) -> Vec<bool> {
         (0..self.slots.len())
-            .map(|idx| {
-                self.slots[idx].is_some() || self.create_time.is_some_and(|(ct, _)| ct == idx)
-            })
+            .map(|idx| self.slots[idx].is_some() || self.create_time.is(idx))
             .collect()
     }
 
     fn set(&mut self, col_idx: usize, value: Value<'_>) {
-        if let Some((_, is_date)) = self.create_time.filter(|(ct, _)| *ct == col_idx) {
-            self.row_time = match value {
-                Value::Int(days) if is_date => {
-                    temporal_value_in_clock(&ValueRef::Date(days as i32), self.clock)
-                }
-                Value::Int(ticks) => Some(ticks),
-                _ => None,
-            };
+        if self.create_time.is(col_idx) {
+            self.row_time = self.create_time.ticks(value);
         }
         let Some(Some(slot)) = self.slots.get(col_idx).copied() else {
             return;
@@ -725,12 +767,7 @@ impl TableStats {
     fn commit(&mut self) {
         let width = self.columns.len();
         for (idx, cutoff) in self.cutoffs.iter().enumerate() {
-            let included = match (cutoff, self.row_time) {
-                (Some(cutoff), Some(time)) => time <= *cutoff,
-                (Some(_), None) => self.create_time.is_none(),
-                (None, _) => true,
-            };
-            if !included {
+            if !self.create_time.includes(*cutoff, self.row_time) {
                 continue;
             }
             for slot in 0..width {
@@ -759,7 +796,12 @@ impl TableStats {
         index_dir: &Path,
         index_id: &str,
     ) -> Result<Vec<(String, PathBuf, String)>> {
-        let cutoff = CutoffFiles::new(index_dir, index_id, self.cutoffs[idx], self.clock)?;
+        let cutoff = CutoffFiles::new(
+            index_dir,
+            index_id,
+            self.cutoffs[idx],
+            self.create_time.clock,
+        )?;
         cutoff.write_manifest_if_missing()?;
         let width = self.columns.len();
         let mut files = Vec::new();
@@ -974,18 +1016,22 @@ impl<'a> CutoffFiles<'a> {
         Ok((path, sha256))
     }
 
-    /// Atomically replaces `path` through a temp file no other writer uses.
     fn publish(&self, path: &Path, value: &impl Serialize) -> Result<()> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
         let mut bytes = serde_json::to_vec(value)?;
         bytes.push(b'\n');
+        self.write(path, &bytes)
+    }
+
+    /// Atomically replaces `path` through a temp file no other writer uses.
+    fn write(&self, path: &Path, bytes: &[u8]) -> Result<()> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let name = path
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("");
         let nonce = RandomState::new().hash_one(NEXT.fetch_add(1, AtomicOrdering::Relaxed));
         let tmp = path.with_file_name(format!(".{name}.{}.{nonce:x}.tmp", std::process::id()));
-        write_durable(path, &tmp, &bytes, self.index_dir)
+        write_durable(path, &tmp, bytes, self.index_dir)
             .with_context(|| format!("publish {}", path.display()))
     }
 }
@@ -1044,6 +1090,30 @@ pub(crate) fn publish_ingested(
     Ok(())
 }
 
+/// `(shard, first node, end node)` chunks of a table's nodes, in shard then node order.
+pub(crate) fn node_chunks(table: &TableReader, nodes_per_chunk: u64) -> Vec<(usize, u64, u64)> {
+    (0..table.shard_count())
+        .filter_map(|shard| {
+            let (min, max) = table.shard_id_range(shard)?;
+            (min <= max).then_some((shard, max - min + 1))
+        })
+        .flat_map(|(shard, nodes)| {
+            (0..nodes)
+                .step_by(nodes_per_chunk as usize)
+                .map(move |start| (shard, start, nodes.min(start + nodes_per_chunk)))
+        })
+        .collect()
+}
+
+/// A node's row, unless it was stored without node data (as oversized rows
+/// are), which no statistic observed.
+pub(crate) fn stored_row(shard: &ShardReader, node: u64) -> Result<Option<&[u8]>> {
+    Ok(shard
+        .edges_for_node(node)?
+        .node_data()?
+        .filter(|row| !row.is_empty()))
+}
+
 /// Rescans `table`'s stored rows, decoding only the needed columns, in
 /// parallel over chunks of every shard.
 fn scan_table(
@@ -1071,27 +1141,14 @@ fn scan_table(
         reader.metadata().timestamp_unit,
     )?;
     let mask = empty.read_mask();
-    let chunks: Vec<(usize, u64, u64)> = (0..table_reader.shard_count())
-        .filter_map(|shard| {
-            let (min, max) = table_reader.shard_id_range(shard)?;
-            (min <= max).then_some((shard, max - min + 1))
-        })
-        .flat_map(|(shard, nodes)| {
-            (0..nodes)
-                .step_by(SCAN_CHUNK_NODES as usize)
-                .map(move |start| (shard, start, nodes.min(start + SCAN_CHUNK_NODES)))
-        })
-        .collect();
-    chunks
+    node_chunks(&table_reader, SCAN_CHUNK_NODES)
         .into_par_iter()
         .try_fold(
             || (empty.clone(), Default::default()),
             |(mut stats, mut scratch), (shard, start, end)| {
                 let shard = table_reader.shard(shard).expect("shard in range");
                 for node in start..end {
-                    // Rows stored without node data, oversized ones included, were never observed.
-                    let view = shard.edges_for_node(node)?;
-                    let Some(row) = view.node_data()?.filter(|row| !row.is_empty()) else {
+                    let Some(row) = stored_row(shard, node)? else {
                         continue;
                     };
                     decoder.for_each_value(row, &mask, &mut scratch, |idx, value| {
@@ -1195,6 +1252,30 @@ pub fn ensure_col_stats(
         files,
         seconds: start.elapsed().as_secs_f64(),
     })
+}
+
+/// Atomically publishes `payload` as `col_stats/<cutoff_id>/<table>/<name>`,
+/// beside the statistics files of `cutoff`, and returns its path.
+pub fn publish_col_stats_file(
+    index_dir: &Path,
+    cutoff: Option<i64>,
+    table: &str,
+    name: &str,
+    payload: &[u8],
+) -> Result<PathBuf> {
+    let index_dir = &std::path::absolute(index_dir)?;
+    let metadata = read_dataset_metadata(index_dir)?;
+    ensure!(
+        metadata.node_types.iter().any(|node| node.name == table),
+        "index has no node table {table}"
+    );
+    let index_id = index_id(index_dir, &metadata)?;
+    let cutoff_files = CutoffFiles::new(index_dir, &index_id, cutoff, metadata.timestamp_unit)?;
+    ensure_file_names(table, name)?;
+    cutoff_files.write_manifest_if_missing()?;
+    let path = cutoff_files.dir.join(table).join(name);
+    cutoff_files.write(&path, payload)?;
+    Ok(path)
 }
 
 /// The ingested type a natively typed Arrow array holds.
