@@ -345,11 +345,12 @@ class Plan:
                 identity,
             )
         logger.info(
-            "pinned %d encoders from %d column statistics (%s, cutoff %s) in %.2fs",
+            "pinned %d encoders from %d column statistics (%s, cutoff %s %s) in %.2fs",
             len(pinned),
             len(stats.files),
             stats.source,
             stats.cutoff["value"],
+            stats.cutoff["unit"],
             time.perf_counter() - started,
         )
         return pinned, {

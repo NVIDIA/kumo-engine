@@ -179,7 +179,7 @@ def test_buckets_beyond_the_category_cap_come_from_log_bins():
     assert len(narrow.boundaries) == len(fitted.boundaries)
 
 
-def test_a_vocabulary_beyond_the_category_cap_fits_on_examples():
+def test_truncated_counts_pin_no_vocabulary():
     assert _fitted_from_stats(api.Vocabulary(), [1.0, 2.0], truncated=True)[0] is None
 
 
@@ -407,3 +407,32 @@ def test_statistics_records_round_trip_and_mismatches_are_refused(tmp_path):
     path.write_text(json.dumps(written))
     _redigest(tmp_path / "artifact")
     assert api.Artifact.load(tmp_path / "artifact").fitted_state == fitted
+
+
+@pytest.mark.parametrize("unit, seconds", (("milliseconds", 1), ("seconds", 1), ("days", 86_400)))
+def test_cutoffs_count_rows_as_the_index_clock_rounds_them(tmp_path, monkeypatch, unit, seconds):
+    from kumo.pytorch import materialization
+
+    compile_config = materialization._compile_diskgraph_config
+
+    def clocked(*args, **kwargs):
+        config, *rest = compile_config(*args, **kwargs)
+        return ({**config, "timestamp_unit": unit}, *rest)
+
+    monkeypatch.setattr(materialization, "_compile_diskgraph_config", clocked)
+    cutoff = datetime(2024, 11, 21, 16, tzinfo=UTC)
+    request = [("card_transactions", "channel", "counts")]
+    counted = []
+    for name, engine_options in (("ingest", {"encoder_cutoffs": [cutoff]}), ("recompute", {})):
+        dataset, engine = _setup("diskgraph", tmp_path / name, **engine_options)
+        with api.prepare(_contract(), dataset, engine) as plan:
+            data = plan._require_open().column_stats(request, int(cutoff.timestamp()))
+            assert data.source == name
+            counted.append(data.files[request[0]]["data"])
+    ticks = -(-int(cutoff.timestamp()) // seconds)
+    expected = sum(
+        -(-int(row["occurred_at"].replace(tzinfo=UTC).timestamp()) // seconds) <= ticks
+        for row in _fixture_rows()["card_transactions"]
+    )
+    assert counted[0] == counted[1]
+    assert counted[0]["count"] == expected

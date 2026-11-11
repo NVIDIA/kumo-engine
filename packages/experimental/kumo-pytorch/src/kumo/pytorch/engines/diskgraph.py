@@ -438,6 +438,8 @@ class DiskGraphSource:
 
         self.schema = schema
         self._index = artifact.path
+        metadata = json.loads(Path(artifact.path, "index_metadata.json").read_text())
+        self._clock = metadata.get("timestamp_unit", "seconds")
         self._num_threads = num_threads
         self.ingested_cutoffs: frozenset[int | None] = frozenset()
         self._tables = {table.name: table for table in schema.tables}
@@ -842,8 +844,9 @@ class DiskGraphSource:
     def column_stats(self, requests: Sequence[StatRequest], cutoff: int | None) -> ColumnStats:
         """Statistics files from the index, computing and publishing the missing ones."""
 
+        ticks = self._ticks(cutoff)
         result = self._diskgraph.ensure_col_stats(
-            self._index, cutoff, list(requests), num_threads=self._num_threads
+            self._index, ticks, list(requests), num_threads=self._num_threads
         )
         files = {
             request: json.loads(
@@ -858,10 +861,15 @@ class DiskGraphSource:
         return ColumnStats(
             files,
             source,
-            {"value": cutoff, "unit": result["unit"], "inclusive": True},
+            {"value": ticks, "unit": result["unit"], "inclusive": True},
             cutoff_id=result["cutoff_id"],
             index_id=result["index_id"],
         )
+
+    def _ticks(self, cutoff: int | None) -> int | None:
+        """A cutoff in seconds in the index's clock, rounded as ingest rounds row times."""
+
+        return None if cutoff is None else self._diskgraph.cutoff_ticks(cutoff, self._clock)
 
     def fit_graph_fields(
         self,
