@@ -451,28 +451,6 @@ class MultiCategoricalTensorMapper(TensorMapper[MultiNestedTensor]):
         self.sep = sep
         self._is_string_dtype: bool | None = None
 
-    def _forward_pandas(
-        self,
-        ser: pd.Series,
-        *,
-        device: torch.device | None = None,
-    ) -> MultiNestedTensor:
-        """Handle split/explode cases outside the native Arrow path."""
-        # Support for both string-based and list-like input data:
-        if self._is_string_dtype is None and len(ser) > 0:
-            index = ser.first_valid_index()
-            self._is_string_dtype = index is not None and not pd.api.types.is_list_like(
-                ser[index]
-            )
-
-        rowptr, index = self.mapper.map_multi(ser, self.sep)
-        return MultiNestedTensor(
-            num_rows=rowptr.numel() - 1,
-            num_cols=1,
-            values=index.to(device),
-            offset=rowptr.to(device),
-        )
-
     def backward(self, tensor: MultiNestedTensor) -> pd.Series:
         assert tensor.num_cols == 1
 

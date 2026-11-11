@@ -38,6 +38,11 @@ def _pandas_reference(
         return torch.from_numpy(series.to_numpy().astype(dtype)).view(-1, 1)
     if isinstance(mapper, CategoricalTensorMapper):
         return mapper.mapper.map(series).view(-1, 1)
+    if isinstance(mapper, MultiCategoricalTensorMapper):
+        rowptr, index = mapper.mapper.map_multi(series, mapper.sep)
+        return MultiNestedTensor(
+            num_rows=len(series), num_cols=1, values=index, offset=rowptr
+        )
     return mapper._forward_pandas(series)
 
 
