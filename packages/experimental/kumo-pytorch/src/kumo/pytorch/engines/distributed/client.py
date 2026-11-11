@@ -6,10 +6,13 @@
 
 from __future__ import annotations
 
+import itertools
 import queue
 import threading
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from typing import TypeVar
 
 import pyarrow.flight as flight
 
@@ -26,6 +29,17 @@ from kumo.pytorch.spec import DataLoaderSpec
 from kumo.pytorch.task import Task
 
 _NOT_HOSTED = "is not available on a hosted task: its data lives on the feeder"
+
+Result = TypeVar("Result")
+
+
+def _each(clients: Sequence[FeederClient], call: Callable[[FeederClient], Result]) -> list[Result]:
+    """``call`` on every client at once, results in client order."""
+
+    if len(clients) == 1:
+        return [call(clients[0])]
+    with ThreadPoolExecutor(max_workers=len(clients)) as pool:
+        return list(pool.map(call, clients))
 
 
 class FeederClient:
@@ -50,6 +64,8 @@ class FeederClient:
         self._client.wait_for_available(timeout=timeout)
 
     def stream(self, request: Mapping[str, object], prefetch: int) -> Iterator[Batch]:
+        """Start the stream and its prefetch now; batches come from the returned iterator."""
+
         reader = self._client.do_get(
             flight.Ticket(wire.dumps({"session": self.session, **request}))
         )
@@ -90,43 +106,105 @@ class FeederClient:
 
         thread = threading.Thread(target=pump, name="feeder-prefetch", daemon=True)
         thread.start()
-        try:
-            while True:
-                item = pending.get()
-                if item is None:
-                    return
-                if isinstance(item, BaseException):
-                    raise item
-                yield item
-        finally:
-            stop.set()
-            reader.cancel()
-            thread.join(timeout=5)
+
+        def drain() -> Iterator[Batch]:
+            try:
+                while True:
+                    item = pending.get()
+                    if item is None:
+                        return
+                    if isinstance(item, BaseException):
+                        raise item
+                    yield item
+            finally:
+                stop.set()
+                reader.cancel()
+                thread.join(timeout=5)
+
+        return drain()
 
     def close(self) -> None:
         self._client.close()
 
 
+class Router:
+    """Every feeder's producers, and which one builds a stripe of a rank's pass.
+
+    A rank's pass is split into ``feeders * stripes`` stripes by batch index; stripe
+    ``k`` runs on feeder ``(rank + k) mod feeders``, producer ``k // feeders``.
+    """
+
+    def __init__(self, grid: Sequence[Sequence[FeederClient]]) -> None:
+        if not grid or len({len(row) for row in grid}) != 1:
+            raise ValueError("every feeder needs the same number of producers")
+        self.grid = tuple(tuple(row) for row in grid)
+        self.all = tuple(client for row in self.grid for client in row)
+        self.primary = self.all[0]
+
+    @property
+    def stripes(self) -> int:
+        return len(self.all)
+
+    def route(self, rank: int, stripe: int) -> int:
+        """Position in ``all`` of the producer that builds ``stripe`` of ``rank``'s pass."""
+        feeders = len(self.grid)
+        return ((rank + stripe) % feeders) * len(self.grid[0]) + stripe // feeders
+
+
 @dataclass
 class _HostedTask:
-    """The private backend of a hosted `Task`: its id on the feeder and the stream settings."""
+    """The private backend of a hosted `Task`: its id on each producer and stream settings."""
 
-    client: FeederClient
-    task_id: str
+    producers: Router
+    task_ids: tuple[str, ...]
     prefetch: int
 
     def host_batches(self, arguments: Mapping[str, object], start: int) -> Iterator[Batch]:
-        return self.client.stream(
-            {"task": self.task_id, "arguments": dict(arguments), "start": start}, self.prefetch
-        )
+        rank = arguments["rank"]
+        assert isinstance(rank, int)
+        count = self.producers.stripes
+        streams: list[Iterator[Batch]] = []
+        for offset in range(count):
+            first = start + offset
+            where = self.producers.route(rank, first % count)
+            streams.append(
+                self.producers.all[where].stream(
+                    {
+                        "task": self.task_ids[where],
+                        "arguments": dict(arguments),
+                        "first": first,
+                        "step": count,
+                    },
+                    self.prefetch,
+                )
+            )
+        return _merge(streams)
+
+
+def _merge(streams: list[Iterator[Batch]]) -> Iterator[Batch]:
+    """Round-robin over stripes in batch order; the pass ends at the first exhausted stripe."""
+
+    try:
+        for stream in itertools.cycle(streams):
+            batch = next(stream, None)
+            if batch is None:
+                return
+            yield batch
+    finally:
+        for stream in streams:
+            close = getattr(stream, "close", None)
+            if close is not None:
+                close()
 
 
 class _HostedAnchors:
     """The task's anchors as the feeder holds them; only counts are answered remotely."""
 
-    def __init__(self, client: FeederClient, task_id: str, splits: tuple[str, ...]) -> None:
-        self._client = client
-        self._task_id = task_id
+    def __init__(
+        self, producers: Router, task_ids: tuple[str, ...], splits: tuple[str, ...]
+    ) -> None:
+        self._producers = producers
+        self._task_ids = task_ids
         self._splits = splits
         self._counts: dict[SplitSelection, int] = {}
         self._closed = False
@@ -136,7 +214,7 @@ class _HostedAnchors:
 
     def count(self, selection: SplitSelection) -> int:
         if selection not in self._counts:
-            value = self._client.call("count", task=self._task_id, split=selection)
+            value = self._producers.primary.call("count", task=self._task_ids[0], split=selection)
             assert isinstance(value, int)
             self._counts[selection] = value
         return self._counts[selection]
@@ -160,10 +238,15 @@ class _HostedAnchors:
         if self._closed:
             return
         self._closed = True
-        try:
-            self._client.call("close_task", task=self._task_id)
-        except flight.FlightError:
-            pass
+
+        def close(pair: tuple[FeederClient, str]) -> None:
+            try:
+                pair[0].call("close_task", task=pair[1])
+            except flight.FlightError:
+                pass
+
+        with ThreadPoolExecutor(max_workers=len(self._task_ids)) as pool:
+            list(pool.map(close, zip(self._producers.all, self._task_ids, strict=True)))
 
 
 class _NoSource:
@@ -185,16 +268,16 @@ class DistributedSource:
 
     def __init__(
         self,
-        client: FeederClient,
+        grid: Sequence[Sequence[FeederClient]],
         engine: wire.EngineSpec,
         dataset: Dataset,
         prefetch: int,
     ) -> None:
-        self._client = client
+        self._producers = Router(grid)
         self._engine = engine
         self._dataset = dataset
         self._prefetch = prefetch
-        self._plans: dict[tuple[str, bool], str] = {}
+        self._plans: dict[tuple[str, bool], tuple[str, ...]] = {}
         self._closed = False
 
     def build(self, spec: SampleSpec, requests: Sequence[SampleRequest]) -> list[BuiltSample]:
@@ -228,61 +311,87 @@ class DistributedSource:
     ) -> Task:
         if self._closed:
             raise ValueError("this plan is closed")
-        plan_id = self._plan(contract, plan_inference)
+        plan_ids = self._plan(contract, plan_inference)
         shipped_anchors = anchors if isinstance(anchors, AnchorTable) else tuple(anchors)
-        info = self._client.call(
-            "materialize",
-            plan=plan_id,
-            anchors=shipped_anchors,
-            fit_split=fit_split,
-            fitted=None if fitted is None else ship_state(fitted),
-            inference=inference,
-        )
-        assert isinstance(info, HostedTaskInfo)
-        hosted_anchors = _HostedAnchors(self._client, info.task_id, info.splits)
+        producers = self._producers
+
+        def materialize(where: int, split: object, state: object) -> HostedTaskInfo:
+            info = producers.all[where].call(
+                "materialize" if where == 0 else "install_state",
+                plan=plan_ids[where],
+                anchors=shipped_anchors,
+                fit_split=split,
+                fitted=state,
+                inference=inference,
+            )
+            assert isinstance(info, HostedTaskInfo)
+            return info
+
+        info = materialize(0, fit_split, None if fitted is None else ship_state(fitted))
+        others: list[HostedTaskInfo] = []
+        if producers.stripes > 1:
+            with ThreadPoolExecutor(max_workers=producers.stripes - 1) as pool:
+                others = list(
+                    pool.map(
+                        lambda where: materialize(where, None, info.state),
+                        range(1, producers.stripes),
+                    )
+                )
+        task_ids = (info.task_id, *(other.task_id for other in others))
+        hosted_anchors = _HostedAnchors(producers, task_ids, info.splits)
         try:
+            for other in others:
+                if dict(other.fingerprints) != dict(info.fingerprints):
+                    raise RuntimeError(
+                        "a producer's task does not match the one fitted on the first: "
+                        f"{dict(other.fingerprints)} vs {dict(info.fingerprints)}"
+                    )
             task = _rebuild_task(
                 contract,
                 info,
                 hosted_anchors,
                 dataset_fingerprint=_fingerprint(self._dataset),
                 anchors_fingerprint=_fingerprint(shipped_anchors),
-                hosted=_HostedTask(self._client, info.task_id, self._prefetch),
+                hosted=_HostedTask(producers, task_ids, self._prefetch),
             )
+            if dict(task.fingerprints) != dict(info.fingerprints):
+                raise RuntimeError(
+                    "the feeder's task does not match the one rebuilt on the driver: "
+                    f"feeder {dict(info.fingerprints)}, driver {dict(task.fingerprints)}"
+                )
         except BaseException:
             hosted_anchors.close()
             raise
-        if dict(task.fingerprints) != dict(info.fingerprints):
-            hosted_anchors.close()
-            raise RuntimeError(
-                "the feeder's task does not match the one rebuilt on the driver: "
-                f"feeder {dict(info.fingerprints)}, driver {dict(task.fingerprints)}"
-            )
         return task
 
-    def _plan(self, contract: DataLoaderSpec, inference: bool) -> str:
+    def _plan(self, contract: DataLoaderSpec, inference: bool) -> tuple[str, ...]:
         key = (contract.fingerprint, inference)
         if key not in self._plans:
-            plan_id = self._client.call(
-                "open_plan",
-                contract=contract,
-                dataset=self._dataset.to_dict(),
-                engine=self._engine,
-                inference=inference,
-            )
-            assert isinstance(plan_id, str)
-            self._plans[key] = plan_id
+
+            def open_plan(client: FeederClient) -> str:
+                plan_id = client.call(
+                    "open_plan",
+                    contract=contract,
+                    dataset=self._dataset.to_dict(),
+                    engine=self._engine,
+                    inference=inference,
+                )
+                assert isinstance(plan_id, str)
+                return plan_id
+
+            self._plans[key] = tuple(_each(self._producers.all, open_plan))
         return self._plans[key]
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        for plan_id in self._plans.values():
-            try:
-                self._client.call("close_plan", plan=plan_id)
-            except flight.FlightError:
-                pass
+        for plan_ids in self._plans.values():
+            for client, plan_id in zip(self._producers.all, plan_ids, strict=True):
+                try:
+                    client.call("close_plan", plan=plan_id)
+                except flight.FlightError:
+                    pass
 
 
 def _rebuild_task(

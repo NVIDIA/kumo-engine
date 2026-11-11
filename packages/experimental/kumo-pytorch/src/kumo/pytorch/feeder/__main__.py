@@ -22,7 +22,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     host, _, port = args.listen.rpartition(":")
     if args.parent_pid is not None:
         watch_parent(args.parent_pid)
-    server = FeederServer(f"grpc://{host}:{port}")
+    server = FeederServer(f"grpc://{host}:{port}", host)
     print(f"{wire.LISTENING} grpc://{host}:{server.port}", flush=True)
     sys.stdout = sys.stderr
     server.serve()

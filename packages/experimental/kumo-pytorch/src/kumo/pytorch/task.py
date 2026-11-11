@@ -18,6 +18,7 @@ several tasks, or a resume, checks against.
 
 from __future__ import annotations
 
+import itertools
 import json
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import replace as dataclass_replace
@@ -61,9 +62,11 @@ class TaskBatches(Iterator[Batch]):
         task_fingerprint: str,
         config: Mapping[str, Any],
         seek: Callable[[int], Iterator[Batch]] | None = None,
+        stride: Callable[[int, int], Iterator[Batch]] | None = None,
     ) -> None:
         self._produce = produce
         self._seek = seek
+        self._stride = stride
         self._task_fingerprint = task_fingerprint
         self._config = dict(config)
         self._iterator: Iterator[Batch] | None = None
@@ -83,6 +86,14 @@ class TaskBatches(Iterator[Batch]):
         batch = next(self._iterator)
         self._consumed += 1
         return batch
+
+    def _strided(self, first: int, step: int) -> Iterator[Batch]:
+        """Batches ``first``, ``first + step``, ... of this pass, building only those if it can."""
+        if first < 0 or step <= 0:
+            raise ValueError("first must be non-negative and step positive")
+        if self._stride is not None:
+            return self._stride(first, step)
+        return itertools.islice(self._produce(), first, None, step)
 
     def state_dict(self) -> dict[str, Any]:
         """The resume position: the task fingerprint, batch configuration and batches consumed."""
@@ -298,8 +309,33 @@ class Task:
                     output_format=output_format,
                 )
 
+            policy = self.contract.batch.batching
+            if policy.max_tokens is None and not policy.bucket_by_length:
+
+                def stride(first: int, step: int) -> Iterator[Batch]:
+                    return self._strided_anchor_batches(
+                        selection,
+                        max_samples=max_samples,
+                        chunk_batches=chunk_batches,
+                        first=first,
+                        step=step,
+                        batch_size=batch_size,
+                        epoch=epoch,
+                        seed=seed,
+                        shuffle=shuffle,
+                        rank=rank,
+                        world_size=world_size,
+                        drop_last=drop_last,
+                        output_format=output_format,
+                    )
+
+                strided: Callable[[int, int], Iterator[Batch]] | None = stride
+            else:
+                strided = None
+
         else:
             request_list = tuple(requests)
+            strided = None
 
             def produce() -> Iterator[Batch]:
                 return request_batches(
@@ -336,7 +372,9 @@ class Task:
                 config=config,
                 seek=lambda start: hosted.host_batches(arguments, start),
             )
-        return TaskBatches(produce, task_fingerprint=self.fingerprints["task"], config=config)
+        return TaskBatches(
+            produce, task_fingerprint=self.fingerprints["task"], config=config, stride=strided
+        )
 
     def _anchor_batches(
         self,
@@ -382,6 +420,88 @@ class Task:
             ):
                 yield _surface_padding(batch)
             current = following
+
+    def _strided_anchor_batches(
+        self,
+        selection: SplitSelection,
+        *,
+        max_samples: int,
+        chunk_batches: int,
+        first: int,
+        step: int,
+        batch_size: int | None,
+        epoch: int,
+        seed: int,
+        shuffle: bool,
+        rank: int,
+        world_size: int,
+        drop_last: bool | None,
+        output_format: Literal["inspectable", "model"],
+    ) -> Iterator[Batch]:
+        """Batches ``first``, ``first + step``, ... of `_anchor_batches`, building only those.
+
+        Valid when every batch but a rank's last holds exactly ``max_samples`` anchors, so
+        batch ``i`` is positions ``[i * max_samples, (i + 1) * max_samples)`` of the rank's pass.
+        """
+        positions = padded_positions(
+            self._anchors.order(
+                selection,
+                seed=seed,
+                epoch=epoch,
+                shuffle=shuffle,
+                rank=rank,
+                world_size=world_size,
+            ),
+            count=self._anchors.count(selection),
+            world_size=world_size,
+        )
+        drop = self.contract.batch.batching.drop_last if drop_last is None else drop_last
+        base = 0
+        for chunk in _chunks(positions, max_samples * chunk_batches):
+            count = -(-len(chunk) // max_samples)
+            wanted = [
+                local
+                for local in range(count)
+                if base + local >= first and (base + local - first) % step == 0
+            ]
+            base += count
+            spans = [
+                (local * max_samples, min((local + 1) * max_samples, len(chunk)))
+                for local in wanted
+            ]
+            spans = [
+                (start, stop) for start, stop in spans if not (drop and stop - start < max_samples)
+            ]
+            if not spans:
+                continue
+            if any(padding for _, padding in chunk):
+                # padding IDs are numbered within the whole chunk, as _anchor_batches marks them
+                marked = _mark_padding(
+                    self._anchors.fetch(selection, [position for position, _ in chunk]),
+                    [padding for _, padding in chunk],
+                )
+                groups = [list(marked[start:stop]) for start, stop in spans]
+            else:
+                fetched = list(
+                    self._anchors.fetch(
+                        selection,
+                        [position for start, stop in spans for position, _ in chunk[start:stop]],
+                    )
+                )
+                offsets = list(
+                    itertools.accumulate((stop - start for start, stop in spans), initial=0)
+                )
+                groups = [fetched[start:stop] for start, stop in itertools.pairwise(offsets)]
+            for group in groups:
+                for batch in self._assembler.batches(
+                    group,
+                    batch_size=batch_size,
+                    epoch=epoch,
+                    seed=seed,
+                    drop_last=False,
+                    output_format=output_format,
+                ):
+                    yield _surface_padding(batch)
 
     def preview(self, requests: Sequence[SampleRequest], *, seed: int = 0) -> PreviewResult:
         """Raw samples and one encoded batch for up to eight requests."""

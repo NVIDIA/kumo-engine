@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import itertools
 import os
 import signal
 import subprocess
@@ -43,6 +44,7 @@ from kumo.pytorch.api import (  # noqa: E402
     prepare,
 )
 from kumo.pytorch.artifact import FittedState  # noqa: E402
+from kumo.pytorch.assembly import PreparedBatchPlan  # noqa: E402
 from kumo.pytorch.datasets import hm  # noqa: E402
 from kumo.pytorch.engine import Engine  # noqa: E402
 from kumo.pytorch.engines.distributed import Cluster, DistributedEngine  # noqa: E402
@@ -176,6 +178,74 @@ def test_same_script_gives_identical_batches_locally_and_through_a_feeder(
     assert len(remote.batches) == len(local.batches) > 4 * world_size
     for index, (actual, expected) in enumerate(zip(remote.batches, local.batches, strict=True)):
         assert_identical(actual, expected, f"batches[{index}]")
+
+
+_LOCAL_RUNS: dict[tuple[str, int], Run] = {}
+
+
+@pytest.mark.parametrize("world_size", [1, 2])
+@pytest.mark.parametrize(("feeders", "stripes"), [(1, 2), (1, 4), (2, 1), (2, 2), (2, 4)])
+@pytest.mark.parametrize("contract_name", ["gnn", "sequence"])
+def test_striped_feeders_give_identical_batches(
+    workload: Workload, contract_name: str, feeders: int, stripes: int, world_size: int
+) -> None:
+    contract = CONTRACTS[contract_name]()
+
+    def script(engine: Engine) -> Run:
+        return run(engine, contract, workload.data, world_size=world_size, output_format="model")
+
+    key = (contract_name, world_size)
+    if key not in _LOCAL_RUNS:
+        _LOCAL_RUNS[key] = script(workload.inner())
+    local = _LOCAL_RUNS[key]
+    with DistributedEngine(
+        workload.inner(), cluster=Cluster.subprocess(feeders=feeders), stripes=stripes
+    ) as engine:
+        remote = script(engine)
+        assert [len(pids) for pids in engine.producer_pids] == [stripes] * feeders
+    assert remote.fingerprints == local.fingerprints
+    assert len(remote.batches) == len(local.batches)
+    for index, (actual, expected) in enumerate(zip(remote.batches, local.batches, strict=True)):
+        assert_identical(actual, expected, f"batches[{index}]")
+
+
+@pytest.mark.parametrize("contract_name", ["gnn", "sequence"])
+def test_strided_passes_build_only_their_batches(
+    workload: Workload, contract_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built: list[int] = []
+    original = PreparedBatchPlan.batches
+
+    def counting(self: PreparedBatchPlan, values: object, **options: object) -> object:
+        for batch in original(self, values, **options):
+            built.append(1)
+            yield batch
+
+    with prepare(CONTRACTS[contract_name](), dataset(workload.data), workload.inner()) as plan:
+        task = plan.materialize(anchors(workload.data), fit_split="train")
+        for world_size, drop_last, (first, step) in itertools.product(
+            (1, 7), (False, True), ((0, 1), (3, 1), (1, 4), (5, 3), (2, 2))
+        ):
+            arguments: dict[str, object] = {
+                "split": "train",
+                "batch_size": 12,
+                "epoch": 1,
+                "seed": 5,
+                "shuffle": True,
+                "rank": world_size - 1,
+                "world_size": world_size,
+                "drop_last": drop_last,
+                "chunk_batches": 4,
+                "output_format": "model",
+            }
+            expected = list(itertools.islice(task.batches(**arguments), first, None, step))
+            monkeypatch.setattr(PreparedBatchPlan, "batches", counting)
+            built.clear()
+            actual = list(task.batches(**arguments)._strided(first, step))
+            monkeypatch.setattr(PreparedBatchPlan, "batches", original)
+            assert len(built) == len(actual) == len(expected) > 0
+            for index, (left, right) in enumerate(zip(actual, expected, strict=True)):
+                assert_identical(left, right, f"{world_size}/{drop_last}/{first}/{step}[{index}]")
 
 
 def _start_feeder() -> tuple[subprocess.Popen[str], str]:

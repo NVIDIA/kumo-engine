@@ -6,8 +6,9 @@
 
 from __future__ import annotations
 
-import itertools
 import os
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -52,6 +53,14 @@ class HostedTaskInfo:
     splits: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class Producer:
+    """One producer process of a feeder: the port it serves on and its process ID."""
+
+    port: int
+    pid: int
+
+
 @dataclass
 class _Session:
     plans: dict[str, Plan] = field(default_factory=dict)
@@ -93,13 +102,57 @@ def _dataset(tables: Mapping[str, Mapping[str, object]]) -> Dataset:
     )
 
 
-class FeederServer(flight.FlightServerBase):
-    """Serves control actions and one batch stream per ``do_get``."""
+def launch_feeder(host: str, parent_pid: int) -> tuple[subprocess.Popen[str], str]:
+    """Start ``python -m kumo.pytorch.feeder`` on ``host``; return it and the URL it serves."""
 
-    def __init__(self, location: str) -> None:
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "kumo.pytorch.feeder",
+            "--listen",
+            f"{host}:0",
+            "--parent-pid",
+            str(parent_pid),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert process.stdout is not None
+    line = process.stdout.readline().strip()
+    prefix = wire.LISTENING + " "
+    if not line.startswith(prefix):
+        process.kill()
+        raise RuntimeError(f"the feeder did not start (exit code {process.poll()}): {line!r}")
+    return process, line[len(prefix) :]
+
+
+def stop_processes(processes: list[subprocess.Popen[str]]) -> None:
+    for process in processes:
+        if process.poll() is None:
+            process.terminate()
+    for process in processes:
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+
+class FeederServer(flight.FlightServerBase):
+    """Serves control actions and one batch stream per ``do_get``.
+
+    A feeder is also its own first producer; ``hello`` with ``producers=K`` starts
+    K - 1 more producer processes on the same host, each an independent server.
+    """
+
+    def __init__(self, location: str, host: str) -> None:
         super().__init__(location)
+        self._host = host
         self._sessions: dict[str, _Session] = {}
         self._lock = threading.Lock()
+        self._producers: list[Producer] = []
+        self._children: list[subprocess.Popen[str]] = []
         self._actions: dict[str, Callable[[Mapping[str, object]], object]] = {
             "hello": self._hello,
             "open_plan": self._open_plan,
@@ -107,7 +160,8 @@ class FeederServer(flight.FlightServerBase):
             "count": self._count,
             "close_task": self._close_task,
             "close_plan": self._close_plan,
-            "release": self._release,
+            "install_state": self._install_state,
+            "close_session": self._close_session,
             "shutdown": self._shutdown,
         }
 
@@ -134,9 +188,9 @@ class FeederServer(flight.FlightServerBase):
             task = self._task(request)
             arguments = request["arguments"]
             assert isinstance(arguments, Mapping)
-            batches = task.batches(**arguments)
-            start = int(request["start"])  # type: ignore[arg-type]
-            for batch in itertools.islice(batches, start, None):
+            first, step = request["first"], request["step"]
+            assert isinstance(first, int) and isinstance(step, int)
+            for batch in task.batches(**arguments)._strided(first, step):
                 yield wire.record(wire.BATCH, wire.encode_batch(batch))
         except BaseException as error:
             yield wire.record(wire.ERROR, wire.error_reply(error))
@@ -151,8 +205,17 @@ class FeederServer(flight.FlightServerBase):
             raise ValueError(f"the feeder holds no task {body['task']!r}; it was closed")
         return task
 
-    def _hello(self, body: Mapping[str, object]) -> object:
-        return {"pid": os.getpid()}
+    def _hello(self, body: Mapping[str, object]) -> tuple[Producer, ...]:
+        wanted = body.get("producers", 1)
+        assert isinstance(wanted, int) and wanted >= 1
+        with self._lock:
+            if not self._producers:
+                self._producers.append(Producer(self.port, os.getpid()))
+            while len(self._producers) < wanted:
+                process, url = launch_feeder(self._host, os.getpid())
+                self._children.append(process)
+                self._producers.append(Producer(int(url.rsplit(":", 1)[1]), process.pid))
+            return tuple(self._producers[:wanted])
 
     def _open_plan(self, body: Mapping[str, object]) -> str:
         contract = body["contract"]
@@ -198,6 +261,12 @@ class FeederServer(flight.FlightServerBase):
             splits=tuple(task._anchors.splits()),
         )
 
+    def _install_state(self, body: Mapping[str, object]) -> HostedTaskInfo:
+        """A follower's task: the leader's fitted state, installed; it never refits."""
+        if body["fitted"] is None or body["fit_split"] is not None:
+            raise ValueError("install_state takes complete fitted state and no fit_split")
+        return self._materialize(body)
+
     def _count(self, body: Mapping[str, object]) -> int:
         return self._task(body).count(body["split"])  # type: ignore[arg-type]
 
@@ -211,7 +280,7 @@ class FeederServer(flight.FlightServerBase):
         if plan is not None:
             plan.close()
 
-    def _release(self, body: Mapping[str, object]) -> None:
+    def _close_session(self, body: Mapping[str, object]) -> None:
         with self._lock:
             session = self._sessions.pop(str(body["session"]), None)
         if session is None:
@@ -222,6 +291,7 @@ class FeederServer(flight.FlightServerBase):
             plan.close()
 
     def _shutdown(self, body: Mapping[str, object]) -> None:
+        stop_processes(self._children)
         threading.Thread(target=self.shutdown, daemon=True).start()
 
 

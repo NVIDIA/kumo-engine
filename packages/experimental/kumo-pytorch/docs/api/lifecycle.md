@@ -453,6 +453,7 @@ class TaskBatches(
     task_fingerprint: str,
     config: Mapping[str, Any],
     seek: Callable[[int], Iterator[Batch]] | None = None,
+    stride: Callable[[int, int], Iterator[Batch]] | None = None,
 )
 ```
 

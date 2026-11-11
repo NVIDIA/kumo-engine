@@ -4,6 +4,7 @@
 
 """Prototype: produce a task's batches on feeder processes, byte for byte as locally."""
 
-from kumo.pytorch.engines.distributed.engine import Cluster, DistributedEngine
+from kumo.pytorch.engines.distributed.cluster import Cluster
+from kumo.pytorch.engines.distributed.engine import DistributedEngine
 
 __all__ = ["Cluster", "DistributedEngine"]
