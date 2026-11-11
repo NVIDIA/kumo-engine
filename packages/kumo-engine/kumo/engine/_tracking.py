@@ -593,8 +593,10 @@ class TrackingSession:
         self._trials: Dict[int, List[Event]] = {}
         self._first_epoch: Dict[Any, Any] = {}
         self._search: Optional[_Search] = None
-        self._jobs: 'queue.Queue[Optional[Callable[[], Any]]]' = queue.Queue(
-            QUEUE_SIZE)
+        self._jobs: 'queue.Queue[Callable[[], Any]]' = queue.Queue(QUEUE_SIZE)
+        self._admission = threading.Lock()
+        self._closing = False
+        self._finalizer: Optional[Callable[[], None]] = None
         self._pending_abandon: 'queue.SimpleQueue[Tracking]' = queue.SimpleQueue()
         self._worker: Optional[threading.Thread] = None
         self._behind = False
@@ -693,6 +695,8 @@ class TrackingSession:
         if self._worker is None or (self._tracker is not None
                                     and self._tracker.log_model is None):
             return None, None
+        if self._closing:
+            return None, RuntimeError('experiment tracking is finishing')
         done = threading.Event()
         failed: List[BaseException] = []
         registered: List[Any] = []
@@ -795,12 +799,16 @@ class TrackingSession:
 
         timeout = self._finish_timeout
         deadline = time.monotonic() + timeout
-        try:
-            for job in (finish_tracker, None):
-                self._jobs.put(job, timeout=max(0.0,
-                                                deadline - time.monotonic()))
-        except queue.Full:
-            pass
+        with self._admission:
+            publish = not self._closing
+            if publish:
+                self._closing = True
+                self._finalizer = finish_tracker
+        if publish:
+            try:
+                self._jobs.put_nowait(lambda: None)
+            except queue.Full:
+                pass
         worker.join(max(0.0, deadline - time.monotonic()))
         if worker.is_alive():
             self._fail(TimeoutError(
@@ -808,22 +816,21 @@ class TrackingSession:
                 f'{timeout:g}s; it goes on in the background'))
 
     def _submit(self, job: Callable[[], Any]) -> bool:
-        if self._behind:
-            return False
-        try:
-            self._jobs.put_nowait(job)
-            return True
-        except queue.Full:
-            self._behind = True
-            logger.warning('Experiment tracking is falling behind; the rest '
-                           'of this fit is not tracked')
-            return False
+        with self._admission:
+            if self._behind or self._closing:
+                return False
+            try:
+                self._jobs.put_nowait(job)
+                return True
+            except queue.Full:
+                self._behind = True
+        logger.warning('Experiment tracking is falling behind; the rest '
+                       'of this fit is not tracked')
+        return False
 
     def _work(self) -> None:
         while True:
             job = self._jobs.get()
-            if job is None:
-                return
             try:
                 job()
             except Exception as error:
@@ -836,6 +843,18 @@ class TrackingSession:
                     except queue.Empty:
                         break
                     _abandon(tracker)
+            with self._admission:
+                finalizer = (self._finalizer if self._closing
+                             and self._jobs.empty() else None)
+                if finalizer is not None:
+                    self._finalizer = None
+            if finalizer is not None:
+                try:
+                    finalizer()
+                except Exception as error:
+                    logger.warning('Experiment tracking failed: %s',
+                                   full_error(error), exc_info=_debug())
+                return
 
     def _call(self, call: Callable[[TrackingBase], Any]) -> None:
         tracker = self._tracker

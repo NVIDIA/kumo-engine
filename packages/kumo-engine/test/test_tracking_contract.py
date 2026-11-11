@@ -1059,18 +1059,35 @@ def test_supported_real_budgets_complete_tracking(seconds, kind):
     assert completed.is_set()
 
 
-def test_custom_tracker_can_publish_its_reference_during_finish():
+def test_custom_tracker_can_publish_its_reference_during_finish(monkeypatch):
+    import kumo.engine._tracking as module
     from kumo.engine._tracking import RunSpec, TrackingBase
+
+    idle = threading.Event()
+    owners, finished = [], []
+    original_get = module.queue.Queue.get
+
+    def get(self, *args, **kwargs):
+        if threading.current_thread() in owners and self.empty():
+            idle.set()
+        return original_get(self, *args, **kwargs)
+
+    monkeypatch.setattr(module.queue.Queue, 'get', get)
 
     class Custom(TrackingBase):
         def start(self, record):
-            pass
+            owners.append(threading.current_thread())
 
         def finish(self, record, error):
+            finished.append(record)
             self.run_id = 'published-at-finish'
 
     session = TrackingSession(Custom())
     session.start(lambda: RunSpec(kind='fit'))
     assert session.pointer() is None
+    assert idle.wait(2)
     session.finish(None, None)
+    session.finish(None, None)
+    assert not owners[0].is_alive()
+    assert len(finished) == 1
     assert session.final.run_id == 'published-at-finish'

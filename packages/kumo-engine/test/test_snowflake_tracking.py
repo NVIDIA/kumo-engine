@@ -749,3 +749,61 @@ def test_model_timeout_defers_subclass_cleanup_to_owner(fake, monkeypatch, tmp_p
     assert fake._instance.runs[reference.run_id]['status'] == 'FAILED'
     adapter.log_prediction_run(_prediction('2026-11-01'))
     assert list(fake._instance.runs.values())[-1]['status'] == 'FINISHED'
+
+
+def test_finish_survives_full_queue_and_preserves_fifo(fake, monkeypatch):
+    import kumo.engine._tracking as module
+    from kumo.engine._events import Event
+    from kumo.engine._tracking import RunSpec
+    from kumo.engine.integrations.snowflake import SnowflakeTracking
+
+    entered, release = threading.Event(), threading.Event()
+    calls, owners = [], []
+
+    class QueuedTracking(SnowflakeTracking):
+        def on_trial(self, record, event):
+            calls.append(event.trial)
+            if event.trial == 1:
+                owners.append(threading.current_thread())
+                entered.set()
+                assert release.wait(5)
+
+        def finish(self, record, error):
+            if record is not None:
+                calls.append(('finish', record.name))
+            super().finish(record, error)
+
+    monkeypatch.setattr(module, 'QUEUE_SIZE', 2)
+    adapter = QueuedTracking(FakeSession(), experiment_name='ents',
+                             finish_timeout_seconds=0.01)
+    session = TrackingSession(adapter)
+    session.start(lambda: RunSpec(kind='fit', name='FIRST'))
+    reference = session.pointer()
+    assert reference is not None
+
+    def event(trial):
+        return Event('trial_started', 0, trial=trial, params={'attempt': 1})
+
+    session.on_event(event(1))
+    try:
+        assert entered.wait(2)
+        session.on_event(event(2))
+        session.on_event(event(3))
+        began = module.time.monotonic()
+        session.finish(None, None)
+        assert module.time.monotonic() - began < 1
+        error = session.error
+        assert isinstance(error, TimeoutError)
+        session.on_event(event(4))
+        session.finish(lambda: RunSpec(kind='fit', name='REPLACEMENT'), None)
+        assert session.error is error
+        assert calls == [1]
+    finally:
+        release.set()
+    owners[0].join(3)
+    assert not owners[0].is_alive()
+    assert calls == [1, 2, 3, ('finish', 'FIRST')]
+    assert session.final == reference
+    assert fake._instance.runs[reference.run_id]['status'] == 'FINISHED'
+    adapter.log_prediction_run(_prediction('2026-11-02'))
+    assert list(fake._instance.runs.values())[-1]['status'] == 'FINISHED'
