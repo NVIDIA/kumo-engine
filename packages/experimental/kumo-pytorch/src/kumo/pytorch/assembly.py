@@ -80,6 +80,9 @@ from kumo.pytorch.output import (
 from kumo.pytorch.spec import sample_without_targets
 
 HistoryInput = EntityHistory | BuiltSample
+#: Records measured at a time for the length summary, so their encoded text is never held
+#: for all of them. A model source batch is measured whole.
+_LENGTH_CHUNK = 4096
 
 
 def _history(value: HistoryInput) -> EntityHistory:
@@ -2218,7 +2221,15 @@ class PreparedBatchPlan:
         count = values.batch_size if isinstance(values, ModelSourceBatch) else len(values)
         if name is None or not count:
             return None
-        lengths = self._measure_values(values, name, model=isinstance(values, ModelSourceBatch))
+        model = isinstance(values, ModelSourceBatch)
+        lengths, shapes = {}, {}
+        for start in range(0, 1 if model else count, _LENGTH_CHUNK):
+            self._length_shapes = {}
+            chunk = values if model else values[start : start + _LENGTH_CHUNK]
+            for index, length in self._measure_values(chunk, name, model=model).items():
+                lengths[start + index] = length
+            shapes.update({start + index: shape for index, shape in self._length_shapes.items()})
+        self._length_shapes = shapes
         order = sorted(lengths, key=lambda index: (lengths[index], index))
         chunks = self._compose_batches(
             order, lengths, self.spec.batching, self.spec.batching.max_samples
