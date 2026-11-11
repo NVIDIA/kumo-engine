@@ -28,8 +28,9 @@ cutoff defaults to the latest anchor time the fitting split selects; pass
 `encoder_cutoff=` to `Plan.materialize` to choose another time, or `None` to
 read every row. A table without a clock contributes every row. The engine keeps
 these column statistics with its data, so another task at the same cutoff
-reuses them. `Buckets(bins=...)` learns its cuts from exact log-spaced bins,
-128 per doubling, so a cut lies within 0.6% of the exact quantile. Every other
+reuses them. `Buckets(bins=...)` cuts are `np.quantile`'s over the counted
+values; past a million distinct values they come from exact log-spaced bins,
+128 per doubling, within 0.6% of the exact quantile. Every other
 learned encoder (values computed per anchor, such as aggregates and
 calculations, targets, text, and decimal or bytes columns) fits on the
 training examples only.
