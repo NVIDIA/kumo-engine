@@ -216,9 +216,7 @@ def test_linkpred_bp_fk_target_arrayout(tmp_path: Path):
     data_dir.mkdir()
     index_dir = tmp_path / "index"
     output_root = tmp_path / "lhs_out"
-    target_output_root = tmp_path / "rhs_out"
     output_root.mkdir()
-    target_output_root.mkdir()
 
     graph = _build_linkpred_graph(data_dir)
     index_path = _ingest_linkpred_index(data_dir, index_dir)
@@ -242,7 +240,6 @@ def test_linkpred_bp_fk_target_arrayout(tmp_path: Path):
         input_timestamp_unit=TimeUnit.SECONDS,
         target_stype="multicategorical",
         entity_time_col=None,
-        target_output_root=str(target_output_root),
         job_id=job_id,
     )
 

@@ -206,7 +206,6 @@ def generate_batch_pred_table_via_diskgraph_ttng(
     input_timestamp_unit: TimeUnit,
     target_stype: str,
     entity_time_col: Optional[str],
-    target_output_root: Optional[str] = None,
     lp_bp_layout: Optional[str] = None,
     job_id: Optional[str] = None,
 ) -> Tuple[int, int]:
