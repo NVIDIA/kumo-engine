@@ -562,7 +562,7 @@ mod pk_value_matches_tests {
 #[cfg(test)]
 mod node_data_tests {
     use super::*;
-    use std::io::ErrorKind;
+    use std::io::ErrorKind::{self, InvalidData, UnexpectedEof};
     use std::sync::Arc;
 
     fn layouts(widths: &[usize]) -> Arc<Vec<RelationLayout>> {
@@ -615,7 +615,7 @@ mod node_data_tests {
                     if has_node_data {
                         raw.resize(raw.len() + payload_len as usize, 29);
                     }
-                    let view = EdgeListView {
+                    let mut view = EdgeListView {
                         raw: &raw,
                         layouts: layouts(&[1, 8]),
                         has_node_data,
@@ -629,20 +629,13 @@ mod node_data_tests {
                     assert_eq!(view.node_data().unwrap(), expected);
                     check(&view);
                     for end in 0..raw.len() {
-                        check(&EdgeListView {
-                            raw: &raw[..end],
-                            layouts: view.layouts.clone(),
-                            has_node_data,
-                            node_data_len_bytes: len_width as u8,
-                        });
+                        view.raw = &raw[..end];
+                        check(&view);
                     }
-                    raw.push(99);
-                    check(&EdgeListView {
-                        raw: &raw,
-                        layouts: layouts(&[1, 8]),
-                        has_node_data,
-                        node_data_len_bytes: len_width as u8,
-                    });
+                    let mut trailing = raw.clone();
+                    trailing.push(99);
+                    view.raw = &trailing;
+                    check(&view);
                 }
             }
         }
@@ -653,37 +646,31 @@ mod node_data_tests {
         type Case<'a> = (&'a [u8], &'a [usize], bool, u8, Option<ErrorKind>);
         let cases: &[Case<'_>] = &[
             (&[], &[8], false, 255, None),
-            (&[], &[], true, 2, Some(ErrorKind::InvalidData)),
+            (&[], &[], true, 2, Some(InvalidData)),
             (&[0], &[], true, 1, None),
-            (&[0, 0], &[8], true, 0, Some(ErrorKind::InvalidData)),
-            (&[0, 0], &[8], true, 5, Some(ErrorKind::InvalidData)),
+            (&[0, 0], &[8], true, 0, Some(InvalidData)),
+            (&[0, 0], &[8], true, 5, Some(InvalidData)),
             // Missing second count takes precedence over invalid length width.
-            (&[0], &[1, 8], true, 0, Some(ErrorKind::UnexpectedEof)),
+            (&[0], &[1, 8], true, 0, Some(UnexpectedEof)),
             // Missing node-data length takes precedence over edge-size overflow.
-            (
-                &[255, 255, 255, 255],
-                &[8],
-                true,
-                2,
-                Some(ErrorKind::UnexpectedEof),
-            ),
+            (&[255, 255, 255, 255], &[8], true, 2, Some(UnexpectedEof)),
             // Earlier segment EOF takes precedence over later count multiplication overflow.
             (
                 &[2, 255, 255, 255, 255, 0, 0],
                 &[1, 8],
                 true,
                 2,
-                Some(ErrorKind::UnexpectedEof),
+                Some(UnexpectedEof),
             ),
             (
                 &[255, 255, 255, 255, 0, 0],
                 &[8],
                 true,
                 2,
-                Some(ErrorKind::InvalidData),
+                Some(InvalidData),
             ),
-            (&[0, 0, 7], &[], true, 2, Some(ErrorKind::InvalidData)),
-            (&[7], &[], false, 2, Some(ErrorKind::InvalidData)),
+            (&[0, 0, 7], &[], true, 2, Some(InvalidData)),
+            (&[7], &[], false, 2, Some(InvalidData)),
         ];
         for &(raw, widths, has_node_data, node_data_len_bytes, error) in cases {
             let view = EdgeListView {
