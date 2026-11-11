@@ -1264,12 +1264,16 @@ pub fn publish_col_stats_file(
 ) -> Result<PathBuf> {
     let index_dir = &std::path::absolute(index_dir)?;
     let metadata = read_dataset_metadata(index_dir)?;
+    ensure!(
+        metadata.node_types.iter().any(|node| node.name == table),
+        "index has no node table {table}"
+    );
     let index_id = index_id(index_dir, &metadata)?;
     let cutoff_files = CutoffFiles::new(index_dir, &index_id, cutoff, metadata.timestamp_unit)?;
     ensure_file_names(table, name)?;
+    cutoff_files.write_manifest_if_missing()?;
     let path = cutoff_files.dir.join(table).join(name);
     cutoff_files.write(&path, payload)?;
-    cutoff_files.write_manifest_if_missing()?;
     Ok(path)
 }
 

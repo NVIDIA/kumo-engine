@@ -6,10 +6,11 @@
 
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use arrow::array::{make_array, Array, ArrayData};
 use arrow::pyarrow::{FromPyArrow, ToPyArrow};
-use diskgraph_ingest::column_scan;
+use diskgraph_ingest::column_scan::{self, Next};
 use diskgraph_ingest::cutoff_stats::{self, Stat};
 use diskgraph_ingest::index_metadata::{index_id, read_dataset_metadata};
 use pyo3::prelude::*;
@@ -123,10 +124,19 @@ impl ColumnScan {
     }
 
     fn __next__(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        let next = py.detach(|| self.chunks.lock().expect("scan lock").next());
-        match next.transpose().map_err(map_anyhow_err)? {
-            Some(chunk) => Ok(Some(chunk.to_data().to_pyarrow(py)?.unbind())),
-            None => Ok(None),
+        loop {
+            let next = py.detach(|| {
+                let scan = self.chunks.lock().expect("scan lock");
+                scan.next_within(Duration::from_millis(100))
+            });
+            match next {
+                Next::Chunk(chunk) => {
+                    let chunk = chunk.map_err(map_anyhow_err)?;
+                    return Ok(Some(chunk.to_data().to_pyarrow(py)?.unbind()));
+                }
+                Next::End => return Ok(None),
+                Next::Pending => py.check_signals()?,
+            }
         }
     }
 }

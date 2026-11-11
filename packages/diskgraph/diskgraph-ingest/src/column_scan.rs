@@ -7,9 +7,12 @@
 //! parallel and reach the reader in order.
 
 use std::collections::HashSet;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, ensure, Context, Result};
 use arrow_array::builder::{ArrayBuilder, LargeStringBuilder};
@@ -24,13 +27,29 @@ use crate::index_metadata::INDEX_METADATA_FILENAME;
 /// The column's non-null values, `chunk_rows` per array except the last.
 pub struct ColumnScan {
     chunks: Receiver<Result<LargeStringArray>>,
+    stop: Arc<AtomicBool>,
 }
 
-impl Iterator for ColumnScan {
-    type Item = Result<LargeStringArray>;
+pub enum Next {
+    Chunk(Result<LargeStringArray>),
+    End,
+    Pending,
+}
 
-    fn next(&mut self) -> Option<Self::Item> {
-        self.chunks.recv().ok()
+impl ColumnScan {
+    /// The next chunk, or `Pending` if none is ready within `timeout`.
+    pub fn next_within(&self, timeout: Duration) -> Next {
+        match self.chunks.recv_timeout(timeout) {
+            Ok(chunk) => Next::Chunk(chunk),
+            Err(RecvTimeoutError::Timeout) => Next::Pending,
+            Err(RecvTimeoutError::Disconnected) => Next::End,
+        }
+    }
+}
+
+impl Drop for ColumnScan {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
     }
 }
 
@@ -40,10 +59,11 @@ struct Scan {
     mask: Vec<bool>,
     create_time: CreateTime,
     cutoff: Option<i64>,
+    stop: Arc<AtomicBool>,
 }
 
 /// Opens the scan; decoding runs on `num_threads` threads (all cores when
-/// `None`), at most one chunk of nodes each plus as many finished arrays ahead.
+/// `None`), one chunk of nodes each, with two finished arrays queued ahead.
 pub fn scan_column(
     index_dir: &Path,
     table: &str,
@@ -53,6 +73,7 @@ pub fn scan_column(
     num_threads: Option<usize>,
 ) -> Result<ColumnScan> {
     ensure!(chunk_rows > 0, "chunk_rows must be positive");
+    ensure!(num_threads != Some(0), "num_threads must be positive");
     let reader = GraphIndexReader::open_subset(
         &index_dir.join(INDEX_METADATA_FILENAME),
         index_dir,
@@ -88,34 +109,44 @@ pub fn scan_column(
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads.unwrap_or(0))
         .build()?;
-    let (sender, chunks) = sync_channel(pool.current_num_threads());
+    let (sender, chunks) = sync_channel(2);
+    let stop = Arc::new(AtomicBool::new(false));
     let scan = Scan {
         table: table_reader,
         column: index,
         mask,
         create_time,
         cutoff,
+        stop: Arc::clone(&stop),
     };
+    let panicked = format!("column scan of {table}.{column} panicked");
     std::thread::spawn(move || {
-        if let Err(err) = scan.produce(&pool, chunk_rows, &sender) {
+        let produced = panic::catch_unwind(AssertUnwindSafe(|| {
+            scan.produce(&pool, chunk_rows, &sender)
+        }))
+        .unwrap_or_else(|_| Err(anyhow!(panicked)));
+        if let Err(err) = produced {
             let _ = sender.send(Err(err));
         }
     });
-    Ok(ColumnScan { chunks })
+    Ok(ColumnScan { chunks, stop })
 }
 
 impl Scan {
     /// Decodes a window of node chunks at a time and re-chunks the values in
-    /// order; stops once the reader is gone.
+    /// order; stops once the scan is dropped.
     fn produce(
         &self,
         pool: &rayon::ThreadPool,
         chunk_rows: usize,
         sender: &SyncSender<Result<LargeStringArray>>,
     ) -> Result<()> {
-        let nodes = (chunk_rows as u64).min(SCAN_CHUNK_NODES);
         let mut out = LargeStringBuilder::new();
-        for window in node_chunks(&self.table, nodes).chunks(pool.current_num_threads()) {
+        for window in node_chunks(&self.table, SCAN_CHUNK_NODES).chunks(pool.current_num_threads())
+        {
+            if self.stop.load(Ordering::Relaxed) {
+                return Ok(());
+            }
             let decoded: Vec<LargeStringArray> = pool.install(|| {
                 window
                     .par_iter()
