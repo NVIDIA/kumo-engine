@@ -940,14 +940,15 @@ def test_tracker_finish_budget_still_bounds_hung_work(kind):
             release.wait(30)
 
     recorder = Hung()
-    began = time.monotonic()
     try:
         if kind == 'fit':
             session = TrackingSession(recorder)
             session.start(lambda: fit_spec(CONTEXT))
+            began = time.monotonic()
             session.finish(None, None)
             error = session.error
         else:
+            began = time.monotonic()
             error = tracking.log_run(
                 tracking.as_tracking(recorder),
                 lambda record: recorder.finish(record, None),
@@ -965,9 +966,15 @@ def test_foreign_tracker_without_budget_retains_legacy_default(monkeypatch):
     import kumo.engine._tracking as tracking
 
     budgets = []
+
+    class RecordingThread(threading.Thread):
+        def join(self, timeout=None):
+            budgets.append(timeout)
+            return super().join(timeout)
+
     monkeypatch.setattr(tracking, 'FINISH_SECONDS', 0.25)
-    monkeypatch.setattr(threading.Thread, 'join', lambda self, timeout: budgets.append(timeout))
-    monkeypatch.setattr(threading.Thread, 'is_alive', lambda self: False)
+    monkeypatch.setattr(tracking, 'threading', SimpleNamespace(
+        Thread=RecordingThread, TIMEOUT_MAX=threading.TIMEOUT_MAX))
     assert tracking.log_run(tracking.as_tracking(_Recorder()),
                             lambda record: None, tracking.RunRecord()) is None
     assert budgets == [0.25]
