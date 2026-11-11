@@ -298,6 +298,7 @@ class DiskGraphEngine(
     num_threads: int | None = None,
     num_shards: int = 1,
     ingest: Literal['if_missing', 'never'] = 'if_missing',
+    encoder_cutoffs: Sequence[str | datetime | None] = (),
 )
 ```
 
@@ -328,6 +329,7 @@ step, before any data is read.
 - `num_threads`: native sampling threads.
 - `num_shards`: index shards.
 - `ingest`: `"if_missing"` builds the index when absent; `"never"` requires an existing one. A mismatching manifest is an error, never permission to reuse.
+- `encoder_cutoffs`: encoder cutoffs (`Plan.materialize`'s `encoder_cutoff`; `None` is the whole table) whose column statistics an ingest computes in the same pass. Only a hint: `Plan.materialize` computes any statistics it finds missing from the index.
 
 #### `DiskGraphEngine.check_contract`
 
@@ -362,6 +364,19 @@ DiskGraphEngine.check_anchors(table: AnchorTable) -> tuple[ValidationIssue, ...]
 ```
 
 Issues with a Parquet anchor table's binding, without reading its rows.
+
+#### `DiskGraphEngine.open`
+
+```python
+DiskGraphEngine.open(
+    dataset: Dataset,
+    schema: DataSchema,
+    *,
+    column_stats: Sequence[StatRequest] = (),
+) -> SampleSource
+```
+
+Ensure the index; an ingest also computes `column_stats` at `encoder_cutoffs`.
 
 ### `available_engines`
 
