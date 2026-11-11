@@ -351,17 +351,23 @@ class FittedEncoder:
                 result[numeric == 0] = 1
             result[~valid.numpy()] = 0
             return {"values": torch.from_numpy(result), "valid": valid}
-        strings = pc.fill_null(values, "").to_pylist()
-        pieces = self.tokenizer.encode_batch(strings)
-        lists = [list(item.ids) for item in pieces]
-        for index in range(len(lists)):
-            if not valid[index]:
-                lists[index] = [self.roles["missing"]]
-            elif not lists[index] and config.empty == "unknown":
-                lists[index] = [self.roles["unknown"]]
-        offsets = np.concatenate(([0], np.cumsum([len(item) for item in lists], dtype=np.int64)))
+        strings, present = pc.fill_null(values, ""), valid.numpy()
+        missing, unknown = (self.roles["missing"],), (self.roles["unknown"],)
+        offsets = np.zeros(len(values) + 1, dtype=np.int64)
+        pieces = np.empty(len(values), dtype=np.int64)
+        for start in range(0, len(values), TEXT_BATCH):
+            batch = strings.slice(start, TEXT_BATCH).to_pylist()
+            for index, encoding in enumerate(self.tokenizer.encode_batch_fast(batch), start):
+                ids = encoding.ids if present[index] else missing
+                if not ids and config.empty == "unknown":
+                    ids = unknown
+                end = offsets[index] + len(ids)
+                if end > len(pieces):
+                    pieces = np.concatenate((pieces, np.empty(max(end, len(pieces)), np.int64)))
+                pieces[offsets[index] : end] = ids
+                offsets[index + 1] = end
         return {
-            "values": torch.tensor([part for item in lists for part in item], dtype=torch.long),
+            "values": torch.from_numpy(pieces[: offsets[-1]].copy()),
             "valid": valid,
             "piece_offsets": torch.from_numpy(offsets),
         }
