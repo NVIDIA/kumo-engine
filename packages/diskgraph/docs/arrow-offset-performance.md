@@ -1,9 +1,12 @@
 # Arrow offset performance assessment
 
-**Keep this PR in draft under a strict no-regression requirement.** The large
-decoder slowdown introduced by the first patch has been removed. However, the
-full-query measurements are about 1% slower by median, and wider offsets use
-more memory. These results do not establish a zero-cost fix.
+These measurements describe the earlier always-wide temporal-query implementation
+at `07c92802715e3a2e1e5baf8b5355bef98f529847`, before the explicit opt-in API.
+The current API defaults to 32-bit offsets and selects the wide path only with
+`arrow_offset_width=64`. No new performance benchmark was run for that API
+revision. The measurements below are historical evidence, not a fresh comparison
+against the current base or a claim that wide offsets are free. The generic
+decoder inlining improvement is retained.
 
 ## Setup
 
@@ -106,8 +109,11 @@ the installed wheel:
 python diskgraph-pybind/python/examples/arrow_offset_query_bench.py \
   /tmp/dg-offset-query baseline model
 python diskgraph-pybind/python/examples/arrow_offset_query_bench.py \
-  /tmp/dg-offset-query candidate model
+  /tmp/dg-offset-query candidate model 64
 ```
+
+The `64` argument selects the current opt-in path. Omit it only when replaying
+the historical always-wide candidate wheel; old wheels do not accept the flag.
 
 Repeat with `inspectable`. Alternate the environments across trials, retain
 all results, and require matching value/statistics digests. The example creates

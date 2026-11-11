@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Usage: python arrow_offset_query_bench.py FRESH_INDEX_ROOT LABEL [model|inspectable]
+# Usage: python arrow_offset_query_bench.py FRESH_INDEX_ROOT LABEL [model|inspectable] [32|64]
 # Reuse the generated index across baseline/candidate runs. Use a separate
 # installed wheel for each label; the label only identifies the JSON result.
 
@@ -13,6 +13,7 @@ import diskgraph, pyarrow as pa, pyarrow.parquet as pq
 root = Path(sys.argv[1])
 variant = sys.argv[2]
 output_format = sys.argv[3] if len(sys.argv) > 3 else "model"
+offset_width = int(sys.argv[4]) if len(sys.argv) > 4 else None
 root.mkdir(exist_ok=True)
 if not (root / "index").exists():
     pq.write_table(pa.table({"id": list(range(100))}), root / "users.parquet")
@@ -121,7 +122,8 @@ p = json.dumps(plan)
 
 def run():
     return e.query_temporal(
-        {"users": ids}, {"users": times}, p, output_format=output_format
+        {"users": ids}, {"users": times}, p, output_format=output_format,
+        **({} if offset_width is None else {"arrow_offset_width": offset_width})
     )
 
 
@@ -160,6 +162,7 @@ print(
         {
             "variant": variant,
             "format": output_format,
+            "arrow_offset_width": offset_width,
             "seconds": time.perf_counter() - start,
             "queries": 100,
             "median_query_seconds": statistics.median(latencies),

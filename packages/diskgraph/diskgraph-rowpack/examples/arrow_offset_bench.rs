@@ -26,7 +26,7 @@ fn main() -> Result<()> {
         scale: None,
     }];
     let mut cb = RowPackContextBuilder::new(columns, RowPackConfig::default());
-    cb.observe_row(&[value.clone()])?;
+    cb.observe_row(std::slice::from_ref(&value))?;
     cb.observe_row(&[ValueRef::Null])?;
     let ctx = cb.finish()?;
     let encoder = RowPackEncoder::new(ctx.clone())?;

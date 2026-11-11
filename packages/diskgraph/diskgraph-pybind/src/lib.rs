@@ -728,7 +728,7 @@ impl SamplerEngine {
     /// must contain the same single root type, and cutoffs are epoch seconds.
     /// The JSON plan is storage-oriented rather than task/model-oriented; see
     /// `diskgraph-pybind/README.md` for its compact schema.
-    #[pyo3(signature = (seed_nodes, seed_timestamps, plan_json, *, output_format = "inspectable"))]
+    #[pyo3(signature = (seed_nodes, seed_timestamps, plan_json, *, output_format = "inspectable", arrow_offset_width = 32))]
     pub fn query_temporal(
         &self,
         py: Python<'_>,
@@ -736,7 +736,17 @@ impl SamplerEngine {
         seed_timestamps: Bound<'_, PyDict>,
         plan_json: String,
         output_format: &str,
+        arrow_offset_width: u8,
     ) -> PyResult<Py<PyDict>> {
+        let large_offsets = match arrow_offset_width {
+            32 => false,
+            64 => true,
+            value => {
+                return Err(DiskgraphConfigError::new_err(format!(
+                    "arrow_offset_width must be 32 or 64, got {value}"
+                )))
+            }
+        };
         let model_format = match output_format {
             "inspectable" => false,
             "model" => true,
@@ -772,6 +782,7 @@ impl SamplerEngine {
                     &roots,
                     &cutoffs,
                     &plan_json,
+                    large_offsets,
                 )
             })
             .map_err(temporal_query::config_error)?;

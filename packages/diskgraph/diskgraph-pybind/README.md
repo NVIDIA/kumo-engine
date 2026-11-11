@@ -120,7 +120,7 @@ for event in features:
 ### Direct temporal rows
 
 `SamplerEngine.query_temporal(seed_nodes, seed_timestamps, plan_json,
-output_format=...)` is the small co-located boundary for clients that already
+output_format=..., arrow_offset_width=32)` is the small co-located boundary for clients that already
 own their sample table. It accepts one dense root type, aligned epoch-second
 cutoffs, and a JSON plan with:
 
@@ -170,11 +170,18 @@ value when a caller will immediately encode a batch. Sequence `batch` values
 are Arrow `RecordBatch` objects in both formats. Query semantics, ordering,
 limits, reductions, nulls, timings, and statistics are identical.
 
-Temporal row decoding uses Arrow `large_string`, `large_binary`, and `large_list`
-columns, including large string children inside lists. Their 64-bit offsets
-allow a query's combined values to exceed the 2 GiB limit of ordinary Arrow
-string and binary arrays without changing row values or order. This removes an
-offset limit; the complete query still needs enough memory for its output.
+Temporal queries keep ordinary 32-bit Arrow offsets by default. Pass
+`arrow_offset_width=64` to `query_temporal` when a query needs more than about
+2 GiB of string or binary values in one column, or more than the 32-bit list
+child-count capacity. Only `32` and `64` are accepted. Selection is explicit;
+there is no input-sizing scan or automatic retry.
+
+The opt-in applies to decoded rows (including deferred sequence projections)
+and string aggregates in model output, in both output formats. It returns
+`large_string`, `large_binary`, and `large_list`, including large string children
+inside lists. Values, nulls and row order are preserved. Consumers requesting
+64-bit offsets must accept these physical types and provide enough memory for
+the complete result. `query_temporal_lengths` is unchanged.
 See the [performance assessment](../docs/arrow-offset-performance.md) for
 measured costs and standalone reproduction commands.
 
