@@ -208,9 +208,9 @@
         },
         "id_space": null,
         "kind": "zscore",
-        "mean": 0.026285,
+        "mean": 0.0257258,
         "output_dtype": "float32",
-        "scale": 0.0162101
+        "scale": 0.0149995
       },
       "weekday": {
         "dtype": {
