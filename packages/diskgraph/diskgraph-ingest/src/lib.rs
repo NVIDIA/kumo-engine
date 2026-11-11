@@ -8,6 +8,7 @@ pub mod binary_label;
 pub mod coercion;
 pub mod col_stats;
 pub mod col_stats_export;
+pub mod column_scan;
 pub mod column_inference;
 pub mod config;
 pub mod config_converter;

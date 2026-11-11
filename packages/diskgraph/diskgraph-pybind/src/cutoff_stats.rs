@@ -5,9 +5,11 @@
 //! Exact column statistics at a cutoff; see `diskgraph_ingest::cutoff_stats`.
 
 use std::path::Path;
+use std::sync::Mutex;
 
-use arrow::array::{make_array, ArrayData};
-use arrow::pyarrow::FromPyArrow;
+use arrow::array::{make_array, Array, ArrayData};
+use arrow::pyarrow::{FromPyArrow, ToPyArrow};
+use diskgraph_ingest::column_scan;
 use diskgraph_ingest::cutoff_stats::{self, Stat};
 use diskgraph_ingest::index_metadata::{index_id, read_dataset_metadata};
 use pyo3::prelude::*;
@@ -88,8 +90,60 @@ pub fn col_stats_from_arrow(
     Ok(out.into_any().unbind())
 }
 
+/// Iterates a stored string column's non-null values as `pa.large_string()`
+/// arrays, in shard then node order, over the rows counted at `cutoff`.
+#[pyclass(frozen, module = "diskgraph._c")]
+pub struct ColumnScan {
+    chunks: Mutex<column_scan::ColumnScan>,
+}
+
+#[pymethods]
+impl ColumnScan {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        let next = py.detach(|| self.chunks.lock().expect("scan lock").next());
+        match next.transpose().map_err(map_anyhow_err)? {
+            Some(chunk) => Ok(Some(chunk.to_data().to_pyarrow(py)?.unbind())),
+            None => Ok(None),
+        }
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (index_dir, table, column, cutoff, *, chunk_rows=65536, num_threads=None))]
+pub fn scan_column(
+    py: Python<'_>,
+    index_dir: &str,
+    table: &str,
+    column: &str,
+    cutoff: Option<i64>,
+    chunk_rows: usize,
+    num_threads: Option<usize>,
+) -> PyResult<ColumnScan> {
+    let scan = py
+        .detach(|| {
+            column_scan::scan_column(
+                Path::new(index_dir),
+                table,
+                column,
+                cutoff,
+                chunk_rows,
+                num_threads,
+            )
+        })
+        .map_err(map_anyhow_err)?;
+    Ok(ColumnScan {
+        chunks: Mutex::new(scan),
+    })
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(col_stats_index_id, m)?)?;
     m.add_function(wrap_pyfunction!(ensure_col_stats, m)?)?;
-    m.add_function(wrap_pyfunction!(col_stats_from_arrow, m)?)
+    m.add_function(wrap_pyfunction!(col_stats_from_arrow, m)?)?;
+    m.add_function(wrap_pyfunction!(scan_column, m)?)?;
+    m.add_class::<ColumnScan>()
 }
