@@ -50,14 +50,12 @@ def _arrow_chunks(array: pa.Array | pa.ChunkedArray) -> list[pa.Array]:
 
 def _copy_numpy(destination: Tensor, values: np.ndarray) -> None:
     """Cast and copy NumPy values into destination tensor storage."""
-    if destination.device.type == "cpu":
-        np.copyto(destination.numpy(), values, casting="unsafe")
-    else:
+    if values.dtype.kind not in "biuf":
         dtype = str(destination.dtype).split(".")[-1]
         values = values.astype(dtype, copy=False)
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=".*non-writable.*")
-            destination.copy_(torch.from_numpy(values))
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*non-writable.*")
+        destination.copy_(torch.from_numpy(values))
 
 
 def _encode_nested_chunks(
