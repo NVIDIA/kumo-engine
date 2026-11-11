@@ -15,11 +15,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{BuildHasher, Hash, RandomState};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::Arc;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use arrow_array::cast::AsArray;
 use arrow_array::types::*;
-use arrow_array::{Array, ArrayRef, ArrowPrimitiveType};
+use arrow_array::{Array, ArrayRef, ArrowPrimitiveType, TimestampSecondArray};
 use arrow_schema::DataType;
 use diskgraph_core::time::TimeUnit;
 use diskgraph_index::graph::{
@@ -1298,6 +1299,33 @@ fn arrow_ingested_type(data_type: &DataType) -> Result<IngestedType> {
     })
 }
 
+/// Each Arrow timestamp in ticks of `clock`, read as ingest reads it: an
+/// error when beyond the clock, `None` when null.
+fn ingest_timestamps(
+    array: &ArrayRef,
+    clock: TimeUnit,
+) -> impl Iterator<Item = Result<Option<i64>>> + '_ {
+    let mut access = RowAccess::new(vec![RowAccessHints::default()], RowAccessStats::new(None))
+        .with_clock(clock);
+    access.set_cols(std::slice::from_ref(array));
+    (0..array.len()).map(move |row| {
+        access.set_row(row);
+        access.get_timestamp(0)
+    })
+}
+
+/// Epoch `seconds` in ticks of the index clock, converted as ingest converts
+/// an Arrow timestamp or integer create time (rounding up to a coarser clock).
+/// Ingest rounds create times parsed from text down instead.
+pub fn cutoff_ticks(seconds: i64, clock: TimeUnit) -> Result<i64> {
+    ensure!(clock.is_index_clock(), "{clock:?} is not an index clock");
+    let array: ArrayRef = Arc::new(TimestampSecondArray::from(vec![seconds]));
+    let ticks = ingest_timestamps(&array, clock).next().expect("one value");
+    ticks
+        .with_context(|| format!("cutoff {seconds} s in the {clock:?} clock"))?
+        .ok_or_else(|| anyhow!("cutoff is null"))
+}
+
 /// Each row's value as ingest stores it.
 fn arrow_values(array: &ArrayRef, clock: TimeUnit) -> Result<Vec<Value<'_>>> {
     fn map<T: ArrowPrimitiveType>(
@@ -1334,22 +1362,9 @@ fn arrow_values(array: &ArrayRef, clock: TimeUnit) -> Result<Vec<Value<'_>>> {
             .map(|v| v.map_or(Value::Null, Value::Str))
             .collect(),
         DataType::Date32 => map::<Date32Type>(array, |v| Value::Int(v.into())),
-        DataType::Timestamp(_, _) => {
-            let mut access =
-                RowAccess::new(vec![RowAccessHints::default()], RowAccessStats::new(None))
-                    .with_clock(clock);
-            access.set_cols(std::slice::from_ref(array));
-            (0..array.len())
-                .map(|row| {
-                    access.set_row(row);
-                    access
-                        .get_timestamp(0)
-                        .ok()
-                        .flatten()
-                        .map_or(Value::Null, Value::Int)
-                })
-                .collect()
-        }
+        DataType::Timestamp(_, _) => ingest_timestamps(array, clock)
+            .map(|ticks| ticks.ok().flatten().map_or(Value::Null, Value::Int))
+            .collect(),
         other => bail!("column statistics are unsupported for Arrow {other}"),
     })
 }
