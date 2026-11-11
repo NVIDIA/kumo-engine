@@ -30,8 +30,8 @@ def test_required_metrics(metric, val, test):
                    metrics | {"train_loss": float("nan")}):
         with pytest.raises(ValueError):
             common.check_metrics(broken, [metric])
-    with pytest.raises(ValueError):
-        common.check_metrics(metrics, [metric, "mae"])
+    with pytest.raises(ValueError, match="reference metrics"):
+        common.check_metrics(metrics, [metric, "mae"], "reference")
 
 
 def test_requested_population_and_counts():

@@ -44,7 +44,7 @@ Other metrics, including MAE and RMSE, use `abs(current - reference) <= abs(refe
 At 10B and 25B, payments and fraud use one experiment, one epoch and balanced training sampling at batch 64.
 `majority_sampling_ratio=[1.0]` and `weight_mode=[WeightMode.SAMPLE]` affect training only.
 Every case and scale uses fixed validation and test budgets of 1,000 steps each.
-Payments and fraud remain at every scale. References and fitted results require finite `val_<metric>` and `test_<metric>` for every configured metric.
+Payments and fraud remain at every scale. References and fitted results require finite `val_<metric>` and `test_<metric>` for every configured metric. A reference without them fails before ingest.
 Missing required metrics and any non-finite returned metric fail. Correct inadequate label support in the dataset before regenerating its reference after review.
 `training_table.splits.<split>.positive_rows` records whole-split positives, not measured positives in the capped evaluation prefix.
 Results also record hardware, elapsed time and sampled peak RAM, GPU memory and scratch growth. CI requires the declared instance type and matching reference hardware. Timings do not gate results.

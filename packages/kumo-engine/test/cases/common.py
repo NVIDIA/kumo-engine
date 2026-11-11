@@ -272,13 +272,13 @@ def prediction_table(training_table, query, snapshot, args, generation, coordina
     return population, requested
 
 
-def check_metrics(metrics, configured_metrics):
+def check_metrics(metrics, configured_metrics, source="training"):
     required = {f"{split}_{name}" for name in configured_metrics
                 for split in ("val", "test")}
     invalid = (required - metrics.keys()) | {
         name for name, value in metrics.items() if not math.isfinite(value)}
     if not required or not metrics or invalid:
-        raise ValueError(f"Missing or non-finite training metrics: {sorted(invalid)}")
+        raise ValueError(f"Missing or non-finite {source} metrics: {sorted(invalid)}")
     return sorted(required)
 
 
@@ -448,6 +448,9 @@ def run(graph, query, split, task, overrides=None, *, args,
             if expected.get("control", False) != args.control:
                 raise ValueError("Reference control mode differs")
             check_hardware(result, expected)
+            configured = (overrides or {}).get("training_job.metrics")
+            if configured:
+                check_metrics(expected.get("metrics", {}), configured, "reference")
         args.scratch.mkdir(parents=True, exist_ok=True)
         if shutil.disk_usage(args.scratch).free < args.scratch_gib * 2**30:
             raise ValueError(
@@ -511,8 +514,6 @@ def run(graph, query, split, task, overrides=None, *, args,
         }.items():
             section, field = key.split(".", 1)
             setattr(getattr(plan, section), field, value)
-        if expected is not None:
-            check_metrics(expected.get("metrics", {}), plan.training_job.metrics)
         trainer = kumo.Trainer(plan, accelerator="gpu")
         fitted = trainer.fit(training_table, snapshot=snapshot)
         result["metrics"] = {
