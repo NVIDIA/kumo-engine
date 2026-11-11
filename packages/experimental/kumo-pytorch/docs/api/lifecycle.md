@@ -285,7 +285,7 @@ event and graph node fields) stop learning: each one fits on its columns'
 rows whose clock is at or before it, one row one observation, rather than
 on training examples. It defaults to the latest anchor time `fit_split`
 selects; `None` reads every row. Values computed per anchor
-(aggregates, calculations, targets) and text still fit on the examples.
+(aggregates, calculations, targets) still fit on the examples.
 
 Reused state applies unchanged: nothing refits, grows or renumbers.
 Complete state requires an equal `DataLoaderSpec.fingerprint`;

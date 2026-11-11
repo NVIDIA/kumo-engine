@@ -31,7 +31,7 @@ kumo-pytorch doesn't provide the following:
   observations an encoder is fitted on, beyond the anchors `fit_split` selects
   and the `encoder_cutoff` of encoders over stored columns.
 - Learning encoders over decimal or bytes columns from table statistics. Those
-  encoders fit on the training examples, as text encoders do.
+  encoders fit on the training examples.
 - Updating a saved artifact, or reusing only part of one.
 - Online serving infrastructure, such as deployment, routing and row lookup.
 - Indexes spread over several machines. The rank and world-size arguments split

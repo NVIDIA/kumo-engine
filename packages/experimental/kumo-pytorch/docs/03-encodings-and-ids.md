@@ -20,7 +20,7 @@ column's type or the input's container.
 | `Vocabulary()` or `Vocabulary(values=...)` | Any scalar dtype | One whole-value category ID |
 | `Text(vocabulary_size=...)` | Strings | Variable-length byte-level BPE piece IDs |
 
-A learned `Vocabulary`, `ZScore` or `Buckets(bins=...)` whose every use reads a
+A learned `Vocabulary`, `ZScore`, `Buckets(bins=...)` or `Text` whose every use reads a
 stored column directly (an entity field, an event field or a graph node field)
 learns from that table: from the rows whose clock is at or before the encoder
 cutoff, each row counted once, whatever the training examples select. The
@@ -30,10 +30,11 @@ read every row. A table without a clock contributes every row. The engine keeps
 these column statistics with its data, so another task at the same cutoff
 reuses them. `Buckets(bins=...)` cuts are `np.quantile`'s over the counted
 values; past a million distinct values they come from exact log-spaced bins,
-128 per doubling, within 0.6% of the exact quantile. Every other
-learned encoder (values computed per anchor, such as aggregates and
-calculations, targets, text, and decimal or bytes columns) fits on the
-training examples only.
+128 per doubling, within 0.6% of the exact quantile. `Text` trains its tokenizer on the column's
+values streamed from the index in a fixed order, and the engine keeps the
+tokenizer beside the statistics. Every other learned encoder (values computed
+per anchor, such as aggregates and calculations, targets, and decimal or bytes
+columns) fits on the training examples only.
 
 A missing value is never zero or an unseen category: it keeps its own validity
 bit (columns) or a reserved missing ID (categories). [The API reference](api/encodings.md)
