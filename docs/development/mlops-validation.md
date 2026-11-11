@@ -83,3 +83,31 @@ Run the harness checks and existing shared-runner checks without training:
 .venv/bin/python -m pytest -q -c /dev/null --confcutdir=test/scripts \
   test/scripts/test_engine_mlops_lifecycle.py test/scripts/test_engine_gpu_smoke.py
 ```
+
+## ADLS wheel lifecycle
+
+The manual [ADLS workflow](../../.github/workflows/kumo-engine-adls-smoke.yml)
+reuses [the ADLS lifecycle tests](../../packages/kumo-engine/test/test_adls_mlops.py).
+Select a successful run of `Kumo Engine - Build and publish wheel` and its full
+candidate commit SHA. The workflow downloads that run's Linux x86_64 wheel,
+checks its build identity and verifies the installed wheel with the existing
+lifecycle helper. The test harness comes from the selected dispatch ref.
+
+The job uses the `gha-kumo-workflow-tests` environment's Azure identity, storage
+account and container. Set `KUMO_MLOPS_LIVE_ADLS_ROOT` there to use another
+existing test prefix. Otherwise, the job uses `engine-lifecycle` in the configured
+container. The identity needs read, write and delete access to the test prefix.
+The job supplies one projected OIDC token file to Python and native Arrow, then
+removes it without saving it in the evidence. Each test creates a unique child
+prefix and removes it during test teardown.
+
+The first Python process ingests the Azure fixture, trains, saves the model and
+snapshot, and exports predictions. After that process exits, the second process
+uses new scratch and cache directories, reloads from Azure, and predicts again.
+The tests compare saved output contents and predictions before and after reload.
+The job rejects skipped tests and retains logs, wheel identity, dependency
+versions and worker receipts as workflow artifacts.
+
+This workflow has no automatic trigger and does not add a release gate. It uses
+ambient Azure credentials. Explicit per-connector identities, denied-access
+cases, long-running token renewal and large datasets need separate live checks.
