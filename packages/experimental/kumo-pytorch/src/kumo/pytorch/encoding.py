@@ -11,7 +11,7 @@ import datetime as dt
 import json
 import math
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from decimal import Decimal, localcontext
 from functools import cached_property
@@ -383,6 +383,45 @@ def learned_entries(
     return tuple((actual[key], next(available)) for key in ordered)
 
 
+#: Strings encoded at a time.
+TEXT_BATCH = 65_536
+#: Strings per item fed to tokenizer training, which buffers 256 items ahead.
+TRAIN_BATCH = 1_024
+#: Changes whenever train_text would train a different tokenizer from the same values.
+TEXT_RECIPE = 1
+
+
+def train_text(config: Text, batches: Iterable[Sequence[str]]) -> str:
+    """The JSON of a byte-level BPE tokenizer trained on ``batches`` of strings, in order."""
+
+    from tokenizers import Tokenizer, models, pre_tokenizers, trainers
+
+    tokenizer = Tokenizer(models.BPE(unk_token="[UNK]"))
+    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    tokenizer.train_from_iterator(
+        batches,
+        trainers.BpeTrainer(
+            vocab_size=config.vocabulary_size,
+            min_frequency=config.min_frequency,
+            special_tokens=["[MISSING]", "[UNK]"],
+            show_progress=False,
+        ),
+    )
+    return tokenizer.to_str()
+
+
+def _text_batches(values: Iterable[Any], dtype: DType, identity: str) -> Iterator[list[str]]:
+    batch: list[str] = []
+    for value in values:
+        if value is not None:
+            batch.append(dtype.normalize(value, path=f"encoder {identity}"))
+            if len(batch) == TRAIN_BATCH:
+                yield batch
+                batch = []
+    if batch:
+        yield batch
+
+
 def fit_encoder(
     identity: str, config: ScalarEncoding, dtype: DType, values: Iterable[Any]
 ) -> FittedEncoder:
@@ -390,9 +429,15 @@ def fit_encoder(
 
     if hasattr(values, "to_pylist"):
         values = values.to_pylist()
-    observed = [
-        dtype.normalize(value, path=f"encoder {identity}") for value in values if value is not None
-    ]
+    observed = (
+        ()
+        if isinstance(config, Text) and config.state is None
+        else [
+            dtype.normalize(value, path=f"encoder {identity}")
+            for value in values
+            if value is not None
+        ]
+    )
     if isinstance(config, (ZScore, Buckets)) and not dtype.numeric:
         raise ValueError(f"encoder {identity}: {type(config).__name__} requires a numeric dtype")
     if isinstance(config, Text) and dtype.name != "string":
@@ -450,7 +495,7 @@ def fit_encoder(
             boundaries=tuple(float(value) for value in boundaries),
         )
     if isinstance(config, Text):
-        from tokenizers import Tokenizer, models, pre_tokenizers, trainers
+        from tokenizers import Tokenizer
 
         if config.state is not None:
             tokenizer = Tokenizer.from_str(config.state)
@@ -470,16 +515,8 @@ def fit_encoder(
                     "the tokenizer model's unknown entry"
                 )
         else:
-            tokenizer = Tokenizer(models.BPE(unk_token="[UNK]"))
-            tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
-            tokenizer.train_from_iterator(
-                observed,
-                trainers.BpeTrainer(
-                    vocab_size=config.vocabulary_size,
-                    min_frequency=config.min_frequency,
-                    special_tokens=["[MISSING]", "[UNK]"],
-                    show_progress=False,
-                ),
+            tokenizer = Tokenizer.from_str(
+                train_text(config, _text_batches(values, dtype, identity))
             )
         return FittedEncoder(
             identity=identity, config=config, dtype=dtype, tokenizer_json=tokenizer.to_str()
