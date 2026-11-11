@@ -48,14 +48,50 @@ def _arrow_chunks(array: pa.Array | pa.ChunkedArray) -> list[pa.Array]:
     return array.chunks or [pa.array([], type=array.type)]
 
 
-def _copy_numpy(destination: Tensor, values: np.ndarray) -> None:
-    """Cast and copy NumPy values directly into destination storage."""
+def _arrow_bitmap(array: pa.Array, buffer_index: int) -> np.ndarray:
+    """View only the packed bytes covering an Arrow slice's logical rows."""
+    byte_offset, bit_offset = divmod(array.offset, 8)
+    return np.frombuffer(
+        array.buffers()[buffer_index],
+        dtype=np.uint8,
+        offset=byte_offset,
+        count=(bit_offset + len(array) + 7) // 8,
+    )
+
+
+def _arrow_null_mask(array: pa.Array) -> np.ndarray | None:
+    """Decode a sliced validity bitmap without copying the Arrow values."""
+    if array.null_count == 0:
+        return None
+    bit_offset = array.offset % 8
+    mask = np.unpackbits(
+        _arrow_bitmap(array, 0), bitorder="little", count=bit_offset + len(array)
+    )[bit_offset:].view(np.bool_)
+    np.logical_not(mask, out=mask)
+    return mask
+
+
+def _copy_numpy(
+    destination: Tensor, values: np.ndarray, *, via_float64: bool = False
+) -> None:
+    """Copy into final storage, optionally retaining nullable-integer rounding."""
+    via_float64 = via_float64 and destination.dtype != torch.float64
     if destination.device.type == "cpu":
-        np.copyto(destination.numpy(), values, casting="unsafe")
+        if via_float64:
+            np.add(values, 0, out=destination.numpy(), dtype=np.float64)
+        else:
+            np.copyto(destination.numpy(), values, casting="unsafe")
+    elif via_float64 and destination.device.type == "mps":
+        output = np.empty(values.shape, dtype=str(destination.dtype).split(".")[-1])
+        np.add(values, 0, out=output, dtype=np.float64)
+        _copy_numpy(destination, output)
     else:
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=".*non-writable.*")
-            destination.copy_(torch.from_numpy(values))
+            source = torch.from_numpy(values)
+            if via_float64:
+                source = source.to(device=destination.device, dtype=torch.float64)
+            destination.copy_(source)
 
 
 def _encode_nested_chunks(
@@ -327,19 +363,78 @@ class NumericalTensorMapper(TensorMapper[Tensor]):
         *,
         device: torch.device | None = None,
     ) -> Tensor:
-        """Encode numerical Arrow values, normalizing durations to seconds."""
+        """Encode numerical Arrow buffers directly, scaling durations to seconds."""
         result = torch.empty((len(array), 1), device=device)
+        via_float64 = pa.types.is_integer(array.type) and array.null_count > 0
         start = 0
         for chunk in _arrow_chunks(array):
             if len(chunk) == 0:
                 continue
             destination = result[start : start + len(chunk), 0]
-            if pa.types.is_duration(chunk.type):
+            if chunk.null_count == len(chunk):
+                destination.fill_(float("nan"))
+            elif pa.types.is_duration(chunk.type):
                 self._encode_duration(chunk, destination)
+            elif (
+                pa.types.is_integer(chunk.type)
+                or pa.types.is_floating(chunk.type)
+                or pa.types.is_boolean(chunk.type)
+            ):
+                self._encode_numeric(chunk, destination, via_float64=via_float64)
             else:
                 _copy_numpy(destination, chunk.to_numpy(zero_copy_only=False))
             start += len(chunk)
         return result
+
+    @staticmethod
+    def _encode_numeric(
+        array: pa.Array, destination: Tensor, *, via_float64: bool
+    ) -> None:
+        """Cast primitive values or decode packed booleans into destination rows."""
+        if pa.types.is_boolean(array.type):
+            packed = _arrow_bitmap(array, 1)
+            packed_tensor = None
+            if destination.device.type != "cpu":
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", message=".*non-writable.*")
+                    packed_tensor = torch.from_numpy(packed).to(destination.device)
+            bit_offset = array.offset % 8
+            for row_start in range(min(8, len(array))):
+                source_bit = (bit_offset + row_start) % 8
+                byte_start = (bit_offset + row_start) // 8
+                if destination.device.type == "cpu":
+                    output = destination.numpy()[row_start::8]
+                    source = packed[byte_start : byte_start + len(output)]
+                    np.bitwise_and(
+                        source, 1 << source_bit, out=output, casting="unsafe"
+                    )
+                    np.multiply(output, 1 / (1 << source_bit), out=output)
+                else:
+                    assert packed_tensor is not None
+                    target = destination[row_start::8]
+                    torch.bitwise_and(
+                        packed_tensor[byte_start : byte_start + target.numel()],
+                        1 << source_bit,
+                        out=target,
+                    )
+                    target.div_(1 << source_bit)
+        else:
+            dtype = np.dtype(array.type.to_pandas_dtype())
+            values = np.frombuffer(
+                array.buffers()[1],
+                dtype=dtype,
+                count=len(array),
+                offset=array.offset * dtype.itemsize,
+            )
+            _copy_numpy(destination, values, via_float64=via_float64)
+        null_mask = _arrow_null_mask(array)
+        if null_mask is not None:
+            if destination.device.type == "cpu":
+                destination.numpy()[null_mask] = np.nan
+            else:
+                destination.masked_fill_(
+                    torch.from_numpy(null_mask).to(destination.device), float("nan")
+                )
 
     @staticmethod
     def _encode_duration(array: pa.Array, destination: Tensor) -> None:
@@ -354,19 +449,9 @@ class NumericalTensorMapper(TensorMapper[Tensor]):
             array.type.unit
         ]
         null_mask = ticks == np.iinfo(np.int64).min
-        if array.null_count:
-            byte_offset, bit_offset = divmod(array.offset, 8)
-            bitmap = np.frombuffer(
-                array.buffers()[0],
-                dtype=np.uint8,
-                offset=byte_offset,
-                count=(bit_offset + len(array) + 7) // 8,
-            )
-            valid = np.unpackbits(
-                bitmap, bitorder="little", count=bit_offset + len(array)
-            )[bit_offset:].view(np.bool_)
-            np.logical_not(valid, out=valid)
-            np.logical_or(null_mask, valid, out=null_mask)
+        arrow_nulls = _arrow_null_mask(array)
+        if arrow_nulls is not None:
+            np.logical_or(null_mask, arrow_nulls, out=null_mask)
         if destination.device.type in {"cpu", "mps"}:
             # MPS cannot perform the float64 division required for pandas parity.
             output = (
