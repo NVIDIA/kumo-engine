@@ -447,9 +447,12 @@ def prepare(
     contract, issues = _check(contract, dataset, engine, inference=inference)
     if issues:
         raise ValidationError(issues)
-    return Plan(
-        contract, dataset, engine, engine.open(dataset, contract.schema), inference=inference
-    )
+    if getattr(engine, "encoder_cutoffs", ()) and not inference:
+        requests = {item for e in table_column_encoders(contract).values() for item in e.requests}
+        source = engine.open(dataset, contract.schema, column_stats=sorted(requests))
+    else:
+        source = engine.open(dataset, contract.schema)
+    return Plan(contract, dataset, engine, source, inference=inference)
 
 
 @overload

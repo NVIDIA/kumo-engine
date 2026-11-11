@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import time
 from collections import defaultdict
@@ -18,7 +19,7 @@ import numpy as np
 import torch
 
 from kumo.pytorch.anchors import AnchorTable
-from kumo.pytorch.column_stats import ColumnStats, StatRequest
+from kumo.pytorch.column_stats import ColumnStats, StatRequest, cutoff_seconds
 from kumo.pytorch.contract.batch import EntitySource, EventSource, Input
 from kumo.pytorch.contract.dtypes import DType, arrow_float64
 from kumo.pytorch.contract.sample import (
@@ -202,6 +203,10 @@ class DiskGraphEngine:
     :param ingest: ``"if_missing"`` builds the index when absent; ``"never"``
         requires an existing one. A mismatching manifest is an error, never
         permission to reuse.
+    :param encoder_cutoffs: encoder cutoffs (`Plan.materialize`'s
+        ``encoder_cutoff``; ``None`` is the whole table) whose column statistics
+        an ingest computes in the same pass. Only a hint: `Plan.materialize`
+        computes any statistics it finds missing from the index.
     """
 
     name = "diskgraph"
@@ -215,13 +220,17 @@ class DiskGraphEngine:
         num_threads: int | None = None,
         num_shards: int = 1,
         ingest: Literal["if_missing", "never"] = "if_missing",
+        encoder_cutoffs: Sequence[str | dt.datetime | None] = (),
     ):
         if ingest not in {"if_missing", "never"}:
             raise ValueError("ingest must be 'if_missing' or 'never'")
+        if isinstance(encoder_cutoffs, str):
+            raise TypeError("encoder_cutoffs is a sequence of cutoffs, not one cutoff")
         self.index = Path(index)
         self.num_threads = num_threads
         self.num_shards = num_shards
         self.ingest = ingest
+        self.encoder_cutoffs = tuple(dict.fromkeys(cutoff_seconds(v) for v in encoder_cutoffs))
 
     def check_contract(self, contract: DataLoaderSpec) -> tuple[ValidationIssue, ...]:
         """Refuse the entries of `unsupported` the contract uses, before any data is read."""
@@ -374,7 +383,12 @@ class DiskGraphEngine:
         """Issues with a Parquet anchor table's binding, without reading its rows."""
         return check_parquet_anchors(table)
 
-    def open(self, dataset: Dataset, schema: DataSchema) -> SampleSource:
+    def open(
+        self, dataset: Dataset, schema: DataSchema, *, column_stats: Sequence[StatRequest] = ()
+    ) -> SampleSource:
+        """Ensure the index; an ingest also computes ``column_stats`` at `encoder_cutoffs`."""
+
+        ingests = bool(column_stats and self.encoder_cutoffs) and not self.index.exists()
         artifact = ensure_diskgraph_index(
             schema,
             dataset,
@@ -382,12 +396,17 @@ class DiskGraphEngine:
             num_shards=self.num_shards,
             num_threads=self.num_threads,
             if_missing=self.ingest == "if_missing",
+            col_stats_requests={
+                "cutoffs": list(self.encoder_cutoffs),
+                "requests": list(column_stats),
+            }
+            if ingests
+            else None,
         )
-        return DiskGraphSource(
-            artifact,
-            schema,
-            num_threads=self.num_threads,
-        )
+        source = DiskGraphSource(artifact, schema, num_threads=self.num_threads)
+        if ingests:
+            source.ingested_cutoffs = frozenset(self.encoder_cutoffs)
+        return source
 
     def materialize_anchors(self, table: AnchorTable) -> AnchorTask:
         # anchors are read from Parquet independently of the graph index: an anchor
@@ -420,6 +439,7 @@ class DiskGraphSource:
         self.schema = schema
         self._index = artifact.path
         self._num_threads = num_threads
+        self.ingested_cutoffs: frozenset[int | None] = frozenset()
         self._tables = {table.name: table for table in schema.tables}
         self._relations = {relation.name: relation for relation in schema.relations}
         self._relation_mapping = artifact.manifest["relation_mapping"]
@@ -833,6 +853,8 @@ class DiskGraphSource:
         }
         sources = {entry["source"] for entry in result["files"].values()}
         source = "recompute" if "recompute" in sources else "existing"
+        if source == "existing" and cutoff in self.ingested_cutoffs:
+            source = "ingest"
         return ColumnStats(
             files,
             source,

@@ -73,6 +73,7 @@ def ensure_diskgraph_index(
     num_threads: int | None = None,
     dataset_name: str = "default",
     if_missing: bool = True,
+    col_stats_requests: Mapping[str, Any] | None = None,
 ) -> _DiskGraphIndex:
     """Reuse or build the base index while opening a DiskGraph engine.
 
@@ -80,6 +81,8 @@ def ensure_diskgraph_index(
     schema and PK/FK relations with exactly one primary-key side.
     A matching index is reused. An incompatible or incomplete index is never
     overwritten. ``if_missing=False`` requires the index to exist already.
+    ``col_stats_requests`` (``{"cutoffs", "requests"}``) are column statistics
+    an ingest computes in the same pass.
     """
 
     if num_shards <= 0:
@@ -127,6 +130,11 @@ def ensure_diskgraph_index(
             str(build),
             col_stats=False,
             cat_count_strategy="none",
+            **(
+                {}
+                if col_stats_requests is None
+                else {"col_stats_requests": json.dumps(col_stats_requests)}
+            ),
             **thread_options,
         )
         elapsed = time.perf_counter() - started
