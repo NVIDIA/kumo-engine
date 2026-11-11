@@ -367,6 +367,22 @@ class FittedEncoder:
         }
 
 
+def learned_entries(
+    config: Vocabulary, counts: Mapping[tuple[str, Any], int], actual: Mapping[tuple[str, Any], Any]
+) -> tuple[tuple[Any, int], ...]:
+    """Vocabulary entries from category counts keyed by `typed_key`."""
+
+    ordered = sorted(
+        (key for key in counts if counts[key] >= config.min_frequency),
+        key=lambda key: (-counts[key], key),
+    )
+    if config.max_size is not None:
+        ordered = ordered[: config.max_size]
+    reserved = {config.missing_id, config.unknown_id}
+    available = (index for index in range(len(ordered) + 2) if index not in reserved)
+    return tuple((actual[key], next(available)) for key in ordered)
+
+
 def fit_encoder(
     identity: str, config: ScalarEncoding, dtype: DType, values: Iterable[Any]
 ) -> FittedEncoder:
@@ -383,17 +399,11 @@ def fit_encoder(
         raise ValueError(f"encoder {identity}: Text requires string dtype")
     if isinstance(config, Vocabulary):
         if config.values is None:
-            counts = Counter(typed_key(dtype, value) for value in observed)
-            actual = {typed_key(dtype, value): value for value in observed}
-            ordered = sorted(
-                (key for key in counts if counts[key] >= config.min_frequency),
-                key=lambda key: (-counts[key], key),
+            entries = learned_entries(
+                config,
+                Counter(typed_key(dtype, value) for value in observed),
+                {typed_key(dtype, value): value for value in observed},
             )
-            if config.max_size is not None:
-                ordered = ordered[: config.max_size]
-            reserved = {config.missing_id, config.unknown_id}
-            available = (index for index in range(len(ordered) + 2) if index not in reserved)
-            entries = tuple((actual[key], next(available)) for key in ordered)
         else:
             entries = tuple((dtype.normalize(value), index) for value, index in config.values)
             keys = [typed_key(dtype, value) for value, _ in entries]
