@@ -14,11 +14,8 @@ ROOT = Path(__file__).resolve().parents[2]
 common = NS(**runpy.run_path(str(ROOT / "packages/kumo-engine/test/cases/common.py")))
 
 
-def compare(requested, frames, keys, **counts):
-    counts = dict(requested_rows=len(requested), scored_rows=len(requested),
-                  skipped_rows=0) | counts
-    results = [NS(frame=frame, **counts) for frame in frames]
-    return common.check_predictions(*results, .005, requested=requested,
+def compare(requested, frames, keys):
+    return common.check_predictions(*frames, .005, requested=requested,
                                     coordinates=keys)
 
 
@@ -42,15 +39,12 @@ def test_requested_population_and_counts():
                               [pd.Timestamp("2025-01-01")] * 20})
     keys = list(requested)
     frame = requested.assign(True_PROB=.5)
-    compare(requested, [frame, frame.iloc[::-1], frame], keys)
+    counts = dict(requested_rows=20, scored_rows=20, skipped_rows=0)
+    assert compare(requested, [frame, frame.iloc[::-1], NS(frame=frame)], keys)["reload"] == counts
     for broken in (frame.iloc[:19], frame.assign(ENTITY=range(1, 21))):
-        with pytest.raises(ValueError):
-            compare(requested, [broken] * 3, keys)
-    for counts in (dict(scored_rows=19, skipped_rows=1),
-                   dict(requested_rows=None), dict(requested_rows=19)):
-        with pytest.raises(ValueError):
-            compare(requested, [frame] * 3, keys, **counts)
-    common.check_population(dict(requested_rows=20, scored_rows=20, skipped_rows=0), 20)
+        with pytest.raises(ValueError, match="reload prediction population differs"):
+            compare(requested, [frame, frame, broken], keys)
+    common.check_population(counts, 20)
     with pytest.raises(ValueError):
         common.check_population(dict(requested_rows=20, scored_rows=19, skipped_rows=1), 20)
     static = pd.DataFrame({"ENTITY": [1]})
@@ -66,7 +60,7 @@ def test_forecast_coordinates_and_timestamp_units():
         "2025-01-08", "2025-01-15", "2025-01-15", "2025-01-22"]), TARGET_PRED=.5)
     keys = ["ENTITY", "ANCHOR_TIMESTAMP", "signup_time"]
     microseconds = frame.assign(**{key: frame[key].dt.as_unit("us") for key in keys[1:]})
-    compare(requested, [frame, microseconds.iloc[::-1], frame], keys)
+    compare(requested, [microseconds, microseconds.iloc[::-1], microseconds], keys)
     changed = frame.copy()
     changed["signup_time"] = changed["signup_time"].dt.as_unit("ns")
     changed.loc[0, "signup_time"] += pd.Timedelta(nanoseconds=1)
@@ -78,7 +72,11 @@ def test_forecast_coordinates_and_timestamp_units():
             compare(requested, [broken] * 3, keys)
 
 
-def test_forecast_clock_comes_from_the_parsed_entity(monkeypatch):
+def test_prediction_coordinates(monkeypatch):
+    anchored = ["ENTITY", "ANCHOR_TIMESTAMP"]
+    for task, keys in [("binary", anchored), ("temporal_link", anchored + ["CLASS"]),
+                       ("static_link", ["ENTITY", "CLASS"])]:
+        assert common.prediction_coordinates(task, None, None) == keys
     module = ModuleType("kumo_core.pquery")
     module.normalize_graph = lambda config: NS(table=lambda name: NS(time_column=config[name]))
     module.parse_and_validate_query = lambda query, graph: NS(entity_table="users")

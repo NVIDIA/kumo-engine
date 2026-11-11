@@ -36,8 +36,8 @@ References compare node and edge counts, training-table checks and metric bands.
 At 100M and 1B, an order-independent pandas hash covers all exported training rows.
 At 10B and 25B, native metadata supplies total rows, per-split rows and binary positive counts without a full export.
 Repeat and reload predictions need identical coordinates and score differences within the case tolerance.
-Every prediction must cover the exact sampled entity/anchor population, including when all three outputs agree.
-Results record requested, scored and skipped counts for materialization and each prediction. These held-out cases require zero skipped rows.
+If all three outputs agree, every prediction must still cover the exact sampled entity/anchor population.
+Results record requested, scored and skipped counts for materialization and for each prediction output. These held-out cases require zero skipped rows. A population error names the failing prediction and its counts.
 Forecast coordinates include the entity, original anchor and horizon column resolved from the scoring snapshot's graph metadata.
 AUROC and AP, including their variants, use an absolute band of 0.03.
 Other metrics, including MAE and RMSE, use `abs(current - reference) <= abs(reference) * tolerance`, with a relative tolerance of 25%.
