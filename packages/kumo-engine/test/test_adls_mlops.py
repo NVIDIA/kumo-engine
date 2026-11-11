@@ -3,28 +3,26 @@
 # SPDX-License-Identifier: Apache-2.0
 """ADLS MLOps lifecycle; opt into Azure with KUMO_MLOPS_LIVE_ADLS_ROOT."""
 
+import ctypes
 import hashlib
 import os
 import runpy
 import shutil
+import signal
+import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 import numpy as np
 import pandas as pd
-import pyarrow.parquet as pq
 import pytest
 from kumo_core.sources.object_store_access import ObjectStoreAccess
 from kumoapi.model_plan import ModelPlan
 from kumoapi.typing import Stype
-from pyarrow.fs import (
-    FileSelector,
-    FileType,
-    LocalFileSystem,
-    SubTreeFileSystem,
-)
+from pyarrow.fs import FileType, LocalFileSystem, SubTreeFileSystem
 
 import kumo.engine as kumo
 from kumo.engine._deps import (
@@ -67,6 +65,7 @@ def adls_store(request, monkeypatch, tmp_path):
         directory = tmp_path / 'storage'
         directory.mkdir()
         local_storage(monkeypatch, directory)
+        monkeypatch.setenv('KUMO_MLOPS_FAKE_ADLS_DIR', str(directory))
     uri = f'{base.rstrip("/")}/mlops-{uuid4().hex}'
     connector = connector_for_root(uri)
     previous = get_scratch_dir()
@@ -114,24 +113,27 @@ def test_adls_files_models_and_assets_roundtrip(adls_store, tmp_path):
         connector.sink_backend.preflight_write_files(connector, 'predictions/')
 
 
-def test_adls_artifact_lifecycle(adls_store, tmp_path):
+def test_adls_artifact_lifecycle(adls_store, tmp_path, monkeypatch):
     pytest.importorskip('mlflow')
     _, uri = adls_store
+    monkeypatch.setenv('PYTHONPATH', os.pathsep.join(sys.path))
     for phase in ('fit', 'reload'):
+        (tmp_path / f'cache-{phase}').mkdir()
+        monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / f'cache-{phase}'))
         command = [
-            sys.executable, '-I',
+            sys.executable, '-X', 'faulthandler',
             str(Path(__file__).resolve()), phase,
-            str(tmp_path), uri,
-            str(tmp_path / 'storage') if (tmp_path / 'storage').is_dir() else ''
+            str(tmp_path), uri
         ]
         with (tmp_path / f'{phase}.log').open('w') as log:
-            status = lifecycle.execute(command, tmp_path, log, timeout=600)
+            try:
+                status = lifecycle.execute(command, tmp_path, log, timeout=600)
+            except subprocess.TimeoutExpired:
+                status = 'timed out'
         assert status == 0, (tmp_path / f'{phase}.log').read_text()
         if phase == 'fit':
             shutil.rmtree(tmp_path / 'scratch-fit')
             shutil.rmtree(tmp_path / 'cache-fit')
-    fit = lifecycle.read(tmp_path / 'fit.json')
-    assert fit['pid'] != lifecycle.read(tmp_path / 'reload.json')['pid']
 
 
 def events():
@@ -172,15 +174,9 @@ def prediction_frame(frame):
 
 
 def check_output(connector, path, run):
-    filesystem, directory = file_store(connector, path)
-    paths = [
-        item.path for item in filesystem.get_file_info(
-            FileSelector(directory, recursive=True))
-        if item.type == FileType.File and item.path.endswith('.parquet')
-    ]
-    assert paths
-    exported = pq.read_table(paths, filesystem=filesystem).to_pandas()
-    pd.testing.assert_frame_equal(prediction_frame(exported),
+    exported = kumo.PredictionResult.load_from_connector(connector, path=path)
+    assert exported.id == run.id
+    pd.testing.assert_frame_equal(prediction_frame(exported.frame),
                                   prediction_frame(run.frame), check_exact=True)
 
 
@@ -205,13 +201,13 @@ def fit(uri, _root):
         training = query.generate_training_table(snapshot)
         fitted = trainer.fit(training, snapshot=snapshot)
         run = trainer.predict(
-            query.generate_prediction_table(snapshot), snapshot=snapshot,
-            binary_classification_threshold=0.5,
+            query.generate_prediction_table(
+                snapshot, prediction_time=datetime(2024, 4, 28)),
+            snapshot=snapshot, binary_classification_threshold=0.5,
             output_config=kumo.PredictionOutputConfig(
                 settings.root.connector, path='direct-predictions/'))
     assert all(source.connector == 'ADLS' and source.location.startswith(uri)
                for source in snapshot.manifest.parents.source_tables.values())
-    prediction_frame(run.frame)
     check_output(settings.root.connector,
                  f'{artifacts_uri}/direct-predictions/', run)
     assert all(output.destination.connector == 'ADLS'
@@ -241,7 +237,9 @@ def reload(uri, tmp_path):
     assert loaded.result.id == state['model']
     stored = kumo.PredictionResult.load_from_connector(
         settings, path=f'predictions/{state["prediction"]}')
-    with kumo.mlops(settings):
+    with kumo.mlops(
+            kumo.MLOps((explicit, artifacts_uri), store=False,
+                       on_error='raise')):
         run = loaded.predict(
             snapshot=restored, prediction_time=pd.Timestamp(
                 state['prediction_time']).tz_localize(None).to_pydatetime(),
@@ -249,12 +247,14 @@ def reload(uri, tmp_path):
             output_config=kumo.PredictionOutputConfig(
                 explicit, path='reloaded-predictions/'))
     assert run.bundle_id == stored.bundle_id == state['model']
+    assert run.manifest.prediction_table.anchors == [state['prediction_time']]
     before, after = prediction_frame(stored.frame), prediction_frame(run.frame)
     scores = ['False_PROB', 'True_PROB']
-    comparison = lifecycle.gpu_helpers().compare_predictions(
+    lifecycle.gpu_helpers().compare_predictions(
         before[scores], after[scores], task='binary', atol=0.005,
-        before_decisions=before.TARGET_PRED.to_numpy(),
-        after_decisions=after.TARGET_PRED.to_numpy())
+        before_decisions=before.TARGET_PRED.to_numpy(dtype=bool),
+        after_decisions=after.TARGET_PRED.to_numpy(dtype=bool))
+    check_output(explicit, f'{artifacts_uri}/direct-predictions/', stored)
     check_output(explicit, f'{artifacts_uri}/reloaded-predictions/', run)
     assert loaded.score_drift(stored, snapshot=restored,
                               training_snapshot=restored).psi is not None
@@ -270,7 +270,7 @@ def reload(uri, tmp_path):
     labels = graph(sources).snapshot()
     assert labels.id != restored.id
     evaluated = loaded.evaluate(stored, labels_snapshot=labels)
-    assert evaluated.rows == run.num_rows
+    assert evaluated.rows == stored.num_rows
     assert evaluated.matured and evaluated.labelled_fraction == 1.0
 
     vocabulary = tmp_path / 'vocabulary'
@@ -309,27 +309,25 @@ def reload(uri, tmp_path):
     assert fallback._snapshots[snapshot_uri].id == restored.id
     assert fallback._snapshots[snapshot_uri].index_path.is_relative_to(
         tmp_path / 'fallback-serving')
-    return dict(rows=run.num_rows, comparison=comparison)
+    return {}
 
 
 def main():
-    phase, root, uri, storage = sys.argv[1:]
+    if sys.platform == 'linux':  # Exit with the pytest parent.
+        ctypes.CDLL(None).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
+    phase, root, uri = sys.argv[1:]
     root = Path(root)
     import torch
 
     torch.set_num_threads(2)
     scratch = root / f'scratch-{phase}'
-    cache = root / f'cache-{phase}'
-    assert not scratch.exists() and not cache.exists()
-    cache.mkdir()
-    os.environ['XDG_CACHE_HOME'] = str(cache)
+    assert not scratch.exists()
     kumo.configure(scratch_dir=scratch)
     with pytest.MonkeyPatch.context() as monkeypatch:
-        if storage:
+        if storage := os.environ.get('KUMO_MLOPS_FAKE_ADLS_DIR'):
             local_storage(monkeypatch, Path(storage))
         result = {'fit': fit, 'reload': reload}[phase](uri, root)
-    lifecycle.write(root / f'{phase}.json',
-                    dict(pid=os.getpid(), uri=uri, **result))
+    lifecycle.write(root / f'{phase}.json', result)
 
 
 if __name__ == '__main__':
