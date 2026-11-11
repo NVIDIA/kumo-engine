@@ -371,14 +371,14 @@ def test_leading_null_chunk_preserves_string_backward(sequence: bool) -> None:
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 @pytest.mark.parametrize("sliced", [False, True])
 @pytest.mark.parametrize("chunked", [False, True])
-def test_duration_chunks_divide_directly_into_destination(
+def test_duration_chunks_scale_on_destination(
     unit: str,
     dtype: torch.dtype,
     sliced: bool,
     chunked: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Vectorized duration scaling matches pandas without a seconds buffer."""
+    """Duration division updates destination slices with dtype-sized rounding."""
     ticks = [
         0,
         1,
@@ -403,23 +403,26 @@ def test_duration_chunks_divide_directly_into_destination(
     source = pa.chunked_array([array[:2], array[2:]]) if chunked else array
     previous = torch.get_default_dtype()
     destinations = []
-    divide = np.divide
+    divide = Tensor.div_
 
-    def divide_into_destination(*args: object, **kwargs: object) -> np.ndarray:
-        output = kwargs["out"]
-        assert isinstance(output, np.ndarray)
-        destinations.append(output)
-        return divide(*args, **kwargs)
+    def divide_into_destination(values: Tensor, divisor: int) -> Tensor:
+        destinations.append(values)
+        return divide(values, divisor)
 
     try:
         torch.set_default_dtype(dtype)
         mapper = NumericalTensorMapper()
         expected = _pandas_reference(mapper, array.to_pandas())
-        monkeypatch.setattr(np, "divide", divide_into_destination)
+        monkeypatch.setattr(Tensor, "div_", divide_into_destination)
         actual = mapper(source)
-        torch.testing.assert_close(actual, expected, rtol=0, atol=0, equal_nan=True)
+        torch.testing.assert_close(
+            actual, expected, rtol=2 * torch.finfo(dtype).eps, atol=0, equal_nan=True
+        )
         assert len(destinations) == (2 if chunked else 1)
-        assert all(np.shares_memory(output, actual.numpy()) for output in destinations)
+        assert all(
+            output.untyped_storage().data_ptr() == actual.untyped_storage().data_ptr()
+            for output in destinations
+        )
     finally:
         torch.set_default_dtype(previous)
 
@@ -431,7 +434,9 @@ def test_duration_chunks_without_nulls(unit: str) -> None:
     mapper = NumericalTensorMapper()
     expected = _pandas_reference(mapper, array.to_pandas())
     actual = mapper(pa.chunked_array([array[:1], array[1:]]))
-    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    torch.testing.assert_close(
+        actual, expected, rtol=2 * torch.finfo(actual.dtype).eps, atol=0
+    )
 
 
 @pytest.mark.parametrize(
@@ -537,3 +542,41 @@ def test_numerical_null_type_and_all_null_chunks() -> None:
         actual = mapper(pa.chunked_array([array[:1], array[1:]]))
         assert actual.shape == (2, 1)
         assert actual.isnan().all()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+@pytest.mark.parametrize(
+    "mapper,array",
+    [
+        (
+            NumericalTensorMapper(),
+            pa.array([1, None, 1_234_567_891], type=pa.duration("ns")),
+        ),
+        (
+            CategoricalTensorMapper([["a", 2], ["b", 1]]),
+            pa.array(["a", "b", None, "z"]).dictionary_encode(),
+        ),
+        (SequenceTensorMapper(0, 3), pa.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])),
+        (SequenceTensorMapper(0, 3), pa.array([[1.0, 2.0], None, [3.0, 4.0]])),
+        (SequenceTensorMapper(0, 3), pa.array([[1.0], [2.0, 3.0, 4.0, 5.0], None])),
+    ],
+)
+def test_chunk_encodings_use_cuda_destination(
+    mapper: TensorMapper, array: pa.Array
+) -> None:
+    """Duration scaling, dictionary gathers, and sequence padding run on CUDA."""
+    source = pa.chunked_array([array, array])
+    expected = mapper(source)
+    actual = mapper(source, device=torch.device("cuda"))
+    values = actual if isinstance(actual, Tensor) else actual.values
+    expected_values = expected if isinstance(expected, Tensor) else expected.values
+    assert values.device.type == "cuda"
+    if values.is_floating_point():
+        torch.testing.assert_close(
+            values.cpu(),
+            expected_values,
+            rtol=2 * torch.finfo(values.dtype).eps,
+            atol=0,
+            equal_nan=True,
+        )
+    _assert_same(expected, actual.to("cpu"))

@@ -346,20 +346,17 @@ class NumericalTensorMapper(TensorMapper[Tensor]):
 
     @staticmethod
     def _encode_duration(array: pa.Array, destination: Tensor) -> None:
-        """Scale NumPy duration ticks into destination storage, preserving NaT."""
+        """Scale duration ticks in place on the destination device, preserving NaT."""
         ticks = array.to_numpy(zero_copy_only=False).view(np.int64)
         ticks_per_second = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}[
             array.type.unit
         ]
-        output = (
-            destination.numpy()
-            if destination.device.type == "cpu"
-            else np.empty(len(array), dtype=str(destination.dtype).split(".")[-1])
+        _copy_numpy(destination, ticks)
+        destination.div_(ticks_per_second)
+        null_mask = torch.as_tensor(
+            ticks == np.iinfo(np.int64).min, device=destination.device
         )
-        np.divide(ticks, ticks_per_second, out=output, dtype=np.float64)
-        output[ticks == np.iinfo(np.int64).min] = np.nan
-        if destination.device.type != "cpu":
-            _copy_numpy(destination, output)
+        destination.masked_fill_(null_mask, float("nan"))
 
     def post_forward(
         self,
@@ -419,12 +416,15 @@ class CategoricalTensorMapper(TensorMapper[Tensor]):
             if chunk.null_count == len(chunk):
                 destination.fill_(-1)
             elif isinstance(chunk, pa.DictionaryArray):
-                dictionary = self.mapping.get_indexer(chunk.dictionary.to_pandas())
-                indices = chunk.indices.fill_null(0).to_numpy(zero_copy_only=False)
-                if destination.device.type == "cpu":
-                    np.take(dictionary, indices, out=destination.numpy(), mode="clip")
-                else:
-                    _copy_numpy(destination, dictionary[indices])
+                dictionary = torch.from_numpy(
+                    self.mapping.get_indexer(chunk.dictionary.to_pandas())
+                ).to(destination.device)
+                indices = torch.tensor(
+                    chunk.indices.fill_null(0).to_numpy(zero_copy_only=False),
+                    dtype=torch.long,
+                    device=destination.device,
+                )
+                torch.index_select(dictionary, 0, indices, out=destination)
                 if chunk.null_count:
                     mask = chunk.is_null().to_numpy(zero_copy_only=False)
                     destination[torch.from_numpy(mask).to(destination.device)] = -1
@@ -762,26 +762,6 @@ class SequenceTensorMapper(TensorMapper[MultiEmbeddingTensor]):
         uniform = path != "ragged"
         if dense and out is not None:
             _copy_numpy(out, values_np.reshape(n_rows, L))
-            return MultiEmbeddingTensor(
-                num_rows=n_rows,
-                num_cols=1,
-                values=out,
-                offset=torch.tensor([0, L], device=device),
-            )
-        if out is not None and out.device.type == "cpu":
-            out.fill_(float("nan"))
-            if uniform:
-                width = min(row_len, L)
-                rows_np = values_np.reshape(int(full.sum()), row_len)[:, :width]
-                out.numpy()[full, :width] = rows_np
-            else:
-                lengths = torch.from_numpy(seq_len_np.astype(np.int64))
-                clipped = lengths.clamp(max=L)
-                source_mask = _tiled_mask(clipped, (lengths - L).clamp(min=0))
-                target_mask = _tiled_mask(clipped, L - clipped)
-                out.numpy().reshape(-1)[target_mask.numpy()] = values_np[
-                    source_mask.numpy()
-                ]
             return MultiEmbeddingTensor(
                 num_rows=n_rows,
                 num_cols=1,
