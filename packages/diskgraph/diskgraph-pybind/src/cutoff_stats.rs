@@ -90,6 +90,25 @@ pub fn col_stats_from_arrow(
     Ok(out.into_any().unbind())
 }
 
+/// Atomically writes `payload` at `col_stats/<cutoff_id>/<table>/<name>`
+/// and returns the path.
+#[pyfunction]
+pub fn publish_col_stats_file(
+    py: Python<'_>,
+    index_dir: &str,
+    cutoff: Option<i64>,
+    table: &str,
+    name: &str,
+    payload: &[u8],
+) -> PyResult<String> {
+    let path = py
+        .detach(|| {
+            cutoff_stats::publish_col_stats_file(Path::new(index_dir), cutoff, table, name, payload)
+        })
+        .map_err(map_anyhow_err)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 /// Iterates a stored string column's non-null values as `pa.large_string()`
 /// arrays, in shard then node order, over the rows counted at `cutoff`.
 #[pyclass(frozen, module = "diskgraph._c")]
@@ -144,6 +163,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(col_stats_index_id, m)?)?;
     m.add_function(wrap_pyfunction!(ensure_col_stats, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_from_arrow, m)?)?;
+    m.add_function(wrap_pyfunction!(publish_col_stats_file, m)?)?;
     m.add_function(wrap_pyfunction!(scan_column, m)?)?;
     m.add_class::<ColumnScan>()
 }

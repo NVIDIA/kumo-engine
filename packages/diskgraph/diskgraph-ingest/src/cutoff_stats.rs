@@ -1015,18 +1015,22 @@ impl<'a> CutoffFiles<'a> {
         Ok((path, sha256))
     }
 
-    /// Atomically replaces `path` through a temp file no other writer uses.
     fn publish(&self, path: &Path, value: &impl Serialize) -> Result<()> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
         let mut bytes = serde_json::to_vec(value)?;
         bytes.push(b'\n');
+        self.write(path, &bytes)
+    }
+
+    /// Atomically replaces `path` through a temp file no other writer uses.
+    fn write(&self, path: &Path, bytes: &[u8]) -> Result<()> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let name = path
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("");
         let nonce = RandomState::new().hash_one(NEXT.fetch_add(1, AtomicOrdering::Relaxed));
         let tmp = path.with_file_name(format!(".{name}.{}.{nonce:x}.tmp", std::process::id()));
-        write_durable(path, &tmp, &bytes, self.index_dir)
+        write_durable(path, &tmp, bytes, self.index_dir)
             .with_context(|| format!("publish {}", path.display()))
     }
 }
@@ -1247,6 +1251,26 @@ pub fn ensure_col_stats(
         files,
         seconds: start.elapsed().as_secs_f64(),
     })
+}
+
+/// Atomically publishes `payload` as `col_stats/<cutoff_id>/<table>/<name>`,
+/// beside the statistics files of `cutoff`, and returns its path.
+pub fn publish_col_stats_file(
+    index_dir: &Path,
+    cutoff: Option<i64>,
+    table: &str,
+    name: &str,
+    payload: &[u8],
+) -> Result<PathBuf> {
+    let index_dir = &std::path::absolute(index_dir)?;
+    let metadata = read_dataset_metadata(index_dir)?;
+    let index_id = index_id(index_dir, &metadata)?;
+    let cutoff_files = CutoffFiles::new(index_dir, &index_id, cutoff, metadata.timestamp_unit)?;
+    ensure_file_names(table, name)?;
+    let path = cutoff_files.dir.join(table).join(name);
+    cutoff_files.write(&path, payload)?;
+    cutoff_files.write_manifest_if_missing()?;
+    Ok(path)
 }
 
 /// The ingested type a natively typed Arrow array holds.
