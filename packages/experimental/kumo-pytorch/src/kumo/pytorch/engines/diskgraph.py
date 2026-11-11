@@ -7,10 +7,11 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import time
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import Any, Literal
@@ -19,7 +20,7 @@ import numpy as np
 import torch
 
 from kumo.pytorch.anchors import AnchorTable
-from kumo.pytorch.column_stats import ColumnStats, StatRequest, cutoff_seconds
+from kumo.pytorch.column_stats import Column, ColumnStats, StatRequest, cutoff_seconds
 from kumo.pytorch.contract.batch import EntitySource, EventSource, Input
 from kumo.pytorch.contract.dtypes import DType, arrow_float64
 from kumo.pytorch.contract.sample import (
@@ -60,6 +61,7 @@ from kumo.pytorch.data.records import (
     timestamp_to_epoch,
 )
 from kumo.pytorch.dataset import Dataset, Parquet, TableSource
+from kumo.pytorch.encoding import TRAIN_BATCH
 from kumo.pytorch.engine import AnchorTask, GraphRoot, SampleSource, register_engine
 from kumo.pytorch.engines.parquet_anchors import ParquetAnchors, check_parquet_anchors
 from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED, Unsupported
@@ -870,6 +872,73 @@ class DiskGraphSource:
         """A cutoff in seconds in the index's clock, rounded as ingest rounds row times."""
 
         return None if cutoff is None else self._diskgraph.cutoff_ticks(cutoff, self._clock)
+
+    def column_text(
+        self,
+        columns: Sequence[Column],
+        cutoff: int | None,
+        name: str,
+        train: Callable[[Iterator[Sequence[str]]], str],
+    ) -> ColumnStats:
+        """A tokenizer trained on string columns streamed from the index, kept beside the
+        column statistics: reused when there, else trained and published."""
+
+        table, column = columns[0]
+        ticks = self._ticks(cutoff)
+        result = self._diskgraph.ensure_col_stats(self._index, ticks, [])
+        clock = {"value": ticks, "unit": result["unit"], "inclusive": True}
+        path = Path(self._index, "col_stats", result["cutoff_id"], table, f"{column}.{name}.json")
+        source = "existing" if path.is_file() else "recompute"
+        if source == "recompute":
+            tokenizer = train(
+                chunk.to_pylist()
+                for table_name, column_name in columns
+                for chunk in self._diskgraph.scan_column(
+                    self._index,
+                    table_name,
+                    column_name,
+                    ticks,
+                    chunk_rows=TRAIN_BATCH,
+                    num_threads=self._num_threads,
+                )
+            )
+            document = {
+                "schema": "diskgraph.col_stats_extension.v1",
+                "index_id": result["index_id"],
+                "cutoff_id": result["cutoff_id"],
+                "cutoff": clock,
+                "columns": [list(item) for item in columns],
+                "stat": name,
+                "tokenizer": tokenizer,
+                "sha256": hashlib.sha256(tokenizer.encode()).hexdigest(),
+            }
+            path = Path(
+                self._diskgraph.publish_col_stats_file(
+                    self._index,
+                    ticks,
+                    table,
+                    f"{column}.{name}.json",
+                    (json.dumps(document) + "\n").encode(),
+                )
+            )
+        try:
+            document = json.loads(path.read_text())
+            valid = (
+                document["stat"] == name
+                and document["columns"] == [list(item) for item in columns]
+                and hashlib.sha256(document["tokenizer"].encode()).hexdigest() == document["sha256"]
+            )
+        except (AttributeError, KeyError, TypeError, ValueError):
+            valid = False
+        if not valid:
+            raise ValueError(f"{path} is not a valid tokenizer file; delete it to retrain")
+        return ColumnStats(
+            {(table, column, name): document},
+            source,
+            clock,
+            cutoff_id=result["cutoff_id"],
+            index_id=result["index_id"],
+        )
 
     def fit_graph_fields(
         self,

@@ -18,6 +18,7 @@ import logging
 import time
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
+from functools import partial
 from typing import Any, overload
 
 from kumo.pytorch.anchors import (
@@ -39,10 +40,11 @@ from kumo.pytorch.column_stats import (
     fit_from_stats,
     table_column_encoders,
 )
+from kumo.pytorch.contract.batch.encodings import Text
 from kumo.pytorch.contract.sample import SampleRequest
 from kumo.pytorch.data.records import cutoff_to_epoch
 from kumo.pytorch.dataset import Dataset, TableSource
-from kumo.pytorch.encoding import FittedEncoder
+from kumo.pytorch.encoding import FittedEncoder, train_text
 from kumo.pytorch.engine import AnchorTask, Engine, SampleSource
 from kumo.pytorch.spec import (
     DataLoaderSpec,
@@ -201,7 +203,7 @@ class Plan:
         rows whose clock is at or before it, one row one observation, rather than
         on training examples. It defaults to the latest anchor time ``fit_split``
         selects; ``None`` reads every row. Values computed per anchor
-        (aggregates, calculations, targets) and text still fit on the examples.
+        (aggregates, calculations, targets) still fit on the examples.
 
         Reused state applies unchanged: nothing refits, grows or renumbers.
         Complete state requires an equal `DataLoaderSpec.fingerprint`;
@@ -311,9 +313,14 @@ class Plan:
     ) -> tuple[dict[str, FittedEncoder], dict[str, Any]]:
         """Encoders pinned from column statistics, and where each one's came from."""
 
-        encoders = table_column_encoders(self.contract)
         column_stats = getattr(source, "column_stats", None)
-        if not encoders or column_stats is None or not fitting:
+        column_text = getattr(source, "column_text", None)
+        encoders = {
+            identity: encoder
+            for identity, encoder in table_column_encoders(self.contract).items()
+            if (column_text if isinstance(encoder.config, Text) else column_stats) is not None
+        }
+        if not encoders or not fitting:
             return {}, {}
         latest = (
             max(cutoff_to_epoch(request.as_of_time) for request in fitting)
@@ -330,11 +337,18 @@ class Plan:
                 _iso(latest),
             )
         started = time.perf_counter()
-        stats = column_stats(
-            sorted({item for e in encoders.values() for item in e.requests}), cutoff
-        )
+        requests = sorted({item for e in encoders.values() for item in e.requests})
+        stats = column_stats(requests, cutoff) if requests else None
+        found = {
+            identity: column_text(
+                encoder.columns, cutoff, encoder.text[2], partial(train_text, encoder.config)
+            )
+            if isinstance(encoder.config, Text)
+            else stats
+            for identity, encoder in encoders.items()
+        }
         fitted = {
-            identity: fit_from_stats(identity, encoder, stats.files)
+            identity: fit_from_stats(identity, encoder, found[identity].files)
             for identity, encoder in encoders.items()
         }
         pinned = {identity: encoder for identity, encoder in fitted.items() if encoder is not None}
@@ -345,16 +359,14 @@ class Plan:
                 identity,
             )
         logger.info(
-            "pinned %d encoders from %d column statistics (%s, cutoff %s %s) in %.2fs",
+            "pinned %d encoders from column statistics and tokenizers (%s, cutoff %s) in %.2fs",
             len(pinned),
-            len(stats.files),
-            stats.source,
-            stats.cutoff["value"],
-            stats.cutoff["unit"],
+            ", ".join(sorted({value.source for value in found.values()})),
+            "none" if cutoff is None else _iso(cutoff),
             time.perf_counter() - started,
         )
         return pinned, {
-            identity: stats.provenance(encoders[identity].requests) for identity in pinned
+            identity: found[identity].provenance(encoders[identity].files) for identity in pinned
         }
 
     @staticmethod

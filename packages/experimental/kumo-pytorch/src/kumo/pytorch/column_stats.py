@@ -34,12 +34,12 @@ from kumo.pytorch.contract.batch import (
     Graph,
     UseEncoding,
 )
-from kumo.pytorch.contract.batch.encodings import Buckets, ScalarEncoding, Vocabulary, ZScore
+from kumo.pytorch.contract.batch.encodings import Buckets, ScalarEncoding, Text, Vocabulary, ZScore
 from kumo.pytorch.contract.batch.validation import resolved_fields
 from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.sample import Field, destination_table
 from kumo.pytorch.data.records import cutoff_to_epoch
-from kumo.pytorch.encoding import FittedEncoder, learned_entries, typed_key
+from kumo.pytorch.encoding import TEXT_RECIPE, FittedEncoder, learned_entries, typed_key
 
 __all__ = [
     "LATEST_ANCHOR",
@@ -57,7 +57,7 @@ __all__ = [
 Column = tuple[str, str]
 StatRequest = tuple[str, str, str]
 
-_STATS = {Vocabulary: ("counts",), ZScore: ("moments",), Buckets: ("counts", "bins")}
+_STATS = {Vocabulary: ("counts",), ZScore: ("moments",), Buckets: ("counts", "bins"), Text: ()}
 _SUPPORTED = frozenset(
     {
         "bool",
@@ -101,14 +101,14 @@ class ColumnStats:
     cutoff_id: str | None = None
     index_id: str | None = None
 
-    def provenance(self, requests: Sequence[StatRequest]) -> dict[str, Any]:
+    def provenance(self, files: Sequence[StatRequest]) -> dict[str, Any]:
         return {
             "cutoff": dict(self.cutoff),
             "cutoff_id": self.cutoff_id,
             "index_id": self.index_id,
             "files": {
                 f"{table}/{column}.{stat}": self.files[(table, column, stat)]["sha256"]
-                for table, column, stat in requests
+                for table, column, stat in files
             },
         }
 
@@ -129,12 +129,34 @@ class TableColumnEncoder:
     def requests(self) -> tuple[StatRequest, ...]:
         return tuple((table, column, stat) for table, column in self.columns for stat in self.stats)
 
+    @property
+    def text(self) -> StatRequest:
+        """Where a Text encoder's tokenizer is kept: beside its first column, named for
+        its training settings, columns, tokenizers version and recipe."""
+
+        import tokenizers
+
+        settings = [
+            self.config.vocabulary_size,
+            self.config.min_frequency,
+            self.columns,
+            tokenizers.__version__,
+            TEXT_RECIPE,
+        ]
+        digest = hashlib.sha256(json.dumps(settings).encode()).hexdigest()[:16]
+        return (*self.columns[0], f"text-{digest}")
+
+    @property
+    def files(self) -> tuple[StatRequest, ...]:
+        return (self.text,) if isinstance(self.config, Text) else self.requests
+
 
 def table_column_encoders(contract: Any) -> dict[str, TableColumnEncoder]:
     """Encoders that learn from statistics, by identity.
 
     Qualifies: an unpinned Vocabulary, ZScore or Buckets(bins=...) of a
-    supported dtype whose every use is a stored column read directly.
+    supported dtype, or Text of strings, whose every use is a stored column
+    read directly.
     """
 
     from kumo.pytorch.assembly import _encoder_identity, _graph_encoder_identity
@@ -207,6 +229,8 @@ def _learns_from_stats(config: Any, dtype: DType) -> bool:
         return config.mean is None and dtype.numeric
     if isinstance(config, Buckets):
         return config.bins is not None and dtype.numeric
+    if isinstance(config, Text):
+        return config.state is None and dtype.name == "string"
     return False
 
 
@@ -223,7 +247,7 @@ def check_statistics(contract: Any, statistics: Any) -> None:
             or not isinstance(record, Mapping)
             or set(record) != {"cutoff", "cutoff_id", "index_id", "files"}
             or not isinstance(record["files"], Mapping)
-            or set(record["files"]) != {"{}/{}.{}".format(*item) for item in expected.requests}
+            or set(record["files"]) != {"{}/{}.{}".format(*item) for item in expected.files}
             or not all(
                 isinstance(digest, str) and _SHA256.fullmatch(digest)
                 for digest in record["files"].values()
@@ -265,6 +289,13 @@ def fit_from_stats(
     """
 
     config, dtype = encoder.config, encoder.dtype
+    if isinstance(config, Text):
+        return FittedEncoder(
+            identity=identity,
+            config=config,
+            dtype=dtype,
+            tokenizer_json=files[encoder.text]["tokenizer"],
+        )
     datas = {
         stat: [files[request]["data"] for request in encoder.requests if request[2] == stat]
         for stat in encoder.stats

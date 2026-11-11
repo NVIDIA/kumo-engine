@@ -14,14 +14,16 @@ comparison is a matter of swapping one object.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import hashlib
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from itertools import groupby
 from typing import Any
 
-from kumo.pytorch.column_stats import ColumnStats, StatRequest, data_sha256
+from kumo.pytorch.column_stats import Column, ColumnStats, StatRequest, data_sha256
 from kumo.pytorch.contract.sample import BuiltSample, SampleRequest, SampleSpec
 from kumo.pytorch.contract.schema import DataSchema, table_clock
 from kumo.pytorch.data.records import timestamp_to_epoch
+from kumo.pytorch.encoding import TRAIN_BATCH
 from kumo.pytorch.engines.in_memory.graph import InMemoryGraphSampler
 from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
 
@@ -100,6 +102,42 @@ class InMemorySource:
                 }
         return ColumnStats(
             files, "recompute", {"value": cutoff, "unit": "seconds", "inclusive": True}
+        )
+
+    def column_text(
+        self,
+        columns: Sequence[Column],
+        cutoff: int | None,
+        name: str,
+        train: Callable[[Iterator[Sequence[str]]], str],
+    ) -> ColumnStats:
+        """A tokenizer trained on string columns' stored values, as DiskGraph trains it."""
+
+        tables = {table.name: table for table in self.schema.tables}
+
+        def batches() -> Iterator[list[str]]:
+            batch = []
+            for table, column in columns:
+                clock = table_clock(tables[table])
+                for row in self._tables[table]:
+                    if row.get(column) is not None and (
+                        clock is None
+                        or row.get(clock) is not None
+                        and (cutoff is None or timestamp_to_epoch(row[clock]) <= cutoff)
+                    ):
+                        batch.append(row[column])
+                        if len(batch) == TRAIN_BATCH:
+                            yield batch
+                            batch = []
+            if batch:
+                yield batch
+
+        tokenizer = train(batches())
+        sha256 = hashlib.sha256(tokenizer.encode()).hexdigest()
+        return ColumnStats(
+            {(*columns[0], name): {"tokenizer": tokenizer, "sha256": sha256}},
+            "recompute",
+            {"value": cutoff, "unit": "seconds", "inclusive": True},
         )
 
     def sample_graph(
