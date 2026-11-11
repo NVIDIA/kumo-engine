@@ -15,10 +15,13 @@ comparison is a matter of swapping one object.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from itertools import groupby
 from typing import Any
 
+from kumo.pytorch.column_stats import ColumnStats, StatRequest, data_sha256
 from kumo.pytorch.contract.sample import BuiltSample, SampleRequest, SampleSpec
-from kumo.pytorch.contract.schema import DataSchema
+from kumo.pytorch.contract.schema import DataSchema, table_clock
+from kumo.pytorch.data.records import timestamp_to_epoch
 from kumo.pytorch.engines.in_memory.graph import InMemoryGraphSampler
 from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
 
@@ -34,6 +37,7 @@ class InMemorySource:
         tables: Mapping[str, Sequence[Mapping[str, Any]]],
     ):
         self.schema = schema
+        self._tables = tables
         self._samples = InMemorySampleBuilder(schema, tables)
         self._graph = InMemoryGraphSampler(schema, tables)
 
@@ -55,6 +59,47 @@ class InMemorySource:
             self._neighborhood(sample, spec),
             spec,
             roots,
+        )
+
+    def column_stats(self, requests: Sequence[StatRequest], cutoff: int | None) -> ColumnStats:
+        """Column statistics over the stored rows, as DiskGraph computes them."""
+
+        import diskgraph
+        import pyarrow as pa
+
+        tables = {table.name: table for table in self.schema.tables}
+        files = {}
+        for (table, column), group in groupby(sorted(requests), key=lambda item: item[:2]):
+            rows, clock = self._tables[table], table_clock(tables[table])
+            stats = [stat for _, _, stat in group]
+            dtype = tables[table].columns[column]
+            computed = diskgraph.col_stats_from_arrow(
+                # microseconds, so the collector rounds sub-second instants as ingest does
+                pa.array(
+                    [row.get(column) for row in rows],
+                    type=pa.timestamp("us", "UTC")
+                    if dtype.name == "timestamp"
+                    else dtype.to_arrow(),
+                ),
+                None
+                if clock is None
+                else pa.array(
+                    [
+                        None if row.get(clock) is None else timestamp_to_epoch(row[clock])
+                        for row in rows
+                    ],
+                    type=pa.int64(),
+                ),
+                None if clock is None else cutoff,
+                stats,
+            )
+            for stat in stats:
+                files[(table, column, stat)] = {
+                    "data": computed[stat],
+                    "sha256": data_sha256(computed[stat]),
+                }
+        return ColumnStats(
+            files, "recompute", {"value": cutoff, "unit": "seconds", "inclusive": True}
         )
 
     def sample_graph(

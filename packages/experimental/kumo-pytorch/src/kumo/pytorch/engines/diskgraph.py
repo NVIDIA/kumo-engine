@@ -18,6 +18,7 @@ import numpy as np
 import torch
 
 from kumo.pytorch.anchors import AnchorTable
+from kumo.pytorch.column_stats import ColumnStats, StatRequest
 from kumo.pytorch.contract.batch import EntitySource, EventSource, Input
 from kumo.pytorch.contract.dtypes import DType, arrow_float64
 from kumo.pytorch.contract.sample import (
@@ -417,6 +418,8 @@ class DiskGraphSource:
             raise ImportError("DiskGraphEngine requires pyarrow") from error
 
         self.schema = schema
+        self._index = artifact.path
+        self._num_threads = num_threads
         self._tables = {table.name: table for table in schema.tables}
         self._relations = {relation.name: relation for relation in schema.relations}
         self._relation_mapping = artifact.manifest["relation_mapping"]
@@ -814,6 +817,28 @@ class DiskGraphSource:
             request_metadata=tuple(
                 {"split": request.split, **request.metadata} for request in requests
             ),
+        )
+
+    def column_stats(self, requests: Sequence[StatRequest], cutoff: int | None) -> ColumnStats:
+        """Statistics files from the index, computing and publishing the missing ones."""
+
+        result = self._diskgraph.ensure_col_stats(
+            self._index, cutoff, list(requests), num_threads=self._num_threads
+        )
+        files = {
+            request: json.loads(
+                Path(result["files"]["{}/{}.{}".format(*request)]["path"]).read_text()
+            )
+            for request in requests
+        }
+        sources = {entry["source"] for entry in result["files"].values()}
+        source = "recompute" if "recompute" in sources else "existing"
+        return ColumnStats(
+            files,
+            source,
+            {"value": cutoff, "unit": result["unit"], "inclusive": True},
+            cutoff_id=result["cutoff_id"],
+            index_id=result["index_id"],
         )
 
     def fit_graph_fields(
