@@ -48,50 +48,16 @@ def _arrow_chunks(array: pa.Array | pa.ChunkedArray) -> list[pa.Array]:
     return array.chunks or [pa.array([], type=array.type)]
 
 
-def _arrow_bitmap(array: pa.Array, buffer_index: int) -> np.ndarray:
-    """View only the packed bytes covering an Arrow slice's logical rows."""
-    byte_offset, bit_offset = divmod(array.offset, 8)
-    return np.frombuffer(
-        array.buffers()[buffer_index],
-        dtype=np.uint8,
-        offset=byte_offset,
-        count=(bit_offset + len(array) + 7) // 8,
-    )
-
-
-def _arrow_null_mask(array: pa.Array) -> np.ndarray | None:
-    """Decode a sliced validity bitmap without copying the Arrow values."""
-    if array.null_count == 0:
-        return None
-    bit_offset = array.offset % 8
-    mask = np.unpackbits(
-        _arrow_bitmap(array, 0), bitorder="little", count=bit_offset + len(array)
-    )[bit_offset:].view(np.bool_)
-    np.logical_not(mask, out=mask)
-    return mask
-
-
-def _copy_numpy(
-    destination: Tensor, values: np.ndarray, *, via_float64: bool = False
-) -> None:
-    """Copy into final storage, optionally retaining nullable-integer rounding."""
-    via_float64 = via_float64 and destination.dtype != torch.float64
+def _copy_numpy(destination: Tensor, values: np.ndarray) -> None:
+    """Cast and copy NumPy values into destination tensor storage."""
     if destination.device.type == "cpu":
-        if via_float64:
-            np.add(values, 0, out=destination.numpy(), dtype=np.float64)
-        else:
-            np.copyto(destination.numpy(), values, casting="unsafe")
-    elif via_float64 and destination.device.type == "mps":
-        output = np.empty(values.shape, dtype=str(destination.dtype).split(".")[-1])
-        np.add(values, 0, out=output, dtype=np.float64)
-        _copy_numpy(destination, output)
+        np.copyto(destination.numpy(), values, casting="unsafe")
     else:
+        dtype = str(destination.dtype).split(".")[-1]
+        values = values.astype(dtype, copy=False)
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=".*non-writable.*")
-            source = torch.from_numpy(values)
-            if via_float64:
-                source = source.to(device=destination.device, dtype=torch.float64)
-            destination.copy_(source)
+            destination.copy_(torch.from_numpy(values))
 
 
 def _encode_nested_chunks(
@@ -363,9 +329,9 @@ class NumericalTensorMapper(TensorMapper[Tensor]):
         *,
         device: torch.device | None = None,
     ) -> Tensor:
-        """Encode numerical Arrow buffers directly, scaling durations to seconds."""
+        """Encode numerical Arrow chunks, normalizing durations to seconds."""
         result = torch.empty((len(array), 1), device=device)
-        via_float64 = pa.types.is_integer(array.type) and array.null_count > 0
+        nullable_integer = pa.types.is_integer(array.type) and array.null_count > 0
         start = 0
         for chunk in _arrow_chunks(array):
             if len(chunk) == 0:
@@ -375,104 +341,31 @@ class NumericalTensorMapper(TensorMapper[Tensor]):
                 destination.fill_(float("nan"))
             elif pa.types.is_duration(chunk.type):
                 self._encode_duration(chunk, destination)
-            elif (
-                pa.types.is_integer(chunk.type)
-                or pa.types.is_floating(chunk.type)
-                or pa.types.is_boolean(chunk.type)
-            ):
-                self._encode_numeric(chunk, destination, via_float64=via_float64)
             else:
-                _copy_numpy(destination, chunk.to_numpy(zero_copy_only=False))
+                values = chunk.to_numpy(zero_copy_only=False)
+                if nullable_integer:
+                    # Preserve column-wide rounding even for chunks without nulls.
+                    values = values.astype(np.float64, copy=False)
+                _copy_numpy(destination, values)
             start += len(chunk)
         return result
 
     @staticmethod
-    def _encode_numeric(
-        array: pa.Array, destination: Tensor, *, via_float64: bool
-    ) -> None:
-        """Cast primitive values or decode packed booleans into destination rows."""
-        if pa.types.is_boolean(array.type):
-            packed = _arrow_bitmap(array, 1)
-            packed_tensor = None
-            if destination.device.type != "cpu":
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", message=".*non-writable.*")
-                    packed_tensor = torch.from_numpy(packed).to(destination.device)
-            bit_offset = array.offset % 8
-            for row_start in range(min(8, len(array))):
-                source_bit = (bit_offset + row_start) % 8
-                byte_start = (bit_offset + row_start) // 8
-                if destination.device.type == "cpu":
-                    output = destination.numpy()[row_start::8]
-                    source = packed[byte_start : byte_start + len(output)]
-                    np.bitwise_and(
-                        source, 1 << source_bit, out=output, casting="unsafe"
-                    )
-                    np.multiply(output, 1 / (1 << source_bit), out=output)
-                else:
-                    assert packed_tensor is not None
-                    target = destination[row_start::8]
-                    torch.bitwise_and(
-                        packed_tensor[byte_start : byte_start + target.numel()],
-                        1 << source_bit,
-                        out=target,
-                    )
-                    target.div_(1 << source_bit)
-        else:
-            dtype = np.dtype(array.type.to_pandas_dtype())
-            values = np.frombuffer(
-                array.buffers()[1],
-                dtype=dtype,
-                count=len(array),
-                offset=array.offset * dtype.itemsize,
-            )
-            _copy_numpy(destination, values, via_float64=via_float64)
-        null_mask = _arrow_null_mask(array)
-        if null_mask is not None:
-            if destination.device.type == "cpu":
-                destination.numpy()[null_mask] = np.nan
-            else:
-                destination.masked_fill_(
-                    torch.from_numpy(null_mask).to(destination.device), float("nan")
-                )
-
-    @staticmethod
     def _encode_duration(array: pa.Array, destination: Tensor) -> None:
-        """Divide Arrow duration ticks into final storage, preserving pandas NaT."""
-        ticks = np.frombuffer(
-            array.buffers()[1],
-            dtype=np.int64,
-            count=len(array),
-            offset=array.offset * np.dtype(np.int64).itemsize,
-        )
+        """Scale NumPy duration ticks into destination storage, preserving NaT."""
+        ticks = array.to_numpy(zero_copy_only=False).view(np.int64)
         ticks_per_second = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}[
             array.type.unit
         ]
-        null_mask = ticks == np.iinfo(np.int64).min
-        arrow_nulls = _arrow_null_mask(array)
-        if arrow_nulls is not None:
-            np.logical_or(null_mask, arrow_nulls, out=null_mask)
-        if destination.device.type in {"cpu", "mps"}:
-            # MPS cannot perform the float64 division required for pandas parity.
-            output = (
-                destination.numpy()
-                if destination.device.type == "cpu"
-                else np.empty(len(array), dtype=str(destination.dtype).split(".")[-1])
-            )
-            np.divide(ticks, ticks_per_second, out=output, dtype=np.float64)
-            output[null_mask] = np.nan
-            if destination.device.type == "mps":
-                _copy_numpy(destination, output)
-        else:
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", message=".*non-writable.*")
-                source = torch.from_numpy(ticks).to(
-                    device=destination.device, dtype=torch.float64
-                )
-            torch.div(source, ticks_per_second, out=destination)
-            destination[torch.from_numpy(null_mask).to(destination.device)] = float(
-                "nan"
-            )
+        output = (
+            destination.numpy()
+            if destination.device.type == "cpu"
+            else np.empty(len(array), dtype=str(destination.dtype).split(".")[-1])
+        )
+        np.divide(ticks, ticks_per_second, out=output, dtype=np.float64)
+        output[ticks == np.iinfo(np.int64).min] = np.nan
+        if destination.device.type != "cpu":
+            _copy_numpy(destination, output)
 
     def post_forward(
         self,

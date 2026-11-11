@@ -454,13 +454,13 @@ def test_duration_chunks_without_nulls(unit: str) -> None:
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 @pytest.mark.parametrize("offset", [0, 1, 7, 8, 9])
 @pytest.mark.parametrize("nullable", [False, True])
-def test_primitive_arrow_buffers_match_pandas(
+def test_numerical_numpy_chunks_match_pandas(
     arrow_type: pa.DataType,
     dtype: torch.dtype,
     offset: int,
     nullable: bool,
 ) -> None:
-    """Native buffers and packed bits preserve values across sliced chunks."""
+    """Arrow-to-NumPy conversion preserves values across sliced chunks."""
     if pa.types.is_boolean(arrow_type):
         rows = [index % 3 == 0 for index in range(32)]
     elif pa.types.is_floating(arrow_type):
@@ -498,21 +498,19 @@ def test_nullable_integer_rounding_is_independent_of_chunks(
 
 
 @pytest.mark.parametrize("arrow_type", [pa.int64(), pa.uint32(), pa.float32()])
-def test_nullable_numeric_reads_arrow_values_without_materializing_numpy(
+def test_nonnull_numpy_chunks_share_arrow_values(
     arrow_type: pa.DataType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Only views of original Arrow values reach destination conversion."""
+    """Non-null numeric NumPy views reuse Arrow values and write into one tensor."""
     from kumo_core.encoders import tensor_mapper
 
-    array = pa.array([8, 4, None, 3, 2, 1], type=arrow_type).slice(1)
+    array = pa.array([8, 4, 5, 3, 2, 1], type=arrow_type).slice(1)
     chunks = [array[:2], array[2:]]
     source = pa.chunked_array(chunks)
     copies = []
     copy_numpy = tensor_mapper._copy_numpy
 
-    def copy_arrow_view(
-        destination: Tensor, values: np.ndarray, *, via_float64: bool = False
-    ) -> None:
+    def copy_arrow_view(destination: Tensor, values: np.ndarray) -> None:
         chunk = chunks[len(copies)]
         dtype = np.dtype(chunk.type.to_pandas_dtype())
         assert values.dtype == dtype
@@ -521,39 +519,12 @@ def test_nullable_numeric_reads_arrow_values_without_materializing_numpy(
             == chunk.buffers()[1].address + chunk.offset * dtype.itemsize
         )
         copies.append(destination.numpy())
-        copy_numpy(destination, values, via_float64=via_float64)
+        copy_numpy(destination, values)
 
     monkeypatch.setattr(tensor_mapper, "_copy_numpy", copy_arrow_view)
     result = NumericalTensorMapper()(source)
     assert len(copies) == len(chunks)
     assert all(np.shares_memory(output, result.numpy()) for output in copies)
-
-
-def test_boolean_bits_write_directly_into_destination(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Packed Boolean values use final tensor slices as the bitwise output."""
-    array = pa.array([True, None, False, True] * 5).slice(3, 13)
-    bitwise_and = np.bitwise_and
-    outputs = []
-
-    def unpack_into_destination(*args: object, **kwargs: object) -> np.ndarray:
-        output = kwargs["out"]
-        assert isinstance(output, np.ndarray)
-        outputs.append(output)
-        return bitwise_and(*args, **kwargs)
-
-    monkeypatch.setattr(np, "bitwise_and", unpack_into_destination)
-    actual = NumericalTensorMapper()(array)
-    expected = torch.tensor(
-        [
-            [float(value) if value is not None else float("nan")]
-            for value in array.to_pylist()
-        ]
-    )
-    torch.testing.assert_close(actual, expected, rtol=0, atol=0, equal_nan=True)
-    assert len(outputs) == 8
-    assert all(np.shares_memory(output, actual.numpy()) for output in outputs)
 
 
 def test_numerical_null_type_and_all_null_chunks() -> None:
