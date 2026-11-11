@@ -1234,7 +1234,8 @@ fn ingest_timestamps(
 }
 
 /// Epoch `seconds` in ticks of the index clock, converted as ingest converts
-/// an Arrow `timestamp[s]` create time (rounding up to a coarser clock).
+/// an Arrow timestamp or integer create time (rounding up to a coarser clock).
+/// Ingest rounds create times parsed from text down instead.
 pub fn cutoff_ticks(seconds: i64, clock: TimeUnit) -> Result<i64> {
     ensure!(clock.is_index_clock(), "{clock:?} is not an index clock");
     let array: ArrayRef = Arc::new(TimestampSecondArray::from(vec![seconds]));

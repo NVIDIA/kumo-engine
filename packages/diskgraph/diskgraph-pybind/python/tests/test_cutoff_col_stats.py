@@ -286,8 +286,8 @@ def test_rejects_unsupported_requests(built):
 
 DAY_START = 19_700 * 86_400
 CLOCK_CUTOFF = DAY_START + 10 * 3_600  # 10:00 on day 19700
-# Milliseconds from the cutoff: 00:00 that day, 09:00, just before, at, just after, 00:00 and
-# 00:00:01 the next day.
+# Milliseconds from the cutoff: 00:00 and 09:00 that day, four just before or at it, three just
+# after, then 00:00 and 00:00:01 the next day.
 OFFSETS_MS = [-36_000_000, -3_600_000, -500, -1, 0, 1, 500, 1_000, 50_400_000, 50_401_000]
 
 
