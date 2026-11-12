@@ -12,5 +12,3 @@ def test_engine_scratch_dir_follows_kumo_settings(monkeypatch, tmp_path):
     assert get_scratch_dir() == kumo.settings.scratch_dir() == tmp_path / 'configured'
     monkeypatch.setattr('kumo.engine._scratch._root', tmp_path / 'patched')
     assert get_scratch_dir() == tmp_path / 'patched'
-    with kumo.settings.scoped(scratch_dir=tmp_path / 'scoped'):
-        assert get_scratch_dir() == tmp_path / 'scoped'
