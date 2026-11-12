@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -184,6 +185,54 @@ def test_link_prediction_output_columns(graph, link, fields):
     assert list(
         frames['predictions']) == ['ENTITY', 'CLASS', 'SCORE', *metadata]
     assert list(frames['embeddings']) == ['ID', 'TYPE', 'EMBEDDING', *metadata]
+
+
+@pytest.mark.parametrize('name', ['forecast', 'classifier', 'link'])
+def test_prediction_task_matches_the_fitted_task(graph, name, request,
+                                                 monkeypatch):
+    from kumo_core.io.json import load_json
+    from kumo_core.resolved_task import ResolvedNumericalTask
+
+    trainer = request.getfixturevalue(name)[0]
+    resolve = ResolvedNumericalTask.from_manifest
+    tasks = []
+
+    def spy(*args, **kwargs):
+        tasks.append(resolve(*args, **kwargs))
+        return tasks[-1]
+
+    monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest', spy)
+    _predict(graph, request.getfixturevalue(name), None,
+             num_classes_to_return=3 if name == 'link' else None)
+    fitted = ResolvedNumericalTask.from_dict(
+        load_json(trainer._training_result.artifact_paths['input_manifest'],
+                  dict))
+
+    assert fitted.unix_end_offset is not None
+    for field in ('forecast_length', 'lag_timesteps', 'unix_start_offset',
+                  'unix_end_offset', 'unix_step_size'):
+        assert getattr(tasks[0], field) == getattr(fitted, field)
+
+
+def test_forecast_rejects_a_table_with_other_lags(graph, forecast):
+    trainer, _, table = forecast
+    options = dict(table.compiler_options, lag_offsets_secs=(-86400, -172800))
+
+    with pytest.raises(ValueError, match='table uses lag_timesteps = 2'):
+        trainer.predict(replace(table, compiler_options=options),
+                        snapshot=graph[1])
+
+
+def test_forecast_rejects_a_table_with_another_horizon(graph, forecast):
+    trainer, _, table = forecast
+    future = table.compiler_options['future_offsets_secs']
+    options = dict(table.compiler_options,
+                   future_offsets_secs=(*future, future[-1] + 86400))
+
+    expected = f'table uses forecast_length = {len(future) + 1}'
+    with pytest.raises(ValueError, match=expected):
+        trainer.predict(replace(table, compiler_options=options),
+                        snapshot=graph[1])
 
 
 @pytest.mark.parametrize('num_classes_to_return, expected', [

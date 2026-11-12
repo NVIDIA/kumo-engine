@@ -181,6 +181,8 @@ def test_binary_predictions_preserve_probabilities_and_metadata_contract(
         SimpleNamespace(manifest_path='task', bundle_dir='bundle'))
     monkeypatch.setattr('kumo.engine.trainer.trainer._stage_model_bundle',
                         lambda *a: tmp_path)
+    monkeypatch.setattr('kumo.engine.trainer.trainer.bundle_task_options',
+                        lambda *a: {'lag_timesteps': 0})
     (tmp_path / 'config.json').write_text('{}')
     monkeypatch.setattr(
         DiskgraphTaskManifest, 'load', lambda *a: SimpleNamespace(
@@ -291,6 +293,8 @@ def test_predict_reuses_generated_table_without_recompiling(
                         fake_materialize)
     monkeypatch.setattr('kumo.engine.trainer.trainer._stage_model_bundle',
                         lambda *a: tmp_path)
+    monkeypatch.setattr('kumo.engine.trainer.trainer.bundle_task_options',
+                        lambda *a: {'lag_timesteps': 0})
     (tmp_path / 'config.json').write_text('{}')
     monkeypatch.setattr(
         DiskgraphTaskManifest, 'load', lambda *a: SimpleNamespace(
@@ -689,6 +693,8 @@ def test_repeated_predict_calls_get_distinct_ingest_targets(
 
     monkeypatch.setattr('kumo.engine.trainer.trainer._stage_model_bundle',
                         fake_stage)
+    monkeypatch.setattr('kumo.engine.trainer.trainer.bundle_task_options',
+                        lambda *a: {'lag_timesteps': 0})
     monkeypatch.setattr(
         DiskgraphTaskManifest, 'load', lambda *a: SimpleNamespace(
             task_type='binary_classification', stage_counts={'predict': 3}))

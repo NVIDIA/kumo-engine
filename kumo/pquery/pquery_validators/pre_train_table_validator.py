@@ -5,6 +5,7 @@
 from typing import Dict, List, Optional, Union
 
 import pandas as pd
+from kumo_core.training.bounds import validate_time_bounds
 from kumo_core.training.validation import validate_train_offsets
 from kumo_core.types import TaskType
 from kumoapi.pquery import QueryType, ValidatedPredictiveQuery
@@ -774,94 +775,17 @@ class PreTrainTableValidator():
 
         return validation_response
 
-    def validate_train_time_compatibility(self) -> ValidationResponse:
-        r"""Validates that start_time/end_time and train offsets are not used
-        together.
-
-        Note: This validation can be removed once we fully migrate from using
-        train_start_offset/train_end_offset to start_time/end_time parameters.
-
-        Returns:
-            ValidationResponse: Response containing any validation errors.
-        """
+    def validate_time_bounds(self) -> ValidationResponse:
+        """Adapt the shared time-bound checks to service validation errors."""
         validation_response = ValidationResponse()
-
-        if ((self.start_time is not None or self.end_time is not None)
-                and (self.train_start_offset is not None
-                     or self.train_end_offset is not None)):
-            validation_response.errors.append(
-                ValidationError(
-                    title="Incompatible time parameters",
-                    message=("Cannot specify both start_time/end_time and "
-                             "train_start_offset/train_end_offset. Use either "
-                             "absolute/relative timestamps or train offset "
-                             "parameters, but not both.")))
-
-        return validation_response
-
-    def validate_train_time(self) -> ValidationResponse:
-        r"""Validates start_time and end_time parameters.
-
-        Checks:
-        1. Both must be offsets or both timestamps
-        2. For timestamps: start_time must be smaller than end_time
-        3. For offsets: both must be <= 0 and start_time must be < end_time
-
-        Returns:
-            ValidationResponse: Response containing any validation errors.
-        """
-        validation_response = ValidationResponse()
-
-        if self.start_time is None or self.end_time is None:
-            return validation_response
-
-        # Check if both are same type (offset or timestamp)
-        is_start_offset = isinstance(self.start_time, pd.DateOffset)
-        is_end_offset = isinstance(self.end_time, pd.DateOffset)
-
-        if is_start_offset != is_end_offset:
-            validation_response.errors.append(
-                ValidationError(
-                    title="Inconsistent time parameter types",
-                    message=("start_time and end_time must both be offsets "
-                             "or both be timestamps, but got mixed types.")))
-            return validation_response
-
-        # Validate timestamps
-        if not is_start_offset:
-            assert isinstance(self.start_time, pd.Timestamp)
-            assert isinstance(self.end_time, pd.Timestamp)
-            if self.start_time >= self.end_time:
-                validation_response.errors.append(
-                    ValidationError(
-                        title="Invalid timestamp range", message=(
-                            f"start_time ({self.start_time}) must be smaller "
-                            f"than end_time ({self.end_time})")))
-        # Validate offsets
-        else:
-            assert isinstance(self.start_time, pd.DateOffset)
-            assert isinstance(self.end_time, pd.DateOffset)
-            now = pd.Timestamp.now()
-            start_ts = now + self.start_time
-            end_ts = now + self.end_time
-
-            if start_ts <= now and end_ts <= now:
-                if start_ts >= end_ts:
-                    validation_response.errors.append(
-                        ValidationError(
-                            title="Invalid offset range", message=(
-                                f"For relative offsets, start_time must be "
-                                f"more negative than end_time, but got "
-                                f"start_time={self.start_time}, "
-                                f"end_time={self.end_time}")))
-            else:
-                validation_response.errors.append(
-                    ValidationError(
-                        title="Invalid offset values", message=(
-                            f"Relative offsets must be <= 0 (i.e. in the "
-                            f"past), but got start_time={self.start_time}, "
-                            f"end_time={self.end_time}")))
-
+        try:
+            validate_time_bounds(
+                self.start_time, self.end_time,
+                train_start_offset=self.train_start_offset,
+                train_end_offset=self.train_end_offset)
+        except ValueError as error:
+            validation_response.errors.append(ValidationError(
+                title='Invalid training time bounds', message=str(error)))
         return validation_response
 
 

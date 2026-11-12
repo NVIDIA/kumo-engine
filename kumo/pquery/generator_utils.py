@@ -14,8 +14,6 @@ from kumoapi.typing import AggregationType, Dtype, ProblemType, Stype
 
 from io_utils import logging
 from kumo.graph import ForeignKey, Graph, TimeColumn
-# Re-exported for kumo.data.generic.diskgraph_batch_pred.
-from kumo.graph.utils import map_to_api_graph_definition  # noqa: F401
 from kumo.pquery.utils import col_name, table_name
 from kumo.stats import is_missing_stat_value
 from kumo.validation.train_table_validation import TrainingTableGenerationError

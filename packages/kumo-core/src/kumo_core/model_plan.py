@@ -23,6 +23,7 @@ from typing import (
 import kumoapi.encoder as encoder_api
 import kumoapi.model_plan as api
 from kumo_core.errors import TrainingValidationError as ValidationException
+from kumo_core.training.bounds import parse_time_bound, validate_time_bounds
 from kumo_core.types import TaskType
 from kumoapi.common import ValidationWarning
 from kumoapi.encoder import (
@@ -67,6 +68,7 @@ from kumoapi.model_plan import (
 )
 from kumoapi.pquery import QueryType
 from kumoapi.typing import Stype, TimeUnit
+from pandas import DateOffset
 from pydantic import BaseModel, ValidationError, conlist, field_validator
 from pydantic.dataclasses import dataclass
 from pydantic_core import InitErrorDetails, PydanticCustomError
@@ -795,11 +797,9 @@ class TrainingTableGenerationPlan(api.TrainingTableGenerationPlan, PlanMixin):
                                        has_train_table_weight_col):
             return False
 
-        # Check split-related options based on decoupled splits setting
-        # When using decoupled splits, only allow start/end time
-        # When using legacy splits, only allow train start/end offset
+        # Absolute node bounds are available independently of split routing.
         if name in ['start_time', 'end_time']:
-            return _use_decoupled_splits()
+            return _use_decoupled_splits() or task_type.is_node_pred
         if name in ['train_start_offset', 'train_end_offset']:
             return not _use_decoupled_splits()
 
@@ -838,6 +838,7 @@ class TrainingTableGenerationPlan(api.TrainingTableGenerationPlan, PlanMixin):
                              "model plan.")))
         errors.extend(unsupported_entity_candidate_errors(self))
 
+        split = None
         if self.split != InferredType.VALUE:
             try:
                 split = self.get_split(self.split)
@@ -954,6 +955,38 @@ class TrainingTableGenerationPlan(api.TrainingTableGenerationPlan, PlanMixin):
                             f"Forecasting requires a {acceptable_splits} "
                             f"split. Please choose one of these splits or "
                             f"set `split` to `inferred`."))
+        if query_type == QueryType.TEMPORAL and task_type.is_node_pred:
+            start = inferred_or_missing_type_to_none(self.start_time)
+            end = inferred_or_missing_type_to_none(self.end_time)
+            # The plan has no aggregation unit. Check relative ordering here;
+            # query planning resolves integers using the actual aggregation unit.
+            if _use_decoupled_splits():
+                if isinstance(start, int):
+                    start = DateOffset(days=start)
+                if isinstance(end, int):
+                    end = DateOffset(days=end)
+            try:
+                validate_time_bounds(
+                    start,
+                    end,
+                    train_start_offset=inferred_or_missing_type_to_none(
+                        self.train_start_offset),
+                    train_end_offset=inferred_or_missing_type_to_none(
+                        self.train_end_offset),
+                    split_family=None if split is None else split.name,
+                )
+            except ValueError as error:
+                errors.append(error)
+        elif (query_type == QueryType.TEMPORAL
+              and not _use_decoupled_splits()):
+            # Reject integer bounds in default mode, matching temporal node plans.
+            for name, value in (('start_time', self.start_time),
+                                ('end_time', self.end_time)):
+                if isinstance(value, int):
+                    try:
+                        parse_time_bound(value, name)
+                    except ValueError as error:
+                        errors.append(error)
         return errors, warnings
 
     @classmethod
