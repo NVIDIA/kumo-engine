@@ -1,11 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Process-wide settings shared by the Kumo packages, set with `configure`.
-
-The scratch directory is where DiskGraph ingest, training and prediction read
-and write their working data. It defaults to `~/.cache/kumo-engine`.
-"""
+"""Process-wide settings shared by the Kumo packages."""
 
 import os
 from pathlib import Path
@@ -16,14 +12,7 @@ _configured: Optional[Path] = None
 
 
 def configure(*, scratch_dir: Optional[Union[str, "os.PathLike[str]"]] = None) -> None:
-    """Sets process-wide settings. `None` leaves a setting unchanged.
-
-    Call it once, early: paths already derived from the scratch directory are
-    not recomputed.
-
-    Raises:
-        ValueError: if `scratch_dir` is not a local filesystem path.
-    """
+    """Sets process-wide settings; call it once, early. `None` leaves a setting unchanged."""
     global _configured
     if scratch_dir is None:
         return
@@ -36,5 +25,5 @@ def configure(*, scratch_dir: Optional[Union[str, "os.PathLike[str]"]] = None) -
 
 
 def scratch_dir() -> Path:
-    """The scratch directory."""
+    """The local directory DiskGraph ingest, training and prediction work in."""
     return _configured or _DEFAULT_SCRATCH_DIR
