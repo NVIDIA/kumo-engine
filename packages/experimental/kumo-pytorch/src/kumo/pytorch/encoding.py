@@ -387,17 +387,14 @@ def learned_entries(
     return tuple((actual[key], next(available)) for key in ordered)
 
 
-#: Strings encoded at a time.
 TEXT_BATCH = 65_536
-#: Strings per item fed to tokenizer training, which buffers 256 items ahead.
+# Tokenizer training buffers 256 items ahead.
 TRAIN_BATCH = 1_024
-#: Changes whenever train_text would train a different tokenizer from the same values.
+# Bump when train_text would train a different tokenizer from the same values.
 TEXT_RECIPE = 1
 
 
 def train_text(config: Text, batches: Iterable[Sequence[str]]) -> str:
-    """The JSON of a byte-level BPE tokenizer trained on ``batches`` of strings, in order."""
-
     from tokenizers import Tokenizer, models, pre_tokenizers, trainers
 
     tokenizer = Tokenizer(models.BPE(unk_token="[UNK]"))

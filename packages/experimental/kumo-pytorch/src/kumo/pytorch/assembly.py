@@ -80,8 +80,6 @@ from kumo.pytorch.output import (
 from kumo.pytorch.spec import sample_without_targets
 
 HistoryInput = EntityHistory | BuiltSample
-#: Records measured at a time for the length summary, so their encoded text is never held
-#: for all of them. A model source batch is measured whole.
 _LENGTH_CHUNK = 4096
 
 

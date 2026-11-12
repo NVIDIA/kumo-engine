@@ -861,15 +861,21 @@ class DiskGraphSource:
         name: str,
         train: Callable[[Iterator[Sequence[str]]], str],
     ) -> ColumnStats:
-        """A tokenizer trained on string columns streamed from the index, kept beside the
-        column statistics: reused when there, else trained and published."""
-
         table, column = columns[0]
         ticks = None if cutoff is None else self._diskgraph.cutoff_ticks(cutoff, self._clock)
         result = self._diskgraph.ensure_col_stats(self._index, ticks, [])
         clock = {"value": ticks, "unit": result["unit"], "inclusive": True}
         path = Path(self._index, "col_stats", result["cutoff_id"], table, f"{column}.{name}.json")
-        if not path.is_file():
+        if path.is_file():
+            try:
+                document = json.loads(path.read_text())
+                tokenizer = document["tokenizer"]
+                intact = hashlib.sha256(tokenizer.encode()).hexdigest() == document["sha256"]
+            except (AttributeError, KeyError, TypeError, ValueError):
+                intact = False
+            if not intact:
+                raise ValueError(f"{path} is not a valid tokenizer file; delete it to retrain")
+        else:
             tokenizer = train(
                 chunk.to_pylist()
                 for table_name, column_name in columns
@@ -892,26 +898,13 @@ class DiskGraphSource:
                 "tokenizer": tokenizer,
                 "sha256": hashlib.sha256(tokenizer.encode()).hexdigest(),
             }
-            path = Path(
-                self._diskgraph.publish_col_stats_file(
-                    self._index,
-                    ticks,
-                    table,
-                    f"{column}.{name}.json",
-                    (json.dumps(document) + "\n").encode(),
-                )
+            self._diskgraph.publish_col_stats_file(
+                self._index,
+                ticks,
+                table,
+                f"{column}.{name}.json",
+                (json.dumps(document) + "\n").encode(),
             )
-        try:
-            document = json.loads(path.read_text())
-            valid = (
-                document["stat"] == name
-                and document["columns"] == [list(item) for item in columns]
-                and hashlib.sha256(document["tokenizer"].encode()).hexdigest() == document["sha256"]
-            )
-        except (AttributeError, KeyError, TypeError, ValueError):
-            valid = False
-        if not valid:
-            raise ValueError(f"{path} is not a valid tokenizer file; delete it to retrain")
         return ColumnStats(
             {(table, column, name): document},
             clock,

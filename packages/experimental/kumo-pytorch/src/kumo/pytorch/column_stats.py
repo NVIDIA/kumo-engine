@@ -107,9 +107,6 @@ class TableColumnEncoder:
 
     @property
     def text(self) -> StatRequest:
-        """Where a Text encoder's tokenizer is kept: beside its first column, named for
-        its training settings, columns, tokenizers version and recipe."""
-
         import tokenizers
 
         settings = [

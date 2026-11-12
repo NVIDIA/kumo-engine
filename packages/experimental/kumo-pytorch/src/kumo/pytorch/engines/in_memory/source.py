@@ -107,8 +107,6 @@ class InMemorySource:
         name: str,
         train: Callable[[Iterator[Sequence[str]]], str],
     ) -> ColumnStats:
-        """A tokenizer trained on string columns' stored values, as DiskGraph trains it."""
-
         tables = {table.name: table for table in self.schema.tables}
 
         def batches() -> Iterator[list[str]]:
