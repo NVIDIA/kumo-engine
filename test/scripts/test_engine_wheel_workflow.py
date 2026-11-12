@@ -277,12 +277,10 @@ def test_cpu_qualification_uses_candidate_artifacts_on_all_pythons():
     # PyYAML's YAML 1.1 parser interprets the GitHub Actions `on` key as True.
     # The build calls it with no inputs. A manual run names an earlier build
     # run and its commit, to qualify wheels that run already uploaded.
-    triggers = workflow[True]
-    assert triggers['workflow_call'] is None
-    assert set(triggers['workflow_dispatch']['inputs']) == {
-        'wheel_run_id', 'wheel_sha'}
-    assert all(spec['required']
-               for spec in triggers['workflow_dispatch']['inputs'].values())
+    assert workflow[True]['workflow_call'] is None
+    inputs = workflow[True]['workflow_dispatch']['inputs']
+    assert set(inputs) == {'wheel_run_id', 'wheel_sha'}
+    assert all(spec['required'] for spec in inputs.values())
     job = workflow['jobs']['smoke']
     matrix = job['strategy']['matrix']
     assert set(matrix['python']) == {'3.11', '3.12', '3.13', '3.14'}
@@ -308,8 +306,7 @@ def test_cpu_qualification_uses_candidate_artifacts_on_all_pythons():
         'github-token': '${{ github.token }}',
     }
     # The reload qualification reads the GPU smoke's private fixture with the
-    # same environment-scoped role, and keeps fixture predictions on the
-    # runner.
+    # same environment-scoped role, and keeps fixture predictions on the runner.
     assert caller['permissions']['id-token'] == 'write'
     reload = workflow['jobs']['reload']
     assert reload['environment']['name'] == 'gha-kumo-workflow-tests'

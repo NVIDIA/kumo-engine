@@ -46,20 +46,14 @@ import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 
-
-def _load_tasks():
-    """Load the shared task definitions that sit next to this file."""
-    path = Path(__file__).resolve().with_name('wheel_gpu_smoke.py')
-    spec = importlib.util.spec_from_file_location('wheel_gpu_smoke', path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
 # The eight tasks of the GPU wheel smoke: one definition of each query,
 # fixture split, model plan and prediction check for both checks.
-tasks = _load_tasks()
+_SPEC = importlib.util.spec_from_file_location(
+    'wheel_gpu_smoke',
+    Path(__file__).resolve().with_name('wheel_gpu_smoke.py'))
+tasks = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = tasks
+_SPEC.loader.exec_module(tasks)
 CASES = tuple(tasks.TASKS)
 DEVICES = ('cpu', 'gpu', 'mps')
 TORCH_DEVICE = {'cpu': 'cpu', 'gpu': 'cuda', 'mps': 'mps'}
@@ -93,10 +87,7 @@ HOSTED_TARGETS = (
 # is the supported floor, which hosted runners no longer offer, so its CPU
 # row comes from a Mac too, on bare metal or in a VM. MPS needs macOS 15. On
 # macOS 14 the unavailable_device check proves that MPS fails clearly.
-EXTERNAL_TARGETS = (
-    ('macos-14', 'cpu'),
-    ('macos-15', 'mps'),
-)
+EXTERNAL_TARGETS = (('macos-14', 'cpu'), ('macos-15', 'mps'))
 MPS_MIN_MACOS = 15
 # Checks every configuration must carry, by case. Score drift must be caught
 # on every task, artifact rejections once and missing Faiss on static link.
@@ -165,8 +156,7 @@ def require_disjoint(durable, ephemeral_roots):
     durable = Path(durable).resolve()
     for root in ephemeral_roots:
         root = Path(root).resolve()
-        if (durable == root or durable.is_relative_to(root)
-                or root.is_relative_to(durable)):
+        if durable.is_relative_to(root) or root.is_relative_to(durable):
             raise QualificationError(
                 f'Durable directory {durable} overlaps cleanup root {root}')
 
@@ -196,9 +186,7 @@ def verify_installed_wheel(wheel):
         algorithm, expected = row[1].split('=', 1)
         if algorithm != 'sha256':
             raise QualificationError(f'Unexpected RECORD hash: {row[1]}')
-        installed = [
-            root / row[0] for root in roots if (root / row[0]).is_file()
-        ]
+        installed = [r / row[0] for r in roots if (r / row[0]).is_file()]
         if not installed:
             raise QualificationError(f'Wheel file is not installed: {row[0]}')
         digest = base64.urlsafe_b64encode(
@@ -306,22 +294,17 @@ def require_device_work(receipt, *, phase, device):
         if work.get('fits') != 1 or not work.get('training_batches') or (
                 work.get('optimizer_steps', 0) <= 0):
             raise QualificationError('Producer completed no real training')
-    else:
-        if work.get('fits') or work.get('training_batches') or work.get(
-                'optimizer_steps') or work.get('other_optimizer_steps'):
-            raise QualificationError(
-                'Consumer trained the model: '
-                f'fits={work.get("fits")}, '
-                f'training_batches={work.get("training_batches")}, '
-                f'optimizer_steps={work.get("optimizer_steps")}')
+    elif work.get('fits') or work.get('training_batches') or work.get(
+            'optimizer_steps') or work.get('other_optimizer_steps'):
+        raise QualificationError(
+            f'Consumer trained the model: fits={work.get("fits")}, '
+            f'training_batches={work.get("training_batches")}, '
+            f'optimizer_steps={work.get("optimizer_steps")}')
 
 
 def expected_retrieval_backend(device, system):
-    if device == 'mps':
-        return 'faiss-metal'
-    if device == 'gpu':
-        return 'faiss-cuda'
-    return 'torch-bruteforce' if system == 'Darwin' else 'faiss-cpu'
+    cpu = 'torch-bruteforce' if system == 'Darwin' else 'faiss-cpu'
+    return {'mps': 'faiss-metal', 'gpu': 'faiss-cuda'}.get(device, cpu)
 
 
 def require_retrieval(receipt, *, phase, case, device):
@@ -355,13 +338,11 @@ def compare_frames(case, baseline, after, *, producer, atol):
     ranks may change only between scores that tie within atol.
     """
     def aligned(frame):
-        values = tasks.prediction_values(
-            case, frame, producer['entities'], classes=producer['classes'],
-            anchor=producer['anchor'], time_column=producer['time_column'])
-        decisions = tasks.prediction_decisions(case, frame,
-                                               producer['entities'],
-                                               classes=producer['classes'])
-        return values, decisions
+        ids, classes = producer['entities'], producer['classes']
+        return (tasks.prediction_values(case, frame, ids, classes=classes,
+                                        anchor=producer['anchor'],
+                                        time_column=producer['time_column']),
+                tasks.prediction_decisions(case, frame, ids, classes=classes))
 
     try:
         (before, chosen), (later, rechosen) = aligned(baseline), aligned(after)
@@ -379,10 +360,7 @@ def compare_frames(case, baseline, after, *, producer, atol):
 
 def _block_imports():
     """Hide modules named in DRQ_BLOCK_IMPORTS to test missing dependencies."""
-    names = {
-        name
-        for name in os.environ.get('DRQ_BLOCK_IMPORTS', '').split(',') if name
-    }
+    names = set(os.environ.get('DRQ_BLOCK_IMPORTS', '').split(',')) - {''}
     if not names:
         return
 
@@ -391,7 +369,6 @@ def _block_imports():
             if fullname.split('.')[0] in names:
                 raise ModuleNotFoundError(f"No module named '{fullname}'",
                                           name=fullname)
-            return None
 
     sys.meta_path.insert(0, Blocker())
 
@@ -407,24 +384,25 @@ def _seed():
     torch.manual_seed(SEED)
 
 
-def prediction_options(case, durable, output_dir, classes):
+def predict_inputs(args, trainer, snapshot, classes):
     """Score the saved inputs with the options of the shared GPU smoke."""
     from kumoapi.jobs import MetadataField
 
     import kumo.engine as kumo
 
     options = dict(entities=kumo.FileConnector(
-        root_dir=str(durable))['inputs.parquet'])
+        root_dir=str(Path(args.durable)))['inputs.parquet'])
     if classes:
         options['num_classes_to_return'] = len(classes)
-    if case == 'binary':
+    if args.case == 'binary':
         options['binary_classification_threshold'] = .5
-    if case != 'static_link':
+    if args.case != 'static_link':
         options['output_config'] = kumo.PredictionOutputConfig(
-            connector=kumo.FileConnector(root_dir=str(output_dir)),
+            connector=kumo.FileConnector(
+                root_dir=str(Path(args.scratch) / 'out')),
             output_paths={'predictions': 'predictions'},
             extra_fields=[MetadataField.ANCHOR_TIMESTAMP])
-    return options
+    return trainer.predict(snapshot, **options).frame
 
 
 def seed_time_column(trainer):
@@ -450,13 +428,11 @@ def observe(device, work):
     seen = set()
 
     def tensors(values):
-        if isinstance(values, torch.Tensor):
-            return [values]
         if isinstance(values, dict):
-            return [v for v in values.values() if isinstance(v, torch.Tensor)]
-        if isinstance(values, (list, tuple)):
-            return [v for v in values if isinstance(v, torch.Tensor)]
-        return []
+            values = values.values()
+        elif not isinstance(values, (list, tuple)):
+            values = [values]
+        return [v for v in values if isinstance(v, torch.Tensor)]
 
     def check(module, values, label):
         found = [value for value in tensors(values) if value.numel()]
@@ -465,9 +441,8 @@ def observe(device, work):
         if module.device.type != expected or not found or any(
                 value.device.type != expected for value in found):
             raise QualificationError(
-                f'{label} did not run on {expected}: module='
-                f'{module.device}, outputs='
-                f'{[str(v.device) for v in found]}')
+                f'{label} did not run on {expected}: module={module.device}, '
+                f'outputs={[str(v.device) for v in found]}')
 
     class Proof(pl.Callback):
         def on_fit_start(self, trainer, module):
@@ -561,11 +536,12 @@ def preflight(device, info):
     """A required device must exist; never fall back to CPU silently."""
     import torch
 
-    if device == 'gpu' and not (torch.cuda.is_available()
-                                and torch.cuda.device_count() >= 1):
-        raise QualificationError(
-            'Required CUDA device is unavailable: torch.cuda.is_available() '
-            f'is {torch.cuda.is_available()}')
+    if device == 'gpu':
+        if not (torch.cuda.is_available() and torch.cuda.device_count() >= 1):
+            raise QualificationError(
+                'Required CUDA device is unavailable: '
+                f'torch.cuda.is_available() is {torch.cuda.is_available()}')
+        info['gpu_name'] = torch.cuda.get_device_name(0)
     if device == 'mps':
         if platform.system(
         ) != 'Darwin' or not torch.backends.mps.is_available():
@@ -574,8 +550,6 @@ def preflight(device, info):
         if os.environ.get('PYTORCH_ENABLE_MPS_FALLBACK') != '0':
             raise QualificationError(
                 'Strict MPS needs PYTORCH_ENABLE_MPS_FALLBACK=0')
-    if device == 'gpu':
-        info['gpu_name'] = torch.cuda.get_device_name(0)
 
 
 def metal_evidence(info):
@@ -599,7 +573,6 @@ def produce(args):
     receipt = dict(schema=RECEIPT_SCHEMA, phase='producer', case=args.case,
                    device=args.device, status='RUNNING', work=work)
     info = environment(args.device, args.expected_version)
-    receipt.update(info)
     preflight(args.device, info)
     receipt.update(info)
     kumo.configure(scratch_dir=args.scratch)
@@ -625,10 +598,7 @@ def produce(args):
         work['stage'] = 'predict'
         _seed()
         before = work['prediction_batches']
-        frame = trainer.predict(
-            snapshot,
-            **prediction_options(args.case, durable,
-                                 Path(args.scratch) / 'out', classes)).frame
+        frame = predict_inputs(args, trainer, snapshot, classes)
         if work['prediction_batches'] <= before:
             raise QualificationError('Baseline prediction ran no batches')
     frame.to_parquet(durable / 'baseline.parquet')
@@ -660,10 +630,9 @@ def consume(args):
                    device=args.device, status='RUNNING', work=work,
                    producer_receipt_sha256=sha256_file(args.producer_receipt))
     info = environment(args.device, args.expected_version)
-    receipt.update(info)
     if not args.skip_preflight:
         preflight(args.device, info)
-        receipt.update(info)
+    receipt.update(info)
     kumo.configure(scratch_dir=args.scratch)
     with observe(args.device, work):
         files = kumo.FileConnector(root_dir=str(durable))
@@ -675,11 +644,7 @@ def consume(args):
             raise QualificationError('Reloaded snapshot has another id')
         work['stage'] = 'predict'
         _seed()
-        frame = trainer.predict(
-            snapshot,
-            **prediction_options(args.case, durable,
-                                 Path(args.scratch) / 'out',
-                                 producer['classes'])).frame
+        frame = predict_inputs(args, trainer, snapshot, producer['classes'])
     frame.to_parquet(Path(args.output) / 'reloaded.parquet')
     receipt.update(status='PASS', snapshot_id=snapshot.id, rows=len(frame))
     if args.device == 'mps':
@@ -693,15 +658,13 @@ def worker_main(args):
     phase = 'producer' if args.command == 'produce' else 'consumer'
     receipt = dict(schema=RECEIPT_SCHEMA, phase=phase, case=args.case,
                    device=args.device, status='FAIL')
-    code = 1
     try:
         receipt = (produce if args.command == 'produce' else consume)(args)
-        code = 0
     except BaseException as error:  # noqa: B902 -- record, then fail.
         receipt.update(status='FAIL', error=f'{type(error).__name__}: {error}')
         traceback.print_exc()
     receipt_path.write_text(json.dumps(receipt, indent=2, default=str) + '\n')
-    return code
+    return 0 if receipt['status'] == 'PASS' else 1
 
 
 # ---------------------------------------------------------------------------
@@ -753,11 +716,11 @@ def remove_roots(base, roots):
     return [str(path) for path in targets]
 
 
-def worker_command(python, script, command, case, device, version, **paths):
+def worker_command(ctx, command, device, **paths):
     result = [
-        str(python), '-I',
-        str(script), command, '--case', case, '--device', device,
-        '--expected-version', version
+        str(ctx['python']), '-I',
+        str(ctx['script']), command, '--case', ctx['case'], '--device', device,
+        '--expected-version', ctx['version']
     ]
     for key, value in paths.items():
         if value is True:
@@ -779,9 +742,8 @@ def run_consumer(ctx, durable, label, *, device=None, env_extra=None,
     env = worker_env(device, roots)
     env.update(env_extra or {})
     receipt = output / 'consumer-receipt.json'
-    command = worker_command(ctx['python'], ctx['script'], 'consume',
-                             ctx['case'], device, ctx['version'],
-                             durable=durable, scratch=roots['scratch'],
+    command = worker_command(ctx, 'consume', device, durable=durable,
+                             scratch=roots['scratch'],
                              producer_receipt=ctx['producer_receipt'],
                              receipt=receipt, output=output,
                              skip_preflight=skip_preflight or None)
@@ -816,8 +778,7 @@ def run_case(ctx):
     raw = producer_base / 'raw'
     require_disjoint(durable, [producer_base, *roots.values()])
     receipt_path = evidence / 'producer-receipt.json'
-    command = worker_command(ctx['python'], ctx['script'], 'produce', case,
-                             device, ctx['version'], durable=durable,
+    command = worker_command(ctx, 'produce', device, durable=durable,
                              scratch=roots['scratch'], raw=raw,
                              data_dir=ctx['data_dir'],
                              graph_metadata=ctx['graph_metadata'],
@@ -838,10 +799,7 @@ def run_case(ctx):
                             device=device)
     require_device_work(producer, phase='producer', device=device)
     require_retrieval(producer, phase='producer', case=case, device=device)
-    exports = {
-        'model': tree_hashes(durable / 'model'),
-        'snapshot': tree_hashes(durable / 'snapshot'),
-    }
+    exports = {n: tree_hashes(durable / n) for n in ('model', 'snapshot')}
     inputs = {name: sha256_file(durable / name) for name in DURABLE_FILES}
     require_durable_layout(durable)
     shutil.copy2(durable / 'baseline.parquet', evidence / 'baseline.parquet')
@@ -914,16 +872,6 @@ def _remove_tree(root):
     return root
 
 
-def macos_major():
-    """The macOS major version, or None off macOS or when it is unknown."""
-    if platform.system() != 'Darwin':
-        return None
-    try:
-        return int(platform.mac_ver()[0].split('.')[0])
-    except ValueError:
-        return None
-
-
 def unavailable_device():
     """Pick a device this host cannot use, or None if every one is usable.
 
@@ -933,12 +881,14 @@ def unavailable_device():
     """
     import torch
 
-    major = macos_major()
-    if major is not None and major < MPS_MIN_MACOS:
-        return 'mps_old_macos'
-    if platform.system() != 'Darwin' or not torch.backends.mps.is_available():
+    if platform.system() != 'Darwin':
         return 'mps'
-    return None
+    try:
+        if int(platform.mac_ver()[0].split('.')[0]) < MPS_MIN_MACOS:
+            return 'mps_old_macos'
+    except ValueError:
+        pass
+    return None if torch.backends.mps.is_available() else 'mps'
 
 
 # Each product rejection must name its cause in the consumer error.
@@ -969,33 +919,24 @@ def negative_checks(ctx, durable, baseline):
 
     def expect_rejected(name, action):
         try:
-            detail = action()
+            detected, detail = False, action()
         except QualificationError as error:
-            checks.append(dict(name=name, detected=True, detail=str(error)))
-            return
+            detected, detail = True, str(error)
         except Exception as error:  # noqa: B902 -- unexpected, still record.
-            checks.append(
-                dict(name=name, detected=False,
-                     detail=f'{type(error).__name__}: {error}'))
-            return
-        checks.append(dict(name=name, detected=False, detail=detail))
+            detected, detail = False, f'{type(error).__name__}: {error}'
+        checks.append(dict(name=name, detected=detected, detail=detail))
 
     def consumer_must_fail(name, mutate=None, **kwargs):
-        """Detected only if the product fails with an error naming the cause.
-
-        A zero exit, a timeout, a signal, a leftover process or an unrelated
-        error means the product did not reject the input clearly.
-        """
+        # A zero exit, a timeout, a signal, a leftover process or an
+        # unrelated error means the product did not reject the input clearly.
         label = 'neg-' + name.replace('_', '-')
         copy = ctx['work'] / f'{label}-durable'
         shutil.copytree(durable, copy)
         try:
             target = mutate(copy) if mutate else None
-            try:
-                process, receipt_path, _ = run_consumer(ctx, copy, label,
-                                                        **kwargs)
-            except QualificationError as error:
-                return f'Consumer did not exit cleanly: {error}'
+            process, receipt_path, _ = run_consumer(ctx, copy, label, **kwargs)
+        except QualificationError as error:
+            return f'Consumer did not exit cleanly: {error}'
         finally:
             shutil.rmtree(copy, ignore_errors=True)
         receipt = json.loads(
@@ -1017,8 +958,7 @@ def negative_checks(ctx, durable, baseline):
             'snapshot_missing': lambda d: _remove_tree(d / 'snapshot'),
         }
         for name, mutate in mutations.items():
-            expect_rejected(name,
-                            lambda n=name, m=mutate: consumer_must_fail(n, m))
+            expect_rejected(name, lambda: consumer_must_fail(name, mutate))
         wrong = unavailable_device()
         if wrong is None:
             not_applicable.append(
@@ -1026,8 +966,7 @@ def negative_checks(ctx, durable, baseline):
                      reason='Every Kumo accelerator is usable on this host.'))
         else:
             name = f'unavailable_device_{wrong}'
-            options = dict(device='mps', skip_preflight=True,
-                           env_extra={'PYTORCH_ENABLE_MPS_FALLBACK': '0'})
+            options = dict(device='mps', skip_preflight=True)
             expect_rejected(name, lambda: consumer_must_fail(name, **options))
     if case == FAISS_CASE:
         expect_rejected(
@@ -1145,9 +1084,8 @@ def fixture_identity(data_dir, graph_metadata):
         for name, digest in tree_hashes(data_dir).items()
     }
     files['graphs.json'] = sha256_file(graph_metadata)
-    return dict(data_sha256=hashlib.sha256(
-        json.dumps(files, sort_keys=True).encode()).hexdigest(),
-                files=len(files))
+    combined = hashlib.sha256(json.dumps(files, sort_keys=True).encode())
+    return dict(data_sha256=combined.hexdigest(), files=len(files))
 
 
 def run_controller(args):
@@ -1186,14 +1124,11 @@ def run_controller(args):
         print(f'Candidate wheel check failed: {error}', file=sys.stderr)
         return 1
     for case in args.case:
-        evidence = output / case
-        if evidence.exists():
-            shutil.rmtree(evidence)
-        evidence.mkdir(parents=True)
-        work = work_root / case
-        if work.exists():
-            shutil.rmtree(work)
-        work.mkdir(parents=True)
+        evidence, work = output / case, work_root / case
+        for path in (evidence, work):
+            if path.exists():
+                shutil.rmtree(path)
+            path.mkdir(parents=True)
         ctx = dict(case=case, device=args.device, python=python, script=script,
                    version=version, timeout=args.timeout, atol=args.atol,
                    work=work, evidence=evidence,
@@ -1238,10 +1173,7 @@ def run_controller(args):
 
 
 def required_labels(targets=REQUIRED_TARGETS):
-    return [
-        f'{name}-{device}-py{python}' for name, device in targets
-        for python in PYTHONS
-    ]
+    return [f'{name}-{dev}-py{py}' for name, dev in targets for py in PYTHONS]
 
 
 def host_mismatch(name, summary):
@@ -1304,8 +1236,7 @@ def build_report(evidence_dirs, *, commit=None, targets=REQUIRED_TARGETS):
     }
     identities['version'] = {(s.get('wheel') or {}).get('version')
                              for _, s in found.values()}
-    mixed = sorted(key for key, values in identities.items()
-                   if len(values) > 1)
+    mixed = sorted(key for key, values in identities.items() if len(values) > 1)
     rows = []
     for label in required_labels(targets):
         path, summary = found.get(label, (None, None))
@@ -1331,9 +1262,8 @@ def build_report(evidence_dirs, *, commit=None, targets=REQUIRED_TARGETS):
                         summary.get('fixture') or {}).get('data_sha256'):
                     row.update(status='FAIL',
                                reason='Evidence lacks the task or fixture id.')
-                elif summary_mismatch(label, summary):
-                    row.update(status='FAIL',
-                               reason=summary_mismatch(label, summary))
+                elif mismatch := summary_mismatch(label, summary):
+                    row.update(status='FAIL', reason=mismatch)
                 else:
                     row.update(status=result.get('status', 'FAIL'),
                                reason=result.get('error'),
@@ -1344,24 +1274,20 @@ def build_report(evidence_dirs, *, commit=None, targets=REQUIRED_TARGETS):
                             c['name']: c['detected']
                             for c in checks
                         }
-                    if row['status'] == 'PASS' and (not checks or
-                                                    not all(c['detected']
-                                                            for c in checks)):
+                    if row['status'] == 'PASS' and not (checks and all(
+                            c['detected'] for c in checks)):
                         row.update(status='FAIL',
                                    reason='Negative checks are missing.')
                     name, device, _ = label.rsplit('-', 2)
                     needed = BASE_CHECKS.get(case, ()) + REQUIRED_CHECKS.get(
                         (name, device), {}).get(case, ()) + (
                             'prediction_score_shift', )
-                    absent = [
-                        n for n in needed
-                        if n not in (row.get('negative_checks') or {})
-                    ]
+                    present = row.get('negative_checks') or {}
+                    absent = [n for n in needed if n not in present]
                     if row['status'] == 'PASS' and absent:
                         row.update(
-                            status='FAIL',
-                            reason=f'Required negative checks are '
-                            f'missing: {absent}')
+                            status='FAIL', reason='Required negative '
+                            f'checks are missing: {absent}')
             rows.append(row)
     unexpected = sorted(set(found) - set(required_labels(targets)))
     status = 'PASS' if all(r['status'] == 'PASS' for r in rows) else 'OPEN'
@@ -1414,21 +1340,16 @@ def parse_args(argv=None):
     report.add_argument('--commit', required=True)
     # CI produces the hosted rows only; the release report adds the Macs.
     report.add_argument('--targets', choices=('all', 'hosted'), default='all')
-    for name in ('produce', 'consume'):
+    workers = dict(produce=('--raw', '--data-dir', '--graph-metadata'),
+                   consume=('--producer-receipt', '--output'))
+    for name, extra in workers.items():
         worker = commands.add_parser(name)
         worker.add_argument('--case', choices=CASES, required=True)
         worker.add_argument('--device', choices=DEVICES, required=True)
-        worker.add_argument('--expected-version', required=True)
-        worker.add_argument('--durable', required=True)
-        worker.add_argument('--scratch', required=True)
-        worker.add_argument('--receipt', required=True)
-        if name == 'produce':
-            worker.add_argument('--raw', required=True)
-            worker.add_argument('--data-dir', required=True)
-            worker.add_argument('--graph-metadata', required=True)
-        else:
-            worker.add_argument('--producer-receipt', required=True)
-            worker.add_argument('--output', required=True)
+        for flag in ('--expected-version', '--durable', '--scratch',
+                     '--receipt', *extra):
+            worker.add_argument(flag, required=True)
+        if name == 'consume':
             worker.add_argument('--skip-preflight', action='store_true')
     return parser.parse_args(argv)
 

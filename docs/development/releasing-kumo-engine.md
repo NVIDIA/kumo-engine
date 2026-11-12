@@ -126,27 +126,26 @@ platform's `release-version`.
      within that bound. The macOS wheel has no GPU smoke
      check. See the [test criteria](testing.md#finished-kumo-engine-wheel).
    - runs the fresh-process reload qualification on each supported desktop
-     configuration with Python 3.11–3.14. Linux x86-64 and WSL2 x86-64 run
-     on CPU and CUDA. Linux ARM64 runs on CPU. macOS 15 and 26 on Apple
-     Silicon run on CPU. The cases are the eight tasks of the GPU wheel
-     smoke (`wheel_gpu_smoke.py`) on its PR172 fixture data, so both checks
-     share one task definition. For each task, a producer process trains,
-     exports the model and the snapshot, and saves its predictions. The job
-     then deletes the producer scratch, caches, temp files, and source data.
-     A new consumer process loads only the exports and predicts without
-     training. Entities, anchor timestamps, classes or items, and forecast
-     steps must match the saved inputs exactly. Scores must match within the
-     absolute tolerance `0.0001` on CPU and MPS, and `0.005` on CUDA, the
-     GPU smoke's reload bound, because CUDA kernels are not bit-reproducible.
-     Labels or ranks may change only between tied scores. A CUDA or
-     MPS row passes only with training and prediction batches observed on
-     that device, and MPS link rows need Faiss Metal search. The job uploads
-     the wheel hash, model and snapshot file hashes, logs, and per-case
-     results. A report job lists every configuration and case. If a
-     configuration has no evidence, the report marks it UNVERIFIED and fails.
-     If an unrelated build target fails and skips this step, run
-     `kumo-engine-platform-smoke.yml` by hand with that build run's ID and
-     commit. See
+     configuration with Python 3.11–3.14. Linux x86-64 and WSL2 x86-64 run on
+     CPU and CUDA. Linux ARM64 runs on CPU. macOS 15 and 26 on Apple Silicon run
+     on CPU. The cases are the eight tasks of the GPU wheel smoke
+     (`wheel_gpu_smoke.py`) on its PR172 fixture data, so both checks share one
+     task definition. For each task, a producer process trains, exports the
+     model and the snapshot, and saves its predictions. The job then deletes the
+     producer scratch, caches, temp files, and source data. A new consumer
+     process loads only the exports and predicts without training. Entities,
+     anchor timestamps, classes or items, and forecast steps must match the
+     saved inputs exactly. Scores must match within the absolute tolerance
+     `0.0001` on CPU and MPS, and `0.005` on CUDA, the GPU smoke's reload bound,
+     because CUDA kernels are not bit-reproducible. Labels or ranks may change
+     only between tied scores. A CUDA or MPS row passes only with training and
+     prediction batches observed on that device, and MPS link rows need Faiss
+     Metal search. The job uploads the wheel hash, model and snapshot file
+     hashes, logs, and per-case results. A report job lists every configuration
+     and case. If a configuration has no evidence, the report marks it
+     UNVERIFIED and fails. If an unrelated build target fails and skips this
+     step, run `kumo-engine-platform-smoke.yml` by hand with that build run's ID
+     and commit. See
      [`desktop_reload_qualification.py`](../../packages/kumo-engine/test/desktop_reload_qualification.py).
    - needs evidence from Apple Silicon Macs for two rows: macOS 14 on CPU,
      on bare metal or in a macOS 14 VM, and macOS 15 on MPS on bare metal.

@@ -28,10 +28,6 @@ pytestmark = pytest.mark.skipif(sys.platform == 'win32',
 ENTITIES = [0, 2, 4]
 CLASSES = list(range(6))
 ANCHOR = '2024-04-22 00:00:00'
-PRODUCER = dict(entities=ENTITIES, classes=[], anchor=ANCHOR,
-                time_column='TIMESTAMP')
-
-
 LABELS = [f'c{i}' for i in range(6)]
 # Six class probabilities that sum to one, with gaps wider than any tamper.
 PROBABILITIES = [.4, .25, .15, .1, .06, .04]
@@ -40,8 +36,8 @@ PROBABILITIES = [.4, .25, .15, .1, .06, .04]
 def producer(case):
     classes = (CLASSES if case.endswith('link') else
                LABELS if case in ('multiclass', 'multilabel_ranking') else [])
-    anchor = None if case == 'static_link' else ANCHOR
-    return {**PRODUCER, 'classes': classes, 'anchor': anchor}
+    return dict(entities=ENTITIES, classes=classes, time_column='TIMESTAMP',
+                anchor=None if case == 'static_link' else ANCHOR)
 
 
 def frame(case, score=lambda entity, rank: 1.0 - rank / 10):
@@ -49,9 +45,8 @@ def frame(case, score=lambda entity, rank: 1.0 - rank / 10):
     anchor = {} if case == 'static_link' else dict(
         ANCHOR_TIMESTAMP=pd.Timestamp(ANCHOR))
     if case == 'regression':
-        return pd.DataFrame([
-            dict(ENTITY=e, TARGET_PRED=e / 10, **anchor) for e in ENTITIES
-        ])
+        return pd.DataFrame(
+            [dict(ENTITY=e, TARGET_PRED=e / 10, **anchor) for e in ENTITIES])
     if case == 'binary':
         return pd.DataFrame([
             dict(ENTITY=e, False_PROB=1 - p, True_PROB=p, TARGET_PRED=p > .5,
@@ -72,21 +67,14 @@ def frame(case, score=lambda entity, rank: 1.0 - rank / 10):
     ])
 
 
-FRAME_CASES = [
+@pytest.mark.parametrize('case', [
     'binary', 'multiclass', 'multilabel_ranking', 'regression', 'static_link',
     'temporal_link'
-]
-
-
-@pytest.mark.parametrize('case', FRAME_CASES)
-def test_identical_predictions_pass(case):
+])
+def test_identical_predictions_pass_and_every_tamper_fails(case):
     result = drq.compare_frames(case, frame(case), frame(case),
                                 producer=producer(case), atol=1e-4)
     assert result['max_abs_difference'] == 0 and result['decisions_equal']
-
-
-@pytest.mark.parametrize('case', FRAME_CASES)
-def test_every_tampered_prediction_fails(case):
     changes = drq.tampers(case, frame(case), 1e-4)
     expected = {
         'prediction_score_shift', 'prediction_entity_missing',
@@ -158,14 +146,12 @@ def test_worker_exit_code_and_timeout_are_reported(tmp_path):
 def test_worker_must_not_leave_descendants(tmp_path, monkeypatch):
     monkeypatch.setattr(drq, 'DESCENDANT_GRACE', 1.0)
     code = ('import subprocess, sys; subprocess.Popen([sys.executable, "-c",'
-            ' "import time; time.sleep(30)"])')
+            ' "import time; time.sleep({})"])')
     with pytest.raises(drq.QualificationError,
                        match=r'descendant processes running: \[.+\]'):
-        run(tmp_path, code)
+        run(tmp_path, code.format(30))
     # A helper that exits within the grace period is not a leak.
-    code = ('import subprocess, sys; subprocess.Popen([sys.executable, "-c",'
-            ' "import time; time.sleep(0.3)"])')
-    assert run(tmp_path, code)['exit_code'] == 0
+    assert run(tmp_path, code.format(0.3))['exit_code'] == 0
 
 
 def receipt(tmp_path, **changes):
@@ -192,21 +178,16 @@ def test_missing_skipped_or_failed_receipt_fails(tmp_path):
     assert drq.read_receipt(receipt(tmp_path), **kwargs)['status'] == 'PASS'
 
 
-@pytest.mark.parametrize('work', [
-    dict(optimizer_steps=1),
-    dict(other_optimizer_steps={'LBFGS': 1}),
+@pytest.mark.parametrize('device,work,match', [
+    ('cpu', dict(optimizer_steps=1), 'trained'),
+    ('cpu', dict(other_optimizer_steps={'LBFGS': 1}), 'trained'),
+    ('gpu', {}, 'ran on'),
+    ('mps', {}, 'ran on'),
 ])
-def test_consumer_training_fails(tmp_path, work):
-    body = json.loads(receipt(tmp_path).read_text())
-    body['work'].update(work)
-    with pytest.raises(drq.QualificationError, match='trained'):
-        drq.require_device_work(body, phase='consumer', device='cpu')
-
-
-@pytest.mark.parametrize('device', ['gpu', 'mps'])
-def test_cpu_fallback_does_not_pass_a_gpu_case(tmp_path, device):
+def test_consumer_must_not_train_or_fall_back(tmp_path, device, work, match):
     body = json.loads(receipt(tmp_path, device=device).read_text())
-    with pytest.raises(drq.QualificationError, match='ran on'):
+    body['work'].update(work)
+    with pytest.raises(drq.QualificationError, match=match):
         drq.require_device_work(body, phase='consumer', device=device)
 
 
@@ -214,19 +195,17 @@ def test_metal_case_requires_metal_search_and_apple_gpu(tmp_path):
     body = json.loads(
         receipt(tmp_path, device='mps', system='Darwin',
                 case='static_link').read_text())
+    kwargs = dict(phase='consumer', case='static_link', device='mps')
     body['work']['retrieval'] = {'predict': {'torch-bruteforce': 3}}
     with pytest.raises(drq.QualificationError, match='faiss-metal'):
-        drq.require_retrieval(body, phase='consumer', case='static_link',
-                              device='mps')
+        drq.require_retrieval(body, **kwargs)
     body['work']['retrieval'] = {'predict': {'faiss-metal': 3}}
     body['metal'] = dict(mps_available=True, faiss_metal=True, faiss_num_gpus=0,
                          mps_fallback='0')
     with pytest.raises(drq.QualificationError, match='Apple GPU'):
-        drq.require_retrieval(body, phase='consumer', case='static_link',
-                              device='mps')
+        drq.require_retrieval(body, **kwargs)
     body['metal'].update(faiss_num_gpus=1)
-    drq.require_retrieval(body, phase='consumer', case='static_link',
-                          device='mps')
+    drq.require_retrieval(body, **kwargs)
 
 
 def test_wheel_identity_is_parsed_from_the_file_name():
@@ -249,21 +228,16 @@ HOSTS = {
 }
 
 
-def host(name):
-    if name.startswith('macos-'):
-        return dict(system='Darwin', machine='arm64',
-                    os_release=name.split('-')[1] + '.1')
-    system, machine, release = HOSTS[name]
-    return dict(system=system, machine=machine, os_release=release)
-
-
 def write_summary(root, label, *, attempt=1, commit='abc', **changes):
     name, device, python = label.rsplit('-', 2)
+    system, machine, release = (('Darwin', 'arm64', name.split('-')[1] + '.1')
+                                if name.startswith('macos-') else HOSTS[name])
     body = dict(
-        **host(name),
-        label=label, commit=commit, attempt=attempt, device=device,
-        python_version=python.removeprefix('py') + '.0', atol=drq.REQUIRED_ATOL[device],
-        harness_sha256='h', tasks_sha256='t', fixture=dict(data_sha256='f'),
+        system=system, machine=machine, os_release=release, label=label,
+        commit=commit, attempt=attempt, device=device,
+        python_version=python.removeprefix('py') + '.0',
+        atol=drq.REQUIRED_ATOL[device], harness_sha256='h', tasks_sha256='t',
+        fixture=dict(data_sha256='f'),
         wheel=dict(installed_files_verified=10, version='1'), cases={
             case: dict(status='PASS', negative_checks=checks(case))
             for case in drq.CASES
@@ -285,8 +259,7 @@ def test_report_marks_missing_configurations_unverified(tmp_path):
     rows = {(r['label'], r['case']): r for r in report['rows']}
     assert report['status'] == 'OPEN'
     assert rows[(label, 'regression')]['status'] == 'PASS'
-    assert rows[('macos-15-mps-py3.12',
-                 'static_link')]['status'] == ('UNVERIFIED')
+    assert rows['macos-15-mps-py3.12', 'static_link']['status'] == 'UNVERIFIED'
     assert ('macos-14-mps-py3.12', 'static_link') not in rows
     assert len(rows) == len(drq.REQUIRED_TARGETS) * len(drq.PYTHONS) * len(
         drq.CASES)
@@ -298,8 +271,7 @@ def test_report_marks_missing_configurations_unverified(tmp_path):
 def test_report_uses_the_newest_attempt(tmp_path):
     label = 'linux-arm64-cpu-py3.12'
     write_summary(tmp_path, label, attempt=1,
-                  cases={case: dict(status='FAIL')
-                         for case in drq.CASES})
+                  cases=dict.fromkeys(drq.CASES, dict(status='FAIL')))
     write_summary(tmp_path, label, attempt=2)
     assert statuses(drq.build_report(tmp_path, commit='abc'), label) == {'PASS'}
 
@@ -309,15 +281,10 @@ def test_report_uses_the_newest_attempt(tmp_path):
     dict(device='gpu'),
     dict(python_version='3.13.1'),
     dict(wheel={}),
-    dict(cases={case: dict(status='PASS')
-                for case in drq.CASES}),
-    dict(
-        cases={
-            case:
-            dict(status='PASS',
-                 negative_checks=[dict(name='x', detected=False)])
-            for case in drq.CASES
-        }),
+    dict(cases=dict.fromkeys(drq.CASES, dict(status='PASS'))),
+    dict(cases=dict.fromkeys(
+        drq.CASES,
+        dict(status='PASS', negative_checks=[dict(name='x', detected=False)]))),
 ])
 def test_report_rejects_weakened_evidence(tmp_path, changes):
     label = 'linux-arm64-cpu-py3.12'
@@ -365,8 +332,7 @@ def test_durable_directory_must_hold_only_the_exports(tmp_path):
 
 
 def test_every_product_rejection_has_an_expected_error():
-    for name, pattern in drq.EXPECTED_ERRORS.items():
-        assert pattern and name
+    assert all(drq.EXPECTED_ERRORS) and all(drq.EXPECTED_ERRORS.values())
     assert re.search(
         drq.EXPECTED_ERRORS['unavailable_device_mps'],
         'MisconfigurationException: `MPSAccelerator` can not run on your '
@@ -417,6 +383,11 @@ def test_macos_14_row_needs_the_clear_mps_error(tmp_path):
     }
     write_summary(tmp_path, label, attempt=2, cases=cases)
     assert statuses(drq.build_report(tmp_path, commit='abc'), label) == {'PASS'}
+    assert re.search(
+        drq.EXPECTED_ERRORS['unavailable_device_mps_old_macos'],
+        "UnsupportedAcceleratorError: accelerator='mps' uses Apple MPS, which "
+        'requires macOS 15 or later, but this host runs macOS 14.7.1. Use '
+        "accelerator='cpu' on this host.")
 
 
 @pytest.mark.parametrize('system,release,mps,expected', [
@@ -438,14 +409,6 @@ def test_unavailable_device_follows_the_macos_floor(monkeypatch, system,
     assert drq.unavailable_device() == expected
 
 
-def test_old_macos_mps_error_names_the_floor():
-    assert re.search(
-        drq.EXPECTED_ERRORS['unavailable_device_mps_old_macos'],
-        "UnsupportedAcceleratorError: accelerator='mps' uses Apple MPS, which "
-        'requires macOS 15 or later, but this host runs macOS 14.7.1. Use '
-        "accelerator='cpu' on this host.")
-
-
 @pytest.mark.parametrize('change', [
     dict(harness_sha256='other'),
     dict(tasks_sha256='other'),
@@ -460,16 +423,10 @@ def test_report_rejects_mixed_harness_tasks_or_fixture(tmp_path, change):
 
 def test_report_requires_artifact_and_faiss_checks(tmp_path):
     label = 'linux-arm64-cpu-py3.12'
-    cases = {
-        case: dict(status='PASS', negative_checks=checks('regression'))
-        for case in drq.CASES
-    }
-    write_summary(tmp_path, label, cases=cases)
-    rows = {
-        r['case']: r
-        for r in drq.build_report(tmp_path, commit='abc')['rows']
-        if r['label'] == label
-    }
+    shift_only = dict(status='PASS', negative_checks=checks('regression'))
+    write_summary(tmp_path, label, cases=dict.fromkeys(drq.CASES, shift_only))
+    report = drq.build_report(tmp_path, commit='abc')
+    rows = {r['case']: r for r in report['rows'] if r['label'] == label}
     assert rows[drq.ARTIFACT_CASE]['status'] == 'FAIL'
     assert rows[drq.FAISS_CASE]['status'] == 'FAIL'
     assert rows['regression']['status'] == 'PASS'
@@ -492,8 +449,7 @@ def test_reordered_ranks_fail_outside_a_tie(case):
 ])
 def test_report_rejects_evidence_from_another_platform(tmp_path, label, change):
     write_summary(tmp_path, label, **change)
-    report = drq.build_report(tmp_path, commit='abc')
-    assert statuses(report, label) == {'FAIL'}
+    assert statuses(drq.build_report(tmp_path, commit='abc'), label) == {'FAIL'}
 
 
 def test_failed_wheel_check_fails_every_case(tmp_path):

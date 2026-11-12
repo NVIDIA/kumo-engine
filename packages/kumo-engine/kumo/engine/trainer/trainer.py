@@ -1083,10 +1083,9 @@ class Trainer:
         embedding_models: the word-embedding models for text columns, by
             name. Defaults to the installed ones (``kumo-engine[text]``).
         accelerator: Lightning device selection: ``auto`` (default), ``cpu``,
-            ``gpu``, or ``mps``. Applies to training and prediction. Apple
-            MPS requires macOS 15 or later. On an earlier macOS, ``mps`` and
-            ``gpu`` raise ``UnsupportedAcceleratorError`` and ``auto`` uses
-            the CPU.
+            ``gpu``, or ``mps``. Applies to training and prediction. Apple MPS
+            requires macOS 15 or later. On an earlier macOS, ``mps`` and ``gpu``
+            raise ``UnsupportedAcceleratorError`` and ``auto`` uses the CPU.
     """
     def __init__(
         self,

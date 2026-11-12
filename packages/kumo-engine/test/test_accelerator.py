@@ -6,6 +6,7 @@ import os
 
 import pandas as pd
 import pytest
+from kumo_core import accelerator as acc
 from kumoapi.model_plan import ModelPlan
 
 from kumo.engine import FileConnector, Graph, PredictiveQuery, Table, Trainer
@@ -19,19 +20,15 @@ def test_invalid_accelerator_fails_at_construction(accelerator):
 
 
 def macos(monkeypatch, release):
-    from kumo_core import accelerator
-
     # Patch only the host lookup; the rest of the process stays on Linux.
-    monkeypatch.setattr(accelerator, '_macos_release', lambda: release)
-    monkeypatch.setattr(accelerator, '_warned_auto_cpu', False)
+    monkeypatch.setattr(acc, '_macos_release', lambda: release)
+    monkeypatch.setattr(acc, '_warned_auto_cpu', False)
 
 
 @pytest.mark.parametrize('accelerator', ['mps', 'gpu'])
 def test_mps_before_macos_15_fails_at_construction(monkeypatch, accelerator):
-    from kumo_core.accelerator import UnsupportedAcceleratorError
-
     macos(monkeypatch, '14.7.1')
-    with pytest.raises(UnsupportedAcceleratorError,
+    with pytest.raises(acc.UnsupportedAcceleratorError,
                        match='requires macOS 15 or later'):
         Trainer(ModelPlan(), accelerator=accelerator)
 
@@ -53,14 +50,13 @@ def test_accelerator_defaults_to_auto_and_is_instance_local(monkeypatch):
     assert os.environ['KUMO_ACCELERATOR'] == 'mps'
 
 
-@pytest.mark.parametrize('num_workers,old_macos', [(1, False), (2, False),
-                                                   (1, True)])
+@pytest.mark.parametrize('num_workers,choice', [(1, 'cpu'), (2, 'cpu'),
+                                                (1, 'auto')])
 def test_cpu_fit_refit_reload_and_predict_override_environment(
-        tmp_path, monkeypatch, num_workers, old_macos):
+        tmp_path, monkeypatch, num_workers, choice):
     # On macOS 14, accelerator='auto' must train on the CPU even when a
     # device is visible, because MPS aborts the process there.
-    choice = 'auto' if old_macos else 'cpu'
-    if old_macos:
+    if choice == 'auto':
         macos(monkeypatch, '14.7.1')
     import torch
     from kumo_core.train.trainer import Trainer as CoreTrainer

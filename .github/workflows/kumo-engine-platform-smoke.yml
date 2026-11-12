@@ -130,19 +130,17 @@ jobs:
       fail-fast: false
       matrix:
         python: ['3.11', '3.12', '3.13', '3.14']
+        # In an expression, a key that a row omits is an empty string.
         target:
           - name: linux-x86_64
             runner: ubuntu-24.04
             artifact: x86_64
             device: cpu
             torch_backend: cpu
-            extra: ''
           - name: linux-x86_64
             runner: linux-amd64-gpu-rtxpro6000-latest-1
             artifact: x86_64
             device: gpu
-            torch_backend: ''
-            extra: ''
           - name: linux-arm64
             runner: ubuntu-24.04-arm
             artifact: aarch64
@@ -154,25 +152,18 @@ jobs:
             artifact: x86_64
             device: cpu
             torch_backend: cpu
-            extra: ''
           - name: windows-wsl
             runner: wsl-amd64-gpu-t4-latest-1
             artifact: x86_64
             device: gpu
-            torch_backend: ''
-            extra: ''
           - name: macos-15
             runner: macos-15
             artifact: arm64
             device: cpu
-            torch_backend: ''
-            extra: ''
           - name: macos-26
             runner: macos-26
             artifact: arm64
             device: cpu
-            torch_backend: ''
-            extra: ''
           # Hosted macOS VMs expose a paravirtual GPU without Metal 2.0, so
           # PyTorch reports no MPS. MPS (macos-15-mps) runs on a bare-metal
           # Apple Silicon Mac; see docs/development/releasing-kumo-engine.md.
@@ -275,11 +266,8 @@ jobs:
           fi
           uv venv --python "$RELOAD_PYTHON" --seed venv
           python="$stage/venv/bin/python"
-          args=()
-          if [ -n "$RELOAD_TORCH_BACKEND" ]; then
-            args+=(--torch-backend="$RELOAD_TORCH_BACKEND")
-          fi
-          uv pip install --python "$python" ${args[@]+"${args[@]}"} \
+          uv pip install --python "$python" \
+            ${RELOAD_TORCH_BACKEND:+--torch-backend="$RELOAD_TORCH_BACKEND"} \
             "${wheels[0]}${RELOAD_EXTRA}" pytest 2>&1 | tee results/install.log
           uv pip check --python "$python" 2>&1 | tee results/dependencies.log
           uv pip freeze --python "$python" > results/freeze.txt
@@ -288,22 +276,17 @@ jobs:
           if [ "$RELOAD_DEVICE" = gpu ]; then
             nvidia-smi 2>&1 | tee results/nvidia-smi.log
           fi
-          if [ "$RELOAD_DEVICE" = mps ]; then
-            system_profiler SPDisplaysDataType 2>&1 | tee results/gpu.log
-          fi
           (cd test && "$python" -m pytest -q -p no:cacheprovider \
             --confcutdir=. --noconftest test_desktop_reload_harness.py \
             --junitxml=../results/harness-junit.xml) 2>&1 \
             | tee results/harness-tests.log
           "$python" -I test/desktop_reload_qualification.py run \
-            --wheel "${wheels[0]}" --device "$RELOAD_DEVICE" \
+            --wheel "${wheels[0]}" --device "$RELOAD_DEVICE" --negative-checks \
             --data-dir "$RUNNER_TEMP/reload-inputs" \
             --graph-metadata "$RUNNER_TEMP/reload-inputs/graphs.json" \
-            --negative-checks --label "$RELOAD_LABEL" \
-            --commit "$CANDIDATE_SHA" --attempt "$GITHUB_RUN_ATTEMPT" \
-            --work-dir "$stage/work" \
-            --output-dir "$stage/results/cases" 2>&1 \
-            | tee results/reload.log
+            --label "$RELOAD_LABEL" --commit "$CANDIDATE_SHA" \
+            --attempt "$GITHUB_RUN_ATTEMPT" --work-dir "$stage/work" \
+            --output-dir "$stage/results/cases" 2>&1 | tee results/reload.log
 
       - name: Save reload qualification evidence
         if: always()
@@ -346,12 +329,10 @@ jobs:
           REPORT: ${{ runner.temp }}/reload-report
         run: |
           mkdir -p "$EVIDENCE"
-          set +e
+          status=0
           python3 -I packages/kumo-engine/test/desktop_reload_qualification.py \
             report --evidence-dir "$EVIDENCE" --output-dir "$REPORT" \
-            --commit "$CANDIDATE_SHA" --targets hosted
-          status=$?
-          set -e
+            --commit "$CANDIDATE_SHA" --targets hosted || status=$?
           cat "$REPORT/matrix.md" >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
 
