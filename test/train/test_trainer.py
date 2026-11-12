@@ -51,7 +51,13 @@ from kumo_core.train.trainer import (
 from kumo_core.training.config import FitMode, TrainerConfig
 from kumo_core.training.task_config import TaskConfig
 from kumo_core.types import TaskType
-from kumoapi.encoder import Datetime, Index, MultiCategorical, Numerical, NumericalList
+from kumoapi.encoder import (
+    Datetime,
+    Index,
+    MultiCategorical,
+    Numerical,
+    NumericalList,
+)
 from kumoapi.train import TrainingStage
 from kumoapi.typing import ColStatType, Stype
 from torch_geometric.sampler import NumNeighbors
