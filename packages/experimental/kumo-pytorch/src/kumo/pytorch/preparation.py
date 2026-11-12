@@ -32,7 +32,14 @@ from kumo.pytorch.anchors import (
     split_selection,
 )
 from kumo.pytorch.artifact import FitRecord, FittedState
-from kumo.pytorch.assembly import PreviewResult, _fingerprint, _InputState, fit_plan
+from kumo.pytorch.assembly import (
+    PreviewResult,
+    _chunks,
+    _fingerprint,
+    _InputState,
+    _Mapped,
+    fit_plan,
+)
 from kumo.pytorch.column_stats import (
     LATEST_ANCHOR,
     StatRequest,
@@ -258,7 +265,9 @@ class Plan:
             record: FitRecord | None = None
             if input_state is None or target_encoders is None:
                 chosen = self._fit_selection(selection, declares_splits)
-                fitting = task_anchors.fetch(chosen, range(task_anchors.count(chosen)))
+                fitting = _Mapped(
+                    partial(task_anchors.fetch, chosen), range(task_anchors.count(chosen))
+                )
                 record = {
                     "contract": self.contract.fingerprint,
                     "dataset": self._dataset_fingerprint,
@@ -320,7 +329,11 @@ class Plan:
         if not encoders or not fitting:
             return {}, {}
         latest = (
-            max(cutoff_to_epoch(request.as_of_time) for request in fitting)
+            max(
+                cutoff_to_epoch(request.as_of_time)
+                for chunk in _chunks(fitting)
+                for request in chunk
+            )
             if self.contract.requires_anchor_time
             else None
         )
