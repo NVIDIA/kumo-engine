@@ -25,7 +25,8 @@ REQUEST = {
     "dirs": ["at-cutoff", "every-row"],
     "columns": {
         "users": {"tier": "categorical", "age": "numerical", "raw": "categorical",
-                  "seen": "categorical", "born": "categorical", "price": "numerical"},
+                  "seen": "categorical", "born": "categorical", "price": "numerical",
+                  "big": "categorical"},
         "items": {"name": "categorical"},
     },
     "quantiles": {"users": {"age": QUANTILES}},
@@ -48,6 +49,7 @@ def data(tmp_path_factory) -> pathlib.Path:
         "seen": pa.array([(T0 + i % 13) * 10**6 for i in range(n)], pa.timestamp("us")),
         "born": pa.array([19_000 + i % 11 for i in range(n)], pa.date32()),
         "price": pa.array([decimal.Decimal(i % 1000) / 100 for i in range(n)], pa.decimal128(10, 2)),
+        "big": pa.array([(5, 2**63, 2**64 - 1)[i % 3] for i in range(n)], pa.uint64()),
     }), root / "users.parquet", row_group_size=300)
     pq.write_table(pa.table({
         "item_id": pa.array(range(500), pa.int64()),
@@ -67,7 +69,8 @@ def _ingest(data: pathlib.Path, out: pathlib.Path, col_stats=False, **options) -
         config_json=json.dumps({"dataset_name": "cutoffs", "timestamp_unit": "seconds", "tables": [
             table("users", "id", [("id", "int64"), ("signup", "timestamp"), ("tier", "string"),
                                   ("age", "int32"), ("raw", "bytes"), ("seen", "timestamp"),
-                                  ("born", "date"), ("price", "decimal128", {"precision": 10, "scale": 2})],
+                                  ("born", "date"), ("price", "decimal128", {"precision": 10, "scale": 2}),
+                                  ("big", "u_int64")],
                   "signup"),
             table("items", "item_id", [("item_id", "int64"), ("name", "string")]),
         ]}),
@@ -121,6 +124,8 @@ def test_recompute_from_the_index_matches_ingest(data, ingested, tmp_path):
     shutil.copytree(ingested, index, ignore=shutil.ignore_patterns("col_stats"))
     diskgraph.cutoff_col_stats(str(index), json.dumps(REQUEST), num_threads=4)
     assert _stats(str(index)) == _stats(ingested)
+    counts = _stats(ingested)["every-row"]["users"]["big"]["category_counts"]
+    assert {int(key) for key, _ in counts} == {5, -(2**63), -1}
 
 
 def test_rejects_unknown_columns_and_exclusive_options(data, ingested, tmp_path):

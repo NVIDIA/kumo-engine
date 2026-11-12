@@ -243,7 +243,7 @@ def test_a_cutoff_after_the_latest_anchor_warns(tmp_path, caplog):
 COLUMN_TYPES = {
     "flag": (api.DType("bool"), [True, False, True]),
     "n": (api.DType("int32"), [3, -1, 3]),
-    "u": (api.DType("uint64"), [2**63 - 1, 1, 2**63 - 1]),
+    "u": (api.DType("uint64"), [2**64 - 1, 1, 2**64 - 1]),
     "f": (api.DType("float32"), [0.5, -0.0, 0.5]),
     "s": (api.DType("string"), ["a", "", "a"]),
     "b": (api.DType("bytes"), [b"\x00", b"\xff", b"\x00"]),

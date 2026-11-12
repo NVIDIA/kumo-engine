@@ -8,11 +8,15 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, ensure, Result};
 use arrow::compute::filter_record_batch;
-use arrow_array::{ArrayRef, TimestampSecondArray};
+use arrow_array::cast::AsArray;
+use arrow_array::types::UInt64Type;
+use arrow_array::{ArrayRef, Int64Array, TimestampSecondArray};
 use diskgraph_index::graph::GraphIndexReader;
 use diskgraph_ingest::column_scan::{at_cutoff, create_times, decode_chunk, node_chunks};
 use diskgraph_ingest::cutoff_col_stats::CutoffColStatsRequest;
-use diskgraph_ingest::graph_config::{read_persisted_config, SemanticType};
+use diskgraph_ingest::graph_config::{
+    read_persisted_config, ColumnSpec, IngestedType, SemanticType,
+};
 use diskgraph_ingest::index_metadata::INDEX_METADATA_FILENAME;
 use pyo3::prelude::*;
 use rayon::prelude::*;
@@ -68,14 +72,23 @@ fn from_index(index_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
                     let rows = filter_record_batch(&batch, &keep)?;
                     for (position, &col_idx) in requested.iter().enumerate() {
                         let column = &table.columns[col_idx];
-                        drive_from_arrow_column(
-                            col_idx,
-                            rows.column(position),
-                            column,
-                            stats,
-                            None,
-                            clock,
-                        )?;
+                        let (values, column) = match column.ingested_dtype {
+                            // Ingest observes a u64's bits as an i64.
+                            IngestedType::UInt64 => (
+                                Arc::new(Int64Array::from_iter(
+                                    rows.column(position)
+                                        .as_primitive::<UInt64Type>()
+                                        .iter()
+                                        .map(|value| value.map(|value| value as i64)),
+                                )) as ArrayRef,
+                                ColumnSpec {
+                                    ingested_dtype: IngestedType::Int64,
+                                    ..column.clone()
+                                },
+                            ),
+                            _ => (rows.column(position).clone(), column.clone()),
+                        };
+                        drive_from_arrow_column(col_idx, &values, &column, stats, None, clock)?;
                     }
                 }
                 Ok(sinks)
