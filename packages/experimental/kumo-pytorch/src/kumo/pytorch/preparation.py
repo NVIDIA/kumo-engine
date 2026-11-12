@@ -18,7 +18,6 @@ import logging
 import time
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import replace
-from functools import partial
 from typing import Any, overload
 
 from kumo.pytorch.anchors import (
@@ -46,7 +45,7 @@ from kumo.pytorch.contract.batch.encodings import Buckets, Text
 from kumo.pytorch.contract.sample import SampleRequest
 from kumo.pytorch.data.records import cutoff_to_epoch
 from kumo.pytorch.dataset import Dataset, TableSource
-from kumo.pytorch.encoding import FittedEncoder, train_text
+from kumo.pytorch.encoding import FittedEncoder
 from kumo.pytorch.engine import AnchorTask, Engine, SampleSource
 from kumo.pytorch.spec import (
     DataLoaderSpec,
@@ -339,9 +338,7 @@ class Plan:
         pinned, dirs = {}, list(stats.dirs) if stats else []
         for identity, encoder in encoders.items():
             if isinstance(encoder.config, Text):
-                tokenizer, directory = column_text(
-                    encoder, cutoff, partial(train_text, encoder.config)
-                )
+                tokenizer, directory = column_text(encoder, cutoff)
                 pinned[identity] = FittedEncoder(
                     identity=identity,
                     config=encoder.config,

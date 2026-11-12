@@ -9,10 +9,10 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
-import os
+import tempfile
 import time
 from collections import defaultdict
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import Any, Literal
@@ -69,7 +69,7 @@ from kumo.pytorch.data.records import (
     timestamp_to_epoch,
 )
 from kumo.pytorch.dataset import Dataset, Parquet, TableSource
-from kumo.pytorch.encoding import TRAIN_BATCH
+from kumo.pytorch.encoding import TEXT_SPECIAL_TOKENS, TEXT_UNKNOWN
 from kumo.pytorch.engine import AnchorTask, GraphRoot, SampleSource, register_engine
 from kumo.pytorch.engines.parquet_anchors import ParquetAnchors, check_parquet_anchors
 from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED, Unsupported
@@ -865,12 +865,7 @@ class DiskGraphSource:
             dirs.extend(request["dirs"])
         return ColumnStats(columns, {"value": ticks, "unit": self._clock}, tuple(dirs))
 
-    def column_text(
-        self,
-        encoder: TableColumnEncoder,
-        cutoff: int | None,
-        train: Callable[[Iterator[Sequence[str]]], str],
-    ) -> tuple[str, str]:
+    def column_text(self, encoder: TableColumnEncoder, cutoff: int | None) -> tuple[str, str]:
         ticks = None if cutoff is None else self._diskgraph.cutoff_ticks(cutoff, self._clock)
         directory = encoder.tokenizer_dir(ticks, self._clock)
         path = Path(self._index, "col_stats", directory, "tokenizer.json")
@@ -884,17 +879,15 @@ class DiskGraphSource:
             if not intact:
                 raise ValueError(f"{path} is not a valid tokenizer file; delete it to retrain")
             return tokenizer, directory
-        tokenizer = train(
-            chunk.to_pylist()
-            for table, column in encoder.columns
-            for chunk in self._diskgraph.scan_column(
-                self._index,
-                table,
-                column,
-                ticks,
-                chunk_rows=TRAIN_BATCH,
-                num_threads=self._num_threads,
-            )
+        tokenizer = self._diskgraph.train_tokenizer(
+            self._index,
+            encoder.columns,
+            ticks,
+            vocab_size=encoder.config.vocabulary_size,
+            min_frequency=encoder.config.min_frequency,
+            special_tokens=TEXT_SPECIAL_TOKENS,
+            unk_token=TEXT_UNKNOWN,
+            num_threads=self._num_threads,
         )
         document = {
             "columns": [list(item) for item in encoder.columns],
@@ -903,9 +896,11 @@ class DiskGraphSource:
             "sha256": hashlib.sha256(tokenizer.encode()).hexdigest(),
         }
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".tokenizer.{os.getpid()}.json")
-        temporary.write_text(json.dumps(document) + "\n")
-        temporary.replace(path)
+        with tempfile.NamedTemporaryFile(
+            "w", dir=path.parent, prefix=".tokenizer.", delete=False
+        ) as temporary:
+            temporary.write(json.dumps(document) + "\n")
+        Path(temporary.name).replace(path)
         return tokenizer, directory
 
     def fit_graph_fields(

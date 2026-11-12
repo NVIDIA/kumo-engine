@@ -96,15 +96,12 @@ class TableColumnEncoder:
         return tuple((table, column, stype) for table, column in self.columns)
 
     def tokenizer_dir(self, cutoff: int | None, unit: str) -> str:
-        import tokenizers
-
         settings = [
             cutoff,
             unit,
             self.config.vocabulary_size,
             self.config.min_frequency,
             self.columns,
-            tokenizers.__version__,
             TEXT_RECIPE,
         ]
         return "text-" + hashlib.sha256(json.dumps(settings).encode()).hexdigest()[:16]

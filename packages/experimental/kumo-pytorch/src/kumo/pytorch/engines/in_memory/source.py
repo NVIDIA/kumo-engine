@@ -15,7 +15,7 @@ comparison is a matter of swapping one object.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +30,7 @@ from kumo.pytorch.column_stats import (
 from kumo.pytorch.contract.sample import BuiltSample, SampleRequest, SampleSpec
 from kumo.pytorch.contract.schema import DataSchema, table_clock
 from kumo.pytorch.data.records import timestamp_to_epoch
-from kumo.pytorch.encoding import TRAIN_BATCH
+from kumo.pytorch.encoding import TRAIN_BATCH, train_text
 from kumo.pytorch.engines.in_memory.graph import InMemoryGraphSampler
 from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
 
@@ -115,12 +115,7 @@ class InMemorySource:
                 columns.update({item: found[item[0]][item[1]] for item in group})
         return ColumnStats(columns, {"value": cutoff, "unit": "seconds"})
 
-    def column_text(
-        self,
-        encoder: TableColumnEncoder,
-        cutoff: int | None,
-        train: Callable[[Iterator[Sequence[str]]], str],
-    ) -> tuple[str, None]:
+    def column_text(self, encoder: TableColumnEncoder, cutoff: int | None) -> tuple[str, None]:
         tables = {table.name: table for table in self.schema.tables}
 
         def batches() -> Iterator[list[str]]:
@@ -140,7 +135,7 @@ class InMemorySource:
             if batch:
                 yield batch
 
-        return train(batches()), None
+        return train_text(encoder.config, batches()), None
 
     def sample_graph(
         self,
