@@ -812,11 +812,15 @@ def _allocate_spaces(
         members[space_name][encoder.identity] = (encoder.local_ids, encoder.roles)
     spaces = {}
     for name, definition in spec.id_spaces.items():
-        role_names = [role for role in ROLE_ORDER if role in definition.specials] + sorted(
-            set(definition.specials) - set(ROLE_ORDER)
-        )
-        roles = {role: index for index, role in enumerate(role_names)}
-        cursor = len(roles)
+        if definition.special_ids:
+            roles = dict(definition.special_ids)
+            cursor = max(roles.values()) + 1
+        else:
+            role_names = [role for role in ROLE_ORDER if role in definition.specials] + sorted(
+                set(definition.specials) - set(ROLE_ORDER)
+            )
+            roles = {role: index for index, role in enumerate(role_names)}
+            cursor = len(roles)
         mappings = {}
         for identity, (ids, local_roles) in sorted(members[name].items()):
             inverse_roles = {value: role for role, value in local_roles.items()}
@@ -1199,6 +1203,8 @@ def _token_output(
     )
     space = state.spaces.get(space_name)
     pad = space.roles.get("pad", 0) if space is not None else 0
+    field_space = state.spaces.get(group.field_space)
+    field_pad = field_space.roles.get("pad", 0) if field_space is not None else 0
     targets = {}
     masked_targets = [
         (target_name, target)
@@ -1257,20 +1263,28 @@ def _token_output(
             targets[target_name] = answers
             tokens = tokens.select(indices, new_bounds)
         return tokens.output(
-            prepared.spec.layout, pad=pad, field_ids=group.field_names is not None
+            prepared.spec.layout,
+            pad=pad,
+            field_ids=group.field_names is not None,
+            field_pad=field_pad,
         ), targets
     if isinstance(prepared.spec.source, EntitySource):
         tokens = tokens.select(np.arange(len(tokens.values)), tokens.boundaries[rows.boundaries])
         _masked_layout(targets, tokens.boundaries, prepared.spec.layout)
         return tokens.output(
-            prepared.spec.layout, pad=pad, field_ids=group.field_names is not None
+            prepared.spec.layout,
+            pad=pad,
+            field_ids=group.field_names is not None,
+            field_pad=field_pad,
         ), targets
     if isinstance(group.row, Composite):
         return tokens.select(np.arange(len(tokens.values)), rows.boundaries).output(
             prepared.spec.layout, pad=pad, field_ids=False
         ), targets
     layout = prepared.spec.layout
-    result = tokens.output(layout.fields, pad=pad, field_ids=group.field_names is not None)
+    result = tokens.output(
+        layout.fields, pad=pad, field_ids=group.field_names is not None, field_pad=field_pad
+    )
     if "offsets" in result:
         result["field_offsets"] = result.pop("offsets")
     lengths = np.diff(rows.boundaries)

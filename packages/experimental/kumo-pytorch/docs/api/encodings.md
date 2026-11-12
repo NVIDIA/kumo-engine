@@ -165,7 +165,7 @@ object, are never shared.
 *class* · `kumo.pytorch.api.IdSpace`
 
 ```python
-class IdSpace(specials: Mapping[str, str] = {})
+class IdSpace(specials: Mapping[str, str] = {}, special_ids: Mapping[str, int] = {})
 ```
 
 Final numbering shared by explicitly participating encoder uses.
@@ -174,13 +174,14 @@ Different encoders get separate allocations even when their local IDs or
 values are equal; uses of one shared encoder get one. Declared roles have
 stable IDs, allocated in `pad`, `unknown`, `missing`, `mask`,
 `entity`, `event`, `separator`, `bos`, `eos` order, then custom
-names lexically. Members' local missing and unknown IDs map to the matching
-final roles; ordinary entries never collide with roles. Only discrete
-encoders can join.
+names lexically, unless `special_ids` chooses them. Members' local
+missing and unknown IDs map to the matching final roles; ordinary entries
+never collide with roles. Only discrete encoders can join.
 
 **Parameters**
 
 - `specials`: role name to its display label.
+- `special_ids`: role name to its final ID, for every declared role or none. IDs are distinct integers from 0 to 65,535. Gaps between them stay reserved; ordinary entries start after the largest.
 
 ### `FieldNames`
 

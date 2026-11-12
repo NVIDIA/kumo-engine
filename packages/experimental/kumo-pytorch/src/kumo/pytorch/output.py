@@ -106,7 +106,9 @@ class TokenRows:
             source_indices=None if self.source_indices is None else self.source_indices[indices],
         )
 
-    def output(self, layout: Any, *, pad: int, field_ids: bool) -> dict[str, Any]:
+    def output(
+        self, layout: Any, *, pad: int, field_ids: bool, field_pad: int = 0
+    ) -> dict[str, Any]:
         result = sequence_layout(
             self.boundaries,
             layout,
@@ -123,6 +125,8 @@ class TokenRows:
             result["field_valid"] = layout_array(
                 torch.from_numpy(self.field_valid.copy()), self.boundaries, layout, fill=False
             )
+            if field_pad:
+                result["field_ids"][~result["field_valid"]] = field_pad
         return result
 
 

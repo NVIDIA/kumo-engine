@@ -188,6 +188,25 @@ Here's what the numbers show:
   field keeps its field ID across inputs that use the same dictionary, even
   when its value encoders differ.
 
+## Choosing special IDs
+
+By default a space numbers its special roles for you, starting at 0, and
+ordinary entries follow. If your model expects particular numbers, such as
+`pad` at 0 and `mask` at 1, declare every role's final ID with `special_ids`:
+
+```python
+chosen = api.IdSpace(
+    specials={"pad": "[PAD]", "mask": "[MASK]", "unknown": "[UNK]", "missing": "[MISSING]"},
+    special_ids={"pad": 0, "mask": 1, "unknown": 2, "missing": 5},
+)
+```
+
+Give an ID to every declared role or to none. IDs are distinct integers from 0
+to 65,535. Ordinary entries start after the largest one, and the numbers in
+between (3 and 4 here) stay reserved, so the space's size counts them. Because
+`special_ids` is part of the contract, changing it changes the contract's
+fingerprint.
+
 ## Reusing fitted state
 
 Everything a task fitted is in `task.fitted_state`. Passing it to another
