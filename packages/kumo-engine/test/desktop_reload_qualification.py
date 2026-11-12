@@ -20,19 +20,24 @@ The harness supports POSIX hosts only: Linux, WSL2 and macOS.
 """
 
 import argparse
+import base64
+import csv
 import hashlib
 import importlib.metadata
 import json
 import math
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import time
 import traceback
+import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -60,6 +65,7 @@ QUERIES = {
     f'RANK TOP {TOP_K} FOR EACH users.USER_ID',
 }
 RECEIPT_SCHEMA = 1
+REQUIRED_ATOL = 1e-4
 PYTHONS = ('3.11', '3.12', '3.13', '3.14')
 # Supported desktop configurations. Keep in sync with the `reload` job in
 # .github/workflows/kumo-engine-platform-smoke.yml.
@@ -138,6 +144,39 @@ def wheel_version(wheel):
     if len(parts) < 5 or parts[0] != 'kumo_engine' or not name.endswith('.whl'):
         raise QualificationError(f'Not a kumo-engine wheel: {name}')
     return parts[1]
+
+
+def verify_installed_wheel(wheel):
+    """Require every packaged file to be installed with the wheel's hash."""
+    roots = {Path(sysconfig.get_paths()[key]) for key in ('purelib', 'platlib')}
+    with zipfile.ZipFile(wheel) as archive:
+        [record] = [
+            name for name in archive.namelist()
+            if name.endswith('.dist-info/RECORD') and name.count('/') == 1
+        ]
+        rows = list(csv.reader(archive.read(record).decode().splitlines()))
+    checked = 0
+    for row in rows:
+        if len(row) < 2 or not row[1] or '.dist-info/' in row[0] or ('.data/'
+                                                                     in row[0]):
+            continue
+        algorithm, expected = row[1].split('=', 1)
+        if algorithm != 'sha256':
+            raise QualificationError(f'Unexpected RECORD hash: {row[1]}')
+        installed = [
+            root / row[0] for root in roots if (root / row[0]).is_file()
+        ]
+        if not installed:
+            raise QualificationError(f'Wheel file is not installed: {row[0]}')
+        digest = base64.urlsafe_b64encode(
+            bytes.fromhex(sha256_file(installed[0]))).rstrip(b'=').decode()
+        if digest != expected:
+            raise QualificationError(
+                f'Installed file differs from the candidate wheel: {row[0]}')
+        checked += 1
+    if not checked:
+        raise QualificationError('The candidate wheel lists no files')
+    return checked
 
 
 def run_worker(command, *, cwd, env, timeout, log_path):
@@ -855,8 +894,13 @@ def worker_main(args):
 
 def worker_env(device, roots):
     env = dict(os.environ)
-    for name in ('PYTHONPATH', 'PYTHONHOME', 'DRQ_BLOCK_IMPORTS'):
+    for name in ('PYTHONPATH', 'PYTHONHOME', 'DRQ_BLOCK_IMPORTS',
+                 'DISKGRAPH_DATA_ROOT', 'DISKGRAPH_INGEST_BIN',
+                 'KUMO_BP_OUTPUT_SPOOL_ROOT', 'KUMO_REQUIRE_GPU'):
         env.pop(name, None)
+    # A task-owned HOME keeps ~/.cache/kumo-engine and other home caches
+    # out of both workers, so nothing survives cleanup through them.
+    env.update(HOME=str(roots['home']), USERPROFILE=str(roots['home']))
     env.update(TMPDIR=str(roots['tmp']), TEMP=str(roots['tmp']),
                TMP=str(roots['tmp']), XDG_CACHE_HOME=str(roots['cache']),
                PYTHONUNBUFFERED='1', PYTHONDONTWRITEBYTECODE='1',
@@ -869,7 +913,7 @@ def worker_env(device, roots):
 
 
 def make_roots(base):
-    roots = {name: base / name for name in ('scratch', 'cache', 'cwd')}
+    roots = {name: base / name for name in ('scratch', 'cache', 'cwd', 'home')}
     for path in roots.values():
         path.mkdir(parents=True)
     # AF_UNIX socket paths are limited to about 104 bytes, and Torch data
@@ -924,11 +968,24 @@ def run_consumer(ctx, durable, label, *, device=None, env_extra=None,
                              producer_receipt=ctx['producer_receipt'],
                              receipt=receipt, output=output,
                              skip_preflight=skip_preflight or None)
-    process = run_worker(command, cwd=roots['cwd'], env=env,
-                         timeout=ctx['timeout'],
-                         log_path=output / 'consumer.log')
-    remove_roots(base, roots)
+    try:
+        process = run_worker(command, cwd=roots['cwd'], env=env,
+                             timeout=ctx['timeout'],
+                             log_path=output / 'consumer.log')
+    finally:
+        remove_roots(base, roots)
     return process, receipt, output
+
+
+DURABLE_FILES = ('entities.parquet', 'baseline.parquet')
+
+
+def require_durable_layout(durable):
+    found = sorted(path.name for path in Path(durable).iterdir())
+    expected = sorted([*DURABLE_FILES, 'model', 'snapshot'])
+    if found != expected:
+        raise QualificationError(
+            f'Durable directory holds {found}, expected {expected}')
 
 
 def run_case(ctx):
@@ -946,12 +1003,16 @@ def run_case(ctx):
                              device, ctx['version'], durable=durable,
                              scratch=roots['scratch'], raw=raw,
                              receipt=receipt_path)
-    process = run_worker(command, cwd=roots['cwd'],
-                         env=worker_env(device, roots), timeout=ctx['timeout'],
-                         log_path=evidence / 'producer.log')
-    row = dict(producer_process=process)
+    try:
+        process = run_worker(command, cwd=roots['cwd'],
+                             env=worker_env(device,
+                                            roots), timeout=ctx['timeout'],
+                             log_path=evidence / 'producer.log')
+    finally:
+        # Delete everything the producer owned except the durable exports.
+        deleted = remove_roots(producer_base, roots)
+    row = dict(producer_process=process, deleted_after_producer=deleted)
     if process['exit_code'] != 0:
-        remove_roots(producer_base, roots)
         raise QualificationError(
             f'Producer exited with {process["exit_code"]}; see producer.log')
     producer = read_receipt(receipt_path, phase='producer', case=case,
@@ -962,12 +1023,8 @@ def run_case(ctx):
         'model': tree_hashes(durable / 'model'),
         'snapshot': tree_hashes(durable / 'snapshot'),
     }
-    inputs = {
-        name: sha256_file(durable / name)
-        for name in ('entities.parquet', 'baseline.parquet')
-    }
-    # Delete everything the producer owned except the durable exports.
-    row['deleted_after_producer'] = remove_roots(producer_base, roots)
+    inputs = {name: sha256_file(durable / name) for name in DURABLE_FILES}
+    require_durable_layout(durable)
     shutil.copy2(durable / 'baseline.parquet', evidence / 'baseline.parquet')
     ctx['producer_receipt'] = receipt_path
     process, consumer_path, _ = run_consumer(ctx, durable, 'consumer')
@@ -985,9 +1042,13 @@ def run_case(ctx):
     require_retrieval(consumer, phase='consumer', case=case, device=device)
     for name, hashes in exports.items():
         require_same_tree(hashes, durable / name, name)
+    require_durable_layout(durable)
+    for name, digest in inputs.items():
+        if sha256_file(durable / name) != digest:
+            raise QualificationError(f'{name} changed during the consumer run')
     import pandas as pd
 
-    baseline = pd.read_parquet(durable / 'baseline.parquet')
+    baseline = pd.read_parquet(evidence / 'baseline.parquet')
     reloaded = pd.read_parquet(evidence / 'consumer' / 'reloaded.parquet')
     for frame in (baseline, reloaded):
         validate_frame(case, frame, entities=producer['entities'],
@@ -1040,20 +1101,43 @@ def _remove_tree(root):
 
 
 def unavailable_device():
-    """Pick a device this host cannot use, for the wrong-device check."""
-    if platform.system() != 'Darwin':
+    """Pick a device this host cannot use, or None if every one is usable.
+
+    Lightning maps 'gpu' to MPS on Apple Silicon, so a Mac with MPS has no
+    device that Kumo must reject.
+    """
+    import torch
+
+    if platform.system() != 'Darwin' or not torch.backends.mps.is_available():
         return 'mps'
-    return 'gpu'
+    return None
+
+
+# Each product rejection must name its cause in the consumer error.
+EXPECTED_ERRORS = {
+    'model_file_corrupt': r'model bundle .* does not match its digest',
+    'model_file_missing': r'model bundle .* is missing',
+    'snapshot_file_corrupt': r'snapshot export .* is corrupt',
+    'snapshot_missing': r'No snapshot export at',
+    'unavailable_device_mps': r'MPSAccelerator`? can not run on your system',
+    'faiss_missing': r'FaissUnavailableError: FAISS is required',
+}
 
 
 def negative_checks(ctx, durable, baseline):
-    """Each check passes only when the harness or the product rejects it."""
+    """Prove that each failure is caught.
+
+    Artifact, device and dependency checks pass only when the product fails
+    with an error that names the cause. Prediction tampering checks pass
+    only when the harness comparison rejects the changed output.
+    """
     import numpy as np
     import pandas as pd
 
     case = ctx['case']
     producer = ctx['producer']
     checks = []
+    not_applicable = ctx.setdefault('not_applicable', [])
 
     def expect_rejected(name, action):
         try:
@@ -1068,50 +1152,59 @@ def negative_checks(ctx, durable, baseline):
             return
         checks.append(dict(name=name, detected=False, detail=detail))
 
-    def consumer_must_fail(label, mutate=None, **kwargs):
+    def consumer_must_fail(name, mutate=None, **kwargs):
+        """Detected only if the product fails with an error naming the cause.
+
+        A zero exit, a timeout, a signal, a leftover process or an unrelated
+        error means the product did not reject the input clearly.
+        """
+        label = 'neg-' + name.replace('_', '-')
         copy = ctx['work'] / f'{label}-durable'
         shutil.copytree(durable, copy)
-        target = mutate(copy) if mutate else None
-        process, receipt_path, output = run_consumer(ctx, copy, label, **kwargs)
-        shutil.rmtree(copy)
+        try:
+            target = mutate(copy) if mutate else None
+            try:
+                process, receipt_path, _ = run_consumer(ctx, copy, label,
+                                                        **kwargs)
+            except QualificationError as error:
+                return f'Consumer did not exit cleanly: {error}'
+        finally:
+            shutil.rmtree(copy, ignore_errors=True)
         receipt = json.loads(
             receipt_path.read_text()) if (receipt_path.is_file()) else {}
         detail = dict(exit_code=process['exit_code'],
                       error=receipt.get('error'),
                       mutated=str(target) if target else None)
-        if process['exit_code'] == 0:
-            # A zero exit is accepted only if the receipt checks reject it.
-            consumer = read_receipt(
-                receipt_path, phase='consumer', case=case,
-                device=kwargs.get('device') or ctx['device'])
-            require_device_work(consumer, phase='consumer',
-                                device=kwargs.get('device') or ctx['device'])
-            return f'Consumer accepted it: {detail}'
+        if process['exit_code'] != 1 or receipt.get('status') != 'FAIL':
+            return f'Consumer did not reject it: {detail}'
+        if not re.search(EXPECTED_ERRORS[name], receipt.get('error') or ''):
+            return f'Consumer error does not name the cause: {detail}'
         raise QualificationError(json.dumps(detail, default=str))
 
     if case == 'numerical':
-        expect_rejected(
-            'model_file_corrupt', lambda: consumer_must_fail(
-                'neg-model-corrupt', lambda d: _corrupt_largest(d / 'model')))
-        expect_rejected(
-            'model_file_missing', lambda: consumer_must_fail(
-                'neg-model-missing', lambda d: _remove_largest(d / 'model')))
-        expect_rejected(
-            'snapshot_file_corrupt', lambda: consumer_must_fail(
-                'neg-snapshot-corrupt', lambda d: _corrupt_largest(d /
-                                                                   'snapshot')))
-        expect_rejected(
-            'snapshot_missing', lambda: consumer_must_fail(
-                'neg-snapshot-missing', lambda d: _remove_tree(d / 'snapshot')))
+        mutations = {
+            'model_file_corrupt': lambda d: _corrupt_largest(d / 'model'),
+            'model_file_missing': lambda d: _remove_largest(d / 'model'),
+            'snapshot_file_corrupt': lambda d: _corrupt_largest(d / 'snapshot'),
+            'snapshot_missing': lambda d: _remove_tree(d / 'snapshot'),
+        }
+        for name, mutate in mutations.items():
+            expect_rejected(name,
+                            lambda n=name, m=mutate: consumer_must_fail(n, m))
         wrong = unavailable_device()
-        expect_rejected(
-            f'unavailable_device_{wrong}', lambda: consumer_must_fail(
-                f'neg-device-{wrong}', device=wrong, skip_preflight=True,
-                env_extra={'PYTORCH_ENABLE_MPS_FALLBACK': '0'}))
+        if wrong is None:
+            not_applicable.append(
+                dict(name='unavailable_device',
+                     reason='Every Kumo accelerator is usable on this host.'))
+        else:
+            name = f'unavailable_device_{wrong}'
+            options = dict(device=wrong, skip_preflight=True,
+                           env_extra={'PYTORCH_ENABLE_MPS_FALLBACK': '0'})
+            expect_rejected(name, lambda: consumer_must_fail(name, **options))
     if case == 'static_link':
         expect_rejected(
             'faiss_missing', lambda: consumer_must_fail(
-                'neg-faiss-missing', env_extra={'DRQ_BLOCK_IMPORTS': 'faiss'}))
+                'faiss_missing', env_extra={'DRQ_BLOCK_IMPORTS': 'faiss'}))
 
     entities = producer['entities']
 
@@ -1163,7 +1256,8 @@ def negative_checks(ctx, durable, baseline):
 
 def run_controller(args):
     script = Path(__file__).resolve()
-    python = Path(args.python or sys.executable)
+    # Workers use this interpreter, whose environment holds the candidate.
+    python = Path(sys.executable)
     wheel = Path(args.wheel).resolve()
     version = wheel_version(wheel)
     output = Path(args.output_dir).resolve()
@@ -1172,10 +1266,22 @@ def run_controller(args):
     require_disjoint(output, [work_root])
     summary = dict(
         status='RUNNING', label=args.label, device=args.device,
-        wheel=dict(name=wheel.name, sha256=sha256_file(wheel),
-                   version=version), harness_sha256=sha256_file(script),
-        python=str(python), atol=args.atol, timeout=args.timeout,
+        attempt=args.attempt, wheel=dict(name=wheel.name,
+                                         sha256=sha256_file(wheel),
+                                         version=version),
+        harness_sha256=sha256_file(script), python=str(python),
+        python_version=platform.python_version(), system=platform.system(),
+        machine=platform.machine(), atol=args.atol, timeout=args.timeout,
         commit=args.commit, required_cases=list(args.case), cases={})
+    try:
+        summary['wheel']['installed_files_verified'] = verify_installed_wheel(
+            wheel)
+    except QualificationError as error:
+        summary.update(status='FAIL', error=str(error))
+        (output / 'summary.json'
+         ).write_text(json.dumps(summary, indent=2, default=str) + '\n')
+        print(f'Candidate wheel check failed: {error}', file=sys.stderr)
+        return 1
     for case in args.case:
         evidence = output / case
         if evidence.exists():
@@ -1195,6 +1301,8 @@ def run_controller(args):
             row.update(details)
             if args.negative_checks:
                 row['negative_checks'] = negative_checks(ctx, durable, baseline)
+                row['negative_checks_not_applicable'] = ctx.get(
+                    'not_applicable', [])
                 missed = [
                     c['name'] for c in row['negative_checks']
                     if not c['detected']
@@ -1231,15 +1339,33 @@ def required_labels():
     ]
 
 
+def summary_mismatch(label, summary):
+    """Explain why a summary cannot stand for its label, else None."""
+    name, device, python = label.rsplit('-', 2)
+    if summary.get('device') != device:
+        return f'Evidence ran device {summary.get("device")}, not {device}.'
+    if not str(summary.get('python_version',
+                           '')).startswith(python.removeprefix('py') + '.'):
+        return f'Evidence ran Python {summary.get("python_version")}.'
+    if summary.get('atol') != REQUIRED_ATOL:
+        return f'Evidence used atol={summary.get("atol")}, not {REQUIRED_ATOL}.'
+    if not (summary.get('wheel') or {}).get('installed_files_verified'):
+        return 'The installed files were not checked against the wheel.'
+    return None
+
+
 def build_report(evidence_dir, *, commit=None):
     """Merge job summaries; a configuration without evidence is UNVERIFIED."""
     found = {}
     for path in sorted(Path(evidence_dir).rglob('summary.json')):
         summary = json.loads(path.read_text())
         label = summary.get('label')
-        if label in found:
-            raise QualificationError(f'Two summaries for {label}')
-        found[label] = (path, summary)
+        attempt = summary.get('attempt') or 0
+        if label in found and found[label][1].get('attempt', 0) == attempt:
+            raise QualificationError(f'Two summaries for {label} #{attempt}')
+        # A re-run of failed jobs keeps the newest result per configuration.
+        if label not in found or found[label][1].get('attempt', 0) < attempt:
+            found[label] = (path, summary)
     rows = []
     for label in required_labels():
         path, summary = found.get(label, (None, None))
@@ -1255,6 +1381,9 @@ def build_report(evidence_dir, *, commit=None):
                 elif commit and summary.get('commit') != commit:
                     row.update(status='FAIL',
                                reason='Evidence names another commit.')
+                elif summary_mismatch(label, summary):
+                    row.update(status='FAIL',
+                               reason=summary_mismatch(label, summary))
                 else:
                     row.update(status=result.get('status', 'FAIL'),
                                reason=result.get('error'),
@@ -1265,6 +1394,11 @@ def build_report(evidence_dir, *, commit=None):
                             c['name']: c['detected']
                             for c in checks
                         }
+                    if row['status'] == 'PASS' and (not checks or
+                                                    not all(c['detected']
+                                                            for c in checks)):
+                        row.update(status='FAIL',
+                                   reason='Negative checks are missing.')
             rows.append(row)
     unexpected = sorted(set(found) - set(required_labels()))
     status = 'PASS' if all(r['status'] == 'PASS' for r in rows) else 'OPEN'
@@ -1299,10 +1433,11 @@ def parse_args(argv=None):
     run.add_argument('--case', choices=CASES, action='append', required=True)
     run.add_argument('--work-dir', required=True)
     run.add_argument('--output-dir', required=True)
-    run.add_argument('--python')
+    run.add_argument('--attempt', type=int,
+                     default=int(os.environ.get('GITHUB_RUN_ATTEMPT', '1')))
     run.add_argument('--label')
     run.add_argument('--commit')
-    run.add_argument('--atol', type=float, default=1e-4)
+    run.add_argument('--atol', type=float, default=REQUIRED_ATOL)
     run.add_argument('--timeout', type=float, default=1800)
     run.add_argument('--negative-checks', action='store_true')
     run.add_argument('--keep-work', action='store_true')

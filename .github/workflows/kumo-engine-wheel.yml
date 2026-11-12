@@ -270,6 +270,9 @@ jobs:
 
   platform-qualification:
     needs: [build]
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/kumo-engine-platform-smoke.yml
 
   attach-to-release:

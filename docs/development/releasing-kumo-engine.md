@@ -138,7 +138,11 @@ platform's `release-version`.
      MPS row passes only with training and prediction batches observed on
      that device, and MPS link rows need Faiss Metal search. The job uploads
      the wheel hash, model and snapshot file hashes, logs, and per-case
-     results. See
+     results. A report job lists every configuration and case. If a
+     configuration has no evidence, the report marks it UNVERIFIED and fails.
+     If an unrelated build target fails and skips this step, run
+     `kumo-engine-platform-smoke.yml` by hand with that build run's ID and
+     commit. See
      [`desktop_reload_qualification.py`](../../packages/kumo-engine/test/desktop_reload_qualification.py).
    - attaches the Linux x86_64/ARM64 and macOS ARM64 wheels to the GitHub
      release; the Linux x86_64 wheel also serves WSL2. Native Windows upload

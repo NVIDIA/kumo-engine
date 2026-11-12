@@ -8,6 +8,7 @@ These tests need no training. The harness itself runs against a wheel.
 
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -241,16 +242,29 @@ def test_wheel_identity_is_parsed_from_the_file_name():
         drq.wheel_version('other-1.0-py3-none-any.whl')
 
 
+def write_summary(root, label, *, attempt=1, commit='abc', **changes):
+    name, device, python = label.rsplit('-', 2)
+    body = dict(
+        label=label, commit=commit, attempt=attempt, device=device,
+        python_version=python.removeprefix('py') + '.0', atol=drq.REQUIRED_ATOL,
+        wheel=dict(installed_files_verified=10), cases={
+            case:
+            dict(status='PASS', negative_checks=[dict(name='x', detected=True)])
+            for case in drq.CASES
+        })
+    body.update(changes)
+    folder = root / f'{label}-{attempt}'
+    folder.mkdir()
+    (folder / 'summary.json').write_text(json.dumps(body))
+
+
+def statuses(report, label):
+    return {r['status'] for r in report['rows'] if r['label'] == label}
+
+
 def test_report_marks_missing_configurations_unverified(tmp_path):
     label = 'linux-arm64-cpu-py3.12'
-    (tmp_path / label).mkdir()
-    (tmp_path / label / 'summary.json').write_text(
-        json.dumps(
-            dict(
-                label=label, commit='abc', cases={
-                    case: dict(status='PASS', negative_checks=[])
-                    for case in drq.CASES
-                })))
+    write_summary(tmp_path, label)
     report = drq.build_report(tmp_path, commit='abc')
     rows = {(r['label'], r['case']): r for r in report['rows']}
     assert report['status'] == 'OPEN'
@@ -259,11 +273,89 @@ def test_report_marks_missing_configurations_unverified(tmp_path):
                  'static_link')]['status'] == ('UNVERIFIED')
     assert len(rows) == len(drq.REQUIRED_TARGETS) * len(drq.PYTHONS) * len(
         drq.CASES)
-    other = drq.build_report(tmp_path, commit='def')
-    assert {r['status']
-            for r in other['rows'] if r['label'] == label} == {'FAIL'}
+    assert statuses(drq.build_report(tmp_path, commit='def'), label) == {'FAIL'}
     drq.write_report(report, tmp_path / 'out')
     assert 'UNVERIFIED' in (tmp_path / 'out' / 'matrix.md').read_text()
+
+
+def test_report_uses_the_newest_attempt(tmp_path):
+    label = 'linux-arm64-cpu-py3.12'
+    write_summary(tmp_path, label, attempt=1,
+                  cases={case: dict(status='FAIL')
+                         for case in drq.CASES})
+    write_summary(tmp_path, label, attempt=2)
+    assert statuses(drq.build_report(tmp_path, commit='abc'), label) == {'PASS'}
+
+
+@pytest.mark.parametrize('changes', [
+    dict(atol=1.0),
+    dict(device='gpu'),
+    dict(python_version='3.13.1'),
+    dict(wheel={}),
+    dict(cases={case: dict(status='PASS')
+                for case in drq.CASES}),
+    dict(
+        cases={
+            case:
+            dict(status='PASS',
+                 negative_checks=[dict(name='x', detected=False)])
+            for case in drq.CASES
+        }),
+])
+def test_report_rejects_weakened_evidence(tmp_path, changes):
+    label = 'linux-arm64-cpu-py3.12'
+    write_summary(tmp_path, label, **changes)
+    assert statuses(drq.build_report(tmp_path, commit='abc'), label) == {'FAIL'}
+
+
+def test_installed_files_must_match_the_wheel(tmp_path, monkeypatch):
+    import base64
+    import hashlib
+    import zipfile
+
+    site = tmp_path / 'site'
+    (site / 'pkg').mkdir(parents=True)
+    (site / 'pkg' / 'mod.py').write_bytes(b'x = 1\n')
+    digest = base64.urlsafe_b64encode(
+        hashlib.sha256(b'x = 1\n').digest()).rstrip(b'=').decode()
+    wheel = tmp_path / 'kumo_engine-1.0-cp311-abi3-linux_aarch64.whl'
+    with zipfile.ZipFile(wheel, 'w') as archive:
+        archive.writestr('pkg/mod.py', 'x = 1\n')
+        archive.writestr(
+            'kumo_engine-1.0.dist-info/RECORD',
+            f'pkg/mod.py,sha256={digest},6\n'
+            'kumo_engine-1.0.dist-info/RECORD,,\n')
+    monkeypatch.setattr(drq.sysconfig, 'get_paths',
+                        lambda: dict(purelib=str(site), platlib=str(site)))
+    assert drq.verify_installed_wheel(wheel) == 1
+    (site / 'pkg' / 'mod.py').write_bytes(b'x = 2\n')
+    with pytest.raises(drq.QualificationError, match='differs'):
+        drq.verify_installed_wheel(wheel)
+    (site / 'pkg' / 'mod.py').unlink()
+    with pytest.raises(drq.QualificationError, match='not installed'):
+        drq.verify_installed_wheel(wheel)
+
+
+def test_durable_directory_must_hold_only_the_exports(tmp_path):
+    for name in drq.DURABLE_FILES:
+        (tmp_path / name).write_bytes(b'')
+    for name in ('model', 'snapshot'):
+        (tmp_path / name).mkdir()
+    drq.require_durable_layout(tmp_path)
+    (tmp_path / 'extra.parquet').write_bytes(b'')
+    with pytest.raises(drq.QualificationError, match='holds'):
+        drq.require_durable_layout(tmp_path)
+
+
+def test_every_product_rejection_has_an_expected_error():
+    for name, pattern in drq.EXPECTED_ERRORS.items():
+        assert pattern and name
+    assert re.search(
+        drq.EXPECTED_ERRORS['unavailable_device_mps'],
+        'MisconfigurationException: `MPSAccelerator` can not run on your '
+        'system since the accelerator is not available.')
+    assert not re.search(drq.EXPECTED_ERRORS['faiss_missing'],
+                         'ImportError: No module named torch')
 
 
 def test_required_matrix_matches_the_workflow():
