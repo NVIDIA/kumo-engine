@@ -158,6 +158,9 @@ def _predict_with_stubbed_scorer(bundle: Path, root: Path,
                 return_value=root,
             ))
         stack.enter_context(
+            patch('kumo.engine.trainer.trainer.bundle_task_options',
+                  return_value={'lag_timesteps': 0}))
+        stack.enter_context(
             patch.object(
                 DiskgraphTaskManifest,
                 'load',

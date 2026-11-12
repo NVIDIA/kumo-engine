@@ -12,8 +12,10 @@ A Databricks notebook in the user's workspace, attached to a **classic GPU clust
 Catalog through the confirmed SQL warehouse; it does not use Spark. Genie Code's own serverless
 execution has neither a GPU nor Kumo: it serves intake, never the notebook.
 
-Create **one new notebook**, named after the task (`kumo_churn_30d`), next to the notebook the user
-is in, else in their home folder. Never overwrite or append to an existing notebook. Each step is
+Only after the user has confirmed the Node 1d restatement (`adapter.md` §0), create **one new
+notebook**, named after the task (`kumo_churn_30d`), next to the notebook the user is in, else in
+their home folder. Never overwrite or append to an existing notebook, apart from the one edit
+`job.md` §7 allows: the job notebook this skill generated, after the user's yes to a named fix. Each step is
 its own code cell. Show the user where the notebook is. Creating it is not running it: Step 3
 still waits for an explicit request.
 
@@ -129,9 +131,10 @@ An APPEND run writes the run's columns, and an existing destination must already
 `kumoai-reference/references/outputs.md` *Write predictions* has the rule and the gate question.
 
 The connector stages the rows through the volume `<OUTPUT_CATALOG>.<OUTPUT_SCHEMA>._kumo_staging`
-and creates it on first use (`adapter.md` §4 has the grants). When it does not exist yet, the
-Node 1d output line says so — `Output: <catalog.schema.table>; creates the staging volume
-<catalog.schema>._kumo_staging` — so the user confirms that write too.
+and creates it on first use (`adapter.md` §4 has the grants). The Node 1d `Output:` line names
+the destination verbatim and nothing else. When the volume does not exist yet, a separate line
+says so — `Staging volume: creates <catalog.schema>._kumo_staging` — so the user confirms that
+write too. An existing volume needs no line.
 
 `PredictionArtifactType`, `WriteMode` and `MetadataField` come from `kumoapi.jobs`. Then read the destination back
 and compare its row count to `prediction_result.num_rows` — the only proof the write worked. An
@@ -217,7 +220,8 @@ assigned by Unity Catalog [default]` — rather than asking for a version.
 location = kumo.ModelRegistryLocation(model_name=MODEL_NAME)      # no version= here
 training_result = trainer.fit(
     training_table, snapshot=snapshot,
-    export_config=kumo.ModelOutputConfig(connector=registry_connector, location=location))
+    export_config=kumo.ModelOutputConfig(connector=registry_connector, location=location),
+    scoring_defaults=kumo.ScoringDefaults(binary_classification_threshold=THRESHOLD))  # only if confirmed
 published = training_result.published_model
 if published is None:
     raise RuntimeError('Fit returned no publication record')
@@ -225,6 +229,17 @@ print(published.name, published.version, published.uri)   # the version Unity Ca
 ```
 
 Report the assigned version; it is the one every later load names.
+
+Pass `scoring_defaults` only when the user confirmed a threshold for a binary or multilabel
+classification in this request; omit it otherwise. It writes `scoring-defaults.json` into the
+bundle, and a later `predict` that names no threshold falls back to it. It is the only place a
+confirmed threshold survives the fit.
+
+**Nothing else is written.** The published bundle carries what scoring needs later: its
+`training-spec.json` holds the predictive query and the graph, and `scoring-defaults.json` the
+confirmed threshold when there is one (`adapter.md` §6.1). The training
+notebook adds no record file, no staging volume and no version comment of its own. A comment the
+user asked for goes in `ModelRegistryLocation(comment=...)`.
 
 ### 5.2 Pick the version and load it
 

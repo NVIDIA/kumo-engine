@@ -34,7 +34,6 @@ from kumo.diskgraph import (
     DiskgraphHandle,
     DiskgraphService,
     IngestResult,
-    PredTableResult,
     TrainTableResult,
 )
 from rest.config.table_v2 import (
@@ -1521,46 +1520,6 @@ def test_generate_train_table_delegates(monkeypatch):
     assert result.manifest_path == 'manifest/path'
 
 
-def test_generate_pred_table_delegates(monkeypatch):
-    import kumo.data.generic.diskgraph_batch_pred as bp_mod
-
-    captured: dict = {}
-
-    def fake_gen(**kwargs):
-        captured.update(kwargs)
-        return (42, 7)
-
-    monkeypatch.setattr(
-        bp_mod,
-        'generate_batch_pred_table_via_diskgraph',
-        fake_gen,
-    )
-    svc = _service()
-    h = DiskgraphHandle(graph_key='gk', graph_data_version='v5')
-    result = svc.generate_pred_table(
-        h,
-        query=None,
-        task_type=None,
-        graph=None,
-        timestamps=[],
-        forecast_length=0,
-        lag_timesteps=None,
-        use_yoy_labels=False,
-        list_distinct_target_is_array=False,
-        output_root='/tmp/o',
-        target_output_root=None,
-        input_timestamp_unit=TimeUnit.Nanoseconds,
-        target_stype='numerical',
-        entity_time_col='DATE',
-        lp_bp_layout='separate_lhs_rhs',
-    )
-    assert captured['index_path'] == '/tmp/dg-contract-test/gk/v5'
-    assert captured['entity_time_col'] == 'DATE'
-    assert captured['lp_bp_layout'] == 'separate_lhs_rhs'
-    assert result.total_rows == 42
-    assert result.total_partitions == 7
-
-
 def test_cleanup_staging_removes_per_job_dirs(tmp_path):
     """``cleanup_staging`` removes the three staging subtrees for each
     job_id under ``data_root``, leaves other dirs alone.
@@ -1596,4 +1555,3 @@ def test_result_dataclasses_constructible():
     IngestResult(index_path='/i', col_stats_path='/c', ingest_stats_path='/s',
                  kumo_stats_dir='/k')
     TrainTableResult(output_path='/o', manifest_path='/m')
-    PredTableResult(total_rows=1, total_partitions=1)

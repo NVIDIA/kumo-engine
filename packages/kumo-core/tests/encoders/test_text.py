@@ -6,19 +6,23 @@ from collections.abc import Iterator
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pytest
 import torch
-from kumoapi.encoder import TextEmbedding
-from kumoapi.typing import Stype
-from torch_geometric.testing import onlyCUDA
-
+from kumo_core import embedding_models
+from kumo_core.embedding_models import (
+    EmbeddingModelStore,
+    GloVeVectors,
+    resolve_encoder,
+)
 from kumo_core.encoders.fused.text import FusedTextEncoder
 from kumo_core.encoders.tensor_mapper import TextTensorMapper
 from kumo_core.encoders.text import normalize_text
 from kumo_core.features.stats import get_stats
-from kumo_core import embedding_models
-from kumo_core.embedding_models import EmbeddingModelStore, GloVeVectors, resolve_encoder
 from kumo_core.glove import TokenEmbeddingTable
+from kumoapi.encoder import TextEmbedding
+from kumoapi.typing import Stype
+from torch_geometric.testing import onlyCUDA
 
 
 @pytest.fixture
@@ -77,7 +81,7 @@ def test_glove_text_encoding_with_null_words(glove_with_null_words) -> None:
     ser = pd.Series(["the of", "null", "to a to"])
 
     mapper = TextTensorMapper()
-    feat = mapper(ser)
+    feat = mapper(pa.array(ser, from_pandas=True))
     assert mapper.backward(feat).tolist() == ["the of", None, "to a to"]
 
     encoder = FusedTextEncoder(
@@ -148,12 +152,12 @@ class _NumpyModel:
 
 
 def test_custom_models_are_checked_where_they_are_used() -> None:
-    feat = TextTensorMapper(_NumpyModel())(pd.Series(["red shoe", "sock"]))
+    feat = TextTensorMapper(_NumpyModel())(pa.array(["red shoe", "sock"]))
     assert feat.offset.tolist() == [0, 2, 2]
     assert feat.values.dtype == torch.long
     assert TokenEmbeddingTable(_NumpyModel()).initialize().emb.dtype == torch.float32
 
     with pytest.raises(ValueError, match=r"returned 4 row pointers for 2 texts"):
-        TextTensorMapper(_NumpyModel(extra_pointer=True))(pd.Series(["a", "b"]))
+        TextTensorMapper(_NumpyModel(extra_pointer=True))(pa.array(["a", "b"]))
     with pytest.raises(ValueError, match=r"has shape \(3, 2\), but it must be \(2, 2\)"):
         TokenEmbeddingTable(_NumpyModel(rows=3)).initialize()

@@ -30,12 +30,13 @@ Exact forecast prediction still needs enabled lag and year-over-year sequences.
 
 A prediction population must not contain numbered target columns (`TARGET1`, `TARGET2`, etc.).
 Keep evaluation labels separately rather than leaking them into the scoring population.
-If the supplied table carries a target column, keep the entity column, the `TIMESTAMP` where the
+If the supplied table carries a target column, say that the scoring population must not carry it
+and that evaluation labels stay separate, joined to the scores afterwards. Never pass the table as
+is. Propose, for the user's approval, a read-only `connector.sql(...)` source (Snowflake,
+Databricks and BigQuery only) that keeps only the entity column, the `TIMESTAMP` where the
 task needs one (a temporal task, or a static task, node or link, on an entity table with a time
 column), and any sequence columns the task requires
-(`autoregression_labels`, `year_over_year_labels`). Drop the numbered target columns
-(`TARGET1`, ...) in a read-only `connector.sql(...)` source (Snowflake, Databricks and BigQuery
-only), and say you left the target out. A temporal prediction population with no
+(`autoregression_labels`, `year_over_year_labels`), or ask for a table without the target. A temporal prediction population with no
 `TIMESTAMP` per row cannot be built from the table as it stands: ask for the anchors, and do not
 substitute a generated population with one `prediction_time`.
 No public column-renaming map exists on these constructors. Fields need their contract names.
@@ -74,9 +75,10 @@ holding labels such as `'train'` / `'val'` / `'test'` is accepted as a string co
 as is, but no row matches a split. Ingestion skips every row it cannot read, so the build then
 fails with `custom-TT source kept no rows`. When only some labels are unreadable, those rows are
 skipped: the build succeeds on fewer rows and logs a warning with the skipped count per reason
-(also recorded in `row_failures`). Map the labels the user gave you, without inventing a
-mapping, in a read-only query; the result is a source table, so nothing is written. Look at the
-labels first, with the host's SQL tool, and map only after every value is accounted for:
+(also recorded in `row_failures`). So report the split column as the offending field, with its
+labels and counts (from the host's SQL tool), and ask: a prepared table holding 0/1/2, or the
+user's explicit approval of a mapping you show. Only after that approval, map in a read-only
+query; the result is a source table, so nothing is written:
 
 ```sql
 SELECT SPLIT_LABEL, COUNT(*) AS N FROM CURATED_LABELS GROUP BY SPLIT_LABEL;
@@ -95,8 +97,21 @@ training_table = kumo.TrainingTable.from_source_table(
 
 Any value in that result that matches no branch (including NULL) becomes a NULL `SPLIT` and the
 row is skipped: ask the user how to map it before building the training table, and never leave it
-out unreported. List the labels you mapped with their counts. Create a mapped copy of the table only
-when the user approves writing one.
+out unreported. List the labels you mapped with their counts. The mapping stays in the read-only
+`connector.sql(...)` source: write nothing back, and create no mapped copy or derived table.
+
+## Derived or normalized weights
+
+Weights follow the same rule as splits. Asked to derive, scale or normalize weights (for example
+positives x10, or `WEIGHT / mean(WEIGHT)`), report the request, then show the exact formula, the
+columns it reads and the resulting weight distribution (min, mean, max, and counts per distinct
+weight or per label) from a read-only query, and stop for the user's explicit approval. An
+approval given before the formula and distribution were shown is not approval. Unapproved, report
+and ask; do not transform. Only after approval, apply it in a read-only `connector.sql(...)`
+source, as for approved split mappings above; keep the table's `SPLIT` (or the generated
+training table's, if exported), and write nothing back: no UPDATE, no CREATE TABLE AS, no
+derived table. The result must still be finite and nonnegative, except the signed weights
+temporal link prediction permits above, with at least one positive weight.
 
 ## Export a generated training table
 

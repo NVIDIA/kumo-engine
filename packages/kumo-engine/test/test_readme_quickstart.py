@@ -9,17 +9,22 @@ from pathlib import Path
 from kumo.engine import datasets
 
 README = Path(__file__).parents[1] / 'README.md'
+REPOSITORY_README = Path(__file__).parents[3] / 'README.md'
 
 
-def _quickstart_code() -> str:
-    text = README.read_text(encoding='utf-8')
+def _quickstart_code(readme: Path = README) -> str:
+    text = readme.read_text(encoding='utf-8')
     section = re.search(r'^## Quickstart\n(.*?)(?=^## |\Z)', text,
                         re.MULTILINE | re.DOTALL)
-    assert section, f'{README} has no "## Quickstart" section'
+    assert section, f'{readme} has no "## Quickstart" section'
     blocks = re.findall(r'^```python\n(.*?)^```$', section.group(1),
                         re.MULTILINE | re.DOTALL)
-    assert blocks, f'the quickstart in {README} has no python code block'
+    assert blocks, f'the quickstart in {readme} has no python code block'
     return '\n'.join(blocks)
+
+
+def test_repository_readme_repeats_quickstart():
+    assert _quickstart_code(REPOSITORY_README) == _quickstart_code()
 
 
 def test_readme_quickstart(tmp_path, monkeypatch):

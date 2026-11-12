@@ -10,7 +10,11 @@ from typing import Any, Mapping
 import pandas as pd
 from kumo_core.encoder_selection import select_target_encoder
 from kumo_core.encoders.config import EncodersConfig
-from kumo_core.resolved_task import ResolvedNumericalTask, ResolvedTaskSampling
+from kumo_core.resolved_task import (
+    ResolvedNumericalTask,
+    ResolvedTaskSampling,
+    fitted_task_options,
+)
 from kumo_core.task_dataset import DiskgraphTaskManifest
 from kumo_core.train.autoregression import (
     AUTOREGRESSION_COL,
@@ -1241,11 +1245,7 @@ class Task(ConfigMixin, _HasData):
             column_stats=column_stats,
             name=self.name,
             metrics=list(self.metrics),
-            forecast_length=self.forecast_length,
-            lag_timesteps=self.lag_timesteps,
-            unix_start_offset=self.unix_start_offset,
-            unix_end_offset=self.unix_end_offset,
-            unix_step_size=self.unix_step_size,
+            **fitted_task_options(vars(self)),
             sampling=sampling,
         )
         resolved.target_to_entity_paths = [[
