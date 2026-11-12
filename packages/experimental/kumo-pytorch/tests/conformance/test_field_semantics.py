@@ -10,6 +10,8 @@ import warnings
 from dataclasses import replace
 from unittest.mock import patch
 
+import pytest
+
 from conformance.assertions import (
     assert_answer,
     assert_execution_error,
@@ -138,8 +140,8 @@ def test_a_stored_column_fits_on_its_table_rows_not_the_fitting_anchors(engine_n
     ):
         binding = task.output("entity").field(name="amount")
         amounts = [row["amount"] for row in tables["users"] if row["amount"] is not None]
-        assert binding.encoder.mean == statistics.fmean(amounts)
-        assert binding.encoder.scale == statistics.pstdev(amounts)
+        assert binding.encoder.mean == pytest.approx(statistics.fmean(amounts), rel=1e-12)
+        assert binding.encoder.scale == pytest.approx(statistics.pstdev(amounts), rel=1e-12)
 
 
 def test_exposure_warning_names_overlap_and_masks_only_named_input(engine_name):

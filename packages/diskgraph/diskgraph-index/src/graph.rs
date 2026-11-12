@@ -746,9 +746,8 @@ fn commit_shard_output(
         edges_len,
         build_stats_len,
     };
-    write_durable(
+    write_durable_commit(
         commit_path,
-        &commit_path.with_extension("json.tmp"),
         &serde_json::to_vec(&commit)?,
         commit_sync_root,
     )?;
@@ -858,23 +857,18 @@ fn sync_directory_chain(start: &Path, stop: &Path) -> Result<()> {
     ))
 }
 
-/// Writes `payload` through `tmp_path` to `path`, syncing directories up to `durable_root`.
-pub fn write_durable(
-    path: &Path,
-    tmp_path: &Path,
-    payload: &[u8],
-    durable_root: &Path,
-) -> Result<()> {
+fn write_durable_commit(path: &Path, payload: &[u8], durable_root: &Path) -> Result<()> {
     let parent = path
         .parent()
-        .ok_or_else(|| anyhow!("durable write has no parent: {}", path.display()))?;
+        .ok_or_else(|| anyhow!("index shard commit has no parent: {}", path.display()))?;
     fs::create_dir_all(parent)?;
-    let _ = fs::remove_file(tmp_path);
-    let mut file = fs::File::create(tmp_path)?;
+    let tmp_path = path.with_extension("json.tmp");
+    let _ = fs::remove_file(&tmp_path);
+    let mut file = fs::File::create(&tmp_path)?;
     file.write_all(payload)?;
     file.sync_all()?;
     drop(file);
-    fs::rename(tmp_path, path)?;
+    fs::rename(&tmp_path, path)?;
     sync_directory_chain(parent, durable_root)
 }
 
@@ -1908,10 +1902,7 @@ impl TableReader {
 }
 
 /// Convert a rowpack `ValueRef` representing a temporal column to the index clock.
-pub fn temporal_value_in_clock(
-    val: &diskgraph_rowpack::ValueRef<'_>,
-    clock: TimeUnit,
-) -> Option<i64> {
+fn temporal_value_in_clock(val: &diskgraph_rowpack::ValueRef<'_>, clock: TimeUnit) -> Option<i64> {
     match val {
         diskgraph_rowpack::ValueRef::Timestamp(ticks) => Some(*ticks),
         diskgraph_rowpack::ValueRef::Int64(ns) => {

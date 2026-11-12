@@ -325,31 +325,19 @@ class Plan:
                 _iso(latest),
             )
         started = time.perf_counter()
-        stats = column_stats(
-            sorted({item for e in encoders.values() for item in e.requests}), cutoff
-        )
-        fitted = {
-            identity: fit_from_stats(identity, encoder, stats.files)
+        stats = column_stats([item for e in encoders.values() for item in e.requests], cutoff)
+        pinned = {
+            identity: fit_from_stats(identity, encoder, stats)
             for identity, encoder in encoders.items()
         }
-        pinned = {identity: encoder for identity, encoder in fitted.items() if encoder is not None}
-        for identity in sorted(fitted.keys() - pinned.keys()):
-            logger.warning(
-                "encoder %s has more categories than column statistics count; it fits on "
-                "the training examples",
-                identity,
-            )
         logger.info(
-            "pinned %d encoders from %d column statistics (cutoff %s %s) in %.2fs",
+            "pinned %d encoders from DiskGraph column statistics (cutoff %s %s) in %.2fs",
             len(pinned),
-            len(stats.files),
             stats.cutoff["value"],
             stats.cutoff["unit"],
             time.perf_counter() - started,
         )
-        return pinned, {
-            identity: stats.provenance(encoders[identity].requests) for identity in pinned
-        }
+        return pinned, {"cutoff": dict(stats.cutoff), "col_stats": list(stats.dirs)}
 
     @staticmethod
     def _fit_selection(selection: SplitSelection | None, declares_splits: bool) -> SplitSelection:
@@ -443,8 +431,8 @@ def prepare(
     if issues:
         raise ValidationError(issues)
     if getattr(engine, "encoder_cutoffs", ()) and not inference:
-        requests = {item for e in table_column_encoders(contract).values() for item in e.requests}
-        source = engine.open(dataset, contract.schema, column_stats=sorted(requests))
+        requests = [item for e in table_column_encoders(contract).values() for item in e.requests]
+        source = engine.open(dataset, contract.schema, column_stats=requests)
     else:
         source = engine.open(dataset, contract.schema)
     return Plan(contract, dataset, engine, source, inference=inference)

@@ -19,7 +19,13 @@ import numpy as np
 import torch
 
 from kumo.pytorch.anchors import AnchorTable
-from kumo.pytorch.column_stats import ColumnStats, StatRequest, cutoff_seconds
+from kumo.pytorch.column_stats import (
+    ColumnStats,
+    StatRequest,
+    cutoff_seconds,
+    stats_request,
+    stype_groups,
+)
 from kumo.pytorch.contract.batch import EntitySource, EventSource, Input
 from kumo.pytorch.contract.dtypes import DType, arrow_float64
 from kumo.pytorch.contract.sample import (
@@ -221,6 +227,8 @@ class DiskGraphEngine:
     ):
         if ingest not in {"if_missing", "never"}:
             raise ValueError("ingest must be 'if_missing' or 'never'")
+        if isinstance(encoder_cutoffs, str):
+            raise TypeError("encoder_cutoffs is a list of cutoffs; wrap a single one in a list")
         self.index = Path(index)
         self.num_threads = num_threads
         self.num_shards = num_shards
@@ -389,12 +397,7 @@ class DiskGraphEngine:
             num_shards=self.num_shards,
             num_threads=self.num_threads,
             if_missing=self.ingest == "if_missing",
-            col_stats_requests={
-                "cutoffs": list(self.encoder_cutoffs),
-                "requests": list(column_stats),
-            }
-            if ingests
-            else None,
+            column_stats=(stype_groups(column_stats)[0], self.encoder_cutoffs) if ingests else None,
         )
         return DiskGraphSource(
             artifact,
@@ -836,21 +839,18 @@ class DiskGraphSource:
 
     def column_stats(self, requests: Sequence[StatRequest], cutoff: int | None) -> ColumnStats:
         ticks = None if cutoff is None else self._diskgraph.cutoff_ticks(cutoff, self._clock)
-        result = self._diskgraph.ensure_col_stats(
-            self._index, ticks, list(requests), num_threads=self._num_threads
-        )
-        files = {
-            request: json.loads(
-                Path(result["files"]["{}/{}.{}".format(*request)]["path"]).read_text()
-            )
-            for request in requests
-        }
-        return ColumnStats(
-            files,
-            {"value": ticks, "unit": result["unit"], "inclusive": True},
-            cutoff_id=result["cutoff_id"],
-            index_id=result["index_id"],
-        )
+        columns, dirs = {}, []
+        for group in stype_groups(requests):
+            request = stats_request(group, [ticks], self._clock)
+            path = Path(self._index, "col_stats", request["dirs"][0], "col_stats.json")
+            if not path.is_file():
+                self._diskgraph.cutoff_col_stats(
+                    self._index, json.dumps(request), num_threads=self._num_threads
+                )
+            tables = json.loads(path.read_text())
+            columns.update({item: tables[item[0]][item[1]] for item in group})
+            dirs.extend(request["dirs"])
+        return ColumnStats(columns, {"value": ticks, "unit": self._clock}, tuple(dirs))
 
     def fit_graph_fields(
         self,

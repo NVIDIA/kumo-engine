@@ -2,18 +2,19 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Encoders over stored table columns, fitted from column statistics up to a cutoff."""
+"""Encoders over stored table columns, fitted from DiskGraph's column statistics at a cutoff."""
 
 from __future__ import annotations
 
 import datetime as dt
 import hashlib
 import json
+import logging
 import math
-import struct
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 import numpy as np
@@ -34,34 +35,45 @@ from kumo.pytorch.data.records import cutoff_to_epoch
 from kumo.pytorch.encoding import FittedEncoder, learned_entries, typed_key
 
 __all__ = [
+    "EMPTY_STATS",
     "LATEST_ANCHOR",
-    "Column",
     "ColumnStats",
     "StatRequest",
     "TableColumnEncoder",
     "cutoff_seconds",
-    "data_sha256",
     "fit_from_stats",
+    "stats_request",
+    "stype_groups",
     "table_column_encoders",
 ]
 
+logger = logging.getLogger(__name__)
+
 Column = tuple[str, str]
+#: ``(table, column, semantic type)``.
 StatRequest = tuple[str, str, str]
 
-_STATS = {Vocabulary: ("counts",), ZScore: ("moments",), Buckets: ("counts", "bins")}
-_SUPPORTED = frozenset(
-    {
-        "bool",
-        *(f"int{bits}" for bits in (8, 16, 32, 64)),
-        *(f"uint{bits}" for bits in (8, 16, 32, 64)),
-        "float32",
-        "float64",
-        "string",
-        "date32",
-        "timestamp",
-    }
-)
+# Quantiles each numerical column's t-digest publishes; Buckets cuts interpolate them.
+QUANTILE_GRID = [index / 1024 for index in range(1025)]
+_TICKS_PER_SECOND = {
+    "seconds": 1,
+    "milliseconds": 10**3,
+    "microseconds": 10**6,
+    "nanoseconds": 10**9,
+}
 _EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
+#: DiskGraph's statistics of a column with no rows.
+EMPTY_STATS = {
+    "count": 0,
+    "null_count": 0,
+    "invalid_count": 0,
+    "mean": 0.0,
+    "std": 0.0,
+    "quantiles": [],
+    "value_bins": [],
+    "category_counts": [],
+    "category_counts_capped": False,
+}
 
 
 class _LatestAnchor:
@@ -74,21 +86,11 @@ LATEST_ANCHOR = _LatestAnchor()
 
 @dataclass(frozen=True)
 class ColumnStats:
-    files: Mapping[StatRequest, Mapping[str, Any]]
+    #: Each request's entry in DiskGraph's ``col_stats.json``.
+    columns: Mapping[StatRequest, Mapping[str, Any]]
     cutoff: Mapping[str, Any]
-    cutoff_id: str | None = None
-    index_id: str | None = None
-
-    def provenance(self, requests: Sequence[StatRequest]) -> dict[str, Any]:
-        return {
-            "cutoff": dict(self.cutoff),
-            "cutoff_id": self.cutoff_id,
-            "index_id": self.index_id,
-            "files": {
-                f"{table}/{column}.{stat}": self.files[(table, column, stat)]["sha256"]
-                for table, column, stat in requests
-            },
-        }
+    #: The ``col_stats/`` directories read.
+    dirs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -98,12 +100,40 @@ class TableColumnEncoder:
     columns: tuple[Column, ...]
 
     @property
-    def stats(self) -> tuple[str, ...]:
-        return _STATS[type(self.config)]
-
-    @property
     def requests(self) -> tuple[StatRequest, ...]:
-        return tuple((table, column, stat) for table, column in self.columns for stat in self.stats)
+        stype = "categorical" if isinstance(self.config, Vocabulary) else "numerical"
+        return tuple((table, column, stype) for table, column in self.columns)
+
+
+def stats_request(
+    requests: Sequence[StatRequest], cutoffs: Sequence[int | None], unit: str
+) -> dict:
+    """DiskGraph's ``cutoff_col_stats`` request; each cutoff's directory names its inputs."""
+
+    columns: dict[str, dict[str, str]] = {}
+    for table, column, stype in sorted(requests):
+        columns.setdefault(table, {})[column] = stype
+    quantiles = {
+        table: {column: QUANTILE_GRID for column, stype in types.items() if stype == "numerical"}
+        for table, types in columns.items()
+    }
+    dirs = [
+        hashlib.sha256(json.dumps([cutoff, unit, columns]).encode()).hexdigest()[:16]
+        for cutoff in cutoffs
+    ]
+    return {"cutoffs": list(cutoffs), "dirs": dirs, "columns": columns, "quantiles": quantiles}
+
+
+def stype_groups(requests: Sequence[StatRequest]) -> list[list[StatRequest]]:
+    """Requests split so no group asks one column for two semantic types."""
+
+    groups: list[list[StatRequest]] = []
+    for request in sorted(set(requests)):
+        group = next((g for g in groups if all(r[:2] != request[:2] for r in g)), None)
+        if group is None:
+            groups.append(group := [])
+        group.append(request)
+    return groups
 
 
 def table_column_encoders(contract: Any) -> dict[str, TableColumnEncoder]:
@@ -169,8 +199,6 @@ def _stored_column(sample: Any, schema: Any, identity: tuple[str, ...]) -> Colum
 
 
 def _learns_from_stats(config: Any, dtype: DType) -> bool:
-    if dtype.name not in _SUPPORTED:
-        return False
     if isinstance(config, Vocabulary):
         return config.values is None
     if isinstance(config, ZScore):
@@ -193,50 +221,23 @@ def cutoff_seconds(value: Any) -> int | None:
     raise TypeError(f"encoder_cutoff must be a timestamp string or datetime, not {value!r}")
 
 
-def data_sha256(data: Mapping[str, Any]) -> str:
-    return hashlib.sha256(json.dumps(data, separators=(",", ":")).encode()).hexdigest()
-
-
-def fit_from_stats(
-    identity: str, encoder: TableColumnEncoder, files: Mapping[StatRequest, Mapping[str, Any]]
-) -> FittedEncoder | None:
-    """``None`` when a vocabulary's counts are truncated."""
-
+def fit_from_stats(identity: str, encoder: TableColumnEncoder, stats: ColumnStats) -> FittedEncoder:
     config, dtype = encoder.config, encoder.dtype
-    datas = {
-        stat: [files[request]["data"] for request in encoder.requests if request[2] == stat]
-        for stat in encoder.stats
-    }
-    if sum(data["non_finite"] for data in datas[encoder.stats[0]]):
-        raise ValueError(
-            f"encoder {identity}: {dtype.name} vocabulary values must be finite"
-            if isinstance(config, Vocabulary)
-            else f"encoder {identity}: numeric transforms require finite values"
-        )
-    if isinstance(config, ZScore):
-        count, mean, m2 = 0, 0.0, 0.0
-        for data in datas["moments"]:
-            if data["count"]:
-                total = count + data["count"]
-                delta = data["mean"] - mean
-                mean += delta * data["count"] / total
-                m2 += data["m2"] + delta * delta * count * data["count"] / total
-                count = total
-        scale = math.sqrt(m2 / count) if count else 1.0
-        if not math.isfinite(mean) or not math.isfinite(scale):
-            raise ValueError(f"encoder {identity}: fitted statistics overflow")
-        return FittedEncoder(
-            identity=identity, config=config, dtype=dtype, mean=mean, scale=scale or 1.0
-        )
-    exact = not any(data["truncated"] for data in datas["counts"])
+    datas = [stats.columns[request] for request in encoder.requests]
     if isinstance(config, Vocabulary):
-        if not exact:
-            return None
         counts: Counter = Counter()
         actual = {}
-        for data in datas["counts"]:
-            for raw, count in data["values"]:
-                value = _value(dtype, raw)
+        for (table, column), data in zip(encoder.columns, datas, strict=True):
+            if data["category_counts_capped"]:
+                logger.warning(
+                    "%s.%s has more distinct values than DiskGraph counts; encoder %s learns "
+                    "the ones it counted",
+                    table,
+                    column,
+                    identity,
+                )
+            for raw, count in data["category_counts"]:
+                value = dtype.normalize(_category(dtype, raw, stats.cutoff["unit"]))
                 key = typed_key(dtype, value)
                 counts[key] += count
                 actual.setdefault(key, value)
@@ -246,101 +247,73 @@ def fit_from_stats(
             dtype=dtype,
             entries=learned_entries(config, counts, actual),
         )
-    ranges = config.bins - int(config.separate_zero)
-    probabilities = np.linspace(0, 1, ranges + 1)[1:-1]
-    boundaries = (
-        _exact_quantiles(datas["counts"], probabilities, config.separate_zero)
-        if exact
-        else _binned_quantiles(datas["bins"], probabilities, config.separate_zero)
-    )
+    if any(data["invalid_count"] for data in datas):
+        raise ValueError(f"encoder {identity}: numeric transforms require finite values")
+    finite = [data["count"] - data["null_count"] for data in datas]
+    if isinstance(config, ZScore):
+        count, mean, m2 = 0, 0.0, 0.0
+        for data, n in zip(datas, finite, strict=True):
+            if n:
+                total = count + n
+                delta = data["mean"] - mean
+                mean += delta * n / total
+                m2 += data["std"] ** 2 * (n - 1) + delta * delta * count * n / total
+                count = total
+        scale = math.sqrt(m2 / count) if count else 1.0
+        if not math.isfinite(mean) or not math.isfinite(scale):
+            raise ValueError(f"encoder {identity}: fitted statistics overflow")
+        return FittedEncoder(
+            identity=identity, config=config, dtype=dtype, mean=mean, scale=scale or 1.0
+        )
     return FittedEncoder(
         identity=identity,
         config=config,
         dtype=dtype,
-        boundaries=tuple(float(value) for value in np.unique(boundaries)),
+        boundaries=_bucket_cuts(config, datas, finite),
     )
 
 
-def _value(dtype: DType, raw: Any) -> Any:
-    if dtype.name == "timestamp":
-        return _EPOCH + dt.timedelta(seconds=raw)
+def _category(dtype: DType, raw: Any, unit: str) -> Any:
+    if dtype.name == "string":
+        return raw
+    if dtype.name == "bytes":
+        return bytes.fromhex(raw)
+    if dtype.name.startswith("float"):
+        value = float(raw)
+        if not math.isfinite(value):
+            raise ValueError(f"{dtype.name} vocabulary values must be finite")
+        return value
+    if dtype.name.startswith("decimal"):
+        return Decimal(raw).quantize(Decimal(1).scaleb(-dtype.scale))
+    value = int(raw)
+    if dtype.name == "bool":
+        return bool(value)
+    if dtype.name == "uint64" and value < 0:
+        return value + 2**64
     if dtype.name == "date32":
-        return dt.date(1970, 1, 1) + dt.timedelta(days=raw)
-    return raw
+        return dt.date(1970, 1, 1) + dt.timedelta(days=value)
+    if dtype.name == "timestamp":
+        return _EPOCH + dt.timedelta(seconds=value / _TICKS_PER_SECOND[unit])
+    return value
 
 
-def _interpolated(total: int, order_statistic: Any, probabilities: np.ndarray) -> list[float]:
-    """``np.quantile``'s linear interpolation."""
+def _bucket_cuts(config: Buckets, datas: Sequence[Mapping[str, Any]], finite: Sequence[int]):
+    """``np.quantile``'s cuts of the columns' combined values, from each one's t-digest grid."""
 
-    result = []
-    for probability in probabilities:
-        position = (total - 1) * probability
-        below = math.floor(position)
-        low = order_statistic(below)
-        if position == below:
-            result.append(low)
-            continue
-        high, weight = order_statistic(below + 1), position - below
-        result.append(
-            high - (high - low) * (1 - weight) if weight >= 0.5 else low + (high - low) * weight
-        )
-    return result
-
-
-def _exact_quantiles(
-    datas: Sequence[Mapping[str, Any]], probabilities: np.ndarray, skip_zero: bool
-):
-    counts: Counter = Counter()
-    for data in datas:
-        counts.update({float(value): count for value, count in data["values"]})
-    if skip_zero:
-        counts.pop(0.0, None)
-    if not counts:
-        return []
-    values = np.asarray(sorted(counts))
-    ends = np.cumsum([counts[value] for value in values])
-    return _interpolated(
-        int(ends[-1]),
-        lambda rank: values[np.searchsorted(ends, rank, side="right")],
-        probabilities,
+    grids = [(np.asarray(data["quantiles"]), n) for data, n in zip(datas, finite) if n]
+    if not grids:
+        return ()
+    zeros = (
+        sum(count for data in datas for start, count in data["value_bins"] if start == 0.0)
+        if config.separate_zero
+        else 0
     )
-
-
-def _bin_edges(key: int, bits: int) -> tuple[float, float]:
-    def magnitude(index: int) -> float:
-        return struct.unpack("<d", struct.pack("<Q", index << bits))[0]
-
-    if key >= 0:
-        return magnitude(key), magnitude(key + 1)
-    return -magnitude(-key), -magnitude(-key - 1)
-
-
-def _binned_quantiles(
-    datas: Sequence[Mapping[str, Any]], probabilities: np.ndarray, skip_zero: bool
-):
-    """Ranks spread evenly within a bin, clamped to the exact minimum and maximum."""
-
-    bins: Counter = Counter()
-    zeros = 0
-    for data in datas:
-        bits = 52 - int(math.log2(data["bins_per_octave"]))
-        bins.update({key: count for key, count in data["bins"]})
-        zeros += data["zeros"]
-    lowest = min((data["min"] for data in datas if data["min"] is not None), default=None)
-    highest = max((data["max"] for data in datas if data["max"] is not None), default=None)
-    bins[0] -= zeros
-    pieces = [(*_bin_edges(key, bits), count) for key, count in sorted(bins.items()) if count]
-    if not skip_zero and zeros:
-        pieces.append((0.0, 0.0, zeros))
-    pieces.sort(key=lambda piece: (piece[0], piece[1]))
-    if not pieces:
-        return []
-    starts = np.cumsum([0] + [count for _, _, count in pieces])
-
-    def order_statistic(rank: int) -> float:
-        index = int(np.searchsorted(starts, rank, side="right")) - 1
-        low, high, count = pieces[index]
-        low, high = max(low, lowest), min(high, highest)
-        return low + (high - low) * (rank - starts[index] + 0.5) / count
-
-    return _interpolated(int(starts[-1]), order_statistic, probabilities)
+    values = np.unique(np.concatenate([grid for grid, _ in grids]))
+    below = sum(n * np.interp(values, grid, QUANTILE_GRID) for grid, n in grids)
+    total = sum(n for _, n in grids) - zeros
+    if total <= 0:
+        return ()
+    below = (below - zeros * (values >= 0)) / total
+    ranges = config.bins - int(config.separate_zero)
+    cuts = np.interp(np.linspace(0, 1, ranges + 1)[1:-1], np.maximum.accumulate(below), values)
+    return tuple(float(value) for value in np.unique(cuts))

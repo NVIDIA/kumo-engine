@@ -13,8 +13,7 @@ import numpy as np
 import pytest
 
 from kumo.pytorch import api
-from kumo.pytorch.column_stats import TableColumnEncoder, fit_from_stats
-from kumo.pytorch.encoding import fit_encoder
+from kumo.pytorch.column_stats import table_column_encoders
 from tests.test_diskgraph_backend import _fixture_rows, _requests, _schema, _write_parquet
 
 pytest.importorskip("diskgraph")
@@ -131,54 +130,6 @@ def _statistics(fitted: api.FittedState) -> dict:
     return fitted.fit["inputs"]["statistics"]
 
 
-def _fitted_from_stats(config, values, *, truncated=False):
-    import diskgraph
-    import pyarrow as pa
-
-    dtype = api.DType("float64")
-    encoder = TableColumnEncoder(config, dtype, (("t", "c"),))
-    computed = diskgraph.col_stats_from_arrow(
-        pa.array(values, pa.float64()), None, None, list(encoder.stats)
-    )
-    if truncated:
-        computed["counts"]["truncated"] = True
-    files = {("t", "c", stat): {"data": data} for stat, data in computed.items()}
-    return fit_from_stats("e", encoder, files), fit_encoder("e", config, dtype, values)
-
-
-@pytest.mark.parametrize(
-    "values",
-    (
-        [1.0, 2.0, 3.0, 4.0, 5.0] * 200,
-        [1.0, 1.0, 1.0, 100.0],
-        [1.0, 1.0001, 1.0002, 1.0003],
-        [-3.5, -1.0, 0.0, 0.0, 2.0, 7.25],
-        [4.0],
-    ),
-)
-@pytest.mark.parametrize("separate_zero", (False, True))
-def test_buckets_from_counted_values_are_numpy_quantiles(values, separate_zero):
-    for bins in (3, 4, 5):
-        config = api.Buckets(bins=bins, separate_zero=separate_zero)
-        pinned, fitted = _fitted_from_stats(config, values)
-        assert pinned.boundaries == fitted.boundaries
-
-
-def test_buckets_beyond_the_category_cap_come_from_log_bins():
-    rng = np.random.default_rng(0)
-    values = rng.lognormal(3, 1, 10_000).tolist()
-    pinned, fitted = _fitted_from_stats(api.Buckets(bins=8), values, truncated=True)
-    np.testing.assert_allclose(pinned.boundaries, fitted.boundaries, rtol=2 ** (1 / 128) - 1)
-    narrow, fitted = _fitted_from_stats(
-        api.Buckets(bins=4), [1.0, 1.0001, 1.0002, 1.0003], truncated=True
-    )
-    assert len(narrow.boundaries) == len(fitted.boundaries)
-
-
-def test_truncated_counts_pin_no_vocabulary():
-    assert _fitted_from_stats(api.Vocabulary(), [1.0, 2.0], truncated=True)[0] is None
-
-
 def test_a_shared_encoder_combines_its_columns_unless_one_is_computed(tmp_path):
     contract = _contract()
     inputs = dict(contract.batch.inputs)
@@ -231,12 +182,14 @@ def test_a_shared_encoder_combines_its_columns_unless_one_is_computed(tmp_path):
             encodings={"kinds": api.Vocabulary(), "amounts": api.ZScore()},
         ),
     )
-    statistics = _statistics(_encoders(shared, *_setup("in_memory", tmp_path)))
-    assert sorted(statistics['["shared","kinds"]']["files"]) == [
-        "accounts/account_type.counts",
-        "card_transactions/channel.counts",
-    ]
-    assert '["shared","amounts"]' not in statistics
+    assert '["shared","amounts"]' not in table_column_encoders(shared)
+    fitted = _encoders(shared, *_setup("in_memory", tmp_path))
+    values = _column("accounts", "account_type", LATEST) + _column(
+        "card_transactions", "channel", LATEST
+    )
+    counts = {value: values.count(value) for value in values}
+    expected = sorted(counts, key=lambda value: (-counts[value], value))
+    assert [value for value, _ in _state(fitted, '"kinds"')["entries"]] == expected
 
 
 @pytest.mark.parametrize("engine_name", ("in_memory", "diskgraph"))
@@ -269,22 +222,12 @@ def test_pinned_encoders_match_numpy_over_rows_up_to_the_cutoff(tmp_path, engine
     assert zscore["mean"] == pytest.approx(amounts.mean(), rel=1e-12)
     assert zscore["scale"] == pytest.approx(amounts.std() or 1.0, rel=1e-12)
     buckets = _state(fitted, '"transactions","fields","amount"')
-    expected = np.unique(np.quantile(amounts, np.linspace(0, 1, 5)[1:-1]))
-    assert buckets["boundaries"] == expected.tolist()
-    assert {
-        identity: sorted(record["files"]) for identity, record in _statistics(fitted).items()
-    } == {
-        '["inputs","entity","fields","country"]': ["users/country.counts"],
-        '["inputs","graph","graph","accounts","account_type"]': ["accounts/account_type.counts"],
-        '["inputs","graph","graph","card_transactions","amount"]': [
-            "card_transactions/amount.moments"
-        ],
-        '["inputs","transactions","fields","amount"]': [
-            "card_transactions/amount.bins",
-            "card_transactions/amount.counts",
-        ],
-        '["inputs","transactions","fields","channel"]': ["card_transactions/channel.counts"],
-    }
+    # t-digest cuts: each within one rank of the exact quantile.
+    ranks = [np.mean(amounts <= cut) for cut in buckets["boundaries"]]
+    assert np.allclose(ranks, [0.25, 0.5, 0.75][: len(ranks)], atol=1.5 / len(amounts))
+    assert _statistics(fitted)["cutoff"]["value"] == (
+        None if bound is None else int(bound.timestamp())
+    )
 
 
 def test_a_cutoff_after_the_latest_anchor_warns(tmp_path, caplog):

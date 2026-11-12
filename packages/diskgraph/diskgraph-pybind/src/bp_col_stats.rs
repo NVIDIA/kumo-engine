@@ -64,7 +64,7 @@ struct TimestampHistogramSpec {
 }
 
 #[derive(Clone, Copy, Default)]
-struct IntegerRange {
+pub(crate) struct IntegerRange {
     min: Option<i64>,
     max: Option<i64>,
 }
@@ -937,7 +937,7 @@ fn accumulate_distributions_for_row_group(
 
 /// Feed one name-resolved Arrow column into a stats observer through the same
 /// checked normalization layer used by ingestion.
-fn drive_from_arrow_column<O: ColumnValueObserver>(
+pub(crate) fn drive_from_arrow_column<O: ColumnValueObserver>(
     col_idx: usize,
     array: &arrow_array::ArrayRef,
     col: &ColumnSpec,
