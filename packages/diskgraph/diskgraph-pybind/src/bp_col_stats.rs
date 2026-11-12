@@ -1818,6 +1818,77 @@ mod tests {
         );
     }
 
+    /// Every published count is at most `b = N/(cap+1) + 1` below its true
+    /// count, and every value occurring more than `2b` times is published.
+    fn assert_frequent_values_published(values: &[String], cap: u64) {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("items.parquet");
+        write_parquet(
+            &path,
+            Schema::new(vec![Field::new("item", DataType::Utf8, false)]),
+            vec![StdArc::new(StringArray::from_iter_values(values)) as ArrayRef],
+            values.len().div_ceil(64),
+        );
+        let columns = vec![col("item", IngestedType::String, SemanticType::Categorical)];
+        let (full, _) =
+            compute_parquet_col_stats_with_max_categories(&[path.as_path()], &columns, "v1", cap)
+                .unwrap();
+        let published: Vec<(String, u64)> =
+            serde_json::from_value(val(&full, "item__kumo.categorical__CATEGORY_COUNTS__False"))
+                .unwrap();
+
+        let mut truth = HashMap::<&str, u64>::new();
+        for value in values {
+            *truth.entry(value).or_default() += 1;
+        }
+        let bound = values.len() as u64 / (cap + 1) + 1;
+        assert!(published.len() as u64 <= cap);
+        for (value, count) in &published {
+            let true_count = truth[value.as_str()];
+            assert!(
+                *count <= true_count && count + bound >= true_count,
+                "{value}"
+            );
+        }
+        for (value, &count) in &truth {
+            let kept = published.iter().any(|(published, _)| published == value);
+            assert!(count <= 2 * bound || kept, "{value} occurs {count} times");
+        }
+    }
+
+    #[test]
+    fn capped_category_counts_keep_zipf_heavy_hitters() {
+        // The value of rank r occurs 5000/r times, in shuffled order.
+        let mut values: Vec<String> = (1..=5_000)
+            .flat_map(|rank| std::iter::repeat_n(format!("item-{rank}"), 5_000 / rank))
+            .collect();
+        let mut rng = 0x9E37_79B9_7F4A_7C15u64;
+        for i in (1..values.len()).rev() {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            values.swap(i, (rng % (i as u64 + 1)) as usize);
+        }
+        assert_frequent_values_published(&values, 100);
+    }
+
+    #[test]
+    fn capped_category_counts_keep_frequent_values_that_appear_late() {
+        // Ids increase over time and the five most frequent appear only in
+        // the last 10% of rows.
+        let rows = 50_000;
+        let values: Vec<String> = (0..rows)
+            .map(|row| {
+                if row < rows * 9 / 10 {
+                    format!("item-{}", row / 2)
+                } else {
+                    format!("item-{}", rows + row % 5)
+                }
+            })
+            .collect();
+        assert_frequent_values_published(&values, 100);
+    }
+
     /// The pre-streaming implementation: copy the counts into JSON values,
     /// then deep-clone and truncate for min.
     fn legacy_col_stats(
