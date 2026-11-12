@@ -832,7 +832,18 @@ fn check_windows<U: UnitSystem>(op: &tt::Op<U>) -> PyResult<()> {
     if lo != UNBOUNDED_LOWER_OFFSET {
         check_tick::<U>("window bound", lo, unit)?;
     }
-    check_tick::<U>("window bound", hi, unit)
+    check_tick::<U>("window bound", hi, unit)?;
+    if lo != UNBOUNDED_LOWER_OFFSET
+        && lo != hi
+        && dur_from_unit::<U>(lo, unit) == dur_from_unit::<U>(hi, unit)
+    {
+        return Err(crate::DiskgraphConfigError::new_err(format!(
+            "the window ({lo}, {hi}] {} is empty on the {} index clock",
+            unit_name(unit),
+            unit_name(U::UNIT)
+        )));
+    }
+    Ok(())
 }
 
 /// Describes a window whose bounds the clock `U` truncates, e.g. 90 minutes
@@ -842,12 +853,12 @@ fn truncated_window<U: UnitSystem>(op: &tt::Op<U>) -> Option<String> {
     if matches!(unit, TimeUnit::Months | TimeUnit::Years) {
         return None;
     }
-    let in_clock = |value: i64| match value {
-        UNBOUNDED_LOWER_OFFSET => value,
-        _ => {
-            let ticks = dur_from_unit::<U>(value, unit).raw() as i128;
-            (ticks * U::TICK_NANOS as i128 / unit.tick_nanos() as i128) as i64
+    let in_clock = |value: i64| {
+        if value == UNBOUNDED_LOWER_OFFSET {
+            return value;
         }
+        let ticks = dur_from_unit::<U>(value, unit).raw() as i128;
+        (ticks * U::TICK_NANOS as i128 / unit.tick_nanos() as i128) as i64
     };
     let window = |lo: i64, hi: i64| match lo {
         UNBOUNDED_LOWER_OFFSET => format!("(-inf, {hi}] {}", unit_name(unit)),

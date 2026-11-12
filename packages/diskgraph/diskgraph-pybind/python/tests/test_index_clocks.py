@@ -7,6 +7,7 @@
 import datetime
 import decimal
 import json
+import logging
 import pathlib
 
 import pyarrow as pa
@@ -371,6 +372,7 @@ def test_unbounded_lower_window_is_preserved(clock, operation):
 
 @pytest.mark.parametrize("window, unit", [((0, 30), "minutes"), ((-1, 0), "minutes"),
                                           ((-2**60, 30), "minutes"),
+                                          ((60, 90), "minutes"),
                                           ((0, 500), "milliseconds")])
 def test_windows_shorter_than_a_tick_are_rejected(window, unit):
     builder = DiskGraphTTBuilder("hours")
@@ -403,6 +405,9 @@ def test_offsets_shorter_than_a_tick_are_rejected():
     ({"anchor_start_offset": -30}, "split anchor_start_offset"),
     ({"timeframe_step": 1}, "split timeframe_step"),
     ({"timeframe_step": 1, "flexible_boundaries": False}, None),
+    ({"kind": "TimeRangeSplit", "ranges": [(EPOCH_DAY * DAY, (EPOCH_DAY + 1) * DAY)],
+      "timeframe": 30}, "split timeframe"),
+    ({"offsets": [-2, -1], "offset_unit": "months"}, None),
 ])
 def test_split_durations_shorter_than_a_tick_are_rejected(fields, error):
     builder = DiskGraphTTBuilder("hours")
@@ -520,5 +525,5 @@ def test_off_tick_rows_anchors_and_windows_follow_the_clock(off_tick_data, tmp_p
         "days": "The window (0, 36] hours truncates to (0, 24] hours on the days index "
                 "clock. Use a window of whole days, or a finer timestamp_precision.",
     }
-    assert [record.getMessage() for record in caplog.records] == (
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == (
         [truncated[clock]] if clock in truncated else [])
