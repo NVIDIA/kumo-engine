@@ -5,6 +5,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{ensure, Result};
 use arrow::array::Array;
@@ -125,12 +126,15 @@ impl ColumnScan {
     }
 
     fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        match py.detach(|| self.scan.chunks.recv()) {
-            Ok(chunk) => {
-                let chunk = chunk.map_err(map_anyhow_err)?;
-                Ok(Some(chunk.to_data().to_pyarrow(py)?.unbind()))
+        loop {
+            match py.detach(|| self.scan.chunks.recv_timeout(Duration::from_millis(100))) {
+                Ok(chunk) => {
+                    let chunk = chunk.map_err(map_anyhow_err)?;
+                    return Ok(Some(chunk.to_data().to_pyarrow(py)?.unbind()));
+                }
+                Err(err) if err.is_timeout() => py.check_signals()?,
+                Err(_) => return Ok(None),
             }
-            Err(_) => Ok(None),
         }
     }
 }
