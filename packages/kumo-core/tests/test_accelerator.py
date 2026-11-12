@@ -51,7 +51,7 @@ def test_required_gpu_rejects_mps_before_macos_15(monkeypatch):
     monkeypatch.setattr(acc, '_macos_release', lambda: '14.7.1')
     monkeypatch.setattr(torch.cuda, 'is_available', lambda: False)
     monkeypatch.setattr(torch.backends.mps, 'is_available', lambda: True)
-    with pytest.raises(RuntimeError, match='GPU required'):
+    with pytest.raises(RuntimeError, match='MPS requires macOS 15'):
         error.check_gpu_ready(max_retries=1, delay_seconds=0,
                               require_gpu=True)
     # Without the requirement the check skips MPS instead of probing it.

@@ -54,6 +54,10 @@ def check_gpu_ready(
             # job still reports success). GPU loss commonly follows a
             # cgroup/daemon event (systemd reload, apt upgrade, docker
             # hiccup) or a driver desync.
+            if torch.backends.mps.is_available():
+                raise RuntimeError(
+                    "GPU required (KUMO_REQUIRE_GPU), but Apple MPS requires "
+                    "macOS 15 or later; refusing to fall back to CPU.")
             raise RuntimeError(
                 "GPU required (KUMO_REQUIRE_GPU) but no CUDA or MPS device is "
                 "available — refusing to silently fall back to CPU. Verify "

@@ -317,8 +317,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  # One matrix of every required configuration and case. A configuration
-  # whose job produced no evidence is UNVERIFIED, and the job then fails.
+  # One matrix of every hosted configuration and case. A configuration whose
+  # job produced no evidence is UNVERIFIED, and the job then fails. The
+  # release report adds the bare-metal Mac rows from separate evidence.
   reload-report:
     needs: [reload]
     if: always()
@@ -348,7 +349,7 @@ jobs:
           set +e
           python3 -I packages/kumo-engine/test/desktop_reload_qualification.py \
             report --evidence-dir "$EVIDENCE" --output-dir "$REPORT" \
-            --commit "$CANDIDATE_SHA"
+            --commit "$CANDIDATE_SHA" --targets hosted
           status=$?
           set -e
           cat "$REPORT/matrix.md" >> "$GITHUB_STEP_SUMMARY"

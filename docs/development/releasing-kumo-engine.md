@@ -155,7 +155,7 @@ platform's `release-version`.
      `unavailable_device` check requests MPS and passes only when the
      consumer fails with `UnsupportedAcceleratorError`. Hosted macOS runners
      are VMs without a Metal device, so they cannot run MPS. The CI report
-     marks these rows UNVERIFIED. On each Mac, install the macOS wheel from
+     covers the hosted rows only. On each Mac, install the macOS wheel from
      the same build run in a clean environment. Download the object that
      [`inputs.json`](../../packages/kumo-engine/test/pr172/inputs.json) names
      with AWS credentials that can read it, check its SHA-256, and extract
@@ -164,7 +164,9 @@ platform's `release-version`.
      `graphs.json` as `--graph-metadata`, `--negative-checks`, and the label
      `macos-<major>-<device>-py<version>` for each Python version. Build the
      full matrix with `desktop_reload_qualification.py report`. Pass one
-     `--evidence-dir` for the CI results and one for each Mac.
+     `--evidence-dir` for the CI results and one for each Mac. The report
+     marks a missing row UNVERIFIED and checks that each row ran on its
+     labeled platform.
    - attaches the Linux x86_64/ARM64 and macOS ARM64 wheels to the GitHub
      release; the Linux x86_64 wheel also serves WSL2. Native Windows upload
      routes remain disabled despite experimental build/test coverage.

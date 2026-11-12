@@ -49,9 +49,8 @@ def exports(tmp_path):
 def _index_files(path):
     return {
         str(file.relative_to(path)): file.read_bytes()
-        for file in Path(path).rglob('*')
-        if file.is_file() and file.name not in ('_SUCCESS', '_provenance.json',
-                                                '.kumo_export')
+        for file in Path(path).rglob('*') if file.is_file()
+        and file.name not in ('_SUCCESS', '_provenance.json', '.kumo_export')
         and not str(file.relative_to(path)).startswith('train_tables/')
     }
 
@@ -83,17 +82,16 @@ def _edit_index_manifest(exported, edit):
     edit(manifest)
     path.write_text(json.dumps(manifest))
     _edit_manifest(
-        exported, lambda m: m.update(index_manifest=hashlib.sha256(
-            path.read_bytes()).hexdigest()))
+        exported, lambda m: m.update(
+            index_manifest=hashlib.sha256(path.read_bytes()).hexdigest()))
 
 
 def _load(exports, location, **kwargs):
     return GraphSnapshot.load_from_connector(exports, path=location, **kwargs)
 
 
-def test_export_load_round_trip_relocates_and_is_reused(tmp_path, scratch,
-                                                        graph, exports,
-                                                        monkeypatch):
+def test_export_load_round_trip_relocates_and_is_reused(
+        tmp_path, scratch, graph, exports, monkeypatch):
     monkeypatch.setattr(snapshot_io, '_CHUNK', 1024)
     monkeypatch.setattr(snapshot_io, '_RANGE_BYTES', 4096)
     snapshot = graph.snapshot()
@@ -113,13 +111,15 @@ def test_export_load_round_trip_relocates_and_is_reused(tmp_path, scratch,
     assert loaded.index_path.is_relative_to(tmp_path / 'gpu')
     assert _index_files(loaded.index_path) == _index_files(
         _generation(exported) / 'index')
-    assert (loaded.index_path / '_provenance.json').read_bytes() == recorded
+    assert (loaded.index_path /
+            '_provenance.json').read_bytes() == recorded
     reexported = tmp_path / 'exports' / _put(loaded, exports, 'two')
     assert (_generation(reexported) /
             '_provenance.json').read_bytes() == recorded
 
-    monkeypatch.setattr('kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
-                        Mock(side_effect=AssertionError('ingest must not run')))
+    monkeypatch.setattr(
+        'kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
+        Mock(side_effect=AssertionError('ingest must not run')))
     monkeypatch.setattr(snapshot_io, 'load_into',
                         Mock(side_effect=AssertionError('already loaded')))
     assert _load(exports, location) == loaded
@@ -256,10 +256,8 @@ def test_interleaved_exports_of_different_builds_stay_consistent(
     scratch('gpu')
     assert _index_files(_load(exports, location).index_path) == _index_files(
         first.index_path)
-    generations = [
-        path for path in (tmp_path / 'exports' / location).iterdir()
-        if path.is_dir()
-    ]
+    generations = [path for path in (tmp_path / 'exports' / location).iterdir()
+                   if path.is_dir()]
     assert generations == [_generation(tmp_path / 'exports' / location)]
 
 
@@ -294,17 +292,15 @@ def test_a_cached_load_is_reused_only_for_the_same_export(
     scratch('gpu')
     for location, build in ((one, first), (two, second), (one, first)):
         loaded = _load(exports, location)
-        assert _index_files(loaded.index_path) == _index_files(build.index_path)
+        assert _index_files(loaded.index_path) == _index_files(
+            build.index_path)
 
 
 def test_overlapping_marker_commits_leave_one_whole_marker(
         tmp_path, monkeypatch):
     root = tmp_path / 'location'
     markers = {
-        name * 32: json.dumps({
-            'generation': name * 32,
-            'crc': crc
-        }).encode()
+        name * 32: json.dumps({'generation': name * 32, 'crc': crc}).encode()
         for name, crc in (('a', 1), ('b', 1234567))
     }
     for generation in markers:
@@ -321,9 +317,9 @@ def test_overlapping_marker_commits_leave_one_whole_marker(
 
     monkeypatch.setattr(snapshot_io, '_write', interleaved)
     threads = [
-        threading.Thread(
-            target=snapshot_io._commit,
-            args=(LocalFileSystem(), str(root), generation, marker))
+        threading.Thread(target=snapshot_io._commit,
+                         args=(LocalFileSystem(), str(root), generation,
+                               marker))
         for generation, marker in markers.items()
     ]
     for thread in threads:
@@ -360,8 +356,8 @@ def test_loading_an_export_on_the_exporting_machine_skips_the_checksum_pass(
     assert _load(exports, location) == snapshot
 
 
-def test_failed_upload_is_retried_with_a_fresh_client(scratch, graph, exports,
-                                                      monkeypatch):
+def test_failed_upload_is_retried_with_a_fresh_client(
+        scratch, graph, exports, monkeypatch):
     open_output, clients = snapshot_io._open_output, []
 
     def expiring(client, path, size):
@@ -388,8 +384,8 @@ def test_reexport_after_redaction_publishes_the_redacted_manifest(
     assert committed != first
     assert (committed / '_provenance.json').read_bytes() == (
         redacted.index_path / '_provenance.json').read_bytes()
-    assert json.loads(
-        (committed / '_provenance.json').read_text())['record_sources'] is False
+    assert json.loads((committed / '_provenance.json').read_text())[
+        'record_sources'] is False
 
 
 @pytest.mark.parametrize('damage', ['missing_file', 'damaged'])
@@ -450,8 +446,8 @@ def test_load_refuses_before_downloading_when_disk_is_too_small(
 @pytest.mark.parametrize('index, edit', [
     (False, lambda manifest: manifest.update(data_version='../../victim')),
     (False, lambda manifest: manifest.pop('crc32')),
-    (True,
-     lambda manifest: manifest['files'][0].update(rel_path='../../victim/x')),
+    (True, lambda manifest: manifest['files'][0].update(
+        rel_path='../../victim/x')),
     (True, lambda manifest: manifest['files'].append(manifest['files'][0])),
 ])
 def test_load_rejects_a_hostile_or_malformed_manifest(tmp_path, scratch, graph,
@@ -479,9 +475,8 @@ def test_load_rejects_unknown_formats_and_accepts_unknown_fields(
 
     _edit_manifest(exported, lambda m: m.update(format=1, added_later={'x': 1}))
     other = kumo.Graph(tables={'users': graph.tables['users']})
-    with pytest.warns(
-            UserWarning, match=r'another graph\. Schema changes: '
-            r'table events added\.$'):
+    with pytest.warns(UserWarning, match=r'another graph\. Schema changes: '
+                      r'table events added\.$'):
         loaded = _load(exports, location, graph=other)
     assert loaded.id == snapshot.id
 
@@ -498,9 +493,8 @@ def test_load_warns_about_a_graph_that_moved_with_the_same_schema(
         }, edges=graph.edges)
     assert moved.id != graph.id
 
-    with pytest.warns(
-            UserWarning, match=r'another graph\. The schema is '
-            r'the same; only table connectors or locations differ'):
+    with pytest.warns(UserWarning, match=r'another graph\. The schema is '
+                      r'the same; only table connectors or locations differ'):
         _load(exports, location, graph=moved)
 
 
@@ -568,7 +562,8 @@ def test_load_works_without_posix_fallocate(tmp_path, scratch, graph, exports,
 
 
 @pytest.mark.parametrize('scheme', ['s3', 'gs'])
-def test_object_store_round_trip(tmp_path, scratch, graph, monkeypatch, scheme):
+def test_object_store_round_trip(tmp_path, scratch, graph, monkeypatch,
+                                 scheme):
     storage = tmp_path / 'storage'
     storage.mkdir()
 
@@ -607,9 +602,8 @@ def dated(tmp_path, graph):
 
 
 @pytest.mark.parametrize('record_sources', [True, False])
-def test_source_changes_reads_stamps_without_staging(scratch, graph, dated,
-                                                     monkeypatch,
-                                                     record_sources):
+def test_source_changes_reads_stamps_without_staging(
+        scratch, graph, dated, monkeypatch, record_sources):
     from kumo_core.sources.object_store import ObjectStoreSourceReader
 
     from kumo.engine.connector.file import _FileSourceBackend
@@ -621,31 +615,19 @@ def test_source_changes_reads_stamps_without_staging(scratch, graph, dated,
     monkeypatch.setattr(ObjectStoreSourceReader, 'prepare', fail)
     monkeypatch.setattr(_FileSourceBackend, 'prepare_ingest', fail)
     assert snapshot.source_changes(graph) == {
-        'users': {
-            'status': 'unchanged',
-            'recorded': '1700002800',
-            'current': '1700002800'
-        },
-        'events': {
-            'status': 'unchanged',
-            'recorded': '1700000123',
-            'current': '1700000123'
-        },
+        'users': {'status': 'unchanged', 'recorded': '1700002800',
+                  'current': '1700002800'},
+        'events': {'status': 'unchanged', 'recorded': '1700000123',
+                   'current': '1700000123'},
     }
     _rewrite_events(dated)
     assert snapshot.source_changes(graph)['events'] == {
-        'status': 'changed',
-        'recorded': '1700000123',
-        'current': '1700009123'
-    }
+        'status': 'changed', 'recorded': '1700000123', 'current': '1700009123'}
 
     monkeypatch.setattr(_FileSourceBackend, 'get_data_version',
                         Mock(side_effect=OSError('listing failed')))
     assert snapshot.source_changes(graph)['events'] == {
-        'status': 'unknown',
-        'recorded': '1700000123',
-        'current': None
-    }
+        'status': 'unknown', 'recorded': '1700000123', 'current': None}
 
 
 def test_source_changes_compares_directory_listings(tmp_path, scratch):
@@ -653,11 +635,10 @@ def test_source_changes_compares_directory_listings(tmp_path, scratch):
     parts.mkdir(parents=True)
     pd.DataFrame({'ID': range(5)}).to_parquet(parts / 'part-0.parquet')
     connector = kumo.FileConnector(root_dir=str(tmp_path / 'dir'))
-    graph = kumo.Graph(
-        tables={
-            'users':
-            kumo.Table.from_source_table(connector['users'], primary_key='ID')
-        }, edges=[])
+    graph = kumo.Graph(tables={
+        'users': kumo.Table.from_source_table(connector['users'],
+                                              primary_key='ID')
+    }, edges=[])
     snapshot = graph.snapshot()
     assert snapshot.source_changes(graph)['users']['status'] == 'unchanged'
     pd.DataFrame({'ID': range(5, 9)}).to_parquet(parts / 'part-1.parquet')
@@ -676,10 +657,9 @@ def test_source_changes_notices_a_rebound_source(tmp_path, scratch, graph,
             kumo.Table.from_source_table(connector['users.parquet'],
                                          primary_key='ID'),
             'events':
-            kumo.Table.from_source_table(connector['events.parquet'],
-                                         primary_key='EID',
-                                         time_column='TS').with_column(
-                                             'USER_ID', stype=Stype.ID),
+            kumo.Table.from_source_table(
+                connector['events.parquet'], primary_key='EID',
+                time_column='TS').with_column('USER_ID', stype=Stype.ID),
         }, edges=[Edge(src_table='events', fkey='USER_ID', dst_table='users')])
 
     changes = snapshot.source_changes(rebound)
@@ -701,10 +681,8 @@ def test_source_changes_unknown_without_a_comparable_version(
         for entry in manifest['parents']['source_tables'].values():
             entry['version_kind'] = 'hour_bucket'
         path.write_text(json.dumps(manifest))
-    assert {
-        change['status']
-        for change in snapshot.source_changes(graph).values()
-    } == {'unknown'}
+    assert {change['status'] for change in snapshot.source_changes(
+        graph).values()} == {'unknown'}
 
 
 def test_load_warns_only_with_graph_and_only_for_changed_tables(
@@ -733,7 +711,8 @@ class _Bytes:
         pass
 
 
-def test_a_sink_with_only_a_filesystem_holds_exports(tmp_path, scratch, graph):
+def test_a_sink_with_only_a_filesystem_holds_exports(tmp_path, scratch,
+                                                     graph):
     from kumo_core.chunked_fs import ChunkedFileHandler
     from pyarrow.fs import FileSelector, FileType, PyFileSystem
 
@@ -751,11 +730,8 @@ def test_a_sink_with_only_a_filesystem_holds_exports(tmp_path, scratch, graph):
             return None if data is None else len(data)
 
         def _list(self, directory):
-            return {
-                p: len(d)
-                for p, d in self.objects.items()
-                if p.startswith(directory + '/')
-            }
+            return {p: len(d) for p, d in self.objects.items()
+                    if p.startswith(directory + '/')}
 
         def _put(self, local, path):
             self.objects[path] = Path(local).read_bytes()
@@ -771,8 +747,8 @@ def test_a_sink_with_only_a_filesystem_holds_exports(tmp_path, scratch, graph):
     store = Store()
     sink = SimpleNamespace(
         holds_files=lambda connector, path: path.startswith('@'),
-        filesystem=lambda connector, path:
-        (PyFileSystem(store), path.rstrip('/')))
+        filesystem=lambda connector, path: (PyFileSystem(store),
+                                            path.rstrip('/')))
     connector = SimpleNamespace(sink_backend=sink)
     snapshot = graph.snapshot()
     location = _put(snapshot, connector, '@stage/s')
@@ -788,9 +764,8 @@ def test_a_sink_with_only_a_filesystem_holds_exports(tmp_path, scratch, graph):
     for info in filesystem.get_file_info(FileSelector(root, recursive=True)):
         if info.type is FileType.File:
             with filesystem.open_input_file(info.path) as reader:
-                assert (
-                    loaded.index_path /
-                    info.path[len(root) + 1:]).read_bytes() == reader.read()
+                assert (loaded.index_path / info.path[len(root) + 1:]
+                        ).read_bytes() == reader.read()
     with pytest.raises(NotImplementedError, match='S3, GCS or file connector'):
         _put(snapshot, connector, 'DB.SCHEMA')
 
@@ -814,8 +789,8 @@ def test_a_mlops_block_stores_each_snapshot_once(tmp_path, scratch, graph,
     with pytest.raises(TypeError, match='kumo.MLOps'):
         GraphSnapshot.load_from_connector(kumo.FileConnector(root_dir='.'),
                                           id=snapshot.id)
-    graph.snapshot(mlops=kumo.MLOps(artifact_root=str(tmp_path /
-                                                      'off'), store={'model'}))
+    graph.snapshot(mlops=kumo.MLOps(artifact_root=str(tmp_path / 'off'),
+                                    store={'model'}))
     assert not (tmp_path / 'off').exists()
 
 
@@ -831,10 +806,10 @@ def test_loading_a_missing_export_names_its_full_path(tmp_path, exports):
     ('raise',
      partial(pytest.raises, RuntimeError, match='Could not store snapshot')),
 ])
-def test_a_failed_store_follows_on_error(tmp_path, scratch, graph, monkeypatch,
-                                         on_error, outcome):
+def test_a_failed_store_follows_on_error(tmp_path, scratch, graph,
+                                         monkeypatch, on_error, outcome):
     monkeypatch.setattr(snapshot_io, 'export',
                         Mock(side_effect=OSError('ACCESS_DENIED')))
     with outcome():
-        graph.snapshot(mlops=kumo.MLOps(str(tmp_path /
-                                            'root'), on_error=on_error))
+        graph.snapshot(mlops=kumo.MLOps(str(tmp_path / 'root'),
+                                        on_error=on_error))

@@ -223,6 +223,10 @@ def run_worker(command, *, cwd, env, timeout, log_path):
             process.wait()
             raise QualificationError(
                 f'Worker exceeded {timeout} seconds: {command[2:4]}') from None
+        except BaseException:
+            # An interrupted controller must not leave a detached worker.
+            _kill_group(process.pid)
+            raise
     # Helpers such as the multiprocessing resource tracker exit shortly
     # after their parent. Anything still alive after the grace period is a
     # leaked process.
@@ -1149,6 +1153,8 @@ def run_controller(args):
     version = wheel_version(wheel)
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
+    # A summary from an earlier, interrupted run must not stand for this one.
+    (output / 'summary.json').unlink(missing_ok=True)
     work_root = Path(args.work_dir).resolve()
     require_disjoint(output, [work_root])
     summary = dict(
@@ -1161,7 +1167,9 @@ def run_controller(args):
         fixture=fixture_identity(Path(args.data_dir), Path(args.graph_metadata)),
         python=str(python),
         python_version=platform.python_version(), system=platform.system(),
-        machine=platform.machine(), atol=args.atol, timeout=args.timeout,
+        machine=platform.machine(),
+        os_release=platform.mac_ver()[0] or platform.release(),
+        atol=args.atol, timeout=args.timeout,
         commit=args.commit, required_cases=list(args.case), cases={})
     try:
         summary['wheel']['installed_files_verified'] = verify_installed_wheel(
@@ -1224,11 +1232,31 @@ def run_controller(args):
     return 0 if passed else 1
 
 
-def required_labels():
+def required_labels(targets=REQUIRED_TARGETS):
     return [
-        f'{name}-{device}-py{python}' for name, device in REQUIRED_TARGETS
+        f'{name}-{device}-py{python}' for name, device in targets
         for python in PYTHONS
     ]
+
+
+def host_mismatch(name, summary):
+    """Explain why the evidence host is not the labeled platform."""
+    system, machine = summary.get('system'), summary.get('machine')
+    release = str(summary.get('os_release') or '')
+    if name.startswith('macos-'):
+        major = release.split('.')[0]
+        if system != 'Darwin' or f'macos-{major}' != name:
+            return f'Evidence ran on {system} {release}, not {name}.'
+        return None
+    wsl = 'microsoft' in release.lower()
+    expected = {
+        'linux-x86_64': ('Linux', 'x86_64', False),
+        'linux-arm64': ('Linux', 'aarch64', False),
+        'windows-wsl': ('Linux', 'x86_64', True),
+    }.get(name)
+    if expected != (system, machine, wsl):
+        return f'Evidence ran on {system} {machine} {release}, not {name}.'
+    return None
 
 
 def summary_mismatch(label, summary):
@@ -1243,10 +1271,10 @@ def summary_mismatch(label, summary):
         return f'Evidence used atol={summary.get("atol")}, not {REQUIRED_ATOL}.'
     if not (summary.get('wheel') or {}).get('installed_files_verified'):
         return 'The installed files were not checked against the wheel.'
-    return None
+    return host_mismatch(name, summary)
 
 
-def build_report(evidence_dirs, *, commit=None):
+def build_report(evidence_dirs, *, commit=None, targets=REQUIRED_TARGETS):
     """Merge job summaries; a configuration without evidence is UNVERIFIED."""
     found = {}
     if isinstance(evidence_dirs, (str, Path)):
@@ -1273,7 +1301,7 @@ def build_report(evidence_dirs, *, commit=None):
     mixed = sorted(key for key, values in identities.items()
                    if len(values) > 1)
     rows = []
-    for label in required_labels():
+    for label in required_labels(targets):
         path, summary = found.get(label, (None, None))
         for case in CASES:
             row = dict(label=label, case=case, status='UNVERIFIED',
@@ -1282,7 +1310,10 @@ def build_report(evidence_dirs, *, commit=None):
                 result = summary.get('cases', {}).get(case)
                 row.update(evidence=str(path), wheel=summary.get('wheel'),
                            harness_sha256=summary.get('harness_sha256'))
-                if result is None:
+                if result is None and summary.get('status') == 'FAIL':
+                    row.update(status='FAIL', reason=summary.get('error')
+                               or 'The job failed before this case.')
+                elif result is None:
                     row['reason'] = 'The job did not run this case.'
                 elif summary.get('commit') != commit:
                     row.update(status='FAIL',
@@ -1326,7 +1357,7 @@ def build_report(evidence_dirs, *, commit=None):
                             reason=f'Required negative checks are '
                             f'missing: {absent}')
             rows.append(row)
-    unexpected = sorted(set(found) - set(required_labels()))
+    unexpected = sorted(set(found) - set(required_labels(targets)))
     status = 'PASS' if all(r['status'] == 'PASS' for r in rows) else 'OPEN'
     return dict(status=status, commit=commit, rows=rows,
                 unexpected_labels=unexpected)
@@ -1374,6 +1405,8 @@ def parse_args(argv=None):
     report.add_argument('--evidence-dir', action='append', required=True)
     report.add_argument('--output-dir', required=True)
     report.add_argument('--commit', required=True)
+    # CI produces the hosted rows only; the release report adds the Macs.
+    report.add_argument('--targets', choices=('all', 'hosted'), default='all')
     for name in ('produce', 'consume'):
         worker = commands.add_parser(name)
         worker.add_argument('--case', choices=CASES, required=True)
@@ -1399,7 +1432,10 @@ def main(argv=None):
         args.case = args.case or list(CASES)
         return run_controller(args)
     if args.command == 'report':
-        report = build_report(args.evidence_dir, commit=args.commit)
+        report = build_report(
+            args.evidence_dir, commit=args.commit,
+            targets=HOSTED_TARGETS if args.targets == 'hosted' else
+            REQUIRED_TARGETS)
         write_report(report, args.output_dir)
         print(Path(args.output_dir, 'matrix.md').read_text())
         return 0 if report['status'] == 'PASS' else 1

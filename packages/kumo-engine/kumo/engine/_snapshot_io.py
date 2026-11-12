@@ -87,8 +87,8 @@ class _Progress:
                     and self.moved < self.total):
                 return
             self.logged = now
-        logger.info('Snapshot %s of %s: %d of %d bytes, %.2f GB/s', self.action,
-                    self.path, self.moved, self.total,
+        logger.info('Snapshot %s of %s: %d of %d bytes, %.2f GB/s',
+                    self.action, self.path, self.moved, self.total,
                     self.moved / max(now - self.started, 1e-9) / 1e9)
 
 
@@ -103,8 +103,8 @@ def _transfer(connector: Any, path: str, items: Sequence[Any],
     stop = threading.Event()
     with copies(items) as workers:
         client = _Client(connector, path)
-        logger.info('Snapshot %s of %s: %d files, %d bytes, %d workers', action,
-                    path, len(items), sum(sizes), workers)
+        logger.info('Snapshot %s of %s: %d files, %d bytes, %d workers',
+                    action, path, len(items), sum(sizes), workers)
         progress = _Progress(action, path, sum(sizes))
 
         def run(item: Any, size: int) -> Any:
@@ -205,12 +205,12 @@ def store(snapshot: Any, settings: Any) -> None:
     from kumo.engine._mlops import snapshot_path
 
     try:
-        settings.locate(
-            Path(snapshot.index_path) / PROVENANCE_FILE, SnapshotManifest,
-            snapshot_path(snapshot))
+        settings.locate(Path(snapshot.index_path) / PROVENANCE_FILE,
+                        SnapshotManifest, snapshot_path(snapshot))
         connector = settings.root.connector
         path = settings.root.location('snapshots')
-        filesystem, root = _location(connector, export_location(snapshot, path))
+        filesystem, root = _location(connector,
+                                     export_location(snapshot, path))
         try:
             marker = _read_json(filesystem, f'{root}/{_MANIFEST}')
         except ValueError:
@@ -231,10 +231,10 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
     graph_key, data_version = snapshot._graph_key, snapshot._data_version
     location = export_location(snapshot, path)
     snapshot_manifest = _snapshot_manifest(snapshot)
-    if _holds_copy(connector, location, snapshot.id, source, snapshot_manifest):
-        logger.info(
-            '%s already holds an identical export of snapshot %s; '
-            'reused it', location, snapshot.id)
+    if _holds_copy(connector, location, snapshot.id, source,
+                   snapshot_manifest):
+        logger.info('%s already holds an identical export of snapshot %s; '
+                    'reused it', location, snapshot.id)
         return location
     index_manifest = (source / _INDEX_MANIFEST).read_bytes()
     sizes = _listed_sizes(index_manifest)
@@ -244,10 +244,8 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
 
     def upload(client: FileSystem, name: str, stop: threading.Event) -> None:
         size = sizes[name]
-        with open(source / name, 'rb',
-                  buffering=0) as reader, _open_output(client,
-                                                       f'{base}/index/{name}',
-                                                       size) as writer:
+        with open(source / name, 'rb', buffering=0) as reader, _open_output(
+                client, f'{base}/index/{name}', size) as writer:
             for offset in range(0, size, _CHUNK):
                 _stopped(stop)
                 chunk = reader.read(min(_CHUNK, size - offset))
@@ -260,8 +258,8 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
     with ThreadPoolExecutor(1) as pool:
         checksums = pool.submit(snapshot_range_checksums, str(source),
                                 _RANGE_BYTES)
-        _transfer(connector, location, names, [sizes[name] for name in names],
-                  upload, 'export')
+        _transfer(connector, location, names,
+                  [sizes[name] for name in names], upload, 'export')
         crc32 = checksums.result()
     _write(filesystem, f'{base}/index/{_INDEX_MANIFEST}', index_manifest)
     _write(filesystem, f'{base}/{PROVENANCE_FILE}', snapshot_manifest)
@@ -285,8 +283,8 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
     return location
 
 
-def _holds_copy(connector: Any, location: str, snapshot_id: str, index: Path,
-                snapshot_manifest: bytes) -> bool:
+def _holds_copy(connector: Any, location: str, snapshot_id: str,
+                index: Path, snapshot_manifest: bytes) -> bool:
     from kumo_core.object_store_sink import file_sizes
 
     try:
@@ -382,11 +380,9 @@ def read(connector: Any, path: str) -> Tuple[str, dict]:
 
 
 def export_identity(manifest: dict) -> str:
-    return hashlib.sha256(
-        json.dumps([
-            manifest['range_bytes'], manifest['crc32'],
-            manifest['index_manifest']
-        ], sort_keys=True).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(
+        [manifest['range_bytes'], manifest['crc32'],
+         manifest['index_manifest']], sort_keys=True).encode()).hexdigest()
 
 
 def holds_export(index: Path, manifest: dict) -> bool:
@@ -423,8 +419,8 @@ def _download(root: str, staging: Path, client: FileSystem,
 
 
 def _index_files(
-        path: str, root: str, manifest: dict,
-        connector: Any) -> Tuple[bytes, List[Tuple[str, int]], Optional[bytes]]:
+        path: str, root: str, manifest: dict, connector: Any
+) -> Tuple[bytes, List[Tuple[str, int]], Optional[bytes]]:
     from kumo_core.sources.layout import confined
 
     filesystem, _ = _location(connector, path)
@@ -462,9 +458,10 @@ def load_into(connector: Any, path: str, root: str, manifest: dict,
     discard_destination(str(staging))
     try:
         _allocate(staging, files)
-        ranges = sorted(
-            ((name, offset, min(span, size - offset)) for name, size in files
-             for offset in range(0, size, span)), key=lambda item: -item[2])
+        ranges = sorted(((name, offset, min(span, size - offset))
+                         for name, size in files
+                         for offset in range(0, size, span)),
+                        key=lambda item: -item[2])
         try:
             _transfer(connector, path, ranges, [item[2] for item in ranges],
                       partial(_download, root, staging), 'load')
@@ -525,9 +522,9 @@ def _verify(path: str, staging: Path, manifest: dict) -> None:
     for name, crcs in sorted(loaded.items()):
         expected = manifest['crc32'].get(name)
         if crcs != expected:
-            offset = next(
-                (index * span for index, crc in enumerate(crcs) if not expected
-                 or index >= len(expected) or crc != expected[index]), 0)
+            offset = next((index * span for index, crc in enumerate(crcs)
+                           if not expected or index >= len(expected)
+                           or crc != expected[index]), 0)
             raise _corrupt(path,
                            f'{name} failed its checksum at offset {offset}')
 

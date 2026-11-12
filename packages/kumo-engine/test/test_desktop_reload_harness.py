@@ -242,9 +242,25 @@ def checks(case, *extra):
     return [dict(name=name, detected=True) for name in names]
 
 
+HOSTS = {
+    'linux-x86_64': ('Linux', 'x86_64', '6.8.0-1017-azure'),
+    'linux-arm64': ('Linux', 'aarch64', '6.8.0-1017-azure'),
+    'windows-wsl': ('Linux', 'x86_64', '5.15.167.4-microsoft-standard-WSL2'),
+}
+
+
+def host(name):
+    if name.startswith('macos-'):
+        return dict(system='Darwin', machine='arm64',
+                    os_release=name.split('-')[1] + '.1')
+    system, machine, release = HOSTS[name]
+    return dict(system=system, machine=machine, os_release=release)
+
+
 def write_summary(root, label, *, attempt=1, commit='abc', **changes):
     name, device, python = label.rsplit('-', 2)
     body = dict(
+        **host(name),
         label=label, commit=commit, attempt=attempt, device=device,
         python_version=python.removeprefix('py') + '.0', atol=drq.REQUIRED_ATOL,
         harness_sha256='h', tasks_sha256='t', fixture=dict(data_sha256='f'),
@@ -465,3 +481,35 @@ def test_reordered_ranks_fail_outside_a_tie(case):
     with pytest.raises(drq.QualificationError, match='near tie'):
         drq.compare_frames(case, frame(case), reordered,
                            producer=producer(case), atol=1e-4)
+
+
+@pytest.mark.parametrize('label,change', [
+    ('macos-15-mps-py3.12', dict(os_release='26.1')),
+    ('macos-14-cpu-py3.12', dict(os_release='15.8')),
+    ('linux-x86_64-cpu-py3.12', dict(machine='aarch64')),
+    ('windows-wsl-gpu-py3.12', dict(os_release='6.8.0-1017-azure')),
+    ('linux-x86_64-gpu-py3.12', dict(os_release='5.15-microsoft-WSL2')),
+])
+def test_report_rejects_evidence_from_another_platform(tmp_path, label, change):
+    write_summary(tmp_path, label, **change)
+    report = drq.build_report(tmp_path, commit='abc')
+    assert statuses(report, label) == {'FAIL'}
+
+
+def test_failed_wheel_check_fails_every_case(tmp_path):
+    label = 'linux-arm64-cpu-py3.12'
+    write_summary(tmp_path, label, status='FAIL', cases={},
+                  error='Installed file differs from the candidate wheel')
+    rows = [r for r in drq.build_report(tmp_path, commit='abc')['rows']
+            if r['label'] == label]
+    assert {r['status'] for r in rows} == {'FAIL'}
+    assert 'differs' in rows[0]['reason']
+
+
+def test_hosted_report_needs_no_mac_rows(tmp_path):
+    for name, device in drq.HOSTED_TARGETS:
+        for python in drq.PYTHONS:
+            write_summary(tmp_path, f'{name}-{device}-py{python}')
+    assert drq.build_report(tmp_path, commit='abc',
+                            targets=drq.HOSTED_TARGETS)['status'] == 'PASS'
+    assert drq.build_report(tmp_path, commit='abc')['status'] == 'OPEN'
