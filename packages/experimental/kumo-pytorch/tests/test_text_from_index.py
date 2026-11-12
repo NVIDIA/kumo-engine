@@ -9,6 +9,7 @@ from dataclasses import replace
 
 import pyarrow as pa
 import pytest
+from tokenizers import Tokenizer
 
 from kumo.pytorch import api, encoding
 from kumo.pytorch.encoding import fit_encoder, train_text
@@ -83,8 +84,11 @@ def test_chunked_encoding_matches_one_string_at_a_time(monkeypatch):
     monkeypatch.setattr(encoding, "TEXT_BATCH", 3)
     fitted = fit_encoder("e", TEXT, api.DType("string"), ["red bike", "blue car", "red car"])
     unknown = replace(fitted, config=replace(TEXT, empty="unknown"))
+    tokenizer = Tokenizer.from_str(fitted.tokenizer_json)
+    tokenizer.enable_padding()
+    padded = fit_encoder("e", replace(TEXT, state=tokenizer.to_str()), api.DType("string"), ())
     values = ["red bike", None, "", "blue car red car red bike", "", None, "x"]
-    for encoder in (fitted, unknown):
+    for encoder in (fitted, unknown, padded):
         encoded = encoder.encode_arrow(pa.array(values, pa.string()))
         pieces = [encoder.encode(value) for value in values]
         assert encoded["values"].tolist() == [piece for item in pieces for piece in item]

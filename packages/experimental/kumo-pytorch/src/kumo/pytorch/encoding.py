@@ -168,7 +168,9 @@ class FittedEncoder:
     def tokenizer(self):
         from tokenizers import Tokenizer
 
-        return Tokenizer.from_str(self.tokenizer_json)
+        tokenizer = Tokenizer.from_str(self.tokenizer_json)
+        tokenizer.no_padding()
+        return tokenizer
 
     @property
     def roles(self) -> Mapping[str, int]:
