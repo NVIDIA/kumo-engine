@@ -32,13 +32,19 @@ Continue the workflow normally; pause for visual review only if the user asks.
 ## Generated SDK scripts
 
 Save the diagram next to the artifact, named after it (`churn_30d_train.graph.svg` for
-`churn_30d_train.py`), before training, and report its path. A fixed name such as `graph.svg`
-could replace an unrelated file; the artifact's own name is only ever its own:
+`churn_30d_train.py`), before training, and report its path. `visualize` overwrites an existing
+file, so when that name is taken — by an earlier run or anything else — write a new file beside
+it instead:
 
 ```python
+import tempfile
 from pathlib import Path
 
 graph_path = Path(__file__).with_suffix('.graph.svg').resolve()
+if graph_path.exists():                  # never replace a file: take a new name beside it
+    with tempfile.NamedTemporaryFile(dir=graph_path.parent, prefix=graph_path.stem + '-',
+                                     suffix='.svg', delete=False) as reserved:
+        graph_path = Path(reserved.name)
 if not hasattr(graph, 'visualize'):
     print('Graph preview needs a kumo-engine build including #134; upgrade when available. Continuing.')
 else:
@@ -55,7 +61,8 @@ The viewer supports up to 30 tables and does not support self-relations.
 ## Requested visuals and exports
 
 Display the graph in a notebook or save the format the user requests: `.svg` for a diagram, `.pdf` for a diagram and complete schema index, or `.md` for a Mermaid diagram and schema tables.
-`graph.visualize('graph.pdf', show_cols=True)` also shows ordinary columns in the diagram.
+`graph.visualize(EXPORT_PATH, show_cols=True)` also shows ordinary columns in the diagram.
+`EXPORT_PATH` is the path the user named. When they named none, choose one that does not exist yet, as for scripts, and report it; when the named file exists, say so and confirm before replacing it.
 Use `layout='standard'` or `layout='compact'` to select an arrangement; the default is `'auto'`.
 Export paths belong to the Python runtime; use `hosts/<host>/runtime.md` for display and file retrieval.
 
@@ -67,10 +74,15 @@ Keep samples off unless the user requests source values.
 When considering which tables or relationships to change for a use case, export the graph for text inspection:
 
 ```python
-_ = graph.visualize('graph.md')
+import tempfile
+from pathlib import Path
+
+schema_path = Path(tempfile.mkdtemp(prefix='kumo-graph-')) / 'graph.md'   # a new directory: replaces nothing
+_ = graph.visualize(schema_path)
+print(f'Graph schema: {schema_path}')
 ```
 
-Read the file to inspect all declared columns, key and time roles, and relationships, including columns hidden in the diagram.
+Read the file at the printed path to inspect all declared columns, key and time roles, and relationships, including columns hidden in the diagram.
 The assignment suppresses automatic notebook display.
 Use this schema alongside model evaluation results to plan graph experiments; it does not measure predictive usefulness.
 Markdown inspection is optional during iteration, not a prerequisite for generating or running a model.
