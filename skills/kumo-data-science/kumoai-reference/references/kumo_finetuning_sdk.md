@@ -470,6 +470,8 @@ says how a population is staged, or that it is not covered there:
   `ENTITY1` in the confirmed population table and pass it explicitly:
 
 ```python
+if f'{POP_DATABASE}.{POP_SCHEMA}.{POP_TABLE}' != POPULATION_CONFIRMED:   # approved at Node 1d
+    raise RuntimeError('The population table changed after Node 1d: confirm the new one first.')
 session.sql(                                  # the session from §3.3
     f'CREATE OR REPLACE TABLE {POP_DATABASE}.{POP_SCHEMA}.{POP_TABLE} AS '
     f'SELECT "{ENTITY_KEY}" AS ENTITY1 FROM {SOURCE_DATABASE}.{SOURCE_SCHEMA}."{ENTITY_TABLE}"'
@@ -482,7 +484,10 @@ prediction_table = kumo.PredictionTable.from_source_table(
 )
 ```
 
-- `CREATE OR REPLACE` replaces an existing table; Node 1d names that before it is confirmed.
+- `CREATE OR REPLACE` replaces an existing table; Node 1d names that before it is confirmed,
+  and the approval covers that one name. The config cell carries it verbatim as
+  `POPULATION_CONFIRMED`, and every staging recipe stops before writing when the name it would
+  replace differs — an edit after confirmation needs a new confirmation, not a silent replace.
 - Stage the population only where Node 1d confirmed it — never in the source schema. Write
   `POP_TABLE` in upper case, so the unquoted `CREATE` and the connector lookup agree.
 - Never change the query, the entity or the target to get rows. An empty population is a fact
@@ -623,8 +628,13 @@ def quoted(name):
     return '"' + name.replace('"', '""') + '"'
 
 destination = session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA, quoted(output_table)])
-assert destination.count() == prediction_result.num_rows
+assert destination.count() - before == prediction_result.num_rows
 ```
+
+`before` is 0 for `OVERWRITE`. For `APPEND` it is the same count taken before `predict` — 0 when
+the table does not exist yet, since the first APPEND creates it — so the check compares the rows
+this run added. The delta holds only while nothing else writes to the table
+(`kumoai-reference/references/outputs.md`).
 
 Scope the output connector to the destination database and schema; `table_name` is a bare name.
 Always read the table back — it is the only proof the write-back worked. `session` is the one
@@ -653,8 +663,10 @@ the write, as the host's `runtime.md` says (§9.1 for Snowflake).
 
 ## 10. Complete verified example
 
-On Snowflake. On any other connector, replace steps 1, 7 and 8 with the host `runtime.md`'s
-connect step, the §9.2 destination and its read-back; nothing else changes.
+On Snowflake, in a host whose `runtime.md` provides an active Snowpark session (§3.3). On any
+other host — Snowflake reached from outside it included — drop the `get_active_session()` line and
+replace steps 1, 7 and 8 with that host `runtime.md`'s connect step, the §9.2 destination and its
+SQL read-back; nothing else changes.
 
 Self-contained: `OUTPUT_DATABASE`, `OUTPUT_SCHEMA` and `OUTPUT_TABLE` are placeholders for the
 confirmed output destination (§12).
@@ -672,7 +684,7 @@ from snowflake.snowpark.context import get_active_session
 
 OUTPUT_DATABASE, OUTPUT_SCHEMA, OUTPUT_TABLE = '<db>', '<schema>', '<table>'  # confirmed destination
 
-session = get_active_session()
+session = get_active_session()   # §3.3: only where the host provides the session
 
 # 1. Scratch directory, then connect (inside SPCS; elsewhere use the §3 order). No credentials in the notebook.
 kumo.configure(scratch_dir=Path('/tmp/kumo-run') / 'scratch')
@@ -856,10 +868,12 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
 - [ ] No code cell writes anywhere unless a destination was confirmed; an example of how to add
       one later is markdown text, not a code cell.
 - [ ] Smoke-test sizing called out as such.
-- [ ] `write_mode` and any population replacement as Node 1d confirmed them (§9, §7.1).
+- [ ] `write_mode` and any population replacement as Node 1d confirmed them (§9, §7.1); the
+      staging cell stops when the population name differs from `POPULATION_CONFIRMED`.
 - [ ] Destination in its connector's form (§9.2), reported with its exact name — no
       `_predictions` suffix.
-- [ ] Written destination read back and row count compared to `prediction_result.num_rows`.
+- [ ] Written destination read back and row count compared to `prediction_result.num_rows` —
+      for APPEND, the count added since before `predict` (§9.1).
 - [ ] Success judged by blocking calls returning without raising — not by a status value.
 
 ---

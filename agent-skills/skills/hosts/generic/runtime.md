@@ -28,7 +28,9 @@ still waits for an explicit request.
 ## 1. Config cell
 
 The first code cell holds the imports and every location as a named constant: the confirmed
-source, the confirmed destination, and any population table — each written verbatim.
+source, the confirmed destination, and any population table — each written verbatim. A
+population also gets `POPULATION_CONFIRMED`, its name exactly as Node 1d confirmed it, which the
+staging step checks before replacing anything (§3.1).
 
 Values only the runtime knows — a Snowflake warehouse or `connections.toml` entry, a Databricks
 SQL warehouse or cluster — are constants here too. S3, GCS and BigQuery have none: the ambient
@@ -128,6 +130,9 @@ written = ds.dataset(OUTPUT_LOCATION.removeprefix('s3://'), format=OUTPUT_FORMAT
                      filesystem=s3).count_rows()
 ```
 
+Without an explicit identity, emit `s3 = None`: §3.1's population staging then lets Arrow resolve
+the ambient credentials itself.
+
 The Snowflake factory `from_spcs_env` and Snowflake's notebook secret store belong to
 Snowflake's own runtime. Emit them only when the user says the code runs there.
 
@@ -211,8 +216,14 @@ with snowflake.connector.connect(connection_name=SNOWFLAKE_CONNECTION,
     written = conn.cursor().execute(
         f'SELECT COUNT(*) FROM {OUTPUT_DATABASE}.{OUTPUT_SCHEMA}.{table}').fetchone()[0]
 
-assert written == prediction_result.num_rows, (written, prediction_result.num_rows)
+assert written - before == prediction_result.num_rows, (written, before, prediction_result.num_rows)
 ```
+
+`before` is 0 for OVERWRITE. For APPEND (`kumoai-reference/references/outputs.md`) it is the same
+count taken before `predict` — 0 when the destination does not exist yet, since the first APPEND
+creates it — so the check compares the rows this run added. The delta holds only while nothing
+else writes to the destination; when the user says others do, confirm a run-specific destination
+instead.
 
 - `OUTPUT_LOCATION` for files, S3 and GCS is the confirmed destination itself.
 - A Databricks destination is passed to Kumo as `'<schema>__kumo__<table>'` and read back as
@@ -244,21 +255,39 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   import pyarrow as pa
   import pyarrow.compute as pc
   import pyarrow.dataset as ds
+  import pyarrow.fs
   import pyarrow.parquet as papq
 
+  def arrow_fs(uri):
+      """Arrow's filesystem and path for uri; S3 with an explicit S3Identity takes §2's `s3`."""
+      if uri.startswith('s3://') and s3 is not None:         # s3 = None under ambient credentials
+          return s3, uri.removeprefix('s3://')
+      return pyarrow.fs.FileSystem.from_uri(uri if '://' in uri else os.path.abspath(uri))
+
+  if POPULATION_PATH != POPULATION_CONFIRMED:                # Node 1d approved replacing this path only
+      raise RuntimeError('POPULATION_PATH changed after Node 1d: confirm the new path first.')
   keep = {ENTITY_KEY: 'ENTITY1'}
   if ENTITY_TIME:                                             # the entity Table's time_column, else None
       keep[ENTITY_TIME] = 'TIMESTAMP'
-  scanner = ds.dataset(ENTITY_SOURCE, format=ENTITY_FORMAT).scanner(columns=list(keep))
-  schema = pa.schema([(keep[f.name], pa.timestamp('us') if keep[f.name] == 'TIMESTAMP' else f.type)
-                      for f in scanner.projected_schema])     # a DATE anchor reads as null: cast
-  if '://' not in POPULATION_PATH:
-      os.makedirs(POPULATION_PATH, exist_ok=True)              # object stores need no directory
-  with papq.ParquetWriter(POPULATION_PATH + 'population.parquet', schema) as writer:
+  source_fs, source_path = arrow_fs(ENTITY_SOURCE)
+  scanner = ds.dataset(source_path, format=ENTITY_FORMAT,
+                       filesystem=source_fs).scanner(columns=list(keep))
+
+  def anchor_type(t):            # a timestamp keeps its unit; a DATE anchor reads as null: cast it
+      return t if pa.types.is_timestamp(t) else pa.timestamp('us')
+
+  schema = pa.schema([(keep[f.name], anchor_type(f.type) if keep[f.name] == 'TIMESTAMP' else f.type)
+                      for f in scanner.projected_schema])
+  pop_fs, pop_dir = arrow_fs(POPULATION_PATH)
+  if isinstance(pop_fs, pyarrow.fs.LocalFileSystem):
+      pop_fs.create_dir(pop_dir)                              # object stores need no directory
+  final = pop_dir.rstrip('/') + '/population.parquet'
+  with papq.ParquetWriter(final + '.partial', schema, filesystem=pop_fs) as writer:
       for batch in scanner.to_batches():                     # in batches: bounded memory
           writer.write_batch(pa.RecordBatch.from_arrays(
               [pc.cast(batch[f.name], t.type) for f, t in zip(batch.schema, schema)],
               schema=schema))
+  pop_fs.move(final + '.partial', final)                     # replace only once every batch is in
   if POPULATION_PATH.startswith('s3://'):                     # the source's kind, in the §2 forms
       population_connector = kumo.S3Connector(root_dir=POPULATION_PATH)
   elif POPULATION_PATH.startswith('gs://'):
@@ -272,7 +301,11 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   `ENTITY_SOURCE` is the entity table's file or directory as preflight listed it, and
   `ENTITY_FORMAT` its format as preflight found it, `'csv'` or `'parquet'`. The population is
   written as Parquet either way. `POPULATION_PATH` is the confirmed path, ending in `/`, in the
-  source's file system or bucket. Each run replaces its `population.parquet`, as Node 1d says.
+  source's file system or bucket, and `POPULATION_CONFIRMED` the same path as Node 1d confirmed
+  it, both in the config cell. Each run replaces its `population.parquet`, as Node 1d says. The
+  rows go to `population.parquet.partial` first, so a scan or cast that fails leaves the previous
+  population in place. A source timestamp keeps its own unit: a `timestamp[ns]` with
+  sub-microsecond values would fail a safe cast to microseconds.
 - **Snowflake source:** the §7.1 SQL, run through
   `snowflake.connector.connect(connection_name=SNOWFLAKE_CONNECTION, warehouse=SNOWFLAKE_WAREHOUSE)`
   as in the read-back above,
@@ -294,6 +327,8 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
       """`catalog`.`schema`.`table`: Unity Catalog names may contain hyphens."""
       return '.'.join('`' + p.replace('`', '``') + '`' for p in parts)
 
+  if f'{POP_CATALOG}.{POP_SCHEMA}.{POP_TABLE}' != POPULATION_CONFIRMED:   # approved at Node 1d
+      raise RuntimeError('The population table changed after Node 1d: confirm the new one first.')
   ws = WorkspaceClient()
   time_col = f', CAST({q(ENTITY_TIME)} AS TIMESTAMP) AS TIMESTAMP' if ENTITY_TIME else ''
   r = ws.statement_execution.execute_statement(
@@ -317,6 +352,8 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   ```python
   from google.cloud import bigquery
 
+  if f'{POP_PROJECT}.{POP_DATASET}.{POP_TABLE}' != POPULATION_CONFIRMED:   # approved at Node 1d
+      raise RuntimeError('The population table changed after Node 1d: confirm the new one first.')
   time_col = f', CAST({ENTITY_TIME} AS TIMESTAMP) AS `TIMESTAMP`' if ENTITY_TIME else ''
   bigquery.Client(project=POP_PROJECT).query(
       f'CREATE OR REPLACE TABLE `{POP_PROJECT}.{POP_DATASET}.{POP_TABLE}` AS '

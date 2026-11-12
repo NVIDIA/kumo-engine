@@ -240,9 +240,12 @@ generated before the task is confirmed:
 target is NULL (`kumoai-reference/references/kumo_finetuning_sdk.md` §7.1). If the user wants rows that
 already have a target scored (for example "every order"), the notebook stages an explicit
 population table. That is a write, and it goes in the source's system, so name it here: next to the confirmed
-destination by default (`<DESTINATION>_POPULATION`) when the destination is in the source's
-system; otherwise, or when there is no destination, ask for a schema or path in the source's
-system. Never stage it in the source schema.
+destination by default when the destination is in the source's system — the table
+`<DESTINATION>_POPULATION`, or for a path the sibling directory
+`<destination without its trailing / or file suffix>_population/` (`s3://b/scores/` →
+`s3://b/scores_population/`), never inside the destination, which must stay empty; otherwise, or
+when there is no destination, ask for a schema or path in the source's system. Never stage it in
+the source schema.
 
 **Name what a run replaces.** The notebook writes predictions with `OVERWRITE` and stages a
 population with `CREATE OR REPLACE` (a file: overwritten), on every run. Check from the catalog
@@ -250,7 +253,9 @@ whether the destination and the population already exist, and say so on their li
 `<DB.SCHEMA.TABLE> (exists: replaced on every run)` — so confirming them approves the
 replacement. When the user does not want an existing table replaced, ask for another name, or
 for a destination, APPEND (`kumoai-reference/references/outputs.md`). If the check cannot run,
-say that instead.
+say that instead. The approval covers the confirmed population name only: the notebook carries it
+as `POPULATION_CONFIRMED` and stops before staging if the name it would replace differs
+(`kumoai-reference/references/kumo_finetuning_sdk.md` §7.1).
 
 | Condition | Transition |
 |---|---|
