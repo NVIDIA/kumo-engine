@@ -801,6 +801,7 @@ def produce(args):
     info = environment(args.device, args.expected_version)
     receipt.update(info)
     preflight(args.device, info)
+    receipt.update(info)
     kumo.configure(scratch_dir=args.scratch)
     fixture = write_fixture(args.case, Path(args.raw))
     fixture['entities'].to_parquet(durable / 'entities.parquet')
@@ -867,6 +868,7 @@ def consume(args):
     receipt.update(info)
     if not args.skip_preflight:
         preflight(args.device, info)
+        receipt.update(info)
     kumo.configure(scratch_dir=args.scratch)
     with observe(args.device, work):
         files = kumo.FileConnector(root_dir=str(durable))
