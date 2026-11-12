@@ -4,16 +4,18 @@
 
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{ensure, Result};
+use ahash::AHashMap;
+use anyhow::{anyhow, ensure, Result};
 use arrow::array::Array;
 use arrow::compute::filter_record_batch;
 use arrow::pyarrow::ToPyArrow;
 use arrow_array::cast::AsArray;
 use arrow_array::types::UInt64Type;
 use arrow_array::{ArrayRef, Int64Array, TimestampSecondArray};
+use compact_str::CompactString;
 use diskgraph_ingest::column_scan::{
     self, at_cutoff, create_times, decode_chunk, node_chunks, stored_tables,
 };
@@ -23,11 +25,20 @@ use diskgraph_ingest::graph_config::{
 };
 use pyo3::prelude::*;
 use rayon::prelude::*;
+use tokenizers::models::bpe::{BpeTrainer, BPE};
+use tokenizers::pre_tokenizers::byte_level::ByteLevel;
+use tokenizers::{
+    AddedToken, OffsetReferential, OffsetType, PreTokenizedString, PreTokenizer, Tokenizer,
+};
 
 use crate::bp_col_stats::drive_from_arrow_column;
 use crate::{map_anyhow_err, DiskgraphConfigError};
 
 const CHUNK_NODES: u64 = 1 << 16;
+const TEXT_CHUNK_NODES: u64 = 1 << 10;
+const TEXT_WINDOW_CHUNKS: usize = 1 << 10;
+
+type WordCounts = AHashMap<CompactString, u64>;
 
 /// Recomputes `request` from an index's stored rows.
 fn from_index(index_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
@@ -169,6 +180,152 @@ pub fn scan_column(
     Ok(ColumnScan { scan })
 }
 
+/// How often each byte-level word occurs in string columns' non-null values over the rows counted
+/// at `cutoff`.
+fn word_counts(
+    py: Python<'_>,
+    index_dir: &Path,
+    columns: &[(String, String)],
+    cutoff: Option<i64>,
+    pool: &rayon::ThreadPool,
+    pre_tokenizer: &ByteLevel,
+) -> PyResult<WordCounts> {
+    let names = columns.iter().map(|(table, _)| table.clone()).collect();
+    let (tables, clock) = stored_tables(index_dir, &names).map_err(map_anyhow_err)?;
+    let scans = columns
+        .iter()
+        .map(|(table, column)| {
+            let stored = &tables[table];
+            let index = stored
+                .columns
+                .iter()
+                .position(|(name, _)| name == column)
+                .ok_or_else(|| anyhow!("table {table} has no column {column}"))?;
+            let kind = stored.columns[index].1;
+            ensure!(
+                kind == diskgraph_rowpack::IngestedType::String,
+                "column {table}.{column} holds {kind:?} values, not strings"
+            );
+            let decoded: Vec<usize> = std::iter::once(index).chain(stored.create_time).collect();
+            Ok((stored, decoded))
+        })
+        .collect::<Result<Vec<_>>>()
+        .map_err(map_anyhow_err)?;
+    let chunks: Vec<_> = scans
+        .iter()
+        .enumerate()
+        .flat_map(|(scan, (stored, _))| {
+            node_chunks(&stored.reader, TEXT_CHUNK_NODES).map(move |chunk| (scan, chunk))
+        })
+        .collect();
+    let maps: Vec<Mutex<WordCounts>> = (0..pool.current_num_threads())
+        .map(|_| Mutex::default())
+        .collect();
+    for window in chunks.chunks(TEXT_WINDOW_CHUNKS) {
+        py.detach(|| {
+            pool.install(|| {
+                window.par_iter().try_for_each(|&(scan, chunk)| {
+                    let (stored, decoded) = &scans[scan];
+                    let batch = decode_chunk(&stored.reader, chunk, decoded)?;
+                    let times =
+                        (batch.num_columns() > 1).then(|| create_times(batch.column(1), clock));
+                    let keep = at_cutoff(times.as_deref(), batch.num_rows(), cutoff);
+                    let values = batch.column(0).as_string::<i32>();
+                    let thread = rayon::current_thread_index().expect("a pool thread");
+                    let mut words = maps[thread].lock().expect("unpoisoned");
+                    for row in
+                        (0..batch.num_rows()).filter(|&row| keep.value(row) && values.is_valid(row))
+                    {
+                        let mut value = PreTokenizedString::from(values.value(row));
+                        pre_tokenizer
+                            .pre_tokenize(&mut value)
+                            .map_err(|e| anyhow!(e))?;
+                        for (word, _, _) in
+                            value.get_splits(OffsetReferential::Original, OffsetType::Byte)
+                        {
+                            *words.entry(word.into()).or_default() += 1;
+                        }
+                    }
+                    Ok(())
+                })
+            })
+        })
+        .map_err(map_anyhow_err)?;
+        py.check_signals()?;
+    }
+    Ok(py.detach(|| {
+        let mut maps = maps
+            .into_iter()
+            .map(|map| map.into_inner().expect("unpoisoned"));
+        let mut words = maps.next().unwrap_or_default();
+        for map in maps {
+            for (word, count) in map {
+                *words.entry(word).or_default() += count;
+            }
+        }
+        words
+    }))
+}
+
+/// A byte-level BPE tokenizer's JSON, trained as `tokenizers`' `train_from_iterator` trains it on
+/// string columns' non-null values over the rows counted at `cutoff`.
+#[pyfunction]
+#[pyo3(signature = (
+    index_dir, columns, cutoff, *, vocab_size, min_frequency, special_tokens, unk_token,
+    num_threads=None
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn train_tokenizer(
+    py: Python<'_>,
+    index_dir: &str,
+    columns: Vec<(String, String)>,
+    cutoff: Option<i64>,
+    vocab_size: usize,
+    min_frequency: u64,
+    special_tokens: Vec<String>,
+    unk_token: String,
+    num_threads: Option<usize>,
+) -> PyResult<String> {
+    if num_threads == Some(0) {
+        return Err(DiskgraphConfigError::new_err(
+            "num_threads must be positive",
+        ));
+    }
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads.unwrap_or(0))
+        .build()
+        .map_err(|e| map_anyhow_err(e.into()))?;
+    let pre_tokenizer = ByteLevel::default().add_prefix_space(false);
+    let words = word_counts(
+        py,
+        Path::new(index_dir),
+        &columns,
+        cutoff,
+        &pool,
+        &pre_tokenizer,
+    )?;
+    py.detach(|| -> tokenizers::Result<String> {
+        let trainer = BpeTrainer::builder()
+            .vocab_size(vocab_size)
+            .min_frequency(min_frequency)
+            .show_progress(false)
+            .special_tokens(
+                special_tokens
+                    .into_iter()
+                    .map(|t| AddedToken::from(t, true))
+                    .collect(),
+            )
+            .build();
+        let mut model = BPE::builder().unk_token(unk_token).build()?;
+        let special = pool.install(|| trainer.do_train(&words, &mut model))?;
+        let mut tokenizer = Tokenizer::new(model);
+        tokenizer.with_pre_tokenizer(Some(pre_tokenizer));
+        tokenizer.add_special_tokens(special)?;
+        tokenizer.to_string(false)
+    })
+    .map_err(|e| map_anyhow_err(anyhow!(e)))
+}
+
 /// Epoch `seconds` in the index clock `unit`, rounded as ingest rounds a row's create time.
 #[pyfunction]
 pub fn cutoff_ticks(seconds: i64, unit: &str) -> PyResult<i64> {
@@ -183,5 +340,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cutoff_col_stats, m)?)?;
     m.add_function(wrap_pyfunction!(cutoff_ticks, m)?)?;
     m.add_function(wrap_pyfunction!(scan_column, m)?)?;
+    m.add_function(wrap_pyfunction!(train_tokenizer, m)?)?;
     m.add_class::<ColumnScan>()
 }
