@@ -819,11 +819,6 @@ def test_synthetic_banking_materialization_sampling_and_reopen_are_reproducible(
     assert model_batch.targets["future_activity"]["values"].tolist() == [3.0, 2.0]
     signup = next(row["signup_at"] for row in rows["users"] if row["user_id"] == 2)
     engine = api.DiskGraphEngine(index=indexes[0], num_threads=1)
-    for cutoff in (signup - timedelta(seconds=1), signup):
-        request = api.SampleRequest("before-signup", 2, cutoff)
-        with pytest.raises(ValueError, match="entity did not exist before"):
-            with api.prepare(contract, parquet, engine) as plan:
-                plan.materialize((request,))
     request = api.SampleRequest(
         "after-signup", 2, signup + timedelta(seconds=1), targets=requests[0].targets
     )

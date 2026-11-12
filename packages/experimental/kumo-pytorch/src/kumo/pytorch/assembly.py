@@ -56,7 +56,13 @@ from kumo.pytorch.contract.batch import (
 from kumo.pytorch.contract.batch.encodings import Buckets, Text, Vocabulary, ZScore
 from kumo.pytorch.contract.batch.tokens import ROLE_ORDER
 from kumo.pytorch.contract.dtypes import DType
-from kumo.pytorch.contract.sample import BuiltSample, SampleRequest, SampleSpec
+from kumo.pytorch.contract.sample import (
+    BuiltSample,
+    ExternalTarget,
+    SampleRequest,
+    SampleSpec,
+    _normalize_supplied_targets,
+)
 from kumo.pytorch.data.masking import mask_event_values
 from kumo.pytorch.data.model import ModelSourceBatch
 from kumo.pytorch.data.records import EntityHistory, Event, cutoff_to_epoch
@@ -66,6 +72,7 @@ from kumo.pytorch.encoding import (
     OutputBinding,
     fit_encoder,
     json_value,
+    learns_from_values,
     typed_key,
     unjson_value,
 )
@@ -109,9 +116,11 @@ def _sample_id(value: HistoryInput) -> str | int:
     return value.sample_id if isinstance(value, BuiltSample) else value.entity_id
 
 
-def _targets(value: HistoryInput) -> dict[str, Any]:
+def _targets(value: HistoryInput | SampleRequest) -> dict[str, Any]:
     return (
-        {item.name: item.value for item in value.targets} if isinstance(value, BuiltSample) else {}
+        {item.name: item.value for item in value.targets}
+        if isinstance(value, (BuiltSample, SampleRequest))
+        else {}
     )
 
 
@@ -678,7 +687,7 @@ def _fit_inputs(
                             f"encoder {identity}: sharing requires identical declared dtypes"
                         )
                     definitions[identity] = (config, dtype)
-                    if identity not in pinned:
+                    if identity not in pinned and learns_from_values(config, dtype):
                         slots[(name, table, use.field)] = identity
                     graph_fields[name][table][use.field] = identity
             continue
@@ -693,7 +702,7 @@ def _fit_inputs(
             if identity in definitions and definitions[identity][1] != dtype:
                 raise ValueError(f"encoder {identity}: sharing requires identical declared dtypes")
             definitions[identity] = (config, dtype)
-            if identity not in pinned:
+            if identity not in pinned and learns_from_values(config, dtype):
                 slots[(name, use.field)] = identity
             if value.representation.field_names is not None:
                 field_names[value.representation.field_names].update(
@@ -707,7 +716,9 @@ def _fit_inputs(
         and isinstance(value.representation.row, Composite)
         and value.representation.row.vocabulary is None
     }
-    for values in _chunks(values_for(sample)) if observed or composites else ():
+    for values in (
+        _chunks(values_for(sample_without_targets(sample))) if observed or composites else ()
+    ):
         rows = _rows_for_inputs(spec, declarations, values, model=model)
         for name, value in spec.inputs.items():
             if not isinstance(value.representation, Fields):
@@ -1464,7 +1475,7 @@ def _fit_targets(
                 else use.encoding
             )
             definitions[identity] = (config, dtype)
-            if identity not in state.encoders:
+            if identity not in state.encoders and learns_from_values(config, dtype):
                 slots[(name, use.field)] = identity
         if isinstance(target, AlignedEventTarget):
             for item in target.derived:
@@ -1482,11 +1493,36 @@ def _fit_targets(
                 )
                 definitions[identity] = (config, item.dtype)
                 derived[(name, item.name)] = item
-                if identity not in state.encoders:
+                if identity not in state.encoders and learns_from_values(config, item.dtype):
                     slots[(name, item.name)] = identity
-    observed = {key: [] for key in (*slots, *derived)}
-    for values in _chunks(values_for(sample)) if observed or groups else ():
-        rows = _rows_for_inputs(spec, declarations, values, model=model)
+    observed = {
+        key: []
+        for key in (*slots, *(key for key, item in derived.items() if item.threshold is None))
+    }
+    learned = {name for name, _ in observed} | set(groups)
+    reads_rows = any(
+        isinstance(spec.targets[name], (AlignedEventTarget, MatchingGroupTarget, CandidateTarget))
+        for name in learned
+    )
+    computed = any(
+        not isinstance(sample.targets.get(spec.targets[name].source), ExternalTarget)
+        for name in learned
+        if isinstance(spec.targets[name], (LabelTarget, StructuredTarget))
+    )
+    targets_only = replace(
+        sample,
+        entity_values={},
+        dated_entity_values={},
+        events={},
+        current_events={},
+        neighborhoods={},
+    )
+    for values in (
+        _chunks(values_for(sample if reads_rows else targets_only if computed else None))
+        if learned
+        else ()
+    ):
+        rows = _rows_for_inputs(spec, declarations, values, model=model) if reads_rows else {}
         for name in groups:
             target = spec.targets[name]
             bindings = state.prepared_inputs[target.input].state
@@ -2531,8 +2567,10 @@ def fit_plan(
     requires both, and builds samples without their row-computed targets so no
     target row is read.
 
-    Samples are built in chunks of ``_FIT_CHUNK`` requests, only when an encoder
-    observes values; observations, not samples, are kept.
+    Samples are built in chunks of ``_FIT_CHUNK`` requests, only for encodings
+    that learn from values, and only their observations are kept: inputs build
+    without their targets, targets build alone unless they read input rows, and
+    supplied labels are read from the requests.
     """
 
     needs_fitting = input_state is None or target_encoders is None
@@ -2552,8 +2590,16 @@ def fit_plan(
     )
 
     def values_for(sample_spec):
-        build = source.build_model if model else source.build
-        return _Mapped(partial(build, sample_spec), fitting_requests)
+        if sample_spec is not None:
+            build = source.build_model if model else source.build
+            return _Mapped(partial(build, sample_spec), fitting_requests)
+        return _Mapped(
+            lambda requests: [
+                replace(request, targets=_normalize_supplied_targets(sample, request.targets))
+                for request in requests
+            ],
+            fitting_requests,
+        )
 
     reused = input_state is not None
     fitting_spec = _fitting_batch_spec(spec)
