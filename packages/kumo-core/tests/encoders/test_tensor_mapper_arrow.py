@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Golden tests: native ``pyarrow.Array`` mapper path == the pandas path."""
 
+from unittest.mock import MagicMock
+
 import pandas as pd
 import pyarrow as pa
 import pytest
@@ -244,6 +246,51 @@ def test_mapper_rejects_non_arrow_input(mapper: TensorMapper) -> None:
     for values in (series, series.to_numpy()):
         with pytest.raises(TypeError, match="Arrow array"):
             mapper(values)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "mapper",
+    [
+        NumericalTensorMapper(),
+        CategoricalTensorMapper([["a", 1]]),
+        MultiCategoricalTensorMapper([["a", 1]], None),
+        SequenceTensorMapper(0, 3),
+        TimestampTensorMapper(),
+        TextTensorMapper(),
+        ImageTensorMapper(),
+        UnsupportedTensorMapper(),
+    ],
+    ids=lambda mapper: type(mapper).__name__,
+)
+@pytest.mark.parametrize(
+    "array",
+    [
+        pa.array([[1.0, 2.0], [3.0]], type=pa.list_view(pa.float64())),
+        pa.array([[1.0, 2.0], [3.0]], type=pa.large_list_view(pa.float64())),
+        pa.array(["[1,2]", None], type=pa.string_view()),
+    ],
+    ids=["list-view", "large-list-view", "string-view"],
+)
+@pytest.mark.parametrize("chunked", [False, True])
+@pytest.mark.parametrize("empty", [False, True])
+def test_mappers_reject_arrow_view_types(
+    mapper: TensorMapper,
+    array: pa.Array,
+    chunked: bool,
+    empty: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unsupported view types fail before mapper-specific encoding runs."""
+    if empty:
+        array = array.slice(0, 0)
+    source = pa.chunked_array([array[:1], array[1:]]) if chunked else array
+    forward = MagicMock()
+    monkeypatch.setattr(mapper, "forward", forward)
+
+    with pytest.raises(TypeError, match="does not support Arrow view arrays"):
+        mapper(source)
+
+    forward.assert_not_called()
 
 
 def test_categorical_float_arrow_preserves_zero_and_unknown_categories() -> None:

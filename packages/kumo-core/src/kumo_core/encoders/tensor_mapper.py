@@ -64,15 +64,31 @@ class TensorMapper(ABC, Generic[T]):
     ) -> T:
         """Encode raw Arrow values, combining chunks before conversion.
 
+        Args:
+            array: Raw column values in a supported Arrow array or chunked array.
+            device: Destination device, or the default device when omitted.
+
+        Returns:
+            The column's compact tensor representation.
+
         Raises:
-            TypeError: If the input is not an Arrow array or chunked array.
+            TypeError: If the input is not an Arrow array or chunked array,
+                or uses an unsupported list-view or string-view type.
         """
-        if isinstance(array, pa.ChunkedArray):
-            array = array.combine_chunks()
-        elif not isinstance(array, pa.Array):
+        if not isinstance(array, (pa.Array, pa.ChunkedArray)):
             raise TypeError(
                 "TensorMapper input must be an Arrow array or chunked array"
             )
+        if (
+            pa.types.is_list_view(array.type)
+            or pa.types.is_large_list_view(array.type)
+            or pa.types.is_string_view(array.type)
+        ):
+            raise TypeError(
+                f"TensorMapper does not support Arrow view arrays ({array.type})"
+            )
+        if isinstance(array, pa.ChunkedArray):
+            array = array.combine_chunks()
         return self.forward(array, device=device)
 
     @abstractmethod
@@ -571,11 +587,11 @@ class SequenceTensorMapper(TensorMapper[MultiEmbeddingTensor]):
             self._is_string_dtype = False
 
         values, offsets = _list_values_and_offsets(array)
-        if pa.types.is_null(values.type):
-            values = values.cast(pa.float64())
-        return self._pad_or_truncate(
-            values.to_numpy(zero_copy_only=False), offsets, device
-        )
+        values_np = values.to_numpy(zero_copy_only=False)
+        if values_np.dtype.kind in {"O", "U", "S"}:
+            dtype = str(torch.get_default_dtype()).split(".")[-1]
+            values_np = values_np.astype(dtype)
+        return self._pad_or_truncate(values_np, offsets, device)
 
     def post_forward(
         self,

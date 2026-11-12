@@ -271,3 +271,92 @@ def test_fixed_size_list_output_does_not_alias_arrow_buffer() -> None:
     mapper = SequenceTensorMapper(min_length=0, max_length=L)
     mapper(arr).values.fill_(0.0)
     assert arr.to_pylist() == FIXED_ROWS["full"]
+
+
+@pytest.mark.parametrize(
+    "value_type, rows, expected",
+    [
+        (
+            pa.string(),
+            [["0", None], ["1", "2.5"], None],
+            [[0.0, np.nan], [1.0, 2.5], [np.nan, np.nan]],
+        ),
+        (
+            pa.large_string(),
+            [["0", None], ["1", "2.5"], None],
+            [[0.0, np.nan], [1.0, 2.5], [np.nan, np.nan]],
+        ),
+        (
+            pa.string(),
+            [[" 0 ", None], [" +1e0 ", " 2.5 "], None],
+            [[0.0, np.nan], [1.0, 2.5], [np.nan, np.nan]],
+        ),
+        (
+            pa.bool_(),
+            [[True, None], [False, True], None],
+            [[1.0, np.nan], [0.0, 1.0], [np.nan, np.nan]],
+        ),
+        (pa.null(), [[None, None], [None, None], None], [[np.nan, np.nan]] * 3),
+    ],
+    ids=[
+        "numeric-strings",
+        "large-numeric-strings",
+        "numpy-numeric-strings",
+        "nullable-booleans",
+        "null-leaves",
+    ],
+)
+@pytest.mark.parametrize("layout", ["list", "large-list", "fixed-size-list"])
+@pytest.mark.parametrize("max_length", [1, 2, 3])
+@pytest.mark.usefixtures("default_dtype")
+def test_sequence_leaves_are_coerced_to_floats(
+    value_type: pa.DataType,
+    rows: list[list[str | bool | None] | None],
+    expected: list[list[float]],
+    layout: str,
+    max_length: int,
+) -> None:
+    """Numeric leaves preserve nulls, row boundaries, and the default dtype."""
+    if layout == "large-list":
+        array_type = pa.large_list(value_type)
+    else:
+        array_type = pa.list_(value_type, 2 if layout == "fixed-size-list" else -1)
+    array = pa.array(rows, type=array_type)
+    expected_values = torch.full((3, max_length), float("nan"))
+    width = min(2, max_length)
+    expected_values[:, :width] = torch.tensor(expected)[:, :width]
+    sources = (
+        (array, expected_values),
+        (array.slice(0, 2), expected_values[:2]),
+        (array.slice(1), expected_values[1:]),
+        (pa.chunked_array([array[:1], array[1:]]), expected_values),
+    )
+
+    for source, expected_rows in sources:
+        result = SequenceTensorMapper(0, max_length)(source)
+
+        torch.testing.assert_close(result.values, expected_rows, equal_nan=True)
+        assert result.values.dtype == torch.get_default_dtype()
+        assert result.offset.tolist() == [0, max_length]
+
+
+def test_sequence_rejects_nonnumeric_string_leaves() -> None:
+    """Invalid numeric leaves raise a parsing error instead of losing data."""
+    array = pa.array([["not-a-number"]])
+
+    with pytest.raises(ValueError, match="could not convert string to float"):
+        SequenceTensorMapper(0, 3)(array)
+
+
+@pytest.mark.parametrize("value_type", [pa.string(), pa.large_string()], ids=str)
+@pytest.mark.usefixtures("default_dtype")
+def test_string_encoded_sequences_use_numpy_parsing(value_type: pa.DataType) -> None:
+    """String-encoded sequences retain NumPy whitespace and exponent parsing."""
+    array = pa.array(["[ 1 , +2.5e0 ]", None, "[]"], type=value_type)
+    expected = torch.tensor(
+        [[1.0, 2.5, np.nan], [np.nan, np.nan, np.nan], [np.nan, np.nan, np.nan]]
+    )
+
+    result = SequenceTensorMapper(0, 3)(array)
+
+    torch.testing.assert_close(result.values, expected, equal_nan=True)
