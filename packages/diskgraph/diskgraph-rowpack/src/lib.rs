@@ -2133,6 +2133,8 @@ pub trait ColumnValueObserver {
     }
     /// Called before a row's values, with its create time in index-clock ticks.
     fn start_row(&mut self, _create_time: Option<i64>) {}
+    /// Called after a row's values, with whether the index stores them.
+    fn finish_row(&mut self, _stored: bool) {}
 }
 
 /// Zero-sized observer that does nothing. LLVM eliminates all calls via monomorphization.

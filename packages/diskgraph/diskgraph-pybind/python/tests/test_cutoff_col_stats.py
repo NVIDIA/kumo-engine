@@ -40,8 +40,7 @@ def data(tmp_path_factory) -> pathlib.Path:
     n = 3_000
     pq.write_table(pa.table({
         "id": pa.array(range(n), pa.int64()),
-        "signup": pa.array([(T0 + rng.randrange(-2_000, 7_000)) * 1_000 for _ in range(n)],
-                           pa.timestamp("ms")),
+        "signup": pa.array([(T0 + rng.randrange(-2_000, 7_000)) * 1_000 for _ in range(n)]),
         "tier": pa.array([None if i % 17 == 0 else rng.choice(["gold", "", "é"])
                           for i in range(n)]),
         "age": pa.array([rng.randrange(90) for _ in range(n)], pa.int32()),
@@ -67,7 +66,8 @@ def _ingest(data: pathlib.Path, out: pathlib.Path, col_stats=False, **options) -
 
     diskgraph.ingest(
         config_json=json.dumps({"dataset_name": "cutoffs", "timestamp_unit": "seconds", "tables": [
-            table("users", "id", [("id", "int64"), ("signup", "timestamp"), ("tier", "string"),
+            table("users", "id", [("id", "int64"), ("signup", "timestamp", {"timestamp_unit": "millis"}),
+                                  ("tier", "string"),
                                   ("age", "int32"), ("raw", "bytes"), ("seen", "timestamp"),
                                   ("born", "date"), ("price", "decimal128", {"precision": 10, "scale": 2}),
                                   ("big", "u_int64")],
@@ -94,7 +94,7 @@ def ingested(data, tmp_path_factory) -> str:
 
 def test_ingest_counts_the_rows_created_at_or_before_each_cutoff(data, ingested):
     table = pq.read_table(data / "users.parquet")
-    users = {**table.to_pydict(), **{c: table[c].cast(pa.int64()).to_pylist() for c in ("signup", "seen")}}
+    users = {**table.to_pydict(), "seen": table["seen"].cast(pa.int64()).to_pylist()}
     kept = [i for i, ms in enumerate(users["signup"]) if ms <= CUTOFF * 1_000]
     for directory, rows in zip(REQUEST["dirs"], (kept, range(len(users["id"])))):
         stats = _stats(ingested)[directory]
@@ -132,8 +132,42 @@ def test_rejects_unknown_columns_and_exclusive_options(data, ingested, tmp_path)
     with pytest.raises(Exception, match="has no column missing"):
         diskgraph.cutoff_col_stats(ingested, json.dumps(
             {**REQUEST, "columns": {"users": {"missing": "categorical"}}}))
+    with pytest.raises(Exception, match="its own directory"):
+        diskgraph.cutoff_col_stats(ingested, json.dumps({**REQUEST, "dirs": ["same", "same"]}))
     with pytest.raises(Exception, match="exclusive"):
         _ingest(data, tmp_path / "both", True, cutoff_col_stats=json.dumps(REQUEST))
+
+
+def test_rows_the_index_does_not_store_count_on_neither_route(tmp_path):
+    times = [dt.datetime.fromtimestamp(T0 + i, dt.UTC).strftime("%Y-%m-%d %H:%M:%S") for i in range(60)]
+    times[3], times[4] = "garbage", None
+    tiers = [f"t{i % 5}" for i in range(60)]
+    tiers[7] = "x" * (65 << 20)
+    pq.write_table(pa.table({"id": range(60), "at": times, "tier": pa.array(tiers, pa.large_string())}),
+                   tmp_path / "events.parquet")
+    request = {"cutoffs": [T0 + 29, None], "dirs": ["at-cutoff", "every-row"],
+               "columns": {"events": {"tier": "categorical"}}}
+    index = tmp_path / "index"
+    diskgraph.ingest(
+        config_json=json.dumps({"dataset_name": "dropped", "tables": [{
+            "name": "events", "primary_key": "id", "create_time": "at",
+            "columns": [{"name": "id", "ingested_dtype": "int64"},
+                        {"name": "at", "ingested_dtype": "timestamp", "timestamp_format": "%Y-%m-%d %H:%M:%S"},
+                        {"name": "tier", "ingested_dtype": "string"}],
+            "source": {"type": "parquet", "paths": [str(tmp_path / "events.parquet")]}}]}),
+        output_dir=str(index), col_stats=False, cutoff_col_stats=json.dumps(request),
+    )
+
+    def counts():
+        return [dict(map(tuple, json.loads((index / "col_stats" / d / "col_stats.json").read_text())
+                         ["events"]["tier"]["category_counts"])) for d in request["dirs"]]
+
+    ingested = counts()
+    shutil.rmtree(index / "col_stats")
+    diskgraph.cutoff_col_stats(str(index), json.dumps(request))
+    stored = [i for i in range(60) if i not in (3, 4, 7)]
+    assert counts() == ingested == [collections.Counter(tiers[i] for i in stored if i <= 29),
+                                    collections.Counter(tiers[i] for i in stored)]
 
 
 @pytest.mark.parametrize("unit, ticks", [

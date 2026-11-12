@@ -116,9 +116,12 @@ def ensure_diskgraph_index(
     if column_stats is not None:
         requests, cutoffs, quantiles = column_stats
         clock = config.get("timestamp_unit", "seconds")
-        ticks = [
-            None if cutoff is None else diskgraph.cutoff_ticks(cutoff, clock) for cutoff in cutoffs
-        ]
+        ticks = list(
+            dict.fromkeys(
+                None if cutoff is None else diskgraph.cutoff_ticks(cutoff, clock)
+                for cutoff in cutoffs
+            )
+        )
         request = stats_request(requests, ticks, clock, quantiles)
         stats_options = {"cutoff_col_stats": json.dumps(request)}
     started = time.perf_counter()
