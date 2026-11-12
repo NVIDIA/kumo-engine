@@ -331,13 +331,12 @@ class Plan:
             for identity, encoder in encoders.items()
         }
         logger.info(
-            "pinned %d encoders from DiskGraph column statistics (cutoff %s %s) in %.2fs",
+            "pinned %d encoders from DiskGraph column statistics (cutoff %s) in %.2fs",
             len(pinned),
-            stats.cutoff["value"],
-            stats.cutoff["unit"],
+            "none" if cutoff is None else _iso(cutoff),
             time.perf_counter() - started,
         )
-        return pinned, {"cutoff": dict(stats.cutoff), "col_stats": list(stats.dirs)}
+        return pinned, {"cutoff": cutoff, "col_stats": list(stats.dirs)}
 
     @staticmethod
     def _fit_selection(selection: SplitSelection | None, declares_splits: bool) -> SplitSelection:
