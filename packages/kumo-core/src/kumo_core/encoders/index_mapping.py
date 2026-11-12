@@ -5,6 +5,8 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.compute as pc
 import torch
 from torch import Tensor
 from torch_geometric.index import index2ptr
@@ -135,28 +137,58 @@ class Mapper:
 
         return rowptr, index
 
-    def tokenize(self, data: Any) -> tuple[Tensor, Tensor]:
+    def tokenize(self, data: pa.Array) -> tuple[Tensor, Tensor]:
         r"""Tokenize sentences in ``data`` to integer IDS in CSR
         ``(rowptr, index)`` format based on the pre-defined mapping.
+
+        Args:
+            data: Arrow text values, with optional nulls.
+
+        Returns:
+            Row offsets and word indices, excluding words absent from the mapping.
+
+        Raises:
+            pa.ArrowNotImplementedError: If Arrow values cannot be cast to strings.
         """
-        if not isinstance(data, pd.Series):
-            data = pd.Series(data=data)
-
-        if len(data) == 0:
-            index = torch.empty(0, dtype=torch.long)
-            rowptr = torch.tensor([0], dtype=torch.long)
+        text = (
+            data
+            if pa.types.is_string(data.type) or pa.types.is_large_string(data.type)
+            else pc.cast(data, pa.large_string())
+        )
+        text = pc.fill_null(text, "")
+        ascii_mask = pc.string_is_ascii(text)
+        if pc.all(ascii_mask).as_py():
+            text = pc.utf8_lower(text)
         else:
-            from kumo_core.encoders.text import normalize_text
-
-            data = normalize_text(data)
-            exploded_data = data.reset_index(drop=True).explode()
-            index = self.map(exploded_data)
-            row = torch.from_numpy(exploded_data.index.to_numpy())
-            mask = index >= 0
-            row, index = row[mask], index[mask]
-            rowptr = index2ptr(row, size=len(data))
-
-        return rowptr, index
+            # Arrow uses simple case mapping; Python also handles expansions
+            # and context, such as dotted I and Greek final sigma.
+            unicode_text = pc.filter(text, pc.invert(ascii_mask))
+            lowered = pa.array(
+                [value.lower() for value in unicode_text.to_pylist()],
+                type=text.type,
+            )
+            text = pc.replace_with_mask(
+                pc.utf8_lower(text), pc.invert(ascii_mask), lowered
+            )
+        text = pc.replace_substring_regex(text, r"[\'\"\.,\(\)\!\?\;\:]", " ")
+        # RE2's \s is ASCII-only; Python's split also recognizes these.
+        whitespace = (
+            r"[\s\x{1c}-\x{1f}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}"
+            r"\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]"
+        )
+        text = pc.replace_substring_regex(text, rf"<br{whitespace}*/?>", " ")
+        words = pc.split_pattern_regex(text, rf"{whitespace}+")
+        flattened = pc.list_flatten(words)
+        nonempty = pc.not_equal(flattened, "")
+        values = pc.filter(flattened, nonempty).to_numpy(zero_copy_only=False)
+        index = self.map(values)
+        known = index >= 0
+        rows = pc.filter(pc.list_parent_indices(words), nonempty).to_numpy()
+        counts = np.bincount(rows[known.numpy()], minlength=len(data))
+        offsets: np.ndarray = np.empty(len(data) + 1, dtype=np.int64)
+        offsets[0] = 0
+        np.cumsum(counts, out=offsets[1:])
+        return torch.from_numpy(offsets), index[known]
 
     def __len__(self) -> int:
         return self._length

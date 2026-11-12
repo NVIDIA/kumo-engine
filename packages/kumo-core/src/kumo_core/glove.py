@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import torch
 from torch import Tensor
 
@@ -36,7 +37,18 @@ class VocabularyIndex:
         rows = self._rows[codes[mask]]
         return (rows, mask) if return_mask else rows
 
-    def tokenize(self, values: pd.Series) -> tuple[Tensor, Tensor]:
+    def tokenize(self, values: pa.Array) -> tuple[Tensor, Tensor]:
+        """Map text to vocabulary rows, preserving the last duplicate word.
+
+        Args:
+            values: Arrow text values, with optional nulls.
+
+        Returns:
+            CSR row offsets and vocabulary row indices, dropping unknown words.
+
+        Raises:
+            pa.ArrowNotImplementedError: If Arrow values cannot be cast to strings.
+        """
         rowptr, codes = self._mapper.tokenize(values)
         return rowptr, self._rows[codes]
 
