@@ -238,8 +238,7 @@ class PredictionTableGeneratorV2:
         entity_time_col = (entity_table.time_col.name
                            if entity_table.time_col is not None else None)
 
-        # Bypass the service and call the TT-NG sibling directly. Lazy-import
-        # TimeUnit and the sibling.
+        # Lazy-import TimeUnit and the TT-NG generator.
         from diskgraph import TimeUnit
 
         # isort: off
@@ -259,7 +258,6 @@ class PredictionTableGeneratorV2:
                 list_distinct_target_is_array=(list_distinct_target_is_array),
                 index_path=diskgraph_index_path,
                 output_root=output_path,
-                target_output_root=target_file_path,
                 input_timestamp_unit=TimeUnit.Nanoseconds,
                 target_stype=self.query.target_stype.value,
                 entity_time_col=entity_time_col,
