@@ -30,9 +30,10 @@ import pandas as pd
 import pyarrow as pa
 import pytorch_lightning as pl
 import torch
+from kumo_core.encoders.config import EncodersConfig, TargetEncoderConfig
 from kumo_core.encoders.tensor_frame import get_tf
 from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
-from kumo_core.encoders.tensor_mapper import TensorMapper
+from kumo_core.encoders.tensor_mapper import NumericalTensorMapper
 from kumo_core.explain.base import Explainer
 from kumo_core.modeling.gnn.hetero import HeteroGNN
 from kumo_core.modeling.heads.node_prediction import NodePredHead
@@ -40,7 +41,8 @@ from kumo_core.train.mapping import NODE_INDEX_COLUMN
 from kumo_core.train.trainer import Trainer
 from kumo_core.training.task_config import TaskConfig
 from kumo_core.types import TaskType
-from kumoapi.encoder import Stype
+from kumoapi.encoder import Index, Numerical, Stype
+from kumoapi.typing import ColStatType
 from torch.utils.data import DataLoader
 from torch_frame import TensorFrame
 from torch_geometric.data import HeteroData
@@ -77,8 +79,7 @@ class _DummyExplainer(Explainer):
 
 def _make_batch(ages: list[float]) -> HeteroData:
     n = len(ages)
-    age_mapper = TensorMapper.from_stype(Stype.numerical,
-                                         pd.Series([18.0, 25.0, 30.0, 50.0]))
+    age_mapper = NumericalTensorMapper()
     tf = get_tf(
         pa.RecordBatch.from_arrays([pa.array(ages, type=pa.float64())],
                                    names=['AGE']),
@@ -155,7 +156,13 @@ def _build_trainer(root_dir: str) -> Trainer:
     _, _, encoders = create_task_data(
         df_dict=df_dict,
         schema_dict=schema_dict,
-        task_type=TaskType.BINARY_CLASSIFICATION,
+        encoders=EncodersConfig(
+            encoders={USER: {"AGE": Numerical(_stats={ColStatType.MEAN: 35.0})}},
+            target=TargetEncoderConfig(
+                "TARGET",
+                Index(_stats={ColStatType.CATEGORY_COUNTS: [[False, 2], [True, 2]]}),
+            ),
+        ),
         train_table_df=train_table_df,
     )
 

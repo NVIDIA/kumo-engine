@@ -31,6 +31,8 @@ QUERY = 'PREDICT COUNT(events.*, 0, 7, days) > 0 FOR EACH users.ID'
 MODEL = 'kumo-local-lifecycle'
 EXPERIMENT = 'kumo-local-lifecycle'
 POPULATION = 60
+EPOCHS = 2
+TRIALS = 2
 PHASES = ('fit', 'score', 'evaluate', 'negative')
 SCHEMA = ['ENTITY', 'TARGET_PRED', 'False_PROB', 'True_PROB']
 
@@ -224,6 +226,17 @@ def prediction_tracking(cfg, run, expected):
             'Prediction tracking records the wrong model/run identity')
 
 
+def small_plan(seed, trials=1):
+    plan = gpu_helpers().make_plan('binary')
+    plan.training_job.manual_seed = seed
+    plan.training_job.num_experiments = trials
+    plan.optimization.max_epochs = EPOCHS
+    plan.optimization.min_steps_per_epoch = 2
+    plan.optimization.max_steps_per_epoch = 2
+    plan.optimization.batch_size = [32]
+    return plan
+
+
 def fit(root):
     import kumo.engine as kumo
 
@@ -236,13 +249,7 @@ def fit(root):
         scored = graph(root, '2024-03-31').snapshot()
         versions = []
         for seed in (0, 1):
-            plan = gpu_helpers().make_plan('binary')
-            plan.training_job.manual_seed = seed
-            plan.optimization.max_epochs = 2
-            plan.optimization.min_steps_per_epoch = 2
-            plan.optimization.max_steps_per_epoch = 2
-            plan.optimization.batch_size = [32]
-            trainer = kumo.Trainer(plan, accelerator='cpu')
+            trainer = kumo.Trainer(small_plan(seed), accelerator='cpu')
             result = trainer.fit(
                 table, snapshot=snapshot, scoring_defaults=kumo.ScoringDefaults(
                     binary_classification_threshold=0.5))
@@ -287,8 +294,23 @@ def fit(root):
     with cfg.tracking.client() as client:
         client.set_registered_model_alias(MODEL, 'champion',
                                           versions[0]['version'])
+    untracked = kumo.Trainer(small_plan(1, TRIALS), accelerator='cpu').fit(
+        table, snapshot=snapshot)
+    require(untracked.tracking is None, 'Ordinary training used a tracker')
+    untracked_history = untracked.metric_history
+    require(untracked_history['total_trials']
+            == untracked_history['completed_trials']
+            == len(untracked_history['trial_progress']) == TRIALS,
+            'Model history lost a completed trial')
+    for trial in untracked_history['trial_progress'].values():
+        require(trial['num_epochs_completed'] == EPOCHS
+                and set(trial['metrics']) == {str(i) for i in range(EPOCHS)},
+                'Model history lost a recorded epoch')
+    untracked.export(kumo.ModelOutputConfig(
+        kumo.FileConnector(root_dir=str(root)), path='untracked-model'))
     return dict(training_snapshot=snapshot.id, scoring_snapshot=scored.id,
-                training_table=table.id, versions=versions)
+                training_table=table.id, versions=versions,
+                untracked=dict(bundle=untracked.id, history=untracked_history))
 
 
 def load(root, *, version=None, alias=None):
@@ -491,6 +513,19 @@ def negative(root):
     import kumo.engine as kumo
 
     state = read(root / 'fit.json')['result']
+    connector = kumo.FileConnector(root_dir=str(root))
+    restored = kumo.Trainer.load_from_connector(
+        connector, path='untracked-model', accelerator='cpu')
+    require(restored.result.id == state['untracked']['bundle']
+            and restored.result.metric_history == state['untracked']['history'],
+            'Model history changed after fresh-process load')
+    restored.result.export(kumo.ModelOutputConfig(
+        connector, path='history-reexport'))
+    require((root / 'untracked-model' / 'metric-history.json').read_bytes()
+            == (root / 'history-reexport' / 'metric-history.json').read_bytes(),
+            'Re-export changed metric history bytes')
+    require('mlflow' not in sys.modules,
+            'Loading or re-exporting model history imported MLflow')
     bundle = root / 'store' / 'models' / state['versions'][0]['bundle']
     broken = root / 'incomplete-model'
     shutil.copytree(bundle, broken)
@@ -547,7 +582,7 @@ def negative(root):
     else:
         raise AssertionError('An uncommitted prediction export was accepted')
     return dict(incomplete_model=incomplete, denied_artifact_access=permission,
-                incomplete_prediction=interruption)
+                incomplete_prediction=interruption, exported_epoch_history='passed')
 
 
 def phase(args):
@@ -587,12 +622,7 @@ def run(args):
         status='blocked', command=sys.argv, phases={
             name: dict(status='blocked', reason='Prerequisite has not passed')
             for name in PHASES
-        }, test_sha256=digest(Path(__file__)), required_gaps={
-            'exported_epoch_history':
-            dict(
-                status='not implemented',
-                reason='Full epoch history is not available in model exports.'),
-        })
+        }, test_sha256=digest(Path(__file__)))
     started = time.monotonic()
     execution_started = False
     try:
@@ -642,9 +672,7 @@ def run(args):
                 require(not list(root.glob('data-*')),
                         'Producer source files survived cleanup')
         else:
-            report['status'] = ('blocked' if any(
-                gap['status'] != 'passed'
-                for gap in report['required_gaps'].values()) else 'passed')
+            report['status'] = 'passed'
     except Exception:
         if execution_started:
             report['status'] = 'failed'

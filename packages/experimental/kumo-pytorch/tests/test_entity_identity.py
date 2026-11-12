@@ -249,7 +249,7 @@ def test_graph_roots_and_fitted_attributes_use_the_same_primary_key(engine_name)
                         assert encoded == dict(vocabulary)[3 - raw_id]
 
 
-@pytest.mark.parametrize("key,columns", [("", ("pk",)), (None, ("pk",)), ("pk", ("external",))])
+@pytest.mark.parametrize("key,columns", [("", ("pk",)), (1, ("pk",)), ("pk", ("external",))])
 def test_schema_already_rejects_invalid_primary_key_declarations(key, columns):
     with pytest.raises(ValueError, match="primary key"):
         api.TableSpec(

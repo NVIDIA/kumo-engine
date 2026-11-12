@@ -236,8 +236,9 @@ class Rows:
     :param filters: typed comparisons on destination columns.
     :param active: restricts to rows whose validity interval contains the
         prediction time, which is a different question from when they occurred.
-    :param distinct: after traversal, keep one row per destination table and
-        primary key; fan-out through a join can otherwise repeat a row.
+    :param distinct: after traversal, keep one visit per destination row,
+        identified by its primary key or its occurrence when keyless. Separate
+        identical source rows remain separate; joins can revisit the same row.
     """
 
     path: tuple[str, ...] = ()
@@ -846,7 +847,7 @@ class SampleSpec:
         comparisons and calculations.
     :param events: named historical event components. Several components can
         merge into one batch input; equal-time events then order by component
-        name and primary key.
+        name and primary key, or local occurrence identity for a keyless table.
     :param dated_entity_values: repeated timestamped facts, as opposed to the
         single values in ``entity_values``.
     :param current_events: events kept apart from ``events`` so an objective can

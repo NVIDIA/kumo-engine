@@ -81,8 +81,9 @@ class TableSpec:
     types with concrete ones, so a saved contract records them.
 
     :param name: table name, as referenced by relations and specs.
-    :param primary_key: column uniquely identifying each row; must be non-null
-        and unique, and must appear in ``columns``.
+    :param primary_key: column uniquely identifying each row, or ``None`` for
+        a keyless table. A declared key must be non-null, unique, and included
+        in ``columns``. Entity tables require a declared key.
     :param columns: selected columns and stored types. Omit to discover columns
         from Parquet metadata; use None for an individual inferred type.
     :param time_column: the column ordering this table's rows, or
@@ -90,13 +91,17 @@ class TableSpec:
     """
 
     name: str
-    primary_key: str
+    primary_key: str | None
     columns: Mapping[str, DType | None] | None = None
     time_column: str | NonTemporal = dataclass_field(kw_only=True)
 
     def __post_init__(self) -> None:
-        if not self.name or not self.primary_key:
-            raise ValueError("table name and primary key must be non-empty")
+        if not self.name:
+            raise ValueError("table name must be non-empty")
+        if self.primary_key is not None and (
+            not isinstance(self.primary_key, str) or not self.primary_key
+        ):
+            raise ValueError("primary key must be a non-empty column name or None")
         if isinstance(self.time_column, str):
             if not self.time_column:
                 raise ValueError(
@@ -116,7 +121,7 @@ class TableSpec:
         columns = dict(self.columns)
         if not columns:
             raise ValueError(f"table {self.name!r} must declare its columns")
-        if self.primary_key not in columns:
+        if self.primary_key is not None and self.primary_key not in columns:
             raise ValueError(
                 f"table {self.name!r} columns must include primary key {self.primary_key!r}"
             )
