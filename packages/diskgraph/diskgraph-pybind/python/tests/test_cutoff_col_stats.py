@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import collections
+import datetime as dt
+import decimal
 import json
 import pathlib
 import random
@@ -23,7 +25,7 @@ REQUEST = {
     "dirs": ["at-cutoff", "every-row"],
     "columns": {
         "users": {"tier": "categorical", "age": "numerical", "raw": "categorical",
-                  "seen": "categorical"},
+                  "seen": "categorical", "born": "categorical", "price": "numerical"},
         "items": {"name": "categorical"},
     },
     "quantiles": {"users": {"age": QUANTILES}},
@@ -44,6 +46,8 @@ def data(tmp_path_factory) -> pathlib.Path:
         "age": pa.array([rng.randrange(90) for _ in range(n)], pa.int32()),
         "raw": pa.array([bytes([i % 7]) for i in range(n)], pa.binary()),
         "seen": pa.array([(T0 + i % 13) * 10**6 for i in range(n)], pa.timestamp("us")),
+        "born": pa.array([19_000 + i % 11 for i in range(n)], pa.date32()),
+        "price": pa.array([decimal.Decimal(i % 1000) / 100 for i in range(n)], pa.decimal128(10, 2)),
     }), root / "users.parquet", row_group_size=300)
     pq.write_table(pa.table({
         "item_id": pa.array(range(500), pa.int64()),
@@ -55,14 +59,15 @@ def data(tmp_path_factory) -> pathlib.Path:
 def _ingest(data: pathlib.Path, out: pathlib.Path, col_stats=False, **options) -> str:
     def table(name, key, columns, create_time=None):
         spec = {"name": name, "primary_key": key,
-                "columns": [{"name": c, "ingested_dtype": d} for c, d in columns],
+                "columns": [{"name": c, "ingested_dtype": d, **dict(*extra)} for c, d, *extra in columns],
                 "source": {"type": "parquet", "paths": [str(data / f"{name}.parquet")]}}
         return {**spec, "create_time": create_time} if create_time else spec
 
     diskgraph.ingest(
         config_json=json.dumps({"dataset_name": "cutoffs", "timestamp_unit": "seconds", "tables": [
             table("users", "id", [("id", "int64"), ("signup", "timestamp"), ("tier", "string"),
-                                  ("age", "int32"), ("raw", "bytes"), ("seen", "timestamp")],
+                                  ("age", "int32"), ("raw", "bytes"), ("seen", "timestamp"),
+                                  ("born", "date"), ("price", "decimal128", {"precision": 10, "scale": 2})],
                   "signup"),
             table("items", "item_id", [("item_id", "int64"), ("name", "string")]),
         ]}),
@@ -103,6 +108,10 @@ def test_ingest_counts_the_rows_created_at_or_before_each_cutoff(data, ingested)
         assert dict(map(tuple, stats["users"]["raw"]["category_counts"])) == raw
         seen = collections.Counter(users["seen"][i] // 10**6 for i in rows)
         assert {int(k): v for k, v in stats["users"]["seen"]["category_counts"]} == seen
+        born = collections.Counter((users["born"][i] - dt.date(1970, 1, 1)).days for i in rows)
+        assert {int(k): v for k, v in stats["users"]["born"]["category_counts"]} == born
+        prices = np.array([float(users["price"][i]) for i in rows])
+        assert stats["users"]["price"]["mean"] == pytest.approx(prices.mean(), rel=1e-12)
         # A table without a create time counts every row at every cutoff.
         assert sum(v for _, v in stats["items"]["name"]["category_counts"]) == 500
 

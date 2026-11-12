@@ -3384,6 +3384,12 @@ impl RowPackEncoder {
                                 ..
                             } = &col.encoding
                             {
+                                if let Some(value) = decimal_i256_to_f64(
+                                    arrow_buffer::i256::from_le_bytes(v),
+                                    *scale,
+                                ) {
+                                    observer.observe_f64(idx, value);
+                                }
                                 if *bytes == 0 || *bytes > 32 {
                                     return Err(anyhow!("rowpack decimal size mismatch"));
                                 }
@@ -6797,7 +6803,7 @@ pub(crate) fn apply_decimal_scale_i256(value: arrow_buffer::i256, scale: i32) ->
     out
 }
 
-pub(crate) fn decimal_i128_to_f64(value: i128, scale: i32) -> f64 {
+pub fn decimal_i128_to_f64(value: i128, scale: i32) -> f64 {
     if scale == 0 {
         return value as f64;
     }
@@ -6807,7 +6813,7 @@ pub(crate) fn decimal_i128_to_f64(value: i128, scale: i32) -> f64 {
     (value as f64) * 10_f64.powi(-scale)
 }
 
-pub(crate) fn decimal_i256_to_f64(value: arrow_buffer::i256, scale: i32) -> Option<f64> {
+pub fn decimal_i256_to_f64(value: arrow_buffer::i256, scale: i32) -> Option<f64> {
     let out = BigInt::from_signed_bytes_le(&value.to_le_bytes());
     let mut v = out.to_f64()?;
     if scale == 0 {

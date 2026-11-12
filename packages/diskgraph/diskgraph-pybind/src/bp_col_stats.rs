@@ -31,7 +31,10 @@ use diskgraph_core::time::{convert_ceil, TimeUnit};
 use diskgraph_ingest::col_stats::{FileColStats, TableCategoryCounts};
 use diskgraph_ingest::graph_config::{ColumnSpec, IngestedType, SemanticType, TimestampUnit};
 use diskgraph_ingest::PublicIngestError;
-use diskgraph_rowpack::{ColumnValueObserver, RowAccess, RowAccessHints, RowAccessStats};
+use diskgraph_rowpack::{
+    decimal_i128_to_f64, decimal_i256_to_f64, ColumnValueObserver, RowAccess, RowAccessHints,
+    RowAccessStats,
+};
 
 use crate::exact_quantiles::{exact_quantiles, Column, GATHER};
 
@@ -1005,6 +1008,31 @@ pub(crate) fn drive_from_arrow_column<O: ColumnValueObserver>(
                 IngestedType::Timestamp => {
                     access_or_parse_failure(timestamp_ticks(&access, col), col_idx, observer)
                         .map(|value| observer.observe_timestamp(col_idx, value))
+                        .is_some()
+                }
+                IngestedType::Date => {
+                    access_or_parse_failure(access.get_date(0), col_idx, observer)
+                        .map(|days| observer.observe_i64(col_idx, days.into()))
+                        .is_some()
+                }
+                IngestedType::Decimal128 => {
+                    access_or_parse_failure(access.get_decimal128(0), col_idx, observer)
+                        .map(|v| {
+                            let value = decimal_i128_to_f64(v, col.scale.unwrap_or(0));
+                            observer.observe_f64(col_idx, value)
+                        })
+                        .is_some()
+                }
+                IngestedType::Decimal256 => {
+                    access_or_parse_failure(access.get_decimal256(0), col_idx, observer)
+                        .map(|v| {
+                            let scale = col.scale.unwrap_or(0);
+                            if let Some(value) =
+                                decimal_i256_to_f64(arrow::datatypes::i256::from_le_bytes(v), scale)
+                            {
+                                observer.observe_f64(col_idx, value);
+                            }
+                        })
                         .is_some()
                 }
                 IngestedType::Float32Array
