@@ -19,7 +19,6 @@ from kumo.pytorch import api
 from kumo.pytorch.column_stats import TableColumnEncoder, fit_from_stats, table_column_encoders
 from kumo.pytorch.encoding import fit_encoder
 from tests.test_diskgraph_backend import _fixture_rows, _requests, _schema, _write_parquet
-from tests.test_fitted_state_persistence import _redigest
 
 pytest.importorskip("diskgraph")
 
@@ -378,35 +377,6 @@ def test_reused_state_reads_no_statistics(tmp_path, monkeypatch):
             pass
         with plan.materialize(_requests(), fitted=fitted.inputs, fit_split="train"):
             pass
-
-
-def test_statistics_records_round_trip_and_mismatches_are_refused(tmp_path):
-    dataset, engine = _setup("in_memory", tmp_path)
-    contract = _contract()
-    with api.prepare(contract, dataset, engine) as plan:
-        with plan.materialize(_requests(), fit_split="train") as task:
-            task.to_artifact().save(tmp_path / "artifact")
-            fitted = task.fitted_state
-    loaded = api.Artifact.load(tmp_path / "artifact").fitted_state
-    assert loaded == fitted and loaded.fit == fitted.fit
-    path = tmp_path / "artifact" / "fitted-state.json"
-    written = json.loads(path.read_text())
-    statistics = written["fit"]["inputs"]["statistics"]
-    country = '["inputs","entity","fields","country"]'
-    assert list(statistics[country]["files"]) == ["users/country.counts"]
-    for tampered in (
-        {**statistics, country: {**statistics[country], "files": {"users/other.counts": "0" * 64}}},
-        {**statistics, '["inputs","entity","fields","transaction_count"]': statistics[country]},
-    ):
-        written["fit"]["inputs"]["statistics"] = tampered
-        path.write_text(json.dumps(written))
-        _redigest(tmp_path / "artifact")
-        with pytest.raises(ValueError, match="not ones this contract's encoders read"):
-            api.Artifact.load(tmp_path / "artifact")
-    del written["fit"]["inputs"]["statistics"]
-    path.write_text(json.dumps(written))
-    _redigest(tmp_path / "artifact")
-    assert api.Artifact.load(tmp_path / "artifact").fitted_state == fitted
 
 
 @pytest.mark.parametrize("unit, seconds", (("milliseconds", 1), ("seconds", 1), ("days", 86_400)))

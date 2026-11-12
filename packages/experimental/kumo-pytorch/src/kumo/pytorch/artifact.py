@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from dataclasses import replace as dataclass_replace
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 import torch
 
@@ -59,13 +59,15 @@ class FitRecord(TypedDict):
 
     Fitting takes no seed: the state is a function of these alone. The record
     is informational: reuse with ``fitted=`` keeps it, ``Artifact.load`` does
-    not check it, and fitted-state equality ignores it.
+    not check it, and fitted-state equality ignores it. ``statistics`` (inputs
+    only) names the column statistics files each encoder was fitted from.
     """
 
     contract: str
     dataset: str
     anchors: str
     fit_split: str | list[str | None]
+    statistics: NotRequired[dict[str, Any]]
 
 
 @dataclass(frozen=True, eq=False)

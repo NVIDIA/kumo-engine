@@ -17,7 +17,6 @@ import datetime as dt
 import hashlib
 import json
 import math
-import re
 import struct
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -47,7 +46,6 @@ __all__ = [
     "ColumnStats",
     "StatRequest",
     "TableColumnEncoder",
-    "check_statistics",
     "cutoff_seconds",
     "data_sha256",
     "fit_from_stats",
@@ -71,7 +69,6 @@ _SUPPORTED = frozenset(
     }
 )
 _EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
-_SHA256 = re.compile("[0-9a-f]{64}")
 
 
 class _LatestAnchor:
@@ -208,33 +205,6 @@ def _learns_from_stats(config: Any, dtype: DType) -> bool:
     if isinstance(config, Buckets):
         return config.bins is not None and dtype.numeric
     return False
-
-
-def check_statistics(contract: Any, statistics: Any) -> None:
-    """Refuse a fit record's statistics that the contract's encoders could not have read."""
-
-    if not isinstance(statistics, Mapping):
-        raise ValueError("the fit record's statistics must map encoders to records")
-    encoders = table_column_encoders(contract)
-    for identity, record in statistics.items():
-        expected = encoders.get(identity)
-        if (
-            expected is None
-            or not isinstance(record, Mapping)
-            or set(record) != {"cutoff", "cutoff_id", "index_id", "files"}
-            or not isinstance(record["files"], Mapping)
-            or set(record["files"]) != {"{}/{}.{}".format(*item) for item in expected.requests}
-            or not all(
-                isinstance(digest, str) and _SHA256.fullmatch(digest)
-                for digest in record["files"].values()
-            )
-            or not isinstance(record["cutoff"], Mapping)
-            or set(record["cutoff"]) != {"value", "unit", "inclusive"}
-        ):
-            raise ValueError(
-                f"the statistics recorded for encoder {identity} are not ones this "
-                "contract's encoders read"
-            )
 
 
 def cutoff_seconds(value: Any) -> int | None:
