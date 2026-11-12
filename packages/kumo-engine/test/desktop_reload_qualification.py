@@ -82,8 +82,13 @@ HOSTED_TARGETS = (
 # Hosted macOS runners are VMs whose paravirtual GPU has no Metal 2.0, so
 # PyTorch reports no MPS there. MPS runs on a bare-metal Apple Silicon Mac
 # with `run` and joins the report through a second --evidence-dir. macOS 14
-# is also the supported floor, which hosted runners no longer offer.
-EXTERNAL_TARGETS = (('macos-14', 'mps'), )
+# is the supported floor, which hosted runners no longer offer, so its CPU
+# and MPS rows also come from a bare-metal Mac.
+EXTERNAL_TARGETS = (
+    ('macos-14', 'cpu'),
+    ('macos-14', 'mps'),
+    ('macos-15', 'mps'),
+)
 REQUIRED_TARGETS = HOSTED_TARGETS + EXTERNAL_TARGETS
 
 

@@ -144,15 +144,17 @@ platform's `release-version`.
      `kumo-engine-platform-smoke.yml` by hand with that build run's ID and
      commit. See
      [`desktop_reload_qualification.py`](../../packages/kumo-engine/test/desktop_reload_qualification.py).
-   - needs MPS evidence from a bare-metal Apple Silicon Mac with macOS 14,
-     the supported floor. Hosted macOS runners are VMs without a Metal
-     device, so the CI report marks `macos-14-mps` UNVERIFIED. On the Mac,
-     install the macOS wheel from the same build run in a clean environment.
-     Then run `desktop_reload_qualification.py run --device mps` with all
-     three cases, `--negative-checks`, and the label
-     `macos-14-mps-py<version>` for each Python version. Build the full
-     matrix with `desktop_reload_qualification.py report`, and pass one
-     `--evidence-dir` for the CI results and one for the Mac results.
+   - needs evidence from bare-metal Apple Silicon Macs for three rows:
+     macOS 14 on CPU and MPS, and macOS 15 on MPS. macOS 14 is the
+     supported floor, and hosted runners no longer offer it. Hosted macOS
+     runners are VMs without a Metal device, so they cannot run MPS. The CI
+     report marks these rows UNVERIFIED. On each Mac, install the macOS
+     wheel from the same build run in a clean environment. Then run
+     `desktop_reload_qualification.py run` with all three cases,
+     `--negative-checks`, and the label `macos-<major>-<device>-py<version>`
+     for each Python version. Build the full matrix with
+     `desktop_reload_qualification.py report`. Pass one `--evidence-dir` for
+     the CI results and one for each Mac.
    - attaches the Linux x86_64/ARM64 and macOS ARM64 wheels to the GitHub
      release; the Linux x86_64 wheel also serves WSL2. Native Windows upload
      routes remain disabled despite experimental build/test coverage.
