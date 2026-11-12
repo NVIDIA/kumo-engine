@@ -12,6 +12,7 @@ import pytest
 import kumo.engine as kumo
 from kumo.engine._manifest import SnapshotManifest, stub
 from kumo.engine._mlops import resolve
+from kumo.engine._tracking import TrackingBase
 
 
 def test_mlops_needs_an_artifact_root_it_can_write_files_to(tmp_path):
@@ -54,6 +55,27 @@ def test_the_tracker_registers_and_its_registry_checks_the_name(tmp_path):
         kumo.MLOps(str(tmp_path), tracking=tracker,
                    registry=kumo.ModelOutputConfig(tracker.connector,
                                                    location=good))
+
+
+@pytest.mark.parametrize(
+    'seconds', ['600', 0, float('inf'), threading.TIMEOUT_MAX * 2])
+@pytest.mark.parametrize('tracker_base', [object, TrackingBase],
+                         ids=['foreign', 'native'])
+@pytest.mark.parametrize('on_error', ['warn', 'raise'])
+def test_invalid_tracker_timeout_fails_when_mlops_is_built(
+        tmp_path, monkeypatch, seconds, tracker_base, on_error):
+    class Invalid(tracker_base):
+        finish_timeout_seconds = seconds
+
+        def check(self, registry):
+            pytest.fail('Invalid timeout must fail before provider checks')
+
+    def writable(root):
+        pytest.fail('Invalid timeout must fail before artifact access')
+
+    monkeypatch.setattr('kumo.engine._mlops._require_writable', writable)
+    with pytest.raises(ValueError, match='finish_timeout_seconds'):
+        kumo.MLOps(str(tmp_path), tracking=Invalid(), on_error=on_error)
 
 
 def test_a_root_is_a_uri_or_a_connector_and_path(tmp_path):

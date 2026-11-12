@@ -74,6 +74,14 @@ def _tracking(session=FakeSession, **kwargs):
         experiment_name='ents', **kwargs)
 
 
+class _DelegatingTracker:
+    def __init__(self, tracker):
+        self._tracker = tracker
+
+    def __getattr__(self, name):
+        return getattr(self._tracker, name)
+
+
 def _replay(tracking, result=RESULT, error=None, during=None):
     session = TrackingSession(tracking)
     session.start(lambda: fit_spec(CONTEXT))
@@ -608,7 +616,10 @@ def test_failed_start_releases_adapter_and_preserves_provider_error(fake, monkey
     assert list(fake._instance.runs.values())[-1]['status'] == 'FINISHED'
 
 
-def test_final_ref_belongs_to_completed_run_when_adapter_is_immediately_reused(fake, monkeypatch):
+@pytest.mark.parametrize('wrap', [lambda tracker: tracker, _DelegatingTracker],
+                         ids=['native', 'wrapped'])
+def test_final_ref_belongs_to_completed_run_when_adapter_is_immediately_reused(
+        fake, monkeypatch, wrap):
     from kumo.engine._tracking import RunSpec
 
     adapter = _tracking()
@@ -621,7 +632,7 @@ def test_final_ref_belongs_to_completed_run_when_adapter_is_immediately_reused(f
         original(second, None)
 
     monkeypatch.setattr(adapter, 'finish', finish)
-    session = TrackingSession(adapter)
+    session = TrackingSession(wrap(adapter))
     session.start(lambda: RunSpec(kind='fit', name='FIRST'))
     first = session.pointer()
     assert first is not None
@@ -667,7 +678,10 @@ def test_context_cleanup_failure_still_releases_adapter(fake, monkeypatch, durin
 
 
 @pytest.mark.parametrize('state', ['busy', 'full_queue', 'idle'])
-def test_model_timeout_defers_subclass_cleanup_to_owner(fake, monkeypatch, tmp_path, state):
+@pytest.mark.parametrize('wrap', [lambda tracker: tracker, _DelegatingTracker],
+                         ids=['native', 'wrapped'])
+def test_model_timeout_defers_subclass_cleanup_to_owner(fake, monkeypatch,
+                                                        tmp_path, state, wrap):
     import kumo.engine._tracking as module
     from kumo.engine._tracking import RunSpec
     from kumo.engine.integrations.snowflake import SnowflakeTracking
@@ -713,7 +727,7 @@ def test_model_timeout_defers_subclass_cleanup_to_owner(fake, monkeypatch, tmp_p
         monkeypatch.setattr(module.queue.Queue, 'put_nowait', put)
     adapter = ModelTracking(FakeSession(), experiment_name='ents',
                             finish_timeout_seconds=2)
-    session = TrackingSession(adapter, warn=False)
+    session = TrackingSession(wrap(adapter), warn=False)
     session.start(lambda: RunSpec(kind='fit', name='FIRST'))
     reference = session.pointer()
     assert reference is not None

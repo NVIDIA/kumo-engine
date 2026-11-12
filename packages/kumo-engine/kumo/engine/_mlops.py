@@ -71,6 +71,11 @@ class MLOps:
         if self.on_error not in ('warn', 'raise'):
             raise ValueError(f"on_error must be 'warn' or 'raise', not "
                              f"{self.on_error!r}.")
+        from kumo.engine._tracking import _finish_seconds, as_tracking
+
+        tracker = as_tracking(self.tracking)
+        if tracker is not None:
+            _finish_seconds(tracker)
         if isinstance(self.artifact_root, str):
             if self.artifact_root.startswith('@'):
                 raise ValueError(
@@ -94,9 +99,6 @@ class MLOps:
                              f'{list(KINDS)}.')
         if kinds:
             _require_writable(root)
-        from kumo.engine._tracking import as_tracking
-
-        tracker = as_tracking(self.tracking)
         if self.registry is not None:
             self._check_registry(tracker)
         if tracker is not None:

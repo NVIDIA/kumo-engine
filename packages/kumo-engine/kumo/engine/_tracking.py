@@ -493,6 +493,10 @@ class TrackingBase(Tracking):
     sample_system_metrics: Optional[Callable[[], ContextManager[None]]] = None
     serving_options: Optional[Mapping[str, str]] = None
     finish_timeout_seconds: Optional[float] = None
+    # Keep ownership-sensitive cleanup on the run's worker.
+    _finish_on_worker_thread = False
+    # Capture the run reference before finish permits adapter reuse.
+    _snapshot_ref_before_finish = False
 
     @property
     def platform(self) -> str:
@@ -516,7 +520,8 @@ class _Foreign(TrackingBase):
         self._tracker = tracker
 
     def __getattribute__(self, name: str) -> Any:
-        if name.startswith('_'):
+        if name.startswith('_') and name not in ('_finish_on_worker_thread',
+                                                 '_snapshot_ref_before_finish'):
             return object.__getattribute__(self, name)
         if name in ('start', 'on_trial', 'finish'):
             return getattr(self._tracker, name)
