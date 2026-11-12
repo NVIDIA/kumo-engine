@@ -32,14 +32,13 @@ pub fn read_index_metadata(index_path: &Path) -> Result<String, IndexMetadataErr
     Ok(raw)
 }
 
-pub fn read_dataset_metadata(index_path: &Path) -> anyhow::Result<DatasetMetadata> {
+pub(crate) fn read_dataset_metadata(index_path: &Path) -> anyhow::Result<DatasetMetadata> {
     let path = index_path.join(INDEX_METADATA_FILENAME);
     let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
 }
 
-/// The id ingest records: the resolved config, every source file with its
-/// size, and the DiskGraph version.
+/// Hashes the resolved config, each source file's size and the DiskGraph version.
 pub(crate) fn ingest_index_id(config: &GraphConfig) -> anyhow::Result<String> {
     let sources: BTreeSet<(&str, Option<u64>)> = config
         .tables
@@ -58,9 +57,8 @@ pub(crate) fn ingest_index_id(config: &GraphConfig) -> anyhow::Result<String> {
     ))
 }
 
-/// The recorded id, or for an index ingested before ids existed, a hash of
-/// its config, metadata and manifest files.
-pub fn index_id(index_path: &Path, metadata: &DatasetMetadata) -> anyhow::Result<String> {
+/// For an index ingested before ids existed, a hash of its config, metadata and manifest files.
+pub(crate) fn index_id(index_path: &Path, metadata: &DatasetMetadata) -> anyhow::Result<String> {
     if let Some(id) = &metadata.index_id {
         return Ok(id.clone());
     }

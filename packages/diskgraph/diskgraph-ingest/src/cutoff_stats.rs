@@ -2,12 +2,7 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Exact column statistics over the rows of a table created at or before a
-//! cutoff, published under `<index>/col_stats/<cutoff_id>/`.
-//!
-//! Ingest observes the rows it stores, a built index is rescanned, and Arrow
-//! arrays are read directly; all three feed the same [`TableStats`], whose
-//! merges are exact and order-independent, so every route writes the same bytes.
+//! Exact column statistics of the rows created at or before a cutoff, in `<index>/col_stats/`.
 
 use std::borrow::Borrow;
 use std::cmp::Ordering;
@@ -69,7 +64,6 @@ impl Stat {
     }
 }
 
-/// The statistics ingest computes in the same pass, one file set per cutoff.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IngestRequests {
@@ -139,8 +133,7 @@ impl ValueType {
     }
 }
 
-/// One row's value of a column: integers, booleans, dates and timestamps as
-/// `Int` (unsigned values bit-cast), floats as `Float`.
+/// Unsigned integers are bit-cast into `Int`.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Value<'a> {
     Null,
@@ -166,19 +159,13 @@ impl<'a> From<ValueRef<'a>> for Value<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Exact sums
-// ---------------------------------------------------------------------------
-
-/// Bit positions above 2^-1074 that a sum of doubles and a sum of their
-/// squares can reach, before carries.
+/// Bits above 2^-1074 that a sum of doubles, or of their squares, can reach before carries.
 const SUM_BITS: usize = 2045 + 53;
 const SQUARE_BITS: usize = 4090 + 106;
 const SUM_LSB: i64 = -1074;
 const SQUARE_LSB: i64 = 2 * SUM_LSB;
 
-/// An exact integer sum in 32-bit digits held by i64 limbs, so carries can
-/// wait until `normalize`.
+/// 32-bit digits in i64 limbs, so carries can wait until `normalize`.
 #[derive(Clone)]
 struct ExactSum {
     limbs: Vec<i64>,
@@ -193,7 +180,7 @@ impl ExactSum {
         }
     }
 
-    /// Adds `±mantissa · 2^offset`; every limb moves by less than 2^33.
+    /// Every limb moves by less than 2^33.
     fn add(&mut self, mut mantissa: u128, offset: usize, negative: bool) {
         let (mut idx, shift) = (offset / 32, offset % 32);
         while mantissa != 0 {
@@ -246,7 +233,7 @@ impl ExactSum {
 /// `value / n · 2^lsb` rounded once to the nearest double, ties to even.
 fn round_quotient(value: &BigInt, n: u64, lsb: i64) -> f64 {
     let scaled = value.magnitude() << 128u32;
-    // The remainder sits far below the rounding bit, so a sticky bit stands in for it.
+    // A sticky bit stands in for the remainder, far below the rounding bit.
     let magnitude = (&scaled / n) | BigUint::from(u8::from(!(&scaled % n).is_zero()));
     let rounded = round_scaled(&magnitude, lsb - 128);
     if value.sign() == Sign::Minus {
@@ -274,7 +261,6 @@ fn round_scaled(magnitude: &BigUint, lsb: i64) -> f64 {
     mantissa as f64 * scale
 }
 
-/// Exact Σx and Σx² of finite doubles.
 #[derive(Clone)]
 struct Moments {
     sum: ExactSum,
@@ -310,8 +296,7 @@ impl Moments {
         self.squares.merge(&other.squares);
     }
 
-    /// The mean and the population sum of squared deviations, `(n·Σx² − (Σx)²) / n`,
-    /// each rounded once.
+    /// The mean and `(n·Σx² − (Σx)²) / n`, each rounded once.
     fn mean_m2(&self, n: u64) -> (f64, f64) {
         if n == 0 {
             return (0.0, 0.0);
@@ -325,11 +310,6 @@ impl Moments {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Per-column statistics
-// ---------------------------------------------------------------------------
-
-/// Exact counts of at most `MAX_CATEGORIES` distinct values.
 #[derive(Clone)]
 struct CountMap<K> {
     counts: gxhash::HashMap<K, u64>,
@@ -526,11 +506,9 @@ impl ColumnStats {
         }
     }
 
-    /// The compact JSON of `stat`'s data object.
     fn data(&self, stat: Stat) -> Result<String> {
         let (count, nulls, non_finite) = (self.count, self.nulls, self.non_finite);
         let value_type = self.value_type;
-        let missing = || anyhow!("{} was not collected", stat.name());
         Ok(match stat {
             Stat::Counts => {
                 let (truncated, values) = match (&self.keys, &self.strings) {
@@ -549,7 +527,7 @@ impl ColumnStats {
                             .map(|(key, count)| (json!(key), count))
                             .collect(),
                     ),
-                    (None, None) => return Err(missing()),
+                    (None, None) => unreachable!("counts requested"),
                 };
                 serde_json::to_string(&CountsData {
                     count,
@@ -560,7 +538,11 @@ impl ColumnStats {
                 })?
             }
             Stat::Moments => {
-                let (mean, m2) = self.moments.as_ref().ok_or_else(missing)?.mean_m2(count);
+                let (mean, m2) = self
+                    .moments
+                    .as_ref()
+                    .expect("moments requested")
+                    .mean_m2(count);
                 serde_json::to_string(&MomentsData {
                     count,
                     nulls,
@@ -570,7 +552,7 @@ impl ColumnStats {
                 })?
             }
             Stat::Bins => {
-                let bins = self.bins.as_ref().ok_or_else(missing)?;
+                let bins = self.bins.as_ref().expect("bins requested");
                 serde_json::to_string(&BinsData {
                     count,
                     nulls,
@@ -585,10 +567,6 @@ impl ColumnStats {
         })
     }
 }
-
-// ---------------------------------------------------------------------------
-// Per-table collection
-// ---------------------------------------------------------------------------
 
 #[derive(Clone)]
 struct ColumnPlan {
@@ -606,9 +584,7 @@ enum Cell {
     Text,
 }
 
-/// The requested statistics of one table for every cutoff. Rows arrive one
-/// column value at a time ([`TableStats::set`] or the observer methods) and
-/// count once [`ColumnValueObserver::row_stored`] confirms them.
+/// A row's values are buffered until `row_stored` counts them.
 #[derive(Clone, Default)]
 pub(crate) struct TableStats {
     table: String,
@@ -616,9 +592,9 @@ pub(crate) struct TableStats {
     cutoffs: Vec<Option<i64>>,
     /// Cutoff-major: `stats[cutoff * columns.len() + column]`.
     stats: Vec<ColumnStats>,
-    /// Requested column position of each table column.
+    /// Each table column's position in `columns`.
     slots: Vec<Option<usize>>,
-    /// The create-time column and whether it holds dates.
+    /// The create-time column, and whether it holds dates.
     create_time: Option<(usize, bool)>,
     clock: TimeUnit,
     row: Vec<Cell>,
@@ -688,7 +664,6 @@ impl TableStats {
         })
     }
 
-    /// The table columns a row must supply: requested ones and the create time.
     fn read_mask(&self) -> Vec<bool> {
         (0..self.slots.len())
             .map(|idx| {
@@ -751,8 +726,7 @@ impl TableStats {
         }
     }
 
-    /// Publishes every file of cutoff `idx`, returning `(key, path, sha256)`
-    /// per file with key `<table>/<column>.<stat>`.
+    /// `(<table>/<column>.<stat>, path, sha256)` of each file of cutoff `idx`.
     fn publish(
         &self,
         idx: usize,
@@ -804,10 +778,6 @@ fn stats_key(table: &str, column: &str, stat: Stat) -> String {
     format!("{table}/{column}.{}", stat.name())
 }
 
-// ---------------------------------------------------------------------------
-// Files
-// ---------------------------------------------------------------------------
-
 #[derive(Serialize)]
 struct Cutoff {
     value: Option<i64>,
@@ -841,12 +811,6 @@ struct StatsFile<'a> {
 
 #[derive(Deserialize)]
 struct StoredStats<'a> {
-    schema: String,
-    index_id: String,
-    cutoff_id: String,
-    table: String,
-    column: String,
-    stat: Stat,
     #[serde(borrow)]
     data: &'a RawValue,
     sha256: String,
@@ -877,7 +841,6 @@ fn ensure_file_names(table: &str, column: &str) -> Result<()> {
     Ok(())
 }
 
-/// One cutoff's directory under an index.
 struct CutoffFiles<'a> {
     index_dir: &'a Path,
     dir: PathBuf,
@@ -930,7 +893,7 @@ impl<'a> CutoffFiles<'a> {
         self.publish(&path, &manifest)
     }
 
-    /// The sha256 of a valid existing file for this request.
+    /// The sha256 of an intact existing file.
     fn existing(&self, table: &str, column: &str, stat: Stat) -> Result<Option<String>> {
         let Ok(bytes) = std::fs::read(self.stats_path(table, column, stat)?) else {
             return Ok(None);
@@ -938,13 +901,8 @@ impl<'a> CutoffFiles<'a> {
         let Ok(stored) = serde_json::from_slice::<StoredStats>(&bytes) else {
             return Ok(None);
         };
-        let valid = stored.schema == SCHEMA
-            && stored.index_id == self.index_id
-            && stored.cutoff_id == self.cutoff_id
-            && (stored.table.as_str(), stored.column.as_str(), stored.stat)
-                == (table, column, stat)
-            && sha256_hex(stored.data.get().as_bytes()) == stored.sha256;
-        Ok(valid.then_some(stored.sha256))
+        let intact = sha256_hex(stored.data.get().as_bytes()) == stored.sha256;
+        Ok(intact.then_some(stored.sha256))
     }
 
     fn write_stats(
@@ -974,7 +932,7 @@ impl<'a> CutoffFiles<'a> {
         Ok((path, sha256))
     }
 
-    /// Atomically replaces `path` through a temp file no other writer uses.
+    /// Through a temp file no other writer uses.
     fn publish(&self, path: &Path, value: &impl Serialize) -> Result<()> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let mut bytes = serde_json::to_vec(value)?;
@@ -990,13 +948,7 @@ impl<'a> CutoffFiles<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Routes
-// ---------------------------------------------------------------------------
-
 impl IngestRequests {
-    /// One empty [`TableStats`] per requested table; rejects unknown tables,
-    /// edge tables, unknown columns and unsupported column types up front.
     pub(crate) fn tables(
         &self,
         tables: &[crate::graph_config::TableSpec],
@@ -1030,7 +982,6 @@ impl IngestRequests {
     }
 }
 
-/// Publishes what ingest collected, after `index_metadata.json` is final.
 pub(crate) fn publish_ingested(
     tables: &HashMap<String, TableStats>,
     index_dir: &Path,
@@ -1044,8 +995,6 @@ pub(crate) fn publish_ingested(
     Ok(())
 }
 
-/// Rescans `table`'s stored rows, decoding only the needed columns, in
-/// parallel over chunks of every shard.
 fn scan_table(
     reader: &GraphIndexReader,
     table: &str,
@@ -1089,7 +1038,7 @@ fn scan_table(
             |(mut stats, mut scratch), (shard, start, end)| {
                 let shard = table_reader.shard(shard).expect("shard in range");
                 for node in start..end {
-                    // Rows stored without node data, oversized ones included, were never observed.
+                    // Ingest observes no row stored without node data, oversized ones included.
                     let view = shard.edges_for_node(node)?;
                     let Some(row) = view.node_data()?.filter(|row| !row.is_empty()) else {
                         continue;
@@ -1125,18 +1074,15 @@ pub struct Ensured {
     pub index_id: String,
     pub unit: TimeUnit,
     pub files: BTreeMap<String, EnsuredFile>,
-    pub seconds: f64,
 }
 
-/// Makes every requested `(table, column, stat)` file of `cutoff` present
-/// and valid, recomputing the missing ones from the index.
+/// Reuses each requested `(table, column, stat)` file of `cutoff`, or recomputes it from the index.
 pub fn ensure_col_stats(
     index_dir: &Path,
     cutoff: Option<i64>,
     requests: &[(String, String, Stat)],
     num_threads: Option<usize>,
 ) -> Result<Ensured> {
-    let start = std::time::Instant::now();
     let index_dir = &std::path::absolute(index_dir)?;
     let metadata = read_dataset_metadata(index_dir)?;
     let index_id = index_id(index_dir, &metadata)?;
@@ -1193,11 +1139,9 @@ pub fn ensure_col_stats(
         index_id: index_id.clone(),
         unit: clock,
         files,
-        seconds: start.elapsed().as_secs_f64(),
     })
 }
 
-/// The ingested type a natively typed Arrow array holds.
 fn arrow_ingested_type(data_type: &DataType) -> Result<IngestedType> {
     Ok(match data_type {
         DataType::Boolean => IngestedType::Bool,
@@ -1218,8 +1162,7 @@ fn arrow_ingested_type(data_type: &DataType) -> Result<IngestedType> {
     })
 }
 
-/// Each Arrow timestamp in ticks of `clock`, read as ingest reads it: an
-/// error when beyond the clock, `None` when null.
+/// As ingest reads them.
 fn ingest_timestamps(
     array: &ArrayRef,
     clock: TimeUnit,
@@ -1233,9 +1176,7 @@ fn ingest_timestamps(
     })
 }
 
-/// Epoch `seconds` in ticks of the index clock, converted as ingest converts
-/// an Arrow timestamp or integer create time (rounding up to a coarser clock).
-/// Ingest rounds create times parsed from text down instead.
+/// Epoch `seconds` in the index clock, rounded as ingest rounds an Arrow timestamp.
 pub fn cutoff_ticks(seconds: i64, clock: TimeUnit) -> Result<i64> {
     ensure!(clock.is_index_clock(), "{clock:?} is not an index clock");
     let array: ArrayRef = Arc::new(TimestampSecondArray::from(vec![seconds]));
@@ -1245,7 +1186,7 @@ pub fn cutoff_ticks(seconds: i64, clock: TimeUnit) -> Result<i64> {
         .ok_or_else(|| anyhow!("cutoff is null"))
 }
 
-/// Each row's value as ingest stores it.
+/// As ingest stores them.
 fn arrow_values(array: &ArrayRef, clock: TimeUnit) -> Result<Vec<Value<'_>>> {
     fn map<T: ArrowPrimitiveType>(
         array: &dyn Array,
@@ -1288,18 +1229,14 @@ fn arrow_values(array: &ArrayRef, clock: TimeUnit) -> Result<Vec<Value<'_>>> {
     })
 }
 
-/// `stats` of `values` over the rows whose `create_time` (ticks of `clock`,
-/// or Arrow dates/timestamps) is at or before `cutoff`; rows with a null
-/// create time are skipped and `None` counts every row. Values and create
-/// times convert to `clock` as ingest converts them. Returns each stat's
-/// data JSON, as its file would hold it.
+/// Each stat's file `data` over the rows created at or before `cutoff`, in seconds.
 pub fn stats_from_arrow(
     values: &ArrayRef,
     create_time: Option<&ArrayRef>,
     cutoff: Option<i64>,
     stats: &[Stat],
-    clock: TimeUnit,
 ) -> Result<Vec<(Stat, String)>> {
+    let clock = TimeUnit::Seconds;
     if stats.is_empty() {
         return Ok(Vec::new());
     }
@@ -1343,12 +1280,10 @@ pub fn stats_from_arrow(
         table.row_stored();
     }
     let column = &table.stats[0];
-    let mut requested: Vec<Stat> = stats.to_vec();
-    requested.sort_unstable();
-    requested.dedup();
-    requested
-        .into_iter()
-        .map(|stat| Ok((stat, column.data(stat)?)))
+    table.columns[0]
+        .stats
+        .iter()
+        .map(|stat| Ok((*stat, column.data(*stat)?)))
         .collect()
 }
 

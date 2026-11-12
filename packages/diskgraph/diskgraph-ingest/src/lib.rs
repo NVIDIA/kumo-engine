@@ -958,9 +958,6 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     // sees its own predecessors' output.
     if let Some(rfp) = resume_from_phase {
         if rfp > IngestPhase::Encode {
-            if ctx.col_stats_requests.is_some() {
-                tracing::warn!("resumed after Encode: col_stats_requests are not published");
-            }
             ctx.restore_encode_state()?;
             ctx.repopulate_table_contexts_from_source()?;
             ctx.repopulate_node_stats_from_meta()?;
