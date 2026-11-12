@@ -215,7 +215,6 @@ enum Seen {
     F64(f64),
     Str(Range<usize>),
     Bytes(Range<usize>),
-    Decimal(f64, Range<usize>),
     Timestamp(i64),
     FloatList(FloatListView),
     IntList(IntListView),
@@ -254,9 +253,6 @@ impl Row {
                 Seen::F64(value) => stats.observe_f64(col, *value),
                 Seen::Str(range) => stats.observe_string(col, &self.text[range.clone()]),
                 Seen::Bytes(range) => stats.observe_bytes(col, &self.bytes[range.clone()]),
-                Seen::Decimal(value, range) => {
-                    stats.observe_decimal(col, *value, &|| self.text[range.clone()].to_owned())
-                }
                 Seen::Timestamp(ticks) => stats.observe_timestamp(col, *ticks),
                 Seen::FloatList(view) => stats.observe_float_list(col, view),
                 Seen::IntList(view) => stats.observe_int64_list(col, view),
@@ -271,7 +267,7 @@ impl Row {
 
 impl CutoffSinks {
     fn push(&mut self, col_idx: usize, seen: impl FnOnce(&mut Row) -> Seen) {
-        if self.active.contains(&true) {
+        if self.active.contains(&true) && self.stats[0].collects(col_idx) {
             let seen = seen(&mut self.row);
             self.row.seen.push((col_idx, seen));
         }
@@ -292,7 +288,11 @@ impl ColumnValueObserver for CutoffSinks {
         self.push(col_idx, |row| Seen::Bytes(row.bytes(value)));
     }
     fn observe_decimal(&mut self, col_idx: usize, value: f64, text: &dyn Fn() -> String) {
-        self.push(col_idx, |row| Seen::Decimal(value, row.text(&text())));
+        let keyed = self.stats.iter().any(|s| s.counts_categories(col_idx));
+        self.push(col_idx, |row| match keyed {
+            true => Seen::Str(row.text(&text())),
+            false => Seen::F64(value),
+        });
     }
     fn observe_timestamp(&mut self, col_idx: usize, ticks: i64) {
         self.push(col_idx, |_| Seen::Timestamp(ticks));
