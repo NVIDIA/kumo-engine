@@ -1082,13 +1082,29 @@ fn make_split_spec<U: UnitSystem>(args: SplitSpecArgs) -> PyResult<tt::SplitSpec
         (_, Some(v)) => (
             Some(
                 v.into_iter()
-                    .map(|o| dur_from_unit::<U>(o, off_unit))
-                    .collect::<Vec<_>>(),
+                    .map(|o| {
+                        check_tick::<U>("split offset", o, off_unit)?;
+                        Ok(dur_from_unit::<U>(o, off_unit))
+                    })
+                    .collect::<PyResult<Vec<_>>>()?,
             ),
             None,
         ),
         (_, None) => (None, None),
     };
+    if has_temporal_boundary_semantics
+        && !matches!(split_unit, tt::TimeUnit::Months | tt::TimeUnit::Years)
+    {
+        check_tick::<U>("split timeframe", timeframe.unwrap_or(0), split_unit)?;
+        check_tick::<U>("split anchor_start_offset", anchor_start_offset, split_unit)?;
+        if is_date_offset_split && flexible_boundaries.unwrap_or(true) {
+            check_tick::<U>(
+                "split timeframe_step",
+                timeframe_step.unwrap_or(0),
+                split_unit,
+            )?;
+        }
+    }
     Ok(tt::SplitSpec {
         ratio,
         kind,

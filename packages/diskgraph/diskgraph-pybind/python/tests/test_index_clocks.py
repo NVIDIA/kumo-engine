@@ -395,3 +395,24 @@ def test_offsets_shorter_than_a_tick_are_rejected():
         else:
             with pytest.raises(diskgraph.DiskgraphConfigError, match="offset"):
                 builder.build()
+
+
+@pytest.mark.parametrize("fields, error", [
+    ({"offsets": [-30, 0]}, "split offset"),
+    ({"timeframe": 30}, "split timeframe"),
+    ({"anchor_start_offset": -30}, "split anchor_start_offset"),
+    ({"timeframe_step": 1}, "split timeframe_step"),
+    ({"timeframe_step": 1, "flexible_boundaries": False}, None),
+])
+def test_split_durations_shorter_than_a_tick_are_rejected(fields, error):
+    builder = DiskGraphTTBuilder("hours")
+    builder.temporal([EPOCH_DAY * DAY], forecast_length=1, unit="seconds")
+    builder.for_each("users", "user_id")
+    builder.split_ratio(SplitSpec(**{
+        "kind": "DateOffsetSplit", "offsets": [-120, -60], "offset_unit": "minutes",
+        "unit": "minutes", "timeframe": 60, **fields}))
+    if error is None:
+        builder.build()
+    else:
+        with pytest.raises(diskgraph.DiskgraphConfigError, match=error):
+            builder.build()
