@@ -40,8 +40,7 @@ def data(tmp_path_factory) -> pathlib.Path:
     n = 3_000
     pq.write_table(pa.table({
         "id": pa.array(range(n), pa.int64()),
-        "signup": pa.array([(T0 + rng.randrange(-2_000, 7_000)) * 1_000 for _ in range(n)],
-                           pa.timestamp("ms")),
+        "signup": pa.array([(T0 + rng.randrange(-2_000, 7_000)) * 1_000 for _ in range(n)]),
         "tier": pa.array([None if i % 17 == 0 else rng.choice(["gold", "", "é"])
                           for i in range(n)]),
         "age": pa.array([rng.randrange(90) for _ in range(n)], pa.int32()),
@@ -67,7 +66,8 @@ def _ingest(data: pathlib.Path, out: pathlib.Path, col_stats=False, **options) -
 
     diskgraph.ingest(
         config_json=json.dumps({"dataset_name": "cutoffs", "timestamp_unit": "seconds", "tables": [
-            table("users", "id", [("id", "int64"), ("signup", "timestamp"), ("tier", "string"),
+            table("users", "id", [("id", "int64"), ("signup", "timestamp", {"timestamp_unit": "millis"}),
+                                  ("tier", "string"),
                                   ("age", "int32"), ("raw", "bytes"), ("seen", "timestamp"),
                                   ("born", "date"), ("price", "decimal128", {"precision": 10, "scale": 2}),
                                   ("big", "u_int64")],
@@ -94,7 +94,7 @@ def ingested(data, tmp_path_factory) -> str:
 
 def test_ingest_counts_the_rows_created_at_or_before_each_cutoff(data, ingested):
     table = pq.read_table(data / "users.parquet")
-    users = {**table.to_pydict(), **{c: table[c].cast(pa.int64()).to_pylist() for c in ("signup", "seen")}}
+    users = {**table.to_pydict(), "seen": table["seen"].cast(pa.int64()).to_pylist()}
     kept = [i for i, ms in enumerate(users["signup"]) if ms <= CUTOFF * 1_000]
     for directory, rows in zip(REQUEST["dirs"], (kept, range(len(users["id"])))):
         stats = _stats(ingested)[directory]
