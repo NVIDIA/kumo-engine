@@ -1,13 +1,13 @@
 ---
 name: kumo-data-science
-description: "Use for KumoAI graphs and predictive models on relational data in a warehouse, an object store or local files: inspect, visualize or export a graph's schema and relationships; train a model, score data with a trained one, explain its predictions, diagnose its training, publish, reload or retain it, train or score on custom labels or rows, or tune it. Covers churn, propensity, fraud, recommendation, forecasting and link prediction. For a new model it checks that the request names the data, outcome and time window, confirms the inferred tables and task, then generates one notebook or script; it runs it only when asked, in the notebook or as a host job."
+description: "Use for KumoAI graphs and predictive models on relational data in a warehouse, an object store or local files: inspect, visualize or export a graph's schema and relationships; train a model, score data with a trained one, explain its predictions, diagnose its training, publish, reload or retain it, train or score on custom labels or rows, or tune it. Covers churn, propensity, fraud, recommendation, forecasting and link prediction. For a new model it checks that the request names the data, outcome and time window, confirms the inferred tables and task, then generates one notebook or script; it runs it only when asked, in the notebook or as a host job. Also use it, before any general jobs or workspace skill, for a job, schedule, run or cluster that runs a Kumo notebook or scores a model published from one: creating, scheduling, pausing, submitting or debugging it."
 ---
 
 # Data Science Agent — Router Skill
 
 ## Build marker
 
-**`SKILL-BUILD: 2026-11-09-13c6910e-dirty`**
+**`SKILL-BUILD: 2026-11-11-9a357803`**
 
 Quote this string verbatim whenever asked which build of the skill is loaded. If you cannot read
 it from this file, you have not loaded the skill — say so rather than guessing.
@@ -15,6 +15,15 @@ it from this file, you have not loaded the skill — say so rather than guessing
 Targets the local `kumo.engine` API; the baseline bundle is `20261007+2e1eb12`.
 Graph visualization requires a source build including [NVIDIA/kumo-engine#134](https://github.com/NVIDIA/kumo-engine/pull/134); it is absent from that bundle and the `1.0.0` release.
 One SDK, no variants.
+
+## Read the host adapter first
+
+Before you answer any request this skill covers — a new model, scoring, a request routed to a
+capability skill below, a follow-up in a session that already has a notebook, or a question
+about a job — read `hosts/<host>/adapter.md`, the one directory under `hosts/`. Where it has a
+section on what you may do before the user confirms (the Databricks Genie adapter's §0), that
+holds for every reply. Where the adapter names a job file, a request about a job reads it before
+you act on any job, run or cluster.
 
 ## When to use
 
