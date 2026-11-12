@@ -97,3 +97,23 @@ def test_custom_tokenizer_receives_arrow() -> None:
     model.tokenize.assert_called_once_with(array)
     assert result.offset.tolist() == [0, 1, 1]
     assert result.values.tolist() == [0]
+
+
+@pytest.mark.parametrize("arrow_type", [pa.string(), pa.large_string()])
+def test_arrow_whitespace_matches_python(arrow_type: pa.DataType) -> None:
+    """Preserve Python splitting for every whitespace character, including VT."""
+    whitespace = [chr(code) for code in range(0x110000) if chr(code).isspace()]
+    texts = [
+        text
+        for separator in whitespace
+        for text in (
+            f"{separator}the{separator}of{separator}",
+            f"the<br{separator}/>of",
+        )
+    ]
+    model = resolve_encoder(TextEmbedding("glove.test-10d"))
+
+    result = TextTensorMapper(model)(pa.array(texts, type=arrow_type))
+
+    assert result.offset.tolist() == list(range(0, 2 * len(texts) + 1, 2))
+    assert result.values.tolist() == [0, 3] * len(texts)

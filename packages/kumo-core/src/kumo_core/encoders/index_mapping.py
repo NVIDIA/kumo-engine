@@ -171,13 +171,10 @@ class Mapper:
                 pc.utf8_lower(text), pc.invert(ascii_mask), lowered
             )
         text = pc.replace_substring_regex(text, r"[\'\"\.,\(\)\!\?\;\:]", " ")
-        # RE2's \s is ASCII-only; Python's split also recognizes these.
-        whitespace = (
-            r"[\s\x{1c}-\x{1f}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}"
-            r"\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]"
-        )
+        # RE2's \s omits vertical tabs and Unicode whitespace.
+        whitespace = r"[\s\x{0b}\x{1c}-\x{1f}\x{85}\p{Z}]"
         text = pc.replace_substring_regex(text, rf"<br{whitespace}*/?>", " ")
-        words = pc.split_pattern_regex(text, rf"{whitespace}+")
+        words = pc.utf8_split_whitespace(text)
         flattened = pc.list_flatten(words)
         nonempty = pc.not_equal(flattened, "")
         values = pc.filter(flattened, nonempty).to_numpy(zero_copy_only=False)
