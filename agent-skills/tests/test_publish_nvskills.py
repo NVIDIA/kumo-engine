@@ -56,11 +56,12 @@ def test_check_ignores_the_build_stamp_but_not_content(tmp_path: Path, catalog: 
     dest = tmp_path / 'kumo-data-science'
     publish_nvskills.publish(dest, catalog)
     router = dest / 'SKILL.md'
-    text = router.read_text()
-    router.write_text(publish_nvskills.package_skill.MARKER.sub('SKILL-BUILD: 2000-01-01-0', text))
+    text = router.read_text(encoding='utf-8')
+    router.write_text(publish_nvskills.package_skill.MARKER.sub('SKILL-BUILD: 2000-01-01-0', text),
+                      encoding='utf-8')
     assert publish_nvskills.stale(dest, catalog) == []
 
-    router.write_text(text + '\nedited by hand\n')
+    router.write_text(text + '\nedited by hand\n', encoding='utf-8')
     assert publish_nvskills.stale(dest, catalog) == ['~ SKILL.md']
 
 
