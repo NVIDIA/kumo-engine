@@ -16,7 +16,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import time
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, overload
 
@@ -34,14 +34,11 @@ from kumo.pytorch.artifact import FitRecord, FittedState
 from kumo.pytorch.assembly import PreviewResult, _fingerprint, _InputState, fit_plan
 from kumo.pytorch.column_stats import (
     LATEST_ANCHOR,
-    StatRequest,
-    TableColumnEncoder,
     _LatestAnchor,
     cutoff_seconds,
     fit_from_stats,
     table_column_encoders,
 )
-from kumo.pytorch.contract.batch.encodings import Buckets
 from kumo.pytorch.contract.sample import SampleRequest
 from kumo.pytorch.data.records import cutoff_to_epoch
 from kumo.pytorch.dataset import Dataset, TableSource
@@ -328,8 +325,9 @@ class Plan:
                 _iso(latest),
             )
         started = time.perf_counter()
-        requests, quantiles = _stats_requests(encoders.values())
-        stats = column_stats(requests, cutoff, quantiles)
+        stats = column_stats(
+            [item for encoder in encoders.values() for item in encoder.requests], cutoff
+        )
         pinned = {
             identity: fit_from_stats(identity, encoder, stats)
             for identity, encoder in encoders.items()
@@ -340,7 +338,7 @@ class Plan:
             "none" if cutoff is None else _iso(cutoff),
             time.perf_counter() - started,
         )
-        return pinned, {"cutoff": cutoff, "col_stats": list(stats.dirs)}
+        return pinned, {"cutoff": cutoff, "col_stats": list(stats.files)}
 
     @staticmethod
     def _fit_selection(selection: SplitSelection | None, declares_splits: bool) -> SplitSelection:
@@ -434,7 +432,8 @@ def prepare(
     if issues:
         raise ValidationError(issues)
     if getattr(engine, "encoder_cutoffs", ()) and not inference:
-        requests = _stats_requests(table_column_encoders(contract).values())
+        encoders = table_column_encoders(contract).values()
+        requests = [item for encoder in encoders for item in encoder.requests]
         source = engine.open(dataset, contract.schema, column_stats=requests)
     else:
         source = engine.open(dataset, contract.schema)
@@ -531,12 +530,6 @@ def _source_issues(
 ) -> tuple[ValidationIssue, ...]:
     check_sources = getattr(engine, "check_sources", None)
     return () if check_sources is None else tuple(check_sources(sources, path))
-
-
-def _stats_requests(encoders: Iterable[TableColumnEncoder]) -> tuple[list[StatRequest], bool]:
-    encoders = list(encoders)
-    requests = [item for encoder in encoders for item in encoder.requests]
-    return requests, any(isinstance(encoder.config, Buckets) for encoder in encoders)
 
 
 def _iso(seconds: int) -> str:

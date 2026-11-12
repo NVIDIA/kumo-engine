@@ -74,7 +74,7 @@ def ensure_diskgraph_index(
     num_threads: int | None = None,
     dataset_name: str = "default",
     if_missing: bool = True,
-    column_stats: tuple[Sequence[StatRequest], Sequence[int | None], bool] | None = None,
+    column_stats: tuple[Sequence[StatRequest], Sequence[int | None]] | None = None,
 ) -> _DiskGraphIndex:
     """Reuse or build the base index while opening a DiskGraph engine.
 
@@ -82,8 +82,7 @@ def ensure_diskgraph_index(
     schema and PK/FK relations with exactly one primary-key side.
     A matching index is reused. An incompatible or incomplete index is never
     overwritten. ``if_missing=False`` requires the index to exist already.
-    An ingest also computes ``column_stats``: requests at cutoffs in seconds, and
-    whether to publish t-digest quantiles.
+    An ingest also computes ``column_stats``: requests at cutoffs in seconds.
     """
 
     if num_shards <= 0:
@@ -114,7 +113,7 @@ def ensure_diskgraph_index(
     config_json = json.dumps(config, sort_keys=True, separators=(",", ":"))
     stats_options = {}
     if column_stats is not None:
-        requests, cutoffs, quantiles = column_stats
+        requests, cutoffs = column_stats
         clock = config.get("timestamp_unit", "seconds")
         ticks = list(
             dict.fromkeys(
@@ -122,7 +121,7 @@ def ensure_diskgraph_index(
                 for cutoff in cutoffs
             )
         )
-        request = stats_request(requests, ticks, clock, quantiles)
+        request = stats_request(requests, ticks, clock)
         stats_options = {"cutoff_col_stats": json.dumps(request)}
     started = time.perf_counter()
     thread_options = (

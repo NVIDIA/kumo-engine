@@ -83,7 +83,8 @@ def _ingest(data: pathlib.Path, out: pathlib.Path, col_stats=False, **options) -
 
 def _stats(index: str) -> dict:
     root = pathlib.Path(index) / "col_stats"
-    return {d: json.loads((root / d / "col_stats.json").read_text()) for d in REQUEST["dirs"]}
+    return {d: {t: json.loads((root / d / f"{t}.col_stats.json").read_text())[t] for t in REQUEST["columns"]}
+            for d in REQUEST["dirs"]}
 
 
 @pytest.fixture(scope="module")
@@ -123,7 +124,11 @@ def test_ingest_counts_the_rows_created_at_or_before_each_cutoff(data, ingested)
 def test_recompute_from_the_index_matches_ingest(data, ingested, tmp_path):
     index = tmp_path / "index"
     shutil.copytree(ingested, index, ignore=shutil.ignore_patterns("col_stats"))
-    diskgraph.cutoff_col_stats(str(index), json.dumps(REQUEST), num_threads=4)
+    users = {**REQUEST["columns"]["users"], "age": ["categorical"]}
+    diskgraph.cutoff_col_stats(str(index), json.dumps({**REQUEST, "columns": {**REQUEST["columns"], "users": users}}),
+                               num_threads=4)
+    # Statistics added to a column join its entry; its other keys and the other columns stay.
+    diskgraph.cutoff_col_stats(str(index), json.dumps({**REQUEST, "columns": {"users": {"age": ["numerical"]}}}))
     assert _stats(str(index)) == _stats(ingested)
     counts = _stats(ingested)["every-row"]["users"]["big"]["category_counts"]
     assert {int(key) for key, _ in counts} == {5, -(2**63), -1}
@@ -163,7 +168,7 @@ def test_rows_the_index_does_not_store_count_on_neither_route(tmp_path):
     )
 
     def counts():
-        return [dict(map(tuple, json.loads((index / "col_stats" / d / "col_stats.json").read_text())
+        return [dict(map(tuple, json.loads((index / "col_stats" / d / "events.col_stats.json").read_text())
                          ["events"]["tier"]["category_counts"])) for d in request["dirs"]]
 
     ingested = counts()

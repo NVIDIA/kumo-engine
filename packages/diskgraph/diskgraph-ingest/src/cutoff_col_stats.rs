@@ -5,6 +5,7 @@
 //! Column statistics of the rows created at or before each cutoff, under `col_stats/<dir>/`.
 
 use std::collections::{BTreeMap, HashSet};
+use std::fs::File;
 use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
@@ -13,6 +14,7 @@ use anyhow::{anyhow, ensure, Result};
 use diskgraph_core::time::TimeUnit;
 use diskgraph_rowpack::{ColumnValueObserver, FloatListView, IntListView, StringListView};
 use serde::Deserialize;
+use serde_json::value::RawValue;
 
 use crate::col_stats::{
     write_col_stats, CategoryCountStrategy, ColStatsTable, FileColStats, StatSet,
@@ -116,7 +118,7 @@ impl CutoffColStatsRequest {
         })
     }
 
-    /// Writes each cutoff's `col_stats.json`; a directory another writer published stays.
+    /// Adds each table's statistics to its `col_stats/<dir>/<table>.col_stats.json`.
     pub fn publish(
         &self,
         index_dir: &Path,
@@ -153,31 +155,49 @@ impl CutoffColStatsRequest {
                 });
             }
         }
-        let root = index_dir.join("col_stats");
-        std::fs::create_dir_all(&root)?;
-        let written = self
-            .dirs
-            .iter()
-            .zip(per_cutoff)
-            .map(|(dir, tables)| {
-                let tmp = tempfile::Builder::new()
-                    .prefix(&format!(".{dir}."))
-                    .tempdir_in(&root)?;
-                write_col_stats(
-                    &OutputTarget::parse(&tmp.path().to_string_lossy(), Dest::Local)?,
-                    tables,
-                )?;
-                Ok((root.join(dir), tmp))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        for (published, tmp) in written {
-            if let Err(error) = std::fs::rename(tmp.path(), &published) {
-                // Another writer published the same statistics first.
-                ensure!(published.join("col_stats.json").is_file(), error);
+        for (dir, tables) in self.dirs.iter().zip(per_cutoff) {
+            let dir = index_dir.join("col_stats").join(dir);
+            std::fs::create_dir_all(&dir)?;
+            for table in tables {
+                add_to_file(&dir, table)?;
             }
         }
         Ok(())
     }
+}
+
+/// Table, column and statistic, each value kept as written.
+type StatsFile = BTreeMap<String, BTreeMap<String, BTreeMap<String, Box<RawValue>>>>;
+
+/// Adds `table` to `<dir>/<table>.col_stats.json`; a column already there keeps its keys and
+/// gains the new ones.
+fn add_to_file(dir: &Path, table: ColStatsTable<'_>) -> Result<()> {
+    let path = dir.join(format!("{}.col_stats.json", table.name));
+    let tmp = tempfile::Builder::new().prefix(".").tempdir_in(dir)?;
+    write_col_stats(
+        &OutputTarget::parse(&tmp.path().to_string_lossy(), Dest::Local)?,
+        vec![table],
+    )?;
+    let written = tmp.path().join("col_stats.json");
+    // Writers take turns, so none drops another's columns.
+    let lock = File::open(dir)?;
+    lock.lock()?;
+    if path.is_file() {
+        let mut stats: StatsFile = serde_json::from_slice(&std::fs::read(&path)?)?;
+        let added: StatsFile = serde_json::from_slice(&std::fs::read(&written)?)?;
+        for (name, columns) in added {
+            let known = stats.entry(name).or_default();
+            for (column, values) in columns {
+                let known = known.entry(column).or_default();
+                for (key, value) in values {
+                    known.entry(key).or_insert(value);
+                }
+            }
+        }
+        std::fs::write(&written, serde_json::to_vec(&stats)?)?;
+    }
+    std::fs::rename(&written, &path)?;
+    Ok(())
 }
 
 impl CutoffTable {

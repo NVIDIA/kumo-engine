@@ -14,7 +14,6 @@ comparison is a matter of swapping one object.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -23,7 +22,7 @@ from kumo.pytorch.column_stats import (
     EMPTY_STATS,
     ColumnStats,
     StatRequest,
-    stats_request,
+    read_column_stats,
 )
 from kumo.pytorch.contract.sample import BuiltSample, SampleRequest, SampleSpec
 from kumo.pytorch.contract.schema import DataSchema
@@ -66,12 +65,9 @@ class InMemorySource:
             roots,
         )
 
-    def column_stats(
-        self, requests: Sequence[StatRequest], cutoff: int | None, quantiles: bool
-    ) -> ColumnStats:
+    def column_stats(self, requests: Sequence[StatRequest], cutoff: int | None) -> ColumnStats:
         import tempfile
 
-        import diskgraph
         import pyarrow as pa
         import pyarrow.parquet as pq
 
@@ -103,12 +99,7 @@ class InMemorySource:
             ensure_diskgraph_index(DataSchema(tables=tuple(stored)), Dataset(sources), index)
             names = {table.name for table in stored}
             group = [item for item in requests if item[0] in names]
-            request = stats_request(group, [cutoff], "seconds", quantiles)
-            diskgraph.cutoff_col_stats(str(index), json.dumps(request))
-            found = json.loads(
-                index.joinpath("col_stats", request["dirs"][0], "col_stats.json").read_text()
-            )
-            columns.update({item: found[item[0]][item[1]] for item in group})
+            columns.update(read_column_stats(index, group, cutoff, "seconds").columns)
         return ColumnStats(columns, {"value": cutoff, "unit": "seconds"})
 
     def sample_graph(

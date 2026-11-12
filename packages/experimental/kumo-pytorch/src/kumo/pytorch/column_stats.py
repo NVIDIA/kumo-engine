@@ -15,6 +15,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -44,6 +45,8 @@ StatRequest = tuple[str, str, str]
 COL_STATS_RECIPE = 1
 # Buckets cuts interpolate the t-digest quantiles at these probabilities.
 QUANTILE_GRID = [index / 1024 for index in range(1025)]
+#: A key each semantic type's statistics add to a column's entry.
+_STAT_KEYS = {"categorical": "category_counts", "numerical": "mean"}
 _TICKS_PER_SECOND = {
     "seconds": 1,
     "milliseconds": 10**3,
@@ -75,11 +78,11 @@ LATEST_ANCHOR = _LatestAnchor()
 
 @dataclass(frozen=True)
 class ColumnStats:
-    #: Each request's entry in DiskGraph's ``col_stats.json``.
+    #: Each request's column entry, in DiskGraph's ``col_stats.json`` format.
     columns: Mapping[StatRequest, Mapping[str, Any]]
     cutoff: Mapping[str, Any]
-    #: The ``col_stats/`` directories read.
-    dirs: tuple[str, ...] = ()
+    #: The ``col_stats/`` files read.
+    files: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -95,25 +98,61 @@ class TableColumnEncoder:
 
 
 def stats_request(
-    requests: Sequence[StatRequest], cutoffs: Sequence[int | None], unit: str, quantiles: bool
+    requests: Sequence[StatRequest], cutoffs: Sequence[int | None], unit: str
 ) -> dict:
-    """DiskGraph's ``cutoff_col_stats`` request; each cutoff's directory names its inputs."""
+    """DiskGraph's ``cutoff_col_stats`` request, into each cutoff's own directory."""
 
     columns: dict[str, dict[str, list[str]]] = {}
     for table, column, stype in sorted(set(requests)):
         columns.setdefault(table, {}).setdefault(column, []).append(stype)
-    dirs = [
-        hashlib.sha256(
-            json.dumps([COL_STATS_RECIPE, cutoff, unit, columns, quantiles]).encode()
-        ).hexdigest()[:16]
-        for cutoff in cutoffs
-    ]
     return {
         "cutoffs": list(cutoffs),
-        "dirs": dirs,
+        "dirs": [_cutoff_dir(cutoff, unit) for cutoff in cutoffs],
         "columns": columns,
-        "quantiles": QUANTILE_GRID if quantiles else [],
+        "quantiles": QUANTILE_GRID,
     }
+
+
+def read_column_stats(
+    index: str | Path,
+    requests: Sequence[StatRequest],
+    ticks: int | None,
+    unit: str,
+    num_threads: int | None = None,
+) -> ColumnStats:
+    """The requested statistics at a cutoff, first computing into the index those it lacks."""
+
+    import diskgraph
+
+    directory = Path(index, "col_stats", _cutoff_dir(ticks, unit))
+    paths = {table: directory / f"{table}.col_stats.json" for table, _, _ in requests}
+
+    def read() -> dict:
+        return {
+            table: json.loads(path.read_text())[table]
+            for table, path in paths.items()
+            if path.is_file()
+        }
+
+    found = read()
+    missing = [
+        (table, column, stype)
+        for table, column, stype in requests
+        if _STAT_KEYS[stype] not in found.get(table, {}).get(column, {})
+    ]
+    if missing:
+        request = stats_request(missing, [ticks], unit)
+        diskgraph.cutoff_col_stats(str(index), json.dumps(request), num_threads=num_threads)
+        found = read()
+    return ColumnStats(
+        {item: found[item[0]][item[1]] for item in requests},
+        {"value": ticks, "unit": unit},
+        tuple(f"{directory.name}/{path.name}" for _, path in sorted(paths.items())),
+    )
+
+
+def _cutoff_dir(ticks: int | None, unit: str) -> str:
+    return hashlib.sha256(json.dumps([COL_STATS_RECIPE, ticks, unit]).encode()).hexdigest()[:16]
 
 
 def table_column_encoders(contract: Any) -> dict[str, TableColumnEncoder]:

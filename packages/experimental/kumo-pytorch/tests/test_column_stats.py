@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import replace
 from datetime import UTC, date, datetime
@@ -227,6 +228,47 @@ def test_pinned_encoders_match_numpy_over_rows_up_to_the_cutoff(tmp_path, engine
     ranks = [np.mean(amounts <= cut) for cut in buckets["boundaries"]]
     assert np.allclose(ranks, [0.25, 0.5, 0.75][: len(ranks)], atol=1.5 / len(amounts))
     assert _statistics(fitted)["cutoff"] == (None if bound is None else int(bound.timestamp()))
+
+
+def test_statistics_keep_a_file_per_table_per_cutoff_and_compute_only_what_is_missing(
+    tmp_path, monkeypatch
+):
+    import diskgraph
+
+    computed = []
+    compute = diskgraph.cutoff_col_stats
+
+    def recording(index, request, **options):
+        computed.append(json.loads(request)["columns"])
+        compute(index, request, **options)
+
+    monkeypatch.setattr(diskgraph, "cutoff_col_stats", recording)
+    dataset, engine = _setup("diskgraph", tmp_path)
+    contract = _contract()
+    inputs = dict(contract.batch.inputs)
+    inputs["transactions"] = replace(
+        inputs["transactions"],
+        representation=api.Fields(fields=(api.Encode(field="amount", encoding=api.Vocabulary()),)),
+    )
+    _encoders(replace(contract, batch=replace(contract.batch, inputs=inputs)), dataset, engine)
+    (directory,) = (tmp_path / "index" / "col_stats").iterdir()
+    files = ["accounts.col_stats.json", "card_transactions.col_stats.json", "users.col_stats.json"]
+    assert sorted(path.name for path in directory.iterdir()) == files
+    before = json.loads((directory / "card_transactions.col_stats.json").read_text())
+
+    _encoders(contract, dataset, engine)
+    after = json.loads((directory / "card_transactions.col_stats.json").read_text())
+    assert computed == [
+        {
+            "accounts": {"account_type": ["categorical"]},
+            "card_transactions": {"amount": ["categorical", "numerical"]},
+            "users": {"country": ["categorical"]},
+        },
+        {"card_transactions": {"channel": ["categorical"]}},
+    ]
+    channel = after["card_transactions"].pop("channel")
+    assert after == before and channel["category_counts"]
+    assert list(directory.parent.iterdir()) == [directory]
 
 
 def test_a_cutoff_after_the_latest_anchor_warns(tmp_path, caplog):
