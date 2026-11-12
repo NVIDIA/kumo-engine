@@ -128,8 +128,9 @@ platform's `release-version`.
    - runs the fresh-process reload qualification on each supported desktop
      configuration with Python 3.11–3.14. Linux x86-64 and WSL2 x86-64 run
      on CPU and CUDA. Linux ARM64 runs on CPU. macOS 15 and 26 on Apple
-     Silicon run on CPU. Each case is a
-     numerical, static link, or temporal link task. A producer process trains,
+     Silicon run on CPU. The cases are the eight tasks of the GPU wheel
+     smoke (`wheel_gpu_smoke.py`) on its PR172 fixture data, so both checks
+     share one task definition. For each task, a producer process trains,
      exports the model and the snapshot, and saves its predictions. The job
      then deletes the producer scratch, caches, temp files, and source data.
      A new consumer process loads only the exports and predicts without
@@ -144,16 +145,17 @@ platform's `release-version`.
      `kumo-engine-platform-smoke.yml` by hand with that build run's ID and
      commit. See
      [`desktop_reload_qualification.py`](../../packages/kumo-engine/test/desktop_reload_qualification.py).
-   - needs evidence from bare-metal Apple Silicon Macs for two rows:
-     macOS 14 on CPU and macOS 15 on MPS. macOS 14 is the supported floor,
-     and hosted runners no longer offer it. MPS requires macOS 15 or later,
+   - needs evidence from Apple Silicon Macs for two rows: macOS 14 on CPU,
+     on bare metal or in a macOS 14 VM, and macOS 15 on MPS on bare metal.
+     macOS 14 is the supported floor, and hosted runners no longer offer it. MPS requires macOS 15 or later,
      because the supported PyTorch calls Metal APIs that macOS 14 does not
      have. On macOS 14, the `unavailable_device` check requests MPS and
      passes only when the consumer fails with `UnsupportedAcceleratorError`.
      Hosted macOS runners are VMs without a Metal device, so they cannot run
      MPS. The CI report marks these rows UNVERIFIED. On each Mac, install the macOS
      wheel from the same build run in a clean environment. Then run
-     `desktop_reload_qualification.py run` with all three cases,
+     `desktop_reload_qualification.py run` next to `wheel_gpu_smoke.py`,
+     with the extracted PR172 inputs (`--data-dir`, `--graph-metadata`),
      `--negative-checks`, and the label `macos-<major>-<device>-py<version>`
      for each Python version. Build the full matrix with
      `desktop_reload_qualification.py report`. Pass one `--evidence-dir` for

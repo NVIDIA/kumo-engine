@@ -273,6 +273,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      id-token: write
     uses: ./.github/workflows/kumo-engine-platform-smoke.yml
 
   attach-to-release:

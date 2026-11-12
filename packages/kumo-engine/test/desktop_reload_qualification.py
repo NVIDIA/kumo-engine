@@ -4,17 +4,21 @@
 # SPDX-License-Identifier: Apache-2.0
 """Fresh-process save and reload qualification for one installed wheel.
 
-The controller runs each case in two new interpreters. The producer trains,
-exports the model and the graph snapshot, and saves baseline predictions.
-The controller then deletes every producer scratch, cache, temp and raw-input
-directory. The consumer loads only the durable exports, predicts with the
-same options and must not train. The controller compares the two outputs.
+The cases are the eight tasks of the GPU wheel smoke (wheel_gpu_smoke.py,
+which must sit next to this file) on its PR172 fixture data. The controller
+runs each task in two new interpreters. The producer trains, exports the
+model and the graph snapshot, and saves baseline predictions. The controller
+then deletes every producer scratch, cache, temp and raw-input directory.
+The consumer loads only the durable exports, predicts with the same options
+and must not train. The controller compares the two outputs with the shared
+task checks.
 
 Run it with the interpreter of a clean environment, outside the checkout:
 
     python -I desktop_reload_qualification.py run --wheel <wheel> \
-        --device cpu --case numerical --case static_link \
-        --case temporal_link --work-dir <dir> --output-dir <dir>
+        --device cpu --data-dir <pr172 inputs> \
+        --graph-metadata <pr172 inputs>/graphs.json \
+        --work-dir <dir> --output-dir <dir>
 
 The harness supports POSIX hosts only: Linux, WSL2 and macOS.
 """
@@ -24,6 +28,7 @@ import base64
 import csv
 import hashlib
 import importlib.metadata
+import importlib.util
 import json
 import math
 import os
@@ -41,29 +46,29 @@ import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 
-CASES = ('numerical', 'static_link', 'temporal_link')
+
+def _load_tasks():
+    """Load the shared task definitions that sit next to this file."""
+    path = Path(__file__).resolve().with_name('wheel_gpu_smoke.py')
+    spec = importlib.util.spec_from_file_location('wheel_gpu_smoke', path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+# The eight tasks of the GPU wheel smoke: one definition of each query,
+# fixture split, model plan and prediction check for both checks.
+tasks = _load_tasks()
+CASES = tuple(tasks.TASKS)
 DEVICES = ('cpu', 'gpu', 'mps')
 TORCH_DEVICE = {'cpu': 'cpu', 'gpu': 'cuda', 'mps': 'mps'}
 SEED = 0
-TOP_K = 5
-USERS = 60
-ITEMS = 40
-GROUPS = 4
-NUMERIC_ROWS = 400
-NUMERIC_LABELED = 300
-START = '2024-01-01'
-DAYS = 112
-HORIZON = 7
-QUERIES = {
-    'numerical':
-    'PREDICT entities.Y FOR EACH entities.ID',
-    'static_link':
-    f'PREDICT LIST_DISTINCT(events.ITEM_ID) RANK TOP {TOP_K} '
-    'FOR EACH users.USER_ID',
-    'temporal_link':
-    f'PREDICT LIST_DISTINCT(events.ITEM_ID, 0, {HORIZON}, days) '
-    f'RANK TOP {TOP_K} FOR EACH users.USER_ID',
-}
+# Artifact and device rejections do not depend on the task, so they run once
+# per configuration. The Faiss check needs a retrieval task.
+ARTIFACT_CASE = 'binary'
+FAISS_CASE = 'static_link'
+RANKING_CASES = ('multilabel_ranking', 'static_link', 'temporal_link')
 RECEIPT_SCHEMA = 1
 DESCENDANT_GRACE = 15.0
 REQUIRED_ATOL = 1e-4
@@ -83,7 +88,7 @@ HOSTED_TARGETS = (
 # PyTorch reports no MPS there. MPS runs on a bare-metal Apple Silicon Mac
 # with `run` and joins the report through a second --evidence-dir. macOS 14
 # is the supported floor, which hosted runners no longer offer, so its CPU
-# row also comes from a bare-metal Mac. MPS needs macOS 15 or later. On
+# row comes from a Mac too, on bare metal or in a VM. MPS needs macOS 15. On
 # macOS 14 the unavailable_device check proves that MPS fails clearly.
 EXTERNAL_TARGETS = (
     ('macos-14', 'cpu'),
@@ -94,7 +99,7 @@ MPS_MIN_MACOS = 15
 # passes only with proof that MPS fails there with a clear error.
 REQUIRED_CHECKS = {
     ('macos-14', 'cpu'): {
-        'numerical': ('unavailable_device_mps_old_macos', ),
+        ARTIFACT_CASE: ('unavailable_device_mps_old_macos', ),
     },
 }
 REQUIRED_TARGETS = HOSTED_TARGETS + EXTERNAL_TARGETS
@@ -328,130 +333,29 @@ def require_retrieval(receipt, *, phase, case, device):
 # ---------------------------------------------------------------------------
 
 
-def _rank_order(frame):
-    """Return per-entity rank positions, from RANK or emitted order."""
-    if 'RANK' in frame:
-        ranks = frame['RANK']
-        return ranks - ranks.groupby(frame['ENTITY']).transform('min')
-    return frame.groupby('ENTITY', sort=False).cumcount()
+def compare_frames(case, baseline, after, *, producer, atol):
+    """Check both outputs with the shared task rules, then compare them.
 
+    Entities, anchor timestamps, classes and forecast steps must match the
+    saved inputs exactly. Scores must agree within atol. Chosen labels and
+    ranks may change only between scores that tie within atol.
+    """
+    def aligned(frame):
+        values = tasks.prediction_values(
+            case, frame, producer['entities'], classes=producer['classes'],
+            anchor=producer['anchor'], time_column=producer['time_column'])
+        decisions = tasks.prediction_decisions(case, frame,
+                                               producer['entities'],
+                                               classes=producer['classes'])
+        return values, decisions
 
-def validate_frame(case, frame, *, entities, k=TOP_K, catalog=None,
-                   anchors=None, atol=1e-4):
-    """Check one prediction output against the saved inputs."""
-    import numpy as np
-    import pandas as pd
-
-    ids = list(entities)
-    if not ids or len(set(ids)) != len(ids):
-        raise QualificationError('Saved entities are empty or repeated')
-    if frame.empty or frame['ENTITY'].isna().any():
-        raise QualificationError('Prediction output is empty or has null keys')
-    if set(frame['ENTITY']) != set(ids):
-        missing = sorted(set(ids) - set(frame['ENTITY']))[:5]
-        foreign = sorted(set(frame['ENTITY']) - set(ids))[:5]
-        raise QualificationError(
-            f'Prediction entities differ: missing={missing}, '
-            f'foreign={foreign}')
-    if anchors is not None:
-        if 'ANCHOR_TIMESTAMP' not in frame:
-            raise QualificationError('Temporal output has no ANCHOR_TIMESTAMP')
-        stamps = pd.to_datetime(frame['ANCHOR_TIMESTAMP'])
-        # JSON receipts turn integer keys into strings; compare as text.
-        expected = frame['ENTITY'].astype(str).map({
-            str(key): pd.Timestamp(value)
-            for key, value in anchors.items()
-        })
-        if expected.isna().any() or not stamps.eq(expected).all():
-            raise QualificationError(
-                'Prediction timestamps differ from the saved inputs')
-    if case == 'numerical':
-        if not frame['ENTITY'].is_unique:
-            raise QualificationError('Numerical output repeats an entity')
-        if not np.isfinite(frame['TARGET_PRED'].to_numpy(float)).all():
-            raise QualificationError('Numerical predictions are not finite')
-        return
-    if catalog is None or not 0 < k < len(catalog):
-        raise QualificationError(
-            'Top-k needs k smaller than the eligible item count')
-    if frame.duplicated(['ENTITY', 'CLASS']).any():
-        raise QualificationError('An entity lists one item twice')
-    counts = frame.groupby('ENTITY').size()
-    if not counts.eq(k).all():
-        raise QualificationError(
-            f'Each entity needs exactly top-{k} items, got '
-            f'{sorted(set(counts.tolist()))}')
-    if not set(frame['CLASS']).issubset(set(catalog)):
-        raise QualificationError('Prediction lists an item outside catalog')
-    scores = frame['SCORE'].to_numpy(float)
-    if not np.isfinite(scores).all():
-        raise QualificationError('Link scores are not finite')
-    ranks = _rank_order(frame)
-    ordered = frame.assign(_RANK=ranks.to_numpy()).sort_values(
-        ['ENTITY', '_RANK'])
-    for _, group in ordered.groupby('ENTITY', sort=False):
-        if group['_RANK'].tolist() != list(range(k)):
-            raise QualificationError('Ranks are not contiguous 0..k-1')
-        values = group['SCORE'].to_numpy(float)
-        if (np.diff(values) > atol).any():
-            raise QualificationError('Ranked scores increase with rank')
-
-
-def compare_predictions(case, baseline, after, *, atol):
-    """Compare coordinates first, then scores, then ranks."""
-    import numpy as np
-
-    if not math.isfinite(atol) or atol < 0:
-        raise QualificationError('Tolerance must be finite and nonnegative')
-    keys = ['ENTITY']
-    if 'ANCHOR_TIMESTAMP' in baseline or 'ANCHOR_TIMESTAMP' in after:
-        keys.append('ANCHOR_TIMESTAMP')
-    if case != 'numerical':
-        keys.append('CLASS')
-    left = baseline.assign(_RANK=_rank_order(baseline).to_numpy())
-    right = after.assign(_RANK=_rank_order(after).to_numpy())
-    for frame in (left, right):
-        if any(key not in frame for key in keys):
-            raise QualificationError(f'Output lacks a coordinate in {keys}')
-        if frame.duplicated(keys).any():
-            raise QualificationError('Output repeats a coordinate')
-    left_keys = set(map(tuple, left[keys].astype(str).to_numpy()))
-    right_keys = set(map(tuple, right[keys].astype(str).to_numpy()))
-    if left_keys != right_keys:
-        raise QualificationError(
-            'Reloaded coordinates differ: '
-            f'missing={sorted(left_keys - right_keys)[:5]}, '
-            f'extra={sorted(right_keys - left_keys)[:5]}')
-    column = 'TARGET_PRED' if case == 'numerical' else 'SCORE'
-    joined = left.astype({
-        key: str
-        for key in keys
-    }).merge(right.astype({key: str
-                           for key in keys}), on=keys,
-             suffixes=('_before', '_after'), validate='one_to_one')
-    before = joined[f'{column}_before'].to_numpy(float)
-    later = joined[f'{column}_after'].to_numpy(float)
-    if not (np.isfinite(before).all() and np.isfinite(later).all()):
-        raise QualificationError('Compared scores are not finite')
-    difference = np.abs(before - later)
-    result = dict(rows=int(len(joined)),
-                  max_abs_difference=float(difference.max()), exact=bool(
-                      (difference == 0).all()), atol=atol)
-    if (difference > atol).any():
-        raise QualificationError(
-            f'Reloaded scores differ beyond atol={atol}: {result}')
-    if case != 'numerical':
-        moved = joined['_RANK_before'] != joined['_RANK_after']
-        result['rank_changes'] = int(moved.sum())
-        for entity in joined.loc[moved, 'ENTITY'].unique():
-            group = joined[joined['ENTITY'] == entity]
-            # A rank may move only between items whose scores tie.
-            span = group.loc[moved & (joined['ENTITY'] == entity),
-                             'SCORE_before']
-            if span.max() - span.min() > atol:
-                raise QualificationError(
-                    f'Rank changed outside a score tie for entity {entity}')
-    return result
+    try:
+        (before, chosen), (later, rechosen) = aligned(baseline), aligned(after)
+        return tasks.compare_predictions(before, later, task=case, atol=atol,
+                                         before_decisions=chosen,
+                                         after_decisions=rechosen)
+    except ValueError as error:
+        raise QualificationError(str(error)) from None
 
 
 # ---------------------------------------------------------------------------
@@ -489,154 +393,19 @@ def _seed():
     torch.manual_seed(SEED)
 
 
-def write_fixture(case, raw):
-    """Write deterministic source tables; return query inputs."""
-    import numpy as np
-    import pandas as pd
-
-    rng = np.random.default_rng(SEED)
-    raw.mkdir(parents=True, exist_ok=True)
-    if case == 'numerical':
-        targets = rng.random(NUMERIC_ROWS)
-        targets[NUMERIC_LABELED:] = np.nan
-        pd.DataFrame({
-            'ID': np.arange(NUMERIC_ROWS),
-            'Y': targets,
-            'F1': rng.normal(size=NUMERIC_ROWS),
-        }).to_parquet(raw / 'entities.parquet')
-        entities = pd.DataFrame(
-            {'ENTITY1': np.arange(NUMERIC_LABELED, NUMERIC_ROWS)})
-        return dict(entities=entities, catalog=None, anchors=None)
-
-    # Each user mostly buys from one item group, so retrieval can learn.
-    pd.DataFrame({
-        'USER_ID': np.arange(USERS),
-        'AGE': rng.normal(size=USERS),
-    }).to_parquet(raw / 'users.parquet')
-    pd.DataFrame({
-        'ITEM_ID': np.arange(ITEMS),
-        'PRICE': rng.random(ITEMS),
-    }).to_parquet(raw / 'items.parquet')
-    count = 2400
-    user = rng.integers(0, USERS, count)
-    group = np.where(
-        rng.random(count) < .85, user % GROUPS, rng.integers(0, GROUPS, count))
-    item = group * (ITEMS // GROUPS) + rng.integers(0, ITEMS // GROUPS, count)
-    start = pd.Timestamp(START)
-    events = pd.DataFrame({
-        'EVENT_ID': np.arange(count),
-        'USER_ID': user,
-        'ITEM_ID': item,
-    })
-    if case == 'temporal_link':
-        events['TS'] = start + pd.to_timedelta(
-            rng.integers(0, DAYS * 24, count), unit='h')
-    events.to_parquet(raw / 'events.parquet')
-    ids = np.arange(0, USERS, 2)
-    entities = pd.DataFrame({'ENTITY1': ids})
-    anchors = None
-    if case == 'temporal_link':
-        # Temporal link prediction scores one anchor time per call.
-        stamps = [start + pd.Timedelta(days=DAYS)] * len(ids)
-        entities['TIMESTAMP'] = pd.to_datetime(stamps).astype('datetime64[us]')
-        anchors = {int(i): str(s) for i, s in zip(ids, stamps)}
-    return dict(entities=entities, catalog=list(range(ITEMS)), anchors=anchors)
-
-
-def build_graph(case, raw):
-    from kumoapi.graph import Edge
-    from kumoapi.typing import Stype
-
-    import kumo.engine as kumo
-
-    files = kumo.FileConnector(root_dir=str(raw))
-    if case == 'numerical':
-        entities = kumo.Table.from_source_table(
-            files['entities.parquet'], primary_key='ID').infer_metadata()
-        return kumo.Graph(tables={'entities': entities}, edges=[])
-    users = kumo.Table.from_source_table(
-        files['users.parquet'], primary_key='USER_ID').infer_metadata()
-    items = kumo.Table.from_source_table(
-        files['items.parquet'], primary_key='ITEM_ID').infer_metadata()
-    events = kumo.Table.from_source_table(
-        files['events.parquet'], primary_key='EVENT_ID', time_column='TS'
-        if case == 'temporal_link' else None).infer_metadata().with_column(
-            'USER_ID', stype=Stype.ID).with_column('ITEM_ID', stype=Stype.ID)
-    graph = kumo.Graph(
-        tables={
-            'users': users,
-            'items': items,
-            'events': events
-        }, edges=[
-            Edge(src_table='events', fkey='USER_ID', dst_table='users'),
-            Edge(src_table='events', fkey='ITEM_ID', dst_table='items'),
-        ])
-    graph.validate()
-    return graph
-
-
-def generation_plan(case):
-    import pandas as pd
-    from kumoapi.model_plan import TrainingTableGenerationPlan
-
-    if case == 'numerical':
-        return None
-    if case == 'static_link':
-        return TrainingTableGenerationPlan(
-            split='RandomLinkSplit([0.6, 0.2, 0.2])')
-    end = pd.Timestamp(START) + pd.Timedelta(days=DAYS)
-    step = pd.Timedelta(days=HORIZON)
-    bounds = [(pd.Timestamp(START), end - 2 * step),
-              (end - 2 * step, end - step), (end - step, end)]
-    ranges = [(a.isoformat(), b.isoformat()) for a, b in bounds]
-    return TrainingTableGenerationPlan(
-        split=(f'TimeRangeSplit({ranges!r}, timeframe={HORIZON}, '
-               'flexible_boundaries=False)'), timeframe_step=HORIZON)
-
-
-def model_plan(case):
-    from kumoapi.model_plan import GNNModelPlan, ModelPlan, NumNeighborsConfig
-
-    plan = ModelPlan()
-    plan.training_job.num_experiments = 1
-    plan.training_job.disable_explain = True
-    plan.training_job.disable_compilation = True
-    plan.training_job.manual_seed = SEED
-    plan.training_job.refit_trainval = False
-    plan.training_job.refit_full = False
-    plan.optimization.max_epochs = 2
-    plan.optimization.min_steps_per_epoch = 4
-    plan.optimization.max_steps_per_epoch = 4
-    plan.optimization.batch_size = [32]
-    plan.optimization.max_val_steps = 20
-    plan.optimization.max_test_steps = 20
-    if case.endswith('link'):
-        plan.training_job.metrics = [f'recall@{TOP_K}']
-        plan.training_job.tune_metric = f'recall@{TOP_K}'
-        plan.model_architecture.model = [
-            GNNModelPlan(channels=[16], aggregation=[['sum', 'mean']],
-                         dropout=[0.0])
-        ]
-        plan.model_architecture.module = 'shallow_rhs'
-        plan.model_architecture.target_embedding_mode = ['lookup']
-        plan.model_architecture.output_embedding_dim = [16]
-        plan.model_architecture.handle_new_target_entities = False
-        plan.neighbor_sampling.num_neighbors = [
-            NumNeighborsConfig(hop1={'default': 8}, hop2={'default': 8})
-        ]
-    return plan
-
-
-def prediction_options(case, durable, output_dir):
+def prediction_options(case, durable, output_dir, classes):
+    """Score the saved inputs with the options of the shared GPU smoke."""
     from kumoapi.jobs import MetadataField
 
     import kumo.engine as kumo
 
     options = dict(entities=kumo.FileConnector(
-        root_dir=str(durable))['entities.parquet'])
-    if case.endswith('link'):
-        options['num_classes_to_return'] = TOP_K
-    if case == 'temporal_link':
+        root_dir=str(durable))['inputs.parquet'])
+    if classes:
+        options['num_classes_to_return'] = len(classes)
+    if case == 'binary':
+        options['binary_classification_threshold'] = .5
+    if case != 'static_link':
         options['output_config'] = kumo.PredictionOutputConfig(
             connector=kumo.FileConnector(root_dir=str(output_dir)),
             output_paths={'predictions': 'predictions'},
@@ -644,20 +413,13 @@ def prediction_options(case, durable, output_dir):
     return options
 
 
-def canonical(frame):
-    columns = [
-        column for column in ('ENTITY', 'ANCHOR_TIMESTAMP', 'CLASS', 'SCORE',
-                              'RANK', 'TARGET_PRED') if column in frame
-    ]
-    frame = frame[columns].copy()
-    if 'RANK' not in frame and 'CLASS' in frame:
-        frame['RANK'] = frame.groupby('ENTITY', sort=False).cumcount()
-    if 'ANCHOR_TIMESTAMP' in frame:
-        import pandas as pd
-        frame['ANCHOR_TIMESTAMP'] = pd.to_datetime(
-            frame['ANCHOR_TIMESTAMP']).astype('datetime64[us]')
-    order = [c for c in ('ENTITY', 'ANCHOR_TIMESTAMP', 'RANK') if c in frame]
-    return frame.sort_values(order).reset_index(drop=True)
+def seed_time_column(trainer):
+    """The time column of the fitted seed table, as forecasts name it."""
+    [runtime] = trainer.scratch_dir.glob(
+        'runs/*-fit-*/task_dataset/runtime_manifest.json')
+    seed = json.loads(runtime.read_text())['table']['seed_entity_table']
+    schema = json.loads(runtime.with_name('feature_schema.json').read_text())
+    return schema['node_types'][seed]['time_column'] or 'TIMESTAMP'
 
 
 @contextmanager
@@ -811,7 +573,8 @@ def metal_evidence(info):
 def produce(args):
     import kumo.engine as kumo
 
-    durable = Path(args.durable)
+    durable, raw = Path(args.durable), Path(args.raw)
+    spec = tasks.TASKS[args.case]
     work = dict(stage='fit', fits=0, training_batches=0, prediction_batches=0,
                 optimizer_steps=0, retrieval={})
     receipt = dict(schema=RECEIPT_SCHEMA, phase='producer', case=args.case,
@@ -821,23 +584,21 @@ def produce(args):
     preflight(args.device, info)
     receipt.update(info)
     kumo.configure(scratch_dir=args.scratch)
-    fixture = write_fixture(args.case, Path(args.raw))
-    fixture['entities'].to_parquet(durable / 'entities.parquet')
+    # Only producer-owned storage holds the source tables, and the controller
+    # deletes it before the consumer starts.
+    shutil.copytree(Path(args.data_dir) / spec['graph'], raw / spec['graph'])
+    metadata = json.loads(Path(args.graph_metadata).read_text())
     _seed()
-    graph = build_graph(args.case, Path(args.raw))
-    snapshot = graph.snapshot()
-    query = kumo.PredictiveQuery(graph=graph, query=QUERIES[args.case])
-    query.validate()
-    plan = generation_plan(args.case)
-    table = (query.generate_training_table(snapshot) if plan is None else
-             query.generate_training_table(snapshot, plan=plan))
+    prepared = tasks.prepare_task(args.case, raw, metadata, raw / 'task', {})
+    shutil.copy2(prepared['input_file'], durable / 'inputs.parquet')
+    snapshot, classes = prepared['snapshot'], prepared['classes']
     with observe(args.device, work):
-        trainer = kumo.Trainer(model_plan=model_plan(args.case),
+        _seed()
+        trainer = kumo.Trainer(tasks.make_plan(args.case),
                                accelerator=args.device)
-        fitted = trainer.fit(table, snapshot=snapshot)
-        metrics = {key: float(value) for key, value in fitted.metrics.items()}
-        if not metrics or not all(map(math.isfinite, metrics.values())):
-            raise QualificationError('Training metrics are missing or invalid')
+        fitted = trainer.fit(prepared['training_table'], snapshot=snapshot)
+        if not fitted.metrics:
+            raise QualificationError('Training reported no metrics')
         files = kumo.FileConnector(root_dir=str(durable))
         published = fitted.export(kumo.ModelOutputConfig(files, path='model'))
         location = snapshot.export(
@@ -845,28 +606,25 @@ def produce(args):
         work['stage'] = 'predict'
         _seed()
         before = work['prediction_batches']
-        result = trainer.predict(
+        frame = trainer.predict(
             snapshot,
             **prediction_options(args.case, durable,
-                                 Path(args.scratch) / 'out'))
+                                 Path(args.scratch) / 'out', classes)).frame
         if work['prediction_batches'] <= before:
             raise QualificationError('Baseline prediction ran no batches')
-        frame = canonical(result.frame)
-    validate_frame(args.case, frame,
-                   entities=fixture['entities']['ENTITY1'].tolist(),
-                   catalog=fixture['catalog'], anchors=fixture['anchors'])
     frame.to_parquet(durable / 'baseline.parquet')
+    anchor = prepared['anchor']
     receipt.update(
-        status='PASS', metrics=metrics, snapshot_id=snapshot.id,
-        snapshot_location=location,
+        status='PASS', metrics={
+            key: float(value) if math.isfinite(value) else None
+            for key, value in fitted.metrics.items()
+        }, snapshot_id=snapshot.id, snapshot_location=location,
         model=dict(name=published.name, version=published.version,
-                   uri=published.uri,
-                   metadata=dict(published.metadata)), query=QUERIES[args.case],
-        top_k=TOP_K if args.case.endswith('link') else None,
-        catalog=fixture['catalog'], anchors=fixture['anchors'],
-        entities=fixture['entities']['ENTITY1'].tolist(), options=dict(
-            num_classes_to_return=TOP_K if args.case.endswith('link') else None,
-            anchor_timestamp=args.case == 'temporal_link'), rows=len(frame))
+                   uri=published.uri, metadata=dict(published.metadata)),
+        query=spec['query'], task_type=spec['task_type'],
+        entities=prepared['ids'], classes=classes,
+        anchor=None if anchor is None else str(anchor),
+        time_column=seed_time_column(trainer), rows=len(frame))
     if args.device == 'mps':
         receipt['metal'] = metal_evidence(info)
     return receipt
@@ -898,11 +656,11 @@ def consume(args):
             raise QualificationError('Reloaded snapshot has another id')
         work['stage'] = 'predict'
         _seed()
-        result = trainer.predict(
+        frame = trainer.predict(
             snapshot,
             **prediction_options(args.case, durable,
-                                 Path(args.scratch) / 'out'))
-        frame = canonical(result.frame)
+                                 Path(args.scratch) / 'out',
+                                 producer['classes'])).frame
     frame.to_parquet(Path(args.output) / 'reloaded.parquet')
     receipt.update(status='PASS', snapshot_id=snapshot.id, rows=len(frame))
     if args.device == 'mps':
@@ -1017,7 +775,7 @@ def run_consumer(ctx, durable, label, *, device=None, env_extra=None,
     return process, receipt, output
 
 
-DURABLE_FILES = ('entities.parquet', 'baseline.parquet')
+DURABLE_FILES = ('inputs.parquet', 'baseline.parquet')
 
 
 def require_durable_layout(durable):
@@ -1042,6 +800,8 @@ def run_case(ctx):
     command = worker_command(ctx['python'], ctx['script'], 'produce', case,
                              device, ctx['version'], durable=durable,
                              scratch=roots['scratch'], raw=raw,
+                             data_dir=ctx['data_dir'],
+                             graph_metadata=ctx['graph_metadata'],
                              receipt=receipt_path)
     try:
         process = run_worker(command, cwd=roots['cwd'],
@@ -1090,13 +850,8 @@ def run_case(ctx):
 
     baseline = pd.read_parquet(evidence / 'baseline.parquet')
     reloaded = pd.read_parquet(evidence / 'consumer' / 'reloaded.parquet')
-    for frame in (baseline, reloaded):
-        validate_frame(case, frame, entities=producer['entities'],
-                       k=producer.get('top_k') or TOP_K,
-                       catalog=producer.get('catalog'),
-                       anchors=producer.get('anchors'), atol=ctx['atol'])
-    row['comparison'] = compare_predictions(case, baseline, reloaded,
-                                            atol=ctx['atol'])
+    row['comparison'] = compare_frames(case, baseline, reloaded,
+                                       producer=producer, atol=ctx['atol'])
     row.update(
         model_files=exports['model'], snapshot_files=exports['snapshot'],
         inputs=inputs, snapshot_id=producer['snapshot_id'],
@@ -1188,9 +943,6 @@ def negative_checks(ctx, durable, baseline):
     with an error that names the cause. Prediction tampering checks pass
     only when the harness comparison rejects the changed output.
     """
-    import numpy as np
-    import pandas as pd
-
     case = ctx['case']
     producer = ctx['producer']
     checks = []
@@ -1238,7 +990,7 @@ def negative_checks(ctx, durable, baseline):
             return f'Consumer error does not name the cause: {detail}'
         raise QualificationError(json.dumps(detail, default=str))
 
-    if case == 'numerical':
+    if case == ARTIFACT_CASE:
         mutations = {
             'model_file_corrupt': lambda d: _corrupt_largest(d / 'model'),
             'model_file_missing': lambda d: _remove_largest(d / 'model'),
@@ -1258,57 +1010,76 @@ def negative_checks(ctx, durable, baseline):
             options = dict(device='mps', skip_preflight=True,
                            env_extra={'PYTORCH_ENABLE_MPS_FALLBACK': '0'})
             expect_rejected(name, lambda: consumer_must_fail(name, **options))
-    if case == 'static_link':
+    if case == FAISS_CASE:
         expect_rejected(
             'faiss_missing', lambda: consumer_must_fail(
                 'faiss_missing', env_extra={'DRQ_BLOCK_IMPORTS': 'faiss'}))
 
-    entities = producer['entities']
-
     def tampered(change):
-        frame = change(baseline.copy())
-        validate_frame(case, frame, entities=entities, k=producer.get('top_k')
-                       or TOP_K, catalog=producer.get('catalog'),
-                       anchors=producer.get('anchors'), atol=ctx['atol'])
-        compare_predictions(case, baseline, frame, atol=ctx['atol'])
+        compare_frames(case, baseline, change(baseline.copy()),
+                       producer=producer, atol=ctx['atol'])
         return 'Tampered prediction passed'
 
-    column = 'TARGET_PRED' if case == 'numerical' else 'SCORE'
-    tampers = {
-        'prediction_score_shift':
-        lambda f: f.assign(**{column: f[column] + 10 * ctx['atol'] + 1e-3}),
-        'prediction_entity_missing':
-        lambda f: f[f['ENTITY'] != f['ENTITY'].iloc[0]],
-        'prediction_entity_duplicated':
-        lambda f: pd.concat([f, f.iloc[:1]]),
-    }
-    if case != 'numerical':
-
-        def swap_item(f):
-            row = f.index[0]
-            used = set(f.loc[f['ENTITY'] == f.at[row, 'ENTITY'], 'CLASS'])
-            f.at[row, 'CLASS'] = next(i for i in producer['catalog']
-                                      if i not in used)
-            return f
-
-        def swap_rank(f):
-            first = f.index[(f['ENTITY'] == f['ENTITY'].iloc[0])
-                            & (f['RANK'] == f['RANK'].min())][0]
-            second = f.index[(f['ENTITY'] == f['ENTITY'].iloc[0])
-                             & (f['RANK'] == f['RANK'].min() + TOP_K - 1)][0]
-            f.loc[[first, second], 'CLASS'] = f.loc[[second, first],
-                                                    'CLASS'].to_numpy()
-            return f
-
-        tampers.update(
-            item_replaced=swap_item, rank_swapped=swap_rank,
-            top_k_truncated=lambda f: f[f['RANK'] != f['RANK'].max()])
-    if case == 'temporal_link':
-        tampers['timestamp_shifted'] = lambda f: f.assign(ANCHOR_TIMESTAMP=f[
-            'ANCHOR_TIMESTAMP'] + np.timedelta64(1, 'D'))
-    for name, change in tampers.items():
+    for name, change in tampers(case, baseline, ctx['atol']).items():
         expect_rejected(name, lambda change=change: tampered(change))
     return checks
+
+
+def tampers(case, baseline, atol):
+    """Changes to a correct output that the comparison must reject."""
+    import numpy as np
+    import pandas as pd
+
+    column = next(c for c in ('SCORE', 'True_PROB', 'TARGET_PRED')
+                  if c in baseline)
+    first = baseline['ENTITY'].iloc[0]
+
+    def shift(f):
+        f.loc[f.index[0], column] += 10 * atol + 1e-3
+        return f
+
+    result = {
+        'prediction_score_shift': shift,
+        'prediction_entity_missing': lambda f: f[f['ENTITY'] != first],
+        'prediction_entity_duplicated': lambda f: pd.concat([f, f.iloc[:1]]),
+    }
+    if 'ANCHOR_TIMESTAMP' in baseline:
+        result['timestamp_shifted'] = lambda f: f.assign(
+            ANCHOR_TIMESTAMP=pd.to_datetime(f['ANCHOR_TIMESTAMP']) +
+            pd.to_timedelta(1, unit='D'))
+    if 'CLASS' in baseline:
+
+        def replace_class(f):
+            foreign = (f['CLASS'].max() + 1 if pd.api.types.is_numeric_dtype(
+                f['CLASS']) else 'drq-foreign-class')
+            f.loc[f.index[0], 'CLASS'] = foreign
+            return f
+
+        result.update(
+            class_replaced=replace_class, class_dropped=lambda f: f.drop(
+                f.index[f['ENTITY'] == first][-1:]))
+    if case in RANKING_CASES:
+
+        def swap_ranks(f):
+            # The entity whose scores spread most, so the swap is no tie.
+            spread = f.groupby('ENTITY')['SCORE'].agg(np.ptp)
+            rows = f.index[f['ENTITY'] == spread.idxmax()]
+            top, bottom = rows[0], rows[-1]
+            f.loc[[top, bottom], 'CLASS'] = f.loc[[bottom, top],
+                                                  'CLASS'].to_numpy()
+            return f
+
+        result['rank_swapped'] = swap_ranks
+    decision = 'PREDICTED' if 'PREDICTED' in baseline else (
+        'TARGET_PRED' if case == 'binary' else None)
+    if decision:
+
+        def flip(f):
+            f.loc[f.index[0], decision] = not f.loc[f.index[0], decision]
+            return f
+
+        result['decision_flipped'] = flip
+    return result
 
 
 def run_controller(args):
@@ -1350,7 +1121,9 @@ def run_controller(args):
         work.mkdir(parents=True)
         ctx = dict(case=case, device=args.device, python=python, script=script,
                    version=version, timeout=args.timeout, atol=args.atol,
-                   work=work, evidence=evidence)
+                   work=work, evidence=evidence,
+                   data_dir=Path(args.data_dir).resolve(),
+                   graph_metadata=Path(args.graph_metadata).resolve())
         row = dict(status='RUNNING')
         started = time.monotonic()
         try:
@@ -1502,7 +1275,10 @@ def parse_args(argv=None):
     run = commands.add_parser('run')
     run.add_argument('--wheel', required=True)
     run.add_argument('--device', choices=DEVICES, required=True)
-    run.add_argument('--case', choices=CASES, action='append', required=True)
+    run.add_argument('--case', choices=CASES, action='append',
+                     help='Default: all eight tasks.')
+    run.add_argument('--data-dir', required=True)
+    run.add_argument('--graph-metadata', required=True)
     run.add_argument('--work-dir', required=True)
     run.add_argument('--output-dir', required=True)
     run.add_argument('--attempt', type=int,
@@ -1527,6 +1303,8 @@ def parse_args(argv=None):
         worker.add_argument('--receipt', required=True)
         if name == 'produce':
             worker.add_argument('--raw', required=True)
+            worker.add_argument('--data-dir', required=True)
+            worker.add_argument('--graph-metadata', required=True)
         else:
             worker.add_argument('--producer-receipt', required=True)
             worker.add_argument('--output', required=True)
@@ -1537,6 +1315,7 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
     if args.command == 'run':
+        args.case = args.case or list(CASES)
         return run_controller(args)
     if args.command == 'report':
         report = build_report(args.evidence_dir, commit=args.commit)

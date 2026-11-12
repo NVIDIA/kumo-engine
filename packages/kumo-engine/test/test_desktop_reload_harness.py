@@ -26,115 +26,78 @@ pytestmark = pytest.mark.skipif(sys.platform == 'win32',
                                 reason='The harness is POSIX only.')
 
 ENTITIES = [0, 2, 4]
-CATALOG = list(range(8))
-ANCHORS = {0: '2024-04-22', 2: '2024-04-15', 4: '2024-04-22'}
+CLASSES = list(range(6))
+ANCHOR = '2024-04-22 00:00:00'
+PRODUCER = dict(entities=ENTITIES, classes=[], anchor=ANCHOR,
+                time_column='TIMESTAMP')
 
 
-def link_frame(temporal=False):
-    rows = []
-    for entity in ENTITIES:
-        for rank in range(drq.TOP_K):
-            row = dict(ENTITY=entity, CLASS=(entity + rank) % len(CATALOG),
-                       SCORE=1.0 - rank / 10, RANK=rank)
-            if temporal:
-                row['ANCHOR_TIMESTAMP'] = pd.Timestamp(ANCHORS[entity])
-            rows.append(row)
-    return pd.DataFrame(rows)
+def producer(case):
+    classes = CLASSES if case.endswith('link') else []
+    anchor = None if case == 'static_link' else ANCHOR
+    return {**PRODUCER, 'classes': classes, 'anchor': anchor}
 
 
-def numeric_frame():
-    return pd.DataFrame({'ENTITY': ENTITIES, 'TARGET_PRED': [.1, .2, .3]})
+def frame(case, score=lambda entity, rank: 1.0 - rank / 10):
+    """A correct output of the shared task checks for one case."""
+    anchor = {} if case == 'static_link' else dict(
+        ANCHOR_TIMESTAMP=pd.Timestamp(ANCHOR))
+    if case == 'regression':
+        return pd.DataFrame([
+            dict(ENTITY=e, TARGET_PRED=e / 10, **anchor) for e in ENTITIES
+        ])
+    if case == 'binary':
+        return pd.DataFrame([
+            dict(ENTITY=e, False_PROB=1 - p, True_PROB=p, TARGET_PRED=p > .5,
+                 **anchor) for e, p in zip(ENTITIES, (.2, .7, .9))
+        ])
+    return pd.DataFrame([
+        dict(ENTITY=e, CLASS=(e + rank) % len(CLASSES), SCORE=score(e, rank),
+             **anchor) for e in ENTITIES for rank in range(len(CLASSES))
+    ])
 
 
-def validate(case, frame):
-    drq.validate_frame(
-        case, frame, entities=ENTITIES,
-        catalog=None if case == 'numerical' else CATALOG, anchors={
-            str(k): v
-            for k, v in ANCHORS.items()
-        } if case == 'temporal_link' else None)
+FRAME_CASES = ['binary', 'regression', 'static_link', 'temporal_link']
 
 
-@pytest.mark.parametrize('case', drq.CASES)
+@pytest.mark.parametrize('case', FRAME_CASES)
 def test_identical_predictions_pass(case):
-    frame = (numeric_frame() if case == 'numerical' else link_frame(
-        case == 'temporal_link'))
-    validate(case, frame)
-    result = drq.compare_predictions(case, frame, frame.copy(), atol=1e-4)
-    assert result['exact'] and result['rows'] == len(frame)
+    result = drq.compare_frames(case, frame(case), frame(case),
+                                producer=producer(case), atol=1e-4)
+    assert result['max_abs_difference'] == 0 and result['decisions_equal']
 
 
-def _swap_rank(frame):
-    first = frame.index[(frame.ENTITY == 0) & (frame.RANK == 0)][0]
-    last = frame.index[(frame.ENTITY == 0) & (frame.RANK == drq.TOP_K - 1)][0]
-    frame.loc[[first, last], 'CLASS'] = frame.loc[[last, first],
-                                                  'CLASS'].to_numpy()
-    return frame
-
-
-LINK_TAMPERS = {
-    'score':
-    lambda f: f.assign(SCORE=f.SCORE + 1e-2),
-    'missing_entity':
-    lambda f: f[f.ENTITY != 0],
-    'foreign_entity':
-    lambda f: f.assign(ENTITY=f.ENTITY.replace(0, 99)),
-    'duplicate_row':
-    lambda f: pd.concat([f, f.iloc[:1]]),
-    'item_replaced':
-    lambda f: f.assign(CLASS=f.CLASS.where(f.index != 0, 7)),
-    'rank_swapped':
-    _swap_rank,
-    'top_k_truncated':
-    lambda f: f[f.RANK != drq.TOP_K - 1],
-    'item_outside_catalog':
-    lambda f: f.assign(CLASS=f.CLASS.where(f.index != 0, 99)),
-}
-
-
-@pytest.mark.parametrize('case', ['static_link', 'temporal_link'])
-@pytest.mark.parametrize('name', sorted(LINK_TAMPERS))
-def test_wrong_link_prediction_fails(case, name):
-    baseline = link_frame(case == 'temporal_link')
-    after = LINK_TAMPERS[name](baseline.copy())
-    with pytest.raises(drq.QualificationError):
-        validate(case, after)
-        drq.compare_predictions(case, baseline, after, atol=1e-4)
-
-
-def test_wrong_timestamp_fails():
-    baseline = link_frame(temporal=True)
-    after = baseline.assign(ANCHOR_TIMESTAMP=baseline.ANCHOR_TIMESTAMP +
-                            pd.Timedelta(days=1))
-    with pytest.raises(drq.QualificationError, match='timestamps'):
-        validate('temporal_link', after)
-    with pytest.raises(drq.QualificationError, match='coordinates'):
-        drq.compare_predictions('temporal_link', baseline, after, atol=1e-4)
-
-
-def test_k_must_be_smaller_than_catalog():
-    with pytest.raises(drq.QualificationError, match='smaller'):
-        drq.validate_frame('static_link', link_frame(), entities=ENTITIES,
-                           catalog=CATALOG[:drq.TOP_K])
+@pytest.mark.parametrize('case', FRAME_CASES)
+def test_every_tampered_prediction_fails(case):
+    changes = drq.tampers(case, frame(case), 1e-4)
+    expected = {
+        'prediction_score_shift', 'prediction_entity_missing',
+        'prediction_entity_duplicated'
+    }
+    if case != 'static_link':
+        expected.add('timestamp_shifted')
+    if case.endswith('link'):
+        expected |= {'class_replaced', 'class_dropped', 'rank_swapped'}
+    if case == 'binary':
+        expected.add('decision_flipped')
+    assert set(changes) == expected
+    for name, change in changes.items():
+        with pytest.raises(drq.QualificationError):
+            drq.compare_frames(case, frame(case), change(frame(case)),
+                               producer=producer(case), atol=1e-4)
 
 
 def test_rank_change_allowed_only_inside_a_tie():
-    baseline = link_frame().assign(SCORE=1.0)
-    drq.compare_predictions('static_link', baseline,
-                            _swap_rank(baseline.copy()), atol=1e-4)
+    tied = frame('static_link', score=lambda entity, rank: 1.0)
+    swapped = drq.tampers('static_link', tied, 1e-4)['rank_swapped']
+    drq.compare_frames('static_link', tied, swapped(tied.copy()),
+                       producer=producer('static_link'), atol=1e-4)
 
 
-@pytest.mark.parametrize('name', ['shift', 'missing', 'nan'])
-def test_wrong_numerical_prediction_fails(name):
-    baseline = numeric_frame()
-    after = {
-        'shift': baseline.assign(TARGET_PRED=baseline.TARGET_PRED + 1e-3),
-        'missing': baseline.iloc[1:],
-        'nan': baseline.assign(TARGET_PRED=float('nan')),
-    }[name]
-    with pytest.raises(drq.QualificationError):
-        validate('numerical', after)
-        drq.compare_predictions('numerical', baseline, after, atol=1e-4)
+def test_cases_are_the_shared_gpu_smoke_tasks():
+    assert drq.CASES == tuple(drq.tasks.TASKS) and len(drq.CASES) == 8
+    assert {drq.ARTIFACT_CASE, drq.FAISS_CASE} <= set(drq.CASES)
+    assert set(drq.RANKING_CASES) <= set(drq.CASES)
 
 
 def test_changed_or_missing_artifact_fails(tmp_path):
@@ -185,7 +148,7 @@ def test_worker_must_not_leave_descendants(tmp_path, monkeypatch):
 
 def receipt(tmp_path, **changes):
     body = dict(
-        schema=drq.RECEIPT_SCHEMA, phase='consumer', case='numerical',
+        schema=drq.RECEIPT_SCHEMA, phase='consumer', case='regression',
         device='cpu', status='PASS', system='Linux',
         work=dict(device_types=['cpu'], fits=0, training_batches=0,
                   optimizer_steps=0, prediction_batches=2, retrieval={}))
@@ -196,7 +159,7 @@ def receipt(tmp_path, **changes):
 
 
 def test_missing_skipped_or_failed_receipt_fails(tmp_path):
-    kwargs = dict(phase='consumer', case='numerical', device='cpu')
+    kwargs = dict(phase='consumer', case='regression', device='cpu')
     with pytest.raises(drq.QualificationError, match='missing'):
         drq.read_receipt(tmp_path / 'absent.json', **kwargs)
     for status in ('SKIP', 'FAIL', 'RUNNING'):
@@ -274,7 +237,7 @@ def test_report_marks_missing_configurations_unverified(tmp_path):
     report = drq.build_report(tmp_path, commit='abc')
     rows = {(r['label'], r['case']): r for r in report['rows']}
     assert report['status'] == 'OPEN'
-    assert rows[(label, 'numerical')]['status'] == 'PASS'
+    assert rows[(label, 'regression')]['status'] == 'PASS'
     assert rows[('macos-15-mps-py3.12',
                  'static_link')]['status'] == ('UNVERIFIED')
     assert ('macos-14-mps-py3.12', 'static_link') not in rows
@@ -395,8 +358,8 @@ def test_macos_14_row_needs_the_clear_mps_error(tmp_path):
     write_summary(tmp_path, label)
     report = drq.build_report(tmp_path, commit='abc')
     rows = {r['case']: r for r in report['rows'] if r['label'] == label}
-    assert rows['numerical']['status'] == 'FAIL'
-    assert 'unavailable_device_mps_old_macos' in rows['numerical']['reason']
+    assert rows[drq.ARTIFACT_CASE]['status'] == 'FAIL'
+    assert 'unavailable_device_mps_old_macos' in rows[drq.ARTIFACT_CASE]['reason']
     assert rows['static_link']['status'] == 'PASS'
 
     check = dict(name='unavailable_device_mps_old_macos', detected=True)

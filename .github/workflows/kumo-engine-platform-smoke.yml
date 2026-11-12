@@ -174,9 +174,17 @@ jobs:
             torch_backend: ''
             extra: ''
           # Hosted macOS VMs expose a paravirtual GPU without Metal 2.0, so
-          # PyTorch reports no MPS. MPS (macos-14-mps) runs on a bare-metal
+          # PyTorch reports no MPS. MPS (macos-15-mps) runs on a bare-metal
           # Apple Silicon Mac; see docs/development/releasing-kumo-engine.md.
     runs-on: ${{ matrix.target.runner }}
+    # The eight tasks read the GPU smoke's private PR172 fixture object.
+    environment:
+      name: gha-kumo-workflow-tests
+      deployment: false
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     defaults:
       run:
         shell: bash
@@ -212,6 +220,42 @@ jobs:
         with:
           enable-cache: false
 
+      - name: Read the private fixture object
+        id: fixture-credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-west-2
+          output-env-credentials: false
+          output-credentials: true
+          unset-current-credentials: true
+
+      - name: Download the pinned PR172 inputs of the eight tasks
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.fixture-credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.fixture-credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.fixture-credentials.outputs.aws-session-token }}
+        run: |
+          set -euo pipefail
+          # A separate tool environment keeps boto3 out of the candidate venv.
+          uv run --no-project --python 3.12 --with 'boto3>=1.34,<2' \
+            python -I - <<'PY'
+          import hashlib, json, os, tarfile
+          from pathlib import Path
+          import boto3
+          spec = json.loads(Path('packages/kumo-engine/test/pr172/inputs.json').read_text())
+          root = Path(os.environ['RUNNER_TEMP']) / 'reload-inputs'
+          root.mkdir()
+          archive = root / 'inputs.tar.gz'
+          boto3.client('s3', region_name=spec['region']).download_file(spec['bucket'], spec['key'], str(archive))
+          if hashlib.sha256(archive.read_bytes()).hexdigest() != spec['sha256']:
+              raise SystemExit('PR172 input checksum differs')
+          with tarfile.open(archive) as source:
+              source.extractall(root, filter='data')
+          archive.unlink()
+          print('Inputs:', spec['version'], spec['sha256'], flush=True)
+          PY
+
       - name: Clean install, then train, reload and compare in new processes
         run: |
           set -euo pipefail
@@ -220,7 +264,7 @@ jobs:
           mkdir -p "$stage/results" "$stage/test"
           cp packages/kumo-engine/test/desktop_reload_qualification.py \
             packages/kumo-engine/test/test_desktop_reload_harness.py \
-            "$stage/test/"
+            packages/kumo-engine/test/wheel_gpu_smoke.py "$stage/test/"
           cd "$stage"
           wheels=(artifacts/kumo_engine-*.whl)
           if [ "${#wheels[@]}" -ne 1 ] || [ ! -f "${wheels[0]}" ]; then
@@ -251,7 +295,8 @@ jobs:
             | tee results/harness-tests.log
           "$python" -I test/desktop_reload_qualification.py run \
             --wheel "${wheels[0]}" --device "$RELOAD_DEVICE" \
-            --case numerical --case static_link --case temporal_link \
+            --data-dir "$RUNNER_TEMP/reload-inputs" \
+            --graph-metadata "$RUNNER_TEMP/reload-inputs/graphs.json" \
             --negative-checks --label "$RELOAD_LABEL" \
             --commit "$CANDIDATE_SHA" --attempt "$GITHUB_RUN_ATTEMPT" \
             --work-dir "$stage/work" \
