@@ -252,8 +252,9 @@ def test_statistics_keep_a_file_per_table_per_cutoff_and_compute_only_what_is_mi
     )
     _encoders(replace(contract, batch=replace(contract.batch, inputs=inputs)), dataset, engine)
     (directory,) = (tmp_path / "index" / "col_stats").iterdir()
-    files = ["accounts.col_stats.json", "card_transactions.col_stats.json", "users.col_stats.json"]
-    assert sorted(path.name for path in directory.iterdir()) == files
+    assert sorted(path.name for path in directory.iterdir()) == [
+        f"{table}.col_stats.json" for table in ("accounts", "card_transactions", "users")
+    ]
     before = json.loads((directory / "card_transactions.col_stats.json").read_text())
 
     _encoders(contract, dataset, engine)

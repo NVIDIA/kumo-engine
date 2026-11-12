@@ -186,9 +186,9 @@ fn add_to_file(dir: &Path, table: ColStatsTable<'_>) -> Result<()> {
         let mut stats: StatsFile = serde_json::from_slice(&std::fs::read(&path)?)?;
         let added: StatsFile = serde_json::from_slice(&std::fs::read(&written)?)?;
         for (name, columns) in added {
-            let known = stats.entry(name).or_default();
+            let table = stats.entry(name).or_default();
             for (column, values) in columns {
-                let known = known.entry(column).or_default();
+                let known = table.entry(column).or_default();
                 for (key, value) in values {
                     known.entry(key).or_insert(value);
                 }
