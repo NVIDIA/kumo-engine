@@ -307,3 +307,22 @@ def test_cpu_qualification_uses_candidate_artifacts_on_all_pythons():
         'run-id': '${{ inputs.wheel_run_id || github.run_id }}',
         'github-token': '${{ github.token }}',
     }
+    # The reload qualification reads the GPU smoke's private fixture with the
+    # same environment-scoped role, and keeps fixture predictions on the
+    # runner.
+    assert caller['permissions']['id-token'] == 'write'
+    reload = workflow['jobs']['reload']
+    assert reload['environment']['name'] == 'gha-kumo-workflow-tests'
+    assert reload['permissions']['id-token'] == 'write'
+    steps = {step.get('name'): step for step in reload['steps']}
+    fixture = steps['Download the pinned PR172 inputs of the eight tasks']
+    assert 'pr172/inputs.json' in fixture['run']
+    assert "hexdigest() != spec['sha256']" in fixture['run']
+    run = steps['Clean install, then train, reload and compare in new processes']
+    assert 'unset ACTIONS_ID_TOKEN_REQUEST_URL' in run['run']
+    assert '--data-dir "$RUNNER_TEMP/reload-inputs"' in run['run']
+    assert 'wheel_gpu_smoke.py' in run['run']
+    upload = next(step for step in reload['steps']
+                  if step.get('uses', '').startswith('actions/upload-artifact@'))
+    assert '!${{ runner.temp }}/reload/results/**/*.parquet' in upload['with'][
+        'path']

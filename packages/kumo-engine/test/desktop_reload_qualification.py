@@ -95,6 +95,13 @@ EXTERNAL_TARGETS = (
     ('macos-15', 'mps'),
 )
 MPS_MIN_MACOS = 15
+# Checks every configuration must carry, by case. Score drift must be caught
+# on every task, artifact rejections once and missing Faiss on static link.
+BASE_CHECKS = {
+    ARTIFACT_CASE: ('model_file_corrupt', 'model_file_missing',
+                    'snapshot_file_corrupt', 'snapshot_missing'),
+    FAISS_CASE: ('faiss_missing', ),
+}
 # Checks a configuration must carry, by target and case. A macOS 14 row
 # passes only with proof that MPS fails there with a clear error.
 REQUIRED_CHECKS = {
@@ -294,7 +301,7 @@ def require_device_work(receipt, *, phase, device):
             raise QualificationError('Producer completed no real training')
     else:
         if work.get('fits') or work.get('training_batches') or work.get(
-                'optimizer_steps'):
+                'optimizer_steps') or work.get('other_optimizer_steps'):
             raise QualificationError(
                 'Consumer trained the model: '
                 f'fits={work.get("fits")}, '
@@ -478,9 +485,14 @@ def observe(device, work):
             parameter.grad for group in optimizer.param_groups
             for parameter in group['params'] if parameter.grad is not None
         ]
-        if not grads or any(grad.device.type != expected for grad in grads):
-            raise QualificationError('Optimizer step ran off-device')
-        work['optimizer_steps'] += 1
+        if grads and all(grad.device.type == expected for grad in grads):
+            work['optimizer_steps'] += 1
+            return
+        # Post-hoc calibration fits its few parameters on the CPU during
+        # validation. The callback above proves where each training batch ran.
+        other = work.setdefault('other_optimizer_steps', {})
+        name = type(optimizer).__name__
+        other[name] = other.get(name, 0) + 1
 
     original = mips.MIPSFaiss._search
 
@@ -1015,14 +1027,27 @@ def negative_checks(ctx, durable, baseline):
             'faiss_missing', lambda: consumer_must_fail(
                 'faiss_missing', env_extra={'DRQ_BLOCK_IMPORTS': 'faiss'}))
 
-    def tampered(change):
-        compare_frames(case, baseline, change(baseline.copy()),
-                       producer=producer, atol=ctx['atol'])
+    def tampered(name, change):
+        try:
+            compare_frames(case, baseline, change(baseline.copy()),
+                           producer=producer, atol=ctx['atol'])
+        except QualificationError as error:
+            if re.search(TAMPER_ERRORS.get(name, '.'), str(error)):
+                raise
+            return f'Rejected for another reason: {error}'
         return 'Tampered prediction passed'
 
     for name, change in tampers(case, baseline, ctx['atol']).items():
-        expect_rejected(name, lambda change=change: tampered(change))
+        expect_rejected(name, lambda n=name, c=change: tampered(n, c))
     return checks
+
+
+# A tamper that keeps the output valid must fail the reload comparison
+# itself, not an earlier output check.
+TAMPER_ERRORS = {
+    'prediction_score_shift': r'Prediction difference exceeds atol',
+    'rank_swapped': r'changed outside a near tie',
+}
 
 
 def tampers(case, baseline, atol):
@@ -1033,9 +1058,31 @@ def tampers(case, baseline, atol):
     column = next(c for c in ('SCORE', 'True_PROB', 'TARGET_PRED')
                   if c in baseline)
     first = baseline['ENTITY'].iloc[0]
+    delta = 10 * atol + 1e-3
 
     def shift(f):
-        f.loc[f.index[0], column] += 10 * atol + 1e-3
+        """Move one score by more than atol and keep the output valid."""
+        if case == 'binary':
+            # Move away from the 0.5 threshold; keep the pair summing to one.
+            p = f['True_PROB']
+            row = ((p.sub(.5).abs() > 2 * delta) & p.between(delta, 1 - delta)
+                   ).idxmax()
+            step = delta if p[row] > .5 else -delta
+            f.loc[row, 'True_PROB'] += step
+            f.loc[row, 'False_PROB'] -= step
+        elif case in ('multiclass', 'multilabel_ranking'):
+            # Move mass from the second score to the lowest one, so each
+            # entity still sums to one and keeps its top class and order.
+            for _, group in f.groupby('ENTITY', sort=False):
+                ordered = group['SCORE'].sort_values(ascending=False)
+                if (len(ordered) > 2 and ordered.iloc[0] - ordered.iloc[1] >
+                        2 * delta and ordered.iloc[1] - ordered.iloc[-1] >
+                        2 * delta):
+                    f.loc[ordered.index[1], 'SCORE'] -= delta
+                    f.loc[ordered.index[-1], 'SCORE'] += delta
+                    break
+        else:
+            f.loc[f.index[0], column] += delta
         return f
 
     result = {
@@ -1061,12 +1108,12 @@ def tampers(case, baseline, atol):
     if case in RANKING_CASES:
 
         def swap_ranks(f):
-            # The entity whose scores spread most, so the swap is no tie.
+            # Reorder two classes of the entity whose scores spread most.
+            # Each class keeps its score; only the published rank changes.
             spread = f.groupby('ENTITY')['SCORE'].agg(np.ptp)
             rows = f.index[f['ENTITY'] == spread.idxmax()]
-            top, bottom = rows[0], rows[-1]
-            f.loc[[top, bottom], 'CLASS'] = f.loc[[bottom, top],
-                                                  'CLASS'].to_numpy()
+            pair, columns = [rows[0], rows[-1]], ['CLASS', 'SCORE']
+            f.loc[pair, columns] = f.loc[pair[::-1], columns].to_numpy()
             return f
 
         result['rank_swapped'] = swap_ranks
@@ -1080,6 +1127,18 @@ def tampers(case, baseline, atol):
 
         result['decision_flipped'] = flip
     return result
+
+
+def fixture_identity(data_dir, graph_metadata):
+    """Name the fixture files the producers read, by content."""
+    files = {
+        f'data/{name}': digest
+        for name, digest in tree_hashes(data_dir).items()
+    }
+    files['graphs.json'] = sha256_file(graph_metadata)
+    return dict(data_sha256=hashlib.sha256(
+        json.dumps(files, sort_keys=True).encode()).hexdigest(),
+                files=len(files))
 
 
 def run_controller(args):
@@ -1097,7 +1156,10 @@ def run_controller(args):
         attempt=args.attempt, wheel=dict(name=wheel.name,
                                          sha256=sha256_file(wheel),
                                          version=version),
-        harness_sha256=sha256_file(script), python=str(python),
+        harness_sha256=sha256_file(script),
+        tasks_sha256=sha256_file(tasks.__file__),
+        fixture=fixture_identity(Path(args.data_dir), Path(args.graph_metadata)),
+        python=str(python),
         python_version=platform.python_version(), system=platform.system(),
         machine=platform.machine(), atol=args.atol, timeout=args.timeout,
         commit=args.commit, required_cases=list(args.case), cases={})
@@ -1199,6 +1261,17 @@ def build_report(evidence_dirs, *, commit=None):
         # A re-run of failed jobs keeps the newest result per configuration.
         if label not in found or found[label][1].get('attempt', 0) < attempt:
             found[label] = (path, summary)
+    # Every configuration must run one harness, one task module, one fixture
+    # and one wheel version.
+    identities = {
+        key: {json.dumps(s.get(key), sort_keys=True)
+              for _, s in found.values()}
+        for key in ('harness_sha256', 'tasks_sha256', 'fixture')
+    }
+    identities['version'] = {(s.get('wheel') or {}).get('version')
+                             for _, s in found.values()}
+    mixed = sorted(key for key, values in identities.items()
+                   if len(values) > 1)
     rows = []
     for label in required_labels():
         path, summary = found.get(label, (None, None))
@@ -1211,9 +1284,16 @@ def build_report(evidence_dirs, *, commit=None):
                            harness_sha256=summary.get('harness_sha256'))
                 if result is None:
                     row['reason'] = 'The job did not run this case.'
-                elif commit and summary.get('commit') != commit:
+                elif summary.get('commit') != commit:
                     row.update(status='FAIL',
                                reason='Evidence names another commit.')
+                elif mixed:
+                    row.update(status='FAIL',
+                               reason=f'Configurations ran different {mixed}.')
+                elif not summary.get('tasks_sha256') or not (
+                        summary.get('fixture') or {}).get('data_sha256'):
+                    row.update(status='FAIL',
+                               reason='Evidence lacks the task or fixture id.')
                 elif summary_mismatch(label, summary):
                     row.update(status='FAIL',
                                reason=summary_mismatch(label, summary))
@@ -1233,8 +1313,9 @@ def build_report(evidence_dirs, *, commit=None):
                         row.update(status='FAIL',
                                    reason='Negative checks are missing.')
                     name, device, _ = label.rsplit('-', 2)
-                    needed = REQUIRED_CHECKS.get((name, device),
-                                                 {}).get(case, ())
+                    needed = BASE_CHECKS.get(case, ()) + REQUIRED_CHECKS.get(
+                        (name, device), {}).get(case, ()) + (
+                            'prediction_score_shift', )
                     absent = [
                         n for n in needed
                         if n not in (row.get('negative_checks') or {})
@@ -1292,7 +1373,7 @@ def parse_args(argv=None):
     report = commands.add_parser('report')
     report.add_argument('--evidence-dir', action='append', required=True)
     report.add_argument('--output-dir', required=True)
-    report.add_argument('--commit')
+    report.add_argument('--commit', required=True)
     for name in ('produce', 'consume'):
         worker = commands.add_parser(name)
         worker.add_argument('--case', choices=CASES, required=True)

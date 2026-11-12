@@ -259,6 +259,8 @@ jobs:
       - name: Clean install, then train, reload and compare in new processes
         run: |
           set -euo pipefail
+          # Only the pinned credential step may mint OIDC tokens.
+          unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
           unset PYTHONPATH
           stage="$RUNNER_TEMP/reload"
           mkdir -p "$stage/results" "$stage/test"
@@ -308,7 +310,10 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:
           name: engine-wheel-reload-${{ matrix.target.name }}-${{ matrix.target.device }}-py${{ matrix.python }}-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/reload/results
+          # Predictions on the private fixture stay on the runner.
+          path: |
+            ${{ runner.temp }}/reload/results
+            !${{ runner.temp }}/reload/results/**/*.parquet
           if-no-files-found: warn
           retention-days: 30
 

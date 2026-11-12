@@ -32,8 +32,14 @@ PRODUCER = dict(entities=ENTITIES, classes=[], anchor=ANCHOR,
                 time_column='TIMESTAMP')
 
 
+LABELS = [f'c{i}' for i in range(6)]
+# Six class probabilities that sum to one, with gaps wider than any tamper.
+PROBABILITIES = [.4, .25, .15, .1, .06, .04]
+
+
 def producer(case):
-    classes = CLASSES if case.endswith('link') else []
+    classes = (CLASSES if case.endswith('link') else
+               LABELS if case in ('multiclass', 'multilabel_ranking') else [])
     anchor = None if case == 'static_link' else ANCHOR
     return {**PRODUCER, 'classes': classes, 'anchor': anchor}
 
@@ -51,13 +57,25 @@ def frame(case, score=lambda entity, rank: 1.0 - rank / 10):
             dict(ENTITY=e, False_PROB=1 - p, True_PROB=p, TARGET_PRED=p > .5,
                  **anchor) for e, p in zip(ENTITIES, (.2, .7, .9))
         ])
+    if case in ('multiclass', 'multilabel_ranking'):
+        rows = [
+            dict(ENTITY=e, CLASS=LABELS[(e + rank) % 6],
+                 SCORE=PROBABILITIES[rank], **anchor) for e in ENTITIES
+            for rank in range(6)
+        ]
+        if case == 'multiclass':
+            rows = [{**row, 'PREDICTED': row['SCORE'] == .4} for row in rows]
+        return pd.DataFrame(rows)
     return pd.DataFrame([
         dict(ENTITY=e, CLASS=(e + rank) % len(CLASSES), SCORE=score(e, rank),
              **anchor) for e in ENTITIES for rank in range(len(CLASSES))
     ])
 
 
-FRAME_CASES = ['binary', 'regression', 'static_link', 'temporal_link']
+FRAME_CASES = [
+    'binary', 'multiclass', 'multilabel_ranking', 'regression', 'static_link',
+    'temporal_link'
+]
 
 
 @pytest.mark.parametrize('case', FRAME_CASES)
@@ -76,13 +94,17 @@ def test_every_tampered_prediction_fails(case):
     }
     if case != 'static_link':
         expected.add('timestamp_shifted')
-    if case.endswith('link'):
-        expected |= {'class_replaced', 'class_dropped', 'rank_swapped'}
-    if case == 'binary':
+    if case in ('multiclass', 'multilabel_ranking') or case.endswith('link'):
+        expected |= {'class_replaced', 'class_dropped'}
+    if case in drq.RANKING_CASES:
+        expected.add('rank_swapped')
+    if case in ('binary', 'multiclass'):
         expected.add('decision_flipped')
     assert set(changes) == expected
     for name, change in changes.items():
-        with pytest.raises(drq.QualificationError):
+        # Valid tampers must fail the reload comparison itself.
+        with pytest.raises(drq.QualificationError,
+                           match=drq.TAMPER_ERRORS.get(name)):
             drq.compare_frames(case, frame(case), change(frame(case)),
                                producer=producer(case), atol=1e-4)
 
@@ -170,9 +192,13 @@ def test_missing_skipped_or_failed_receipt_fails(tmp_path):
     assert drq.read_receipt(receipt(tmp_path), **kwargs)['status'] == 'PASS'
 
 
-def test_consumer_training_fails(tmp_path):
+@pytest.mark.parametrize('work', [
+    dict(optimizer_steps=1),
+    dict(other_optimizer_steps={'LBFGS': 1}),
+])
+def test_consumer_training_fails(tmp_path, work):
     body = json.loads(receipt(tmp_path).read_text())
-    body['work']['optimizer_steps'] = 1
+    body['work'].update(work)
     with pytest.raises(drq.QualificationError, match='trained'):
         drq.require_device_work(body, phase='consumer', device='cpu')
 
@@ -211,14 +237,19 @@ def test_wheel_identity_is_parsed_from_the_file_name():
         drq.wheel_version('other-1.0-py3-none-any.whl')
 
 
+def checks(case, *extra):
+    names = (*drq.BASE_CHECKS.get(case, ()), 'prediction_score_shift', *extra)
+    return [dict(name=name, detected=True) for name in names]
+
+
 def write_summary(root, label, *, attempt=1, commit='abc', **changes):
     name, device, python = label.rsplit('-', 2)
     body = dict(
         label=label, commit=commit, attempt=attempt, device=device,
         python_version=python.removeprefix('py') + '.0', atol=drq.REQUIRED_ATOL,
-        wheel=dict(installed_files_verified=10), cases={
-            case:
-            dict(status='PASS', negative_checks=[dict(name='x', detected=True)])
+        harness_sha256='h', tasks_sha256='t', fixture=dict(data_sha256='f'),
+        wheel=dict(installed_files_verified=10, version='1'), cases={
+            case: dict(status='PASS', negative_checks=checks(case))
             for case in drq.CASES
         })
     body.update(changes)
@@ -362,9 +393,10 @@ def test_macos_14_row_needs_the_clear_mps_error(tmp_path):
     assert 'unavailable_device_mps_old_macos' in rows[drq.ARTIFACT_CASE]['reason']
     assert rows['static_link']['status'] == 'PASS'
 
-    check = dict(name='unavailable_device_mps_old_macos', detected=True)
     cases = {
-        case: dict(status='PASS', negative_checks=[check])
+        case: dict(status='PASS', negative_checks=checks(
+            case, *(['unavailable_device_mps_old_macos']
+                    if case == drq.ARTIFACT_CASE else [])))
         for case in drq.CASES
     }
     write_summary(tmp_path, label, attempt=2, cases=cases)
@@ -396,3 +428,40 @@ def test_old_macos_mps_error_names_the_floor():
         "UnsupportedAcceleratorError: accelerator='mps' uses Apple MPS, which "
         'requires macOS 15 or later, but this host runs macOS 14.7.1. Use '
         "accelerator='cpu' on this host.")
+
+
+@pytest.mark.parametrize('change', [
+    dict(harness_sha256='other'),
+    dict(tasks_sha256='other'),
+    dict(fixture=dict(data_sha256='other')),
+])
+def test_report_rejects_mixed_harness_tasks_or_fixture(tmp_path, change):
+    write_summary(tmp_path, 'linux-arm64-cpu-py3.12')
+    write_summary(tmp_path, 'linux-arm64-cpu-py3.13', **change)
+    report = drq.build_report(tmp_path, commit='abc')
+    assert statuses(report, 'linux-arm64-cpu-py3.12') == {'FAIL'}
+
+
+def test_report_requires_artifact_and_faiss_checks(tmp_path):
+    label = 'linux-arm64-cpu-py3.12'
+    cases = {
+        case: dict(status='PASS', negative_checks=checks('regression'))
+        for case in drq.CASES
+    }
+    write_summary(tmp_path, label, cases=cases)
+    rows = {
+        r['case']: r
+        for r in drq.build_report(tmp_path, commit='abc')['rows']
+        if r['label'] == label
+    }
+    assert rows[drq.ARTIFACT_CASE]['status'] == 'FAIL'
+    assert rows[drq.FAISS_CASE]['status'] == 'FAIL'
+    assert rows['regression']['status'] == 'PASS'
+
+
+@pytest.mark.parametrize('case', ['static_link', 'multilabel_ranking'])
+def test_reordered_ranks_fail_outside_a_tie(case):
+    reordered = frame(case).iloc[::-1].reset_index(drop=True)
+    with pytest.raises(drq.QualificationError, match='near tie'):
+        drq.compare_frames(case, frame(case), reordered,
+                           producer=producer(case), atol=1e-4)
