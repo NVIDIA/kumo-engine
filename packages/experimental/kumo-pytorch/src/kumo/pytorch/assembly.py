@@ -1819,8 +1819,6 @@ class PreparedBatchPlan:
         contract: Any = None,
         schema_fingerprint=None,
         contract_fingerprint=None,
-        fitting_values=(),
-        length_summary=None,
         inference=False,
     ):
         self.inference = inference
@@ -1914,9 +1912,6 @@ class PreparedBatchPlan:
             },
             "fitted_state_fingerprint": _fingerprint(self.fitted_state),
         }
-        self.manifest["lengths"] = (
-            self._length_summary(fitting_values) if length_summary is None else length_summary
-        )
         self.manifest["artifact_fingerprint"] = _fingerprint(self.manifest)
 
     def output(self, *, name: str) -> OutputView:
@@ -2301,39 +2296,6 @@ class PreparedBatchPlan:
             return sum(lengths[index] for index in indices)
         return len(indices) * max(lengths[index] for index in indices)
 
-    def _length_summary(self, values):
-        name = self.spec.batching.length_input
-        count = len(values)
-        if name is None or not count:
-            return None
-        lengths, shapes = {}, {}
-        for start in range(0, count, _FIT_CHUNK):
-            self._length_shapes = {}
-            chunk = values[start : start + _FIT_CHUNK]
-            model = isinstance(chunk, ModelSourceBatch)
-            for index, length in self._measure_values(chunk, name, model=model).items():
-                lengths[start + index] = length
-            shapes.update({start + index: shape for index, shape in self._length_shapes.items()})
-        self._length_shapes = shapes
-        order = sorted(lengths, key=lambda index: (lengths[index], index))
-        chunks = self._compose_batches(
-            order, lengths, self.spec.batching, self.spec.batching.max_samples
-        )
-        actual = sum(lengths.values())
-        capacity = sum(self._batch_cost(chunk, lengths, name) for chunk in chunks)
-        return {
-            "input": name,
-            "count": count,
-            "mean": float(np.mean(list(lengths.values()))),
-            **{
-                f"p{percentile}": int(
-                    np.percentile(list(lengths.values()), percentile, method="nearest")
-                )
-                for percentile in (0, 25, 50, 75, 90, 95, 100)
-            },
-            "expected_padded_fraction": float(capacity - actual) / capacity if capacity else 0.0,
-        }
-
     def _compose_batches(self, order, lengths, policy, max_samples):
         batches, current = [], []
 
@@ -2498,9 +2460,7 @@ def prepare_batch_spec(
             for name, value in state.prepared_inputs.items()
         },
     )
-    return PreparedBatchPlan(
-        sample, spec, state, targets, contract=contract, fitting_values=fitting_values
-    )
+    return PreparedBatchPlan(sample, spec, state, targets, contract=contract)
 
 
 def _model_retrieval_sample(sample: SampleSpec, spec: BatchSpec) -> SampleSpec:
@@ -2555,7 +2515,6 @@ def fit_plan(
     contract=None,
     input_state=None,
     target_encoders=None,
-    length_summary=None,
     inference=False,
     pinned=MappingProxyType({}),
 ) -> PreparedBatchPlan:
@@ -2673,14 +2632,12 @@ def fit_plan(
         contract=contract,
         schema_fingerprint=schema_fingerprint,
         contract_fingerprint=contract_fingerprint,
-        fitting_values=values_for(sample) if needs_fitting else (),
-        length_summary=None if needs_fitting else length_summary,
         inference=inference,
     )
 
 
 def restore_fitted_state(
-    contract: Any, serialized: Mapping[str, Any], lengths: Mapping[str, Any] | None = None
+    contract: Any, serialized: Mapping[str, Any]
 ) -> tuple[_InputState, dict[str, _TargetState], dict[str, Any], Any]:
     """Rebuild a contract's fitted state from its written form, reading no data.
 
@@ -2691,8 +2648,8 @@ def restore_fitted_state(
     silently refitted or dropped. A state without ``targets`` is the input half.
 
     Returns the input state (what the inputs depend on), the target state, the
-    manifest the state gives with ``lengths`` as its length summary, and the
-    bound contract: the contract with that state's encodings pinned.
+    manifest the state gives, and the bound contract: the contract with that
+    state's encodings pinned.
     """
 
     spec = contract.batch
@@ -2787,7 +2744,6 @@ def restore_fitted_state(
         contract=contract,
         schema_fingerprint=_fingerprint(contract.schema),
         contract_fingerprint=contract.fingerprint,
-        length_summary=lengths,
     )
     expected = json.loads(json.dumps({"targets": {}, **serialized}, sort_keys=True))
     actual = json.loads(json.dumps(restored.fitted_state, sort_keys=True))
@@ -2797,7 +2753,7 @@ def restore_fitted_state(
 
 
 #: What a written fitted-state file keeps beside the fitted values, outside every fingerprint.
-WRITTEN_BESIDE_STATE = ("fit", "lengths", "fitted_for")
+WRITTEN_BESIDE_STATE = ("fit", "fitted_for")
 
 
 def pin_fitted_state(contract: Any, serialized: Mapping[str, Any]) -> Any:

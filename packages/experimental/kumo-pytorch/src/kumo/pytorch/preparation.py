@@ -296,7 +296,6 @@ class Plan:
                 contract=self.contract,
                 input_state=input_state,
                 target_encoders=target_encoders,
-                length_summary=None if fitted is None else fitted._lengths,
                 inference=inference,
                 pinned=pinned,
             )

@@ -81,10 +81,10 @@ class FittedState(Mapping[str, Any]):
     task's input vocabularies and fits its own targets. ``state.inputs`` is that
     input-only half.
 
-    Two states are equal when they hold the same fitted values and length
-    summary for the same contract (for input-only states, the same inputs); the
-    informational `fit` record is not compared. Compared with a plain mapping,
-    only the fitted values are.
+    Two states are equal when they hold the same fitted values for the same
+    contract (for input-only states, the same inputs); the informational `fit`
+    record is not compared. Compared with a plain mapping, only the fitted
+    values are.
 
     :param input_fingerprint: `DataLoaderSpec.input_fingerprint` of the
         contract the state was fitted for. Reuse is refused under any other.
@@ -97,7 +97,6 @@ class FittedState(Mapping[str, Any]):
     _input_state: _InputState
     _target_encoders: Mapping[str, Any] | None
     _serialized: Mapping[str, Any]
-    _lengths: Mapping[str, Any] | None = None
     _fit: Mapping[str, FitRecord | None] = dataclass_field(default_factory=dict)
 
     @property
@@ -166,13 +165,12 @@ class FittedState(Mapping[str, Any]):
 
 
 def _written(state: FittedState) -> dict[str, Any]:
-    """The fitted-state file: the values and, outside every fingerprint, `fit`, lengths and
-    the fingerprints of the contract it was fitted for."""
+    """The fitted-state file: the values and, outside every fingerprint, `fit` and the
+    fingerprints of the contract it was fitted for."""
 
     return {
         **state.to_dict(),
         "fit": state.fit,
-        "lengths": state._lengths,
         "fitted_for": {"inputs": state.input_fingerprint, "contract": state.contract_fingerprint},
     }
 
@@ -217,10 +215,10 @@ class Artifact:
         The manifest written also records each file's SHA-256 digest (`artifact_digests`).
 
         Files: ``contract.json``; ``fitted-state.json`` (fitted values, the
-        length summary, the fingerprints the state was fitted for, and the
-        ``fit`` record); ``task.json`` (fingerprints and output schema);
-        ``manifest.json`` (summaries, fingerprints and digests). The digests
-        catch files not written together; they are not a signature.
+        fingerprints the state was fitted for, and the ``fit`` record);
+        ``task.json`` (fingerprints and output schema); ``manifest.json``
+        (summaries, fingerprints and digests). The digests catch files not
+        written together; they are not a signature.
         """
 
         identity = {"fingerprints": dict(self.fingerprints), "output_schema": self.output_schema}
@@ -250,8 +248,7 @@ class Artifact:
         :raises FileNotFoundError: when one of the four files is missing.
         :raises ValueError: naming the file and, where it applies, the field: a
             digest mismatch, or a manifest without digests; state
-            fitted for another contract; a length summary missing, unexpected or
-            different from the manifest's; target state for other targets; state
+            fitted for another contract; target state for other targets; state
             that does not serialize back exactly, or an ID space numbering other
             IDs than its members produce; ``manifest.json`` or ``task.json``
             disagreeing with the contract and state.
@@ -279,25 +276,18 @@ class Artifact:
                     "the artifact's files were not written together"
                 )
         contract = DataLoaderSpec.from_json(texts["contract.json"])
-        serialized, fit, lengths, fitted_for = _split_fit(root / "fitted-state.json")
+        serialized, fit, fitted_for = _split_fit(root / "fitted-state.json")
         task: dict[str, Any] = json.loads(texts["task.json"])
         _require_fitted_for(root / "fitted-state.json", fitted_for, contract)
-        length_input = contract.batch.batching.length_input
-        if (lengths is None) != (length_input is None):
-            raise ValueError(
-                f"{root / 'fitted-state.json'} has {'no' if lengths is None else 'a'} length "
-                f"summary, but this contract's Batching.length_input is {length_input!r}"
-            )
-        if lengths != manifest.get("lengths"):
-            raise ValueError(
-                f"the length summary in {root / 'fitted-state.json'} is not the one "
-                "manifest.json records"
-            )
         _require_targets(root / "fitted-state.json", serialized, contract)
         try:
-            fitted, rebuilt, bound = _restored(contract, serialized, fit, lengths)
+            fitted, rebuilt, bound = _restored(contract, serialized, fit)
         except (AttributeError, KeyError, TypeError, ValueError) as error:
             raise ValueError(f"{root}: {error}") from error
+        if "lengths" in manifest:
+            # written before the length summary was dropped; its fingerprint covered it
+            del manifest["lengths"]
+            manifest["artifact_fingerprint"] = rebuilt["artifact_fingerprint"]
         _require_same(root / "manifest.json", manifest, rebuilt)
         _require_same(root / "task.json", task, _task_identity(contract, serialized, rebuilt, task))
         return cls(
@@ -312,25 +302,21 @@ class Artifact:
 
 def _split_fit(
     path: Path,
-) -> tuple[
-    dict[str, Any], dict[str, FitRecord | None], dict[str, Any] | None, dict[str, Any] | None
-]:
-    """The fitted values and, beside them, the informational ``fit``, the length summary and
-    the fingerprints of the contract the state was fitted for."""
+) -> tuple[dict[str, Any], dict[str, FitRecord | None], dict[str, Any] | None]:
+    """The fitted values and, beside them, the informational ``fit`` and the fingerprints
+    of the contract the state was fitted for."""
 
     serialized = json.loads(path.read_text())
     if not isinstance(serialized, dict):
         raise ValueError(f"{path} is not a fitted-state object")
     fit = serialized.pop("fit", {})
-    lengths = serialized.pop("lengths", None)
+    serialized.pop("lengths", None)
     fitted_for = serialized.pop("fitted_for", None)
     if not isinstance(fit, dict) or any(
         not isinstance(record, (dict, type(None))) for record in fit.values()
     ):
         raise ValueError(f"{path} has a malformed fit record; it must map each half to an object")
-    if not isinstance(lengths, (dict, type(None))):
-        raise ValueError(f"{path} has a malformed length summary; it must be an object or null")
-    return serialized, fit, lengths, fitted_for
+    return serialized, fit, fitted_for
 
 
 def _require_fitted_for(path: Path, fitted_for: object, contract: DataLoaderSpec) -> None:
@@ -368,20 +354,16 @@ def _restored(
     contract: DataLoaderSpec,
     serialized: Mapping[str, Any],
     fit: Mapping[str, FitRecord | None],
-    lengths: Mapping[str, Any] | None,
 ) -> tuple[FittedState, dict[str, Any], DataLoaderSpec]:
     """The fitted state, the manifest it gives, and the contract with it pinned."""
 
-    input_state, target_encoders, manifest, bound = restore_fitted_state(
-        contract, serialized, lengths
-    )
+    input_state, target_encoders, manifest, bound = restore_fitted_state(contract, serialized)
     state = FittedState(
         input_fingerprint=contract.input_fingerprint,
         contract_fingerprint=contract.fingerprint,
         _input_state=input_state,
         _target_encoders=target_encoders,
         _serialized=serialized,
-        _lengths=lengths,
         _fit=fit,
     )
     return state, manifest, bound

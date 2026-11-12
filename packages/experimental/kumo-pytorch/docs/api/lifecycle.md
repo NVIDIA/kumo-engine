@@ -529,8 +529,6 @@ class PreparedBatchPlan(
     contract: Any = None,
     schema_fingerprint=None,
     contract_fingerprint=None,
-    fitting_values=(),
-    length_summary=None,
     inference=False,
 )
 ```

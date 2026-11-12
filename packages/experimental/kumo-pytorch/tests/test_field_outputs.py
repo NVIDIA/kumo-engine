@@ -307,7 +307,7 @@ def test_grouped_token_budget_counts_materialized_token_slots(packed):
     assert all(batch.inputs["history"]["value_ids"].numel() <= budget for batch in batches)
 
 
-def test_single_grouped_history_exceeding_padding_budget_refuses_at_fitting():
+def test_single_grouped_history_exceeding_padding_budget_is_refused():
     contract = _contract()
     history = contract.batch.inputs["history"]
     history = replace(
@@ -325,8 +325,9 @@ def test_single_grouped_history_exceeding_padding_budget_refuses_at_fitting():
             batching=Batching(max_tokens=5, length_input="history"),
         ),
     )
+    plan, requests = _plan(contract)
     with pytest.raises(ValueError, match="exceeds.*max_tokens"):
-        _plan(contract)
+        next(plan.batches(requests))
 
 
 def test_columns_field_ids_distinguish_declared_nulls_from_padding():

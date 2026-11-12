@@ -142,7 +142,6 @@ class Task:
             _input_state=assembler._fitted_input_state(),
             _target_encoders=dict(assembler._target_encoders) if has_targets else None,
             _serialized=serialized,
-            _lengths=manifest["lengths"],
             _fit=dict(fit),
         )
         self.output_schema: Mapping[str, Any] = {
