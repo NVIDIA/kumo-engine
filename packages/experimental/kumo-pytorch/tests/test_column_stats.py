@@ -5,8 +5,9 @@
 from __future__ import annotations
 
 import logging
+import random
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -191,6 +192,57 @@ def test_a_shared_encoder_combines_its_columns_unless_one_is_computed(tmp_path):
     counts = {value: values.count(value) for value in values}
     expected = sorted(counts, key=lambda value: (-counts[value], value))
     assert [value for value, _ in _state(fitted, '"kinds"')["entries"]] == expected
+
+
+# 6226f4ac fits this state, reading the graph once for every fitting anchor.
+SHARED_GRAPH_STATE = "sha256:a737a0089a9acc4f75c8c6055315623ccb2b20b29a379129c4af4719602bd710"
+
+
+def test_a_graph_field_sharing_an_encoder_with_an_aggregate_fits_as_before(tmp_path):
+    rows = _fixture_rows()
+    draw = random.Random(1)
+    for row in rows["card_transactions"]:
+        row["amount"] = draw.uniform(0, 1) * 10 ** draw.randint(-3, 6)
+    history = api.Rows(("user_card_transactions",), api.TimeWindow("occurred_at", None, 0))
+    layers = (
+        api.GraphLayer(
+            (api.GraphSample("user_accounts", 6), api.GraphSample("user_card_transactions", 3))
+        ),
+        api.GraphLayer((api.GraphSample("account_card_transactions", 4),)),
+    )
+    sample = api.SampleSpec(
+        entity=api.EntitySpec("users", entity_type="user"),
+        entity_values={
+            "spend": api.Aggregate(history, "sum", "amount", dtype=api.DType("float64"))
+        },
+        neighborhoods={"activity": api.NeighborhoodSpec(layers=layers)},
+    )
+    amounts = api.UseEncoding("amounts")
+    graph = api.Graph(
+        node_fields={"card_transactions": api.Fields(fields=(api.Encode("amount", amounts),))}
+    )
+    batch = api.BatchSpec(
+        inputs={
+            "graph": api.Input(api.NeighborhoodSource("activity"), graph, None),
+            "user": api.Input(
+                api.EntitySource(),
+                api.Fields(fields=(api.Encode("spend", amounts),)),
+                api.Separate(),
+            ),
+        },
+        encodings={"amounts": api.ZScore()},
+        batching=api.Batching(max_samples=2),
+    )
+    contract = api.DataLoaderSpec(schema=_schema(), sample=sample, batch=batch)
+    anchors = [
+        api.SampleRequest(f"{user}-{hour}", user, datetime(2024, 1, 1) + timedelta(hours=hour))
+        for hour in range(0, 35_000, 7)
+        for user in (2, 3)
+    ]
+    engine = api.DiskGraphEngine(index=tmp_path / "index")
+    with api.prepare(contract, _write_parquet(rows, tmp_path / "parquet"), engine) as plan:
+        with plan.materialize(anchors) as task:
+            assert task.manifest["fitted_state_fingerprint"] == SHARED_GRAPH_STATE
 
 
 @pytest.mark.parametrize("engine_name", ("in_memory", "diskgraph"))

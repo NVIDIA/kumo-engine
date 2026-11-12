@@ -716,28 +716,27 @@ def _fit_inputs(
         and isinstance(value.representation.row, Composite)
         and value.representation.row.vocabulary is None
     }
-    for values in (
-        _chunks(values_for(sample_without_targets(sample))) if observed or composites else ()
-    ):
+    for name, value in spec.inputs.items():
+        graph_slots = [slot for slot in observed if slot[0] == name]
+        if isinstance(value.representation, Graph) and graph_slots:
+            graph = SimpleNamespace(
+                source=value.source.name, node_fields=value.representation.node_fields
+            )
+            roots = [
+                GraphRoot(request.sample_id, request.entity_id, cutoff_to_epoch(request.as_of_time))
+                for requests in _chunks(values_for(None))
+                for request in requests
+            ]
+            found = source.fit_graph_fields(sample, graph, roots)
+            for slot in graph_slots:
+                observed[slot].extend(found[slot[1:]])
+    builds = composites or any(
+        isinstance(spec.inputs[slot[0]].representation, Fields) for slot in observed
+    )
+    for values in _chunks(values_for(sample_without_targets(sample))) if builds else ():
         rows = _rows_for_inputs(spec, declarations, values, model=model)
         for name, value in spec.inputs.items():
             if not isinstance(value.representation, Fields):
-                learned = [slot for slot in observed if slot[0] == name]
-                if learned:
-                    graph = SimpleNamespace(
-                        source=value.source.name, node_fields=value.representation.node_fields
-                    )
-                    roots = [
-                        GraphRoot(
-                            _sample_id(item),
-                            _history(item).entity_id,
-                            _history(item).evaluation_time,
-                        )
-                        for item in values
-                    ]
-                    found = source.fit_graph_fields(sample, graph, roots)
-                    for slot in learned:
-                        observed[slot].extend(found[slot[1:]])
                 continue
             fitting_rows = rows[name]
             if isinstance(value.representation.row, Composite):
