@@ -113,9 +113,10 @@ def test_scan_yields_stored_values_in_order(data_dir, indexes):
     first, last = source["body"][1:3]
     boundary = _scan(indexes[1, 1], "docs", "body", CUTOFF)
     assert first in boundary and last not in boundary
-    counted = diskgraph.ensure_col_stats(indexes[1, 1], CUTOFF, [["docs", "body", "counts"]])
-    data = json.loads(pathlib.Path(counted["files"]["docs/body.counts"]["path"]).read_text())
-    assert len(boundary) == data["data"]["count"]
+    request = {"cutoffs": [CUTOFF], "dirs": ["counts"], "columns": {"docs": {"body": "categorical"}}}
+    diskgraph.cutoff_col_stats(indexes[1, 1], json.dumps(request))
+    counted = json.loads((pathlib.Path(indexes[1, 1]) / "col_stats/counts/col_stats.json").read_text())
+    assert len(boundary) == counted["docs"]["body"]["count"] - counted["docs"]["body"]["null_count"]
     assert _scan(indexes[1, 1], "docs", "body", T0 - 10_000) == []
 
 
@@ -131,19 +132,6 @@ def test_rejects_non_string_columns(indexes):
         diskgraph.scan_column(indexes[1, 1], "docs", "missing", None)
     with pytest.raises(Exception, match="num_threads must be positive"):
         diskgraph.scan_column(indexes[1, 1], "docs", "body", None, num_threads=0)
-
-
-def test_publish_beside_statistics(indexes, tmp_path):
-    index = indexes[1, 1]
-    ensured = diskgraph.ensure_col_stats(index, CUTOFF, [])
-    assert ensured["files"] == {}
-    directory = pathlib.Path(index) / "col_stats" / ensured["cutoff_id"]
-    assert (directory / "manifest.json").exists()
-    path = diskgraph.publish_col_stats_file(index, CUTOFF, "docs", "body.text-abc.json", b"{}")
-    assert pathlib.Path(path) == directory / "docs" / "body.text-abc.json"
-    assert pathlib.Path(path).read_bytes() == b"{}"
-    with pytest.raises(Exception, match="cannot name"):
-        diskgraph.publish_col_stats_file(index, CUTOFF, "docs", "../escape", b"{}")
 
 
 def test_scan_memory_stays_bounded(tmp_path):

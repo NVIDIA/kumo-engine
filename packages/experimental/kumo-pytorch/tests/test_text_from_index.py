@@ -62,11 +62,10 @@ def test_a_stored_text_column_trains_on_its_rows_up_to_the_cutoff(tmp_path, engi
             with plan.materialize(_requests(), fit_split="train") as task:
                 assert _tokenizer(task) == expected
                 statistics = task.fitted_state.fit["inputs"]["statistics"]
-        texts = tmp_path.glob("index/col_stats/*/*/*.text-*")
+        texts = tmp_path.glob("index/col_stats/text-*/tokenizer.json")
         published.append({path: path.stat().st_mtime_ns for path in texts})
-    (file,) = statistics['["inputs","transactions","fields","description"]']["files"]
-    assert file.startswith("card_transactions/description.text-")
     if engine_name == "diskgraph":
+        assert any(name.startswith("text-") for name in statistics["col_stats"])
         assert published[0] == published[1]
         (path,) = published[0]
         assert json.loads(path.read_text())["tokenizer"] == expected
@@ -99,6 +98,7 @@ def test_chunked_encoding_matches_one_string_at_a_time(monkeypatch):
 _RSS = """
 import sys
 from kumo.pytorch import api
+from kumo.pytorch.column_stats import TableColumnEncoder
 from kumo.pytorch.encoding import train_text
 from kumo.pytorch.engines.diskgraph import DiskGraphSource
 from kumo.pytorch.materialization import ensure_diskgraph_index
@@ -127,7 +127,8 @@ if sys.argv[3] == "train":
     with open("/proc/self/clear_refs", "w") as peak:
         peak.write("5")
     before = memory("VmRSS")
-    source.column_text([("notes", "body")], None, "text-test", lambda b: train_text(TEXT, b))
+    encoder = TableColumnEncoder(TEXT, api.DType("string"), (("notes", "body"),))
+    source.column_text(encoder, None, lambda b: train_text(TEXT, b))
     print(memory("VmHWM") - before)
 """
 

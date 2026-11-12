@@ -540,20 +540,20 @@ impl ReservoirSamplerL {
 pub use diskgraph_core::accumulators::TDigestEstimator;
 pub use diskgraph_core::accumulators::WelfordAccumulator;
 
-/// Exact counts on fixed bins, `2^(52 - SHIFT)` per power of two, in an open-addressing table.
+/// Exact counts on fixed bins, eight per power of two, in an open-addressing table.
 #[derive(Clone, Default)]
-pub struct ValueBins<const SHIFT: u32 = 49> {
+pub struct ValueBins {
     bins: Vec<i32>,
     counts: Vec<u64>,
     len: usize,
 }
 
-impl<const SHIFT: u32> ValueBins<SHIFT> {
+impl ValueBins {
     const EMPTY: i32 = i32::MIN;
 
     #[inline]
-    pub(crate) fn add(&mut self, value: f64) {
-        let bin = (value.abs().to_bits() >> SHIFT) as i32;
+    fn add(&mut self, value: f64) {
+        let bin = (value.abs().to_bits() >> 49) as i32;
         self.add_count(if value < 0.0 { -bin - 1 } else { bin }, 1);
     }
 
@@ -593,31 +593,25 @@ impl<const SHIFT: u32> ValueBins<SHIFT> {
             .map(|(bin, count)| (*bin, *count))
     }
 
-    pub(crate) fn merge(&mut self, other: &Self) {
+    fn merge(&mut self, other: &ValueBins) {
         for (bin, count) in other.iter() {
             self.add_count(bin, count);
         }
     }
 
-    /// `(bin, count)` pairs in bin order, which is value order.
-    pub(crate) fn sorted(&self) -> Vec<(i32, u64)> {
-        let mut bins: Vec<_> = self.iter().collect();
-        bins.sort_unstable();
-        bins
-    }
-
     /// `[start, count]` pairs in value order; a negative bin starts below its values.
     fn to_json(&self) -> JsonValue {
+        let mut bins: Vec<_> = self.iter().collect();
+        bins.sort_unstable();
         let start = |bin: i32| {
-            let magnitude = |bits: i32| f64::from_bits((bits as u64) << SHIFT);
+            let magnitude = |bits: i32| f64::from_bits((bits as u64) << 49);
             if bin < 0 {
                 -magnitude(-bin)
             } else {
                 magnitude(bin)
             }
         };
-        self.sorted()
-            .into_iter()
+        bins.into_iter()
             .map(|(bin, count)| json!([start(bin), count]))
             .collect()
     }
@@ -648,6 +642,8 @@ pub struct FileColStats {
     grad_snapshots: Vec<Option<Arc<HashSet<u64>>>>,
     /// The index clock that timestamp statistics are in.
     clock: TimeUnit,
+    /// Column to the t-digest quantiles its summary reports.
+    quantiles: HashMap<String, Vec<f64>>,
 }
 
 /// Per-column stats collector, chosen by SemanticType.
@@ -767,6 +763,7 @@ impl FileColStats {
             rng: 1,
             grad_snapshots: (0..n).map(|_| None).collect(),
             clock: TimeUnit::Seconds,
+            quantiles: HashMap::new(),
         }
     }
 
@@ -821,11 +818,17 @@ impl FileColStats {
             rng,
             grad_snapshots,
             clock: TimeUnit::Seconds,
+            quantiles: HashMap::new(),
         }
     }
 
     pub fn with_clock(mut self, clock: TimeUnit) -> Self {
         self.clock = clock;
+        self
+    }
+
+    pub fn with_quantiles(mut self, quantiles: HashMap<String, Vec<f64>>) -> Self {
+        self.quantiles = quantiles;
         self
     }
 
@@ -960,8 +963,18 @@ impl FileColStats {
         text_sample_stats: Option<&HashMap<String, TextSampleStats>>,
     ) -> serde_json::Map<String, JsonValue> {
         let mut map = serde_json::Map::new();
+        let quantiles = &self.quantiles;
         for (col_idx, (col, name)) in self.cols.iter_mut().zip(column_names.iter()).enumerate() {
             if let Some(mut val) = col.to_json(self.clock) {
+                if let (Some(probabilities), ColumnStatsCollector::Numerical { tdigest, .. }) =
+                    (quantiles.get(name), &mut *col)
+                {
+                    let values: Vec<f64> = probabilities
+                        .iter()
+                        .map(|&q| tdigest.quantile_at(q))
+                        .collect();
+                    val["quantiles"] = json!(values);
+                }
                 if has_counts[col_idx] {
                     if let JsonValue::Object(ref mut obj) = val {
                         obj.insert("category_counts".to_string(), json!([]));
@@ -2806,8 +2819,22 @@ impl ColumnValueObserver for FileColStats {
         }
     }
 
+    fn observe_bytes(&mut self, col_idx: usize, value: &[u8]) {
+        if let ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } =
+            &self.cols[col_idx]
+        {
+            let hex: String = value.iter().map(|byte| format!("{byte:02x}")).collect();
+            self.observe_string(col_idx, &hex);
+        }
+    }
+
     #[inline]
     fn observe_timestamp(&mut self, col_idx: usize, secs: i64) {
+        if let ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } =
+            &self.cols[col_idx]
+        {
+            return self.observe_i64(col_idx, secs);
+        }
         if let ColumnStatsCollector::Timestamp {
             count,
             min,
@@ -4071,7 +4098,7 @@ mod tests {
             json!([[-3.25, 1], [0.0, 2], [1.0, 3], [1.125, 1]])
         );
 
-        let mut wide = ValueBins::<49>::default();
+        let mut wide = ValueBins::default();
         for exponent in -100..100 {
             wide.add(2f64.powi(exponent));
             wide.add(2f64.powi(exponent));

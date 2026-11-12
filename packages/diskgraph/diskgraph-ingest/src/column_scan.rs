@@ -2,7 +2,7 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! A stored string column's values over the rows the column statistics count, in node order.
+//! Stored rows of an index table, decoded to Arrow a chunk of nodes at a time.
 
 use std::collections::HashSet;
 use std::panic::{self, AssertUnwindSafe};
@@ -12,15 +12,80 @@ use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{anyhow, ensure, Result};
 use arrow_array::builder::{ArrayBuilder, LargeStringBuilder};
-use arrow_array::LargeStringArray;
+use arrow_array::cast::AsArray;
+use arrow_array::{Array, ArrayRef, BooleanArray, LargeStringArray, RecordBatch};
+use diskgraph_core::time::TimeUnit;
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
-use diskgraph_rowpack::{IngestedType, RowPackDecodeScratch, ValueRef};
-use rayon::prelude::*;
+use diskgraph_rowpack::{IngestedType, RowAccess, RowAccessHints, RowAccessStats};
 
-use crate::cutoff_stats::{column_index, node_chunks, stored_row, CreateTime};
 use crate::index_metadata::INDEX_METADATA_FILENAME;
+
+const CHUNK_NODES: u64 = 1 << 16;
+
+/// `(shard, first node, end node)`, in node order.
+pub fn node_chunks(table: &TableReader) -> Vec<(usize, u64, u64)> {
+    (0..table.shard_count())
+        .filter_map(|shard| {
+            let (min, max) = table.shard_id_range(shard)?;
+            (min <= max).then_some((shard, max - min + 1))
+        })
+        .flat_map(|(shard, nodes)| {
+            (0..nodes)
+                .step_by(CHUNK_NODES as usize)
+                .map(move |start| (shard, start, nodes.min(start + CHUNK_NODES)))
+        })
+        .collect()
+}
+
+/// The `columns` of a chunk's rows stored with node data, in node order.
+pub fn decode_chunk(
+    table: &TableReader,
+    (shard, start, end): (usize, u64, u64),
+    columns: &[usize],
+) -> Result<RecordBatch> {
+    let shard = table
+        .shard(shard)
+        .ok_or_else(|| anyhow!("no shard {shard}"))?;
+    let decoder = table
+        .node_data_decoder()
+        .ok_or_else(|| anyhow!("table has no node data"))?;
+    let mut rows = Vec::new();
+    for node in start..end {
+        // Rows stored without node data, as oversized ones are, hold no values.
+        if let Some(row) = shard.edges_for_node(node)?.node_data()? {
+            if !row.is_empty() {
+                rows.push(row);
+            }
+        }
+    }
+    decoder.decode_batch_to_arrow(&rows, columns)
+}
+
+/// Each create time in ticks of `clock`, read as ingest reads it.
+pub fn create_times(array: &ArrayRef, clock: TimeUnit) -> Vec<Option<i64>> {
+    let mut access = RowAccess::new(vec![RowAccessHints::default()], RowAccessStats::new(None))
+        .with_clock(clock);
+    access.set_cols(std::slice::from_ref(array));
+    (0..array.len())
+        .map(|row| {
+            access.set_row(row);
+            access.get_timestamp(0).ok().flatten()
+        })
+        .collect()
+}
+
+/// Whether each row counts at `cutoff`: created at or before it; every row without a create time.
+pub fn at_cutoff(times: Option<&[Option<i64>]>, rows: usize, cutoff: Option<i64>) -> BooleanArray {
+    match (times, cutoff) {
+        (Some(times), Some(cutoff)) => times
+            .iter()
+            .map(|t| Some(t.is_some_and(|t| t <= cutoff)))
+            .collect(),
+        _ => BooleanArray::from(vec![true; rows]),
+    }
+}
 
 pub struct ColumnScan {
     chunks: Receiver<Result<LargeStringArray>>,
@@ -51,14 +116,15 @@ impl Drop for ColumnScan {
 
 struct Scan {
     table: Arc<TableReader>,
-    column: usize,
-    mask: Vec<bool>,
-    create_time: CreateTime,
+    /// The string column, then the create time if the table has one.
+    columns: Vec<usize>,
     cutoff: Option<i64>,
+    clock: TimeUnit,
     stop: Arc<AtomicBool>,
 }
 
-/// `chunk_rows` non-null values per array, decoded on `num_threads` threads, two arrays ahead.
+/// A string column's non-null values over the rows counted at `cutoff`, in node order:
+/// `chunk_rows` per array, decoded on `num_threads` threads, two arrays ahead.
 pub fn scan_column(
     index_dir: &Path,
     table: &str,
@@ -77,29 +143,20 @@ pub fn scan_column(
     let table_reader = reader
         .table(table)
         .ok_or_else(|| anyhow!("index has no node table {table}"))?;
-    let decoder = table_reader
+    let stored = &table_reader
         .node_data_decoder()
-        .ok_or_else(|| anyhow!("table {table} has no node data"))?;
-    let columns: Vec<_> = decoder
+        .ok_or_else(|| anyhow!("table {table} has no node data"))?
         .context()
-        .columns
-        .iter()
-        .map(|c| (c.name.as_str(), c.logical_type))
-        .collect();
-    let index = column_index(&columns, column).with_context(|| format!("table {table}"))?;
+        .columns;
+    let position = |name: &str| stored.iter().position(|c| c.name == name);
+    let index = position(column).ok_or_else(|| anyhow!("table {table} has no column {column}"))?;
     ensure!(
-        columns[index].1 == IngestedType::String,
+        stored[index].logical_type == IngestedType::String,
         "column {table}.{column} holds {:?} values, not strings",
-        columns[index].1
+        stored[index].logical_type
     );
-    let create_time = CreateTime::new(
-        &columns,
-        table_reader.create_time_col(),
-        reader.metadata().timestamp_unit,
-    )
-    .with_context(|| format!("table {table}"))?;
-    let mask = (0..columns.len())
-        .map(|idx| idx == index || create_time.is(idx))
+    let columns = std::iter::once(index)
+        .chain(table_reader.create_time_col().and_then(position))
         .collect();
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads.unwrap_or(0))
@@ -108,10 +165,9 @@ pub fn scan_column(
     let stop = Arc::new(AtomicBool::new(false));
     let scan = Scan {
         table: table_reader,
-        column: index,
-        mask,
-        create_time,
+        columns,
         cutoff,
+        clock: reader.metadata().timestamp_unit,
         stop: Arc::clone(&stop),
     };
     let panicked = format!("column scan of {table}.{column} panicked");
@@ -134,21 +190,31 @@ impl Scan {
         chunk_rows: usize,
         sender: &SyncSender<Result<LargeStringArray>>,
     ) -> Result<()> {
+        use rayon::prelude::*;
+
         let mut out = LargeStringBuilder::new();
         for window in node_chunks(&self.table).chunks(pool.current_num_threads()) {
             if self.stop.load(Ordering::Relaxed) {
                 return Ok(());
             }
-            let decoded: Vec<LargeStringArray> = pool.install(|| {
+            let decoded: Vec<RecordBatch> = pool.install(|| {
                 window
                     .par_iter()
-                    .map(|&chunk| self.decode(chunk))
+                    .map(|&chunk| decode_chunk(&self.table, chunk, &self.columns))
                     .collect::<Result<_>>()
             })?;
-            for value in decoded.iter().flat_map(|array| array.iter().flatten()) {
-                out.append_value(value);
-                if out.len() == chunk_rows && sender.send(Ok(out.finish())).is_err() {
-                    return Ok(());
+            for batch in &decoded {
+                let times =
+                    (batch.num_columns() > 1).then(|| create_times(batch.column(1), self.clock));
+                let keep = at_cutoff(times.as_deref(), batch.num_rows(), self.cutoff);
+                let values = batch.column(0).as_string::<i32>();
+                for row in
+                    (0..batch.num_rows()).filter(|&row| keep.value(row) && values.is_valid(row))
+                {
+                    out.append_value(values.value(row));
+                    if out.len() == chunk_rows && sender.send(Ok(out.finish())).is_err() {
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -156,32 +222,5 @@ impl Scan {
             let _ = sender.send(Ok(out.finish()));
         }
         Ok(())
-    }
-
-    fn decode(&self, (shard, start, end): (usize, u64, u64)) -> Result<LargeStringArray> {
-        let shard = self.table.shard(shard).expect("shard in range");
-        let decoder = self.table.node_data_decoder().expect("checked at open");
-        let mut scratch = RowPackDecodeScratch::default();
-        let mut text = String::new();
-        let mut values = LargeStringBuilder::new();
-        for node in start..end {
-            let Some(row) = stored_row(shard, node)? else {
-                continue;
-            };
-            let (mut present, mut time) = (false, None);
-            decoder.for_each_value(row, &self.mask, &mut scratch, |idx, value| {
-                if idx != self.column {
-                    time = self.create_time.ticks(value.into());
-                } else if let ValueRef::String(value) = value {
-                    text.clear();
-                    text.push_str(value);
-                    present = true;
-                }
-            })?;
-            if present && self.create_time.includes(self.cutoff, time) {
-                values.append_value(&text);
-            }
-        }
-        Ok(values.finish())
     }
 }

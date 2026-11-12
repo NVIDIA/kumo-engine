@@ -11,11 +11,12 @@ import json
 import tempfile
 import time
 import warnings
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from kumo.pytorch.column_stats import StatRequest, stats_request
 from kumo.pytorch.contract._frozen import FrozenMapping
 from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.schema import DataSchema, RelationSpec, table_clock
@@ -73,7 +74,7 @@ def ensure_diskgraph_index(
     num_threads: int | None = None,
     dataset_name: str = "default",
     if_missing: bool = True,
-    col_stats_requests: Mapping[str, Any] | None = None,
+    column_stats: tuple[Sequence[StatRequest], Sequence[int | None]] | None = None,
 ) -> _DiskGraphIndex:
     """Reuse or build the base index while opening a DiskGraph engine.
 
@@ -81,7 +82,7 @@ def ensure_diskgraph_index(
     schema and PK/FK relations with exactly one primary-key side.
     A matching index is reused. An incompatible or incomplete index is never
     overwritten. ``if_missing=False`` requires the index to exist already.
-    An ingest also computes ``col_stats_requests``, its cutoffs in seconds.
+    An ingest also computes ``column_stats``: requests at cutoffs in seconds.
     """
 
     if num_shards <= 0:
@@ -110,15 +111,14 @@ def ensure_diskgraph_index(
         dataset_name=dataset_name,
     )
     config_json = json.dumps(config, sort_keys=True, separators=(",", ":"))
-    if col_stats_requests is not None:
+    stats_options = {}
+    if column_stats is not None:
+        requests, cutoffs = column_stats
         clock = config.get("timestamp_unit", "seconds")
-        col_stats_requests = {
-            **col_stats_requests,
-            "cutoffs": [
-                None if cutoff is None else diskgraph.cutoff_ticks(cutoff, clock)
-                for cutoff in col_stats_requests["cutoffs"]
-            ],
-        }
+        ticks = [
+            None if cutoff is None else diskgraph.cutoff_ticks(cutoff, clock) for cutoff in cutoffs
+        ]
+        stats_options = {"cutoff_col_stats": json.dumps(stats_request(requests, ticks, clock))}
     started = time.perf_counter()
     thread_options = (
         {}
@@ -138,11 +138,7 @@ def ensure_diskgraph_index(
             str(build),
             col_stats=False,
             cat_count_strategy="none",
-            **(
-                {}
-                if col_stats_requests is None
-                else {"col_stats_requests": json.dumps(col_stats_requests)}
-            ),
+            **stats_options,
             **thread_options,
         )
         elapsed = time.perf_counter() - started

@@ -8,12 +8,12 @@ pub mod binary_label;
 pub mod coercion;
 pub mod col_stats;
 pub mod col_stats_export;
-pub mod column_scan;
 pub mod column_inference;
+pub mod column_scan;
 pub mod config;
 pub mod config_converter;
 pub mod consts;
-pub mod cutoff_stats;
+pub mod cutoff_col_stats;
 pub mod diagnostics;
 pub mod disk_manager;
 pub mod errors;
@@ -1149,11 +1149,10 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     let ts_groupings = ctx.run_ts_grouping()?;
     let sample_weight_indexes = ctx.run_sample_weight_indexes()?;
     let binary_label_indexes = ctx.run_binary_label_indexes()?;
-    let index_id = index_metadata
-        .index_id
-        .as_deref()
-        .expect("finalized index id");
-    crate::cutoff_stats::publish_ingested(&ctx.cutoff_stats, &local_root, index_id)?;
+    if let Some(request) = &ctx.cutoff_col_stats {
+        let tables = std::mem::take(&mut ctx.cutoff_tables);
+        request.publish(&local_root, ctx.source.timestamp_unit, tables)?;
+    }
     let finalize_wall = finalize_start.elapsed();
     ctx.set_peak_stage(None);
     tracing::info!(
@@ -1944,8 +1943,8 @@ mod tests_repopulate_helpers {
             text_sample_stats: HashMap::new(),
             parent_index_path: None,
             resolve_columns: Vec::new(),
-            col_stats_requests: None,
-            cutoff_stats: HashMap::new(),
+            cutoff_col_stats: None,
+            cutoff_tables: Vec::new(),
         }
     }
 
@@ -2765,9 +2764,9 @@ struct IngestContext {
     /// reference value(s) to graph node-ids and writes them as rowpack columns
     /// (no FK edge). Empty (default) preserves the edge-materializing path.
     resolve_columns: Vec<crate::config::ResolveColumnSpec>,
-    col_stats_requests: Option<crate::cutoff_stats::IngestRequests>,
-    /// Per-cutoff statistics collected by this run's Encode, by table.
-    cutoff_stats: HashMap<String, crate::cutoff_stats::TableStats>,
+    cutoff_col_stats: Option<crate::cutoff_col_stats::CutoffColStatsRequest>,
+    /// Statistics at the requested cutoffs, collected by this run's Encode.
+    cutoff_tables: Vec<crate::cutoff_col_stats::CutoffTable>,
 }
 
 const ENCODE_STATE_VERSION: u32 = 2;
@@ -7352,8 +7351,8 @@ impl IngestContext {
             text_sample_stats: HashMap::new(),
             parent_index_path: options.parent_index_path,
             resolve_columns: options.resolve_columns,
-            col_stats_requests: options.col_stats_requests,
-            cutoff_stats: HashMap::new(),
+            cutoff_col_stats: options.cutoff_col_stats,
+            cutoff_tables: Vec::new(),
         })
     }
 
@@ -7426,6 +7425,13 @@ impl IngestContext {
         let dest_key_errors = dest_key_pool.error();
         let trimmed_strings = std::sync::Arc::clone(&self.trimmed_strings);
         let col_stats_enabled = self.col_stats;
+        if let Some(request) = &self.cutoff_col_stats {
+            ensure!(
+                !col_stats_enabled,
+                "col_stats and cutoff_col_stats are exclusive"
+            );
+            request.validate(&tables)?;
+        }
         let cat_count_strategy = self.cat_count_strategy;
         let row_subsample = self.row_subsample;
         let clock = self.source.timestamp_unit;
@@ -7435,10 +7441,6 @@ impl IngestContext {
             std::sync::Arc<crate::col_stats::TableCategoryCounts>,
         > = HashMap::new();
         let mut table_col_stats: HashMap<String, crate::col_stats::FileColStats> = HashMap::new();
-        let cutoff_tables = match &self.col_stats_requests {
-            Some(requests) => requests.tables(&tables, clock)?,
-            None => HashMap::new(),
-        };
         // FK-free LP resolution mode: load the parent pkmap(s) ONCE here, before
         // the parallel encode pass, and share read-only via Arc so each encode
         // worker can resolve PK reference columns to graph node-ids inline (no
@@ -7765,7 +7767,10 @@ impl IngestContext {
                         )
                         .chain(&mut stream);
                     let table_cat = table_cat_counts.get(&table.name).cloned();
-                    let cutoff_table = cutoff_tables.get(&table.name);
+                    let mut cutoff_table = self
+                        .cutoff_col_stats
+                        .as_ref()
+                        .and_then(|request| request.table(table));
                     let encode_table: &TableSpec = table;
                     let results = run_encode_batch_workers(
                         replay,
@@ -7774,9 +7779,8 @@ impl IngestContext {
                         Arc::clone(&validation),
                         |batches| {
                             let mut key_failures = KeyFailureState::default();
-                            let cutoff = cutoff_table.cloned().unwrap_or_default();
                             if col_stats_enabled {
-                                let file_stats = if let Some(categories) = &table_cat {
+                                let mut observer = if let Some(categories) = &table_cat {
                                     crate::col_stats::FileColStats::new_with_categories(
                                         &encode_table.columns,
                                         Arc::clone(categories),
@@ -7784,7 +7788,6 @@ impl IngestContext {
                                 } else {
                                     crate::col_stats::FileColStats::new(&encode_table.columns)
                                 };
-                                let mut observer = (file_stats, cutoff);
                                 let node = Self::build_temp_node_batches(
                                     encode_table,
                                     batches,
@@ -7805,11 +7808,32 @@ impl IngestContext {
                                     &mut observer,
                                     clock,
                                 )?;
-                                let (mut file_stats, cutoff) = observer;
-                                file_stats.flush_categories();
-                                Ok((node, key_failures, Some(file_stats), cutoff))
+                                observer.flush_categories();
+                                Ok((node, key_failures, Some(observer), None))
+                            } else if let Some(cutoff_table) = &cutoff_table {
+                                let mut observer = cutoff_table.sinks();
+                                let node = Self::build_temp_node_batches(
+                                    encode_table,
+                                    batches,
+                                    &relationships,
+                                    &relation_defs,
+                                    num_shards,
+                                    &node_encoder,
+                                    &trimmed_strings,
+                                    &mut key_failures,
+                                    &node_senders,
+                                    &node_errors,
+                                    &dest_key_senders,
+                                    &dest_key_errors,
+                                    &fk_edge_targets,
+                                    &resolve_columns,
+                                    ref_resolver.as_deref(),
+                                    &sidecars,
+                                    &mut observer,
+                                    clock,
+                                )?;
+                                Ok((node, key_failures, None, Some(observer)))
                             } else {
-                                let mut observer = (diskgraph_rowpack::NoOpObserver, cutoff);
                                 let node = Self::build_temp_node_batches(
                                     encode_table,
                                     batches,
@@ -7827,20 +7851,19 @@ impl IngestContext {
                                     &resolve_columns,
                                     ref_resolver.as_deref(),
                                     &sidecars,
-                                    &mut observer,
+                                    &mut diskgraph_rowpack::NoOpObserver,
                                     clock,
                                 )?;
-                                Ok((node, key_failures, None, observer.1))
+                                Ok((node, key_failures, None, None))
                             }
                         },
                     )?;
                     let mut total_rows = 0u64;
                     let mut node_data_dropped = 0u64;
                     let mut merged_stats: Option<crate::col_stats::FileColStats> = None;
-                    let mut merged_cutoff = cutoff_table.cloned();
-                    for (node, key_failures, file_stats, cutoff) in results {
-                        if let Some(merged) = &mut merged_cutoff {
-                            merged.merge(&cutoff);
+                    for (node, key_failures, file_stats, sinks) in results {
+                        if let (Some(table), Some(sinks)) = (&mut cutoff_table, sinks) {
+                            table.add(sinks);
                         }
                         total_rows = total_rows.saturating_add(node.total_rows);
                         node_data_dropped =
@@ -7862,9 +7885,7 @@ impl IngestContext {
                     if let Some(stats) = merged_stats {
                         table_col_stats.insert(table.name.clone(), stats);
                     }
-                    if let Some(merged) = merged_cutoff {
-                        self.cutoff_stats.insert(table.name.clone(), merged);
-                    }
+                    self.cutoff_tables.extend(cutoff_table);
                 }
                 validation.finish()?;
                 let source_rows = validation.rows_seen();
@@ -8962,6 +8983,10 @@ impl IngestContext {
             Some(idx) => Some(Self::sample_weight_from_access(access, idx)?),
             None => None,
         };
+        if observer.wants_create_time() {
+            let time = create_time_col_idx.and_then(|idx| access.get_timestamp(idx).ok().flatten());
+            observer.start_row(time);
+        }
         node_tags.clear();
         node_bools.clear();
         node_data.clear();
@@ -9001,7 +9026,6 @@ impl IngestContext {
                 batcher.push_empty_node(shard)?;
             } else {
                 batcher.push_encoded_node(shard, lens, node_tags, node_bools, node_data)?;
-                observer.row_stored();
             }
             // Record the grouping timestamp 1:1 with the node just pushed (both
             // the normal and oversized-empty paths emit a node). The two
@@ -12059,7 +12083,6 @@ impl IngestContext {
             dataset_name: self.source.dataset_name.clone(),
             node_types,
             edge_relations,
-            index_id: None,
         };
         Ok(index_metadata)
     }
@@ -12078,7 +12101,6 @@ impl IngestContext {
                 shard.path.clear();
             }
         }
-        metadata.index_id = Some(crate::index_metadata::ingest_index_id(&self.source)?);
         let json = serde_json::to_vec_pretty(&metadata)?;
         self.target.write_bytes("index_metadata.json", json)?;
 

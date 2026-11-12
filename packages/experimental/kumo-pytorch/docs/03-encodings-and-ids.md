@@ -21,15 +21,18 @@ column's type or the input's container.
 | `Text(vocabulary_size=...)` | Strings | Variable-length byte-level BPE piece IDs |
 
 Learned encoders fit on the training examples only, except a `Vocabulary`,
-`ZScore`, `Buckets(bins=...)` or `Text` whose every use reads a stored column
-(an entity, event or graph node field). Those fit on the table's rows created at or
-before the encoder cutoff, each row once: by default the latest anchor time
-`fit_split` selects, or `Plan.materialize(encoder_cutoff=...)`, where `None`
-reads every row. Past a million distinct values, `Buckets` cuts come from
-log-spaced bins, within 0.6% of the exact quantiles. A missing value is never
-zero or an unseen category: it keeps its own validity bit (columns) or a
-reserved missing ID (categories). [The API reference](api/encodings.md) lists
-every option.
+`ZScore`, `Buckets(bins=...)` or `Text` whose every use reads a stored column (an
+entity, event or graph node field). Those fit on DiskGraph's column statistics
+of the table's rows created at or before the encoder cutoff: by default the
+latest anchor time `fit_split` selects, or `Plan.materialize(encoder_cutoff=...)`,
+where `None` reads every row. `Vocabulary` uses its category counts (exact for
+the first million distinct values it meets), `ZScore` its mean and standard
+deviation, and `Buckets` cuts interpolated from its t-digest. `Text` trains its
+tokenizer on the column's values streamed from the index.
+
+A missing value is never zero or an unseen category: it keeps its own validity
+bit (columns) or a reserved missing ID (categories). [The API reference](api/encodings.md)
+lists every option.
 
 ## Private and shared encoders
 

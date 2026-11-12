@@ -14,12 +14,18 @@ comparison is a matter of swapping one object.
 
 from __future__ import annotations
 
-import hashlib
+import json
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from itertools import groupby
+from pathlib import Path
 from typing import Any
 
-from kumo.pytorch.column_stats import Column, ColumnStats, StatRequest, data_sha256
+from kumo.pytorch.column_stats import (
+    EMPTY_STATS,
+    ColumnStats,
+    StatRequest,
+    TableColumnEncoder,
+    stype_groups,
+)
 from kumo.pytorch.contract.sample import BuiltSample, SampleRequest, SampleSpec
 from kumo.pytorch.contract.schema import DataSchema, table_clock
 from kumo.pytorch.data.records import timestamp_to_epoch
@@ -64,54 +70,56 @@ class InMemorySource:
         )
 
     def column_stats(self, requests: Sequence[StatRequest], cutoff: int | None) -> ColumnStats:
-        import diskgraph
-        import pyarrow as pa
+        import tempfile
 
-        tables = {table.name: table for table in self.schema.tables}
-        files = {}
-        for (table, column), group in groupby(sorted(requests), key=lambda item: item[:2]):
-            rows, clock = self._tables[table], table_clock(tables[table])
-            stats = [stat for _, _, stat in group]
-            dtype = tables[table].columns[column]
-            computed = diskgraph.col_stats_from_arrow(
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        from kumo.pytorch.dataset import Dataset, Parquet
+        from kumo.pytorch.materialization import ensure_diskgraph_index
+
+        columns = {}
+        with tempfile.TemporaryDirectory() as directory:
+            for table in self.schema.tables:
+                wanted = [item for item in requests if item[0] == table.name]
+                rows = self._tables[table.name]
+                if not wanted or not rows:
+                    columns.update({item: EMPTY_STATS for item in wanted})
+                    continue
                 # Microseconds, so sub-second instants round as ingest rounds them.
-                pa.array(
-                    [row.get(column) for row in rows],
-                    type=pa.timestamp("us", "UTC")
+                types = {
+                    name: pa.timestamp("us", "UTC")
                     if dtype.name == "timestamp"
-                    else dtype.to_arrow(),
-                ),
-                None
-                if clock is None
-                else pa.array(
-                    [
-                        None if row.get(clock) is None else timestamp_to_epoch(row[clock])
-                        for row in rows
-                    ],
-                    type=pa.int64(),
-                ),
-                cutoff,
-                stats,
-            )
-            for stat in stats:
-                files[(table, column, stat)] = {
-                    "data": computed[stat],
-                    "sha256": data_sha256(computed[stat]),
+                    else dtype.to_arrow()
+                    for name, dtype in table.columns.items()
                 }
-        return ColumnStats(files, {"value": cutoff, "unit": "seconds", "inclusive": True})
+                path = f"{directory}/{table.name}.parquet"
+                pq.write_table(pa.Table.from_pylist(rows, pa.schema(types)), path)
+                schema = DataSchema(tables=(table,))
+                for number, group in enumerate(stype_groups(wanted)):
+                    index = Path(directory, f"{table.name}-{number}")
+                    ensure_diskgraph_index(
+                        schema,
+                        Dataset({table.name: Parquet(path)}),
+                        index,
+                        column_stats=(group, [cutoff]),
+                    )
+                    (stats,) = index.glob("col_stats/*/col_stats.json")
+                    found = json.loads(stats.read_text())[table.name]
+                    columns.update({item: found[item[1]] for item in group})
+        return ColumnStats(columns, {"value": cutoff, "unit": "seconds"})
 
     def column_text(
         self,
-        columns: Sequence[Column],
+        encoder: TableColumnEncoder,
         cutoff: int | None,
-        name: str,
         train: Callable[[Iterator[Sequence[str]]], str],
-    ) -> ColumnStats:
+    ) -> tuple[str, None]:
         tables = {table.name: table for table in self.schema.tables}
 
         def batches() -> Iterator[list[str]]:
             batch = []
-            for table, column in columns:
+            for table, column in encoder.columns:
                 clock = table_clock(tables[table])
                 for row in self._tables[table]:
                     if row.get(column) is not None and (
@@ -126,12 +134,7 @@ class InMemorySource:
             if batch:
                 yield batch
 
-        tokenizer = train(batches())
-        sha256 = hashlib.sha256(tokenizer.encode()).hexdigest()
-        return ColumnStats(
-            {(*columns[0], name): {"tokenizer": tokenizer, "sha256": sha256}},
-            {"value": cutoff, "unit": "seconds", "inclusive": True},
-        )
+        return train(batches()), None
 
     def sample_graph(
         self,

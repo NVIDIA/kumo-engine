@@ -38,7 +38,7 @@ INGEST_OPTIONS: Mapping[str, IngestOption] = {
     "success_marker_content": None,
     "resume_from_phase": None,
     "parent_index_path": None,
-    "col_stats_requests": None,
+    "cutoff_col_stats": None,
 }
 THREAD_OPTIONS = (
     "context_threads",
@@ -145,7 +145,7 @@ class FakeDiskGraph:
         edges_map_threads: int | None = None,
         index_threads: int | None = None,
         parent_index_path: str | None = None,
-        col_stats_requests: str | None = None,
+        cutoff_col_stats: str | None = None,
     ) -> None:
         """The parameters of the pinned ``diskgraph.ingest``; an unknown keyword fails."""
 
@@ -162,7 +162,7 @@ class FakeDiskGraph:
             "edges_map_threads": edges_map_threads,
             "index_threads": index_threads,
             "parent_index_path": parent_index_path,
-            "col_stats_requests": col_stats_requests,
+            "cutoff_col_stats": cutoff_col_stats,
         }
         call = IngestCall(config, Path(output_dir), options)
         self.calls.append(call)

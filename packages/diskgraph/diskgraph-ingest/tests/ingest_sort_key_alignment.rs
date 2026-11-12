@@ -285,7 +285,7 @@ fn sort_key_alignment_multi_file_edge_table() -> Result<()> {
             index_threads: None,
             parent_index_path: None,
             resolve_columns: Vec::new(),
-            col_stats_requests: None,
+            cutoff_col_stats: None,
         },
     )?;
 
@@ -857,7 +857,7 @@ fn sort_key_alignment_node_table_fk() -> Result<()> {
             index_threads: None,
             parent_index_path: None,
             resolve_columns: Vec::new(),
-            col_stats_requests: None,
+            cutoff_col_stats: None,
         },
     )?;
 

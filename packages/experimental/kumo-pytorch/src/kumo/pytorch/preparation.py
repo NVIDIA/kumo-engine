@@ -332,36 +332,30 @@ class Plan:
                 _iso(latest),
             )
         started = time.perf_counter()
-        requests = sorted({item for e in encoders.values() for item in e.requests})
+        requests = [item for e in encoders.values() for item in e.requests]
         stats = column_stats(requests, cutoff) if requests else None
-        found = {
-            identity: column_text(
-                encoder.columns, cutoff, encoder.text[2], partial(train_text, encoder.config)
-            )
-            if isinstance(encoder.config, Text)
-            else stats
-            for identity, encoder in encoders.items()
-        }
-        fitted = {
-            identity: fit_from_stats(identity, encoder, found[identity].files)
-            for identity, encoder in encoders.items()
-        }
-        pinned = {identity: encoder for identity, encoder in fitted.items() if encoder is not None}
-        for identity in sorted(fitted.keys() - pinned.keys()):
-            logger.warning(
-                "encoder %s has more categories than column statistics count; it fits on "
-                "the training examples",
-                identity,
-            )
+        pinned, dirs = {}, list(stats.dirs) if stats else []
+        for identity, encoder in encoders.items():
+            if isinstance(encoder.config, Text):
+                tokenizer, directory = column_text(
+                    encoder, cutoff, partial(train_text, encoder.config)
+                )
+                pinned[identity] = FittedEncoder(
+                    identity=identity,
+                    config=encoder.config,
+                    dtype=encoder.dtype,
+                    tokenizer_json=tokenizer,
+                )
+                dirs.extend([directory] if directory else [])
+            else:
+                pinned[identity] = fit_from_stats(identity, encoder, stats)
         logger.info(
-            "pinned %d encoders from column statistics and tokenizers (cutoff %s) in %.2fs",
+            "pinned %d encoders from DiskGraph column statistics (cutoff %s) in %.2fs",
             len(pinned),
             "none" if cutoff is None else _iso(cutoff),
             time.perf_counter() - started,
         )
-        return pinned, {
-            identity: found[identity].provenance(encoders[identity].files) for identity in pinned
-        }
+        return pinned, {"cutoff": cutoff, "col_stats": dirs}
 
     @staticmethod
     def _fit_selection(selection: SplitSelection | None, declares_splits: bool) -> SplitSelection:
@@ -455,8 +449,8 @@ def prepare(
     if issues:
         raise ValidationError(issues)
     if getattr(engine, "encoder_cutoffs", ()) and not inference:
-        requests = {item for e in table_column_encoders(contract).values() for item in e.requests}
-        source = engine.open(dataset, contract.schema, column_stats=sorted(requests))
+        requests = [item for e in table_column_encoders(contract).values() for item in e.requests]
+        source = engine.open(dataset, contract.schema, column_stats=requests)
     else:
         source = engine.open(dataset, contract.schema)
     return Plan(contract, dataset, engine, source, inference=inference)

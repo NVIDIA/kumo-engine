@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import os
 import time
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -20,7 +21,14 @@ import numpy as np
 import torch
 
 from kumo.pytorch.anchors import AnchorTable
-from kumo.pytorch.column_stats import Column, ColumnStats, StatRequest, cutoff_seconds
+from kumo.pytorch.column_stats import (
+    ColumnStats,
+    StatRequest,
+    TableColumnEncoder,
+    cutoff_seconds,
+    stats_request,
+    stype_groups,
+)
 from kumo.pytorch.contract.batch import EntitySource, EventSource, Input
 from kumo.pytorch.contract.dtypes import DType, arrow_float64
 from kumo.pytorch.contract.sample import (
@@ -223,6 +231,8 @@ class DiskGraphEngine:
     ):
         if ingest not in {"if_missing", "never"}:
             raise ValueError("ingest must be 'if_missing' or 'never'")
+        if isinstance(encoder_cutoffs, str):
+            raise TypeError("encoder_cutoffs is a list of cutoffs; wrap a single one in a list")
         self.index = Path(index)
         self.num_threads = num_threads
         self.num_shards = num_shards
@@ -391,12 +401,7 @@ class DiskGraphEngine:
             num_shards=self.num_shards,
             num_threads=self.num_threads,
             if_missing=self.ingest == "if_missing",
-            col_stats_requests={
-                "cutoffs": list(self.encoder_cutoffs),
-                "requests": list(column_stats),
-            }
-            if ingests
-            else None,
+            column_stats=(stype_groups(column_stats)[0], self.encoder_cutoffs) if ingests else None,
         )
         return DiskGraphSource(
             artifact,
@@ -838,34 +843,28 @@ class DiskGraphSource:
 
     def column_stats(self, requests: Sequence[StatRequest], cutoff: int | None) -> ColumnStats:
         ticks = None if cutoff is None else self._diskgraph.cutoff_ticks(cutoff, self._clock)
-        result = self._diskgraph.ensure_col_stats(
-            self._index, ticks, list(requests), num_threads=self._num_threads
-        )
-        files = {
-            request: json.loads(
-                Path(result["files"]["{}/{}.{}".format(*request)]["path"]).read_text()
-            )
-            for request in requests
-        }
-        return ColumnStats(
-            files,
-            {"value": ticks, "unit": result["unit"], "inclusive": True},
-            cutoff_id=result["cutoff_id"],
-            index_id=result["index_id"],
-        )
+        columns, dirs = {}, []
+        for group in stype_groups(requests):
+            request = stats_request(group, [ticks], self._clock)
+            path = Path(self._index, "col_stats", request["dirs"][0], "col_stats.json")
+            if not path.is_file():
+                self._diskgraph.cutoff_col_stats(
+                    self._index, json.dumps(request), num_threads=self._num_threads
+                )
+            tables = json.loads(path.read_text())
+            columns.update({item: tables[item[0]][item[1]] for item in group})
+            dirs.extend(request["dirs"])
+        return ColumnStats(columns, {"value": ticks, "unit": self._clock}, tuple(dirs))
 
     def column_text(
         self,
-        columns: Sequence[Column],
+        encoder: TableColumnEncoder,
         cutoff: int | None,
-        name: str,
         train: Callable[[Iterator[Sequence[str]]], str],
-    ) -> ColumnStats:
-        table, column = columns[0]
+    ) -> tuple[str, str]:
         ticks = None if cutoff is None else self._diskgraph.cutoff_ticks(cutoff, self._clock)
-        result = self._diskgraph.ensure_col_stats(self._index, ticks, [])
-        clock = {"value": ticks, "unit": result["unit"], "inclusive": True}
-        path = Path(self._index, "col_stats", result["cutoff_id"], table, f"{column}.{name}.json")
+        directory = encoder.tokenizer_dir(ticks, self._clock)
+        path = Path(self._index, "col_stats", directory, "tokenizer.json")
         if path.is_file():
             try:
                 document = json.loads(path.read_text())
@@ -875,42 +874,30 @@ class DiskGraphSource:
                 intact = False
             if not intact:
                 raise ValueError(f"{path} is not a valid tokenizer file; delete it to retrain")
-        else:
-            tokenizer = train(
-                chunk.to_pylist()
-                for table_name, column_name in columns
-                for chunk in self._diskgraph.scan_column(
-                    self._index,
-                    table_name,
-                    column_name,
-                    ticks,
-                    chunk_rows=TRAIN_BATCH,
-                    num_threads=self._num_threads,
-                )
-            )
-            document = {
-                "schema": "diskgraph.col_stats_extension.v1",
-                "index_id": result["index_id"],
-                "cutoff_id": result["cutoff_id"],
-                "cutoff": clock,
-                "columns": [list(item) for item in columns],
-                "stat": name,
-                "tokenizer": tokenizer,
-                "sha256": hashlib.sha256(tokenizer.encode()).hexdigest(),
-            }
-            self._diskgraph.publish_col_stats_file(
+            return tokenizer, directory
+        tokenizer = train(
+            chunk.to_pylist()
+            for table, column in encoder.columns
+            for chunk in self._diskgraph.scan_column(
                 self._index,
-                ticks,
                 table,
-                f"{column}.{name}.json",
-                (json.dumps(document) + "\n").encode(),
+                column,
+                ticks,
+                chunk_rows=TRAIN_BATCH,
+                num_threads=self._num_threads,
             )
-        return ColumnStats(
-            {(table, column, name): document},
-            clock,
-            cutoff_id=result["cutoff_id"],
-            index_id=result["index_id"],
         )
+        document = {
+            "columns": [list(item) for item in encoder.columns],
+            "cutoff": {"value": ticks, "unit": self._clock},
+            "tokenizer": tokenizer,
+            "sha256": hashlib.sha256(tokenizer.encode()).hexdigest(),
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".tokenizer.{os.getpid()}.json")
+        temporary.write_text(json.dumps(document) + "\n")
+        temporary.replace(path)
+        return tokenizer, directory
 
     def fit_graph_fields(
         self,
