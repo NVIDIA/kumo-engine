@@ -425,6 +425,18 @@ def _text_batches(values: Iterable[Any], dtype: DType, identity: str) -> Iterato
         yield batch
 
 
+def learns_from_values(config: ScalarEncoding, dtype: DType) -> bool:
+    if isinstance(config, Vocabulary):
+        return config.values is None
+    if isinstance(config, ZScore):
+        return config.mean is None and dtype.numeric
+    if isinstance(config, Buckets):
+        return config.bins is not None and dtype.numeric
+    if isinstance(config, Text):
+        return config.state is None and dtype.name == "string"
+    return False
+
+
 def fit_encoder(
     identity: str, config: ScalarEncoding, dtype: DType, values: Iterable[Any]
 ) -> FittedEncoder:
