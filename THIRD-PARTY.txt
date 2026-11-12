@@ -4778,7 +4778,7 @@ crc32fast 1.5.0
 crossbeam-channel 0.5.15
 ------------------------------------------------------------------------------
   License       : MIT OR Apache-2.0
-  Distributed in: bin/ingest.exe, diskgraph._c.abi3.so, diskgraph._c.pyd, diskgraph/bin/ingest
+  Distributed in: diskgraph._c.abi3.so, diskgraph._c.pyd
   Copyright     : Copyright (c) 2019 The Crossbeam Project Developers
                   COPYRIGHT AND/OR OTHER APPLICABLE LAW. ANY USE OF THE WORK OTHER THAN AS
                   Copyright (c) 2009 The Go Authors. All rights reserved

@@ -3432,13 +3432,6 @@
         },
         {
           "license": "MIT OR Apache-2.0",
-          "name": "crossbeam-channel",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "source_kind": "registry-or-git",
-          "version": "0.5.15"
-        },
-        {
-          "license": "MIT OR Apache-2.0",
           "name": "crossbeam-deque",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "source_kind": "registry-or-git",
@@ -8695,13 +8688,6 @@
         },
         {
           "license": "MIT OR Apache-2.0",
-          "name": "crossbeam-channel",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "source_kind": "registry-or-git",
-          "version": "0.5.15"
-        },
-        {
-          "license": "MIT OR Apache-2.0",
           "name": "crossbeam-deque",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "source_kind": "registry-or-git",
@@ -10576,6 +10562,6 @@
       ]
     }
   ],
-  "cargo_lock_sha256": "71995614d5d099ea412564f313479b2643f45f6df55fd38f1bb3a598035b19f2",
+  "cargo_lock_sha256": "b6a7f090f7e2a7d8bc8685afebe75d770a40b696282b1b5d4943cda5a04bba41",
   "schema": 1
 }

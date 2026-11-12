@@ -5,24 +5,16 @@
 //! Stored rows of an index table, decoded to Arrow a chunk of nodes at a time.
 
 use std::collections::{HashMap, HashSet};
-use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use anyhow::{anyhow, ensure, Result};
-use arrow_array::builder::{ArrayBuilder, LargeStringBuilder};
-use arrow_array::cast::AsArray;
-use arrow_array::{Array, ArrayRef, BooleanArray, LargeStringArray, RecordBatch};
-use crossbeam_channel::{bounded, Receiver, Sender};
+use anyhow::{anyhow, Result};
+use arrow_array::{ArrayRef, BooleanArray, RecordBatch};
 use diskgraph_core::time::TimeUnit;
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use diskgraph_rowpack::{IngestedType, RowAccess, RowAccessHints, RowAccessStats};
 
 use crate::index_metadata::INDEX_METADATA_FILENAME;
-
-const CHUNK_NODES: u64 = 1 << 10;
-const WINDOW_BYTES: usize = 64 << 20;
 
 /// `(shard, first node, end node)` of up to `size` nodes, in node order.
 pub fn node_chunks(table: &TableReader, size: u64) -> impl Iterator<Item = (usize, u64, u64)> + '_ {
@@ -126,125 +118,4 @@ pub fn stored_tables(
         })
         .collect::<Result<_>>()?;
     Ok((tables, reader.metadata().timestamp_unit))
-}
-
-pub struct ColumnScan {
-    pub chunks: Receiver<Result<LargeStringArray>>,
-    stop: Arc<AtomicBool>,
-}
-
-impl Drop for ColumnScan {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-    }
-}
-
-struct Scan {
-    table: Arc<TableReader>,
-    /// The string column, then the create time if the table has one.
-    columns: Vec<usize>,
-    cutoff: Option<i64>,
-    clock: TimeUnit,
-    stop: Arc<AtomicBool>,
-}
-
-/// A string column's non-null values over the rows counted at `cutoff`, in node order:
-/// `chunk_rows` per array, decoded on `num_threads` threads, two arrays ahead.
-pub fn scan_column(
-    index_dir: &Path,
-    table: &str,
-    column: &str,
-    cutoff: Option<i64>,
-    chunk_rows: usize,
-    num_threads: Option<usize>,
-) -> Result<ColumnScan> {
-    ensure!(chunk_rows > 0, "chunk_rows must be positive");
-    ensure!(num_threads != Some(0), "num_threads must be positive");
-    let (mut tables, clock) = stored_tables(index_dir, &HashSet::from([table.to_string()]))?;
-    let stored = tables.remove(table).expect("opened table");
-    let index = stored
-        .columns
-        .iter()
-        .position(|(name, _)| name == column)
-        .ok_or_else(|| anyhow!("table {table} has no column {column}"))?;
-    let kind = stored.columns[index].1;
-    ensure!(
-        kind == IngestedType::String,
-        "column {table}.{column} holds {kind:?} values, not strings"
-    );
-    let columns = std::iter::once(index).chain(stored.create_time).collect();
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(num_threads.unwrap_or(0))
-        .build()?;
-    let (sender, chunks) = bounded(2);
-    let stop = Arc::new(AtomicBool::new(false));
-    let scan = Scan {
-        table: stored.reader,
-        columns,
-        cutoff,
-        clock,
-        stop: Arc::clone(&stop),
-    };
-    let panicked = format!("column scan of {table}.{column} panicked");
-    std::thread::spawn(move || {
-        let produced = panic::catch_unwind(AssertUnwindSafe(|| {
-            scan.produce(&pool, chunk_rows, &sender)
-        }))
-        .unwrap_or_else(|_| Err(anyhow!(panicked)));
-        if let Err(err) = produced {
-            let _ = sender.send(Err(err));
-        }
-    });
-    Ok(ColumnScan { chunks, stop })
-}
-
-impl Scan {
-    fn produce(
-        &self,
-        pool: &rayon::ThreadPool,
-        chunk_rows: usize,
-        sender: &Sender<Result<LargeStringArray>>,
-    ) -> Result<()> {
-        use rayon::prelude::*;
-
-        let mut out = LargeStringBuilder::new();
-        let mut chunks = node_chunks(&self.table, CHUNK_NODES);
-        let mut window_len = 1;
-        loop {
-            if self.stop.load(Ordering::Relaxed) {
-                return Ok(());
-            }
-            let window: Vec<_> = chunks.by_ref().take(window_len).collect();
-            if window.is_empty() {
-                break;
-            }
-            let decoded: Vec<RecordBatch> = pool.install(|| {
-                window
-                    .par_iter()
-                    .map(|&chunk| decode_chunk(&self.table, chunk, &self.columns))
-                    .collect::<Result<_>>()
-            })?;
-            let bytes: usize = decoded.iter().map(RecordBatch::get_array_memory_size).sum();
-            window_len = (WINDOW_BYTES * window.len() / bytes.max(1))
-                .clamp(1, 4 * pool.current_num_threads());
-            for batch in &decoded {
-                let times =
-                    (batch.num_columns() > 1).then(|| create_times(batch.column(1), self.clock));
-                let keep = at_cutoff(times.as_deref(), batch.num_rows(), self.cutoff);
-                let values = batch.column(0).as_string::<i32>();
-                for row in
-                    (0..batch.num_rows()).filter(|&row| keep.value(row) && values.is_valid(row))
-                {
-                    out.append_value(values.value(row));
-                    if out.len() == chunk_rows && sender.send(Ok(out.finish())).is_err() {
-                        return Ok(());
-                    }
-                }
-            }
-        }
-        if !out.is_empty() {
-            let _ = sender.send(Ok(out.finish()));
-        }
-        Ok(())
-    }
 }

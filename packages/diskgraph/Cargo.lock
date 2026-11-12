@@ -1973,7 +1973,6 @@ dependencies = [
  "chrono",
  "clap",
  "crc32fast",
- "crossbeam-channel",
  "crossterm",
  "dashmap",
  "dirs",

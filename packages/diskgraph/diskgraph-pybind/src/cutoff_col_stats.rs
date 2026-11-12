@@ -5,19 +5,17 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use ahash::AHashMap;
 use anyhow::{anyhow, ensure, Result};
 use arrow::array::Array;
 use arrow::compute::filter_record_batch;
-use arrow::pyarrow::ToPyArrow;
 use arrow_array::cast::AsArray;
 use arrow_array::types::UInt64Type;
 use arrow_array::{ArrayRef, Int64Array, TimestampSecondArray};
 use compact_str::CompactString;
 use diskgraph_ingest::column_scan::{
-    self, at_cutoff, create_times, decode_chunk, node_chunks, stored_tables,
+    at_cutoff, create_times, decode_chunk, node_chunks, stored_tables,
 };
 use diskgraph_ingest::cutoff_col_stats::CutoffColStatsRequest;
 use diskgraph_ingest::graph_config::{
@@ -126,58 +124,6 @@ pub fn cutoff_col_stats(
         pool.install(|| from_index(Path::new(index_dir), &request))
     })
     .map_err(map_anyhow_err)
-}
-
-#[pyclass(module = "diskgraph._c")]
-pub struct ColumnScan {
-    scan: column_scan::ColumnScan,
-}
-
-#[pymethods]
-impl ColumnScan {
-    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-        slf
-    }
-
-    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        loop {
-            match py.detach(|| self.scan.chunks.recv_timeout(Duration::from_millis(100))) {
-                Ok(chunk) => {
-                    let chunk = chunk.map_err(map_anyhow_err)?;
-                    return Ok(Some(chunk.to_data().to_pyarrow(py)?.unbind()));
-                }
-                Err(err) if err.is_timeout() => py.check_signals()?,
-                Err(_) => return Ok(None),
-            }
-        }
-    }
-}
-
-/// A stored string column's non-null values over the rows counted at `cutoff`, as `large_string`.
-#[pyfunction]
-#[pyo3(signature = (index_dir, table, column, cutoff, *, chunk_rows=65536, num_threads=None))]
-pub fn scan_column(
-    py: Python<'_>,
-    index_dir: &str,
-    table: &str,
-    column: &str,
-    cutoff: Option<i64>,
-    chunk_rows: usize,
-    num_threads: Option<usize>,
-) -> PyResult<ColumnScan> {
-    let scan = py
-        .detach(|| {
-            column_scan::scan_column(
-                Path::new(index_dir),
-                table,
-                column,
-                cutoff,
-                chunk_rows,
-                num_threads,
-            )
-        })
-        .map_err(map_anyhow_err)?;
-    Ok(ColumnScan { scan })
 }
 
 /// How often each byte-level word occurs in string columns' non-null values over the rows counted
@@ -339,7 +285,5 @@ pub fn cutoff_ticks(seconds: i64, unit: &str) -> PyResult<i64> {
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cutoff_col_stats, m)?)?;
     m.add_function(wrap_pyfunction!(cutoff_ticks, m)?)?;
-    m.add_function(wrap_pyfunction!(scan_column, m)?)?;
-    m.add_function(wrap_pyfunction!(train_tokenizer, m)?)?;
-    m.add_class::<ColumnScan>()
+    m.add_function(wrap_pyfunction!(train_tokenizer, m)?)
 }
