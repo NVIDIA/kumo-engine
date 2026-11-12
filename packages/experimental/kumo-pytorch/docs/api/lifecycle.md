@@ -261,7 +261,7 @@ Bind anchors, fit what is still unfitted, and return the task.
 `SampleRequest` values built in code.
 
 `fit_split` says which anchors fitting may read, and is never implied
-when the anchors carry splits — so held-out or unassigned rows cannot
+when the anchors carry splits — so held-out or unassigned anchors cannot
 reach fitted state without an explicit choice:
 
 - anchors that declare splits require it: a split name, a set of names
@@ -279,9 +279,9 @@ otherwise. It never fits, so it requires `fitted` state: the complete
 state, or `state.inputs` alone, since inference reads no target state.
 It defaults to the plan's mode; an inference plan refuses `inference=False`.
 
-Encoders over stored table columns fit on their table's rows created at
-or before `encoder_cutoff`, by default the latest anchor time
-`fit_split` selects; `None` reads every row.
+Encoders over stored table columns fit on every table row created at or
+before `encoder_cutoff`, whatever `fit_split` selects: by default the
+latest anchor time `fit_split` selects; `None` reads every row.
 
 Reused state applies unchanged: nothing refits, grows or renumbers.
 Complete state requires an equal `DataLoaderSpec.fingerprint`;

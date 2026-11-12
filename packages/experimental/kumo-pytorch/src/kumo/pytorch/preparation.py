@@ -16,7 +16,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import time
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import replace
 from functools import partial
 from typing import Any, overload
@@ -35,12 +35,14 @@ from kumo.pytorch.artifact import FitRecord, FittedState
 from kumo.pytorch.assembly import PreviewResult, _fingerprint, _InputState, fit_plan
 from kumo.pytorch.column_stats import (
     LATEST_ANCHOR,
+    StatRequest,
+    TableColumnEncoder,
     _LatestAnchor,
     cutoff_seconds,
     fit_from_stats,
     table_column_encoders,
 )
-from kumo.pytorch.contract.batch.encodings import Text
+from kumo.pytorch.contract.batch.encodings import Buckets, Text
 from kumo.pytorch.contract.sample import SampleRequest
 from kumo.pytorch.data.records import cutoff_to_epoch
 from kumo.pytorch.dataset import Dataset, TableSource
@@ -180,7 +182,7 @@ class Plan:
         `SampleRequest` values built in code.
 
         ``fit_split`` says which anchors fitting may read, and is never implied
-        when the anchors carry splits — so held-out or unassigned rows cannot
+        when the anchors carry splits — so held-out or unassigned anchors cannot
         reach fitted state without an explicit choice:
 
         - anchors that declare splits require it: a split name, a set of names
@@ -198,9 +200,9 @@ class Plan:
         state, or ``state.inputs`` alone, since inference reads no target state.
         It defaults to the plan's mode; an inference plan refuses ``inference=False``.
 
-        Encoders over stored table columns fit on their table's rows created at
-        or before ``encoder_cutoff``, by default the latest anchor time
-        ``fit_split`` selects; ``None`` reads every row.
+        Encoders over stored table columns fit on every table row created at or
+        before ``encoder_cutoff``, whatever ``fit_split`` selects: by default the
+        latest anchor time ``fit_split`` selects; ``None`` reads every row.
 
         Reused state applies unchanged: nothing refits, grows or renumbers.
         Complete state requires an equal `DataLoaderSpec.fingerprint`;
@@ -332,8 +334,8 @@ class Plan:
                 _iso(latest),
             )
         started = time.perf_counter()
-        requests = [item for e in encoders.values() for item in e.requests]
-        stats = column_stats(requests, cutoff) if requests else None
+        requests, quantiles = _stats_requests(encoders.values())
+        stats = column_stats(requests, cutoff, quantiles) if requests else None
         pinned, dirs = {}, list(stats.dirs) if stats else []
         for identity, encoder in encoders.items():
             if isinstance(encoder.config, Text):
@@ -449,7 +451,7 @@ def prepare(
     if issues:
         raise ValidationError(issues)
     if getattr(engine, "encoder_cutoffs", ()) and not inference:
-        requests = [item for e in table_column_encoders(contract).values() for item in e.requests]
+        requests = _stats_requests(table_column_encoders(contract).values())
         source = engine.open(dataset, contract.schema, column_stats=requests)
     else:
         source = engine.open(dataset, contract.schema)
@@ -546,6 +548,12 @@ def _source_issues(
 ) -> tuple[ValidationIssue, ...]:
     check_sources = getattr(engine, "check_sources", None)
     return () if check_sources is None else tuple(check_sources(sources, path))
+
+
+def _stats_requests(encoders: Iterable[TableColumnEncoder]) -> tuple[list[StatRequest], bool]:
+    encoders = list(encoders)
+    requests = [item for encoder in encoders for item in encoder.requests]
+    return requests, any(isinstance(encoder.config, Buckets) for encoder in encoders)
 
 
 def _iso(seconds: int) -> str:

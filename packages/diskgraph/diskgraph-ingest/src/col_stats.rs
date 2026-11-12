@@ -642,8 +642,8 @@ pub struct FileColStats {
     grad_snapshots: Vec<Option<Arc<HashSet<u64>>>>,
     /// The index clock that timestamp statistics are in.
     clock: TimeUnit,
-    /// Column to the t-digest quantiles its summary reports.
-    quantiles: HashMap<String, Vec<f64>>,
+    /// t-digest quantiles each numerical column's summary reports.
+    quantiles: Vec<f64>,
 }
 
 /// Per-column stats collector, chosen by SemanticType.
@@ -763,7 +763,7 @@ impl FileColStats {
             rng: 1,
             grad_snapshots: (0..n).map(|_| None).collect(),
             clock: TimeUnit::Seconds,
-            quantiles: HashMap::new(),
+            quantiles: Vec::new(),
         }
     }
 
@@ -818,7 +818,7 @@ impl FileColStats {
             rng,
             grad_snapshots,
             clock: TimeUnit::Seconds,
-            quantiles: HashMap::new(),
+            quantiles: Vec::new(),
         }
     }
 
@@ -827,7 +827,7 @@ impl FileColStats {
         self
     }
 
-    pub fn with_quantiles(mut self, quantiles: HashMap<String, Vec<f64>>) -> Self {
+    pub fn with_quantiles(mut self, quantiles: Vec<f64>) -> Self {
         self.quantiles = quantiles;
         self
     }
@@ -966,14 +966,12 @@ impl FileColStats {
         let quantiles = &self.quantiles;
         for (col_idx, (col, name)) in self.cols.iter_mut().zip(column_names.iter()).enumerate() {
             if let Some(mut val) = col.to_json(self.clock) {
-                if let (Some(probabilities), ColumnStatsCollector::Numerical { tdigest, .. }) =
-                    (quantiles.get(name), &mut *col)
-                {
-                    let values: Vec<f64> = probabilities
-                        .iter()
-                        .map(|&q| tdigest.quantile_at(q))
-                        .collect();
-                    val["quantiles"] = json!(values);
+                if let ColumnStatsCollector::Numerical { tdigest, .. } = col {
+                    if !quantiles.is_empty() {
+                        let values: Vec<f64> =
+                            quantiles.iter().map(|&q| tdigest.quantile_at(q)).collect();
+                        val["quantiles"] = json!(values);
+                    }
                 }
                 if has_counts[col_idx] {
                     if let JsonValue::Object(ref mut obj) = val {
@@ -1115,6 +1113,16 @@ impl FileColStats {
 
 /// Per column: sorted category counts and, for Hybrid, whether they were capped.
 type PublishedColumns = (Vec<Option<Vec<(String, u64)>>>, Vec<Option<bool>>);
+
+/// Lowercase hex, the category key of a bytes value.
+pub fn bytes_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut value = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(value, "{byte:02x}").expect("write to string");
+    }
+    value
+}
 
 /// Free function to get category counts for a column (avoids self borrow issues).
 #[cfg(any(test, feature = "test-util"))]
@@ -2823,8 +2831,16 @@ impl ColumnValueObserver for FileColStats {
         if let ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } =
             &self.cols[col_idx]
         {
-            let hex: String = value.iter().map(|byte| format!("{byte:02x}")).collect();
-            self.observe_string(col_idx, &hex);
+            self.observe_string(col_idx, &bytes_hex(value));
+        }
+    }
+
+    fn observe_decimal(&mut self, col_idx: usize, value: f64, text: &dyn Fn() -> String) {
+        match &self.cols[col_idx] {
+            ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } => {
+                self.observe_string(col_idx, &text())
+            }
+            _ => self.observe_f64(col_idx, value),
         }
     }
 

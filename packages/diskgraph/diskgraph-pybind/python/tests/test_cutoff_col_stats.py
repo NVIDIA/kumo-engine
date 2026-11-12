@@ -29,7 +29,7 @@ REQUEST = {
                   "big": "categorical"},
         "items": {"name": "categorical"},
     },
-    "quantiles": {"users": {"age": QUANTILES}},
+    "quantiles": QUANTILES,
 }
 
 

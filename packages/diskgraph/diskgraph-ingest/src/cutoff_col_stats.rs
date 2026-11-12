@@ -4,7 +4,7 @@
 
 //! Column statistics of the rows created at or before each cutoff, under `col_stats/<dir>/`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -28,9 +28,9 @@ pub struct CutoffColStatsRequest {
     pub dirs: Vec<String>,
     /// Table, then column, to the semantic type it is collected as.
     pub columns: BTreeMap<String, BTreeMap<String, SemanticType>>,
-    /// Table, then column, to the quantiles published from its t-digest.
+    /// The t-digest quantiles every numerical column publishes.
     #[serde(default)]
-    pub quantiles: BTreeMap<String, BTreeMap<String, Vec<f64>>>,
+    pub quantiles: Vec<f64>,
 }
 
 /// One table's statistics at every cutoff.
@@ -124,17 +124,14 @@ impl CutoffColStatsRequest {
             self.dirs.iter().map(|_| Vec::new()).collect();
         for mut table in tables {
             let stats = table.stats.take().unwrap_or_else(|| table.sinks());
-            let quantiles: HashMap<String, Vec<f64>> = self
-                .quantiles
-                .get(&table.name)
-                .map(|q| q.clone().into_iter().collect())
-                .unwrap_or_default();
             for ((out, stats), categories) in
                 per_cutoff.iter_mut().zip(stats.stats).zip(table.categories)
             {
                 out.push(ColStatsTable {
                     name: table.name.clone(),
-                    stats: stats.with_clock(clock).with_quantiles(quantiles.clone()),
+                    stats: stats
+                        .with_clock(clock)
+                        .with_quantiles(self.quantiles.clone()),
                     column_names: table.columns.iter().map(|c| c.name.clone()).collect(),
                     ingested_types: table
                         .columns
@@ -154,7 +151,10 @@ impl CutoffColStatsRequest {
                 &OutputTarget::parse(&tmp.to_string_lossy(), Dest::Local)?,
                 tables,
             )?;
-            if std::fs::rename(&tmp, root.join(dir)).is_err() {
+            let published = root.join(dir);
+            if let Err(error) = std::fs::rename(&tmp, &published) {
+                // Another writer published the same statistics first.
+                ensure!(published.is_dir(), error);
                 std::fs::remove_dir_all(&tmp)?;
             }
         }
@@ -211,6 +211,7 @@ impl ColumnValueObserver for CutoffSinks {
         observe_f64(col_idx: usize, value: f64);
         observe_string(col_idx: usize, value: &str);
         observe_bytes(col_idx: usize, value: &[u8]);
+        observe_decimal(col_idx: usize, value: f64, text: &dyn Fn() -> String);
         observe_timestamp(col_idx: usize, ticks: i64);
         observe_float_list(col_idx: usize, view: &FloatListView);
         observe_int64_list(col_idx: usize, view: &IntListView);

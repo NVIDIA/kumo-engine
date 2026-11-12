@@ -24,6 +24,7 @@ from kumo.pytorch.column_stats import (
     ColumnStats,
     StatRequest,
     TableColumnEncoder,
+    stats_request,
     stype_groups,
 )
 from kumo.pytorch.contract.sample import BuiltSample, SampleRequest, SampleSpec
@@ -69,44 +70,49 @@ class InMemorySource:
             roots,
         )
 
-    def column_stats(self, requests: Sequence[StatRequest], cutoff: int | None) -> ColumnStats:
+    def column_stats(
+        self, requests: Sequence[StatRequest], cutoff: int | None, quantiles: bool
+    ) -> ColumnStats:
         import tempfile
 
+        import diskgraph
         import pyarrow as pa
         import pyarrow.parquet as pq
 
         from kumo.pytorch.dataset import Dataset, Parquet
         from kumo.pytorch.materialization import ensure_diskgraph_index
 
-        columns = {}
+        stored = [
+            table
+            for table in self.schema.tables
+            if self._tables[table.name] and any(item[0] == table.name for item in requests)
+        ]
+        columns = {item: EMPTY_STATS for item in requests}
+        if not stored:
+            return ColumnStats(columns, {"value": cutoff, "unit": "seconds"})
         with tempfile.TemporaryDirectory() as directory:
-            for table in self.schema.tables:
-                wanted = [item for item in requests if item[0] == table.name]
-                rows = self._tables[table.name]
-                if not wanted or not rows:
-                    columns.update({item: EMPTY_STATS for item in wanted})
-                    continue
-                # Microseconds, so sub-second instants round as ingest rounds them.
-                types = {
-                    name: pa.timestamp("us", "UTC")
-                    if dtype.name == "timestamp"
-                    else dtype.to_arrow()
-                    for name, dtype in table.columns.items()
-                }
+            sources = {}
+            for table in stored:
+                rows = [
+                    {name: dtype.normalize(row.get(name)) for name, dtype in table.columns.items()}
+                    for row in self._tables[table.name]
+                ]
+                types = pa.schema(
+                    [(name, dtype.to_arrow()) for name, dtype in table.columns.items()]
+                )
                 path = f"{directory}/{table.name}.parquet"
-                pq.write_table(pa.Table.from_pylist(rows, pa.schema(types)), path)
-                schema = DataSchema(tables=(table,))
-                for number, group in enumerate(stype_groups(wanted)):
-                    index = Path(directory, f"{table.name}-{number}")
-                    ensure_diskgraph_index(
-                        schema,
-                        Dataset({table.name: Parquet(path)}),
-                        index,
-                        column_stats=(group, [cutoff]),
-                    )
-                    (stats,) = index.glob("col_stats/*/col_stats.json")
-                    found = json.loads(stats.read_text())[table.name]
-                    columns.update({item: found[item[1]] for item in group})
+                pq.write_table(pa.Table.from_pylist(rows, types), path)
+                sources[table.name] = Parquet(path)
+            index = Path(directory, "index")
+            ensure_diskgraph_index(DataSchema(tables=tuple(stored)), Dataset(sources), index)
+            names = {table.name for table in stored}
+            for group in stype_groups([item for item in requests if item[0] in names]):
+                request = stats_request(group, [cutoff], "seconds", quantiles)
+                diskgraph.cutoff_col_stats(str(index), json.dumps(request))
+                found = json.loads(
+                    index.joinpath("col_stats", request["dirs"][0], "col_stats.json").read_text()
+                )
+                columns.update({item: found[item[0]][item[1]] for item in group})
         return ColumnStats(columns, {"value": cutoff, "unit": "seconds"})
 
     def column_text(

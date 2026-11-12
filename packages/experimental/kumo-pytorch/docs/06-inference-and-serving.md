@@ -454,7 +454,7 @@ print(f"user-3-at-34 scores {disk_predictions['user-3-at-34']:.3f}")
 <!-- test: output -->
 ```text
 60 anchors scored
-user-3-at-34 scores 0.605
+user-3-at-34 scores 0.647
 ```
 
 The first `prepare` builds the index under `shop-data/index`. A scheduled
@@ -620,9 +620,9 @@ print("serving equals batch inference:", all(matches))
 
 <!-- test: output -->
 ```text
-user-1-at-34 scores 0.121
-user-2-at-34 scores 0.128
-user-3-at-34 scores 0.605
+user-1-at-34 scores 0.116
+user-2-at-34 scores 0.112
+user-3-at-34 scores 0.647
 serving equals batch inference: True
 ```
 
@@ -722,12 +722,12 @@ for rows in (user_3, newest_8):
 
 <!-- test: output -->
 ```text
-12 purchases: 0.605
-8 purchases: 0.991
+12 purchases: 0.647
+8 purchases: 0.943
 ```
 
 User 3 has 12 purchases. With only the newest 8 supplied, the model sees a count
-of 8 and the score moves from 0.605 to 0.991.
+of 8 and the score moves from 0.647 to 0.943.
 
 `assemble` can't detect this. A row you leave out looks exactly like a row that
 doesn't exist, so the batch is built without it.
