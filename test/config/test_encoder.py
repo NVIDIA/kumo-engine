@@ -4,9 +4,7 @@
 
 from dataclasses import asdict
 
-import pandas as pd
 import pytest
-from encoder_stats import fit_encoder_stats
 from kumo_core.types import ColStatType
 from kumoapi.encoder import (
     Datetime,
@@ -27,7 +25,6 @@ from pydantic import TypeAdapter, ValidationError
 
 from io_utils import kumo_dataclass
 from io_utils.locate import locate
-from kumo.testing import withTestDataFrame
 
 
 @kumo_dataclass
@@ -149,56 +146,34 @@ def test_null():
     }
 
 
-@withTestDataFrame(dataset='FINANCIAL', filename='LOAN.csv')
-def test_index(df):
-    # Test computing stats from series with categories
+def test_index():
     cfg = Index(na_strategy='separate')
     assert cfg.na_strategy is NAStrategy.SEPARATE
-    fit_encoder_stats(cfg, df['STATUS'])
-    assert cfg._stats[ColStatType.CATEGORY_COUNTS] == [
-        ['C', 403],
-        ['A', 203],
-        ['D', 45],
-        ['B', 31],
-    ]
+    cfg._stats = {
+        ColStatType.CATEGORY_COUNTS: [["C", 403], ["A", 203], ["D", 45], ["B", 31]]
+    }
     encoders = Encoders(encoders=[cfg])
     assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))
 
-    # Test computing stats from series with NA values
     cfg = Index(na_strategy='separate')
     assert cfg.na_strategy is NAStrategy.SEPARATE
-    fit_encoder_stats(
-        cfg,
-        pd.Series([True, False, True, True, pd.NA], dtype=pd.BooleanDtype()),
-    )
-    assert cfg._stats[ColStatType.CATEGORY_COUNTS] == [
-        [True, 3],
-        [False, 1],
-    ]
+    cfg._stats = {ColStatType.CATEGORY_COUNTS: [[True, 3], [False, 1]]}
     encoders = Encoders(encoders=[cfg])
     assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))
 
-    # Test computing stats from series with no categories
     cfg = Index(na_strategy='separate')
     assert cfg.na_strategy is NAStrategy.SEPARATE
-    fit_encoder_stats(cfg, pd.Series(['', '', '', '']))
-    assert cfg._stats[ColStatType.CATEGORY_COUNTS] == []
+    cfg._stats = {ColStatType.CATEGORY_COUNTS: []}
     encoders = Encoders(encoders=[cfg])
     assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))
 
 
-@withTestDataFrame(dataset='FINANCIAL', filename='LOAN.csv')
-def test_hash(df):
-    # Test computing stats from series with categories
+def test_hash():
     cfg = Hash(num_components=2, na_strategy='separate')
     assert cfg.na_strategy is NAStrategy.SEPARATE
-    fit_encoder_stats(cfg, df['STATUS'])
-    assert cfg._stats[ColStatType.CATEGORY_COUNTS] == [
-        ['C', 403],
-        ['A', 203],
-        ['D', 45],
-        ['B', 31],
-    ]
+    cfg._stats = {
+        ColStatType.CATEGORY_COUNTS: [["C", 403], ["A", 203], ["D", 45], ["B", 31]]
+    }
     encoders = Encoders(encoders=[cfg])
     assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))
     assert asdict(encoders)['encoders'][0] == {
@@ -216,17 +191,9 @@ def test_hash(df):
         'num_components': 2,
     }
 
-    # Test computing stats from series with NA values
     cfg = Hash(num_components=2, na_strategy='separate')
     assert cfg.na_strategy is NAStrategy.SEPARATE
-    fit_encoder_stats(
-        cfg,
-        pd.Series([True, False, True, True, pd.NA], dtype=pd.BooleanDtype()),
-    )
-    assert cfg._stats[ColStatType.CATEGORY_COUNTS] == [
-        [True, 3],
-        [False, 1],
-    ]
+    cfg._stats = {ColStatType.CATEGORY_COUNTS: [[True, 3], [False, 1]]}
     encoders = Encoders(encoders=[cfg])
     assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))
     assert asdict(encoders)['encoders'][0] == {
@@ -242,11 +209,9 @@ def test_hash(df):
         'num_components': 2,
     }
 
-    # Test computing stats from series with no categories
     cfg = Hash(num_components=2, na_strategy='separate')
     assert cfg.na_strategy is NAStrategy.SEPARATE
-    fit_encoder_stats(cfg, pd.Series(['', '', '', '']))
-    assert cfg._stats[ColStatType.CATEGORY_COUNTS] == []
+    cfg._stats = {ColStatType.CATEGORY_COUNTS: []}
     encoders = Encoders(encoders=[cfg])
     assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))
     assert asdict(encoders)['encoders'][0] == {
@@ -261,30 +226,20 @@ def test_hash(df):
 
 
 def test_multicategorical():
-    # Test computing stats from series with categories
     cfg = MultiCategorical(na_strategy='zero')
     assert cfg.na_strategy is NAStrategy.ZERO
-    fit_encoder_stats(
-        cfg,
-        pd.Series([
-            pd.NA,
-            '',
-            'A|B|C|D|E',
-            'A|C|E',
-            'D|F',
-            'D|G|F',
-            'D',
-        ]),
-    )
-    assert cfg._stats[ColStatType.MULTI_CATEGORY_COUNTS] == [
-        ['D', 4],
-        ['A', 2],
-        ['C', 2],
-        ['E', 2],
-        ['F', 2],
-        ['B', 1],
-        ['G', 1],
-    ]
+    cfg._stats = {
+        ColStatType.MULTI_CATEGORIES_SEPARATOR: "|",
+        ColStatType.MULTI_CATEGORY_COUNTS: [
+            ["D", 4],
+            ["A", 2],
+            ["C", 2],
+            ["E", 2],
+            ["F", 2],
+            ["B", 1],
+            ["G", 1],
+        ],
+    }
     encoders = Encoders(encoders=[cfg])
     assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))
     assert asdict(encoders)['encoders'][0] == {
@@ -307,13 +262,13 @@ def test_multicategorical():
         'min_occ': 1,
     }
 
-    # Test computing stats from series with no categories
     for sep in [None, '|']:
         cfg = MultiCategorical(na_strategy='zero')
-        cfg._stats[ColStatType.MULTI_CATEGORIES_SEPARATOR] = sep
         assert cfg.na_strategy is NAStrategy.ZERO
-        fit_encoder_stats(cfg, pd.Series(['', '', '', '']))
-        assert cfg._stats[ColStatType.MULTI_CATEGORY_COUNTS] == []
+        cfg._stats = {
+            ColStatType.MULTI_CATEGORIES_SEPARATOR: sep,
+            ColStatType.MULTI_CATEGORY_COUNTS: [],
+        }
         encoders = Encoders(encoders=[cfg])
         assert encoders == TypeAdapter(Encoders).validate_python(
             asdict(encoders))
@@ -328,10 +283,12 @@ def test_multicategorical():
             'min_occ': 1,
         }
 
-    # Test computing stats from series with single category in each row
     cfg = MultiCategorical(na_strategy='zero')
     assert cfg.na_strategy is NAStrategy.ZERO
-    fit_encoder_stats(cfg, pd.Series([pd.NA, 'A', 'A', 'B', 'B', 'B']))
+    cfg._stats = {
+        ColStatType.MULTI_CATEGORIES_SEPARATOR: None,
+        ColStatType.MULTI_CATEGORY_COUNTS: [["B", 3], ["A", 2]],
+    }
     encoders = Encoders(encoders=[cfg])
     assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))
     assert asdict(encoders)['encoders'][0] == {
@@ -348,18 +305,12 @@ def test_multicategorical():
         },
     }
 
-    # Test computing stats from series with single category or empty string
     cfg = MultiCategorical(na_strategy='zero')
     assert cfg.na_strategy is NAStrategy.ZERO
-    fit_encoder_stats(cfg, pd.Series([
-        '',
-        'A',
-        'A',
-        '',
-        '',
-        'A',
-        'A',
-    ]))
+    cfg._stats = {
+        ColStatType.MULTI_CATEGORIES_SEPARATOR: None,
+        ColStatType.MULTI_CATEGORY_COUNTS: [["A", 4]],
+    }
     encoders = Encoders(encoders=[cfg])
     assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))
     assert asdict(encoders)['encoders'][0] == {
@@ -375,19 +326,20 @@ def test_multicategorical():
         },
     }
 
-    # Test computing stats from series for separate n/a strategy
     cfg = MultiCategorical(na_strategy='separate')
     assert cfg.na_strategy is NAStrategy.SEPARATE
-    fit_encoder_stats(
-        cfg, pd.Series([
-            pd.NA,
-            '',
-            'A|B|C|D|E',
-            'A|C|E',
-            'D|F',
-            'D|G|F',
-            'D',
-        ]))
+    cfg._stats = {
+        ColStatType.MULTI_CATEGORIES_SEPARATOR: "|",
+        ColStatType.MULTI_CATEGORY_COUNTS: [
+            ["D", 4],
+            ["A", 2],
+            ["C", 2],
+            ["E", 2],
+            ["F", 2],
+            ["B", 1],
+            ["G", 1],
+        ],
+    }
     encoders = Encoders(encoders=[cfg])
     assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))
     assert asdict(encoders)['encoders'][0] == {
@@ -410,22 +362,20 @@ def test_multicategorical():
         },
     }
 
-    # Test computing stats from series with repeated categories
     cfg = MultiCategorical(na_strategy='separate')
     assert cfg.na_strategy is NAStrategy.SEPARATE
-    # Series where categories are repeated
-    fit_encoder_stats(
-        cfg,
-        pd.Series([
-            pd.NA,
-            '',
-            'A|B|C|D|E',
-            'A|A|C|E',
-            'D|F|D',
-            'D|G|G|F',
-            'D',
-        ]),
-    )
+    cfg._stats = {
+        ColStatType.MULTI_CATEGORIES_SEPARATOR: "|",
+        ColStatType.MULTI_CATEGORY_COUNTS: [
+            ["D", 5],
+            ["A", 3],
+            ["C", 2],
+            ["E", 2],
+            ["F", 2],
+            ["G", 2],
+            ["B", 1],
+        ],
+    }
     encoders = Encoders(encoders=[cfg])
     assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))
     assert asdict(encoders)['encoders'][0] == {
@@ -437,7 +387,6 @@ def test_multicategorical():
             ColStatType.MULTI_CATEGORIES_SEPARATOR:
             '|',
             ColStatType.MULTI_CATEGORY_COUNTS: [
-                # Counts of D, A and G have increase since they are repeated.
                 ['D', 5],
                 ['A', 3],
                 ['C', 2],
@@ -449,19 +398,20 @@ def test_multicategorical():
         },
     }
 
-    # Test computing stats from series for most_frequent n/a strategy
     cfg = MultiCategorical(na_strategy='most_frequent')
     assert cfg.na_strategy is NAStrategy.MOST_FREQUENT
-    fit_encoder_stats(
-        cfg, pd.Series([
-            pd.NA,
-            '',
-            'A|B|C|D|E',
-            'A|C|E',
-            'D|F',
-            'D|G|F',
-            'D',
-        ]))
+    cfg._stats = {
+        ColStatType.MULTI_CATEGORIES_SEPARATOR: "|",
+        ColStatType.MULTI_CATEGORY_COUNTS: [
+            ["D", 4],
+            ["A", 2],
+            ["C", 2],
+            ["E", 2],
+            ["F", 2],
+            ["B", 1],
+            ["G", 1],
+        ],
+    }
     encoders = Encoders(encoders=[cfg])
     assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))
     assert asdict(encoders)['encoders'][0] == {
@@ -503,7 +453,7 @@ def test_numerical():
     cfg = Numerical(na_strategy='mean', scaler='minmax')
     assert cfg.na_strategy is NAStrategy.MEAN
     assert cfg.scaler is Scaler.MINMAX
-    fit_encoder_stats(cfg, pd.Series([1, 2, 3, 4, 5]))
+    cfg._stats = {ColStatType.MEAN: 3.0, ColStatType.MIN: 1, ColStatType.MAX: 5}
     encoders = Encoders(encoders=[cfg])
     assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))
     assert asdict(encoders)['encoders'][0] == {
@@ -522,7 +472,7 @@ def test_numerical():
 def test_max_log_numerical():
     cfg = MaxLogNumerical()
     assert cfg.na_strategy is NAStrategy.MEAN
-    fit_encoder_stats(cfg, pd.Series([1, 2, 3, 4, 5]))
+    cfg._stats = {ColStatType.MEAN: 3.0, ColStatType.MIN: 1.0}
     encoders = Encoders(encoders=[cfg])
     assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))
     assert asdict(encoders)['encoders'][0] == {
@@ -539,7 +489,7 @@ def test_max_log_numerical():
 def test_min_log_numerical():
     cfg = MinLogNumerical()
     assert cfg.na_strategy is NAStrategy.MEAN
-    fit_encoder_stats(cfg, pd.Series([1, 2, 3, 4, 5]))
+    cfg._stats = {ColStatType.MEAN: 3.0, ColStatType.MAX: 5.0}
     encoders = Encoders(encoders=[cfg])
     assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))
     assert asdict(encoders)['encoders'][0] == {
@@ -572,8 +522,7 @@ def test_numerical_list():
     }
 
 
-@withTestDataFrame(dataset='FINANCIAL', filename='LOAN.csv')
-def test_datetime(df):
+def test_datetime():
     cfg = Datetime(include_minute=False, include_hour=False)
     assert cfg.na_strategy is NAStrategy.ZERO
     encoders = Encoders(encoders=[cfg])
@@ -592,10 +541,10 @@ def test_datetime(df):
         'num_year_periods': None,
     }
 
-    fit_encoder_stats(
-        cfg,
-        pd.to_datetime(df['DATE'], format='%Y%m%d'),  # type: ignore
-    )
+    cfg._stats = {
+        ColStatType.MIN: "kumo_timestamp_1993-07-05 00:00:00",
+        ColStatType.MAX: "kumo_timestamp_1998-12-08 00:00:00",
+    }
     encoders = Encoders(encoders=[cfg])
     assert encoders == TypeAdapter(Encoders).validate_python(asdict(encoders))
     assert asdict(encoders)['encoders'][0] == {

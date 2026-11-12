@@ -26,6 +26,7 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 import torch
+from kumo_core.encoders.config import EncodersConfig, TargetEncoderConfig
 from kumo_core.encoders.tensor_frame import get_tf
 from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
 from kumo_core.encoders.tensor_mapper import (
@@ -40,8 +41,9 @@ from kumo_core.train.mapping import NODE_INDEX_COLUMN
 from kumo_core.train.trainer import Trainer
 from kumo_core.training.task_config import TaskConfig
 from kumo_core.types import TaskType
-from kumoapi.encoder import Stype
+from kumoapi.encoder import Index, Numerical, Stype
 from kumoapi.train import TrainingStage
+from kumoapi.typing import ColStatType
 from torch_frame import TensorFrame
 from torch_geometric.data import HeteroData
 
@@ -101,7 +103,20 @@ def _build_trainer_and_batch(root_dir: str) -> tuple[Trainer, HeteroData]:
     _, _, encoders = create_task_data(
         df_dict=df_dict,
         schema_dict=schema_dict,
-        task_type=TaskType.BINARY_CLASSIFICATION,
+        encoders=EncodersConfig(
+            encoders={
+                USER: {
+                    "AGE": Numerical(_stats={ColStatType.MEAN: 35.0}),
+                    "GENDER": Index(
+                        _stats={ColStatType.CATEGORY_COUNTS: [["f", 3], ["m", 1]]}
+                    ),
+                }
+            },
+            target=TargetEncoderConfig(
+                "TARGET",
+                Index(_stats={ColStatType.CATEGORY_COUNTS: [[False, 2], [True, 2]]}),
+            ),
+        ),
         train_table_df=train_table_df,
     )
 

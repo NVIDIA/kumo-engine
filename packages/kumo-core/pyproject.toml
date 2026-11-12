@@ -104,7 +104,7 @@ kumo_core = ["py.typed"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["--strict-markers", "--strict-config", "--import-mode=importlib"]
-pythonpath = ["src", "tests/support"]
+pythonpath = ["src"]
 xfail_strict = true
 filterwarnings = [
   "ignore:distutils:DeprecationWarning",
