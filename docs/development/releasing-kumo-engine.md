@@ -307,12 +307,13 @@ for tracing. A denied read alone does not establish whether Portal credentials
 are valid.
 
 
-### macOS ARM64 smoke trial
+### macOS ARM64 desktop qualification
 
-Run **Actions → Kumo Engine - macOS ARM64 smoke → Run workflow** and select
-`main` after merging, or the feature branch during validation. Choose the Python
-version to test. The workflow builds a native development wheel on `macos-15`,
-checks its payload, then runs the same clean-install and CPU train/predict smoke
-as the release platform matrix. It does not publish packages or use cloud secrets.
-The `engine-wheel-cpu-macos-arm64-*` artifact contains dependency checks,
-installed-module origins, wheel hash, training output, and JUnit results.
+Run **Actions → Kumo Engine - macOS ARM64 qualification → Run workflow** and
+select `main` after merging, or the feature branch during validation. By default,
+all supported Python versions (3.11–3.14) share one native candidate wheel build.
+Each installs the exact wheel in a fresh environment and runs the
+[desktop qualification suite](macos-validation.md), including actual durable
+save/restart/load/predict, retrieval dependencies, and negative cases.
+The same desktop checks follow the Mac release-platform smoke. They do not
+publish packages, use cloud credentials, or run the MLOps lifecycle.

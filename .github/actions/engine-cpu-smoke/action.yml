@@ -61,3 +61,23 @@ runs:
         "$python" -m pytest -q -s --confcutdir=. \
           --junitxml=../results/junit.xml smoke_platform.py \
           2>&1 | tee ../results/smoke.log
+
+    - name: Qualify desktop recovery and retrieval on macOS
+      if: ${{ inputs.platform == 'macos-arm64' }}
+      shell: bash
+      env:
+        PYTHONUNBUFFERED: '1'
+        PYTHONPATH: ''
+        PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        PYTORCH_ENABLE_MPS_FALLBACK: '0'
+      run: |
+        set -euo pipefail
+        unset PYTHONPATH
+        stage="$RUNNER_TEMP/platform-wheel"
+        python3 packages/kumo-engine/test/desktop_validation.py --prepare-to "$stage/recipe"
+        python="$stage/venv/bin/python"
+        wheel=("$stage"/artifacts/kumo_engine-*.whl)
+        version=$("$python" -c 'from importlib.metadata import version; print(version("kumo-engine"))')
+        cd "$stage/recipe/packages/kumo-engine/test"
+        "$python" -I desktop_validation.py --wheel "${wheel[0]}" \
+          --expected-version "$version" --output-dir "$stage/results/desktop"

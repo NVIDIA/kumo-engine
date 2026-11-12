@@ -13,7 +13,7 @@ permissions:
 jobs:
   smoke:
     name: CPU wheel (${{ matrix.target.platform }}, Python ${{ matrix.python }})
-    timeout-minutes: 60
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:

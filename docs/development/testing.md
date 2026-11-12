@@ -55,8 +55,11 @@ The platform CPU matrix also qualifies the finished macOS ARM64 wheel on
 `macos-15` with Python 3.11–3.14. It uses the same clean-install action and
 train/predict fixture as Linux ARM64 and Windows: verify wheel provenance and
 dependencies, observe four optimizer steps, predict 100 held-out entities, and
-reload the saved model. The manual **Kumo Engine - macOS ARM64 smoke** workflow
-builds and tests just this platform on a selected Python version.
+reload the saved model. The manual **Kumo Engine - macOS ARM64 qualification** workflow builds one
+Mac wheel and tests it across Python 3.11–3.14 by default. The Mac matrix also
+runs [desktop recovery and retrieval qualification](macos-validation.md) after
+the basic smoke. MPS execution has a separate verdict; missing hardware never
+counts as a GPU pass.
 
 The job uses the same [GPU test script](../../packages/kumo-engine/test/wheel_gpu_smoke.py)
 and [setup action](../../.github/actions/engine-gpu-smoke/action.yml) as the PR

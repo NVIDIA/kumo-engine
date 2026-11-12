@@ -15,6 +15,7 @@ import importlib.util
 import json
 import math
 import os
+import platform
 import resource
 import shutil
 import signal
@@ -67,14 +68,17 @@ def gpu_helpers():
     return module
 
 
-def check_install(wheel, expected_version):
+def check_install(wheel, expected_version, *, platform_name='linux-cpu'):
     """Bind execution to a non-editable wheel in an isolated environment."""
     import diskgraph
     import kumo_core
 
     import kumo.engine as kumo
 
-    require(sys.platform == 'linux', 'This initial profile requires Linux CPU')
+    require((platform_name == 'linux-cpu' and sys.platform == 'linux')
+            or (platform_name == 'macos-arm64' and sys.platform == 'darwin'
+                and platform.machine().lower() == 'arm64'),
+            'The installed-wheel runtime differs from the selected platform')
     require(sys.prefix != sys.base_prefix, 'Use a clean virtual environment')
     config = Path(sys.prefix) / 'pyvenv.cfg'
     require('include-system-site-packages = false' in config.read_text(),
