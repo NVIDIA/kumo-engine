@@ -33,18 +33,14 @@ Continue the workflow normally; pause for visual review only if the user asks.
 
 Save the diagram next to the artifact, named after it (`churn_30d_train.graph.svg` for
 `churn_30d_train.py`), before training, and report its path. `visualize` overwrites an existing
-file, so when that name is taken — by an earlier run or anything else — write a new file beside
-it instead:
+file, and here that is intended: the name derives from the script's own name, so the only file it
+can replace is the diagram an earlier run of the same script wrote, and a rerun should redraw it
+for the graph it trains on:
 
 ```python
-import tempfile
 from pathlib import Path
 
-graph_path = Path(__file__).with_suffix('.graph.svg').resolve()
-if graph_path.exists():                  # never replace a file: take a new name beside it
-    with tempfile.NamedTemporaryFile(dir=graph_path.parent, prefix=graph_path.stem + '-',
-                                     suffix='.svg', delete=False) as reserved:
-        graph_path = Path(reserved.name)
+graph_path = Path(__file__).with_suffix('.graph.svg').resolve()   # this script's own diagram
 if not hasattr(graph, 'visualize'):
     print('Graph preview needs a kumo-engine build including #134; upgrade when available. Continuing.')
 else:
@@ -62,7 +58,7 @@ The viewer supports up to 30 tables and does not support self-relations.
 
 Display the graph in a notebook or save the format the user requests: `.svg` for a diagram, `.pdf` for a diagram and complete schema index, or `.md` for a Mermaid diagram and schema tables.
 `graph.visualize(EXPORT_PATH, show_cols=True)` also shows ordinary columns in the diagram.
-`EXPORT_PATH` is the path the user named. When they named none, choose one that does not exist yet, as for scripts, and report it; when the named file exists, say so and confirm before replacing it.
+`EXPORT_PATH` is the path the user named. When they named none, choose one that does not exist yet and report it; when the named file exists, say so and confirm before replacing it.
 Use `layout='standard'` or `layout='compact'` to select an arrangement; the default is `'auto'`.
 Export paths belong to the Python runtime; use `hosts/<host>/runtime.md` for display and file retrieval.
 
