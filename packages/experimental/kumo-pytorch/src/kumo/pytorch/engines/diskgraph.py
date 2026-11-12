@@ -24,7 +24,6 @@ from kumo.pytorch.column_stats import (
     StatRequest,
     cutoff_seconds,
     stats_request,
-    stype_groups,
 )
 from kumo.pytorch.contract.batch import EntitySource, EventSource, Input
 from kumo.pytorch.contract.dtypes import DType, arrow_float64
@@ -402,9 +401,7 @@ class DiskGraphEngine:
             num_shards=self.num_shards,
             num_threads=self.num_threads,
             if_missing=self.ingest == "if_missing",
-            column_stats=(stype_groups(requests)[0], self.encoder_cutoffs, quantiles)
-            if ingests
-            else None,
+            column_stats=(requests, self.encoder_cutoffs, quantiles) if ingests else None,
         )
         return DiskGraphSource(
             artifact,
@@ -848,18 +845,18 @@ class DiskGraphSource:
         self, requests: Sequence[StatRequest], cutoff: int | None, quantiles: bool
     ) -> ColumnStats:
         ticks = None if cutoff is None else self._diskgraph.cutoff_ticks(cutoff, self._clock)
-        columns, dirs = {}, []
-        for group in stype_groups(requests):
-            request = stats_request(group, [ticks], self._clock, quantiles)
-            path = Path(self._index, "col_stats", request["dirs"][0], "col_stats.json")
-            if not path.is_file():
-                self._diskgraph.cutoff_col_stats(
-                    self._index, json.dumps(request), num_threads=self._num_threads
-                )
-            tables = json.loads(path.read_text())
-            columns.update({item: tables[item[0]][item[1]] for item in group})
-            dirs.extend(request["dirs"])
-        return ColumnStats(columns, {"value": ticks, "unit": self._clock}, tuple(dirs))
+        request = stats_request(requests, [ticks], self._clock, quantiles)
+        path = Path(self._index, "col_stats", request["dirs"][0], "col_stats.json")
+        if not path.is_file():
+            self._diskgraph.cutoff_col_stats(
+                self._index, json.dumps(request), num_threads=self._num_threads
+            )
+        tables = json.loads(path.read_text())
+        return ColumnStats(
+            {item: tables[item[0]][item[1]] for item in requests},
+            {"value": ticks, "unit": self._clock},
+            tuple(request["dirs"]),
+        )
 
     def fit_graph_fields(
         self,

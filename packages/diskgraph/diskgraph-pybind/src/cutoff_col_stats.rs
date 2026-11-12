@@ -14,9 +14,7 @@ use arrow_array::{ArrayRef, Int64Array, TimestampSecondArray};
 use diskgraph_index::graph::GraphIndexReader;
 use diskgraph_ingest::column_scan::{at_cutoff, create_times, decode_chunk, node_chunks};
 use diskgraph_ingest::cutoff_col_stats::CutoffColStatsRequest;
-use diskgraph_ingest::graph_config::{
-    read_persisted_config, ColumnSpec, IngestedType, SemanticType,
-};
+use diskgraph_ingest::graph_config::{read_persisted_config, ColumnSpec, IngestedType};
 use diskgraph_ingest::index_metadata::INDEX_METADATA_FILENAME;
 use pyo3::prelude::*;
 use rayon::prelude::*;
@@ -34,7 +32,9 @@ fn from_index(index_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
     let clock = reader.metadata().timestamp_unit;
     let mut tables = Vec::new();
     for spec in &config.tables {
-        let Some(mut table) = request.table(spec) else {
+        let (Some(mut table), Some(wanted)) =
+            (request.table(spec), request.columns.get(&spec.name))
+        else {
             continue;
         };
         let table_reader = reader
@@ -53,8 +53,8 @@ fn from_index(index_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
             "table {} stores other columns than its config lists",
             spec.name
         );
-        let requested: Vec<usize> = (0..table.columns.len())
-            .filter(|&idx| table.columns[idx].semantic_type != Some(SemanticType::Unsupported))
+        let requested: Vec<usize> = (0..spec.columns.len())
+            .filter(|&idx| wanted.contains_key(&spec.columns[idx].name))
             .collect();
         let create_time = spec
             .create_time
@@ -66,12 +66,16 @@ fn from_index(index_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
             .map(|chunk| {
                 let batch = decode_chunk(&table_reader, chunk, &decoded)?;
                 let times = create_time.map(|_| create_times(batch.column(requested.len()), clock));
-                let mut sinks = table.sinks();
+                let mut sinks = table.sinks()?;
                 for (stats, cutoff) in sinks.stats.iter_mut().zip(&request.cutoffs) {
                     let keep = at_cutoff(times.as_deref(), batch.num_rows(), *cutoff);
                     let rows = filter_record_batch(&batch, &keep)?;
                     for (position, &col_idx) in requested.iter().enumerate() {
-                        let column = &table.columns[col_idx];
+                        // Stored values are observed by their type, as ingest observes them.
+                        let column = ColumnSpec {
+                            semantic_type: None,
+                            ..spec.columns[col_idx].clone()
+                        };
                         let (values, column) = match column.ingested_dtype {
                             // Ingest observes a u64's bits as an i64.
                             IngestedType::UInt64 => (
@@ -83,10 +87,10 @@ fn from_index(index_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
                                 )) as ArrayRef,
                                 ColumnSpec {
                                     ingested_dtype: IngestedType::Int64,
-                                    ..column.clone()
+                                    ..column
                                 },
                             ),
-                            _ => (rows.column(position).clone(), column.clone()),
+                            _ => (rows.column(position).clone(), column),
                         };
                         drive_from_arrow_column(col_idx, &values, &column, stats, None, clock)?;
                     }

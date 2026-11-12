@@ -7809,7 +7809,7 @@ impl IngestContext {
                                 observer.flush_categories();
                                 Ok((node, key_failures, Some(observer), None))
                             } else if let Some(cutoff_table) = &cutoff_table {
-                                let mut observer = cutoff_table.sinks();
+                                let mut observer = cutoff_table.sinks()?;
                                 let node = encode!(&mut observer);
                                 Ok((node, key_failures, None, Some(observer)))
                             } else {

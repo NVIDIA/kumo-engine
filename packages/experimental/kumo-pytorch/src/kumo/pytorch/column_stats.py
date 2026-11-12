@@ -99,9 +99,9 @@ def stats_request(
 ) -> dict:
     """DiskGraph's ``cutoff_col_stats`` request; each cutoff's directory names its inputs."""
 
-    columns: dict[str, dict[str, str]] = {}
-    for table, column, stype in sorted(requests):
-        columns.setdefault(table, {})[column] = stype
+    columns: dict[str, dict[str, list[str]]] = {}
+    for table, column, stype in sorted(set(requests)):
+        columns.setdefault(table, {}).setdefault(column, []).append(stype)
     dirs = [
         hashlib.sha256(
             json.dumps([COL_STATS_RECIPE, cutoff, unit, columns, quantiles]).encode()
@@ -114,18 +114,6 @@ def stats_request(
         "columns": columns,
         "quantiles": QUANTILE_GRID if quantiles else [],
     }
-
-
-def stype_groups(requests: Sequence[StatRequest]) -> list[list[StatRequest]]:
-    """Requests split so no group asks one column for two semantic types."""
-
-    groups: list[list[StatRequest]] = []
-    for request in sorted(set(requests)):
-        group = next((g for g in groups if all(r[:2] != request[:2] for r in g)), None)
-        if group is None:
-            groups.append(group := [])
-        group.append(request)
-    return groups
 
 
 def table_column_encoders(contract: Any) -> dict[str, TableColumnEncoder]:

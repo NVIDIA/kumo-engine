@@ -966,15 +966,25 @@ impl FileColStats {
         self
     }
 
+    fn collectors_of(&self, col_idx: usize) -> impl Iterator<Item = &ColumnStatsCollector> {
+        let n = self.num_columns();
+        let extras = n + self.extra_cols.partition_point(|&c| c < col_idx)
+            ..n + self.extra_cols.partition_point(|&c| c <= col_idx);
+        std::iter::once(&self.cols[col_idx]).chain(&self.cols[extras])
+    }
+
     pub fn collects(&self, col_idx: usize) -> bool {
-        !matches!(self.cols[col_idx], ColumnStatsCollector::Skip)
+        self.collectors_of(col_idx)
+            .any(|col| !matches!(col, ColumnStatsCollector::Skip))
     }
 
     pub fn counts_categories(&self, col_idx: usize) -> bool {
-        matches!(
-            self.cols[col_idx],
-            ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. }
-        )
+        self.collectors_of(col_idx).any(|col| {
+            matches!(
+                col,
+                ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. }
+            )
+        })
     }
 
     /// Merge another `FileColStats` into this one (per-column dispatch).

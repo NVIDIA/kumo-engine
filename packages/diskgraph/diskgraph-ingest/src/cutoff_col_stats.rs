@@ -15,7 +15,8 @@ use diskgraph_rowpack::{ColumnValueObserver, FloatListView, IntListView, StringL
 use serde::Deserialize;
 
 use crate::col_stats::{
-    write_col_stats, CategoryCountStrategy, ColStatsTable, FileColStats, TableCategoryCounts,
+    write_col_stats, CategoryCountStrategy, ColStatsTable, FileColStats, StatSet,
+    TableCategoryCounts,
 };
 use crate::graph_config::{ColumnSpec, SemanticType, TableSpec};
 use crate::io::{Dest, OutputTarget};
@@ -27,8 +28,8 @@ pub struct CutoffColStatsRequest {
     pub cutoffs: Vec<Option<i64>>,
     /// The `col_stats/<dir>/` of each cutoff.
     pub dirs: Vec<String>,
-    /// Table, then column, to the semantic type it is collected as.
-    pub columns: BTreeMap<String, BTreeMap<String, SemanticType>>,
+    /// Table, then column, to the semantic types whose statistics it collects.
+    pub columns: BTreeMap<String, BTreeMap<String, Vec<SemanticType>>>,
     /// The t-digest quantiles every numerical column publishes.
     #[serde(default)]
     pub quantiles: Vec<f64>,
@@ -37,7 +38,8 @@ pub struct CutoffColStatsRequest {
 /// One table's statistics at every cutoff.
 pub struct CutoffTable {
     name: String,
-    pub columns: Vec<ColumnSpec>,
+    columns: Vec<ColumnSpec>,
+    stat_sets: Vec<StatSet>,
     temporal: bool,
     cutoffs: Vec<Option<i64>>,
     categories: Vec<Arc<TableCategoryCounts>>,
@@ -78,37 +80,35 @@ impl CutoffColStatsRequest {
         Ok(())
     }
 
-    /// The requested columns as their requested types; the others collect nothing.
+    /// The requested statistics of each column; the others collect nothing.
     pub fn table(&self, table: &TableSpec) -> Option<CutoffTable> {
         let requested = self.columns.get(&table.name)?;
-        let columns: Vec<ColumnSpec> = table
+        let stat_sets: Vec<StatSet> = table
             .columns
             .iter()
-            .map(|column| ColumnSpec {
-                semantic_type: Some(
-                    requested
-                        .get(&column.name)
-                        .copied()
-                        .unwrap_or(SemanticType::Unsupported),
-                ),
-                ..column.clone()
+            .map(|column| {
+                requested
+                    .get(&column.name)
+                    .into_iter()
+                    .flatten()
+                    .fold(StatSet::default(), |set, &stype| set | Some(stype).into())
             })
             .collect();
-        let stypes: Vec<_> = columns.iter().map(|c| c.semantic_type).collect();
         let categories = self
             .cutoffs
             .iter()
             .map(|_| {
                 Arc::new(TableCategoryCounts::new(
                     CategoryCountStrategy::Hybrid,
-                    &stypes,
+                    &stat_sets,
                     false,
                 ))
             })
             .collect();
         Some(CutoffTable {
             name: table.name.clone(),
-            columns,
+            columns: table.columns.clone(),
+            stat_sets,
             temporal: table.create_time.is_some(),
             cutoffs: self.cutoffs.clone(),
             categories,
@@ -129,7 +129,10 @@ impl CutoffColStatsRequest {
         let mut per_cutoff: Vec<Vec<ColStatsTable<'_>>> =
             self.dirs.iter().map(|_| Vec::new()).collect();
         for mut table in tables {
-            let stats = table.stats.take().unwrap_or_else(|| table.sinks());
+            let stats = match table.stats.take() {
+                Some(stats) => stats,
+                None => table.sinks()?,
+            };
             for ((out, stats), categories) in
                 per_cutoff.iter_mut().zip(stats.stats).zip(table.categories)
             {
@@ -178,20 +181,24 @@ impl CutoffColStatsRequest {
 }
 
 impl CutoffTable {
-    pub fn sinks(&self) -> CutoffSinks {
-        CutoffSinks {
+    pub fn sinks(&self) -> Result<CutoffSinks> {
+        Ok(CutoffSinks {
             cutoffs: self.cutoffs.clone(),
             temporal: self.temporal,
             stats: self
                 .categories
                 .iter()
                 .map(|categories| {
-                    FileColStats::new_with_categories(&self.columns, Arc::clone(categories))
+                    FileColStats::new_with_stat_sets(
+                        &self.columns,
+                        &self.stat_sets,
+                        Arc::clone(categories),
+                    )
                 })
-                .collect(),
+                .collect::<Result<_>>()?,
             active: vec![true; self.cutoffs.len()],
             row: Row::default(),
-        }
+        })
     }
 
     pub fn add(&mut self, mut sinks: CutoffSinks) {

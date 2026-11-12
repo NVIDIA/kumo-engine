@@ -24,7 +24,6 @@ from kumo.pytorch.column_stats import (
     ColumnStats,
     StatRequest,
     stats_request,
-    stype_groups,
 )
 from kumo.pytorch.contract.sample import BuiltSample, SampleRequest, SampleSpec
 from kumo.pytorch.contract.schema import DataSchema
@@ -103,13 +102,13 @@ class InMemorySource:
             index = Path(directory, "index")
             ensure_diskgraph_index(DataSchema(tables=tuple(stored)), Dataset(sources), index)
             names = {table.name for table in stored}
-            for group in stype_groups([item for item in requests if item[0] in names]):
-                request = stats_request(group, [cutoff], "seconds", quantiles)
-                diskgraph.cutoff_col_stats(str(index), json.dumps(request))
-                found = json.loads(
-                    index.joinpath("col_stats", request["dirs"][0], "col_stats.json").read_text()
-                )
-                columns.update({item: found[item[0]][item[1]] for item in group})
+            group = [item for item in requests if item[0] in names]
+            request = stats_request(group, [cutoff], "seconds", quantiles)
+            diskgraph.cutoff_col_stats(str(index), json.dumps(request))
+            found = json.loads(
+                index.joinpath("col_stats", request["dirs"][0], "col_stats.json").read_text()
+            )
+            columns.update({item: found[item[0]][item[1]] for item in group})
         return ColumnStats(columns, {"value": cutoff, "unit": "seconds"})
 
     def sample_graph(

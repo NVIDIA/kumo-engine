@@ -24,10 +24,10 @@ REQUEST = {
     "cutoffs": [CUTOFF, None],
     "dirs": ["at-cutoff", "every-row"],
     "columns": {
-        "users": {"tier": "categorical", "age": "numerical", "raw": "categorical",
-                  "seen": "categorical", "born": "categorical", "price": "numerical",
-                  "big": "categorical"},
-        "items": {"name": "categorical"},
+        "users": {"tier": ["categorical"], "age": ["categorical", "numerical"],
+                  "raw": ["categorical"], "seen": ["categorical"], "born": ["categorical"],
+                  "price": ["numerical"], "big": ["categorical"]},
+        "items": {"name": ["categorical"]},
     },
     "quantiles": QUANTILES,
 }
@@ -107,6 +107,7 @@ def test_ingest_counts_the_rows_created_at_or_before_each_cutoff(data, ingested)
         assert age["std"] == pytest.approx(ages.std(ddof=1), rel=1e-12)
         ranks = [np.mean(ages <= q) for q in age["quantiles"]]
         assert ranks == pytest.approx(QUANTILES, abs=0.02)
+        assert {int(k): v for k, v in age["category_counts"]} == collections.Counter(ages.tolist())
         raw = collections.Counter(users["raw"][i].hex() for i in rows)
         assert dict(map(tuple, stats["users"]["raw"]["category_counts"])) == raw
         seen = collections.Counter(users["seen"][i] // 10**6 for i in rows)
@@ -131,7 +132,10 @@ def test_recompute_from_the_index_matches_ingest(data, ingested, tmp_path):
 def test_rejects_unknown_columns_and_exclusive_options(data, ingested, tmp_path):
     with pytest.raises(Exception, match="has no column missing"):
         diskgraph.cutoff_col_stats(ingested, json.dumps(
-            {**REQUEST, "columns": {"users": {"missing": "categorical"}}}))
+            {**REQUEST, "columns": {"users": {"missing": ["categorical"]}}}))
+    with pytest.raises(Exception, match="more than one kind of category counts"):
+        diskgraph.cutoff_col_stats(ingested, json.dumps(
+            {**REQUEST, "columns": {"users": {"tier": ["categorical", "id"]}}}))
     with pytest.raises(Exception, match="its own directory"):
         diskgraph.cutoff_col_stats(ingested, json.dumps({**REQUEST, "dirs": ["same", "same"]}))
     with pytest.raises(Exception, match="exclusive"):
@@ -146,7 +150,7 @@ def test_rows_the_index_does_not_store_count_on_neither_route(tmp_path):
     pq.write_table(pa.table({"id": range(60), "at": times, "tier": pa.array(tiers, pa.large_string())}),
                    tmp_path / "events.parquet")
     request = {"cutoffs": [T0 + 29, None], "dirs": ["at-cutoff", "every-row"],
-               "columns": {"events": {"tier": "categorical"}}}
+               "columns": {"events": {"tier": ["categorical"]}}}
     index = tmp_path / "index"
     diskgraph.ingest(
         config_json=json.dumps({"dataset_name": "dropped", "tables": [{
