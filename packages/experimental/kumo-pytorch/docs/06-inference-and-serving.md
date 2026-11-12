@@ -634,7 +634,12 @@ is up to you. Each table's rows can be a list of dicts or a `pyarrow.Table`.
 
 `assemble` takes a sequence of requests, so one call can serve one request or
 several. For several, put the rows of all of them in one `rows` mapping, each
-row once (a repeated primary key is refused). Each request reads only the rows
+row once (a repeated declared primary key is refused). Keyless tables require
+no PK column and preserve separate identical rows. Their IDs are local to each
+prepared dataset, so equal-time limits, uniform draws and floating reduction
+rounding may differ when rows are reordered or fetched as a subset. Use a
+declared PK when stable choices across preparations are required.
+Each request reads only the rows
 that match it, so its sample is the same as when it is assembled alone:
 
 ```python

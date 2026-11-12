@@ -138,9 +138,13 @@ def load_case(path: Path) -> GoldenCase:
                 isinstance(row, dict) and set(row) == set(declared[name].columns),
                 f"{name}: each row must supply exactly its declared columns",
             )
-            key = row[declared[name].primary_key]
-            _require(type(key) in (int, str), f"{name}: primary keys must be integers or strings")
-            keys.append(key)
+            primary_key = declared[name].primary_key
+            if primary_key is not None:
+                key = row[primary_key]
+                _require(
+                    type(key) in (int, str), f"{name}: primary keys must be integers or strings"
+                )
+                keys.append(key)
             clock = table_clock(declared[name])
             if clock is not None:
                 _require(
