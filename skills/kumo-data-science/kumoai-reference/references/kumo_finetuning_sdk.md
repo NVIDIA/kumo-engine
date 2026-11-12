@@ -604,8 +604,9 @@ PredictionResult.export(output_config)
   (`kumo_core.prediction_options.MAX_LINKS_TO_PREDICT`); for more than 500 per entity, export
   embeddings instead. Multiclass and multilabel accept it optionally and fall back to the
   query's `RANK TOP K` when it has one. Regression and binary classification reject it.
-- Binary classification requires an explicit `binary_classification_threshold`; there is no SDK
-  default. Use the one confirmed at Node 1d (§12).
+- Binary classification: without `binary_classification_threshold` (and none recorded with the
+  model), `predict` returns `True_PROB` and leaves `TARGET_PRED` null; it has no 0.5 default of
+  its own. Always pass the one confirmed at Node 1d (§12), written or local alike.
 - `binary_classification_threshold` and `num_classes_to_return` are arguments of `predict`, and
   only of `predict`. `PredictionOutputConfig` describes where to write, not how to predict: it
   takes neither, and passing one is a `TypeError`. Whatever the destination, the config carries
@@ -828,7 +829,7 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
 | PQL `query=` | Generated per `kumoai-reference/references/pql_writing.md` |
 | `prediction_time=` | A known in-range **naive** `datetime`; **cannot be computed** |
 | `predict(num_classes_to_return=N)` | Results per entity the user asked for; defaults to `RANK TOP K` but may differ. Link prediction writing predictions requires it, 1–500; no cap otherwise (§9) |
-| `predict(binary_classification_threshold=)` | Required for binary classification; never on `PredictionOutputConfig`. The threshold restated at Node 1d: the user's, else `0.5 [default]` (`kumo-data-science/accept/intake_contract.md`) |
+| `predict(binary_classification_threshold=)` | Always passed for binary classification, written or local; never on `PredictionOutputConfig`. The threshold restated at Node 1d: the user's, else `0.5 [default]` (`kumo-data-science/accept/intake_contract.md`) |
 | Population table (static task, rows that already have a target) | Confirmed at Node 1d (§7.1) |
 | `PredictionOutputConfig(...)` + output connector | Output destination in its connector's form (§9.2); report it back unchanged — `DB.SCHEMA.TABLE`, or the path |
 

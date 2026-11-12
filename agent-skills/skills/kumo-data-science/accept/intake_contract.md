@@ -99,7 +99,7 @@ confirmed **before** any PQL is written.
 | **`output_location`** | none — training yields a notebook; when given, the same notebook also predicts into it (SKILL.md Step 2) |
 | **artifact format** | one notebook (user may ask for a script) |
 | **embeddings** | not included; add only when the user explicitly asks (see below) |
-| **binary classification threshold** | `0.5`, shown `[default]` at Node 1d whenever a binary classification writes predictions. `predict` requires one and has no default of its own (`kumoai-reference/references/kumo_finetuning_sdk.md` §9) |
+| **binary classification threshold** | `0.5`, shown `[default]` at Node 1d for every binary classification, whether predictions are written or stay local. Without one, `predict` leaves `TARGET_PRED` null; it has no default of its own (`kumoai-reference/references/kumo_finetuning_sdk.md` §9) |
 | **metrics** | by task type, see `SKILL.md` |
 
 If the user supplies an `output_location`, carry it verbatim into the task interpretation gate

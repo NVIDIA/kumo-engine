@@ -7,7 +7,7 @@ description: "Use for KumoAI graphs and predictive models on relational data in 
 
 ## Build marker
 
-**`SKILL-BUILD: 2026-11-12-2507a7fc-dirty`**
+**`SKILL-BUILD: 2026-11-12-21c1f7ab-dirty`**
 
 Quote this string verbatim whenever asked which build of the skill is loaded. If you cannot read
 it from this file, you have not loaded the skill — say so rather than guessing.
@@ -232,7 +232,7 @@ generated before the task is confirmed:
 - Task type: <temporal binary classification | link prediction | ...>
 - Output: predictions written to <destination, verbatim> in the same notebook | notebook only, no predictions written
 - Scoring population (static tasks): rows whose <target> is NULL | all <entity> rows, staged at <DB.SCHEMA.TABLE>
-- Threshold (binary classification, predictions written): <the user's value [supplied] | 0.5 [default]>
+- Threshold (binary classification, written or local): <the user's value [supplied] | 0.5 [default]>
 - Embeddings: <included, if explicitly requested>
 ```
 
