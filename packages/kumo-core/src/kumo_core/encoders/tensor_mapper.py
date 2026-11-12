@@ -79,7 +79,7 @@ class TensorMapper(ABC, Generic[T]):
             raise TypeError(
                 "TensorMapper input must be an Arrow array or chunked array"
             )
-        if (
+        if hasattr(pa.types, "is_list_view") and (
             pa.types.is_list_view(array.type)
             or pa.types.is_large_list_view(array.type)
             or pa.types.is_string_view(array.type)

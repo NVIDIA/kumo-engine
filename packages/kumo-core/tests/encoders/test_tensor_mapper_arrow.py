@@ -263,24 +263,28 @@ def test_mapper_rejects_non_arrow_input(mapper: TensorMapper) -> None:
     ids=lambda mapper: type(mapper).__name__,
 )
 @pytest.mark.parametrize(
-    "array",
-    [
-        pa.array([[1.0, 2.0], [3.0]], type=pa.list_view(pa.float64())),
-        pa.array([[1.0, 2.0], [3.0]], type=pa.large_list_view(pa.float64())),
-        pa.array(["[1,2]", None], type=pa.string_view()),
-    ],
+    "view_type_name",
+    ["list_view", "large_list_view", "string_view"],
     ids=["list-view", "large-list-view", "string-view"],
 )
 @pytest.mark.parametrize("chunked", [False, True])
 @pytest.mark.parametrize("empty", [False, True])
 def test_mappers_reject_arrow_view_types(
     mapper: TensorMapper,
-    array: pa.Array,
+    view_type_name: str,
     chunked: bool,
     empty: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Unsupported view types fail before mapper-specific encoding runs."""
+    constructor = getattr(pa, view_type_name, None)
+    if constructor is None:
+        return pytest.skip("Arrow view types are unavailable in this PyArrow version")
+    array = (
+        pa.array(["[1,2]", None], type=constructor())
+        if view_type_name == "string_view"
+        else pa.array([[1.0, 2.0], [3.0]], type=constructor(pa.float64()))
+    )
     if empty:
         array = array.slice(0, 0)
     source = pa.chunked_array([array[:1], array[1:]]) if chunked else array
@@ -291,6 +295,23 @@ def test_mappers_reject_arrow_view_types(
         mapper(source)
 
     forward.assert_not_called()
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_mapper_accepts_arrow_without_view_predicates(
+    chunked: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Supported arrays still encode when PyArrow 15 has no view predicates."""
+    for name in ("is_list_view", "is_large_list_view", "is_string_view"):
+        monkeypatch.delattr(pa.types, name, raising=False)
+    array = pa.array([1.0, None, 3.0])
+    source = pa.chunked_array([array[:1], array[1:]]) if chunked else array
+
+    result = NumericalTensorMapper()(source)
+
+    torch.testing.assert_close(
+        result, torch.tensor([[1.0], [float("nan")], [3.0]]), equal_nan=True
+    )
 
 
 def test_categorical_float_arrow_preserves_zero_and_unknown_categories() -> None:

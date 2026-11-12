@@ -360,3 +360,14 @@ def test_string_encoded_sequences_use_numpy_parsing(value_type: pa.DataType) -> 
     result = SequenceTensorMapper(0, 3)(array)
 
     torch.testing.assert_close(result.values, expected, equal_nan=True)
+
+
+@pytest.mark.usefixtures("default_dtype")
+def test_null_type_sequences_follow_default_float_dtype() -> None:
+    """Null-type columns produce all-NaN rows in either supported float dtype."""
+    result = SequenceTensorMapper(0, 3)(pa.nulls(2))
+
+    assert result.values.shape == (2, 3)
+    assert result.values.dtype == torch.get_default_dtype()
+    assert result.values.isnan().all()
+    assert result.offset.tolist() == [0, 3]
