@@ -15,12 +15,17 @@ sys.modules['publish_nvskills'] = publish_nvskills
 spec.loader.exec_module(publish_nvskills)
 
 
+# The router and every skill the generic package nests inside it.
+SKILLS = ['.', 'kumoai-reference', *publish_nvskills.package_skill.CAPABILITY]
+
+
 @pytest.fixture
 def catalog(tmp_path: Path) -> Path:
     root = tmp_path / 'catalog'
-    (root / 'evals').mkdir(parents=True)
-    (root / 'evals' / 'evals.json').write_text('{"skill_name": "kumo-data-science"}\n')
-    (root / 'skill-card.md').write_text('## Description\n')
+    for skill in SKILLS:
+        (root / skill / 'evals').mkdir(parents=True, exist_ok=True)
+        (root / skill / 'evals' / 'evals.json').write_text(f'{{"skill_name": "{skill}"}}\n')
+        (root / skill / 'skill-card.md').write_text('## Description\n')
     return root
 
 
@@ -31,25 +36,65 @@ def test_publish_writes_the_generic_package_and_catalog_files(tmp_path: Path,
     assert (dest / 'SKILL.md').is_file()
     assert (dest / 'hosts' / 'generic' / 'adapter.md').is_file()
     assert not (dest / 'hosts' / 'snowflake-coco').exists()
-    assert (dest / 'evals' / 'evals.json').is_file()
-    assert (dest / 'skill-card.md').is_file()
+    assert sorted(publish_nvskills.skill_dirs(dest)) == sorted(SKILLS)
+    for skill in SKILLS:
+        assert (dest / skill / 'evals' / 'evals.json').is_file()
+        assert (dest / skill / 'skill-card.md').is_file()
+    assert publish_nvskills.missing(dest) == []
     assert publish_nvskills.stale(dest, catalog) == []
+
+
+@pytest.mark.parametrize('rel', ['kumoai-reference/skill-card.md',
+                                 'kumo-model-tuning/evals/evals.json', 'evals/evals.json'])
+def test_every_skill_directory_needs_its_own_card_and_evals(tmp_path: Path, catalog: Path,
+                                                            rel: str) -> None:
+    """The catalog sync deletes a SKILL.md directory without its own card and evals.
+
+    For a nested skill that also breaks the router's links into it, so the build refuses.
+    """
+    (catalog / rel).unlink()
+    dest = tmp_path / 'kumo-data-science'
+    with pytest.raises(SystemExit, match='the catalog would drop these skills'):
+        publish_nvskills.publish(dest, catalog)
+    assert not dest.exists()
+
+
+def test_without_catalog_files_every_input_is_reported_missing(tmp_path: Path) -> None:
+    absent = tmp_path / 'no-catalog'
+    dest = tmp_path / 'kumo-data-science'
+    assert publish_nvskills.publish(dest, absent)
+    todo = publish_nvskills.not_ready(absent)
+    for skill in SKILLS:
+        assert (Path(skill) / 'skill-card.md').as_posix() in todo
+        assert (Path(skill) / 'evals' / '*.json').as_posix() in todo
+    assert len(todo) == 2 * len(SKILLS)
+
+
+@pytest.mark.parametrize('rel', ['notes.md', 'SKILL.md', 'hosts/generic/adapter.md',
+                                 'hosts/skill-card.md', 'hosts/evals/evals.json',
+                                 'kumo-model-tunning/skill-card.md'])
+def test_catalog_files_must_belong_to_a_skill(tmp_path: Path, catalog: Path, rel: str) -> None:
+    (catalog / rel).parent.mkdir(parents=True, exist_ok=True)
+    (catalog / rel).write_text('stray\n')
+    with pytest.raises(SystemExit, match='is not the skill-card.md or evals/ of a skill'):
+        publish_nvskills.publish(tmp_path / 'kumo-data-science', catalog)
 
 
 def test_publish_keeps_signed_files_and_drops_files_no_longer_shipped(tmp_path: Path,
                                                                       catalog: Path) -> None:
     dest = tmp_path / 'kumo-data-science'
     publish_nvskills.publish(dest, catalog)
-    for name in publish_nvskills.SIGNED:
-        (dest / name).write_text('from NVSkills CI\n')
+    signed = [dest / skill / name for skill in SKILLS for name in publish_nvskills.SIGNED]
+    for path in signed:
+        path.write_text('from NVSkills CI\n')
     (dest / 'old' / 'removed.md').parent.mkdir()
     (dest / 'old' / 'removed.md').write_text('gone\n')
 
     assert publish_nvskills.stale(dest, catalog) == ['- old/removed.md']
     publish_nvskills.publish(dest, catalog)
     assert not (dest / 'old').exists()
-    for name in publish_nvskills.SIGNED:
-        assert (dest / name).read_text() == 'from NVSkills CI\n'
+    for path in signed:
+        assert path.read_text() == 'from NVSkills CI\n'
 
 
 def test_check_ignores_the_build_stamp_but_not_content(tmp_path: Path, catalog: Path) -> None:
@@ -65,7 +110,9 @@ def test_check_ignores_the_build_stamp_but_not_content(tmp_path: Path, catalog: 
     assert publish_nvskills.stale(dest, catalog) == ['~ SKILL.md']
 
 
-@pytest.mark.parametrize('rel', ['skill.oms.sig', 'evals/skill.oms.sig', 'evals/BENCHMARK.md'])
+@pytest.mark.parametrize('rel', ['skill.oms.sig', 'evals/skill.oms.sig', 'evals/BENCHMARK.md',
+                                 'kumoai-reference/skill.oms.sig',
+                                 'kumo-model-tuning/BENCHMARK.md'])
 def test_catalog_files_cannot_supply_signed_files(tmp_path: Path, catalog: Path,
                                                   rel: str) -> None:
     (catalog / rel).write_text('forged\n')
@@ -73,11 +120,19 @@ def test_catalog_files_cannot_supply_signed_files(tmp_path: Path, catalog: Path,
         publish_nvskills.publish(tmp_path / 'kumo-data-science', catalog)
 
 
-@pytest.mark.parametrize('rel', ['SKILL.md', 'hosts/generic/adapter.md'])
+@pytest.mark.parametrize('rel', ['skill-card.md', 'kumo-model-tuning/evals/evals.json'])
 def test_catalog_files_cannot_replace_package_files(tmp_path: Path, catalog: Path,
+                                                    monkeypatch: pytest.MonkeyPatch,
                                                     rel: str) -> None:
-    (catalog / rel).parent.mkdir(parents=True, exist_ok=True)
-    (catalog / rel).write_text('replaced\n')
+    build = publish_nvskills.package_skill.build
+
+    def shipping(host: str, dist: Path) -> Path:
+        pkg = build(host, dist)
+        (pkg / rel).parent.mkdir(parents=True, exist_ok=True)
+        (pkg / rel).write_text('from the package\n')
+        return pkg
+
+    monkeypatch.setattr(publish_nvskills.package_skill, 'build', shipping)
     with pytest.raises(SystemExit, match='already in the generic package'):
         publish_nvskills.publish(tmp_path / 'kumo-data-science', catalog)
 

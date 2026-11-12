@@ -17,17 +17,24 @@ for Claude Code, Codex and other coding agents) to `skills/kumo-data-science/`. 
 the skill runs it and commits the result, and `tests/test_publish_nvskills.py` fails the PR when
 it did not. NVSkills CI signs that same PR, so merging it to `main` is what publishes.
 
+The catalog treats every directory holding a `SKILL.md` as its own skill, and its sync deletes
+any such directory that lacks its own `skill.oms.sig`, `skill-card.md` and eval dataset. The
+package has eight: the router and the seven skills nested inside it, which stay nested so the
+router's relative links resolve. Each of the eight is a catalog skill here.
+
 Three kinds of file sit in the published directory:
 
 * the package, rebuilt from `agent-skills/skills/` on every run;
-* the catalog files that NVSkills requires and that we write: `skill-card.md` and
-  `evals/*.json`. Their source is `agent-skills/nvskills/kumo-data-science/`, and they are
-  copied in on every run. A catalog file may not replace a package file;
+* the catalog files that NVSkills requires and that we write: each skill's `skill-card.md` and
+  `evals/*.json`. Their source is `agent-skills/nvskills/kumo-data-science/`, laid out like the
+  package (a nested skill's files under `<skill>/`), and they are copied in on every run. A
+  catalog file must belong to a skill directory and may not replace a package file. Once that
+  source exists, the build fails unless every skill has both, so the sync never drops one;
 * `BENCHMARK.md` and `skill.oms.sig`, which NVSkills CI writes into the pull request. They are
   never edited here, and the build fails if the package or the catalog files carry either
-  name at any depth. A refresh leaves them in place, so they describe the previous content until
-  NVSkills CI runs again. The catalog then keeps serving the last signed version rather than
-  dropping the skill.
+  name at any depth. A refresh leaves them in place at any depth, so they describe the previous
+  content until NVSkills CI runs again. The catalog then keeps serving the last signed version
+  rather than dropping the skill.
 
 `--check` ignores the `SKILL-BUILD` stamp, which names the commit that built the package and so
 differs on every commit even when no skill file changed.
@@ -54,6 +61,37 @@ PUBLISHED = REPO / 'skills' / package_skill.ROUTER
 CATALOG_FILES = package_skill.ROOT / 'nvskills' / package_skill.ROUTER
 # Written by NVSkills CI into the pull request; never generated or deleted here.
 SIGNED = frozenset({'BENCHMARK.md', 'skill.oms.sig'})
+# What each skill directory needs from the catalog files; the sync drops a skill without them.
+CARD = 'skill-card.md'
+EVALS = 'evals'
+
+
+def skill_dirs(pkg: Path) -> list[str]:
+    """Each directory of `pkg` that the catalog treats as a skill, `.` for the router."""
+    return sorted(p.parent.relative_to(pkg).as_posix() for p in pkg.rglob('SKILL.md'))
+
+
+def owner(rel: Path) -> str | None:
+    """The skill directory a catalog file belongs to, or None if it is not a catalog input."""
+    parts = rel.parts
+    if parts[-1] == CARD:
+        return Path(*parts[:-1]).as_posix() if len(parts) > 1 else '.'
+    if EVALS in parts[:-1]:
+        i = parts.index(EVALS)
+        return Path(*parts[:i]).as_posix() if i else '.'
+    return None
+
+
+def missing(pkg: Path) -> list[str]:
+    """The catalog inputs a skill directory of `pkg` lacks, as package-relative paths."""
+    out = []
+    for skill in skill_dirs(pkg):
+        d = pkg / skill
+        if not (d / CARD).is_file():
+            out.append((Path(skill) / CARD).as_posix())
+        if not any((d / EVALS).glob('*.json')):
+            out.append((Path(skill) / EVALS / '*.json').as_posix())
+    return out
 
 
 def build(out: Path, catalog_files: Path = CATALOG_FILES) -> Path:
@@ -67,17 +105,34 @@ def build(out: Path, catalog_files: Path = CATALOG_FILES) -> Path:
     if signed:
         raise SystemExit(f'{HOST} package ships {signed}: written by NVSkills CI, not by hand')
     if catalog_files.is_dir():
+        skills = skill_dirs(pkg)
         for path in sorted(catalog_files.rglob('*')):
             if path.is_file():
                 rel = path.relative_to(catalog_files)
                 if path.name in SIGNED:
                     raise SystemExit(f'{path}: {rel} is written by NVSkills CI, not by hand')
+                if owner(rel) not in skills:
+                    raise SystemExit(f'{path}: {rel} is not the {CARD} or {EVALS}/ of a skill '
+                                     f'in the {HOST} package ({skills})')
                 target = pkg / rel
                 if target.exists():
                     raise SystemExit(f'{path}: {rel} is already in the {HOST} package')
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(path, target)
+        # The catalog sync deletes a skill directory without its own card and evals, and with
+        # it the files the router links to. Before the first one is written nothing is
+        # published, so the gap is reported (`not_ready`) rather than fatal.
+        gaps = missing(pkg)
+        if gaps:
+            raise SystemExit(f'{catalog_files}: the catalog would drop these skills; add '
+                             f'{gaps}')
     return pkg
+
+
+def not_ready(catalog_files: Path = CATALOG_FILES) -> list[str]:
+    """Catalog inputs still to write before the first publish; empty once they all exist."""
+    with tempfile.TemporaryDirectory() as tmp:
+        return missing(build(Path(tmp), catalog_files))
 
 
 def files(root: Path) -> dict[str, bytes]:
@@ -87,7 +142,7 @@ def files(root: Path) -> dict[str, bytes]:
     out = {}
     for path in sorted(root.rglob('*')):
         rel = path.relative_to(root).as_posix()
-        if path.is_file() and rel not in SIGNED:
+        if path.is_file() and path.name not in SIGNED:
             data = path.read_bytes()
             if rel == 'SKILL.md':
                 text = package_skill.MARKER.sub('SKILL-BUILD: x', data.decode('utf-8'))
@@ -115,8 +170,7 @@ def publish(dest: Path = PUBLISHED, catalog_files: Path = CATALOG_FILES) -> list
         pkg = build(Path(tmp), catalog_files)
         if dest.is_dir():
             for path in sorted(dest.rglob('*'), reverse=True):
-                rel = path.relative_to(dest).as_posix()
-                if path.is_file() and rel not in SIGNED:
+                if path.is_file() and path.name not in SIGNED:
                     path.unlink()
                 elif path.is_dir() and not any(path.iterdir()):
                     path.rmdir()
@@ -144,6 +198,10 @@ def main() -> None:
         raise SystemExit(1)
     else:
         print(f'{where}/ refreshed: {len(changes)} file(s)')
+    todo = not_ready()
+    if todo:
+        print(f'not publishable yet: the catalog would drop every skill until '
+              f'{CATALOG_FILES.relative_to(REPO)}/ supplies {todo}', file=sys.stderr)
 
 
 if __name__ == '__main__':
