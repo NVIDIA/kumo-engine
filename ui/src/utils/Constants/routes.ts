@@ -22,16 +22,21 @@ export enum docURLs {
     SelectTables = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/connect-data/select-tables",
     CreateGraph = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/connect-data/create-graph",
     TrainModel = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/train-model/model-training/training",
-    BatchPrediction = "batch-prediction",
+    ColumnPreprocessing = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/connect-data/column-preprocessing",
+    ModelPlanner = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/train-model/model-settings/model-planner",
+    ColumnEncoding = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/train-model/model-settings/model-planner#column-encoding",
+    PredictionAnchorTime = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/train-model/predictive-query/what-is-anchor-time-and-why-is-it-important",
+    TaskTypes = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/train-model/predictive-query/task-types",
+    BatchPrediction = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/run-models/batch-prediction",
     SnowflakeSite = "https://docs.snowflake.com/en/user-guide/gen-conn-config",
     BigQuerySite = "https://cloud.google.com/bigquery/docs",
     DatabricksSite = "https://docs.databricks.com/aws/en",
-    EncoderOverrides = "reference/column_processing#encoder-overrides",
-    Metrics = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/legacy-ui-references/metrics",
-    NeighborSampling = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/legacy-ui-references/neighbor-sampling",
+    EncoderOverrides = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/user-code-guide/train-a-model/model-plan-guide#column-processing",
+    Metrics = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/user-code-guide/train-a-model/model-plan-guide#training-job-plan",
+    NeighborSampling = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/user-code-guide/train-a-model/model-plan-guide#neighbor-sampling",
     ModelArchitecture = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/train-model/model-settings/model-planner#architecture-search",
-    CreateDateSelection = "column-preprocessing#create-date-column",
-    PkeySelection = "column-preprocessing#primary-key-column"
+    CreateDateSelection = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/connect-data/column-preprocessing#create-date-column",
+    PkeySelection = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/connect-data/column-preprocessing#primary-key-column"
 }
 
 export const defaultModelsPageURL =
@@ -70,4 +75,5 @@ export const getProjectPath = (projectId?: string | null) => {
 
 export const publicPaths: string[] = ["", "login", "logout"];
 
-export const newDocsURL = "https://kumo.ai/docs/";
+export const newDocsURL =
+    "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/get-started-with-kumo-engine/overview";

@@ -188,7 +188,7 @@ describe("ModelPlannerInput", () => {
         expect(docsLink).toBeInTheDocument();
         expect(docsLink).toHaveAttribute(
             "href",
-            "https://kumo.ai/docs/model-planner"
+            "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/train-model/model-settings/model-planner"
         );
         expect(docsLink).toHaveAttribute("target", "_blank");
         return docsLink;
