@@ -138,6 +138,38 @@ def test_rejects_unknown_columns_and_exclusive_options(data, ingested, tmp_path)
         _ingest(data, tmp_path / "both", True, cutoff_col_stats=json.dumps(REQUEST))
 
 
+def test_rows_the_index_does_not_store_count_on_neither_route(tmp_path):
+    times = [dt.datetime.fromtimestamp(T0 + i, dt.UTC).strftime("%Y-%m-%d %H:%M:%S") for i in range(60)]
+    times[3], times[4] = "garbage", None
+    tiers = [f"t{i % 5}" for i in range(60)]
+    tiers[7] = "x" * (65 << 20)
+    pq.write_table(pa.table({"id": range(60), "at": times, "tier": pa.array(tiers, pa.large_string())}),
+                   tmp_path / "events.parquet")
+    request = {"cutoffs": [T0 + 29, None], "dirs": ["at-cutoff", "every-row"],
+               "columns": {"events": {"tier": "categorical"}}}
+    index = tmp_path / "index"
+    diskgraph.ingest(
+        config_json=json.dumps({"dataset_name": "dropped", "tables": [{
+            "name": "events", "primary_key": "id", "create_time": "at",
+            "columns": [{"name": "id", "ingested_dtype": "int64"},
+                        {"name": "at", "ingested_dtype": "timestamp", "timestamp_format": "%Y-%m-%d %H:%M:%S"},
+                        {"name": "tier", "ingested_dtype": "string"}],
+            "source": {"type": "parquet", "paths": [str(tmp_path / "events.parquet")]}}]}),
+        output_dir=str(index), col_stats=False, cutoff_col_stats=json.dumps(request),
+    )
+
+    def counts():
+        return [dict(map(tuple, json.loads((index / "col_stats" / d / "col_stats.json").read_text())
+                         ["events"]["tier"]["category_counts"])) for d in request["dirs"]]
+
+    ingested = counts()
+    shutil.rmtree(index / "col_stats")
+    diskgraph.cutoff_col_stats(str(index), json.dumps(request))
+    stored = [i for i in range(60) if i not in (3, 4, 7)]
+    assert counts() == ingested == [collections.Counter(tiers[i] for i in stored if i <= 29),
+                                    collections.Counter(tiers[i] for i in stored)]
+
+
 @pytest.mark.parametrize("unit, ticks", [
     ("milliseconds", CUTOFF * 1_000), ("seconds", CUTOFF), ("days", -(-CUTOFF // 86_400)),
 ])

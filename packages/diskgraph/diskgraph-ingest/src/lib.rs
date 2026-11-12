@@ -8974,6 +8974,7 @@ impl IngestContext {
                 if byte_idx < node_tags.len() {
                     let tag_val = (node_tags[byte_idx] >> bit_pos) & 0b11;
                     if tag_val == 0 {
+                        observer.finish_row(false);
                         *node_data_dropped = node_data_dropped.saturating_add(1);
                         *row_id = row_id.saturating_add(1);
                         return Ok(());
@@ -8984,6 +8985,7 @@ impl IngestContext {
                 .tag_bytes
                 .saturating_add(lens.bool_bytes)
                 .saturating_add(lens.data_bytes);
+            observer.finish_row(row_len <= MAX_NODE_DATA_LEN);
             if row_len > MAX_NODE_DATA_LEN {
                 *node_data_dropped = node_data_dropped.saturating_add(1);
                 batcher.push_empty_node(shard)?;

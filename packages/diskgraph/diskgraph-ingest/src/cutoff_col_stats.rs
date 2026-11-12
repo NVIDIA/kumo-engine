@@ -5,6 +5,7 @@
 //! Column statistics of the rows created at or before each cutoff, under `col_stats/<dir>/`.
 
 use std::collections::{BTreeMap, HashSet};
+use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -49,6 +50,7 @@ pub struct CutoffSinks {
     temporal: bool,
     pub stats: Vec<FileColStats>,
     active: Vec<bool>,
+    row: Row,
 }
 
 impl CutoffColStatsRequest {
@@ -188,6 +190,7 @@ impl CutoffTable {
                 })
                 .collect(),
             active: vec![true; self.cutoffs.len()],
+            row: Row::default(),
         }
     }
 
@@ -206,32 +209,111 @@ impl CutoffTable {
     }
 }
 
-macro_rules! forward {
-    ($($name:ident($($arg:ident: $ty:ty),*);)*) => {$(
-        fn $name(&mut self, $($arg: $ty),*) {
-            for (stats, active) in self.stats.iter_mut().zip(&self.active) {
-                if *active {
-                    stats.$name($($arg),*);
+/// One observed value; strings and bytes live in the row's buffers.
+enum Seen {
+    I64(i64),
+    F64(f64),
+    Str(Range<usize>),
+    Bytes(Range<usize>),
+    Decimal(f64, Range<usize>),
+    Timestamp(i64),
+    FloatList(FloatListView),
+    IntList(IntListView),
+    StringList(StringListView),
+    Null,
+    ParseFailure,
+    BeyondClock,
+}
+
+/// A row's observations, held until the row is known to be stored.
+#[derive(Default)]
+struct Row {
+    seen: Vec<(usize, Seen)>,
+    text: String,
+    bytes: Vec<u8>,
+}
+
+impl Row {
+    fn text(&mut self, value: &str) -> Range<usize> {
+        let start = self.text.len();
+        self.text.push_str(value);
+        start..self.text.len()
+    }
+
+    fn bytes(&mut self, value: &[u8]) -> Range<usize> {
+        let start = self.bytes.len();
+        self.bytes.extend_from_slice(value);
+        start..self.bytes.len()
+    }
+
+    fn replay(&self, stats: &mut FileColStats) {
+        for (col, seen) in &self.seen {
+            let col = *col;
+            match seen {
+                Seen::I64(value) => stats.observe_i64(col, *value),
+                Seen::F64(value) => stats.observe_f64(col, *value),
+                Seen::Str(range) => stats.observe_string(col, &self.text[range.clone()]),
+                Seen::Bytes(range) => stats.observe_bytes(col, &self.bytes[range.clone()]),
+                Seen::Decimal(value, range) => {
+                    stats.observe_decimal(col, *value, &|| self.text[range.clone()].to_owned())
                 }
+                Seen::Timestamp(ticks) => stats.observe_timestamp(col, *ticks),
+                Seen::FloatList(view) => stats.observe_float_list(col, view),
+                Seen::IntList(view) => stats.observe_int64_list(col, view),
+                Seen::StringList(view) => stats.observe_string_list(col, view),
+                Seen::Null => stats.observe_null(col),
+                Seen::ParseFailure => stats.observe_parse_failure(col),
+                Seen::BeyondClock => stats.observe_beyond_clock(col),
             }
         }
-    )*};
+    }
+}
+
+impl CutoffSinks {
+    fn push(&mut self, col_idx: usize, seen: impl FnOnce(&mut Row) -> Seen) {
+        if self.active.contains(&true) {
+            let seen = seen(&mut self.row);
+            self.row.seen.push((col_idx, seen));
+        }
+    }
 }
 
 impl ColumnValueObserver for CutoffSinks {
-    forward! {
-        observe_i64(col_idx: usize, value: i64);
-        observe_f64(col_idx: usize, value: f64);
-        observe_string(col_idx: usize, value: &str);
-        observe_bytes(col_idx: usize, value: &[u8]);
-        observe_decimal(col_idx: usize, value: f64, text: &dyn Fn() -> String);
-        observe_timestamp(col_idx: usize, ticks: i64);
-        observe_float_list(col_idx: usize, view: &FloatListView);
-        observe_int64_list(col_idx: usize, view: &IntListView);
-        observe_string_list(col_idx: usize, view: &StringListView);
-        observe_null(col_idx: usize);
-        observe_parse_failure(col_idx: usize);
-        observe_beyond_clock(col_idx: usize);
+    fn observe_i64(&mut self, col_idx: usize, value: i64) {
+        self.push(col_idx, |_| Seen::I64(value));
+    }
+    fn observe_f64(&mut self, col_idx: usize, value: f64) {
+        self.push(col_idx, |_| Seen::F64(value));
+    }
+    fn observe_string(&mut self, col_idx: usize, value: &str) {
+        self.push(col_idx, |row| Seen::Str(row.text(value)));
+    }
+    fn observe_bytes(&mut self, col_idx: usize, value: &[u8]) {
+        self.push(col_idx, |row| Seen::Bytes(row.bytes(value)));
+    }
+    fn observe_decimal(&mut self, col_idx: usize, value: f64, text: &dyn Fn() -> String) {
+        self.push(col_idx, |row| Seen::Decimal(value, row.text(&text())));
+    }
+    fn observe_timestamp(&mut self, col_idx: usize, ticks: i64) {
+        self.push(col_idx, |_| Seen::Timestamp(ticks));
+    }
+    fn observe_float_list(&mut self, col_idx: usize, view: &FloatListView) {
+        self.push(col_idx, |_| Seen::FloatList(view.clone()));
+    }
+    fn observe_int64_list(&mut self, col_idx: usize, view: &IntListView) {
+        self.push(col_idx, |_| Seen::IntList(view.clone()));
+    }
+    fn observe_string_list(&mut self, col_idx: usize, view: &StringListView) {
+        self.push(col_idx, |_| Seen::StringList(view.clone()));
+    }
+    fn observe_null(&mut self, col_idx: usize) {
+        self.push(col_idx, |_| Seen::Null);
+    }
+    fn observe_parse_failure(&mut self, col_idx: usize) {
+        self.push(col_idx, |_| Seen::ParseFailure);
+    }
+    fn observe_beyond_clock(&mut self, col_idx: usize) {
+        self.push(col_idx, |_| Seen::BeyondClock);
     }
 
     fn wants_create_time(&self) -> bool {
@@ -246,5 +328,18 @@ impl ColumnValueObserver for CutoffSinks {
                 (None, _) => true,
             };
         }
+    }
+
+    fn finish_row(&mut self, stored: bool) {
+        if stored {
+            for (stats, active) in self.stats.iter_mut().zip(&self.active) {
+                if *active {
+                    self.row.replay(stats);
+                }
+            }
+        }
+        self.row.seen.clear();
+        self.row.text.clear();
+        self.row.bytes.clear();
     }
 }
