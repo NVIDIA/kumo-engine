@@ -38,7 +38,10 @@ import pyarrow as pa
 import torch
 from kumo_core.encoders.tensor_frame import get_tf
 from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
-from kumo_core.encoders.tensor_mapper import TensorMapper
+from kumo_core.encoders.tensor_mapper import (
+    NumericalTensorMapper,
+    TensorMapper,
+)
 from kumo_core.explain.subgraph_collector import SubgraphCollector
 from kumo_core.modeling.gnn.hetero import HeteroGNN
 from kumo_core.modeling.heads.node_prediction import NodePredHead
@@ -96,8 +99,7 @@ def test_subgraph_collector_writes_per_entity_csv(tmp_path: object) -> None:
     root_dir = str(tmp_path)
     ages = [20.0, 30.0, 40.0, 50.0]
 
-    age_mapper = TensorMapper.from_stype(Stype.numerical,
-                                         pd.Series([18.0, 25.0, 30.0, 50.0]))
+    age_mapper = NumericalTensorMapper()
     tf = get_tf(
         pa.RecordBatch.from_arrays([pa.array(ages, type=pa.float64())],
                                    names=['AGE']),

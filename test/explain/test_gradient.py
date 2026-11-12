@@ -28,7 +28,10 @@ import pytest
 import torch
 from kumo_core.encoders.tensor_frame import get_tf
 from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
-from kumo_core.encoders.tensor_mapper import TensorMapper
+from kumo_core.encoders.tensor_mapper import (
+    CategoricalTensorMapper,
+    NumericalTensorMapper,
+)
 from kumo_core.explain.gradient_explainer import GradientExplainer
 from kumo_core.modeling.context import explaining
 from kumo_core.modeling.gnn.hetero import HeteroGNN
@@ -49,10 +52,8 @@ TRAIN_TABLE = 'TRAIN_TABLE'
 
 
 def _build_trainer_and_batch(root_dir: str) -> tuple[Trainer, HeteroData]:
-    age_mapper = TensorMapper.from_stype(Stype.numerical,
-                                         pd.Series([18.0, 25.0, 30.0, 50.0]))
-    gender_mapper = TensorMapper.from_stype(Stype.categorical,
-                                            pd.Series(['m', 'f', 'f', 'm']))
+    age_mapper = NumericalTensorMapper()
+    gender_mapper = CategoricalTensorMapper(category_counts=[('f', 2), ('m', 2)])
     user_tf = get_tf(
         pa.RecordBatch.from_arrays(
             [

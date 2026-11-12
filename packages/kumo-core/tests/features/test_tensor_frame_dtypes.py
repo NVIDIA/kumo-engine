@@ -2,7 +2,6 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 import datetime
-from collections import defaultdict
 
 import numpy as np
 import pandas as pd
@@ -11,6 +10,15 @@ from encoder_stats import fit_encoder_stats
 from kumo_core.encoders.config import EncodersConfig
 from kumo_core.encoders.tensor_frame import get_tf
 from kumo_core.encoders.tensor_mapper import TensorMapper
+from kumoapi.encoder import (
+    Datetime,
+    Image,
+    Index,
+    MultiCategorical,
+    Null,
+    Numerical,
+    NumericalList,
+)
 from kumoapi.typing import Stype
 
 
@@ -55,28 +63,31 @@ def test_all_dtypes() -> None:
         }
     )
 
-    stypes: dict[str, dict[str, Stype]] = defaultdict(dict)
-    stypes["test"]["bool"] = Stype.categorical
-    stypes["test"]["int"] = Stype.numerical
-    stypes["test"]["byte"] = Stype.categorical
-    stypes["test"]["int16"] = Stype.numerical
-    stypes["test"]["int32"] = Stype.categorical
-    stypes["test"]["int64"] = Stype.numerical
-    stypes["test"]["float"] = Stype.numerical
-    stypes["test"]["float32"] = Stype.categorical
-    stypes["test"]["float64"] = Stype.numerical
-    stypes["test"]["string"] = Stype.multicategorical
-    stypes["test"]["binary"] = Stype.categorical
-    stypes["test"]["image"] = Stype.image
-    stypes["test"]["date"] = Stype.timestamp
-    stypes["test"]["time"] = Stype.timestamp
-    stypes["test"]["timedelta"] = Stype.numerical
-    stypes["test"]["floatlist"] = Stype.multicategorical
-    stypes["test"]["intlist"] = Stype.sequence
-    stypes["test"]["stringlist"] = Stype.multicategorical
-    stypes["test"]["unsupported"] = Stype.unsupported
-
-    encoders = EncodersConfig.from_stypes(df_dict, stypes)
+    encoders = EncodersConfig(
+        encoders={
+            "test": {
+                "bool": Index(),
+                "int": Numerical(),
+                "byte": Index(),
+                "int16": Numerical(),
+                "int32": Index(),
+                "int64": Numerical(),
+                "float": Numerical(),
+                "float32": Index(),
+                "float64": Numerical(),
+                "string": MultiCategorical(),
+                "binary": Index(),
+                "image": Image(),
+                "date": Datetime(),
+                "time": Datetime(),
+                "timedelta": Numerical(),
+                "floatlist": MultiCategorical(),
+                "intlist": NumericalList(),
+                "stringlist": MultiCategorical(),
+                "unsupported": Null(),
+            }
+        }
+    )
     mappers = {
         name: TensorMapper.from_encoder(
             fit_encoder_stats(encoder, df_dict["test"][name])
