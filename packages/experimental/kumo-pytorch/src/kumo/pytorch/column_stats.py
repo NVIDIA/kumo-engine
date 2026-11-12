@@ -34,26 +34,15 @@ from kumo.pytorch.contract.sample import Field, destination_table
 from kumo.pytorch.data.records import cutoff_to_epoch
 from kumo.pytorch.encoding import FittedEncoder, learned_entries, typed_key
 
-__all__ = [
-    "EMPTY_STATS",
-    "LATEST_ANCHOR",
-    "ColumnStats",
-    "StatRequest",
-    "TableColumnEncoder",
-    "cutoff_seconds",
-    "fit_from_stats",
-    "stats_request",
-    "stype_groups",
-    "table_column_encoders",
-]
-
 logger = logging.getLogger(__name__)
 
 Column = tuple[str, str]
 #: ``(table, column, semantic type)``.
 StatRequest = tuple[str, str, str]
 
-# Quantiles each numerical column's t-digest publishes; Buckets cuts interpolate them.
+# Bump when the statistics a request asks for change, so a stale directory is never reused.
+COL_STATS_RECIPE = 1
+# Buckets cuts interpolate the t-digest quantiles at these probabilities.
 QUANTILE_GRID = [index / 1024 for index in range(1025)]
 _TICKS_PER_SECOND = {
     "seconds": 1,
@@ -106,22 +95,25 @@ class TableColumnEncoder:
 
 
 def stats_request(
-    requests: Sequence[StatRequest], cutoffs: Sequence[int | None], unit: str
+    requests: Sequence[StatRequest], cutoffs: Sequence[int | None], unit: str, quantiles: bool
 ) -> dict:
     """DiskGraph's ``cutoff_col_stats`` request; each cutoff's directory names its inputs."""
 
     columns: dict[str, dict[str, str]] = {}
     for table, column, stype in sorted(requests):
         columns.setdefault(table, {})[column] = stype
-    quantiles = {
-        table: {column: QUANTILE_GRID for column, stype in types.items() if stype == "numerical"}
-        for table, types in columns.items()
-    }
     dirs = [
-        hashlib.sha256(json.dumps([cutoff, unit, columns]).encode()).hexdigest()[:16]
+        hashlib.sha256(
+            json.dumps([COL_STATS_RECIPE, cutoff, unit, columns, quantiles]).encode()
+        ).hexdigest()[:16]
         for cutoff in cutoffs
     ]
-    return {"cutoffs": list(cutoffs), "dirs": dirs, "columns": columns, "quantiles": quantiles}
+    return {
+        "cutoffs": list(cutoffs),
+        "dirs": dirs,
+        "columns": columns,
+        "quantiles": QUANTILE_GRID if quantiles else [],
+    }
 
 
 def stype_groups(requests: Sequence[StatRequest]) -> list[list[StatRequest]]:
@@ -284,7 +276,7 @@ def _category(dtype: DType, raw: Any, unit: str) -> Any:
             raise ValueError(f"{dtype.name} vocabulary values must be finite")
         return value
     if dtype.name.startswith("decimal"):
-        return Decimal(raw).quantize(Decimal(1).scaleb(-dtype.scale))
+        return Decimal(raw)
     value = int(raw)
     if dtype.name == "bool":
         return bool(value)

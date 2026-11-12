@@ -252,10 +252,12 @@ valid [[55.0]]
 test [[154.0]]
 ```
 
-Each pass reads only the anchors in its own split, and encoders are fitted on
-`fit_split` alone (encoders over stored columns, on rows up to its latest
-anchor time), so held-out rows never shape
-vocabularies or statistics. When anchors carry splits, `fit_split` is required.
+Each pass reads only the anchors in its own split. Encoders over computed values
+fit on `fit_split`'s examples alone, so held-out anchors never shape them.
+Encoders over stored columns instead fit on every table row created at or
+before the encoder cutoff (by default the latest anchor time `fit_split`
+selects), whichever split that row's entity belongs to; a non-temporal table
+contributes every row. When anchors carry splits, `fit_split` is required.
 It can name one split, a set of splits, or `api.ALL_ANCHORS`. Anchor tables can
 also carry your own labels (`targets={"label": "column"}`), metadata columns
 that are passed through to the batch, and nested candidate lists

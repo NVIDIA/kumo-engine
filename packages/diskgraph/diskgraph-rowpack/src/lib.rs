@@ -2113,6 +2113,10 @@ pub trait ColumnValueObserver {
     fn observe_f64(&mut self, col_idx: usize, value: f64);
     fn observe_string(&mut self, col_idx: usize, value: &str);
     fn observe_bytes(&mut self, _col_idx: usize, _value: &[u8]) {}
+    /// A decimal value; `text` renders it exactly.
+    fn observe_decimal(&mut self, col_idx: usize, value: f64, _text: &dyn Fn() -> String) {
+        self.observe_f64(col_idx, value);
+    }
     fn observe_timestamp(&mut self, col_idx: usize, secs: i64);
     fn observe_float_list(&mut self, col_idx: usize, view: &FloatListView);
     fn observe_int64_list(&mut self, col_idx: usize, view: &IntListView);
@@ -3362,7 +3366,11 @@ impl RowPackEncoder {
                                 ..
                             } = &col.encoding
                             {
-                                observer.observe_f64(idx, v as f64 / 10_f64.powi(*scale));
+                                observer.observe_decimal(
+                                    idx,
+                                    v as f64 / 10_f64.powi(*scale),
+                                    &|| format_decimal_i128(v, *scale),
+                                );
                                 if *bytes == 0 || *bytes > 16 {
                                     return Err(anyhow!("rowpack decimal size mismatch"));
                                 }
@@ -3384,12 +3392,12 @@ impl RowPackEncoder {
                                 ..
                             } = &col.encoding
                             {
-                                if let Some(value) = decimal_i256_to_f64(
-                                    arrow_buffer::i256::from_le_bytes(v),
-                                    *scale,
-                                ) {
-                                    observer.observe_f64(idx, value);
-                                }
+                                let decimal = arrow_buffer::i256::from_le_bytes(v);
+                                let value =
+                                    decimal_i256_to_f64(decimal, *scale).unwrap_or(f64::NAN);
+                                observer.observe_decimal(idx, value, &|| {
+                                    format_decimal_i256(decimal, *scale)
+                                });
                                 if *bytes == 0 || *bytes > 32 {
                                     return Err(anyhow!("rowpack decimal size mismatch"));
                                 }
@@ -6835,7 +6843,7 @@ fn pow10_i128(exp: u32) -> i128 {
     out
 }
 
-pub(crate) fn format_decimal_i128(value: i128, scale: i32) -> String {
+pub fn format_decimal_i128(value: i128, scale: i32) -> String {
     let negative = value.is_negative();
     let mut digits = value.unsigned_abs().to_string();
     if scale <= 0 {
@@ -6872,7 +6880,7 @@ pub(crate) fn format_decimal_i128(value: i128, scale: i32) -> String {
     out
 }
 
-pub(crate) fn format_decimal_i256(value: arrow_buffer::i256, scale: i32) -> String {
+pub fn format_decimal_i256(value: arrow_buffer::i256, scale: i32) -> String {
     let out = BigInt::from_signed_bytes_le(&value.to_le_bytes());
     let negative = out.sign() == num_bigint::Sign::Minus;
     let mut digits = out.abs().to_string();

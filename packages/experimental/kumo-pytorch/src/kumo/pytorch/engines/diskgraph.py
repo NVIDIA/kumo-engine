@@ -387,9 +387,14 @@ class DiskGraphEngine:
         return check_parquet_anchors(table)
 
     def open(
-        self, dataset: Dataset, schema: DataSchema, *, column_stats: Sequence[StatRequest] = ()
+        self,
+        dataset: Dataset,
+        schema: DataSchema,
+        *,
+        column_stats: tuple[Sequence[StatRequest], bool] = ((), False),
     ) -> SampleSource:
-        ingests = bool(column_stats and self.encoder_cutoffs) and not self.index.exists()
+        requests, quantiles = column_stats
+        ingests = bool(requests and self.encoder_cutoffs) and not self.index.exists()
         artifact = ensure_diskgraph_index(
             schema,
             dataset,
@@ -397,7 +402,9 @@ class DiskGraphEngine:
             num_shards=self.num_shards,
             num_threads=self.num_threads,
             if_missing=self.ingest == "if_missing",
-            column_stats=(stype_groups(column_stats)[0], self.encoder_cutoffs) if ingests else None,
+            column_stats=(stype_groups(requests)[0], self.encoder_cutoffs, quantiles)
+            if ingests
+            else None,
         )
         return DiskGraphSource(
             artifact,
@@ -837,11 +844,13 @@ class DiskGraphSource:
             ),
         )
 
-    def column_stats(self, requests: Sequence[StatRequest], cutoff: int | None) -> ColumnStats:
+    def column_stats(
+        self, requests: Sequence[StatRequest], cutoff: int | None, quantiles: bool
+    ) -> ColumnStats:
         ticks = None if cutoff is None else self._diskgraph.cutoff_ticks(cutoff, self._clock)
         columns, dirs = {}, []
         for group in stype_groups(requests):
-            request = stats_request(group, [ticks], self._clock)
+            request = stats_request(group, [ticks], self._clock, quantiles)
             path = Path(self._index, "col_stats", request["dirs"][0], "col_stats.json")
             if not path.is_file():
                 self._diskgraph.cutoff_col_stats(
