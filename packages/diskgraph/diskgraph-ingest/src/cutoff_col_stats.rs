@@ -4,7 +4,7 @@
 
 //! Column statistics of the rows created at or before each cutoff, under `col_stats/<dir>/`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -56,6 +56,10 @@ impl CutoffColStatsRequest {
         ensure!(
             self.cutoffs.len() == self.dirs.len(),
             "one directory per cutoff"
+        );
+        ensure!(
+            self.dirs.iter().collect::<HashSet<_>>().len() == self.dirs.len(),
+            "each cutoff needs its own directory"
         );
         for (name, columns) in &self.columns {
             let table = tables
@@ -145,17 +149,26 @@ impl CutoffColStatsRequest {
             }
         }
         let root = index_dir.join("col_stats");
-        for (dir, tables) in self.dirs.iter().zip(per_cutoff) {
-            let tmp = root.join(format!(".{dir}.{}.tmp", std::process::id()));
-            write_col_stats(
-                &OutputTarget::parse(&tmp.to_string_lossy(), Dest::Local)?,
-                tables,
-            )?;
-            let published = root.join(dir);
-            if let Err(error) = std::fs::rename(&tmp, &published) {
+        std::fs::create_dir_all(&root)?;
+        let written = self
+            .dirs
+            .iter()
+            .zip(per_cutoff)
+            .map(|(dir, tables)| {
+                let tmp = tempfile::Builder::new()
+                    .prefix(&format!(".{dir}."))
+                    .tempdir_in(&root)?;
+                write_col_stats(
+                    &OutputTarget::parse(&tmp.path().to_string_lossy(), Dest::Local)?,
+                    tables,
+                )?;
+                Ok((root.join(dir), tmp))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for (published, tmp) in written {
+            if let Err(error) = std::fs::rename(tmp.path(), &published) {
                 // Another writer published the same statistics first.
-                ensure!(published.is_dir(), error);
-                std::fs::remove_dir_all(&tmp)?;
+                ensure!(published.join("col_stats.json").is_file(), error);
             }
         }
         Ok(())

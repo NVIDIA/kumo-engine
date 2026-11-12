@@ -132,6 +132,8 @@ def test_rejects_unknown_columns_and_exclusive_options(data, ingested, tmp_path)
     with pytest.raises(Exception, match="has no column missing"):
         diskgraph.cutoff_col_stats(ingested, json.dumps(
             {**REQUEST, "columns": {"users": {"missing": "categorical"}}}))
+    with pytest.raises(Exception, match="its own directory"):
+        diskgraph.cutoff_col_stats(ingested, json.dumps({**REQUEST, "dirs": ["same", "same"]}))
     with pytest.raises(Exception, match="exclusive"):
         _ingest(data, tmp_path / "both", True, cutoff_col_stats=json.dumps(REQUEST))
 
