@@ -83,12 +83,20 @@ HOSTED_TARGETS = (
 # PyTorch reports no MPS there. MPS runs on a bare-metal Apple Silicon Mac
 # with `run` and joins the report through a second --evidence-dir. macOS 14
 # is the supported floor, which hosted runners no longer offer, so its CPU
-# and MPS rows also come from a bare-metal Mac.
+# row also comes from a bare-metal Mac. MPS needs macOS 15 or later. On
+# macOS 14 the unavailable_device check proves that MPS fails clearly.
 EXTERNAL_TARGETS = (
     ('macos-14', 'cpu'),
-    ('macos-14', 'mps'),
     ('macos-15', 'mps'),
 )
+MPS_MIN_MACOS = 15
+# Checks a configuration must carry, by target and case. A macOS 14 row
+# passes only with proof that MPS fails there with a clear error.
+REQUIRED_CHECKS = {
+    ('macos-14', 'cpu'): {
+        'numerical': ('unavailable_device_mps_old_macos', ),
+    },
+}
 REQUIRED_TARGETS = HOSTED_TARGETS + EXTERNAL_TARGETS
 
 
@@ -1132,14 +1140,28 @@ def _remove_tree(root):
     return root
 
 
+def macos_major():
+    """The macOS major version, or None off macOS or when it is unknown."""
+    if platform.system() != 'Darwin':
+        return None
+    try:
+        return int(platform.mac_ver()[0].split('.')[0])
+    except ValueError:
+        return None
+
+
 def unavailable_device():
     """Pick a device this host cannot use, or None if every one is usable.
 
-    Lightning maps 'gpu' to MPS on Apple Silicon, so a Mac with MPS has no
-    device that Kumo must reject.
+    Lightning maps 'gpu' to MPS on Apple Silicon, so a Mac with MPS on
+    macOS 15 or later has no device that Kumo must reject. Before macOS 15,
+    Kumo must reject MPS with a clear error.
     """
     import torch
 
+    major = macos_major()
+    if major is not None and major < MPS_MIN_MACOS:
+        return 'mps_old_macos'
     if platform.system() != 'Darwin' or not torch.backends.mps.is_available():
         return 'mps'
     return None
@@ -1152,6 +1174,9 @@ EXPECTED_ERRORS = {
     'snapshot_file_corrupt': r'snapshot export .* is corrupt',
     'snapshot_missing': r'No snapshot export at',
     'unavailable_device_mps': r'MPSAccelerator`? can not run on your system',
+    'unavailable_device_mps_old_macos': (
+        r"UnsupportedAcceleratorError: accelerator='mps' uses Apple MPS, "
+        r'which requires macOS 15 or later'),
     'faiss_missing': r'FaissUnavailableError: FAISS is required',
 }
 
@@ -1230,7 +1255,7 @@ def negative_checks(ctx, durable, baseline):
                      reason='Every Kumo accelerator is usable on this host.'))
         else:
             name = f'unavailable_device_{wrong}'
-            options = dict(device=wrong, skip_preflight=True,
+            options = dict(device='mps', skip_preflight=True,
                            env_extra={'PYTORCH_ENABLE_MPS_FALLBACK': '0'})
             expect_rejected(name, lambda: consumer_must_fail(name, **options))
     if case == 'static_link':
@@ -1434,6 +1459,18 @@ def build_report(evidence_dirs, *, commit=None):
                                                             for c in checks)):
                         row.update(status='FAIL',
                                    reason='Negative checks are missing.')
+                    name, device, _ = label.rsplit('-', 2)
+                    needed = REQUIRED_CHECKS.get((name, device),
+                                                 {}).get(case, ())
+                    absent = [
+                        n for n in needed
+                        if n not in (row.get('negative_checks') or {})
+                    ]
+                    if row['status'] == 'PASS' and absent:
+                        row.update(
+                            status='FAIL',
+                            reason=f'Required negative checks are '
+                            f'missing: {absent}')
             rows.append(row)
     unexpected = sorted(set(found) - set(required_labels()))
     status = 'PASS' if all(r['status'] == 'PASS' for r in rows) else 'OPEN'

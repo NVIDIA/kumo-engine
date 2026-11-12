@@ -144,11 +144,14 @@ platform's `release-version`.
      `kumo-engine-platform-smoke.yml` by hand with that build run's ID and
      commit. See
      [`desktop_reload_qualification.py`](../../packages/kumo-engine/test/desktop_reload_qualification.py).
-   - needs evidence from bare-metal Apple Silicon Macs for three rows:
-     macOS 14 on CPU and MPS, and macOS 15 on MPS. macOS 14 is the
-     supported floor, and hosted runners no longer offer it. Hosted macOS
-     runners are VMs without a Metal device, so they cannot run MPS. The CI
-     report marks these rows UNVERIFIED. On each Mac, install the macOS
+   - needs evidence from bare-metal Apple Silicon Macs for two rows:
+     macOS 14 on CPU and macOS 15 on MPS. macOS 14 is the supported floor,
+     and hosted runners no longer offer it. MPS requires macOS 15 or later,
+     because the supported PyTorch calls Metal APIs that macOS 14 does not
+     have. On macOS 14, the `unavailable_device` check requests MPS and
+     passes only when the consumer fails with `UnsupportedAcceleratorError`.
+     Hosted macOS runners are VMs without a Metal device, so they cannot run
+     MPS. The CI report marks these rows UNVERIFIED. On each Mac, install the macOS
      wheel from the same build run in a clean environment. Then run
      `desktop_reload_qualification.py run` with all three cases,
      `--negative-checks`, and the label `macos-<major>-<device>-py<version>`

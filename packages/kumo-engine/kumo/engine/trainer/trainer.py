@@ -32,6 +32,7 @@ from typing import (
 )
 
 import pandas as pd
+from kumo_core.accelerator import resolve_accelerator
 from kumo_core.artifacts import PROVENANCE_FILE, bundle_task_options
 from kumo_core.embedding_models import EmbeddingModelStore
 from kumo_core.evaluation_counts import (
@@ -1082,7 +1083,10 @@ class Trainer:
         embedding_models: the word-embedding models for text columns, by
             name. Defaults to the installed ones (``kumo-engine[text]``).
         accelerator: Lightning device selection: ``auto`` (default), ``cpu``,
-            ``gpu``, or ``mps``. Applies to training and prediction.
+            ``gpu``, or ``mps``. Applies to training and prediction. Apple
+            MPS requires macOS 15 or later. On an earlier macOS, ``mps`` and
+            ``gpu`` raise ``UnsupportedAcceleratorError`` and ``auto`` uses
+            the CPU.
     """
     def __init__(
         self,
@@ -1094,6 +1098,8 @@ class Trainer:
         if accelerator not in ('cpu', 'gpu', 'mps', 'auto'):
             raise ValueError(
                 "accelerator must be one of 'cpu', 'gpu', 'mps', or 'auto'")
+        # Fail before any work when this host cannot run the accelerator.
+        resolve_accelerator(accelerator)
         self._accelerator = accelerator
         self._model_plan = model_plan
         self._embedding_models = (embedding_models if embedding_models

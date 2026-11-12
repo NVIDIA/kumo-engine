@@ -275,8 +275,9 @@ def test_report_marks_missing_configurations_unverified(tmp_path):
     rows = {(r['label'], r['case']): r for r in report['rows']}
     assert report['status'] == 'OPEN'
     assert rows[(label, 'numerical')]['status'] == 'PASS'
-    assert rows[('macos-14-mps-py3.12',
+    assert rows[('macos-15-mps-py3.12',
                  'static_link')]['status'] == ('UNVERIFIED')
+    assert ('macos-14-mps-py3.12', 'static_link') not in rows
     assert len(rows) == len(drq.REQUIRED_TARGETS) * len(drq.PYTHONS) * len(
         drq.CASES)
     assert statuses(drq.build_report(tmp_path, commit='def'), label) == {'FAIL'}
@@ -383,7 +384,52 @@ def test_report_merges_external_evidence(tmp_path):
     hosted.mkdir()
     external.mkdir()
     write_summary(hosted, 'linux-arm64-cpu-py3.12')
-    write_summary(external, 'macos-14-mps-py3.12')
+    write_summary(external, 'macos-15-mps-py3.12')
     report = drq.build_report([hosted, external], commit='abc')
-    assert statuses(report, 'macos-14-mps-py3.12') == {'PASS'}
+    assert statuses(report, 'macos-15-mps-py3.12') == {'PASS'}
     assert statuses(report, 'linux-arm64-cpu-py3.12') == {'PASS'}
+
+
+def test_macos_14_row_needs_the_clear_mps_error(tmp_path):
+    label = 'macos-14-cpu-py3.12'
+    write_summary(tmp_path, label)
+    report = drq.build_report(tmp_path, commit='abc')
+    rows = {r['case']: r for r in report['rows'] if r['label'] == label}
+    assert rows['numerical']['status'] == 'FAIL'
+    assert 'unavailable_device_mps_old_macos' in rows['numerical']['reason']
+    assert rows['static_link']['status'] == 'PASS'
+
+    check = dict(name='unavailable_device_mps_old_macos', detected=True)
+    cases = {
+        case: dict(status='PASS', negative_checks=[check])
+        for case in drq.CASES
+    }
+    write_summary(tmp_path, label, attempt=2, cases=cases)
+    assert statuses(drq.build_report(tmp_path, commit='abc'), label) == {'PASS'}
+
+
+@pytest.mark.parametrize('system,release,mps,expected', [
+    ('Linux', '', False, 'mps'),
+    ('Darwin', '14.7.1', True, 'mps_old_macos'),
+    ('Darwin', '15.0', True, None),
+    ('Darwin', '26.1', True, None),
+    ('Darwin', '14.7.1', False, 'mps_old_macos'),
+    ('Darwin', '15.0', False, 'mps'),
+    ('Darwin', '', True, None),
+])
+def test_unavailable_device_follows_the_macos_floor(monkeypatch, system,
+                                                    release, mps, expected):
+    torch = pytest.importorskip('torch')
+    monkeypatch.setattr(drq.platform, 'system', lambda: system)
+    monkeypatch.setattr(drq.platform, 'mac_ver', lambda: (release,
+                                                          ('', '', ''), ''))
+    monkeypatch.setattr(torch.backends.mps, 'is_available', lambda: mps)
+    assert drq.unavailable_device() == expected
+
+
+def test_old_macos_mps_error_names_the_floor():
+    assert re.search(
+        drq.EXPECTED_ERRORS['unavailable_device_mps_old_macos'],
+        "UnsupportedAcceleratorError: accelerator='mps' uses Apple MPS, which "
+        'requires macOS 15 or later, but this host runs macOS 14.7.1. Use '
+        "accelerator='cpu' on this host.")
