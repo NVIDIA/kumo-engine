@@ -2,8 +2,6 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Column statistics at a cutoff: ingest, a rescan of the index and Arrow agree byte for byte."""
-
 import collections
 import fractions
 import json
@@ -144,7 +142,6 @@ def _ensure_all(index: str) -> dict:
 
 @pytest.fixture(scope="module")
 def builds(data_dir, tmp_path_factory) -> dict:
-    """Per (encode/index threads, shards): the index, its ingested files, its rescans."""
     out = {}
     for threads, shards in [(1, 1), (1, 3), (4, 1), (4, 3)]:
         index = _ingest(data_dir, tmp_path_factory.mktemp(f"index_t{threads}_s{shards}"),
@@ -184,7 +181,8 @@ def test_ingest_and_recompute_write_identical_files(builds):
             assert stored["cutoff"] == {"value": cutoff, "unit": "seconds", "inclusive": True}
             again = diskgraph.ensure_col_stats(index, cutoff, REQUEST_LIST)
             assert {f["source"] for f in again["files"].values()} == {"existing"}
-        assert result["index_id"] == diskgraph.col_stats_index_id(index)
+        metadata = json.loads((pathlib.Path(index) / "index_metadata.json").read_text())
+        assert result["index_id"] == metadata["index_id"]
 
 
 def test_thread_and_shard_counts_do_not_change_data(builds):
@@ -265,12 +263,9 @@ def test_index_without_id_uses_fallback(data_dir, built, tmp_path):
     metadata_path = pathlib.Path(index) / "index_metadata.json"
     metadata = json.loads(metadata_path.read_text())
     recorded = metadata.pop("index_id")
-    assert diskgraph.col_stats_index_id(index) == recorded
     metadata_path.write_text(json.dumps(metadata))
-    fallback = diskgraph.col_stats_index_id(index)
-    assert len(fallback) == 64 and fallback != recorded
     result = diskgraph.ensure_col_stats(index, CUTOFF, REQUEST_LIST)
-    assert result["index_id"] == fallback
+    assert len(result["index_id"]) == 64 and result["index_id"] != recorded
     assert _data(_files(index)) == {k: v for k, v in _data(built[1]).items() if k[0] == CUTOFF}
 
 
@@ -282,6 +277,31 @@ def test_rejects_unsupported_requests(built):
     with pytest.raises(Exception, match="unknown column statistic"):
         diskgraph.col_stats_from_arrow(pa.array([1]), None, None, ["median"])
     assert diskgraph.col_stats_from_arrow(pa.array([1]), None, None, []) == {}
+
+
+@pytest.mark.parametrize("values", [
+    [1e308, 1e308, 1.0, -1e308, -1e308],
+    [1e100, 1.0, -1e100],
+    [sys.float_info.max, -sys.float_info.max, sys.float_info.max],
+    [5e-324, 5e-324],
+    [1e-200, 1e-200],
+    [2.0 ** 511, -2.0 ** 511],
+])
+def test_moments_are_exact_through_cancellation_overflow_and_underflow(values):
+    n = len(values)
+    exact_sum = sum(map(fractions.Fraction, values))
+    m2 = (n * sum(fractions.Fraction(x) ** 2 for x in values) - exact_sum ** 2) / n
+    moments = diskgraph.col_stats_from_arrow(pa.array(values), None, None, ["moments"])["moments"]
+    assert moments["mean"] == float(exact_sum / n)
+    if m2 < sys.float_info.max:
+        assert moments["m2"] == float(m2)
+
+
+def test_counts_share_one_zero_and_skip_non_finite_values():
+    counts = diskgraph.col_stats_from_arrow(
+        pa.array([-0.0, 0.0, 1.0, float("nan"), float("inf"), None]), None, None, ["counts"])
+    assert counts["counts"] == {"count": 3, "nulls": 1, "non_finite": 2, "truncated": False,
+                                "values": [[0.0, 2], [1.0, 1]]}
 
 
 DAY_START = 19_700 * 86_400

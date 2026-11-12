@@ -1000,8 +1000,7 @@ class TestDistributedTokenBudgets:
 
 
 def _scored_contract() -> DataLoaderSpec:
-    # A calculation is a per-anchor value, so fitting reads the selected anchors
-    # rather than the stored column.
+    # A calculation, so fitting reads the selected anchors, not the stored column.
     contract = _contract(temporal=False)
     entity_values = {"stored": Field(column="score"), "score": Derived("abs", ("stored",))}
     return replace(

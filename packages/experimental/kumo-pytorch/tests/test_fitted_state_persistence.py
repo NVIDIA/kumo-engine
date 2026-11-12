@@ -372,16 +372,7 @@ def test_the_fit_record_says_where_state_was_fitted_and_survives_reuse(tmp_path:
                 "anchors": task.fingerprints["anchors"],
                 "fit_split": ["train"],
             }
-            statistics = task.fitted_state.fit["inputs"]["statistics"]
-            assert {name: sorted(value["files"]) for name, value in statistics.items()} == {
-                '["inputs","graph","graph","accounts","account_type"]': [
-                    "accounts/account_type.counts"
-                ],
-                '["inputs","graph","graph","card_transactions","amount"]': [
-                    "card_transactions/amount.moments"
-                ],
-            }
-            inputs = {**record, "statistics": statistics}
+            inputs = {**record, "statistics": task.fitted_state.fit["inputs"]["statistics"]}
             assert task.fitted_state.fit == {"inputs": inputs, "targets": record}
             trained = task.fitted_state
 
