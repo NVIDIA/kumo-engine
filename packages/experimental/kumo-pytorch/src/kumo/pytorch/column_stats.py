@@ -2,14 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pin encoders over stored table columns from column statistics up to a cutoff.
-
-An encoder whose every use reads a stored column (an entity field, an event
-field or a graph node field) learns from that table's rows whose clock is at
-or before the cutoff, one row one observation, instead of from training
-examples. The engine computes the statistics; this module decides which
-encoders qualify and turns the statistics into fitted encoders.
-"""
+"""Encoders over stored table columns, fitted from column statistics up to a cutoff."""
 
 from __future__ import annotations
 
@@ -17,7 +10,6 @@ import datetime as dt
 import hashlib
 import json
 import math
-import re
 import struct
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -47,7 +39,6 @@ __all__ = [
     "ColumnStats",
     "StatRequest",
     "TableColumnEncoder",
-    "check_statistics",
     "cutoff_seconds",
     "data_sha256",
     "fit_from_stats",
@@ -71,7 +62,6 @@ _SUPPORTED = frozenset(
     }
 )
 _EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
-_SHA256 = re.compile("[0-9a-f]{64}")
 
 
 class _LatestAnchor:
@@ -79,24 +69,12 @@ class _LatestAnchor:
         return "LATEST_ANCHOR"
 
 
-#: `Plan.materialize`'s default encoder cutoff: the latest anchor time ``fit_split`` selects.
 LATEST_ANCHOR = _LatestAnchor()
 
 
 @dataclass(frozen=True)
 class ColumnStats:
-    """Statistics an engine computed for one cutoff.
-
-    :param files: each requested ``(table, column, stat)`` to its statistics
-        document, whose ``data`` holds the values and ``sha256`` their digest.
-    :param source: ``"ingest"``, ``"existing"`` or ``"recompute"``.
-    :param cutoff: ``{"value", "unit", "inclusive"}``, the value in the engine's clock.
-    :param cutoff_id: the engine's name for the cutoff's statistics, when it keeps them.
-    :param index_id: the index the statistics describe, when there is one.
-    """
-
     files: Mapping[StatRequest, Mapping[str, Any]]
-    source: str
     cutoff: Mapping[str, Any]
     cutoff_id: str | None = None
     index_id: str | None = None
@@ -115,8 +93,6 @@ class ColumnStats:
 
 @dataclass(frozen=True)
 class TableColumnEncoder:
-    """One encoder fitted from the stored columns it reads."""
-
     config: ScalarEncoding
     dtype: DType
     columns: tuple[Column, ...]
@@ -152,13 +128,6 @@ class TableColumnEncoder:
 
 
 def table_column_encoders(contract: Any) -> dict[str, TableColumnEncoder]:
-    """Encoders that learn from statistics, by identity.
-
-    Qualifies: an unpinned Vocabulary, ZScore or Buckets(bins=...) of a
-    supported dtype, or Text of strings, whose every use is a stored column
-    read directly.
-    """
-
     from kumo.pytorch.assembly import _encoder_identity, _graph_encoder_identity
 
     spec, sample, schema = contract.batch, contract.sample, contract.schema
@@ -234,36 +203,7 @@ def _learns_from_stats(config: Any, dtype: DType) -> bool:
     return False
 
 
-def check_statistics(contract: Any, statistics: Any) -> None:
-    """Refuse a fit record's statistics that the contract's encoders could not have read."""
-
-    if not isinstance(statistics, Mapping):
-        raise ValueError("the fit record's statistics must map encoders to records")
-    encoders = table_column_encoders(contract)
-    for identity, record in statistics.items():
-        expected = encoders.get(identity)
-        if (
-            expected is None
-            or not isinstance(record, Mapping)
-            or set(record) != {"cutoff", "cutoff_id", "index_id", "files"}
-            or not isinstance(record["files"], Mapping)
-            or set(record["files"]) != {"{}/{}.{}".format(*item) for item in expected.files}
-            or not all(
-                isinstance(digest, str) and _SHA256.fullmatch(digest)
-                for digest in record["files"].values()
-            )
-            or not isinstance(record["cutoff"], Mapping)
-            or set(record["cutoff"]) != {"value", "unit", "inclusive"}
-        ):
-            raise ValueError(
-                f"the statistics recorded for encoder {identity} are not ones this "
-                "contract's encoders read"
-            )
-
-
 def cutoff_seconds(value: Any) -> int | None:
-    """An encoder cutoff as whole seconds since the epoch; ``None`` stays ``None``."""
-
     if value is None:
         return None
     if isinstance(value, str):
@@ -283,10 +223,7 @@ def data_sha256(data: Mapping[str, Any]) -> str:
 def fit_from_stats(
     identity: str, encoder: TableColumnEncoder, files: Mapping[StatRequest, Mapping[str, Any]]
 ) -> FittedEncoder | None:
-    """The encoder its columns' statistics determine; ``None`` when they cannot.
-
-    A vocabulary needs every category counted, so truncated counts give ``None``.
-    """
+    """``None`` when a vocabulary's counts are truncated."""
 
     config, dtype = encoder.config, encoder.dtype
     if isinstance(config, Text):
@@ -363,7 +300,7 @@ def _value(dtype: DType, raw: Any) -> Any:
 
 
 def _interpolated(total: int, order_statistic: Any, probabilities: np.ndarray) -> list[float]:
-    """``np.quantile``'s linear interpolation over ``total`` sorted values."""
+    """``np.quantile``'s linear interpolation."""
 
     result = []
     for probability in probabilities:
@@ -411,11 +348,7 @@ def _bin_edges(key: int, bits: int) -> tuple[float, float]:
 def _binned_quantiles(
     datas: Sequence[Mapping[str, Any]], probabilities: np.ndarray, skip_zero: bool
 ):
-    """Quantiles of more distinct values than are counted, from exact log bins.
-
-    Within a bin, ranks spread evenly between its edges, clamped to the exact
-    minimum and maximum; exact zeros are one value.
-    """
+    """Ranks spread evenly within a bin, clamped to the exact minimum and maximum."""
 
     bins: Counter = Counter()
     zeros = 0

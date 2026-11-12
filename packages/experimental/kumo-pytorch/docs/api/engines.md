@@ -329,7 +329,7 @@ step, before any data is read.
 - `num_threads`: native sampling threads.
 - `num_shards`: index shards.
 - `ingest`: `"if_missing"` builds the index when absent; `"never"` requires an existing one. A mismatching manifest is an error, never permission to reuse.
-- `encoder_cutoffs`: encoder cutoffs (`Plan.materialize`'s `encoder_cutoff`; `None` is the whole table) whose column statistics an ingest computes in the same pass. Only a hint: `Plan.materialize` computes any statistics it finds missing from the index.
+- `encoder_cutoffs`: `encoder_cutoff` values whose column statistics an ingest computes.
 
 #### `DiskGraphEngine.check_contract`
 
@@ -364,19 +364,6 @@ DiskGraphEngine.check_anchors(table: AnchorTable) -> tuple[ValidationIssue, ...]
 ```
 
 Issues with a Parquet anchor table's binding, without reading its rows.
-
-#### `DiskGraphEngine.open`
-
-```python
-DiskGraphEngine.open(
-    dataset: Dataset,
-    schema: DataSchema,
-    *,
-    column_stats: Sequence[StatRequest] = (),
-) -> SampleSource
-```
-
-Ensure the index; an ingest also computes `column_stats` at `encoder_cutoffs`.
 
 ### `available_engines`
 

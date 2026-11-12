@@ -56,21 +56,22 @@ def _tokenizer(task: api.Task) -> str:
 
 
 @pytest.mark.parametrize("engine_name", ("in_memory", "diskgraph"))
-def test_a_stored_text_column_trains_on_its_rows_up_to_the_cutoff(tmp_path, engine_name, caplog):
+def test_a_stored_text_column_trains_on_its_rows_up_to_the_cutoff(tmp_path, engine_name):
     dataset, engine = _setup(engine_name, tmp_path)
     expected = train_text(TEXT, [_column("card_transactions", "description", LATEST)])
-    for source in ("recompute", "existing" if engine_name == "diskgraph" else "recompute"):
-        caplog.clear()
-        caplog.set_level("INFO", logger="kumo.pytorch.preparation")
+    published = []
+    for _ in range(2):
         with api.prepare(_text_contract(), dataset, engine) as plan:
             with plan.materialize(_requests(), fit_split="train") as task:
                 assert _tokenizer(task) == expected
                 statistics = task.fitted_state.fit["inputs"]["statistics"]
-        assert f"({source}," in caplog.text
+        texts = tmp_path.glob("index/col_stats/*/*/*.text-*")
+        published.append({path: path.stat().st_mtime_ns for path in texts})
     (file,) = statistics['["inputs","transactions","fields","description"]']["files"]
     assert file.startswith("card_transactions/description.text-")
     if engine_name == "diskgraph":
-        (path,) = (tmp_path / "index" / "col_stats").glob(f"*/{file}.json")
+        assert published[0] == published[1]
+        (path,) = published[0]
         assert json.loads(path.read_text())["tokenizer"] == expected
 
 

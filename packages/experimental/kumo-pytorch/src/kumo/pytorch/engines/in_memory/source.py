@@ -64,8 +64,6 @@ class InMemorySource:
         )
 
     def column_stats(self, requests: Sequence[StatRequest], cutoff: int | None) -> ColumnStats:
-        """Column statistics over the stored rows, as DiskGraph computes them."""
-
         import diskgraph
         import pyarrow as pa
 
@@ -76,7 +74,7 @@ class InMemorySource:
             stats = [stat for _, _, stat in group]
             dtype = tables[table].columns[column]
             computed = diskgraph.col_stats_from_arrow(
-                # microseconds, so the collector rounds sub-second instants as ingest does
+                # Microseconds, so sub-second instants round as ingest rounds them.
                 pa.array(
                     [row.get(column) for row in rows],
                     type=pa.timestamp("us", "UTC")
@@ -92,7 +90,7 @@ class InMemorySource:
                     ],
                     type=pa.int64(),
                 ),
-                None if clock is None else cutoff,
+                cutoff,
                 stats,
             )
             for stat in stats:
@@ -100,9 +98,7 @@ class InMemorySource:
                     "data": computed[stat],
                     "sha256": data_sha256(computed[stat]),
                 }
-        return ColumnStats(
-            files, "recompute", {"value": cutoff, "unit": "seconds", "inclusive": True}
-        )
+        return ColumnStats(files, {"value": cutoff, "unit": "seconds", "inclusive": True})
 
     def column_text(
         self,
@@ -136,7 +132,6 @@ class InMemorySource:
         sha256 = hashlib.sha256(tokenizer.encode()).hexdigest()
         return ColumnStats(
             {(*columns[0], name): {"tokenizer": tokenizer, "sha256": sha256}},
-            "recompute",
             {"value": cutoff, "unit": "seconds", "inclusive": True},
         )
 

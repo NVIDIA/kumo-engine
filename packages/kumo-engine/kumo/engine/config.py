@@ -30,8 +30,7 @@ def configure(
     scratch_dir: Optional[Union[str, Path]] = None,
 ) -> None:
     r"""Sets process-wide configuration for this package. Same as
-    `kumo.settings.configure`, which also documents the `KUMO_SCRATCH_DIR`
-    environment variable.
+    `kumo.settings.configure`.
 
     Args:
         scratch_dir: where `Graph.snapshot()`'s DiskGraph ingest and

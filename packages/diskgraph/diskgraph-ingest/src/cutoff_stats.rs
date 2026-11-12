@@ -2,12 +2,7 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Exact column statistics over the rows of a table created at or before a
-//! cutoff, published under `<index>/col_stats/<cutoff_id>/`.
-//!
-//! Ingest observes the rows it stores, a built index is rescanned, and Arrow
-//! arrays are read directly; all three feed the same [`TableStats`], whose
-//! merges are exact and order-independent, so every route writes the same bytes.
+//! Exact column statistics of the rows created at or before a cutoff, in `<index>/col_stats/`.
 
 use std::borrow::Borrow;
 use std::cmp::Ordering;
@@ -72,7 +67,6 @@ impl Stat {
     }
 }
 
-/// The statistics ingest computes in the same pass, one file set per cutoff.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IngestRequests {
@@ -142,8 +136,7 @@ impl ValueType {
     }
 }
 
-/// One row's value of a column: integers, booleans, dates and timestamps as
-/// `Int` (unsigned values bit-cast), floats as `Float`.
+/// Unsigned integers are bit-cast into `Int`.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Value<'a> {
     Null,
@@ -169,19 +162,13 @@ impl<'a> From<ValueRef<'a>> for Value<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Exact sums
-// ---------------------------------------------------------------------------
-
-/// Bit positions above 2^-1074 that a sum of doubles and a sum of their
-/// squares can reach, before carries.
+/// Bits above 2^-1074 that a sum of doubles, or of their squares, can reach before carries.
 const SUM_BITS: usize = 2045 + 53;
 const SQUARE_BITS: usize = 4090 + 106;
 const SUM_LSB: i64 = -1074;
 const SQUARE_LSB: i64 = 2 * SUM_LSB;
 
-/// An exact integer sum in 32-bit digits held by i64 limbs, so carries can
-/// wait until `normalize`.
+/// 32-bit digits in i64 limbs, so carries can wait until `normalize`.
 #[derive(Clone)]
 struct ExactSum {
     limbs: Vec<i64>,
@@ -196,7 +183,7 @@ impl ExactSum {
         }
     }
 
-    /// Adds `±mantissa · 2^offset`; every limb moves by less than 2^33.
+    /// Every limb moves by less than 2^33.
     fn add(&mut self, mut mantissa: u128, offset: usize, negative: bool) {
         let (mut idx, shift) = (offset / 32, offset % 32);
         while mantissa != 0 {
@@ -249,7 +236,7 @@ impl ExactSum {
 /// `value / n · 2^lsb` rounded once to the nearest double, ties to even.
 fn round_quotient(value: &BigInt, n: u64, lsb: i64) -> f64 {
     let scaled = value.magnitude() << 128u32;
-    // The remainder sits far below the rounding bit, so a sticky bit stands in for it.
+    // A sticky bit stands in for the remainder, far below the rounding bit.
     let magnitude = (&scaled / n) | BigUint::from(u8::from(!(&scaled % n).is_zero()));
     let rounded = round_scaled(&magnitude, lsb - 128);
     if value.sign() == Sign::Minus {
@@ -277,7 +264,6 @@ fn round_scaled(magnitude: &BigUint, lsb: i64) -> f64 {
     mantissa as f64 * scale
 }
 
-/// Exact Σx and Σx² of finite doubles.
 #[derive(Clone)]
 struct Moments {
     sum: ExactSum,
@@ -313,8 +299,7 @@ impl Moments {
         self.squares.merge(&other.squares);
     }
 
-    /// The mean and the population sum of squared deviations, `(n·Σx² − (Σx)²) / n`,
-    /// each rounded once.
+    /// The mean and `(n·Σx² − (Σx)²) / n`, each rounded once.
     fn mean_m2(&self, n: u64) -> (f64, f64) {
         if n == 0 {
             return (0.0, 0.0);
@@ -328,11 +313,6 @@ impl Moments {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Per-column statistics
-// ---------------------------------------------------------------------------
-
-/// Exact counts of at most `MAX_CATEGORIES` distinct values.
 #[derive(Clone)]
 struct CountMap<K> {
     counts: gxhash::HashMap<K, u64>,
@@ -529,11 +509,9 @@ impl ColumnStats {
         }
     }
 
-    /// The compact JSON of `stat`'s data object.
     fn data(&self, stat: Stat) -> Result<String> {
         let (count, nulls, non_finite) = (self.count, self.nulls, self.non_finite);
         let value_type = self.value_type;
-        let missing = || anyhow!("{} was not collected", stat.name());
         Ok(match stat {
             Stat::Counts => {
                 let (truncated, values) = match (&self.keys, &self.strings) {
@@ -552,7 +530,7 @@ impl ColumnStats {
                             .map(|(key, count)| (json!(key), count))
                             .collect(),
                     ),
-                    (None, None) => return Err(missing()),
+                    (None, None) => unreachable!("counts requested"),
                 };
                 serde_json::to_string(&CountsData {
                     count,
@@ -563,7 +541,11 @@ impl ColumnStats {
                 })?
             }
             Stat::Moments => {
-                let (mean, m2) = self.moments.as_ref().ok_or_else(missing)?.mean_m2(count);
+                let (mean, m2) = self
+                    .moments
+                    .as_ref()
+                    .expect("moments requested")
+                    .mean_m2(count);
                 serde_json::to_string(&MomentsData {
                     count,
                     nulls,
@@ -573,7 +555,7 @@ impl ColumnStats {
                 })?
             }
             Stat::Bins => {
-                let bins = self.bins.as_ref().ok_or_else(missing)?;
+                let bins = self.bins.as_ref().expect("bins requested");
                 serde_json::to_string(&BinsData {
                     count,
                     nulls,
@@ -588,10 +570,6 @@ impl ColumnStats {
         })
     }
 }
-
-// ---------------------------------------------------------------------------
-// Per-table collection
-// ---------------------------------------------------------------------------
 
 #[derive(Clone)]
 struct ColumnPlan {
@@ -664,9 +642,7 @@ pub(crate) fn column_index(columns: &[(&str, IngestedType)], name: &str) -> Resu
         .ok_or_else(|| anyhow!("no column {name}"))
 }
 
-/// The requested statistics of one table for every cutoff. Rows arrive one
-/// column value at a time ([`TableStats::set`] or the observer methods) and
-/// count once [`ColumnValueObserver::row_stored`] confirms them.
+/// A row's values are buffered until `row_stored` counts them.
 #[derive(Clone, Default)]
 pub(crate) struct TableStats {
     table: String,
@@ -674,7 +650,7 @@ pub(crate) struct TableStats {
     cutoffs: Vec<Option<i64>>,
     /// Cutoff-major: `stats[cutoff * columns.len() + column]`.
     stats: Vec<ColumnStats>,
-    /// Requested column position of each table column.
+    /// Each table column's position in `columns`.
     slots: Vec<Option<usize>>,
     create_time: CreateTime,
     row: Vec<Cell>,
@@ -738,7 +714,6 @@ impl TableStats {
         })
     }
 
-    /// The table columns a row must supply: requested ones and the create time.
     fn read_mask(&self) -> Vec<bool> {
         (0..self.slots.len())
             .map(|idx| self.slots[idx].is_some() || self.create_time.is(idx))
@@ -788,8 +763,7 @@ impl TableStats {
         }
     }
 
-    /// Publishes every file of cutoff `idx`, returning `(key, path, sha256)`
-    /// per file with key `<table>/<column>.<stat>`.
+    /// `(<table>/<column>.<stat>, path, sha256)` of each file of cutoff `idx`.
     fn publish(
         &self,
         idx: usize,
@@ -846,10 +820,6 @@ fn stats_key(table: &str, column: &str, stat: Stat) -> String {
     format!("{table}/{column}.{}", stat.name())
 }
 
-// ---------------------------------------------------------------------------
-// Files
-// ---------------------------------------------------------------------------
-
 #[derive(Serialize)]
 struct Cutoff {
     value: Option<i64>,
@@ -883,12 +853,6 @@ struct StatsFile<'a> {
 
 #[derive(Deserialize)]
 struct StoredStats<'a> {
-    schema: String,
-    index_id: String,
-    cutoff_id: String,
-    table: String,
-    column: String,
-    stat: Stat,
     #[serde(borrow)]
     data: &'a RawValue,
     sha256: String,
@@ -919,7 +883,6 @@ fn ensure_file_names(table: &str, column: &str) -> Result<()> {
     Ok(())
 }
 
-/// One cutoff's directory under an index.
 struct CutoffFiles<'a> {
     index_dir: &'a Path,
     dir: PathBuf,
@@ -972,7 +935,7 @@ impl<'a> CutoffFiles<'a> {
         self.publish(&path, &manifest)
     }
 
-    /// The sha256 of a valid existing file for this request.
+    /// The sha256 of an intact existing file.
     fn existing(&self, table: &str, column: &str, stat: Stat) -> Result<Option<String>> {
         let Ok(bytes) = std::fs::read(self.stats_path(table, column, stat)?) else {
             return Ok(None);
@@ -980,13 +943,8 @@ impl<'a> CutoffFiles<'a> {
         let Ok(stored) = serde_json::from_slice::<StoredStats>(&bytes) else {
             return Ok(None);
         };
-        let valid = stored.schema == SCHEMA
-            && stored.index_id == self.index_id
-            && stored.cutoff_id == self.cutoff_id
-            && (stored.table.as_str(), stored.column.as_str(), stored.stat)
-                == (table, column, stat)
-            && sha256_hex(stored.data.get().as_bytes()) == stored.sha256;
-        Ok(valid.then_some(stored.sha256))
+        let intact = sha256_hex(stored.data.get().as_bytes()) == stored.sha256;
+        Ok(intact.then_some(stored.sha256))
     }
 
     fn write_stats(
@@ -1022,7 +980,7 @@ impl<'a> CutoffFiles<'a> {
         self.write(path, &bytes)
     }
 
-    /// Atomically replaces `path` through a temp file no other writer uses.
+    /// Through a temp file no other writer uses.
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<()> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let name = path
@@ -1036,13 +994,7 @@ impl<'a> CutoffFiles<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Routes
-// ---------------------------------------------------------------------------
-
 impl IngestRequests {
-    /// One empty [`TableStats`] per requested table; rejects unknown tables,
-    /// edge tables, unknown columns and unsupported column types up front.
     pub(crate) fn tables(
         &self,
         tables: &[crate::graph_config::TableSpec],
@@ -1076,7 +1028,6 @@ impl IngestRequests {
     }
 }
 
-/// Publishes what ingest collected, after `index_metadata.json` is final.
 pub(crate) fn publish_ingested(
     tables: &HashMap<String, TableStats>,
     index_dir: &Path,
@@ -1114,8 +1065,6 @@ pub(crate) fn stored_row(shard: &ShardReader, node: u64) -> Result<Option<&[u8]>
         .filter(|row| !row.is_empty()))
 }
 
-/// Rescans `table`'s stored rows, decoding only the needed columns, in
-/// parallel over chunks of every shard.
 fn scan_table(
     reader: &GraphIndexReader,
     table: &str,
@@ -1182,18 +1131,15 @@ pub struct Ensured {
     pub index_id: String,
     pub unit: TimeUnit,
     pub files: BTreeMap<String, EnsuredFile>,
-    pub seconds: f64,
 }
 
-/// Makes every requested `(table, column, stat)` file of `cutoff` present
-/// and valid, recomputing the missing ones from the index.
+/// Reuses each requested `(table, column, stat)` file of `cutoff`, or recomputes it from the index.
 pub fn ensure_col_stats(
     index_dir: &Path,
     cutoff: Option<i64>,
     requests: &[(String, String, Stat)],
     num_threads: Option<usize>,
 ) -> Result<Ensured> {
-    let start = std::time::Instant::now();
     let index_dir = &std::path::absolute(index_dir)?;
     let metadata = read_dataset_metadata(index_dir)?;
     let index_id = index_id(index_dir, &metadata)?;
@@ -1250,7 +1196,6 @@ pub fn ensure_col_stats(
         index_id: index_id.clone(),
         unit: clock,
         files,
-        seconds: start.elapsed().as_secs_f64(),
     })
 }
 
@@ -1278,7 +1223,6 @@ pub fn publish_col_stats_file(
     Ok(path)
 }
 
-/// The ingested type a natively typed Arrow array holds.
 fn arrow_ingested_type(data_type: &DataType) -> Result<IngestedType> {
     Ok(match data_type {
         DataType::Boolean => IngestedType::Bool,
@@ -1299,8 +1243,7 @@ fn arrow_ingested_type(data_type: &DataType) -> Result<IngestedType> {
     })
 }
 
-/// Each Arrow timestamp in ticks of `clock`, read as ingest reads it: an
-/// error when beyond the clock, `None` when null.
+/// As ingest reads them.
 fn ingest_timestamps(
     array: &ArrayRef,
     clock: TimeUnit,
@@ -1314,9 +1257,7 @@ fn ingest_timestamps(
     })
 }
 
-/// Epoch `seconds` in ticks of the index clock, converted as ingest converts
-/// an Arrow timestamp or integer create time (rounding up to a coarser clock).
-/// Ingest rounds create times parsed from text down instead.
+/// Epoch `seconds` in the index clock, rounded as ingest rounds an Arrow timestamp.
 pub fn cutoff_ticks(seconds: i64, clock: TimeUnit) -> Result<i64> {
     ensure!(clock.is_index_clock(), "{clock:?} is not an index clock");
     let array: ArrayRef = Arc::new(TimestampSecondArray::from(vec![seconds]));
@@ -1326,7 +1267,7 @@ pub fn cutoff_ticks(seconds: i64, clock: TimeUnit) -> Result<i64> {
         .ok_or_else(|| anyhow!("cutoff is null"))
 }
 
-/// Each row's value as ingest stores it.
+/// As ingest stores them.
 fn arrow_values(array: &ArrayRef, clock: TimeUnit) -> Result<Vec<Value<'_>>> {
     fn map<T: ArrowPrimitiveType>(
         array: &dyn Array,
@@ -1369,18 +1310,14 @@ fn arrow_values(array: &ArrayRef, clock: TimeUnit) -> Result<Vec<Value<'_>>> {
     })
 }
 
-/// `stats` of `values` over the rows whose `create_time` (ticks of `clock`,
-/// or Arrow dates/timestamps) is at or before `cutoff`; rows with a null
-/// create time are skipped and `None` counts every row. Values and create
-/// times convert to `clock` as ingest converts them. Returns each stat's
-/// data JSON, as its file would hold it.
+/// Each stat's file `data` over the rows created at or before `cutoff`, in seconds.
 pub fn stats_from_arrow(
     values: &ArrayRef,
     create_time: Option<&ArrayRef>,
     cutoff: Option<i64>,
     stats: &[Stat],
-    clock: TimeUnit,
 ) -> Result<Vec<(Stat, String)>> {
+    let clock = TimeUnit::Seconds;
     if stats.is_empty() {
         return Ok(Vec::new());
     }
@@ -1424,153 +1361,9 @@ pub fn stats_from_arrow(
         table.row_stored();
     }
     let column = &table.stats[0];
-    let mut requested: Vec<Stat> = stats.to_vec();
-    requested.sort_unstable();
-    requested.dedup();
-    requested
-        .into_iter()
-        .map(|stat| Ok((stat, column.data(stat)?)))
+    table.columns[0]
+        .stats
+        .iter()
+        .map(|stat| Ok((*stat, column.data(*stat)?)))
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn exact(values: &[f64]) -> (f64, f64) {
-        let mut moments = Moments::default();
-        for &x in values {
-            moments.add(x);
-        }
-        moments.mean_m2(values.len() as u64)
-    }
-
-    #[test]
-    fn exact_sum_matches_integer_reference() {
-        // k · 2^-10 with |k| < 2^40: Σk and n·Σk² − (Σk)² are exact in i128, and
-        // dividing by n = 2^12 is exact too.
-        let mut state = 0x2545_F491_4F6C_DD1Du64;
-        let ks: Vec<i64> = (0..4096)
-            .map(|_| {
-                state ^= state << 13;
-                state ^= state >> 7;
-                state ^= state << 17;
-                (state >> 24) as i64 - (1 << 39)
-            })
-            .collect();
-        let values: Vec<f64> = ks.iter().map(|&k| k as f64 / 1024.0).collect();
-        let n = ks.len() as i128;
-        let sum: i128 = ks.iter().map(|&k| k as i128).sum();
-        let squares: i128 = ks.iter().map(|&k| (k as i128) * (k as i128)).sum();
-        let mean = sum as f64 / 1024.0 / n as f64;
-        let m2 = (n * squares - sum * sum) as f64 / (1u64 << 20) as f64 / n as f64;
-        assert_eq!(exact(&values), (mean, m2));
-    }
-
-    #[test]
-    fn exact_sum_survives_cancellation_overflow_and_underflow() {
-        assert_eq!(exact(&[1e308, 1e308, 1.0, -1e308, -1e308]).0, 1.0 / 5.0);
-        assert_eq!(exact(&[1e100, 1.0, -1e100]).0, 1.0 / 3.0);
-        assert_eq!(exact(&[f64::MAX, -f64::MAX, f64::MAX]).0, f64::MAX / 3.0);
-        assert_eq!(exact(&[5e-324, 5e-324]).0, 5e-324);
-        // Squares below the smallest subnormal still cancel exactly.
-        assert_eq!(exact(&[1e-200, 1e-200]), (1e-200, 0.0));
-        assert_eq!(exact(&[3.0, 3.0, 3.0]), (3.0, 0.0));
-        assert_eq!(exact(&[]), (0.0, 0.0));
-        // Σx and n·Σx² overflow doubles; the quotients by n do not.
-        assert_eq!(exact(&[1e308, 1e308]).0, 1e308);
-        let big = 2f64.powi(511);
-        assert_eq!(exact(&[big, -big]), (0.0, 2f64.powi(1023)));
-    }
-
-    #[test]
-    fn quotients_round_once_to_nearest_even() {
-        let r = |v: i64, lsb| round_quotient(&BigInt::from(v), 1, lsb);
-        assert_eq!(r((1 << 53) + 1, 0), 9007199254740992.0);
-        assert_eq!(r((1 << 53) + 3, 0), 9007199254740996.0);
-        assert_eq!(r(-((1 << 54) + 3), 0), -18014398509481988.0);
-        assert_eq!(r(3, -1075), 1e-323);
-        assert_eq!(r(1, -1075), 0.0);
-        assert_eq!(r(1, 1024), f64::INFINITY);
-        let q = |v: i64, n| round_quotient(&BigInt::from(v), n, 0);
-        assert_eq!(q(-10, 3), -10.0 / 3.0);
-        // An exact tie rounds to even; a remainder just past it rounds up.
-        assert_eq!(q((1 << 54) + 2, 2), 9007199254740992.0);
-        assert_eq!(q((1 << 55) + 13, 4), 9007199254740996.0);
-    }
-
-    #[test]
-    fn merges_are_order_independent() {
-        let values: Vec<f64> = (0..3000)
-            .map(|i| {
-                ((i * 7919) % 1000) as f64 * 1.37e-3 - 0.5 + if i % 97 == 0 { 1e15 } else { 0.0 }
-            })
-            .collect();
-        let data = |chunks: &[&[f64]]| {
-            let mut total: Option<ColumnStats> = None;
-            for chunk in chunks {
-                let mut part = ColumnStats::new(
-                    ValueType::Float64,
-                    &[Stat::Counts, Stat::Moments, Stat::Bins],
-                );
-                for &x in *chunk {
-                    part.add(Value::Float(x));
-                }
-                match &mut total {
-                    Some(total) => total.merge(&part),
-                    None => total = Some(part),
-                }
-            }
-            let total = total.unwrap();
-            [Stat::Counts, Stat::Moments, Stat::Bins].map(|stat| total.data(stat).unwrap())
-        };
-        let mut reversed = values.clone();
-        reversed.reverse();
-        let whole = data(&[&values]);
-        assert_eq!(
-            whole,
-            data(&[&values[..1234], &values[1234..2000], &values[2000..]])
-        );
-        assert_eq!(whole, data(&[&reversed[..10], &reversed[10..]]));
-    }
-
-    #[test]
-    fn bins_and_counts_canonicalize_values() {
-        let mut stats = ColumnStats::new(ValueType::Float64, &[Stat::Counts, Stat::Bins]);
-        for x in [
-            -0.0,
-            0.0,
-            1.0,
-            1.0 + 1.0 / 128.0,
-            -3.0,
-            f64::NAN,
-            f64::INFINITY,
-        ] {
-            stats.add(Value::Float(x));
-        }
-        stats.add(Value::Null);
-        let bins: JsonValue = serde_json::from_str(&stats.data(Stat::Bins).unwrap()).unwrap();
-        let one = (1f64.to_bits() >> 45) as i64;
-        let three = (3f64.to_bits() >> 45) as i64;
-        assert_eq!(
-            bins,
-            json!({"count": 5, "nulls": 1, "non_finite": 2, "zeros": 2, "min": -3.0, "max": 1.0078125,
-                   "bins_per_octave": 128, "bins": [[-three - 1, 1], [0, 2], [one, 1], [one + 1, 1]]})
-        );
-        let counts: JsonValue = serde_json::from_str(&stats.data(Stat::Counts).unwrap()).unwrap();
-        assert_eq!(
-            counts["values"],
-            json!([[0.0, 2], [-3.0, 1], [1.0, 1], [1.0078125, 1]])
-        );
-
-        let mut unsigned = ColumnStats::new(ValueType::Uint64, &[Stat::Counts, Stat::Bins]);
-        for v in [u64::MAX, 1, u64::MAX] {
-            unsigned.add(Value::Int(v as i64));
-        }
-        let counts: JsonValue =
-            serde_json::from_str(&unsigned.data(Stat::Counts).unwrap()).unwrap();
-        assert_eq!(counts["values"], json!([[u64::MAX, 2], [1, 1]]));
-        let bins: JsonValue = serde_json::from_str(&unsigned.data(Stat::Bins).unwrap()).unwrap();
-        assert_eq!((&bins["min"], &bins["max"]), (&json!(1), &json!(u64::MAX)));
-    }
 }

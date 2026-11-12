@@ -179,14 +179,9 @@ read.
 
 The index holds rows, key maps and relations. It holds no anchors, labels or
 fitted encoders, so several contracts over the same tables can share one index.
-It also keeps the column statistics that encoders over table columns learn from
-(see [encodings](03-encodings-and-ids.md#encoders)), in `col_stats/`, one
-directory per encoder cutoff. `Plan.materialize` computes the statistics it
-doesn't find there from the index, in parallel and reading only the columns it
-needs, and leaves them for the next task, so fitting needs the index directory
-to be writable; materializing with `fitted=` state reads no statistics. To compute them while the index is
-built instead, give the engine the cutoffs you'll use:
-`DiskGraphEngine(..., encoder_cutoffs=["2024-01-08"])`.
+Fitting keeps the column statistics of encoders over stored columns in
+`col_stats/`, so it needs the index directory to be writable. Ingest computes
+them for the cutoffs in `DiskGraphEngine(..., encoder_cutoffs=["2024-01-08"])`.
 Its manifest records the schema, the files and their resolved types. If the
 manifest doesn't match the dataset and schema you pass, `prepare` refuses the
 index rather than reusing it, and it never overwrites it. The shard count isn't
@@ -258,8 +253,8 @@ test [[154.0]]
 ```
 
 Each pass reads only the anchors in its own split, and encoders are fitted on
-`fit_split` alone: on its examples, or, for encoders over stored columns, on
-table rows up to its latest anchor time, so held-out examples never shape
+`fit_split` alone (encoders over stored columns, on rows up to its latest
+anchor time), so held-out rows never shape
 vocabularies or statistics. When anchors carry splits, `fit_split` is required.
 It can name one split, a set of splits, or `api.ALL_ANCHORS`. Anchor tables can
 also carry your own labels (`targets={"label": "column"}`), metadata columns

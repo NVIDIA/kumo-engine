@@ -81,8 +81,7 @@ def ensure_diskgraph_index(
     schema and PK/FK relations with exactly one primary-key side.
     A matching index is reused. An incompatible or incomplete index is never
     overwritten. ``if_missing=False`` requires the index to exist already.
-    ``col_stats_requests`` (``{"cutoffs", "requests"}``, cutoffs in seconds) are
-    column statistics an ingest computes in the same pass.
+    An ingest also computes ``col_stats_requests``, its cutoffs in seconds.
     """
 
     if num_shards <= 0:

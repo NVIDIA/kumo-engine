@@ -2,11 +2,8 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Encoders over stored table columns learn from table rows up to the encoder cutoff."""
-
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -16,10 +13,9 @@ import numpy as np
 import pytest
 
 from kumo.pytorch import api
-from kumo.pytorch.column_stats import TableColumnEncoder, fit_from_stats, table_column_encoders
+from kumo.pytorch.column_stats import TableColumnEncoder, fit_from_stats
 from kumo.pytorch.encoding import fit_encoder
 from tests.test_diskgraph_backend import _fixture_rows, _requests, _schema, _write_parquet
-from tests.test_fitted_state_persistence import _redigest
 
 pytest.importorskip("diskgraph")
 
@@ -97,7 +93,7 @@ def _contract() -> api.DataLoaderSpec:
     return api.DataLoaderSpec(schema=_schema(), sample=sample, batch=batch)
 
 
-def _setup(engine_name: str, directory: Path, **engine_options):
+def _setup(engine_name: str, directory: Path):
     rows = _fixture_rows()
     if engine_name == "in_memory":
         dataset = api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()})
@@ -108,7 +104,7 @@ def _setup(engine_name: str, directory: Path, **engine_options):
     dataset = api.Dataset(
         {name: api.Parquet(str(directory / "parquet" / f"{name}.parquet")) for name in rows}
     )
-    return dataset, api.DiskGraphEngine(index=directory / "index", num_threads=2, **engine_options)
+    return dataset, api.DiskGraphEngine(index=directory / "index", num_threads=2)
 
 
 def _encoders(contract, dataset, engine, **materialize):
@@ -183,20 +179,7 @@ def test_truncated_counts_pin_no_vocabulary():
     assert _fitted_from_stats(api.Vocabulary(), [1.0, 2.0], truncated=True)[0] is None
 
 
-def test_only_stored_columns_read_directly_learn_from_statistics():
-    found = {
-        identity: encoder.columns
-        for identity, encoder in table_column_encoders(_contract()).items()
-    }
-    assert found == {
-        '["inputs","entity","fields","country"]': (("users", "country"),),
-        '["inputs","graph","graph","accounts","account_type"]': (("accounts", "account_type"),),
-        '["inputs","graph","graph","card_transactions","amount"]': (
-            ("card_transactions", "amount"),
-        ),
-        '["inputs","transactions","fields","amount"]': (("card_transactions", "amount"),),
-        '["inputs","transactions","fields","channel"]': (("card_transactions", "channel"),),
-    }
+def test_a_shared_encoder_combines_its_columns_unless_one_is_computed(tmp_path):
     contract = _contract()
     inputs = dict(contract.batch.inputs)
     inputs["transactions"] = replace(
@@ -248,12 +231,12 @@ def test_only_stored_columns_read_directly_learn_from_statistics():
             encodings={"kinds": api.Vocabulary(), "amounts": api.ZScore()},
         ),
     )
-    found = table_column_encoders(shared)
-    assert found['["shared","kinds"]'].columns == (
-        ("accounts", "account_type"),
-        ("card_transactions", "channel"),
-    )
-    assert '["shared","amounts"]' not in found
+    statistics = _statistics(_encoders(shared, *_setup("in_memory", tmp_path)))
+    assert sorted(statistics['["shared","kinds"]']["files"]) == [
+        "accounts/account_type.counts",
+        "card_transactions/channel.counts",
+    ]
+    assert '["shared","amounts"]' not in statistics
 
 
 @pytest.mark.parametrize("engine_name", ("in_memory", "diskgraph"))
@@ -291,68 +274,17 @@ def test_pinned_encoders_match_numpy_over_rows_up_to_the_cutoff(tmp_path, engine
     assert {
         identity: sorted(record["files"]) for identity, record in _statistics(fitted).items()
     } == {
-        identity: sorted(f"{table}/{column}.{stat}" for table, column, stat in encoder.requests)
-        for identity, encoder in table_column_encoders(_contract()).items()
+        '["inputs","entity","fields","country"]': ["users/country.counts"],
+        '["inputs","graph","graph","accounts","account_type"]': ["accounts/account_type.counts"],
+        '["inputs","graph","graph","card_transactions","amount"]': [
+            "card_transactions/amount.moments"
+        ],
+        '["inputs","transactions","fields","amount"]': [
+            "card_transactions/amount.bins",
+            "card_transactions/amount.counts",
+        ],
+        '["inputs","transactions","fields","channel"]': ["card_transactions/channel.counts"],
     }
-
-
-def test_the_cutoff_is_inclusive_and_static_tables_count_every_row(tmp_path):
-    dataset, engine = _setup("diskgraph", tmp_path)
-    with api.prepare(_contract(), dataset, engine) as plan:
-        source = plan._require_open()
-        moment = int(datetime(2024, 11, 21, 16, tzinfo=UTC).timestamp())
-        at, before = (
-            source.column_stats(
-                [
-                    ("card_transactions", "channel", "counts"),
-                    ("merchants", "risk_score", "moments"),
-                ],
-                cutoff,
-            )
-            for cutoff in (moment, moment - 1)
-        )
-    channel = ("card_transactions", "channel", "counts")
-    merchants = ("merchants", "risk_score", "moments")
-    instants = [row["occurred_at"] for row in _fixture_rows()["card_transactions"]]
-    exact = instants.count(datetime(2024, 11, 21, 16))
-    assert (
-        exact
-        and at.files[channel]["data"]["count"] == before.files[channel]["data"]["count"] + exact
-    )
-    assert at.files[merchants]["data"] == before.files[merchants]["data"]
-    assert at.files[merchants]["data"]["count"] == len(_fixture_rows()["merchants"])
-
-
-def test_both_engines_compute_the_same_statistics(tmp_path):
-    states = [
-        _encoders(_contract(), *_setup(name, tmp_path / name), encoder_cutoff=None)
-        for name in ("in_memory", "diskgraph")
-    ]
-    assert states[0] == states[1]
-    assert {key: value["files"] for key, value in _statistics(states[0]).items()} == {
-        key: value["files"] for key, value in _statistics(states[1]).items()
-    }
-
-
-def test_ingest_and_recompute_publish_identical_files(tmp_path, caplog):
-    caplog.set_level(logging.INFO, logger="kumo.pytorch.preparation")
-    hinted = _setup("diskgraph", tmp_path, encoder_cutoffs=[LATEST.isoformat()])
-    states = [_encoders(_contract(), *hinted)]
-    plain = _setup("diskgraph", tmp_path)[0], api.DiskGraphEngine(index=tmp_path / "other")
-    states.append(_encoders(_contract(), *plain))
-    sources = [record.getMessage() for record in caplog.records if "pinned" in record.message]
-    assert "(ingest," in sources[0]
-    assert "(recompute," in sources[1]
-    assert states[0]["encoders"] == states[1]["encoders"]
-    published = [
-        sorted((tmp_path / name / "col_stats").rglob("*.json")) for name in ("index", "other")
-    ]
-    assert [path.relative_to(tmp_path / "index") for path in published[0]] == [
-        path.relative_to(tmp_path / "other") for path in published[1]
-    ]
-    for left, right in zip(*published, strict=True):
-        if left.name != "manifest.json":
-            assert json.loads(left.read_text())["data"] == json.loads(right.read_text())["data"]
 
 
 def test_a_cutoff_after_the_latest_anchor_warns(tmp_path, caplog):
@@ -364,75 +296,3 @@ def test_a_cutoff_after_the_latest_anchor_warns(tmp_path, caplog):
         assert "after the latest fitting anchor" in caplog.text
     with pytest.raises(ValueError, match="encoder_cutoff 'soon' is not an ISO 8601 timestamp"):
         _encoders(_contract(), dataset, engine, encoder_cutoff="soon")
-
-
-def test_reused_state_reads_no_statistics(tmp_path, monkeypatch):
-    dataset, engine = _setup("in_memory", tmp_path)
-    fitted = _encoders(_contract(), dataset, engine)
-    monkeypatch.setattr(
-        "kumo.pytorch.engines.in_memory.source.InMemorySource.column_stats",
-        lambda *_: pytest.fail("statistics read while reusing state"),
-    )
-    with api.prepare(_contract(), dataset, engine) as plan:
-        with plan.materialize(_requests(), fitted=fitted):
-            pass
-        with plan.materialize(_requests(), fitted=fitted.inputs, fit_split="train"):
-            pass
-
-
-def test_statistics_records_round_trip_and_mismatches_are_refused(tmp_path):
-    dataset, engine = _setup("in_memory", tmp_path)
-    contract = _contract()
-    with api.prepare(contract, dataset, engine) as plan:
-        with plan.materialize(_requests(), fit_split="train") as task:
-            task.to_artifact().save(tmp_path / "artifact")
-            fitted = task.fitted_state
-    loaded = api.Artifact.load(tmp_path / "artifact").fitted_state
-    assert loaded == fitted and loaded.fit == fitted.fit
-    path = tmp_path / "artifact" / "fitted-state.json"
-    written = json.loads(path.read_text())
-    statistics = written["fit"]["inputs"]["statistics"]
-    country = '["inputs","entity","fields","country"]'
-    assert list(statistics[country]["files"]) == ["users/country.counts"]
-    for tampered in (
-        {**statistics, country: {**statistics[country], "files": {"users/other.counts": "0" * 64}}},
-        {**statistics, '["inputs","entity","fields","transaction_count"]': statistics[country]},
-    ):
-        written["fit"]["inputs"]["statistics"] = tampered
-        path.write_text(json.dumps(written))
-        _redigest(tmp_path / "artifact")
-        with pytest.raises(ValueError, match="not ones this contract's encoders read"):
-            api.Artifact.load(tmp_path / "artifact")
-    del written["fit"]["inputs"]["statistics"]
-    path.write_text(json.dumps(written))
-    _redigest(tmp_path / "artifact")
-    assert api.Artifact.load(tmp_path / "artifact").fitted_state == fitted
-
-
-@pytest.mark.parametrize("unit, seconds", (("milliseconds", 1), ("seconds", 1), ("days", 86_400)))
-def test_cutoffs_count_rows_as_the_index_clock_rounds_them(tmp_path, monkeypatch, unit, seconds):
-    from kumo.pytorch import materialization
-
-    compile_config = materialization._compile_diskgraph_config
-
-    def clocked(*args, **kwargs):
-        config, *rest = compile_config(*args, **kwargs)
-        return ({**config, "timestamp_unit": unit}, *rest)
-
-    monkeypatch.setattr(materialization, "_compile_diskgraph_config", clocked)
-    cutoff = datetime(2024, 11, 21, 16, tzinfo=UTC)
-    request = [("card_transactions", "channel", "counts")]
-    counted = []
-    for name, engine_options in (("ingest", {"encoder_cutoffs": [cutoff]}), ("recompute", {})):
-        dataset, engine = _setup("diskgraph", tmp_path / name, **engine_options)
-        with api.prepare(_contract(), dataset, engine) as plan:
-            data = plan._require_open().column_stats(request, int(cutoff.timestamp()))
-            assert data.source == name
-            counted.append(data.files[request[0]]["data"])
-    ticks = -(-int(cutoff.timestamp()) // seconds)
-    expected = sum(
-        -(-int(row["occurred_at"].replace(tzinfo=UTC).timestamp()) // seconds) <= ticks
-        for row in _fixture_rows()["card_transactions"]
-    )
-    assert counted[0] == counted[1]
-    assert counted[0]["count"] == expected

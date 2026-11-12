@@ -746,8 +746,9 @@ fn commit_shard_output(
         edges_len,
         build_stats_len,
     };
-    write_durable_commit(
+    write_durable(
         commit_path,
+        &commit_path.with_extension("json.tmp"),
         &serde_json::to_vec(&commit)?,
         commit_sync_root,
     )?;
@@ -857,17 +858,7 @@ fn sync_directory_chain(start: &Path, stop: &Path) -> Result<()> {
     ))
 }
 
-fn write_durable_commit(path: &Path, payload: &[u8], durable_root: &Path) -> Result<()> {
-    write_durable(
-        path,
-        &path.with_extension("json.tmp"),
-        payload,
-        durable_root,
-    )
-}
-
-/// Writes `payload` to `tmp_path`, renames it over `path`, and syncs every
-/// directory from `path`'s parent up to `durable_root`.
+/// Writes `payload` through `tmp_path` to `path`, syncing directories up to `durable_root`.
 pub fn write_durable(
     path: &Path,
     tmp_path: &Path,

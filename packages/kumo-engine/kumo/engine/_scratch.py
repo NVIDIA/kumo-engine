@@ -23,22 +23,33 @@ The root all of these nest under is `kumo.settings.scratch_dir()`.
 
 import hashlib
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 from kumo_core.chunked_fs import set_spool_dir
 
 import kumo.settings
 
-# Tests pin the root by patching this; a `kumo.settings.scoped(...)` block
-# still takes precedence.
+# Tests pin the root by patching this.
 _root: Optional[Path] = None
+_scoped_root: ContextVar[Optional[Path]] = ContextVar('kumo_scratch_root',
+                                                      default=None)
 
 
 def get_scratch_dir() -> Path:
-    if _root is None or kumo.settings._scoped.get() is not None:
-        return kumo.settings.scratch_dir()
-    return _root
+    return _scoped_root.get() or _root or kumo.settings.scratch_dir()
+
+
+@contextmanager
+def scoped_scratch_dir(path: Path) -> Iterator[None]:
+    r"""Nests this context's new scratch directories under ``path``."""
+    token = _scoped_root.set(path)
+    try:
+        yield
+    finally:
+        _scoped_root.reset(token)
 
 
 set_spool_dir(lambda: str(get_scratch_dir() / "spool"))

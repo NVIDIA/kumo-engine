@@ -66,8 +66,8 @@ class TrainerPredictor:
 
 def predict_frame(trainer: Any, snapshot: Any, rows: pd.DataFrame,
                   params: Mapping[str, Any]) -> pd.DataFrame:
-    import kumo.settings
     from kumo.engine._mlops import resolve
+    from kumo.engine._scratch import scoped_scratch_dir
     from kumo.engine.connector.file import FileConnector
 
     time = params.get('prediction_time')
@@ -80,7 +80,7 @@ def predict_frame(trainer: Any, snapshot: Any, rows: pd.DataFrame,
     _require_inputs(trainer, snapshot, rows, time)
     trainer.scratch_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=trainer.scratch_dir) as tmp, \
-            kumo.settings.scoped(scratch_dir=Path(tmp) / 'scratch'):
+            scoped_scratch_dir(Path(tmp) / 'scratch'):
         rows = rows.rename(columns={'ENTITY': 'ENTITY1'})
         if time is not None and 'TIMESTAMP' not in rows:
             rows = rows.assign(TIMESTAMP=time)

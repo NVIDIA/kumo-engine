@@ -145,13 +145,9 @@ The fitted values, as `Artifact.save` writes them beside `fit`.
 Where one half of a fitted state was fitted.
 
 Fitting takes no seed: the state is a function of these alone. The record
-is informational: reuse with `fitted=` keeps it, `Artifact.load` only
-checks that its `statistics` fit the encoders, and fitted-state equality
-ignores it.
-
-`statistics` (inputs only) names, per encoder pinned from column
-statistics, the cutoff, the engine's statistics id and index id, and each
-statistics file it read with its digest.
+is informational: reuse with `fitted=` keeps it, `Artifact.load` does
+not check it, and fitted-state equality ignores it. `statistics` (inputs
+only) names the column statistics files each encoder was fitted from.
 
 ### `save_weights`
 

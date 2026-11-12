@@ -650,6 +650,12 @@ def _fit_inputs(
             graph = SimpleNamespace(
                 source=value.source.name, node_fields=value.representation.node_fields
             )
+            roots = [
+                GraphRoot(
+                    _sample_id(item), _history(item).entity_id, _history(item).evaluation_time
+                )
+                for item in values
+            ]
             identities = {
                 (table, use.field): _graph_encoder_identity(name, table, use)
                 for table, group in value.representation.node_fields.items()
@@ -658,18 +664,7 @@ def _fit_inputs(
             observed = (
                 {}
                 if set(identities.values()) <= set(pinned)
-                else source.fit_graph_fields(
-                    sample,
-                    graph,
-                    [
-                        GraphRoot(
-                            _sample_id(item),
-                            _history(item).entity_id,
-                            _history(item).evaluation_time,
-                        )
-                        for item in values
-                    ],
-                )
+                else source.fit_graph_fields(sample, graph, roots)
             )
             graph_fields[name] = {}
             tables = {table.name: table for table in contract.schema.tables}

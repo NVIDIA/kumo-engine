@@ -46,7 +46,6 @@ from kumo.pytorch.assembly import (
     fitted_target_names,
     restore_fitted_state,
 )
-from kumo.pytorch.column_stats import check_statistics
 from kumo.pytorch.spec import DataLoaderSpec
 
 __all__ = ["Artifact", "FitRecord", "FittedState", "load_weights", "save_weights"]
@@ -59,13 +58,9 @@ class FitRecord(TypedDict):
     """Where one half of a fitted state was fitted.
 
     Fitting takes no seed: the state is a function of these alone. The record
-    is informational: reuse with ``fitted=`` keeps it, ``Artifact.load`` only
-    checks that its ``statistics`` fit the encoders, and fitted-state equality
-    ignores it.
-
-    ``statistics`` (inputs only) names, per encoder pinned from column
-    statistics, the cutoff, the engine's statistics id and index id, and each
-    statistics file it read with its digest.
+    is informational: reuse with ``fitted=`` keeps it, ``Artifact.load`` does
+    not check it, and fitted-state equality ignores it. ``statistics`` (inputs
+    only) names the column statistics files each encoder was fitted from.
     """
 
     contract: str
@@ -298,7 +293,6 @@ class Artifact:
                 "manifest.json records"
             )
         _require_targets(root / "fitted-state.json", serialized, contract)
-        _require_statistics(root / "fitted-state.json", fit, contract)
         try:
             fitted, rebuilt, bound = _restored(contract, serialized, fit, lengths)
         except (AttributeError, KeyError, TypeError, ValueError) as error:
@@ -353,17 +347,6 @@ def _require_fitted_for(path: Path, fitted_for: object, contract: DataLoaderSpec
                 f"{fitted_for.get(key)}, this contract's is {fingerprint}; read it with "
                 "the contract it was fitted under"
             )
-
-
-def _require_statistics(
-    path: Path, fit: Mapping[str, FitRecord | None], contract: DataLoaderSpec
-) -> None:
-    """Refuse statistics records the contract's encoders could not have been pinned from."""
-
-    try:
-        check_statistics(contract, (fit.get("inputs") or {}).get("statistics", {}))
-    except ValueError as error:
-        raise ValueError(f"{path}: {error}") from error
 
 
 def _require_targets(path: Path, serialized: Mapping[str, Any], contract: DataLoaderSpec) -> None:
