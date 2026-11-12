@@ -129,15 +129,15 @@ platform's `release-version`.
      configuration with Python 3.11–3.14. Linux x86-64 and WSL2 x86-64 run on
      CPU and CUDA. Linux ARM64 runs on CPU. macOS 15 and 26 on Apple Silicon run
      on CPU. The cases are the eight tasks of the GPU wheel smoke
-     (`wheel_gpu_smoke.py`) on its PR172 fixture data, so both checks share one
+     (`wheel_gpu_smoke.py`) on its PR172 fixture data. Both checks share one
      task definition. For each task, a producer process trains, exports the
      model and the snapshot, and saves its predictions. The job then deletes the
      producer scratch, caches, temp files, and source data. A new consumer
      process loads only the exports and predicts without training. Entities,
      anchor timestamps, classes or items, and forecast steps must match the
      saved inputs exactly. Scores must match within the absolute tolerance
-     `0.0001` on CPU and MPS, and `0.005` on CUDA, the GPU smoke's reload bound,
-     because CUDA kernels are not bit-reproducible. Labels or ranks may change
+     `0.0001` on CPU and MPS. CUDA uses `0.005`, the GPU smoke's reload bound,
+     because CUDA kernels are not bit-reproducible. Labels or ranks can change
      only between tied scores. A CUDA or MPS row passes only with training and
      prediction batches observed on that device, and MPS link rows need Faiss
      Metal search. The job uploads the wheel hash, model and snapshot file
@@ -152,21 +152,23 @@ platform's `release-version`.
      macOS 14 is the supported floor, and hosted runners no longer offer it.
      MPS requires macOS 15 or later, because the supported PyTorch calls
      Metal APIs that macOS 14 does not have. On macOS 14, the
-     `unavailable_device` check requests MPS and passes only when the
-     consumer fails with `UnsupportedAcceleratorError`. Hosted macOS runners
-     are VMs without a Metal device, so they cannot run MPS. The CI report
-     covers the hosted rows only. On each Mac, install the macOS wheel from
-     the same build run in a clean environment. Download the object that
+     `unavailable_device` check requests MPS. If the consumer fails with
+     `UnsupportedAcceleratorError`, the check passes. Any other result fails
+     it. Hosted macOS runners are VMs without a Metal device, so they cannot
+     run MPS. The CI report covers the hosted rows only. On each Mac, install
+     the macOS wheel from the same build run in a clean environment. Download
+     the object that
      [`inputs.json`](../../packages/kumo-engine/test/pr172/inputs.json) names
      with AWS credentials that can read it, check its SHA-256, and extract
      it. Then run `desktop_reload_qualification.py run` next to
-     `wheel_gpu_smoke.py`, with the extracted root as `--data-dir`, its
-     `graphs.json` as `--graph-metadata`, `--negative-checks`, and the label
-     `macos-<major>-<device>-py<version>` for each Python version. Build the
-     full matrix with `desktop_reload_qualification.py report`. Pass one
-     `--evidence-dir` for the CI results and one for each Mac. The report
-     marks a missing row UNVERIFIED and checks that each row ran on its
-     labeled platform.
+     `wheel_gpu_smoke.py` for each Python version. Pass the extracted root as
+     `--data-dir` and its `graphs.json` as `--graph-metadata`. Also pass
+     `--negative-checks`, the candidate commit as `--commit`, and the label
+     `macos-<major>-<device>-py<version>`. Build the full matrix with
+     `desktop_reload_qualification.py report --commit <candidate commit>`.
+     Pass one `--evidence-dir` for the CI results and one for each Mac. The
+     report marks a missing row UNVERIFIED, fails a row that names another
+     commit, and checks that each row ran on its labeled platform.
    - attaches the Linux x86_64/ARM64 and macOS ARM64 wheels to the GitHub
      release; the Linux x86_64 wheel also serves WSL2. Native Windows upload
      routes remain disabled despite experimental build/test coverage.
