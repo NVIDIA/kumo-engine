@@ -215,18 +215,19 @@ pub struct TableCategoryCounts {
 }
 
 impl TableCategoryCounts {
-    /// Create shared state for a table given its column semantic types.
-    /// Categorical, Id, and Multicategorical columns get category count
-    /// collection, each capped at `MAX_CATEGORIES` uniques so Encode memory
-    /// stays bounded. Multicategorical reuses the same machinery: one DashMap
-    /// entry per distinct *token* (not per row), fed by the per-input-kind
-    /// tokenization paths in `ColumnStatsCollector::Multicategorical`.
+    /// Create shared state for a table given its columns' semantic types or
+    /// stat sets. Categorical, Id, and Multicategorical columns get category
+    /// count collection, each capped at `MAX_CATEGORIES` uniques so Encode
+    /// memory stays bounded. Multicategorical reuses the same machinery: one
+    /// DashMap entry per distinct *token* (not per row), fed by the
+    /// per-input-kind tokenization paths in
+    /// `ColumnStatsCollector::Multicategorical`.
     pub fn new(
         strategy: CategoryCountStrategy,
-        semantic_types: &[Option<SemanticType>],
+        stat_sets: &[impl Copy + Into<StatSet>],
         row_subsample: bool,
     ) -> Self {
-        Self::new_with_max_categories(strategy, semantic_types, row_subsample, MAX_CATEGORIES)
+        Self::new_with_max_categories(strategy, stat_sets, row_subsample, MAX_CATEGORIES)
     }
 
     /// Construct table counts with an injectable Hybrid feature cap.
@@ -234,7 +235,7 @@ impl TableCategoryCounts {
     /// exercising the same observation and publication paths.
     pub fn new_with_max_categories(
         strategy: CategoryCountStrategy,
-        semantic_types: &[Option<SemanticType>],
+        stat_sets: &[impl Copy + Into<StatSet>],
         row_subsample: bool,
         max_categories: u64,
     ) -> Self {
@@ -242,34 +243,17 @@ impl TableCategoryCounts {
             strategy != CategoryCountStrategy::Hybrid || !row_subsample,
             "Hybrid category counts require row_subsample=false so retained occurrence counts are exact"
         );
-        let columns = semantic_types
+        let columns = stat_sets
             .iter()
-            .map(|stype| match stype {
-                // Id columns are counted alongside Categorical: some models
-                // consume their category counts, and the shared map is capped
-                // so there is no memory reason to skip them.
-                Some(SemanticType::Categorical) | Some(SemanticType::Id) => {
-                    let shared = match strategy {
+            .map(|&stat_set| {
+                (stat_set.into().counted() > 0).then(|| {
+                    Arc::new(match strategy {
                         CategoryCountStrategy::Graduation => SharedColumnCounts::new_graduation(),
                         _ => SharedColumnCounts::new_hashed_capped_with_max_categories(
                             max_categories,
                         ),
-                    };
-                    Some(Arc::new(shared))
-                }
-                Some(SemanticType::Multicategorical) => {
-                    // Token cardinality can be proportional to the complete
-                    // input. Use the same capped/abort policy as scalar
-                    // categorical columns so Encode memory remains bounded.
-                    let shared = match strategy {
-                        CategoryCountStrategy::Graduation => SharedColumnCounts::new_graduation(),
-                        _ => SharedColumnCounts::new_hashed_capped_with_max_categories(
-                            max_categories,
-                        ),
-                    };
-                    Some(Arc::new(shared))
-                }
-                _ => None,
+                    })
+                })
             })
             .collect();
         Self {
@@ -737,22 +721,98 @@ pub enum ColumnStatsCollector {
     Skip,
 }
 
+/// Which semantic types' statistics to collect for a column; one pass
+/// gathers them all.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StatSet(u16);
+
+impl StatSet {
+    /// Category counts and distinct count.
+    pub const COUNTS: Self = Self::of(SemanticType::Categorical);
+    /// Mean, std, min, max, skewness, kurtosis, quantiles, value bins and
+    /// distinct count.
+    pub const MOMENTS: Self = Self::of(SemanticType::Numerical);
+    const COUNTED: Self = Self(
+        Self::COUNTS.0 | Self::of(SemanticType::Id).0 | Self::of(SemanticType::Multicategorical).0,
+    );
+
+    const fn of(stype: SemanticType) -> Self {
+        Self(1 << stype as u16)
+    }
+
+    /// Numerical last: it ignores other values, so a key that members share
+    /// (count, num_unique) is taken from another member.
+    fn stypes(self) -> impl Iterator<Item = SemanticType> {
+        use SemanticType::*;
+        [
+            Categorical,
+            Id,
+            Multicategorical,
+            Text,
+            Timestamp,
+            Sequence,
+            Latlong,
+            ImageUrl,
+            Numerical,
+            Unsupported,
+        ]
+        .into_iter()
+        .filter(move |&stype| self.0 & Self::of(stype).0 != 0)
+    }
+
+    /// How many members keep category counts.
+    fn counted(self) -> u32 {
+        (self.0 & Self::COUNTED.0).count_ones()
+    }
+}
+
+impl std::ops::BitOr for StatSet {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+impl From<Option<SemanticType>> for StatSet {
+    fn from(stype: Option<SemanticType>) -> Self {
+        stype.map_or(Self::default(), Self::of)
+    }
+}
+
 /// Each column's collector, then the columns' further collectors and
 /// their columns.
 type Collectors = (Vec<ColumnStatsCollector>, Vec<usize>);
 
-fn collectors(columns: &[ColumnSpec]) -> Collectors {
-    let cols = columns
+fn collectors(columns: &[ColumnSpec], stat_sets: impl IntoIterator<Item = StatSet>) -> Collectors {
+    let (mut extras, mut extra_cols) = (Vec::new(), Vec::new());
+    let mut cols: Vec<_> = columns
         .iter()
-        .map(|c| {
-            ColumnStatsCollector::from_column_type(
-                &c.semantic_type,
-                &c.ingested_dtype,
-                c.multicategorical_delimiter.as_deref(),
-            )
+        .zip(stat_sets)
+        .enumerate()
+        .map(|(col_idx, (c, stat_set))| {
+            let collector = |stype| {
+                ColumnStatsCollector::from_column_type(
+                    &stype,
+                    &c.ingested_dtype,
+                    c.multicategorical_delimiter.as_deref(),
+                )
+            };
+            let mut stypes = stat_set.stypes();
+            let first = collector(stypes.next());
+            for stype in stypes {
+                extras.push(collector(Some(stype)));
+                extra_cols.push(col_idx);
+            }
+            first
         })
         .collect();
-    (cols, Vec::new())
+    cols.append(&mut extras);
+    (cols, extra_cols)
+}
+
+fn stype_stat_sets(columns: &[ColumnSpec]) -> impl Iterator<Item = StatSet> + '_ {
+    columns.iter().map(|c| c.semantic_type.into())
 }
 
 /// Each collector with its column.
@@ -787,7 +847,7 @@ impl FileColStats {
     /// and (for multicategorical string columns) `multicategorical_delimiter`
     /// used to construct each collector.
     pub fn new(columns: &[ColumnSpec]) -> Self {
-        let (cols, extra_cols) = collectors(columns);
+        let (cols, extra_cols) = collectors(columns, stype_stat_sets(columns));
         let n = columns.len();
         Self {
             cols,
@@ -807,7 +867,40 @@ impl FileColStats {
         columns: &[ColumnSpec],
         table_cat: Arc<TableCategoryCounts>,
     ) -> Self {
-        Self::with_collectors(collectors(columns), table_cat)
+        Self::with_collectors(collectors(columns, stype_stat_sets(columns)), table_cat)
+    }
+
+    /// Like [`Self::new_with_categories`], collecting `stat_sets[i]` for
+    /// column `i` instead of its semantic type's statistics. `table_cat`
+    /// must be built from the same stat sets.
+    pub fn new_with_stat_sets(
+        columns: &[ColumnSpec],
+        stat_sets: &[StatSet],
+        table_cat: Arc<TableCategoryCounts>,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            stat_sets.len() == columns.len() && table_cat.columns.len() == columns.len(),
+            "expected {} stat sets and category columns, got {} and {}",
+            columns.len(),
+            stat_sets.len(),
+            table_cat.columns.len()
+        );
+        for ((col, stat_set), shared) in columns.iter().zip(stat_sets).zip(&table_cat.columns) {
+            anyhow::ensure!(
+                stat_set.counted() <= 1,
+                "column {} requests more than one kind of category counts",
+                col.name
+            );
+            anyhow::ensure!(
+                shared.is_some() == (stat_set.counted() == 1),
+                "category counts for column {} were built from another stat set",
+                col.name
+            );
+        }
+        Ok(Self::with_collectors(
+            collectors(columns, stat_sets.iter().copied()),
+            table_cat,
+        ))
     }
 
     fn with_collectors(
@@ -2223,8 +2316,9 @@ impl FileColStats {
                     // Hybrid). Graduation drops sub-threshold categories,
                     // subsampling sees only a fraction, and an aborted or
                     // absent map is None — all fall back to the HLL estimate.
+                    let capped = cat_capped[col_idx].unwrap_or(false);
                     let num_unique = match cat_lens[col_idx] {
-                        Some(len) if cat_map_is_exhaustive => len as u64,
+                        Some(len) if cat_map_is_exhaustive && !capped => len as u64,
                         _ => hll.estimate() as u64,
                     }
                     .min(total);
@@ -6225,5 +6319,61 @@ mod tests {
             std::fs::read(dir.path().join("col_stats.json")).unwrap(),
             b"{}"
         );
+    }
+
+    #[test]
+    fn stat_set_collects_counts_and_moments_in_one_pass() {
+        let cols = make_test_cols_with_types(&[(None, IngestedType::Int64, None)]);
+        let table_cat = |stat_set: StatSet| {
+            Arc::new(TableCategoryCounts::new(
+                CategoryCountStrategy::Hybrid,
+                &[stat_set],
+                false,
+            ))
+        };
+        let publish = |stat_set: StatSet| {
+            let tc = table_cat(stat_set);
+            let mut stats =
+                FileColStats::new_with_stat_sets(&cols, &[stat_set], Arc::clone(&tc)).unwrap();
+            for value in [3, 1, 4, 1, 5, 9, 2, 6, 5, 3] {
+                stats.observe_i64(0, value);
+            }
+            stats.observe_null(0);
+            stats.flush_categories();
+            let dir = tempfile::tempdir().unwrap();
+            let table = ColStatsTable {
+                name: "t".to_string(),
+                stats,
+                column_names: vec!["c0".to_string()],
+                ingested_types: vec![IngestedType::Int64],
+                table_cat: Some(tc),
+                text_sample_stats: None,
+                data_version: Some("v1".to_string()),
+            };
+            write_col_stats(&local_target(&dir), vec![table]).unwrap();
+            let read = |rel: &str| -> serde_json::Map<String, JsonValue> {
+                serde_json::from_slice(&std::fs::read(dir.path().join(rel)).unwrap()).unwrap()
+            };
+            let summary = read("col_stats.json")["t"]["c0"]
+                .as_object()
+                .unwrap()
+                .clone();
+            (summary, read("kumo_col_stats/col_stats_full/t.json"))
+        };
+        let (counts_summary, counts_kumo) = publish(StatSet::COUNTS);
+        let (mut summary, mut kumo) = publish(StatSet::MOMENTS);
+        assert!(counts_summary.contains_key("category_counts") && summary.contains_key("q50"));
+        summary.extend(counts_summary);
+        kumo.extend(counts_kumo);
+        assert_eq!(publish(StatSet::COUNTS | StatSet::MOMENTS), (summary, kumo));
+
+        let id_counts = StatSet::COUNTS | StatSet::from(Some(SemanticType::Id));
+        for (stat_sets, tc) in [
+            (vec![id_counts], table_cat(id_counts)),
+            (vec![StatSet::COUNTS], table_cat(StatSet::MOMENTS)),
+            (vec![], table_cat(StatSet::MOMENTS)),
+        ] {
+            assert!(FileColStats::new_with_stat_sets(&cols, &stat_sets, tc).is_err());
+        }
     }
 }
