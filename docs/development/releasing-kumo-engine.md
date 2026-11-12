@@ -125,6 +125,21 @@ platform's `release-version`.
      Labels and ranks can change only when their scores justify the change
      within that bound. The macOS wheel has no GPU smoke
      check. See the [test criteria](testing.md#finished-kumo-engine-wheel).
+   - runs the fresh-process reload qualification on each supported desktop
+     configuration with Python 3.11–3.14. Linux x86-64 and WSL2 x86-64 run
+     on CPU and CUDA. Linux ARM64 runs on CPU. macOS 14 and 15 on Apple
+     Silicon run on CPU and MPS. Each case is a
+     numerical, static link, or temporal link task. A producer process trains,
+     exports the model and the snapshot, and saves its predictions. The job
+     then deletes the producer scratch, caches, temp files, and source data.
+     A new consumer process loads only the exports and predicts without
+     training. Entities, timestamps, items, scores, ranks, and top-k
+     membership must match within the absolute tolerance `0.0001`. A CUDA or
+     MPS row passes only with training and prediction batches observed on
+     that device, and MPS link rows need Faiss Metal search. The job uploads
+     the wheel hash, model and snapshot file hashes, logs, and per-case
+     results. See
+     [`desktop_reload_qualification.py`](../../packages/kumo-engine/test/desktop_reload_qualification.py).
    - attaches the Linux x86_64/ARM64 and macOS ARM64 wheels to the GitHub
      release; the Linux x86_64 wheel also serves WSL2. Native Windows upload
      routes remain disabled despite experimental build/test coverage.

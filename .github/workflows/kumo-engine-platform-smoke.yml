@@ -103,3 +103,202 @@ jobs:
           path: ${{ runner.temp }}/platform-wheel/results
           if-no-files-found: warn
           retention-days: 14
+
+  # Fresh-process save and reload on every supported desktop configuration.
+  # A producer process trains and exports the model and snapshot; the job
+  # deletes its scratch, caches and inputs; a new consumer process reloads
+  # and predicts. A GPU row passes only with work observed on that GPU.
+  reload:
+    name: Reload ${{ matrix.target.name }} ${{ matrix.target.device }} (Python ${{ matrix.python }})
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14']
+        target:
+          - name: linux-x86_64
+            runner: ubuntu-24.04
+            artifact: x86_64
+            device: cpu
+            torch_backend: cpu
+            extra: ''
+          - name: linux-x86_64
+            runner: linux-amd64-gpu-rtxpro6000-latest-1
+            artifact: x86_64
+            device: gpu
+            torch_backend: ''
+            extra: ''
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            artifact: aarch64
+            device: cpu
+            torch_backend: cpu
+            extra: '[cpu]'
+          - name: windows-wsl
+            runner: wsl-amd64-gpu-t4-latest-1
+            artifact: x86_64
+            device: cpu
+            torch_backend: cpu
+            extra: ''
+          - name: windows-wsl
+            runner: wsl-amd64-gpu-t4-latest-1
+            artifact: x86_64
+            device: gpu
+            torch_backend: ''
+            extra: ''
+          - name: macos-14
+            runner: macos-14
+            artifact: arm64
+            device: cpu
+            torch_backend: ''
+            extra: ''
+          - name: macos-15
+            runner: macos-15
+            artifact: arm64
+            device: cpu
+            torch_backend: ''
+            extra: ''
+          # Standard macOS runners expose no Metal device to PyTorch.
+          - name: macos-14
+            runner: macos-14-xlarge
+            artifact: arm64
+            device: mps
+            torch_backend: ''
+            extra: ''
+          - name: macos-15
+            runner: macos-15-xlarge
+            artifact: arm64
+            device: mps
+            torch_backend: ''
+            extra: ''
+    runs-on: ${{ matrix.target.runner }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONUNBUFFERED: '1'
+      PYTHONPATH: ''
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+      UV_LINK_MODE: copy
+      UV_NO_CONFIG: 'true'
+      RELOAD_LABEL: ${{ matrix.target.name }}-${{ matrix.target.device }}-py${{ matrix.python }}
+      RELOAD_DEVICE: ${{ matrix.target.device }}
+      RELOAD_PYTHON: ${{ matrix.python }}
+      RELOAD_EXTRA: ${{ matrix.target.extra }}
+      RELOAD_TORCH_BACKEND: ${{ matrix.target.torch_backend }}
+      CANDIDATE_SHA: ${{ github.sha }}
+    steps:
+      - name: Checkout the candidate test harness
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download the candidate wheel from this run
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8
+        with:
+          name: kumo-engine-wheel-${{ matrix.target.artifact }}-${{ github.sha }}
+          path: ${{ runner.temp }}/reload/artifacts
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          enable-cache: false
+
+      - name: Clean install, then train, reload and compare in new processes
+        run: |
+          set -euo pipefail
+          unset PYTHONPATH
+          stage="$RUNNER_TEMP/reload"
+          mkdir -p "$stage/results" "$stage/test"
+          cp packages/kumo-engine/test/desktop_reload_qualification.py \
+            packages/kumo-engine/test/test_desktop_reload_harness.py \
+            "$stage/test/"
+          cd "$stage"
+          wheels=(artifacts/kumo_engine-*.whl)
+          if [ "${#wheels[@]}" -ne 1 ] || [ ! -f "${wheels[0]}" ]; then
+            echo 'Expected exactly one candidate engine wheel.' >&2
+            exit 1
+          fi
+          uv venv --python "$RELOAD_PYTHON" --seed venv
+          python="$stage/venv/bin/python"
+          args=()
+          if [ -n "$RELOAD_TORCH_BACKEND" ]; then
+            args+=(--torch-backend="$RELOAD_TORCH_BACKEND")
+          fi
+          uv pip install --python "$python" ${args[@]+"${args[@]}"} \
+            "${wheels[0]}${RELOAD_EXTRA}" pytest 2>&1 | tee results/install.log
+          uv pip check --python "$python" 2>&1 | tee results/dependencies.log
+          uv pip freeze --python "$python" > results/freeze.txt
+          sha256sum "${wheels[0]}" 2>/dev/null > results/wheel.sha256 \
+            || shasum -a 256 "${wheels[0]}" > results/wheel.sha256
+          if [ "$RELOAD_DEVICE" = gpu ]; then
+            nvidia-smi 2>&1 | tee results/nvidia-smi.log
+          fi
+          if [ "$RELOAD_DEVICE" = mps ]; then
+            system_profiler SPDisplaysDataType 2>&1 | tee results/gpu.log
+          fi
+          (cd test && "$python" -m pytest -q -p no:cacheprovider \
+            --confcutdir=. --noconftest test_desktop_reload_harness.py \
+            --junitxml=../results/harness-junit.xml) 2>&1 \
+            | tee results/harness-tests.log
+          "$python" -I test/desktop_reload_qualification.py run \
+            --wheel "${wheels[0]}" --device "$RELOAD_DEVICE" \
+            --case numerical --case static_link --case temporal_link \
+            --negative-checks --label "$RELOAD_LABEL" \
+            --commit "$CANDIDATE_SHA" --work-dir "$stage/work" \
+            --output-dir "$stage/results/cases" 2>&1 \
+            | tee results/reload.log
+
+      - name: Save reload qualification evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
+        with:
+          name: engine-wheel-reload-${{ matrix.target.name }}-${{ matrix.target.device }}-py${{ matrix.python }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/reload/results
+          if-no-files-found: warn
+          retention-days: 30
+
+  # One matrix of every required configuration and case. A configuration
+  # whose job produced no evidence is UNVERIFIED, and the job then fails.
+  reload-report:
+    needs: [reload]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout the candidate test harness
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download every reload result from this run
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8
+        with:
+          pattern: engine-wheel-reload-*-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/reload-evidence
+
+      - name: Build the qualification matrix
+        env:
+          CANDIDATE_SHA: ${{ github.sha }}
+          EVIDENCE: ${{ runner.temp }}/reload-evidence
+          REPORT: ${{ runner.temp }}/reload-report
+        run: |
+          mkdir -p "$EVIDENCE"
+          set +e
+          python3 -I packages/kumo-engine/test/desktop_reload_qualification.py \
+            report --evidence-dir "$EVIDENCE" --output-dir "$REPORT" \
+            --commit "$CANDIDATE_SHA"
+          status=$?
+          set -e
+          cat "$REPORT/matrix.md" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Save the qualification matrix
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
+        with:
+          name: engine-wheel-reload-matrix-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/reload-report
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,0 +1,1343 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""Fresh-process save and reload qualification for one installed wheel.
+
+The controller runs each case in two new interpreters. The producer trains,
+exports the model and the graph snapshot, and saves baseline predictions.
+The controller then deletes every producer scratch, cache, temp and raw-input
+directory. The consumer loads only the durable exports, predicts with the
+same options and must not train. The controller compares the two outputs.
+
+Run it with the interpreter of a clean environment, outside the checkout:
+
+    python -I desktop_reload_qualification.py run --wheel <wheel> \
+        --device cpu --case numerical --case static_link \
+        --case temporal_link --work-dir <dir> --output-dir <dir>
+
+The harness supports POSIX hosts only: Linux, WSL2 and macOS.
+"""
+
+import argparse
+import hashlib
+import importlib.metadata
+import json
+import math
+import os
+import platform
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import traceback
+from contextlib import contextmanager
+from pathlib import Path
+
+CASES = ('numerical', 'static_link', 'temporal_link')
+DEVICES = ('cpu', 'gpu', 'mps')
+TORCH_DEVICE = {'cpu': 'cpu', 'gpu': 'cuda', 'mps': 'mps'}
+SEED = 0
+TOP_K = 5
+USERS = 60
+ITEMS = 40
+GROUPS = 4
+NUMERIC_ROWS = 400
+NUMERIC_LABELED = 300
+START = '2024-01-01'
+DAYS = 112
+HORIZON = 7
+QUERIES = {
+    'numerical':
+    'PREDICT entities.Y FOR EACH entities.ID',
+    'static_link':
+    f'PREDICT LIST_DISTINCT(events.ITEM_ID) RANK TOP {TOP_K} '
+    'FOR EACH users.USER_ID',
+    'temporal_link':
+    f'PREDICT LIST_DISTINCT(events.ITEM_ID, 0, {HORIZON}, days) '
+    f'RANK TOP {TOP_K} FOR EACH users.USER_ID',
+}
+RECEIPT_SCHEMA = 1
+PYTHONS = ('3.11', '3.12', '3.13', '3.14')
+# Supported desktop configurations. Keep in sync with the `reload` job in
+# .github/workflows/kumo-engine-platform-smoke.yml.
+REQUIRED_TARGETS = (
+    ('linux-x86_64', 'cpu'),
+    ('linux-x86_64', 'gpu'),
+    ('linux-arm64', 'cpu'),
+    ('windows-wsl', 'cpu'),
+    ('windows-wsl', 'gpu'),
+    ('macos-14', 'cpu'),
+    ('macos-15', 'cpu'),
+    ('macos-14', 'mps'),
+    ('macos-15', 'mps'),
+)
+
+
+class QualificationError(Exception):
+    """A case did not meet the qualification contract."""
+
+
+# ---------------------------------------------------------------------------
+# Pure helpers: identity, paths and process control. No Engine imports.
+# ---------------------------------------------------------------------------
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as stream:
+        for block in iter(lambda: stream.read(1 << 20), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def tree_hashes(root):
+    """Map every regular file under root to its SHA-256."""
+    root = Path(root)
+    if not root.is_dir():
+        raise QualificationError(f'Durable export is missing: {root}')
+    result = {}
+    for path in sorted(root.rglob('*')):
+        if path.is_symlink():
+            raise QualificationError(f'Durable export holds a symlink: {path}')
+        if path.is_file():
+            result[path.relative_to(root).as_posix()] = sha256_file(path)
+    if not result:
+        raise QualificationError(f'Durable export is empty: {root}')
+    return result
+
+
+def require_same_tree(expected, root, label):
+    actual = tree_hashes(root)
+    if actual != expected:
+        missing = sorted(set(expected) - set(actual))
+        extra = sorted(set(actual) - set(expected))
+        changed = sorted(name for name in set(expected) & set(actual)
+                         if expected[name] != actual[name])
+        raise QualificationError(
+            f'{label} changed after the producer exited: missing={missing}, '
+            f'extra={extra}, changed={changed}')
+
+
+def require_disjoint(durable, ephemeral_roots):
+    """Durable paths must not resolve inside any directory we delete."""
+    durable = Path(durable).resolve()
+    for root in ephemeral_roots:
+        root = Path(root).resolve()
+        if (durable == root or durable.is_relative_to(root)
+                or root.is_relative_to(durable)):
+            raise QualificationError(
+                f'Durable directory {durable} overlaps cleanup root {root}')
+
+
+def wheel_version(wheel):
+    name = Path(wheel).name
+    parts = name.split('-')
+    if len(parts) < 5 or parts[0] != 'kumo_engine' or not name.endswith('.whl'):
+        raise QualificationError(f'Not a kumo-engine wheel: {name}')
+    return parts[1]
+
+
+def run_worker(command, *, cwd, env, timeout, log_path):
+    """Run one worker in a new session and require a clean, timely exit."""
+    started = time.monotonic()
+    with open(log_path, 'wb') as log:
+        process = subprocess.Popen(command, cwd=cwd, env=env, stdout=log,
+                                   stderr=subprocess.STDOUT,
+                                   start_new_session=True)
+        try:
+            code = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_group(process.pid)
+            process.wait()
+            raise QualificationError(
+                f'Worker exceeded {timeout} seconds: {command[2:4]}') from None
+    leftover = _group_alive(process.pid)
+    if leftover:
+        _kill_group(process.pid)
+        raise QualificationError('Worker left descendant processes running')
+    return dict(exit_code=code, seconds=round(time.monotonic() - started, 3))
+
+
+def _kill_group(pgid):
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def _group_alive(pgid):
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def read_receipt(path, *, phase, case, device):
+    """Load a worker receipt and reject skips, failures and mismatches."""
+    path = Path(path)
+    if not path.is_file():
+        raise QualificationError(f'{phase} receipt is missing: {path}')
+    receipt = json.loads(path.read_text())
+    if receipt.get('schema') != RECEIPT_SCHEMA:
+        raise QualificationError(f'{phase} receipt has an unknown schema')
+    if receipt.get('phase') != phase or receipt.get('case') != case:
+        raise QualificationError(f'{phase} receipt names another phase/case')
+    if receipt.get('device') != device:
+        raise QualificationError(f'{phase} receipt names another device')
+    if receipt.get('status') != 'PASS':
+        raise QualificationError(
+            f'{phase} receipt status is {receipt.get("status")!r}: '
+            f'{receipt.get("error")}')
+    return receipt
+
+
+def require_device_work(receipt, *, phase, device):
+    """Require real batches on the requested device; reject CPU fallback."""
+    work = receipt.get('work') or {}
+    expected = TORCH_DEVICE[device]
+    if work.get('device_types') != [expected]:
+        raise QualificationError(
+            f'{phase} ran on {work.get("device_types")}, not [{expected!r}]')
+    if not work.get('prediction_batches'):
+        raise QualificationError(f'{phase} completed no prediction batches')
+    if phase == 'producer':
+        if work.get('fits') != 1 or not work.get('training_batches') or (
+                work.get('optimizer_steps', 0) <= 0):
+            raise QualificationError('Producer completed no real training')
+    else:
+        if work.get('fits') or work.get('training_batches') or work.get(
+                'optimizer_steps'):
+            raise QualificationError(
+                'Consumer trained the model: '
+                f'fits={work.get("fits")}, '
+                f'training_batches={work.get("training_batches")}, '
+                f'optimizer_steps={work.get("optimizer_steps")}')
+
+
+def expected_retrieval_backend(device, system):
+    if device == 'mps':
+        return 'faiss-metal'
+    if device == 'gpu':
+        return 'faiss-cuda'
+    return 'torch-bruteforce' if system == 'Darwin' else 'faiss-cpu'
+
+
+def require_retrieval(receipt, *, phase, case, device):
+    if not case.endswith('link'):
+        return
+    searches = (receipt.get('work') or {}).get('retrieval') or {}
+    expected = expected_retrieval_backend(device, receipt.get('system'))
+    predicted = searches.get('predict') or {}
+    if set(predicted) != {expected} or predicted[expected] <= 0:
+        raise QualificationError(
+            f'{phase} retrieval used {predicted}, expected only {expected!r}')
+    if device == 'mps':
+        metal = receipt.get('metal') or {}
+        if not (metal.get('mps_available') and metal.get('faiss_metal')
+                and metal.get('faiss_num_gpus', 0) > 0
+                and metal.get('mps_fallback') == '0'):
+            raise QualificationError(
+                f'{phase} has no Apple GPU evidence: {metal}')
+
+
+# ---------------------------------------------------------------------------
+# Prediction validation and comparison. Pandas and NumPy only.
+# ---------------------------------------------------------------------------
+
+
+def _rank_order(frame):
+    """Return per-entity rank positions, from RANK or emitted order."""
+    if 'RANK' in frame:
+        ranks = frame['RANK']
+        return ranks - ranks.groupby(frame['ENTITY']).transform('min')
+    return frame.groupby('ENTITY', sort=False).cumcount()
+
+
+def validate_frame(case, frame, *, entities, k=TOP_K, catalog=None,
+                   anchors=None, atol=1e-4):
+    """Check one prediction output against the saved inputs."""
+    import numpy as np
+    import pandas as pd
+
+    ids = list(entities)
+    if not ids or len(set(ids)) != len(ids):
+        raise QualificationError('Saved entities are empty or repeated')
+    if frame.empty or frame['ENTITY'].isna().any():
+        raise QualificationError('Prediction output is empty or has null keys')
+    if set(frame['ENTITY']) != set(ids):
+        missing = sorted(set(ids) - set(frame['ENTITY']))[:5]
+        foreign = sorted(set(frame['ENTITY']) - set(ids))[:5]
+        raise QualificationError(
+            f'Prediction entities differ: missing={missing}, '
+            f'foreign={foreign}')
+    if anchors is not None:
+        if 'ANCHOR_TIMESTAMP' not in frame:
+            raise QualificationError('Temporal output has no ANCHOR_TIMESTAMP')
+        stamps = pd.to_datetime(frame['ANCHOR_TIMESTAMP'])
+        # JSON receipts turn integer keys into strings; compare as text.
+        expected = frame['ENTITY'].astype(str).map({
+            str(key): pd.Timestamp(value)
+            for key, value in anchors.items()
+        })
+        if expected.isna().any() or not stamps.eq(expected).all():
+            raise QualificationError(
+                'Prediction timestamps differ from the saved inputs')
+    if case == 'numerical':
+        if not frame['ENTITY'].is_unique:
+            raise QualificationError('Numerical output repeats an entity')
+        if not np.isfinite(frame['TARGET_PRED'].to_numpy(float)).all():
+            raise QualificationError('Numerical predictions are not finite')
+        return
+    if catalog is None or not 0 < k < len(catalog):
+        raise QualificationError(
+            'Top-k needs k smaller than the eligible item count')
+    if frame.duplicated(['ENTITY', 'CLASS']).any():
+        raise QualificationError('An entity lists one item twice')
+    counts = frame.groupby('ENTITY').size()
+    if not counts.eq(k).all():
+        raise QualificationError(
+            f'Each entity needs exactly top-{k} items, got '
+            f'{sorted(set(counts.tolist()))}')
+    if not set(frame['CLASS']).issubset(set(catalog)):
+        raise QualificationError('Prediction lists an item outside catalog')
+    scores = frame['SCORE'].to_numpy(float)
+    if not np.isfinite(scores).all():
+        raise QualificationError('Link scores are not finite')
+    ranks = _rank_order(frame)
+    ordered = frame.assign(_RANK=ranks.to_numpy()).sort_values(
+        ['ENTITY', '_RANK'])
+    for _, group in ordered.groupby('ENTITY', sort=False):
+        if group['_RANK'].tolist() != list(range(k)):
+            raise QualificationError('Ranks are not contiguous 0..k-1')
+        values = group['SCORE'].to_numpy(float)
+        if (np.diff(values) > atol).any():
+            raise QualificationError('Ranked scores increase with rank')
+
+
+def compare_predictions(case, baseline, after, *, atol):
+    """Compare coordinates first, then scores, then ranks."""
+    import numpy as np
+
+    if not math.isfinite(atol) or atol < 0:
+        raise QualificationError('Tolerance must be finite and nonnegative')
+    keys = ['ENTITY']
+    if 'ANCHOR_TIMESTAMP' in baseline or 'ANCHOR_TIMESTAMP' in after:
+        keys.append('ANCHOR_TIMESTAMP')
+    if case != 'numerical':
+        keys.append('CLASS')
+    left = baseline.assign(_RANK=_rank_order(baseline).to_numpy())
+    right = after.assign(_RANK=_rank_order(after).to_numpy())
+    for frame in (left, right):
+        if any(key not in frame for key in keys):
+            raise QualificationError(f'Output lacks a coordinate in {keys}')
+        if frame.duplicated(keys).any():
+            raise QualificationError('Output repeats a coordinate')
+    left_keys = set(map(tuple, left[keys].astype(str).to_numpy()))
+    right_keys = set(map(tuple, right[keys].astype(str).to_numpy()))
+    if left_keys != right_keys:
+        raise QualificationError(
+            'Reloaded coordinates differ: '
+            f'missing={sorted(left_keys - right_keys)[:5]}, '
+            f'extra={sorted(right_keys - left_keys)[:5]}')
+    column = 'TARGET_PRED' if case == 'numerical' else 'SCORE'
+    joined = left.astype({
+        key: str
+        for key in keys
+    }).merge(right.astype({key: str
+                           for key in keys}), on=keys,
+             suffixes=('_before', '_after'), validate='one_to_one')
+    before = joined[f'{column}_before'].to_numpy(float)
+    later = joined[f'{column}_after'].to_numpy(float)
+    if not (np.isfinite(before).all() and np.isfinite(later).all()):
+        raise QualificationError('Compared scores are not finite')
+    difference = np.abs(before - later)
+    result = dict(rows=int(len(joined)),
+                  max_abs_difference=float(difference.max()), exact=bool(
+                      (difference == 0).all()), atol=atol)
+    if (difference > atol).any():
+        raise QualificationError(
+            f'Reloaded scores differ beyond atol={atol}: {result}')
+    if case != 'numerical':
+        moved = joined['_RANK_before'] != joined['_RANK_after']
+        result['rank_changes'] = int(moved.sum())
+        for entity in joined.loc[moved, 'ENTITY'].unique():
+            group = joined[joined['ENTITY'] == entity]
+            # A rank may move only between items whose scores tie.
+            span = group.loc[moved & (joined['ENTITY'] == entity),
+                             'SCORE_before']
+            if span.max() - span.min() > atol:
+                raise QualificationError(
+                    f'Rank changed outside a score tie for entity {entity}')
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Worker side: fixtures, training, export, reload and observation.
+# ---------------------------------------------------------------------------
+
+
+def _block_imports():
+    """Hide modules named in DRQ_BLOCK_IMPORTS to test missing dependencies."""
+    names = {
+        name
+        for name in os.environ.get('DRQ_BLOCK_IMPORTS', '').split(',') if name
+    }
+    if not names:
+        return
+
+    class Blocker:
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname.split('.')[0] in names:
+                raise ModuleNotFoundError(f"No module named '{fullname}'",
+                                          name=fullname)
+            return None
+
+    sys.meta_path.insert(0, Blocker())
+
+
+def _seed():
+    import random
+
+    import numpy as np
+    import torch
+
+    random.seed(SEED)
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
+
+
+def write_fixture(case, raw):
+    """Write deterministic source tables; return query inputs."""
+    import numpy as np
+    import pandas as pd
+
+    rng = np.random.default_rng(SEED)
+    raw.mkdir(parents=True, exist_ok=True)
+    if case == 'numerical':
+        targets = rng.random(NUMERIC_ROWS)
+        targets[NUMERIC_LABELED:] = np.nan
+        pd.DataFrame({
+            'ID': np.arange(NUMERIC_ROWS),
+            'Y': targets,
+            'F1': rng.normal(size=NUMERIC_ROWS),
+        }).to_parquet(raw / 'entities.parquet')
+        entities = pd.DataFrame(
+            {'ENTITY1': np.arange(NUMERIC_LABELED, NUMERIC_ROWS)})
+        return dict(entities=entities, catalog=None, anchors=None)
+
+    # Each user mostly buys from one item group, so retrieval can learn.
+    pd.DataFrame({
+        'USER_ID': np.arange(USERS),
+        'AGE': rng.normal(size=USERS),
+    }).to_parquet(raw / 'users.parquet')
+    pd.DataFrame({
+        'ITEM_ID': np.arange(ITEMS),
+        'PRICE': rng.random(ITEMS),
+    }).to_parquet(raw / 'items.parquet')
+    count = 2400
+    user = rng.integers(0, USERS, count)
+    group = np.where(
+        rng.random(count) < .85, user % GROUPS, rng.integers(0, GROUPS, count))
+    item = group * (ITEMS // GROUPS) + rng.integers(0, ITEMS // GROUPS, count)
+    start = pd.Timestamp(START)
+    events = pd.DataFrame({
+        'EVENT_ID': np.arange(count),
+        'USER_ID': user,
+        'ITEM_ID': item,
+    })
+    if case == 'temporal_link':
+        events['TS'] = start + pd.to_timedelta(
+            rng.integers(0, DAYS * 24, count), unit='h')
+    events.to_parquet(raw / 'events.parquet')
+    ids = np.arange(0, USERS, 2)
+    entities = pd.DataFrame({'ENTITY1': ids})
+    anchors = None
+    if case == 'temporal_link':
+        # Temporal link prediction scores one anchor time per call.
+        stamps = [start + pd.Timedelta(days=DAYS)] * len(ids)
+        entities['TIMESTAMP'] = pd.to_datetime(stamps).astype('datetime64[us]')
+        anchors = {int(i): str(s) for i, s in zip(ids, stamps)}
+    return dict(entities=entities, catalog=list(range(ITEMS)), anchors=anchors)
+
+
+def build_graph(case, raw):
+    from kumoapi.graph import Edge
+    from kumoapi.typing import Stype
+
+    import kumo.engine as kumo
+
+    files = kumo.FileConnector(root_dir=str(raw))
+    if case == 'numerical':
+        entities = kumo.Table.from_source_table(
+            files['entities.parquet'], primary_key='ID').infer_metadata()
+        return kumo.Graph(tables={'entities': entities}, edges=[])
+    users = kumo.Table.from_source_table(
+        files['users.parquet'], primary_key='USER_ID').infer_metadata()
+    items = kumo.Table.from_source_table(
+        files['items.parquet'], primary_key='ITEM_ID').infer_metadata()
+    events = kumo.Table.from_source_table(
+        files['events.parquet'], primary_key='EVENT_ID', time_column='TS'
+        if case == 'temporal_link' else None).infer_metadata().with_column(
+            'USER_ID', stype=Stype.ID).with_column('ITEM_ID', stype=Stype.ID)
+    graph = kumo.Graph(
+        tables={
+            'users': users,
+            'items': items,
+            'events': events
+        }, edges=[
+            Edge(src_table='events', fkey='USER_ID', dst_table='users'),
+            Edge(src_table='events', fkey='ITEM_ID', dst_table='items'),
+        ])
+    graph.validate()
+    return graph
+
+
+def generation_plan(case):
+    import pandas as pd
+    from kumoapi.model_plan import TrainingTableGenerationPlan
+
+    if case == 'numerical':
+        return None
+    if case == 'static_link':
+        return TrainingTableGenerationPlan(
+            split='RandomLinkSplit([0.6, 0.2, 0.2])')
+    end = pd.Timestamp(START) + pd.Timedelta(days=DAYS)
+    step = pd.Timedelta(days=HORIZON)
+    bounds = [(pd.Timestamp(START), end - 2 * step),
+              (end - 2 * step, end - step), (end - step, end)]
+    ranges = [(a.isoformat(), b.isoformat()) for a, b in bounds]
+    return TrainingTableGenerationPlan(
+        split=(f'TimeRangeSplit({ranges!r}, timeframe={HORIZON}, '
+               'flexible_boundaries=False)'), timeframe_step=HORIZON)
+
+
+def model_plan(case):
+    from kumoapi.model_plan import GNNModelPlan, ModelPlan, NumNeighborsConfig
+
+    plan = ModelPlan()
+    plan.training_job.num_experiments = 1
+    plan.training_job.disable_explain = True
+    plan.training_job.disable_compilation = True
+    plan.training_job.manual_seed = SEED
+    plan.training_job.refit_trainval = False
+    plan.training_job.refit_full = False
+    plan.optimization.max_epochs = 2
+    plan.optimization.min_steps_per_epoch = 4
+    plan.optimization.max_steps_per_epoch = 4
+    plan.optimization.batch_size = [32]
+    plan.optimization.max_val_steps = 20
+    plan.optimization.max_test_steps = 20
+    if case.endswith('link'):
+        plan.training_job.metrics = [f'recall@{TOP_K}']
+        plan.training_job.tune_metric = f'recall@{TOP_K}'
+        plan.model_architecture.model = [
+            GNNModelPlan(channels=[16], aggregation=[['sum', 'mean']],
+                         dropout=[0.0])
+        ]
+        plan.model_architecture.module = 'shallow_rhs'
+        plan.model_architecture.target_embedding_mode = ['lookup']
+        plan.model_architecture.output_embedding_dim = [16]
+        plan.model_architecture.handle_new_target_entities = False
+        plan.neighbor_sampling.num_neighbors = [
+            NumNeighborsConfig(hop1={'default': 8}, hop2={'default': 8})
+        ]
+    return plan
+
+
+def prediction_options(case, durable, output_dir):
+    from kumoapi.jobs import MetadataField
+
+    import kumo.engine as kumo
+
+    options = dict(entities=kumo.FileConnector(
+        root_dir=str(durable))['entities.parquet'])
+    if case.endswith('link'):
+        options['num_classes_to_return'] = TOP_K
+    if case == 'temporal_link':
+        options['output_config'] = kumo.PredictionOutputConfig(
+            connector=kumo.FileConnector(root_dir=str(output_dir)),
+            output_paths={'predictions': 'predictions'},
+            extra_fields=[MetadataField.ANCHOR_TIMESTAMP])
+    return options
+
+
+def canonical(frame):
+    columns = [
+        column for column in ('ENTITY', 'ANCHOR_TIMESTAMP', 'CLASS', 'SCORE',
+                              'RANK', 'TARGET_PRED') if column in frame
+    ]
+    frame = frame[columns].copy()
+    if 'RANK' not in frame and 'CLASS' in frame:
+        frame['RANK'] = frame.groupby('ENTITY', sort=False).cumcount()
+    if 'ANCHOR_TIMESTAMP' in frame:
+        import pandas as pd
+        frame['ANCHOR_TIMESTAMP'] = pd.to_datetime(
+            frame['ANCHOR_TIMESTAMP']).astype('datetime64[us]')
+    order = [c for c in ('ENTITY', 'ANCHOR_TIMESTAMP', 'RANK') if c in frame]
+    return frame.sort_values(order).reset_index(drop=True)
+
+
+@contextmanager
+def observe(device, work):
+    """Record real device work through public Lightning and Torch hooks."""
+    from unittest.mock import patch
+
+    import pytorch_lightning as pl
+    import torch
+    from kumo_core.modeling.retrieval import mips
+    from torch.optim.optimizer import register_optimizer_step_post_hook
+
+    expected = TORCH_DEVICE[device]
+    seen = set()
+
+    def tensors(values):
+        if isinstance(values, torch.Tensor):
+            return [values]
+        if isinstance(values, dict):
+            return [v for v in values.values() if isinstance(v, torch.Tensor)]
+        if isinstance(values, (list, tuple)):
+            return [v for v in values if isinstance(v, torch.Tensor)]
+        return []
+
+    def check(module, values, label):
+        found = [value for value in tensors(values) if value.numel()]
+        seen.add(module.device.type)
+        seen.update(value.device.type for value in found)
+        if module.device.type != expected or not found or any(
+                value.device.type != expected for value in found):
+            raise QualificationError(
+                f'{label} did not run on {expected}: module='
+                f'{module.device}, outputs='
+                f'{[str(v.device) for v in found]}')
+
+    class Proof(pl.Callback):
+        def on_fit_start(self, trainer, module):
+            work['fits'] += 1
+
+        def on_train_batch_end(self, trainer, module, outputs, batch, index):
+            check(module, outputs, 'Training batch')
+            work['training_batches'] += 1
+
+        def on_predict_batch_end(self, trainer, module, outputs, batch, index,
+                                 dataloader_index=0):
+            check(module, outputs, 'Prediction batch')
+            work['prediction_batches'] += 1
+
+    class ObservedTrainer(pl.Trainer):
+        def __init__(self, *args, **kwargs):
+            kwargs['callbacks'] = [*(kwargs.get('callbacks') or []), Proof()]
+            super().__init__(*args, **kwargs)
+
+    def on_step(optimizer, _args, _kwargs):
+        grads = [
+            parameter.grad for group in optimizer.param_groups
+            for parameter in group['params'] if parameter.grad is not None
+        ]
+        if not grads or any(grad.device.type != expected for grad in grads):
+            raise QualificationError('Optimizer step ran off-device')
+        work['optimizer_steps'] += 1
+
+    original = mips.MIPSFaiss._search
+
+    def search(index, query, k, exclude):
+        if index._cpu_index is not None:
+            backend = 'torch-bruteforce'
+        elif index._metal_index is not None:
+            backend = 'faiss-metal'
+        elif index._res is not None:
+            backend = 'faiss-cuda'
+        else:
+            backend = 'faiss-cpu'
+        stage = work['retrieval'].setdefault(work['stage'], {})
+        stage[backend] = stage.get(backend, 0) + 1
+        return original(index, query, k, exclude)
+
+    hook = register_optimizer_step_post_hook(on_step)
+    try:
+        with patch.object(pl, 'Trainer', ObservedTrainer), patch.object(
+                mips.MIPSFaiss, '_search', search):
+            yield
+    finally:
+        hook.remove()
+        work['device_types'] = sorted(seen)
+
+
+def environment(device, expected_version):
+    import torch
+
+    import kumo.engine as kumo
+
+    version = importlib.metadata.version('kumo-engine')
+    location = Path(kumo.__file__).resolve()
+    if version != expected_version or kumo.__version__ != version:
+        raise QualificationError(
+            f'Installed kumo-engine {version} is not candidate '
+            f'{expected_version}')
+    if not location.is_relative_to(Path(sys.prefix).resolve()):
+        raise QualificationError(f'kumo.engine imported from {location}')
+    info = dict(kumo_engine=version, import_path=str(location),
+                python=sys.version.split()[0], executable=sys.executable,
+                platform=platform.platform(), machine=platform.machine(),
+                system=platform.system(), torch=torch.__version__,
+                torch_cuda=torch.version.cuda,
+                cuda_available=torch.cuda.is_available(),
+                mps_available=bool(torch.backends.mps.is_available()))
+    try:
+        import faiss
+        info['faiss'] = dict(
+            version=faiss.__version__, path=faiss.__file__,
+            options=faiss.get_compile_options(), num_gpus=faiss.get_num_gpus()
+            if hasattr(faiss, 'get_num_gpus') else None)
+    except ImportError as error:
+        info['faiss'] = dict(error=str(error))
+    return info
+
+
+def preflight(device, info):
+    """A required device must exist; never fall back to CPU silently."""
+    import torch
+
+    if device == 'gpu' and not (torch.cuda.is_available()
+                                and torch.cuda.device_count() >= 1):
+        raise QualificationError(
+            'Required CUDA device is unavailable: torch.cuda.is_available() '
+            f'is {torch.cuda.is_available()}')
+    if device == 'mps':
+        if platform.system(
+        ) != 'Darwin' or not torch.backends.mps.is_available():
+            raise QualificationError(
+                'Required MPS device is unavailable on this host')
+        if os.environ.get('PYTORCH_ENABLE_MPS_FALLBACK') != '0':
+            raise QualificationError(
+                'Strict MPS needs PYTORCH_ENABLE_MPS_FALLBACK=0')
+    if device == 'gpu':
+        info['gpu_name'] = torch.cuda.get_device_name(0)
+
+
+def metal_evidence(info):
+    import torch
+
+    faiss = info.get('faiss') or {}
+    return dict(mps_available=bool(torch.backends.mps.is_available()),
+                mps_built=bool(torch.backends.mps.is_built()),
+                faiss_metal='MAC_METAL' in (faiss.get('options') or ''),
+                faiss_num_gpus=faiss.get('num_gpus') or 0,
+                mps_fallback=os.environ.get('PYTORCH_ENABLE_MPS_FALLBACK'))
+
+
+def produce(args):
+    import kumo.engine as kumo
+
+    durable = Path(args.durable)
+    work = dict(stage='fit', fits=0, training_batches=0, prediction_batches=0,
+                optimizer_steps=0, retrieval={})
+    receipt = dict(schema=RECEIPT_SCHEMA, phase='producer', case=args.case,
+                   device=args.device, status='RUNNING', work=work)
+    info = environment(args.device, args.expected_version)
+    receipt.update(info)
+    preflight(args.device, info)
+    kumo.configure(scratch_dir=args.scratch)
+    fixture = write_fixture(args.case, Path(args.raw))
+    fixture['entities'].to_parquet(durable / 'entities.parquet')
+    _seed()
+    graph = build_graph(args.case, Path(args.raw))
+    snapshot = graph.snapshot()
+    query = kumo.PredictiveQuery(graph=graph, query=QUERIES[args.case])
+    query.validate()
+    plan = generation_plan(args.case)
+    table = (query.generate_training_table(snapshot) if plan is None else
+             query.generate_training_table(snapshot, plan=plan))
+    with observe(args.device, work):
+        trainer = kumo.Trainer(model_plan=model_plan(args.case),
+                               accelerator=args.device)
+        fitted = trainer.fit(table, snapshot=snapshot)
+        metrics = {key: float(value) for key, value in fitted.metrics.items()}
+        if not metrics or not all(map(math.isfinite, metrics.values())):
+            raise QualificationError('Training metrics are missing or invalid')
+        files = kumo.FileConnector(root_dir=str(durable))
+        published = fitted.export(kumo.ModelOutputConfig(files, path='model'))
+        location = snapshot.export(
+            kumo.SnapshotOutputConfig(files, path='snapshot'))
+        work['stage'] = 'predict'
+        _seed()
+        before = work['prediction_batches']
+        result = trainer.predict(
+            snapshot,
+            **prediction_options(args.case, durable,
+                                 Path(args.scratch) / 'out'))
+        if work['prediction_batches'] <= before:
+            raise QualificationError('Baseline prediction ran no batches')
+        frame = canonical(result.frame)
+    validate_frame(args.case, frame,
+                   entities=fixture['entities']['ENTITY1'].tolist(),
+                   catalog=fixture['catalog'], anchors=fixture['anchors'])
+    frame.to_parquet(durable / 'baseline.parquet')
+    receipt.update(
+        status='PASS', metrics=metrics, snapshot_id=snapshot.id,
+        snapshot_location=location,
+        model=dict(name=published.name, version=published.version,
+                   uri=published.uri,
+                   metadata=dict(published.metadata)), query=QUERIES[args.case],
+        top_k=TOP_K if args.case.endswith('link') else None,
+        catalog=fixture['catalog'], anchors=fixture['anchors'],
+        entities=fixture['entities']['ENTITY1'].tolist(), options=dict(
+            num_classes_to_return=TOP_K if args.case.endswith('link') else None,
+            anchor_timestamp=args.case == 'temporal_link'), rows=len(frame))
+    if args.device == 'mps':
+        receipt['metal'] = metal_evidence(info)
+    return receipt
+
+
+def consume(args):
+    import kumo.engine as kumo
+
+    durable = Path(args.durable)
+    producer = json.loads(Path(args.producer_receipt).read_text())
+    work = dict(stage='load', fits=0, training_batches=0, prediction_batches=0,
+                optimizer_steps=0, retrieval={})
+    receipt = dict(schema=RECEIPT_SCHEMA, phase='consumer', case=args.case,
+                   device=args.device, status='RUNNING', work=work,
+                   producer_receipt_sha256=sha256_file(args.producer_receipt))
+    info = environment(args.device, args.expected_version)
+    receipt.update(info)
+    if not args.skip_preflight:
+        preflight(args.device, info)
+    kumo.configure(scratch_dir=args.scratch)
+    with observe(args.device, work):
+        files = kumo.FileConnector(root_dir=str(durable))
+        trainer = kumo.Trainer.load_from_connector(files, path='model',
+                                                   accelerator=args.device)
+        snapshot = kumo.GraphSnapshot.load_from_connector(
+            files, path=producer['snapshot_location'])
+        if snapshot.id != producer['snapshot_id']:
+            raise QualificationError('Reloaded snapshot has another id')
+        work['stage'] = 'predict'
+        _seed()
+        result = trainer.predict(
+            snapshot,
+            **prediction_options(args.case, durable,
+                                 Path(args.scratch) / 'out'))
+        frame = canonical(result.frame)
+    frame.to_parquet(Path(args.output) / 'reloaded.parquet')
+    receipt.update(status='PASS', snapshot_id=snapshot.id, rows=len(frame))
+    if args.device == 'mps':
+        receipt['metal'] = metal_evidence(info)
+    return receipt
+
+
+def worker_main(args):
+    _block_imports()
+    receipt_path = Path(args.receipt)
+    phase = 'producer' if args.command == 'produce' else 'consumer'
+    receipt = dict(schema=RECEIPT_SCHEMA, phase=phase, case=args.case,
+                   device=args.device, status='FAIL')
+    code = 1
+    try:
+        receipt = (produce if args.command == 'produce' else consume)(args)
+        code = 0
+    except BaseException as error:  # noqa: B902 -- record, then fail.
+        receipt.update(status='FAIL', error=f'{type(error).__name__}: {error}')
+        traceback.print_exc()
+    receipt_path.write_text(json.dumps(receipt, indent=2, default=str) + '\n')
+    return code
+
+
+# ---------------------------------------------------------------------------
+# Controller.
+# ---------------------------------------------------------------------------
+
+
+def worker_env(device, roots):
+    env = dict(os.environ)
+    for name in ('PYTHONPATH', 'PYTHONHOME', 'DRQ_BLOCK_IMPORTS'):
+        env.pop(name, None)
+    env.update(TMPDIR=str(roots['tmp']), TEMP=str(roots['tmp']),
+               TMP=str(roots['tmp']), XDG_CACHE_HOME=str(roots['cache']),
+               PYTHONUNBUFFERED='1', PYTHONDONTWRITEBYTECODE='1',
+               SYNC_DATA_LOADER='1')
+    if device == 'cpu':
+        env['CUDA_VISIBLE_DEVICES'] = ''
+    if device == 'mps':
+        env['PYTORCH_ENABLE_MPS_FALLBACK'] = '0'
+    return env
+
+
+def make_roots(base):
+    roots = {name: base / name for name in ('scratch', 'cache', 'cwd')}
+    for path in roots.values():
+        path.mkdir(parents=True)
+    # AF_UNIX socket paths are limited to about 104 bytes, and Torch data
+    # loaders put sockets in TMPDIR. Use a short, task-owned directory.
+    roots['tmp'] = Path(
+        tempfile.mkdtemp(
+            prefix='drq-', dir=os.environ.get('DRQ_TMP_BASE')
+            or ('/tmp' if os.path.isdir('/tmp') else None)))
+    return roots
+
+
+def remove_roots(base, roots):
+    """Delete every ephemeral root and prove that none survived."""
+    targets = [Path(base), *roots.values()]
+    for path in targets:
+        shutil.rmtree(path, ignore_errors=True)
+    survivors = [str(path) for path in targets if path.exists()]
+    if survivors:
+        raise QualificationError(f'Cleanup left directories: {survivors}')
+    return [str(path) for path in targets]
+
+
+def worker_command(python, script, command, case, device, version, **paths):
+    result = [
+        str(python), '-I',
+        str(script), command, '--case', case, '--device', device,
+        '--expected-version', version
+    ]
+    for key, value in paths.items():
+        if value is True:
+            result.append(f'--{key.replace("_", "-")}')
+        elif value is not None:
+            result += [f'--{key.replace("_", "-")}', str(value)]
+    return result
+
+
+def run_consumer(ctx, durable, label, *, device=None, env_extra=None,
+                 skip_preflight=False):
+    base = ctx['work'] / label
+    if base.exists():
+        shutil.rmtree(base)
+    roots = make_roots(base)
+    output = ctx['evidence'] / label
+    output.mkdir(parents=True, exist_ok=True)
+    device = device or ctx['device']
+    env = worker_env(device, roots)
+    env.update(env_extra or {})
+    receipt = output / 'consumer-receipt.json'
+    command = worker_command(ctx['python'], ctx['script'], 'consume',
+                             ctx['case'], device, ctx['version'],
+                             durable=durable, scratch=roots['scratch'],
+                             producer_receipt=ctx['producer_receipt'],
+                             receipt=receipt, output=output,
+                             skip_preflight=skip_preflight or None)
+    process = run_worker(command, cwd=roots['cwd'], env=env,
+                         timeout=ctx['timeout'],
+                         log_path=output / 'consumer.log')
+    remove_roots(base, roots)
+    return process, receipt, output
+
+
+def run_case(ctx):
+    """Run one positive case; return its result row."""
+    case, device = ctx['case'], ctx['device']
+    work, evidence = ctx['work'], ctx['evidence']
+    durable = work / 'durable'
+    producer_base = work / 'producer'
+    durable.mkdir(parents=True)
+    roots = make_roots(producer_base)
+    raw = producer_base / 'raw'
+    require_disjoint(durable, [producer_base, *roots.values()])
+    receipt_path = evidence / 'producer-receipt.json'
+    command = worker_command(ctx['python'], ctx['script'], 'produce', case,
+                             device, ctx['version'], durable=durable,
+                             scratch=roots['scratch'], raw=raw,
+                             receipt=receipt_path)
+    process = run_worker(command, cwd=roots['cwd'],
+                         env=worker_env(device, roots), timeout=ctx['timeout'],
+                         log_path=evidence / 'producer.log')
+    row = dict(producer_process=process)
+    if process['exit_code'] != 0:
+        remove_roots(producer_base, roots)
+        raise QualificationError(
+            f'Producer exited with {process["exit_code"]}; see producer.log')
+    producer = read_receipt(receipt_path, phase='producer', case=case,
+                            device=device)
+    require_device_work(producer, phase='producer', device=device)
+    require_retrieval(producer, phase='producer', case=case, device=device)
+    exports = {
+        'model': tree_hashes(durable / 'model'),
+        'snapshot': tree_hashes(durable / 'snapshot'),
+    }
+    inputs = {
+        name: sha256_file(durable / name)
+        for name in ('entities.parquet', 'baseline.parquet')
+    }
+    # Delete everything the producer owned except the durable exports.
+    row['deleted_after_producer'] = remove_roots(producer_base, roots)
+    shutil.copy2(durable / 'baseline.parquet', evidence / 'baseline.parquet')
+    ctx['producer_receipt'] = receipt_path
+    process, consumer_path, _ = run_consumer(ctx, durable, 'consumer')
+    row['consumer_process'] = process
+    if process['exit_code'] != 0:
+        raise QualificationError(
+            f'Consumer exited with {process["exit_code"]}; see consumer.log')
+    consumer = read_receipt(consumer_path, phase='consumer', case=case,
+                            device=device)
+    if consumer.get('producer_receipt_sha256') != sha256_file(receipt_path):
+        raise QualificationError('Consumer receipt names another producer')
+    if consumer.get('kumo_engine') != producer.get('kumo_engine'):
+        raise QualificationError('Producer and consumer used other wheels')
+    require_device_work(consumer, phase='consumer', device=device)
+    require_retrieval(consumer, phase='consumer', case=case, device=device)
+    for name, hashes in exports.items():
+        require_same_tree(hashes, durable / name, name)
+    import pandas as pd
+
+    baseline = pd.read_parquet(durable / 'baseline.parquet')
+    reloaded = pd.read_parquet(evidence / 'consumer' / 'reloaded.parquet')
+    for frame in (baseline, reloaded):
+        validate_frame(case, frame, entities=producer['entities'],
+                       k=producer.get('top_k') or TOP_K,
+                       catalog=producer.get('catalog'),
+                       anchors=producer.get('anchors'), atol=ctx['atol'])
+    row['comparison'] = compare_predictions(case, baseline, reloaded,
+                                            atol=ctx['atol'])
+    row.update(
+        model_files=exports['model'], snapshot_files=exports['snapshot'],
+        inputs=inputs, snapshot_id=producer['snapshot_id'],
+        snapshot_location=producer['snapshot_location'],
+        model=producer['model'], metrics=producer['metrics'],
+        producer_work=producer['work'], consumer_work=consumer['work'],
+        environment={
+            key: producer.get(key)
+            for key in ('kumo_engine', 'import_path', 'python', 'platform',
+                        'machine', 'system', 'torch', 'torch_cuda', 'faiss',
+                        'gpu_name')
+        })
+    if device == 'mps':
+        row['metal'] = dict(producer=producer['metal'],
+                            consumer=consumer['metal'])
+    ctx['producer'] = producer
+    return row, durable, baseline
+
+
+def _largest_file(root):
+    return max((p for p in Path(root).rglob('*') if p.is_file()),
+               key=lambda p: p.stat().st_size)
+
+
+def _corrupt_largest(root):
+    target = _largest_file(root)
+    data = bytearray(target.read_bytes())
+    data[len(data) // 2] ^= 0xFF
+    target.write_bytes(bytes(data))
+    return target
+
+
+def _remove_largest(root):
+    target = _largest_file(root)
+    target.unlink()
+    return target
+
+
+def _remove_tree(root):
+    shutil.rmtree(root)
+    return root
+
+
+def unavailable_device():
+    """Pick a device this host cannot use, for the wrong-device check."""
+    if platform.system() != 'Darwin':
+        return 'mps'
+    return 'gpu'
+
+
+def negative_checks(ctx, durable, baseline):
+    """Each check passes only when the harness or the product rejects it."""
+    import numpy as np
+    import pandas as pd
+
+    case = ctx['case']
+    producer = ctx['producer']
+    checks = []
+
+    def expect_rejected(name, action):
+        try:
+            detail = action()
+        except QualificationError as error:
+            checks.append(dict(name=name, detected=True, detail=str(error)))
+            return
+        except Exception as error:  # noqa: B902 -- unexpected, still record.
+            checks.append(
+                dict(name=name, detected=False,
+                     detail=f'{type(error).__name__}: {error}'))
+            return
+        checks.append(dict(name=name, detected=False, detail=detail))
+
+    def consumer_must_fail(label, mutate=None, **kwargs):
+        copy = ctx['work'] / f'{label}-durable'
+        shutil.copytree(durable, copy)
+        target = mutate(copy) if mutate else None
+        process, receipt_path, output = run_consumer(ctx, copy, label, **kwargs)
+        shutil.rmtree(copy)
+        receipt = json.loads(
+            receipt_path.read_text()) if (receipt_path.is_file()) else {}
+        detail = dict(exit_code=process['exit_code'],
+                      error=receipt.get('error'),
+                      mutated=str(target) if target else None)
+        if process['exit_code'] == 0:
+            # A zero exit is accepted only if the receipt checks reject it.
+            consumer = read_receipt(
+                receipt_path, phase='consumer', case=case,
+                device=kwargs.get('device') or ctx['device'])
+            require_device_work(consumer, phase='consumer',
+                                device=kwargs.get('device') or ctx['device'])
+            return f'Consumer accepted it: {detail}'
+        raise QualificationError(json.dumps(detail, default=str))
+
+    if case == 'numerical':
+        expect_rejected(
+            'model_file_corrupt', lambda: consumer_must_fail(
+                'neg-model-corrupt', lambda d: _corrupt_largest(d / 'model')))
+        expect_rejected(
+            'model_file_missing', lambda: consumer_must_fail(
+                'neg-model-missing', lambda d: _remove_largest(d / 'model')))
+        expect_rejected(
+            'snapshot_file_corrupt', lambda: consumer_must_fail(
+                'neg-snapshot-corrupt', lambda d: _corrupt_largest(d /
+                                                                   'snapshot')))
+        expect_rejected(
+            'snapshot_missing', lambda: consumer_must_fail(
+                'neg-snapshot-missing', lambda d: _remove_tree(d / 'snapshot')))
+        wrong = unavailable_device()
+        expect_rejected(
+            f'unavailable_device_{wrong}', lambda: consumer_must_fail(
+                f'neg-device-{wrong}', device=wrong, skip_preflight=True,
+                env_extra={'PYTORCH_ENABLE_MPS_FALLBACK': '0'}))
+    if case == 'static_link':
+        expect_rejected(
+            'faiss_missing', lambda: consumer_must_fail(
+                'neg-faiss-missing', env_extra={'DRQ_BLOCK_IMPORTS': 'faiss'}))
+
+    entities = producer['entities']
+
+    def tampered(change):
+        frame = change(baseline.copy())
+        validate_frame(case, frame, entities=entities, k=producer.get('top_k')
+                       or TOP_K, catalog=producer.get('catalog'),
+                       anchors=producer.get('anchors'), atol=ctx['atol'])
+        compare_predictions(case, baseline, frame, atol=ctx['atol'])
+        return 'Tampered prediction passed'
+
+    column = 'TARGET_PRED' if case == 'numerical' else 'SCORE'
+    tampers = {
+        'prediction_score_shift':
+        lambda f: f.assign(**{column: f[column] + 10 * ctx['atol'] + 1e-3}),
+        'prediction_entity_missing':
+        lambda f: f[f['ENTITY'] != f['ENTITY'].iloc[0]],
+        'prediction_entity_duplicated':
+        lambda f: pd.concat([f, f.iloc[:1]]),
+    }
+    if case != 'numerical':
+
+        def swap_item(f):
+            row = f.index[0]
+            used = set(f.loc[f['ENTITY'] == f.at[row, 'ENTITY'], 'CLASS'])
+            f.at[row, 'CLASS'] = next(i for i in producer['catalog']
+                                      if i not in used)
+            return f
+
+        def swap_rank(f):
+            first = f.index[(f['ENTITY'] == f['ENTITY'].iloc[0])
+                            & (f['RANK'] == f['RANK'].min())][0]
+            second = f.index[(f['ENTITY'] == f['ENTITY'].iloc[0])
+                             & (f['RANK'] == f['RANK'].min() + TOP_K - 1)][0]
+            f.loc[[first, second], 'CLASS'] = f.loc[[second, first],
+                                                    'CLASS'].to_numpy()
+            return f
+
+        tampers.update(
+            item_replaced=swap_item, rank_swapped=swap_rank,
+            top_k_truncated=lambda f: f[f['RANK'] != f['RANK'].max()])
+    if case == 'temporal_link':
+        tampers['timestamp_shifted'] = lambda f: f.assign(ANCHOR_TIMESTAMP=f[
+            'ANCHOR_TIMESTAMP'] + np.timedelta64(1, 'D'))
+    for name, change in tampers.items():
+        expect_rejected(name, lambda change=change: tampered(change))
+    return checks
+
+
+def run_controller(args):
+    script = Path(__file__).resolve()
+    python = Path(args.python or sys.executable)
+    wheel = Path(args.wheel).resolve()
+    version = wheel_version(wheel)
+    output = Path(args.output_dir).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    work_root = Path(args.work_dir).resolve()
+    require_disjoint(output, [work_root])
+    summary = dict(
+        status='RUNNING', label=args.label, device=args.device,
+        wheel=dict(name=wheel.name, sha256=sha256_file(wheel),
+                   version=version), harness_sha256=sha256_file(script),
+        python=str(python), atol=args.atol, timeout=args.timeout,
+        commit=args.commit, required_cases=list(args.case), cases={})
+    for case in args.case:
+        evidence = output / case
+        if evidence.exists():
+            shutil.rmtree(evidence)
+        evidence.mkdir(parents=True)
+        work = work_root / case
+        if work.exists():
+            shutil.rmtree(work)
+        work.mkdir(parents=True)
+        ctx = dict(case=case, device=args.device, python=python, script=script,
+                   version=version, timeout=args.timeout, atol=args.atol,
+                   work=work, evidence=evidence)
+        row = dict(status='RUNNING')
+        started = time.monotonic()
+        try:
+            details, durable, baseline = run_case(ctx)
+            row.update(details)
+            if args.negative_checks:
+                row['negative_checks'] = negative_checks(ctx, durable, baseline)
+                missed = [
+                    c['name'] for c in row['negative_checks']
+                    if not c['detected']
+                ]
+                if missed:
+                    raise QualificationError(
+                        f'Negative checks were not detected: {missed}')
+            row['status'] = 'PASS'
+        except Exception as error:  # noqa: B902 -- record per case.
+            row.update(status='FAIL', error=f'{type(error).__name__}: {error}')
+            traceback.print_exc()
+        row['seconds'] = round(time.monotonic() - started, 3)
+        summary['cases'][case] = row
+        (evidence / 'result.json'
+         ).write_text(json.dumps(row, indent=2, default=str) + '\n')
+        print(
+            json.dumps(
+                dict(case=case, status=row['status'], error=row.get('error'),
+                     comparison=row.get('comparison'))), flush=True)
+        if not args.keep_work:
+            shutil.rmtree(work, ignore_errors=True)
+    passed = all(summary['cases'].get(case, {}).get('status') == 'PASS'
+                 for case in args.case)
+    summary['status'] = 'PASS' if passed else 'FAIL'
+    (output / 'summary.json'
+     ).write_text(json.dumps(summary, indent=2, default=str) + '\n')
+    return 0 if passed else 1
+
+
+def required_labels():
+    return [
+        f'{name}-{device}-py{python}' for name, device in REQUIRED_TARGETS
+        for python in PYTHONS
+    ]
+
+
+def build_report(evidence_dir, *, commit=None):
+    """Merge job summaries; a configuration without evidence is UNVERIFIED."""
+    found = {}
+    for path in sorted(Path(evidence_dir).rglob('summary.json')):
+        summary = json.loads(path.read_text())
+        label = summary.get('label')
+        if label in found:
+            raise QualificationError(f'Two summaries for {label}')
+        found[label] = (path, summary)
+    rows = []
+    for label in required_labels():
+        path, summary = found.get(label, (None, None))
+        for case in CASES:
+            row = dict(label=label, case=case, status='UNVERIFIED',
+                       reason='No evidence was produced for this case.')
+            if summary is not None:
+                result = summary.get('cases', {}).get(case)
+                row.update(evidence=str(path), wheel=summary.get('wheel'),
+                           harness_sha256=summary.get('harness_sha256'))
+                if result is None:
+                    row['reason'] = 'The job did not run this case.'
+                elif commit and summary.get('commit') != commit:
+                    row.update(status='FAIL',
+                               reason='Evidence names another commit.')
+                else:
+                    row.update(status=result.get('status', 'FAIL'),
+                               reason=result.get('error'),
+                               comparison=result.get('comparison'))
+                    checks = result.get('negative_checks')
+                    if checks is not None:
+                        row['negative_checks'] = {
+                            c['name']: c['detected']
+                            for c in checks
+                        }
+            rows.append(row)
+    unexpected = sorted(set(found) - set(required_labels()))
+    status = 'PASS' if all(r['status'] == 'PASS' for r in rows) else 'OPEN'
+    return dict(status=status, commit=commit, rows=rows,
+                unexpected_labels=unexpected)
+
+
+def write_report(report, output):
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    (output / 'matrix.json'
+     ).write_text(json.dumps(report, indent=2, default=str) + '\n')
+    lines = [
+        f'Desktop reload qualification: {report["status"]}', '',
+        '| Configuration | Case | Status | Detail |',
+        '| --- | --- | --- | --- |'
+    ]
+    for row in report['rows']:
+        detail = row.get('reason') or json.dumps(row.get('comparison'))
+        detail = str(detail).replace('|', '/').replace('\n', ' ')[:160]
+        lines.append(
+            f'| {row["label"]} | {row["case"]} | {row["status"]} | {detail} |')
+    (output / 'matrix.md').write_text('\n'.join(lines) + '\n')
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    commands = parser.add_subparsers(dest='command', required=True)
+    run = commands.add_parser('run')
+    run.add_argument('--wheel', required=True)
+    run.add_argument('--device', choices=DEVICES, required=True)
+    run.add_argument('--case', choices=CASES, action='append', required=True)
+    run.add_argument('--work-dir', required=True)
+    run.add_argument('--output-dir', required=True)
+    run.add_argument('--python')
+    run.add_argument('--label')
+    run.add_argument('--commit')
+    run.add_argument('--atol', type=float, default=1e-4)
+    run.add_argument('--timeout', type=float, default=1800)
+    run.add_argument('--negative-checks', action='store_true')
+    run.add_argument('--keep-work', action='store_true')
+    report = commands.add_parser('report')
+    report.add_argument('--evidence-dir', required=True)
+    report.add_argument('--output-dir', required=True)
+    report.add_argument('--commit')
+    for name in ('produce', 'consume'):
+        worker = commands.add_parser(name)
+        worker.add_argument('--case', choices=CASES, required=True)
+        worker.add_argument('--device', choices=DEVICES, required=True)
+        worker.add_argument('--expected-version', required=True)
+        worker.add_argument('--durable', required=True)
+        worker.add_argument('--scratch', required=True)
+        worker.add_argument('--receipt', required=True)
+        if name == 'produce':
+            worker.add_argument('--raw', required=True)
+        else:
+            worker.add_argument('--producer-receipt', required=True)
+            worker.add_argument('--output', required=True)
+            worker.add_argument('--skip-preflight', action='store_true')
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    if args.command == 'run':
+        return run_controller(args)
+    if args.command == 'report':
+        report = build_report(args.evidence_dir, commit=args.commit)
+        write_report(report, args.output_dir)
+        print(Path(args.output_dir, 'matrix.md').read_text())
+        return 0 if report['status'] == 'PASS' else 1
+    return worker_main(args)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
