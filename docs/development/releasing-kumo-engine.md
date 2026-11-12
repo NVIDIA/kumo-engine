@@ -136,8 +136,9 @@ platform's `release-version`.
      A new consumer process loads only the exports and predicts without
      training. Entities, anchor timestamps, classes or items, and forecast
      steps must match the saved inputs exactly. Scores must match within the
-     absolute tolerance `0.0001`, and labels or ranks may change only between
-     tied scores. A CUDA or
+     absolute tolerance `0.0001` on CPU and MPS, and `0.005` on CUDA, the
+     GPU smoke's reload bound, because CUDA kernels are not bit-reproducible.
+     Labels or ranks may change only between tied scores. A CUDA or
      MPS row passes only with training and prediction batches observed on
      that device, and MPS link rows need Faiss Metal search. The job uploads
      the wheel hash, model and snapshot file hashes, logs, and per-case

@@ -262,7 +262,7 @@ def write_summary(root, label, *, attempt=1, commit='abc', **changes):
     body = dict(
         **host(name),
         label=label, commit=commit, attempt=attempt, device=device,
-        python_version=python.removeprefix('py') + '.0', atol=drq.REQUIRED_ATOL,
+        python_version=python.removeprefix('py') + '.0', atol=drq.REQUIRED_ATOL[device],
         harness_sha256='h', tasks_sha256='t', fixture=dict(data_sha256='f'),
         wheel=dict(installed_files_verified=10, version='1'), cases={
             case: dict(status='PASS', negative_checks=checks(case))
@@ -513,3 +513,14 @@ def test_hosted_report_needs_no_mac_rows(tmp_path):
     assert drq.build_report(tmp_path, commit='abc',
                             targets=drq.HOSTED_TARGETS)['status'] == 'PASS'
     assert drq.build_report(tmp_path, commit='abc')['status'] == 'OPEN'
+
+
+def test_cuda_uses_the_gpu_smoke_reload_bound(tmp_path):
+    workflow = Path(__file__).resolve().parents[3] / (
+        '.github/workflows/kumo-engine-pr.yml')
+    if workflow.is_file():
+        assert "reload-atol: '0.005'" in workflow.read_text()
+    assert drq.REQUIRED_ATOL == {'cpu': 1e-4, 'mps': 1e-4, 'gpu': 5e-3}
+    label = 'linux-x86_64-gpu-py3.12'
+    write_summary(tmp_path, label, atol=1e-4)
+    assert statuses(drq.build_report(tmp_path, commit='abc'), label) == {'FAIL'}

@@ -71,7 +71,10 @@ FAISS_CASE = 'static_link'
 RANKING_CASES = ('multilabel_ranking', 'static_link', 'temporal_link')
 RECEIPT_SCHEMA = 1
 DESCENDANT_GRACE = 15.0
-REQUIRED_ATOL = 1e-4
+# Absolute score tolerance by device. CUDA kernels are not bit-reproducible
+# across processes, so CUDA uses the GPU smoke's reload bound for the same
+# eight tasks (reload-atol in kumo-engine-pr.yml and kumo-engine-wheel-smoke.yml).
+REQUIRED_ATOL = {'cpu': 1e-4, 'mps': 1e-4, 'gpu': 5e-3}
 PYTHONS = ('3.11', '3.12', '3.13', '3.14')
 # Supported desktop configurations on GitHub-hosted runners. Keep in sync
 # with the `reload` job in .github/workflows/kumo-engine-platform-smoke.yml.
@@ -1062,16 +1065,18 @@ def tampers(case, baseline, atol):
     column = next(c for c in ('SCORE', 'True_PROB', 'TARGET_PRED')
                   if c in baseline)
     first = baseline['ENTITY'].iloc[0]
-    delta = 10 * atol + 1e-3
+    # Just past atol, so near-equal valid scores still leave room to move.
+    delta = 2 * atol + 1e-4
 
     def shift(f):
         """Move one score by more than atol and keep the output valid."""
         if case == 'binary':
-            # Move away from the 0.5 threshold; keep the pair summing to one.
-            p = f['True_PROB']
-            row = ((p.sub(.5).abs() > 2 * delta) & p.between(delta, 1 - delta)
-                   ).idxmax()
-            step = delta if p[row] > .5 else -delta
+            # Stay on the same side of 0.5 and inside [0, 1]; keep the pair
+            # summing to one, so only the reload comparison can reject it.
+            row = f.index[0]
+            p = float(f.loc[row, 'True_PROB'])
+            up = (p + delta <= 1) if p > .5 else (p + delta < .5)
+            step = delta if up else -delta
             f.loc[row, 'True_PROB'] += step
             f.loc[row, 'False_PROB'] -= step
         elif case in ('multiclass', 'multilabel_ranking'):
@@ -1267,8 +1272,9 @@ def summary_mismatch(label, summary):
     if not str(summary.get('python_version',
                            '')).startswith(python.removeprefix('py') + '.'):
         return f'Evidence ran Python {summary.get("python_version")}.'
-    if summary.get('atol') != REQUIRED_ATOL:
-        return f'Evidence used atol={summary.get("atol")}, not {REQUIRED_ATOL}.'
+    if summary.get('atol') != REQUIRED_ATOL[device]:
+        return (f'Evidence used atol={summary.get("atol")}, not '
+                f'{REQUIRED_ATOL[device]}.')
     if not (summary.get('wheel') or {}).get('installed_files_verified'):
         return 'The installed files were not checked against the wheel.'
     return host_mismatch(name, summary)
@@ -1397,7 +1403,8 @@ def parse_args(argv=None):
                      default=int(os.environ.get('GITHUB_RUN_ATTEMPT', '1')))
     run.add_argument('--label')
     run.add_argument('--commit')
-    run.add_argument('--atol', type=float, default=REQUIRED_ATOL)
+    run.add_argument('--atol', type=float,
+                     help='Default: the required tolerance of --device.')
     run.add_argument('--timeout', type=float, default=1800)
     run.add_argument('--negative-checks', action='store_true')
     run.add_argument('--keep-work', action='store_true')
@@ -1430,6 +1437,8 @@ def main(argv=None):
     args = parse_args(argv)
     if args.command == 'run':
         args.case = args.case or list(CASES)
+        if args.atol is None:
+            args.atol = REQUIRED_ATOL[args.device]
         return run_controller(args)
     if args.command == 'report':
         report = build_report(
