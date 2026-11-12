@@ -212,7 +212,7 @@ Kumo determines the task type automatically. `pquery.get_task_type()` returns it
 | `LIST_DISTINCT` over a **non-foreign-key** categorical column | Multilabel classification |
 | `LIST_DISTINCT` over a **foreign key** column (+ `RANK TOP K`) | Link prediction / ranking |
 | `LIST_DISTINCT(...) CLASSIFY` | Separate binary classification per class |
-| Temporal regression + generation-plan `forecast_length` | Forecasting |
+| Temporal regression meant as a forecast | Regression: `get_task_type()` reads the query alone, so it does not change when the generation plan sets `forecast_length`; that plan is what makes it a forecast (*Forecasting* below) |
 
 Static vs temporal: a query without a time window is **static** (default 80/10/10 random split, no time column required). A query aggregating over a window is **temporal** (time-based splits, anchor times sampled back through history).
 
@@ -367,7 +367,7 @@ Produces a separate binary classification per article ID. Without `TOP K`, class
 
 ### Forecasting
 
-Forecasting is **not a distinct PQL keyword**. Write a temporal regression query and set `forecast_length` in the training and prediction table generation plans (`TrainingTableGenerationPlan`, `PredictionTableGenerationPlan`; Source: shipped package (`kumoapi.model_plan`)), not the model plan; `forecast_length=3` on a 7-day window forecasts the next three 7-day windows. The flow is in `kumoai-reference/references/task_journeys.md` *Forecasting*.
+Forecasting is **not a distinct PQL keyword**. Write a temporal regression query, set `forecast_length` on the `TrainingTableGenerationPlan` passed to `generate_training_table(snapshot, plan=...)`, and pass the fitted trainer's `trainer.training_table_generation_plan` to `generate_prediction_table(snapshot, plan=...)` — both take a `TrainingTableGenerationPlan`, not a `PredictionTableGenerationPlan`, and never the model plan (Source: shipped package (`kumoapi.model_plan`, `kumo.engine.pquery.predictive_query`)); `forecast_length=3` on a 7-day window forecasts the next three 7-day windows. The flow is in `kumoai-reference/references/task_journeys.md` *Forecasting*.
 
 ```text
 PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 7, days)
@@ -429,7 +429,7 @@ Source: shipped package (`kumo_core.model_plan`)
 8. **`LAST`/`FIRST` cannot be applied to foreign key columns.** Use `LIST_DISTINCT` + `RANK` for FK targets.
 9. **`LIST_DISTINCT` over a non-FK column silently becomes multilabel classification, not ranking.** Check `get_task_type()`.
 10. **`LIST_DISTINCT` beyond ~1000 distinct values is not recommended.**
-11. **Horizon vs. split health:** too large a window leaves fewer than 3 anchor times; too small a window on a long history generates too many examples (mitigate with model-plan `train_start_offset`) and, for link prediction, too few positives.
+11. **Horizon vs. split health:** too large a window leaves fewer than 3 anchor times; too small a window on a long history generates too many examples (mitigate with `train_start_offset` on the `TrainingTableGenerationPlan` passed to `generate_training_table(snapshot, plan=...)`; the model plan has no such field) and, for link prediction, too few positives.
 12. **Always validate before generating tables:** `pquery.validate()` for syntax, `pquery.get_task_type()` for semantics. Required — see "Required pre-flight" under SDK usage.
 13. **Inline `WHERE` vs trailing `WHERE` are not interchangeable.** A row-level condition on the predicted event goes inside the aggregation; an entity-eligibility condition goes in the trailing `WHERE`. Swapping them produces a query that validates and trains on the wrong question.
 

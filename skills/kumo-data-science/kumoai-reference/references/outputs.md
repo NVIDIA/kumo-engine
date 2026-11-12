@@ -56,8 +56,11 @@ whatever `extra_fields` says (Source: shipped package
 The write never adds a column to an existing table. When an APPEND destination already exists,
 read its columns before generating the artifact. If it lacks any of these columns, a run would
 fail at the write, after training and scoring. Say so at the gate and let the user pick: add the
-missing columns (`ALTER TABLE … ADD COLUMN`: the timestamps `TIMESTAMP_NTZ`, the IDs a string
-type; earlier rows hold nulls), a new table the first run creates, or OVERWRITE. Adding columns is
+missing columns (`ALTER TABLE … ADD COLUMN`, earlier rows hold nulls), a new table the first run
+creates, or OVERWRITE. The IDs take a string type. The timestamps take the type the destination's
+sink writes: `TIMESTAMP_NTZ` on Snowflake and Databricks, `TIMESTAMP` on BigQuery, where a
+`DATETIME` column fails the APPEND (Source: shipped package (`kumo_bigquery.write`,
+`kumo_databricks.write`)). Adding columns is
 a write, confirmed like any other.
 
 The exact table name is used; no suffix is appended and its case is kept. Read back, with the
