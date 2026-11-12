@@ -223,7 +223,7 @@ fn read_weight_f64(arr: &dyn Array, idx: usize) -> Result<f64, WeightFault> {
 /// Determine the `OutputMode` for a custom-TT job by peeking at the
 /// customer parquet's schema. For Forecasting, this picks up
 /// AUTOREGRESSION_COL and (optionally) YOY_COL dtypes from the actual
-/// `autoregression` / `yoy` columns; for Node, it picks up the TARGETk
+/// `autoregression` / `yoy` columns; for Node and Forecasting, it picks up the TARGETk
 /// dtype from each `TARGETk` slot the plan declares. Falls back to
 /// `Float64` defaults when columns are absent.
 fn output_mode_for_custom_tt<U: UnitSystem>(
@@ -236,6 +236,23 @@ fn output_mode_for_custom_tt<U: UnitSystem>(
     drop(probe);
 
     let lookup = |name: &str| arrow_schema.field_with_name(name).ok().cloned();
+    let scalar_target_dtypes = || {
+        if plan.is_prediction {
+            return Vec::new();
+        }
+        (0..plan.target_alias_indices.len())
+            .map(|i| {
+                lookup(&target_column(i))
+                    .map(|f| f.data_type().clone())
+                    .unwrap_or_else(|| {
+                        plan.target_dtypes
+                            .get(i)
+                            .cloned()
+                            .unwrap_or(DataType::Float64)
+                    })
+            })
+            .collect()
+    };
     match plan.prediction_type {
         PredictionType::PassThrough => Ok(OutputMode::PassThrough),
         PredictionType::Forecasting => {
@@ -252,43 +269,15 @@ fn output_mode_for_custom_tt<U: UnitSystem>(
             let future_labels_dtype =
                 lookup(FUTURE_LABELS_OUTPUT_ALIAS).map(|f| f.data_type().clone());
             Ok(OutputMode::Forecasting {
-                target_dtypes: if !plan.is_prediction {
-                    plan.target_dtypes.clone()
-                } else {
-                    Vec::new()
-                },
+                target_dtypes: scalar_target_dtypes(),
                 autoregression_dtype: ar_dtype,
                 future_labels_dtype,
                 yoy_dtype,
             })
         }
-        PredictionType::Node => {
-            // A PREDICTION bundle carries NO target column — native predict
-            // emits `[ENTITY1, TIMESTAMP]` only (its plan is PassThrough).
-            // Empty target_dtypes ⟹ zero TARGETk columns (same predict
-            // contract as the Forecasting arm above).
-            let target_dtypes: Vec<DataType> = if plan.is_prediction {
-                Vec::new()
-            } else {
-                // Read one TARGETk dtype per declared target slot, falling back
-                // to the plan-resolved target_dtype for that slot when the
-                // parquet doesn't carry it.
-                (0..plan.target_alias_indices.len())
-                    .map(|i| {
-                        let parquet_name = target_column(i);
-                        lookup(&parquet_name)
-                            .map(|f| f.data_type().clone())
-                            .unwrap_or_else(|| {
-                                plan.target_dtypes
-                                    .get(i)
-                                    .cloned()
-                                    .unwrap_or(DataType::Float64)
-                            })
-                    })
-                    .collect()
-            };
-            Ok(OutputMode::Node { target_dtypes })
-        }
+        PredictionType::Node => Ok(OutputMode::Node {
+            target_dtypes: scalar_target_dtypes(),
+        }),
         PredictionType::Link { include_frequency } => {
             // Predict LP seed tables carry no TARGET1 list column → no target
             // columns in the bundle (same predict contract as Node above).

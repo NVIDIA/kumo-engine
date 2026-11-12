@@ -228,10 +228,12 @@ def test_link_export_roundtrip(graph, reload, window, invalid_targets,
 @pytest.mark.parametrize(
     "aggregate, target", [("COUNT", "events.*"), ("SUM", "events.VAL")]
 )
+@pytest.mark.parametrize("split_col", [None, "SPLIT"])
 def test_forecasting_export_roundtrip(
     graph: tuple[kumo.Graph, kumo.GraphSnapshot, kumo.FileConnector, Path],
     aggregate: str,
     target: str,
+    split_col: str | None,
 ) -> None:
     """Restore numeric forecasts without changing values or split membership."""
     _, snapshot, connector, _ = graph
@@ -239,7 +241,8 @@ def test_forecasting_export_roundtrip(
         f"PREDICT {aggregate}({target}, 0, 7, days) FORECAST 3 TIMEFRAMES "
         "FOR EACH ents.ID"
     )
-    pquery, table, exported = _export(graph, query, f"forecast_{aggregate.lower()}")
+    name = f"forecast_{aggregate.lower()}_{split_col or 'inferred'}"
+    pquery, table, exported = _export(graph, query, name)
     seeds, counts = _seeds(table)
     columns = [
         "ENTITY1",
@@ -255,9 +258,13 @@ def test_forecasting_export_roundtrip(
     for key, split in SPLITS.items():
         assert exported["SPLIT"].to_pylist().count(split) == counts[key]
 
+    if aggregate == "SUM":
+        labels = exported["autoregression_labels"].combine_chunks().values
+        assert not labels.equals(labels.cast(pa.float32()).cast(labels.type))
+
     reimported = kumo.TrainingTable.from_source_table(
-        connector[f"forecast_{aggregate.lower()}"],
-        TrainingTableSpec(split_col="SPLIT"),
+        connector[name],
+        TrainingTableSpec(split_col=split_col),
         pq=pquery,
         snapshot=snapshot,
     )
@@ -265,8 +272,26 @@ def test_forecasting_export_roundtrip(
     assert restored_counts == counts
     for key, seed in seeds.items():
         actual = restored[key].select(columns)
-        expected = seed.select(columns).cast(actual.schema)
+        expected = seed.select(columns)
+        assert actual.schema == expected.schema
         assert _rows(actual, columns) == _rows(expected, columns)
+
+    # Forecasting model validation currently rejects ManualSplit metadata.
+    if split_col is not None:
+        return
+
+    plan = ModelPlan()
+    plan.training_job.disable_explain = True
+    plan.training_job.num_experiments = 1
+    plan.training_job.refit_trainval = False
+    plan.optimization.max_epochs = 1
+    plan.optimization.max_steps_per_epoch = 2
+    trainer = kumo.Trainer(model_plan=plan)
+    trainer.fit(reimported, snapshot=snapshot)
+    predictions = trainer.predict(snapshot).frame
+    assert set(predictions["ENTITY"]) == set(range(50))
+    assert len(predictions) == 50 * 3
+    assert np.isfinite(predictions["TARGET_PRED"].to_numpy()).all()
 
 
 def test_reexport_and_trailing_slash(graph, monkeypatch, caplog):
@@ -334,6 +359,8 @@ def test_custom_link_table_ingests_multiple_weighted_parts(
                             for values in exported['TARGET1'].to_pylist()],
                            pa.list_(pa.float64()))
         weighted = exported.append_column('WEIGHT', weights)
+        weighted = weighted.append_column(
+            'category', pa.array(['a'] * len(weighted)).dictionary_encode())
         pq.write_table(weighted, out / 'multipart_weighted.parquet')
         reimported = kumo.TrainingTable.from_source_table(
             connector['multipart_weighted.parquet'],

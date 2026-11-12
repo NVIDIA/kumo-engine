@@ -138,6 +138,8 @@ class ObjectStoreSourceReader:
     object_identity: ObjectIdentity | None = None
     #: DiskGraph converts the staged columns to their declared dtypes itself.
     ingest_converts: bool = False
+    #: Inferred floatlist metadata does not retain the source element precision.
+    preserve_float_lists: bool = False
 
     source_type: ConnectorType = ConnectorType.S3
 
@@ -578,6 +580,7 @@ class ObjectStoreSourceReader:
         projection = (_projection(table, dataset.schema, columns, aliases,
                                   normalize=normalize, null_values=null_values,
                                   converts=self.ingest_converts,
+                                  preserve_float_lists=self.preserve_float_lists,
                                   partitions=partitions)
                       if columns is not None else {
                           name: pc.field(name)
@@ -643,7 +646,8 @@ class ObjectStoreSourceReader:
                 return False
             for name, dtype in columns.items():
                 if not (self.ingest_converts
-                        or _uncast(schema.field(name).type, dtype)):
+                        or _uncast(schema.field(name).type, dtype,
+                                   self.preserve_float_lists)):
                     return False
         return True
 
@@ -884,7 +888,8 @@ def _prebuffered_bytes(fragments: Sequence[Any], columns: Sequence[str],
 def _chunks(metadata: Any, columns: Sequence[str]) -> list[int]:
     """Column chunk indices of the named top-level fields, by position: a
     field name may itself contain a period."""
-    chunks, start = [], 0
+    chunks: list[int] = []
+    start = 0
     for field in metadata.schema.to_arrow_schema():
         leaves = _leaves(field.type)
         if field.name in columns:
@@ -1015,21 +1020,31 @@ def _dtype_of(arrow_type: pa.DataType) -> Dtype:
         return Dtype.unsupported
 
 
-def _uncast(stored: pa.DataType, dtype: Any) -> bool:
+def _uncast(
+    stored: pa.DataType, dtype: Any, preserve_float_lists: bool = False
+) -> bool:
     """Whether :func:`_projection` would leave ``stored`` alone. A dtype with
     no Arrow spelling -- the temporal family -- is written out as it was read,
     so agreeing on the dtype is agreement enough.
     """
-    wanted = _pyarrow_type(dtype)
+    wanted = _pyarrow_type(dtype, stored if preserve_float_lists else None)
     if wanted is None:
         return _dtype_of(stored) is Dtype(dtype)
     return stored.equals(wanted)
 
 
-def _pyarrow_type(dtype: Any) -> pa.DataType | None:
+def _pyarrow_type(dtype: Any, stored: pa.DataType | None = None) -> pa.DataType | None:
     from ..types.conversions import TO_PYARROW_DTYPE
 
-    return TO_PYARROW_DTYPE.get(Dtype(dtype))
+    dtype = Dtype(dtype)
+    if (
+        dtype is Dtype.floatlist
+        and stored is not None
+        and pa.types.is_list(stored)
+        and pa.types.is_float64(stored.value_type)
+    ):
+        return stored
+    return TO_PYARROW_DTYPE.get(dtype)
 
 
 def _unpinned(columns: Mapping[str, Dtype]) -> list[str]:
@@ -1049,6 +1064,7 @@ def _projection(
     normalize: bool = False,
     null_values: Sequence[str] = ARROW_NA_TOKENS,
     converts: bool = False,
+    preserve_float_lists: bool = False,
     partitions: Sequence[str] = (),
 ) -> dict[str, Any]:
     missing = [name for name in columns if name not in schema.names]
@@ -1058,9 +1074,10 @@ def _projection(
     unpinned = set(_unpinned(columns)) if normalize else set()
     projection = {}
     for name, dtype in columns.items():
-        wanted = None if name in unpinned else _pyarrow_type(dtype)
-        expression = pc.field(name)
         stored = schema.field(name).type
+        wanted = None if name in unpinned else _pyarrow_type(
+            dtype, stored if preserve_float_lists else None)
+        expression = pc.field(name)
         if wanted is not None and not stored.equals(wanted):
             if normalize:
                 from . import csv_format

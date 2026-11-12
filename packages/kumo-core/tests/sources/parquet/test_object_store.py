@@ -12,6 +12,7 @@ runs here.
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Mapping
@@ -441,6 +442,40 @@ def test_a_type_the_catalog_widens_is_widened_on_disk_too(
     assert reader.dtypes("t") == {"c": declared}
     staged = read_all(tmp_path, "t", tmp_path)
     assert staged_frame(staged).schema.field("c").type != stored
+
+
+@pytest.mark.parametrize("preserve", [False, True])
+@pytest.mark.parametrize("reencode", [False, True])
+def test_float_list_precision_preservation(
+    tmp_path: Path, preserve: bool, reencode: bool
+) -> None:
+    """Preserve inferred list precision on both copy and re-encoding paths."""
+    table = pa.table(
+        {
+            "values": pa.array(
+                [[1.0000000000000002], [], [None]], pa.list_(pa.float64())
+            ),
+            "category": pa.array(["a", "b", "c"]),
+        }
+    )
+    source = table
+    if reencode:
+        source = source.set_column(
+            1, "category", source["category"].dictionary_encode()
+        )
+    write_parts(tmp_path / "t", source)
+    reader = replace(reader_over(tmp_path), preserve_float_lists=preserve)
+
+    staged = read_table(
+        reader, "t", str(tmp_path / "staged"), columns=reader.dtypes("t")
+    )
+
+    expected = (
+        table
+        if preserve
+        else table.cast(table.schema.set(0, pa.field("values", pa.list_(pa.float32()))))
+    )
+    assert staged_frame(staged).equals(expected)
 
 
 def test_a_dictionary_column_is_decoded_rather_than_copied(tmp_path):
