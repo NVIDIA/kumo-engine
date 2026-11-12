@@ -173,14 +173,9 @@ jobs:
             device: cpu
             torch_backend: ''
             extra: ''
-          # Hosted macos-14 runners are retired. The macos-15 VMs expose only
-          # a paravirtual GPU without Metal 2.0, so PyTorch reports no MPS.
-          - name: macos-26
-            runner: macos-26-xlarge
-            artifact: arm64
-            device: mps
-            torch_backend: ''
-            extra: ''
+          # Hosted macOS VMs expose a paravirtual GPU without Metal 2.0, so
+          # PyTorch reports no MPS. MPS (macos-14-mps) runs on a bare-metal
+          # Apple Silicon Mac; see docs/development/releasing-kumo-engine.md.
     runs-on: ${{ matrix.target.runner }}
     defaults:
       run:

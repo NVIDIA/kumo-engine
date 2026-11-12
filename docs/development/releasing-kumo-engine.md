@@ -128,7 +128,7 @@ platform's `release-version`.
    - runs the fresh-process reload qualification on each supported desktop
      configuration with Python 3.11–3.14. Linux x86-64 and WSL2 x86-64 run
      on CPU and CUDA. Linux ARM64 runs on CPU. macOS 15 and 26 on Apple
-     Silicon run on CPU, and macOS 26 also runs on MPS. Each case is a
+     Silicon run on CPU. Each case is a
      numerical, static link, or temporal link task. A producer process trains,
      exports the model and the snapshot, and saves its predictions. The job
      then deletes the producer scratch, caches, temp files, and source data.
@@ -144,6 +144,15 @@ platform's `release-version`.
      `kumo-engine-platform-smoke.yml` by hand with that build run's ID and
      commit. See
      [`desktop_reload_qualification.py`](../../packages/kumo-engine/test/desktop_reload_qualification.py).
+   - needs MPS evidence from a bare-metal Apple Silicon Mac with macOS 14,
+     the supported floor. Hosted macOS runners are VMs without a Metal
+     device, so the CI report marks `macos-14-mps` UNVERIFIED. On the Mac,
+     install the macOS wheel from the same build run in a clean environment.
+     Then run `desktop_reload_qualification.py run --device mps` with all
+     three cases, `--negative-checks`, and the label
+     `macos-14-mps-py<version>` for each Python version. Build the full
+     matrix with `desktop_reload_qualification.py report`, and pass one
+     `--evidence-dir` for the CI results and one for the Mac results.
    - attaches the Linux x86_64/ARM64 and macOS ARM64 wheels to the GitHub
      release; the Linux x86_64 wheel also serves WSL2. Native Windows upload
      routes remain disabled despite experimental build/test coverage.

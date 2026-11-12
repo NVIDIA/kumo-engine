@@ -275,7 +275,7 @@ def test_report_marks_missing_configurations_unverified(tmp_path):
     rows = {(r['label'], r['case']): r for r in report['rows']}
     assert report['status'] == 'OPEN'
     assert rows[(label, 'numerical')]['status'] == 'PASS'
-    assert rows[('macos-26-mps-py3.12',
+    assert rows[('macos-14-mps-py3.12',
                  'static_link')]['status'] == ('UNVERIFIED')
     assert len(rows) == len(drq.REQUIRED_TARGETS) * len(drq.PYTHONS) * len(
         drq.CASES)
@@ -374,4 +374,16 @@ def test_required_matrix_matches_the_workflow():
         workflow.read_text())['jobs']['reload']['strategy']['matrix']
     assert tuple(matrix['python']) == drq.PYTHONS
     assert tuple((t['name'], t['device'])
-                 for t in matrix['target']) == drq.REQUIRED_TARGETS
+                 for t in matrix['target']) == drq.HOSTED_TARGETS
+    assert not set(drq.EXTERNAL_TARGETS) & set(drq.HOSTED_TARGETS)
+
+
+def test_report_merges_external_evidence(tmp_path):
+    hosted, external = tmp_path / 'hosted', tmp_path / 'external'
+    hosted.mkdir()
+    external.mkdir()
+    write_summary(hosted, 'linux-arm64-cpu-py3.12')
+    write_summary(external, 'macos-14-mps-py3.12')
+    report = drq.build_report([hosted, external], commit='abc')
+    assert statuses(report, 'macos-14-mps-py3.12') == {'PASS'}
+    assert statuses(report, 'linux-arm64-cpu-py3.12') == {'PASS'}

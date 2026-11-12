@@ -68,9 +68,9 @@ RECEIPT_SCHEMA = 1
 DESCENDANT_GRACE = 15.0
 REQUIRED_ATOL = 1e-4
 PYTHONS = ('3.11', '3.12', '3.13', '3.14')
-# Supported desktop configurations. Keep in sync with the `reload` job in
-# .github/workflows/kumo-engine-platform-smoke.yml.
-REQUIRED_TARGETS = (
+# Supported desktop configurations on GitHub-hosted runners. Keep in sync
+# with the `reload` job in .github/workflows/kumo-engine-platform-smoke.yml.
+HOSTED_TARGETS = (
     ('linux-x86_64', 'cpu'),
     ('linux-x86_64', 'gpu'),
     ('linux-arm64', 'cpu'),
@@ -78,8 +78,13 @@ REQUIRED_TARGETS = (
     ('windows-wsl', 'gpu'),
     ('macos-15', 'cpu'),
     ('macos-26', 'cpu'),
-    ('macos-26', 'mps'),
 )
+# Hosted macOS runners are VMs whose paravirtual GPU has no Metal 2.0, so
+# PyTorch reports no MPS there. MPS runs on a bare-metal Apple Silicon Mac
+# with `run` and joins the report through a second --evidence-dir. macOS 14
+# is also the supported floor, which hosted runners no longer offer.
+EXTERNAL_TARGETS = (('macos-14', 'mps'), )
+REQUIRED_TARGETS = HOSTED_TARGETS + EXTERNAL_TARGETS
 
 
 class QualificationError(Exception):
@@ -1376,10 +1381,13 @@ def summary_mismatch(label, summary):
     return None
 
 
-def build_report(evidence_dir, *, commit=None):
+def build_report(evidence_dirs, *, commit=None):
     """Merge job summaries; a configuration without evidence is UNVERIFIED."""
     found = {}
-    for path in sorted(Path(evidence_dir).rglob('summary.json')):
+    if isinstance(evidence_dirs, (str, Path)):
+        evidence_dirs = [evidence_dirs]
+    paths = [p for d in evidence_dirs for p in Path(d).rglob('summary.json')]
+    for path in sorted(paths):
         summary = json.loads(path.read_text())
         label = summary.get('label')
         attempt = summary.get('attempt') or 0
@@ -1464,7 +1472,7 @@ def parse_args(argv=None):
     run.add_argument('--negative-checks', action='store_true')
     run.add_argument('--keep-work', action='store_true')
     report = commands.add_parser('report')
-    report.add_argument('--evidence-dir', required=True)
+    report.add_argument('--evidence-dir', action='append', required=True)
     report.add_argument('--output-dir', required=True)
     report.add_argument('--commit')
     for name in ('produce', 'consume'):
