@@ -12,9 +12,9 @@ from unittest.mock import MagicMock
 import numpy as np
 import pandas as pd
 import pytest
+from encoder_stats import fit_encoder_stats
 from kumo_core.diskgraph.metadata import DiskgraphSchema
 from kumo_core.encoders.config import EncodersConfig, TargetEncoderConfig
-from kumo_core.encoders.selection import compute_missing_stats_
 from kumo_core.encoders.tensor_mapper import TensorMapper
 from kumo_core.features.stores.feature import FeatureStore
 from kumo_core.training.options import allow_array_targets
@@ -169,7 +169,7 @@ def create_task_data(
         encoders[table_name] = {}
         for col_name, stype in schema.stypes.items():
             encoder = get_encoder(stype)
-            compute_missing_stats_(encoder, df_dict[table_name][col_name])
+            fit_encoder_stats(encoder, df_dict[table_name][col_name])
             encoders[table_name][col_name] = encoder_overrides.get(
                 f"{table_name}.{col_name}", encoder
             )
@@ -178,7 +178,7 @@ def create_task_data(
     target_encoder = get_target_encoder(task_type)
     if "TARGET" in train_table_df:
         assert target_encoder is not None
-        compute_missing_stats_(target_encoder, train_table_df["TARGET"])
+        fit_encoder_stats(target_encoder, train_table_df["TARGET"])
         encoders.target = TargetEncoderConfig("TARGET", target_encoder)
 
     mappers = {
