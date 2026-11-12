@@ -4,18 +4,17 @@
 
 //! Stored rows of an index table, decoded to Arrow a chunk of nodes at a time.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{anyhow, ensure, Result};
 use arrow_array::builder::{ArrayBuilder, LargeStringBuilder};
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, ArrayRef, BooleanArray, LargeStringArray, RecordBatch};
+use crossbeam_channel::{bounded, Receiver, Sender};
 use diskgraph_core::time::TimeUnit;
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use diskgraph_rowpack::{IngestedType, RowAccess, RowAccessHints, RowAccessStats};
@@ -87,25 +86,51 @@ pub fn at_cutoff(times: Option<&[Option<i64>]>, rows: usize, cutoff: Option<i64>
     }
 }
 
+/// A node table's reader, its stored columns, and the position of its create time.
+pub struct StoredTable {
+    pub reader: Arc<TableReader>,
+    pub columns: Vec<(String, IngestedType)>,
+    pub create_time: Option<usize>,
+}
+
+/// The named node tables of an index, and the index clock.
+pub fn stored_tables(
+    index_dir: &Path,
+    names: &HashSet<String>,
+) -> Result<(HashMap<String, StoredTable>, TimeUnit)> {
+    let reader =
+        GraphIndexReader::open_subset(&index_dir.join(INDEX_METADATA_FILENAME), index_dir, names)?;
+    let tables = names
+        .iter()
+        .map(|name| {
+            let table = reader
+                .table(name)
+                .ok_or_else(|| anyhow!("index has no node table {name}"))?;
+            let columns: Vec<(String, IngestedType)> = table
+                .node_data_decoder()
+                .ok_or_else(|| anyhow!("table {name} has no node data"))?
+                .context()
+                .columns
+                .iter()
+                .map(|c| (c.name.clone(), c.logical_type))
+                .collect();
+            let create_time = table
+                .create_time_col()
+                .and_then(|time| columns.iter().position(|(c, _)| c == time));
+            let stored = StoredTable {
+                reader: table,
+                columns,
+                create_time,
+            };
+            Ok((name.clone(), stored))
+        })
+        .collect::<Result<_>>()?;
+    Ok((tables, reader.metadata().timestamp_unit))
+}
+
 pub struct ColumnScan {
-    chunks: Receiver<Result<LargeStringArray>>,
+    pub chunks: Receiver<Result<LargeStringArray>>,
     stop: Arc<AtomicBool>,
-}
-
-pub enum Next {
-    Chunk(Result<LargeStringArray>),
-    End,
-    Pending,
-}
-
-impl ColumnScan {
-    pub fn next_within(&self, timeout: Duration) -> Next {
-        match self.chunks.recv_timeout(timeout) {
-            Ok(chunk) => Next::Chunk(chunk),
-            Err(RecvTimeoutError::Timeout) => Next::Pending,
-            Err(RecvTimeoutError::Disconnected) => Next::End,
-        }
-    }
 }
 
 impl Drop for ColumnScan {
@@ -135,39 +160,29 @@ pub fn scan_column(
 ) -> Result<ColumnScan> {
     ensure!(chunk_rows > 0, "chunk_rows must be positive");
     ensure!(num_threads != Some(0), "num_threads must be positive");
-    let reader = GraphIndexReader::open_subset(
-        &index_dir.join(INDEX_METADATA_FILENAME),
-        index_dir,
-        &HashSet::from([table.to_string()]),
-    )?;
-    let table_reader = reader
-        .table(table)
-        .ok_or_else(|| anyhow!("index has no node table {table}"))?;
-    let stored = &table_reader
-        .node_data_decoder()
-        .ok_or_else(|| anyhow!("table {table} has no node data"))?
-        .context()
-        .columns;
-    let position = |name: &str| stored.iter().position(|c| c.name == name);
-    let index = position(column).ok_or_else(|| anyhow!("table {table} has no column {column}"))?;
+    let (mut tables, clock) = stored_tables(index_dir, &HashSet::from([table.to_string()]))?;
+    let stored = tables.remove(table).expect("opened table");
+    let index = stored
+        .columns
+        .iter()
+        .position(|(name, _)| name == column)
+        .ok_or_else(|| anyhow!("table {table} has no column {column}"))?;
+    let kind = stored.columns[index].1;
     ensure!(
-        stored[index].logical_type == IngestedType::String,
-        "column {table}.{column} holds {:?} values, not strings",
-        stored[index].logical_type
+        kind == IngestedType::String,
+        "column {table}.{column} holds {kind:?} values, not strings"
     );
-    let columns = std::iter::once(index)
-        .chain(table_reader.create_time_col().and_then(position))
-        .collect();
+    let columns = std::iter::once(index).chain(stored.create_time).collect();
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads.unwrap_or(0))
         .build()?;
-    let (sender, chunks) = sync_channel(2);
+    let (sender, chunks) = bounded(2);
     let stop = Arc::new(AtomicBool::new(false));
     let scan = Scan {
-        table: table_reader,
+        table: stored.reader,
         columns,
         cutoff,
-        clock: reader.metadata().timestamp_unit,
+        clock,
         stop: Arc::clone(&stop),
     };
     let panicked = format!("column scan of {table}.{column} panicked");
@@ -188,7 +203,7 @@ impl Scan {
         &self,
         pool: &rayon::ThreadPool,
         chunk_rows: usize,
-        sender: &SyncSender<Result<LargeStringArray>>,
+        sender: &Sender<Result<LargeStringArray>>,
     ) -> Result<()> {
         use rayon::prelude::*;
 

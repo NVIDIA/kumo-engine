@@ -4,25 +4,22 @@
 
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Arc;
 
-use anyhow::{anyhow, ensure, Result};
+use anyhow::{ensure, Result};
 use arrow::array::Array;
 use arrow::compute::filter_record_batch;
 use arrow::pyarrow::ToPyArrow;
 use arrow_array::cast::AsArray;
 use arrow_array::types::UInt64Type;
 use arrow_array::{ArrayRef, Int64Array, TimestampSecondArray};
-use diskgraph_index::graph::GraphIndexReader;
 use diskgraph_ingest::column_scan::{
-    self, at_cutoff, create_times, decode_chunk, node_chunks, Next,
+    self, at_cutoff, create_times, decode_chunk, node_chunks, stored_tables,
 };
 use diskgraph_ingest::cutoff_col_stats::CutoffColStatsRequest;
 use diskgraph_ingest::graph_config::{
     read_persisted_config, ColumnSpec, IngestedType, SemanticType,
 };
-use diskgraph_ingest::index_metadata::INDEX_METADATA_FILENAME;
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
@@ -34,26 +31,18 @@ fn from_index(index_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
     let config = read_persisted_config(index_dir)?;
     request.validate(&config.tables)?;
     let names: HashSet<String> = request.columns.keys().cloned().collect();
-    let reader =
-        GraphIndexReader::open_subset(&index_dir.join(INDEX_METADATA_FILENAME), index_dir, &names)?;
-    let clock = reader.metadata().timestamp_unit;
+    let (stored_tables, clock) = stored_tables(index_dir, &names)?;
     let mut tables = Vec::new();
     for spec in &config.tables {
         let Some(mut table) = request.table(spec) else {
             continue;
         };
-        let table_reader = reader
-            .table(&spec.name)
-            .ok_or_else(|| anyhow!("index has no node table {}", spec.name))?;
-        let stored = &table_reader
-            .node_data_decoder()
-            .ok_or_else(|| anyhow!("table {} has no node data", spec.name))?
-            .context()
-            .columns;
+        let stored = &stored_tables[&spec.name];
         ensure!(
             stored
+                .columns
                 .iter()
-                .map(|c| &c.name)
+                .map(|(name, _)| name)
                 .eq(spec.columns.iter().map(|c| &c.name)),
             "table {} stores other columns than its config lists",
             spec.name
@@ -61,15 +50,12 @@ fn from_index(index_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
         let requested: Vec<usize> = (0..table.columns.len())
             .filter(|&idx| table.columns[idx].semantic_type != Some(SemanticType::Unsupported))
             .collect();
-        let create_time = spec
-            .create_time
-            .as_ref()
-            .and_then(|name| spec.columns.iter().position(|c| &c.name == name));
+        let create_time = stored.create_time;
         let decoded: Vec<usize> = requested.iter().copied().chain(create_time).collect();
-        let parts = node_chunks(&table_reader)
+        let parts = node_chunks(&stored.reader)
             .into_par_iter()
             .map(|chunk| {
-                let batch = decode_chunk(&table_reader, chunk, &decoded)?;
+                let batch = decode_chunk(&stored.reader, chunk, &decoded)?;
                 let times = create_time.map(|_| create_times(batch.column(requested.len()), clock));
                 let mut sinks = table.sinks();
                 for (stats, cutoff) in sinks.stats.iter_mut().zip(&request.cutoffs) {
@@ -127,9 +113,9 @@ pub fn cutoff_col_stats(
     .map_err(map_anyhow_err)
 }
 
-#[pyclass(frozen, module = "diskgraph._c")]
+#[pyclass(module = "diskgraph._c")]
 pub struct ColumnScan {
-    chunks: Mutex<column_scan::ColumnScan>,
+    scan: column_scan::ColumnScan,
 }
 
 #[pymethods]
@@ -138,20 +124,13 @@ impl ColumnScan {
         slf
     }
 
-    fn __next__(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        loop {
-            let next = py.detach(|| {
-                let scan = self.chunks.lock().expect("scan lock");
-                scan.next_within(Duration::from_millis(100))
-            });
-            match next {
-                Next::Chunk(chunk) => {
-                    let chunk = chunk.map_err(map_anyhow_err)?;
-                    return Ok(Some(chunk.to_data().to_pyarrow(py)?.unbind()));
-                }
-                Next::End => return Ok(None),
-                Next::Pending => py.check_signals()?,
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        match py.detach(|| self.scan.chunks.recv()) {
+            Ok(chunk) => {
+                let chunk = chunk.map_err(map_anyhow_err)?;
+                Ok(Some(chunk.to_data().to_pyarrow(py)?.unbind()))
             }
+            Err(_) => Ok(None),
         }
     }
 }
@@ -180,9 +159,7 @@ pub fn scan_column(
             )
         })
         .map_err(map_anyhow_err)?;
-    Ok(ColumnScan {
-        chunks: Mutex::new(scan),
-    })
+    Ok(ColumnScan { scan })
 }
 
 /// Epoch `seconds` in the index clock `unit`, rounded as ingest rounds a row's create time.
