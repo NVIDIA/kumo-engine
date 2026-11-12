@@ -26,7 +26,7 @@ REQUEST = {
     "columns": {
         "users": {"tier": ["categorical"], "age": ["categorical", "numerical"],
                   "raw": ["categorical"], "seen": ["categorical"], "born": ["categorical"],
-                  "price": ["numerical"], "big": ["categorical"]},
+                  "price": ["categorical", "numerical"], "big": ["categorical"]},
         "items": {"name": ["categorical"]},
     },
     "quantiles": QUANTILES,
@@ -117,6 +117,8 @@ def test_ingest_counts_the_rows_created_at_or_before_each_cutoff(data, ingested)
         assert {int(k): v for k, v in stats["users"]["born"]["category_counts"]} == born
         prices = np.array([float(users["price"][i]) for i in rows])
         assert stats["users"]["price"]["mean"] == pytest.approx(prices.mean(), rel=1e-12)
+        decimals = collections.Counter(str(users["price"][i]) for i in rows)
+        assert dict(map(tuple, stats["users"]["price"]["category_counts"])) == decimals
         # A table without a create time counts every row at every cutoff.
         assert sum(v for _, v in stats["items"]["name"]["category_counts"]) == 500
 

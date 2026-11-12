@@ -242,6 +242,7 @@ enum Seen {
     F64(f64),
     Str(Range<usize>),
     Bytes(Range<usize>),
+    Decimal(f64, Range<usize>),
     Timestamp(i64),
     FloatList(FloatListView),
     IntList(IntListView),
@@ -280,6 +281,9 @@ impl Row {
                 Seen::F64(value) => stats.observe_f64(col, *value),
                 Seen::Str(range) => stats.observe_string(col, &self.text[range.clone()]),
                 Seen::Bytes(range) => stats.observe_bytes(col, &self.bytes[range.clone()]),
+                Seen::Decimal(value, range) => {
+                    stats.observe_decimal(col, *value, &|| self.text[range.clone()].to_owned())
+                }
                 Seen::Timestamp(ticks) => stats.observe_timestamp(col, *ticks),
                 Seen::FloatList(view) => stats.observe_float_list(col, view),
                 Seen::IntList(view) => stats.observe_int64_list(col, view),
@@ -317,7 +321,7 @@ impl ColumnValueObserver for CutoffSinks {
     fn observe_decimal(&mut self, col_idx: usize, value: f64, text: &dyn Fn() -> String) {
         let keyed = self.stats.iter().any(|s| s.counts_categories(col_idx));
         self.push(col_idx, |row| match keyed {
-            true => Seen::Str(row.text(&text())),
+            true => Seen::Decimal(value, row.text(&text())),
             false => Seen::F64(value),
         });
     }
