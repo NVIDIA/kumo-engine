@@ -20,24 +20,16 @@ column's type or the input's container.
 | `Vocabulary()` or `Vocabulary(values=...)` | Any scalar dtype | One whole-value category ID |
 | `Text(vocabulary_size=...)` | Strings | Variable-length byte-level BPE piece IDs |
 
-A learned `Vocabulary`, `ZScore` or `Buckets(bins=...)` whose every use reads a
-stored column directly (an entity field, an event field or a graph node field)
-learns from that table: from the rows whose clock is at or before the encoder
-cutoff, each row counted once, whatever the training examples select. The
-cutoff defaults to the latest anchor time the fitting split selects; pass
-`encoder_cutoff=` to `Plan.materialize` to choose another time, or `None` to
-read every row. A table without a clock contributes every row. The engine keeps
-these column statistics with its data, so another task at the same cutoff
-reuses them. `Buckets(bins=...)` cuts are `np.quantile`'s over the counted
-values; past a million distinct values they come from exact log-spaced bins,
-128 per doubling, within 0.6% of the exact quantile. Every other
-learned encoder (values computed per anchor, such as aggregates and
-calculations, targets, text, and decimal or bytes columns) fits on the
-training examples only.
-
-A missing value is never zero or an unseen category: it keeps its own validity
-bit (columns) or a reserved missing ID (categories). [The API reference](api/encodings.md)
-lists every option.
+Learned encoders fit on the training examples only, except a `Vocabulary`,
+`ZScore` or `Buckets(bins=...)` whose every use reads a stored column (an
+entity, event or graph node field). Those fit on the table's rows created at or
+before the encoder cutoff, each row once: by default the latest anchor time
+`fit_split` selects, or `Plan.materialize(encoder_cutoff=...)`, where `None`
+reads every row. Past a million distinct values, `Buckets` cuts come from
+log-spaced bins, within 0.6% of the exact quantiles. A missing value is never
+zero or an unseen category: it keeps its own validity bit (columns) or a
+reserved missing ID (categories). [The API reference](api/encodings.md) lists
+every option.
 
 ## Private and shared encoders
 

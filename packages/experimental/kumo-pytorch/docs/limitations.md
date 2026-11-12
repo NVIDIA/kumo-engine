@@ -28,10 +28,9 @@ kumo-pytorch doesn't provide the following:
   strings.
 - UUID and IP address types.
 - Fitted calculations other than the encoders, and choosing or weighting which
-  observations an encoder is fitted on, beyond the anchors `fit_split` selects
-  and the `encoder_cutoff` of encoders over stored columns.
-- Learning encoders over decimal or bytes columns from table statistics. Those
-  encoders fit on the training examples, as text encoders do.
+  observations an encoder is fitted on, other than `fit_split` and `encoder_cutoff`.
+- Fitting encoders over decimal or bytes columns on table rows; they fit on the
+  training examples.
 - Updating a saved artifact, or reusing only part of one.
 - Online serving infrastructure, such as deployment, routing and row lookup.
 - Indexes spread over several machines. The rank and world-size arguments split

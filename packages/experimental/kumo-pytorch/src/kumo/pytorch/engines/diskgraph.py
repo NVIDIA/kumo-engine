@@ -203,10 +203,7 @@ class DiskGraphEngine:
     :param ingest: ``"if_missing"`` builds the index when absent; ``"never"``
         requires an existing one. A mismatching manifest is an error, never
         permission to reuse.
-    :param encoder_cutoffs: encoder cutoffs (`Plan.materialize`'s
-        ``encoder_cutoff``; ``None`` is the whole table) whose column statistics
-        an ingest computes in the same pass. Only a hint: `Plan.materialize`
-        computes any statistics it finds missing from the index.
+    :param encoder_cutoffs: ``encoder_cutoff`` values whose column statistics an ingest computes.
     """
 
     name = "diskgraph"
@@ -224,8 +221,6 @@ class DiskGraphEngine:
     ):
         if ingest not in {"if_missing", "never"}:
             raise ValueError("ingest must be 'if_missing' or 'never'")
-        if isinstance(encoder_cutoffs, str):
-            raise TypeError("encoder_cutoffs is a sequence of cutoffs, not one cutoff")
         self.index = Path(index)
         self.num_threads = num_threads
         self.num_shards = num_shards
@@ -386,8 +381,6 @@ class DiskGraphEngine:
     def open(
         self, dataset: Dataset, schema: DataSchema, *, column_stats: Sequence[StatRequest] = ()
     ) -> SampleSource:
-        """Ensure the index; an ingest also computes ``column_stats`` at `encoder_cutoffs`."""
-
         ingests = bool(column_stats and self.encoder_cutoffs) and not self.index.exists()
         artifact = ensure_diskgraph_index(
             schema,
@@ -403,10 +396,11 @@ class DiskGraphEngine:
             if ingests
             else None,
         )
-        source = DiskGraphSource(artifact, schema, num_threads=self.num_threads)
-        if ingests:
-            source.ingested_cutoffs = frozenset(self.encoder_cutoffs)
-        return source
+        return DiskGraphSource(
+            artifact,
+            schema,
+            num_threads=self.num_threads,
+        )
 
     def materialize_anchors(self, table: AnchorTable) -> AnchorTask:
         # anchors are read from Parquet independently of the graph index: an anchor
@@ -441,7 +435,6 @@ class DiskGraphSource:
         metadata = json.loads(Path(artifact.path, "index_metadata.json").read_text())
         self._clock = metadata.get("timestamp_unit", "seconds")
         self._num_threads = num_threads
-        self.ingested_cutoffs: frozenset[int | None] = frozenset()
         self._tables = {table.name: table for table in schema.tables}
         self._relations = {relation.name: relation for relation in schema.relations}
         self._relation_mapping = artifact.manifest["relation_mapping"]
@@ -842,9 +835,7 @@ class DiskGraphSource:
         )
 
     def column_stats(self, requests: Sequence[StatRequest], cutoff: int | None) -> ColumnStats:
-        """Statistics files from the index, computing and publishing the missing ones."""
-
-        ticks = self._ticks(cutoff)
+        ticks = None if cutoff is None else self._diskgraph.cutoff_ticks(cutoff, self._clock)
         result = self._diskgraph.ensure_col_stats(
             self._index, ticks, list(requests), num_threads=self._num_threads
         )
@@ -854,22 +845,12 @@ class DiskGraphSource:
             )
             for request in requests
         }
-        sources = {entry["source"] for entry in result["files"].values()}
-        source = "recompute" if "recompute" in sources else "existing"
-        if source == "existing" and cutoff in self.ingested_cutoffs:
-            source = "ingest"
         return ColumnStats(
             files,
-            source,
             {"value": ticks, "unit": result["unit"], "inclusive": True},
             cutoff_id=result["cutoff_id"],
             index_id=result["index_id"],
         )
-
-    def _ticks(self, cutoff: int | None) -> int | None:
-        """A cutoff in seconds in the index's clock, rounded as ingest rounds row times."""
-
-        return None if cutoff is None else self._diskgraph.cutoff_ticks(cutoff, self._clock)
 
     def fit_graph_fields(
         self,

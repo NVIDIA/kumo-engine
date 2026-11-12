@@ -370,8 +370,6 @@ class FittedEncoder:
 def learned_entries(
     config: Vocabulary, counts: Mapping[tuple[str, Any], int], actual: Mapping[tuple[str, Any], Any]
 ) -> tuple[tuple[Any, int], ...]:
-    """Vocabulary entries from category counts keyed by `typed_key`."""
-
     ordered = sorted(
         (key for key in counts if counts[key] >= config.min_frequency),
         key=lambda key: (-counts[key], key),

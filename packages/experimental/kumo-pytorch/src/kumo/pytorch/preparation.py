@@ -178,7 +178,7 @@ class Plan:
         `SampleRequest` values built in code.
 
         ``fit_split`` says which anchors fitting may read, and is never implied
-        when the anchors carry splits — so held-out or unassigned anchors cannot
+        when the anchors carry splits — so held-out or unassigned rows cannot
         reach fitted state without an explicit choice:
 
         - anchors that declare splits require it: a split name, a set of names
@@ -196,12 +196,9 @@ class Plan:
         state, or ``state.inputs`` alone, since inference reads no target state.
         It defaults to the plan's mode; an inference plan refuses ``inference=False``.
 
-        ``encoder_cutoff`` is when the encoders over stored table columns (entity,
-        event and graph node fields) stop learning: each one fits on its columns'
-        rows whose clock is at or before it, one row one observation, rather than
-        on training examples. It defaults to the latest anchor time ``fit_split``
-        selects; ``None`` reads every row. Values computed per anchor
-        (aggregates, calculations, targets) and text still fit on the examples.
+        Encoders over stored table columns fit on their table's rows created at
+        or before ``encoder_cutoff``, by default the latest anchor time
+        ``fit_split`` selects; ``None`` reads every row.
 
         Reused state applies unchanged: nothing refits, grows or renumbers.
         Complete state requires an equal `DataLoaderSpec.fingerprint`;
@@ -309,8 +306,6 @@ class Plan:
         fitting: Sequence[SampleRequest],
         cutoff: int | None | _LatestAnchor,
     ) -> tuple[dict[str, FittedEncoder], dict[str, Any]]:
-        """Encoders pinned from column statistics, and where each one's came from."""
-
         encoders = table_column_encoders(self.contract)
         column_stats = getattr(source, "column_stats", None)
         if not encoders or column_stats is None or not fitting:
@@ -345,10 +340,9 @@ class Plan:
                 identity,
             )
         logger.info(
-            "pinned %d encoders from %d column statistics (%s, cutoff %s %s) in %.2fs",
+            "pinned %d encoders from %d column statistics (cutoff %s %s) in %.2fs",
             len(pinned),
             len(stats.files),
-            stats.source,
             stats.cutoff["value"],
             stats.cutoff["unit"],
             time.perf_counter() - started,
@@ -486,9 +480,8 @@ def preview(
 ) -> PreviewResult:
     """Build up to eight raw samples and one model-facing batch.
 
-    A contract preview temporarily fits on the preview requests (encoders over
-    stored columns on rows up to the latest of them) and closes the binding it
-    opens; do not treat those encodings as training state. A task
+    A contract preview temporarily fits on the preview requests and closes the
+    binding it opens; do not treat those encodings as training state. A task
     preview reuses the task's fitted state and never changes it.
 
     Accepts at most eight requests and ignores batching limits so they appear
