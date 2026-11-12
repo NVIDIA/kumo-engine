@@ -21,21 +21,21 @@ use diskgraph_rowpack::{IngestedType, RowAccess, RowAccessHints, RowAccessStats}
 
 use crate::index_metadata::INDEX_METADATA_FILENAME;
 
-const CHUNK_NODES: u64 = 1 << 16;
+const CHUNK_NODES: u64 = 1 << 10;
+const WINDOW_BYTES: usize = 64 << 20;
 
-/// `(shard, first node, end node)`, in node order.
-pub fn node_chunks(table: &TableReader) -> Vec<(usize, u64, u64)> {
+/// `(shard, first node, end node)` of up to `size` nodes, in node order.
+pub fn node_chunks(table: &TableReader, size: u64) -> impl Iterator<Item = (usize, u64, u64)> + '_ {
     (0..table.shard_count())
         .filter_map(|shard| {
             let (min, max) = table.shard_id_range(shard)?;
             (min <= max).then_some((shard, max - min + 1))
         })
-        .flat_map(|(shard, nodes)| {
+        .flat_map(move |(shard, nodes)| {
             (0..nodes)
-                .step_by(CHUNK_NODES as usize)
-                .map(move |start| (shard, start, nodes.min(start + CHUNK_NODES)))
+                .step_by(size as usize)
+                .map(move |start| (shard, start, nodes.min(start + size)))
         })
-        .collect()
 }
 
 /// The `columns` of a chunk's rows stored with node data, in node order.
@@ -208,9 +208,15 @@ impl Scan {
         use rayon::prelude::*;
 
         let mut out = LargeStringBuilder::new();
-        for window in node_chunks(&self.table).chunks(pool.current_num_threads()) {
+        let mut chunks = node_chunks(&self.table, CHUNK_NODES);
+        let mut window_len = 1;
+        loop {
             if self.stop.load(Ordering::Relaxed) {
                 return Ok(());
+            }
+            let window: Vec<_> = chunks.by_ref().take(window_len).collect();
+            if window.is_empty() {
+                break;
             }
             let decoded: Vec<RecordBatch> = pool.install(|| {
                 window
@@ -218,6 +224,9 @@ impl Scan {
                     .map(|&chunk| decode_chunk(&self.table, chunk, &self.columns))
                     .collect::<Result<_>>()
             })?;
+            let bytes: usize = decoded.iter().map(RecordBatch::get_array_memory_size).sum();
+            window_len = (WINDOW_BYTES * window.len() / bytes.max(1))
+                .clamp(1, 4 * pool.current_num_threads());
             for batch in &decoded {
                 let times =
                     (batch.num_columns() > 1).then(|| create_times(batch.column(1), self.clock));

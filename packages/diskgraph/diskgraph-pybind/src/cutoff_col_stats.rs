@@ -27,6 +27,8 @@ use rayon::prelude::*;
 use crate::bp_col_stats::drive_from_arrow_column;
 use crate::{map_anyhow_err, DiskgraphConfigError};
 
+const CHUNK_NODES: u64 = 1 << 16;
+
 /// Recomputes `request` from an index's stored rows.
 fn from_index(index_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
     let config = read_persisted_config(index_dir)?;
@@ -53,7 +55,8 @@ fn from_index(index_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
             .collect();
         let create_time = stored.create_time;
         let decoded: Vec<usize> = requested.iter().copied().chain(create_time).collect();
-        let parts = node_chunks(&stored.reader)
+        let parts = node_chunks(&stored.reader, CHUNK_NODES)
+            .collect::<Vec<_>>()
             .into_par_iter()
             .map(|chunk| {
                 let batch = decode_chunk(&stored.reader, chunk, &decoded)?;
