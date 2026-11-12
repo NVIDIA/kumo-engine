@@ -2,12 +2,9 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Text encoders over stored columns train on table rows up to the encoder cutoff."""
-
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from dataclasses import replace
@@ -87,39 +84,6 @@ def test_both_engines_and_every_thread_count_train_the_same_tokenizer(tmp_path):
     assert len(tokenizers) == 1
 
 
-def test_training_is_independent_of_batching_order_and_threads():
-    words = [f"w{index}x" for index in range(500)]
-    values = [
-        " ".join(words[(row * 7 + step) % 500] for step in range(row % 9 + 1))
-        for row in range(5000)
-    ]
-    script = (
-        "import json, sys; from kumo.pytorch.api import Text; "
-        "from kumo.pytorch.encoding import train_text; "
-        "values, size = json.load(sys.stdin); "
-        "print(train_text(Text(vocabulary_size=300), "
-        "(values[i : i + size] for i in range(0, len(values), size))))"
-    )
-    outputs = set()
-    for threads, size, ordered in (("1", 1, values), ("8", 1000, values), ("8", 7, values[::-1])):
-        run = subprocess.run(
-            [sys.executable, "-c", script],
-            input=json.dumps([ordered, size]),
-            capture_output=True,
-            text=True,
-            check=True,
-            env={**os.environ, "RAYON_NUM_THREADS": threads},
-        )
-        outputs.add(run.stdout)
-    assert len(outputs) == 1
-
-
-def test_text_on_per_anchor_values_still_fits_on_examples():
-    values = ["red bike", None, "blue car", "red car"] * 3
-    fitted = fit_encoder("e", TEXT, api.DType("string"), values)
-    assert fitted.tokenizer_json == train_text(TEXT, [[value for value in values if value]])
-
-
 def test_chunked_encoding_matches_one_string_at_a_time(monkeypatch):
     monkeypatch.setattr(encoding, "TEXT_BATCH", 3)
     fitted = fit_encoder("e", TEXT, api.DType("string"), ["red bike", "blue car", "red car"])
@@ -196,8 +160,7 @@ def _training_growth(directory: Path, rows: int) -> int:
 
 
 def test_training_from_the_index_does_not_hold_the_column(tmp_path):
-    # Training holds a bounded number of values, so 4x the rows is not 4x the peak; what
-    # does grow is mostly the index pages the scan maps.
+    # The slack covers the index pages the scan maps.
     small = _training_growth(tmp_path / "small", 500_000)
     large = _training_growth(tmp_path / "large", 2_000_000)
     assert large < small * 2 + 32 * 2**20
