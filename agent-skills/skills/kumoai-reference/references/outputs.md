@@ -23,7 +23,7 @@ self-links. Preserve the actual schema and task rather than assuming one row per
 
 Inputs: `output_connector` scoped to the confirmed destination database/schema, exact bare
 `OUTPUT_TABLE`, explicit `WRITE_MODE`, and task-specific `PREDICT_OPTIONS`. WriteMode has
-APPEND and OVERWRITE. Select the mode deliberately: File export OVERWRITE replaces existing data while retaining the table and grants when its schema matches, and fails on Snowflake when it does not (below);
+APPEND and OVERWRITE. Select the mode deliberately: File export OVERWRITE replaces existing data while retaining the table and grants when its schema matches, and fails on Snowflake when it does not; on BigQuery it removes the table's row access policies (below);
 APPEND can duplicate outputs on retry and never changes the existing table's schema (below). Check destination
 existence and access first.
 
@@ -42,6 +42,7 @@ output = kumo.PredictionOutputConfig(
 )
 with warnings.catch_warnings():
     if WRITE_MODE == WriteMode.APPEND:   # no model id, no write: see below
+        assert trainer.result.id, 'No model id: APPEND would write rows without BUNDLE_ID'
         warnings.filterwarnings('error', message='Predicting without a prediction manifest')
     written = trainer.predict(
         population, snapshot=snapshot, output_config=output, **PREDICT_OPTIONS,
@@ -53,12 +54,15 @@ print(written.num_rows, written.files)
 prediction run) and `BUNDLE_ID` (the model that scored it), and the `extra_fields` above add
 `JOB_TIMESTAMP` (when the run started) and `ANCHOR_TIMESTAMP` (the time its predictions are for),
 so the table's history can be ordered and filtered by run, and a retried run shows as a second
-`PREDICTION_ID` and `JOB_TIMESTAMP`. `BUNDLE_ID` comes from the run's prediction manifest. If that
-manifest cannot be built, `predict` warns `Predicting without a prediction manifest` and writes the
-rows with `BUNDLE_ID` null — `PREDICTION_ID` is still set — and the row count still matches. The
-snippet above turns that warning into an error for APPEND, so the run fails before writing rather
-than append rows no model is named on; report it as a failed run. A query with no time window has no anchor: pass
-`JOB_TIMESTAMP` alone, or the write fails after scoring.
+`PREDICTION_ID` and `JOB_TIMESTAMP`. `BUNDLE_ID` is the model id the run's prediction manifest
+names. When there is none — `trainer.result.id` is `None` because the id could not be computed at
+fit, or `predict` warns `Predicting without a prediction manifest` — the writer leaves the
+`BUNDLE_ID` column out of the rows; `PREDICTION_ID` is still set and the row count still matches.
+An existing table with the column gets nulls in it. A table the run creates has no `BUNDLE_ID`
+column at all, so every later APPEND that names a model fails on BigQuery and Databricks, or loses
+the id on Snowflake (below). The snippet above checks the model id before scoring and turns the
+warning into an error, so APPEND writes neither; report it as a failed run. A query with no time
+window has no anchor: pass `JOB_TIMESTAMP` alone, or the write fails after scoring.
 
 The write never adds a column to an existing table. When an APPEND destination already exists,
 read its columns before generating the artifact and check every column the run emits:
@@ -81,6 +85,12 @@ must be exactly the table's: an OVERWRITE run writes no run columns, so a table 
 APPEND runs gave them fails, after scoring. Offer OVERWRITE there only when the columns match;
 otherwise offer a new table, or dropping the existing one first (a write, confirmed like any
 other). Databricks OVERWRITE replaces the table, columns included.
+
+BigQuery OVERWRITE replaces the table's rows and schema with one `WRITE_TRUNCATE` job
+(`kumo_bigquery.write`). It keeps column descriptions and policy tags, but BigQuery drops the
+table's row access policies with it, so every reader of the table then sees every prediction row. Before offering OVERWRITE onto an existing BigQuery table, list its policies
+(`bq ls --row_access_policies <project>:<dataset>.<table>`, or ask the user). When it has any, say
+so at the gate and offer a new table, with the access controls it needs, instead.
 
 The exact table name is used; no suffix is appended and its case is kept. Read back, with the
 session taken in the first cell (`kumoai-reference/references/kumo_finetuning_sdk.md` §3.3), using
