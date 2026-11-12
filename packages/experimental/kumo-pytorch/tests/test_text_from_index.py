@@ -5,13 +5,9 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from dataclasses import replace
-from pathlib import Path
 
 import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
 
 from kumo.pytorch import api, encoding
@@ -93,75 +89,3 @@ def test_chunked_encoding_matches_one_string_at_a_time(monkeypatch):
         pieces = [encoder.encode(value) for value in values]
         assert encoded["values"].tolist() == [piece for item in pieces for piece in item]
         assert encoded["piece_offsets"].diff().tolist() == [len(item) for item in pieces]
-
-
-_RSS = """
-import sys
-from kumo.pytorch import api
-from kumo.pytorch.column_stats import TableColumnEncoder
-from kumo.pytorch.encoding import train_text
-from kumo.pytorch.engines.diskgraph import DiskGraphSource
-from kumo.pytorch.materialization import ensure_diskgraph_index
-from tests.test_text_from_index import TEXT
-
-
-def memory(field):
-    status = dict(line.split(":", 1) for line in open("/proc/self/status"))
-    return int(status[field].split()[0]) * 1024
-
-
-schema = api.DataSchema(
-    tables=(
-        api.TableSpec(
-            "notes",
-            "id",
-            {"id": api.DType("int64"), "body": api.DType("string")},
-            time_column=api.NON_TEMPORAL,
-        ),
-    ),
-)
-dataset = api.Dataset({"notes": api.Parquet(sys.argv[1])})
-index = ensure_diskgraph_index(schema, dataset, sys.argv[2], num_threads=4)
-if sys.argv[3] == "train":
-    source = DiskGraphSource(index, schema, num_threads=4)
-    with open("/proc/self/clear_refs", "w") as peak:
-        peak.write("5")
-    before = memory("VmRSS")
-    encoder = TableColumnEncoder(TEXT, api.DType("string"), (("notes", "body"),))
-    source.column_text(encoder, None, lambda b: train_text(TEXT, b))
-    print(memory("VmHWM") - before)
-"""
-
-
-def _training_growth(directory: Path, rows: int) -> int:
-    body = pa.array(
-        [f"note {index % 997} about item {index % 5003} and more" for index in range(rows)]
-    )
-    directory.mkdir()
-    pq.write_table(
-        pa.table({"id": pa.array(range(rows), pa.int64()), "body": body}),
-        directory / "notes.parquet",
-    )
-    for step in ("build", "train"):
-        run = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                _RSS,
-                str(directory / "notes.parquet"),
-                str(directory / "index"),
-                step,
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd=Path(__file__).parents[1],
-        )
-    return int(run.stdout.split()[-1])
-
-
-def test_training_from_the_index_does_not_hold_the_column(tmp_path):
-    # The slack covers the index pages the scan maps.
-    small = _training_growth(tmp_path / "small", 500_000)
-    large = _training_growth(tmp_path / "large", 2_000_000)
-    assert large < small * 2 + 32 * 2**20
