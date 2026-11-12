@@ -1,0 +1,11 @@
+/packages/experimental/kumo-pytorch/ @lambyqq @bberger62 @nittin-murthi @am-porter
+/packages/experimental/kumo-pytorch/conformance/ @bberger62 @lambyqq
+/packages/experimental/kumo-pytorch/tests/conformance/ @bberger62 @lambyqq
+/packages/experimental/kumo-pytorch/tests/conftest.py @bberger62 @lambyqq
+/packages/experimental/kumo-pytorch/AGENTS.md @bberger62 @lambyqq
+/packages/experimental/kumo-pytorch/CLAUDE.md @bberger62 @lambyqq
+/packages/experimental/kumo-pytorch/harness/ @bberger62 @lambyqq
+/.github/actions/kumo-pytorch-setup/ @bberger62 @lambyqq
+/.github/workflows/kumo-pytorch-*.yml @bberger62 @lambyqq
+/.github/scripts/kumo-pytorch-policy.py @bberger62 @lambyqq
+/.github/scripts/kumo-pytorch-alert.py @bberger62 @lambyqq

@@ -5,26 +5,25 @@
 name: kumo-pytorch tests
 
 # kumo-pytorch's CPU checks: golden cases on the in-memory engine, the test
-# suite (DiskGraph tests skip here), style and the package build.
+# suite (DiskGraph tests skip here), style and the package build. Pull requests
+# run it through kumo-pytorch-gate.
 on:  # yamllint disable-line rule:truthy
-  pull_request:
-    paths:
-      - 'packages/experimental/kumo-pytorch/**'
-      - '.github/actions/kumo-pytorch-setup/**'
-      - '.github/workflows/kumo-pytorch-tests.yml'
   push:
     branches: [main]
     paths:
       - 'packages/experimental/kumo-pytorch/**'
       - '.github/actions/kumo-pytorch-setup/**'
       - '.github/workflows/kumo-pytorch-tests.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: kumo-pytorch-tests-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

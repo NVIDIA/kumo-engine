@@ -18,6 +18,8 @@ on:  # yamllint disable-line rule:truthy
       - '.github/workflows/_diskgraph-wheel.yml'
       - '.github/actions/kumo-pytorch-setup/**'
       - '.github/workflows/kumo-pytorch-t2a.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
   pull_request:
     paths:
       - 'packages/experimental/kumo-pytorch/e2e/**'
