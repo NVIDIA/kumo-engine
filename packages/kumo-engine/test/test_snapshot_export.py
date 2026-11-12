@@ -553,7 +553,6 @@ def test_load_explains_an_index_the_installed_diskgraph_cannot_open(
         _load(exports, location)
 
 
-@pytest.mark.parametrize('scheme', ['s3', 'gs'])
 def test_load_works_without_posix_fallocate(tmp_path, scratch, graph, exports,
                                             monkeypatch):
     # macOS has no os.posix_fallocate; loading must still restore the index.
@@ -568,6 +567,7 @@ def test_load_works_without_posix_fallocate(tmp_path, scratch, graph, exports,
         _generation(exported) / 'index')
 
 
+@pytest.mark.parametrize('scheme', ['s3', 'gs'])
 def test_object_store_round_trip(tmp_path, scratch, graph, monkeypatch, scheme):
     storage = tmp_path / 'storage'
     storage.mkdir()
