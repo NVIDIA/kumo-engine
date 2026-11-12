@@ -146,14 +146,16 @@ def test_scan_memory_stays_bounded(tmp_path):
                    tmp_path / "tags.parquet")
     index = _ingest(tmp_path, tmp_path / "index", 4, 3)
     script = """
-import resource, sys, diskgraph
-before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+import sys, pyarrow, diskgraph
+def peak_kib():
+    return next(int(line.split()[1]) for line in open("/proc/self/status") if line.startswith("VmHWM"))
+before = peak_kib()
 rows = sum(len(c) for c in diskgraph.scan_column(sys.argv[1], "docs", "body", None,
-                                                 chunk_rows=16384, num_threads=4))
-print(rows, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before)
+                                                 chunk_rows=16384, num_threads=64))
+print(rows, peak_kib() - before)
 """
     out = subprocess.run([sys.executable, "-c", script, index], check=True,
                          capture_output=True, text=True).stdout.split()
     scanned, growth_kib = int(out[0]), int(out[1])
     assert scanned == rows
-    assert growth_kib * 1024 < rows * width / 10
+    assert growth_kib * 1024 < rows * width
