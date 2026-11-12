@@ -1923,9 +1923,9 @@ impl SharedColumnCounts {
 
 /// Per-file local category counts for a single column.
 pub struct LocalColumnCounts {
-    pub counts: HashMap<u64, u64>,
-    pub strings: HashMap<u64, String>,
-    integer_values: HashMap<u64, i64>,
+    pub counts: HashMap<u64, u64, IdentityBuildHasher>,
+    pub strings: HashMap<u64, String, IdentityBuildHasher>,
+    integer_values: HashMap<u64, i64, IdentityBuildHasher>,
     /// `(hash, value, count)` for values whose hash `strings` holds for another value.
     collided: Vec<(u64, String, u64)>,
 }
@@ -1933,12 +1933,12 @@ pub struct LocalColumnCounts {
 impl LocalColumnCounts {
     pub fn with_capacity(cap: usize) -> Self {
         Self {
-            counts: HashMap::with_capacity(cap),
-            strings: HashMap::with_capacity(cap),
+            counts: HashMap::with_capacity_and_hasher(cap, IdentityBuildHasher),
+            strings: HashMap::with_capacity_and_hasher(cap, IdentityBuildHasher),
             // Keep string-backed categorical caches at their prior allocation
             // footprint. Integer identity storage allocates lazily only when
             // an integer category actually wins admission.
-            integer_values: HashMap::new(),
+            integer_values: HashMap::default(),
             collided: Vec::new(),
         }
     }
