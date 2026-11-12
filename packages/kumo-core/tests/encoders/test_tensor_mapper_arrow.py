@@ -19,6 +19,7 @@ from kumo_core.encoders.tensor_mapper import (
     UnsupportedTensorMapper,
 )
 from kumo_core.types.features import TensorData
+from tests.support.mapper_reference import sequence_pandas_reference
 from torch import Tensor
 from torch_frame.data import MultiEmbeddingTensor, MultiNestedTensor
 
@@ -38,7 +39,12 @@ def _pandas_reference(
         return torch.from_numpy(series.to_numpy().astype(dtype)).view(-1, 1)
     if isinstance(mapper, CategoricalTensorMapper):
         return mapper.mapper.map(series).view(-1, 1)
-    return mapper._forward_pandas(series)
+    if isinstance(mapper, MultiCategoricalTensorMapper):
+        rowptr, index = mapper.mapper.map_multi(series, mapper.sep)
+        return MultiNestedTensor(
+            num_rows=len(series), num_cols=1, values=index, offset=rowptr
+        )
+    return sequence_pandas_reference(mapper, series)
 
 
 def _assert_same(pandas_out, arrow_out) -> None:
@@ -114,8 +120,6 @@ def test_multicategorical_list_arrow_matches_pandas() -> None:
     mapper = MultiCategoricalTensorMapper(
         category_counts=[[1, 2], [2, 1], [3, 1]], sep=None
     )
-    # No nulls and no empty lists, so this hits the native CSR fast path (a
-    # list-level null would defer to the pandas fallback).
     ser = pd.Series([[1, 2], [2, 3], [1], [1, 1]])
     arr = pa.array([[1, 2], [2, 3], [1], [1, 1]], type=pa.list_(pa.int64()))
     assert arr.null_count == 0
@@ -126,7 +130,6 @@ def test_multicategorical_list_arrow_matches_pandas() -> None:
 
 
 def test_multicategorical_null_arrow_matches_pandas() -> None:
-    # A list-level null forces the pandas fallback; it must still match.
     mapper = MultiCategoricalTensorMapper(
         category_counts=[[1, 2], [2, 1], [3, 1]], sep=None
     )
@@ -176,9 +179,7 @@ def test_multicategorical_all_empty_lists_preserve_legacy_tokens(
 
 
 def test_multicategorical_sliced_list_arrow_matches_pandas() -> None:
-    # A head slice keeps offsets[0] == 0 but ``arr.values`` still spans the
-    # full child buffer; the native guard must defer this to the pandas
-    # fallback rather than build a mismatched tensor.
+    # Head slices retain the full child buffer, which must be trimmed.
     mapper = MultiCategoricalTensorMapper(
         category_counts=[[1, 2], [2, 1], [3, 1]], sep=None
     )
@@ -207,8 +208,6 @@ def test_sequence_truncation_arrow_matches_pandas() -> None:
 
 
 def test_sequence_sliced_list_arrow_matches_pandas() -> None:
-    # Head slice: native guard must defer to the pandas fallback (see the
-    # multicategorical sliced test for the underlying pyarrow behavior).
     mapper = SequenceTensorMapper(min_length=2, max_length=2)
     arr = pa.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], type=pa.list_(pa.float64()))
     sliced = arr.slice(0, 2)
