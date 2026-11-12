@@ -2,8 +2,6 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""scan_column streams exactly the rows the cutoff statistics count, in stored order."""
-
 import json
 import pathlib
 import random
@@ -74,7 +72,6 @@ def indexes(data_dir, tmp_path_factory) -> dict:
 
 
 def _stored(index: str, table: str, columns: list) -> dict:
-    """Each column's value per node id, in node id order (shard, then node)."""
     metadata = json.loads((pathlib.Path(index) / "index_metadata.json").read_text())
     nodes = next(n["max_id"] + 1 for n in metadata["node_types"] if n["name"] == table)
     events = diskgraph.SamplerEngine(index).fetch_features(
@@ -84,7 +81,6 @@ def _stored(index: str, table: str, columns: list) -> dict:
 
 
 def _plain(array: pa.Array) -> list:
-    """Python values, timestamps as epoch seconds."""
     if pa.types.is_timestamp(array.type):
         array = array.cast(pa.timestamp("s")).cast(pa.int64())
     return array.to_pylist()
@@ -148,8 +144,6 @@ def test_publish_beside_statistics(indexes, tmp_path):
     assert pathlib.Path(path).read_bytes() == b"{}"
     with pytest.raises(Exception, match="cannot name"):
         diskgraph.publish_col_stats_file(index, CUTOFF, "docs", "../escape", b"{}")
-    with pytest.raises(Exception, match="no node table"):
-        diskgraph.publish_col_stats_file(index, CUTOFF, "missing", "x.json", b"{}")
 
 
 def test_scan_memory_stays_bounded(tmp_path):

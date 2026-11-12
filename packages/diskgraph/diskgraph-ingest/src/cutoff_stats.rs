@@ -40,7 +40,7 @@ use crate::index_metadata::{index_id, read_dataset_metadata, INDEX_METADATA_FILE
 const SCHEMA: &str = "diskgraph.col_stats_extension.v1";
 const SPEC_VERSION: u32 = 1;
 const STATS_DIR: &str = "col_stats";
-pub(crate) const SCAN_CHUNK_NODES: u64 = 1 << 16;
+const SCAN_CHUNK_NODES: u64 = 1 << 16;
 const BINS_PER_OCTAVE: u32 = 128;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -587,10 +587,9 @@ enum Cell {
     Text,
 }
 
-/// A table's create-time column, read in index-clock ticks.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct CreateTime {
-    /// The column and whether it holds dates.
+    /// The column, and whether it holds dates.
     column: Option<(usize, bool)>,
     clock: TimeUnit,
 }
@@ -624,8 +623,6 @@ impl CreateTime {
         }
     }
 
-    /// Whether a row created at `time` counts at `cutoff`, inclusive; every
-    /// row of a table without a create time counts.
     pub(crate) fn includes(&self, cutoff: Option<i64>, time: Option<i64>) -> bool {
         match (cutoff, time) {
             (Some(cutoff), Some(time)) => time <= cutoff,
@@ -1041,8 +1038,8 @@ pub(crate) fn publish_ingested(
     Ok(())
 }
 
-/// `(shard, first node, end node)` chunks of a table's nodes, in shard then node order.
-pub(crate) fn node_chunks(table: &TableReader, nodes_per_chunk: u64) -> Vec<(usize, u64, u64)> {
+/// `(shard, first node, end node)`, in node order.
+pub(crate) fn node_chunks(table: &TableReader) -> Vec<(usize, u64, u64)> {
     (0..table.shard_count())
         .filter_map(|shard| {
             let (min, max) = table.shard_id_range(shard)?;
@@ -1050,14 +1047,13 @@ pub(crate) fn node_chunks(table: &TableReader, nodes_per_chunk: u64) -> Vec<(usi
         })
         .flat_map(|(shard, nodes)| {
             (0..nodes)
-                .step_by(nodes_per_chunk as usize)
-                .map(move |start| (shard, start, nodes.min(start + nodes_per_chunk)))
+                .step_by(SCAN_CHUNK_NODES as usize)
+                .map(move |start| (shard, start, nodes.min(start + SCAN_CHUNK_NODES)))
         })
         .collect()
 }
 
-/// A node's row, unless it was stored without node data (as oversized rows
-/// are), which no statistic observed.
+/// `None` for a row stored without node data, as oversized rows are, which ingest never observed.
 pub(crate) fn stored_row(shard: &ShardReader, node: u64) -> Result<Option<&[u8]>> {
     Ok(shard
         .edges_for_node(node)?
@@ -1090,7 +1086,7 @@ fn scan_table(
         reader.metadata().timestamp_unit,
     )?;
     let mask = empty.read_mask();
-    node_chunks(&table_reader, SCAN_CHUNK_NODES)
+    node_chunks(&table_reader)
         .into_par_iter()
         .try_fold(
             || (empty.clone(), Default::default()),
@@ -1199,8 +1195,7 @@ pub fn ensure_col_stats(
     })
 }
 
-/// Atomically publishes `payload` as `col_stats/<cutoff_id>/<table>/<name>`,
-/// beside the statistics files of `cutoff`, and returns its path.
+/// Atomically writes `col_stats/<cutoff_id>/<table>/<name>`, beside the statistics of `cutoff`.
 pub fn publish_col_stats_file(
     index_dir: &Path,
     cutoff: Option<i64>,
@@ -1210,10 +1205,6 @@ pub fn publish_col_stats_file(
 ) -> Result<PathBuf> {
     let index_dir = &std::path::absolute(index_dir)?;
     let metadata = read_dataset_metadata(index_dir)?;
-    ensure!(
-        metadata.node_types.iter().any(|node| node.name == table),
-        "index has no node table {table}"
-    );
     let index_id = index_id(index_dir, &metadata)?;
     let cutoff_files = CutoffFiles::new(index_dir, &index_id, cutoff, metadata.timestamp_unit)?;
     ensure_file_names(table, name)?;

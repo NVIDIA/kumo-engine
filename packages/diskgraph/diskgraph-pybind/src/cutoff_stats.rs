@@ -73,8 +73,7 @@ pub fn col_stats_from_arrow(
     Ok(out.into_any().unbind())
 }
 
-/// Atomically writes `payload` at `col_stats/<cutoff_id>/<table>/<name>`
-/// and returns the path.
+/// Atomically writes `payload` at `col_stats/<cutoff_id>/<table>/<name>` and returns its path.
 #[pyfunction]
 pub fn publish_col_stats_file(
     py: Python<'_>,
@@ -92,8 +91,6 @@ pub fn publish_col_stats_file(
     Ok(path.to_string_lossy().into_owned())
 }
 
-/// Iterates a stored string column's non-null values as `pa.large_string()`
-/// arrays, in shard then node order, over the rows counted at `cutoff`.
 #[pyclass(frozen, module = "diskgraph._c")]
 pub struct ColumnScan {
     chunks: Mutex<column_scan::ColumnScan>,
@@ -123,6 +120,7 @@ impl ColumnScan {
     }
 }
 
+/// A stored string column's non-null values over the rows counted at `cutoff`, as `large_string`.
 #[pyfunction]
 #[pyo3(signature = (index_dir, table, column, cutoff, *, chunk_rows=65536, num_threads=None))]
 pub fn scan_column(

@@ -2,9 +2,7 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! One stored string column, streamed in shard then node order over the rows
-//! the column statistics count at a cutoff. Chunks of nodes decode ahead in
-//! parallel and reach the reader in order.
+//! A stored string column's values over the rows the column statistics count, in node order.
 
 use std::collections::HashSet;
 use std::panic::{self, AssertUnwindSafe};
@@ -21,10 +19,9 @@ use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use diskgraph_rowpack::{IngestedType, RowPackDecodeScratch, ValueRef};
 use rayon::prelude::*;
 
-use crate::cutoff_stats::{column_index, node_chunks, stored_row, CreateTime, SCAN_CHUNK_NODES};
+use crate::cutoff_stats::{column_index, node_chunks, stored_row, CreateTime};
 use crate::index_metadata::INDEX_METADATA_FILENAME;
 
-/// The column's non-null values, `chunk_rows` per array except the last.
 pub struct ColumnScan {
     chunks: Receiver<Result<LargeStringArray>>,
     stop: Arc<AtomicBool>,
@@ -37,7 +34,6 @@ pub enum Next {
 }
 
 impl ColumnScan {
-    /// The next chunk, or `Pending` if none is ready within `timeout`.
     pub fn next_within(&self, timeout: Duration) -> Next {
         match self.chunks.recv_timeout(timeout) {
             Ok(chunk) => Next::Chunk(chunk),
@@ -62,8 +58,7 @@ struct Scan {
     stop: Arc<AtomicBool>,
 }
 
-/// Opens the scan; decoding runs on `num_threads` threads (all cores when
-/// `None`), one chunk of nodes each, with two finished arrays queued ahead.
+/// `chunk_rows` non-null values per array, decoded on `num_threads` threads, two arrays ahead.
 pub fn scan_column(
     index_dir: &Path,
     table: &str,
@@ -133,8 +128,6 @@ pub fn scan_column(
 }
 
 impl Scan {
-    /// Decodes a window of node chunks at a time and re-chunks the values in
-    /// order; stops once the scan is dropped.
     fn produce(
         &self,
         pool: &rayon::ThreadPool,
@@ -142,8 +135,7 @@ impl Scan {
         sender: &SyncSender<Result<LargeStringArray>>,
     ) -> Result<()> {
         let mut out = LargeStringBuilder::new();
-        for window in node_chunks(&self.table, SCAN_CHUNK_NODES).chunks(pool.current_num_threads())
-        {
+        for window in node_chunks(&self.table).chunks(pool.current_num_threads()) {
             if self.stop.load(Ordering::Relaxed) {
                 return Ok(());
             }
