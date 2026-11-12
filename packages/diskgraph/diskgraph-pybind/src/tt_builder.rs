@@ -14,6 +14,8 @@
 //! plan_json = b.build()
 //! ```
 
+use std::collections::BTreeSet;
+
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 
@@ -710,7 +712,7 @@ impl DiskGraphTTBuilder {
         &mut self,
         entity: tt::EntitySpec<Seconds>,
     ) -> PyResult<tt::DiskGraphTTPlan<U>> {
-        let stages = std::mem::take(&mut self.stages)
+        let stages: Vec<tt::Stage<U>> = std::mem::take(&mut self.stages)
             .into_iter()
             .map(|(ops, filter)| {
                 let ops = ops
@@ -720,6 +722,14 @@ impl DiskGraphTTBuilder {
                 Ok(tt::Stage { ops, filter })
             })
             .collect::<PyResult<_>>()?;
+        let truncated: BTreeSet<String> = stages
+            .iter()
+            .flat_map(|stage| &stage.ops)
+            .filter_map(truncated_window)
+            .collect();
+        for message in truncated {
+            tracing::warn!("{message}");
+        }
 
         Ok(tt::DiskGraphTTPlan {
             entity: tt::EntitySpec {
@@ -782,9 +792,7 @@ impl BuilderOp {
     }
 }
 
-/// Rejects a window whose bound is shorter than one tick of the clock `U`
-/// instead of letting it truncate to an empty window.
-fn check_windows<U: UnitSystem>(op: &tt::Op<U>) -> PyResult<()> {
+fn window_of<U: UnitSystem>(op: &tt::Op<U>) -> Option<(i64, i64, TimeUnit)> {
     match op {
         tt::Op::Aggregate {
             window: Some((lo, hi)),
@@ -795,30 +803,66 @@ fn check_windows<U: UnitSystem>(op: &tt::Op<U>) -> PyResult<()> {
             window: Some((lo, hi)),
             window_unit,
             ..
-        } => {
-            let unit = window_unit.unwrap_or(TimeUnit::Seconds);
-            if matches!(
-                unit,
-                TimeUnit::Milliseconds | TimeUnit::Microseconds | TimeUnit::Nanoseconds
-            ) {
-                return Err(crate::DiskgraphConfigError::new_err(format!(
-                    "windows in {} are not supported; use seconds or a coarser unit",
-                    unit_name(unit)
-                )));
-            }
-            if matches!(unit, TimeUnit::Months | TimeUnit::Years) {
-                return Ok(());
-            }
-            if *lo != UNBOUNDED_LOWER_OFFSET {
-                check_tick::<U>("window bound", *lo, unit)?;
-            }
-            check_tick::<U>("window bound", *hi, unit)
-        }
+        } => Some((*lo, *hi, window_unit.unwrap_or(TimeUnit::Seconds))),
         tt::Op::Autoregression { target_op, .. } | tt::Op::FutureLabels { target_op, .. } => {
-            check_windows(target_op)
+            window_of(target_op)
         }
-        _ => Ok(()),
+        _ => None,
     }
+}
+
+/// Rejects a window whose bound is shorter than one tick of the clock `U`
+/// instead of letting it truncate to an empty window.
+fn check_windows<U: UnitSystem>(op: &tt::Op<U>) -> PyResult<()> {
+    let Some((lo, hi, unit)) = window_of(op) else {
+        return Ok(());
+    };
+    if matches!(
+        unit,
+        TimeUnit::Milliseconds | TimeUnit::Microseconds | TimeUnit::Nanoseconds
+    ) {
+        return Err(crate::DiskgraphConfigError::new_err(format!(
+            "windows in {} are not supported; use seconds or a coarser unit",
+            unit_name(unit)
+        )));
+    }
+    if matches!(unit, TimeUnit::Months | TimeUnit::Years) {
+        return Ok(());
+    }
+    if lo != UNBOUNDED_LOWER_OFFSET {
+        check_tick::<U>("window bound", lo, unit)?;
+    }
+    check_tick::<U>("window bound", hi, unit)
+}
+
+/// Describes a window whose bounds the clock `U` truncates, e.g. 90 minutes
+/// on the hours clock.
+fn truncated_window<U: UnitSystem>(op: &tt::Op<U>) -> Option<String> {
+    let (lo, hi, unit) = window_of(op)?;
+    if matches!(unit, TimeUnit::Months | TimeUnit::Years) {
+        return None;
+    }
+    let in_clock = |value: i64| match value {
+        UNBOUNDED_LOWER_OFFSET => value,
+        _ => {
+            let ticks = dur_from_unit::<U>(value, unit).raw() as i128;
+            (ticks * U::TICK_NANOS as i128 / unit.tick_nanos() as i128) as i64
+        }
+    };
+    let window = |lo: i64, hi: i64| match lo {
+        UNBOUNDED_LOWER_OFFSET => format!("(-inf, {hi}] {}", unit_name(unit)),
+        _ => format!("({lo}, {hi}] {}", unit_name(unit)),
+    };
+    let (lo_in_clock, hi_in_clock) = (in_clock(lo), in_clock(hi));
+    let clock = unit_name(U::UNIT);
+    ((lo_in_clock, hi_in_clock) != (lo, hi)).then(|| {
+        format!(
+            "The window {} truncates to {} on the {clock} index clock. Use a window of whole \
+             {clock}, or a finer timestamp_precision.",
+            window(lo, hi),
+            window(lo_in_clock, hi_in_clock),
+        )
+    })
 }
 
 fn check_tick<U: UnitSystem>(what: &str, value: i64, unit: TimeUnit) -> PyResult<()> {
