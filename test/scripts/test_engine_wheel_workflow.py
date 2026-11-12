@@ -275,7 +275,14 @@ def test_cpu_qualification_uses_candidate_artifacts_on_all_pythons():
     path = WORKFLOW.parent / 'kumo-engine-platform-smoke.yml'
     workflow = yaml.safe_load(path.read_text())
     # PyYAML's YAML 1.1 parser interprets the GitHub Actions `on` key as True.
-    assert workflow[True] == {'workflow_call': None}
+    # The build calls it with no inputs. A manual run names an earlier build
+    # run and its commit, to qualify wheels that run already uploaded.
+    triggers = workflow[True]
+    assert triggers['workflow_call'] is None
+    assert set(triggers['workflow_dispatch']['inputs']) == {
+        'wheel_run_id', 'wheel_sha'}
+    assert all(spec['required']
+               for spec in triggers['workflow_dispatch']['inputs'].values())
     job = workflow['jobs']['smoke']
     matrix = job['strategy']['matrix']
     assert set(matrix['python']) == {'3.11', '3.12', '3.13', '3.14'}
@@ -290,12 +297,13 @@ def test_cpu_qualification_uses_candidate_artifacts_on_all_pythons():
     download = next(step for step in job['steps']
                     if step.get('uses', '').startswith(
                         'actions/download-artifact@'))
+    # A workflow_call defines no inputs, so both fall back to the current
+    # build run and commit. Only a manual run can name an earlier build, and
+    # the release build never qualifies a stale artifact.
     assert download['with'] == {
         'name': ('kumo-engine-wheel-${{ matrix.target.artifact }}-'
-                 '${{ github.sha }}'),
+                 '${{ inputs.wheel_sha || github.sha }}'),
         'path': '${{ runner.temp }}/platform-wheel/artifacts',
+        'run-id': '${{ inputs.wheel_run_id || github.run_id }}',
+        'github-token': '${{ github.token }}',
     }
-    # Supplying another run or token here could accidentally qualify a stale
-    # artifact while publishing the current build.
-    assert 'run-id' not in download['with']
-    assert 'github-token' not in download['with']
