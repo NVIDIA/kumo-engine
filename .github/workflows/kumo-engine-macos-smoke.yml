@@ -9,7 +9,7 @@ on:  # yamllint disable-line rule:truthy
       python_version:
         description: Python versions for desktop qualification
         type: choice
-        default: all
+        default: '3.12'
         options: [all, '3.11', '3.12', '3.13', '3.14']
   push:
     branches: [egu/macos-arm64-smoke]

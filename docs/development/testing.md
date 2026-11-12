@@ -56,7 +56,7 @@ The platform CPU matrix also qualifies the finished macOS ARM64 wheel on
 train/predict fixture as Linux ARM64 and Windows: verify wheel provenance and
 dependencies, observe four optimizer steps, predict 100 held-out entities, and
 reload the saved model. The manual **Kumo Engine - macOS ARM64 qualification** workflow builds one
-Mac wheel and tests it across Python 3.11–3.14 by default. The Mac matrix also
+Mac wheel and tests Python 3.12 by default; `all` selects 3.11–3.14. The Mac matrix also
 runs [desktop recovery and retrieval qualification](macos-validation.md) after
 the basic smoke. MPS execution has a separate verdict; missing hardware never
 counts as a GPU pass.

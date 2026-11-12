@@ -310,8 +310,8 @@ are valid.
 ### macOS ARM64 desktop qualification
 
 Run **Actions → Kumo Engine - macOS ARM64 qualification → Run workflow** and
-select `main` after merging, or the feature branch during validation. By default,
-all supported Python versions (3.11–3.14) share one native candidate wheel build.
+select `main` after merging, or the feature branch during validation. Python 3.12 is the default manual profile. Select `all` for Python 3.11–3.14;
+those jobs share one native candidate wheel build.
 Each installs the exact wheel in a fresh environment and runs the
 [desktop qualification suite](macos-validation.md), including actual durable
 save/restart/load/predict, retrieval dependencies, and negative cases.

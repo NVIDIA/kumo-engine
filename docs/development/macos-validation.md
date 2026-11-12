@@ -9,8 +9,10 @@ aliases, tracking, drift, and evaluation belong to the separate MLOps tests.
 
 Open **Actions → Kumo Engine - macOS ARM64 qualification → Run workflow**.
 Select the feature branch during PR validation or `main` after merging. The
-Python selector defaults to **all**: 3.11, 3.12, 3.13, and 3.14. One native wheel
-build supplies the exact same wheel bytes to all four jobs. No cloud credentials
+Python selector defaults to **3.12**, the initial desktop qualification profile.
+Select **all** to test 3.11, 3.12, 3.13, and 3.14 for release or dependency
+compatibility. When testing multiple versions, one native wheel build supplies
+the exact same wheel bytes to every job. No cloud credentials
 or customer datasets are needed. Push events register the feature workflow but
 skip execution.
 
