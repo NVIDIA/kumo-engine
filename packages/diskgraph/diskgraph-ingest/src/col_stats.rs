@@ -832,6 +832,17 @@ impl FileColStats {
         self
     }
 
+    pub fn collects(&self, col_idx: usize) -> bool {
+        !matches!(self.cols[col_idx], ColumnStatsCollector::Skip)
+    }
+
+    pub fn counts_categories(&self, col_idx: usize) -> bool {
+        matches!(
+            self.cols[col_idx],
+            ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. }
+        )
+    }
+
     /// Merge another `FileColStats` into this one (per-column dispatch).
     /// Used on the channel receive side to accumulate per-table stats.
     pub fn merge(&mut self, other: &mut FileColStats) {
