@@ -221,9 +221,10 @@ def bundle(out: Path) -> None:
     """Build every host's package into `out/<host>/kumo-data-science/`, the layout the
     `kumo-engine` wheel ships under `kumo/engine/_skills/` for `kumo.engine.install_skills()`.
 
-    `packages/kumo-engine/setup.py` calls this on every build from a checkout, so a wheel always
-    carries the skill built from its own commit. A package with an unresolved reference fails the
-    build instead of shipping.
+    `packages/kumo-engine/setup.py` calls this on every wheel or sdist build from a checkout, so a
+    wheel always carries the skill built from its own commit; an editable install reads
+    `agent-skills/` directly. A package with an unresolved reference fails the build instead of
+    shipping.
     """
     if out.exists():
         shutil.rmtree(out)
