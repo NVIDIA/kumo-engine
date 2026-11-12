@@ -229,17 +229,18 @@ class ServingAssembler:
                         f"rows[{name!r}][{index}][{column!r}]: {value!r} is not a valid "
                         f"{dtype_text(dtype)} value, the column's declared type; {_SEE_SPEC}"
                     ) from None
-            identity = values[key]
-            if identity is None:
-                raise ValueError(
-                    f"rows[{name!r}][{index}] has a NULL primary key {key!r}; {_SEE_SPEC}"
-                )
-            if identity in seen:
-                raise ValueError(
-                    f"rows[{name!r}][{index}] repeats primary key {key}={identity!r} of "
-                    f"rows[{name!r}][{seen[identity]}]; supply each row once; {_SEE_SPEC}"
-                )
-            seen[identity] = index
+            if key is not None:
+                identity = values[key]
+                if identity is None:
+                    raise ValueError(
+                        f"rows[{name!r}][{index}] has a NULL primary key {key!r}; {_SEE_SPEC}"
+                    )
+                if identity in seen:
+                    raise ValueError(
+                        f"rows[{name!r}][{index}] repeats primary key {key}={identity!r} of "
+                        f"rows[{name!r}][{seen[identity]}]; supply each row once; {_SEE_SPEC}"
+                    )
+                seen[identity] = index
             result.append(values)
         return result
 
@@ -289,7 +290,11 @@ class ServingAssembler:
         requests: Sequence[SampleRequest],
     ) -> None:
         sample = self.contract.sample
-        present = {name: {row[self._keys[name]] for row in rows} for name, rows in tables.items()}
+        present = {
+            name: {row[self._keys[name]] for row in rows}
+            for name, rows in tables.items()
+            if self._keys[name] is not None
+        }
 
         def require(table: str, entity_id: object, what: str) -> None:
             key = self._keys[table]

@@ -19,6 +19,8 @@ import {
 
 import WithErrorBoundary from "components/@hoc/WithErrorBoundary";
 
+import { docURLs } from "utils/Constants";
+
 export interface PredictionAnchorTimeProps {
     onChange: (date: Date) => void;
 }
@@ -48,9 +50,7 @@ const PredictionAnchorTime: React.FC<PredictionAnchorTimeProps> = ({
                                 <span className="whitespace-nowrap">
                                     <DocumentationLink
                                         id="prediction-anchor-link"
-                                        url={
-                                            "https://kumo.ai/docs/troubleshooting/what-is-anchor-time-and-why-is-it-important/"
-                                        }
+                                        url={docURLs.PredictionAnchorTime}
                                         linkText="docs"
                                         className="text-blue-300! hover:text-blue-400!"
                                         showExternalIcon={true}

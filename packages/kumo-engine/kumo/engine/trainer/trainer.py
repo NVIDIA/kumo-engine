@@ -32,7 +32,7 @@ from typing import (
 )
 
 import pandas as pd
-from kumo_core.artifacts import PROVENANCE_FILE
+from kumo_core.artifacts import PROVENANCE_FILE, bundle_task_options
 from kumo_core.embedding_models import EmbeddingModelStore
 from kumo_core.evaluation_counts import (
     at_k_summaries,
@@ -48,6 +48,7 @@ from kumo_core.pquery import (
     build_generated_training_task_dataset,
     resolve_query_forecast,
 )
+from kumo_core.resolved_task import check_prediction_plan
 from kumo_core.summaries import Note, Scalar, Summary
 from kumo_core.train.artifact_manifest import PredictionSelectionRef
 from kumo_core.training.config import FitMode
@@ -203,6 +204,21 @@ class TrainingResult:
     def id(self) -> Optional[str]:
         """The bundle id."""
         return self.bundle_id
+
+    @property
+    def metric_history(self) -> Optional[Dict[str, Any]]:
+        """Per-epoch metrics for every search trial, or ``None`` if absent.
+
+        Reads the training progress record kept in the bundle. It needs no
+        tracker and excludes refit epochs. A ``fit()`` result reads the file
+        from the trainer scratch directory, so export and reload the model to
+        keep the history after that directory is removed. Non-finite metric
+        values read as ``None``.
+        """
+        path = self.artifact_paths.get('metric_history')
+        return (None if path is None else json.loads(
+            Path(path).read_text(encoding='utf-8'),
+            parse_constant=lambda _: None))
 
     @property
     def manifest(self) -> Optional[ModelManifest]:
@@ -985,22 +1001,30 @@ def _requested_artifacts(
             {PredictionArtifactType.PREDICTIONS})
 
 
+def _offset_count(compiler_options: Mapping[str, Any],
+                  name: str) -> Optional[int]:
+    offsets = compiler_options.get(name)
+    return len(offsets) if isinstance(offsets, (tuple, list)) else None
+
+
 def _materialize_prediction(prediction_table: PredictionTable,
                             snapshot: GraphSnapshot, parsed: Any,
-                            native_graph: Any, run_id: str,
-                            run_dir: Path) -> Tuple[Any, Any, Any]:
+                            native_graph: Any, run_id: str, run_dir: Path,
+                            task_options: Mapping[str, Any]) -> Tuple[Any, Any]:
     from kumo_core.prediction import (
         GeneratedPredictionTable,
         PredictionTableRequest,
-        forecast_task_options,
         materialize_prediction_task,
     )
 
     ingest_tt_id = f'{prediction_table.tt_id}-{run_id}'
     compiler_options = prediction_table.compiler_options or {}
-    lag_offsets = compiler_options.get('lag_offsets_secs')
-    lag_timesteps = (len(lag_offsets) if isinstance(lag_offsets,
-                                                    (tuple, list)) else None)
+    lag_timesteps = _offset_count(compiler_options, 'lag_offsets_secs')
+    if parsed.task_type == 'forecasting':
+        check_prediction_plan(
+            task_options, lag_timesteps=lag_timesteps,
+            forecast_length=_offset_count(compiler_options,
+                                          'future_offsets_secs'))
     with no_encoder_inference_warnings():
         task_dataset = build_generated_training_task_dataset(
             query=parsed,
@@ -1021,7 +1045,6 @@ def _materialize_prediction(prediction_table: PredictionTable,
         tt_id=ingest_tt_id,
         task_dataset=task_dataset,
         compiler_options=prediction_table.compiler_options,
-        forecast_timeframe_step=prediction_table.forecast_timeframe_step,
     )
     generated = GeneratedPredictionTable(
         staging_dir=str(prediction_table.staging_dir),
@@ -1031,7 +1054,7 @@ def _materialize_prediction(prediction_table: PredictionTable,
     )
     materialized = materialize_prediction_task(request, generated,
                                                graph_index_id=snapshot.id)
-    return materialized, request.timestamps, forecast_task_options(request)
+    return materialized, request.timestamps
 
 
 _UNACTIONABLE = (
@@ -1554,8 +1577,24 @@ class Trainer:
     ) -> PredictionResult:
         r"""Score a snapshot and return durable file-backed results.
 
-        Scores the query's population at ``prediction_time``, or the
-        ``entities`` given, or a ``prediction_table`` generated beforehand.
+        Pass at most one of the following to choose what to score:
+
+        - ``prediction_time``: the query's population at that time, as for
+          :meth:`PredictiveQuery.generate_prediction_table`. A timezone-naive
+          ``datetime`` is read as UTC, and a timezone-aware one raises
+          ``ValueError``.
+        - ``entities``: the rows to score (see
+          :meth:`PredictionTable.from_source_table`), with these columns:
+
+          - ``ENTITY1``: the key of each entity to score.
+          - ``TIMESTAMP``: each row's anchor time (optional; required for
+            temporal queries and for static queries whose entity table has a
+            time column).
+
+        - ``prediction_table``: a table generated beforehand.
+
+        With none of the three, a temporal query scores its population at the
+        latest timestamp among the tables aggregated in its target.
 
         The trainer must contain fitted state from :meth:`fit`, :meth:`load`,
         or :meth:`load_from_connector`. Without ``output_config``,
@@ -1702,6 +1741,7 @@ class Trainer:
         run_id = f'{self._id}-predict-{new_run_id()}'
         if output_config is not None:
             _preflight(output_config)
+        task_options = bundle_task_options(training_result.artifact_paths)
         encoders = self._trained_encoders(training_result)
         started_at = datetime.now(timezone.utc)
         run_dir = self.scratch_dir / 'runs' / run_id
@@ -1709,9 +1749,9 @@ class Trainer:
         if self._training_table_generation_plan is not None:
             parsed = resolve_query_forecast(
                 parsed, native_graph, self._training_table_generation_plan)
-        materialized, timestamps, forecast_options = (
-            _materialize_prediction(prediction_table, snapshot, parsed,
-                                    native_graph, run_id, run_dir))
+        materialized, timestamps = _materialize_prediction(
+            prediction_table, snapshot, parsed, native_graph, run_id, run_dir,
+            task_options)
         model_dir = str(
             _stage_model_bundle(
                 training_result.artifact_paths,
@@ -1745,7 +1785,7 @@ class Trainer:
                 json.dumps(source_identity, sort_keys=True,
                            default=str).encode()).hexdigest(),
             binary_threshold=threshold,
-            forecast_options=forecast_options,
+            task_options=task_options,
             embedding_models=self._embedding_models,
             encoders=encoders,
             accelerator=self._accelerator,

@@ -549,3 +549,48 @@ def test_ttng_set_runtime_worker_shard_updates_existing_datamodule():
     assert trainer._runtime_worker_id == 0
     assert trainer.datamodule.runtime_num_workers == 1
     assert trainer.datamodule.runtime_worker_id == 0
+
+
+def test_hosted_and_local_prediction_read_the_same_fitted_scalars(tmp_path):
+    from kumo_core.artifacts import bundle_task_options
+    from kumo_core.resolved_task import ResolvedNumericalTask
+    from kumo_core.task_dataset import DiskgraphTaskManifest
+
+    from kumo.task.task import Task
+
+    manifest = DiskgraphTaskManifest(
+        manifest_path='manifest.json',
+        runtime_manifest_path='runtime_manifest.json',
+        manifest={},
+        metadata={
+            'task_type': 'temporal_link_prediction',
+            'seed_node_type': 'users',
+            'target_node_type': 'products',
+            'train_table_name': 'train_table',
+            'train_table_columns': {
+                'time_column': 'TIMESTAMP',
+                'foreign_key_columns': ['ENTITY', 'TARGET'],
+            },
+        },
+        feature_schema={},
+        graph_runtime_metadata={
+            'node_types': ['users', 'products'],
+            'edge_types': [],
+        },
+    )
+    scalars = dict(forecast_length=1, lag_timesteps=0, unix_start_offset=86_400,
+                   unix_end_offset=604_800, unix_step_size=86_400)
+    fitted = ResolvedNumericalTask.from_manifest(manifest, name='fit',
+                                                 **scalars)
+    save_json(fitted.to_dict(), str(tmp_path / 'input.json'))
+    hosted_task = SimpleNamespace(name='predict', metrics=['map@10'],
+                                  unqualified_target_to_entity_paths=[],
+                                  exclude_cols={}, **scalars)
+
+    local = ResolvedNumericalTask.from_manifest(
+        manifest, name='predict',
+        **bundle_task_options({'input_manifest': str(tmp_path / 'input.json')}))
+    hosted = Task.to_resolved_numerical_task(hosted_task, manifest)
+
+    for name, value in scalars.items():
+        assert getattr(local, name) == getattr(hosted, name) == value

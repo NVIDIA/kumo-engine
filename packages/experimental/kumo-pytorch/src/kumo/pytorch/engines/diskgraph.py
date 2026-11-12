@@ -992,7 +992,11 @@ class DiskGraphSource:
                 name: batch.column(index).to_pylist()
                 for index, name in enumerate(batch.schema.names)
             }
-            primary_keys = self._result_column(columns, output.primary_key)
+            primary_keys = (
+                self._result_column(columns, output.primary_key)
+                if output.primary_key is not None
+                else sequence["node_ids"]
+            )
             for anchor, cutoff in enumerate(cutoffs):
                 start, stop = offsets[anchor : anchor + 2]
                 if output.kind == "row_target":
@@ -1527,7 +1531,7 @@ class DiskGraphSource:
                 tuple(
                     dict.fromkeys(
                         (
-                            primary_key,
+                            *((primary_key,) if primary_key is not None else ()),
                             *(
                                 (use.field for use in node_fields[table].fields)
                                 if table in node_fields
@@ -1539,7 +1543,11 @@ class DiskGraphSource:
             )
             feature_fetch_ns += time.perf_counter_ns() - started
             started = time.perf_counter_ns()
-            node_ids = _graph_node_ids(feature_arrays[primary_key])
+            node_ids = (
+                _graph_node_ids(feature_arrays[primary_key])
+                if primary_key is not None
+                else torch.tensor(ids, dtype=torch.long)
+            )
             identity_fetch_ns += time.perf_counter_ns() - started
             started = time.perf_counter_ns()
             nodes[table] = {
@@ -1650,7 +1658,7 @@ class _SequenceOutput:
         kind: str,
         logical_name: str,
         spec: EventSpec | RowTarget,
-        primary_key: str,
+        primary_key: str | None,
         order: str = "ascending",
     ) -> None:
         self.kind = kind
@@ -1734,12 +1742,15 @@ class _TemporalPlanCompiler:
     ) -> None:
         frame, destination = self._frame(spec.rows)
         primary_key = self.source._tables[destination].primary_key
-        columns = [primary_key]
+        columns = [primary_key] if primary_key is not None else []
         for field in spec.fields.values():
             if isinstance(field, Field) and field.column is not None:
                 self._physical_column(frame, destination, field.column)
                 if field.column not in columns:
                     columns.append(field.column)
+        if not columns:
+            # Constant-only events still need one physical native projection.
+            columns.append(frame["time_column"])
         if isinstance(spec, EventSpec):
             order = spec.order
             limit = spec.limit

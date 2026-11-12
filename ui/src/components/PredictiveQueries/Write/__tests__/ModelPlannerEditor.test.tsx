@@ -218,22 +218,22 @@ describe("ModelPlannerEditor", () => {
         [
             0,
             "mp-training-table-generation-info",
-            "https://kumo.ai/docs/model-planner/"
+            "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/train-model/model-settings/model-planner"
         ],
         [
             1,
             "mp-training-job-info",
-            "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/legacy-ui-references/metrics"
+            "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/user-code-guide/train-a-model/model-plan-guide#training-job-plan"
         ],
         [
             2,
             "mp-column-processing-info",
-            "https://kumo.ai/docs/reference/column_processing/"
+            "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/train-model/model-settings/model-planner#column-encoding"
         ],
         [
             3,
             "mp-neighbor-sampling-info",
-            "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/legacy-ui-references/neighbor-sampling"
+            "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/user-code-guide/train-a-model/model-plan-guide#neighbor-sampling"
         ],
         [
             4,

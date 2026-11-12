@@ -1,7 +1,74 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Shared notebook theme, controls, and output cleanup."""
+"""Shared shell for Kumo notebook widgets, such as the graph viewer.
+
+A feature defines one specification and renders it through either transport:
+
+- `render_widget` returns trusted HTML for Jupyter, Databricks, and other
+  hosts that run scripts in cell output.
+- `render_anywidget` returns an anywidget model for hosts that block scripted
+  HTML, such as Snowflake Workspace notebooks. It imports `anywidget` and
+  `traitlets` only when called; Kumo Engine does not depend on them.
+
+The shell supplies theme tokens, the toolbar `button` helper, a unique view
+ID, and cleanup. Feature behavior stays in `script`, a JavaScript function
+body that receives `host`, `widgetId`, `data`, `signal`, and
+`onDispose(callback)`::
+
+    from IPython.display import HTML, display
+
+    from kumo.engine._widget import (CSS_THEME, button, render_anywidget,
+                                     render_widget)
+
+    counter = dict(
+        class_name='kumo-counter',
+        body=('<div class="kumo-widget-toolbar">'
+              + button('counter-add', 'Add one', text='+')
+              + '</div><span class="counter-value"></span>'),
+        style=f'.kumo-counter .counter-value{{color:{CSS_THEME["accent"]}}}',
+        data={'start': 0},
+        script='''
+            const value = host.querySelector('.counter-value');
+            const add = host.querySelector('.counter-add');
+            let count = data.start;
+            const update = () => { value.textContent = count; };
+            add.addEventListener('click', () => { count += 1; update(); },
+                                 {signal});
+            update();
+            add.disabled = false;
+        ''',
+    )
+    display(HTML(render_widget(**counter)))
+    display(render_anywidget(**counter))
+
+Rules for feature code:
+
+- Security: escape user text in `body` and pass values through `data`. Never
+  treat `data` as code or put scripts in `body`. Keep frontend code
+  self-contained, with no CDN imports, `eval`, or `new Function`.
+- Scope and cleanup: query elements through `host`, attach listeners with
+  `signal`, and enable controls after initialization (`button` renders them
+  disabled). Register other cleanup, such as timers, animation frames,
+  observers, pointer capture, and object URLs, with `onDispose`. The shell
+  runs it when the HTML is removed or the anywidget view is disposed.
+- Styling: scope CSS under the feature's `class_name` and use `CSS_THEME` for
+  interactive colors. The anywidget view uses the host's color scheme when
+  one is declared at mount time, and the browser's otherwise.
+- IDs: use `widgetId` for IDs that `script` creates. For IDs already in
+  `body`, give them a shared unique prefix and pass it as `namespace`; each
+  view replaces the prefix with its own ID.
+- Exports: build static exports in the feature with the light `THEME`
+  palette, and keep notebook-only values, such as source samples, out of
+  them. Show export commands instead of writing files during display.
+- Fullscreen: request it from a user action and handle rejection. Inside
+  Shadow DOM, check `host.matches(':fullscreen')`.
+
+Each view runs its own initializer, so repeated displays of one widget keep
+independent state. Rendering copies the specification; changing the Python
+objects afterward does not update displayed views. A view that the host
+disposes must be displayed again.
+"""
 
 import json
 import os

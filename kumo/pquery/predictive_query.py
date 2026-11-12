@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import kumo_core.types as core_types
 from kumo_core.pquery import resolve_target_to_entity_paths
+from kumo_core.resolved_task import resolve_task_options
 from kumo_core.train.mapping import NODE_INDEX_COLUMN
 from kumo_core.training.options import allow_array_targets
 from kumo_core.training.splits import DateOffsetSplit as CoreDateOffsetSplit
@@ -18,7 +19,6 @@ from kumo_core.training.splits import (
     normalize_static_link_split,
 )
 from kumo_core.utils.registry import register
-from kumo_core.utils.time import compute_unix_step
 from kumoapi.pquery import QueryType, ValidatedPredictiveQuery
 from kumoapi.typing import AggregationType, ProblemType, TimeUnit
 from pandas import DataFrame as PandasDataFrame
@@ -1261,17 +1261,6 @@ class PredictiveQueryV2(PredictiveQuery):
         if task_type == core_types.TaskType.STATIC_LINK_PREDICTION:
             target_table_name = self.table_generator.get_target_table_name()
 
-        unix_start_offset = unix_end_offset = unix_step_size = None
-        if self.query_type == QueryType.TEMPORAL:
-            offset = self.target.date_offset_range
-            start = offset.start or 0
-            end = offset.end
-            step_size = self.timeframe_step or (end - start)
-
-            unix_start_offset = compute_unix_step(start, offset.unit)
-            unix_end_offset = compute_unix_step(end, offset.unit)
-            unix_step_size = compute_unix_step(step_size, offset.unit)
-
         self.task = Task(
             self.graph,
             task_name=self.name,
@@ -1287,15 +1276,17 @@ class PredictiveQueryV2(PredictiveQuery):
             get_entity_include_bit_col(),
             weight_col=weight_col,
             stats_manager=self.table_generator.stats_manager,
-            forecast_length=self.forecast_length,
-            unix_start_offset=unix_start_offset,
-            unix_end_offset=unix_end_offset,
-            unix_step_size=unix_step_size,
+            **resolve_task_options(
+                self.validated_predictive_query,
+                task_type=task_type,
+                timeframe_step=self.timeframe_step,
+                lag_timesteps=self.lag_timesteps,
+                forecast_length=self.forecast_length,
+            ),
             split=self.split,
             target_to_entity_paths=self.target_to_entity_paths,
             target_table_name=target_table_name,
             is_sliding_window=False,
-            lag_timesteps=self.lag_timesteps,
             job_id=job_id,
             job_dir=job_dir,
             list_distinct_target_is_array=self.list_distinct_target_is_array,

@@ -7,7 +7,12 @@ import os.path as osp
 from typing import Any, Optional, Tuple
 
 from kumo_core.job_config import PredictionConfig
+from kumo_core.prediction import link_prediction_anchor
 from kumo_core.prediction_options import resolve_prediction_time_options
+from kumo_core.resolved_task import (
+    IncompatiblePredictionPlan,
+    check_prediction_plan,
+)
 from kumo_core.types import PredictionArtifactType, TaskType
 from kumoapi.typing import Dtype
 from temporalio import activity
@@ -387,22 +392,6 @@ def _materialize_ttng_prediction_task_dataset(
         predict_staging_tt_id,
         ttng_staging_dir,
     )
-
-    # Prediction anchor: deterministic max target date (matches the BP-gen
-    # anchor); empty for static queries.
-    bp_gen = pquery.get_batch_pred_table_generator()
-    pred_time = None
-    if bp_gen.query_type == QueryType.TEMPORAL:
-        pred_time = bp_gen.generate_pred_timestamp()
-    timestamps = [int(pred_time.value)] if pred_time else []  # ns
-
-    # Predict seed time (int64-ns) for the RHS MIPS NodeRange loader (else it
-    # seeds rhs_seed_time=None and the engine raises). Temporal -> anchor,
-    # static -> 0. LP-only.
-    predict_seed_time_ns: Optional[int] = None
-    if is_link_pred:
-        predict_seed_time_ns = timestamps[0] if timestamps else 0
-
     from kumo.data.generic.diskgraph_train_table import (
         TTNGBundleError,
         assert_ttng_bundle_complete,
@@ -431,6 +420,21 @@ def _materialize_ttng_prediction_task_dataset(
     if not had_complete_local_bundle:
         log.info('[TT-NG] BP restored predict staging from durable %s -> %s',
                  durable_staging_dir, predict_staging_dir)
+
+    # Predict seed time (int64-ns) for the RHS MIPS NodeRange loader and the
+    # candidate filter. LP-only; a static query seeds 0. A generated table is
+    # anchored at the query's prediction time, a custom table at its rows'.
+    predict_seed_time_ns: Optional[int] = None
+    if is_link_pred:
+        predict_seed_time_ns = 0
+        bp_gen = pquery.get_batch_pred_table_generator()
+        if (bp_gen.query_type == QueryType.TEMPORAL
+                and job_input.config.custom_pred_table_source is not None):
+            predict_seed_time_ns = _custom_link_prediction_anchor(
+                predict_staging_dir)
+        elif bp_gen.query_type == QueryType.TEMPORAL:
+            pred_time = bp_gen.generate_pred_timestamp()
+            predict_seed_time_ns = int(pred_time.value) if pred_time else 0
 
     handle = DiskgraphHandle(
         graph_key=job_input.graph_data_compute_input.graph_key,
@@ -463,6 +467,15 @@ def _materialize_ttng_prediction_task_dataset(
     log.info('[TT-NG] BP materialized task dataset at %s', result.bundle_dir)
     prediction_config.diskgraph_task_dataset_bundle_dir = result.bundle_dir
     return int(result.predict_row_count or 0)
+
+
+def _custom_link_prediction_anchor(staging_dir: str) -> int:
+    """The one anchor of a custom link-prediction table's staging bundle."""
+    try:
+        return link_prediction_anchor((), osp.join(staging_dir, 'tt.parquet'))
+    except ValueError as e:
+        raise PredictionDataMaterializationError(message=str(e),
+                                                 non_retryable=True) from e
 
 
 def _custom_pred_entity_metadata(
@@ -715,6 +728,8 @@ def _build_ttng_custom_pred_table_artifacts(
             # cleaned up; otherwise copy_tree_threaded sees an empty source and
             # silently publishes no bundle.
             assert_ttng_bundle_complete(staging_dir)
+            if is_temporal and target_entity_table is not None:
+                _custom_link_prediction_anchor(staging_dir)
             persist_durable_ttng_bundle(
                 staging_dir,
                 durable,
@@ -866,28 +881,14 @@ def materialize_prediction_task(
     if task.train_table is not None:
         task.train_table._weight_col = None
 
-    # Validate forecasting compatibility
     if task.task_type == TaskType.FORECASTING:
-        if task.lag_timesteps != job_input.predictive_query.lag_timesteps:
-            raise IncompatiblePredictionTable(
-                message=("This prediction table is not compatible with "
-                         "the model that was requested. You specified "
-                         f"lag_timesteps = {task.lag_timesteps} in your "
-                         "TrainingTableGenerationPlan when training the "
-                         "model, but you specified lag_timesteps = "
-                         f"{job_input.predictive_query.lag_timesteps} in "
-                         "your PredictionTableGenerationPlan when "
-                         "creating the prediction table. These must match."))
-        if (task.forecast_length != job_input.predictive_query.forecast_length):
-            raise IncompatiblePredictionTable(
-                message=("This prediction table is not compatible with "
-                         "the model that was requested. You specified "
-                         f"forecast_length = {task.forecast_length} in "
-                         "your TrainingTableGenerationPlan when training "
-                         "the model, but you specified forecast_length = "
-                         f"{job_input.predictive_query.forecast_length} "
-                         "in your PredictionTableGenerationPlan when "
-                         "creating the prediction table. These must match."))
+        try:
+            check_prediction_plan(
+                vars(task),
+                lag_timesteps=job_input.predictive_query.lag_timesteps,
+                forecast_length=job_input.predictive_query.forecast_length)
+        except IncompatiblePredictionPlan as error:
+            raise IncompatiblePredictionTable(message=str(error)) from error
 
     # TODO(manan): this is a hacky way of ensuring that the graph that is
     # input at prediction time is the one that is to be used with the

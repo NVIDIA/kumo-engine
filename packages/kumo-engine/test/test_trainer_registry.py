@@ -19,6 +19,7 @@ from typing import Optional
 
 import pandas as pd
 import pytest
+from kumo_core.artifacts import add_bundle_file
 from kumoapi.model_plan import ModelPlan, TrainingTableGenerationPlan
 from kumoapi.plugin import ModelRegistryLocation, PublishedModel
 
@@ -357,20 +358,31 @@ def test_load_from_connector_fetches_then_uses_local_loader(
     assert loaded.result.registered_alias is None
 
 
-def test_local_bundle_reloads_in_a_fresh_process(tmp_path: Path) -> None:
+@pytest.mark.parametrize('history', [None, {
+    'trial_progress': {'0': {'metrics': {
+        '0': {'train_metrics': {'train_loss': .8}},
+        '1': {'train_metrics': {'train_loss': .5}},
+    }}}
+}])
+def test_local_bundle_reloads_in_a_fresh_process(tmp_path: Path, history) -> None:
     bundle = _fake_published_bundle(tmp_path)
     write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
                         model_plan=ModelPlan(), snapshot_id='snap-123',
                         training_table_generation=_generation_plan())
+    if history is not None:
+        (bundle / 'metric-history.json').write_text(json.dumps(history))
+        add_bundle_file(bundle, 'metric_history', 'metric-history.json')
     code = """
 import json
 import sys
+sys.modules['mlflow'] = sys.modules['wandb'] = None
 from kumo.engine.trainer.trainer import Trainer
 trainer = Trainer.load(sys.argv[1])
 print(json.dumps({
     'snapshot_id': trainer._snapshot_id,
     'query': trainer._training_query,
     'metrics': trainer._training_result.metrics,
+    'metric_history': trainer.result.metric_history,
     'bundle_dir': str(trainer._training_result.bundle_dir),
 }))
 """
@@ -381,6 +393,7 @@ print(json.dumps({
         capture_output=True, text=True, env=env)
     restored = json.loads(completed.stdout)
     assert restored == {
+        'metric_history': history,
         'snapshot_id': 'snap-123',
         'query': 'PREDICT COUNT(*)',
         'metrics': {
@@ -546,6 +559,8 @@ def test_predict_works_after_load_without_refitting(snapshot: GraphSnapshot,
         SimpleNamespace(manifest_path='task', bundle_dir='bundle'))
     monkeypatch.setattr('kumo.engine.trainer.trainer._stage_model_bundle',
                         lambda *a: tmp_path)
+    monkeypatch.setattr('kumo.engine.trainer.trainer.bundle_task_options',
+                        lambda *a: {'lag_timesteps': 0})
     (tmp_path / 'config.json').write_text('{}')
     monkeypatch.setattr(
         DiskgraphTaskManifest, 'load', lambda *a: SimpleNamespace(

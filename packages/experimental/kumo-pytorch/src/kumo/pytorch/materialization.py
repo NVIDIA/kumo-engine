@@ -256,10 +256,11 @@ def _compile_diskgraph_config(
                 {"name": name, **_diskgraph_dtype(pa, dtype.to_arrow())}
                 for name, dtype in sorted(table.columns.items())
             ],
-            "primary_key": table.primary_key,
             "source": {"type": "parquet", "paths": paths},
             "fkeys": [],
         }
+        if table.primary_key is not None:
+            configs[table.name]["primary_key"] = table.primary_key
         clock = table_clock(table)
         if clock is not None:
             configs[table.name]["create_time"] = clock
