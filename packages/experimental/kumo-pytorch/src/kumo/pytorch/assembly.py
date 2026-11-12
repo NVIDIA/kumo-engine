@@ -14,6 +14,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass, replace
 from dataclasses import field as dataclass_field
+from functools import partial
 from types import MappingProxyType, SimpleNamespace
 from typing import Any, Literal
 
@@ -80,7 +81,24 @@ from kumo.pytorch.output import (
 from kumo.pytorch.spec import sample_without_targets
 
 HistoryInput = EntityHistory | BuiltSample
-_LENGTH_CHUNK = 4096
+_FIT_CHUNK = 4096
+
+
+def _chunks(values: Any) -> Any:
+    return (values[start : start + _FIT_CHUNK] for start in range(0, len(values), _FIT_CHUNK))
+
+
+class _Mapped:
+    """``self[i:j]`` is ``function(items[i:j])``, computed when sliced."""
+
+    def __init__(self, function: Any, items: Any) -> None:
+        self._function, self._items = function, items
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __getitem__(self, index: slice) -> Any:
+        return self._function(self._items[index])
 
 
 def _history(value: HistoryInput) -> EntityHistory:
@@ -626,50 +644,29 @@ def _graph_encoder_identity(input_name: str, table: str, use: Encode) -> str:
 def _fit_inputs(
     sample: SampleSpec,
     spec: BatchSpec,
-    values: Any,
+    declarations: Mapping[str, Any],
+    values_for: Any,
     contract: Any,
     *,
     model: bool = False,
     source: Any = None,
-    requests=(),
     pinned: Mapping[str, FittedEncoder] = MappingProxyType({}),
 ) -> _InputState:
     import pyarrow as pa
 
-    declarations = _declarations(sample, spec, contract, [] if model else values)
-    rows = _rows_for_inputs(spec, declarations, values, model=model)
-    contributions = {}
+    slots = {}
     definitions = {}
     field_names = {name: {} for name in spec.field_names}
     graph_fields = {}
     for name in sorted(spec.inputs):
         value = spec.inputs[name]
         if not isinstance(value.representation, Fields):
-            graph = SimpleNamespace(
-                source=value.source.name, node_fields=value.representation.node_fields
-            )
-            roots = [
-                GraphRoot(
-                    _sample_id(item), _history(item).entity_id, _history(item).evaluation_time
-                )
-                for item in values
-            ]
-            identities = {
-                (table, use.field): _graph_encoder_identity(name, table, use)
-                for table, group in value.representation.node_fields.items()
-                for use in group.fields
-            }
-            observed = (
-                {}
-                if set(identities.values()) <= set(pinned)
-                else source.fit_graph_fields(sample, graph, roots)
-            )
             graph_fields[name] = {}
             tables = {table.name: table for table in contract.schema.tables}
             for table, group in value.representation.node_fields.items():
                 graph_fields[name][table] = {}
                 for use in group.fields:
-                    identity = identities[(table, use.field)]
+                    identity = _graph_encoder_identity(name, table, use)
                     dtype = tables[table].columns[use.field]
                     config = (
                         spec.encodings[use.encoding.name]
@@ -682,16 +679,9 @@ def _fit_inputs(
                         )
                     definitions[identity] = (config, dtype)
                     if identity not in pinned:
-                        contributions.setdefault(identity, []).extend(observed[(table, use.field)])
+                        slots[(name, table, use.field)] = identity
                     graph_fields[name][table][use.field] = identity
             continue
-        fitting_rows = rows[name]
-        if isinstance(value.representation.row, Composite):
-            fitting_rows = (
-                _model_rows(value.source, values, declarations[name])
-                if model
-                else _record_rows(value.source, values, declarations[name])
-            )
         for use in value.representation.fields:
             identity = _encoder_identity(name, use)
             dtype = declarations[name][use.field][0][1]
@@ -704,18 +694,67 @@ def _fit_inputs(
                 raise ValueError(f"encoder {identity}: sharing requires identical declared dtypes")
             definitions[identity] = (config, dtype)
             if identity not in pinned:
-                column = fitting_rows.columns[use.field]
-                if pa.types.is_list(column.type) or pa.types.is_large_list(column.type):
-                    column = column.flatten()
-                contributions.setdefault(identity, []).extend(column.to_pylist())
+                slots[(name, use.field)] = identity
             if value.representation.field_names is not None:
                 field_names[value.representation.field_names].update(
                     {tuple(item[0]): 0 for item in declarations[name][use.field]}
                 )
+    observed = {slot: [] for slot in slots}
+    composites = {
+        name: Counter()
+        for name, value in spec.inputs.items()
+        if isinstance(value.representation, Fields)
+        and isinstance(value.representation.row, Composite)
+        and value.representation.row.vocabulary is None
+    }
+    for values in _chunks(values_for(sample)) if observed or composites else ():
+        rows = _rows_for_inputs(spec, declarations, values, model=model)
+        for name, value in spec.inputs.items():
+            if not isinstance(value.representation, Fields):
+                learned = [slot for slot in observed if slot[0] == name]
+                if learned:
+                    graph = SimpleNamespace(
+                        source=value.source.name, node_fields=value.representation.node_fields
+                    )
+                    roots = [
+                        GraphRoot(
+                            _sample_id(item),
+                            _history(item).entity_id,
+                            _history(item).evaluation_time,
+                        )
+                        for item in values
+                    ]
+                    found = source.fit_graph_fields(sample, graph, roots)
+                    for slot in learned:
+                        observed[slot].extend(found[slot[1:]])
+                continue
+            fitting_rows = rows[name]
+            if isinstance(value.representation.row, Composite):
+                fitting_rows = (
+                    _model_rows(value.source, values, declarations[name])
+                    if model
+                    else _record_rows(value.source, values, declarations[name])
+                )
+            for use in value.representation.fields:
+                if (name, use.field) in observed:
+                    column = fitting_rows.columns[use.field]
+                    if pa.types.is_list(column.type) or pa.types.is_large_list(column.type):
+                        column = column.flatten()
+                    observed[(name, use.field)].extend(column.to_pylist())
+            if name in composites:
+                columns = (rows[name].columns[use.field] for use in value.representation.fields)
+                composites[name].update(
+                    zip(*(column.to_pylist() for column in columns), strict=True)
+                )
+    contributions = {}
+    for slot, identity in slots.items():
+        contributions.setdefault(identity, []).extend(observed[slot])
     encoders = {
         name: pinned[name]
         if name in pinned
-        else fit_encoder(identity=name, config=config, dtype=dtype, values=contributions[name])
+        else fit_encoder(
+            identity=name, config=config, dtype=dtype, values=contributions.get(name, ())
+        )
         for name, (config, dtype) in sorted(definitions.items())
     }
     field_names = {
@@ -744,16 +783,12 @@ def _fit_inputs(
         composite = None
         if isinstance(value.representation.row, Composite):
             config = value.representation.row
-            columns = {field: column.to_pylist() for field, column in rows[name].columns.items()}
-            keys = [
-                tuple(
-                    _component_key(bindings[use.field], columns[use.field][index])
-                    for use in value.representation.fields
-                )
-                for index in range(rows[name].size)
-            ]
             if config.vocabulary is None:
-                counts = Counter(keys)
+                counts = Counter()
+                for key, count in composites[name].items():
+                    parts = zip(value.representation.fields, key, strict=True)
+                    key = tuple(_component_key(bindings[use.field], part) for use, part in parts)
+                    counts[key] += count
                 ordered = sorted(counts, key=lambda key: (-counts[key], key))[: config.top_k]
                 composite = {key: index + 2 for index, key in enumerate(ordered)}
             else:
@@ -1366,7 +1401,8 @@ def fitted_target_names(spec: BatchSpec) -> list[str]:
 def _fit_targets(
     sample: SampleSpec,
     spec: BatchSpec,
-    values: Any,
+    declarations: Mapping[str, Any],
+    values_for: Any,
     state: _InputState,
     contract: Any,
     *,
@@ -1377,27 +1413,13 @@ def _fit_targets(
 
     if reused:
         _check_reused_target_spaces(spec, state)
-    declarations = _declarations(sample, spec, contract, [] if model else values)
-    rows = _rows_for_inputs(spec, declarations, values, model=model)
-    contributors, definitions, uses, thresholds, groups = {}, {}, {}, {}, {}
+    slots, derived, definitions, uses, groups = {}, {}, {}, {}, {}
     for name in sorted(spec.targets):
         target = spec.targets[name]
         if isinstance(target, (MaskedValuesTarget, NextTokenTarget)):
             continue
         if isinstance(target, MatchingGroupTarget):
-            parent = rows[target.input]
-            columns = {field: parent.columns[field].to_pylist() for field in target.fields}
-            keys = [
-                tuple(
-                    typed_key(
-                        state.prepared_inputs[target.input].state[field].encoder.dtype,
-                        columns[field][index],
-                    )
-                    for field in target.fields
-                )
-                for index in range(parent.size)
-            ]
-            groups[name] = {key: index for index, key in enumerate(sorted(set(keys)))}
+            groups[name] = set()
             uses[name] = []
             continue
         fields_ = (
@@ -1409,7 +1431,6 @@ def _fit_targets(
         for use in fields_:
             if isinstance(target, AlignedEventTarget):
                 dtype = declarations[target.input][use.field][0][1]
-                observed = rows[target.input].columns[use.field].to_pylist()
             else:
                 candidate = (
                     spec.inputs[target.input].source.name
@@ -1427,16 +1448,10 @@ def _fit_targets(
                     else _record_target_dtype(
                         sample,
                         target.source,
-                        values,
+                        values_for(sample),
                         candidate=candidate,
                         field=use.field if isinstance(target, StructuredTarget) else None,
                     )
-                )
-                observed = _raw_targets(
-                    values,
-                    target.source,
-                    field=use.field if isinstance(target, StructuredTarget) else None,
-                    candidate=candidate,
                 )
             identity = (
                 _identity("shared", use.encoding.name)
@@ -1449,31 +1464,11 @@ def _fit_targets(
                 else use.encoding
             )
             definitions[identity] = (config, dtype)
-            contributors.setdefault(identity, []).extend(observed)
+            if identity not in state.encoders:
+                slots[(name, use.field)] = identity
         if isinstance(target, AlignedEventTarget):
-            for derived in target.derived:
-                observed = rows[target.input].columns[derived.field].to_pylist()
-                numeric = [float(value) for value in observed if value is not None]
-                threshold = (
-                    derived.threshold
-                    if derived.threshold is not None
-                    else float(np.median(numeric))
-                    if numeric
-                    else 0.0
-                )
-                if not np.isfinite(numeric).all() or not np.isfinite(threshold):
-                    raise ValueError(f"target {name!r}: threshold values must be finite")
-                thresholds.setdefault(name, {})[derived.name] = threshold
-                above = (
-                    (lambda value: value > threshold)
-                    if derived.comparison == "greater_than"
-                    else (lambda value: value >= threshold)
-                )
-                labels = [
-                    None if value is None else derived.above if above(value) else derived.below
-                    for value in observed
-                ]
-                use = Encode(field=derived.name, encoding=derived.encoding)
+            for item in target.derived:
+                use = Encode(field=item.name, encoding=item.encoding)
                 uses[name].append(use)
                 identity = (
                     _identity("shared", use.encoding.name)
@@ -1485,8 +1480,69 @@ def _fit_targets(
                     if isinstance(use.encoding, UseEncoding)
                     else use.encoding
                 )
-                definitions[identity] = (config, derived.dtype)
-                contributors.setdefault(identity, []).extend(labels)
+                definitions[identity] = (config, item.dtype)
+                derived[(name, item.name)] = item
+                if identity not in state.encoders:
+                    slots[(name, item.name)] = identity
+    observed = {key: [] for key in (*slots, *derived)}
+    for values in _chunks(values_for(sample)) if observed or groups else ():
+        rows = _rows_for_inputs(spec, declarations, values, model=model)
+        for name in groups:
+            target = spec.targets[name]
+            bindings = state.prepared_inputs[target.input].state
+            columns = [rows[target.input].columns[field].to_pylist() for field in target.fields]
+            groups[name].update(
+                tuple(
+                    typed_key(bindings[field].encoder.dtype, value)
+                    for field, value in zip(target.fields, row, strict=True)
+                )
+                for row in zip(*columns, strict=True)
+            )
+        for name, field in observed:
+            target = spec.targets[name]
+            if isinstance(target, AlignedEventTarget):
+                column = derived[(name, field)].field if (name, field) in derived else field
+                observed[(name, field)].extend(rows[target.input].columns[column].to_pylist())
+            else:
+                observed[(name, field)].extend(
+                    _raw_targets(
+                        values,
+                        target.source,
+                        field=field if isinstance(target, StructuredTarget) else None,
+                        candidate=spec.inputs[target.input].source.name
+                        if isinstance(target, CandidateTarget)
+                        else None,
+                    )
+                )
+    groups = {
+        name: {key: index for index, key in enumerate(sorted(keys))}
+        for name, keys in groups.items()
+    }
+    thresholds = {}
+    for (name, field), item in derived.items():
+        raw = observed.get((name, field), [])
+        numeric = [float(value) for value in raw if value is not None]
+        threshold = (
+            item.threshold
+            if item.threshold is not None
+            else float(np.median(numeric))
+            if numeric
+            else 0.0
+        )
+        if not np.isfinite(numeric).all() or not np.isfinite(threshold):
+            raise ValueError(f"target {name!r}: threshold values must be finite")
+        thresholds.setdefault(name, {})[field] = threshold
+        above = (
+            (lambda value: value > threshold)
+            if item.comparison == "greater_than"
+            else (lambda value: value >= threshold)
+        )
+        observed[(name, field)] = [
+            None if value is None else item.above if above(value) else item.below for value in raw
+        ]
+    contributors = {}
+    for key, identity in slots.items():
+        contributors.setdefault(identity, []).extend(observed[key])
     encoders = dict(state.encoders)
     for identity, (config, dtype) in sorted(definitions.items()):
         if identity in encoders:
@@ -1495,7 +1551,7 @@ def _fit_targets(
                 raise ValueError(f"target encoder {identity}: incompatible shared encoding")
             continue  # Input-shared encoders never collect target observations.
         encoders[identity] = fit_encoder(
-            identity=identity, config=config, dtype=dtype, values=contributors[identity]
+            identity=identity, config=config, dtype=dtype, values=contributors.get(identity, ())
         )
     target_states = {}
     target_members = []
@@ -2211,14 +2267,14 @@ class PreparedBatchPlan:
 
     def _length_summary(self, values):
         name = self.spec.batching.length_input
-        count = values.batch_size if isinstance(values, ModelSourceBatch) else len(values)
+        count = len(values)
         if name is None or not count:
             return None
-        model = isinstance(values, ModelSourceBatch)
         lengths, shapes = {}, {}
-        for start in range(0, 1 if model else count, _LENGTH_CHUNK):
+        for start in range(0, count, _FIT_CHUNK):
             self._length_shapes = {}
-            chunk = values if model else values[start : start + _LENGTH_CHUNK]
+            chunk = values[start : start + _FIT_CHUNK]
+            model = isinstance(chunk, ModelSourceBatch)
             for index, length in self._measure_values(chunk, name, model=model).items():
                 lengths[start + index] = length
             shapes.update({start + index: shape for index, shape in self._length_shapes.items()})
@@ -2394,8 +2450,11 @@ def prepare_batch_spec(
     if not fitting_values:
         raise ValueError("at least one fitting sample is required")
     fitting_spec = _fitting_batch_spec(spec)
-    state = _fit_inputs(sample, fitting_spec, fitting_values, contract)
-    state, targets = _fit_targets(sample, fitting_spec, fitting_values, state, contract)
+    declarations = _declarations(sample, fitting_spec, contract, fitting_values)
+    state = _fit_inputs(sample, fitting_spec, declarations, lambda _: fitting_values, contract)
+    state, targets = _fit_targets(
+        sample, fitting_spec, declarations, lambda _: fitting_values, state, contract
+    )
     state = replace(
         state,
         prepared_inputs={
@@ -2471,6 +2530,9 @@ def fit_plan(
     ``fitting_requests``, except the input encoders in ``pinned``. ``inference``
     requires both, and builds samples without their row-computed targets so no
     target row is read.
+
+    Samples are built in chunks of ``_FIT_CHUNK`` requests, only when an encoder
+    observes values; observations, not samples, are kept.
     """
 
     needs_fitting = input_state is None or target_encoders is None
@@ -2488,26 +2550,23 @@ def fit_plan(
             for value in spec.inputs.values()
         )
     )
-    values = (
-        (
-            source.build_model(sample, fitting_requests)
-            if model
-            else source.build(sample, fitting_requests)
-        )
-        if needs_fitting
-        else []
-    )
+
+    def values_for(sample_spec):
+        build = source.build_model if model else source.build
+        return _Mapped(partial(build, sample_spec), fitting_requests)
+
     reused = input_state is not None
     fitting_spec = _fitting_batch_spec(spec)
+    declarations = _declarations(sample, fitting_spec, contract, ()) if needs_fitting else {}
     if input_state is None:
         input_state = _fit_inputs(
             sample,
             fitting_spec,
-            values,
+            declarations,
+            values_for,
             contract,
             model=model,
             source=source,
-            requests=fitting_requests,
             pinned=pinned,
         )
     else:
@@ -2520,7 +2579,14 @@ def fit_plan(
         )
     if target_encoders is None:
         input_state, target_encoders = _fit_targets(
-            sample, fitting_spec, values, input_state, contract, model=model, reused=reused
+            sample,
+            fitting_spec,
+            declarations,
+            values_for,
+            input_state,
+            contract,
+            model=model,
+            reused=reused,
         )
     else:
         encoders, spaces = dict(input_state.encoders), dict(input_state.spaces)
@@ -2561,7 +2627,7 @@ def fit_plan(
         contract=contract,
         schema_fingerprint=schema_fingerprint,
         contract_fingerprint=contract_fingerprint,
-        fitting_values=values,
+        fitting_values=values_for(sample) if needs_fitting else (),
         length_summary=None if needs_fitting else length_summary,
         inference=inference,
     )
