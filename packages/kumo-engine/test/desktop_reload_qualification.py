@@ -65,6 +65,7 @@ QUERIES = {
     f'RANK TOP {TOP_K} FOR EACH users.USER_ID',
 }
 RECEIPT_SCHEMA = 1
+DESCENDANT_GRACE = 15.0
 REQUIRED_ATOL = 1e-4
 PYTHONS = ('3.11', '3.12', '3.13', '3.14')
 # Supported desktop configurations. Keep in sync with the `reload` job in
@@ -75,10 +76,9 @@ REQUIRED_TARGETS = (
     ('linux-arm64', 'cpu'),
     ('windows-wsl', 'cpu'),
     ('windows-wsl', 'gpu'),
-    ('macos-14', 'cpu'),
     ('macos-15', 'cpu'),
-    ('macos-14', 'mps'),
-    ('macos-15', 'mps'),
+    ('macos-26', 'cpu'),
+    ('macos-26', 'mps'),
 )
 
 
@@ -193,11 +193,31 @@ def run_worker(command, *, cwd, env, timeout, log_path):
             process.wait()
             raise QualificationError(
                 f'Worker exceeded {timeout} seconds: {command[2:4]}') from None
-    leftover = _group_alive(process.pid)
-    if leftover:
+    # Helpers such as the multiprocessing resource tracker exit shortly
+    # after their parent. Anything still alive after the grace period is a
+    # leaked process.
+    deadline = time.monotonic() + DESCENDANT_GRACE
+    while _group_alive(process.pid) and time.monotonic() < deadline:
+        time.sleep(.2)
+    if _group_alive(process.pid):
+        listing = _group_listing(process.pid)
         _kill_group(process.pid)
-        raise QualificationError('Worker left descendant processes running')
+        raise QualificationError(
+            f'Worker left descendant processes running: {listing}')
     return dict(exit_code=code, seconds=round(time.monotonic() - started, 3))
+
+
+def _group_listing(pgid):
+    try:
+        lines = subprocess.run(['ps', '-A', '-o', 'pid=,pgid=,command='],
+                               capture_output=True, text=True,
+                               timeout=10).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError) as error:
+        return f'ps failed: {error}'
+    return [
+        line.strip()[:200] for line in lines
+        if len(line.split()) > 2 and line.split()[1] == str(pgid)
+    ]
 
 
 def _kill_group(pgid):

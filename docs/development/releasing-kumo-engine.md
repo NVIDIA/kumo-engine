@@ -127,8 +127,8 @@ platform's `release-version`.
      check. See the [test criteria](testing.md#finished-kumo-engine-wheel).
    - runs the fresh-process reload qualification on each supported desktop
      configuration with Python 3.11–3.14. Linux x86-64 and WSL2 x86-64 run
-     on CPU and CUDA. Linux ARM64 runs on CPU. macOS 14 and 15 on Apple
-     Silicon run on CPU and MPS. Each case is a
+     on CPU and CUDA. Linux ARM64 runs on CPU. macOS 15 and 26 on Apple
+     Silicon run on CPU, and macOS 26 also runs on MPS. Each case is a
      numerical, static link, or temporal link task. A producer process trains,
      exports the model and the snapshot, and saves its predictions. The job
      then deletes the producer scratch, caches, temp files, and source data.

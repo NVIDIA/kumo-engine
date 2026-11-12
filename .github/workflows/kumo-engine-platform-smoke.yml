@@ -161,27 +161,22 @@ jobs:
             device: gpu
             torch_backend: ''
             extra: ''
-          - name: macos-14
-            runner: macos-14
-            artifact: arm64
-            device: cpu
-            torch_backend: ''
-            extra: ''
           - name: macos-15
             runner: macos-15
             artifact: arm64
             device: cpu
             torch_backend: ''
             extra: ''
-          # Standard macOS runners expose no Metal device to PyTorch.
-          - name: macos-14
-            runner: macos-14-xlarge
+          - name: macos-26
+            runner: macos-26
             artifact: arm64
-            device: mps
+            device: cpu
             torch_backend: ''
             extra: ''
-          - name: macos-15
-            runner: macos-15-xlarge
+          # Hosted macos-14 runners are retired. The macos-15 VMs expose only
+          # a paravirtual GPU without Metal 2.0, so PyTorch reports no MPS.
+          - name: macos-26
+            runner: macos-26-xlarge
             artifact: arm64
             device: mps
             torch_backend: ''

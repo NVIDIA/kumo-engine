@@ -170,11 +170,17 @@ def test_worker_exit_code_and_timeout_are_reported(tmp_path):
         run(tmp_path, 'import time; time.sleep(30)', timeout=1)
 
 
-def test_worker_must_not_leave_descendants(tmp_path):
+def test_worker_must_not_leave_descendants(tmp_path, monkeypatch):
+    monkeypatch.setattr(drq, 'DESCENDANT_GRACE', 1.0)
     code = ('import subprocess, sys; subprocess.Popen([sys.executable, "-c",'
             ' "import time; time.sleep(30)"])')
-    with pytest.raises(drq.QualificationError, match='descendant'):
+    with pytest.raises(drq.QualificationError,
+                       match=r'descendant processes running: \[.+\]'):
         run(tmp_path, code)
+    # A helper that exits within the grace period is not a leak.
+    code = ('import subprocess, sys; subprocess.Popen([sys.executable, "-c",'
+            ' "import time; time.sleep(0.3)"])')
+    assert run(tmp_path, code)['exit_code'] == 0
 
 
 def receipt(tmp_path, **changes):
@@ -269,7 +275,7 @@ def test_report_marks_missing_configurations_unverified(tmp_path):
     rows = {(r['label'], r['case']): r for r in report['rows']}
     assert report['status'] == 'OPEN'
     assert rows[(label, 'numerical')]['status'] == 'PASS'
-    assert rows[('macos-15-mps-py3.12',
+    assert rows[('macos-26-mps-py3.12',
                  'static_link')]['status'] == ('UNVERIFIED')
     assert len(rows) == len(drq.REQUIRED_TARGETS) * len(drq.PYTHONS) * len(
         drq.CASES)
