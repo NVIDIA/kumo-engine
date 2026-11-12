@@ -527,3 +527,22 @@ def test_off_tick_rows_anchors_and_windows_follow_the_clock(off_tick_data, tmp_p
     }
     assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == (
         [truncated[clock]] if clock in truncated else [])
+
+
+@pytest.mark.parametrize("fields", [
+    {"offsets": [-120, -60], "timeframe": 60, "timeframe_step": 0},
+    {"offsets": [-90, -60]},
+])
+def test_a_flexible_split_without_a_step_is_rejected(off_tick_data, tmp_path, fields):
+    index = _ingest(tmp_path / "hours", "hours", _off_tick_tables(off_tick_data))
+    builder = DiskGraphTTBuilder("hours")
+    builder.temporal(OFF_TICK_ANCHORS, forecast_length=1, unit="nanoseconds")
+    builder.node_prediction()
+    builder.for_each("users", "user_id")
+    builder.set_target_stype("numerical")
+    builder.aggregate("count", EdgeRef("users", "user_id", "events", "user_id"), "count",
+                      time_col="at", window=(0, 1), window_unit="hours")
+    builder.split_ratio(SplitSpec(kind="DateOffsetSplit", offset_unit="minutes",
+                                  unit="minutes", **fields))
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="positive timeframe_step"):
+        execute_tt_gen(builder.build(), index, "no_step")
