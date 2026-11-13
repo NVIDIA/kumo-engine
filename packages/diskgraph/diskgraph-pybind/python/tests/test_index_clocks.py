@@ -7,6 +7,7 @@
 import datetime
 import decimal
 import json
+import logging
 import pathlib
 
 import pyarrow as pa
@@ -371,6 +372,7 @@ def test_unbounded_lower_window_is_preserved(clock, operation):
 
 @pytest.mark.parametrize("window, unit", [((0, 30), "minutes"), ((-1, 0), "minutes"),
                                           ((-2**60, 30), "minutes"),
+                                          ((60, 90), "minutes"),
                                           ((0, 500), "milliseconds")])
 def test_windows_shorter_than_a_tick_are_rejected(window, unit):
     builder = DiskGraphTTBuilder("hours")
@@ -395,3 +397,152 @@ def test_offsets_shorter_than_a_tick_are_rejected():
         else:
             with pytest.raises(diskgraph.DiskgraphConfigError, match="offset"):
                 builder.build()
+
+
+@pytest.mark.parametrize("fields, error", [
+    ({"offsets": [-30, 0]}, "split offset"),
+    ({"timeframe": 30}, "split timeframe"),
+    ({"anchor_start_offset": -30}, "split anchor_start_offset"),
+    ({"timeframe_step": 1}, "split timeframe_step"),
+    ({"timeframe_step": 1, "flexible_boundaries": False}, None),
+    ({"kind": "TimeRangeSplit", "ranges": [(EPOCH_DAY * DAY, (EPOCH_DAY + 1) * DAY)],
+      "timeframe": 30}, "split timeframe"),
+    ({"offsets": [-2, -1], "offset_unit": "months"}, None),
+])
+def test_split_durations_shorter_than_a_tick_are_rejected(fields, error):
+    builder = DiskGraphTTBuilder("hours")
+    builder.temporal([EPOCH_DAY * DAY], forecast_length=1, unit="seconds")
+    builder.for_each("users", "user_id")
+    builder.split_ratio(SplitSpec(**{
+        "kind": "DateOffsetSplit", "offsets": [-120, -60], "offset_unit": "minutes",
+        "unit": "minutes", "timeframe": 60, **fields}))
+    if error is None:
+        builder.build()
+    else:
+        with pytest.raises(diskgraph.DiskgraphConfigError, match=error):
+            builder.build()
+
+
+HOUR_NS = 3_600 * 10**9
+DAY_NS = DAY * 10**9
+UNBOUNDED = -2**60
+# Off-tick anchors (2024-03-10 12:00:00.250007003, 2024-03-13 00:30, 2024-03-16 23:59:59.999999999).
+OFF_TICK_ANCHORS = [1_710_072_000_250_007_003, 1_710_289_800 * 10**9, 1_710_633_600 * 10**9 - 1]
+EVENT_OFFSETS = [-DAY_NS - 1, -DAY_NS, -DAY_NS + 1, -HOUR_NS, -1, 0, 1, 10**6, 10**9,
+                 HOUR_NS - 1, HOUR_NS, HOUR_NS + 1, DAY_NS - 1, DAY_NS, DAY_NS + 1,
+                 36 * HOUR_NS, 36 * HOUR_NS + 1]
+UNIT_NS = {"minutes": 60 * 10**9, "hours": HOUR_NS, "days": DAY_NS}
+
+
+def _trunc(ns: int, tick: int) -> int:
+    return ns // tick if ns >= 0 else -(-ns // tick)
+
+
+@pytest.fixture(scope="module")
+def off_tick_data(tmp_path_factory) -> pathlib.Path:
+    data_dir = tmp_path_factory.mktemp("off_tick")
+    times = sorted(a + d for a in OFF_TICK_ANCHORS for d in EVENT_OFFSETS)
+    pq.write_table(pa.table({"user_id": pa.array([0], pa.int64())}), data_dir / "users.parquet")
+    pq.write_table(
+        pa.table({
+            "event_id": pa.array(range(len(times)), pa.int64()),
+            "user_id": pa.array([0] * len(times), pa.int64()),
+            "at": pa.array(times, pa.timestamp("ns")),
+        }),
+        data_dir / "events.parquet",
+    )
+    return data_dir
+
+
+def _off_tick_tables(data_dir: pathlib.Path) -> list:
+    return [
+        {
+            "name": "users",
+            "columns": [{"name": "user_id", "ingested_dtype": "int64"}],
+            "primary_key": "user_id",
+            "source": {"type": "parquet", "paths": [str(data_dir / "users.parquet")]},
+        },
+        {
+            "name": "events",
+            "columns": [
+                {"name": "event_id", "ingested_dtype": "int64"},
+                {"name": "user_id", "ingested_dtype": "int64"},
+                {"name": "at", "ingested_dtype": "timestamp", "semantic_type": "timestamp"},
+            ],
+            "primary_key": "event_id",
+            "create_time": "at",
+            "fkeys": [{
+                "src_column": "user_id",
+                "dst_table": "users",
+                "reverse": {"time": {"table": "events", "column": "at", "unit": "ns"}},
+            }],
+            "source": {"type": "parquet", "paths": [str(data_dir / "events.parquet")]},
+        },
+    ]
+
+
+def _window_counts(index: str, clock: str, window: tuple) -> dict:
+    lo, hi, unit = window
+    builder = DiskGraphTTBuilder(clock)
+    builder.temporal(OFF_TICK_ANCHORS, forecast_length=1, unit="nanoseconds")
+    builder.node_prediction()
+    builder.for_each("users", "user_id")
+    builder.set_target_stype("numerical")
+    builder.aggregate("count", EdgeRef("users", "user_id", "events", "user_id"), "count",
+                      time_col="at", window=(lo, hi), window_unit=unit)
+    generated = execute_tt_gen(builder.build(), index, f"{lo}_{hi}_{unit}")
+    table = pq.read_table(generated["tt_parquet_path"])
+    return dict(zip(table["TIMESTAMP"].cast(pa.int64()).to_pylist(),
+                    table["TARGET1"].to_pylist()))
+
+
+def _expected_counts(clock: str, window: tuple) -> dict:
+    lo, hi, unit = window
+    tick = TICK_NS[clock]
+    rows = [-(-(a + d) // tick) for a in OFF_TICK_ANCHORS for d in EVENT_OFFSETS]
+    counts = {}
+    for anchor in OFF_TICK_ANCHORS:
+        a = _trunc(anchor, tick)
+        lower = -2**63 if lo == UNBOUNDED else a + _trunc(lo * UNIT_NS[unit], tick)
+        upper = a + _trunc(hi * UNIT_NS[unit], tick)
+        counts[a * tick] = sum(lower < row <= upper for row in rows)
+    return counts
+
+
+@pytest.mark.parametrize("clock", CLOCKS)
+def test_off_tick_rows_anchors_and_windows_follow_the_clock(off_tick_data, tmp_path, caplog,
+                                                            clock):
+    windows = [(0, 1, "days"), (-1, 0, "days"), (UNBOUNDED, 0, "days"), (0, 36, "hours")]
+    if clock != "days":
+        windows.append((0, 90, "minutes"))
+    index = _ingest(tmp_path / clock, clock, _off_tick_tables(off_tick_data))
+    for window in windows:
+        assert _window_counts(index, clock, window) == _expected_counts(clock, window), window
+
+    truncated = {
+        "hours": "The window (0, 90] minutes truncates to (0, 60] minutes on the hours index "
+                 "clock. Use a window of whole hours, or a finer timestamp_precision.",
+        "days": "The window (0, 36] hours truncates to (0, 24] hours on the days index "
+                "clock. Use a window of whole days, or a finer timestamp_precision.",
+    }
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == (
+        [truncated[clock]] if clock in truncated else [])
+
+
+@pytest.mark.parametrize("fields", [
+    {"offsets": [-120, -60], "timeframe": 60, "timeframe_step": 0},
+    {"offsets": [-90, -60]},
+])
+def test_a_flexible_split_without_a_step_is_rejected(off_tick_data, tmp_path, fields):
+    index = _ingest(tmp_path / "hours", "hours", _off_tick_tables(off_tick_data))
+    builder = DiskGraphTTBuilder("hours")
+    builder.temporal(OFF_TICK_ANCHORS, forecast_length=1, unit="nanoseconds")
+    builder.node_prediction()
+    builder.for_each("users", "user_id")
+    builder.set_target_stype("numerical")
+    builder.aggregate("count", EdgeRef("users", "user_id", "events", "user_id"), "count",
+                      time_col="at", window=(0, 1), window_unit="hours")
+    builder.split_ratio(SplitSpec(kind="DateOffsetSplit", offset_unit="minutes",
+                                  unit="minutes", **fields))
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="positive timeframe_step"):
+        execute_tt_gen(builder.build(), index, "no_step")

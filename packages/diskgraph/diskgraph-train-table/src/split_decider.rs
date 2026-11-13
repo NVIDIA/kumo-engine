@@ -1121,10 +1121,10 @@ pub(crate) fn flex_adjust_boundaries<U: UnitSystem>(
     timeframe_step: Option<Dur<U>>,
 ) {
     let n = boundaries.len();
-    if n < 2 {
+    let step = timeframe_step.unwrap_or(tf);
+    if n < 2 || step <= Dur::zero() {
         return;
     }
-    let step = timeframe_step.unwrap_or(tf);
     let mut step_offset = boundaries[n - 1] - tf;
     for i in (1..n - 1).rev() {
         let mut start = boundaries[i];
@@ -1339,6 +1339,14 @@ impl<U: UnitSystem> SplitDecider<U> for DateOffsetDecider<U> {
         // `flexible_boundaries`; rigid DateOffsetSplit preserves its legacy
         // raw-boundary behavior.
         if self.flexible_boundaries {
+            let tf = self.shift - self.anchor_start_offset;
+            if self.boundaries.len() > 2 && self.timeframe_step.unwrap_or(tf) <= Dur::zero() {
+                return Err(crate::errors::TTGenError::InvalidPlan(
+                    "a flexible-boundary split needs a positive timeframe_step, timeframe or \
+                     offset spacing on the index clock"
+                        .to_string(),
+                ));
+            }
             validate_flexible_train_window(&self.boundaries, self.shift)?;
         }
         Ok(())

@@ -37,6 +37,13 @@ from kumo_core.utils.time import compute_unix_step
 from kumoapi.typing import Stype, TimeUnit
 
 
+@pytest.fixture(autouse=True)
+def seconds_index_clock(monkeypatch):
+    # The synthetic index paths below have no metadata to read a clock from.
+    monkeypatch.setattr('kumo_core.pquery.index_timestamp_unit',
+                        lambda _path: 'seconds')
+
+
 def graph_config():
     return {
         "tables": [
@@ -954,6 +961,45 @@ def test_generation_plan_keeps_its_only_complete_anchor(tmp_path, monkeypatch):
     )
 
     assert plan.train_table.timestamps == (origin.value, )
+
+
+@pytest.mark.parametrize("clock, window, start, end, messages", [
+    ("hours", "0, 90, minutes", "2024-01-01T00:30", "2024-01-01T06:00", [
+        "241 training anchors truncate to 5 ticks of the hours index clock, "
+        "so the training table repeats (entity, anchor) rows up to 60 times. "
+        "Space anchors by whole hours (timeframe_step), or use a finer "
+        "timestamp_precision.",
+        "start_time 2024-01-01 00:30:00 is not on the hours index clock, so "
+        "the first training anchor truncates to 2024-01-01 00:00:00, before "
+        "start_time. Align start_time to whole hours, or use a finer "
+        "timestamp_precision.",
+    ]),
+    ("seconds", "0, 1, days", "2024-01-01", "2024-01-10", []),
+])
+def test_generation_plan_warns_when_the_clock_truncates_anchors(
+        tmp_path, monkeypatch, caplog, clock, window, start, end, messages):
+    from pandas import Timestamp
+
+    monkeypatch.setattr("kumo_core.pquery.index_timestamp_unit",
+                        lambda _path: clock)
+    monkeypatch.setattr(
+        "kumo_core.pquery.read_col_stats", lambda *args: json.dumps({
+            "event_time__NA_FRACTION__False": 0.0,
+            "event_time__MIN__False": Timestamp("2024-01-01").value,
+            "event_time__MAX__False": Timestamp("2024-01-20").value,
+        }))
+    graph = normalize_graph(forecasting_graph_config())
+    query = parse_and_validate_query(
+        f"PREDICT COUNT(events.*, {window}) FOR EACH articles.aid", graph)
+    build_native_pquery_task_plan(
+        query=query, graph=graph,
+        training_table_generation_plan=TrainingTableGenerationPlan(
+            start_time=start, end_time=end, timeframe_step=1),
+        run_id="clock", graph_index_path=str(tmp_path / "index"),
+        scratch_dir=str(tmp_path), artifact_dir=str(tmp_path))
+
+    assert [record.getMessage() for record in caplog.records
+            if record.name == "kumo_core.pquery"] == messages
 
 
 @pytest.mark.parametrize("unit", ["days", "hours"])
