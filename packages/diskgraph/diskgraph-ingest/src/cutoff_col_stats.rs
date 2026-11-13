@@ -180,7 +180,11 @@ fn add_to_file(dir: &Path, table: ColStatsTable<'_>) -> Result<()> {
     )?;
     let written = tmp.path().join("col_stats.json");
     // Writers take turns, so none drops another's columns.
-    let lock = File::open(dir)?;
+    let lock = File::options()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join(".lock"))?;
     lock.lock()?;
     if path.is_file() {
         let mut stats: StatsFile = serde_json::from_slice(&std::fs::read(&path)?)?;
@@ -196,6 +200,7 @@ fn add_to_file(dir: &Path, table: ColStatsTable<'_>) -> Result<()> {
         }
         std::fs::write(&written, serde_json::to_vec(&stats)?)?;
     }
+    File::open(&written)?.sync_all()?;
     std::fs::rename(&written, &path)?;
     Ok(())
 }
