@@ -117,7 +117,7 @@ def plan_for(
     }
 
 
-def query(history_graph, plan, output_format="inspectable"):
+def query(history_graph, plan, output_format="inspectable", arrow_offset_width=None):
     engine = history_graph[0]
     ids = engine.lookup_node_ids("users", pa.array([1, 2, 3, 1]))
     return engine.query_temporal(
@@ -125,6 +125,7 @@ def query(history_graph, plan, output_format="inspectable"):
         {"users": [1_700_000_010, 1_700_000_010, 1_700_000_008, 1_700_000_005]},
         json.dumps(plan),
         output_format=output_format,
+        **({} if arrow_offset_width is None else {"arrow_offset_width": arrow_offset_width}),
     )
 
 
@@ -670,8 +671,9 @@ def test_shared_history_selectivity_boundary(history_graph, limit, deferred):
     assert result["stats"]["rows_decoded"] == 94 + (returned if deferred else 0)
 
 
+@pytest.mark.parametrize("arrow_offset_width", [None, 32, 64])
 def test_shared_history_preserves_types_and_floating_point_order(
-    history_graph, tmp_path
+    history_graph, tmp_path, arrow_offset_width
 ):
     config = copy.deepcopy(history_graph[4])
     source = pq.read_table(config["tables"][1]["source"]["paths"][0])
@@ -683,6 +685,11 @@ def test_shared_history_preserves_types_and_floating_point_order(
     extra = {
         "description": (pa.array([None, "alpha", "beta", "alpha"] * 25), "string"),
         "tags": (pa.array([None, [], ["a", "b"], ["c"]] * 25), "string_array"),
+        "blob": (pa.array([None, b"", b"\x00\xff", b"abc"] * 25), "bytes"),
+        "codes": (
+            pa.array([None, [], [-8, 7], [3]] * 25, type=pa.list_(pa.int8())),
+            "int8_array",
+        ),
         "enabled": (pa.array([True, False, None, True] * 25), "bool"),
     }
     for name, (values, dtype) in extra.items():
@@ -707,6 +714,8 @@ def test_shared_history_preserves_types_and_floating_point_order(
         plan["frames"][0]["columns"] += list(extra)
         plan["sequences"][0]["columns"] = [
             "tags",
+            "blob",
+            "codes",
             "value",
             "description",
             "enabled",
@@ -722,7 +731,8 @@ def test_shared_history_preserves_types_and_floating_point_order(
         ]
         unlimited = copy.deepcopy(plan)
         unlimited["sequences"][0]["limit"] = None
-        actual, full = query(graph, plan), query(graph, unlimited)
+        actual = query(graph, plan, arrow_offset_width=arrow_offset_width)
+        full = query(graph, unlimited, arrow_offset_width=arrow_offset_width)
         assert actual["aggregates"] == full["aggregates"]
         a, b = actual["sequences"][0], full["sequences"][0]
         selected = [
@@ -731,6 +741,21 @@ def test_shared_history_preserves_types_and_floating_point_order(
             for row in range(start, min(start + 3, stop))
         ]
         assert a["batch"].equals(b["batch"].take(pa.array(selected, type=pa.int64())))
+        string_type = pa.large_string() if arrow_offset_width == 64 else pa.string()
+        binary_type = pa.large_binary() if arrow_offset_width == 64 else pa.binary()
+        list_type = pa.large_list if arrow_offset_width == 64 else pa.list_
+        assert a["batch"].schema.field("description").type == string_type
+        assert a["batch"].schema.field("blob").type == binary_type
+        assert a["batch"].schema.field("tags").type == list_type(string_type)
+        assert a["batch"].schema.field("codes").type == list_type(pa.int8())
+        model = query(graph, plan, output_format="model", arrow_offset_width=arrow_offset_width)
+        assert model["sequences"][0]["batch"].equals(a["batch"])
+        assert model["aggregates"][0]["values"].to_pylist() == actual["aggregates"][0]["values"]
+        if operation == "mode":
+            assert model["aggregates"][0]["values"].type == string_type
+        original_rows = {row["id"]: row for row in source.to_pylist()}
+        for row in a["batch"].to_pylist():
+            assert row == {name: original_rows[row["id"]][name] for name in row}
         assert actual["stats"]["values_decoded"] < full["stats"]["values_decoded"]
 
 
@@ -926,3 +951,9 @@ def test_window_endpoints_at_clipped_clock_floor(
     floor_endpoint_graph, lower, upper, expected
 ):
     _assert_window(floor_endpoint_graph, lower, upper, expected)
+
+
+@pytest.mark.parametrize("arrow_offset_width", [0, 16, 33, 128])
+def test_invalid_arrow_offset_width_is_refused(history_graph, arrow_offset_width):
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="arrow_offset_width must be 32 or 64"):
+        query(history_graph, plan_for(history_graph), arrow_offset_width=arrow_offset_width)

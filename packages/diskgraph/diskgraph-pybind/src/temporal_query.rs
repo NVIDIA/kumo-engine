@@ -290,6 +290,7 @@ impl ScalarValue {
 fn scalar_values_to_array(
     values: &[ScalarValue],
     fallback: Option<ScalarValue>,
+    large_offsets: bool,
 ) -> Result<ArrayRef, String> {
     let first = values
         .iter()
@@ -338,16 +339,21 @@ fn scalar_values_to_array(
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         ))),
-        Some(ScalarValue::String(_)) => Ok(Arc::new(StringArray::from(
-            values
+        Some(ScalarValue::String(_)) => {
+            let strings = values
                 .iter()
                 .map(|value| match value {
                     ScalarValue::Null => Ok(None),
                     ScalarValue::String(value) => Ok(Some(value.as_str())),
                     _ => Err("aggregate values have inconsistent physical types".to_string()),
                 })
-                .collect::<Result<Vec<_>, _>>()?,
-        ))),
+                .collect::<Result<Vec<_>, _>>()?;
+            if large_offsets {
+                Ok(Arc::new(LargeStringArray::from(strings)))
+            } else {
+                Ok(Arc::new(StringArray::from(strings)))
+            }
+        }
         Some(ScalarValue::Null) => unreachable!("nulls were filtered above"),
     }
 }
@@ -423,6 +429,7 @@ pub(crate) struct LengthResult {
 }
 
 pub(crate) struct QueryResult {
+    large_offsets: bool,
     sequences: Vec<SequenceResult>,
     aggregates: Vec<AggregateResult>,
     timings: QueryTimings,
@@ -454,6 +461,7 @@ fn table_rows(
     table: &TableReader,
     node_ids: &[u64],
     projection_indices: &[usize],
+    large_offsets: bool,
 ) -> Result<RecordBatch, String> {
     if projection_indices.is_empty() {
         return RecordBatch::try_new_with_options(
@@ -477,9 +485,12 @@ fn table_rows(
                 .ok_or_else(|| format!("node {node_id} has no rowpack data"))?,
         );
     }
-    decoder
-        .decode_batch_to_arrow(&rows, projection_indices)
-        .map_err(|error| error.to_string())
+    let batch = if large_offsets {
+        decoder.decode_batch_to_arrow_large(&rows, projection_indices)
+    } else {
+        decoder.decode_batch_to_arrow(&rows, projection_indices)
+    };
+    batch.map_err(|error| error.to_string())
 }
 
 fn scalar_at(array: &dyn Array, row: usize) -> Result<ScalarValue, String> {
@@ -642,7 +653,10 @@ fn relation_destinations(
             // of timestamp width or weight bits. Ingestion may clamp later rows
             // there: they must reach the existing rowpack window check before
             // they can count toward the limit.
-            if keys.iter().any(|&key| exact_key_time(decoder, key).is_none()) {
+            if keys
+                .iter()
+                .any(|&key| exact_key_time(decoder, key).is_none())
+            {
                 return Ok(destinations);
             }
             let mut seen = HashSet::new();
@@ -767,7 +781,10 @@ fn validate_sequence_plan(plan: &SequencePlan) -> Result<(), String> {
         return Err(format!("sequence {:?} limit must be positive", plan.name));
     }
     if plan.columns.is_empty() {
-        return Err(format!("sequence {:?} must project at least one column", plan.name));
+        return Err(format!(
+            "sequence {:?} must project at least one column",
+            plan.name
+        ));
     }
     Ok(())
 }
@@ -815,6 +832,7 @@ fn materialize_frame(
     cutoffs: &[i64],
     sequence: Option<&SequencePlan>,
     full_columns: Option<(&HashSet<&str>, usize)>,
+    large_offsets: bool,
     timings: &mut QueryTimings,
     stats: &mut QueryStats,
 ) -> Result<MaterializedFrame, String> {
@@ -931,7 +949,12 @@ fn materialize_frame(
         stats.rows_decoded += flat_nodes.len();
     }
     stats.values_decoded += flat_nodes.len() * projection_indices.len();
-    let decoded = table_rows(table.as_ref(), &flat_nodes, &projection_indices)?;
+    let decoded = table_rows(
+        table.as_ref(),
+        &flat_nodes,
+        &projection_indices,
+        large_offsets,
+    )?;
 
     let mut input_offsets = Vec::with_capacity(rows_by_anchor.len() + 1);
     input_offsets.push(0usize);
@@ -1012,6 +1035,7 @@ fn sequence_result(
     reader: &GraphIndexReader,
     frame: &MaterializedFrame,
     plan: &SequencePlan,
+    large_offsets: bool,
     stats: &mut QueryStats,
 ) -> Result<SequenceResult, String> {
     let mut selected = Vec::<u64>::new();
@@ -1064,7 +1088,7 @@ fn sequence_result(
         let table = reader
             .table(&frame.destination)
             .ok_or_else(|| format!("unknown destination table {:?}", frame.destination))?;
-        let extra = table_rows(table.as_ref(), &node_ids, &missing)?;
+        let extra = table_rows(table.as_ref(), &node_ids, &missing, large_offsets)?;
         stats.rows_decoded += node_ids.len();
         stats.values_decoded += node_ids.len() * missing.len();
         let indices = UInt64Array::from(selected);
@@ -1495,13 +1519,14 @@ fn count_frame(
             .as_ref()
             .expect("frame validation requires a time column for bounds");
         let sort_decoder =
-            matching_time_decoder(final_sort_key.as_ref(), &destination, time_column)
-                .filter(|decoder| {
+            matching_time_decoder(final_sort_key.as_ref(), &destination, time_column).filter(
+                |decoder| {
                     rows_by_anchor
                         .iter()
                         .flatten()
                         .all(|&(_, key)| exact_key_time(decoder, key).is_some())
-                });
+                },
+            );
         if let Some(decoder) = sort_decoder {
             for (anchor, rows) in rows_by_anchor.iter().enumerate() {
                 let lower = plan
@@ -1533,7 +1558,7 @@ fn count_frame(
                 .flatten()
                 .map(|(node_id, _)| *node_id)
                 .collect::<Vec<_>>();
-            let decoded = table_rows(table.as_ref(), &flat_nodes, &projection_indices)?;
+            let decoded = table_rows(table.as_ref(), &flat_nodes, &projection_indices, false)?;
             let mut row = 0;
             for (anchor, rows) in rows_by_anchor.iter().enumerate() {
                 let lower = plan
@@ -1641,6 +1666,7 @@ pub(crate) fn execute(
     roots: &[u64],
     cutoffs: &[i64],
     plan_json: &str,
+    large_offsets: bool,
 ) -> Result<QueryResult, String> {
     let total_started = Instant::now();
     if roots.len() != cutoffs.len() {
@@ -1709,6 +1735,7 @@ pub(crate) fn execute(
             full_columns
                 .as_ref()
                 .zip(consumers.first().and_then(|sequence| sequence.limit)),
+            large_offsets,
             &mut timings,
             &mut stats,
         )?;
@@ -1726,7 +1753,7 @@ pub(crate) fn execute(
                     sequence.name, sequence.frame
                 )
             })?;
-            sequence_result(reader, frame, sequence, &mut stats)
+            sequence_result(reader, frame, sequence, large_offsets, &mut stats)
         })
         .collect::<Result<Vec<_>, String>>()?;
     timings.sequence_assembly = elapsed_ns(sequence_started);
@@ -1748,6 +1775,7 @@ pub(crate) fn execute(
     timings.aggregation = elapsed_ns(aggregate_started);
     timings.total = elapsed_ns(total_started);
     Ok(QueryResult {
+        large_offsets,
         sequences,
         aggregates,
         timings,
@@ -1798,8 +1826,9 @@ impl QueryResult {
             let item = PyDict::new(py);
             item.set_item("name", aggregate.name)?;
             if model_format {
-                let values = scalar_values_to_array(&aggregate.values, aggregate.kind)
-                    .map_err(DiskgraphConfigError::new_err)?;
+                let values =
+                    scalar_values_to_array(&aggregate.values, aggregate.kind, self.large_offsets)
+                        .map_err(DiskgraphConfigError::new_err)?;
                 item.set_item("values", values.to_data().to_pyarrow(py)?)?;
             } else {
                 let values = PyList::empty(py);
@@ -1874,6 +1903,30 @@ pub(crate) fn config_error(error: String) -> PyErr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_string_aggregates_keep_large_offsets_and_nulls() {
+        let values = [
+            ScalarValue::String("café".into()),
+            ScalarValue::Null,
+            ScalarValue::String(String::new()),
+        ];
+        let narrow = scalar_values_to_array(&values, None, false).unwrap();
+        let narrow = narrow.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(
+            narrow.iter().collect::<Vec<_>>(),
+            vec![Some("café"), None, Some("")]
+        );
+        let actual = scalar_values_to_array(&values, None, true).unwrap();
+        let strings = actual.as_any().downcast_ref::<LargeStringArray>().unwrap();
+        assert_eq!(
+            strings.iter().collect::<Vec<_>>(),
+            vec![Some("café"), None, Some("")]
+        );
+        assert!(
+            scalar_values_to_array(&[values[0].clone(), ScalarValue::I64(1)], None, true).is_err()
+        );
+    }
 
     #[test]
     fn frame_sort_keeps_existing_tie_order_for_every_scalar_kind() {
@@ -2034,6 +2087,7 @@ mod tests {
         let output = scalar_values_to_array(
             &[ScalarValue::I64(0), ScalarValue::I64((1 << 53) + 1)],
             Some(SumType::Int64.zero()),
+            false,
         )
         .unwrap();
         assert_eq!(output.data_type(), &arrow_schema::DataType::Int64);
@@ -2046,7 +2100,8 @@ mod tests {
             (1 << 53) + 1
         );
         for kind in [SumType::Int64, SumType::Uint64] {
-            let output = scalar_values_to_array(&[ScalarValue::Null], Some(kind.zero())).unwrap();
+            let output =
+                scalar_values_to_array(&[ScalarValue::Null], Some(kind.zero()), false).unwrap();
             assert_eq!(output.null_count(), 1);
             assert_eq!(
                 output.data_type(),
