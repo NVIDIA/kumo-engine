@@ -17,7 +17,7 @@ on:  # yamllint disable-line rule:truthy
   workflow_call:
     inputs:
       build_only:
-        description: Build main without candidate checks or GPU tests.
+        description: Build the selected revision without candidate checks or GPU tests.
         type: boolean
         default: false
 
@@ -67,8 +67,7 @@ jobs:
     needs: changes
     if: >-
       !cancelled() &&
-      (!inputs.build_only || github.ref == 'refs/heads/main') &&
-      (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.gpu == 'true')
+      (inputs.build_only || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.gpu == 'true')
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     permissions:

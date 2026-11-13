@@ -1,0 +1,37 @@
+{
+  "candidate": {
+    "wheel_file": "kumo_engine-1.0.0.dev0+aaaaaaa-cp311-abi3-manylinux_2_34_x86_64.whl",
+    "wheel_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "expected_version": "1.0.0.dev0+aaaaaaa"
+  },
+  "assets": {
+    "kumo_engine-1.0.0.dev0+aaaaaaa-cp311-abi3-manylinux_2_34_x86_64.whl": {
+      "name": "kumo_engine-1.0.0.dev0+aaaaaaa-cp311-abi3-manylinux_2_34_x86_64.whl",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "size": 4096,
+      "location": "@KUMO_TEST_DB.KUMO_TEST.TEST_STAGE/mlops-validation/payload-cache/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/kumo_engine-1.0.0.dev0+aaaaaaa-cp311-abi3-manylinux_2_34_x86_64.whl/objects/aaaaaaaaaaaa/kumo_engine-1.0.0.dev0+aaaaaaa-cp311-abi3-manylinux_2_34_x86_64.whl",
+      "remote": {
+        "name": "test_stage/mlops-validation/payload-cache/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/kumo_engine-1.0.0.dev0+aaaaaaa-cp311-abi3-manylinux_2_34_x86_64.whl/objects/aaaaaaaaaaaa/kumo_engine-1.0.0.dev0+aaaaaaa-cp311-abi3-manylinux_2_34_x86_64.whl",
+        "size": 4096,
+        "md5": "synthetic",
+        "last_modified": "synthetic"
+      }
+    },
+    "wheelhouse.tar": {
+      "name": "wheelhouse.tar",
+      "sha256": "0741437be3c97ac75710495fe65651c10825e661d674861725dd31153b822963",
+      "size": 4089108480,
+      "location": "@KUMO_TEST_DB.KUMO_TEST.TEST_STAGE/mlops-validation/payload-cache/0741437be3c97ac75710495fe65651c10825e661d674861725dd31153b822963/wheelhouse.tar/objects/aaaaaaaaaaaa/wheelhouse.tar",
+      "remote": {
+        "name": "mlops-validation/payload-cache/0741437be3c97ac75710495fe65651c10825e661d674861725dd31153b822963/wheelhouse.tar/objects/aaaaaaaaaaaa/wheelhouse.tar",
+        "size": 4089108480,
+        "md5": "synthetic",
+        "last_modified": "synthetic"
+      }
+    }
+  },
+  "build": {
+    "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "github_run": 1
+  }
+}

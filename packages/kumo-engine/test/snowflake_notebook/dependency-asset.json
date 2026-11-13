@@ -1,0 +1,12 @@
+{
+  "name": "wheelhouse.tar",
+  "sha256": "0741437be3c97ac75710495fe65651c10825e661d674861725dd31153b822963",
+  "size": 4089108480,
+  "location": "@KUMO_TEST_DB.KUMO_TEST.TEST_STAGE/notebook-output-probe/b85262f060c8/payload/wheelhouse.tar",
+  "remote": {
+    "name": "test_stage/notebook-output-probe/b85262f060c8/payload/wheelhouse.tar",
+    "size": 4089108480,
+    "md5": "2654d4d4a73730af1e0ca9e5a2acb37f-488",
+    "last_modified": "Wed, 4 Nov 2026 00:13:47 GMT"
+  }
+}

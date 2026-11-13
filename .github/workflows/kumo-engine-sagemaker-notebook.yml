@@ -1,0 +1,163 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: SageMaker notebook platform checks
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: Notebook scenario
+        type: choice
+        default: all
+        options: [all, engine, graph]
+      engine_checks_only:
+        description: Execute without claiming full platform UI qualification
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sagemaker-notebook-platform
+  cancel-in-progress: false
+
+jobs:
+  configuration:
+    name: Check protected SageMaker environment
+    if: >-
+      github.repository == 'NVIDIA/kumo-engine' &&
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - &check-environment
+        name: Verify maintainer-protected environment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 packages/kumo-engine/test/sagemaker_notebook/check_environment.py
+  wheel:
+    needs: configuration
+    uses: ./.github/workflows/kumo-engine-pr.yml
+    with:
+      build_only: true
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+
+  notebook:
+    needs: [configuration, wheel]
+    if: >-
+      github.repository == 'NVIDIA/kumo-engine' &&
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    environment: sagemaker-mlops-test
+    env:
+      SAGEMAKER_TEST_DOMAIN_ID: ${{ vars.SAGEMAKER_TEST_DOMAIN_ID }}
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - *check-environment
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
+        with:
+          node-version: '22'
+      - name: Install host runner tools
+        run: pip install --require-hashes -r packages/kumo-engine/test/sagemaker_notebook/requirements.txt
+      - name: Install shared locked browser tools
+        run: |
+          npm ci --prefix packages/kumo-engine/test/snowflake_notebook/browser
+          node packages/kumo-engine/test/snowflake_notebook/browser/node_modules/playwright/cli.js install --with-deps chromium
+      - name: Download this dispatch's wheel
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: engine-pr-wheel-${{ github.sha }}
+          path: ${{ runner.temp }}/sagemaker-wheel
+      - name: Identify this dispatch's wheel
+        run: |
+          export SAGEMAKER_TEST_CANDIDATE="$RUNNER_TEMP/sagemaker-candidate.json"
+          printf 'SAGEMAKER_TEST_CANDIDATE=%s\n' "$SAGEMAKER_TEST_CANDIDATE" >> "$GITHUB_ENV"
+          python packages/kumo-engine/test/sagemaker_notebook/candidate.py \
+            --wheel "$RUNNER_TEMP"/sagemaker-wheel/*.whl \
+            --source-ref "$GITHUB_SHA" --github-run "$GITHUB_RUN_ID" \
+            --output "$SAGEMAKER_TEST_CANDIDATE"
+      - name: Authenticate with the dedicated environment-only runner role
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/kumo-engine-sagemaker-test-runner
+          aws-region: us-west-2
+          allowed-account-ids: '926922431314'
+          role-session-name: kumo-test-notebook-${{ github.run_id }}
+          role-duration-seconds: 10800
+      - name: Download the unchanged shared graph fixture
+        env:
+          FIXTURE: ${{ runner.temp }}/pr172-inputs-v1.tar.gz
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import boto3
+          fixture = json.loads(Path('packages/kumo-engine/test/pr172/inputs.json').read_text())
+          boto3.client('s3').download_file(fixture['bucket'], fixture['key'], os.environ['FIXTURE'])
+          PY
+      - name: Execute the same installed-wheel notebook scenario as local testing
+        env:
+          SCENARIO: ${{ inputs.scenario }}
+          ENGINE_ONLY: ${{ inputs.engine_checks_only }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+          base = Path('packages/kumo-engine/test/sagemaker_notebook')
+          candidate = json.loads(Path(os.environ['SAGEMAKER_TEST_CANDIDATE']).read_text())['candidate']
+          temp = Path(os.environ['RUNNER_TEMP'])
+          command = [sys.executable, str(base / 'run.py'), '--execute',
+                     '--scenario', os.environ['SCENARIO'],
+                     '--wheel', str(temp / 'sagemaker-wheel' / candidate['wheel_file']),
+                     '--fixture', str(temp / 'pr172-inputs-v1.tar.gz'),
+                     '--output-dir', str(temp / 'sagemaker-notebook')]
+          if os.environ['ENGINE_ONLY'] == 'true':
+              command.append('--engine-checks-only')
+          raise SystemExit(subprocess.call(command))
+          PY
+      - name: Prepare public aggregate results
+        if: always()
+        env:
+          SCENARIO: ${{ inputs.scenario }}
+        run: |
+          python packages/kumo-engine/test/platform_summary.py \
+            --platform sagemaker --scenario "$SCENARIO" \
+            --input "$RUNNER_TEMP/sagemaker-notebook" \
+            --output "$RUNNER_TEMP/sagemaker-public"
+      - name: Retain public aggregate results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: sagemaker-notebook-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sagemaker-public/
+          if-no-files-found: warn
+          retention-days: 7

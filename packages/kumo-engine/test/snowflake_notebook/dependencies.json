@@ -1,0 +1,736 @@
+{
+  "target": {
+    "python": "3.12",
+    "system": "Linux",
+    "architecture": "x86_64",
+    "maximum_manylinux": "2.35"
+  },
+  "resolution": "pip download candidate[snowflake]; no manual dependency list or version pins",
+  "source_index": "https://pypi.org/simple",
+  "local_wheels": [
+    "antlr4_python3_runtime-4.9.3-py3-none-any.whl"
+  ],
+  "archive_sha256": "0741437be3c97ac75710495fe65651c10825e661d674861725dd31153b822963",
+  "wheels": {
+    "absl_py-2.5.1-py3-none-any.whl": {
+      "sha256": "721200f2f0e9960f2ca9dc3a2a706b201f5f75d812c158f059cbbe29eeafbdb8",
+      "size": 137673,
+      "name": "absl-py",
+      "version": "2.5.1"
+    },
+    "aiohappyeyeballs-2.7.1-py3-none-any.whl": {
+      "sha256": "9243213661e29250eb41368e5daa826fc017156c3b8a11440826b2e3ed376472",
+      "size": 15038,
+      "name": "aiohappyeyeballs",
+      "version": "2.7.1"
+    },
+    "aiohttp-3.14.5-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl": {
+      "sha256": "20f085697d7e911f1f73c43ed03fafbed1e7121797e2eb5428efa80398060584",
+      "size": 1919630,
+      "name": "aiohttp",
+      "version": "3.14.5"
+    },
+    "aiosignal-1.4.0-py3-none-any.whl": {
+      "sha256": "053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e",
+      "size": 7490,
+      "name": "aiosignal",
+      "version": "1.4.0"
+    },
+    "alembic-1.20.1-py3-none-any.whl": {
+      "sha256": "9970712cfb81ea26c8658d378aaa5b8f6ff9146e5bb111d70497c164016cf598",
+      "size": 270355,
+      "name": "alembic",
+      "version": "1.20.1"
+    },
+    "annotated_types-0.8.0-py3-none-any.whl": {
+      "sha256": "f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0",
+      "size": 13427,
+      "name": "annotated-types",
+      "version": "0.8.0"
+    },
+    "antlr4_python3_runtime-4.9.3-py3-none-any.whl": {
+      "sha256": "586223395acee0043b7da7f1956187160c50a5400a7d7a6af385e623200a5bb4",
+      "size": 144590,
+      "name": "antlr4-python3-runtime",
+      "version": "4.9.3"
+    },
+    "anyio-4.16.0-py3-none-any.whl": {
+      "sha256": "c66ae634e0b8228396b801741beb3294326d4b6102f7bba4041c0dfb58c29026",
+      "size": 134521,
+      "name": "anyio",
+      "version": "4.16.0"
+    },
+    "asn1crypto-1.5.1-py2.py3-none-any.whl": {
+      "sha256": "db4e40728b728508912cbb3d44f19ce188f218e9eba635821bb4b68564f8fd67",
+      "size": 105045,
+      "name": "asn1crypto",
+      "version": "1.5.1"
+    },
+    "attrs-26.1.0-py3-none-any.whl": {
+      "sha256": "c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309",
+      "size": 67548,
+      "name": "attrs",
+      "version": "26.1.0"
+    },
+    "boto3-1.43.123-py3-none-any.whl": {
+      "sha256": "d18d66e1e13faa0c25d0b1b8c5ce946e29fb5fc0b6456b655a93a678ff4cc313",
+      "size": 140044,
+      "name": "boto3",
+      "version": "1.43.123"
+    },
+    "botocore-1.43.123-py3-none-any.whl": {
+      "sha256": "e30580f9c1282c321529238ff8ff75066096a2adbd0a293c8ae592c21d1733a3",
+      "size": 16185987,
+      "name": "botocore",
+      "version": "1.43.123"
+    },
+    "cachetools-7.2.8-py3-none-any.whl": {
+      "sha256": "09b04a85741d0019b3fb7d02b7ee9933a422fa6923af92a0fd63b893b695830c",
+      "size": 19646,
+      "name": "cachetools",
+      "version": "7.2.8"
+    },
+    "certifi-2026.10.23-py3-none-any.whl": {
+      "sha256": "e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1",
+      "size": 135082,
+      "name": "certifi",
+      "version": "2026.10.23"
+    },
+    "cffi-2.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl": {
+      "sha256": "c1453022f490d2459a11819d83ad1d586e9ff65a12ac3e705ffebd46d3685dcf",
+      "size": 221822,
+      "name": "cffi",
+      "version": "2.1.1"
+    },
+    "charset_normalizer-3.5.2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl": {
+      "sha256": "3d31298449090ab8d47b7b1b2a555ff73cac7ed438a08b7ac160980c7ebed649",
+      "size": 257601,
+      "name": "charset-normalizer",
+      "version": "3.5.2"
+    },
+    "cloudpickle-3.1.2-py3-none-any.whl": {
+      "sha256": "9acb47f6afd73f60dc1df93bb801b472f05ff42fa6c84167d25cb206be1fbf4a",
+      "size": 22228,
+      "name": "cloudpickle",
+      "version": "3.1.2"
+    },
+    "colorlog-6.12.0-py3-none-any.whl": {
+      "sha256": "30d392604e9110045a2c2aeefc27d7a017abbab63f3a8aee594eac0801df784e",
+      "size": 12239,
+      "name": "colorlog",
+      "version": "6.12.0"
+    },
+    "contourpy-1.4.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl": {
+      "sha256": "875f42444c9cf48d56f724f2637e60d0f73b3b12c9041e1484580a233edf9591",
+      "size": 383243,
+      "name": "contourpy",
+      "version": "1.4.0"
+    },
+    "cryptography-50.0.2-cp311-abi3-manylinux_2_34_x86_64.whl": {
+      "sha256": "9dab55f57c74c3cad24c323bacbbd04be4705ba6eb0d92e920b1fc4837ed5079",
+      "size": 4752576,
+      "name": "cryptography",
+      "version": "50.0.2"
+    },
+    "cuda_bindings-13.4.4-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl": {
+      "sha256": "433efa31e33c2868621b5f6036bd3bf5de9c45c5546cb1361a5f6ff3415b8bb5",
+      "size": 7172184,
+      "name": "cuda-bindings",
+      "version": "13.4.4"
+    },
+    "cuda_pathfinder-1.8.5-py3-none-any.whl": {
+      "sha256": "16d1026fdd78ac0222b966441de53dec3f0dbe6b1e2c43d19d92eb29bfd81e67",
+      "size": 62595,
+      "name": "cuda-pathfinder",
+      "version": "1.8.5"
+    },
+    "cuda_toolkit-13.2.2-py2.py3-none-any.whl": {
+      "sha256": "d12edc1aad1356236a2ee10c0d794b1aff5d3e79bfeca54867c3bb8e5afd87b0",
+      "size": 2607,
+      "name": "cuda-toolkit",
+      "version": "13.2.2"
+    },
+    "cycler-0.12.1-py3-none-any.whl": {
+      "sha256": "85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30",
+      "size": 8321,
+      "name": "cycler",
+      "version": "0.12.1"
+    },
+    "faiss_gpu-1.14.3-cp310-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl": {
+      "sha256": "ac72630dbfbb29e49ff6f5ac7acd293472b88679082459314603d7424d9ce8b3",
+      "size": 134915441,
+      "name": "faiss-gpu",
+      "version": "1.14.3"
+    },
+    "filelock-4.2.7-py3-none-any.whl": {
+      "sha256": "d08972bbca2b8767ee552aff877b091dd111ffb1d22de7de885766ea7d719d5e",
+      "size": 164345,
+      "name": "filelock",
+      "version": "4.2.7"
+    },
+    "fonttools-4.68.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl": {
+      "sha256": "3edce69ecdefa73ab1041901ca22eefed6ebb93a77bc77e889d940479f25bf7d",
+      "size": 5443448,
+      "name": "fonttools",
+      "version": "4.68.0"
+    },
+    "frozenlist-1.8.0-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl": {
+      "sha256": "494a5952b1c597ba44e0e78113a7266e656b9794eec897b19ead706bd7074383",
+      "size": 242411,
+      "name": "frozenlist",
+      "version": "1.8.0"
+    },
+    "fsspec-2026.9.0-py3-none-any.whl": {
+      "sha256": "8dd6e646e99ea382bd85f97a45e6b526a442d79423a7dc673f1e2756d05fcb5f",
+      "size": 221738,
+      "name": "fsspec",
+      "version": "2026.9.0"
+    },
+    "grpcio-1.85.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl": {
+      "sha256": "a1a72d19c0ab84b4b73b6c47eeaade76d84b1973a51593ff1160a73df33d03d9",
+      "size": 7362744,
+      "name": "grpcio",
+      "version": "1.85.1"
+    },
+    "idna-3.20-py3-none-any.whl": {
+      "sha256": "ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c",
+      "size": 69583,
+      "name": "idna",
+      "version": "3.20"
+    },
+    "importlib_resources-6.5.2-py3-none-any.whl": {
+      "sha256": "789cfdc3ed28c78b67a06acb8126751ced69a3d5f79c095a98298cd8a760ccec",
+      "size": 37461,
+      "name": "importlib_resources",
+      "version": "6.5.2"
+    },
+    "jinja2-3.1.6-py3-none-any.whl": {
+      "sha256": "85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67",
+      "size": 134899,
+      "name": "Jinja2",
+      "version": "3.1.6"
+    },
+    "jmespath-1.1.0-py3-none-any.whl": {
+      "sha256": "a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64",
+      "size": 20419,
+      "name": "jmespath",
+      "version": "1.1.0"
+    },
+    "joblib-1.6.0-py3-none-any.whl": {
+      "sha256": "3dbbf9f6e4b592a2357b854608e980fe6390d131d7a82f011a377ef2ebef7aba",
+      "size": 306115,
+      "name": "joblib",
+      "version": "1.6.0"
+    },
+    "kiwisolver-1.5.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl": {
+      "sha256": "34633ecf50d16187ab8e5528b7a2530f2feb4e23f300db4672538b51cfc5cd38",
+      "size": 1477929,
+      "name": "kiwisolver",
+      "version": "1.5.1"
+    },
+    "lightning_utilities-0.15.3-py3-none-any.whl": {
+      "sha256": "6c55f1bee70084a1cbeaa41ada96e4b3a0fea5909e844dd335bd80f5a73c5f91",
+      "size": 31906,
+      "name": "lightning-utilities",
+      "version": "0.15.3"
+    },
+    "mako-1.4.3-py3-none-any.whl": {
+      "sha256": "723296007c870bfd6b3f0c3230dba7198096e5269297ebf5e4eff9e7ffa39d4f",
+      "size": 80164,
+      "name": "Mako",
+      "version": "1.4.3"
+    },
+    "markdown-3.11.2-py3-none-any.whl": {
+      "sha256": "f80390747a2a0ff2ba54da074ce4f862f72a6685f608cd2637b646a6d83993f5",
+      "size": 114266,
+      "name": "Markdown",
+      "version": "3.11.2"
+    },
+    "markupsafe-3.0.4-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl": {
+      "sha256": "8e124f974786f831d6043728e38296969d3579db8896fe004682f5758e613581",
+      "size": 22985,
+      "name": "MarkupSafe",
+      "version": "3.0.4"
+    },
+    "matplotlib-3.11.2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl": {
+      "sha256": "df4f7784aca81a94f254c0a2767d592ee25f407e488f5fa7203e51093fb6ca27",
+      "size": 9860353,
+      "name": "matplotlib",
+      "version": "3.11.2"
+    },
+    "mpmath-1.3.0-py3-none-any.whl": {
+      "sha256": "a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c",
+      "size": 536198,
+      "name": "mpmath",
+      "version": "1.3.0"
+    },
+    "multidict-7.2.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl": {
+      "sha256": "1fb8c1a3480c130c3a6422d5f16f3cad6552bf08c2089dd288ba7134649183b5",
+      "size": 516796,
+      "name": "multidict",
+      "version": "7.2.1"
+    },
+    "narwhals-2.28.0-py3-none-any.whl": {
+      "sha256": "1f69d6385ec30e2fa6e1fdeb37c562ecabd0f713f6f3e3b58a668c5c9df9567f",
+      "size": 490591,
+      "name": "narwhals",
+      "version": "2.28.0"
+    },
+    "networkx-3.7-py3-none-any.whl": {
+      "sha256": "e3fd2c13a7814cee3746340d8d7f8598a67f16a58bf47fb7f8793fab6efca1b0",
+      "size": 2142205,
+      "name": "networkx",
+      "version": "3.7"
+    },
+    "numpy-2.5.4-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl": {
+      "sha256": "fbde6962867ee75b48b0ee29b2b9372ec5d617799dbaf38e82dc0596f2f7738a",
+      "size": 16727283,
+      "name": "numpy",
+      "version": "2.5.4"
+    },
+    "nvidia_cublas-13.4.1.3-py3-none-manylinux_2_27_x86_64.whl": {
+      "sha256": "a5917cb642cfb07f4a0231ee16aec7e2e0357d8cb8b1b78a0c9c68dba3e6afc7",
+      "size": 404870805,
+      "name": "nvidia-cublas",
+      "version": "13.4.1.3"
+    },
+    "nvidia_cublas_cu12-12.9.3.13-py3-none-manylinux_2_27_x86_64.whl": {
+      "sha256": "d7d51055f161b317c7105ddaae90e71eda059026074ffef93cf7cde2886bfe72",
+      "size": 581217458,
+      "name": "nvidia-cublas-cu12",
+      "version": "12.9.3.13"
+    },
+    "nvidia_cuda_cccl-13.3.4.3.1-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl": {
+      "sha256": "48ba8e44a1162face51306d5bfd67604d9949be5acb9105dbb93734d2df8b3a4",
+      "size": 3930678,
+      "name": "nvidia-cuda-cccl",
+      "version": "13.3.4.3.1"
+    },
+    "nvidia_cuda_cupti-13.2.86-py3-none-manylinux_2_25_x86_64.whl": {
+      "sha256": "8fa29f15dd8336181f961764d9d95236fc6b931dd0c8fcf8cd70aab0c310b586",
+      "size": 11988600,
+      "name": "nvidia-cuda-cupti",
+      "version": "13.2.86"
+    },
+    "nvidia_cuda_nvrtc-13.2.86-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl": {
+      "sha256": "8111c5130e967b78222ea2124145f8efe9ce201b752b2579a2513100a53be1c5",
+      "size": 47018468,
+      "name": "nvidia-cuda-nvrtc",
+      "version": "13.2.86"
+    },
+    "nvidia_cuda_nvrtc_cu12-12.9.86-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl": {
+      "sha256": "210cf05005a447e29214e9ce50851e83fc5f4358df8b453155d5e1918094dcb4",
+      "size": 89568129,
+      "name": "nvidia-cuda-nvrtc-cu12",
+      "version": "12.9.86"
+    },
+    "nvidia_cuda_runtime-13.2.86-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl": {
+      "sha256": "3498247680dfddce31bad102af7e3e26fc795342a3cac64722bb0fa95e7f60f0",
+      "size": 2323576,
+      "name": "nvidia-cuda-runtime",
+      "version": "13.2.86"
+    },
+    "nvidia_cuda_runtime_cu12-12.9.79-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl": {
+      "sha256": "25bba2dfb01d48a9b59ca474a1ac43c6ebf7011f1b0b8cc44f54eb6ac48a96c3",
+      "size": 3493179,
+      "name": "nvidia-cuda-runtime-cu12",
+      "version": "12.9.79"
+    },
+    "nvidia_cudnn_cu13-9.26.0.51-py3-none-manylinux_2_27_x86_64.whl": {
+      "sha256": "9c976d539786698c71d6bcdbe2053b7485fae062ff7e1215d2f2ff67b1a2149a",
+      "size": 519150073,
+      "name": "nvidia-cudnn-cu13",
+      "version": "9.26.0.51"
+    },
+    "nvidia_cufft-12.2.0.57-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl": {
+      "sha256": "34da27fadf3979b0b042c43823f0530be8408b86df31ee0108e1ca0b621d4ef6",
+      "size": 218258101,
+      "name": "nvidia-cufft",
+      "version": "12.2.0.57"
+    },
+    "nvidia_cufile-1.17.1.22-py3-none-manylinux_2_27_x86_64.whl": {
+      "sha256": "87feaf8c3ad20d3d03a01933181801ff6892bace5c8f0b1e4b48f319d3e62d36",
+      "size": 1387670,
+      "name": "nvidia-cufile",
+      "version": "1.17.1.22"
+    },
+    "nvidia_curand_cu12-10.3.10.19-py3-none-manylinux_2_27_x86_64.whl": {
+      "sha256": "49b274db4780d421bd2ccd362e1415c13887c53c214f0d4b761752b8f9f6aa1e",
+      "size": 68295626,
+      "name": "nvidia-curand-cu12",
+      "version": "10.3.10.19"
+    },
+    "nvidia_cusolver-12.2.0.11-py3-none-manylinux_2_27_x86_64.whl": {
+      "sha256": "fab5778f6769947389a1a6abc07e635576825a08c0ffc68c3ae7f1392c794b42",
+      "size": 227913465,
+      "name": "nvidia-cusolver",
+      "version": "12.2.0.11"
+    },
+    "nvidia_cusparse-12.7.10.12-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl": {
+      "sha256": "25907c75e4db1581685f06f61cc6cdecc04611765516a52373e0a18ebd69fa00",
+      "size": 150999307,
+      "name": "nvidia-cusparse",
+      "version": "12.7.10.12"
+    },
+    "nvidia_cusparselt_cu13-0.8.1-py3-none-manylinux2014_x86_64.whl": {
+      "sha256": "786ce87568c303fadb5afcc7102d454cd3040d75f6f8626f5db460d1871f4dd0",
+      "size": 170148586,
+      "name": "nvidia-cusparselt-cu13",
+      "version": "0.8.1"
+    },
+    "nvidia_nccl_cu13-2.30.7-py3-none-manylinux_2_18_x86_64.whl": {
+      "sha256": "cefa7fdb9710efd0f39c5f1be1d61ff6fc9a996c451265bd7fbdcf9455ed4b50",
+      "size": 215965170,
+      "name": "nvidia-nccl-cu13",
+      "version": "2.30.7"
+    },
+    "nvidia_nvjitlink-13.4.92-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl": {
+      "sha256": "e0391f24ed94ec879b84e3da4d4ec320c879aff681f2c7a638462f7199284323",
+      "size": 42452378,
+      "name": "nvidia-nvjitlink",
+      "version": "13.4.92"
+    },
+    "nvidia_nvshmem_cu13-3.7.2-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl": {
+      "sha256": "b9a4f843c62b5dded8ad33fd6d220e007dcd39f06cee549292f5ba14ce4c235c",
+      "size": 135397797,
+      "name": "nvidia-nvshmem-cu13",
+      "version": "3.7.2"
+    },
+    "nvidia_nvtx-13.2.86-py3-none-manylinux1_x86_64.manylinux_2_5_x86_64.whl": {
+      "sha256": "968ce72baee2a01791c7d3254000eac81f24677b0b91c62d21b449a1f309c245",
+      "size": 153463,
+      "name": "nvidia-nvtx",
+      "version": "13.2.86"
+    },
+    "optuna-4.9.0-py3-none-any.whl": {
+      "sha256": "f52f3be6148654850c92a5860d398fd88ec6b2c84ab68d9c3d07dcff02e7afee",
+      "size": 425553,
+      "name": "optuna",
+      "version": "4.9.0"
+    },
+    "packaging-25.0-py3-none-any.whl": {
+      "sha256": "29572ef2b1f17581046b3a2227d5c611fb25ec70ca1ba8554b24b0e69331a484",
+      "size": 66469,
+      "name": "packaging",
+      "version": "25.0"
+    },
+    "pandas-2.3.3-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl": {
+      "sha256": "b3d11d2fda7eb164ef27ffc14b4fcab16a80e1ce67e9f57e19ec0afaf715ba89",
+      "size": 12362693,
+      "name": "pandas",
+      "version": "2.3.3"
+    },
+    "pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl": {
+      "sha256": "42d63be3af4f9b951b199b0a9d23365d37ab14687e6d77b74940432c8515c4ca",
+      "size": 7144542,
+      "name": "pillow",
+      "version": "13.0.0"
+    },
+    "platformdirs-4.14.3-py3-none-any.whl": {
+      "sha256": "cba2d05fe5e18b26b1fa6f376b8e6234c012abe1f8696c486fface7d0054e931",
+      "size": 35276,
+      "name": "platformdirs",
+      "version": "4.14.3"
+    },
+    "propcache-0.5.4-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl": {
+      "sha256": "2814ecd8e818f487bee4b0f921bc4d1c176cc5fc71ac0f072d0fa67eda4ac14b",
+      "size": 250424,
+      "name": "propcache",
+      "version": "0.5.4"
+    },
+    "protobuf-6.33.6-cp39-abi3-manylinux2014_x86_64.whl": {
+      "sha256": "e9db7e292e0ab79dd108d7f1a94fe31601ce1ee3f7b79e0692043423020b0593",
+      "size": 323436,
+      "name": "protobuf",
+      "version": "6.33.6"
+    },
+    "psutil-7.2.2-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl": {
+      "sha256": "076a2d2f923fd4821644f5ba89f059523da90dc9014e85f8e45a5774ca5bc6f9",
+      "size": 155560,
+      "name": "psutil",
+      "version": "7.2.2"
+    },
+    "pyarrow-24.0.0-cp312-cp312-manylinux_2_28_x86_64.whl": {
+      "sha256": "6165461f55ef6314f026de6638d661188e3455d3ec49834556a0ebbdbace18bb",
+      "size": 48863122,
+      "name": "pyarrow",
+      "version": "24.0.0"
+    },
+    "pycparser-3.12-py3-none-any.whl": {
+      "sha256": "a076f3f489b39b43ed13563a1dafe42447445bec2e294154ec5c57fcdda4c85e",
+      "size": 62600,
+      "name": "pycparser",
+      "version": "3.12"
+    },
+    "pydantic-2.14.2-py3-none-any.whl": {
+      "sha256": "7efbf7507b937931cd32a5755acb00ea1cf5ccb1d4e8067a5850d5069e382118",
+      "size": 490403,
+      "name": "pydantic",
+      "version": "2.14.2"
+    },
+    "pydantic_core-2.50.2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl": {
+      "sha256": "9667637665acba166a7dbbc786f14c50512d3a01f7199e0e1a13b929e92d7c7a",
+      "size": 2242782,
+      "name": "pydantic_core",
+      "version": "2.50.2"
+    },
+    "pyjwt-2.15.1-py3-none-any.whl": {
+      "sha256": "42d59d631f7768a1028a64c7ff581a9bf7519804daf91fc5b6c56e30eec5e193",
+      "size": 33860,
+      "name": "PyJWT",
+      "version": "2.15.1"
+    },
+    "pyopenssl-26.4.0-py3-none-any.whl": {
+      "sha256": "f0eb0cb2d581d3ad2b9c489468485e7f2ab6727d08401bcf9d824c3caddf3c1c",
+      "size": 56026,
+      "name": "pyOpenSSL",
+      "version": "26.4.0"
+    },
+    "pyparsing-3.3.3-py3-none-any.whl": {
+      "sha256": "ece8c00a69cf01b45d0b1dedabb469c90d8caf996d4fda40f147627a122849a4",
+      "size": 126420,
+      "name": "pyparsing",
+      "version": "3.3.3"
+    },
+    "python_dateutil-2.9.0.post0-py2.py3-none-any.whl": {
+      "sha256": "a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427",
+      "size": 229892,
+      "name": "python-dateutil",
+      "version": "2.9.0.post0"
+    },
+    "pytimeparse-1.1.10-py3-none-any.whl": {
+      "sha256": "a9f9117a02eaa32efd268e70af29bc3ec1e84f473d3edef6d9809b36793b1c5d",
+      "size": 10661,
+      "name": "pytimeparse",
+      "version": "1.1.10"
+    },
+    "pytorch_frame-0.3.0-py3-none-any.whl": {
+      "sha256": "88916f53865230e4fe04c912ed774ac65f566b5b3424b43a80fe88beac63589f",
+      "size": 146318,
+      "name": "pytorch-frame",
+      "version": "0.3.0"
+    },
+    "pytorch_lightning-2.6.6-py3-none-any.whl": {
+      "sha256": "71f95c7b22f25c4f91cc659e1734bcdc6c69c8b66543f2ed2d78dbe29ce2f167",
+      "size": 853045,
+      "name": "pytorch-lightning",
+      "version": "2.6.6"
+    },
+    "pytz-2026.6-py2.py3-none-any.whl": {
+      "sha256": "7fed3fee8fd6bd4a2b7b75a8d56021d0624127bf69bd5691f115db929ac570b3",
+      "size": 506321,
+      "name": "pytz",
+      "version": "2026.6"
+    },
+    "pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl": {
+      "sha256": "ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc",
+      "size": 807870,
+      "name": "PyYAML",
+      "version": "6.0.3"
+    },
+    "requests-2.34.2-py3-none-any.whl": {
+      "sha256": "2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0",
+      "size": 73075,
+      "name": "requests",
+      "version": "2.34.2"
+    },
+    "retrying-1.4.2-py3-none-any.whl": {
+      "sha256": "bbc004aeb542a74f3569aeddf42a2516efefcdaff90df0eb38fbfbf19f179f59",
+      "size": 10859,
+      "name": "retrying",
+      "version": "1.4.2"
+    },
+    "s3transfer-0.19.3-py3-none-any.whl": {
+      "sha256": "24eb7535804306355e31c952a90022bf5b2f9d760f9a11062c7493a217c08553",
+      "size": 90252,
+      "name": "s3transfer",
+      "version": "0.19.3"
+    },
+    "scikit_learn-1.9.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl": {
+      "sha256": "e5d7b18a5b9dca241a74695f3275fa4c895a9dadc72b3d8df5fa9d1083c9b83e",
+      "size": 9166043,
+      "name": "scikit-learn",
+      "version": "1.9.1"
+    },
+    "scipy-1.18.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl": {
+      "sha256": "f55fa87b6c612ecd6b058f167c53231b1d14e412efe361d3d6e38b3631c73218",
+      "size": 35344199,
+      "name": "scipy",
+      "version": "1.18.1"
+    },
+    "setuptools-84.2.1-py3-none-any.whl": {
+      "sha256": "ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2",
+      "size": 876263,
+      "name": "setuptools",
+      "version": "84.2.1"
+    },
+    "six-1.17.0-py2.py3-none-any.whl": {
+      "sha256": "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274",
+      "size": 11050,
+      "name": "six",
+      "version": "1.17.0"
+    },
+    "snowflake_connector_python-4.8.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl": {
+      "sha256": "1d8178d9e90c8dc008cd3514dfc89adb4f80a49e85820de51175df72fd3772b6",
+      "size": 2992864,
+      "name": "snowflake-connector-python",
+      "version": "4.8.1"
+    },
+    "snowflake_ml_python-2.7.0-py3-none-any.whl": {
+      "sha256": "d9272d0075153a6c4f0529fa1627cc209789314eb6809f6b38e60cb8469781a9",
+      "size": 3037099,
+      "name": "snowflake-ml-python",
+      "version": "2.7.0"
+    },
+    "snowflake_snowpark_python-1.56.0-py3-none-any.whl": {
+      "sha256": "281a05a49e620a6054e382d7371ae5449b2db6bd312f6c4c5dd08ff4c9b93b3d",
+      "size": 1944508,
+      "name": "snowflake-snowpark-python",
+      "version": "1.56.0"
+    },
+    "sortedcontainers-2.4.0-py2.py3-none-any.whl": {
+      "sha256": "a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0",
+      "size": 29575,
+      "name": "sortedcontainers",
+      "version": "2.4.0"
+    },
+    "sqlalchemy-2.1.7-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl": {
+      "sha256": "0e72dfd9ab6e073b722362d3ee8e83155cee6bd77a0facdd1c35371bad5c5ce4",
+      "size": 4732417,
+      "name": "SQLAlchemy",
+      "version": "2.1.7"
+    },
+    "sqlglot-30.17.0-py3-none-any.whl": {
+      "sha256": "84435ac283a60173da31b5fd7d11a725037a1c3fd6ed1e21fb065de74ddb579f",
+      "size": 741795,
+      "name": "sqlglot",
+      "version": "30.17.0"
+    },
+    "sqlparse-0.6.1-py3-none-any.whl": {
+      "sha256": "3be5a72d04c873d690d7c6dedd33d6fae2ef82759881ceec02fc2efd0cba564f",
+      "size": 51200,
+      "name": "sqlparse",
+      "version": "0.6.1"
+    },
+    "sympy-1.14.0-py3-none-any.whl": {
+      "sha256": "e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5",
+      "size": 6299353,
+      "name": "sympy",
+      "version": "1.14.0"
+    },
+    "tabulate-0.8.10-py3-none-any.whl": {
+      "sha256": "0ba055423dbaa164b9e456abe7920c5e8ed33fcc16f6d1b2f2d152c8e1e8b4fc",
+      "size": 29068,
+      "name": "tabulate",
+      "version": "0.8.10"
+    },
+    "tensorboard-2.21.0-py3-none-any.whl": {
+      "sha256": "7279316dcb6bd5bc391d623dea841531299cde1887310e8133bc34a996d32255",
+      "size": 5516204,
+      "name": "tensorboard",
+      "version": "2.21.0"
+    },
+    "tensorboard_data_server-0.7.2-py3-none-manylinux_2_31_x86_64.whl": {
+      "sha256": "ef687163c24185ae9754ed5650eb5bc4d84ff257aabdc33f0cc6f74d8ba54530",
+      "size": 6590363,
+      "name": "tensorboard-data-server",
+      "version": "0.7.2"
+    },
+    "threadpoolctl-3.7.0-py3-none-any.whl": {
+      "sha256": "cd8b60b5641b45c67bbf73c64c843235fc2d8a480c87389f52f5dbee893b86be",
+      "size": 26362,
+      "name": "threadpoolctl",
+      "version": "3.7.0"
+    },
+    "tomlkit-0.15.2-py3-none-any.whl": {
+      "sha256": "05562412163a3037b94497385fb7f9204c637bc605af7a48199e41cf2272f437",
+      "size": 52225,
+      "name": "tomlkit",
+      "version": "0.15.2"
+    },
+    "torch-2.15.0-cp312-cp312-manylinux_2_28_x86_64.whl": {
+      "sha256": "6d8c86f4e33a9f12a58149bd9b0d64351632b8eb44479be8ff85e5389932dd79",
+      "size": 539172785,
+      "name": "torch",
+      "version": "2.15.0"
+    },
+    "torch_geometric-2.8.1-py3-none-any.whl": {
+      "sha256": "b628de243c0893f3435b6eca9a7bbc07f3219293ed27c974b8929aaae42e65d0",
+      "size": 1325471,
+      "name": "torch-geometric",
+      "version": "2.8.1"
+    },
+    "torchmetrics-1.8.1-py3-none-any.whl": {
+      "sha256": "2437501351e0da3d294c71210ce8139b9c762b5e20604f7a051a725443db8f4b",
+      "size": 982961,
+      "name": "torchmetrics",
+      "version": "1.8.1"
+    },
+    "tqdm-4.70.1-py3-none-any.whl": {
+      "sha256": "c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73",
+      "size": 80199,
+      "name": "tqdm",
+      "version": "4.70.1"
+    },
+    "triton-3.9.0-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl": {
+      "sha256": "5e52ab4e2f1d64f0ac494c9aa723697b793f81a91c4cae4c36608ca0bc4267bf",
+      "size": 285674620,
+      "name": "triton",
+      "version": "3.9.0"
+    },
+    "typing_extensions-4.16.0-py3-none-any.whl": {
+      "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8",
+      "size": 45571,
+      "name": "typing_extensions",
+      "version": "4.16.0"
+    },
+    "typing_inspection-0.4.4-py3-none-any.whl": {
+      "sha256": "65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147",
+      "size": 14750,
+      "name": "typing-inspection",
+      "version": "0.4.4"
+    },
+    "tzdata-2026.6-py2.py3-none-any.whl": {
+      "sha256": "0a10eec6e13ef16b627fabed9a5f2ba61a62b1c67f327305f4e7e412a70b4aec",
+      "size": 348210,
+      "name": "tzdata",
+      "version": "2026.6"
+    },
+    "tzlocal-5.4.5-py3-none-any.whl": {
+      "sha256": "ecab534f6d65d9deb4c4ea52c121ab6dd5958e9b878e71dcb102578269752454",
+      "size": 18215,
+      "name": "tzlocal",
+      "version": "5.4.5"
+    },
+    "urllib3-2.8.0-py3-none-any.whl": {
+      "sha256": "0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3",
+      "size": 135717,
+      "name": "urllib3",
+      "version": "2.8.0"
+    },
+    "werkzeug-3.1.9-py3-none-any.whl": {
+      "sha256": "6392e50c78460ba618e5b21f08a71f59c99ce99cdc6cf6e3dd7e6ccca8754fab",
+      "size": 228700,
+      "name": "Werkzeug",
+      "version": "3.1.9"
+    },
+    "wheel-0.48.0-py3-none-any.whl": {
+      "sha256": "3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab",
+      "size": 33320,
+      "name": "wheel",
+      "version": "0.48.0"
+    },
+    "xxhash-4.0.2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl": {
+      "sha256": "7c7c95dba490be3b4e5a2fa5595b4d4f088fe7b8726e5998b8c1d83b1f9eb3e4",
+      "size": 261797,
+      "name": "xxhash",
+      "version": "4.0.2"
+    },
+    "yarl-1.25.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl": {
+      "sha256": "c6f117789d22dce188e5754e8bc65b7e6ebf8cb73963b9fa761f672a5883769d",
+      "size": 117050,
+      "name": "yarl",
+      "version": "1.25.1"
+    }
+  }
+}

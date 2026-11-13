@@ -1,0 +1,1104 @@
+{
+  "runner_trust": {
+    "Effect": "Allow",
+    "Principal": {
+      "Federated": "arn:aws:iam::__KUMO_TEST_ACCOUNT__:oidc-provider/token.actions.githubusercontent.com"
+    },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+        "token.actions.githubusercontent.com:sub": "repo:NVIDIA@1728152/kumo-engine@1402052651:environment:sagemaker-mlops-test"
+      }
+    }
+  },
+  "runner_policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:GetBucketLocation"
+        ],
+        "Resource": [
+          "arn:aws:s3:::kumo-test-dataplane-bucket"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:ListBucket"
+        ],
+        "Resource": [
+          "arn:aws:s3:::kumo-test-dataplane-bucket"
+        ],
+        "Condition": {
+          "StringLike": {
+            "s3:prefix": "mlops-validation/sagemaker/*"
+          }
+        }
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:GetObject",
+          "s3:GetObjectAttributes"
+        ],
+        "Resource": [
+          "arn:aws:s3:::kumo-test-dataplane-bucket/mlops-validation/sagemaker/*"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:AbortMultipartUpload",
+          "s3:ListMultipartUploadParts"
+        ],
+        "Resource": [
+          "arn:aws:s3:::kumo-test-dataplane-bucket/mlops-validation/sagemaker/*"
+        ]
+      },
+      {
+        "Effect": "Deny",
+        "Action": [
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:AbortMultipartUpload"
+        ],
+        "Resource": [
+          "arn:aws:s3:::kumo-test-dataplane-bucket/mlops-validation/sagemaker-denied/*"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "iam:PassRole"
+        ],
+        "Resource": [
+          "arn:aws:iam::__KUMO_TEST_ACCOUNT__:role/kumo-mlops-validation-sagemaker"
+        ],
+        "Condition": {
+          "StringEquals": {
+            "iam:PassedToService": "sagemaker.amazonaws.com"
+          }
+        }
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:GetObject"
+        ],
+        "Resource": [
+          "arn:aws:s3:::kumo-test-dataplane-bucket/mlops-validation/sagemaker-denied/README.txt"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker:CreatePipeline",
+          "sagemaker:UpdatePipeline",
+          "sagemaker:DescribePipeline",
+          "sagemaker:StartPipelineExecution",
+          "sagemaker:DescribePipelineExecution",
+          "sagemaker:ListPipelineExecutionSteps",
+          "sagemaker:StopPipelineExecution",
+          "sagemaker:AddTags"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:pipeline/kumo-test-notebook-*",
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:pipeline/kumo-test-notebook-*/*"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker:DescribeTrainingJob",
+          "sagemaker:ListTags",
+          "sagemaker:StopTrainingJob"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:training-job/kumo-test-notebook-*"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker:DescribeMlflowTrackingServer",
+          "sagemaker:CreatePresignedMlflowTrackingServerUrl",
+          "sagemaker-mlflow:AccessUI"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:mlflow-tracking-server/kumo-mlops-validation"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "logs:DescribeLogStreams"
+        ],
+        "Resource": [
+          "arn:aws:logs:us-west-2:__KUMO_TEST_ACCOUNT__:log-group:/aws/sagemaker/TrainingJobs:*"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "logs:GetLogEvents"
+        ],
+        "Resource": [
+          "arn:aws:logs:us-west-2:__KUMO_TEST_ACCOUNT__:log-group:/aws/sagemaker/TrainingJobs:log-stream:kumo-test-notebook-*"
+        ]
+      }
+    ]
+  },
+  "execution_policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:GetBucketLocation"
+        ],
+        "Resource": [
+          "arn:aws:s3:::kumo-test-dataplane-bucket"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:ListBucket"
+        ],
+        "Resource": [
+          "arn:aws:s3:::kumo-test-dataplane-bucket"
+        ],
+        "Condition": {
+          "StringLike": {
+            "s3:prefix": "mlops-validation/sagemaker/*"
+          }
+        }
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:GetObject",
+          "s3:GetObjectAttributes"
+        ],
+        "Resource": [
+          "arn:aws:s3:::kumo-test-dataplane-bucket/mlops-validation/sagemaker/*"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:AbortMultipartUpload",
+          "s3:ListMultipartUploadParts"
+        ],
+        "Resource": [
+          "arn:aws:s3:::kumo-test-dataplane-bucket/mlops-validation/sagemaker/*"
+        ]
+      },
+      {
+        "Effect": "Deny",
+        "Action": [
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:AbortMultipartUpload"
+        ],
+        "Resource": [
+          "arn:aws:s3:::kumo-test-dataplane-bucket/mlops-validation/sagemaker-denied/*"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker-mlflow:*"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:mlflow-tracking-server/kumo-mlops-validation"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker:DescribeTrainingJob",
+          "sagemaker:ListTags"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:training-job/kumo-test-notebook-*"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker:DescribeModelPackage",
+          "sagemaker:DescribeModelPackageGroup"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:model-package-group/kumo-test-*",
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:model-package/kumo-test-*/*"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "ecr:GetAuthorizationToken"
+        ],
+        "Resource": [
+          "*"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "ecr:BatchGetImage",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchCheckLayerAvailability"
+        ],
+        "Resource": [
+          "arn:aws:ecr:us-west-2:__KUMO_TEST_ACCOUNT__:repository/kumo-mlops-validation"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ],
+        "Resource": [
+          "arn:aws:logs:us-west-2:__KUMO_TEST_ACCOUNT__:log-group:/aws/sagemaker/TrainingJobs:log-stream:kumo-test-notebook-*"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:GetBucketLocation"
+        ],
+        "Resource": [
+          "arn:aws:s3:::kumo-test-dataplane-bucket"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:ListBucket"
+        ],
+        "Resource": [
+          "arn:aws:s3:::kumo-test-dataplane-bucket"
+        ],
+        "Condition": {
+          "StringLike": {
+            "s3:prefix": "mlops-validation/sagemaker/*"
+          }
+        }
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:GetObject",
+          "s3:GetObjectAttributes"
+        ],
+        "Resource": [
+          "arn:aws:s3:::kumo-test-dataplane-bucket/mlops-validation/sagemaker/*"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "iam:PassRole"
+        ],
+        "Resource": [
+          "arn:aws:iam::__KUMO_TEST_ACCOUNT__:role/kumo-mlops-validation-sagemaker"
+        ],
+        "Condition": {
+          "StringEquals": {
+            "iam:PassedToService": "sagemaker.amazonaws.com"
+          }
+        }
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker:CreateTrainingJob",
+          "sagemaker:DescribeTrainingJob",
+          "sagemaker:StopTrainingJob",
+          "sagemaker:AddTags"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:training-job/kumo-test-notebook-*"
+        ]
+      }
+    ]
+  },
+  "ui_policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker-mlflow:GetRun",
+          "sagemaker-mlflow:GetExperiment",
+          "sagemaker-mlflow:GetMetricHistory",
+          "sagemaker-mlflow:GetRegisteredModel",
+          "sagemaker-mlflow:GetModelVersion",
+          "sagemaker-mlflow:SearchModelVersions",
+          "sagemaker-mlflow:SearchRuns",
+          "sagemaker-mlflow:SearchExperiments",
+          "sagemaker-mlflow:SearchRegisteredModels",
+          "sagemaker-mlflow:ListArtifacts"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:mlflow-tracking-server/kumo-mlops-validation"
+        ]
+      }
+    ]
+  },
+  "studio_policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker:DescribeDomain"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:domain/__KUMO_TEST_DOMAIN_ID__"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker:DescribeUserProfile"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:user-profile/__KUMO_TEST_DOMAIN_ID__/kumo-test-platform"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker:DescribeSpace"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:space/__KUMO_TEST_DOMAIN_ID__/kumo-test-notebook"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker:DescribeApp"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:app/__KUMO_TEST_DOMAIN_ID__/kumo-test-notebook/JupyterLab/default"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker:ListTags"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:domain/__KUMO_TEST_DOMAIN_ID__",
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:user-profile/__KUMO_TEST_DOMAIN_ID__/kumo-test-platform",
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:space/__KUMO_TEST_DOMAIN_ID__/kumo-test-notebook",
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:app/__KUMO_TEST_DOMAIN_ID__/kumo-test-notebook/JupyterLab/default"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker:CreatePresignedDomainUrl"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:user-profile/__KUMO_TEST_DOMAIN_ID__/kumo-test-platform"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker:CreateApp",
+          "sagemaker:DeleteApp",
+          "sagemaker:AddTags"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:app/__KUMO_TEST_DOMAIN_ID__/kumo-test-notebook/JupyterLab/default"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker:DescribeMlflowTrackingServer",
+          "sagemaker:CreatePresignedMlflowTrackingServerUrl",
+          "sagemaker-mlflow:AccessUI"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:mlflow-tracking-server/kumo-mlops-validation"
+        ]
+      }
+    ]
+  },
+  "steps_policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "PipelineSteps",
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker:CreateTrainingJob",
+          "sagemaker:DescribeTrainingJob",
+          "sagemaker:StopTrainingJob",
+          "sagemaker:CreateProcessingJob",
+          "sagemaker:DescribeProcessingJob",
+          "sagemaker:StopProcessingJob",
+          "sagemaker:AddTags",
+          "sagemaker:ListTags"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:training-job/*",
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:processing-job/*"
+        ]
+      },
+      {
+        "Sid": "PassSelf",
+        "Effect": "Allow",
+        "Action": "iam:PassRole",
+        "Resource": "arn:aws:iam::__KUMO_TEST_ACCOUNT__:role/kumo-mlops-validation-sagemaker",
+        "Condition": {
+          "StringEquals": {
+            "iam:PassedToService": "sagemaker.amazonaws.com"
+          }
+        }
+      }
+    ]
+  },
+  "execution_studio_policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker:DescribeDomain"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:domain/__KUMO_TEST_DOMAIN_ID__"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker:DescribeUserProfile"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:user-profile/__KUMO_TEST_DOMAIN_ID__/kumo-test-platform"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker:DescribeSpace"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:space/__KUMO_TEST_DOMAIN_ID__/kumo-test-notebook"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker:DescribeApp"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:app/__KUMO_TEST_DOMAIN_ID__/kumo-test-notebook/JupyterLab/default"
+        ]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sagemaker:ListTags"
+        ],
+        "Resource": [
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:domain/__KUMO_TEST_DOMAIN_ID__",
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:user-profile/__KUMO_TEST_DOMAIN_ID__/kumo-test-platform",
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:space/__KUMO_TEST_DOMAIN_ID__/kumo-test-notebook",
+          "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:app/__KUMO_TEST_DOMAIN_ID__/kumo-test-notebook/JupyterLab/default"
+        ]
+      }
+    ]
+  },
+  "dedicated_previous_policies": {
+    "RUNNER": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:GetBucketLocation"
+          ],
+          "Resource": [
+            "arn:aws:s3:::kumo-test-dataplane-bucket"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:ListBucket"
+          ],
+          "Resource": [
+            "arn:aws:s3:::kumo-test-dataplane-bucket"
+          ],
+          "Condition": {
+            "StringLike": {
+              "s3:prefix": "mlops-validation/sagemaker/*"
+            }
+          }
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:GetObject",
+            "s3:GetObjectAttributes"
+          ],
+          "Resource": [
+            "arn:aws:s3:::kumo-test-dataplane-bucket/mlops-validation/sagemaker/*"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:PutObject",
+            "s3:DeleteObject",
+            "s3:AbortMultipartUpload",
+            "s3:ListMultipartUploadParts"
+          ],
+          "Resource": [
+            "arn:aws:s3:::kumo-test-dataplane-bucket/mlops-validation/sagemaker/*"
+          ]
+        },
+        {
+          "Effect": "Deny",
+          "Action": [
+            "s3:PutObject",
+            "s3:DeleteObject",
+            "s3:AbortMultipartUpload"
+          ],
+          "Resource": [
+            "arn:aws:s3:::kumo-test-dataplane-bucket/mlops-validation/sagemaker-denied/*"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "iam:PassRole"
+          ],
+          "Resource": [
+            "arn:aws:iam::__KUMO_TEST_ACCOUNT__:role/kumo-engine-sagemaker-test-pipeline"
+          ],
+          "Condition": {
+            "StringEquals": {
+              "iam:PassedToService": "sagemaker.amazonaws.com"
+            }
+          }
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:GetObject"
+          ],
+          "Resource": [
+            "arn:aws:s3:::kumo-unit-test/diskgraph-profiles/engine-pr/pr172-fixtures/v1/a20a1e1412c963bf732e6323c3aeac3e96e4b2c253d25a3c45c7f5acf37d6c9a/pr172-inputs-v1.tar.gz"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker-mlflow:GetRun",
+            "sagemaker-mlflow:GetExperiment",
+            "sagemaker-mlflow:GetMetricHistory",
+            "sagemaker-mlflow:GetRegisteredModel",
+            "sagemaker-mlflow:GetModelVersion",
+            "sagemaker-mlflow:SearchModelVersions",
+            "sagemaker-mlflow:SearchRuns",
+            "sagemaker-mlflow:SearchExperiments",
+            "sagemaker-mlflow:SearchRegisteredModels",
+            "sagemaker-mlflow:ListArtifacts",
+            "sagemaker-mlflow:GetExperimentByName",
+            "sagemaker-mlflow:GetExperiment",
+            "sagemaker-mlflow:CreateExperiment",
+            "sagemaker-mlflow:CreateRegisteredModel",
+            "sagemaker-mlflow:DeleteExperiment",
+            "sagemaker-mlflow:DeleteRegisteredModel"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:mlflow-tracking-server/kumo-mlops-validation"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:GetObject"
+          ],
+          "Resource": [
+            "arn:aws:s3:::kumo-test-dataplane-bucket/mlops-validation/sagemaker-denied/README.txt"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker:CreatePipeline",
+            "sagemaker:UpdatePipeline",
+            "sagemaker:DescribePipeline",
+            "sagemaker:DeletePipeline",
+            "sagemaker:ListPipelineExecutions",
+            "sagemaker:ListTags",
+            "sagemaker:StartPipelineExecution",
+            "sagemaker:DescribePipelineExecution",
+            "sagemaker:ListPipelineExecutionSteps",
+            "sagemaker:StopPipelineExecution",
+            "sagemaker:AddTags"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:pipeline/kumo-test-notebook-*",
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:pipeline/kumo-test-notebook-*/*"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker:DescribeTrainingJob",
+            "sagemaker:ListTags",
+            "sagemaker:StopTrainingJob"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:training-job/kumo-test-notebook-*"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker:DescribeMlflowTrackingServer",
+            "sagemaker:CreatePresignedMlflowTrackingServerUrl",
+            "sagemaker-mlflow:AccessUI"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:mlflow-tracking-server/kumo-mlops-validation"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "logs:DescribeLogStreams"
+          ],
+          "Resource": [
+            "arn:aws:logs:us-west-2:__KUMO_TEST_ACCOUNT__:log-group:/aws/sagemaker/TrainingJobs:*"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "logs:GetLogEvents"
+          ],
+          "Resource": [
+            "arn:aws:logs:us-west-2:__KUMO_TEST_ACCOUNT__:log-group:/aws/sagemaker/TrainingJobs:log-stream:kumo-test-notebook-*"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker:DescribeDomain"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:domain/__KUMO_TEST_DOMAIN_ID__"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker:DescribeUserProfile"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:user-profile/__KUMO_TEST_DOMAIN_ID__/kumo-test-validation"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker:DescribeSpace"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:space/__KUMO_TEST_DOMAIN_ID__/kumo-test-validation-space"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker:DescribeApp"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:app/__KUMO_TEST_DOMAIN_ID__/kumo-test-validation-space/JupyterLab/default"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker:ListTags"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:domain/__KUMO_TEST_DOMAIN_ID__",
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:user-profile/__KUMO_TEST_DOMAIN_ID__/kumo-test-validation",
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:space/__KUMO_TEST_DOMAIN_ID__/kumo-test-validation-space",
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:app/__KUMO_TEST_DOMAIN_ID__/kumo-test-validation-space/JupyterLab/default"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker:CreatePresignedDomainUrl"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:user-profile/__KUMO_TEST_DOMAIN_ID__/kumo-test-validation"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker:CreateApp"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:app/__KUMO_TEST_DOMAIN_ID__/kumo-test-validation-space/JupyterLab/default"
+          ],
+          "Condition": {
+            "ForAllValues:StringEquals": {
+              "sagemaker:InstanceTypes": [
+                "ml.m5.2xlarge"
+              ]
+            },
+            "Null": {
+              "sagemaker:InstanceTypes": "false"
+            }
+          }
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker:DeleteApp",
+            "sagemaker:AddTags"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:app/__KUMO_TEST_DOMAIN_ID__/kumo-test-validation-space/JupyterLab/default"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker:DescribeMlflowTrackingServer",
+            "sagemaker:CreatePresignedMlflowTrackingServerUrl",
+            "sagemaker-mlflow:AccessUI"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:mlflow-tracking-server/kumo-mlops-validation"
+          ]
+        }
+      ]
+    },
+    "PIPELINE": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:GetBucketLocation"
+          ],
+          "Resource": [
+            "arn:aws:s3:::kumo-test-dataplane-bucket"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:ListBucket"
+          ],
+          "Resource": [
+            "arn:aws:s3:::kumo-test-dataplane-bucket"
+          ],
+          "Condition": {
+            "StringLike": {
+              "s3:prefix": "mlops-validation/sagemaker/*"
+            }
+          }
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:GetObject",
+            "s3:GetObjectAttributes"
+          ],
+          "Resource": [
+            "arn:aws:s3:::kumo-test-dataplane-bucket/mlops-validation/sagemaker/*"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "iam:PassRole"
+          ],
+          "Resource": [
+            "arn:aws:iam::__KUMO_TEST_ACCOUNT__:role/kumo-engine-sagemaker-test-execution"
+          ],
+          "Condition": {
+            "StringEquals": {
+              "iam:PassedToService": "sagemaker.amazonaws.com"
+            }
+          }
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker:DescribeTrainingJob",
+            "sagemaker:StopTrainingJob",
+            "sagemaker:AddTags"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:training-job/kumo-test-notebook-*"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker:CreateTrainingJob"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:training-job/kumo-test-notebook-*"
+          ],
+          "Condition": {
+            "ForAllValues:StringEquals": {
+              "sagemaker:InstanceTypes": [
+                "ml.m5.2xlarge"
+              ]
+            },
+            "NumericLessThanEquals": {
+              "sagemaker:MaxRuntimeInSeconds": 3600
+            },
+            "Null": {
+              "sagemaker:InstanceTypes": "false",
+              "sagemaker:MaxRuntimeInSeconds": "false"
+            }
+          }
+        }
+      ]
+    },
+    "EXECUTION": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:GetBucketLocation"
+          ],
+          "Resource": [
+            "arn:aws:s3:::kumo-test-dataplane-bucket"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:ListBucket"
+          ],
+          "Resource": [
+            "arn:aws:s3:::kumo-test-dataplane-bucket"
+          ],
+          "Condition": {
+            "StringLike": {
+              "s3:prefix": "mlops-validation/sagemaker/*"
+            }
+          }
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:GetObject",
+            "s3:GetObjectAttributes"
+          ],
+          "Resource": [
+            "arn:aws:s3:::kumo-test-dataplane-bucket/mlops-validation/sagemaker/*"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:PutObject",
+            "s3:DeleteObject",
+            "s3:AbortMultipartUpload",
+            "s3:ListMultipartUploadParts"
+          ],
+          "Resource": [
+            "arn:aws:s3:::kumo-test-dataplane-bucket/mlops-validation/sagemaker/*"
+          ]
+        },
+        {
+          "Effect": "Deny",
+          "Action": [
+            "s3:PutObject",
+            "s3:DeleteObject",
+            "s3:AbortMultipartUpload"
+          ],
+          "Resource": [
+            "arn:aws:s3:::kumo-test-dataplane-bucket/mlops-validation/sagemaker-denied/*"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker-mlflow:*"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:mlflow-tracking-server/kumo-mlops-validation"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker:DescribeTrainingJob",
+            "sagemaker:ListTags"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:training-job/kumo-test-notebook-*"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker:DescribeModelPackage",
+            "sagemaker:DescribeModelPackageGroup"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:model-package-group/kumo-test-*",
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:model-package/kumo-test-*/*"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "ecr:GetAuthorizationToken"
+          ],
+          "Resource": [
+            "*"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "ecr:BatchGetImage",
+            "ecr:GetDownloadUrlForLayer",
+            "ecr:BatchCheckLayerAvailability"
+          ],
+          "Resource": [
+            "arn:aws:ecr:us-west-2:__KUMO_TEST_ACCOUNT__:repository/kumo-mlops-validation"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "logs:CreateLogStream",
+            "logs:PutLogEvents"
+          ],
+          "Resource": [
+            "arn:aws:logs:us-west-2:__KUMO_TEST_ACCOUNT__:log-group:/aws/sagemaker/TrainingJobs:log-stream:kumo-test-notebook-*"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "logs:CreateLogGroup",
+            "logs:DescribeLogStreams"
+          ],
+          "Resource": [
+            "arn:aws:logs:us-west-2:__KUMO_TEST_ACCOUNT__:log-group:/aws/sagemaker/TrainingJobs:*"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "cloudwatch:PutMetricData"
+          ],
+          "Resource": [
+            "*"
+          ],
+          "Condition": {
+            "StringLike": {
+              "cloudwatch:namespace": "/aws/sagemaker/*"
+            }
+          }
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker:DescribeDomain"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:domain/__KUMO_TEST_DOMAIN_ID__"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker:DescribeUserProfile"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:user-profile/__KUMO_TEST_DOMAIN_ID__/kumo-test-validation"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker:DescribeSpace"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:space/__KUMO_TEST_DOMAIN_ID__/kumo-test-validation-space"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker:DescribeApp"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:app/__KUMO_TEST_DOMAIN_ID__/kumo-test-validation-space/JupyterLab/default"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sagemaker:ListTags"
+          ],
+          "Resource": [
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:domain/__KUMO_TEST_DOMAIN_ID__",
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:user-profile/__KUMO_TEST_DOMAIN_ID__/kumo-test-validation",
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:space/__KUMO_TEST_DOMAIN_ID__/kumo-test-validation-space",
+            "arn:aws:sagemaker:us-west-2:__KUMO_TEST_ACCOUNT__:app/__KUMO_TEST_DOMAIN_ID__/kumo-test-validation-space/JupyterLab/default"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "logs:DescribeLogStreams"
+          ],
+          "Resource": [
+            "arn:aws:logs:us-west-2:__KUMO_TEST_ACCOUNT__:log-group:/aws/sagemaker/studio:*"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "logs:CreateLogStream",
+            "logs:PutLogEvents"
+          ],
+          "Resource": [
+            "arn:aws:logs:us-west-2:__KUMO_TEST_ACCOUNT__:log-group:/aws/sagemaker/studio:log-stream:__KUMO_TEST_DOMAIN_ID__/kumo-test-validation-space/JupyterLab/default*"
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,8 +1,10 @@
 # Local MLOps lifecycle validation
 
 Run a small Linux CPU lifecycle against an installed candidate wheel using a
-local SQLite MLflow tracker and registry. The fixture has 60 users and 1,500
-events; it trains two versions for two epochs each, with two steps per epoch.
+local SQLite MLflow tracker and registry. For managed execution and UI checks,
+see [Snowflake notebook tests](snowflake-notebook-actions.md). The fixture has
+60 users and 1,500 events; it trains two versions for two epochs each, with two
+steps per epoch.
 Each worker sets both ambient MLflow URIs to the attempt's SQLite database.
 
 ## Scenario
@@ -73,9 +75,11 @@ alone do not satisfy that artifact requirement: the summary records it as
 Installation/access prerequisites are `blocked`; incorrect behavior is `failed`.
 Unreached phases remain `blocked`.
 
-Removing completion markers checks incomplete-artifact rejection. Active-writer
-interruption/retry remains covered by the existing snapshot-export tests.
-Local execution does not qualify Databricks, Snowflake or SageMaker.
+Drift checks cover identity and zero self-comparison, not independently nonzero
+sensitivity. Removing completion markers checks incomplete-artifact rejection;
+this scenario does not interrupt an active remote writer. Existing snapshot-export
+tests cover writer interruption separately. Local execution does not qualify
+Databricks, Snowflake, SageMaker, or their UI.
 
 Run the harness checks and existing shared-runner checks without training:
 
