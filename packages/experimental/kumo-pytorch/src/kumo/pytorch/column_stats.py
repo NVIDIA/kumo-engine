@@ -317,8 +317,6 @@ def _category(dtype: DType, raw: Any, unit: str) -> Any:
     value = int(raw)
     if dtype.name == "bool":
         return bool(value)
-    if dtype.name == "uint64" and value < 0:
-        return value + 2**64
     if dtype.name == "date32":
         return dt.date(1970, 1, 1) + dt.timedelta(days=value)
     if dtype.name == "timestamp":
