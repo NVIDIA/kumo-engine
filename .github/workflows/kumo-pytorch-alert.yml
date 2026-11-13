@@ -6,7 +6,8 @@ name: kumo-pytorch alert
 
 # After each kumo-pytorch workflow run on main (push or schedule): reruns the
 # failed jobs of a first attempt that failed, then tells the team channel when a
-# workflow starts failing and when it recovers.
+# workflow starts failing and when it recovers. The state last reported for each
+# workflow is kept in an artifact; queued runs keep each workflow's runs serial.
 on:  # yamllint disable-line rule:truthy
   workflow_run:
     workflows:
@@ -23,6 +24,7 @@ permissions:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.workflow_run.workflow_id }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   alert:
@@ -43,6 +45,7 @@ jobs:
           sparse-checkout: .github/scripts/kumo-pytorch-alert.py
           sparse-checkout-cone-mode: false
       - name: Rerun failed jobs, or report a change of state
+        id: alert
         env:
           GH_TOKEN: ${{ github.token }}
           SLACK_WEBHOOK_URL: ${{ secrets.KUMO_PYTORCH_SLACK_WEBHOOK_URL }}
@@ -56,4 +59,13 @@ jobs:
           RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
+          STATE_PATH: ${{ runner.temp }}/state.json
         run: python3 .github/scripts/kumo-pytorch-alert.py
+      - name: Record the reported state
+        if: steps.alert.outputs.state-changed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: kumo-pytorch-alert-state-${{ github.event.workflow_run.workflow_id }}
+          path: ${{ runner.temp }}/state.json
+          if-no-files-found: error
+          retention-days: 90
