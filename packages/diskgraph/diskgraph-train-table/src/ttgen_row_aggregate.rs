@@ -174,11 +174,10 @@ pub fn reduce_rows<V: AggregateScalar>(
             .expect("non-empty mode")
             .1);
     }
+    let pql_numeric = plan.semantics.all_null_sum_is_zero && !plan.semantics.keep_first_equal;
     if (operation == "min" || operation == "max")
-        && plan.semantics.keep_first_equal
-        && values
-            .iter()
-            .all(|value| value.floating().is_some_and(f64::is_finite))
+        && (pql_numeric || plan.semantics.keep_first_equal
+            && values.iter().all(|value| value.floating().is_some_and(f64::is_finite)))
     {
         use crate::ttgen_accumulator::Accumulator;
         use diskgraph_core::tt_builder::{AggFunc, Value};
@@ -190,10 +189,12 @@ pub fn reduce_rows<V: AggregateScalar>(
             },
             None,
         );
-        state.accumulate_numeric(values.iter().map(AggregateScalar::floating), true, false);
+        let numbers = values.iter().map(AggregateScalar::numeric).collect::<Result<Vec<_>, _>>()?;
+        state.accumulate_numeric(numbers.into_iter(), plan.semantics.keep_first_equal, true);
         return match state.finalize() {
             Some(Value::Float(value)) => Ok(V::from_f64(value)),
-            _ => unreachable!("nonempty finite extrema"),
+            None => Ok(V::null()),
+            _ => unreachable!("numeric extrema"),
         };
     }
     if operation == "min" || operation == "max" {
@@ -228,7 +229,7 @@ pub fn reduce_rows<V: AggregateScalar>(
             },
             None,
         );
-        state.accumulate_numeric(numbers.into_iter().map(Some), true, false);
+        state.accumulate_numeric(numbers.into_iter().map(Some), true, pql_numeric);
         return match state.finalize() {
             Some(Value::Float(value)) => Ok(V::from_f64(value)),
             None => Ok(V::null()),
