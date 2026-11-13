@@ -21,15 +21,14 @@ use crossbeam_channel::Receiver;
 use diskgraph_core::time::{Abs, Dur, Seconds};
 use diskgraph_core::tt_builder::*;
 use diskgraph_ingest::coercion::CoercionMode;
-use diskgraph_train_table::ttgen_resolve::{
-    resolve_plan, AUTOREGRESSION_OUTPUT_ALIAS, FUTURE_LABELS_OUTPUT_ALIAS,
-    YOY_OUTPUT_ALIAS,
-};
 use diskgraph_ingest::config::IngestOptions;
 use diskgraph_ingest::graph_config::*;
 use diskgraph_ingest::io::Dest;
 use diskgraph_train_table::errors::{TTGenError, TTGenResult};
 use diskgraph_train_table::ttgen_executor::TTPassOutput;
+use diskgraph_train_table::ttgen_resolve::{
+    resolve_plan, AUTOREGRESSION_OUTPUT_ALIAS, FUTURE_LABELS_OUTPUT_ALIAS, YOY_OUTPUT_ALIAS,
+};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
@@ -370,8 +369,7 @@ fn execute(
     // legacy streaming model where receiver.iter() simply yielded nothing.
     let mut batches = Vec::new();
     for part in diskgraph_train_table::parquet_dataset::ordered_tt_dataset_parts(
-        &output.tt_parquet_path,
-    )? {
+        &output.tt_parquet_path)? {
         let file = std::fs::File::open(part)?;
         let reader = ParquetRecordBatchReaderBuilder::try_new(file)
             .map_err(|e| diskgraph_train_table::errors::TTGenError::Parquet(e.to_string()))?
@@ -2295,8 +2293,7 @@ fn integ_related_column_path_rejects_table_mismatches() {
     let index = build_related_column_graph(dir.path());
     let reader = diskgraph_index::graph::GraphIndexReader::open(
         &index.join("index_metadata.json"),
-        &index,
-    )
+        &index)
     .unwrap();
 
     let pathless_remote = related_column_plan(
@@ -4314,8 +4311,7 @@ fn g1_link_temporal(
             lag_timesteps: None,
         }),
         prediction_type: PredictionType::Link {
-            include_frequency,
-        },
+            include_frequency },
         split: None,
         stages,
         target_stype: Some("numerical".to_string()),
@@ -4965,8 +4961,7 @@ fn g2_link_temporal(
             lag_timesteps: None,
         }),
         prediction_type: PredictionType::Link {
-            include_frequency,
-        },
+            include_frequency },
         split: None,
         stages,
         target_stype: Some("numerical".to_string()),
@@ -4995,8 +4990,7 @@ fn g2_link_static(
         },
         temporal: None,
         prediction_type: PredictionType::Link {
-            include_frequency,
-        },
+            include_frequency },
         split: None,
         stages,
         target_stype: Some("numerical".to_string()),
@@ -5495,8 +5489,7 @@ fn g3_link_temporal(
             lag_timesteps: None,
         }),
         prediction_type: PredictionType::Link {
-            include_frequency,
-        },
+            include_frequency },
         split: None,
         stages,
         target_stype: Some("numerical".to_string()),
@@ -5525,8 +5518,7 @@ fn g3_link_static(
         },
         temporal: None,
         prediction_type: PredictionType::Link {
-            include_frequency,
-        },
+            include_frequency },
         split: None,
         stages,
         target_stype: Some("numerical".to_string()),
@@ -6085,8 +6077,7 @@ fn integ_bp_pass_through_entity_in_filter_excludes_nulls() {
                 op: CompareOp::In,
                 rhs: RowFilterRhs::Constant(Value::List(vec![
                     Value::Int(0),
-                    Value::Int(2),
-                ])),
+                    Value::Int(2)])),
             }),
         },
         temporal: Some(TemporalSpec::<Seconds> {
@@ -6347,8 +6338,7 @@ fn integ_forecasting_training_future_labels() {
                     target_op: Box::new(agg_orders_price(
                         "ar_inner",
                         AggFunc::Avg,
-                        Some((0, 200)),
-                    )),
+                        Some((0, 200)))),
                     lag_offsets: vec![Dur::from_raw(-1000)],
                 },
                 Op::FutureLabels {
@@ -8196,8 +8186,7 @@ fn read_tt_entity_ts_pairs(path: &Path) -> Vec<(String, i64)> {
     let mut out = Vec::new();
     for part in paths {
         let reader = ParquetRecordBatchReaderBuilder::try_new(
-            std::fs::File::open(part).unwrap(),
-        )
+            std::fs::File::open(part).unwrap())
         .unwrap()
         .build()
         .unwrap();
@@ -8847,8 +8836,7 @@ fn integ_date_offset_flexible_boundaries_reject_empty_train_window() {
     let err = diskgraph_train_table::ttgen_executor::execute_tt_pass(
         &plan,
         &index,
-        out_dir.path(),
-    )
+        out_dir.path())
     .unwrap_err();
     assert!(matches!(err, TTGenError::InvalidPlan(_)));
     assert!(err.to_string().contains("Not enough data for the split"));
@@ -9546,8 +9534,7 @@ fn integ_tt_forecasting_target_extraction() {
     let mut map = std::collections::HashMap::new();
 
     for part in diskgraph_train_table::parquet_dataset::ordered_tt_dataset_parts(
-        &output.tt_parquet_path,
-    )
+        &output.tt_parquet_path)
     .unwrap()
     {
         let file = std::fs::File::open(part).unwrap();
@@ -9709,8 +9696,7 @@ fn build_multicat_graph(
     let users_schema = Schema::new(vec![Field::new("user_id", DataType::Int64, false)]);
     let users_batch = RecordBatch::try_new(
         Arc::new(users_schema),
-        vec![Arc::new(users_id_b.finish())],
-    )
+        vec![Arc::new(users_id_b.finish())])
     .unwrap();
     write_parquet(&data_dir.join("users.parquet"), &users_batch);
 
@@ -9863,8 +9849,7 @@ fn build_multicat_graph(
     let config_path = data_dir.join("graph_config.json");
     fs::write(
         &config_path,
-        serde_json::to_string_pretty(&config).unwrap(),
-    )
+        serde_json::to_string_pretty(&config).unwrap())
     .unwrap();
 
     run_ingest(&config_path, &index_dir);
@@ -9962,8 +9947,7 @@ fn integ_multicat_in_row_filter_is_rejected() {
 
     let reader = diskgraph_index::graph::GraphIndexReader::open(
         &index.join("index_metadata.json"),
-        &index,
-    )
+        &index)
     .unwrap();
     let resolve_err = match resolve_plan(&plan, &reader) {
         Ok(_) => panic!("expected multicategorical IN resolution to fail"),
@@ -10009,8 +9993,7 @@ fn integ_remote_multicat_in_row_filter_is_rejected() {
                     },
                     op: CompareOp::In,
                     rhs: RowFilterRhs::Constant(Value::List(vec![Value::Str(
-                        "sale".to_string(),
-                    )])),
+                        "sale".to_string())])),
                 }),
                 limit: None,
                 target_entity_table: None,
@@ -10105,7 +10088,8 @@ fn build_scalar_status_graph(root: &Path) -> PathBuf {
         users_id_b.append_value(uid);
     }
     let users_batch = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new("user_id", DataType::Int64, false)])),
+        Arc::new(Schema::new(vec![Field::new("user_id", DataType::Int64, false,
+        )])),
         vec![Arc::new(users_id_b.finish())],
     )
     .unwrap();
@@ -10299,7 +10283,8 @@ fn build_multicat_with_empty_list(root: &Path) -> PathBuf {
         users_id_b.append_value(uid);
     }
     let users_batch = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new("user_id", DataType::Int64, false)])),
+        Arc::new(Schema::new(vec![Field::new("user_id", DataType::Int64, false,
+        )])),
         vec![Arc::new(users_id_b.finish())],
     )
     .unwrap();
@@ -10460,7 +10445,8 @@ fn integ_multicat_not_contains_empty_list_tristate() {
     let nc = run(CompareOp::NotContains, "a");
     let nc0 = nc.get(&0).map(|v| v[0].1).unwrap_or(0.0);
     assert_target_eq(nc0, 0.0, "user0 [a,b] has a -> excluded");
-    assert_target_eq(nc[&1][0].1, 1.0, "user1 [] empty present -> not_contains passes");
+    assert_target_eq(nc[&1][0].1, 1.0, "user1 [] empty present -> not_contains passes",
+    );
     let nc2 = nc.get(&2).map(|v| v[0].1).unwrap_or(0.0);
     assert_target_eq(nc2, 0.0, "user2 [a] has a -> excluded");
 }
@@ -10519,8 +10505,7 @@ fn integ_forecasting_empty_count_distinct_target_is_zero() {
     let output = diskgraph_train_table::ttgen_executor::execute_tt_pass(
         &plan,
         &index,
-        out_dir.path(),
-    )
+        out_dir.path())
     .unwrap();
 
     assert_eq!(output.rows_written, 5);
@@ -10542,4 +10527,101 @@ fn integ_forecasting_empty_count_distinct_target_is_zero() {
         row_count += batch.num_rows();
     }
     assert_eq!(row_count, 5);
+}
+
+#[test]
+fn integ_shared_numeric_node_projection_crosses_decode_chunks() {
+    use diskgraph_train_table::ttgen_executor::{
+        execute_numeric_group, NumericAggregatePolicy, NumericRows,
+    };
+    use diskgraph_train_table::ttgen_resolve::ResolvedOp;
+
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+    let reader = diskgraph_index::graph::GraphIndexReader::open(
+        &index.join("index_metadata.json"), &index,
+    ).unwrap();
+    let plan = g1_temporal(vec![Stage {
+        ops: vec![
+            count_orders_op("count", Some((0, 5000))),
+            agg_orders_price("sum", AggFunc::Sum, Some((0, 5000))),
+            agg_orders_price("mean", AggFunc::Avg, Some((0, 5000))),
+        ], filter: None,
+    }], vec![0]);
+    let resolved = resolve_plan(&plan, &reader).unwrap();
+    let operations = resolved.stages[0].ops.iter().map(|op| match op {
+        ResolvedOp::Aggregate(aggregate) => aggregate,
+        _ => unreachable!(),
+    }).collect::<Vec<_>>();
+    let mut selections = 0;
+    let values = execute_numeric_group(
+        &operations, &[0], &[Abs::from_raw(0)], NumericAggregatePolicy::Pql,
+        |aggregate, _, cutoff| {
+            assert!(aggregate.window.as_ref().unwrap().sort_keys(cutoff).is_some());
+            selections += 1;
+            // Repeating the same ten real rows exercises the node projection
+            // path across its 512-row decoding boundary, independently of the
+            // temporal-query path's already projected Arrow batches.
+            Ok(NumericRows::Nodes((0..600).map(|i| i % 10).collect()))
+        },
+    ).unwrap().expect("finite node rows must use grouped execution");
+    assert_eq!(selections, 1);
+    assert!(matches!(values[0][0], Some(Value::Int(600))));
+    assert!(matches!(values[1][0], Some(Value::Float(x)) if x == 46800.0));
+    assert!(matches!(values[2][0], Some(Value::Float(x)) if (x - 78.0).abs() < 1e-12));
+}
+
+#[test]
+fn integ_shared_overlapping_windows_preserve_each_pql_result() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+    for (other, target) in [
+        ((0, 5000), (0, 2000)),
+        ((0, 2000), (0, 5000)),
+        ((0, 3000), (1000, 5000)),
+    ] {
+        let reference = g1_temporal(
+            vec![Stage::<Seconds> {
+                ops: vec![agg_orders_price("target", AggFunc::Sum, Some(target))],
+                filter: None,
+            }],
+            vec![0, 1000],
+        );
+        let grouped = g1_temporal(
+            vec![Stage::<Seconds> {
+                ops: vec![
+                    agg_orders_price("other", AggFunc::Avg, Some(other)),
+                    agg_orders_price("target", AggFunc::Sum, Some(target)),
+                ],
+                filter: None,
+            }],
+            vec![0, 1000],
+        );
+        assert_eq!(
+            execute_and_group(&grouped, &index),
+            execute_and_group(&reference, &index)
+        );
+    }
+}
+
+#[test]
+fn integ_numeric_specialization_propagates_reader_errors() {
+    use diskgraph_train_table::ttgen_executor::{execute_numeric_group, NumericAggregatePolicy};
+    use diskgraph_train_table::ttgen_resolve::ResolvedOp;
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+    let reader = diskgraph_index::graph::GraphIndexReader::open(
+        &index.join("index_metadata.json"), &index,
+    ).unwrap();
+    let plan = g1_temporal(vec![Stage {
+        ops: vec![agg_orders_price("sum", AggFunc::Sum, Some((0, 5000)))],
+        filter: None,
+    }], vec![0]);
+    let resolved = resolve_plan(&plan, &reader).unwrap();
+    let ResolvedOp::Aggregate(aggregate) = &resolved.stages[0].ops[0] else { unreachable!() };
+    let failure = execute_numeric_group(
+        &[aggregate], &[0], &[Abs::from_raw(0)], NumericAggregatePolicy::Pql,
+        |_, _, _| Err(TTGenError::SystemError("injected reader failure".into())),
+    ).unwrap_err();
+    assert!(matches!(failure, TTGenError::SystemError(message) if message == "injected reader failure"));
 }

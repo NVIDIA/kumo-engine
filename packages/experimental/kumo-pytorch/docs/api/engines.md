@@ -298,6 +298,7 @@ class DiskGraphEngine(
     num_threads: int | None = None,
     num_shards: int = 1,
     ingest: Literal['if_missing', 'never'] = 'if_missing',
+    encoder_cutoffs: Sequence[str | int | datetime | date | None] = (),
 )
 ```
 
@@ -328,6 +329,7 @@ step, before any data is read.
 - `num_threads`: native sampling threads.
 - `num_shards`: index shards.
 - `ingest`: `"if_missing"` builds the index when absent; `"never"` requires an existing one. A mismatching manifest is an error, never permission to reuse.
+- `encoder_cutoffs`: `encoder_cutoff` values whose column statistics an ingest computes.
 
 #### `DiskGraphEngine.check_contract`
 

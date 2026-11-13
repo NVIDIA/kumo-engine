@@ -139,10 +139,20 @@ impl HyperLogLog {
 // Welford online accumulator (mean, variance, skewness, kurtosis, min, max)
 // ---------------------------------------------------------------------------
 
-/// Streaming accumulator for mean, variance, std_dev, skewness, kurtosis,
-/// min, and max using Welford's online algorithm.
-///
-/// Supports parallel merge via Chan et al.'s formula.
+/// Advance the running mean in input order. The caller chooses finite-value
+/// admission and the M2 update policy; statistics and row reductions have
+/// intentionally different NaN/Inf and historical rounding contracts.
+#[inline]
+pub fn update_running_mean(count: &mut u64, mean: &mut f64, value: f64) -> (u64, f64, f64) {
+    let previous = *count;
+    *count += 1;
+    let delta = value - *mean;
+    let delta_n = delta / *count as f64;
+    *mean += delta_n;
+    (previous, delta, delta_n)
+}
+
+/// Streaming mean/variance/higher moments, with Chan parallel merge.
 pub struct WelfordAccumulator {
     pub count: u64,
     pub m1: f64,
@@ -178,15 +188,11 @@ impl WelfordAccumulator {
         if !value.is_finite() {
             return;
         }
-        let n1 = self.count;
-        self.count += 1;
+        let (n1, delta, delta_n) = update_running_mean(&mut self.count, &mut self.m1, value);
         let n = self.count as f64;
-        let delta = value - self.m1;
-        let delta_n = delta / n;
         let delta_n2 = delta_n * delta_n;
         let term1 = delta * delta_n * n1 as f64;
 
-        self.m1 += delta_n;
         self.m4 += term1 * delta_n2 * (n * n - 3.0 * n + 3.0) + 6.0 * delta_n2 * self.m2
             - 4.0 * delta_n * self.m3;
         self.m3 += term1 * delta_n * (n - 2.0) - 3.0 * delta_n * self.m2;
@@ -1035,7 +1041,13 @@ impl TDigestEstimator {
             let limit = 4.0 * total / self.max_size as f64 * q * (1.0 - q);
             if cur_weight + weight <= limit {
                 let new_weight = cur_weight + weight;
-                cur_mean = (cur_mean * cur_weight + mean * weight) / new_weight;
+                let merged = (cur_mean * cur_weight + mean * weight) / new_weight;
+                // Near ±f64::MAX the weighted sum overflows; weigh each mean first.
+                cur_mean = if merged.is_finite() {
+                    merged
+                } else {
+                    cur_mean * (cur_weight / new_weight) + mean * (weight / new_weight)
+                };
                 cur_weight = new_weight;
             } else {
                 weight_so_far += cur_weight;
@@ -1067,8 +1079,14 @@ impl TDigestEstimator {
                 let prev_weight = self.centroids[i - 1].1;
                 let prev_mid = cum - prev_weight / 2.0;
                 let cur_mid = cum + weight / 2.0;
-                let frac = (target - prev_mid) / (cur_mid - prev_mid);
-                return prev_mean + (mean - prev_mean) * frac.clamp(0.0, 1.0);
+                let frac = ((target - prev_mid) / (cur_mid - prev_mid)).clamp(0.0, 1.0);
+                // Across zero near ±f64::MAX the difference overflows.
+                let step = mean - prev_mean;
+                return if step.is_finite() {
+                    prev_mean + step * frac
+                } else {
+                    prev_mean * (1.0 - frac) + mean * frac
+                };
             }
             cum += weight;
         }

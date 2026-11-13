@@ -181,7 +181,10 @@ print(len(result.samples), "samples;", tuple(result.batch.inputs))
 
 `task.batches` takes `split` (or explicit `requests`), `batch_size`, `shuffle`,
 `seed`, `epoch`, `rank` and `world_size`. The same arguments give the same
-batches, so a run can be resumed or reproduced.
+batches for the same engine, split selection and index, so a run can be resumed or
+reproduced. Native DiskGraph ordering can differ from the in-memory engine;
+selected native split stages shuffle independently and batches do not mix stages.
+See [native anchor loading](04-engines-and-data.md) for that execution contract.
 
 For multi-process training, ranks receive disjoint anchors. A short rank
 repeats one of its own anchors to keep step counts equal, and marks the copy in

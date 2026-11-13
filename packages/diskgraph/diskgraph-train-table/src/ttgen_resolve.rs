@@ -130,7 +130,7 @@ pub struct ResolvedPlan<U: UnitSystem> {
 }
 
 #[derive(Clone)]
-struct SplitProjectionRequest {
+pub(crate) struct SplitProjectionRequest {
     kind: SplitProjectionKind,
     source_table: String,
     source_column: String,
@@ -271,6 +271,7 @@ pub struct ResolvedLogicalOp {
 }
 
 /// A resolved edge hop: relation index + sort key encoder + destination table.
+#[derive(Clone)]
 pub struct ResolvedEdge {
     pub src_table: Arc<TableReader>,
     pub relation_idx: usize,
@@ -386,7 +387,8 @@ pub enum ResolvedStageFilter {
         op: CompareOp,
         rhs: ResolvedStageFilterRhs,
     },
-    NonEmptyList { alias_idx: usize },
+    NonEmptyList { alias_idx: usize,
+    },
     And(Vec<ResolvedStageFilter>),
     Or(Vec<ResolvedStageFilter>),
     Not(Box<ResolvedStageFilter>),
@@ -409,10 +411,19 @@ pub fn resolve_plan<U: UnitSystem>(
     plan: &DiskGraphTTPlan<U>,
     reader: &GraphIndexReader,
 ) -> TTGenResult<ResolvedPlan<U>> {
+    // Preserve the serialized compiler contract; normalize shared scalar ops at
+    // the execution boundary, before resolving either frontend's plan.
+    let mut normalized = plan.clone();
+    normalized
+        .normalize_scalar_ops()
+        .map_err(TTGenError::InvalidPlan)?;
+    let plan = &normalized;
     // 1. Resolve entity table
     let entity_table = reader
         .table(&plan.entity.table)
-        .ok_or_else(|| TTGenError::SchemaError(format!("entity table '{}' not found in index", plan.entity.table)))?;
+        .ok_or_else(|| {
+        TTGenError::SchemaError(format!("entity table '{}' not found in index", plan.entity.table))
+    })?;
 
     let entity_ctx = entity_table
         .node_data_decoder()
@@ -457,6 +468,7 @@ pub fn resolve_plan<U: UnitSystem>(
     for stage in &plan.stages {
         for op in &stage.ops {
             match op {
+                Op::RowAggregate { reduction, .. } => alias_names.push(reduction.name.clone()),
                 Op::Aggregate { alias, .. } |
                 Op::HasEdges { alias, .. } |
                 Op::Column { alias, .. } |
@@ -583,7 +595,8 @@ pub fn resolve_plan<U: UnitSystem>(
             autoregression_dtype = Some(infer_op_dtype(plan.stages.iter().flat_map(|s| &s.ops).find(|op| match op {
                 Op::Autoregression { alias, .. } => alias == AUTOREGRESSION_OUTPUT_ALIAS,
                 _ => false,
-            }).unwrap(), &resolved_stages));
+            }).unwrap(), &resolved_stages,
+            ));
         }
         if let Some(idx) = alias_to_idx.get(FUTURE_LABELS_OUTPUT_ALIAS) {
             future_labels_alias_idx = Some(*idx);
@@ -601,7 +614,8 @@ pub fn resolve_plan<U: UnitSystem>(
             yoy_dtype = Some(infer_op_dtype(plan.stages.iter().flat_map(|s| &s.ops).find(|op| match op {
                 Op::Autoregression { alias, .. } => alias == YOY_OUTPUT_ALIAS,
                 _ => false,
-            }).unwrap(), &resolved_stages));
+            }).unwrap(), &resolved_stages,
+            ));
         }
     }
 
@@ -696,9 +710,7 @@ pub fn resolve_plan<U: UnitSystem>(
         autoregression_dtype,
         future_labels_dtype,
         yoy_dtype,
-        target_stype: plan.target_stype.clone().ok_or_else(|| {
-            TTGenError::InvalidPlan("target_stype is required".to_string())
-        })?,
+        target_stype: plan.target_stype.clone().ok_or_else(|| TTGenError::InvalidPlan("target_stype is required".to_string()))?,
         split_projection,
         weight_col: plan.weight_col.clone(),
         manual_split_keys,
@@ -866,7 +878,9 @@ fn resolve_split_projection<U: UnitSystem>(
     }
 
     let col_idx = find_col_idx_in_context(entity_ctx, &request.source_column)
-        .map_err(|e| TTGenError::SchemaError(format!("resolving {split_kind} split_column: {}", e)))?;
+        .map_err(|e| {
+        TTGenError::SchemaError(format!("resolving {split_kind} split_column: {}", e))
+    })?;
     Ok(Some(ResolvedSplitProjection {
         output_name: request.output_name.clone(),
         entity_col_idx: Some(col_idx),
@@ -953,18 +967,19 @@ fn split_column_table_and_column<'a>(
 
 fn find_col_idx_in_context(
     ctx: &Option<RowPackContext>,
-    col_name: &str,
-) -> TTGenResult<usize> {
+    col_name: &str) -> TTGenResult<usize> {
     let ctx = ctx
         .as_ref()
         .ok_or_else(|| TTGenError::SystemError("no rowpack context available".to_string()))?;
     ctx.columns
         .iter()
         .position(|c| c.name == col_name)
-        .ok_or_else(|| TTGenError::SchemaError(format!("column '{}' not found in rowpack context", col_name)))
+        .ok_or_else(|| {
+            TTGenError::SchemaError(format!("column '{}' not found in rowpack context", col_name))
+        })
 }
 
-fn collect_entity_col_refs<U: UnitSystem>(
+pub(crate) fn collect_entity_col_refs<U: UnitSystem>(
     plan: &DiskGraphTTPlan<U>,
     entity_ctx: &Option<RowPackContext>,
 ) -> TTGenResult<Vec<(String, usize)>> {
@@ -1016,6 +1031,11 @@ fn collect_entity_col_refs<U: UnitSystem>(
             if let Op::Aggregate { row_filter: Some(f), .. } = op {
                 collect_from_row_filter(f, &mut seen);
             }
+            if let Op::RowAggregate { reduction, .. } = op {
+                if let Some(f) = &reduction.row_filter {
+                    collect_from_row_filter(f, &mut seen);
+                }
+            }
             if let Op::HasEdges { row_filter: Some(f), .. } = op {
                 collect_from_row_filter(f, &mut seen);
             }
@@ -1061,52 +1081,45 @@ fn resolve_stage<U: UnitSystem>(
     let filter = stage
         .filter
         .as_ref()
-        .map(|f| resolve_stage_filter(f, reader, entity_table, entity_ctx, alias_to_idx, entity_col_indices))
+        .map(|f| {
+            resolve_stage_filter(f, reader, entity_table, entity_ctx, alias_to_idx, entity_col_indices,
+            )
+        })
         .transpose().map_err(|e| TTGenError::SchemaError(format!("resolving stage filter: {}", e)))?;
 
     Ok(ResolvedStage { ops, filter })
 }
 
-fn resolve_op<U: UnitSystem>(
-    op: &Op<U>,
+#[allow(clippy::too_many_arguments)]
+fn resolve_scalar_aggregate<U: UnitSystem>(
     reader: &GraphIndexReader,
-    entity_table: &Arc<TableReader>,
-    _entity_ctx: &Option<RowPackContext>,
     alias_to_idx: &HashMap<String, usize>,
     entity_col_indices: &[(String, usize)],
     split_request: Option<&SplitProjectionRequest>,
+    alias: &str,
+    path: &[EdgeRef],
+    func: &AggFunc,
+    target_col: &Option<String>,
+    window: &Option<(i64, i64)>,
+    window_unit: &Option<TimeUnit>,
+    row_filter: &Option<RowFilter>,
+    limit: &Option<u32>,
+    target_entity_table: &Option<String>,
 ) -> TTGenResult<ResolvedOp<U>> {
-    match op {
-        Op::Aggregate {
-            alias,
-            path,
-            func,
-            target_col,
-            time_col: _,
-            window,
-            window_unit,
-            row_filter,
-            limit,
-            target_entity_table,
-        } => {
             let alias_idx = alias_to_idx[alias];
             let resolved_path = resolve_path(path, reader)?;
 
-            // Resolve target column on the destination table
-            let dst_table = &resolved_path.last().unwrap().dst_table;
+    let mut aggregate = resolve_aggregate_input(
+        alias_idx,
+        resolved_path,
+        *func,
+        target_col.as_deref(),
+        window.as_ref(),
+        window_unit.as_ref(),
+    )?;
+    let dst_table = &aggregate.path.last().unwrap().dst_table;
             let dst_ctx = dst_table.node_data_decoder().map(|d| d.context().clone());
-            let target_col_idx = target_col
-                .as_ref()
-                .map(|col| find_col_idx_in_context(&dst_ctx, col))
-                .transpose().map_err(|e| TTGenError::SchemaError(format!("resolving aggregate target column: {}", e)))?;
-
-            // The temporal window applies to the first hop (the reverse FK
-            // carrying timestamp sort keys).
-            let resolved_window = resolve_temporal_window::<U>(
-                window.as_ref(),
-                window_unit.as_ref(),
-                &resolved_path,
-            )?;
+            let target_col_idx = aggregate.target_col_idx;
 
             // Use plan-level entity_col_indices so positions match the pre-resolved
             // entity_cols array built in execute_entity.
@@ -1171,7 +1184,8 @@ fn resolve_op<U: UnitSystem>(
                             "resolving CustomLinkSplit split_column: {}",
                             e
                         ))
-                    })?)
+                    })?,
+            )
                 }
                 _ => None,
             };
@@ -1198,9 +1212,11 @@ fn resolve_op<U: UnitSystem>(
             if let Some(col_idx) = target_col_idx {
                 let dst_col = &dst_table
                     .node_data_decoder()
-                    .ok_or_else(|| TTGenError::SchemaError(
+                    .ok_or_else(|| {
+                TTGenError::SchemaError(
                         "destination table missing node-data decoder".to_string()
-                    ))?
+                    )
+            })?
                     .context()
                     .columns[col_idx];
                 let is_multicat = resolved_stype.as_deref()
@@ -1212,8 +1228,8 @@ fn resolve_op<U: UnitSystem>(
                         if is_multicat =>
                     {
                         return Err(TTGenError::InvalidPlan(format!(
-                            "multicategorical source column '{}' has unsupported \
-                             float-list ingested type {:?}; use intlist or stringlist",
+                    "multicategorical source column '{}' has unsupported \
+                     float-list ingested type {:?}; use intlist or stringlist",
                             dst_col.name, dst_col.logical_type
                         )));
                     }
@@ -1225,11 +1241,11 @@ fn resolve_op<U: UnitSystem>(
                         if !is_multicat =>
                     {
                         return Err(TTGenError::InvalidPlan(format!(
-                            "native-list source column '{}.{}' (ingested type {:?}) \
-                             has no multicategorical semantic_type in the \
-                             persisted diskgraph_config.json; got {:?}. \
-                             Re-ingest with stype=multicategorical declared on \
-                             the column, or change the column declaration.",
+                    "native-list source column '{}.{}' (ingested type {:?}) \
+                     has no multicategorical semantic_type in the \
+                     persisted diskgraph_config.json; got {:?}. \
+                     Re-ingest with stype=multicategorical declared on \
+                     the column, or change the column declaration.",
                             dst_table.node_type(),
                             dst_col.name,
                             dst_col.logical_type,
@@ -1246,11 +1262,11 @@ fn resolve_op<U: UnitSystem>(
                     | IngestedType::Int64Array => {}
                     _ if is_multicat => {
                         return Err(TTGenError::InvalidPlan(format!(
-                            "multicategorical source column '{}.{}' has scalar \
-                             ingested type {:?}; multicategorical requires a \
-                             native list shape (string_array / int64_array). \
-                             Re-ingest with stype=categorical for single-value \
-                             columns, or with a list-typed source dtype.",
+                    "multicategorical source column '{}.{}' has scalar \
+                     ingested type {:?}; multicategorical requires a \
+                     native list shape (string_array / int64_array). \
+                     Re-ingest with stype=categorical for single-value \
+                     columns, or with a list-typed source dtype.",
                             dst_table.node_type(),
                             dst_col.name,
                             dst_col.logical_type,
@@ -1260,21 +1276,93 @@ fn resolve_op<U: UnitSystem>(
                 }
             }
 
-            Ok(ResolvedOp::Aggregate(ResolvedAggregate {
-                alias_idx,
-                path: resolved_path,
-                func: *func,
-                target_col_idx,
-                window: resolved_window,
-                row_filter: resolved_filter,
-                limit: *limit,
-                target_pk_table,
-                target_temporal_create_col_idx,
-                target_temporal_end_col_idx,
-                link_split_col_idx,
-                target_semantic_type: resolved_stype,
-            }))
+    aggregate.row_filter = resolved_filter;
+    aggregate.limit = *limit;
+    aggregate.target_pk_table = target_pk_table;
+    aggregate.target_temporal_create_col_idx = target_temporal_create_col_idx;
+    aggregate.target_temporal_end_col_idx = target_temporal_end_col_idx;
+    aggregate.link_split_col_idx = link_split_col_idx;
+    aggregate.target_semantic_type = resolved_stype;
+    Ok(ResolvedOp::Aggregate(aggregate))
+}
+
+pub(crate) fn resolve_op<U: UnitSystem>(
+    op: &Op<U>,
+    reader: &GraphIndexReader,
+    entity_table: &Arc<TableReader>,
+    _entity_ctx: &Option<RowPackContext>,
+    alias_to_idx: &HashMap<String, usize>,
+    entity_col_indices: &[(String, usize)],
+    split_request: Option<&SplitProjectionRequest>,
+) -> TTGenResult<ResolvedOp<U>> {
+    match op {
+        Op::RowAggregate { rows, reduction } => {
+            if !reduction.groups.is_empty()
+                || reduction.sum_type.is_some()
+                || !reduction.semantics.all_null_sum_is_zero
+                || reduction.semantics.keep_first_equal
+            {
+                return Err(TTGenError::InvalidPlan(
+                    "typed/grouped row operations use the scalar batch sink".into(),
+                ));
+            }
+            let func = match reduction.operation.as_str() {
+                "count" => AggFunc::Count,
+                "sum" => AggFunc::Sum,
+                "mean" => AggFunc::Avg,
+                "min" => AggFunc::Min,
+                "max" => AggFunc::Max,
+                other => {
+                    return Err(TTGenError::InvalidPlan(format!(
+                        "unsupported TT output reducer {other}"
+                    )))
+                }
+            };
+            let window = rows
+                .stop_seconds
+                .map(|hi| (rows.start_seconds.unwrap_or(UNBOUNDED_LOWER_OFFSET), hi));
+            resolve_scalar_aggregate(
+                reader,
+                alias_to_idx,
+                entity_col_indices,
+                split_request,
+                &reduction.name,
+                &rows.column_path,
+                &func,
+                &reduction.column,
+                &window,
+                &rows.window_unit,
+                &reduction.row_filter,
+                &reduction.limit,
+                &reduction.target_entity_table,
+            )
         }
+        Op::Aggregate {
+            alias,
+            path,
+            func,
+            target_col,
+            time_col: _,
+            window,
+            window_unit,
+            row_filter,
+            limit,
+            target_entity_table,
+        } => resolve_scalar_aggregate(
+            reader,
+            alias_to_idx,
+            entity_col_indices,
+            split_request,
+            alias,
+            path,
+            func,
+            target_col,
+            window,
+            window_unit,
+            row_filter,
+            limit,
+            target_entity_table,
+        ),
         Op::HasEdges {
             alias,
             path,
@@ -1306,7 +1394,8 @@ fn resolve_op<U: UnitSystem>(
                 row_filter: resolved_filter,
             }))
         }
-        Op::Column { alias, table, column, path } => {
+        Op::Column { alias, table, column, path,
+        } => {
             let alias_idx = alias_to_idx[alias];
             let table_reader = reader
                 .table(table)
@@ -1376,9 +1465,11 @@ fn resolve_op<U: UnitSystem>(
             {
                 let col_meta = &table_reader
                     .node_data_decoder()
-                    .ok_or_else(|| TTGenError::SchemaError(
+                    .ok_or_else(|| {
+                        TTGenError::SchemaError(
                         "table missing node-data decoder".to_string()
-                    ))?
+                    )
+                    })?
                     .context()
                     .columns[col_idx];
                 let is_multicat = resolved_stype.as_deref()
@@ -1441,7 +1532,8 @@ fn resolve_op<U: UnitSystem>(
                 target_semantic_type: resolved_stype,
             }))
         }
-        Op::Compare { alias, lhs, op, rhs } => {
+        Op::Compare { alias, lhs, op, rhs,
+        } => {
             let alias_idx = alias_to_idx[alias];
             let lhs_alias_idx = alias_to_idx
                 .get(lhs)
@@ -1454,7 +1546,8 @@ fn resolve_op<U: UnitSystem>(
                 rhs: rhs.clone(),
             }))
         }
-        Op::LogicalOp { alias, op, operands } => {
+        Op::LogicalOp { alias, op, operands,
+        } => {
             let alias_idx = alias_to_idx[alias];
             let operand_indices = operands
                 .iter()
@@ -1462,7 +1555,9 @@ fn resolve_op<U: UnitSystem>(
                     alias_to_idx
                         .get(name)
                         .copied()
-                        .ok_or_else(|| TTGenError::SchemaError(format!("alias '{}' not found", name)))
+                        .ok_or_else(|| {
+                        TTGenError::SchemaError(format!("alias '{}' not found", name))
+                    })
                 })
                 .collect::<TTGenResult<Vec<_>>>()?;
             Ok(ResolvedOp::LogicalOp(ResolvedLogicalOp {
@@ -1471,7 +1566,8 @@ fn resolve_op<U: UnitSystem>(
                 operand_indices,
             }))
         }
-        Op::Autoregression { alias, target_op, lag_offsets } => {
+        Op::Autoregression { alias, target_op, lag_offsets,
+        } => {
             let alias_idx = alias_to_idx[alias];
             let resolved_target = resolve_op(
                 target_op,
@@ -1488,7 +1584,8 @@ fn resolve_op<U: UnitSystem>(
                 lag_offsets: lag_offsets.clone(),
             }))
         }
-        Op::FutureLabels { alias, target_op, future_offsets } => {
+        Op::FutureLabels { alias, target_op, future_offsets,
+        } => {
             let alias_idx = alias_to_idx[alias];
             let resolved_target = resolve_op(
                 target_op,
@@ -1508,6 +1605,103 @@ fn resolve_op<U: UnitSystem>(
     }
 }
 
+/// Resolve an aggregate's shared semantic IR independently of frontend syntax.
+/// PQL supplies column-based paths; storage adapters may supply exact names.
+pub fn resolve_aggregate_input<U: UnitSystem>(
+    alias_idx: usize,
+    path: Vec<ResolvedEdge>,
+    func: AggFunc,
+    target_col: Option<&str>,
+    window: Option<&(i64, i64)>,
+    window_unit: Option<&TimeUnit>,
+) -> TTGenResult<ResolvedAggregate<U>> {
+    let table = &path
+        .last()
+        .ok_or_else(|| TTGenError::InvalidPlan("aggregate path is empty".into()))?
+        .dst_table;
+    let context = table
+        .node_data_decoder()
+        .map(|decoder| decoder.context().clone());
+    let target_col_idx = target_col
+        .map(|column| find_col_idx_in_context(&context, column))
+        .transpose()
+        .map_err(|error| {
+            TTGenError::SchemaError(format!("resolving aggregate target column: {error}"))
+        })?;
+    let window = resolve_temporal_window(window, window_unit, &path)?;
+    Ok(ResolvedAggregate {
+        alias_idx,
+        path,
+        func,
+        target_col_idx,
+        window,
+        row_filter: None,
+        limit: None,
+        target_pk_table: None,
+        target_temporal_create_col_idx: None,
+        target_temporal_end_col_idx: None,
+        link_split_col_idx: None,
+        target_semantic_type: None,
+    })
+}
+
+fn resolved_edge(
+    source: Arc<TableReader>,
+    destination: Arc<TableReader>,
+    relation_idx: usize,
+) -> TTGenResult<ResolvedEdge> {
+    let layout = source.layouts().get(relation_idx).cloned().ok_or_else(|| {
+        TTGenError::SystemError(format!(
+            "layout not found for relation index {relation_idx}"
+        ))
+    })?;
+    let encoder = source.relations()[relation_idx]
+        .dest_sort_key
+        .as_ref()
+        .map(SortKeyEncoder::new);
+    Ok(ResolvedEdge {
+        src_table: source,
+        dst_table: destination,
+        relation_idx,
+        layout,
+        encoder,
+    })
+}
+
+/// Resolve storage-native relation names to the same handles used by PQL.
+pub fn resolve_named_path(
+    reader: &GraphIndexReader,
+    root: &str,
+    path: &[(&str, &str)],
+) -> TTGenResult<Vec<ResolvedEdge>> {
+    let mut source_name = root;
+    let mut result = Vec::with_capacity(path.len());
+    for &(name, destination_name) in path {
+        let source = reader.table(source_name).ok_or_else(|| {
+            TTGenError::SchemaError(format!("unknown source table {source_name:?}"))
+        })?;
+        let destination = reader.table(destination_name).ok_or_else(|| {
+            TTGenError::SchemaError(format!("unknown destination table {destination_name:?}"))
+        })?;
+        let index = source
+            .relations()
+            .iter()
+            .position(|relation| {
+                relation.name == name
+                    && relation.src_type == source_name
+                    && relation.dst_type == destination_name
+            })
+            .ok_or_else(|| {
+                TTGenError::InvalidPlan(format!(
+                    "relation {name:?} does not connect {source_name:?} to {destination_name:?}"
+                ))
+            })?;
+        result.push(resolved_edge(source, destination, index)?);
+        source_name = destination_name;
+    }
+    Ok(result)
+}
+
 pub(crate) fn resolve_path(
     path: &[EdgeRef],
     reader: &GraphIndexReader,
@@ -1516,36 +1710,22 @@ pub(crate) fn resolve_path(
     for edge_ref in path {
         let src_table = reader
             .table(&edge_ref.src_table)
-            .ok_or_else(|| TTGenError::SchemaError(format!("src table '{}' not found", edge_ref.src_table)))?;
+            .ok_or_else(|| {
+            TTGenError::SchemaError(format!("src table '{}' not found", edge_ref.src_table))
+        })?;
         let dst_table = reader
             .table(&edge_ref.dst_table)
-            .ok_or_else(|| TTGenError::SchemaError(format!("dst table '{}' not found", edge_ref.dst_table)))?;
+            .ok_or_else(|| {
+            TTGenError::SchemaError(format!("dst table '{}' not found", edge_ref.dst_table))
+        })?;
 
         // Find the relation in src_table's relations.
         // Multiple relations can share the same (src_type, dst_type) — e.g.,
         // orders.buyer_id→users and orders.seller_id→users. We disambiguate by
         // matching the relation name against the EdgeRef column names.
         let relations = src_table.relations();
-        let (relation_idx, relation_meta) = find_relation(relations, edge_ref)?;
-
-        let layouts = src_table.layouts();
-        let layout = layouts
-            .get(relation_idx)
-            .cloned()
-            .ok_or_else(|| TTGenError::SystemError(format!("layout not found for relation index {}", relation_idx)))?;
-
-        let encoder = relation_meta
-            .dest_sort_key
-            .as_ref()
-            .map(SortKeyEncoder::new);
-
-        resolved.push(ResolvedEdge {
-            src_table,
-            relation_idx,
-            layout,
-            encoder,
-            dst_table,
-        });
+        let (relation_idx, _) = find_relation(relations, edge_ref)?;
+        resolved.push(resolved_edge(src_table, dst_table, relation_idx)?);
     }
     Ok(resolved)
 }
@@ -1613,7 +1793,9 @@ fn resolve_row_filter(
                     let idx = entity_col_indices
                         .iter()
                         .position(|(name, _)| name == col)
-                        .ok_or_else(|| TTGenError::SchemaError(format!("entity column '{}' not found in refs", col)))?;
+                        .ok_or_else(|| {
+                            TTGenError::SchemaError(format!("entity column '{}' not found in refs", col))
+                        })?;
                     ResolvedRowFilterRhs::EntityColumn(idx)
                 }
                 RowFilterRhs::Remote { path, column } => {
@@ -1637,14 +1819,18 @@ fn resolve_row_filter(
         RowFilter::And(filters) => {
             let resolved = filters
                 .iter()
-                .map(|f| resolve_row_filter(f, reader, current_table, current_ctx, entity_col_indices))
+                .map(|f| {
+                    resolve_row_filter(f, reader, current_table, current_ctx, entity_col_indices)
+                })
                 .collect::<TTGenResult<Vec<_>>>()?;
             Ok(ResolvedRowFilter::And(resolved))
         }
         RowFilter::Or(filters) => {
             let resolved = filters
                 .iter()
-                .map(|f| resolve_row_filter(f, reader, current_table, current_ctx, entity_col_indices))
+                .map(|f| {
+                    resolve_row_filter(f, reader, current_table, current_ctx, entity_col_indices)
+                })
                 .collect::<TTGenResult<Vec<_>>>()?;
             Ok(ResolvedRowFilter::Or(resolved))
         }
@@ -1679,7 +1865,9 @@ fn resolve_stage_filter(
                     let idx = entity_col_indices
                         .iter()
                         .position(|(name, _)| name == col)
-                        .ok_or_else(|| TTGenError::SchemaError(format!("entity column '{}' not found in refs", col)))?;
+                        .ok_or_else(|| {
+                            TTGenError::SchemaError(format!("entity column '{}' not found in refs", col))
+                        })?;
                     ResolvedStageFilterRhs::EntityColumn(idx)
                 }
                 StageFilterRhs::Remote { path, column } => {
@@ -1696,7 +1884,9 @@ fn resolve_stage_filter(
                     let idx = alias_to_idx
                         .get(a)
                         .copied()
-                        .ok_or_else(|| TTGenError::SchemaError(format!("alias '{}' not found", a)))?;
+                        .ok_or_else(|| {
+                        TTGenError::SchemaError(format!("alias '{}' not found", a))
+                    })?;
                     ResolvedStageFilterRhs::Alias(idx)
                 }
             };
@@ -1717,19 +1907,26 @@ fn resolve_stage_filter(
         StageFilter::And(filters) => {
             let resolved = filters
                 .iter()
-                .map(|f| resolve_stage_filter(f, reader, entity_table, entity_ctx, alias_to_idx, entity_col_indices))
+                .map(|f| {
+                    resolve_stage_filter(f, reader, entity_table, entity_ctx, alias_to_idx, entity_col_indices,
+                    )
+                })
                 .collect::<TTGenResult<Vec<_>>>()?;
             Ok(ResolvedStageFilter::And(resolved))
         }
         StageFilter::Or(filters) => {
             let resolved = filters
                 .iter()
-                .map(|f| resolve_stage_filter(f, reader, entity_table, entity_ctx, alias_to_idx, entity_col_indices))
+                .map(|f| {
+                    resolve_stage_filter(f, reader, entity_table, entity_ctx, alias_to_idx, entity_col_indices,
+                    )
+                })
                 .collect::<TTGenResult<Vec<_>>>()?;
             Ok(ResolvedStageFilter::Or(resolved))
         }
         StageFilter::Not(f) => {
-            let resolved = resolve_stage_filter(f, reader, entity_table, entity_ctx, alias_to_idx, entity_col_indices)?;
+            let resolved = resolve_stage_filter(f, reader, entity_table, entity_ctx, alias_to_idx, entity_col_indices,
+            )?;
             Ok(ResolvedStageFilter::Not(Box::new(resolved)))
         }
     }
@@ -1810,7 +2007,8 @@ fn find_relation<'a>(
 }
 
 /// Infer the Arrow DataType for the TARGET column.
-fn infer_target_dtype<U: UnitSystem>(plan: &DiskGraphTTPlan<U>, stages: &[ResolvedStage<U>]) -> DataType {
+fn infer_target_dtype<U: UnitSystem>(plan: &DiskGraphTTPlan<U>, stages: &[ResolvedStage<U>],
+) -> DataType {
     let last_plan_op = plan.stages.iter().rev()
         .flat_map(|s| s.ops.iter().rev())
         .next();
@@ -1834,30 +2032,31 @@ fn infer_target_dtype<U: UnitSystem>(plan: &DiskGraphTTPlan<U>, stages: &[Resolv
 /// Infer Arrow DataType for a specific Op.
 fn infer_op_dtype<U: UnitSystem>(op: &Op<U>, stages: &[ResolvedStage<U>]) -> DataType {
     match op {
+        Op::RowAggregate { reduction, .. } => {
+            if reduction.operation == "count" {
+                DataType::Int64
+            } else {
+                DataType::Float64
+            }
+        }
         Op::Compare { .. } | Op::LogicalOp { .. } => DataType::Boolean,
         // COUNT/COUNT_DISTINCT always produce integer counts.
         Op::Aggregate {
             func: AggFunc::Count | AggFunc::CountDistinct,
             ..
-        } =>
-        {
-            DataType::Int64
-        }
+        } => DataType::Int64,
         Op::HasEdges { .. } => DataType::Boolean,
         Op::Autoregression { target_op, .. } | Op::FutureLabels { target_op, .. } => {
             // Forecasting sequences yield a List of the inner target dtype.
             let inner_dtype = infer_op_dtype(target_op, stages);
             DataType::List(Arc::new(Field::new("item", inner_dtype, true)))
-        },
+        }
 
         // FIRST/LAST preserve the source column's dtype (e.g. FIRST of string → Utf8).
         Op::Aggregate {
             func: AggFunc::First | AggFunc::Last,
             ..
-        } =>
-        {
-            lookup_last_agg_col_dtype(stages).unwrap_or(DataType::Float64)
-        }
+        } => lookup_last_agg_col_dtype(stages).unwrap_or(DataType::Float64),
         // Direct column prediction: look up the column's ingested type.
         Op::Column { .. } => {
             let last_col = stages.iter().rev()
