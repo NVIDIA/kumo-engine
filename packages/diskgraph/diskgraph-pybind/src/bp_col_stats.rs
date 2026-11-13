@@ -1767,6 +1767,46 @@ fn build_summary_stats_by_class(
     ))
 }
 
+/// Write the existing ingestion ColumnStats document from selected Parquet
+/// rows, using the same bounded Parquet scan, StatSet collectors and publisher.
+pub(crate) fn write_parquet_column_stats(
+    paths: &[&Path],
+    columns: &[ColumnSpec],
+    stat_sets: Vec<StatSet>,
+    quantiles: Vec<f64>,
+    output: &Path,
+    clock: TimeUnit,
+) -> Result<()> {
+    let options = ColStatsOptions {
+        stat_sets: Some(stat_sets),
+        summary_stats_by_class: false,
+        histograms: false,
+        clock,
+        ..ColStatsOptions::default()
+    };
+    let (acc, categories, _) = accumulate_parquet_col_stats(
+        paths,
+        columns,
+        diskgraph_core::accumulators::MAX_CATEGORIES,
+        &options,
+    )?;
+    write_col_stats(
+        &diskgraph_ingest::io::OutputTarget::parse(
+            &output.to_string_lossy(),
+            diskgraph_ingest::io::Dest::Local,
+        )?,
+        vec![ColStatsTable {
+            name: "anchors".into(),
+            stats: acc.with_quantiles(quantiles),
+            column_names: columns.iter().map(|c| c.name.clone()).collect(),
+            ingested_types: columns.iter().map(|c| c.ingested_dtype.clone()).collect(),
+            table_cat: Some(categories),
+            text_sample_stats: None,
+            data_version: None,
+        }],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3304,44 +3344,4 @@ mod tests {
             assert!(error.to_string().contains("strictly increasing"), "{error}");
         }
     }
-}
-
-/// Write the existing ingestion ColumnStats document from selected Parquet
-/// rows, using the same bounded Parquet scan, StatSet collectors and publisher.
-pub(crate) fn write_parquet_column_stats(
-    paths: &[&Path],
-    columns: &[ColumnSpec],
-    stat_sets: Vec<StatSet>,
-    quantiles: Vec<f64>,
-    output: &Path,
-    clock: TimeUnit,
-) -> Result<()> {
-    let options = ColStatsOptions {
-        stat_sets: Some(stat_sets),
-        summary_stats_by_class: false,
-        histograms: false,
-        clock,
-        ..ColStatsOptions::default()
-    };
-    let (acc, categories, _) = accumulate_parquet_col_stats(
-        paths,
-        columns,
-        diskgraph_core::accumulators::MAX_CATEGORIES,
-        &options,
-    )?;
-    write_col_stats(
-        &diskgraph_ingest::io::OutputTarget::parse(
-            &output.to_string_lossy(),
-            diskgraph_ingest::io::Dest::Local,
-        )?,
-        vec![ColStatsTable {
-            name: "anchors".into(),
-            stats: acc.with_quantiles(quantiles),
-            column_names: columns.iter().map(|c| c.name.clone()).collect(),
-            ingested_types: columns.iter().map(|c| c.ingested_dtype.clone()).collect(),
-            table_cat: Some(categories),
-            text_sample_stats: None,
-            data_version: None,
-        }],
-    )
 }
