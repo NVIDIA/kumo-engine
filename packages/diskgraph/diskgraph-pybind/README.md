@@ -131,7 +131,7 @@ cutoffs, and a JSON plan with:
   grouping stages.
 
 Frames are the unit of shared work. A sequence and several aggregates naming
-the same frame perform one traversal and one rowpack decode. Results include
+the same frame share traversal and projected rowpack decoding. Results include
 Arrow sequence batches, aligned offsets/timestamps, scalar aggregate values,
 and nanosecond counters for traversal, decode/selection, sequence assembly,
 aggregation, and the full native call. `stats.rows_decoded` counts rows sent to
@@ -181,6 +181,21 @@ filtering decodes the timestamp already packed beside each edge. Otherwise it
 decodes only the destination rowpack's timestamp column. `timings_ns` separates
 traversal and filtering;
 `stats` reports which timestamp path ran.
+
+Aggregate-only, one-hop queries on second-clock indexes lower `count` and
+Float32/Float64 `sum`/`mean`/`min`/`max` to the same resolved aggregate IR and grouped numeric executor
+used by PQL. This applies equally to feature and target aggregates. The
+temporal frontend preserves its exact-time and chronological/primary-key row
+selection; PQL retains its existing index-order selection. Supported groups
+reuse the temporal frontend's existing projected Arrow batch without decoding
+selected rows a second time. PQL projects its selected rows in bounded chunks.
+Queries with group-by stages, exact integer sums, nonfinite inputs or sequence
+consumers still select/materialize their general frames. After selection, their
+ordinary sums/means and finite floating extrema use the same ordered accumulators
+as PQL, including grouped and multi-hop inputs. Typed integer sums/extrema and
+API-specific reductions retain their distinct contracts. This does not require
+rewriting existing PQL traversal or eliminating frames used for window sharing.
+No public JSON schema or frontend syntax changes are required.
 
 ### Flat token packing for RDL
 

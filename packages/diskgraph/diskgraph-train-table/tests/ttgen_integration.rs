@@ -10543,3 +10543,67 @@ fn integ_forecasting_empty_count_distinct_target_is_zero() {
     }
     assert_eq!(row_count, 5);
 }
+
+#[test]
+fn integ_shared_numeric_node_projection_crosses_decode_chunks() {
+    use diskgraph_train_table::ttgen_executor::{
+        execute_numeric_group, NumericAggregatePolicy, NumericRows,
+    };
+    use diskgraph_train_table::ttgen_resolve::ResolvedOp;
+
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+    let reader = diskgraph_index::graph::GraphIndexReader::open(
+        &index.join("index_metadata.json"), &index,
+    ).unwrap();
+    let plan = g1_temporal(vec![Stage {
+        ops: vec![
+            count_orders_op("count", Some((0, 5000))),
+            agg_orders_price("sum", AggFunc::Sum, Some((0, 5000))),
+            agg_orders_price("mean", AggFunc::Avg, Some((0, 5000))),
+        ], filter: None,
+    }], vec![0]);
+    let resolved = resolve_plan(&plan, &reader).unwrap();
+    let operations = resolved.stages[0].ops.iter().map(|op| match op {
+        ResolvedOp::Aggregate(aggregate) => aggregate,
+        _ => unreachable!(),
+    }).collect::<Vec<_>>();
+    let mut selections = 0;
+    let values = execute_numeric_group(
+        &operations, &[0], &[Abs::from_raw(0)], NumericAggregatePolicy::Pql,
+        |aggregate, _, cutoff| {
+            assert!(aggregate.window.as_ref().unwrap().sort_keys(cutoff).is_some());
+            selections += 1;
+            // Repeating the same ten real rows exercises the node projection
+            // path across its 512-row decoding boundary, independently of the
+            // temporal-query path's already projected Arrow batches.
+            Ok(NumericRows::Nodes((0..600).map(|i| i % 10).collect()))
+        },
+    ).unwrap().expect("finite node rows must use grouped execution");
+    assert_eq!(selections, 1);
+    assert!(matches!(values[0][0], Some(Value::Int(600))));
+    assert!(matches!(values[1][0], Some(Value::Float(x)) if x == 46800.0));
+    assert!(matches!(values[2][0], Some(Value::Float(x)) if (x - 78.0).abs() < 1e-12));
+}
+
+#[test]
+fn integ_numeric_specialization_propagates_reader_errors() {
+    use diskgraph_train_table::ttgen_executor::{execute_numeric_group, NumericAggregatePolicy};
+    use diskgraph_train_table::ttgen_resolve::ResolvedOp;
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+    let reader = diskgraph_index::graph::GraphIndexReader::open(
+        &index.join("index_metadata.json"), &index,
+    ).unwrap();
+    let plan = g1_temporal(vec![Stage {
+        ops: vec![agg_orders_price("sum", AggFunc::Sum, Some((0, 5000)))],
+        filter: None,
+    }], vec![0]);
+    let resolved = resolve_plan(&plan, &reader).unwrap();
+    let ResolvedOp::Aggregate(aggregate) = &resolved.stages[0].ops[0] else { unreachable!() };
+    let failure = execute_numeric_group(
+        &[aggregate], &[0], &[Abs::from_raw(0)], NumericAggregatePolicy::Pql,
+        |_, _, _| Err(TTGenError::SystemError("injected reader failure".into())),
+    ).unwrap_err();
+    assert!(matches!(failure, TTGenError::SystemError(message) if message == "injected reader failure"));
+}

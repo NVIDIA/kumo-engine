@@ -22,7 +22,11 @@ use arrow::array::{
 };
 use arrow::pyarrow::ToPyArrow;
 use arrow_array::{RecordBatch, RecordBatchOptions};
-use diskgraph_core::metadata::{EdgeRelationMetadata, EdgeSortKeyMetadata};
+use diskgraph_core::metadata::EdgeSortKeyMetadata;
+use diskgraph_core::time::{Abs, Seconds, TimeUnit};
+use diskgraph_core::tt_builder::AggFunc;
+use diskgraph_train_table::ttgen_resolve::{resolve_named_path, resolve_aggregate_input, ResolvedEdge};
+use diskgraph_train_table::ttgen_executor::{execute_numeric_group, NumericAggregatePolicy, NumericRows};
 use diskgraph_core::sortkey::SortKeyDecoder;
 use diskgraph_engine::edge_unpacker::EdgeUnpacker;
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
@@ -58,7 +62,7 @@ struct QueryPlan {
     aggregates: Vec<AggregatePlan>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FramePlan {
     name: String,
@@ -71,7 +75,7 @@ struct FramePlan {
     columns: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PathStep {
     relation: String,
@@ -724,39 +728,25 @@ fn validate_frame_plan(plan: &FramePlan, root_type: &str) -> Result<(), String> 
     Ok(())
 }
 
-type FramePath<'a> = (Vec<(&'a EdgeRelationMetadata, Arc<TableReader>)>, String);
+type FramePath = (Vec<ResolvedEdge>, String);
 
-/// Each hop's relation and source table, resolved independently of the anchors.
-fn frame_path<'a>(
-    reader: &'a GraphIndexReader,
+fn frame_path(
+    reader: &GraphIndexReader,
     plan: &FramePlan,
     root_type: &str,
-) -> Result<FramePath<'a>, String> {
-    let mut destination = root_type.to_string();
-    let mut hops = Vec::with_capacity(plan.path.len());
-    for step in &plan.path {
-        let relation = reader
-            .merged_edge_relations()
-            .iter()
-            .find(|relation| relation.name == step.relation)
-            .ok_or_else(|| format!("unknown temporal relation {:?}", step.relation))?;
-        if relation.src_type != destination || relation.dst_type != step.destination_type {
-            return Err(format!(
-                "relation {:?} is {:?} -> {:?}, not {:?} -> {:?}",
-                step.relation,
-                relation.src_type,
-                relation.dst_type,
-                destination,
-                step.destination_type
-            ));
-        }
-        let table = reader
-            .table(&destination)
-            .ok_or_else(|| format!("unknown source table {destination:?}"))?;
-        hops.push((relation, table));
-        destination = step.destination_type.clone();
-    }
-    Ok((hops, destination))
+) -> Result<FramePath, String> {
+    let names = plan
+        .path
+        .iter()
+        .map(|step| (step.relation.as_str(), step.destination_type.as_str()))
+        .collect::<Vec<_>>();
+    let path = resolve_named_path(reader, root_type, &names).map_err(|e| e.to_string())?;
+    let destination = path
+        .last()
+        .map(|edge| edge.dst_table.node_type())
+        .unwrap_or(root_type)
+        .to_string();
+    Ok((path, destination))
 }
 
 fn validate_sequence_plan(plan: &SequencePlan) -> Result<(), String> {
@@ -825,7 +815,9 @@ fn materialize_frame(
     let mut rows_by_anchor = Vec::with_capacity(roots.len());
     for (anchor, &root) in roots.iter().enumerate() {
         let mut frontier = vec![root];
-        for (hop, (step, (relation, table))) in plan.path.iter().zip(&hops).enumerate() {
+        for (hop, (step, edge)) in plan.path.iter().zip(&hops).enumerate() {
+            let table = &edge.src_table;
+            let relation = &table.relations()[edge.relation_idx];
             let decoder = if hop + 1 == plan.path.len()
                 && (plan.start_seconds.is_some() || plan.stop_seconds.is_some())
             {
@@ -1249,6 +1241,34 @@ fn reduce(
             .expect("non-empty mode")
             .1);
     }
+    if (operation == "min" || operation == "max")
+        && values
+            .iter()
+            .all(|value| matches!(value, ScalarValue::F64(v) if v.is_finite()))
+    {
+        use diskgraph_core::tt_builder::{AggFunc, Value};
+        use diskgraph_train_table::ttgen_accumulator::Accumulator;
+        let mut state = Accumulator::new(
+            if operation == "min" {
+                AggFunc::Min
+            } else {
+                AggFunc::Max
+            },
+            None,
+        );
+        state.accumulate_numeric(
+            values.iter().map(|value| match value {
+                ScalarValue::F64(value) => Some(*value),
+                _ => unreachable!(),
+            }),
+            true,
+            false,
+        );
+        return match state.finalize() {
+            Some(Value::Float(value)) => Ok(ScalarValue::F64(value)),
+            _ => unreachable!("nonempty finite extrema"),
+        };
+    }
     if operation == "min" || operation == "max" {
         let mut best = values[0].clone();
         for value in &values[1..] {
@@ -1269,20 +1289,33 @@ fn reduce(
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
+    if operation == "sum" || operation == "mean" {
+        use diskgraph_core::tt_builder::{AggFunc, Value};
+        use diskgraph_train_table::ttgen_accumulator::Accumulator;
+        let mut state = Accumulator::new(
+            if operation == "sum" {
+                AggFunc::Sum
+            } else {
+                AggFunc::Avg
+            },
+            None,
+        );
+        state.accumulate_numeric(numbers.into_iter().map(Some), true, false);
+        return match state.finalize() {
+            Some(Value::Float(value)) => Ok(ScalarValue::F64(value)),
+            None => Ok(ScalarValue::Null),
+            _ => unreachable!("sum/mean produce float scalars"),
+        };
+    }
     let mut count = 0u64;
     let mut mean = 0.0f64;
     let mut m2 = 0.0f64;
-    let mut sum = 0.0f64;
     for value in numbers {
-        count += 1;
-        sum += value;
-        let delta = value - mean;
-        mean += delta / count as f64;
+        let (_, delta, _) =
+            diskgraph_core::accumulators::update_running_mean(&mut count, &mut mean, value);
         m2 += delta * (value - mean);
     }
     Ok(match operation {
-        "sum" => ScalarValue::F64(sum),
-        "mean" => ScalarValue::F64(mean),
         "var_population" => ScalarValue::F64(m2 / count as f64),
         "std_population" => ScalarValue::F64((m2 / count as f64).sqrt()),
         "var_sample" if count >= 2 => ScalarValue::F64(m2 / (count - 1) as f64),
@@ -1454,13 +1487,14 @@ fn count_frame(
     let (hops, destination) = frame_path(reader, plan, root_type)?;
     let final_sort_key = hops
         .last()
-        .and_then(|(relation, _)| relation.dest_sort_key.clone());
+        .and_then(|edge| edge.src_table.relations()[edge.relation_idx].dest_sort_key.clone());
 
     let traversal_started = Instant::now();
     let mut rows_by_anchor = Vec::with_capacity(roots.len());
     for &root in roots {
         let mut frontier = vec![(root, 0)];
-        for (step, (_, table)) in plan.path.iter().zip(&hops) {
+        for (step, edge) in plan.path.iter().zip(&hops) {
+            let table = &edge.src_table;
             let mut next = Vec::new();
             for (node_id, _) in frontier {
                 let (destinations, sort_keys) = relation_columns(
@@ -1635,6 +1669,182 @@ pub(crate) fn execute_lengths(
     })
 }
 
+/// Lower the existing fluent query to the shared post-resolution PQL IR.
+/// The row selector remains the established exact-time/PK-ordered policy.
+fn shared_numeric_frame(
+    reader: &GraphIndexReader,
+    frame: &FramePlan,
+    root_type: &str,
+    roots: &[u64],
+    cutoffs: &[i64],
+    aggregates: &[&AggregatePlan],
+    timings: &mut QueryTimings,
+    stats: &mut QueryStats,
+    retained_frame: &mut Option<MaterializedFrame>,
+) -> Result<Option<Vec<AggregateResult>>, String> {
+    if frame.path.len() != 1
+        || aggregates.is_empty()
+        || reader.metadata().timestamp_unit != TimeUnit::Seconds
+        || frame.start_seconds.is_some() && frame.stop_seconds.is_none()
+    {
+        return Ok(None);
+    }
+    validate_frame_plan(frame, root_type)?;
+    let (_, destination) = frame_path(reader, frame, root_type)?;
+    let table = reader
+        .table(&destination)
+        .ok_or_else(|| format!("unknown destination table {destination:?}"))?;
+    let Some(primary_key) = table.primary_key_map() else {
+        return Ok(None);
+    };
+    let mut requested = frame.columns.clone();
+    requested.push(primary_key.column.clone());
+    requested.extend(frame.time_column.iter().cloned());
+    projection(table.as_ref(), &requested)?;
+    let mut operations = Vec::new();
+    for (index, aggregate) in aggregates.iter().enumerate() {
+        let function = match aggregate.operation.as_str() {
+            "count" => AggFunc::Count,
+            "sum" => AggFunc::Sum,
+            "mean" => AggFunc::Avg,
+            "min" => AggFunc::Min,
+            "max" => AggFunc::Max,
+            _ => return Ok(None),
+        };
+        if !aggregate.groups.is_empty()
+            || aggregate.sum_type.is_some()
+            || aggregate
+                .column
+                .as_ref()
+                .is_some_and(|column| function != AggFunc::Count && !frame.columns.contains(column))
+        {
+            return Ok(None);
+        }
+        let (path, _) = frame_path(reader, frame, root_type)?;
+        let window = frame.stop_seconds.map(|hi| {
+            (
+                frame
+                    .start_seconds
+                    .unwrap_or(diskgraph_train_table::ttgen_resolve::UNBOUNDED_LOWER_OFFSET),
+                hi,
+            )
+        });
+        let operation = match resolve_aggregate_input::<Seconds>(
+            index,
+            path,
+            function,
+            aggregate
+                .column
+                .as_deref()
+                .filter(|_| function != AggFunc::Count),
+            window.as_ref(),
+            Some(&TimeUnit::Seconds),
+        ) {
+            Ok(operation) => operation,
+            Err(_) => return Ok(None),
+        };
+        operations.push(operation);
+    }
+    let references = operations.iter().collect::<Vec<_>>();
+    let timestamps = cutoffs
+        .iter()
+        .copied()
+        .map(Abs::from_raw)
+        .collect::<Vec<_>>();
+    let mut selection_times = QueryTimings::default();
+    let mut selection_stats = QueryStats::default();
+    let mut selected: Option<MaterializedFrame> = None;
+    let mut anchor = 0;
+    let started = Instant::now();
+    let result = execute_numeric_group(
+        &references,
+        roots,
+        &timestamps,
+        NumericAggregatePolicy::TemporalQuery,
+        |_, _, _| {
+            if selected.is_none() {
+                selected = Some(
+                    materialize_frame(
+                        reader,
+                        frame,
+                        root_type,
+                        roots,
+                        cutoffs,
+                        None,
+                        None,
+                        &mut selection_times,
+                        &mut selection_stats,
+                    )
+                    .map_err(diskgraph_train_table::errors::TTGenError::InvalidPlan)?,
+                );
+            }
+            let frame = selected.as_ref().unwrap();
+            let mut columns = Vec::new();
+            for (operation, aggregate) in operations.iter().zip(aggregates) {
+                if let Some(column) = operation.target_col_idx {
+                    if !columns.iter().any(|(index, _)| *index == column) {
+                        let name = aggregate.column.as_ref().unwrap();
+                        columns.push((column, frame.batch.column(frame.positions[name]).clone()));
+                    }
+                }
+            }
+            let rows = frame.offsets[anchor]..frame.offsets[anchor + 1];
+            anchor += 1;
+            Ok(NumericRows::Projected { columns, rows })
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    timings.traversal = timings.traversal.saturating_add(selection_times.traversal);
+    timings.decode_and_select = timings
+        .decode_and_select
+        .saturating_add(selection_times.decode_and_select);
+    timings.aggregation = timings.aggregation.saturating_add(
+        elapsed_ns(started).saturating_sub(
+            selection_times
+                .traversal
+                .saturating_add(selection_times.decode_and_select),
+        ),
+    );
+    stats.frames_materialized += selection_stats.frames_materialized;
+    stats.rows_materialized += selection_stats.rows_materialized;
+    stats.rows_decoded += selection_stats.rows_decoded;
+    stats.values_decoded += selection_stats.values_decoded;
+    stats.edges_visited += selection_stats.edges_visited;
+    let Some(values) = result else {
+        *retained_frame = selected;
+        return Ok(None);
+    };
+    let output = aggregates
+        .iter()
+        .zip(operations)
+        .zip(values)
+        .map(|((aggregate, operation), values)| {
+            let kind = if operation.func == AggFunc::Count {
+                ScalarValue::I64(0)
+            } else {
+                ScalarValue::F64(0.0)
+            };
+            let values = values
+                .into_iter()
+                .map(|value| match value {
+                    Some(diskgraph_core::tt_builder::Value::Int(value)) => ScalarValue::I64(value),
+                    Some(diskgraph_core::tt_builder::Value::Float(value)) => {
+                        ScalarValue::F64(value)
+                    }
+                    None => ScalarValue::Null,
+                    _ => unreachable!("shared numeric evaluator returned a nonnumeric value"),
+                })
+                .collect();
+            AggregateResult {
+                name: aggregate.name.clone(),
+                values,
+                kind: Some(kind),
+            }
+        })
+        .collect();
+    Ok(Some(output))
+}
+
 pub(crate) fn execute(
     reader: &GraphIndexReader,
     root_type: &str,
@@ -1658,8 +1868,10 @@ pub(crate) fn execute(
     let mut timings = QueryTimings::default();
     let mut stats = QueryStats::default();
     let mut frames = HashMap::new();
+    let mut seen_frames = HashSet::new();
+    let mut shared_results = HashMap::new();
     for frame_plan in &plan.frames {
-        if frames.contains_key(&frame_plan.name) {
+        if !seen_frames.insert(frame_plan.name.clone()) {
             return Err(format!("duplicate temporal frame {:?}", frame_plan.name));
         }
         let consumers = plan
@@ -1667,6 +1879,23 @@ pub(crate) fn execute(
             .iter()
             .filter(|sequence| sequence.frame == frame_plan.name)
             .collect::<Vec<_>>();
+        if consumers.is_empty() {
+            let consumers = plan.aggregates.iter().enumerate().filter(|(_, aggregate)|
+                aggregate.frame == frame_plan.name).collect::<Vec<_>>();
+            let aggregates = consumers.iter().map(|(_, aggregate)| *aggregate).collect::<Vec<_>>();
+            let mut retained_frame = None;
+            if let Some(values) = shared_numeric_frame(reader, frame_plan, root_type,
+                roots, cutoffs, &aggregates, &mut timings, &mut stats, &mut retained_frame)? {
+                for ((index, _), value) in consumers.into_iter().zip(values) {
+                    shared_results.insert(index, value);
+                }
+                continue;
+            }
+            if let Some(frame) = retained_frame {
+                frames.insert(frame_plan.name.clone(), frame);
+                continue;
+            }
+        }
         // Aggregates need the full frame; multiple consumers may need opposite
         // ends or different limits. Keep their full row selection unchanged.
         let sequence = match consumers.as_slice() {
@@ -1734,8 +1963,9 @@ pub(crate) fn execute(
     let aggregate_started = Instant::now();
     let aggregates = plan
         .aggregates
-        .iter()
-        .map(|aggregate| {
+        .iter().enumerate()
+        .map(|(index, aggregate)| {
+            if let Some(result) = shared_results.remove(&index) { return Ok(result); }
             let frame = frames.get(&aggregate.frame).ok_or_else(|| {
                 format!(
                     "aggregate {:?} has unknown frame {:?}",
@@ -1745,7 +1975,7 @@ pub(crate) fn execute(
             aggregate_result(frame, aggregate, cutoffs)
         })
         .collect::<Result<Vec<_>, String>>()?;
-    timings.aggregation = elapsed_ns(aggregate_started);
+    timings.aggregation = timings.aggregation.saturating_add(elapsed_ns(aggregate_started));
     timings.total = elapsed_ns(total_started);
     Ok(QueryResult {
         sequences,

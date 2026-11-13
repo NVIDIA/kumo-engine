@@ -926,3 +926,13 @@ def test_window_endpoints_at_clipped_clock_floor(
     floor_endpoint_graph, lower, upper, expected
 ):
     _assert_window(floor_endpoint_graph, lower, upper, expected)
+
+
+def test_aggregate_only_keeps_exact_clipped_time_filtering(ceiling_endpoint_graph):
+    engine, ceiling, original = ceiling_endpoint_graph
+    plan = _window_plan(original, start=-200, limit=None)
+    plan["sequences"] = []
+    plan["aggregates"] = [{"name": "target:count", "frame": "f", "operation": "count"}]
+    roots = engine.lookup_node_ids("users", pa.array([1]))
+    result = engine.query_temporal({"users": roots}, {"users": [ceiling + 300]}, json.dumps(plan))
+    assert result["aggregates"][0]["values"] == [1]
