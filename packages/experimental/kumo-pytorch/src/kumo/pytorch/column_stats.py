@@ -232,8 +232,12 @@ def _learns_from_stats(config: Any, dtype: DType) -> bool:
 
 
 def cutoff_nanos(value: Any) -> int | None:
+    """Epoch nanoseconds of a cutoff: an ISO 8601 string, a date or datetime, or epoch seconds."""
+
     if value is None:
         return None
+    if type(value) is int:
+        return value * 10**9
     if isinstance(value, str):
         try:
             value = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -241,7 +245,9 @@ def cutoff_nanos(value: Any) -> int | None:
             raise ValueError(f"encoder_cutoff {value!r} is not an ISO 8601 timestamp") from None
     if isinstance(value, dt.date):
         return _since_epoch(value) // dt.timedelta(microseconds=1) * 1_000
-    raise TypeError(f"encoder_cutoff must be a timestamp string or datetime, not {value!r}")
+    raise TypeError(
+        f"encoder_cutoff must be a timestamp string, datetime or epoch seconds, not {value!r}"
+    )
 
 
 def fit_from_stats(identity: str, encoder: TableColumnEncoder, stats: ColumnStats) -> FittedEncoder:

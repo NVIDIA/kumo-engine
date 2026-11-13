@@ -40,7 +40,6 @@ from kumo.pytorch.column_stats import (
     table_column_encoders,
 )
 from kumo.pytorch.contract.sample import SampleRequest
-from kumo.pytorch.data.records import cutoff_to_epoch
 from kumo.pytorch.dataset import Dataset, TableSource
 from kumo.pytorch.encoding import FittedEncoder
 from kumo.pytorch.engine import AnchorTask, Engine, SampleSource
@@ -309,7 +308,7 @@ class Plan:
         if not encoders or column_stats is None or not fitting:
             return {}, {}
         latest = (
-            max(cutoff_to_epoch(request.as_of_time) for request in fitting) * 10**9
+            max(cutoff_nanos(request.as_of_time) for request in fitting)
             if self.contract.requires_anchor_time
             else None
         )
