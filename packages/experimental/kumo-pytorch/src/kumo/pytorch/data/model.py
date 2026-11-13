@@ -49,6 +49,11 @@ class ModelSourceBatch:
     splits: tuple[str | None, ...]
     request_metadata: tuple[Mapping[str, Any], ...]
     ordered_events: Mapping[tuple[str, str], ModelSequence] = field(default_factory=dict)
+    # Optional native permutation backend; values stay in these Arrow buffers.
+    merge_event_streams: Any = None
+    # Iterator-produced ordering; keys describe the declared component selection.
+    merged_events: Mapping[Any, Any] = field(default_factory=dict)
+    runtime_batch: Any = None
 
     @property
     def batch_size(self) -> int:

@@ -249,7 +249,12 @@ class Plan:
             if issues:
                 raise ValidationError(issues)
             declares_splits = anchors.split is not None
-            task_anchors: AnchorTask = self.engine.materialize_anchors(anchors)
+            materializer = getattr(source, "materialize_anchors", None)
+            task_anchors: AnchorTask = (
+                materializer(anchors, self.contract.sample)
+                if materializer is not None
+                else self.engine.materialize_anchors(anchors)
+            )
             anchors_fingerprint = _fingerprint(anchors)
         else:
             requests = tuple(anchors)

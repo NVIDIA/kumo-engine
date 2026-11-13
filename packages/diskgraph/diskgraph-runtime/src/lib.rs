@@ -1113,6 +1113,11 @@ pub struct RuntimeBatchIterator {
     stage_table_catalog_key: String,
     stage_table: Arc<TableReader>,
     plan: SamplingPlan,
+    neighborhoods: Vec<(
+        String,
+        SamplingPlan,
+        Arc<diskgraph_engine::state::ResolvedProjection>,
+    )>,
     /// The plan's feature projection, resolved against this graph ONCE at build
     /// time and shared by every batch this iterator yields (`Arc` clone =
     /// refcount bump). Resolving per batch would redo the same node-type and
@@ -1219,6 +1224,14 @@ impl RuntimeIndex {
             engine,
             namespace,
         })
+    }
+
+    /// Share the combined reader with history/lookup consumers without reopening it.
+    pub fn shared_context(&self) -> (
+        Arc<diskgraph_index::graph::GraphIndexReader>,
+        Arc<DiskGraphEngine>,
+    ) {
+        (Arc::clone(&self.reader), Arc::clone(&self.engine))
     }
 
     /// Build an iterator over one (stage, epoch, shard) of this index.
@@ -1582,7 +1595,10 @@ impl RuntimeBatchIterator {
                 shuffle,
                 rnd_seed,
                 epoch,
-                &stage_catalog_key,
+                // The caller's logical stage identifies its random stream.
+                // The catalog namespace may be a fresh temporary TT directory;
+                // including that path would reseed identical reopened tasks.
+                &stage_table,
                 0,
             )?
         };
@@ -1644,6 +1660,7 @@ impl RuntimeBatchIterator {
             stage_table: stage_table_arc,
             feature_projection,
             plan: sampling_plan,
+            neighborhoods: Vec::new(),
             flags: SamplingFlags {
                 replace,
                 directed: true,
@@ -1711,6 +1728,58 @@ impl RuntimeBatchIterator {
     /// Return the number of rows in the selected stage table.
     pub fn stage_size(&self) -> u64 {
         self.stage_table.node_count()
+    }
+
+    /// Resolve all named plans once; they share this iterator's selected rows.
+    pub fn with_neighborhoods(&mut self, specs: &str) -> Result<()> {
+        let specs: std::collections::BTreeMap<String, serde_json::Value> =
+            serde_json::from_str(specs)
+                .map_err(|e| RuntimeError::config(format!("invalid neighborhoods: {e}")))?;
+        self.neighborhoods = specs
+            .into_iter()
+            .map(|(name, value)| {
+                let plan = serde_json::from_value(value["plan"].clone()).map_err(|e| {
+                    RuntimeError::config(format!("invalid neighborhood {name}: {e}"))
+                })?;
+                let projections = serde_json::from_value(value["projections"].clone())
+                    .map_err(|e| RuntimeError::config(format!("invalid projection {name}: {e}")))?;
+                Ok((
+                    name,
+                    plan,
+                    Arc::new(self.engine.resolve_projection(&projections)),
+                ))
+            })
+            .collect::<Result<_>>()?;
+        Ok(())
+    }
+
+    pub fn add_neighborhoods(&self, batch: &mut RuntimeBatch) -> Result<()> {
+        if self.neighborhoods.is_empty() {
+            return Ok(());
+        }
+        let root = self
+            .entity_node_type
+            .as_deref()
+            .ok_or_else(|| RuntimeError::config("neighborhood root is required"))?;
+        for (name, plan, projection) in &self.neighborhoods {
+            let result = self
+                .engine
+                .sample_runtime_neighborhood(
+                    &self.stage_table_catalog_key,
+                    root,
+                    &batch.task,
+                    name,
+                    plan,
+                    &self.flags,
+                    Arc::clone(projection),
+                )
+                .map_err(RuntimeError::from)?;
+            batch.graphs.extend(result.graphs);
+            for (table, values) in result.raw_features {
+                batch.raw_features.insert(format!("{name}/{table}"), values);
+            }
+        }
+        Ok(())
     }
 
     /// Yield the next native batch, or None at exhaustion; propagate sampling errors.

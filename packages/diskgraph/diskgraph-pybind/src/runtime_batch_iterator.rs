@@ -297,6 +297,17 @@ impl RuntimeIndex {
         })
     }
 
+    /// A sampler view over this runtime's combined reader; does not open files.
+    pub fn sampler(&self) -> crate::SamplerEngine {
+        let (reader, engine) = self.inner.shared_context();
+        crate::SamplerEngine {
+            reader,
+            engine,
+            pool: diskgraph_engine::state::StatePool::new(),
+            sample_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
     /// Build an iterator over one (stage, epoch, shard) of this index.
     ///
     /// Cheap: no mmap, no decoders, no thread pool. Call it once per epoch, or
@@ -524,6 +535,13 @@ impl RuntimeBatchIterator {
         self.inner.stage_size()
     }
 
+    /// Attach named neighborhoods to the SAME native anchor schedule.
+    pub fn with_neighborhoods(&mut self, specs: String) -> PyResult<()> {
+        self.inner
+            .with_neighborhoods(&specs)
+            .map_err(map_runtime_err)
+    }
+
     /// Attach history work once per epoch; next_batch remains the only batch call.
     pub fn with_history(
         &mut self,
@@ -557,9 +575,12 @@ impl RuntimeBatchIterator {
     pub fn next_batch(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         let next = py.detach(|| {
             let batch = self.inner.next_batch().map_err(map_runtime_err)?;
-            let Some(batch) = batch else {
+            let Some(mut batch) = batch else {
                 return Ok(None);
             };
+            self.inner
+                .add_neighborhoods(&mut batch)
+                .map_err(map_runtime_err)?;
             let history = self
                 .history
                 .as_ref()
