@@ -17,7 +17,7 @@ pub fn node_chunks(table: &TableReader) -> Vec<(usize, u64, u64)> {
     (0..table.shard_count())
         .filter_map(|shard| {
             let (min, max) = table.shard_id_range(shard)?;
-            (min <= max).then_some((shard, max - min + 1))
+            (min <= max).then(|| (shard, max - min + 1))
         })
         .flat_map(|(shard, nodes)| {
             (0..nodes)
