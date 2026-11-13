@@ -1110,7 +1110,7 @@ def fitted_state(case: GeneratedCase, engine: str, position: int) -> None:
         reference, actual = fitted_structure(states["in_memory"]), fitted_structure(states[engine])
         for identity, values in _bucket_values(case, contract).items():
             cuts = [state["encoders"][identity]["boundaries"] for state in (reference, actual)]
-            ranks = [[bisect.bisect_right(values, cut) for cut in side] for side in cuts]
+            ranks = [[bisect.bisect_left(values, cut) for cut in side] for side in cuts]
             if len(ranks[0]) == len(ranks[1]) and all(
                 abs(left - right) <= BUCKET_RANKS for left, right in zip(*ranks, strict=True)
             ):
