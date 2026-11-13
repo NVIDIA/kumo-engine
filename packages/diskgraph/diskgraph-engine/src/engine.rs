@@ -2398,6 +2398,11 @@ impl DiskGraphEngine {
             .node_data()
             .map_err(|e| EngineError::DataCorruption(e.to_string()))?
         {
+            let data = if data.is_empty() {
+                decoder.null_row()
+            } else {
+                data
+            };
             let context = decoder.context();
             // Drop reserved columns (e.g. WEIGHT) from features via a per-column
             // mask; `flush_fused_features` projects the flush schema to the same
@@ -2577,7 +2582,11 @@ impl DiskGraphEngine {
                                 global_id
                             ))
                         })?;
-                    raw_rows.push(data);
+                    raw_rows.push(if data.is_empty() {
+                        decoder.null_row()
+                    } else {
+                        data
+                    });
                 }
 
                 let unique_batch = decoder
