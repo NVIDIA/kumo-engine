@@ -994,6 +994,15 @@ def validate(
         if key in exceptions:
             errors.append("duplicate package-and-version policy exception")
         exceptions[key] = item
+    overrides = {
+        _exception_key(item): item
+        for item in _valid_keyed_records(
+            policy.get("expression_overrides", []),
+            "policy expression override",
+            ("ecosystem", "name", "version", "license_expression", "reason"),
+            errors,
+        )
+    }
     components = _valid_keyed_records(
         inventory.get("components", []),
         "inventory component",
@@ -1051,6 +1060,7 @@ def validate(
     ids: set[str] = set()
     component_keys: set[tuple[str, str, str]] = set()
     used_exceptions: set[tuple[str, str, str]] = set()
+    used_overrides: set[tuple[str, str, str]] = set()
     referenced_texts: set[str] = set()
     for component in components:
         identity = component.get("id", "<missing id>")
@@ -1065,7 +1075,13 @@ def validate(
         expression = component.get("license_expression", "")
         elected = component.get("elected_licenses", [])
         declared = component.get("declared_expression", "")
-        if component.get("ecosystem") == "rust":
+        if key in overrides:
+            used_overrides.add(key)
+            if overrides[key]["license_expression"] != expression:
+                errors.append(
+                    f"{identity}: license expression disagrees with its policy override"
+                )
+        elif component.get("ecosystem") == "rust":
             try:
                 if _choices(declared_spdx(declared)) != _choices(
                         parse_spdx(expression)):
@@ -1231,6 +1247,9 @@ def validate(
     stale_exceptions = sorted(set(exceptions) - used_exceptions)
     if stale_exceptions:
         errors.append(f"stale policy exceptions: {stale_exceptions}")
+    stale_overrides = sorted(set(overrides) - used_overrides)
+    if stale_overrides:
+        errors.append(f"stale policy expression overrides: {stale_overrides}")
 
     known_artifact_ids: set[str] = set()
     recorded_scopes: dict[str, set[str]] = {}
