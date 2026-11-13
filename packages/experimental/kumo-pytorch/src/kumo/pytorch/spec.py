@@ -729,6 +729,8 @@ def _encode(value: Any) -> Any:
 
     if is_dataclass(value) and not isinstance(value, type):
         arguments = {item.name: _encode(getattr(value, item.name)) for item in fields(value)}
+        if type(value).__name__ == "IdSpace" and not value.special_ids:
+            del arguments["special_ids"]
         if type(value).__name__ == "Vocabulary" and value.values is not None:
             arguments["values"] = [
                 _encode(item) for item in sorted(value.values, key=lambda item: item[1])
