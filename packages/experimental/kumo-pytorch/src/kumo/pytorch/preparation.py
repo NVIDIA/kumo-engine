@@ -38,6 +38,7 @@ from kumo.pytorch.column_stats import (
     cutoff_nanos,
     fit_from_stats,
     table_column_encoders,
+    token_length_columns,
 )
 from kumo.pytorch.contract.batch.encodings import Text
 from kumo.pytorch.contract.sample import SampleRequest
@@ -286,6 +287,17 @@ class Plan:
                 inference=inference,
                 pinned=pinned,
             )
+            token_lengths = getattr(source, "token_lengths", None)
+            if token_lengths is not None and input_state is None:
+                files = {
+                    table: token_lengths(table, columns, statistics.get("cutoff"))
+                    for table, columns in token_length_columns(self.contract, assembler).items()
+                }
+                if files:
+                    fit["inputs"] = {
+                        **fit["inputs"],
+                        "statistics": {**statistics, "token_lengths": files},
+                    }
         except BaseException:
             task_anchors.close()
             raise

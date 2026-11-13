@@ -106,6 +106,54 @@ class TableColumnEncoder:
         return f"{_cutoff_dir(ticks, unit)}/{table}.{column}.text-{digest}.tokenizer.json"
 
 
+#: A stored column the model reads, with its fitted tokenizer's JSON if it is ``Text``.
+LengthColumn = tuple[str, str | None]
+
+
+def token_length_columns(contract: Any, plan: Any) -> dict[str, tuple[LengthColumn, ...]]:
+    """Each event table's stored columns that the inputs of a fitted plan read."""
+
+    columns: dict[str, set[LengthColumn]] = {}
+    for name, value in sorted(contract.batch.inputs.items()):
+        if not isinstance(value.representation, Fields):
+            continue
+        for use in value.representation.fields:
+            encoder = plan.output(name=name).field(name=use.field).encoder
+            tokenizer = encoder.tokenizer_json if isinstance(encoder.config, Text) else None
+            for variant, _, _ in resolved_fields(contract, name, use.field):
+                stored = _stored_column(contract.sample, contract.schema, variant)
+                if stored is not None and variant[0] in {"events", "current_events"}:
+                    columns.setdefault(stored[0], set()).add((stored[1], tokenizer))
+    return {
+        table: tuple(sorted(items, key=lambda item: (item[0], item[1] or "")))
+        for table, items in sorted(columns.items())
+    }
+
+
+def token_lengths_file(
+    table: str, columns: Sequence[LengthColumn], ticks: int | None, unit: str
+) -> str:
+    import diskgraph
+
+    settings = [
+        [
+            [column, None if tokenizer is None else hashlib.sha256(tokenizer.encode()).hexdigest()]
+            for column, tokenizer in columns
+        ],
+        diskgraph.TOKENIZER_TRAINER,
+    ]
+    digest = hashlib.sha256(json.dumps(settings).encode()).hexdigest()[:16]
+    return f"{_cutoff_dir(ticks, unit)}/{file_name_part(table)}.lengths-{digest}.bin"
+
+
+def read_token_lengths(path: str | Path) -> np.ndarray:
+    """A token lengths file's per-node counts, memory-mapped, indexed by node ID."""
+
+    if not Path(path).stat().st_size:
+        return np.zeros(0, dtype="<u2")
+    return np.memmap(path, dtype="<u2", mode="r")
+
+
 def stats_request(
     requests: Sequence[StatRequest], cutoffs: Sequence[int | None], unit: str
 ) -> dict:
