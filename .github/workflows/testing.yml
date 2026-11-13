@@ -758,6 +758,7 @@ jobs:
             -name 'kumo_pytorch-*.whl' -print -quit)
           test -n "$wheel" && test -n "$settings" && test -n "$pytorch"
           uv pip install --no-deps "$wheel" "$settings" "$pytorch"
+          uv pip install "ray>=2.40,<3"
           python - <<'PY'
           from pathlib import Path
 

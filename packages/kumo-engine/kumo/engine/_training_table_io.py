@@ -12,10 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from kumo_core.diskgraph.sampling_artifacts import (
-    ArtifactBundle,
-    ArtifactFile,
-)
+from kumo_core.diskgraph.sampling_artifacts import ArtifactBundle, ArtifactFile
 
 if TYPE_CHECKING:
     from kumo.engine._mlops import MLOps

@@ -140,7 +140,7 @@ def test_portable_restore_preserves_settings_and_weights(
         id="temporary",
     )
     reconstruct = Mock(return_value=restored)
-    monkeypatch.setattr(kumo.TrainingTable, "from_source_table", reconstruct)
+    monkeypatch.setattr(kumo.TrainingTable, "_from_rows", reconstruct)
     monkeypatch.setattr(
         "kumo.engine.connector.file_store",
         Mock(return_value=(LocalFileSystem(), str(exported))),

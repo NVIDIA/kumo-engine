@@ -144,6 +144,6 @@ covered on this host; do not adapt it.
 
 ## 7. Other deployment modes — out of scope
 
-Hosted Kumo — `kumo.init(...)`, an API key, `KUMO_API_KEY` / `KUMO_API_ENDPOINT`, Kumo Studio — and
+Hosted Kumo — `kumo.init(url=..., api_key=...)`, an API key, `KUMO_API_KEY` / `KUMO_API_ENDPOINT`, Kumo Studio — and
 the Snowflake Native App are not this SDK. If the user is on one of them, say so and stop. Never
 blend their setup into generated code.

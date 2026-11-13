@@ -69,11 +69,12 @@ def test_downloaded_training_rows_bypass_connector_staging(
     import numpy as np
     import pyarrow as pa
     import pyarrow.parquet as pq
-    from kumo.engine._scratch import scoped_scratch_dir
-    from kumo.engine.cluster import _TrainingTablePublication
     from kumo_core.training import table as native_table
     from kumo_core.training.export import export_schema, read_spec, stage_parts
     from kumoapi.typing import Stype
+
+    from kumo.engine._scratch import scoped_scratch_dir
+    from kumo.engine.cluster import _TrainingTablePublication
 
     events_path = tmp_path / "data/events.parquet"
     events = pq.read_table(events_path)

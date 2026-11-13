@@ -350,7 +350,7 @@ publishing a new model in its place; that is a new request for the user to make.
 
 ## 7. Other deployment modes — out of scope
 
-Hosted Kumo — `kumo.init(...)`, an API key, `KUMO_API_KEY` / `KUMO_API_ENDPOINT`, Kumo Studio — is
+Hosted Kumo — `kumo.init(url=..., api_key=...)`, an API key, `KUMO_API_KEY` / `KUMO_API_ENDPOINT`, Kumo Studio — is
 not this SDK, and neither is Kumo through Spark (a Spark DataFrame handed to Kumo; no such
 connector exists). If the user is on one of them, say so and stop. Never blend their setup into
 generated code. A Model Serving endpoint is not something this skill creates: a request to deploy
