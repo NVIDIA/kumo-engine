@@ -484,17 +484,21 @@ impl LengthPlanning {
                         } else {
                             Some(1)
                         };
-                        if metadata.is_some_and(|m| {
+                        let counted_row = metadata.is_some_and(|m| {
                             m.chunks
                                 .first()
                                 .is_some_and(|a| a.data_type() == &arrow_schema::DataType::UInt16)
-                        }) && value == Some(u16::MAX as u64)
-                            && self
-                                .contract
-                                .row_maximum
-                                .is_none_or(|max| max > u16::MAX as usize)
+                        });
+                        if counted_row && value == Some(u16::MAX as u64) {
+                            // The counting recipe marks rows delivery discards.
+                            cost = usize::MAX;
+                            break;
+                        }
+                        if counted_row && !column.validity_only
+                            && value == Some((u16::MAX - 1) as u64)
+                            && self.contract.row_maximum.is_none_or(|max| max > (u16::MAX - 1) as usize)
                         {
-                            return Err(length_error("saturated event token metadata requires a row token cap no greater than 65535"));
+                            return Err(length_error("saturated event token metadata requires a row token cap no greater than 65534"));
                         }
                         if column.required && value.is_none() {
                             cost = usize::MAX;

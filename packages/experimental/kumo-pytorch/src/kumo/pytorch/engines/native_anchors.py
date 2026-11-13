@@ -417,10 +417,14 @@ class NativeAnchors:
                 cutoff, "nanoseconds", self._source._clock, rounding="floor"
             )
         )
-        for table, (constant, columns) in token_length_columns(contract, assembler).items():
+        for table, (constant, columns, required) in token_length_columns(
+            contract, assembler
+        ).items():
             entry = statistics.get("token_lengths", {}).get(table)
             expected = (
-                token_lengths_file(table, columns, ticks, self._source._clock) if columns else None
+                token_lengths_file(table, columns, required, ticks, self._source._clock)
+                if columns or required
+                else None
             )
             if entry != {"constant": constant, "file": expected}:
                 raise ValueError(
@@ -430,8 +434,8 @@ class NativeAnchors:
             if values is not None:
                 self._token_maps.append(values)
             self._event_costs[table] = dict(
-                columns=selected[table],
-                text_columns=dict(columns),
+                columns=selected.get(table, set()),
+                text_columns={column: tokenizer for column, tokenizer, _ in columns},
                 constant=fixed,
                 values=None if values is None else self._pa.array(values),
             )
@@ -493,18 +497,34 @@ class NativeAnchors:
             event = assembler._model_sample.events[logical]
             costs = []
             fixed[sequence["name"]] = 0
-            if isinstance(spec.representation.row, (Columns, Composite)):
-                # Row/compound inputs measure history events, not field tokens.
-                columns[sequence["name"]] = []
-                sequence["columns"] = [compiled.sequences[sequence["name"]].primary_key]
-                continue
-
             from kumo.pytorch.contract.sample import destination_table
 
             table_name = destination_table(
                 self._source.schema, self._sample.entity.table, event.rows.path
             )
             stored_costs = event_costs.get(table_name)
+            if isinstance(spec.representation.row, (Columns, Composite)):
+                # Row/compound inputs cost one event, but counting metadata still
+                # decides whether Composite.required_fields drops that event.
+                if (
+                    isinstance(spec.representation.row, Composite)
+                    and stored_costs
+                    and stored_costs["values"] is not None
+                ):
+                    key = f"stored-event:{table_name}"
+                    token_lengths[key] = [stored_costs["values"]]
+                    costs.append(
+                        dict(
+                            column="",
+                            metadata=key,
+                            missing_token=False,
+                            required=False,
+                            validity_only=True,
+                        )
+                    )
+                columns[sequence["name"]] = costs
+                sequence["columns"] = [compiled.sequences[sequence["name"]].primary_key]
+                continue
             if stored_costs and isinstance(spec.representation.row, Tokens):
                 declared_columns = [
                     event.fields[item[0][-1]].column

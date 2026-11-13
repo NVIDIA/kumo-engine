@@ -592,3 +592,110 @@ def test_fixed_width_costs_never_scan_or_allocate_per_row_lengths(
                         actual.inputs["history"]["value_ids"][lengths[i] : lengths[i + 1]].tolist()
                         == reference.tolist()
                     )
+
+
+@pytest.mark.parametrize("composite", [False, True])
+def test_counting_policies_are_used_by_native_budget_planning(
+    history_data, tmp_path, monkeypatch, composite
+):
+    from dataclasses import replace
+
+    from tokenizers import Tokenizer
+    from tokenizers.models import BPE
+
+    from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
+
+    schema, dataset, _, _, _ = history_data
+    kinds = ["a", None, "a", "a", "a"] if composite else ["a", "", "", "", "", ""]
+    path = tmp_path / "counted-events.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "id": list(range(len(kinds))),
+                "owner": [1] * len(kinds),
+                "at": pa.array(list(range(1, len(kinds) + 1)), type=pa.timestamp("s")),
+                "amount": [1.0] * len(kinds),
+                "kind": kinds,
+            }
+        ),
+        path,
+    )
+    dataset = replace(dataset, tables={**dataset.tables, "orders": api.Parquet(str(path))})
+    tokenizer = Tokenizer(
+        BPE(vocab={"[MISSING]": 0, "[UNK]": 1, "a": 2}, merges=[], unk_token="[UNK]")
+    )
+    sample = api.SampleSpec(
+        api.EntitySpec("users"),
+        events={
+            "history": api.EventSpec(
+                api.Rows(("orders",), api.TimeWindow("at", stop=0)), {"text": api.Field("kind")}
+            )
+        },
+    )
+    fields = api.Fields(
+        (
+            api.Encode(
+                "text",
+                api.Vocabulary()
+                if composite
+                else api.Text(state=tokenizer.to_str(), empty="unknown"),
+                id_space=None if composite else "words",
+            ),
+        ),
+        row=api.Composite(required_fields=("text",)) if composite else api.Tokens(),
+        history=api.Grouped() if composite else api.Flatten(100),
+    )
+    contract = api.DataLoaderSpec(
+        schema,
+        sample,
+        api.BatchSpec(
+            {
+                "history": api.Input(
+                    api.EventSource(("history",)),
+                    fields,
+                    api.Padded() if composite else api.Packed(),
+                )
+            },
+            id_spaces={} if composite else {"words": api.IdSpace({"pad": "pad"})},
+            batching=api.Batching(
+                max_samples=2,
+                max_tokens=4 if composite else 1,
+                length_input="history",
+                bucket_by_length=True,
+            ),
+        ),
+    )
+    anchors_path = tmp_path / "counted-anchors.parquet"
+    pq.write_table(pa.table({"entity": [1], "cutoff": [10]}), anchors_path)
+    anchors = api.AnchorTable(api.Parquet(str(anchors_path)), "entity", "cutoff")
+    with api.prepare(
+        contract, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
+    ) as plan:
+        with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
+            if not composite:
+                with pytest.raises(
+                    diskgraph.DiskgraphConfigError, match="one sample exceeds Batching.max_tokens"
+                ):
+                    list(task.batches(shuffle=False, output_format="model"))
+                return
+            native = task._anchors
+            task._anchors = ParquetAnchors(anchors)
+            try:
+                expected = list(task.batches(shuffle=False, output_format="model"))
+            finally:
+                task._anchors.close()
+                task._anchors = native
+            assert len(expected) == 1
+
+            def forbidden(*args, **kwargs):
+                pytest.fail(
+                    "native validity counting reconstructed requests or encoded for planning"
+                )
+
+            monkeypatch.setattr(native, "_requests", forbidden)
+            monkeypatch.setattr(task._assembler, "_model_lengths", forbidden)
+            for epoch in (0, 1):
+                actual = list(task.batches(shuffle=False, epoch=epoch, output_format="model"))
+                assert len(actual) == 1
+                _equal(actual[0].inputs, expected[0].inputs)
+                assert native._last_length_planning_stats == ((1, 0) if epoch == 0 else (0, 1))
