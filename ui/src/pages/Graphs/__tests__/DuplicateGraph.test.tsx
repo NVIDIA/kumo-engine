@@ -101,6 +101,7 @@ describe("DuplicateGraphPage", () => {
             validateWithFailure?: boolean;
             validateWithInvalid?: boolean;
             validateWithInvalidSuccess?: boolean;
+            createWithFailure?: boolean;
             validName?: string;
         }
     ) => {
@@ -112,8 +113,10 @@ describe("DuplicateGraphPage", () => {
         await executeGraphCreationFlow(args, clickSubmitButton, {
             validateWithFailure: options.validateWithFailure,
             validateWithInvalid: options.validateWithInvalid,
+            validateWithInvalidSuccess: options.validateWithInvalidSuccess,
+            createWithFailure: options.createWithFailure,
             validName: "ltv_graph_copy",
-            forceRename: true
+            forceRename: false
         });
     };
 
@@ -191,6 +194,12 @@ describe("DuplicateGraphPage", () => {
             mockNewDeuplicateGraphResponse as GraphDefinition,
             {
                 validateWithInvalidSuccess: true
+            }
+        );
+        await duplicateGraphApiCallTest(
+            mockNewDeuplicateGraphResponse as GraphDefinition,
+            {
+                createWithFailure: true
             }
         );
         await duplicateGraphApiCallTest(
