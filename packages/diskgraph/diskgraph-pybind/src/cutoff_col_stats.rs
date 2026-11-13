@@ -39,7 +39,7 @@ use crate::{map_anyhow_err, DiskgraphConfigError};
 const CHUNK_NODES: u64 = 1 << 16;
 const TEXT_CHUNK_NODES: u64 = 1 << 10;
 const TEXT_WINDOW_CHUNKS: usize = 1 << 10;
-const TOKENIZER_TRAINER: &str = "tokenizers 0.23.2 fancy-regex";
+const TOKENIZER_TRAINER: &str = "tokenizers 0.23.2 onig";
 
 type WordCounts = AHashMap<CompactString, u64>;
 

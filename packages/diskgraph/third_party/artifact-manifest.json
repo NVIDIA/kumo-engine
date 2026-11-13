@@ -454,20 +454,6 @@
           "version": "1.3.3"
         },
         {
-          "license": "Apache-2.0 OR MIT",
-          "name": "bit-set",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "source_kind": "registry-or-git",
-          "version": "0.8.0"
-        },
-        {
-          "license": "Apache-2.0 OR MIT",
-          "name": "bit-vec",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "source_kind": "registry-or-git",
-          "version": "0.8.0"
-        },
-        {
           "license": "MIT/Apache-2.0",
           "name": "bitflags",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
@@ -991,13 +977,6 @@
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "source_kind": "registry-or-git",
           "version": "0.1.10"
-        },
-        {
-          "license": "MIT",
-          "name": "fancy-regex",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "source_kind": "registry-or-git",
-          "version": "0.17.0"
         },
         {
           "license": "MIT OR Apache-2.0",
@@ -1782,6 +1761,20 @@
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "source_kind": "registry-or-git",
           "version": "1.21.4"
+        },
+        {
+          "license": "MIT",
+          "name": "onig",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "6.5.3"
+        },
+        {
+          "license": "MIT",
+          "name": "onig_sys",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "69.9.3"
         },
         {
           "license": "MIT OR Apache-2.0",
@@ -5802,20 +5795,6 @@
           "version": "1.3.3"
         },
         {
-          "license": "Apache-2.0 OR MIT",
-          "name": "bit-set",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "source_kind": "registry-or-git",
-          "version": "0.8.0"
-        },
-        {
-          "license": "Apache-2.0 OR MIT",
-          "name": "bit-vec",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "source_kind": "registry-or-git",
-          "version": "0.8.0"
-        },
-        {
           "license": "MIT OR Apache-2.0",
           "name": "bitflags",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
@@ -6311,13 +6290,6 @@
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "source_kind": "registry-or-git",
           "version": "0.1.10"
-        },
-        {
-          "license": "MIT",
-          "name": "fancy-regex",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "source_kind": "registry-or-git",
-          "version": "0.17.0"
         },
         {
           "license": "MIT OR Apache-2.0",
@@ -7053,6 +7025,20 @@
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "source_kind": "registry-or-git",
           "version": "1.70.2"
+        },
+        {
+          "license": "MIT",
+          "name": "onig",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "6.5.3"
+        },
+        {
+          "license": "MIT",
+          "name": "onig_sys",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "69.9.3"
         },
         {
           "license": "MIT",
@@ -10576,6 +10562,6 @@
       ]
     }
   ],
-  "cargo_lock_sha256": "fdf0dd5a686e5614ceb6204643d43251e2b57e6d8797192978af1bcf635ee4e1",
+  "cargo_lock_sha256": "15d806ee8ba1952f557cf431d813b18d51352e4f87396ef04acc93434b6dce05",
   "schema": 1
 }

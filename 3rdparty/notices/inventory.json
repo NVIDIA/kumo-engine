@@ -109,8 +109,6 @@
         "rust:base64@0.22.1",
         "rust:base64@0.23.1",
         "rust:bincode@1.3.3",
-        "rust:bit-set@0.8.0",
-        "rust:bit-vec@0.8.0",
         "rust:bitflags@1.3.2",
         "rust:bitflags@2.13.0",
         "rust:bitvec@1.0.1",
@@ -176,7 +174,6 @@
         "rust:equivalent@1.0.2",
         "rust:errno@0.3.14",
         "rust:esaxx-rs@0.1.10",
-        "rust:fancy-regex@0.17.0",
         "rust:fast-float2@0.2.4",
         "rust:fasteval@0.2.4",
         "rust:fastrand@2.4.1",
@@ -289,6 +286,8 @@
         "rust:object-store@0.13.2",
         "rust:object@0.37.3",
         "rust:once-cell@1.21.4",
+        "rust:onig-sys@69.9.3",
+        "rust:onig@6.5.3",
         "rust:openssl-probe@0.2.1",
         "rust:outref@0.5.2",
         "rust:parking-lot-core@0.9.12",
@@ -933,8 +932,6 @@
         "rust:base64@0.22.1",
         "rust:base64@0.23.1",
         "rust:bincode@1.3.3",
-        "rust:bit-set@0.8.0",
-        "rust:bit-vec@0.8.0",
         "rust:bitflags@2.13.0",
         "rust:bitvec@1.0.1",
         "rust:block-buffer@0.10.4",
@@ -996,7 +993,6 @@
         "rust:equivalent@1.0.2",
         "rust:error-code@2.3.1",
         "rust:esaxx-rs@0.1.10",
-        "rust:fancy-regex@0.17.0",
         "rust:fast-float2@0.2.4",
         "rust:fasteval@0.2.4",
         "rust:fastrand@2.4.1",
@@ -1102,6 +1098,8 @@
         "rust:object-store@0.13.2",
         "rust:once-cell-polyfill@1.70.2",
         "rust:once-cell@1.21.4",
+        "rust:onig-sys@69.9.3",
+        "rust:onig@6.5.3",
         "rust:outref@0.5.2",
         "rust:parking-lot-core@0.9.12",
         "rust:parking-lot@0.12.5",
@@ -3873,72 +3871,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-extension-windows"
-      ],
-      "copyright": [
-        "Copyright (c) 2023 The Rust Project Developers"
-      ],
-      "declared_expression": "Apache-2.0 OR MIT",
-      "ecosystem": "rust",
-      "elected_licenses": [
-        "Apache-2.0"
-      ],
-      "expression_source": "index.crates.io-1949cf8c6b5b557f/bit-set-0.8.0/LICENSE-APACHE",
-      "files": [
-        {
-          "path": "LICENSE-APACHE",
-          "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
-          "source": "cargo-package"
-        },
-        {
-          "path": "LICENSE-MIT",
-          "sha256": "f51ac2c59a222f7476ce507ca879960e2b64ea64bb2786eefdbeb7b0b538d1b7",
-          "source": "cargo-package"
-        }
-      ],
-      "id": "rust:bit-set@0.8.0",
-      "license_expression": "Apache-2.0 OR MIT",
-      "name": "bit-set",
-      "origin": "https://github.com/contain-rs/bit-set",
-      "version": "0.8.0",
-      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
-    },
-    {
-      "artifact_ids": [
-        "diskgraph-extension",
-        "diskgraph-extension-windows"
-      ],
-      "copyright": [
-        "Copyright (c) 2023 The Rust Project Developers"
-      ],
-      "declared_expression": "Apache-2.0 OR MIT",
-      "ecosystem": "rust",
-      "elected_licenses": [
-        "Apache-2.0"
-      ],
-      "expression_source": "index.crates.io-1949cf8c6b5b557f/bit-vec-0.8.0/LICENSE-APACHE",
-      "files": [
-        {
-          "path": "LICENSE-APACHE",
-          "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
-          "source": "cargo-package"
-        },
-        {
-          "path": "LICENSE-MIT",
-          "sha256": "f51ac2c59a222f7476ce507ca879960e2b64ea64bb2786eefdbeb7b0b538d1b7",
-          "source": "cargo-package"
-        }
-      ],
-      "id": "rust:bit-vec@0.8.0",
-      "license_expression": "Apache-2.0 OR MIT",
-      "name": "bit-vec",
-      "origin": "https://github.com/contain-rs/bit-vec",
-      "version": "0.8.0",
-      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
-    },
-    {
-      "artifact_ids": [
-        "diskgraph-extension",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6135,32 +6067,6 @@
       "name": "esaxx-rs",
       "origin": "https://github.com/Narsil/esaxx-rs",
       "version": "0.1.10",
-      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
-    },
-    {
-      "artifact_ids": [
-        "diskgraph-extension",
-        "diskgraph-extension-windows"
-      ],
-      "copyright": [
-        "Copyright 2015 The Fancy Regex Authors"
-      ],
-      "declared_expression": "MIT",
-      "ecosystem": "rust",
-      "elected_licenses": [],
-      "expression_source": "index.crates.io-1949cf8c6b5b557f/fancy-regex-0.17.0/LICENSE",
-      "files": [
-        {
-          "path": "LICENSE",
-          "sha256": "3bc70e239e91272782006c638fc0452a714d384224f11f0923036b7be07cf9b5",
-          "source": "cargo-package"
-        }
-      ],
-      "id": "rust:fancy-regex@0.17.0",
-      "license_expression": "MIT",
-      "name": "fancy-regex",
-      "origin": "https://github.com/fancy-regex/fancy-regex",
-      "version": "0.17.0",
       "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
     },
     {
@@ -9994,6 +9900,61 @@
       "origin": "https://github.com/matklad/once_cell",
       "version": "1.21.4",
       "review_reference": "OSRB-6649311"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [
+        "Copyright (c) 2002-2021  K.Kosako  <kkosako0@gmail.com>"
+      ],
+      "declared_expression": "MIT",
+      "ecosystem": "rust",
+      "elected_licenses": [],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/onig_sys-69.9.3/LICENSE.md",
+      "files": [
+        {
+          "path": "LICENSE.md",
+          "sha256": "71f321038b088358004bee991635ac09e4c703bec467d3c30c06992c0595f189",
+          "source": "cargo-package"
+        },
+        {
+          "path": "oniguruma/COPYING",
+          "sha256": "70ba5469ea0bab6e18a32d7009068f996503168d27be57747e08da34337ff26f",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:onig-sys@69.9.3",
+      "license_expression": "MIT AND BSD-2-Clause",
+      "name": "onig_sys",
+      "origin": "https://github.com/rust-onig/rust-onig",
+      "version": "69.9.3",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [],
+      "declared_expression": "MIT",
+      "ecosystem": "rust",
+      "elected_licenses": [],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/onig-6.5.3/LICENSE.md",
+      "files": [
+        {
+          "path": "LICENSE.md",
+          "sha256": "e9c1238c5beb73c6cc130160418968058b21d486a7a445f0ceff27d51fbfdc44",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:onig@6.5.3",
+      "license_expression": "MIT",
+      "name": "onig",
+      "origin": "https://github.com/iwillspeak/rust-onig",
+      "version": "6.5.3",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
     },
     {
       "artifact_ids": [
@@ -15885,8 +15846,9 @@
     "27995d58ad5c1145c1a8cd86244ce844886958a35eb2b78c6b772748669999ac": "Copyright (c) 2018 Josh Stone\n\nPermission is hereby granted, free of charge, to any\nperson obtaining a copy of this software and associated\ndocumentation files (the \"Software\"), to deal in the\nSoftware without restriction, including without\nlimitation the rights to use, copy, modify, merge,\npublish, distribute, sublicense, and/or sell copies of\nthe Software, and to permit persons to whom the Software\nis furnished to do so, subject to the following\nconditions:\n\nThe above copyright notice and this permission notice\nshall be included in all copies or substantial portions\nof the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF\nANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED\nTO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A\nPARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT\nSHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY\nCLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION\nOF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR\nIN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER\nDEALINGS IN THE SOFTWARE.\n",
     "ea084a2373ebc1f0902c09266e7bf25a05ab3814c1805bb017ffa7308f90c061": "MIT License\n\nCopyright (c) 2017 Nikolai Vazquez\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n",
     "98a817e7b85e5fe4e79d165c656a4a139793b8b643d0f3d9cbcc3538ef82ec82": "Copyright (c) 2015 The unicode-categories Developers\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n",
-    "f51ac2c59a222f7476ce507ca879960e2b64ea64bb2786eefdbeb7b0b538d1b7": "Copyright (c) 2023 The Rust Project Developers\n\nPermission is hereby granted, free of charge, to any\nperson obtaining a copy of this software and associated\ndocumentation files (the \"Software\"), to deal in the\nSoftware without restriction, including without\nlimitation the rights to use, copy, modify, merge,\npublish, distribute, sublicense, and/or sell copies of\nthe Software, and to permit persons to whom the Software\nis furnished to do so, subject to the following\nconditions:\n\nThe above copyright notice and this permission notice\nshall be included in all copies or substantial portions\nof the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF\nANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED\nTO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A\nPARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT\nSHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY\nCLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION\nOF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR\nIN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER\nDEALINGS IN THE SOFTWARE.\n",
-    "3bc70e239e91272782006c638fc0452a714d384224f11f0923036b7be07cf9b5": "The MIT License\n\nCopyright 2015 The Fancy Regex Authors.\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in\nall copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN\nTHE SOFTWARE.\n"
+    "e9c1238c5beb73c6cc130160418968058b21d486a7a445f0ceff27d51fbfdc44": "# Rust-Onig is Open Source!\n\nAll source code in this repository is distributed under the terms of\nthe *MIT License* unless otherwise stated. The Oniguruma source code\nremains the property of the original authors and is re-distributed\nunder the original license.\n\n> The MIT License (MIT)\n> \n> Copyright (c) 2015 Will Speak <will@willspeak.me>, Ivan Ivashchenko\n> <defuz@me.com>, and contributors.\n> \n> Permission is hereby granted, free of charge, to any person obtaining a copy\n> of this software and associated documentation files (the \"Software\"), to deal\n> in the Software without restriction, including without limitation the rights\n> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n> copies of the Software, and to permit persons to whom the Software is\n> furnished to do so, subject to the following conditions:\n> \n> The above copyright notice and this permission notice shall be included in all\n> copies or substantial portions of the Software.\n> \n> THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n> SOFTWARE.\n",
+    "71f321038b088358004bee991635ac09e4c703bec467d3c30c06992c0595f189": "# Rust-Onig is Open Source!\n\nAll source code in this repository is distributed under the terms of\nthe *MIT License* unless otherwise stated. The Oniguruma source code\nremains the property of the original authors and is re-distributed\nunder the original license, see [COPYING](oniguruma/COPYING) for more\ninformation.\n\n> The MIT License (MIT)\n> \n> Copyright (c) 2015 Will Speak <will@willspeak.me>, Ivan Ivashchenko\n> <defuz@me.com>, and contributors.\n> \n> Permission is hereby granted, free of charge, to any person obtaining a copy\n> of this software and associated documentation files (the \"Software\"), to deal\n> in the Software without restriction, including without limitation the rights\n> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n> copies of the Software, and to permit persons to whom the Software is\n> furnished to do so, subject to the following conditions:\n> \n> The above copyright notice and this permission notice shall be included in all\n> copies or substantial portions of the Software.\n> \n> THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n> SOFTWARE.\n",
+    "70ba5469ea0bab6e18a32d7009068f996503168d27be57747e08da34337ff26f": "Oniguruma LICENSE\n-----------------\n\nCopyright (c) 2002-2021  K.Kosako  <kkosako0@gmail.com>\nAll rights reserved.\n\nRedistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions\nare met:\n1. Redistributions of source code must retain the above copyright\n   notice, this list of conditions and the following disclaimer.\n2. Redistributions in binary form must reproduce the above copyright\n   notice, this list of conditions and the following disclaimer in the\n   documentation and/or other materials provided with the distribution.\n\nTHIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND\nANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE\nIMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE\nARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE\nFOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL\nDAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS\nOR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)\nHOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT\nLIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY\nOUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF\nSUCH DAMAGE.\n"
   },
   "tools": {
     "cargo_about": "0.8.4",
