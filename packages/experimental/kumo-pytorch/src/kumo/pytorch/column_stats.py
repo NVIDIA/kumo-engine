@@ -333,6 +333,9 @@ def _bucket_cuts(config: Buckets, datas: Sequence[Mapping[str, Any]], finite: Se
     grids = [(np.asarray(data["quantiles"]), n) for data, n in zip(datas, finite) if n]
     if not grids:
         return ()
+    # Interpolation slopes overflow for values past about 1e289; scale by an exact power of 2.
+    scale = 2.0 ** max(0, math.frexp(max(np.abs(grid).max() for grid, _ in grids))[1] - 960)
+    grids = [(grid / scale, n) for grid, n in grids]
     zeros = (
         sum(count for data in datas for start, count in data["value_bins"] if start == 0.0)
         if config.separate_zero
@@ -346,4 +349,4 @@ def _bucket_cuts(config: Buckets, datas: Sequence[Mapping[str, Any]], finite: Se
     below = (below - zeros * (values >= 0)) / total
     ranges = config.bins - int(config.separate_zero)
     cuts = np.interp(np.linspace(0, 1, ranges + 1)[1:-1], np.maximum.accumulate(below), values)
-    return tuple(float(value) for value in np.unique(cuts))
+    return tuple(float(value * scale) for value in np.unique(cuts))

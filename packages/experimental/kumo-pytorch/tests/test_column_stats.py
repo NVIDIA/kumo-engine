@@ -343,3 +343,38 @@ def test_vocabulary_learns_every_stored_column_type(tmp_path, engine_name):
     if engine_name == "diskgraph":
         (path,) = (tmp_path / "index" / "col_stats").glob("*/*.col_stats.json")
         assert path.name == "%2E%2E%2Fitems%2Fx%20y.col_stats.json"
+
+
+def test_buckets_cut_values_near_the_float_limits():
+    values = [-1.7e308] * 500 + [1.7e308] * 500
+    schema = api.DataSchema(
+        tables=(
+            api.TableSpec(
+                "items",
+                "id",
+                {"id": api.DType("int64"), "v": api.DType("float64")},
+                time_column=api.NON_TEMPORAL,
+            ),
+        )
+    )
+    sample = api.SampleSpec(
+        entity=api.EntitySpec("items", entity_type="item"),
+        entity_values={"v": api.Field(column="v")},
+    )
+    batch = api.BatchSpec(
+        inputs={
+            "entity": api.Input(
+                api.EntitySource(),
+                api.Fields(fields=(api.Encode(field="v", encoding=api.Buckets(bins=4)),)),
+                api.Separate(),
+            )
+        },
+        batching=api.Batching(max_samples=2),
+    )
+    contract = api.DataLoaderSpec(schema=schema, sample=sample, batch=batch)
+    rows = [{"id": i, "v": v} for i, v in enumerate(values)]
+    dataset = api.Dataset({"items": api.InMemoryRows(rows)})
+    with api.prepare(contract, dataset, api.InMemoryEngine()) as plan:
+        with plan.materialize([api.SampleRequest("item-0", 0, 0)]) as task:
+            cuts = _state(task.fitted_state, '"v"')["boundaries"]
+    assert len(cuts) == 3 and all(np.isfinite(cuts)) and cuts == sorted(cuts)

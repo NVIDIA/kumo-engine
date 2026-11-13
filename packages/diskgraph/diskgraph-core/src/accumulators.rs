@@ -1035,7 +1035,13 @@ impl TDigestEstimator {
             let limit = 4.0 * total / self.max_size as f64 * q * (1.0 - q);
             if cur_weight + weight <= limit {
                 let new_weight = cur_weight + weight;
-                cur_mean = (cur_mean * cur_weight + mean * weight) / new_weight;
+                let merged = (cur_mean * cur_weight + mean * weight) / new_weight;
+                // Near ±f64::MAX the weighted sum overflows; weigh each mean first.
+                cur_mean = if merged.is_finite() {
+                    merged
+                } else {
+                    cur_mean * (cur_weight / new_weight) + mean * (weight / new_weight)
+                };
                 cur_weight = new_weight;
             } else {
                 weight_so_far += cur_weight;
@@ -1067,8 +1073,14 @@ impl TDigestEstimator {
                 let prev_weight = self.centroids[i - 1].1;
                 let prev_mid = cum - prev_weight / 2.0;
                 let cur_mid = cum + weight / 2.0;
-                let frac = (target - prev_mid) / (cur_mid - prev_mid);
-                return prev_mean + (mean - prev_mean) * frac.clamp(0.0, 1.0);
+                let frac = ((target - prev_mid) / (cur_mid - prev_mid)).clamp(0.0, 1.0);
+                // Across zero near ±f64::MAX the difference overflows.
+                let step = mean - prev_mean;
+                return if step.is_finite() {
+                    prev_mean + step * frac
+                } else {
+                    prev_mean * (1.0 - frac) + mean * frac
+                };
             }
             cum += weight;
         }
