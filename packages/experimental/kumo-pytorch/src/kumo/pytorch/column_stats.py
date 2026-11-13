@@ -30,9 +30,8 @@ from kumo.pytorch.contract.batch import (
 )
 from kumo.pytorch.contract.batch.encodings import Buckets, ScalarEncoding, Text, Vocabulary, ZScore
 from kumo.pytorch.contract.batch.validation import resolved_fields
-from kumo.pytorch.contract.dtypes import DType
+from kumo.pytorch.contract.dtypes import DType, _since_epoch
 from kumo.pytorch.contract.sample import Field, destination_table
-from kumo.pytorch.data.records import cutoff_to_epoch
 from kumo.pytorch.encoding import (
     TEXT_RECIPE,
     FittedEncoder,
@@ -53,12 +52,6 @@ COL_STATS_RECIPE = 1
 QUANTILE_GRID = [index / 1024 for index in range(1025)]
 #: A key each semantic type's statistics add to a column's entry.
 _STAT_KEYS = {"categorical": "category_counts", "numerical": "mean"}
-_TICKS_PER_SECOND = {
-    "seconds": 1,
-    "milliseconds": 10**3,
-    "microseconds": 10**6,
-    "nanoseconds": 10**9,
-}
 _EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
 #: DiskGraph's statistics of a column with no rows.
 EMPTY_STATS = {
@@ -115,8 +108,56 @@ class TableColumnEncoder:
             diskgraph.TOKENIZER_TRAINER,
         ]
         digest = hashlib.sha256(json.dumps(settings).encode()).hexdigest()[:16]
-        table, column = self.columns[0]
+        table, column = (file_name_part(name) for name in self.columns[0])
         return f"{_cutoff_dir(ticks, unit)}/{table}.{column}.text-{digest}.tokenizer.json"
+
+
+#: A stored column the model reads, with its fitted tokenizer's JSON if it is ``Text``.
+LengthColumn = tuple[str, str | None]
+
+
+def token_length_columns(contract: Any, plan: Any) -> dict[str, tuple[LengthColumn, ...]]:
+    """Each event table's stored columns that the inputs of a fitted plan read."""
+
+    columns: dict[str, set[LengthColumn]] = {}
+    for name, value in sorted(contract.batch.inputs.items()):
+        if not isinstance(value.representation, Fields):
+            continue
+        for use in value.representation.fields:
+            encoder = plan.output(name=name).field(name=use.field).encoder
+            tokenizer = encoder.tokenizer_json if isinstance(encoder.config, Text) else None
+            for variant, _, _ in resolved_fields(contract, name, use.field):
+                stored = _stored_column(contract.sample, contract.schema, variant)
+                if stored is not None and variant[0] in {"events", "current_events"}:
+                    columns.setdefault(stored[0], set()).add((stored[1], tokenizer))
+    return {
+        table: tuple(sorted(items, key=lambda item: (item[0], item[1] or "")))
+        for table, items in sorted(columns.items())
+    }
+
+
+def token_lengths_file(
+    table: str, columns: Sequence[LengthColumn], ticks: int | None, unit: str
+) -> str:
+    import diskgraph
+
+    settings = [
+        [
+            [column, None if tokenizer is None else hashlib.sha256(tokenizer.encode()).hexdigest()]
+            for column, tokenizer in columns
+        ],
+        diskgraph.TOKENIZER_TRAINER,
+    ]
+    digest = hashlib.sha256(json.dumps(settings).encode()).hexdigest()[:16]
+    return f"{_cutoff_dir(ticks, unit)}/{file_name_part(table)}.lengths-{digest}.bin"
+
+
+def read_token_lengths(path: str | Path) -> np.ndarray:
+    """A token lengths file's per-node counts, memory-mapped, indexed by node ID."""
+
+    if not Path(path).stat().st_size:
+        return np.zeros(0, dtype="<u2")
+    return np.memmap(path, dtype="<u2", mode="r")
 
 
 def stats_request(
@@ -147,7 +188,9 @@ def read_column_stats(
     import diskgraph
 
     directory = Path(index, "col_stats", _cutoff_dir(ticks, unit))
-    paths = {table: directory / f"{table}.col_stats.json" for table, _, _ in requests}
+    paths = {
+        table: directory / f"{file_name_part(table)}.col_stats.json" for table, _, _ in requests
+    }
 
     def read() -> dict:
         return {
@@ -170,6 +213,15 @@ def read_column_stats(
         {item: found[item[0]][item[1]] for item in requests},
         {"value": ticks, "unit": unit},
         tuple(f"{directory.name}/{path.name}" for _, path in sorted(paths.items())),
+    )
+
+
+def file_name_part(name: str) -> str:
+    """``name`` with every byte but ASCII letters, digits, ``-`` and ``_`` percent-encoded."""
+
+    return "".join(
+        chr(byte) if bytes([byte]).isalnum() or byte in b"-_" else f"%{byte:02X}"
+        for byte in name.encode()
     )
 
 
@@ -239,7 +291,7 @@ def _stored_column(sample: Any, schema: Any, identity: tuple[str, ...]) -> Colum
     return table, declaration.column
 
 
-def cutoff_seconds(value: Any) -> int | None:
+def cutoff_nanos(value: Any) -> int | None:
     if value is None:
         return None
     if isinstance(value, str):
@@ -248,7 +300,7 @@ def cutoff_seconds(value: Any) -> int | None:
         except ValueError:
             raise ValueError(f"encoder_cutoff {value!r} is not an ISO 8601 timestamp") from None
     if isinstance(value, dt.date):
-        return cutoff_to_epoch(value)
+        return _since_epoch(value) // dt.timedelta(microseconds=1) * 1_000
     raise TypeError(f"encoder_cutoff must be a timestamp string or datetime, not {value!r}")
 
 
@@ -324,7 +376,9 @@ def _category(dtype: DType, raw: Any, unit: str) -> Any:
     if dtype.name == "date32":
         return dt.date(1970, 1, 1) + dt.timedelta(days=value)
     if dtype.name == "timestamp":
-        return _EPOCH + dt.timedelta(seconds=value / _TICKS_PER_SECOND[unit])
+        import diskgraph
+
+        return _EPOCH + dt.timedelta(seconds=diskgraph.convert_ticks(value, unit, "seconds"))
     return value
 
 
@@ -334,6 +388,9 @@ def _bucket_cuts(config: Buckets, datas: Sequence[Mapping[str, Any]], finite: Se
     grids = [(np.asarray(data["quantiles"]), n) for data, n in zip(datas, finite) if n]
     if not grids:
         return ()
+    # Interpolation slopes overflow for values past about 1e289; scale by an exact power of 2.
+    scale = 2.0 ** max(0, math.frexp(max(np.abs(grid).max() for grid, _ in grids))[1] - 960)
+    grids = [(grid / scale, n) for grid, n in grids]
     zeros = (
         sum(count for data in datas for start, count in data["value_bins"] if start == 0.0)
         if config.separate_zero
@@ -347,4 +404,4 @@ def _bucket_cuts(config: Buckets, datas: Sequence[Mapping[str, Any]], finite: Se
     below = (below - zeros * (values >= 0)) / total
     ranges = config.bins - int(config.separate_zero)
     cuts = np.interp(np.linspace(0, 1, ranges + 1)[1:-1], np.maximum.accumulate(below), values)
-    return tuple(float(value) for value in np.unique(cuts))
+    return tuple(float(value * scale) for value in np.unique(cuts))

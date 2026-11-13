@@ -15,11 +15,12 @@ import pytest
 from tokenizers import Tokenizer
 
 from kumo.pytorch import api, encoding
-from kumo.pytorch.column_stats import TableColumnEncoder
+from kumo.pytorch.column_stats import TableColumnEncoder, read_token_lengths
 from kumo.pytorch.encoding import fit_encoder, train_text
 from kumo.pytorch.engines.diskgraph import DiskGraphSource
 from kumo.pytorch.materialization import ensure_diskgraph_index
 from tests.test_column_stats import LATEST, _column, _contract, _requests, _setup
+from tests.test_diskgraph_backend import _fixture_rows
 
 pytest.importorskip("diskgraph")
 
@@ -133,6 +134,30 @@ def test_the_index_trains_the_tokenizer_python_trains_on_every_thread_count(tmp_
         tokenizer, name = source.column_text(encoder, None)
         assert tokenizer == expected
         (tmp_path / "index" / "col_stats" / name).unlink()
+
+
+def test_every_fit_keeps_each_event_rows_token_count(tmp_path):
+    import diskgraph
+
+    dataset, engine = _setup("diskgraph", tmp_path)
+    kept = []
+    for _ in range(2):
+        with api.prepare(_text_contract(), dataset, engine) as plan:
+            with plan.materialize(_requests(), fit_split="train") as task:
+                tokenizer = Tokenizer.from_str(_tokenizer(task))
+                files = task.fitted_state.fit["inputs"]["statistics"]["token_lengths"]
+        path = tmp_path / "index" / "col_stats" / files["card_transactions"]
+        kept.append((files, path.stat().st_mtime_ns))
+    assert kept[0] == kept[1]
+    rows = _fixture_rows()["card_transactions"]
+    nodes = diskgraph.SamplerEngine(str(tmp_path / "index")).lookup_node_ids(
+        "card_transactions", pa.array([row["card_transaction_id"] for row in rows])
+    )
+    lengths = read_token_lengths(path)
+    assert len(lengths) == len(rows)
+    for node, row in zip(nodes, rows, strict=True):
+        pieces = len(tokenizer.encode(row["description"] or "").ids)
+        assert lengths[node] == 2 + pieces  # amount, channel and the description's pieces
 
 
 def test_chunked_encoding_matches_one_string_at_a_time(monkeypatch):

@@ -12984,7 +12984,7 @@ onig 6.5.3
 ------------------------------------------------------------------------------
 onig_sys 69.9.3
 ------------------------------------------------------------------------------
-  License       : MIT
+  License       : MIT AND BSD-2-Clause
   Distributed in: diskgraph._c.abi3.so, diskgraph._c.pyd
   Copyright     : Copyright (c) 2002-2021  K.Kosako  <kkosako0@gmail.com>
 

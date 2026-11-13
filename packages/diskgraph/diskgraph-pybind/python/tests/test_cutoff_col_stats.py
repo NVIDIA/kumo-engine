@@ -181,8 +181,50 @@ def test_rows_the_index_does_not_store_count_on_neither_route(tmp_path):
                                     collections.Counter(tiers[i] for i in stored)]
 
 
-@pytest.mark.parametrize("unit, ticks", [
-    ("milliseconds", CUTOFF * 1_000), ("seconds", CUTOFF), ("days", -(-CUTOFF // 86_400)),
-])
-def test_cutoff_ticks_rounds_like_row_times(unit, ticks):
-    assert diskgraph.cutoff_ticks(CUTOFF, unit) == ticks
+def test_recompute_counts_strings_that_decode_past_2_gib_per_chunk(tmp_path):
+    # Three distinct 40,000-character values, stored as dictionary indexes, decode to 2.8 GB.
+    values = [c * 40_000 for c in "abc"]
+    tiers = pa.DictionaryArray.from_arrays(pa.array([i % 3 for i in range(70_000)], pa.int32()), pa.array(values))
+    pq.write_table(pa.table({"id": pa.array(range(70_000), pa.int64()), "tier": tiers}), tmp_path / "t.parquet",
+                   row_group_size=2_000)
+    diskgraph.ingest(
+        config_json=json.dumps({"dataset_name": "wide", "tables": [{
+            "name": "t", "primary_key": "id",
+            "columns": [{"name": "id", "ingested_dtype": "int64"}, {"name": "tier", "ingested_dtype": "string"}],
+            "source": {"type": "parquet", "paths": [str(tmp_path / "t.parquet")]}}]}),
+        output_dir=str(tmp_path / "index"), col_stats=False,
+    )
+    request = {"cutoffs": [None], "dirs": ["all"], "columns": {"t": {"tier": ["categorical"]}}}
+    diskgraph.cutoff_col_stats(str(tmp_path / "index"), json.dumps(request))
+    stats = json.loads((tmp_path / "index" / "col_stats" / "all" / "t.col_stats.json").read_text())
+    assert dict(map(tuple, stats["t"]["tier"]["category_counts"])) == dict(zip(values, (23_334, 23_333, 23_333)))
+
+
+def _counts_at(tmp_path, unit: str, times_ns: list[int], cutoff_ns: int) -> dict:
+    tiers = [f"row{i}" for i in range(len(times_ns))]
+    pq.write_table(pa.table({"id": range(len(tiers)), "at": pa.array(times_ns, pa.timestamp("ns")), "tier": tiers}),
+                   tmp_path / "events.parquet")
+    request = {"cutoffs": [diskgraph.convert_ticks(cutoff_ns, "nanoseconds", unit)], "dirs": ["cut"],
+               "columns": {"events": {"tier": ["categorical"]}}}
+    diskgraph.ingest(
+        config_json=json.dumps({"dataset_name": "clock", "timestamp_unit": unit, "tables": [{
+            "name": "events", "primary_key": "id", "create_time": "at",
+            "columns": [{"name": "id", "ingested_dtype": "int64"},
+                        {"name": "at", "ingested_dtype": "timestamp", "timestamp_unit": "nanos"},
+                        {"name": "tier", "ingested_dtype": "string"}],
+            "source": {"type": "parquet", "paths": [str(tmp_path / "events.parquet")]}}]}),
+        output_dir=str(tmp_path / "index"), col_stats=False, cutoff_col_stats=json.dumps(request),
+    )
+    stats = json.loads((tmp_path / "index" / "col_stats" / "cut" / "events.col_stats.json").read_text())
+    return dict(map(tuple, stats["events"]["tier"]["category_counts"]))
+
+
+@pytest.mark.parametrize("unit, tick", [("milliseconds", 10**6), ("days", 86_400 * 10**9)])
+def test_a_cutoff_truncates_to_its_tick_so_later_rows_in_that_tick_are_excluded(tmp_path, unit, tick):
+    start = T0 // 86_400 * 86_400 * 10**9
+    assert _counts_at(tmp_path, unit, [start, start + tick // 4, start + tick], start + tick // 2) == {"row0": 1}
+
+
+def test_a_sub_second_cutoff_on_a_nanosecond_index_is_exact(tmp_path):
+    cutoff = T0 * 10**9 + 123_456_789
+    assert _counts_at(tmp_path, "nanoseconds", [cutoff, cutoff + 1], cutoff) == {"row0": 1}

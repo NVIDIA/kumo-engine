@@ -295,7 +295,9 @@ def test_pinned_encoders_match_numpy_over_rows_up_to_the_cutoff(tmp_path, engine
     # t-digest cuts: each within one rank of the exact quantile.
     ranks = [np.mean(amounts <= cut) for cut in buckets["boundaries"]]
     assert np.allclose(ranks, [0.25, 0.5, 0.75][: len(ranks)], atol=1.5 / len(amounts))
-    assert _statistics(fitted)["cutoff"] == (None if bound is None else int(bound.timestamp()))
+    assert _statistics(fitted)["cutoff"] == (
+        None if bound is None else int(bound.timestamp()) * 10**9
+    )
 
 
 def test_statistics_keep_a_file_per_table_per_cutoff_and_compute_only_what_is_missing(
@@ -388,11 +390,13 @@ def test_vocabulary_learns_every_stored_column_type(tmp_path, engine_name):
         {"id": i, **{n: values[i] for n, (_, values) in COLUMN_TYPES.items()}} for i in range(3)
     ]
     columns = {"id": api.DType("int64"), **{n: dtype for n, (dtype, _) in COLUMN_TYPES.items()}}
+    # A table name that would leave col_stats/ if it were a path.
+    table = "../items/x y"
     schema = api.DataSchema(
-        tables=(api.TableSpec("items", "id", columns, time_column=api.NON_TEMPORAL),)
+        tables=(api.TableSpec(table, "id", columns, time_column=api.NON_TEMPORAL),)
     )
     sample = api.SampleSpec(
-        entity=api.EntitySpec("items", entity_type="item"),
+        entity=api.EntitySpec(table, entity_type="item"),
         entity_values={n: api.Field(column=n) for n in COLUMN_TYPES},
     )
     fields = tuple(api.Encode(field=n, encoding=api.Vocabulary()) for n in COLUMN_TYPES)
@@ -402,14 +406,14 @@ def test_vocabulary_learns_every_stored_column_type(tmp_path, engine_name):
     )
     contract = api.DataLoaderSpec(schema=schema, sample=sample, batch=batch)
     if engine_name == "in_memory":
-        dataset, engine = api.Dataset({"items": api.InMemoryRows(rows)}), api.InMemoryEngine()
+        dataset, engine = api.Dataset({table: api.InMemoryRows(rows)}), api.InMemoryEngine()
     else:
         import pyarrow as pa
         import pyarrow.parquet as pq
 
         types = pa.schema([(name, dtype.to_arrow()) for name, dtype in columns.items()])
         pq.write_table(pa.Table.from_pylist(rows, types), tmp_path / "items.parquet")
-        dataset = api.Dataset({"items": api.Parquet(str(tmp_path / "items.parquet"))})
+        dataset = api.Dataset({table: api.Parquet(str(tmp_path / "items.parquet"))})
         engine = api.DiskGraphEngine(index=tmp_path / "index")
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize([api.SampleRequest("item-0", 0, 0)]) as task:
@@ -418,3 +422,41 @@ def test_vocabulary_learns_every_stored_column_type(tmp_path, engine_name):
                 expected = sorted(counts, key=lambda value: (-counts[value], value))
                 entries = task.output("entity").field(name=name).encoder.entries
                 assert [value for value, _ in entries] == expected, name
+    if engine_name == "diskgraph":
+        (path,) = (tmp_path / "index" / "col_stats").glob("*/*.col_stats.json")
+        assert path.name == "%2E%2E%2Fitems%2Fx%20y.col_stats.json"
+
+
+def test_buckets_cut_values_near_the_float_limits():
+    values = [-1.7e308] * 500 + [1.7e308] * 500
+    schema = api.DataSchema(
+        tables=(
+            api.TableSpec(
+                "items",
+                "id",
+                {"id": api.DType("int64"), "v": api.DType("float64")},
+                time_column=api.NON_TEMPORAL,
+            ),
+        )
+    )
+    sample = api.SampleSpec(
+        entity=api.EntitySpec("items", entity_type="item"),
+        entity_values={"v": api.Field(column="v")},
+    )
+    batch = api.BatchSpec(
+        inputs={
+            "entity": api.Input(
+                api.EntitySource(),
+                api.Fields(fields=(api.Encode(field="v", encoding=api.Buckets(bins=4)),)),
+                api.Separate(),
+            )
+        },
+        batching=api.Batching(max_samples=2),
+    )
+    contract = api.DataLoaderSpec(schema=schema, sample=sample, batch=batch)
+    rows = [{"id": i, "v": v} for i, v in enumerate(values)]
+    dataset = api.Dataset({"items": api.InMemoryRows(rows)})
+    with api.prepare(contract, dataset, api.InMemoryEngine()) as plan:
+        with plan.materialize([api.SampleRequest("item-0", 0, 0)]) as task:
+            cuts = _state(task.fitted_state, '"v"')["boundaries"]
+    assert len(cuts) == 3 and all(np.isfinite(cuts)) and cuts == sorted(cuts)

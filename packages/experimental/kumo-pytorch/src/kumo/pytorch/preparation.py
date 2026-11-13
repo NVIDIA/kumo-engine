@@ -43,9 +43,10 @@ from kumo.pytorch.assembly import (
 from kumo.pytorch.column_stats import (
     LATEST_ANCHOR,
     _LatestAnchor,
-    cutoff_seconds,
+    cutoff_nanos,
     fit_from_stats,
     table_column_encoders,
+    token_length_columns,
 )
 from kumo.pytorch.contract.batch.encodings import Text
 from kumo.pytorch.contract.sample import SampleRequest
@@ -230,9 +231,7 @@ class Plan:
             )
         if inference and fit_split is not None:
             raise ValueError("fit_split has nothing to fit in inference")
-        cutoff = (
-            encoder_cutoff if encoder_cutoff is LATEST_ANCHOR else cutoff_seconds(encoder_cutoff)
-        )
+        cutoff = encoder_cutoff if encoder_cutoff is LATEST_ANCHOR else cutoff_nanos(encoder_cutoff)
         source = self._require_open()
         if isinstance(anchors, AnchorTable):
             issues = check(
@@ -297,6 +296,17 @@ class Plan:
                 inference=inference,
                 pinned=pinned,
             )
+            token_lengths = getattr(source, "token_lengths", None)
+            if token_lengths is not None and input_state is None:
+                files = {
+                    table: token_lengths(table, columns, statistics.get("cutoff"))
+                    for table, columns in token_length_columns(self.contract, assembler).items()
+                }
+                if files:
+                    fit["inputs"] = {
+                        **fit["inputs"],
+                        "statistics": {**statistics, "token_lengths": files},
+                    }
         except BaseException:
             task_anchors.close()
             raise
@@ -331,6 +341,7 @@ class Plan:
                 for chunk in _chunks(fitting)
                 for request in chunk
             )
+            * 10**9
             if self.contract.requires_anchor_time
             else None
         )
@@ -559,5 +570,7 @@ def _source_issues(
     return () if check_sources is None else tuple(check_sources(sources, path))
 
 
-def _iso(seconds: int) -> str:
-    return dt.datetime.fromtimestamp(seconds, dt.UTC).isoformat()
+def _iso(nanos: int) -> str:
+    return (
+        dt.datetime(1970, 1, 1, tzinfo=dt.UTC) + dt.timedelta(microseconds=nanos // 1_000)
+    ).isoformat()
