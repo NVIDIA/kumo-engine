@@ -65,11 +65,11 @@ connector = kumo.FileConnector(root_dir=SOURCE_DIR)
 connector = kumo.S3Connector(root_dir=SOURCE_URI)            # 's3://bucket/prefix/'; no region=
 connector = kumo.GCSConnector(root_dir=SOURCE_URI)           # 'gs://bucket/prefix/'
 # BigQuery — PROJECT_ID and DATASET_ID are the two parts of the confirmed `project.dataset` scope,
-# never placeholders. The identity is required; with no arguments it is the ambient Google
-# credential. No billing_project_id (§1). location= is the dataset's own, read by bq_location below.
+# never placeholders. BQ_IDENTITY and BQ_CREDENTIALS are the source's, defined below (ambient by
+# default). No billing_project_id (§1). location= is the dataset's own, read by bq_location below.
 connector = kumo.BigQueryConnector(project_id=PROJECT_ID, dataset_id=DATASET_ID,
-                                   identity=kumo.BigQueryIdentity(),
-                                   location=bq_location(DATASET_ID))
+                                   identity=BQ_IDENTITY,
+                                   location=bq_location(DATASET_ID, BQ_CREDENTIALS))
 # Databricks — exactly one of warehouse_id / cluster_id
 connector = kumo.DatabricksConnector(
     catalog=CATALOG, schema_name=SCHEMA, identity=kumo.DatabricksIdentity(),
@@ -89,15 +89,50 @@ source: it cannot list tables.
 else — `EU`, or a single region such as `us-central1`, which is not `US` — fails: reads with
 not-found, and the prediction write only after training, at the sink's location check. Whenever
 any connector in the notebook is BigQuery — source, population or destination — define this
-once, in the connect step before the first connector, and pass
-`location=bq_location(<its dataset>)` to every `BigQueryConnector`:
+and the identities below once, in the connect step before the first connector, and pass
+`location=bq_location(<its dataset>, <its credentials>)` to every `BigQueryConnector`:
 
 ```python
 from google.cloud import bigquery
 
-def bq_location(dataset):
+def bq_location(dataset, credentials=None):
     """The location a dataset lives in; the dataset must already exist."""
-    return bigquery.Client(project=PROJECT_ID).get_dataset(f'{PROJECT_ID}.{dataset}').location
+    return bigquery.Client(project=PROJECT_ID, credentials=credentials).get_dataset(
+        f'{PROJECT_ID}.{dataset}').location
+```
+
+Each BigQuery identity comes with the Google credentials its direct clients use: the location
+lookups, the population query (§3.1) and the read-back (§3). With an explicit `BigQueryIdentity`
+(*Credentials* below), build those credentials from the inputs the identity was given, as the SDK
+does (`kumo_bigquery.auth`); `None` means ambient. A BigQuery source uses `BQ_IDENTITY` and
+`BQ_CREDENTIALS` for its connector, the population staged in it, and their lookups. A BigQuery
+destination uses `OUTPUT_BQ_IDENTITY` and `OUTPUT_BQ_CREDENTIALS` for its connector, its lookup
+and the read-back: the source's pair unless the user named another identity for the destination,
+then built from that identity's inputs in the same forms. With no BigQuery source, define only the
+output pair, ambient unless the user named one.
+
+```python
+BQ_IDENTITY = kumo.BigQueryIdentity()   # ambient; otherwise replace both with a form below
+BQ_CREDENTIALS = None
+
+# BigQueryIdentity(service_account_key=SERVICE_ACCOUNT_KEY), the key read as Credentials says
+import json, os
+from google.oauth2 import service_account
+SERVICE_ACCOUNT_KEY = json.loads(os.environ[BQ_KEY_VAR])
+BQ_IDENTITY = kumo.BigQueryIdentity(service_account_key=SERVICE_ACCOUNT_KEY)
+BQ_CREDENTIALS = service_account.Credentials.from_service_account_info(SERVICE_ACCOUNT_KEY)
+
+# BigQueryIdentity(workload_service_account_email=SERVICE_ACCOUNT_EMAIL)
+import google.auth
+from google.auth import impersonated_credentials
+SCOPE = 'https://www.googleapis.com/auth/cloud-platform'
+BQ_IDENTITY = kumo.BigQueryIdentity(workload_service_account_email=SERVICE_ACCOUNT_EMAIL)
+BQ_CREDENTIALS = impersonated_credentials.Credentials(
+    source_credentials=google.auth.default(scopes=[SCOPE])[0],
+    target_principal=SERVICE_ACCOUNT_EMAIL, target_scopes=[SCOPE])
+
+# A BigQuery destination: the source's identity unless the user named another
+OUTPUT_BQ_IDENTITY, OUTPUT_BQ_CREDENTIALS = BQ_IDENTITY, BQ_CREDENTIALS
 ```
 
 Name file and object-store tables without their suffix — `connector['accounts']` for
@@ -145,7 +180,8 @@ OUTPUT_LOCATION = OUTPUT_PARENT + OUTPUT_LEAF                   # the confirmed 
 ```
 
 A BigQuery destination's connector is scoped to `OUTPUT_DATASET` and takes
-`location=bq_location(OUTPUT_DATASET)` (§2), which may differ from the source's.
+`identity=OUTPUT_BQ_IDENTITY` and `location=bq_location(OUTPUT_DATASET, OUTPUT_BQ_CREDENTIALS)`
+(§2); the location may differ from the source's.
 
 Rooting the connector at the destination itself and passing a `table_name` writes one level
 below it, to a path the user never confirmed. A directory destination must be empty or absent;
@@ -161,9 +197,9 @@ import pyarrow.dataset as ds
 OUTPUT_FORMAT = 'csv' if OUTPUT_LOCATION.rstrip('/').lower().endswith('.csv') else 'parquet'
 written = ds.dataset(OUTPUT_LOCATION, format=OUTPUT_FORMAT).count_rows()  # full path or URI
 
-# BigQuery
+# BigQuery — as the destination's identity (§2)
 from google.cloud import bigquery
-written = next(iter(bigquery.Client(project=PROJECT_ID).query(
+written = next(iter(bigquery.Client(project=PROJECT_ID, credentials=OUTPUT_BQ_CREDENTIALS).query(
     f'SELECT COUNT(*) FROM `{PROJECT_ID}.{OUTPUT_DATASET}.{OUTPUT_TABLE}`').result()))[0]
 
 # Databricks — with the confirmed SQL warehouse; wait_timeout is at most '50s', so poll
@@ -296,13 +332,13 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   from google.cloud import bigquery
 
   time_col = f', CAST({ENTITY_TIME} AS TIMESTAMP) AS `TIMESTAMP`' if ENTITY_TIME else ''
-  bigquery.Client(project=PROJECT_ID).query(
+  bigquery.Client(project=PROJECT_ID, credentials=BQ_CREDENTIALS).query(   # §2
       f'CREATE OR REPLACE TABLE `{PROJECT_ID}.{POP_DATASET}.{POP_TABLE}` AS '
       f'SELECT {ENTITY_KEY} AS ENTITY1{time_col} '
       f'FROM `{PROJECT_ID}.{DATASET_ID}.{ENTITY_TABLE}`').result()   # waits; raises on failure
   population_connector = kumo.BigQueryConnector(project_id=PROJECT_ID, dataset_id=POP_DATASET,
-                                                 identity=kumo.BigQueryIdentity(),
-                                                 location=bq_location(POP_DATASET))
+                                                 identity=BQ_IDENTITY,   # the source's, §2
+                                                 location=bq_location(POP_DATASET, BQ_CREDENTIALS))
   prediction_table = kumo.PredictionTable.from_source_table(
       population_connector[POP_TABLE], pq=pquery, snapshot=snapshot)
   ```

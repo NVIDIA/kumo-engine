@@ -10,6 +10,7 @@ from pathlib import Path
 
 from setuptools import setup
 from setuptools.command.build_py import build_py
+from setuptools.command.sdist import sdist
 
 kumo_api_release_ver = '3.0.0'
 api_pyproject = Path(__file__).parent.parent / 'kumo-api' / 'pyproject.toml'
@@ -26,13 +27,18 @@ if api_pyproject.exists():
 
 kumo_api = f'kumo-api=={api_ver}'
 
-# The agent skills ship inside this wheel, one package per host, so
-# `kumo.engine.install_skills()` installs the skill written for this exact
-# SDK. A build from a checkout regenerates them from agent-skills/; a build
-# from an sdist has no agent-skills/ and keeps the copy the sdist carries.
-package_skill_py = (Path(__file__).resolve().parents[2] / 'agent-skills' /
-                    'scripts' / 'package_skill.py')
-if package_skill_py.exists():
+
+def _bundle_skills():
+    # The agent skills ship inside this wheel, one package per host, so
+    # `kumo.engine.install_skills()` installs the skill written for this
+    # exact SDK. A build from a checkout regenerates them from agent-skills/;
+    # a build from an sdist has no agent-skills/ and keeps the copy the sdist
+    # carries. Only wheel and sdist builds run this: an editable install
+    # reads the skill from the checkout.
+    package_skill_py = (Path(__file__).resolve().parents[2] / 'agent-skills' /
+                        'scripts' / 'package_skill.py')
+    if not package_skill_py.exists():
+        return
     spec = importlib.util.spec_from_file_location('package_skill',
                                                   package_skill_py)
     assert spec and spec.loader
@@ -56,6 +62,8 @@ def _build_commit():
 
 class _StampBuildCommit(build_py):
     def run(self):
+        if not self.editable_mode:
+            _bundle_skills()
         super().run()
         target = Path(self.build_lib) / 'kumo' / 'engine' / '_version.py'
         if target.is_file():
@@ -66,8 +74,17 @@ class _StampBuildCommit(build_py):
                 encoding='utf-8')
 
 
+class _BundleSkillsSdist(sdist):
+    def run(self):
+        _bundle_skills()
+        super().run()
+
+
 setup(
-    cmdclass={'build_py': _StampBuildCommit},
+    cmdclass={
+        'build_py': _StampBuildCommit,
+        'sdist': _BundleSkillsSdist
+    },
     install_requires=[
         "pandas",
         "pyarrow>=8.0.0",
