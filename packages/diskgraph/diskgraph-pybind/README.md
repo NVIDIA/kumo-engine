@@ -217,11 +217,28 @@ shares a frame traversal between all of its sequence consumers, applies each
 sequence limit, and returns one Arrow `uint64` length vector per sequence. It
 does not build output batches, decode feature columns, sort selected rows, or
 materialize aggregates. When the final relation's destination sort-key clock
-matches the frame clock at lossless one-second resolution, relative-window
+matches the frame clock at lossless one-tick resolution, relative-window
 filtering decodes the timestamp already packed beside each edge. Otherwise it
 decodes only the destination rowpack's timestamp column. `timings_ns` separates
 traversal and filtering;
 `stats` reports which timestamp path ran.
+
+Shared row materialization and length queries seek candidate ranges before
+unpacking adjacency when the final relation indexes the requested time column.
+Bounds use the existing graph-clock conversion, including cutoff flooring and
+window-offset truncation. The search also supports full-width subsecond keys.
+Coarse sort-key buckets widen candidate admission; stored row timestamps still
+decide membership. Clipped ceiling and floor/NULL regions remain candidates,
+and coarse keys never justify applying a sequence cap before row refinement.
+Missing/mismatched clocks or unsafe decoder arithmetic keep the scan fallback.
+This does not change storage precision, query units, ordering or aggregates.
+
+`edges_visited` counts unpacked candidates, excluding binary-search probes;
+length-query `rows_considered` counts candidates after seeking and distinct
+handling. These counters describe work, not the original adjacency degree.
+The specialized PQL numeric executor retains its existing traversal. See the
+[shared-range benchmark](../scripts/benchmarks/shared_temporal_ranges.md) for
+the scoped comparison protocol.
 
 Aggregate-only, one-hop queries on second-clock indexes lower `count` and
 Float32/Float64 `sum`/`mean`/`min`/`max` to the same resolved aggregate IR and grouped numeric executor
