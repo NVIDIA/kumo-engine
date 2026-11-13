@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from kumo.pytorch import api
+from tests.test_model_history_limits import history_data as history_data
 
 pytest.importorskip("diskgraph")
 
@@ -627,3 +628,67 @@ from tests.test_clock_precision import _timestamp_lifecycle
         [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
+@pytest.mark.parametrize("graph_unit", ["s", "ns"])
+@pytest.mark.parametrize("integer", [pa.int32(), pa.int64()])
+def test_integer_timestamp_labels_use_target_units(
+    history_data, tmp_path, unit, graph_unit, integer
+):
+    from dataclasses import replace
+
+    schema, dataset, _, _, _ = history_data
+    schema = replace(
+        schema,
+        tables=tuple(
+            replace(
+                table,
+                columns={
+                    **table.columns,
+                    "at": api.DType("timestamp", unit=graph_unit, timezone="UTC"),
+                },
+            )
+            if table.name == "orders"
+            else table
+            for table in schema.tables
+        ),
+    )
+    dtype = api.DType("timestamp", unit=unit, timezone="UTC")
+    path = tmp_path / "labels.parquet"
+    pq.write_table(
+        pa.table({"entity": [1, 1], "at": [5, 5], "label": pa.array([-2, 2], type=integer)}), path
+    )
+    sample = api.SampleSpec(
+        api.EntitySpec("users"),
+        events={
+            "history": api.EventSpec(
+                api.Rows(("orders",), api.TimeWindow("at", stop=0)),
+                {"amount": api.Field("amount")},
+            )
+        },
+        targets={"label": api.ExternalTarget(dtype)},
+    )
+    contract = api.DataLoaderSpec(
+        schema,
+        sample,
+        api.BatchSpec(
+            inputs={
+                "history": api.Input(
+                    api.EventSource(("history",)),
+                    api.Fields((api.Encode("amount", api.Raw()),)),
+                    api.Padded(),
+                )
+            },
+            targets={"label": api.LabelTarget("label", api.Vocabulary(values=((-2, 7), (2, 9))))},
+            batching=api.Batching(max_samples=2),
+        ),
+    )
+    table = api.AnchorTable(api.Parquet(str(path)), "entity", "at", targets={"label": "label"})
+    with api.prepare(
+        contract, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    ) as plan:
+        with plan.materialize(table, fit_split=api.ALL_ANCHORS) as task:
+            for output in ("inspectable", "model"):
+                batch = next(iter(task.batches(shuffle=False, output_format=output)))
+                assert batch.targets["label"]["values"].tolist() == [7, 9]

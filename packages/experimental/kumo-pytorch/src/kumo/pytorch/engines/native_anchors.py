@@ -325,6 +325,14 @@ class NativeAnchors:
         metadata = {
             name: _arrow_values(columns[name]) for name in table.metadata if name not in internal
         }
+        targets = {}
+        for name, column in {**table.targets, **getattr(bound, "targets", {})}.items():
+            values = columns[column]
+            dtype = self._sample.targets[name].dtype
+            if dtype.name == "timestamp" and pa.types.is_integer(values.type):
+                # External integer labels use declared ticks, not graph-clock ticks.
+                values = values.cast(pa.int64()).cast(dtype.to_arrow())
+            targets[name] = self._source._typed_array(values, dtype).combine_chunks()
         return ModelSourceBatch(
             sample_ids=tuple(columns[table.sample_id].to_pylist())
             if table.sample_id
@@ -343,12 +351,7 @@ class NativeAnchors:
             },
             events={},
             row_targets={},
-            targets={
-                name: self._source._typed_array(
-                    columns[column], self._sample.targets[name].dtype
-                ).combine_chunks()
-                for name, column in {**table.targets, **getattr(bound, "targets", {})}.items()
-            },
+            targets=targets,
             splits=(stage["split"],) * n,
             request_metadata=tuple(
                 {"split": stage["split"], **{k: v[i] for k, v in metadata.items()}}
