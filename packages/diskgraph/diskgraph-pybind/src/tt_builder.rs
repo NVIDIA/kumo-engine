@@ -1160,6 +1160,21 @@ pub fn build_split_spec_json(spec: &Bound<'_, PyAny>, timestamp_unit: &str) -> P
     })
 }
 
+/// Convert fixed index-clock ticks using DG's existing rounding operations.
+#[pyfunction]
+#[pyo3(signature = (value, from, to, *, rounding="truncate"))]
+pub fn convert_ticks(value: i64, from: &str, to: &str, rounding: &str) -> PyResult<i64> {
+    let (from, to) = (parse_time_unit(from)?, parse_time_unit(to)?);
+    if !from.is_index_clock() || !to.is_index_clock() {
+        return Err(crate::DiskgraphConfigError::new_err("convert_ticks requires fixed index clocks"));
+    }
+    match rounding {
+        "truncate" => Ok(diskgraph_core::time::convert_trunc(value, from, to)),
+        "floor" => Ok(diskgraph_core::time::convert_floor(value, from, to)),
+        _ => Err(crate::DiskgraphConfigError::new_err("rounding must be truncate or floor")),
+    }
+}
+
 pub(crate) fn parse_index_clock(unit: &str) -> PyResult<TimeUnit> {
     TimeUnit::from_name(unit)
         .filter(|unit| unit.is_index_clock())
