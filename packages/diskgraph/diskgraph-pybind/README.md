@@ -197,6 +197,7 @@ events = engine.sample(
     {"users": ids}, plan_json, fused=True,
     seed_timestamps={"users": cutoffs},
     seed_timestamp_unit=diskgraph.TimeUnit.Seconds,
+    swap_edge_direction=False,
 )
 ```
 
