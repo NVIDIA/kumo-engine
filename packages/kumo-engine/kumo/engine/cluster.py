@@ -528,11 +528,8 @@ class _ComputeWorker:
         self,
         request: _TrainingTableRequest,
         settings: MLOps,
-        peers: list[Any],
     ) -> TrainingTable:
-        """Produce missing rows, publish their portable export and restore peers."""
-        import ray
-
+        """Produce missing rows and persist staging for owner-local ingestion."""
         publication = request.expected or self.describe_training_table(request)
         snapshot = self.snapshots[request.snapshot_id]
         table = self._local_training_table(publication)
@@ -553,16 +550,7 @@ class _ComputeWorker:
             table = _install_training_table(table, target)
         table._store(settings)
         assert table.id is not None
-        publication = _TrainingTablePublication(
-            table, snapshot.id, str(self.root), table.manifest
-        )
         self.tables[table.id] = table
-        ray.get(
-            [
-                peer.download_training_table.remote(publication, settings)
-                for peer in peers
-            ]
-        )
         return table
 
     def download_training_table(
@@ -584,12 +572,18 @@ class _ComputeWorker:
         import pyarrow.parquet as parquet
         from kumo_core.artifacts import PROVENANCE_FILE
         from kumo_core.io.json import from_json_dict, to_json_dict
+        from kumo_core.sources.object_store import _source_version
         from kumo_core.training.custom_table import contract
         from kumoapi.model_plan import TrainingTableGenerationPlan
         from kumoapi.train import TrainingTableSpec
 
-        from kumo.engine.connector import FileConnector, file_store
-        from kumo.engine.pquery.training_table import _listed, _signature
+        from kumo.engine import _provenance as provenance
+        from kumo.engine.connector import file_store
+        from kumo.engine.pquery.training_table import (
+            _listed,
+            _record_sources,
+            _signature,
+        )
         from kumo.engine.trainer.trainer import _require_success, fetch_parquet
 
         original = publication.table
@@ -602,17 +596,21 @@ class _ComputeWorker:
         filesystem, root = file_store(settings.root.connector, path)
         _require_success(filesystem, root, path)
         files = _listed(filesystem, root)
+        parts = [info for info in files if info.path.endswith(".parquet")]
+        version = _source_version(root, parts)
         query = PredictiveQuery._from_snapshot(snapshot, original.query)
         plan = from_json_dict(
             to_json_dict(original.generation_plan), TrainingTableGenerationPlan
         )
+        relative = original.staging_dir.relative_to(publication.source_root)
+        target = self.root / relative_artifact_path(relative.as_posix())
         with TemporaryDirectory(dir=self.root) as temporary:
             rows = Path(temporary) / "rows"
             fetch_parquet(
                 filesystem,
                 root,
                 rows,
-                [info for info in files if info.path.endswith(".parquet")],
+                parts,
             )
             if _signature(_listed(filesystem, root)) != _signature(files):
                 raise RuntimeError(
@@ -620,8 +618,8 @@ class _ComputeWorker:
                 )
             weight = contract()["weight_output_column"]
             schema = parquet.read_schema(next(rows.glob("*.parquet")))
-            restored = TrainingTable.from_source_table(
-                FileConnector(root_dir=temporary)["rows"],
+            restored = TrainingTable._from_rows(
+                rows,
                 TrainingTableSpec(
                     split_col="SPLIT",
                     weight_col=weight if weight in schema.names else None,
@@ -630,10 +628,15 @@ class _ComputeWorker:
                 snapshot=snapshot,
                 plan=plan,
                 mlops=replace(settings, store=False),
+                version=version,
+                source=provenance.stored_table(
+                    settings.root.connector,
+                    path,
+                    version,
+                    record_sources=_record_sources(snapshot),
+                ),
             )
-        relative = original.staging_dir.relative_to(publication.source_root)
-        target = self.root / relative_artifact_path(relative.as_posix())
-        restored = _install_training_table(restored, target)
+            restored = _install_training_table(restored, target)
         restored = replace(
             restored,
             id=original.id,
@@ -817,11 +820,16 @@ class ComputeCluster:
 
         self._require_active()
         try:
+            kwargs = (
+                {"peers": [peer for peer in self._actors if peer != owner]}
+                if method == "prepare"
+                else {}
+            )
             return ray.get(
                 getattr(owner, method).remote(
                     *args,
                     self._settings,
-                    [peer for peer in self._actors if peer != owner],
+                    **kwargs,
                 )
             )
         except BaseException:
@@ -943,16 +951,12 @@ class ComputeCluster:
                             "Stored training-table identity differs from its path"
                         )
                     publication = replace(publication, manifest=manifest)
-                    replicas = ray.get(
-                        [
-                            actor.download_training_table.remote(
-                                publication, self._settings
-                            )
-                            for actor in self._actors
-                        ]
-                    )
                     owner = default
-                    table = replicas[self._actors.index(owner)]
+                    table = ray.get(
+                        owner.download_training_table.remote(
+                            publication, self._settings
+                        )
+                    )
                 else:
                     cached = ray.get(
                         [
