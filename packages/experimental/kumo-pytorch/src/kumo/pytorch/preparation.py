@@ -49,8 +49,8 @@ from kumo.pytorch.column_stats import (
     token_length_columns,
 )
 from kumo.pytorch.contract.batch.encodings import Text
-from kumo.pytorch.contract.sample import SampleRequest
-from kumo.pytorch.dataset import Dataset, TableSource
+from kumo.pytorch.contract.sample import Aggregate, Compare, SampleRequest
+from kumo.pytorch.dataset import Dataset, Parquet, TableSource
 from kumo.pytorch.encoding import FittedEncoder
 from kumo.pytorch.engine import AnchorTask, Engine, SampleSource
 from kumo.pytorch.spec import (
@@ -184,6 +184,7 @@ class Plan:
         fitted: FittedState | None = None,
         inference: bool | None = None,
         encoder_cutoff: str | int | dt.datetime | dt.date | None = LATEST_ANCHOR,
+        values: Any = None,
     ) -> Task:
         """Bind anchors, fit what is still unfitted, and return the task.
 
@@ -238,23 +239,76 @@ class Plan:
             raise ValueError("fit_split has nothing to fit in inference")
         cutoff = encoder_cutoff if encoder_cutoff is LATEST_ANCHOR else cutoff_nanos(encoder_cutoff)
         source = self._require_open()
+        directory = None
+        if (
+            values is None
+            and isinstance(anchors, AnchorTable)
+            and isinstance(anchors.source, Parquet)
+        ):
+            import pyarrow.parquet as pq
+
+            from kumo.pytorch.aggregate_materialization import _META, MaterializedValues
+            from kumo.pytorch.materialization import _local_parquet_files
+
+            files = _local_parquet_files(anchors.source.path)
+            if _META in (pq.read_schema(files[0]).metadata or {}):
+                values = MaterializedValues.open(anchors.source.path)
+        if (
+            values is None
+            and isinstance(anchors, AnchorTable)
+            and isinstance(anchors.source, Parquet)
+            and hasattr(source, "materialize_scalar_batches")
+            and (
+                self.contract.sample.entity_values
+                or not inference
+                and any(
+                    isinstance(target, (Aggregate, Compare))
+                    for target in self.contract.sample.targets.values()
+                )
+            )
+        ):
+            import tempfile
+            from pathlib import Path
+
+            from kumo.pytorch.aggregate_materialization import materialize_values
+
+            parent = Path(source._index_path) / "tasks"
+            parent.mkdir(exist_ok=True)
+            directory = tempfile.TemporaryDirectory(prefix="task-", dir=parent)
+            try:
+                values = materialize_values(
+                    self, anchors, Path(directory.name) / "values", inference=inference
+                )
+                anchors = values.anchors
+            except BaseException:
+                directory.cleanup()
+                raise
+        if values is not None:
+            source = values._bind(self.contract, source, anchors, self._dataset_fingerprint)
         if isinstance(anchors, AnchorTable):
             issues = check(
                 self.contract,
                 self.dataset,
                 self.engine,
-                anchors=anchors,
+                anchors=anchors if values is None else None,
                 inference=self.inference,
             )
             if issues:
                 raise ValidationError(issues)
             declares_splits = anchors.split is not None
             materializer = getattr(source, "materialize_anchors", None)
-            task_anchors: AnchorTask = (
-                materializer(anchors, self.contract.sample)
-                if materializer is not None
-                else self.engine.materialize_anchors(anchors)
-            )
+            if materializer is not None:
+                task_anchors: AnchorTask = (
+                    materializer(anchors, self.contract.sample, directory=directory)
+                    if directory is not None
+                    else materializer(anchors, self.contract.sample)
+                )
+            elif values is None:
+                task_anchors = self.engine.materialize_anchors(anchors)
+            else:
+                from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
+
+                task_anchors = ParquetAnchors(anchors)
             anchors_fingerprint = _fingerprint(anchors)
         else:
             requests = tuple(anchors)
@@ -383,6 +437,17 @@ class Plan:
             time.perf_counter() - started,
         )
         return pinned, {"cutoff": cutoff, "col_stats": files}
+
+    def _materialize_values(self, anchors: AnchorTable, destination, *, batch_size: int = 1024):
+        """Compute scalar features/targets once, separately from binding/fitting.
+
+        The output is bounded-batch Parquet. Reuse it with
+        ``plan.materialize(values.anchors, ...)``; event histories
+        still load online, while fitting and later epochs reuse scalar values.
+        """
+        from kumo.pytorch.aggregate_materialization import materialize_values
+
+        return materialize_values(self, anchors, destination, batch_size=batch_size)
 
     @staticmethod
     def _fit_selection(selection: SplitSelection | None, declares_splits: bool) -> SplitSelection:

@@ -706,6 +706,34 @@ def _instrument(engine: Engine, epochs: list[Counter[str]]) -> Callable[..., obj
                 return built
 
             source.build_model_batch = counted_batch
+        binder = getattr(source, "bind_materialized_values", None)
+        if binder is not None:
+
+            def bound_values(*args, **kwargs):
+                bound = binder(*args, **kwargs)
+                # copy.copy preserves instance-patched closures that are bound
+                # to the old source. Rebind native work to this task view; the
+                # reference methods already delegate through the counted source.
+                bound.build = build.__func__.__get__(bound, type(bound))
+                if build_model is not None:
+                    setattr(bound, model_method, build_model.__func__.__get__(bound, type(bound)))
+                if build_batch is not None:
+                    native = build_batch.__func__.__get__(bound, type(bound))
+
+                    def counted_bound(spec, runtime, anchors, compiled):
+                        built = native(spec, runtime, anchors, compiled)
+                        work = epochs[-1]
+                        work["build_calls"] += 1
+                        work["requests"] += len(anchors.sample_ids)
+                        profile = getattr(bound, "last_temporal_profile", None) or {}
+                        for name, value in profile.get("native_stats", {}).items():
+                            work[f"native.{name}"] += int(value)
+                        return built
+
+                    bound.build_model_batch = counted_bound
+                return bound
+
+            source.bind_materialized_values = bound_values
         return source
 
     return opened

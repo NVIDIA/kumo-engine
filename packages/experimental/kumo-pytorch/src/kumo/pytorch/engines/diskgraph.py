@@ -573,6 +573,83 @@ class DiskGraphSource:
 
         return NativeAnchors(self, sample, table, directory=directory)
 
+    def materialize_scalar_batches(self, sample, anchors, batch_size):
+        """Scan native TT batches and evaluate scalar arrays without SampleRequests."""
+        from kumo.pytorch.engines.parquet_anchors import _files, _physical
+
+        physical = _physical(anchors)
+        compiled = _TemporalPlanCompiler(self).compile(sample)
+        prepared = self._sampler.prepare_aggregate_plan(
+            sample.entity.table, json.dumps(self._aggregate_plan(sample, compiled.plan))
+        )
+        entity = self._tables[sample.entity.table]
+        for path in _files(anchors.source.path):
+            for batch in self._diskgraph.read_custom_tt_parquet_batches(
+                path, columns=sorted(set(physical.values())), batch_size=batch_size
+            ):
+                started = time.perf_counter_ns()
+                columns = {name: batch.column(column) for name, column in physical.items()}
+                key_dtype = entity.columns[entity.primary_key]
+                keys = self._pa.array(
+                    [
+                        key_dtype.normalize(v, path="anchors.entity_id")
+                        for v in columns[anchors.entity_id].to_pylist()
+                    ],
+                    type=key_dtype.to_arrow(),
+                )
+                roots = self._sampler.lookup_node_ids(sample.entity.table, keys)
+                if any(root is None for root in roots):
+                    raise ValueError("anchor table contains an unknown graph entity")
+                if anchors.as_of_time is None:
+                    cutoffs = self._pa.repeat(self._pa.scalar(0, self._pa.int64()), batch.num_rows)
+                else:
+                    raw = columns[anchors.as_of_time]
+                    if raw.null_count:
+                        raise ValueError("anchor prediction times cannot be NULL")
+                    if self._pa.types.is_timestamp(raw.type):
+                        raw = self._pc.cast(
+                            raw, self._pa.timestamp("s", tz=raw.type.tz), safe=False
+                        )
+                    elif self._pa.types.is_date(raw.type):
+                        raw = self._pc.cast(raw, self._pa.timestamp("s"))
+                    cutoffs = self._pc.cast(raw, self._pa.int64(), safe=False)
+                direct = self._direct_entity_arrays(sample, roots)
+                result = prepared.execute(
+                    roots,
+                    cutoffs.to_pylist(),
+                    anchor_batch_size=batch_size,
+                    output_format="model",
+                )
+                aggregates = {v["name"]: v["values"] for v in result["aggregates"]}
+                features = self._entity_arrays(sample, direct, aggregates)
+                targets = {
+                    name: self._comparison_array(target, aggregates[f"target:{name}"])
+                    if isinstance(target, Compare)
+                    else self._typed_array(aggregates[f"target:{name}"], target.dtype)
+                    for name, target in sample.targets.items()
+                }
+                self._last_temporal_profile = {
+                    "samples": batch.num_rows,
+                    "output_format": "materialize",
+                    "total_ns": time.perf_counter_ns() - started,
+                    "native_stats": result["stats"],
+                    "native_timings_ns": result["timings_ns"],
+                }
+                yield columns, features, targets, cutoffs
+
+    def bind_materialized_values(self, values, contract):
+        """Bind enriched seed columns on this task's source, retaining native batching."""
+        import copy
+
+        from kumo.pytorch.aggregate_materialization import _ModelValuesSource
+
+        bound = copy.copy(self)
+        bound._materialized_values = values
+        # Explicit-request/reference assembly retains its established adapter;
+        # native batches consume the typed seed columns directly.
+        bound._materialized_reference = _ModelValuesSource(self, values, contract)
+        return bound
+
     def string_lookup(self, keys):
         return self._diskgraph.StringLookup(keys).lookup
 

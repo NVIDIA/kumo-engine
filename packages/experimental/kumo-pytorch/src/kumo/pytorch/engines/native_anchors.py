@@ -340,7 +340,8 @@ class NativeAnchors:
             events={},
             row_targets={},
             targets={
-                name: columns[column].combine_chunks() for name, column in table.targets.items()
+                name: columns[column].combine_chunks()
+                for name, column in {**table.targets, **getattr(bound, "targets", {})}.items()
             },
             splits=(stage["split"],) * n,
             request_metadata=tuple(
