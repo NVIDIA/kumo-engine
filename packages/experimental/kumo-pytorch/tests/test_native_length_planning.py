@@ -15,6 +15,101 @@ from tests.test_preview import _equal
 diskgraph = pytest.importorskip("diskgraph")
 
 
+@pytest.mark.parametrize(
+    "layout",
+    [
+        api.Packed(),
+        api.Padded(),
+        api.Nested(fields=api.Packed(), events=api.Packed()),
+        api.Nested(fields=api.Padded(), events=api.Packed()),
+    ],
+)
+def test_native_bucketing_sorts_by_model_token_length(history_data, tmp_path, monkeypatch, layout):
+    from dataclasses import replace
+
+    from tokenizers import Tokenizer
+    from tokenizers.models import BPE
+
+    from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
+
+    schema, dataset, _, _, _ = history_data
+    # Both users have seven events, but their encoded histories have 21/28 tokens.
+    events = pa.table(
+        {
+            "id": list(range(14)),
+            "owner": [1] * 7 + [2] * 7,
+            "at": pa.array(list(range(1, 8)) * 2, type=pa.timestamp("s")),
+            "amount": [1.0] * 14,
+            "kind": ["aaa"] * 7 + ["aaaa"] * 7,
+        }
+    )
+    events_path = tmp_path / "events.parquet"
+    pq.write_table(events, events_path)
+    dataset = replace(dataset, tables={**dataset.tables, "orders": api.Parquet(str(events_path))})
+    tokenizer = Tokenizer(
+        BPE(vocab={"[MISSING]": 0, "[UNK]": 1, "a": 2}, merges=[], unk_token="[UNK]")
+    )
+    sample = api.SampleSpec(
+        api.EntitySpec("users"),
+        events={
+            "history": api.EventSpec(
+                api.Rows(("orders",), api.TimeWindow("at", stop=0)), {"text": api.Field("kind")}
+            )
+        },
+    )
+    contract = api.DataLoaderSpec(
+        schema,
+        sample,
+        api.BatchSpec(
+            inputs={
+                "history": api.Input(
+                    api.EventSource(("history",), max_events=7),
+                    api.Fields(
+                        (api.Encode("text", api.Text(state=tokenizer.to_str()), id_space="words"),),
+                        row=api.Tokens(),
+                        history=api.Grouped()
+                        if isinstance(layout, api.Nested)
+                        else api.Flatten(100),
+                    ),
+                    layout,
+                )
+            },
+            id_spaces={"words": api.IdSpace({"pad": "pad"})},
+            batching=api.Batching(max_samples=2, length_input="history", bucket_by_length=True),
+        ),
+    )
+    path = tmp_path / "anchors.parquet"
+    pq.write_table(pa.table({"entity": [2, 1] * 3, "cutoff": [10] * 6}), path)
+    anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "cutoff")
+    with api.prepare(
+        contract, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
+    ) as plan:
+        with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
+            native = task._anchors
+            task._anchors = ParquetAnchors(anchors)
+            try:
+                expected = list(task.batches(shuffle=False, chunk_batches=3, output_format="model"))
+            finally:
+                task._anchors.close()
+                task._anchors = native
+            expected_ids = [batch.metadata["sample_ids"] for batch in expected]
+            assert expected_ids == [(1, 3), (5, 0), (2, 4)]
+
+            def forbidden(*args, **kwargs):
+                pytest.fail("native bucketing reconstructed requests or re-encoded for planning")
+
+            monkeypatch.setattr(native, "_requests", forbidden)
+            monkeypatch.setattr(task._assembler, "_model_lengths", forbidden)
+            for epoch in (0, 1):
+                actual = list(
+                    task.batches(shuffle=False, epoch=epoch, chunk_batches=3, output_format="model")
+                )
+                assert [batch.metadata["sample_ids"] for batch in actual] == expected_ids
+                for a, b in zip(actual, expected, strict=True):
+                    _equal(a.inputs, b.inputs)
+                assert native._last_length_planning_stats == ((6, 0) if epoch == 0 else (0, 6))
+
+
 @pytest.mark.parametrize("tokens", [False, True])
 @pytest.mark.parametrize("packed", [False, True])
 @pytest.mark.parametrize("keep", ["first", "last"])

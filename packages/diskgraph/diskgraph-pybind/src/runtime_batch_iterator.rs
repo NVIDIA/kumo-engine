@@ -568,7 +568,8 @@ impl LengthPlanning {
             .map_err(|_| length_error("length cache poisoned"))?;
         let mut ordered = ids.clone();
         if self.contract.bucket {
-            ordered.sort_by_key(|&id| cache.get(id as usize).expect("planned length")[0]);
+            // Model length is event count for row layouts and token count for token layouts.
+            ordered.sort_by_key(|&id| cache.get(id as usize).expect("planned length")[1]);
         }
         let (mut current, mut sum, mut maximum, mut history_sum) =
             (Vec::new(), 0usize, 0usize, 0usize);
