@@ -5636,16 +5636,6 @@ impl RowPackDecoder {
         rows: &[T],
         col_indices: &[usize],
     ) -> Result<arrow_array::RecordBatch> {
-        self.decode_batch_to_arrow_with(rows, col_indices, false)
-    }
-
-    /// `large_offsets` decodes strings and bytes with 64-bit offsets, so their values may pass 2 GiB.
-    pub fn decode_batch_to_arrow_with<T: AsRef<[u8]>>(
-        &self,
-        rows: &[T],
-        col_indices: &[usize],
-        large_offsets: bool,
-    ) -> Result<arrow_array::RecordBatch> {
         use arrow_array::builder::*;
         use arrow_schema::Schema;
         use std::sync::Arc;
@@ -5673,13 +5663,8 @@ impl RowPackDecoder {
             if !requested_mask[idx] {
                 continue;
             }
-            let large = large_offsets
-                .then(|| large_arrow_builder(&col.name, col.logical_type, rows.len()))
-                .flatten();
-            let (field, builder) = match large {
-                Some(made) => made,
-                None => make_arrow_builder(&col.name, col.logical_type, rows.len(), self.clock)?,
-            };
+            let (field, builder) =
+                make_arrow_builder(&col.name, col.logical_type, rows.len(), self.clock)?;
             decoded_indices.push(idx);
             fields.push(field);
             builders.push(builder);
@@ -7260,14 +7245,6 @@ fn append_null(builder: &mut dyn arrow_array::builder::ArrayBuilder) {
         b.append_null();
         return;
     }
-    if let Some(b) = builder.as_any_mut().downcast_mut::<LargeStringBuilder>() {
-        b.append_null();
-        return;
-    }
-    if let Some(b) = builder.as_any_mut().downcast_mut::<LargeBinaryBuilder>() {
-        b.append_null();
-        return;
-    }
     if let Some(b) = builder
         .as_any_mut()
         .downcast_mut::<TimestampSecondBuilder>()
@@ -7324,13 +7301,6 @@ fn append_null(builder: &mut dyn arrow_array::builder::ArrayBuilder) {
     if let Some(b) = builder
         .as_any_mut()
         .downcast_mut::<ListBuilder<StringBuilder>>()
-    {
-        b.append_null();
-        return;
-    }
-    if let Some(b) = builder
-        .as_any_mut()
-        .downcast_mut::<ListBuilder<LargeStringBuilder>>()
     {
         b.append_null();
     }
@@ -7515,78 +7485,6 @@ pub fn make_arrow_builder(
     Ok((arrow_schema::Field::new(name, arrow_type, true), builder))
 }
 
-/// A builder with 64-bit offsets for `dtype`, when its values are strings or bytes.
-fn large_arrow_builder(
-    name: &str,
-    dtype: IngestedType,
-    capacity: usize,
-) -> Option<(
-    arrow_schema::Field,
-    Box<dyn arrow_array::builder::ArrayBuilder>,
-)> {
-    use arrow_array::builder::*;
-    use arrow_schema::DataType;
-
-    let (arrow_type, builder): (DataType, Box<dyn ArrayBuilder>) = match dtype {
-        IngestedType::String
-        | IngestedType::Uuid
-        | IngestedType::Uuid256
-        | IngestedType::Ip
-        | IngestedType::Decimal128
-        | IngestedType::Decimal256 => (
-            DataType::LargeUtf8,
-            Box::new(LargeStringBuilder::with_capacity(capacity, capacity * 32)),
-        ),
-        IngestedType::Bytes => (
-            DataType::LargeBinary,
-            Box::new(LargeBinaryBuilder::with_capacity(capacity, capacity * 32)),
-        ),
-        IngestedType::StringArray => (
-            DataType::new_list(DataType::LargeUtf8, true),
-            Box::new(ListBuilder::new(LargeStringBuilder::new())),
-        ),
-        _ => return None,
-    };
-    Some((arrow_schema::Field::new(name, arrow_type, true), builder))
-}
-
-fn append_str(builder: &mut dyn arrow_array::builder::ArrayBuilder, value: &str) {
-    use arrow_array::builder::*;
-    let builder = builder.as_any_mut();
-    if let Some(b) = builder.downcast_mut::<StringBuilder>() {
-        b.append_value(value);
-    } else {
-        let b = builder.downcast_mut::<LargeStringBuilder>().unwrap();
-        b.append_value(value);
-    }
-}
-
-fn append_string_tokens<O: arrow_array::OffsetSizeTrait>(
-    b: &mut arrow_array::builder::ListBuilder<arrow_array::builder::GenericStringBuilder<O>>,
-    len: usize,
-    data: &mut &[u8],
-    encoding: &StringEncoding,
-    dict: Option<&Vec<Vec<u8>>>,
-    scratch: &mut RowPackDecodeScratch,
-) -> Result<()> {
-    for _ in 0..len {
-        if data.is_empty() {
-            return Err(anyhow!("rowpack string array token tag truncated"));
-        }
-        let token_tag = data[0];
-        *data = &data[1..];
-        scratch.string.clear();
-        if token_tag == 2 {
-            decode_string_fallback_into(data, &mut scratch.string)?;
-        } else {
-            decode_string_into(data, encoding, dict, scratch)?;
-        }
-        b.values().append_value(&scratch.string);
-    }
-    b.append(true);
-    Ok(())
-}
-
 fn decode_and_append_to_builder(
     builder: &mut dyn arrow_array::builder::ArrayBuilder,
     col: &ColumnContext,
@@ -7661,13 +7559,11 @@ fn decode_and_append_to_builder(
             } else {
                 decode_bytes(data, *fixed_len)?
             };
-            let builder = builder.as_any_mut();
-            if let Some(b) = builder.downcast_mut::<BinaryBuilder>() {
-                b.append_value(bytes);
-            } else {
-                let b = builder.downcast_mut::<LargeBinaryBuilder>().unwrap();
-                b.append_value(bytes);
-            }
+            builder
+                .as_any_mut()
+                .downcast_mut::<BinaryBuilder>()
+                .unwrap()
+                .append_value(bytes);
         }
         ColumnEncoding::Uuid => {
             let bytes = decode_fixed_bytes::<16>(data)?;
@@ -7678,7 +7574,11 @@ fn decode_and_append_to_builder(
                 uuid_simd::AsciiCase::Lower,
             );
             let s = std::str::from_utf8(s).unwrap();
-            append_str(builder, s);
+            builder
+                .as_any_mut()
+                .downcast_mut::<StringBuilder>()
+                .unwrap()
+                .append_value(s);
         }
         ColumnEncoding::Uuid256 => {
             let bytes = decode_fixed_bytes::<32>(data)?;
@@ -7700,12 +7600,20 @@ fn decode_and_append_to_builder(
                 uuid_simd::AsciiCase::Lower,
             );
             let s = std::str::from_utf8(&buf).unwrap();
-            append_str(builder, s);
+            builder
+                .as_any_mut()
+                .downcast_mut::<StringBuilder>()
+                .unwrap()
+                .append_value(s);
         }
         ColumnEncoding::Ip => {
             let bytes = decode_fixed_bytes::<16>(data)?;
             let s = format_ip(bytes);
-            append_str(builder, &s);
+            builder
+                .as_any_mut()
+                .downcast_mut::<StringBuilder>()
+                .unwrap()
+                .append_value(s);
         }
         ColumnEncoding::Date { varint, bits } => {
             let v = decode_int(data, *varint, *bits)?;
@@ -7760,7 +7668,11 @@ fn decode_and_append_to_builder(
                     DecimalStorage::Raw => unreachable!(),
                 }
             };
-            append_str(builder, &text);
+            builder
+                .as_any_mut()
+                .downcast_mut::<StringBuilder>()
+                .unwrap()
+                .append_value(text);
         }
         ColumnEncoding::String { encoding } => {
             // We use scratch string to decode, then append to builder.
@@ -7771,7 +7683,11 @@ fn decode_and_append_to_builder(
             } else {
                 decode_string_into(data, encoding, dict, scratch)?;
             }
-            append_str(builder, &scratch.string);
+            builder
+                .as_any_mut()
+                .downcast_mut::<StringBuilder>()
+                .unwrap()
+                .append_value(&scratch.string);
         }
         ColumnEncoding::FloatArray { storage }
         | ColumnEncoding::FixedFloatArray { storage, .. } => {
@@ -7883,15 +7799,25 @@ fn decode_and_append_to_builder(
             if len > MAX_ARRAY_LEN {
                 return Err(anyhow!("rowpack string array length overflow"));
             }
-            let builder = builder.as_any_mut();
-            if let Some(b) = builder.downcast_mut::<ListBuilder<StringBuilder>>() {
-                append_string_tokens(b, len, data, encoding, dict, scratch)?;
-            } else {
-                let b = builder
-                    .downcast_mut::<ListBuilder<LargeStringBuilder>>()
-                    .unwrap();
-                append_string_tokens(b, len, data, encoding, dict, scratch)?;
+            let b = builder
+                .as_any_mut()
+                .downcast_mut::<ListBuilder<StringBuilder>>()
+                .unwrap();
+            for _ in 0..len {
+                if data.is_empty() {
+                    return Err(anyhow!("rowpack string array token tag truncated"));
+                }
+                let token_tag = data[0];
+                *data = &data[1..];
+                scratch.string.clear();
+                if token_tag == 2 {
+                    decode_string_fallback_into(data, &mut scratch.string)?;
+                } else {
+                    decode_string_into(data, encoding, dict, scratch)?;
+                }
+                b.values().append_value(&scratch.string);
             }
+            b.append(true);
         }
         ColumnEncoding::Bool => return Err(anyhow!("rowpack bool unexpected")),
     }
