@@ -12,7 +12,7 @@ use diskgraph_core::sampling::*;
 use diskgraph_core::sortkey::SortKeyDecoder;
 use diskgraph_core::time::{convert_trunc, TimeUnit};
 use diskgraph_core::tt_builder::{Value, WEIGHT_COL};
-use diskgraph_index::layout::{EdgeListView, RelationSegment};
+use diskgraph_index::layout::RelationSegment;
 use diskgraph_index::reader::ShardReader;
 use gxhash::HashMap as GxHashMap;
 use rayon::prelude::*;
@@ -2362,42 +2362,17 @@ impl DiskGraphEngine {
         Ok(())
     }
 
-    /// Feature fetching from an EdgeListView, used in fused mode
-    fn accumulate_features_from_view(
-        &self,
-        type_id: usize,
-        type_state: &mut crate::state::TypeState,
-        scratch: &mut RowPackDecodeScratch,
-        edges_view: &EdgeListView,
-        output: &mut impl OutputHandler,
-    ) -> Result<()> {
-        let decoder = self
-            .node_decoders
-            .get(type_id)
-            .and_then(|d| d.as_ref())
-            .ok_or_else(|| EngineError::Internal(format!("no decoder for type {}", type_id)))?;
-
-        self.accumulate_features_from_view_internal(
-            type_id, type_state, scratch, decoder, edges_view, output,
-        )
-    }
-
-    /// Reused for fused mode feature fetching for both non-leaf and leaf nodes.
-    /// Non-leaf nodes EdgeListView is accessed as part of sampling. Leaf nodes
-    /// requires a separate access to EdgeListView given their IDs.
-    fn accumulate_features_from_view_internal(
+    /// Decode feature bytes for both frontier and leaf nodes in fused mode.
+    fn accumulate_features_from_data(
         &self,
         type_id: usize,
         type_state: &mut crate::state::TypeState,
         scratch: &mut RowPackDecodeScratch,
         decoder: &RowPackDecoder,
-        edges_view: &EdgeListView,
+        node_data: Option<&[u8]>,
         output: &mut impl OutputHandler,
     ) -> Result<()> {
-        if let Some(data) = edges_view
-            .node_data()
-            .map_err(|e| EngineError::DataCorruption(e.to_string()))?
-        {
+        if let Some(data) = node_data {
             let context = decoder.context();
             // Drop reserved columns (e.g. WEIGHT) from features via a per-column
             // mask; `flush_fused_features` projects the flush schema to the same
@@ -2475,12 +2450,14 @@ impl DiskGraphEngine {
                 .edges_for_node(local_id)
                 .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
 
-            self.accumulate_features_from_view_internal(
+            self.accumulate_features_from_data(
                 type_id,
                 type_state,
                 scratch,
                 decoder,
-                &edges_view,
+                edges_view
+                    .node_data()
+                    .map_err(|e| EngineError::DataCorruption(e.to_string()))?,
                 output,
             )?;
         }
@@ -2633,7 +2610,7 @@ impl DiskGraphEngine {
         })?;
 
         // Reserved columns (WEIGHT) were dropped from the builders/mask in
-        // `accumulate_features_from_view_internal`, so project the schema to
+        // `accumulate_features_from_data`, so project the schema to
         // the same non-reserved columns to keep field count == array count.
         let keep: Vec<usize> = full_schema
             .fields()
@@ -2970,6 +2947,14 @@ impl DiskGraphEngine {
                     continue;
                 }
 
+                let decoder = self
+                    .node_decoders
+                    .get(src_type_id)
+                    .and_then(|d| d.as_ref())
+                    .ok_or_else(|| {
+                        EngineError::Internal(format!("no decoder for type {}", src_type_id))
+                    })?;
+
                 for node in &frontier {
                     let shard_idx = self.find_shard(shards, node.global_id)?;
                     let shard = &shards[shard_idx];
@@ -2980,20 +2965,23 @@ impl DiskGraphEngine {
                         .edges_for_node(local_id)
                         .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
 
+                    let (segments, node_data) = edges_view
+                        .parse()
+                        .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
+
                     // FETCH SOURCE FEATURES (Locality)
                     {
                         let scratch = &mut state.decode_scratch;
                         let type_state = state.type_states.get_mut(&src_type_id).unwrap();
-                        self.accumulate_features_from_view(
+                        self.accumulate_features_from_data(
                             src_type_id,
                             type_state,
                             scratch,
-                            &edges_view,
+                            decoder,
+                            node_data,
                             output,
                         )?;
                     }
-
-                    let segments = edges_view.relation_segments().unwrap_or_default();
 
                     self.process_node_relations(
                         layer_idx,
