@@ -301,8 +301,10 @@ def test_a_cutoff_after_the_latest_anchor_warns(tmp_path, caplog):
         with caplog.at_level(logging.WARNING, logger="kumo.pytorch.preparation"):
             _encoders(_contract(), dataset, engine, encoder_cutoff=cutoff)
         assert "after the latest fitting anchor" in caplog.text
-    with pytest.raises(ValueError, match="encoder_cutoff 'soon' is not an ISO 8601 timestamp"):
-        _encoders(_contract(), dataset, engine, encoder_cutoff="soon")
+    for cutoff in ("soon", "2024-02-30", "1704067200"):
+        with pytest.raises(ValueError, match=f"encoder_cutoff '{cutoff}' is not an ISO 8601"):
+            _encoders(_contract(), dataset, engine, encoder_cutoff=cutoff)
+    _encoders(_contract(), dataset, engine, encoder_cutoff="2024-01-01T00:00Z")
 
 
 COLUMN_TYPES = {

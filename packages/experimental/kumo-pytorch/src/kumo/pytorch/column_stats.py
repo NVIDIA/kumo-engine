@@ -231,49 +231,42 @@ def _learns_from_stats(config: Any, dtype: DType) -> bool:
     return False
 
 
-def cutoff_nanos(values: Sequence[Any]) -> list[int | None]:
-    """Epoch nanoseconds of each cutoff: an ISO 8601 string, a date or datetime, or epoch seconds.
+def cutoff_nanos(value: Any) -> int | None:
+    """Epoch nanoseconds of a cutoff: an ISO 8601 string, a date or datetime, or epoch seconds.
 
-    DiskGraph parses and normalizes them as ingest reads a timestamp column, to the nanosecond.
+    A string is validated as `datetime.fromisoformat` reads it; DiskGraph supplies the exact value
+    when it parses the string too, keeping digits past the microsecond.
     """
 
+    if value is None:
+        return None
+    if type(value) is int:
+        return value * 10**9
+    if isinstance(value, str):
+        try:
+            parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            raise ValueError(f"encoder_cutoff {value!r} is not an ISO 8601 timestamp") from None
+        exact = _resolve_nanos(value)
+        return _resolve_nanos(parsed) if exact is None else exact
+    if isinstance(value, dt.date):
+        return _resolve_nanos(value)
+    raise TypeError(
+        f"encoder_cutoff must be a timestamp string, datetime or epoch seconds, not {value!r}"
+    )
+
+
+def _resolve_nanos(value: str | dt.date) -> int | None:
     import diskgraph
     import pyarrow as pa
 
-    def epochs(items: list, arrow_type: pa.DataType | None = None) -> list[int | None]:
-        return diskgraph.resolve_temporal(
-            pa.array(items, arrow_type), timestamp_unit="nanoseconds"
-        )[0]
-
-    times = iter(
-        epochs(
-            [
-                value if isinstance(value, dt.datetime) else dt.datetime.combine(value, dt.time())
-                for value in values
-                if isinstance(value, dt.date)
-            ],
-            pa.timestamp("ns"),
-        )
-    )
-    nanos: list[int | None] = []
-    for value in values:
-        if value is None:
-            nanos.append(None)
-        elif type(value) is int:
-            nanos.append(value * 10**9)
-        elif isinstance(value, dt.date):
-            nanos.append(next(times))
-        elif isinstance(value, str):
-            (epoch,) = epochs([value])
-            if epoch is None:
-                raise ValueError(f"encoder_cutoff {value!r} is not an ISO 8601 timestamp")
-            nanos.append(epoch)
-        else:
-            raise TypeError(
-                "encoder_cutoff must be a timestamp string, datetime or epoch seconds, "
-                f"not {value!r}"
-            )
-    return nanos
+    if isinstance(value, str):
+        array = pa.array([value])
+    else:
+        if not isinstance(value, dt.datetime):
+            value = dt.datetime.combine(value, dt.time())
+        array = pa.array([value], pa.timestamp("ns"))
+    return diskgraph.resolve_temporal(array, timestamp_unit="nanoseconds")[0][0]
 
 
 def fit_from_stats(identity: str, encoder: TableColumnEncoder, stats: ColumnStats) -> FittedEncoder:

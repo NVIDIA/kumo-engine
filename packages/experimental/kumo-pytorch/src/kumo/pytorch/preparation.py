@@ -226,9 +226,7 @@ class Plan:
             )
         if inference and fit_split is not None:
             raise ValueError("fit_split has nothing to fit in inference")
-        cutoff = (
-            encoder_cutoff if encoder_cutoff is LATEST_ANCHOR else cutoff_nanos([encoder_cutoff])[0]
-        )
+        cutoff = encoder_cutoff if encoder_cutoff is LATEST_ANCHOR else cutoff_nanos(encoder_cutoff)
         source = self._require_open()
         if isinstance(anchors, AnchorTable):
             issues = check(
@@ -316,7 +314,7 @@ class Plan:
         if not encoders or column_stats is None or not fitting:
             return {}, {}
         latest = (
-            max(cutoff_nanos([request.as_of_time for request in fitting]))
+            cutoff_nanos(max(request.as_of_time for request in fitting))
             if self.contract.requires_anchor_time
             else None
         )
