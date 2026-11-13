@@ -1583,8 +1583,7 @@ fn e2e_multi_entity_multi_target_pipeline() {
     let parquet_rows = parquet_row_count(&output.tt_parquet_path);
     assert_eq!(parquet_rows, n_rows as u64);
     let first_part = diskgraph_train_table::parquet_dataset::ordered_tt_dataset_parts(
-        &output.tt_parquet_path,
-    )
+        &output.tt_parquet_path)
     .unwrap()
     .into_iter()
     .next()

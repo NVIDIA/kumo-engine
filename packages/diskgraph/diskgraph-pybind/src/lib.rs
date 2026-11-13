@@ -8,6 +8,7 @@
     clippy::too_many_arguments
 )]
 
+use crate::temporal_query::{LengthPython as _, QueryPython as _};
 use arrow::array::{
     make_array, ArrayData, BinaryArray, BinaryViewArray, Decimal128Array, Decimal256Array,
     FixedSizeBinaryArray, Int16Array, Int32Array, Int64Array, Int8Array, LargeBinaryArray,
@@ -185,15 +186,15 @@ use diskgraph_engine::state::{SamplingState, StatePool};
 mod artifact_helpers;
 mod bp_col_stats;
 mod bp_evaluate;
-mod exact_quantiles;
 mod col_stats_export;
-mod custom_tt_entry;
 mod cutoff_col_stats;
-mod index_metadata;
-mod success_marker;
-mod string_lookup;
-mod runtime_batch_iterator;
 mod custom_tt_contract;
+mod custom_tt_entry;
+mod exact_quantiles;
+mod index_metadata;
+mod runtime_batch_iterator;
+mod string_lookup;
+mod success_marker;
 mod temporal;
 mod temporal_query;
 mod token_stream;
@@ -269,11 +270,16 @@ impl From<PyTimeUnit> for diskgraph_core::time::TimeUnit {
 /// Events yielded by the sampling iterator.
 #[derive(Debug)]
 enum SampleEvent {
-    EdgeBatch { rel_id: usize, batch: RecordBatch },
-    NodeBatch { type_id: usize, batch: RecordBatch },
-    FeatureBatch { type_id: usize, batch: RecordBatch },
-    Stats { stats: String },
-    Error { err: diskgraph_engine::errors::EngineError },
+    EdgeBatch { rel_id: usize, batch: RecordBatch,
+    },
+    NodeBatch { type_id: usize, batch: RecordBatch,
+    },
+    FeatureBatch { type_id: usize, batch: RecordBatch,
+    },
+    Stats { stats: String,
+    },
+    Error { err: diskgraph_engine::errors::EngineError,
+    },
 }
 
 /// Bridge between Rust Engine and Python Iterator.
@@ -499,6 +505,52 @@ pub struct SamplerEngine {
     sample_count: Arc<std::sync::atomic::AtomicUsize>,
 }
 
+/// Prepared common scalar plan bound to the index/pool that resolved it.
+#[pyclass]
+struct PreparedAggregateQuery {
+    reader: Arc<diskgraph_index::graph::GraphIndexReader>,
+    engine: Arc<DiskGraphEngine>,
+    plan: Arc<diskgraph_train_table::batch_aggregate::PreparedAggregatePlan>,
+}
+
+#[pymethods]
+impl PreparedAggregateQuery {
+    #[pyo3(signature = (roots, cutoffs, *, anchor_batch_size=256, output_format="model"))]
+    fn execute(
+        &self,
+        py: Python<'_>,
+        roots: Vec<u64>,
+        cutoffs: Vec<i64>,
+        anchor_batch_size: usize,
+        output_format: &str,
+    ) -> PyResult<Py<PyDict>> {
+        let model_format = match output_format {
+            "model" => true,
+            "inspectable" => false,
+            _ => {
+                return Err(DiskgraphConfigError::new_err(
+                    "output_format must be inspectable or model",
+                ))
+            }
+        };
+        let reader = Arc::clone(&self.reader);
+        let engine = Arc::clone(&self.engine);
+        let plan = Arc::clone(&self.plan);
+        let result = py
+            .detach(move || {
+                plan.execute(
+                    &reader,
+                    &roots,
+                    &cutoffs,
+                    anchor_batch_size,
+                    &engine.thread_pool,
+                )
+            })
+            .map_err(temporal_query::config_error)?;
+        result.into_python(py, model_format)
+    }
+}
+
 fn fixed_primary_key_bytes<const N: usize>(value: &[u8], key_type: &str) -> PyResult<[u8; N]> {
     value.try_into().map_err(|_| {
         DiskgraphDataError::new_err(format!(
@@ -573,20 +625,26 @@ where
                 DataType::Binary => mask_array!(BinaryArray, |array, index| Ok(Key::$variant(
                     fixed_primary_key_bytes::<$size>(array.value(index), $label)?
                 ))),
-                DataType::LargeBinary => mask_array!(LargeBinaryArray, |array, index| Ok(
+                DataType::LargeBinary => {
+                    mask_array!(LargeBinaryArray, |array, index| Ok(
                     Key::$variant(fixed_primary_key_bytes::<$size>(
                         array.value(index), $label
                     )?)
-                )),
-                DataType::BinaryView => mask_array!(BinaryViewArray, |array, index| Ok(
+                ))
+                }
+                DataType::BinaryView => {
+                    mask_array!(BinaryViewArray, |array, index| Ok(
                     Key::$variant(fixed_primary_key_bytes::<$size>(
                         array.value(index), $label
                     )?)
-                )),
-                DataType::FixedSizeBinary(_) => mask_array!(FixedSizeBinaryArray,
+                ))
+                }
+                DataType::FixedSizeBinary(_) => {
+                    mask_array!(FixedSizeBinaryArray,
                     |array, index| Ok(Key::$variant(fixed_primary_key_bytes::<$size>(
                         array.value(index), $label
-                    )?))),
+                    )?)))
+                }
                 data_type => Err(primary_key_type_error(key_type, data_type)),
             }
         }};
@@ -608,8 +666,10 @@ where
                 array.value(index) as u64))),
             DataType::UInt32 => mask_array!(UInt32Array, |array, index| Ok(Key::Int(
                 array.value(index) as u64))),
-            DataType::UInt64 => mask_array!(UInt64Array, |array, index| Ok(Key::Int(
-                array.value(index)))),
+            DataType::UInt64 => {
+                mask_array!(UInt64Array, |array, index| Ok(Key::Int(
+                array.value(index))))
+            }
             DataType::Decimal128(_, scale) => {
                 let scale = *scale;
                 mask_array!(Decimal128Array, |array, index| {
@@ -684,7 +744,8 @@ impl SamplerEngine {
     #[new]
     #[pyo3(signature = (path, random_seed=None, num_threads=None))]
     #[tracing::instrument(level = "info", skip(path), fields(index_path = %path))]
-    pub fn new(path: String, random_seed: Option<u64>, num_threads: Option<usize>) -> PyResult<Self> {
+    pub fn new(path: String, random_seed: Option<u64>, num_threads: Option<usize>,
+    ) -> PyResult<Self> {
         let root = std::path::Path::new(&path);
         let reader = Arc::new(
             diskgraph_index::graph::GraphIndexReader::open(&root.join("index_metadata.json"), root)
@@ -767,14 +828,90 @@ impl SamplerEngine {
         })?;
         let cutoffs: Vec<i64> = cutoff_values.extract()?;
         let reader = Arc::clone(&self.reader);
+        let engine = Arc::clone(&self.engine);
         let result = py
             .detach(move || {
-                temporal_query::execute(
+                temporal_query::execute_parallel(
                     reader.as_ref(),
                     &root_type,
                     &roots,
                     &cutoffs,
                     &plan_json,
+                    &engine.thread_pool,
+                )
+            })
+            .map_err(temporal_query::config_error)?;
+        result.into_python(py, model_format)
+    }
+
+    /// Resolve one common scalar plan for all subsequent anchor chunks.
+    fn prepare_aggregate_plan(
+        &self,
+        py: Python<'_>,
+        root_type: String,
+        plan_json: String,
+    ) -> PyResult<PreparedAggregateQuery> {
+        let reader = Arc::clone(&self.reader);
+        let plan = py
+            .detach(move || {
+                diskgraph_train_table::batch_aggregate::PreparedAggregatePlan::prepare(
+                    &reader, &root_type, &plan_json,
+                )
+            })
+            .map_err(temporal_query::config_error)?;
+        Ok(PreparedAggregateQuery {
+            reader: Arc::clone(&self.reader),
+            engine: Arc::clone(&self.engine),
+            plan: Arc::new(plan),
+        })
+    }
+
+    /// Materialize scalar features/targets using the same DGTTPlan IR as PQL.
+    /// Explicit anchors preserve order and duplicates; intermediates are bounded
+    /// by anchor_batch_size rather than by the full caller population.
+    #[pyo3(signature = (seed_nodes, seed_timestamps, plan_json, *, anchor_batch_size=256, output_format="model"))]
+    pub fn query_aggregate_plan(
+        &self,
+        py: Python<'_>,
+        seed_nodes: Bound<'_, PyDict>,
+        seed_timestamps: Bound<'_, PyDict>,
+        plan_json: String,
+        anchor_batch_size: usize,
+        output_format: &str,
+    ) -> PyResult<Py<PyDict>> {
+        let model_format = match output_format {
+            "inspectable" => false,
+            "model" => true,
+            _ => {
+                return Err(DiskgraphConfigError::new_err(
+                    "output_format must be inspectable or model",
+                ))
+            }
+        };
+        if seed_nodes.len() != 1 || seed_timestamps.len() != 1 {
+            return Err(DiskgraphConfigError::new_err(
+                "aggregate plans require exactly one root type",
+            ));
+        }
+        let (root_key, values) = seed_nodes.into_iter().next().unwrap();
+        let root: String = root_key.extract()?;
+        let roots: Vec<u64> = values.extract()?;
+        let cutoffs: Vec<i64> = seed_timestamps
+            .get_item(&root)?
+            .ok_or_else(|| DiskgraphConfigError::new_err("missing cutoff root type"))?
+            .extract()?;
+        let reader = Arc::clone(&self.reader);
+        let engine = Arc::clone(&self.engine);
+        let result = py
+            .detach(move || {
+                temporal_query::execute_aggregate_plan(
+                    reader.as_ref(),
+                    &root,
+                    &roots,
+                    &cutoffs,
+                    &plan_json,
+                    anchor_batch_size,
+                    &engine.thread_pool,
                 )
             })
             .map_err(temporal_query::config_error)?;
@@ -812,14 +949,16 @@ impl SamplerEngine {
         })?;
         let cutoffs: Vec<i64> = cutoff_values.extract()?;
         let reader = Arc::clone(&self.reader);
+        let engine = Arc::clone(&self.engine);
         let result = py
             .detach(move || {
-                temporal_query::execute_lengths(
+                temporal_query::execute_lengths_parallel(
                     reader.as_ref(),
                     &root_type,
                     &roots,
                     &cutoffs,
                     &plan_json,
+                    &engine.thread_pool,
                 )
             })
             .map_err(temporal_query::config_error)?;
@@ -997,15 +1136,22 @@ impl SamplerEngine {
             let dict: Bound<'_, PyDict> = item.extract()?;
             let node_type: String = dict
                 .get_item("node_type")?
-                .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("missing 'node_type' in feature request"))?
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyKeyError::new_err("missing 'node_type' in feature request")
+                })?
                 .extract()?;
             let node_ids: Vec<u64> = dict
                 .get_item("node_ids")?
-                .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("missing 'node_ids' in feature request"))?
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyKeyError::new_err("missing 'node_ids' in feature request")
+                })?
                 .extract()?;
             let feature_names: Vec<String> = dict
                 .get_item("feature_names")?
-                .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("missing 'feature_names' in feature request"))?
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyKeyError::new_err("missing 'feature_names' in feature request",
+                    )
+                })?
                 .extract()?;
 
             req_batch.push(FeatureRequest {
@@ -1219,9 +1365,7 @@ pub fn export_tt_artifacts(py: Python<'_>, config: &ExportConfig) -> PyResult<()
     // Release the GIL during export — this is a long-running CPU/IO operation
     // and holding the GIL would block heartbeats and other Python threads in the
     // Temporal worker.
-    py.detach(move || {
-        diskgraph_engine::export_tt_artifacts::process_export(&internal_config)
-    })
+    py.detach(move || diskgraph_engine::export_tt_artifacts::process_export(&internal_config))
     .map(|_| {
         info!("Pybind export_tt_artifacts finished");
     })
@@ -1621,8 +1765,7 @@ fn compute_col_stats_for_parquet(
     _category_count_limit_for_testing: Option<u64>,
 ) -> PyResult<(String, String)> {
     use diskgraph_ingest::config_converter::{
-        map_kumo_dtype, map_kumo_stype, map_timestamp_unit,
-    };
+        map_kumo_dtype, map_kumo_stype, map_timestamp_unit};
     use diskgraph_ingest::graph_config::ColumnSpec;
 
     use diskgraph_core::accumulators::MAX_CATEGORIES;
@@ -1650,9 +1793,11 @@ fn compute_col_stats_for_parquet(
     }
 
     let kumo_cols: Vec<KumoColumnSpec> = serde_json::from_str(kumo_column_specs_json)
-        .map_err(|e| DiskgraphConfigError::new_err(format!(
+        .map_err(|e| {
+            DiskgraphConfigError::new_err(format!(
             "invalid kumo_column_specs_json: {e}"
-        )))?;
+        ))
+        })?;
     let columns: Vec<ColumnSpec> = kumo_cols
         .into_iter()
         .map(|c| {
@@ -1802,7 +1947,8 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let _ = rayon::ThreadPoolBuilder::new()
         .num_threads(diskgraph_ingest::effective_parallelism())
         .build_global();
-    m.add("DiskgraphDataError", m.py().get_type::<DiskgraphDataError>())?;
+    m.add("DiskgraphDataError", m.py().get_type::<DiskgraphDataError>(),
+    )?;
     m.add(
         "DiskgraphSourceValidationError",
         m.py().get_type::<DiskgraphSourceValidationError>(),
@@ -1811,8 +1957,10 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "DiskgraphTargetCategoryLimitError",
         m.py().get_type::<DiskgraphTargetCategoryLimitError>(),
     )?;
-    m.add("DiskgraphConfigError", m.py().get_type::<DiskgraphConfigError>())?;
-    m.add("DiskgraphSystemError", m.py().get_type::<DiskgraphSystemError>())?;
+    m.add("DiskgraphConfigError", m.py().get_type::<DiskgraphConfigError>(),
+    )?;
+    m.add("DiskgraphSystemError", m.py().get_type::<DiskgraphSystemError>(),
+    )?;
     m.add(
         "DiskgraphCorruptionError",
         m.py().get_type::<DiskgraphCorruptionError>(),
@@ -1840,6 +1988,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(col_stats_export::read_col_stats, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_export::read_edge_stats, m)?)?;
     m.add_class::<SamplerEngine>()?;
+    m.add_class::<PreparedAggregateQuery>()?;
     runtime_batch_iterator::register(m)?;
     m.add_class::<PySampleIterator>()?;
     m.add_function(wrap_pyfunction!(tt_builder::build_split_spec_json, m)?)?;
@@ -1857,7 +2006,12 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
         tt_executor::read_tt_parquet_batches,
         m
     )?)?;
+    m.add_function(wrap_pyfunction!(
+        tt_executor::read_custom_tt_parquet_batches,
+        m
+    )?)?;
     m.add_class::<tt_executor::TTParquetBatchIterator>()?;
+    m.add_class::<tt_executor::TaskParquetWriter>()?;
     m.add_function(wrap_pyfunction!(
         tt_executor::build_prediction_table_edge_bundle_artifact,
         m
