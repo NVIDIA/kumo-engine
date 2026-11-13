@@ -16,6 +16,8 @@ pub mod dataset;
 pub mod decimal_key;
 pub mod errors;
 pub mod features;
+pub mod indexed_range;
+pub mod indexed_time_range;
 pub mod metadata;
 pub mod sampling;
 pub mod simulation_test;
