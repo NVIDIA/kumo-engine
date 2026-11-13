@@ -222,7 +222,7 @@ class DiskGraphEngine:
         num_threads: int | None = None,
         num_shards: int = 1,
         ingest: Literal["if_missing", "never"] = "if_missing",
-        encoder_cutoffs: Sequence[str | dt.datetime | None] = (),
+        encoder_cutoffs: Sequence[str | int | dt.datetime | dt.date | None] = (),
     ):
         if ingest not in {"if_missing", "never"}:
             raise ValueError("ingest must be 'if_missing' or 'never'")
