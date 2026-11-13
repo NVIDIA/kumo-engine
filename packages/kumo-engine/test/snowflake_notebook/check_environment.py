@@ -12,6 +12,12 @@ REPOSITORY = 'NVIDIA/kumo-engine'
 ENVIRONMENT = 'snowflake-mlops-test'
 MAIN_BRANCH = 'main'
 TEAM_ID = 19956283
+RELEASE_TRIAL = 'egu/release-v1.1-platform-tests'
+EXISTING_TRIALS = {
+    'snowflake-mlops-test': 'egu/mlops-platform-integration',
+    'databricks-mlops-test': 'egu/databricks-ui-validation',
+    'sagemaker-mlops-test': 'egu/sagemaker-platform-validation',
+}
 
 
 def validate(environment, policies, branch=None, selected_branch=MAIN_BRANCH):
@@ -38,7 +44,17 @@ def validate(environment, policies, branch=None, selected_branch=MAIN_BRANCH):
     branches = policies.get('branch_policies', [])
     names = [item.get('name') for item in branches]
     allowed = {MAIN_BRANCH, branch} if branch is not None else set(names)
-    if (not 1 <= len(branches) <= 2
+    limit = 2
+    if selected_branch == RELEASE_TRIAL:
+        existing = EXISTING_TRIALS.get(environment.get('name'))
+        if existing is None:
+            raise ValueError('Unknown release-validation environment')
+        allowed = {MAIN_BRANCH, RELEASE_TRIAL, existing}
+        if set(names) != allowed:
+            raise ValueError(
+                'Release validation must preserve existing trial access')
+        limit = 3
+    if (not 1 <= len(branches) <= limit
             or any(not isinstance(name, str)
                    or not re.fullmatch(r'[A-Za-z0-9_./-]+', name)
                    for name in names)

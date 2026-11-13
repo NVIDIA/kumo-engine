@@ -230,6 +230,41 @@ def test_environment_guard_rejects_unrestricted_or_other_branches(modules):
                        {'branch_policies': [branch]})
 
 
+@pytest.mark.parametrize('name,existing', [
+    ('snowflake-mlops-test', 'egu/mlops-platform-integration'),
+    ('databricks-mlops-test', 'egu/databricks-ui-validation'),
+    ('sagemaker-mlops-test', 'egu/sagemaker-platform-validation'),
+])
+def test_release_trial_preserves_exact_existing_allowlist(
+        modules, name, existing):
+    guard = importlib.import_module('check_environment')
+    environment = dict(
+        name=name, can_admins_bypass=False, protection_rules=[
+            dict(type='required_reviewers', prevent_self_review=False,
+                 reviewers=[dict(type='Team', reviewer=dict(id=guard.TEAM_ID))])
+        ], deployment_branch_policy=dict(protected_branches=False,
+                                         custom_branch_policies=True))
+    branches = [
+        dict(name=value, type='branch')
+        for value in ['main', existing, guard.RELEASE_TRIAL]
+    ]
+    guard.validate(environment, dict(branch_policies=branches),
+                   selected_branch=guard.RELEASE_TRIAL)
+    invalid_policies = [branches[::2],
+                        branches + [dict(name='other', type='branch')]]
+    invalid_policies.append([
+        branches[0], dict(name='feature/*', type='branch'), branches[2]
+    ])
+    for names in invalid_policies:
+        with pytest.raises(ValueError):
+            guard.validate(environment, dict(branch_policies=names),
+                           selected_branch=guard.RELEASE_TRIAL)
+    with pytest.raises(ValueError):
+        guard.validate(dict(environment, name='unknown'),
+                       dict(branch_policies=branches),
+                       selected_branch=guard.RELEASE_TRIAL)
+
+
 def test_lifecycle_evidence_checks_survive_python_optimization(
         modules, tmp_path):
     launch, _, _ = modules

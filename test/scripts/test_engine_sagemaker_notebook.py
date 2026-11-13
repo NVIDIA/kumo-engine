@@ -1166,7 +1166,8 @@ def test_sagemaker_environment_keeps_main_independent_and_trial_self_approval(
     from importlib.util import module_from_spec, spec_from_file_location
     rule = dict(type='required_reviewers', prevent_self_review=prevent_self_review,
                 reviewers=[dict(type='Team', reviewer=dict(id=19956283))])
-    environment = dict(can_admins_bypass=False, protection_rules=[rule],
+    environment = dict(name='sagemaker-mlops-test',
+                       can_admins_bypass=False, protection_rules=[rule],
                        deployment_branch_policy=dict(protected_branches=False,
                                                      custom_branch_policies=True))
     policies = dict(
@@ -1174,6 +1175,10 @@ def test_sagemaker_environment_keeps_main_independent_and_trial_self_approval(
             dict(type='branch', name='main'),
             dict(type='branch', name='egu/release-v1.1-platform-tests')
         ])
+    if dispatch == 'egu/release-v1.1-platform-tests':
+        policies['branch_policies'].append(dict(
+            type='branch', name='egu/sagemaker-platform-validation'))
+        policies['total_count'] = 3
     if invalid == 'admin-bypass':
         environment['can_admins_bypass'] = True
     if invalid == 'reviewers':
