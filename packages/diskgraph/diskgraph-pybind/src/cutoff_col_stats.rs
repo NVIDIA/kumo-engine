@@ -442,7 +442,8 @@ fn chunk_lengths(
                     let counts = cast(&length(column)?, &DataType::Int64)?;
                     for (total, count) in totals.iter_mut().zip(counts.as_primitive::<Int64Type>())
                     {
-                        *total += count.map_or(0, |count| (count as u64).max(*empty));
+                        *total = total
+                            .saturating_add(count.map_or(0, |count| (count as u64).max(*empty)));
                     }
                 }
                 Cost::Pieces(tokenizer) => {
@@ -450,7 +451,7 @@ fn chunk_lengths(
                         if let Some(value) = value {
                             let pieces =
                                 tokenizer.encode_fast(value, true).map_err(|e| anyhow!(e))?;
-                            *total += (pieces.len() as u64).max(*empty);
+                            *total = total.saturating_add((pieces.len() as u64).max(*empty));
                         }
                     }
                 }
