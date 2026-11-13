@@ -744,8 +744,9 @@ def _fit_inputs(
             graph = SimpleNamespace(
                 source=value.source.name, node_fields=value.representation.node_fields
             )
+            graph_cutoff = getattr(source, "_cutoff", cutoff_to_epoch)
             roots = [
-                GraphRoot(request.sample_id, request.entity_id, cutoff_to_epoch(request.as_of_time))
+                GraphRoot(request.sample_id, request.entity_id, graph_cutoff(request.as_of_time))
                 for requests in _chunks(values_for(None))
                 for request in requests
             ]

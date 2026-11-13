@@ -15,6 +15,129 @@ from kumo.pytorch import api
 pytest.importorskip("diskgraph")
 
 
+@pytest.mark.parametrize("value", [1700000000000, -1700000000000])
+@pytest.mark.parametrize("typed", [False, True])
+def test_overflowing_cutoffs_are_refused_in_both_paths(value, typed):
+    import pyarrow.compute as pc
+
+    from kumo.pytorch.engines.diskgraph import DiskGraphSource
+
+    source = DiskGraphSource.__new__(DiskGraphSource)
+    source._clock, source._pa, source._pc = "milliseconds", pa, pc
+    values = pa.array([value], type=pa.timestamp("s", tz="UTC") if typed else pa.int64())
+    # An epoch-ms-looking integer still means seconds; on ms it fits exactly.
+    assert source._cutoff(values[0] if typed else value) == value * 1000
+    assert source._cutoff_array(values).to_pylist() == [value * 1000]
+    source._clock = "nanoseconds"
+    with pytest.raises((ValueError, pa.ArrowInvalid), match="overflow|bounds|range"):
+        source._cutoff(values[0] if typed else value)
+    with pytest.raises((ValueError, pa.ArrowInvalid), match="overflow|bounds|range"):
+        source._cutoff_array(values)
+
+
+@pytest.mark.parametrize("unit", ["ms", "us", "ns"])
+def test_unpinned_graph_fitting_uses_the_source_clock(tmp_path, monkeypatch, unit):
+    import datetime as dt
+
+    factor = {"ms": 1000, "us": 10**6, "ns": 10**9}[unit]
+    base, step = 1700000000 * factor, factor // 1000
+    users, events = tmp_path / "users.parquet", tmp_path / "events.parquet"
+    pq.write_table(pa.table({"id": [1]}), users)
+    pq.write_table(
+        pa.table(
+            {
+                "id": [1, 2],
+                "owner": [1, 1],
+                "time": pa.array([base + step, base + 5 * step], type=pa.timestamp(unit, tz="UTC")),
+                "kind": ["seen", "future"],
+            }
+        ),
+        events,
+    )
+    schema = api.DataSchema(
+        (
+            api.TableSpec("users", "id", {"id": api.DType("int64")}, time_column=api.NON_TEMPORAL),
+            api.TableSpec(
+                "events",
+                "id",
+                {
+                    "id": api.DType("int64"),
+                    "owner": api.DType("int64"),
+                    "time": api.DType("timestamp", unit=unit, timezone="UTC"),
+                    "kind": api.DType("string"),
+                },
+                time_column="time",
+            ),
+        ),
+        (api.RelationSpec("activity", "users", "id", "events", "owner"),),
+    )
+    sample = api.SampleSpec(
+        api.EntitySpec("users"),
+        neighborhoods={
+            "graph": api.NeighborhoodSpec((api.GraphLayer((api.GraphSample("activity", 10),)),))
+        },
+    )
+    contract = api.DataLoaderSpec(
+        schema,
+        sample,
+        api.BatchSpec(
+            {
+                "graph": api.Input(
+                    api.NeighborhoodSource("graph"),
+                    api.Graph(
+                        node_fields={"events": api.Fields((api.Encode("kind", api.Vocabulary()),))}
+                    ),
+                    None,
+                )
+            }
+        ),
+    )
+    data = api.Dataset({"users": api.Parquet(str(users)), "events": api.Parquet(str(events))})
+    cutoff = dt.datetime.fromtimestamp(1700000000, tz=dt.UTC) + dt.timedelta(milliseconds=3)
+    with api.prepare(contract, data, api.DiskGraphEngine(index=tmp_path / "index")) as plan:
+        # Exercise the supported fallback for an encoder that is not pinned by column stats.
+        monkeypatch.setattr(plan._require_open(), "column_stats", None)
+        with plan.materialize([api.SampleRequest("one", 1, cutoff)]) as task:
+            (encoder,) = task.fitted_state["encoders"].values()
+            assert {value for value, _ in encoder["entries"]} == {"seen"}
+
+
+def test_native_request_reconstruction_preserves_ns_without_pandas():
+    import subprocess
+    import sys
+    import textwrap
+    from pathlib import Path
+
+    code = (
+        "import sys, types\nk=types.ModuleType('kumo');k.__path__=["
+        + repr(str(Path(api.__file__).parents[1]))
+        + "];sys.modules['kumo']=k\n"
+    )
+    code += textwrap.dedent("""
+        class WithoutPandas:
+            def find_spec(self, name, path=None, target=None):
+                if name == 'pandas' or name.startswith('pandas.'):
+                    raise ModuleNotFoundError('pandas deliberately unavailable')
+        sys.meta_path.insert(0, WithoutPandas())
+        import pyarrow as pa
+        from kumo.pytorch import api
+        from kumo.pytorch.engines.native_anchors import NativeAnchors
+        anchors = NativeAnchors.__new__(NativeAnchors)
+        anchors._pa = pa
+        anchors._aliases = {'entity': 'entity', 'at': 'at'}
+        anchors._types = {'entity': pa.int64(), 'at': pa.timestamp('ns', tz='UTC')}
+        anchors._ipc = set()
+        anchors._table = api.AnchorTable(api.Parquet('unused'), 'entity', 'at')
+        batch = pa.record_batch({'entity': [1], 'at': [1], 'anchor_position': [0]})
+        requests = anchors._requests({'name': 'one', 'split': None}, {
+            'raw_features': {'anchors/one': {'record_batches': [batch]}}
+        })
+        assert requests[0].as_of_time.value == 1
+        assert 'pandas' not in sys.modules
+    """)
+    subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)
+
+
 @pytest.mark.parametrize(
     "unit,name",
     [

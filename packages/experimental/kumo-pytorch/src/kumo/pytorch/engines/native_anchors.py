@@ -504,7 +504,14 @@ class NativeAnchors:
                     for value in values
                 ]
             else:
-                columns[name] = values.cast(self._types[name]).to_pylist()
+                typed = values.cast(self._types[name])
+                if pa.types.is_timestamp(typed.type) and typed.type.unit == "ns":
+                    columns[name] = [
+                        value if value.is_valid and value.value % 1000 else value.as_py()
+                        for value in typed
+                    ]
+                else:
+                    columns[name] = typed.to_pylist()
         original_positions = data["anchor_position"].to_pylist()
         table = self._table
         return [

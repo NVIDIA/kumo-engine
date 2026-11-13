@@ -524,9 +524,19 @@ class DiskGraphSource:
                 if isinstance(value, dt.datetime)
                 else value
             )
-            return convert_ticks(scalar.value, scalar.type.unit, self._clock, rounding="floor")
-        # Untyped anchor integers retain the original epoch-seconds contract.
-        return convert_ticks(int(value), "seconds", self._clock, rounding="floor")
+            raw, unit = scalar.value, scalar.type.unit
+        else:
+            # Untyped anchor integers retain the original epoch-seconds contract.
+            raw, unit = int(value), "seconds"
+        ticks = convert_ticks(raw, unit, self._clock, rounding="floor")
+        if ticks in (-(2**63), 2**63 - 1):
+            # The native converter saturates; use the checked array path at its
+            # limits to distinguish a valid endpoint from conversion overflow.
+            arrow_unit = "s" if unit == "seconds" else unit
+            return self._cutoff_array(
+                self._pa.array([raw], type=self._pa.timestamp(arrow_unit, tz="UTC"))
+            )[0].as_py()
+        return ticks
 
     def _cutoff_array(self, values):
         """Convert an Arrow anchor batch without reconstructing scalar requests."""
@@ -540,7 +550,7 @@ class DiskGraphSource:
             values = self._pc.cast(values, self._pa.timestamp("s", tz="UTC"))
         values = self._pc.floor_temporal(values, unit=self._clock[:-1])
         if unit is not None:
-            aligned = self._pc.cast(values, self._pa.timestamp(unit, tz="UTC"), safe=False)
+            aligned = self._pc.cast(values, self._pa.timestamp(unit, tz="UTC"), safe=True)
             return self._pc.cast(aligned, self._pa.int64())
         seconds = self._pc.cast(
             self._pc.cast(values, self._pa.timestamp("s", tz="UTC"), safe=False), self._pa.int64()

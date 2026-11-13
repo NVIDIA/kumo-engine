@@ -326,6 +326,7 @@ pub fn scalar_values_to_array(
 struct MaterializedFrame {
     clock: TimeUnit,
     scalar_clock: TimeUnit,
+    time_column: Option<String>,
     name: String,
     destination: String,
     deferred_columns: HashMap<String, usize>,
@@ -1024,6 +1025,7 @@ fn materialize_frame(
     Ok(MaterializedFrame {
         clock: reader.metadata().timestamp_unit,
         scalar_clock: plan.cutoff_unit.unwrap_or(TimeUnit::Seconds),
+        time_column: plan.time_column.clone(),
         name: plan.name.clone(),
         destination: destination.clone(),
         deferred_columns,
@@ -1166,7 +1168,14 @@ impl RowsView<'_> {
                             | arrow_schema::DataType::Date32 | arrow_schema::DataType::Date64) {
                             Ok(row_clock_time(array, row, frame.scalar_clock)?.map_or(ScalarValue::Null, ScalarValue::I64))
                         } else {
-                            scalar_at(array, row)
+                            let value = scalar_at(array, row)?;
+                            if frame.time_column.as_deref() == Some(column) {
+                                Ok(value.timestamp_ticks()?.map_or(ScalarValue::Null, |ticks| {
+                                    ScalarValue::I64(convert_floor(ticks, frame.clock, frame.scalar_clock))
+                                }))
+                            } else {
+                                Ok(value)
+                            }
                         }
                     })
                     .collect()
@@ -1978,6 +1987,7 @@ fn shared_window_frames(
                 MaterializedFrame {
                     clock: frame.clock,
                     scalar_clock: frame.scalar_clock,
+                    time_column: frame.time_column.clone(),
                     name: original.name.clone(),
                     destination: frame.destination.clone(),
                     deferred_columns: HashMap::new(),
@@ -2573,6 +2583,33 @@ fn execute_query(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integer_time_values_use_the_scalar_clock_but_ids_do_not() {
+        let schema = arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("time", arrow_schema::DataType::Int64, false),
+            arrow_schema::Field::new("id", arrow_schema::DataType::Int64, false),
+        ]);
+        let frame = MaterializedFrame {
+            clock: TimeUnit::Seconds,
+            scalar_clock: TimeUnit::Milliseconds,
+            time_column: Some("time".into()),
+            name: "events".into(),
+            destination: "events".into(),
+            deferred_columns: HashMap::new(),
+            positions: HashMap::from([("time".into(), 0), ("id".into(), 1)]),
+            batch: RecordBatch::try_new(Arc::new(schema), vec![
+                Arc::new(Int64Array::from(vec![1300])),
+                Arc::new(Int64Array::from(vec![7])),
+            ]).unwrap(),
+            node_ids: vec![1],
+            timestamps: vec![Some(1300)],
+            offsets: vec![0, 1],
+        };
+        let rows = RowsView::Frame { frame: &frame, start: 0, stop: 1 };
+        assert!(matches!(rows.values("time").unwrap()[0], ScalarValue::I64(1_300_000)));
+        assert!(matches!(rows.values("id").unwrap()[0], ScalarValue::I64(7)));
+    }
 
     #[test]
     fn subclock_offsets_match_pql_truncation() {
