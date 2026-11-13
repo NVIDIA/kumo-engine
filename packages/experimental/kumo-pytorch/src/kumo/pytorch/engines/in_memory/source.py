@@ -83,7 +83,9 @@ class InMemorySource:
         ]
         columns = {item: EMPTY_STATS for item in requests}
         ticks = (
-            None if cutoff is None else diskgraph.convert_ticks(cutoff, "nanoseconds", "seconds")
+            None
+            if cutoff is None
+            else diskgraph.convert_ticks(cutoff, "nanoseconds", "seconds", rounding="floor")
         )
         if not stored:
             return ColumnStats(columns, {"value": ticks, "unit": "seconds"})

@@ -844,7 +844,7 @@ class DiskGraphSource:
         ticks = (
             None
             if cutoff is None
-            else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock)
+            else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock, rounding="floor")
         )
         return read_column_stats(self._index_path, requests, ticks, self._clock, self._num_threads)
 
