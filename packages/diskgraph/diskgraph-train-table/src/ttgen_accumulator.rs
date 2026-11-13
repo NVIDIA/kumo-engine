@@ -9,18 +9,17 @@
 
 use std::collections::HashSet;
 
-use crate::ttgen_resolve::ResolvedAggregate;
 use arrow_array::{ArrayRef, Float32Array, Float64Array};
 use diskgraph_core::accumulators::WelfordAccumulator;
-use diskgraph_core::time::UnitSystem;
+use diskgraph_core::tt_builder::ScalarAggregate;
 use diskgraph_core::tt_builder::Value;
 
 /// Update compatible PQL-resolved reductions from caller-ordered projected
 /// columns. Both frontends keep their selected row order and empty-SUM policy.
 /// False means the caller must use its existing general evaluator; no result
 /// from these partially updated states may then be published.
-pub fn accumulate_numeric_batch<U: UnitSystem>(
-    operations: &[&ResolvedAggregate<U>],
+pub fn accumulate_numeric_batch(
+    operations: &[(&ScalarAggregate, Option<usize>)],
     states: &mut [Accumulator],
     observed: &mut [usize],
     columns: &[(usize, ArrayRef)],
@@ -28,14 +27,10 @@ pub fn accumulate_numeric_batch<U: UnitSystem>(
     keep_first_equal: bool,
 ) -> bool {
     // Eligibility is invariant for the whole batch, including empty batches.
-    if operations.iter().any(|operation| {
+    if operations.iter().any(|(operation, _)| {
         !matches!(
-            operation.func,
-            diskgraph_core::tt_builder::AggFunc::Count
-                | diskgraph_core::tt_builder::AggFunc::Sum
-                | diskgraph_core::tt_builder::AggFunc::Avg
-                | diskgraph_core::tt_builder::AggFunc::Min
-                | diskgraph_core::tt_builder::AggFunc::Max
+            operation.operation.as_str(),
+            "count" | "sum" | "mean" | "min" | "max"
         )
     }) {
         return false;
@@ -84,17 +79,16 @@ pub fn accumulate_numeric_batch<U: UnitSystem>(
     };
     // Dispatch once per operation/column, not once per row. Rows remain in
     // caller order: vectorized SUM/mean would change floating cancellation.
-    for ((operation, state), count) in operations.iter().zip(states).zip(observed) {
-        if operation.func == diskgraph_core::tt_builder::AggFunc::Count {
+    for (((operation, column), state), count) in operations.iter().zip(states).zip(observed) {
+        if operation.operation == "count" {
             let Accumulator::Count(total) = state else {
                 return false;
             };
             *total += rows.len() as u64;
             continue;
         }
-        let Some((_, f32s, f64s)) = operation
-            .target_col_idx
-            .and_then(|column| arrays.iter().find(|(index, _, _)| *index == column))
+        let Some((_, f32s, f64s)) =
+            column.and_then(|column| arrays.iter().find(|(index, _, _)| *index == column))
         else {
             return false;
         };
@@ -252,10 +246,13 @@ impl Accumulator {
     }
 }
 
+/// Shared value-hash policy; collection equality remains independent of fingerprints.
+pub type ValueBuildHasher = std::hash::BuildHasherDefault<std::collections::hash_map::DefaultHasher>;
+
 /// Hash a Value for use in CountDistinct / ListDistinct sets.
 pub fn hash_value(v: &Value) -> u64 {
     use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = <ValueBuildHasher as std::hash::BuildHasher>::build_hasher(&ValueBuildHasher::default());
     match v {
         Value::Int(i) => i.hash(&mut hasher),
         Value::Float(f) => f.to_bits().hash(&mut hasher),
@@ -277,7 +274,7 @@ pub fn hash_value(v: &Value) -> u64 {
 #[inline]
 pub fn hash_str(s: &str) -> u64 {
     use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = <ValueBuildHasher as std::hash::BuildHasher>::build_hasher(&ValueBuildHasher::default());
     s.hash(&mut hasher);
     hasher.finish()
 }
@@ -286,7 +283,7 @@ pub fn hash_str(s: &str) -> u64 {
 #[inline]
 pub fn hash_i64(n: i64) -> u64 {
     use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = <ValueBuildHasher as std::hash::BuildHasher>::build_hasher(&ValueBuildHasher::default());
     n.hash(&mut hasher);
     hasher.finish()
 }

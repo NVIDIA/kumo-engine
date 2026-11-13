@@ -357,6 +357,8 @@ struct TemporalArgs {
 
 /// Lag and horizon offsets are the only op fields typed by the clock, so they
 /// wait for `build()`; every other op is complete when added.
+// Keep ready plan operations inline, including the shared row-aggregate variant.
+#[allow(clippy::large_enum_variant)]
 enum BuilderOp {
     Ready(tt::Op<Seconds>),
     Autoregression(ShiftedOp),
