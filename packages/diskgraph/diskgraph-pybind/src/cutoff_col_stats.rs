@@ -8,7 +8,7 @@ use std::path::Path;
 use anyhow::{anyhow, ensure, Result};
 use arrow::compute::filter_record_batch;
 use diskgraph_index::graph::GraphIndexReader;
-use diskgraph_ingest::column_scan::{at_cutoff, create_times, decode_chunk, node_chunks};
+use diskgraph_ingest::column_scan::{at_cutoff, create_times, node_chunks, scan_chunk, ScanBudget};
 use diskgraph_ingest::cutoff_col_stats::CutoffColStatsRequest;
 use diskgraph_ingest::graph_config::{read_persisted_config, ColumnSpec};
 use diskgraph_ingest::index_metadata::INDEX_METADATA_FILENAME;
@@ -26,6 +26,7 @@ fn from_index(index_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
     let reader =
         GraphIndexReader::open_subset(&index_dir.join(INDEX_METADATA_FILENAME), index_dir, &names)?;
     let clock = reader.metadata().timestamp_unit;
+    let budget = ScanBudget::new()?;
     let mut tables = Vec::new();
     for spec in &config.tables {
         let (Some(mut table), Some(wanted)) =
@@ -62,23 +63,27 @@ fn from_index(index_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
             let parts = window
                 .par_iter()
                 .map(|&chunk| {
-                    let batch = decode_chunk(&table_reader, chunk, &decoded)?;
-                    let times =
-                        create_time.map(|_| create_times(batch.column(requested.len()), clock));
                     let mut sinks = table.sinks()?;
-                    for (stats, cutoff) in sinks.stats.iter_mut().zip(&request.cutoffs) {
-                        let keep = at_cutoff(times.as_deref(), batch.num_rows(), *cutoff);
-                        let rows = filter_record_batch(&batch, &keep)?;
-                        for (position, &col_idx) in requested.iter().enumerate() {
-                            // Stored values are observed by their type, as ingest observes them.
-                            let column = ColumnSpec {
-                                semantic_type: None,
-                                ..spec.columns[col_idx].clone()
-                            };
-                            let values = rows.column(position);
-                            drive_from_arrow_column(col_idx, values, &column, stats, None, clock)?;
+                    scan_chunk(&table_reader, chunk, &decoded, &budget, |batch, _| {
+                        let times =
+                            create_time.map(|_| create_times(batch.column(requested.len()), clock));
+                        for (stats, cutoff) in sinks.stats.iter_mut().zip(&request.cutoffs) {
+                            let keep = at_cutoff(times.as_deref(), batch.num_rows(), *cutoff);
+                            let rows = filter_record_batch(batch, &keep)?;
+                            for (position, &col_idx) in requested.iter().enumerate() {
+                                // Stored values are observed by their type, as ingest observes them.
+                                let column = ColumnSpec {
+                                    semantic_type: None,
+                                    ..spec.columns[col_idx].clone()
+                                };
+                                let values = rows.column(position);
+                                drive_from_arrow_column(
+                                    col_idx, values, &column, stats, None, clock,
+                                )?;
+                            }
                         }
-                    }
+                        Ok(())
+                    })?;
                     Ok(sinks)
                 })
                 .collect::<Result<Vec<_>>>()?;

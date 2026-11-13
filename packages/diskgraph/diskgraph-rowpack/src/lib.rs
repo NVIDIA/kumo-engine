@@ -7336,6 +7336,38 @@ fn append_null(builder: &mut dyn arrow_array::builder::ArrayBuilder) {
     }
 }
 
+/// The bytes the values in a builder from [`make_arrow_builder`] take: string and binary data,
+/// list elements, and 8 per other value.
+pub fn builder_value_bytes(builder: &dyn arrow_array::builder::ArrayBuilder) -> usize {
+    use arrow_array::builder::*;
+    let any = builder.as_any();
+    if let Some(b) = any.downcast_ref::<StringBuilder>() {
+        return b.values_slice().len();
+    }
+    if let Some(b) = any.downcast_ref::<BinaryBuilder>() {
+        return b.values_slice().len();
+    }
+    if let Some(b) = any.downcast_ref::<ListBuilder<StringBuilder>>() {
+        return b.values_ref().values_slice().len();
+    }
+    macro_rules! list_elements {
+        ($($builder:ty),*) => {
+            $(if let Some(b) = any.downcast_ref::<ListBuilder<$builder>>() {
+                return std::mem::size_of_val(b.values_ref().values_slice());
+            })*
+        };
+    }
+    list_elements!(
+        Float32Builder,
+        Float64Builder,
+        Int8Builder,
+        Int16Builder,
+        Int32Builder,
+        Int64Builder
+    );
+    builder.len() * 8
+}
+
 pub fn make_arrow_builder(
     name: &str,
     dtype: IngestedType,
