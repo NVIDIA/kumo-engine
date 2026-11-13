@@ -524,9 +524,19 @@ class DiskGraphSource:
                 if isinstance(value, dt.datetime)
                 else value
             )
-            return convert_ticks(scalar.value, scalar.type.unit, self._clock, rounding="floor")
-        # Untyped anchor integers retain the original epoch-seconds contract.
-        return convert_ticks(int(value), "seconds", self._clock, rounding="floor")
+            raw, unit = scalar.value, scalar.type.unit
+        else:
+            # Untyped anchor integers retain the original epoch-seconds contract.
+            raw, unit = int(value), "seconds"
+        ticks = convert_ticks(raw, unit, self._clock, rounding="floor")
+        if ticks in (-(2**63), 2**63 - 1):
+            # The native converter saturates; use the checked array path at its
+            # limits to distinguish a valid endpoint from conversion overflow.
+            arrow_unit = "s" if unit == "seconds" else unit
+            return self._cutoff_array(
+                self._pa.array([raw], type=self._pa.timestamp(arrow_unit, tz="UTC"))
+            )[0].as_py()
+        return ticks
 
     def _cutoff_array(self, values):
         """Convert an Arrow anchor batch without reconstructing scalar requests."""
@@ -540,7 +550,7 @@ class DiskGraphSource:
             values = self._pc.cast(values, self._pa.timestamp("s", tz="UTC"))
         values = self._pc.floor_temporal(values, unit=self._clock[:-1])
         if unit is not None:
-            aligned = self._pc.cast(values, self._pa.timestamp(unit, tz="UTC"), safe=False)
+            aligned = self._pc.cast(values, self._pa.timestamp(unit, tz="UTC"), safe=True)
             return self._pc.cast(aligned, self._pa.int64())
         seconds = self._pc.cast(
             self._pc.cast(values, self._pa.timestamp("s", tz="UTC"), safe=False), self._pa.int64()
@@ -1154,18 +1164,29 @@ class DiskGraphSource:
         temporary.replace(path)
         return tokenizer, name
 
-    def token_lengths(self, table: str, columns: Sequence[LengthColumn], cutoff: int | None) -> str:
+    def token_lengths(
+        self,
+        table: str,
+        columns: Sequence[LengthColumn],
+        required: Sequence[str],
+        cutoff: int | None,
+    ) -> str:
         ticks = (
             None
             if cutoff is None
             else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock, rounding="floor")
         )
-        name = token_lengths_file(table, columns, ticks, self._clock)
+        name = token_lengths_file(table, columns, required, ticks, self._clock)
         path = Path(self._index_path, "col_stats", name)
         if not path.is_file():
             path.parent.mkdir(parents=True, exist_ok=True)
             self._diskgraph.token_lengths(
-                self._index_path, table, list(columns), str(path), num_threads=self._num_threads
+                self._index_path,
+                table,
+                list(columns),
+                str(path),
+                required=list(required),
+                num_threads=self._num_threads,
             )
         return name
 
@@ -1719,7 +1740,14 @@ class DiskGraphSource:
                 values, type=dtype.to_arrow() if dtype.integer and integer_values else None
             )
         if dtype.name in {"timestamp", "date32"} and self._pa.types.is_integer(values.type):
-            return self._pc.cast(self._clock_array(values), dtype.to_arrow(), safe=True)
+            values = self._clock_array(values)
+        if dtype.name == "timestamp" and self._pa.types.is_timestamp(values.type):
+            # Field values round upward to their declared tick; anchor cutoffs
+            # keep their separate causal floor conversion.
+            unit = {"s": "second", "ms": "millisecond", "us": "microsecond", "ns": "nanosecond"}[
+                dtype.unit
+            ]
+            values = self._pc.ceil_temporal(values, unit=unit)
         return self._pc.cast(values, dtype.to_arrow(), safe=True)
 
     def _entity_arrays(
