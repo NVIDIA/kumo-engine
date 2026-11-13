@@ -62,6 +62,7 @@ members = [
     "kumo-pql",
     "kumo-pytorch",
     "kumo-s3",
+    "kumo-settings",
     "kumo-snowflake",
     "kumoai-studio",
 ]
@@ -3531,6 +3532,7 @@ dependencies = [
     { name = "filelock" },
     { name = "kumo-api" },
     { name = "kumo-core" },
+    { name = "kumo-settings" },
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "pydantic" },
@@ -3609,6 +3611,7 @@ requires-dist = [
     { name = "kumo-gcs", marker = "extra == 'gcs'", editable = "packages/kumo-gcs" },
     { name = "kumo-glove-6b-50d", marker = "extra == 'text'", editable = "tools/glove-6b-50d" },
     { name = "kumo-s3", marker = "extra == 's3'", editable = "packages/kumo-s3" },
+    { name = "kumo-settings", editable = "packages/kumo-settings" },
     { name = "kumo-snowflake", extras = ["sdk"], marker = "extra == 'snowflake'", editable = "packages/kumo-snowflake" },
     { name = "matplotlib", marker = "extra == 'plots'", specifier = ">=3.10.0" },
     { name = "mlflow-skinny", marker = "extra == 'mlflow'", specifier = ">=3.5,<4" },
@@ -3761,6 +3764,20 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.11" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=7.4" },
 ]
+provides-extras = ["test"]
+
+[[package]]
+name = "kumo-settings"
+version = "0.1.0.dev1"
+source = { editable = "packages/kumo-settings" }
+
+[package.optional-dependencies]
+test = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pytest", marker = "extra == 'test'", specifier = ">=7.4" }]
 provides-extras = ["test"]
 
 [[package]]
