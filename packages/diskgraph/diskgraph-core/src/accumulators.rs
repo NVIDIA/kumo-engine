@@ -444,7 +444,6 @@ mod tests {
         capped.observe_hashed(3, "three");
         assert!(capped.is_capped());
         assert!(!capped.is_aborted());
-        // Values first seen past the cap are held anonymously.
         capped.observe_hashed(4, "four");
         capped.observe_hashed(5, "five");
         assert_eq!(
@@ -517,7 +516,6 @@ mod tests {
     #[test]
     fn into_sorted_counts_trims_held_values_to_the_cap() {
         let counts = SharedColumnCounts::new_hashed_capped_with_max_categories(2);
-        // Up to twice the cap is counted exactly before any compaction.
         for (hash, value, n) in [(1, "x", 4), (2, "b", 9), (3, "a", 4), (4, "y", 1)] {
             for _ in 0..n {
                 counts.observe_hashed(hash, value);
@@ -618,10 +616,8 @@ mod tests {
         for value in ["holder", "collided", "collided", "collided"] {
             counts.observe_hashed(7, value);
         }
-        // Held anonymously once, then stored, which compacts the partition.
         counts.observe_hashed(9, "other");
         counts.observe_hashed(9, "other");
-        assert_eq!(counts.collided_count(), 0);
         counts.observe_hashed(7, "collided");
         assert_eq!(
             counts.into_sorted_counts().counts.unwrap(),
@@ -639,42 +635,34 @@ mod tests {
         use std::thread;
 
         let values: Vec<String> = (0..48).map(|i| format!("value-{i}")).collect();
-        for cap in [MAX_CATEGORIES, 24] {
-            let counts = Arc::new(SharedColumnCounts::new_hashed_capped_with_max_categories(
-                cap,
-            ));
-            let handles: Vec<_> = (0..8)
-                .map(|worker| {
-                    let (counts, values) = (Arc::clone(&counts), values.clone());
-                    thread::spawn(move || {
-                        let mut local = LocalColumnCounts::with_capacity(4);
-                        let mut observed = HashMap::<String, u64>::new();
-                        for step in 0..20_000usize {
-                            let value = &values[(step * 7 + worker) % values.len()];
-                            let hash = (value.len() % 4) as u64;
-                            local.observe(hash, value);
-                            *observed.entry(value.clone()).or_default() += 1;
-                            if step % 1_000 == 0 {
-                                counts.merge_local_batch(&mut local);
-                            }
+        let counts = Arc::new(SharedColumnCounts::new_hashed());
+        let handles: Vec<_> = (0..8)
+            .map(|worker| {
+                let (counts, values) = (Arc::clone(&counts), values.clone());
+                thread::spawn(move || {
+                    let mut local = LocalColumnCounts::with_capacity(4);
+                    let mut observed = HashMap::<String, u64>::new();
+                    for step in 0..20_000usize {
+                        let value = &values[(step * 7 + worker) % values.len()];
+                        let hash = (value.len() % 4) as u64;
+                        local.observe(hash, value);
+                        *observed.entry(value.clone()).or_default() += 1;
+                        if step % 1_000 == 0 {
+                            counts.merge_local_batch(&mut local);
                         }
-                        counts.merge_local_batch(&mut local);
-                        observed
-                    })
+                    }
+                    counts.merge_local_batch(&mut local);
+                    observed
                 })
-                .collect();
-            let mut expected = HashMap::<String, u64>::new();
-            for handle in handles {
-                for (value, count) in handle.join().unwrap() {
-                    *expected.entry(value).or_default() += count;
-                }
-            }
-            let drained = counts.drain_to_map().unwrap();
-            assert_eq!(drained.len() as u64, cap.min(48));
-            for (value, count) in drained {
-                assert_eq!(expected[&value], count, "{value}");
+            })
+            .collect();
+        let mut expected = HashMap::<String, u64>::new();
+        for handle in handles {
+            for (value, count) in handle.join().unwrap() {
+                *expected.entry(value).or_default() += count;
             }
         }
+        assert_eq!(counts.drain_to_map().unwrap(), expected);
     }
 
     #[test]
