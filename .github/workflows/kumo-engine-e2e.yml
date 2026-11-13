@@ -178,7 +178,7 @@ jobs:
           if [[ "$WRITE_REFERENCE" == true && '${{ steps.case.outcome }}' == success ]]; then
             aws s3 cp reference.json "${REFERENCES_S3%/}/$SCALE/$CASE.json"
           fi
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         if: always()
         with:
           name: engine-e2e-${{ env.CASE }}-${{ matrix.scale }}-${{ github.run_attempt }}
