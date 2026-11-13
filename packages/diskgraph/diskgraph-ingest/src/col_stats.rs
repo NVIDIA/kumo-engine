@@ -2497,7 +2497,6 @@ impl FileColStats {
                 if let Some(ref shared) = self.cat_shared {
                     if let Some(ref col_shared) = shared.columns[col_idx] {
                         if let Some(ref mut local) = self.cat_local[col_idx] {
-                            // A hash held locally by another value is counted in shared state.
                             if !local.try_observe_i64(hash, value) {
                                 col_shared.observe_hashed_i64(hash, value);
                             } else if local.len() >= HYBRID_LOCAL_CAP {

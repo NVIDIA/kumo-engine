@@ -1199,9 +1199,7 @@ impl HashedCategoryCount {
     }
 }
 
-/// A column's counts are split into at most this many hash partitions...
 const MAX_PARTITIONS: u64 = 256;
-/// ...each with a capacity of at least this many values.
 const MIN_PARTITION_CAPACITY: u64 = 4096;
 
 fn partition_of(partitions: usize, hash: u64) -> usize {
@@ -1214,7 +1212,7 @@ fn partition_of(partitions: usize, hash: u64) -> usize {
 /// one once more than `capacity` values are marked; any other new value starts
 /// with `error = floor`, plus one if it may be marked; past twice `capacity`
 /// values, the `capacity` largest estimates are kept and `floor` rises to the
-/// next. For `N` occurrences, `floor` stays at most `N / (capacity + 1)`.
+/// next.
 #[repr(align(128))] // Neighbouring partition locks do not share a cache line.
 pub struct Partition {
     counts: HashMap<u64, HashedCategoryCount, IdentityBuildHasher>,
@@ -1336,7 +1334,7 @@ impl Partition {
     /// returns the dropped values.
     fn compact(&mut self) -> Vec<HashedCategoryCount> {
         use std::collections::hash_map::Entry;
-        if self.len() <= self.capacity.saturating_mul(2) {
+        if self.len() <= 2 * self.capacity {
             return Vec::new();
         }
         let mut estimates: Vec<u64> = self.values().map(HashedCategoryCount::estimate).collect();
@@ -1456,7 +1454,7 @@ impl SharedColumnCounts {
     /// Primarily useful for focused ingest tests. Production feature stats use
     /// [`MAX_CATEGORIES`].
     pub fn new_hashed_capped_with_max_categories(max_categories: u64) -> Self {
-        Self::new_hashed_with_cap(Some(max_categories), CategoryLimitPolicy::RetainCapped)
+        Self::new_hashed_with_cap(max_categories, CategoryLimitPolicy::RetainCapped)
     }
 
     /// Create hash-based storage with a caller-specific unique-category cap.
@@ -1465,16 +1463,12 @@ impl SharedColumnCounts {
     /// classification targets. It is deliberately separate from the retained
     /// feature-vocabulary policy used by [`Self::new_hashed`].
     pub fn new_hashed_with_max_categories(max_categories: u64) -> Self {
-        Self::new_hashed_with_cap(Some(max_categories), CategoryLimitPolicy::Abort)
+        Self::new_hashed_with_cap(max_categories, CategoryLimitPolicy::Abort)
     }
 
-    fn new_hashed_with_cap(max_categories: Option<u64>, limit_policy: CategoryLimitPolicy) -> Self {
-        let partitions = max_categories.map_or(1, |max_categories| {
-            (max_categories / MIN_PARTITION_CAPACITY).clamp(1, MAX_PARTITIONS)
-        });
-        let capacity = max_categories.map_or(usize::MAX, |max_categories| {
-            max_categories.div_ceil(partitions) as usize
-        });
+    fn new_hashed_with_cap(max_categories: u64, limit_policy: CategoryLimitPolicy) -> Self {
+        let partitions = (max_categories / MIN_PARTITION_CAPACITY).clamp(1, MAX_PARTITIONS);
+        let capacity = max_categories.div_ceil(partitions) as usize;
         Self {
             storage: CountStorage::Hashed {
                 partitions: (0..partitions)
@@ -1485,7 +1479,7 @@ impl SharedColumnCounts {
             aborted: AtomicBool::new(false),
             capped: AtomicBool::new(false),
             collision_warned: AtomicBool::new(false),
-            max_categories,
+            max_categories: Some(max_categories),
             limit_policy,
         }
     }
