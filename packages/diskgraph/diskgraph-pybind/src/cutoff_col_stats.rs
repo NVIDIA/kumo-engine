@@ -70,7 +70,7 @@ fn from_index(index_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
             .collect::<Vec<_>>()
             .into_par_iter()
             .map(|chunk| {
-                let batch = decode_chunk(&stored.reader, chunk, &decoded)?;
+                let (_, batch) = decode_chunk(&stored.reader, chunk, &decoded)?;
                 let times = create_time.map(|_| create_times(batch.column(requested.len()), clock));
                 let mut sinks = table.sinks()?;
                 for (stats, cutoff) in sinks.stats.iter_mut().zip(&request.cutoffs) {
@@ -190,7 +190,7 @@ fn word_counts(
             pool.install(|| {
                 window.par_iter().try_for_each(|&(scan, chunk)| {
                     let (stored, decoded) = &scans[scan];
-                    let batch = decode_chunk(&stored.reader, chunk, decoded)?;
+                    let (_, batch) = decode_chunk(&stored.reader, chunk, decoded)?;
                     let times =
                         (batch.num_columns() > 1).then(|| create_times(batch.column(1), clock));
                     let keep = at_cutoff(times.as_deref(), batch.num_rows(), cutoff);
