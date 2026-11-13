@@ -278,14 +278,20 @@ def test_the_default_cutoff_is_the_latest_anchor_at_full_precision(tmp_path):
     dataset, engine = _setup("in_memory", tmp_path)
     at = LATEST + timedelta(microseconds=500_000)
     requests = [replace(request, as_of_time=at) for request in _requests()]
+    fitted = []
     with api.prepare(_contract(), dataset, engine) as plan:
-        with plan.materialize(requests, fit_split="train") as task:
-            latest = task.fitted_state
-        with plan.materialize(requests, fit_split="train", encoder_cutoff=at) as task:
-            explicit = task.fitted_state
-    cutoff = int(LATEST.timestamp()) * 10**9 + 500_000_000
-    assert _statistics(latest)["cutoff"] == _statistics(explicit)["cutoff"] == cutoff
-    assert latest == explicit
+        for options in (
+            {},
+            {"encoder_cutoff": at},
+            {"encoder_cutoff": "2024-12-01T00:00:00.5Z"},
+            {"encoder_cutoff": "2024-12-01T00:00:00.000000001Z"},
+        ):
+            with plan.materialize(requests, fit_split="train", **options) as task:
+                fitted.append(task.fitted_state)
+    second = int(LATEST.timestamp()) * 10**9
+    cutoffs = [_statistics(state)["cutoff"] for state in fitted]
+    assert cutoffs == [second + 500_000_000] * 3 + [second + 1]
+    assert fitted[0] == fitted[1] == fitted[2]
 
 
 def test_a_cutoff_after_the_latest_anchor_warns(tmp_path, caplog):
@@ -295,8 +301,10 @@ def test_a_cutoff_after_the_latest_anchor_warns(tmp_path, caplog):
         with caplog.at_level(logging.WARNING, logger="kumo.pytorch.preparation"):
             _encoders(_contract(), dataset, engine, encoder_cutoff=cutoff)
         assert "after the latest fitting anchor" in caplog.text
-    with pytest.raises(ValueError, match="encoder_cutoff 'soon' is not an ISO 8601 timestamp"):
-        _encoders(_contract(), dataset, engine, encoder_cutoff="soon")
+    for cutoff in ("soon", "2024-02-30", "1704067200"):
+        with pytest.raises(ValueError, match=f"encoder_cutoff '{cutoff}' is not an ISO 8601"):
+            _encoders(_contract(), dataset, engine, encoder_cutoff=cutoff)
+    _encoders(_contract(), dataset, engine, encoder_cutoff="2024-01-01T00:00Z")
 
 
 COLUMN_TYPES = {

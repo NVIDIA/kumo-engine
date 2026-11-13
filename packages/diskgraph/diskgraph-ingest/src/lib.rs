@@ -6986,6 +6986,7 @@ fn build_sort_key_batchers_for_edge_table(
 }
 
 const BASE_ENCODE_MEMORY_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
+const ENCODE_MAX_OVERSIZED_CHUNK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 fn encode_memory_budget_bytes(has_resident_parquet: bool, total_memory: Option<u64>) -> u64 {
     if !has_resident_parquet {
@@ -7372,7 +7373,6 @@ impl IngestContext {
         let temp_root = root.join(TEMP_DIR_NAME);
         fs::create_dir_all(&temp_root)?;
         let mut table_rows: HashMap<String, u64> = HashMap::new();
-        const ENCODE_MAX_OVERSIZED_CHUNK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
         let mut tables = self.source.tables.clone();
         let encode_memory_budget_bytes = encode_memory_budget_bytes(
             tables.iter().any(|table| {

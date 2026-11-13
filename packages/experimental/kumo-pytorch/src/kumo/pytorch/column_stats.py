@@ -30,7 +30,7 @@ from kumo.pytorch.contract.batch import (
 )
 from kumo.pytorch.contract.batch.encodings import Buckets, ScalarEncoding, Text, Vocabulary, ZScore
 from kumo.pytorch.contract.batch.validation import resolved_fields
-from kumo.pytorch.contract.dtypes import DType, _since_epoch
+from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.sample import Field, destination_table
 from kumo.pytorch.encoding import TEXT_RECIPE, FittedEncoder, learned_entries, typed_key
 
@@ -323,7 +323,11 @@ def _learns_from_stats(config: Any, dtype: DType) -> bool:
 
 
 def cutoff_nanos(value: Any) -> int | None:
-    """Epoch nanoseconds of a cutoff: an ISO 8601 string, a date or datetime, or epoch seconds."""
+    """Epoch nanoseconds of a cutoff: an ISO 8601 string, a date or datetime, or epoch seconds.
+
+    A string is validated as `datetime.fromisoformat` reads it; DiskGraph supplies the exact value
+    when it parses the string too, keeping digits past the microsecond.
+    """
 
     if value is None:
         return None
@@ -331,14 +335,29 @@ def cutoff_nanos(value: Any) -> int | None:
         return value * 10**9
     if isinstance(value, str):
         try:
-            value = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+            parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError:
             raise ValueError(f"encoder_cutoff {value!r} is not an ISO 8601 timestamp") from None
+        exact = _resolve_nanos(value)
+        return _resolve_nanos(parsed) if exact is None else exact
     if isinstance(value, dt.date):
-        return _since_epoch(value) // dt.timedelta(microseconds=1) * 1_000
+        return _resolve_nanos(value)
     raise TypeError(
         f"encoder_cutoff must be a timestamp string, datetime or epoch seconds, not {value!r}"
     )
+
+
+def _resolve_nanos(value: str | dt.date) -> int | None:
+    import diskgraph
+    import pyarrow as pa
+
+    if isinstance(value, str):
+        array = pa.array([value])
+    else:
+        if not isinstance(value, dt.datetime):
+            value = dt.datetime.combine(value, dt.time())
+        array = pa.array([value], pa.timestamp("ns"))
+    return diskgraph.resolve_temporal(array, timestamp_unit="nanoseconds")[0][0]
 
 
 def fit_from_stats(identity: str, encoder: TableColumnEncoder, stats: ColumnStats) -> FittedEncoder:

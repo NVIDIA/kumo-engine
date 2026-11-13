@@ -2,7 +2,7 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Stored rows of an index table, decoded to Arrow a chunk of nodes at a time.
+//! Stored rows of an index table, decoded to Arrow in batches under a shared byte budget.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -10,9 +10,16 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use arrow_array::{ArrayRef, BooleanArray, RecordBatch};
+use arrow_schema::Schema;
 use diskgraph_core::time::TimeUnit;
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
-use diskgraph_rowpack::{IngestedType, RowAccess, RowAccessHints, RowAccessStats};
+use diskgraph_limits::total_memory_bytes;
+use diskgraph_rowpack::{
+    builder_value_bytes, make_arrow_builder, IngestedType, RowAccess, RowAccessHints,
+    RowAccessStats, RowPackDecodeScratch,
+};
+
+use crate::source_memory::ByteBudget;
 
 use crate::index_metadata::INDEX_METADATA_FILENAME;
 
@@ -30,34 +37,107 @@ pub fn node_chunks(table: &TableReader, size: u64) -> impl Iterator<Item = (usiz
         })
 }
 
-/// The nodes of a chunk stored with node data, in node order, and their `columns`, strings and
-/// bytes with 64-bit offsets.
-pub fn decode_chunk(
+/// Decoded value bytes per batch. A chunk of narrow rows ends a batch first; wide or
+/// dictionary-expanded rows end it here, well below Arrow's 2 GiB string offsets, with a
+/// few batches per worker inside a budget of a third of memory.
+const BATCH_BYTES: u64 = 128 << 20;
+
+/// The decoded bytes the workers of one scan hold at once.
+pub struct ScanBudget {
+    budget: Arc<ByteBudget>,
+    batch_bytes: u64,
+}
+
+impl ScanBudget {
+    /// Ingest's Encode budget for the memory of this machine or cgroup.
+    pub fn new() -> Result<Self> {
+        Self::with_limits(
+            crate::encode_memory_budget_bytes(true, total_memory_bytes()),
+            BATCH_BYTES,
+        )
+    }
+
+    pub fn with_limits(total_bytes: u64, batch_bytes: u64) -> Result<Self> {
+        Ok(Self {
+            budget: ByteBudget::with_oversized_limit(
+                total_bytes,
+                crate::ENCODE_MAX_OVERSIZED_CHUNK_BYTES,
+            )?,
+            batch_bytes,
+        })
+    }
+
+    pub fn high_water_bytes(&self) -> u64 {
+        self.budget.high_water_bytes()
+    }
+}
+
+/// Visits the `columns` of a chunk's rows stored with node data, with each row's node, in node
+/// order and in batches of about the budget's batch bytes; a larger row is a batch alone.
+pub fn scan_chunk(
     table: &TableReader,
     (shard, start, end): (usize, u64, u64),
     columns: &[usize],
-) -> Result<(Vec<u64>, RecordBatch)> {
+    budget: &ScanBudget,
+    mut visit: impl FnMut(&RecordBatch, &[u64]) -> Result<()>,
+) -> Result<()> {
     let shard = table
         .shard(shard)
         .ok_or_else(|| anyhow!("no shard {shard}"))?;
     let decoder = table
         .node_data_decoder()
         .ok_or_else(|| anyhow!("table has no node data"))?;
-    let (mut nodes, mut rows) = (Vec::new(), Vec::new());
-    for node in start..end {
-        // Rows stored without node data, as oversized ones are, hold no values.
-        if let Some(row) = shard.edges_for_node(node)?.node_data()? {
-            if !row.is_empty() {
-                nodes.push(node);
-                rows.push(row);
+    let context = &decoder.context().columns;
+    let mask: Vec<bool> = (0..context.len()).map(|c| columns.contains(&c)).collect();
+    let decoded: Vec<usize> = (0..context.len()).filter(|&c| mask[c]).collect();
+    let projection: Vec<usize> = columns
+        .iter()
+        .map(|c| decoded.iter().position(|d| d == c).expect("decoded column"))
+        .collect();
+    let mut scratch = RowPackDecodeScratch::default();
+    let mut node = start;
+    loop {
+        let mut permit = budget.budget.acquire_input_chunk(budget.batch_bytes)?;
+        let (mut fields, mut builders) = (Vec::new(), Vec::new());
+        for &c in &decoded {
+            let (field, builder) = make_arrow_builder(
+                &context[c].name,
+                context[c].logical_type,
+                1024,
+                decoder.clock(),
+            )?;
+            fields.push(field);
+            builders.push(builder);
+        }
+        let (mut nodes, mut bytes) = (Vec::new(), 0);
+        while node < end && bytes < budget.batch_bytes {
+            // Rows stored without node data, as oversized ones are, hold no values.
+            if let Some(row) = shard.edges_for_node(node)?.node_data()? {
+                if !row.is_empty() {
+                    decoder.decode_row_to_builders(row, &mut builders, &mask, &mut scratch)?;
+                    nodes.push(node);
+                    bytes = builders
+                        .iter()
+                        .map(|b| builder_value_bytes(b.as_ref()))
+                        .sum::<usize>() as u64;
+                }
             }
+            node += 1;
+        }
+        if bytes > budget.batch_bytes {
+            drop(permit);
+            permit = budget.budget.acquire_input_chunk(bytes)?;
+        } else {
+            permit.shrink_to(bytes);
+        }
+        let arrays = builders.iter_mut().map(|b| b.finish()).collect();
+        let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays)?;
+        visit(&batch.project(&projection)?, &nodes)?;
+        drop(permit);
+        if node >= end {
+            return Ok(());
         }
     }
-    // A chunk's strings can pass the 2 GiB that 32-bit offsets hold.
-    Ok((
-        nodes,
-        decoder.decode_batch_to_arrow_with(&rows, columns, true)?,
-    ))
 }
 
 /// Each create time in ticks of `clock`, read as ingest reads it.
