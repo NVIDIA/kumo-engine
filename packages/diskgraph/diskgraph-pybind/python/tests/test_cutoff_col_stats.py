@@ -215,8 +215,15 @@ def _counts_at(tmp_path, unit: str, times_ns: list[int], cutoff_ns: int) -> dict
             "source": {"type": "parquet", "paths": [str(tmp_path / "events.parquet")]}}]}),
         output_dir=str(tmp_path / "index"), col_stats=False, cutoff_col_stats=json.dumps(request),
     )
-    stats = json.loads((tmp_path / "index" / "col_stats" / "cut" / "events.col_stats.json").read_text())
-    return dict(map(tuple, stats["events"]["tier"]["category_counts"]))
+    def counts():
+        stats = json.loads((tmp_path / "index" / "col_stats" / "cut" / "events.col_stats.json").read_text())
+        return dict(map(tuple, stats["events"]["tier"]["category_counts"]))
+
+    ingested = counts()
+    shutil.rmtree(tmp_path / "index" / "col_stats")
+    diskgraph.cutoff_col_stats(str(tmp_path / "index"), json.dumps(request))
+    assert counts() == ingested
+    return ingested
 
 
 @pytest.mark.parametrize("unit, tick", [("milliseconds", 10**6), ("days", 86_400 * 10**9)])
