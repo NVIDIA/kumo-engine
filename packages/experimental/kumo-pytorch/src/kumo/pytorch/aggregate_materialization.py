@@ -56,7 +56,7 @@ class MaterializedValues:
         file = files[0]
         payload = json.loads(file.schema_arrow.metadata[_META])
         binding = dict(payload["anchors"])
-        binding["targets"] = {**binding["targets"], **payload["targets"]}
+        # Generated labels remain task metadata, not caller-supplied targets.
         anchors = AnchorTable(source=Parquet(str(path)), **binding)
         return cls(
             anchors,

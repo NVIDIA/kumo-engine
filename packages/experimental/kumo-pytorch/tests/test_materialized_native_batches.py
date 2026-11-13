@@ -16,9 +16,12 @@ from tests.test_preview import _equal
 pytest.importorskip("diskgraph", reason="requires the optional native DiskGraph engine")
 
 
+@pytest.mark.parametrize("learned", [False, True])
 @pytest.mark.parametrize("kind", ["gnn", "history"])
 @pytest.mark.parametrize("layout", [api.Packed(), api.Padded()])
-def test_materialized_values_native_anchors_and_history(tmp_path, kind, layout, monkeypatch):
+def test_materialized_values_native_anchors_and_history(
+    tmp_path, kind, layout, monkeypatch, learned
+):
     schema = api.DataSchema(
         tables=(
             api.TableSpec("users", "id", {"id": api.DType("string")}, time_column=api.NON_TEMPORAL),
@@ -83,7 +86,12 @@ def test_materialized_values_native_anchors_and_history(tmp_path, kind, layout, 
     inputs = {
         "entity": api.Input(
             api.EntitySource(),
-            api.Fields((api.Encode("count", api.Raw()), api.Encode("recent_sum", api.Raw()))),
+            api.Fields(
+                (
+                    api.Encode("count", api.ZScore() if learned else api.Raw()),
+                    api.Encode("recent_sum", api.Raw()),
+                )
+            ),
             api.Separate(),
         ),
     }
@@ -214,7 +222,8 @@ def test_materialized_values_native_anchors_and_history(tmp_path, kind, layout, 
         assert source._sampler is cached._anchors._history_engine
         assert cached._assembler._source._materialized_reference.source._sampler is source._sampler
         assert type(cached._assembler._source) is type(source)
-        assert "future" in cached_values.anchors.targets
+        assert "future" not in cached_values.anchors.targets
+        assert cached_values.targets["future"] in cached_values.anchors.metadata
         assert isinstance(baseline._anchors, NativeAnchors)
         assert isinstance(cached._anchors, NativeAnchors)
         for selection in (api.ALL_ANCHORS, frozenset({"train", "valid"}), "train"):
