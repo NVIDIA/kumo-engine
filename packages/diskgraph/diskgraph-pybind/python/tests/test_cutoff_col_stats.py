@@ -181,6 +181,25 @@ def test_rows_the_index_does_not_store_count_on_neither_route(tmp_path):
                                     collections.Counter(tiers[i] for i in stored)]
 
 
+def test_recompute_counts_strings_that_decode_past_2_gib_per_chunk(tmp_path):
+    # Three distinct 40,000-character values, stored as dictionary indexes, decode to 2.8 GB.
+    values = [c * 40_000 for c in "abc"]
+    tiers = pa.DictionaryArray.from_arrays(pa.array([i % 3 for i in range(70_000)], pa.int32()), pa.array(values))
+    pq.write_table(pa.table({"id": pa.array(range(70_000), pa.int64()), "tier": tiers}), tmp_path / "t.parquet",
+                   row_group_size=2_000)
+    diskgraph.ingest(
+        config_json=json.dumps({"dataset_name": "wide", "tables": [{
+            "name": "t", "primary_key": "id",
+            "columns": [{"name": "id", "ingested_dtype": "int64"}, {"name": "tier", "ingested_dtype": "string"}],
+            "source": {"type": "parquet", "paths": [str(tmp_path / "t.parquet")]}}]}),
+        output_dir=str(tmp_path / "index"), col_stats=False,
+    )
+    request = {"cutoffs": [None], "dirs": ["all"], "columns": {"t": {"tier": ["categorical"]}}}
+    diskgraph.cutoff_col_stats(str(tmp_path / "index"), json.dumps(request))
+    stats = json.loads((tmp_path / "index" / "col_stats" / "all" / "t.col_stats.json").read_text())
+    assert dict(map(tuple, stats["t"]["tier"]["category_counts"])) == dict(zip(values, (23_334, 23_333, 23_333)))
+
+
 def _counts_at(tmp_path, unit: str, times_ns: list[int], cutoff_ns: int) -> dict:
     tiers = [f"row{i}" for i in range(len(times_ns))]
     pq.write_table(pa.table({"id": range(len(tiers)), "at": pa.array(times_ns, pa.timestamp("ns")), "tier": tiers}),
