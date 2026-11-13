@@ -7273,6 +7273,27 @@ fn append_null(builder: &mut dyn arrow_array::builder::ArrayBuilder) {
     }
     if let Some(b) = builder
         .as_any_mut()
+        .downcast_mut::<ListBuilder<Int8Builder>>()
+    {
+        b.append_null();
+        return;
+    }
+    if let Some(b) = builder
+        .as_any_mut()
+        .downcast_mut::<ListBuilder<Int16Builder>>()
+    {
+        b.append_null();
+        return;
+    }
+    if let Some(b) = builder
+        .as_any_mut()
+        .downcast_mut::<ListBuilder<Int32Builder>>()
+    {
+        b.append_null();
+        return;
+    }
+    if let Some(b) = builder
+        .as_any_mut()
         .downcast_mut::<ListBuilder<Int64Builder>>()
     {
         b.append_null();

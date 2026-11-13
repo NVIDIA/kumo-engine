@@ -325,11 +325,34 @@ fn decode_batch_to_arrow_preserves_requested_projection_order() {
 #[test]
 fn null_row_decodes_every_column_as_null() {
     let types = [
+        IngestedType::Int8,
+        IngestedType::Int16,
         IngestedType::Int64,
+        IngestedType::Int32,
+        IngestedType::UInt8,
+        IngestedType::UInt16,
+        IngestedType::UInt64,
+        IngestedType::UInt32,
+        IngestedType::Float64,
+        IngestedType::Float32,
         IngestedType::Bool,
         IngestedType::String,
-        IngestedType::Float32,
-        IngestedType::Int64,
+        IngestedType::Bytes,
+        IngestedType::Uuid,
+        IngestedType::Uuid256,
+        IngestedType::Ip,
+        IngestedType::Date,
+        IngestedType::Timestamp,
+        IngestedType::Decimal128,
+        IngestedType::Decimal256,
+        IngestedType::Float16Array,
+        IngestedType::Float32Array,
+        IngestedType::Float64Array,
+        IngestedType::Int8Array,
+        IngestedType::Int16Array,
+        IngestedType::Int32Array,
+        IngestedType::Int64Array,
+        IngestedType::StringArray,
     ];
     let cols: Vec<RowPackColumn> = types
         .iter()
@@ -338,8 +361,8 @@ fn null_row_decodes_every_column_as_null() {
             name: format!("c{i}"),
             logical_type,
             fixed_len: None,
-            precision: None,
-            scale: None,
+            precision: Some(38),
+            scale: Some(2),
         })
         .collect();
     let ctx = RowPackContextBuilder::new(cols, RowPackConfig::default())
@@ -351,7 +374,7 @@ fn null_row_decodes_every_column_as_null() {
     let nulls = vec![ValueRef::Null; types.len()];
     assert_eq!(decoder.null_row(), encode_row(&encoder, &nulls));
     let batch = decoder
-        .decode_batch_to_arrow(&[decoder.null_row()], &[0, 1, 2, 3, 4])
+        .decode_batch_to_arrow(&[decoder.null_row()], &(0..types.len()).collect::<Vec<_>>())
         .unwrap();
     assert!(batch.columns().iter().all(|c| c.null_count() == 1));
 }
