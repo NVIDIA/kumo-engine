@@ -113,8 +113,12 @@ LengthColumn = tuple[str, str | None]
 def token_length_columns(
     contract: Any, plan: Any
 ) -> dict[str, tuple[int, tuple[LengthColumn, ...]]]:
-    """Each event table's per-event constant, 1 per stored column the ``Batching.length_input``
-    input reads without ``Text``, and the ``Text`` columns it reads."""
+    """Each event table's per-event constant and per-node columns under ``Batching.length_input``.
+
+    ``Text`` and variable-length list columns vary per node; every other stored column the input
+    reads adds 1 to the constant. Lists can't be declared yet (DG-NESTED-COLUMN), so only ``Text``
+    is per-node today.
+    """
 
     name = contract.batch.batching.length_input
     if name is None or not isinstance(contract.batch.inputs[name].representation, Fields):
@@ -135,13 +139,11 @@ def token_length_columns(
                     "so its token length is ambiguous"
                 )
             columns[table][column] = tokenizer or known
-    return {
-        table: (
-            sum(tokenizer is None for tokenizer in read.values()),
-            tuple(sorted(item for item in read.items() if item[1] is not None)),
-        )
-        for table, read in sorted(columns.items())
-    }
+    lengths = {}
+    for table, read in sorted(columns.items()):
+        per_node = tuple(sorted(item for item in read.items() if item[1] is not None))
+        lengths[table] = (len(read) - len(per_node), per_node)
+    return lengths
 
 
 def token_lengths_file(

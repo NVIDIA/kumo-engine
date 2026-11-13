@@ -34,11 +34,10 @@ def _tags(key):
 
 
 def _expected(key):
-    """Words of the body, tags, the fixed 3 of the vector and 1 for `n`, NULLs as if present."""
+    """Words of the body and elements of the tags, 0 for NULL."""
     if key == NO_DATA:
         return 0
-    words = len((_body(key) or "").split())
-    return min(words + len(_tags(key) or []) + 3 + 1, 65_535)
+    return min(len((_body(key) or "").split()) + len(_tags(key) or []), 65_535)
 
 
 @pytest.fixture(scope="module")
@@ -75,24 +74,27 @@ def index(tmp_path_factory) -> str:
     return str(root / "index")
 
 
-def test_each_node_counts_its_scalars_list_elements_and_pieces(index, tmp_path):
+def test_each_node_counts_its_list_elements_and_pieces(index, tmp_path):
     nodes = diskgraph.SamplerEngine(index).lookup_node_ids("docs", pa.array(range(ROWS), pa.int64()))
     expected = np.zeros(ROWS, dtype="<u2")
     expected[nodes] = [_expected(key) for key in range(ROWS)]
     assert expected[nodes[NO_DATA]] == 0 and expected[nodes[SATURATED]] == 65_535
     path = tmp_path / "docs.lengths.bin"
     for threads in (1, 4):
-        diskgraph.token_lengths(index, "docs", [("body", WORDS), ("tags", None), ("vec", None),
-                                                ("n", None)], str(path), num_threads=threads)
+        diskgraph.token_lengths(index, "docs", [("body", WORDS), ("tags", None)], str(path),
+                                num_threads=threads)
         assert np.memmap(path, dtype="<u2", mode="r").tolist() == expected.tolist()
     assert [p.name for p in tmp_path.iterdir()] == ["docs.lengths.bin"]
 
 
-def test_token_lengths_refuses_unknown_and_non_string_columns(index, tmp_path):
+def test_token_lengths_refuses_unknown_fixed_cost_and_non_string_columns(index, tmp_path):
     path = str(tmp_path / "docs.lengths.bin")
     with pytest.raises(diskgraph.DiskgraphConfigError, match="no column"):
         diskgraph.token_lengths(index, "docs", [("missing", None)], path)
+    for column in ("n", "vec"):
+        with pytest.raises(diskgraph.DiskgraphConfigError, match="fixed token cost"):
+            diskgraph.token_lengths(index, "docs", [(column, None)], path)
     with pytest.raises(diskgraph.DiskgraphConfigError, match="not strings"):
         diskgraph.token_lengths(index, "docs", [("n", WORDS)], path)
     with pytest.raises(diskgraph.DiskgraphConfigError, match="num_threads must be positive"):
-        diskgraph.token_lengths(index, "docs", [("n", None)], path, num_threads=0)
+        diskgraph.token_lengths(index, "docs", [("tags", None)], path, num_threads=0)

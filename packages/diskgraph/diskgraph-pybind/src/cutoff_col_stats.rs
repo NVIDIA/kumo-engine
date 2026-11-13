@@ -284,10 +284,9 @@ pub fn train_tokenizer(
     .map_err(|e| map_anyhow_err(anyhow!(e)))
 }
 
-/// Each node's token count over `columns` of `table`, NULLs counted as if present: 1 per scalar,
-/// a fixed-length array's length, a list's elements, and a string's pieces under its tokenizer
-/// JSON, saturated to `u16`. Written to `path` as one little-endian `u16` per node ID, 0 for a
-/// node stored without data.
+/// Each node's token count over `columns` of `table`: a variable-length list's elements and a
+/// string's pieces under its tokenizer JSON, 0 for NULL, saturated to `u16`. Written to `path` as
+/// one little-endian `u16` per node ID, 0 for a node stored without data.
 #[pyfunction]
 #[pyo3(signature = (index_dir, table, columns, path, *, num_threads=None))]
 pub fn token_lengths(
@@ -342,10 +341,6 @@ pub fn token_lengths(
             }
             (
                 None,
-                ColumnEncoding::FixedFloatArray { len, .. } | ColumnEncoding::FixedIntArray { len },
-            ) => Cost::Fixed(*len as u64),
-            (
-                None,
                 ColumnEncoding::FloatArray { .. }
                 | ColumnEncoding::Int8Array
                 | ColumnEncoding::Int16Array
@@ -353,7 +348,12 @@ pub fn token_lengths(
                 | ColumnEncoding::Int64Array
                 | ColumnEncoding::StringArray { .. },
             ) => Cost::Elements,
-            (None, _) => Cost::Fixed(1),
+            (None, _) => {
+                return Err(DiskgraphConfigError::new_err(format!(
+                    "column {table}.{column} has a fixed token cost; pass only list columns and \
+                     string columns with a tokenizer"
+                )))
+            }
         });
     }
     let chunks: Vec<_> = node_chunks(&stored.reader, TEXT_CHUNK_NODES).collect();
@@ -398,7 +398,6 @@ pub fn token_lengths(
 }
 
 enum Cost {
-    Fixed(u64),
     Elements,
     Pieces(Box<Tokenizer>),
 }
@@ -413,7 +412,6 @@ fn chunk_lengths(
     let mut totals = vec![0u64; batch.num_rows()];
     for (column, cost) in batch.columns().iter().zip(costs) {
         match cost {
-            Cost::Fixed(length) => totals.iter_mut().for_each(|total| *total += length),
             Cost::Elements => {
                 let counts = cast(&length(column)?, &DataType::Int64)?;
                 for (total, count) in totals.iter_mut().zip(counts.as_primitive::<Int64Type>()) {
