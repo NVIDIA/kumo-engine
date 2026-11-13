@@ -187,6 +187,7 @@ mod artifact_helpers;
 mod bp_col_stats;
 mod bp_evaluate;
 mod col_stats_export;
+mod columnar_input;
 mod cutoff_col_stats;
 mod custom_tt_contract;
 mod custom_tt_entry;
@@ -739,6 +740,137 @@ fn lookup_node_ids_from_arrow(
     primary_key_lookup_from_arrow(table, values, |_, node_id| node_id)
 }
 
+impl SamplerEngine {
+    fn resolve_keys(
+        &self,
+        py: Python<'_>,
+        node_type: &str,
+        primary_keys: &Bound<'_, PyAny>,
+    ) -> PyResult<Vec<Option<u64>>> {
+        let primary_keys = make_array(ArrayData::from_pyarrow_bound(primary_keys)?);
+        let table = self.reader.table(node_type).ok_or_else(|| {
+            DiskgraphConfigError::new_err(format!("unknown node type: {node_type}"))
+        })?;
+        if table.pk_map().is_none() {
+            return Err(DiskgraphConfigError::new_err(format!(
+                "node type {node_type} has no primary-key index"
+            )));
+        }
+        py.detach(move || lookup_node_ids_from_arrow(&table, primary_keys.as_ref()))
+    }
+
+    fn start_sample(
+        &self,
+        py: Python<'_>,
+        seeds: HashMap<String, Vec<u64>>,
+        plan_json: String,
+        fused: bool,
+        timestamps: Option<HashMap<String, Vec<i64>>>,
+        swap_edge_direction: Option<bool>,
+        seed_timestamp_unit: Option<PyTimeUnit>,
+    ) -> PyResult<PySampleIterator> {
+        let plan: SamplingPlan = serde_json::from_str(&plan_json)
+            .map_err(|e| DiskgraphConfigError::new_err(format!("Invalid plan JSON: {}", e)))?;
+
+        let flags = SamplingFlags {
+            replace: false,
+            directed: true,
+            disjoint: true,
+            return_edge_id: false,
+            adaptive: false,
+            fused_feature_fetching: fused,
+            swap_edge_direction: swap_edge_direction.unwrap_or(true),
+        };
+
+        let parsed_unit = seed_timestamp_unit
+            .map(|u| u.into())
+            .unwrap_or(diskgraph_core::time::TimeUnit::Nanoseconds);
+
+        let request = BatchSamplingRequest {
+            dataset_id: uuid::Uuid::nil(),
+            seed_nodes: seeds,
+            seed_timestamps: timestamps,
+            seed_timestamp_unit: parsed_unit,
+            plan,
+            flags,
+        };
+
+        let seed_type = request
+            .seed_nodes
+            .keys()
+            .next()
+            .cloned()
+            .unwrap_or_default();
+        let seed_count = request
+            .seed_nodes
+            .values()
+            .next()
+            .map_or(0usize, |v| v.len());
+
+        let count = self
+            .sample_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count % 100 == 0 {
+            info!(
+                seed_type = %seed_type,
+                seed_count,
+                hops = request.plan.layers.len(),
+                fused_feature_fetching = request.flags.fused_feature_fetching,
+                swap_edge_direction = request.flags.swap_edge_direction,
+                "Pybind sampling request started"
+            );
+        } else {
+            tracing::debug!(
+                seed_type = %seed_type,
+                seed_count,
+                hops = request.plan.layers.len(),
+                fused_feature_fetching = request.flags.fused_feature_fetching,
+                swap_edge_direction = request.flags.swap_edge_direction,
+                "Pybind sampling request started"
+            );
+        }
+
+        let (tx, rx) = bounded(1);
+        let engine = Arc::clone(&self.engine);
+        let mut state = self.pool.acquire();
+
+        py.detach(move || {
+            thread::spawn(move || {
+                let mut handler = PyOutputHandler::new(
+                    tx.clone(),
+                    engine.relation_src_type.clone(),
+                    engine.relation_info.clone(),
+                );
+                match engine.sample(&request, &mut state, &mut handler) {
+                    Ok(()) => {
+                        if count % 100 == 0 {
+                            info!(
+                                total_nodes = state.stats.total_nodes,
+                                total_edges = state.stats.total_edges,
+                                process_rss_mb = get_current_rss_mb(),
+                                "Pybind sampling request finished"
+                            );
+                        } else {
+                            tracing::debug!(
+                                total_nodes = state.stats.total_nodes,
+                                total_edges = state.stats.total_edges,
+                                process_rss_mb = get_current_rss_mb(),
+                                "Pybind sampling request finished"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Pybind sampling request failed");
+                        let _ = tx.send(SampleEvent::Error { err: e });
+                    }
+                }
+            });
+        });
+
+        Ok(PySampleIterator { receiver: rx })
+    }
+}
+
 #[pymethods]
 impl SamplerEngine {
     #[new]
@@ -767,22 +899,25 @@ impl SamplerEngine {
     /// Missing keys are returned as ``None`` in their original positions. A
     /// null or physically incompatible Arrow value is a data error rather than
     /// being conflated with a well-formed key that is absent from the index.
+    #[pyo3(signature = (node_type, primary_keys, *, output_format = "inspectable"))]
     pub fn lookup_node_ids(
         &self,
         py: Python<'_>,
         node_type: String,
         primary_keys: &Bound<'_, PyAny>,
-    ) -> PyResult<Vec<Option<u64>>> {
-        let primary_keys = make_array(ArrayData::from_pyarrow_bound(primary_keys)?);
-        let table = self.reader.table(&node_type).ok_or_else(|| {
-            DiskgraphConfigError::new_err(format!("unknown node type: {node_type}"))
-        })?;
-        if table.pk_map().is_none() {
+        output_format: &str,
+    ) -> PyResult<Py<PyAny>> {
+        if !matches!(output_format, "inspectable" | "model") {
             return Err(DiskgraphConfigError::new_err(format!(
-                "node type {node_type} has no primary-key index"
+                "output_format must be 'inspectable' or 'model', got {output_format:?}"
             )));
         }
-        py.detach(move || lookup_node_ids_from_arrow(&table, primary_keys.as_ref()))
+        let ids = self.resolve_keys(py, &node_type, primary_keys)?;
+        if output_format == "model" {
+            Ok(UInt64Array::from(ids).to_data().to_pyarrow(py)?.unbind())
+        } else {
+            Ok(ids.into_pyobject(py)?.into_any().unbind())
+        }
     }
 
     /// Traverse exact relation paths and derive temporal sequences/aggregates.
@@ -820,13 +955,13 @@ impl SamplerEngine {
             .next()
             .expect("one seed node entry was validated");
         let root_type: String = root_key.extract()?;
-        let roots: Vec<u64> = root_values.extract()?;
+        let roots = columnar_input::node_ids(&root_values, "seed_nodes")?;
         let cutoff_values = seed_timestamps.get_item(&root_type)?.ok_or_else(|| {
             DiskgraphConfigError::new_err(format!(
                 "seed_timestamps has no entry for root type {root_type:?}"
             ))
         })?;
-        let cutoffs: Vec<i64> = cutoff_values.extract()?;
+        let cutoffs = columnar_input::timestamps(&cutoff_values, "seed_timestamps")?;
         let reader = Arc::clone(&self.reader);
         let engine = Arc::clone(&self.engine);
         let result = py
@@ -941,13 +1076,13 @@ impl SamplerEngine {
             .next()
             .expect("one seed node entry was validated");
         let root_type: String = root_key.extract()?;
-        let roots: Vec<u64> = root_values.extract()?;
+        let roots = columnar_input::node_ids(&root_values, "seed_nodes")?;
         let cutoff_values = seed_timestamps.get_item(&root_type)?.ok_or_else(|| {
             DiskgraphConfigError::new_err(format!(
                 "seed_timestamps has no entry for root type {root_type:?}"
             ))
         })?;
-        let cutoffs: Vec<i64> = cutoff_values.extract()?;
+        let cutoffs = columnar_input::timestamps(&cutoff_values, "seed_timestamps")?;
         let reader = Arc::clone(&self.reader);
         let engine = Arc::clone(&self.engine);
         let result = py
@@ -1009,120 +1144,64 @@ impl SamplerEngine {
         let mut seeds = HashMap::new();
         for (key, value) in seed_nodes.into_iter() {
             let type_name: String = key.extract()?;
-            let ids: Vec<u64> = value.extract()?;
+            let ids = columnar_input::node_ids(&value, "seed_nodes")?;
             seeds.insert(type_name, ids);
         }
 
-        let mut timestamps = None;
-        if let Some(st) = seed_timestamps {
-            let mut ts_map = HashMap::new();
-            for (key, value) in st.into_iter() {
-                let type_name: String = key.extract()?;
-                let ts: Vec<i64> = value.extract()?;
-                ts_map.insert(type_name, ts);
-            }
-            timestamps = Some(ts_map);
+        let timestamps = columnar_input::timestamp_map(seed_timestamps, &seeds)?;
+
+        self.start_sample(
+            py,
+            seeds,
+            plan_json,
+            fused,
+            timestamps,
+            swap_edge_direction,
+            seed_timestamp_unit,
+        )
+    }
+
+    /// Resolve typed raw keys and sample in one call. Missing keys fail before
+    /// sampling; dropping them would change per-anchor ownership and cutoffs.
+    /// With `fused=True`, the existing sampler also returns feature batches.
+    #[pyo3(signature = (seed_primary_keys, plan_json, fused, seed_timestamps=None, swap_edge_direction=None, seed_timestamp_unit=None))]
+    pub fn sample_from_keys(
+        &self,
+        py: Python<'_>,
+        seed_primary_keys: Bound<'_, PyDict>,
+        plan_json: String,
+        fused: bool,
+        seed_timestamps: Option<Bound<'_, PyDict>>,
+        swap_edge_direction: Option<bool>,
+        seed_timestamp_unit: Option<PyTimeUnit>,
+    ) -> PyResult<PySampleIterator> {
+        let mut seeds = HashMap::new();
+        for (key, values) in seed_primary_keys.iter() {
+            let node_type: String = key.extract()?;
+            let ids = self.resolve_keys(py, &node_type, &values)?;
+            let ids = ids
+                .into_iter()
+                .enumerate()
+                .map(|(offset, id)| {
+                    id.ok_or_else(|| {
+                        DiskgraphDataError::new_err(format!(
+                            "missing primary key for {node_type:?} at batch offset {offset}"
+                        ))
+                    })
+                })
+                .collect::<PyResult<Vec<u64>>>()?;
+            seeds.insert(node_type, ids);
         }
-
-        let plan: SamplingPlan = serde_json::from_str(&plan_json)
-            .map_err(|e| DiskgraphConfigError::new_err(format!("Invalid plan JSON: {}", e)))?;
-
-        let flags = SamplingFlags {
-            replace: false,
-            directed: true,
-            disjoint: true,
-            return_edge_id: false,
-            adaptive: false,
-            fused_feature_fetching: fused,
-            swap_edge_direction: swap_edge_direction.unwrap_or(true),
-        };
-
-        let parsed_unit = seed_timestamp_unit
-            .map(|u| u.into())
-            .unwrap_or(diskgraph_core::time::TimeUnit::Nanoseconds);
-
-        let request = BatchSamplingRequest {
-            dataset_id: uuid::Uuid::nil(),
-            seed_nodes: seeds,
-            seed_timestamps: timestamps,
-            seed_timestamp_unit: parsed_unit,
-            plan,
-            flags,
-        };
-
-        let seed_type = request
-            .seed_nodes
-            .keys()
-            .next()
-            .cloned()
-            .unwrap_or_default();
-        let seed_count = request
-            .seed_nodes
-            .values()
-            .next()
-            .map_or(0usize, |v| v.len());
-
-        let count = self
-            .sample_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if count % 100 == 0 {
-            info!(
-                seed_type = %seed_type,
-                seed_count,
-                hops = request.plan.layers.len(),
-                fused_feature_fetching = request.flags.fused_feature_fetching,
-                swap_edge_direction = request.flags.swap_edge_direction,
-                "Pybind sampling request started"
-            );
-        } else {
-            tracing::debug!(
-                seed_type = %seed_type,
-                seed_count,
-                hops = request.plan.layers.len(),
-                fused_feature_fetching = request.flags.fused_feature_fetching,
-                swap_edge_direction = request.flags.swap_edge_direction,
-                "Pybind sampling request started"
-            );
-        }
-
-        let (tx, rx) = bounded(1);
-        let engine = Arc::clone(&self.engine);
-        let mut state = self.pool.acquire();
-
-        py.detach(move || {
-            thread::spawn(move || {
-                let mut handler = PyOutputHandler::new(
-                    tx.clone(),
-                    engine.relation_src_type.clone(),
-                    engine.relation_info.clone(),
-                );
-                match engine.sample(&request, &mut state, &mut handler) {
-                    Ok(()) => {
-                        if count % 100 == 0 {
-                            info!(
-                                total_nodes = state.stats.total_nodes,
-                                total_edges = state.stats.total_edges,
-                                process_rss_mb = get_current_rss_mb(),
-                                "Pybind sampling request finished"
-                            );
-                        } else {
-                            tracing::debug!(
-                                total_nodes = state.stats.total_nodes,
-                                total_edges = state.stats.total_edges,
-                                process_rss_mb = get_current_rss_mb(),
-                                "Pybind sampling request finished"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        error!(error = %e, "Pybind sampling request failed");
-                        let _ = tx.send(SampleEvent::Error { err: e });
-                    }
-                }
-            });
-        });
-
-        Ok(PySampleIterator { receiver: rx })
+        let timestamps = columnar_input::timestamp_map(seed_timestamps, &seeds)?;
+        self.start_sample(
+            py,
+            seeds,
+            plan_json,
+            fused,
+            timestamps,
+            swap_edge_direction,
+            seed_timestamp_unit,
+        )
     }
 
     #[tracing::instrument(level = "debug", skip(self, py, batch))]
@@ -1140,12 +1219,12 @@ impl SamplerEngine {
                     pyo3::exceptions::PyKeyError::new_err("missing 'node_type' in feature request")
                 })?
                 .extract()?;
-            let node_ids: Vec<u64> = dict
-                .get_item("node_ids")?
-                .ok_or_else(|| {
+            let node_ids = columnar_input::node_ids(
+                &dict.get_item("node_ids")?.ok_or_else(|| {
                     pyo3::exceptions::PyKeyError::new_err("missing 'node_ids' in feature request")
-                })?
-                .extract()?;
+                })?,
+                "node_ids",
+            )?;
             let feature_names: Vec<String> = dict
                 .get_item("feature_names")?
                 .ok_or_else(|| {
