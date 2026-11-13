@@ -46,10 +46,10 @@ Write the contract, fitted state, identity and manifest; `Artifact.load` reads t
 The manifest written also records each file's SHA-256 digest (`artifact_digests`).
 
 Files: `contract.json`; `fitted-state.json` (fitted values, the
-length summary, the fingerprints the state was fitted for, and the
-`fit` record); `task.json` (fingerprints and output schema);
-`manifest.json` (summaries, fingerprints and digests). The digests
-catch files not written together; they are not a signature.
+fingerprints the state was fitted for, and the `fit` record);
+`task.json` (fingerprints and output schema); `manifest.json`
+(summaries, fingerprints and digests). The digests catch files not
+written together; they are not a signature.
 
 #### `Artifact.load`
 
@@ -68,7 +68,7 @@ contract's declared encodings.
 **Raises**
 
 - `FileNotFoundError`: when one of the four files is missing.
-- `ValueError`: naming the file and, where it applies, the field: a digest mismatch, or a manifest without digests; state fitted for another contract; a length summary missing, unexpected or different from the manifest's; target state for other targets; state that does not serialize back exactly, or an ID space numbering other IDs than its members produce; `manifest.json` or `task.json` disagreeing with the contract and state.
+- `ValueError`: naming the file and, where it applies, the field: a digest mismatch, or a manifest without digests; state fitted for another contract; target state for other targets; state that does not serialize back exactly, or an ID space numbering other IDs than its members produce; `manifest.json` or `task.json` disagreeing with the contract and state.
 
 ### `FittedState`
 
@@ -81,7 +81,6 @@ class FittedState(
     _input_state: _InputState,
     _target_encoders: Mapping[str, Any] | None,
     _serialized: Mapping[str, Any],
-    _lengths: Mapping[str, Any] | None = None,
     _fit: Mapping[str, FitRecord | None] = {},
 )
 ```
@@ -94,10 +93,10 @@ because they are reused differently: a fine-tuning task keeps a pretrained
 task's input vocabularies and fits its own targets. `state.inputs` is that
 input-only half.
 
-Two states are equal when they hold the same fitted values and length
-summary for the same contract (for input-only states, the same inputs); the
-informational `fit` record is not compared. Compared with a plain mapping,
-only the fitted values are.
+Two states are equal when they hold the same fitted values for the same
+contract (for input-only states, the same inputs); the informational `fit`
+record is not compared. Compared with a plain mapping, only the fitted
+values are.
 
 **Parameters**
 

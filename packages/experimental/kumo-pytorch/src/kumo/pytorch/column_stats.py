@@ -32,7 +32,13 @@ from kumo.pytorch.contract.batch.encodings import Buckets, ScalarEncoding, Text,
 from kumo.pytorch.contract.batch.validation import resolved_fields
 from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.sample import Field, destination_table
-from kumo.pytorch.encoding import TEXT_RECIPE, FittedEncoder, learned_entries, typed_key
+from kumo.pytorch.encoding import (
+    TEXT_RECIPE,
+    FittedEncoder,
+    learned_entries,
+    learns_from_values,
+    typed_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -290,7 +296,7 @@ def table_column_encoders(contract: Any) -> dict[str, TableColumnEncoder]:
     return {
         identity: TableColumnEncoder(config, dtype, tuple(sorted(columns)))
         for identity, (config, dtype, columns) in sorted(uses.items())
-        if columns and _learns_from_stats(config, dtype)
+        if columns and learns_from_values(config, dtype)
     }
 
 
@@ -308,18 +314,6 @@ def _stored_column(sample: Any, schema: Any, identity: tuple[str, ...]) -> Colum
     if not isinstance(declaration, Field) or declaration.path:
         return None
     return table, declaration.column
-
-
-def _learns_from_stats(config: Any, dtype: DType) -> bool:
-    if isinstance(config, Vocabulary):
-        return config.values is None
-    if isinstance(config, ZScore):
-        return config.mean is None and dtype.numeric
-    if isinstance(config, Buckets):
-        return config.bins is not None and dtype.numeric
-    if isinstance(config, Text):
-        return config.state is None and dtype.name == "string"
-    return False
 
 
 def cutoff_nanos(value: Any) -> int | None:

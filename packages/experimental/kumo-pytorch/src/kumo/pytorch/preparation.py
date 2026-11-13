@@ -18,6 +18,7 @@ import logging
 import time
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
+from functools import partial
 from typing import Any, overload
 
 from kumo.pytorch.anchors import (
@@ -31,7 +32,14 @@ from kumo.pytorch.anchors import (
     split_selection,
 )
 from kumo.pytorch.artifact import FitRecord, FittedState
-from kumo.pytorch.assembly import PreviewResult, _fingerprint, _InputState, fit_plan
+from kumo.pytorch.assembly import (
+    PreviewResult,
+    _chunks,
+    _fingerprint,
+    _InputState,
+    _Mapped,
+    fit_plan,
+)
 from kumo.pytorch.column_stats import (
     LATEST_ANCHOR,
     _LatestAnchor,
@@ -255,11 +263,13 @@ class Plan:
             input_only = inference and fitted is not None and not fitted.has_targets
             if input_only:
                 target_encoders = {}
-            fitting: Sequence[SampleRequest] = ()
+            fitting: Sequence[SampleRequest] | _Mapped = ()
             record: FitRecord | None = None
             if input_state is None or target_encoders is None:
                 chosen = self._fit_selection(selection, declares_splits)
-                fitting = task_anchors.fetch(chosen, range(task_anchors.count(chosen)))
+                fitting = _Mapped(
+                    partial(task_anchors.fetch, chosen), range(task_anchors.count(chosen))
+                )
                 record = {
                     "contract": self.contract.fingerprint,
                     "dataset": self._dataset_fingerprint,
@@ -288,7 +298,6 @@ class Plan:
                 contract=self.contract,
                 input_state=input_state,
                 target_encoders=target_encoders,
-                length_summary=None if fitted is None else fitted._lengths,
                 inference=inference,
                 pinned=pinned,
             )
@@ -320,7 +329,7 @@ class Plan:
     def _pinned_from_stats(
         self,
         source: SampleSource,
-        fitting: Sequence[SampleRequest],
+        fitting: Sequence[SampleRequest] | _Mapped,
         cutoff: int | None | _LatestAnchor,
     ) -> tuple[dict[str, FittedEncoder], dict[str, Any]]:
         column_stats = getattr(source, "column_stats", None)
@@ -333,7 +342,7 @@ class Plan:
         if not encoders or not fitting:
             return {}, {}
         latest = (
-            cutoff_nanos(max(request.as_of_time for request in fitting))
+            cutoff_nanos(max(request.as_of_time for chunk in _chunks(fitting) for request in chunk))
             if self.contract.requires_anchor_time
             else None
         )

@@ -6,16 +6,19 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from kumo.pytorch import api
 from kumo.pytorch.column_stats import table_column_encoders
+from kumo.pytorch.engine import GraphRoot
 from tests.test_diskgraph_backend import _fixture_rows, _requests, _schema, _write_parquet
 
 pytest.importorskip("diskgraph")
@@ -194,6 +197,71 @@ def test_a_shared_encoder_combines_its_columns_unless_one_is_computed(tmp_path):
     assert [value for value, _ in _state(fitted, '"kinds"')["entries"]] == expected
 
 
+def test_a_shared_encoder_fits_the_graph_values_of_every_root_then_the_aggregate(tmp_path):
+    rows = _fixture_rows()
+    draw = random.Random(1)
+    for row in rows["card_transactions"]:
+        row["amount"] = draw.uniform(0, 1) * 10 ** draw.randint(-3, 6)
+    history = api.Rows(("user_card_transactions",), api.TimeWindow("occurred_at", None, 0))
+    layers = (
+        api.GraphLayer(
+            (api.GraphSample("user_accounts", 6), api.GraphSample("user_card_transactions", 3))
+        ),
+        api.GraphLayer((api.GraphSample("account_card_transactions", 4),)),
+    )
+    sample = api.SampleSpec(
+        entity=api.EntitySpec("users", entity_type="user"),
+        entity_values={
+            "spend": api.Aggregate(history, "sum", "amount", dtype=api.DType("float64"))
+        },
+        neighborhoods={"activity": api.NeighborhoodSpec(layers=layers)},
+    )
+    amounts = api.UseEncoding("amounts")
+    graph = api.Graph(
+        node_fields={"card_transactions": api.Fields(fields=(api.Encode("amount", amounts),))}
+    )
+    batch = api.BatchSpec(
+        inputs={
+            "graph": api.Input(api.NeighborhoodSource("activity"), graph, None),
+            "user": api.Input(
+                api.EntitySource(),
+                api.Fields(fields=(api.Encode("spend", amounts),)),
+                api.Separate(),
+            ),
+        },
+        encodings={"amounts": api.ZScore()},
+        batching=api.Batching(max_samples=2),
+    )
+    contract = api.DataLoaderSpec(schema=_schema(), sample=sample, batch=batch)
+    anchors = [
+        api.SampleRequest(f"{user}-{hour}", user, datetime(2024, 1, 1) + timedelta(hours=hour))
+        for hour in range(0, 35_000, 7)
+        for user in (2, 3)
+    ]
+    dataset, engine = (
+        _write_parquet(rows, tmp_path / "parquet"),
+        api.DiskGraphEngine(index=tmp_path / "index"),
+    )
+    with api.prepare(contract, dataset, engine) as plan:
+        with plan.materialize(anchors) as task:
+            fitted = task.encoders["amounts"]
+    source = engine.open(dataset, contract.schema)
+    roots = [
+        GraphRoot(
+            anchor.sample_id,
+            anchor.entity_id,
+            int(anchor.as_of_time.replace(tzinfo=UTC).timestamp()),
+        )
+        for anchor in anchors
+    ]
+    nodes = SimpleNamespace(source="activity", node_fields=graph.node_fields)
+    values = list(source.fit_graph_fields(sample, nodes, roots)[("card_transactions", "amount")])
+    values += [built.history.entity.values[0].value for built in source.build(sample, anchors)]
+    source.close()
+    expected = np.asarray(values, dtype=np.float64)
+    assert (fitted.mean, fitted.scale) == (float(expected.mean()), float(expected.std()))
+
+
 @pytest.mark.parametrize("engine_name", ("in_memory", "diskgraph"))
 @pytest.mark.parametrize("cutoff", ("latest", "2024-11-21T16:00:00", None))
 def test_pinned_encoders_match_numpy_over_rows_up_to_the_cutoff(tmp_path, engine_name, cutoff):
@@ -272,6 +340,18 @@ def test_statistics_keep_a_file_per_table_per_cutoff_and_compute_only_what_is_mi
     channel = after["card_transactions"].pop("channel")
     assert after == before and channel["category_counts"]
     assert list(directory.parent.iterdir()) == [directory]
+
+
+def test_a_value_supplied_for_a_generated_target_is_refused_while_fitting(tmp_path):
+    contract = _contract()
+    future = api.Rows(("user_card_transactions",), api.TimeWindow("occurred_at", 0, 7 * 86400))
+    generated = api.Aggregate(future, "count", dtype=api.DType("int64"))
+    sample = replace(contract.sample, targets={**contract.sample.targets, "future": generated})
+    request = _requests()[0]
+    request = replace(request, targets=(*request.targets, api.TargetValue("future", 1)))
+    with api.prepare(replace(contract, sample=sample), *_setup("in_memory", tmp_path)) as plan:
+        with pytest.raises(ValueError, match="'future' was both supplied and generated"):
+            plan.materialize([request], fit_split="train")
 
 
 def test_the_default_cutoff_is_the_latest_anchor_at_full_precision(tmp_path):

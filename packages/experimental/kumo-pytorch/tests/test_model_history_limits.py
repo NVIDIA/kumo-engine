@@ -172,7 +172,7 @@ class _Queries:
 @pytest.mark.parametrize("aggregate", [False, True])
 @pytest.mark.parametrize("label", [False, True])
 @pytest.mark.parametrize("limit", [2, 2**64, True])
-def test_real_model_requests_are_bounded_but_preview_fitting_and_labels_are_not(
+def test_real_model_requests_are_bounded_but_preview_and_labels_are_not(
     history_data, keep, layout, aggregate, label, limit
 ):
     schema, parquet, memory, index, requests = history_data
@@ -206,11 +206,8 @@ def test_real_model_requests_are_bounded_but_preview_fitting_and_labels_are_not(
         queries = _Queries(plan._source._sampler)
         plan._source._sampler = queries
         with plan.materialize(requests, fit_split="train") as task:
-            assert queries.calls and all(
-                call["sequences"][0]["limit"] is None for call in queries.calls
-            )
+            assert not queries.calls
             fitted = task.bound_contract().to_json()
-            queries.calls.clear()
             actual = next(task.batches(requests, batch_size=4, output_format="model"))
             pushed = type(limit) is int and limit == 2
             assert queries.calls[0]["sequences"][0]["limit"] == (2 if pushed else None)
