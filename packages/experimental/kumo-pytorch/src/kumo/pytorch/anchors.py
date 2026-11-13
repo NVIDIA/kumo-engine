@@ -384,6 +384,31 @@ class _Permutation:
             if value < self._n:
                 return value
 
+    def many(self, positions):
+        """Evaluate independent positions in a bounded array, preserving scalar order."""
+        import numpy as np
+
+        # Avoid array overhead for tiny batches and retain scalar support for
+        # very large integer domains without truncating their high bits.
+        if len(positions) < 64 or self._half > 31:
+            return [self(int(position)) for position in positions]
+        values = np.asarray(positions)
+        if values.size == 0:
+            return np.empty(0, dtype=np.uint64)
+        if np.any(values < 0) or np.any(values >= self._n):
+            raise IndexError(f"permutation positions outside [0, {self._n})")
+        values = values.astype(np.uint64, copy=True)
+        active = np.arange(len(values))
+        with np.errstate(over="ignore"):
+            while len(active):
+                left = values[active] >> self._half
+                right = values[active] & self._mask
+                for key in self._keys:
+                    left, right = right, left ^ (_mix(key ^ right) & self._mask)
+                values[active] = (left << self._half) | right
+                active = active[values[active] >= self._n]
+        return values
+
 
 def shard_positions(
     n: int,
@@ -417,8 +442,11 @@ def shard_positions(
         yield from range(rank, n, world_size)
         return
     order = _Permutation(n, _mix(seed) ^ _mix(epoch))
-    for position in range(rank, n, world_size):
-        yield order(position)
+    # Bound temporary storage independently of epoch size. Chunking does not
+    # change the pointwise mapping or the rank's strided positions.
+    step = 4096 * world_size
+    for start in range(rank, n, step):
+        yield from map(int, order.many(range(start, min(start + step, n), world_size)))
 
 
 def padded_positions(
