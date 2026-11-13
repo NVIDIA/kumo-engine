@@ -7809,7 +7809,7 @@ impl IngestContext {
                                 observer.flush_categories();
                                 Ok((node, key_failures, Some(observer), None))
                             } else if let Some(cutoff_table) = &cutoff_table {
-                                let mut observer = cutoff_table.sinks();
+                                let mut observer = cutoff_table.sinks()?;
                                 let node = encode!(&mut observer);
                                 Ok((node, key_failures, None, Some(observer)))
                             } else {
@@ -12964,7 +12964,7 @@ fn wipe_phase_outputs(root: &Path, phase: &str) -> Result<()> {
         // from offset zero, so no provisional context, encoded file, stats, or
         // later-phase artifact may survive.
         "encode" => {
-            for relative in [TEMP_DIR_NAME, "nodes", "kumo_col_stats"] {
+            for relative in [TEMP_DIR_NAME, "nodes", "kumo_col_stats", "col_stats"] {
                 let path = root.join(relative);
                 if path.exists() {
                     fs::remove_dir_all(&path)

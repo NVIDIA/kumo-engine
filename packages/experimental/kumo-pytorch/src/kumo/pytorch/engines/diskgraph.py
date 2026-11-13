@@ -26,8 +26,7 @@ from kumo.pytorch.column_stats import (
     StatRequest,
     TableColumnEncoder,
     cutoff_seconds,
-    stats_request,
-    stype_groups,
+    read_column_stats,
 )
 from kumo.pytorch.contract.batch import EntitySource, EventSource, Input
 from kumo.pytorch.contract.dtypes import DType, arrow_float64
@@ -395,10 +394,9 @@ class DiskGraphEngine:
         dataset: Dataset,
         schema: DataSchema,
         *,
-        column_stats: tuple[Sequence[StatRequest], bool] = ((), False),
+        column_stats: Sequence[StatRequest] = (),
     ) -> SampleSource:
-        requests, quantiles = column_stats
-        ingests = bool(requests and self.encoder_cutoffs) and not self.index.exists()
+        ingests = bool(column_stats and self.encoder_cutoffs) and not self.index.exists()
         artifact = ensure_diskgraph_index(
             schema,
             dataset,
@@ -406,9 +404,7 @@ class DiskGraphEngine:
             num_shards=self.num_shards,
             num_threads=self.num_threads,
             if_missing=self.ingest == "if_missing",
-            column_stats=(stype_groups(requests)[0], self.encoder_cutoffs, quantiles)
-            if ingests
-            else None,
+            column_stats=(column_stats, self.encoder_cutoffs) if ingests else None,
         )
         return DiskGraphSource(
             artifact,
@@ -848,22 +844,9 @@ class DiskGraphSource:
             ),
         )
 
-    def column_stats(
-        self, requests: Sequence[StatRequest], cutoff: int | None, quantiles: bool
-    ) -> ColumnStats:
+    def column_stats(self, requests: Sequence[StatRequest], cutoff: int | None) -> ColumnStats:
         ticks = None if cutoff is None else self._diskgraph.cutoff_ticks(cutoff, self._clock)
-        columns, dirs = {}, []
-        for group in stype_groups(requests):
-            request = stats_request(group, [ticks], self._clock, quantiles)
-            path = Path(self._index, "col_stats", request["dirs"][0], "col_stats.json")
-            if not path.is_file():
-                self._diskgraph.cutoff_col_stats(
-                    self._index, json.dumps(request), num_threads=self._num_threads
-                )
-            tables = json.loads(path.read_text())
-            columns.update({item: tables[item[0]][item[1]] for item in group})
-            dirs.extend(request["dirs"])
-        return ColumnStats(columns, {"value": ticks, "unit": self._clock}, tuple(dirs))
+        return read_column_stats(self._index, requests, ticks, self._clock, self._num_threads)
 
     def column_text(self, encoder: TableColumnEncoder, cutoff: int | None) -> tuple[str, str]:
         ticks = None if cutoff is None else self._diskgraph.cutoff_ticks(cutoff, self._clock)

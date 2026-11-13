@@ -274,9 +274,11 @@ support current events, dated values or candidate sets yet.
 
 ## Fitting, saved state, and batching
 
-Only the selected fit anchors contribute observations. Shared input encoders
-collect observations from each selected input use; selecting overlapping data
-in several inputs can contribute it several times. External or generated
+Encoders over computed values learn only from the selected fit anchors. Shared
+input encoders collect observations from each selected input use; selecting
+overlapping data in several inputs can contribute it several times. Encoders
+over stored columns instead learn from each table row created at or before the
+encoder cutoff, once per column. External or generated
 labels do not silently enter a shared input vocabulary.
 
 An artifact doesn't include a copy of your data. `Artifact.load` reloads an artifact written by this version; one whose

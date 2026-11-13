@@ -5,6 +5,7 @@
 //! Column statistics of the rows created at or before each cutoff, under `col_stats/<dir>/`.
 
 use std::collections::{BTreeMap, HashSet};
+use std::fs::File;
 use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
@@ -13,9 +14,11 @@ use anyhow::{anyhow, ensure, Result};
 use diskgraph_core::time::TimeUnit;
 use diskgraph_rowpack::{ColumnValueObserver, FloatListView, IntListView, StringListView};
 use serde::Deserialize;
+use serde_json::value::RawValue;
 
 use crate::col_stats::{
-    write_col_stats, CategoryCountStrategy, ColStatsTable, FileColStats, TableCategoryCounts,
+    write_col_stats, CategoryCountStrategy, ColStatsTable, FileColStats, StatSet,
+    TableCategoryCounts,
 };
 use crate::graph_config::{ColumnSpec, SemanticType, TableSpec};
 use crate::io::{Dest, OutputTarget};
@@ -27,8 +30,8 @@ pub struct CutoffColStatsRequest {
     pub cutoffs: Vec<Option<i64>>,
     /// The `col_stats/<dir>/` of each cutoff.
     pub dirs: Vec<String>,
-    /// Table, then column, to the semantic type it is collected as.
-    pub columns: BTreeMap<String, BTreeMap<String, SemanticType>>,
+    /// Table, then column, to the semantic types whose statistics it collects.
+    pub columns: BTreeMap<String, BTreeMap<String, Vec<SemanticType>>>,
     /// The t-digest quantiles every numerical column publishes.
     #[serde(default)]
     pub quantiles: Vec<f64>,
@@ -37,7 +40,8 @@ pub struct CutoffColStatsRequest {
 /// One table's statistics at every cutoff.
 pub struct CutoffTable {
     name: String,
-    pub columns: Vec<ColumnSpec>,
+    columns: Vec<ColumnSpec>,
+    stat_sets: Vec<StatSet>,
     temporal: bool,
     cutoffs: Vec<Option<i64>>,
     categories: Vec<Arc<TableCategoryCounts>>,
@@ -78,37 +82,35 @@ impl CutoffColStatsRequest {
         Ok(())
     }
 
-    /// The requested columns as their requested types; the others collect nothing.
+    /// The requested statistics of each column; the others collect nothing.
     pub fn table(&self, table: &TableSpec) -> Option<CutoffTable> {
         let requested = self.columns.get(&table.name)?;
-        let columns: Vec<ColumnSpec> = table
+        let stat_sets: Vec<StatSet> = table
             .columns
             .iter()
-            .map(|column| ColumnSpec {
-                semantic_type: Some(
-                    requested
-                        .get(&column.name)
-                        .copied()
-                        .unwrap_or(SemanticType::Unsupported),
-                ),
-                ..column.clone()
+            .map(|column| {
+                requested
+                    .get(&column.name)
+                    .into_iter()
+                    .flatten()
+                    .fold(StatSet::default(), |set, &stype| set | Some(stype).into())
             })
             .collect();
-        let stypes: Vec<_> = columns.iter().map(|c| c.semantic_type).collect();
         let categories = self
             .cutoffs
             .iter()
             .map(|_| {
                 Arc::new(TableCategoryCounts::new(
                     CategoryCountStrategy::Hybrid,
-                    &stypes,
+                    &stat_sets,
                     false,
                 ))
             })
             .collect();
         Some(CutoffTable {
             name: table.name.clone(),
-            columns,
+            columns: table.columns.clone(),
+            stat_sets,
             temporal: table.create_time.is_some(),
             cutoffs: self.cutoffs.clone(),
             categories,
@@ -116,7 +118,7 @@ impl CutoffColStatsRequest {
         })
     }
 
-    /// Writes each cutoff's `col_stats.json`; a directory another writer published stays.
+    /// Adds each table's statistics to its `col_stats/<dir>/<table>.col_stats.json`.
     pub fn publish(
         &self,
         index_dir: &Path,
@@ -129,7 +131,10 @@ impl CutoffColStatsRequest {
         let mut per_cutoff: Vec<Vec<ColStatsTable<'_>>> =
             self.dirs.iter().map(|_| Vec::new()).collect();
         for mut table in tables {
-            let stats = table.stats.take().unwrap_or_else(|| table.sinks());
+            let stats = match table.stats.take() {
+                Some(stats) => stats,
+                None => table.sinks()?,
+            };
             for ((out, stats), categories) in
                 per_cutoff.iter_mut().zip(stats.stats).zip(table.categories)
             {
@@ -150,48 +155,75 @@ impl CutoffColStatsRequest {
                 });
             }
         }
-        let root = index_dir.join("col_stats");
-        std::fs::create_dir_all(&root)?;
-        let written = self
-            .dirs
-            .iter()
-            .zip(per_cutoff)
-            .map(|(dir, tables)| {
-                let tmp = tempfile::Builder::new()
-                    .prefix(&format!(".{dir}."))
-                    .tempdir_in(&root)?;
-                write_col_stats(
-                    &OutputTarget::parse(&tmp.path().to_string_lossy(), Dest::Local)?,
-                    tables,
-                )?;
-                Ok((root.join(dir), tmp))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        for (published, tmp) in written {
-            if let Err(error) = std::fs::rename(tmp.path(), &published) {
-                // Another writer published the same statistics first.
-                ensure!(published.join("col_stats.json").is_file(), error);
+        for (dir, tables) in self.dirs.iter().zip(per_cutoff) {
+            let dir = index_dir.join("col_stats").join(dir);
+            std::fs::create_dir_all(&dir)?;
+            for table in tables {
+                add_to_file(&dir, table)?;
             }
         }
         Ok(())
     }
 }
 
+/// Table, column and statistic, each value kept as written.
+type StatsFile = BTreeMap<String, BTreeMap<String, BTreeMap<String, Box<RawValue>>>>;
+
+/// Adds `table` to `<dir>/<table>.col_stats.json`; a column already there keeps its keys and
+/// gains the new ones.
+fn add_to_file(dir: &Path, table: ColStatsTable<'_>) -> Result<()> {
+    let path = dir.join(format!("{}.col_stats.json", table.name));
+    let tmp = tempfile::Builder::new().prefix(".").tempdir_in(dir)?;
+    write_col_stats(
+        &OutputTarget::parse(&tmp.path().to_string_lossy(), Dest::Local)?,
+        vec![table],
+    )?;
+    let written = tmp.path().join("col_stats.json");
+    // Writers take turns, so none drops another's columns.
+    let lock = File::options()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join(".lock"))?;
+    lock.lock()?;
+    if path.is_file() {
+        let mut stats: StatsFile = serde_json::from_slice(&std::fs::read(&path)?)?;
+        let added: StatsFile = serde_json::from_slice(&std::fs::read(&written)?)?;
+        for (name, columns) in added {
+            let table = stats.entry(name).or_default();
+            for (column, values) in columns {
+                let known = table.entry(column).or_default();
+                for (key, value) in values {
+                    known.entry(key).or_insert(value);
+                }
+            }
+        }
+        std::fs::write(&written, serde_json::to_vec(&stats)?)?;
+    }
+    File::open(&written)?.sync_all()?;
+    std::fs::rename(&written, &path)?;
+    Ok(())
+}
+
 impl CutoffTable {
-    pub fn sinks(&self) -> CutoffSinks {
-        CutoffSinks {
+    pub fn sinks(&self) -> Result<CutoffSinks> {
+        Ok(CutoffSinks {
             cutoffs: self.cutoffs.clone(),
             temporal: self.temporal,
             stats: self
                 .categories
                 .iter()
                 .map(|categories| {
-                    FileColStats::new_with_categories(&self.columns, Arc::clone(categories))
+                    FileColStats::new_with_stat_sets(
+                        &self.columns,
+                        &self.stat_sets,
+                        Arc::clone(categories),
+                    )
                 })
-                .collect(),
+                .collect::<Result<_>>()?,
             active: vec![true; self.cutoffs.len()],
             row: Row::default(),
-        }
+        })
     }
 
     pub fn add(&mut self, mut sinks: CutoffSinks) {
@@ -215,6 +247,7 @@ enum Seen {
     F64(f64),
     Str(Range<usize>),
     Bytes(Range<usize>),
+    Decimal(f64, Range<usize>),
     Timestamp(i64),
     FloatList(FloatListView),
     IntList(IntListView),
@@ -253,6 +286,9 @@ impl Row {
                 Seen::F64(value) => stats.observe_f64(col, *value),
                 Seen::Str(range) => stats.observe_string(col, &self.text[range.clone()]),
                 Seen::Bytes(range) => stats.observe_bytes(col, &self.bytes[range.clone()]),
+                Seen::Decimal(value, range) => {
+                    stats.observe_decimal(col, *value, &|| self.text[range.clone()].to_owned())
+                }
                 Seen::Timestamp(ticks) => stats.observe_timestamp(col, *ticks),
                 Seen::FloatList(view) => stats.observe_float_list(col, view),
                 Seen::IntList(view) => stats.observe_int64_list(col, view),
@@ -290,7 +326,7 @@ impl ColumnValueObserver for CutoffSinks {
     fn observe_decimal(&mut self, col_idx: usize, value: f64, text: &dyn Fn() -> String) {
         let keyed = self.stats.iter().any(|s| s.counts_categories(col_idx));
         self.push(col_idx, |row| match keyed {
-            true => Seen::Str(row.text(&text())),
+            true => Seen::Decimal(value, row.text(&text())),
             false => Seen::F64(value),
         });
     }

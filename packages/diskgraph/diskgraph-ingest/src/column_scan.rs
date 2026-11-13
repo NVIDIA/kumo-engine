@@ -21,7 +21,7 @@ pub fn node_chunks(table: &TableReader, size: u64) -> impl Iterator<Item = (usiz
     (0..table.shard_count())
         .filter_map(|shard| {
             let (min, max) = table.shard_id_range(shard)?;
-            (min <= max).then_some((shard, max - min + 1))
+            (min <= max).then(|| (shard, max - min + 1))
         })
         .flat_map(move |(shard, nodes)| {
             (0..nodes)
