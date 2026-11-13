@@ -801,7 +801,7 @@
           "name": "diskgraph-pybind",
           "source": "diskgraph-pybind/Cargo.toml",
           "source_kind": "workspace-first-party",
-          "version": "0.1.0"
+          "version": "0.2.0"
         },
         {
           "license": "Apache-2.0",
@@ -5925,7 +5925,7 @@
           "name": "diskgraph-pybind",
           "source": "diskgraph-pybind/Cargo.toml",
           "source_kind": "workspace-first-party",
-          "version": "0.1.0"
+          "version": "0.2.0"
         },
         {
           "license": "Apache-2.0",
@@ -10156,6 +10156,6 @@
       ]
     }
   ],
-  "cargo_lock_sha256": "dd4b31926c13cd9d416532ee343d9dee59c228229dea4798ba968303a5fb1d66",
+  "cargo_lock_sha256": "acaf720c98d5d3ea5ebed3e2ce04e4771ceacf839d0ff538aabaf6b7a613c901",
   "schema": 1
 }
