@@ -52,6 +52,19 @@ def _text_contract(encoding: api.Text = TEXT) -> api.DataLoaderSpec:
     return replace(contract, sample=sample, batch=replace(contract.batch, inputs=inputs))
 
 
+def _description_again(contract: api.DataLoaderSpec, encoding) -> api.DataLoaderSpec:
+    transactions = contract.batch.inputs["transactions"]
+    again = replace(
+        transactions,
+        representation=replace(
+            transactions.representation,
+            fields=(api.Encode(field="description", encoding=encoding),),
+        ),
+    )
+    inputs = {**contract.batch.inputs, "again": again}
+    return replace(contract, batch=replace(contract.batch, inputs=inputs))
+
+
 def _tokenizer(task: api.Task) -> str:
     return task.output("transactions").field(name="description").encoder.tokenizer_json
 
@@ -167,6 +180,20 @@ def test_every_fit_keeps_each_event_rows_token_count(tmp_path, padded):
     for node, row in zip(nodes, rows, strict=True):
         pieces = len(tokenizer.encode(row["description"] or "").ids)
         assert lengths[node] == 2 + pieces  # amount, channel and the description's pieces
+
+
+def test_a_column_two_encoders_read_counts_once(tmp_path):
+    dataset, engine = _setup("diskgraph", tmp_path)
+    files = []
+    for contract in (_text_contract(), _description_again(_text_contract(), api.Vocabulary())):
+        with api.prepare(contract, dataset, engine) as plan:
+            with plan.materialize(_requests(), fit_split="train") as task:
+                files.append(task.fitted_state.fit["inputs"]["statistics"]["token_lengths"])
+    assert files[0] == files[1]
+    twice = _description_again(_text_contract(), api.Text(vocabulary_size=300, min_frequency=3))
+    with api.prepare(twice, dataset, engine) as plan:
+        with pytest.raises(ValueError, match="different tokenizers"):
+            plan.materialize(_requests(), fit_split="train")
 
 
 def test_chunked_encoding_matches_one_string_at_a_time(monkeypatch):

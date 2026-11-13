@@ -113,7 +113,7 @@ LengthColumn = tuple[str, str | None]
 def token_length_columns(contract: Any, plan: Any) -> dict[str, tuple[LengthColumn, ...]]:
     """Each event table's stored columns that the inputs of a fitted plan read."""
 
-    columns: dict[str, set[LengthColumn]] = {}
+    columns: dict[str, dict[str, str | None]] = {}
     for name, value in sorted(contract.batch.inputs.items()):
         if not isinstance(value.representation, Fields):
             continue
@@ -122,12 +122,17 @@ def token_length_columns(contract: Any, plan: Any) -> dict[str, tuple[LengthColu
             tokenizer = encoder.tokenizer_json if isinstance(encoder.config, Text) else None
             for variant, _, _ in resolved_fields(contract, name, use.field):
                 stored = _stored_column(contract.sample, contract.schema, variant)
-                if stored is not None and variant[0] in {"events", "current_events"}:
-                    columns.setdefault(stored[0], set()).add((stored[1], tokenizer))
-    return {
-        table: tuple(sorted(items, key=lambda item: (item[0], item[1] or "")))
-        for table, items in sorted(columns.items())
-    }
+                if stored is None or variant[0] not in {"events", "current_events"}:
+                    continue
+                table, column = stored
+                known = columns.setdefault(table, {}).get(column)
+                if tokenizer is not None and known is not None and known != tokenizer:
+                    raise ValueError(
+                        f"{table}.{column} is read by Text encoders with different tokenizers, "
+                        "so its token length is ambiguous"
+                    )
+                columns[table][column] = tokenizer or known
+    return {table: tuple(sorted(read.items())) for table, read in sorted(columns.items())}
 
 
 def token_lengths_file(
@@ -147,10 +152,14 @@ def token_lengths_file(
 
 
 def read_token_lengths(path: str | Path) -> np.ndarray:
-    """A token lengths file's per-node counts, memory-mapped, indexed by node ID."""
+    """A token lengths file's per-node counts, read-only and indexed by node ID.
+
+    ``path`` is the file itself: the index's ``col_stats/`` directory joined with the name
+    ``FitRecord["statistics"]["token_lengths"]`` records.
+    """
 
     if not Path(path).stat().st_size:
-        return np.zeros(0, dtype="<u2")
+        return np.frombuffer(b"", dtype="<u2")
     return np.memmap(path, dtype="<u2", mode="r")
 
 
