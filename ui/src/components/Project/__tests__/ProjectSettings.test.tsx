@@ -22,12 +22,15 @@ import { testResponseType } from "tests/testResponseType";
 import { createQueryClient, createWrapper } from "tests/testUtil";
 
 import { storageKeys } from "utils/Constants/enums";
+import { defaultModelsPageURL, getProjectPath } from "utils/Constants/routes";
+import { getStoredSelectedProjectId } from "utils/storage";
 import { formatToShortLocalDateString } from "utils/timeConverter";
 
 import ProjectSettings from "../ProjectSettings";
 
 import {
     mockProjectData,
+    setArchiveProjectResponseType,
     setProjectResponseType,
     setUpdateProjectResponseType
 } from "./MockFunctions/ProjectSettings.mock";
@@ -71,6 +74,7 @@ describe("ProjectSettings", () => {
         mockNavigateCall();
         setProjectResponseType();
         setUpdateProjectResponseType();
+        setArchiveProjectResponseType();
         storeToLocalStorage(storageKeys.selectedProject, mockProjectData.id);
     });
 
@@ -336,5 +340,107 @@ describe("ProjectSettings", () => {
         expect(
             screen.getByRole("button", { name: "Copy to clipboard" })
         ).toBeInTheDocument();
+    });
+
+    describe("Archive project", () => {
+        const archiveButton = () =>
+            screen.queryByRole("button", { name: "Archive project" });
+
+        const archiveUrl = `v0/projects/${mockProjectData.id}/archive`;
+        const archiveRequested = () =>
+            vi
+                .mocked(mockAxiosInstance.post)
+                .mock.calls.some(([url]) => url === archiveUrl);
+
+        const confirmArchive = async () => {
+            await userEvent.click(archiveButton()!);
+            const dialog = await screen.findByTestId("dialog-content");
+            expect(dialog).toHaveTextContent(mockProjectData.display_name!);
+            await userEvent.click(
+                screen.getByRole("button", { name: "Archive" })
+            );
+        };
+
+        it("Should archive after confirmation and return to the Default project", async () => {
+            await renderProjectSettings();
+            await waitForProjectLoad();
+
+            await confirmArchive();
+
+            await waitFor(() => expect(archiveRequested()).toBe(true));
+            await waitFor(() => {
+                expect(mockUseNavigate).toHaveBeenCalledWith(
+                    getProjectPath("default").ModelJobsList +
+                        "?" +
+                        defaultModelsPageURL.split("?")[1]
+                );
+            });
+            expect(getStoredSelectedProjectId()).toBe("default");
+        });
+
+        it("Should not archive when the confirmation is cancelled", async () => {
+            await renderProjectSettings();
+            await waitForProjectLoad();
+
+            await userEvent.click(archiveButton()!);
+            await screen.findByTestId("dialog-content");
+            const cancelButtons = screen.getAllByRole("button", {
+                name: "Cancel"
+            });
+            await userEvent.click(cancelButtons[cancelButtons.length - 1]);
+
+            await waitFor(() =>
+                expect(
+                    screen.queryByTestId("dialog-content")
+                ).not.toBeInTheDocument()
+            );
+            expect(archiveRequested()).toBe(false);
+            expect(mockUseNavigate).not.toHaveBeenCalled();
+        });
+
+        it("Should show an error and stay on the page when archiving fails", async () => {
+            setArchiveProjectResponseType(testResponseType.ERROR);
+            await renderProjectSettings();
+            await waitForProjectLoad();
+
+            await confirmArchive();
+
+            await waitFor(() =>
+                expect(
+                    screen.getAllByText("Project archive failed!").length
+                ).toBeGreaterThan(0)
+            );
+            expect(mockUseNavigate).not.toHaveBeenCalled();
+            expect(getStoredSelectedProjectId()).toBe(mockProjectData.id);
+        });
+
+        it.each([
+            {
+                description: "the Default project",
+                selectedProject: "default",
+                responseType: ""
+            },
+            {
+                description: "an already archived project",
+                selectedProject: mockProjectData.id,
+                responseType: testResponseType.ARCHIVED
+            }
+        ])(
+            "Should not offer archiving for $description",
+            async ({ selectedProject, responseType }) => {
+                storeToLocalStorage(
+                    storageKeys.selectedProject,
+                    selectedProject
+                );
+                setProjectResponseType(responseType);
+                await renderProjectSettings();
+                await waitForProjectLoad();
+
+                expect(archiveButton()).not.toBeInTheDocument();
+                expect(
+                    screen.queryByTestId("archive-project-section")
+                ).not.toBeInTheDocument();
+            }
+        );
     });
 });

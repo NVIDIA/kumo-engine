@@ -63,6 +63,7 @@ import { mockTrialTagsResponse } from "components/PredictiveQueries/Training/__t
 import { mockCreateProjectResponse } from "components/Project/__tests__/MockFunctions/CreateProject.mock";
 import { mockProjectsByGroupResponse } from "components/Project/__tests__/MockFunctions/ProjectList.mock";
 import {
+    mockArchiveProjectResponse,
     mockGetProjectResponse,
     mockUpdateProjectResponse
 } from "components/Project/__tests__/MockFunctions/ProjectSettings.mock";
@@ -245,6 +246,9 @@ export const mockAxiosInstance = {
         }
         if (url === "v1/tables/infer_metadata") {
             return mockInferMetadataResponse(payload);
+        }
+        if (url.startsWith("v0/projects/") && url.endsWith("/archive")) {
+            return mockArchiveProjectResponse();
         }
         if (
             url.startsWith("v0/projects/") &&

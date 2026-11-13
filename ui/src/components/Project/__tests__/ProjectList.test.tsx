@@ -24,6 +24,7 @@ import { getStoredSelectedProjectId } from "utils/storage";
 import ProjectList, { ProjectListProps } from "../ProjectList";
 
 import {
+    mockArchivedProject,
     mockProjectsData,
     setProjectsResponseType
 } from "./MockFunctions/ProjectList.mock";
@@ -165,6 +166,15 @@ describe("ProjectList", () => {
                 mockProjectsData[1].display_name!
             ],
             shouldBeHidden: [] as string[]
+        },
+        {
+            description: "selected group includes an archived project",
+            projectsResponseType: testResponseType.ARCHIVED,
+            shouldBeVisible: [
+                mockProjectsData[0].display_name!,
+                mockProjectsData[1].display_name!
+            ],
+            shouldBeHidden: [mockArchivedProject.display_name!]
         },
         {
             description: "selected group has no projects",

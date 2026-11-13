@@ -11,6 +11,7 @@ import {
     useGetGroupsProjectsByGroupId
 } from "gen/v0/api/groups/groups";
 import {
+    useCreateProjectsArchiveByProjectId,
     useGetProjects,
     useGetProjectsByProjectId,
     useUpdateProjectsByProjectId
@@ -209,6 +210,44 @@ export const useCreateProject = (
     );
 
     return { createProject: createNewProject };
+};
+
+export const useArchiveProject = (
+    handleError: HandleErrorFunc,
+    setLoading: (value: boolean) => void
+) => {
+    const { mutateAsync: archiveProjectById } =
+        useCreateProjectsArchiveByProjectId();
+    const queryClient = useQueryClient();
+
+    const archiveProject = useCallback(
+        async (projectId: string): Promise<boolean> => {
+            setLoading(true);
+            try {
+                await archiveProjectById({ projectId });
+                invalidateProjectInfo(queryClient, projectId);
+                queryClient.invalidateQueries({
+                    queryKey: [ReactQueryKeys.ProjectList]
+                });
+                return true;
+            } catch (e) {
+                const statusCode = (
+                    e as { response: { status: errorStatusCode } }
+                )?.response?.status;
+                const err = prepareCustomError(
+                    parseErrorMessage(e as CustomError),
+                    statusCode
+                );
+                handleError(err, "Project archive failed!");
+                return false;
+            } finally {
+                setLoading(false);
+            }
+        },
+        [archiveProjectById, handleError, queryClient, setLoading]
+    );
+
+    return { archiveProject };
 };
 
 export const useProjectId = () => {

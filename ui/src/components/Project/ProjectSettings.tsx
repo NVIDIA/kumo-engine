@@ -15,18 +15,21 @@ import {
     PropertiesOverviewCard,
     RadioGroup,
     RadioGroupItem,
+    storeToLocalStorage,
     TextArea,
     Title,
     Tooltip,
     TooltipContent,
     TooltipTrigger
 } from "@kumo-ai/kumo-ui-catalog";
+import { ProjectStatus } from "gen/v0/types";
 
 import WithErrorBoundary from "components/@hoc/WithErrorBoundary";
 import Validation from "components/Validation/Validation";
 
 import { useKumoGroups } from "hooks/groups/groups";
 import {
+    useArchiveProject,
     useProject,
     useProjectId,
     useUpdateProject
@@ -34,6 +37,11 @@ import {
 import { useAutoResizeTextarea } from "hooks/utils/useAutoResizeTextarea";
 import { useValidationState } from "hooks/validation/validation";
 
+import {
+    defaultModelsPageURL,
+    getProjectPath,
+    storageKeys
+} from "utils/Constants";
 import { formatToShortLocalDateString } from "utils/timeConverter";
 
 import ProjectNameInput from "./NameInput/ProjectNameInput";
@@ -46,6 +54,8 @@ const formatDate = (dateStr?: string) => {
     return formatToShortLocalDateString(dateStr);
 };
 
+const DEFAULT_PROJECT_ID = "default";
+
 const ProjectSettings = () => {
     const projectId = useProjectId();
     const [loading, setLoading] = useState(false);
@@ -56,6 +66,7 @@ const ProjectSettings = () => {
         handleError
     );
     const { updateProject } = useUpdateProject(handleError, setLoading);
+    const { archiveProject } = useArchiveProject(handleError, setLoading);
     const { groups } = useKumoGroups();
     const groupName =
         groups.find((g) => g.id === project?.group_id)?.display_name ?? "—";
@@ -64,7 +75,6 @@ const ProjectSettings = () => {
     const [projectNameError, setProjectNameError] = useState("");
     const [userHasEditedName, setUserHasEditedName] = useState(false);
     const [description, setDescription] = useState("");
-    // const [isArchiveDialogOpen, setIsArchiveDialogOpen] = useState(false);
     const navigate = useNavigate();
     const [radioValue, setRadioValue] = useState("Share");
 
@@ -123,6 +133,40 @@ const ProjectSettings = () => {
         });
     };
 
+    const canArchive =
+        !!project &&
+        project.id !== DEFAULT_PROJECT_ID &&
+        project.status !== ProjectStatus.ARCHIVED;
+
+    const onArchiveClick = () => {
+        clearErrors();
+        dialogRef.current?.toggleDialog(
+            "Archive project",
+            `Archive "${project?.display_name}"? Archived projects can no longer be changed and their jobs cannot run. This cannot be undone from the UI.`,
+            {},
+            false,
+            "Archive",
+            "destructive"
+        );
+    };
+
+    const onArchiveConfirm = async () => {
+        dialogRef.current?.toggleDialog();
+        if (!projectId) return;
+        const archived = await archiveProject(projectId);
+        if (archived) {
+            storeToLocalStorage(
+                storageKeys.selectedProject,
+                DEFAULT_PROJECT_ID
+            );
+            navigate(
+                getProjectPath(DEFAULT_PROJECT_ID).ModelJobsList +
+                    "?" +
+                    defaultModelsPageURL.split("?")[1]
+            );
+        }
+    };
+
     return (
         <>
             <div className="flex items-center justify-between">
@@ -159,6 +203,7 @@ const ProjectSettings = () => {
                 alert={alert}
                 ctaMsgs={null}
                 dialogRef={dialogRef}
+                onDialogConfirm={onArchiveConfirm}
                 hideWarnings={() => {}}
                 clearErrors={clearErrors}
             />
@@ -272,6 +317,33 @@ const ProjectSettings = () => {
                 cardClassName={"px-0 pb-0"}
                 titleSize="md"
             />
+            {canArchive && (
+                <>
+                    <Spacer height={32} />
+                    <div
+                        data-testid="archive-project-section"
+                        className="flex items-center justify-between gap-4 max-w-300 border-t border-border-primary pt-6">
+                        <div>
+                            <Label className="font-medium text-base text-title-primary leading-5">
+                                Archive project
+                            </Label>
+                            <p className="text-sm text-title-secondary leading-5 mt-1">
+                                Archived projects are read-only and hidden from
+                                the project list.
+                            </p>
+                        </div>
+                        <Button
+                            id="archive-project"
+                            variant="destructive"
+                            size="sm"
+                            className="rounded-sm px-4 py-2 h-9 text-base leading-5"
+                            disabled={loading}
+                            onClick={onArchiveClick}>
+                            Archive project
+                        </Button>
+                    </div>
+                </>
+            )}
         </>
     );
 };

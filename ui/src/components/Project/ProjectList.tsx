@@ -35,7 +35,7 @@ import {
     TooltipTrigger,
     useLocalStorage
 } from "@kumo-ai/kumo-ui-catalog";
-import { ProjectDBEntry } from "gen/v0/types";
+import { ProjectDBEntry, ProjectStatus } from "gen/v0/types";
 import { useUserDetails } from "stores/userStore";
 
 import WithErrorBoundary from "components/@hoc/WithErrorBoundary";
@@ -124,7 +124,9 @@ const ProjectList = ({ open, toggleModal, enableClose }: ProjectListProps) => {
     } = useProjectListByGroup(selectedGroupId ?? "", handleError);
 
     const tableData = useMemo<ProjectDBEntry[]>(() => {
-        const entries = projects ?? [];
+        const entries = (projects ?? []).filter(
+            (p) => p.status !== ProjectStatus.ARCHIVED
+        );
         const tabFiltered =
             activeTab === "my-projects"
                 ? entries.filter((p) => p?.created_by === userDetails?.user_id)
