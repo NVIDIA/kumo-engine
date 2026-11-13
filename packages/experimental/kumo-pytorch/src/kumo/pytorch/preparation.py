@@ -305,7 +305,7 @@ class Plan:
                 if files:
                     fit["inputs"] = {
                         **fit["inputs"],
-                        "statistics": {**statistics, "token_lengths": files},
+                        "statistics": {"cutoff": None, **statistics, "token_lengths": files},
                     }
         except BaseException:
             task_anchors.close()

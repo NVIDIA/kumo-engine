@@ -25,6 +25,7 @@ use diskgraph_ingest::column_scan::{
 };
 use diskgraph_ingest::cutoff_col_stats::CutoffColStatsRequest;
 use diskgraph_ingest::graph_config::{read_persisted_config, ColumnSpec, IngestedType};
+use diskgraph_rowpack::{ColumnEncoding, IngestedType as StoredType};
 use pyo3::prelude::*;
 use rayon::prelude::*;
 use tokenizers::models::bpe::{BpeTrainer, BPE};
@@ -295,9 +296,10 @@ pub fn train_tokenizer(
     .map_err(|e| map_anyhow_err(anyhow!(e)))
 }
 
-/// Each node's token count over `columns` of `table`: one per scalar, a list's elements, and a
-/// string's pieces under its tokenizer JSON, saturated to `u16`. Written to `path` as one
-/// little-endian `u16` per node ID, 0 for a node stored without data.
+/// Each node's token count over `columns` of `table`, NULLs counted as if present: 1 per scalar,
+/// a fixed-length array's length, a list's elements, and a string's pieces under its tokenizer
+/// JSON, saturated to `u16`. Written to `path` as one little-endian `u16` per node ID, 0 for a
+/// node stored without data.
 #[pyfunction]
 #[pyo3(signature = (index_dir, table, columns, path, *, num_threads=None))]
 pub fn token_lengths(
@@ -320,8 +322,13 @@ pub fn token_lengths(
     let (mut tables, _) = stored_tables(Path::new(index_dir), &HashSet::from([table.to_string()]))
         .map_err(map_anyhow_err)?;
     let stored = tables.remove(table).expect("opened table");
+    let context = stored
+        .reader
+        .node_data_decoder()
+        .expect("a stored table")
+        .context();
     let mut decoded = Vec::new();
-    let mut tokenizers = Vec::new();
+    let mut costs = Vec::new();
     for (column, tokenizer) in columns {
         let index = stored
             .columns
@@ -331,32 +338,40 @@ pub fn token_lengths(
                 DiskgraphConfigError::new_err(format!("index has no column {table}.{column}"))
             })?;
         let kind = stored.columns[index].1;
-        if tokenizer.is_some() && kind != diskgraph_rowpack::IngestedType::String {
-            return Err(DiskgraphConfigError::new_err(format!(
-                "column {table}.{column} holds {kind:?} values, not strings"
-            )));
-        }
         decoded.push(index);
-        tokenizers.push(
-            tokenizer
-                .map(|json| Tokenizer::from_str(&json))
-                .transpose()
-                .map_err(|e| DiskgraphConfigError::new_err(format!("invalid tokenizer: {e}")))?,
-        );
+        costs.push(match (tokenizer, &context.columns[index].encoding) {
+            (Some(_), _) if kind != StoredType::String => {
+                return Err(DiskgraphConfigError::new_err(format!(
+                    "column {table}.{column} holds {kind:?} values, not strings"
+                )))
+            }
+            (Some(json), _) => {
+                let mut tokenizer = Tokenizer::from_str(&json).map_err(|e| {
+                    DiskgraphConfigError::new_err(format!("invalid tokenizer: {e}"))
+                })?;
+                tokenizer.with_padding(None);
+                Cost::Pieces(Box::new(tokenizer))
+            }
+            (
+                None,
+                ColumnEncoding::FixedFloatArray { len, .. } | ColumnEncoding::FixedIntArray { len },
+            ) => Cost::Fixed(*len as u64),
+            (
+                None,
+                ColumnEncoding::FloatArray { .. }
+                | ColumnEncoding::Int8Array
+                | ColumnEncoding::Int16Array
+                | ColumnEncoding::Int32Array
+                | ColumnEncoding::Int64Array
+                | ColumnEncoding::StringArray { .. },
+            ) => Cost::Elements,
+            (None, _) => Cost::Fixed(1),
+        });
     }
-    let mut chunks: Vec<_> = node_chunks(&stored.reader, TEXT_CHUNK_NODES)
-        .map(|chunk| {
-            let (first, _) = stored
-                .reader
-                .shard_id_range(chunk.0)
-                .expect("a stored shard");
-            (first + chunk.1, chunk)
-        })
-        .collect();
-    chunks.sort_unstable();
+    let chunks: Vec<_> = node_chunks(&stored.reader, TEXT_CHUNK_NODES).collect();
     let path = Path::new(path);
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(format!(".{}", uuid::Uuid::new_v4().simple()));
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let temporary = path.with_file_name(format!(".{name}.{}", uuid::Uuid::new_v4().simple()));
     let mut file = BufWriter::new(
         OpenOptions::new()
             .write(true)
@@ -365,30 +380,28 @@ pub fn token_lengths(
             .map_err(|e| map_anyhow_err(e.into()))?,
     );
     let written = (|| -> PyResult<()> {
-        let mut next = 0;
         for window in chunks.chunks(TEXT_WINDOW_CHUNKS) {
-            let lengths = py
-                .detach(|| {
-                    pool.install(|| {
-                        window
-                            .par_iter()
-                            .map(|&(_, chunk)| chunk_lengths(&stored, chunk, &decoded, &tokenizers))
-                            .collect::<Result<Vec<_>>>()
-                    })
-                })
-                .map_err(map_anyhow_err)?;
-            for (&(first, _), lengths) in window.iter().zip(lengths) {
-                let zeros = std::iter::repeat_n(0, (first - next) as usize);
-                for length in zeros.chain(lengths.iter().copied()) {
-                    file.write_all(&u16::to_le_bytes(length))?;
+            py.detach(|| -> Result<()> {
+                let lengths = pool.install(|| {
+                    window
+                        .par_iter()
+                        .map(|&chunk| chunk_lengths(&stored, chunk, &decoded, &costs))
+                        .collect::<Result<Vec<_>>>()
+                })?;
+                for lengths in lengths {
+                    file.write_all(&lengths)?;
                 }
-                next = first + lengths.len() as u64;
-            }
+                Ok(())
+            })
+            .map_err(map_anyhow_err)?;
             py.check_signals()?;
         }
-        file.flush()?;
-        file.get_ref().sync_all()?;
-        Ok(fs::rename(&temporary, path)?)
+        py.detach(|| -> Result<()> {
+            file.flush()?;
+            file.get_ref().sync_all()?;
+            Ok(fs::rename(&temporary, path)?)
+        })
+        .map_err(map_anyhow_err)
     })();
     if written.is_err() {
         let _ = fs::remove_file(&temporary);
@@ -396,17 +409,30 @@ pub fn token_lengths(
     written
 }
 
+enum Cost {
+    Fixed(u64),
+    Elements,
+    Pieces(Box<Tokenizer>),
+}
+
 fn chunk_lengths(
     stored: &StoredTable,
     chunk: (usize, u64, u64),
     decoded: &[usize],
-    tokenizers: &[Option<Tokenizer>],
-) -> Result<Vec<u16>> {
+    costs: &[Cost],
+) -> Result<Vec<u8>> {
     let (nodes, batch) = decode_chunk(&stored.reader, chunk, decoded)?;
     let mut totals = vec![0u64; batch.num_rows()];
-    for (column, tokenizer) in batch.columns().iter().zip(tokenizers) {
-        match (tokenizer, column.data_type()) {
-            (Some(tokenizer), _) => {
+    for (column, cost) in batch.columns().iter().zip(costs) {
+        match cost {
+            Cost::Fixed(length) => totals.iter_mut().for_each(|total| *total += length),
+            Cost::Elements => {
+                let counts = cast(&length(column)?, &DataType::Int64)?;
+                for (total, count) in totals.iter_mut().zip(counts.as_primitive::<Int64Type>()) {
+                    *total += count.unwrap_or(0) as u64;
+                }
+            }
+            Cost::Pieces(tokenizer) => {
                 for (total, value) in totals.iter_mut().zip(column.as_string::<i64>()) {
                     if let Some(value) = value {
                         let pieces = tokenizer.encode_fast(value, true).map_err(|e| anyhow!(e))?;
@@ -414,18 +440,13 @@ fn chunk_lengths(
                     }
                 }
             }
-            (None, DataType::List(_) | DataType::LargeList(_)) => {
-                let counts = cast(&length(column)?, &DataType::Int64)?;
-                for (total, count) in totals.iter_mut().zip(counts.as_primitive::<Int64Type>()) {
-                    *total += count.unwrap_or(0) as u64;
-                }
-            }
-            (None, _) => totals.iter_mut().for_each(|total| *total += 1),
         }
     }
-    let mut lengths = vec![0; (chunk.2 - chunk.1) as usize];
+    let mut lengths = vec![0; 2 * (chunk.2 - chunk.1) as usize];
     for (node, total) in nodes.into_iter().zip(totals) {
-        lengths[(node - chunk.1) as usize] = total.min(u16::MAX.into()) as u16;
+        let slot = 2 * (node - chunk.1) as usize;
+        let length = total.min(u16::MAX.into()) as u16;
+        lengths[slot..slot + 2].copy_from_slice(&length.to_le_bytes());
     }
     Ok(lengths)
 }
