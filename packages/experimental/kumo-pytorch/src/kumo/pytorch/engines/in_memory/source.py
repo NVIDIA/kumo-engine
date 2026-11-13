@@ -118,7 +118,7 @@ class InMemorySource:
                         or row.get(clock) is not None
                         and (cutoff is None or timestamp_to_epoch(row[clock]) <= cutoff)
                     ):
-                        batch.append(row[column])
+                        batch.append(encoder.dtype.normalize(row[column], path=f"{table}.{column}"))
                         if len(batch) == TRAIN_BATCH:
                             yield batch
                             batch = []
