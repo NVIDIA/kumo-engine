@@ -22,6 +22,7 @@ from kumo.pytorch.column_stats import (
     EMPTY_STATS,
     ColumnStats,
     StatRequest,
+    file_name_part,
     read_column_stats,
 )
 from kumo.pytorch.contract.sample import BuiltSample, SampleRequest, SampleSpec
@@ -92,7 +93,7 @@ class InMemorySource:
                 types = pa.schema(
                     [(name, dtype.to_arrow()) for name, dtype in table.columns.items()]
                 )
-                path = f"{directory}/{table.name}.parquet"
+                path = f"{directory}/{file_name_part(table.name)}.parquet"
                 pq.write_table(pa.Table.from_pylist(rows, types), path)
                 sources[table.name] = Parquet(path)
             index = Path(directory, "index")

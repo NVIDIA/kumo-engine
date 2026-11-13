@@ -308,11 +308,13 @@ def test_vocabulary_learns_every_stored_column_type(tmp_path, engine_name):
         {"id": i, **{n: values[i] for n, (_, values) in COLUMN_TYPES.items()}} for i in range(3)
     ]
     columns = {"id": api.DType("int64"), **{n: dtype for n, (dtype, _) in COLUMN_TYPES.items()}}
+    # A table name that would leave col_stats/ if it were a path.
+    table = "../items/x y"
     schema = api.DataSchema(
-        tables=(api.TableSpec("items", "id", columns, time_column=api.NON_TEMPORAL),)
+        tables=(api.TableSpec(table, "id", columns, time_column=api.NON_TEMPORAL),)
     )
     sample = api.SampleSpec(
-        entity=api.EntitySpec("items", entity_type="item"),
+        entity=api.EntitySpec(table, entity_type="item"),
         entity_values={n: api.Field(column=n) for n in COLUMN_TYPES},
     )
     fields = tuple(api.Encode(field=n, encoding=api.Vocabulary()) for n in COLUMN_TYPES)
@@ -322,14 +324,14 @@ def test_vocabulary_learns_every_stored_column_type(tmp_path, engine_name):
     )
     contract = api.DataLoaderSpec(schema=schema, sample=sample, batch=batch)
     if engine_name == "in_memory":
-        dataset, engine = api.Dataset({"items": api.InMemoryRows(rows)}), api.InMemoryEngine()
+        dataset, engine = api.Dataset({table: api.InMemoryRows(rows)}), api.InMemoryEngine()
     else:
         import pyarrow as pa
         import pyarrow.parquet as pq
 
         types = pa.schema([(name, dtype.to_arrow()) for name, dtype in columns.items()])
         pq.write_table(pa.Table.from_pylist(rows, types), tmp_path / "items.parquet")
-        dataset = api.Dataset({"items": api.Parquet(str(tmp_path / "items.parquet"))})
+        dataset = api.Dataset({table: api.Parquet(str(tmp_path / "items.parquet"))})
         engine = api.DiskGraphEngine(index=tmp_path / "index")
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize([api.SampleRequest("item-0", 0, 0)]) as task:
@@ -338,3 +340,6 @@ def test_vocabulary_learns_every_stored_column_type(tmp_path, engine_name):
                 expected = sorted(counts, key=lambda value: (-counts[value], value))
                 entries = task.output("entity").field(name=name).encoder.entries
                 assert [value for value, _ in entries] == expected, name
+    if engine_name == "diskgraph":
+        (path,) = (tmp_path / "index" / "col_stats").glob("*/*.col_stats.json")
+        assert path.name == "%2E%2E%2Fitems%2Fx%20y.col_stats.json"

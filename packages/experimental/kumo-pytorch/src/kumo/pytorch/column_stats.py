@@ -125,7 +125,9 @@ def read_column_stats(
     import diskgraph
 
     directory = Path(index, "col_stats", _cutoff_dir(ticks, unit))
-    paths = {table: directory / f"{table}.col_stats.json" for table, _, _ in requests}
+    paths = {
+        table: directory / f"{file_name_part(table)}.col_stats.json" for table, _, _ in requests
+    }
 
     def read() -> dict:
         return {
@@ -148,6 +150,15 @@ def read_column_stats(
         {item: found[item[0]][item[1]] for item in requests},
         {"value": ticks, "unit": unit},
         tuple(f"{directory.name}/{path.name}" for _, path in sorted(paths.items())),
+    )
+
+
+def file_name_part(name: str) -> str:
+    """``name`` with every byte but ASCII letters, digits, ``-`` and ``_`` percent-encoded."""
+
+    return "".join(
+        chr(byte) if bytes([byte]).isalnum() or byte in b"-_" else f"%{byte:02X}"
+        for byte in name.encode()
     )
 
 

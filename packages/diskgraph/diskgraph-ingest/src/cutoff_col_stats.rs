@@ -172,7 +172,7 @@ type StatsFile = BTreeMap<String, BTreeMap<String, BTreeMap<String, Box<RawValue
 /// Adds `table` to `<dir>/<table>.col_stats.json`; a column already there keeps its keys and
 /// gains the new ones.
 fn add_to_file(dir: &Path, table: ColStatsTable<'_>) -> Result<()> {
-    let path = dir.join(format!("{}.col_stats.json", table.name));
+    let path = dir.join(format!("{}.col_stats.json", file_name_part(&table.name)));
     let tmp = tempfile::Builder::new().prefix(".").tempdir_in(dir)?;
     write_col_stats(
         &OutputTarget::parse(&tmp.path().to_string_lossy(), Dest::Local)?,
@@ -203,6 +203,16 @@ fn add_to_file(dir: &Path, table: ColStatsTable<'_>) -> Result<()> {
     File::open(&written)?.sync_all()?;
     std::fs::rename(&written, &path)?;
     Ok(())
+}
+
+/// `name` with every byte but ASCII letters, digits, `-` and `_` percent-encoded.
+fn file_name_part(name: &str) -> String {
+    name.bytes()
+        .map(|byte| match byte {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' => char::from(byte).to_string(),
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
 }
 
 impl CutoffTable {
