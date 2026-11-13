@@ -3139,7 +3139,7 @@ where
                                 view.node_data()
                                     .map_err(|e| TTGenError::SystemError(e.to_string()))
                             })
-                            .collect::<TTGenResult<Option<Vec<_>>>>>()?;
+                            .collect::<TTGenResult<Option<Vec<_>>>>()?;
                         // Absent node payloads follow the general reader's NULL
                         // policy. A decode/IO failure above is not a decline.
                         let Some(rows) = rows else { return Ok(None); };
