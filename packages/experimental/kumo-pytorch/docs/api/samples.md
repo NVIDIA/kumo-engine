@@ -35,7 +35,7 @@ see `DataLoaderSpec.requires_anchor_time`.
 
 - `entity`: the table each sample is about.
 - `entity_values`: named scalar values: fields, constants, aggregates, comparisons and calculations.
-- `events`: named historical event components. Several components can merge into one batch input; equal-time events then order by component name and primary key.
+- `events`: named historical event components. Several components can merge into one batch input; equal-time events then order by component name and primary key, or local occurrence identity for a keyless table.
 - `dated_entity_values`: repeated timestamped facts, as opposed to the single values in `entity_values`.
 - `current_events`: events kept apart from `events` so an objective can distinguish the event being predicted from its history. Each requires `TimeWindow(column=..., start=-1, stop=0)` and `limit=1`, selecting the event at the anchor's stored second; a historical window ending at zero still includes that event too.
 - `neighborhoods`: named graph neighborhoods around the entity.
@@ -93,7 +93,7 @@ with the historical window ending at the sample time.
 - `time`: the window relative to the anchor; its column must be a `timestamp` or `date32`.
 - `filters`: typed comparisons on destination columns.
 - `active`: restricts to rows whose validity interval contains the prediction time, which is a different question from when they occurred.
-- `distinct`: after traversal, keep one row per destination table and primary key; fan-out through a join can otherwise repeat a row.
+- `distinct`: after traversal, keep one visit per destination row, identified by its primary key or its occurrence when keyless. Separate identical source rows remain separate; joins can revisit the same row.
 
 ### `TimeWindow`
 

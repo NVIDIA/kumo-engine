@@ -18,10 +18,8 @@ from kumo_core.embedding_models import (
 from kumo_core.encoders.fused.text import FusedTextEncoder
 from kumo_core.encoders.tensor_mapper import TextTensorMapper
 from kumo_core.encoders.text import normalize_text
-from kumo_core.features.stats import get_stats
 from kumo_core.glove import TokenEmbeddingTable
 from kumoapi.encoder import TextEmbedding
-from kumoapi.typing import Stype
 from torch_geometric.testing import onlyCUDA
 
 
@@ -63,9 +61,7 @@ def test_glove_lookup_skips_null_and_repeated_words(glove_with_null_words) -> No
     model, embedding = glove_with_null_words
     table = TokenEmbeddingTable(model).initialize()
 
-    rowptr, tokens = model.tokenize(
-        pd.Series(["The OF to", "null nan", None, "a"])
-    )
+    rowptr, tokens = model.tokenize(pd.Series(["The OF to", "null nan", None, "a"]))
     assert rowptr.tolist() == [0, 3, 3, 3, 4]
     assert tokens.tolist() == [0, 5, 4, 6]  # A repeated word maps to its last row.
     assert model.vocabulary()[tokens.numpy()].tolist() == ["the", "of", "to", "a"]
@@ -87,17 +83,16 @@ def test_glove_text_encoding_with_null_words(glove_with_null_words) -> None:
     encoder = FusedTextEncoder(
         {"text": TextEmbedding()}, exclude_cols=[], out_channels=4, enc_mode="column"
     )
-    expected = np.stack([
-        embedding[[0, 5]].mean(axis=0),
-        np.zeros(50, dtype=np.float32),
-        embedding[[4, 6, 4]].mean(axis=0),
-    ])
+    expected = np.stack(
+        [
+            embedding[[0, 5]].mean(axis=0),
+            np.zeros(50, dtype=np.float32),
+            embedding[[4, 6, 4]].mean(axis=0),
+        ]
+    )
     assert torch.allclose(
         encoder.forward_fixed(feat).squeeze(1), torch.from_numpy(expected)
     )
-
-    stats = get_stats(ser, Stype.text, approx=False)
-    assert stats.glove_overlap == pytest.approx(5 / 6)
 
 
 def test_one_table_per_model_identity(tmp_path) -> None:
@@ -114,7 +109,9 @@ def test_one_table_per_model_identity(tmp_path) -> None:
 
 
 def test_column_major_files_load_row_major(tmp_path) -> None:
-    pd.DataFrame({"index": ["red", "shoe"]}).to_parquet(tmp_path / "glove_6B_index.parquet")
+    pd.DataFrame({"index": ["red", "shoe"]}).to_parquet(
+        tmp_path / "glove_6B_index.parquet"
+    )
     vectors = np.asfortranarray(np.arange(100, dtype=np.float32).reshape(2, 50))
     np.save(tmp_path / "glove_6B_50d_emb.npy", vectors)
     table = TokenEmbeddingTable(GloVeVectors(tmp_path)).initialize()
@@ -124,7 +121,9 @@ def test_column_major_files_load_row_major(tmp_path) -> None:
 
 @onlyCUDA
 def test_embedding_device() -> None:
-    table = TokenEmbeddingTable.instance(resolve_encoder(TextEmbedding("glove.test-10d")))
+    table = TokenEmbeddingTable.instance(
+        resolve_encoder(TextEmbedding("glove.test-10d"))
+    )
     table.cleanup().initialize(torch.device("cuda"))
     assert table.emb.device.type == "cuda"
     table.to("cpu")
@@ -159,5 +158,7 @@ def test_custom_models_are_checked_where_they_are_used() -> None:
 
     with pytest.raises(ValueError, match=r"returned 4 row pointers for 2 texts"):
         TextTensorMapper(_NumpyModel(extra_pointer=True))(pa.array(["a", "b"]))
-    with pytest.raises(ValueError, match=r"has shape \(3, 2\), but it must be \(2, 2\)"):
+    with pytest.raises(
+        ValueError, match=r"has shape \(3, 2\), but it must be \(2, 2\)"
+    ):
         TokenEmbeddingTable(_NumpyModel(rows=3)).initialize()

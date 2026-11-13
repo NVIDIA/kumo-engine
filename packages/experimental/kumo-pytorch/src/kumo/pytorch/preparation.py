@@ -47,6 +47,7 @@ from kumo.pytorch.spec import (
     DataLoaderSpec,
     ValidationError,
     ValidationIssue,
+    _entity_key_issues,
     sample_without_targets,
 )
 from kumo.pytorch.task import Task
@@ -86,6 +87,9 @@ def _check(
     anchors: AnchorTable | None = None,
     inference: bool = False,
 ) -> tuple[DataLoaderSpec, tuple[ValidationIssue, ...]]:
+    entity_issues = _entity_key_issues(contract)
+    if entity_issues:
+        return contract, entity_issues
     issues: list[ValidationIssue] = []
     issues.extend(_binding_issues(contract, dataset, engine))
     try:

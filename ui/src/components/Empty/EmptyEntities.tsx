@@ -31,13 +31,7 @@ import { useTables } from "hooks/tables/tables";
 
 import { FlowType } from "types/tables";
 
-import {
-    docURLs,
-    getProjectPath,
-    jobStatus,
-    newDocsURL,
-    PageNames
-} from "utils/Constants";
+import { docURLs, getProjectPath, jobStatus, PageNames } from "utils/Constants";
 import { capitalizeFirstLetter } from "utils/Helpers/stringHelpers";
 import { isPredictionsJobsPage } from "utils/jobs";
 
@@ -170,7 +164,7 @@ const createEmptyEntities = ({
             docsText,
             onDocsClick: () => {
                 if (isPredictionPage && jobsPresent) {
-                    window.open(newDocsURL + docURLs.BatchPrediction, "_blank");
+                    window.open(docURLs.BatchPrediction, "_blank");
                 } else {
                     window.open(docURLs.TrainModel, "_blank");
                 }

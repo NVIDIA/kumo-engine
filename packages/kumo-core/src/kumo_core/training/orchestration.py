@@ -409,7 +409,7 @@ def run_callable_training(
         raise TypeError(
             "resolve_vital_artifacts must return VitalArtifactSources")
     artifact_paths = dict(bindings.artifact_publisher.publish(vital_sources))
-    expected_roles = set(VitalArtifactSources.roles())
+    expected_roles = set(vital_sources.as_dict())
     if set(artifact_paths) != expected_roles:
         raise ValueError(
             "artifact publisher must return exactly the vital artifact roles")
