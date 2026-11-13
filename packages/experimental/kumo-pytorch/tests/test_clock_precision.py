@@ -425,3 +425,205 @@ def test_nanosecond_saved_state_without_pandas_in_fresh_process():
         capture_output=True,
         text=True,
     )
+
+
+@pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
+@pytest.mark.parametrize("chunked", [False, True])
+@pytest.mark.parametrize("categorical", [False, True])
+def test_arrow_timestamp_encoders_preserve_declared_units(unit, chunked, categorical):
+    from kumo.pytorch.encoding import fit_encoder
+
+    dtype = api.DType("timestamp", unit=unit, timezone="UTC")
+    config = api.Vocabulary(values=((-1, 7), (1, 9))) if categorical else api.Raw()
+    encoder = fit_encoder("timestamp", config, dtype, ())
+    values = pa.array([-1, 1, None], type=dtype.to_arrow())
+    if chunked:
+        values = pa.chunked_array([values[:1], values[1:]])
+    result = encoder.encode_arrow(values, model=categorical)
+    assert result["valid"].tolist() == [True, True, False]
+    if categorical:
+        assert result["values"].tolist() == [7, 9, 0]
+    else:
+        assert result["values"].cast(pa.int64()).to_pylist() == [-1, 1, None]
+        with pytest.raises(ValueError, match="Raw timestamp"):
+            encoder.encode_arrow(values, model=True)
+
+
+@pytest.mark.parametrize(
+    "clock,factor",
+    [("seconds", 1), ("milliseconds", 1000), ("microseconds", 10**6), ("nanoseconds", 10**9)],
+)
+@pytest.mark.parametrize(
+    "integer",
+    [
+        pa.int8(),
+        pa.int16(),
+        pa.int32(),
+        pa.int64(),
+        pa.uint8(),
+        pa.uint16(),
+        pa.uint32(),
+        pa.uint64(),
+    ],
+)
+def test_all_integer_anchor_widths_keep_seconds(clock, factor, integer):
+    import pyarrow.compute as pc
+
+    from kumo.pytorch.engines.diskgraph import DiskGraphSource
+
+    source = DiskGraphSource.__new__(DiskGraphSource)
+    source._clock, source._pa, source._pc = clock, pa, pc
+    raw = [-1, 1, None] if pa.types.is_signed_integer(integer) else [0, 1, None]
+    actual = source._cutoff_array(pa.array(raw, type=integer)).to_pylist()
+    assert actual == [None if value is None else value * factor for value in raw]
+
+
+def _timestamp_lifecycle(directory, unit):
+    dtype = api.DType("timestamp", unit=unit, timezone="UTC")
+    users, events, anchors_path = (
+        directory / "users.parquet",
+        directory / "events.parquet",
+        directory / "anchors.parquet",
+    )
+    pq.write_table(pa.table({"id": [1], "joined": pa.array([1], type=dtype.to_arrow())}), users)
+    pq.write_table(
+        pa.table(
+            {
+                "id": [1, 2, 3, 4],
+                "owner": [1, 1, 1, 1],
+                "at": pa.array([-1, 1, 2, 4], type=dtype.to_arrow()),
+                "observed": pa.array([-1, None, 2, 99], type=dtype.to_arrow()),
+            }
+        ),
+        events,
+    )
+    schema = api.DataSchema(
+        (
+            api.TableSpec(
+                "users",
+                "id",
+                {"id": api.DType("int64"), "joined": dtype},
+                time_column=api.NON_TEMPORAL,
+            ),
+            api.TableSpec(
+                "events",
+                "id",
+                {
+                    "id": api.DType("int64"),
+                    "owner": api.DType("int64"),
+                    "at": dtype,
+                    "observed": dtype,
+                },
+                time_column="at",
+            ),
+        ),
+        (api.RelationSpec("history", "users", "id", "events", "owner"),),
+    )
+    history = api.Rows(("history",), api.TimeWindow("at", stop=0))
+    latest = api.Aggregate(history, "max", "at", dtype=dtype)
+    sample = api.SampleSpec(
+        api.EntitySpec("users"),
+        entity_values={"joined": api.Field("joined"), "latest": latest},
+        events={"history": api.EventSpec(history, {"observed": api.Field("observed")})},
+        targets={
+            "latest": api.Aggregate(
+                api.Rows(("history",), api.TimeWindow("at", 0, 1)), "max", "at", dtype=dtype
+            )
+        },
+    )
+    spec = api.DataLoaderSpec(
+        schema,
+        sample,
+        api.BatchSpec(
+            {
+                "entity": api.Input(
+                    api.EntitySource(),
+                    api.Fields(
+                        (
+                            api.Encode("joined", api.Vocabulary()),
+                            api.Encode("latest", api.Vocabulary()),
+                        )
+                    ),
+                    api.Separate(),
+                ),
+                "history": api.Input(
+                    api.EventSource(("history",)),
+                    api.Fields((api.Encode("observed", api.Vocabulary()),)),
+                    api.Padded(),
+                ),
+            },
+            targets={"latest": api.LabelTarget("latest", api.Vocabulary())},
+            batching=api.Batching(max_samples=1),
+        ),
+    )
+    pq.write_table(
+        pa.table({"entity": [1], "at": pa.array([3], type=dtype.to_arrow())}), anchors_path
+    )
+    anchors = api.AnchorTable(api.Parquet(str(anchors_path)), "entity", "at")
+    dataset = api.Dataset({"users": api.Parquet(str(users)), "events": api.Parquet(str(events))})
+
+    def ticks(encoder):
+        return sorted(
+            pa.array([value for value, _ in encoder.entries], type=dtype.to_arrow())
+            .cast(pa.int64())
+            .to_pylist()
+        )
+
+    with api.prepare(
+        spec, dataset, api.DiskGraphEngine(index=directory / "index", num_threads=2)
+    ) as plan:
+        with plan.materialize(anchors) as task:
+            assert ticks(task.output("entity").field(name="joined").encoder) == [1]
+            assert ticks(task.output("entity").field(name="latest").encoder) == [2]
+            assert ticks(task.output("history").field(name="observed").encoder) == [-1, 2]
+            assert ticks(task.target("latest").field(name="value").encoder) == [4]
+            expected = {}
+            for output in ("inspectable", "model"):
+                batch = next(iter(task.batches(output_format=output, shuffle=False)))
+                expected[output] = batch
+                assert batch.inputs["entity"]["joined"]["values"].tolist() == [2]
+                assert batch.targets["latest"]["values"].tolist() == [2]
+            task.to_artifact().save(directory / "artifact")
+        restored = api.Artifact.load(directory / "artifact")
+        with plan.materialize(anchors, fitted=restored.fitted_state) as task:
+            from tests.test_preview import _equal
+
+            for output in ("inspectable", "model"):
+                actual = next(iter(task.batches(output_format=output, shuffle=False)))
+                _equal(actual.inputs, expected[output].inputs)
+                _equal(actual.targets, expected[output].targets)
+
+
+@pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
+def test_timestamp_fitting_batches_and_artifact_reload(tmp_path, unit):
+    _timestamp_lifecycle(tmp_path, unit)
+
+
+def test_timestamp_lifecycle_without_pandas(tmp_path):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    code = (
+        "import sys,types\nk=types.ModuleType('kumo');k.__path__=["
+        + repr(str(Path(api.__file__).parents[1]))
+        + "];sys.modules['kumo']=k\nsys.path.insert(0, "
+        + repr(str(Path(__file__).parents[1]))
+        + ")\n"
+    )
+    code += """
+class WithoutPandas:
+    def find_spec(self, name, path=None, target=None):
+        if name == 'pandas' or name.startswith('pandas.'):
+            raise ModuleNotFoundError('pandas deliberately unavailable')
+sys.meta_path.insert(0, WithoutPandas())
+from pathlib import Path
+from tests.test_clock_precision import _timestamp_lifecycle
+"""
+    code += (
+        f"_timestamp_lifecycle(Path({str(tmp_path)!r}), 'ns')\nassert 'pandas' not in sys.modules\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stderr

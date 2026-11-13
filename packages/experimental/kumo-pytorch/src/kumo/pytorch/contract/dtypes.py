@@ -217,12 +217,7 @@ class DType:
                         ),
                         self.to_arrow(),
                     )
-                if self.unit == "ns":
-                    # Python datetime cannot represent the remaining nanoseconds.
-                    if scalar.value % 1000:
-                        return scalar
-                    scalar = pc.cast(scalar, pa.timestamp("us", tz="UTC"))
-                return scalar.as_py()
+                return _arrow_scalar_value(scalar)
             except (OverflowError, ValueError) as exc:
                 raise ValueError(error) from exc
         if not isinstance(value, Decimal) or not value.is_finite():
@@ -287,3 +282,34 @@ def arrow_float64(values: pa.Array | pa.ChunkedArray) -> pa.Array | pa.ChunkedAr
     if pa.types.is_decimal(values.type):
         values = pc.cast(values, pa.string())
     return pc.cast(values, pa.float64(), safe=False)
+
+
+def _arrow_scalar_value(value: Any) -> Any:
+    """Keep nanoseconds that Python datetime cannot represent, without pandas."""
+    import pyarrow as pa
+
+    if not value.is_valid:
+        return None
+    if isinstance(value, pa.TimestampScalar) and value.type.unit == "ns":
+        if value.value % 1000:
+            return value
+        return value.cast(pa.timestamp("us", tz=value.type.tz)).as_py()
+    if isinstance(value, (pa.ListScalar, pa.LargeListScalar, pa.FixedSizeListScalar)):
+        return [_arrow_scalar_value(item) for item in value.values]
+    return value.as_py()
+
+
+def _arrow_values(values: Any) -> list[Any]:
+    """Use ordinary Arrow conversion except for lossless nanosecond values."""
+    import pyarrow as pa
+
+    dtype = values.type
+    while (
+        pa.types.is_list(dtype)
+        or pa.types.is_large_list(dtype)
+        or pa.types.is_fixed_size_list(dtype)
+    ):
+        dtype = dtype.value_type
+    if pa.types.is_timestamp(dtype) and dtype.unit == "ns":
+        return [_arrow_scalar_value(value) for value in values]
+    return values.to_pylist()

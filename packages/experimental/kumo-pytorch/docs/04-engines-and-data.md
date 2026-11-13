@@ -303,7 +303,10 @@ Kumo-pytorch cutoffs round downward on every graph clock, preserving the
 no-future-event boundary before 1970; stored datetimes round upward to their declared tick. Plain integer
 anchors remain epoch seconds even on an ms/us/ns index. Use a datetime or typed
 Arrow timestamp for an epoch-ms/us/ns anchor. Every frame in one temporal query
-must agree on its cutoff unit (an omitted unit means seconds).
+must agree on its cutoff unit (an omitted unit means seconds). Declared timestamp
+fields retain their s/ms/us/ns precision through fitting, native model batches,
+and artifact reload. Inspectable values finer than Python datetime's microsecond
+resolution remain Arrow timestamp scalars; pandas is not required.
 
 ### Scalar features and labels in task preparation
 

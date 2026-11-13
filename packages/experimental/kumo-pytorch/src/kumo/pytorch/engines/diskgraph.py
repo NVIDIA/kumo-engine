@@ -32,7 +32,7 @@ from kumo.pytorch.column_stats import (
     token_lengths_file,
 )
 from kumo.pytorch.contract.batch import EntitySource, EventSource, Input
-from kumo.pytorch.contract.dtypes import DType, arrow_float64
+from kumo.pytorch.contract.dtypes import DType, _arrow_scalar_value, _arrow_values, arrow_float64
 from kumo.pytorch.contract.sample import (
     Aggregate,
     BuiltSample,
@@ -547,7 +547,9 @@ class DiskGraphSource:
             "nanoseconds": "ns",
         }.get(self._clock)
         if self._pa.types.is_integer(values.type):
-            values = self._pc.cast(values, self._pa.timestamp("s", tz="UTC"))
+            values = self._pc.cast(
+                self._pc.cast(values, self._pa.int64()), self._pa.timestamp("s", tz="UTC")
+            )
         values = self._pc.floor_temporal(values, unit=self._clock[:-1])
         if unit is not None:
             aligned = self._pc.cast(values, self._pa.timestamp(unit, tz="UTC"), safe=True)
@@ -1464,7 +1466,7 @@ class DiskGraphSource:
             offsets = sequence["offsets"]
             timestamps = sequence["timestamps"]
             columns = {
-                name: batch.column(index).to_pylist()
+                name: _arrow_values(batch.column(index))
                 for index, name in enumerate(batch.schema.names)
             }
             primary_keys = (
@@ -1538,9 +1540,9 @@ class DiskGraphSource:
                 if isinstance(target, ExternalTarget):
                     continue
                 if isinstance(target, Aggregate):
-                    value = self._typed_array(aggregates[f"target:{name}"], target.dtype)[
-                        anchor
-                    ].as_py()
+                    value = _arrow_scalar_value(
+                        self._typed_array(aggregates[f"target:{name}"], target.dtype)[anchor]
+                    )
                     if value is not None:
                         targets[name] = TargetValue(
                             name, target.dtype.normalize(value, path=f"targets.{name}")
@@ -1724,7 +1726,7 @@ class DiskGraphSource:
         types = sample_value_types(self.schema, spec)
         result = []
         for name, column in arrays.items():
-            value = column[row].as_py()
+            value = _arrow_scalar_value(column[row])
             repeated = self._pa.types.is_list(column.type) or self._pa.types.is_large_list(
                 column.type
             )
@@ -2104,7 +2106,7 @@ class DiskGraphSource:
     def _feature_values(self, table: str, node_ids: Sequence[int], column: str) -> list[Any]:
         if not node_ids:
             return []
-        return self._feature_arrays(table, node_ids, (column,))[column].to_pylist()
+        return _arrow_values(self._feature_arrays(table, node_ids, (column,))[column])
 
     def _feature_arrays(
         self,

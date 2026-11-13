@@ -55,7 +55,6 @@ TOKEN_LENGTHS_RECIPE = 1
 QUANTILE_GRID = [index / 1024 for index in range(1025)]
 #: A key each semantic type's statistics add to a column's entry.
 _STAT_KEYS = {"categorical": "category_counts", "numerical": "mean"}
-_EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
 #: DiskGraph's statistics of a column with no rows.
 EMPTY_STATS = {
     "count": 0,
@@ -400,6 +399,10 @@ def cutoff_nanos(value: Any) -> int | None:
 
     if value is None:
         return None
+    import pyarrow as pa
+
+    if isinstance(value, pa.TimestampScalar):
+        return value.cast(pa.timestamp("ns", tz="UTC")).value
     if type(value) is int:
         return value * 10**9
     if isinstance(value, str):
@@ -500,8 +503,17 @@ def _category(dtype: DType, raw: Any, unit: str) -> Any:
         return dt.date(1970, 1, 1) + dt.timedelta(days=value)
     if dtype.name == "timestamp":
         import diskgraph
+        import pyarrow as pa
 
-        return _EPOCH + dt.timedelta(seconds=diskgraph.convert_ticks(value, unit, "seconds"))
+        arrow_unit = {
+            "seconds": "s",
+            "milliseconds": "ms",
+            "microseconds": "us",
+            "nanoseconds": "ns",
+        }.get(unit)
+        if arrow_unit is None:
+            value, arrow_unit = diskgraph.convert_ticks(value, unit, "seconds"), "s"
+        return pa.scalar(value, type=pa.timestamp(arrow_unit, tz="UTC"))
     return value
 
 

@@ -54,7 +54,7 @@ from kumo.pytorch.contract.batch import (
 )
 from kumo.pytorch.contract.batch.encodings import Buckets, Text, Vocabulary, ZScore
 from kumo.pytorch.contract.batch.tokens import ROLE_ORDER
-from kumo.pytorch.contract.dtypes import DType
+from kumo.pytorch.contract.dtypes import DType, _arrow_values
 from kumo.pytorch.contract.sample import (
     BuiltSample,
     ExternalTarget,
@@ -141,7 +141,7 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (tuple, list)):
         return [_jsonable(item) for item in value]
     if hasattr(value, "to_pylist"):
-        return {"dtype": str(value.type), "values": json_value(value.to_pylist())}
+        return {"dtype": str(value.type), "values": json_value(_arrow_values(value))}
     return json_value(value)
 
 
@@ -773,11 +773,11 @@ def _fit_inputs(
                     column = fitting_rows.columns[use.field]
                     if pa.types.is_list(column.type) or pa.types.is_large_list(column.type):
                         column = column.flatten()
-                    observed[(name, use.field)].extend(column.to_pylist())
+                    observed[(name, use.field)].extend(_arrow_values(column))
             if name in composites:
                 columns = (rows[name].columns[use.field] for use in value.representation.fields)
                 composites[name].update(
-                    zip(*(column.to_pylist() for column in columns), strict=True)
+                    zip(*(_arrow_values(column) for column in columns), strict=True)
                 )
     contributions = {}
     for slot, identity in slots.items():
@@ -1069,7 +1069,7 @@ def _token_rows(
 
     group = prepared.spec.representation
     if isinstance(group.row, Composite):
-        raw = {use.field: rows.columns[use.field].to_pylist() for use in group.fields}
+        raw = {use.field: _arrow_values(rows.columns[use.field]) for use in group.fields}
         keys = [
             tuple(
                 _component_key(prepared.state[use.field], raw[use.field][index])
@@ -1410,9 +1410,9 @@ def _raw_targets(
 ):
     if isinstance(values, ModelSourceBatch):
         if field is not None:
-            return values.row_targets[source].fields[field].to_pylist()
+            return _arrow_values(values.row_targets[source].fields[field])
         column = values.targets[source]
-        return column.to_pylist() if hasattr(column, "to_pylist") else list(column)
+        return _arrow_values(column) if hasattr(column, "to_pylist") else list(column)
     result = []
     for value in values:
         records = value.candidates.get(candidate, ()) if candidate else (value,)
@@ -1575,7 +1575,7 @@ def _fit_targets(
         for name in groups:
             target = spec.targets[name]
             bindings = state.prepared_inputs[target.input].state
-            columns = [rows[target.input].columns[field].to_pylist() for field in target.fields]
+            columns = [_arrow_values(rows[target.input].columns[field]) for field in target.fields]
             groups[name].update(
                 tuple(
                     typed_key(bindings[field].encoder.dtype, value)
@@ -1587,7 +1587,7 @@ def _fit_targets(
             target = spec.targets[name]
             if isinstance(target, AlignedEventTarget):
                 column = derived[(name, field)].field if (name, field) in derived else field
-                observed[(name, field)].extend(rows[target.input].columns[column].to_pylist())
+                observed[(name, field)].extend(_arrow_values(rows[target.input].columns[column]))
             else:
                 observed[(name, field)].extend(
                     _raw_targets(
@@ -1759,7 +1759,7 @@ def _target_outputs(
         target = spec.targets[name]
         if isinstance(target, MatchingGroupTarget):
             columns = {
-                field: rows[target.input].columns[field].to_pylist() for field in target.fields
+                field: _arrow_values(rows[target.input].columns[field]) for field in target.fields
             }
             bindings = inputs[target.input].state
             keys = [
@@ -1814,7 +1814,7 @@ def _target_outputs(
                 if field in derived_by_name:
                     derived = derived_by_name[field]
                     threshold = state.thresholds[field]
-                    raw = parent.columns[derived.field].to_pylist()
+                    raw = _arrow_values(parent.columns[derived.field])
                     labels = [
                         None
                         if value is None

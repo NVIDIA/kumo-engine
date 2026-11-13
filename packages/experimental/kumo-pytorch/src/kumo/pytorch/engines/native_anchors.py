@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import Any
 
 from kumo.pytorch.anchors import ALL_ANCHORS, AllAnchors, AnchorTable
-from kumo.pytorch.contract.sample import SampleRequest, TargetValue
+from kumo.pytorch.contract.dtypes import _arrow_scalar_value, _arrow_values
+from kumo.pytorch.contract.sample import SampleRequest, TargetValue, sample_value_types
 from kumo.pytorch.engines.parquet_anchors import _files, _physical, check_parquet_anchors
 from kumo.pytorch.materialization import _diskgraph_dtype
 
@@ -42,6 +43,7 @@ class NativeAnchors:
         if issues := check_parquet_anchors(table):
             raise ValueError(issues[0].describe())
         self._source, self._sample, self._table = source, sample, table
+        self._feature_types = sample_value_types(source.schema, sample)
         self._pa, self._pc = pa, pc
         parent = Path(source._index_path)
         (parent / "tasks").mkdir(exist_ok=True)
@@ -321,7 +323,7 @@ class NativeAnchors:
             *getattr(bound, "targets", {}).values(),
         }
         metadata = {
-            name: columns[name].to_pylist() for name in table.metadata if name not in internal
+            name: _arrow_values(columns[name]) for name in table.metadata if name not in internal
         }
         return ModelSourceBatch(
             sample_ids=tuple(columns[table.sample_id].to_pylist())
@@ -334,13 +336,17 @@ class NativeAnchors:
             entity_type=self._sample.entity.entity_type,
             timestamp_unit=self._source._clock,
             entity_values={
-                name: columns[column].combine_chunks()
+                name: self._source._typed_array(
+                    columns[column], self._feature_types[name]
+                ).combine_chunks()
                 for name, column in getattr(bound, "features", {}).items()
             },
             events={},
             row_targets={},
             targets={
-                name: columns[column].combine_chunks()
+                name: self._source._typed_array(
+                    columns[column], self._sample.targets[name].dtype
+                ).combine_chunks()
                 for name, column in {**table.targets, **getattr(bound, "targets", {})}.items()
             },
             splits=(stage["split"],) * n,
@@ -500,18 +506,12 @@ class NativeAnchors:
             values = data[alias]
             if name in self._ipc:
                 columns[name] = [
-                    pa.ipc.open_stream(value.as_py()).read_all()["value"][0].as_py()
+                    _arrow_scalar_value(pa.ipc.open_stream(value.as_py()).read_all()["value"][0])
                     for value in values
                 ]
             else:
                 typed = values.cast(self._types[name])
-                if pa.types.is_timestamp(typed.type) and typed.type.unit == "ns":
-                    columns[name] = [
-                        value if value.is_valid and value.value % 1000 else value.as_py()
-                        for value in typed
-                    ]
-                else:
-                    columns[name] = typed.to_pylist()
+                columns[name] = _arrow_values(typed)
         original_positions = data["anchor_position"].to_pylist()
         table = self._table
         return [

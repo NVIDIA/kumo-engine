@@ -300,17 +300,15 @@ class FittedEncoder:
 
         if isinstance(values, pa.ChunkedArray):
             values = values.combine_chunks()
-        if DType.from_arrow(values.type) != self.dtype:
+        received = DType.from_arrow(values.type)
+        if pa.types.is_timestamp(values.type):
+            received = replace(received, unit=values.type.unit)
+        if received != self.dtype:
             raise ValueError(
                 f"encoder {self.identity}: expected declared {self.dtype}, "
                 f"received Arrow {values.type}"
             )
         if self.dtype.name == "timestamp":
-            if values.type.unit != "s":
-                raise ValueError(
-                    f"encoder {self.identity}: sampled timestamps must already "
-                    "use stored whole seconds"
-                )
             values = pc.cast(values, self.dtype.to_arrow())
         valid = torch.from_numpy(pc.is_valid(values).to_numpy(zero_copy_only=False, writable=True))
         config = self.config
