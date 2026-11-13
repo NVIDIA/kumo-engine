@@ -1147,7 +1147,8 @@ def test_completed_model_wins_when_event_wait_reports_stale_timeout(monkeypatch,
 def test_proxy_does_not_invent_owner_thread_capabilities(unknown):
     class Proxy(_Recorder):
         def __getattr__(self, name):
-            if name in ('finish_on_worker_thread', 'snapshot_ref_before_finish', 'abort_run'):
+            if name in ('finish_on_worker_thread', 'snapshot_ref_before_finish', 'abort_run',
+                        '_abort_run_for_thread'):
                 if unknown == 'key_error':
                     raise KeyError(name)
                 return mock.Mock() if unknown == 'mock' else True
@@ -1155,6 +1156,7 @@ def test_proxy_does_not_invent_owner_thread_capabilities(unknown):
 
     recorder = Proxy()
     session = TrackingSession(recorder)
+    assert session._tracker._abort_run_for_thread(threading.current_thread()) is None
     session.start(lambda: fit_spec(CONTEXT))
     session.finish(None, None)
     assert session.error is None

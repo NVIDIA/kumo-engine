@@ -12,7 +12,17 @@ import warnings
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
 
 from kumo_core.instrumentation import format_error
 from kumo_core.sources.sql import resolve_snowflake_identifier
@@ -107,6 +117,7 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
         self._run: Any = None
         self._run_context = ExitStack()
         self.abort_run = None
+        self._run_abort: Optional[Tuple[threading.Thread, Callable[[], None]]] = None
         self._abort_closed = threading.Event()
         self._abort_confirmed = threading.Event()
         self._tune = 'loss'
@@ -220,6 +231,7 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
                 admission.release()
 
         self.abort_run = abort
+        self._run_abort = (threading.current_thread(), abort)
         if self.native_model_lineage:
             self._run_context.enter_context(self._run)
         self._start_tags = set(record.tags)
@@ -243,6 +255,10 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
                                if name == best}, _SUMMARY_METRICS)
             self._log_params({prefix + k: v for k, v in record.tags.items()
                               if k in ('kumo.status', 'kumo.error')})
+
+    def _abort_run_for_thread(self, owner: threading.Thread) -> Optional[Callable[[], None]]:
+        captured = self._run_abort
+        return captured[1] if captured is not None and captured[0] is owner else None
 
     def finish(self, record: Optional[RunRecord],
                error: Optional[BaseException]) -> None:

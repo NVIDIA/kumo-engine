@@ -1145,12 +1145,15 @@ def test_direct_cross_thread_finish_warns_and_preserves_owner(fake):
 def test_abort_callback_is_bound_to_its_run_and_retired_on_owner_finish(fake):
     adapter = _tracking(native_model_lineage=True)
     adapter.start(_prediction('2026-11-12'))
-    first, abort = adapter.run_id, adapter.abort_run
+    first = adapter.run_id
+    abort = adapter._abort_run_for_thread(threading.current_thread())
+    assert abort is adapter.abort_run
     abort()
     assert fake._instance.runs[first]['status'] == 'FAILED'
     assert fake._instance.lineage_stack
     adapter.finish(None, None)
     assert not fake._instance.lineage_stack
+    assert adapter._abort_run_for_thread(threading.current_thread()) is None
     adapter.start(_prediction('2026-11-13'))
     second = adapter.run_id
     calls = len(adapter.session.statements)
@@ -1259,3 +1262,91 @@ def test_owner_releases_context_when_abort_commits_before_response(fake, monkeyp
     adapter.finish(None, None)
     assert sdk._run is None
     assert not sdk.lineage_stack
+
+
+@pytest.mark.parametrize('delegated', [False, True])
+def test_model_timeout_aborts_run_while_start_is_blocked(
+        fake, monkeypatch, tmp_path, delegated):
+    import kumo.engine._tracking as tracking
+    from kumo.engine.integrations.snowflake import SnowflakeTracking
+
+    entered, release = threading.Event(), threading.Event()
+
+    class ModelTracking(SnowflakeTracking):
+        def log_model(self, *args):
+            return None
+
+    adapter = ModelTracking(FakeSession(), experiment_name='ents',
+                            native_model_lineage=True)
+    original = adapter._log_params
+
+    def blocked(params, *args, **kwargs):
+        if not entered.is_set():
+            # The remote run and callback exist, but start has not returned.
+            entered.set()
+            assert release.wait(5)
+        return original(params, *args, **kwargs)
+
+    monkeypatch.setattr(adapter, '_log_params', blocked)
+    monkeypatch.setattr(tracking, 'MODEL_SECONDS', .01)
+    if delegated:
+        class Delegating(_DelegatingTracker):
+            def _abort_run_for_thread(self, owner):
+                return self._tracker._abort_run_for_thread(owner)
+
+        tracker = Delegating(adapter)
+    else:
+        tracker = adapter
+    session = TrackingSession(tracker, warn=False)
+    session.start(lambda: tracking.RunSpec(kind='fit'))
+    try:
+        assert entered.wait(2)
+        run = adapter.run_id
+        assert fake._instance.runs[run]['status'] == 'RUNNING'
+        _, error = session.log_model(tmp_path, None, None)
+        assert isinstance(error, TimeoutError)
+        assert adapter._abort_confirmed.wait(2)
+        assert fake._instance.runs[run]['status'] == 'FAILED'
+        assert fake._instance._run is adapter._run
+        assert fake._instance.lineage_stack
+    finally:
+        release.set()
+        session.finish(None, None)
+    assert not session._worker.is_alive()
+    assert fake._instance._run is None
+    assert not fake._instance.lineage_stack
+
+
+def test_model_timeout_during_start_does_not_abort_other_owner(
+        fake, monkeypatch, tmp_path):
+    import kumo.engine._tracking as tracking
+
+    entered, release = threading.Event(), threading.Event()
+    adapter = _tracking(native_model_lineage=True)
+    adapter.log_model = lambda *args: None
+    adapter.start(tracking.RunRecord(name='EXISTING'))
+    run = adapter.run_id
+    start = adapter.start
+
+    def blocked_start(record):
+        entered.set()
+        assert release.wait(5)
+        start(record)
+
+    monkeypatch.setattr(adapter, 'start', blocked_start)
+    monkeypatch.setattr(tracking, 'MODEL_SECONDS', .01)
+    session = TrackingSession(adapter, warn=False)
+    session.start(lambda: tracking.RunSpec(kind='fit'))
+    try:
+        assert entered.wait(2)
+        _, error = session.log_model(tmp_path, None, None)
+        assert isinstance(error, TimeoutError)
+        assert fake._instance.runs[run]['status'] == 'RUNNING'
+        assert not any(call[0] == 'abort_run' for call in fake._instance.calls)
+    finally:
+        release.set()
+        with pytest.warns(RuntimeWarning, match='thread that started'):
+            session.finish(None, None)
+        adapter.finish(None, None)
+    assert not session._worker.is_alive()
+    assert fake._instance._run is None

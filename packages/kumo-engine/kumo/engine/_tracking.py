@@ -500,6 +500,10 @@ class TrackingBase(Tracking):
     # Capture the run reference before finish permits adapter reuse.
     snapshot_ref_before_finish = False
 
+    def _abort_run_for_thread(self, owner: threading.Thread) -> Optional[Callable[[], None]]:
+        # Ownership-aware adapters may publish an abort before start returns.
+        return None
+
     @property
     def platform(self) -> str:
         return type(self).__name__
@@ -524,8 +528,10 @@ class _Foreign(TrackingBase):
     def __getattribute__(self, name: str) -> Any:
         if name in ('finish_on_worker_thread', 'snapshot_ref_before_finish'):
             return getattr(type(self._tracker), name, False) is True
-        if name == 'abort_run' and inspect.getattr_static(self._tracker, name, _MISSING) is _MISSING:
-            return None
+        if name in ('abort_run', '_abort_run_for_thread'):
+            if inspect.getattr_static(self._tracker, name, _MISSING) is _MISSING:
+                return object.__getattribute__(self, name) if name.startswith('_') else None
+            return getattr(self._tracker, name)
         if name.startswith('_'):
             return object.__getattribute__(self, name)
         if name in ('start', 'on_trial', 'finish'):
@@ -781,6 +787,12 @@ class TrackingSession:
                 deferred = (tracker is not None and getattr(
                     tracker, 'finish_on_worker_thread', False) is True)
                 abort = self._abort_run
+                if tracker is not None and deferred and not callable(abort):
+                    try:
+                        abort = tracker._abort_run_for_thread(worker)
+                    except Exception:
+                        logger.debug('Could not capture tracking abort during start',
+                                     exc_info=True)
                 if deferred:
                     self._pending_abandon.put(tracker)
                 self._admission.notify_all()
