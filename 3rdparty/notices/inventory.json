@@ -104,6 +104,7 @@
         "rust:aws-types@1.3.16",
         "rust:backtrace@0.3.76",
         "rust:base64-simd@0.8.0",
+        "rust:base64@0.13.1",
         "rust:base64@0.21.7",
         "rust:base64@0.22.1",
         "rust:base64@0.23.1",
@@ -118,6 +119,7 @@
         "rust:byteorder@1.5.0",
         "rust:bytes-utils@0.1.4",
         "rust:bytes@1.11.1",
+        "rust:castaway@0.2.4",
         "rust:cfg-if@1.0.4",
         "rust:chacha20@0.10.2",
         "rust:chrono@0.4.45",
@@ -128,6 +130,7 @@
         "rust:cmov@0.5.4",
         "rust:colorchoice@1.0.5",
         "rust:combine@4.6.7",
+        "rust:compact-str@0.9.1",
         "rust:console@0.15.11",
         "rust:const-oid@0.10.2",
         "rust:cpp-demangle@0.4.5",
@@ -143,12 +146,20 @@
         "rust:csv-core@0.1.13",
         "rust:csv@1.4.0",
         "rust:ctutils@0.4.2",
+        "rust:daachorse@3.0.3",
+        "rust:darling-core@0.20.11",
         "rust:darling-core@0.23.0",
+        "rust:darling-macro@0.20.11",
         "rust:darling-macro@0.23.0",
+        "rust:darling@0.20.11",
         "rust:darling@0.23.0",
+        "rust:dary-heap@0.3.9",
         "rust:dashmap@6.2.1",
         "rust:debugid@0.8.0",
         "rust:deranged@0.5.8",
+        "rust:derive-builder-core@0.20.2",
+        "rust:derive-builder-macro@0.20.2",
+        "rust:derive-builder@0.20.2",
         "rust:digest@0.10.7",
         "rust:digest@0.11.3",
         "rust:diskgraph-ptrhash@1.1.0",
@@ -162,6 +173,7 @@
         "rust:equator@0.4.2",
         "rust:equivalent@1.0.2",
         "rust:errno@0.3.14",
+        "rust:esaxx-rs@0.1.10",
         "rust:fast-float2@0.2.4",
         "rust:fasteval@0.2.4",
         "rust:fastrand@2.4.1",
@@ -244,6 +256,8 @@
         "rust:log@0.4.32",
         "rust:lz4-flex@0.12.2",
         "rust:lz4-flex@0.14.0",
+        "rust:macro-rules-attribute-proc-macro@0.2.3",
+        "rust:macro-rules-attribute@0.2.3",
         "rust:matchers@0.2.0",
         "rust:maybe-dangling@0.1.2",
         "rust:md-5@0.10.6",
@@ -255,6 +269,8 @@
         "rust:miniz-oxide@0.8.9",
         "rust:mio@1.2.1",
         "rust:mmap-rs@0.7.0",
+        "rust:monostate-impl@0.1.18",
+        "rust:monostate@0.1.18",
         "rust:nibble-vec@0.1.0",
         "rust:nix@0.26.4",
         "rust:nix@0.30.1",
@@ -270,11 +286,15 @@
         "rust:object-store@0.13.2",
         "rust:object@0.37.3",
         "rust:once-cell@1.21.4",
+        "rust:onig-sys@69.9.3",
+        "rust:onig@6.5.3",
         "rust:openssl-probe@0.2.1",
         "rust:outref@0.5.2",
         "rust:parking-lot-core@0.9.12",
         "rust:parking-lot@0.12.5",
         "rust:parquet@60.1.0",
+        "rust:paste@1.0.15",
+        "rust:pastey@0.2.3",
         "rust:percent-encoding@2.3.2",
         "rust:pin-project-lite@0.2.17",
         "rust:pin-utils@0.1.0",
@@ -296,10 +316,14 @@
         "rust:radium@0.7.0",
         "rust:radix-trie@0.2.1",
         "rust:rand-chacha@0.3.1",
+        "rust:rand-chacha@0.9.0",
         "rust:rand-core@0.10.1",
         "rust:rand-core@0.6.4",
+        "rust:rand-core@0.9.5",
         "rust:rand@0.10.1",
         "rust:rand@0.8.6",
+        "rust:rand@0.9.5",
+        "rust:rayon-cond@0.4.0",
         "rust:rayon-core@1.13.0",
         "rust:rayon@1.12.0",
         "rust:regex-automata@0.4.14",
@@ -342,7 +366,9 @@
         "rust:snap@1.1.1",
         "rust:socket2@0.6.4",
         "rust:spin@0.10.1",
+        "rust:spm-precompiled@0.1.4",
         "rust:stable-deref-trait@1.2.1",
+        "rust:static-assertions@1.1.0",
         "rust:strsim@0.11.1",
         "rust:subtle@2.6.1",
         "rust:symbolic-common@12.18.3",
@@ -362,6 +388,7 @@
         "rust:time-core@0.1.8",
         "rust:time@0.3.47",
         "rust:tinystr@0.8.3",
+        "rust:tokenizers@0.23.2",
         "rust:tokio-macros@2.7.0",
         "rust:tokio-rustls@0.26.4",
         "rust:tokio-util@0.7.18",
@@ -378,7 +405,9 @@
         "rust:try-lock@0.2.5",
         "rust:twox-hash@2.1.3",
         "rust:typenum@1.20.1",
+        "rust:unicode-categories@0.1.1",
         "rust:unicode-ident@1.0.24",
+        "rust:unicode-normalization-alignments@0.1.12",
         "rust:unicode-segmentation@1.13.3",
         "rust:unicode-width@0.1.14",
         "rust:unicode-width@0.2.2",
@@ -898,6 +927,7 @@
         "rust:aws-smithy-xml@0.60.15",
         "rust:aws-types@1.3.16",
         "rust:base64-simd@0.8.0",
+        "rust:base64@0.13.1",
         "rust:base64@0.21.7",
         "rust:base64@0.22.1",
         "rust:base64@0.23.1",
@@ -911,6 +941,7 @@
         "rust:byteorder@1.5.0",
         "rust:bytes-utils@0.1.4",
         "rust:bytes@1.11.1",
+        "rust:castaway@0.2.4",
         "rust:cfg-if@1.0.4",
         "rust:chacha20@0.10.2",
         "rust:chrono@0.4.45",
@@ -922,6 +953,7 @@
         "rust:cmov@0.5.4",
         "rust:colorchoice@1.0.5",
         "rust:combine@4.6.7",
+        "rust:compact-str@0.9.1",
         "rust:console@0.15.11",
         "rust:const-oid@0.10.2",
         "rust:cpufeatures@0.2.17",
@@ -936,11 +968,19 @@
         "rust:csv-core@0.1.13",
         "rust:csv@1.4.0",
         "rust:ctutils@0.4.2",
+        "rust:daachorse@3.0.3",
+        "rust:darling-core@0.20.11",
         "rust:darling-core@0.23.0",
+        "rust:darling-macro@0.20.11",
         "rust:darling-macro@0.23.0",
+        "rust:darling@0.20.11",
         "rust:darling@0.23.0",
+        "rust:dary-heap@0.3.9",
         "rust:dashmap@6.2.1",
         "rust:deranged@0.5.8",
+        "rust:derive-builder-core@0.20.2",
+        "rust:derive-builder-macro@0.20.2",
+        "rust:derive-builder@0.20.2",
         "rust:digest@0.10.7",
         "rust:digest@0.11.3",
         "rust:diskgraph-ptrhash@1.1.0",
@@ -952,6 +992,7 @@
         "rust:epserde@0.13.2",
         "rust:equivalent@1.0.2",
         "rust:error-code@2.3.1",
+        "rust:esaxx-rs@0.1.10",
         "rust:fast-float2@0.2.4",
         "rust:fasteval@0.2.4",
         "rust:fastrand@2.4.1",
@@ -1028,6 +1069,8 @@
         "rust:log@0.4.32",
         "rust:lz4-flex@0.12.2",
         "rust:lz4-flex@0.14.0",
+        "rust:macro-rules-attribute-proc-macro@0.2.3",
+        "rust:macro-rules-attribute@0.2.3",
         "rust:matchers@0.2.0",
         "rust:maybe-dangling@0.1.2",
         "rust:md-5@0.10.6",
@@ -1039,6 +1082,8 @@
         "rust:miniz-oxide@0.8.9",
         "rust:mio@1.2.1",
         "rust:mmap-rs@0.7.0",
+        "rust:monostate-impl@0.1.18",
+        "rust:monostate@0.1.18",
         "rust:nibble-vec@0.1.0",
         "rust:nom@7.1.3",
         "rust:ntapi@0.4.3",
@@ -1053,10 +1098,14 @@
         "rust:object-store@0.13.2",
         "rust:once-cell-polyfill@1.70.2",
         "rust:once-cell@1.21.4",
+        "rust:onig-sys@69.9.3",
+        "rust:onig@6.5.3",
         "rust:outref@0.5.2",
         "rust:parking-lot-core@0.9.12",
         "rust:parking-lot@0.12.5",
         "rust:parquet@60.1.0",
+        "rust:paste@1.0.15",
+        "rust:pastey@0.2.3",
         "rust:percent-encoding@2.3.2",
         "rust:pin-project-lite@0.2.17",
         "rust:pin-utils@0.1.0",
@@ -1075,10 +1124,14 @@
         "rust:radium@0.7.0",
         "rust:radix-trie@0.2.1",
         "rust:rand-chacha@0.3.1",
+        "rust:rand-chacha@0.9.0",
         "rust:rand-core@0.10.1",
         "rust:rand-core@0.6.4",
+        "rust:rand-core@0.9.5",
         "rust:rand@0.10.1",
         "rust:rand@0.8.6",
+        "rust:rand@0.9.5",
+        "rust:rayon-cond@0.4.0",
         "rust:rayon-core@1.13.0",
         "rust:rayon@1.12.0",
         "rust:regex-automata@0.4.14",
@@ -1117,7 +1170,9 @@
         "rust:smallvec@1.15.2",
         "rust:snap@1.1.1",
         "rust:socket2@0.6.4",
+        "rust:spm-precompiled@0.1.4",
         "rust:stable-deref-trait@1.2.1",
+        "rust:static-assertions@1.1.0",
         "rust:str-buf@1.0.6",
         "rust:strsim@0.11.1",
         "rust:subtle@2.6.1",
@@ -1135,6 +1190,7 @@
         "rust:time-core@0.1.8",
         "rust:time@0.3.47",
         "rust:tinystr@0.8.3",
+        "rust:tokenizers@0.23.2",
         "rust:tokio-macros@2.7.0",
         "rust:tokio-rustls@0.26.4",
         "rust:tokio-util@0.7.18",
@@ -1151,7 +1207,9 @@
         "rust:try-lock@0.2.5",
         "rust:twox-hash@2.1.3",
         "rust:typenum@1.20.1",
+        "rust:unicode-categories@0.1.1",
         "rust:unicode-ident@1.0.24",
+        "rust:unicode-normalization-alignments@0.1.12",
         "rust:unicode-segmentation@1.13.3",
         "rust:unicode-width@0.1.14",
         "rust:unicode-width@0.2.2",
@@ -3654,6 +3712,39 @@
       "copyright": [
         "Copyright (c) 2015 Alice Maz"
       ],
+      "declared_expression": "MIT/Apache-2.0",
+      "ecosystem": "rust",
+      "elected_licenses": [
+        "Apache-2.0"
+      ],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/base64-0.13.1/LICENSE-APACHE",
+      "files": [
+        {
+          "path": "LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "source": "cargo-package"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "0dd882e53de11566d50f8e8e2d5a651bcf3fabee4987d70f306233cf39094ba7",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:base64@0.13.1",
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "base64",
+      "origin": "https://github.com/marshallpierce/rust-base64",
+      "version": "0.13.1",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [
+        "Copyright (c) 2015 Alice Maz"
+      ],
       "declared_expression": "MIT OR Apache-2.0",
       "ecosystem": "rust",
       "elected_licenses": [
@@ -4112,6 +4203,32 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [
+        "Copyright (c) 2021 Stephen M. Coakley"
+      ],
+      "declared_expression": "MIT",
+      "ecosystem": "rust",
+      "elected_licenses": [],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/castaway-0.2.4/LICENSE",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "f98e09091d5ae02b2f2ec1ead4f7f28c4c44d1cb98b078739ba67091637e170c",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:castaway@0.2.4",
+      "license_expression": "MIT",
+      "name": "castaway",
+      "origin": "https://github.com/sagebind/castaway",
+      "version": "0.2.4",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
         "diskgraph-extension-windows",
         "diskgraph-ingest",
         "diskgraph-ingest-windows"
@@ -4475,6 +4592,32 @@
       "origin": "https://github.com/Marwes/combine",
       "version": "4.6.7",
       "review_reference": "OSRB-6649311"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [
+        "Copyright (c) 2021 Parker Timmerman"
+      ],
+      "declared_expression": "MIT",
+      "ecosystem": "rust",
+      "elected_licenses": [],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/compact_str-0.9.1/LICENSE",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "0d52feec79589df30138dad3800323fe5686b764b73347330a2dfef8ac83efe8",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:compact-str@0.9.1",
+      "license_expression": "MIT",
+      "name": "compact_str",
+      "origin": "https://github.com/ParkMyCar/compact_str",
+      "version": "0.9.1",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
     },
     {
       "artifact_ids": [
@@ -5010,6 +5153,63 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [],
+      "declared_expression": "MIT OR Apache-2.0",
+      "ecosystem": "rust",
+      "elected_licenses": [
+        "Apache-2.0"
+      ],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/daachorse-3.0.3/LICENSE-APACHE",
+      "files": [
+        {
+          "path": "LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "source": "cargo-package"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:daachorse@3.0.3",
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "daachorse",
+      "origin": "https://github.com/daac-tools/daachorse",
+      "version": "3.0.3",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [
+        "Copyright (c) 2017 Ted Driggs"
+      ],
+      "declared_expression": "MIT",
+      "ecosystem": "rust",
+      "elected_licenses": [],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/darling_core-0.20.11/LICENSE",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "8ea93490d74a5a1b1af3ff71d786271b3f1e5f0bea79ac16e02ec533cef040d6",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:darling-core@0.20.11",
+      "license_expression": "MIT",
+      "name": "darling_core",
+      "origin": "https://github.com/TedDriggs/darling",
+      "version": "0.20.11",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
         "diskgraph-extension-windows",
         "diskgraph-ingest",
         "diskgraph-ingest-windows"
@@ -5034,6 +5234,32 @@
       "origin": "https://github.com/TedDriggs/darling",
       "version": "0.23.0",
       "review_reference": "OSRB-6649311"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [
+        "Copyright (c) 2017 Ted Driggs"
+      ],
+      "declared_expression": "MIT",
+      "ecosystem": "rust",
+      "elected_licenses": [],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/darling_macro-0.20.11/LICENSE",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "8ea93490d74a5a1b1af3ff71d786271b3f1e5f0bea79ac16e02ec533cef040d6",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:darling-macro@0.20.11",
+      "license_expression": "MIT",
+      "name": "darling_macro",
+      "origin": "https://github.com/TedDriggs/darling",
+      "version": "0.20.11",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
     },
     {
       "artifact_ids": [
@@ -5066,6 +5292,32 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [
+        "Copyright (c) 2017 Ted Driggs"
+      ],
+      "declared_expression": "MIT",
+      "ecosystem": "rust",
+      "elected_licenses": [],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/darling-0.20.11/LICENSE",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "8ea93490d74a5a1b1af3ff71d786271b3f1e5f0bea79ac16e02ec533cef040d6",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:darling@0.20.11",
+      "license_expression": "MIT",
+      "name": "darling",
+      "origin": "https://github.com/TedDriggs/darling",
+      "version": "0.20.11",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
         "diskgraph-extension-windows",
         "diskgraph-ingest",
         "diskgraph-ingest-windows"
@@ -5090,6 +5342,37 @@
       "origin": "https://github.com/TedDriggs/darling",
       "version": "0.23.0",
       "review_reference": "OSRB-6649311"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [],
+      "declared_expression": "MIT OR Apache-2.0",
+      "ecosystem": "rust",
+      "elected_licenses": [
+        "Apache-2.0"
+      ],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/dary_heap-0.3.9/LICENSE-APACHE",
+      "files": [
+        {
+          "path": "LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "source": "cargo-package"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:dary-heap@0.3.9",
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "dary_heap",
+      "origin": "https://github.com/hanmertens/dary_heap",
+      "version": "0.3.9",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
     },
     {
       "artifact_ids": [
@@ -5178,6 +5461,105 @@
       "origin": "https://github.com/jhpratt/deranged",
       "version": "0.5.8",
       "review_reference": "OSRB-6649311"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [
+        "Copyright (c) 2016 rust-derive-builder contributors"
+      ],
+      "declared_expression": "MIT OR Apache-2.0",
+      "ecosystem": "rust",
+      "elected_licenses": [
+        "Apache-2.0"
+      ],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/derive_builder_core-0.20.2/LICENSE-APACHE",
+      "files": [
+        {
+          "path": "LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "source": "cargo-package"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "8c9612877aacfa1b42f5e80b679e6c3c93a7ba2bb99dfaf6e87e200dca4b4e6c",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:derive-builder-core@0.20.2",
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "derive_builder_core",
+      "origin": "https://github.com/colin-kiegel/rust-derive-builder",
+      "version": "0.20.2",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [
+        "Copyright (c) 2016 rust-derive-builder contributors"
+      ],
+      "declared_expression": "MIT OR Apache-2.0",
+      "ecosystem": "rust",
+      "elected_licenses": [
+        "Apache-2.0"
+      ],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/derive_builder_macro-0.20.2/LICENSE-APACHE",
+      "files": [
+        {
+          "path": "LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "source": "cargo-package"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "8c9612877aacfa1b42f5e80b679e6c3c93a7ba2bb99dfaf6e87e200dca4b4e6c",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:derive-builder-macro@0.20.2",
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "derive_builder_macro",
+      "origin": "https://github.com/colin-kiegel/rust-derive-builder",
+      "version": "0.20.2",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [
+        "Copyright (c) 2016 rust-derive-builder contributors"
+      ],
+      "declared_expression": "MIT OR Apache-2.0",
+      "ecosystem": "rust",
+      "elected_licenses": [
+        "Apache-2.0"
+      ],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/derive_builder-0.20.2/LICENSE-APACHE",
+      "files": [
+        {
+          "path": "LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "source": "cargo-package"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "8c9612877aacfa1b42f5e80b679e6c3c93a7ba2bb99dfaf6e87e200dca4b4e6c",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:derive-builder@0.20.2",
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "derive_builder",
+      "origin": "https://github.com/colin-kiegel/rust-derive-builder",
+      "version": "0.20.2",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
     },
     {
       "artifact_ids": [
@@ -5662,6 +6044,30 @@
       "origin": "https://github.com/DoumanAsh/error-code",
       "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization",
       "version": "2.3.1"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [],
+      "declared_expression": "Apache-2.0",
+      "ecosystem": "rust",
+      "elected_licenses": [],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/esaxx-rs-0.1.10/LICENSE",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:esaxx-rs@0.1.10",
+      "license_expression": "Apache-2.0",
+      "name": "esaxx-rs",
+      "origin": "https://github.com/Narsil/esaxx-rs",
+      "version": "0.1.10",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
     },
     {
       "artifact_ids": [
@@ -8421,6 +8827,84 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [
+        "Copyright 2019 Daniel Henry-Mantilla <daniel.henry.mantilla@gmail.com>",
+        "Copyright (c) 2019 Daniel Henry-Mantilla <daniel.henry.mantilla@gmail.com>"
+      ],
+      "declared_expression": "Apache-2.0 OR MIT OR Zlib",
+      "ecosystem": "rust",
+      "elected_licenses": [
+        "Apache-2.0"
+      ],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/macro_rules_attribute-proc_macro-0.2.3/LICENSE-APACHE",
+      "files": [
+        {
+          "path": "LICENSE-APACHE",
+          "sha256": "388e98b08de12ba8a9d4575883c8b0386c747cea188ed459380fc58d60da15c9",
+          "source": "cargo-package"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "603fb27ef3266ea516872eefd9ae587746b8c34614a35c0fb24e4e9e0c17e137",
+          "source": "cargo-package"
+        },
+        {
+          "path": "LICENSE-ZLIB",
+          "sha256": "1c41c0e19caa2c20b0adfeb8219b606b21b7c63914aa3ae74ae3e091d7ce09ca",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:macro-rules-attribute-proc-macro@0.2.3",
+      "license_expression": "Apache-2.0 OR MIT OR Zlib",
+      "name": "macro_rules_attribute-proc_macro",
+      "origin": "https://github.com/danielhenrymantilla/macro_rules_attribute-rs",
+      "version": "0.2.3",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [
+        "Copyright 2019 Daniel Henry-Mantilla <daniel.henry.mantilla@gmail.com>",
+        "Copyright (c) 2019 Daniel Henry-Mantilla <daniel.henry.mantilla@gmail.com>"
+      ],
+      "declared_expression": "Apache-2.0 OR MIT OR Zlib",
+      "ecosystem": "rust",
+      "elected_licenses": [
+        "Apache-2.0"
+      ],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/macro_rules_attribute-0.2.3/LICENSE-APACHE",
+      "files": [
+        {
+          "path": "LICENSE-APACHE",
+          "sha256": "388e98b08de12ba8a9d4575883c8b0386c747cea188ed459380fc58d60da15c9",
+          "source": "cargo-package"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "603fb27ef3266ea516872eefd9ae587746b8c34614a35c0fb24e4e9e0c17e137",
+          "source": "cargo-package"
+        },
+        {
+          "path": "LICENSE-ZLIB",
+          "sha256": "1c41c0e19caa2c20b0adfeb8219b606b21b7c63914aa3ae74ae3e091d7ce09ca",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:macro-rules-attribute@0.2.3",
+      "license_expression": "Apache-2.0 OR MIT OR Zlib",
+      "name": "macro_rules_attribute",
+      "origin": "https://github.com/danielhenrymantilla/macro_rules_attribute-rs",
+      "version": "0.2.3",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
         "diskgraph-extension-windows",
         "diskgraph-ingest",
         "diskgraph-ingest-windows"
@@ -8812,6 +9296,68 @@
       "name": "mmap-rs",
       "origin": "https://github.com/StephanvanSchaik/mmap-rs",
       "version": "0.7.0",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [],
+      "declared_expression": "MIT OR Apache-2.0",
+      "ecosystem": "rust",
+      "elected_licenses": [
+        "Apache-2.0"
+      ],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/monostate-impl-0.1.18/LICENSE-APACHE",
+      "files": [
+        {
+          "path": "LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "source": "cargo-package"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:monostate-impl@0.1.18",
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "monostate-impl",
+      "origin": "https://github.com/dtolnay/monostate",
+      "version": "0.1.18",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [],
+      "declared_expression": "MIT OR Apache-2.0",
+      "ecosystem": "rust",
+      "elected_licenses": [
+        "Apache-2.0"
+      ],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/monostate-0.1.18/LICENSE-APACHE",
+      "files": [
+        {
+          "path": "LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "source": "cargo-package"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:monostate@0.1.18",
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "monostate",
+      "origin": "https://github.com/dtolnay/monostate",
+      "version": "0.1.18",
       "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
     },
     {
@@ -9358,6 +9904,61 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [
+        "Copyright (c) 2002-2021  K.Kosako  <kkosako0@gmail.com>"
+      ],
+      "declared_expression": "MIT",
+      "ecosystem": "rust",
+      "elected_licenses": [],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/onig_sys-69.9.3/LICENSE.md",
+      "files": [
+        {
+          "path": "LICENSE.md",
+          "sha256": "71f321038b088358004bee991635ac09e4c703bec467d3c30c06992c0595f189",
+          "source": "cargo-package"
+        },
+        {
+          "path": "oniguruma/COPYING",
+          "sha256": "70ba5469ea0bab6e18a32d7009068f996503168d27be57747e08da34337ff26f",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:onig-sys@69.9.3",
+      "license_expression": "MIT",
+      "name": "onig_sys",
+      "origin": "https://github.com/rust-onig/rust-onig",
+      "version": "69.9.3",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [],
+      "declared_expression": "MIT",
+      "ecosystem": "rust",
+      "elected_licenses": [],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/onig-6.5.3/LICENSE.md",
+      "files": [
+        {
+          "path": "LICENSE.md",
+          "sha256": "e9c1238c5beb73c6cc130160418968058b21d486a7a445f0ceff27d51fbfdc44",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:onig@6.5.3",
+      "license_expression": "MIT",
+      "name": "onig",
+      "origin": "https://github.com/iwillspeak/rust-onig",
+      "version": "6.5.3",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -9519,6 +10120,68 @@
       "name": "parquet",
       "origin": "https://github.com/apache/arrow-rs",
       "version": "60.1.0",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [],
+      "declared_expression": "MIT OR Apache-2.0",
+      "ecosystem": "rust",
+      "elected_licenses": [
+        "Apache-2.0"
+      ],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/paste-1.0.15/LICENSE-APACHE",
+      "files": [
+        {
+          "path": "LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "source": "cargo-package"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:paste@1.0.15",
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "paste",
+      "origin": "https://github.com/dtolnay/paste",
+      "version": "1.0.15",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [],
+      "declared_expression": "MIT OR Apache-2.0",
+      "ecosystem": "rust",
+      "elected_licenses": [
+        "Apache-2.0"
+      ],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/pastey-0.2.3/LICENSE-APACHE",
+      "files": [
+        {
+          "path": "LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "source": "cargo-package"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:pastey@0.2.3",
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "pastey",
+      "origin": "https://github.com/as1100k/pastey",
+      "version": "0.2.3",
       "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
     },
     {
@@ -10196,6 +10859,40 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [
+        "Copyright 2018 Developers of the Rand project",
+        "Copyright (c) 2014 The Rust Project Developers"
+      ],
+      "declared_expression": "MIT OR Apache-2.0",
+      "ecosystem": "rust",
+      "elected_licenses": [
+        "Apache-2.0"
+      ],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/rand_chacha-0.9.0/LICENSE-APACHE",
+      "files": [
+        {
+          "path": "LICENSE-APACHE",
+          "sha256": "35242e7a83f69875e6edeff02291e688c97caafe2f8902e4e19b49d3e78b4cab",
+          "source": "cargo-package"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "209fbbe0ad52d9235e37badf9cadfe4dbdc87203179c0899e738b39ade42177b",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:rand-chacha@0.9.0",
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "rand_chacha",
+      "origin": "https://github.com/rust-random/rand",
+      "version": "0.9.0",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
         "diskgraph-extension-windows",
         "diskgraph-ingest",
         "diskgraph-ingest-windows"
@@ -10263,6 +10960,40 @@
       "origin": "https://github.com/rust-random/rand",
       "version": "0.6.4",
       "review_reference": "OSRB-6649311"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [
+        "Copyright 2018 Developers of the Rand project",
+        "Copyright (c) 2014 The Rust Project Developers"
+      ],
+      "declared_expression": "MIT OR Apache-2.0",
+      "ecosystem": "rust",
+      "elected_licenses": [
+        "Apache-2.0"
+      ],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/rand_core-0.9.5/LICENSE-APACHE",
+      "files": [
+        {
+          "path": "LICENSE-APACHE",
+          "sha256": "6df43f6f4b5d4587f3d8d71e45532c688fd168afa5fe89d571cb32fa09c4ef51",
+          "source": "cargo-package"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "209fbbe0ad52d9235e37badf9cadfe4dbdc87203179c0899e738b39ade42177b",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:rand-core@0.9.5",
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "rand_core",
+      "origin": "https://github.com/rust-random/rand",
+      "version": "0.9.5",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
     },
     {
       "artifact_ids": [
@@ -10335,6 +11066,73 @@
       "origin": "https://github.com/rust-random/rand",
       "version": "0.8.6",
       "review_reference": "OSRB-6649311"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [
+        "Copyright 2018 Developers of the Rand project",
+        "Copyright (c) 2014 The Rust Project Developers"
+      ],
+      "declared_expression": "MIT OR Apache-2.0",
+      "ecosystem": "rust",
+      "elected_licenses": [
+        "Apache-2.0"
+      ],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/rand-0.9.5/LICENSE-APACHE",
+      "files": [
+        {
+          "path": "LICENSE-APACHE",
+          "sha256": "35242e7a83f69875e6edeff02291e688c97caafe2f8902e4e19b49d3e78b4cab",
+          "source": "cargo-package"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "209fbbe0ad52d9235e37badf9cadfe4dbdc87203179c0899e738b39ade42177b",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:rand@0.9.5",
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "rand",
+      "origin": "https://github.com/rust-random/rand",
+      "version": "0.9.5",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [
+        "Copyright (c) 2018 Josh Stone"
+      ],
+      "declared_expression": "Apache-2.0/MIT",
+      "ecosystem": "rust",
+      "elected_licenses": [
+        "Apache-2.0"
+      ],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/rayon-cond-0.4.0/LICENSE-APACHE",
+      "files": [
+        {
+          "path": "LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "source": "cargo-package"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "27995d58ad5c1145c1a8cd86244ce844886958a35eb2b78c6b772748669999ac",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:rayon-cond@0.4.0",
+      "license_expression": "Apache-2.0 OR MIT",
+      "name": "rayon-cond",
+      "origin": "https://github.com/cuviper/rayon-cond",
+      "version": "0.4.0",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
     },
     {
       "artifact_ids": [
@@ -11791,6 +12589,30 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [],
+      "declared_expression": "Apache-2.0",
+      "ecosystem": "rust",
+      "elected_licenses": [],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/spm_precompiled-0.1.4/LICENSE",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:spm-precompiled@0.1.4",
+      "license_expression": "Apache-2.0",
+      "name": "spm_precompiled",
+      "origin": "https://github.com/huggingface/spm_precompiled",
+      "version": "0.1.4",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
         "diskgraph-extension-windows",
         "diskgraph-ingest",
         "diskgraph-ingest-windows"
@@ -11822,6 +12644,39 @@
       "origin": "https://github.com/storyyeller/stable_deref_trait",
       "version": "1.2.1",
       "review_reference": "OSRB-6649311"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [
+        "Copyright (c) 2017 Nikolai Vazquez"
+      ],
+      "declared_expression": "MIT OR Apache-2.0",
+      "ecosystem": "rust",
+      "elected_licenses": [
+        "Apache-2.0"
+      ],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/static_assertions-1.1.0/LICENSE-APACHE",
+      "files": [
+        {
+          "path": "LICENSE-APACHE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "source": "cargo-package"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "ea084a2373ebc1f0902c09266e7bf25a05ab3814c1805bb017ffa7308f90c061",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:static-assertions@1.1.0",
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "static_assertions",
+      "origin": "https://github.com/nvzqz/static-assertions-rs",
+      "version": "1.1.0",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
     },
     {
       "artifact_ids": [
@@ -12442,6 +13297,30 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [],
+      "declared_expression": "Apache-2.0",
+      "ecosystem": "rust",
+      "elected_licenses": [],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/tokenizers-0.23.2/LICENSE",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:tokenizers@0.23.2",
+      "license_expression": "Apache-2.0",
+      "name": "tokenizers",
+      "origin": "https://github.com/huggingface/tokenizers",
+      "version": "0.23.2",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
         "diskgraph-extension-windows",
         "diskgraph-ingest",
         "diskgraph-ingest-windows"
@@ -12913,6 +13792,39 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [
+        "Copyright (c) 2015 The unicode-categories Developers"
+      ],
+      "declared_expression": "MIT OR Apache-2.0",
+      "ecosystem": "rust",
+      "elected_licenses": [
+        "Apache-2.0"
+      ],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/unicode_categories-0.1.1/LICENSE-APACHE",
+      "files": [
+        {
+          "path": "LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "source": "cargo-package"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "98a817e7b85e5fe4e79d165c656a4a139793b8b643d0f3d9cbcc3538ef82ec82",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:unicode-categories@0.1.1",
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "unicode_categories",
+      "origin": "https://github.com/swgillespie/unicode-categories",
+      "version": "0.1.1",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
         "diskgraph-extension-windows",
         "diskgraph-ingest",
         "diskgraph-ingest-windows"
@@ -12950,6 +13862,39 @@
       "origin": "https://github.com/dtolnay/unicode-ident",
       "version": "1.0.24",
       "review_reference": "OSRB-6649311"
+    },
+    {
+      "artifact_ids": [
+        "diskgraph-extension",
+        "diskgraph-extension-windows"
+      ],
+      "copyright": [
+        "Copyright (c) 2015 The Rust Project Developers"
+      ],
+      "declared_expression": "MIT/Apache-2.0",
+      "ecosystem": "rust",
+      "elected_licenses": [
+        "Apache-2.0"
+      ],
+      "expression_source": "index.crates.io-1949cf8c6b5b557f/unicode-normalization-alignments-0.1.12/LICENSE-APACHE",
+      "files": [
+        {
+          "path": "LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "source": "cargo-package"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "7b63ecd5f1902af1b63729947373683c32745c16a10e8e6292e2e2dcd7e90ae0",
+          "source": "cargo-package"
+        }
+      ],
+      "id": "rust:unicode-normalization-alignments@0.1.12",
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "unicode-normalization-alignments",
+      "origin": "https://github.com/n1t0/unicode-normalization",
+      "version": "0.1.12",
+      "review_reference": "OSRB-6649311 allowed-license policy; added by DiskGraph synchronization"
     },
     {
       "artifact_ids": [
@@ -14891,7 +15836,19 @@
     "f0bae5fa40b0f188fbcfdf3e7fd1ffdefb2f9770c97f10c8e552c072ee41b279": "MIT License\n\nCopyright (c) 2023 Daniel Henry-Mantilla <daniel.henry.mantilla@gmail.com>\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n",
     "3c638385e6deedebff9a9bb15111cb0855159873c8981bd7e71d2b9dfdccf535": "zlib License\n\n(C) 2023 Daniel Henry-Mantilla <daniel.henry.mantilla@gmail.com>\n\nThis software is provided 'as-is', without any express or implied\nwarranty.  In no event will the authors be held liable for any damages\narising from the use of this software.\n\nPermission is granted to anyone to use this software for any purpose,\nincluding commercial applications, and to alter it and redistribute it\nfreely, subject to the following restrictions:\n\n1. The origin of this software must not be misrepresented; you must not\n   claim that you wrote the original software. If you use this software\n   in a product, an acknowledgment in the product documentation would be\n   appreciated but is not required.\n2. Altered source versions must be plainly marked as such, and must not be\n   misrepresented as being the original software.\n3. This notice may not be removed or altered from any source distribution.\n",
     "ce4868c8e4ebe47a7d4b3c93dbf6b802033e5ae2fa7638098173f80836daac60": "BSD 3-Clause License\n\nCopyright (c) 2026, Alexandre Bury\n\nRedistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions are met:\n\n1. Redistributions of source code must retain the above copyright notice, this\n   list of conditions and the following disclaimer.\n\n2. Redistributions in binary form must reproduce the above copyright notice,\n   this list of conditions and the following disclaimer in the documentation\n   and/or other materials provided with the distribution.\n\n3. Neither the name of the copyright holder nor the names of its\n   contributors may be used to endorse or promote products derived from\n   this software without specific prior written permission.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\"\nAND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE\nIMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE\nDISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE\nFOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL\nDAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR\nSERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER\nCAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,\nOR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE\nOF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.\n",
-    "bf7017a73a95ea63bf3716b13ec2bcd79c92942356e3408c6fb66332bad6d977": "The auto-generated bindings are under the 3-clause BSD license:\n\nBSD License\n\nFor Zstandard software\n\nCopyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.\n\nRedistribution and use in source and binary forms, with or without modification,\nare permitted provided that the following conditions are met:\n\n * Redistributions of source code must retain the above copyright notice, this\n   list of conditions and the following disclaimer.\n\n * Redistributions in binary form must reproduce the above copyright notice,\n   this list of conditions and the following disclaimer in the documentation\n   and/or other materials provided with the distribution.\n\n * Neither the name Facebook, nor Meta, nor the names of its contributors may\n   be used to endorse or promote products derived from this software without\n   specific prior written permission.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND\nANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED\nWARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE\nDISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR\nANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES\n(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;\nLOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON\nANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT\n(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS\nSOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.\n"
+    "bf7017a73a95ea63bf3716b13ec2bcd79c92942356e3408c6fb66332bad6d977": "The auto-generated bindings are under the 3-clause BSD license:\n\nBSD License\n\nFor Zstandard software\n\nCopyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.\n\nRedistribution and use in source and binary forms, with or without modification,\nare permitted provided that the following conditions are met:\n\n * Redistributions of source code must retain the above copyright notice, this\n   list of conditions and the following disclaimer.\n\n * Redistributions in binary form must reproduce the above copyright notice,\n   this list of conditions and the following disclaimer in the documentation\n   and/or other materials provided with the distribution.\n\n * Neither the name Facebook, nor Meta, nor the names of its contributors may\n   be used to endorse or promote products derived from this software without\n   specific prior written permission.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND\nANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED\nWARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE\nDISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR\nANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES\n(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;\nLOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON\nANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT\n(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS\nSOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.\n",
+    "f98e09091d5ae02b2f2ec1ead4f7f28c4c44d1cb98b078739ba67091637e170c": "MIT License\n\nCopyright (c) 2021 Stephen M. Coakley\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n",
+    "0d52feec79589df30138dad3800323fe5686b764b73347330a2dfef8ac83efe8": "MIT License\n\nCopyright (c) 2021 Parker Timmerman\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n",
+    "8c9612877aacfa1b42f5e80b679e6c3c93a7ba2bb99dfaf6e87e200dca4b4e6c": "The MIT License (MIT)\n\nCopyright (c) 2016 rust-derive-builder contributors\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n",
+    "388e98b08de12ba8a9d4575883c8b0386c747cea188ed459380fc58d60da15c9": "                                 Apache License\n                           Version 2.0, January 2004\n                        http://www.apache.org/licenses/\n\n   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION\n\n   1. Definitions.\n\n      \"License\" shall mean the terms and conditions for use, reproduction,\n      and distribution as defined by Sections 1 through 9 of this document.\n\n      \"Licensor\" shall mean the copyright owner or entity authorized by\n      the copyright owner that is granting the License.\n\n      \"Legal Entity\" shall mean the union of the acting entity and all\n      other entities that control, are controlled by, or are under common\n      control with that entity. For the purposes of this definition,\n      \"control\" means (i) the power, direct or indirect, to cause the\n      direction or management of such entity, whether by contract or\n      otherwise, or (ii) ownership of fifty percent (50%) or more of the\n      outstanding shares, or (iii) beneficial ownership of such entity.\n\n      \"You\" (or \"Your\") shall mean an individual or Legal Entity\n      exercising permissions granted by this License.\n\n      \"Source\" form shall mean the preferred form for making modifications,\n      including but not limited to software source code, documentation\n      source, and configuration files.\n\n      \"Object\" form shall mean any form resulting from mechanical\n      transformation or translation of a Source form, including but\n      not limited to compiled object code, generated documentation,\n      and conversions to other media types.\n\n      \"Work\" shall mean the work of authorship, whether in Source or\n      Object form, made available under the License, as indicated by a\n      copyright notice that is included in or attached to the work\n      (an example is provided in the Appendix below).\n\n      \"Derivative Works\" shall mean any work, whether in Source or Object\n      form, that is based on (or derived from) the Work and for which the\n      editorial revisions, annotations, elaborations, or other modifications\n      represent, as a whole, an original work of authorship. For the purposes\n      of this License, Derivative Works shall not include works that remain\n      separable from, or merely link (or bind by name) to the interfaces of,\n      the Work and Derivative Works thereof.\n\n      \"Contribution\" shall mean any work of authorship, including\n      the original version of the Work and any modifications or additions\n      to that Work or Derivative Works thereof, that is intentionally\n      submitted to Licensor for inclusion in the Work by the copyright owner\n      or by an individual or Legal Entity authorized to submit on behalf of\n      the copyright owner. For the purposes of this definition, \"submitted\"\n      means any form of electronic, verbal, or written communication sent\n      to the Licensor or its representatives, including but not limited to\n      communication on electronic mailing lists, source code control systems,\n      and issue tracking systems that are managed by, or on behalf of, the\n      Licensor for the purpose of discussing and improving the Work, but\n      excluding communication that is conspicuously marked or otherwise\n      designated in writing by the copyright owner as \"Not a Contribution.\"\n\n      \"Contributor\" shall mean Licensor and any individual or Legal Entity\n      on behalf of whom a Contribution has been received by Licensor and\n      subsequently incorporated within the Work.\n\n   2. Grant of Copyright License. Subject to the terms and conditions of\n      this License, each Contributor hereby grants to You a perpetual,\n      worldwide, non-exclusive, no-charge, royalty-free, irrevocable\n      copyright license to reproduce, prepare Derivative Works of,\n      publicly display, publicly perform, sublicense, and distribute the\n      Work and such Derivative Works in Source or Object form.\n\n   3. Grant of Patent License. Subject to the terms and conditions of\n      this License, each Contributor hereby grants to You a perpetual,\n      worldwide, non-exclusive, no-charge, royalty-free, irrevocable\n      (except as stated in this section) patent license to make, have made,\n      use, offer to sell, sell, import, and otherwise transfer the Work,\n      where such license applies only to those patent claims licensable\n      by such Contributor that are necessarily infringed by their\n      Contribution(s) alone or by combination of their Contribution(s)\n      with the Work to which such Contribution(s) was submitted. If You\n      institute patent litigation against any entity (including a\n      cross-claim or counterclaim in a lawsuit) alleging that the Work\n      or a Contribution incorporated within the Work constitutes direct\n      or contributory patent infringement, then any patent licenses\n      granted to You under this License for that Work shall terminate\n      as of the date such litigation is filed.\n\n   4. Redistribution. You may reproduce and distribute copies of the\n      Work or Derivative Works thereof in any medium, with or without\n      modifications, and in Source or Object form, provided that You\n      meet the following conditions:\n\n      (a) You must give any other recipients of the Work or\n          Derivative Works a copy of this License; and\n\n      (b) You must cause any modified files to carry prominent notices\n          stating that You changed the files; and\n\n      (c) You must retain, in the Source form of any Derivative Works\n          that You distribute, all copyright, patent, trademark, and\n          attribution notices from the Source form of the Work,\n          excluding those notices that do not pertain to any part of\n          the Derivative Works; and\n\n      (d) If the Work includes a \"NOTICE\" text file as part of its\n          distribution, then any Derivative Works that You distribute must\n          include a readable copy of the attribution notices contained\n          within such NOTICE file, excluding those notices that do not\n          pertain to any part of the Derivative Works, in at least one\n          of the following places: within a NOTICE text file distributed\n          as part of the Derivative Works; within the Source form or\n          documentation, if provided along with the Derivative Works; or,\n          within a display generated by the Derivative Works, if and\n          wherever such third-party notices normally appear. The contents\n          of the NOTICE file are for informational purposes only and\n          do not modify the License. You may add Your own attribution\n          notices within Derivative Works that You distribute, alongside\n          or as an addendum to the NOTICE text from the Work, provided\n          that such additional attribution notices cannot be construed\n          as modifying the License.\n\n      You may add Your own copyright statement to Your modifications and\n      may provide additional or different license terms and conditions\n      for use, reproduction, or distribution of Your modifications, or\n      for any such Derivative Works as a whole, provided Your use,\n      reproduction, and distribution of the Work otherwise complies with\n      the conditions stated in this License.\n\n   5. Submission of Contributions. Unless You explicitly state otherwise,\n      any Contribution intentionally submitted for inclusion in the Work\n      by You to the Licensor shall be under the terms and conditions of\n      this License, without any additional terms or conditions.\n      Notwithstanding the above, nothing herein shall supersede or modify\n      the terms of any separate license agreement you may have executed\n      with Licensor regarding such Contributions.\n\n   6. Trademarks. This License does not grant permission to use the trade\n      names, trademarks, service marks, or product names of the Licensor,\n      except as required for reasonable and customary use in describing the\n      origin of the Work and reproducing the content of the NOTICE file.\n\n   7. Disclaimer of Warranty. Unless required by applicable law or\n      agreed to in writing, Licensor provides the Work (and each\n      Contributor provides its Contributions) on an \"AS IS\" BASIS,\n      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or\n      implied, including, without limitation, any warranties or conditions\n      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A\n      PARTICULAR PURPOSE. You are solely responsible for determining the\n      appropriateness of using or redistributing the Work and assume any\n      risks associated with Your exercise of permissions under this License.\n\n   8. Limitation of Liability. In no event and under no legal theory,\n      whether in tort (including negligence), contract, or otherwise,\n      unless required by applicable law (such as deliberate and grossly\n      negligent acts) or agreed to in writing, shall any Contributor be\n      liable to You for damages, including any direct, indirect, special,\n      incidental, or consequential damages of any character arising as a\n      result of this License or out of the use or inability to use the\n      Work (including but not limited to damages for loss of goodwill,\n      work stoppage, computer failure or malfunction, or any and all\n      other commercial damages or losses), even if such Contributor\n      has been advised of the possibility of such damages.\n\n   9. Accepting Warranty or Additional Liability. While redistributing\n      the Work or Derivative Works thereof, You may choose to offer,\n      and charge a fee for, acceptance of support, warranty, indemnity,\n      or other liability obligations and/or rights consistent with this\n      License. However, in accepting such obligations, You may act only\n      on Your own behalf and on Your sole responsibility, not on behalf\n      of any other Contributor, and only if You agree to indemnify,\n      defend, and hold each Contributor harmless for any liability\n      incurred by, or claims asserted against, such Contributor by reason\n      of your accepting any such warranty or additional liability.\n\n   END OF TERMS AND CONDITIONS\n\n   APPENDIX: How to apply the Apache License to your work.\n\n      To apply the Apache License to your work, attach the following\n      boilerplate notice, with the fields enclosed by brackets \"[]\"\n      replaced with your own identifying information. (Don't include\n      the brackets!)  The text should be enclosed in the appropriate\n      comment syntax for the file format. We also recommend that a\n      file or class name and description of purpose be included on the\n      same \"printed page\" as the copyright notice for easier\n      identification within third-party archives.\n\n   Copyright 2019 Daniel Henry-Mantilla <daniel.henry.mantilla@gmail.com>\n\n   Licensed under the Apache License, Version 2.0 (the \"License\");\n   you may not use this file except in compliance with the License.\n   You may obtain a copy of the License at\n\n       http://www.apache.org/licenses/LICENSE-2.0\n\n   Unless required by applicable law or agreed to in writing, software\n   distributed under the License is distributed on an \"AS IS\" BASIS,\n   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n   See the License for the specific language governing permissions and\n   limitations under the License.\n",
+    "603fb27ef3266ea516872eefd9ae587746b8c34614a35c0fb24e4e9e0c17e137": "MIT License\n\nCopyright (c) 2019 Daniel Henry-Mantilla <daniel.henry.mantilla@gmail.com>\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n",
+    "1c41c0e19caa2c20b0adfeb8219b606b21b7c63914aa3ae74ae3e091d7ce09ca": "zlib License\n\n(C) 2019 Daniel Henry-Mantilla <daniel.henry.mantilla@gmail.com>\n\nThis software is provided 'as-is', without any express or implied\nwarranty.  In no event will the authors be held liable for any damages\narising from the use of this software.\n\nPermission is granted to anyone to use this software for any purpose,\nincluding commercial applications, and to alter it and redistribute it\nfreely, subject to the following restrictions:\n\n1. The origin of this software must not be misrepresented; you must not\n   claim that you wrote the original software. If you use this software\n   in a product, an acknowledgment in the product documentation would be\n   appreciated but is not required.\n2. Altered source versions must be plainly marked as such, and must not be\n   misrepresented as being the original software.\n3. This notice may not be removed or altered from any source distribution.\n",
+    "e9c1238c5beb73c6cc130160418968058b21d486a7a445f0ceff27d51fbfdc44": "# Rust-Onig is Open Source!\n\nAll source code in this repository is distributed under the terms of\nthe *MIT License* unless otherwise stated. The Oniguruma source code\nremains the property of the original authors and is re-distributed\nunder the original license.\n\n> The MIT License (MIT)\n> \n> Copyright (c) 2015 Will Speak <will@willspeak.me>, Ivan Ivashchenko\n> <defuz@me.com>, and contributors.\n> \n> Permission is hereby granted, free of charge, to any person obtaining a copy\n> of this software and associated documentation files (the \"Software\"), to deal\n> in the Software without restriction, including without limitation the rights\n> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n> copies of the Software, and to permit persons to whom the Software is\n> furnished to do so, subject to the following conditions:\n> \n> The above copyright notice and this permission notice shall be included in all\n> copies or substantial portions of the Software.\n> \n> THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n> SOFTWARE.\n",
+    "71f321038b088358004bee991635ac09e4c703bec467d3c30c06992c0595f189": "# Rust-Onig is Open Source!\n\nAll source code in this repository is distributed under the terms of\nthe *MIT License* unless otherwise stated. The Oniguruma source code\nremains the property of the original authors and is re-distributed\nunder the original license, see [COPYING](oniguruma/COPYING) for more\ninformation.\n\n> The MIT License (MIT)\n> \n> Copyright (c) 2015 Will Speak <will@willspeak.me>, Ivan Ivashchenko\n> <defuz@me.com>, and contributors.\n> \n> Permission is hereby granted, free of charge, to any person obtaining a copy\n> of this software and associated documentation files (the \"Software\"), to deal\n> in the Software without restriction, including without limitation the rights\n> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n> copies of the Software, and to permit persons to whom the Software is\n> furnished to do so, subject to the following conditions:\n> \n> The above copyright notice and this permission notice shall be included in all\n> copies or substantial portions of the Software.\n> \n> THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n> SOFTWARE.\n",
+    "27995d58ad5c1145c1a8cd86244ce844886958a35eb2b78c6b772748669999ac": "Copyright (c) 2018 Josh Stone\n\nPermission is hereby granted, free of charge, to any\nperson obtaining a copy of this software and associated\ndocumentation files (the \"Software\"), to deal in the\nSoftware without restriction, including without\nlimitation the rights to use, copy, modify, merge,\npublish, distribute, sublicense, and/or sell copies of\nthe Software, and to permit persons to whom the Software\nis furnished to do so, subject to the following\nconditions:\n\nThe above copyright notice and this permission notice\nshall be included in all copies or substantial portions\nof the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF\nANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED\nTO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A\nPARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT\nSHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY\nCLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION\nOF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR\nIN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER\nDEALINGS IN THE SOFTWARE.\n",
+    "ea084a2373ebc1f0902c09266e7bf25a05ab3814c1805bb017ffa7308f90c061": "MIT License\n\nCopyright (c) 2017 Nikolai Vazquez\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n",
+    "98a817e7b85e5fe4e79d165c656a4a139793b8b643d0f3d9cbcc3538ef82ec82": "Copyright (c) 2015 The unicode-categories Developers\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n",
+    "70ba5469ea0bab6e18a32d7009068f996503168d27be57747e08da34337ff26f": "Oniguruma LICENSE\n-----------------\n\nCopyright (c) 2002-2021  K.Kosako  <kkosako0@gmail.com>\nAll rights reserved.\n\nRedistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions\nare met:\n1. Redistributions of source code must retain the above copyright\n   notice, this list of conditions and the following disclaimer.\n2. Redistributions in binary form must reproduce the above copyright\n   notice, this list of conditions and the following disclaimer in the\n   documentation and/or other materials provided with the distribution.\n\nTHIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND\nANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE\nIMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE\nARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE\nFOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL\nDAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS\nOR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)\nHOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT\nLIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY\nOUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF\nSUCH DAMAGE.\n"
   },
   "tools": {
     "cargo_about": "0.8.4",

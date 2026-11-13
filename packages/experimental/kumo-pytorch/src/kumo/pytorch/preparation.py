@@ -16,7 +16,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import time
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from functools import partial
 from typing import Any, overload
@@ -42,18 +42,16 @@ from kumo.pytorch.assembly import (
 )
 from kumo.pytorch.column_stats import (
     LATEST_ANCHOR,
-    StatRequest,
-    TableColumnEncoder,
     _LatestAnchor,
     cutoff_seconds,
     fit_from_stats,
     table_column_encoders,
 )
-from kumo.pytorch.contract.batch.encodings import Buckets, Text
+from kumo.pytorch.contract.batch.encodings import Text
 from kumo.pytorch.contract.sample import SampleRequest
 from kumo.pytorch.data.records import cutoff_to_epoch
 from kumo.pytorch.dataset import Dataset, TableSource
-from kumo.pytorch.encoding import FittedEncoder, train_text
+from kumo.pytorch.encoding import FittedEncoder
 from kumo.pytorch.engine import AnchorTask, Engine, SampleSource
 from kumo.pytorch.spec import (
     DataLoaderSpec,
@@ -346,21 +344,19 @@ class Plan:
                 _iso(latest),
             )
         started = time.perf_counter()
-        requests, quantiles = _stats_requests(encoders.values())
-        stats = column_stats(requests, cutoff, quantiles) if requests else None
-        pinned, dirs = {}, list(stats.dirs) if stats else []
+        requests = [item for encoder in encoders.values() for item in encoder.requests]
+        stats = column_stats(requests, cutoff) if requests else None
+        pinned, files = {}, list(stats.files) if stats else []
         for identity, encoder in encoders.items():
             if isinstance(encoder.config, Text):
-                tokenizer, directory = column_text(
-                    encoder, cutoff, partial(train_text, encoder.config)
-                )
+                tokenizer, path = column_text(encoder, cutoff)
                 pinned[identity] = FittedEncoder(
                     identity=identity,
                     config=encoder.config,
                     dtype=encoder.dtype,
                     tokenizer_json=tokenizer,
                 )
-                dirs.extend([directory] if directory else [])
+                files.extend([path] if path else [])
             else:
                 pinned[identity] = fit_from_stats(identity, encoder, stats)
         logger.info(
@@ -369,7 +365,7 @@ class Plan:
             "none" if cutoff is None else _iso(cutoff),
             time.perf_counter() - started,
         )
-        return pinned, {"cutoff": cutoff, "col_stats": dirs}
+        return pinned, {"cutoff": cutoff, "col_stats": files}
 
     @staticmethod
     def _fit_selection(selection: SplitSelection | None, declares_splits: bool) -> SplitSelection:
@@ -463,7 +459,8 @@ def prepare(
     if issues:
         raise ValidationError(issues)
     if getattr(engine, "encoder_cutoffs", ()) and not inference:
-        requests = _stats_requests(table_column_encoders(contract).values())
+        encoders = table_column_encoders(contract).values()
+        requests = [item for encoder in encoders for item in encoder.requests]
         source = engine.open(dataset, contract.schema, column_stats=requests)
     else:
         source = engine.open(dataset, contract.schema)
@@ -560,12 +557,6 @@ def _source_issues(
 ) -> tuple[ValidationIssue, ...]:
     check_sources = getattr(engine, "check_sources", None)
     return () if check_sources is None else tuple(check_sources(sources, path))
-
-
-def _stats_requests(encoders: Iterable[TableColumnEncoder]) -> tuple[list[StatRequest], bool]:
-    encoders = list(encoders)
-    requests = [item for encoder in encoders for item in encoder.requests]
-    return requests, any(isinstance(encoder.config, Buckets) for encoder in encoders)
 
 
 def _iso(seconds: int) -> str:

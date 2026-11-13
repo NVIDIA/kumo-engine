@@ -147,7 +147,7 @@ Fitting takes no seed: the state is a function of these alone. The record
 is informational: reuse with `fitted=` keeps it, `Artifact.load` does
 not check it, and fitted-state equality ignores it. `statistics` (inputs
 only) names the encoder cutoff, in epoch seconds, and the DiskGraph
-`col_stats/` directories that encoders over stored columns were fitted from.
+`col_stats/` files that encoders over stored columns were fitted from.
 
 ### `save_weights`
 

@@ -215,18 +215,19 @@ pub struct TableCategoryCounts {
 }
 
 impl TableCategoryCounts {
-    /// Create shared state for a table given its column semantic types.
-    /// Categorical, Id, and Multicategorical columns get category count
-    /// collection, each capped at `MAX_CATEGORIES` uniques so Encode memory
-    /// stays bounded. Multicategorical reuses the same machinery: one DashMap
-    /// entry per distinct *token* (not per row), fed by the per-input-kind
-    /// tokenization paths in `ColumnStatsCollector::Multicategorical`.
+    /// Create shared state for a table given its columns' semantic types or
+    /// stat sets. Categorical, Id, and Multicategorical columns get category
+    /// count collection, each capped at `MAX_CATEGORIES` uniques so Encode
+    /// memory stays bounded. Multicategorical reuses the same machinery: one
+    /// DashMap entry per distinct *token* (not per row), fed by the
+    /// per-input-kind tokenization paths in
+    /// `ColumnStatsCollector::Multicategorical`.
     pub fn new(
         strategy: CategoryCountStrategy,
-        semantic_types: &[Option<SemanticType>],
+        stat_sets: &[impl Copy + Into<StatSet>],
         row_subsample: bool,
     ) -> Self {
-        Self::new_with_max_categories(strategy, semantic_types, row_subsample, MAX_CATEGORIES)
+        Self::new_with_max_categories(strategy, stat_sets, row_subsample, MAX_CATEGORIES)
     }
 
     /// Construct table counts with an injectable Hybrid feature cap.
@@ -234,7 +235,7 @@ impl TableCategoryCounts {
     /// exercising the same observation and publication paths.
     pub fn new_with_max_categories(
         strategy: CategoryCountStrategy,
-        semantic_types: &[Option<SemanticType>],
+        stat_sets: &[impl Copy + Into<StatSet>],
         row_subsample: bool,
         max_categories: u64,
     ) -> Self {
@@ -242,34 +243,17 @@ impl TableCategoryCounts {
             strategy != CategoryCountStrategy::Hybrid || !row_subsample,
             "Hybrid category counts require row_subsample=false so retained occurrence counts are exact"
         );
-        let columns = semantic_types
+        let columns = stat_sets
             .iter()
-            .map(|stype| match stype {
-                // Id columns are counted alongside Categorical: some models
-                // consume their category counts, and the shared map is capped
-                // so there is no memory reason to skip them.
-                Some(SemanticType::Categorical) | Some(SemanticType::Id) => {
-                    let shared = match strategy {
+            .map(|&stat_set| {
+                (stat_set.into().counted() > 0).then(|| {
+                    Arc::new(match strategy {
                         CategoryCountStrategy::Graduation => SharedColumnCounts::new_graduation(),
                         _ => SharedColumnCounts::new_hashed_capped_with_max_categories(
                             max_categories,
                         ),
-                    };
-                    Some(Arc::new(shared))
-                }
-                Some(SemanticType::Multicategorical) => {
-                    // Token cardinality can be proportional to the complete
-                    // input. Use the same capped/abort policy as scalar
-                    // categorical columns so Encode memory remains bounded.
-                    let shared = match strategy {
-                        CategoryCountStrategy::Graduation => SharedColumnCounts::new_graduation(),
-                        _ => SharedColumnCounts::new_hashed_capped_with_max_categories(
-                            max_categories,
-                        ),
-                    };
-                    Some(Arc::new(shared))
-                }
-                _ => None,
+                    })
+                })
             })
             .collect();
         Self {
@@ -626,7 +610,10 @@ impl ValueBins {
 /// Created once per file, passed as the observer to `encode_row_observed`.
 /// After the file is processed, merged into the shared accumulator.
 pub struct FileColStats {
+    /// Each column's collector, then the columns' further collectors.
     cols: Vec<ColumnStatsCollector>,
+    /// The column of each further collector, in column order.
+    extra_cols: Vec<usize>,
     /// Category count strategy for this file.
     cat_strategy: CategoryCountStrategy,
     /// Shared per-column category count state (for abort checks + DashMaps).
@@ -736,6 +723,125 @@ pub enum ColumnStatsCollector {
     Skip,
 }
 
+/// Which semantic types' statistics to collect for a column; one pass
+/// gathers them all.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StatSet(u16);
+
+impl StatSet {
+    /// Category counts and distinct count.
+    pub const COUNTS: Self = Self::of(SemanticType::Categorical);
+    /// Mean, std, min, max, skewness, kurtosis, quantiles, value bins and
+    /// distinct count.
+    pub const MOMENTS: Self = Self::of(SemanticType::Numerical);
+    const COUNTED: Self = Self(
+        Self::COUNTS.0 | Self::of(SemanticType::Id).0 | Self::of(SemanticType::Multicategorical).0,
+    );
+
+    const fn of(stype: SemanticType) -> Self {
+        Self(1 << stype as u16)
+    }
+
+    /// Numerical last: it ignores other values, so a key that members share
+    /// (count, num_unique) is taken from another member.
+    fn stypes(self) -> impl Iterator<Item = SemanticType> {
+        use SemanticType::*;
+        [
+            Categorical,
+            Id,
+            Multicategorical,
+            Text,
+            Timestamp,
+            Sequence,
+            Latlong,
+            ImageUrl,
+            Numerical,
+            Unsupported,
+        ]
+        .into_iter()
+        .filter(move |&stype| self.0 & Self::of(stype).0 != 0)
+    }
+
+    /// How many members keep category counts.
+    fn counted(self) -> u32 {
+        (self.0 & Self::COUNTED.0).count_ones()
+    }
+}
+
+impl std::ops::BitOr for StatSet {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+impl From<Option<SemanticType>> for StatSet {
+    fn from(stype: Option<SemanticType>) -> Self {
+        stype.map_or(Self::default(), Self::of)
+    }
+}
+
+/// Each column's collector, then the columns' further collectors and
+/// their columns.
+type Collectors = (Vec<ColumnStatsCollector>, Vec<usize>);
+
+fn collectors(columns: &[ColumnSpec], stat_sets: impl IntoIterator<Item = StatSet>) -> Collectors {
+    let (mut extras, mut extra_cols) = (Vec::new(), Vec::new());
+    let mut cols: Vec<_> = columns
+        .iter()
+        .zip(stat_sets)
+        .enumerate()
+        .map(|(col_idx, (c, stat_set))| {
+            let collector = |stype| {
+                ColumnStatsCollector::from_column_type(
+                    &stype,
+                    &c.ingested_dtype,
+                    c.multicategorical_delimiter.as_deref(),
+                )
+            };
+            let mut stypes = stat_set.stypes();
+            let first = collector(stypes.next());
+            for stype in stypes {
+                extras.push(collector(Some(stype)));
+                extra_cols.push(col_idx);
+            }
+            first
+        })
+        .collect();
+    cols.append(&mut extras);
+    (cols, extra_cols)
+}
+
+fn stype_stat_sets(columns: &[ColumnSpec]) -> impl Iterator<Item = StatSet> + '_ {
+    columns.iter().map(|c| c.semantic_type.into())
+}
+
+/// Each collector with its column.
+fn each_collector<'a, C: 'a>(
+    cols: impl ExactSizeIterator<Item = C> + 'a,
+    extra_cols: &'a [usize],
+) -> impl Iterator<Item = (usize, C)> + 'a {
+    let n = cols.len() - extra_cols.len();
+    cols.enumerate()
+        .map(move |(slot, col)| (slot.checked_sub(n).map_or(slot, |k| extra_cols[k]), col))
+}
+
+/// Adds a collector's stats to its column's; a key the column already has
+/// keeps its value.
+fn add_column_json(map: &mut serde_json::Map<String, JsonValue>, name: &str, val: JsonValue) {
+    match (map.get_mut(name), val) {
+        (Some(JsonValue::Object(stats)), JsonValue::Object(more)) => {
+            for (key, value) in more {
+                stats.entry(key).or_insert(value);
+            }
+        }
+        (_, val) => {
+            map.insert(name.to_string(), val);
+        }
+    }
+}
+
 impl FileColStats {
     /// Create a new observer for a file. No category count collection.
     ///
@@ -743,19 +849,11 @@ impl FileColStats {
     /// and (for multicategorical string columns) `multicategorical_delimiter`
     /// used to construct each collector.
     pub fn new(columns: &[ColumnSpec]) -> Self {
-        let cols = columns
-            .iter()
-            .map(|c| {
-                ColumnStatsCollector::from_column_type(
-                    &c.semantic_type,
-                    &c.ingested_dtype,
-                    c.multicategorical_delimiter.as_deref(),
-                )
-            })
-            .collect();
+        let (cols, extra_cols) = collectors(columns, stype_stat_sets(columns));
         let n = columns.len();
         Self {
             cols,
+            extra_cols,
             cat_strategy: CategoryCountStrategy::None,
             cat_shared: None,
             cat_local: (0..n).map(|_| None).collect(),
@@ -772,16 +870,47 @@ impl FileColStats {
         columns: &[ColumnSpec],
         table_cat: Arc<TableCategoryCounts>,
     ) -> Self {
-        let cols: Vec<ColumnStatsCollector> = columns
-            .iter()
-            .map(|c| {
-                ColumnStatsCollector::from_column_type(
-                    &c.semantic_type,
-                    &c.ingested_dtype,
-                    c.multicategorical_delimiter.as_deref(),
-                )
-            })
-            .collect();
+        Self::with_collectors(collectors(columns, stype_stat_sets(columns)), table_cat)
+    }
+
+    /// Like [`Self::new_with_categories`], collecting `stat_sets[i]` for
+    /// column `i` instead of its semantic type's statistics. `table_cat`
+    /// must count categories for exactly the columns whose stat set does.
+    pub fn new_with_stat_sets(
+        columns: &[ColumnSpec],
+        stat_sets: &[StatSet],
+        table_cat: Arc<TableCategoryCounts>,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            stat_sets.len() == columns.len() && table_cat.columns.len() == columns.len(),
+            "expected {} stat sets and category columns, got {} and {}",
+            columns.len(),
+            stat_sets.len(),
+            table_cat.columns.len()
+        );
+        for ((col, stat_set), shared) in columns.iter().zip(stat_sets).zip(&table_cat.columns) {
+            anyhow::ensure!(
+                stat_set.counted() <= 1,
+                "column {} requests more than one kind of category counts",
+                col.name
+            );
+            anyhow::ensure!(
+                shared.is_some() == (stat_set.counted() == 1),
+                "column {} must have category counts exactly when its stat set counts them",
+                col.name
+            );
+        }
+        Ok(Self::with_collectors(
+            collectors(columns, stat_sets.iter().copied()),
+            table_cat,
+        ))
+    }
+
+    fn with_collectors(
+        (cols, extra_cols): Collectors,
+        table_cat: Arc<TableCategoryCounts>,
+    ) -> Self {
+        let n = cols.len() - extra_cols.len();
         let strategy = table_cat.strategy;
         let row_subsample = table_cat.row_subsample;
         let file_idx = table_cat.next_file_idx();
@@ -798,7 +927,7 @@ impl FileColStats {
                         .map(|_| LocalColumnCounts::with_capacity(HYBRID_LOCAL_CAP))
                 })
                 .collect(),
-            _ => (0..columns.len()).map(|_| None).collect(),
+            _ => (0..n).map(|_| None).collect(),
         };
         // Graduation: init grad_snapshots as empty sets for eligible columns
         let grad_snapshots = match strategy {
@@ -807,10 +936,11 @@ impl FileColStats {
                 .iter()
                 .map(|shared| shared.as_ref().map(|_| Arc::new(HashSet::new())))
                 .collect(),
-            _ => (0..columns.len()).map(|_| None).collect(),
+            _ => (0..n).map(|_| None).collect(),
         };
         Self {
             cols,
+            extra_cols,
             cat_strategy: strategy,
             cat_shared: Some(table_cat),
             cat_local,
@@ -820,6 +950,10 @@ impl FileColStats {
             clock: TimeUnit::Seconds,
             quantiles: Vec::new(),
         }
+    }
+
+    fn num_columns(&self) -> usize {
+        self.cols.len() - self.extra_cols.len()
     }
 
     pub fn with_clock(mut self, clock: TimeUnit) -> Self {
@@ -832,10 +966,32 @@ impl FileColStats {
         self
     }
 
+    fn collectors_of(&self, col_idx: usize) -> impl Iterator<Item = &ColumnStatsCollector> {
+        let n = self.num_columns();
+        let extras = n + self.extra_cols.partition_point(|&c| c < col_idx)
+            ..n + self.extra_cols.partition_point(|&c| c <= col_idx);
+        std::iter::once(&self.cols[col_idx]).chain(&self.cols[extras])
+    }
+
+    pub fn collects(&self, col_idx: usize) -> bool {
+        self.collectors_of(col_idx)
+            .any(|col| !matches!(col, ColumnStatsCollector::Skip))
+    }
+
+    pub fn counts_categories(&self, col_idx: usize) -> bool {
+        self.collectors_of(col_idx).any(|col| {
+            matches!(
+                col,
+                ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. }
+            )
+        })
+    }
+
     /// Merge another `FileColStats` into this one (per-column dispatch).
     /// Used on the channel receive side to accumulate per-table stats.
     pub fn merge(&mut self, other: &mut FileColStats) {
         assert_eq!(self.cols.len(), other.cols.len());
+        assert_eq!(self.extra_cols, other.extra_cols);
         for (dst, src) in self.cols.iter_mut().zip(other.cols.iter_mut()) {
             dst.merge(src);
         }
@@ -964,7 +1120,8 @@ impl FileColStats {
     ) -> serde_json::Map<String, JsonValue> {
         let mut map = serde_json::Map::new();
         let quantiles = &self.quantiles;
-        for (col_idx, (col, name)) in self.cols.iter_mut().zip(column_names.iter()).enumerate() {
+        for (col_idx, col) in each_collector(self.cols.iter_mut(), &self.extra_cols) {
+            let name = &column_names[col_idx];
             if let Some(mut val) = col.to_json(self.clock) {
                 if let ColumnStatsCollector::Numerical { tdigest, .. } = col {
                     if !quantiles.is_empty() {
@@ -997,7 +1154,7 @@ impl FileColStats {
                         obj.insert("glove_overlap".to_string(), json!(tss.glove_overlap));
                     }
                 }
-                map.insert(name.clone(), val);
+                add_column_json(&mut map, name, val);
             }
         }
         map
@@ -1009,7 +1166,7 @@ impl FileColStats {
         table_cat: Option<&TableCategoryCounts>,
         column_names: &[String],
     ) -> Vec<Option<HashMap<String, u64>>> {
-        (0..self.cols.len())
+        (0..self.num_columns())
             .map(|col_idx| {
                 get_category_counts_for_col(
                     self.cat_strategy,
@@ -1024,7 +1181,7 @@ impl FileColStats {
     /// Call after the counts were read: publication can set the capped flag.
     #[cfg(any(test, feature = "test-util"))]
     fn category_capped(&self, table_cat: Option<&TableCategoryCounts>) -> Vec<Option<bool>> {
-        (0..self.cols.len())
+        (0..self.num_columns())
             .map(|col_idx| {
                 (self.cat_strategy == CategoryCountStrategy::Hybrid)
                     .then(|| {
@@ -1049,7 +1206,7 @@ impl FileColStats {
         table_cat: Option<Arc<TableCategoryCounts>>,
         column_names: &[String],
     ) -> anyhow::Result<PublishedColumns> {
-        let n = self.cols.len();
+        let n = self.num_columns();
         let mut counts: Vec<Option<Vec<(String, u64)>>> = (0..n).map(|_| None).collect();
         let mut capped: Vec<Option<bool>> = vec![None; n];
         // Drop this observer's handle so the table's counts can be owned.
@@ -1893,9 +2050,10 @@ impl FileColStats {
             text_sample_stats,
             data_version,
         );
-        for (col_idx, cc) in cat_counts.iter().enumerate() {
-            let Some(cc) = cc else { continue };
-            let col = &self.cols[col_idx];
+        for (col_idx, col) in each_collector(self.cols.iter(), &self.extra_cols) {
+            let Some(cc) = &cat_counts[col_idx] else {
+                continue;
+            };
             let (stat, values) = match col {
                 ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } => (
                     "CATEGORY_COUNTS",
@@ -1941,7 +2099,7 @@ impl FileColStats {
         let mut map = serde_json::Map::new();
         let dv = data_version;
 
-        for (col_idx, col) in self.cols.iter_mut().enumerate() {
+        for (col_idx, col) in each_collector(self.cols.iter_mut(), &self.extra_cols) {
             let name = &column_names[col_idx];
             let sk = kumo_stype_key(col);
 
@@ -2206,8 +2364,9 @@ impl FileColStats {
                     // Hybrid). Graduation drops sub-threshold categories,
                     // subsampling sees only a fraction, and an aborted or
                     // absent map is None — all fall back to the HLL estimate.
+                    let capped = cat_capped[col_idx].unwrap_or(false);
                     let num_unique = match cat_lens[col_idx] {
-                        Some(len) if cat_map_is_exhaustive => len as u64,
+                        Some(len) if cat_map_is_exhaustive && !capped => len as u64,
                         _ => hll.estimate() as u64,
                     }
                     .min(total);
@@ -2608,19 +2767,19 @@ impl FileColStats {
     /// at convert time and dispatch through `observe_string_list`, leaving
     /// only the single-token-per-row case here.
     #[inline]
-    fn observe_multicat_single_string_token(&mut self, col_idx: usize, raw: &str) {
+    fn observe_multicat_single_string_token(&mut self, col_idx: usize, slot: usize, raw: &str) {
         if let ColumnStatsCollector::Multicategorical {
             count,
             input_kind: MulticatInputKind::SingleStringToken,
             ..
-        } = &mut self.cols[col_idx]
+        } = &mut self.cols[slot]
         {
             *count += 1;
         } else {
             return;
         }
         let count_category = self.should_sample_row();
-        self.observe_multicat_token_str(col_idx, raw.trim(), count_category);
+        self.observe_multicat_token_str(col_idx, slot, raw.trim(), count_category);
     }
 
     /// Per-token string primitive for Multicategorical columns. Updates the
@@ -2632,9 +2791,15 @@ impl FileColStats {
     /// Categorical arm of `observe_string`. `bin/multicat_microbench`
     /// pins the per-token cost; keep it ≈ Categorical observe.
     #[inline]
-    fn observe_multicat_token_str(&mut self, col_idx: usize, tok: &str, count_category: bool) {
+    fn observe_multicat_token_str(
+        &mut self,
+        col_idx: usize,
+        slot: usize,
+        tok: &str,
+        count_category: bool,
+    ) {
         let hash = HyperLogLog::hash_str(tok);
-        if let ColumnStatsCollector::Multicategorical { hll, .. } = &mut self.cols[col_idx] {
+        if let ColumnStatsCollector::Multicategorical { hll, .. } = &mut self.cols[slot] {
             hll.observe_hash(hash);
         }
         if count_category {
@@ -2646,9 +2811,15 @@ impl FileColStats {
     /// input kind). Identity-hashed via `HyperLogLog::hash_i64`, matching
     /// the integer categorical path.
     #[inline]
-    fn observe_multicat_token_i64(&mut self, col_idx: usize, n: i64, count_category: bool) {
+    fn observe_multicat_token_i64(
+        &mut self,
+        col_idx: usize,
+        slot: usize,
+        n: i64,
+        count_category: bool,
+    ) {
         let hash = HyperLogLog::hash_i64(n);
-        if let ColumnStatsCollector::Multicategorical { hll, .. } = &mut self.cols[col_idx] {
+        if let ColumnStatsCollector::Multicategorical { hll, .. } = &mut self.cols[slot] {
             hll.observe_hash(hash);
         }
         if count_category {
@@ -2666,19 +2837,19 @@ impl FileColStats {
 //   C2 - C3 ≈ C1   (multicat token observe ≈ Categorical observe)
 // stays within ~10%. Drift here amplifies linearly across hundreds of
 // millions of tokens on list-heavy fixtures.
-impl ColumnValueObserver for FileColStats {
+impl FileColStats {
     #[inline]
-    fn observe_i64(&mut self, col_idx: usize, value: i64) {
+    fn observe_i64_at(&mut self, col_idx: usize, slot: usize, value: i64) {
         // Pre-compute hash for categorical/id (shared between HLL and category counts).
         // This immutable borrow is released before the mutable match below.
-        let cat_hash = match &self.cols[col_idx] {
+        let cat_hash = match &self.cols[slot] {
             ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } => {
                 Some(HyperLogLog::hash_i64(value))
             }
             _ => None,
         };
 
-        match &mut self.cols[col_idx] {
+        match &mut self.cols[slot] {
             ColumnStatsCollector::Numerical {
                 welford,
                 hll,
@@ -2726,11 +2897,11 @@ impl ColumnValueObserver for FileColStats {
     }
 
     #[inline]
-    fn observe_f64(&mut self, col_idx: usize, value: f64) {
+    fn observe_f64_at(&mut self, col_idx: usize, slot: usize, value: f64) {
         // Canonicalize categorical floats exactly as they are serialized. This
         // keeps HLL membership, retained counts, and JSON identity aligned for
         // values such as signed zero and non-finite float spellings.
-        let cat_value = match &self.cols[col_idx] {
+        let cat_value = match &self.cols[slot] {
             ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } => {
                 // The mapper treats both IEEE signed-zero encodings as the
                 // same scalar key, so category statistics must do the same.
@@ -2743,7 +2914,7 @@ impl ColumnValueObserver for FileColStats {
             _ => None,
         };
 
-        match &mut self.cols[col_idx] {
+        match &mut self.cols[slot] {
             ColumnStatsCollector::Numerical {
                 invalid_count,
                 welford,
@@ -2779,30 +2950,30 @@ impl ColumnValueObserver for FileColStats {
     }
 
     #[inline]
-    fn observe_string(&mut self, col_idx: usize, value: &str) {
+    fn observe_string_at(&mut self, col_idx: usize, slot: usize, value: &str) {
         // Multicategorical scalar-string path: one row → N tokens. Dispatch
         // early so the rest of this method keeps its categorical/id/text
         // one-token-per-row shape.
         if matches!(
-            &self.cols[col_idx],
+            &self.cols[slot],
             ColumnStatsCollector::Multicategorical {
                 input_kind: MulticatInputKind::SingleStringToken,
                 ..
             }
         ) {
-            self.observe_multicat_single_string_token(col_idx, value);
+            self.observe_multicat_single_string_token(col_idx, slot, value);
             return;
         }
 
         // Pre-compute hash for categorical/id (shared between HLL and category counts).
-        let cat_hash = match &self.cols[col_idx] {
+        let cat_hash = match &self.cols[slot] {
             ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } => {
                 Some(HyperLogLog::hash_str(value))
             }
             _ => None,
         };
 
-        match &mut self.cols[col_idx] {
+        match &mut self.cols[slot] {
             ColumnStatsCollector::Categorical { count, hll, .. } => {
                 *count += 1;
                 hll.observe_hash(cat_hash.unwrap());
@@ -2827,29 +2998,35 @@ impl ColumnValueObserver for FileColStats {
         }
     }
 
-    fn observe_bytes(&mut self, col_idx: usize, value: &[u8]) {
+    fn observe_bytes_at(&mut self, col_idx: usize, slot: usize, value: &[u8]) {
         if let ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } =
-            &self.cols[col_idx]
+            &self.cols[slot]
         {
-            self.observe_string(col_idx, &bytes_hex(value));
+            self.observe_string_at(col_idx, slot, &bytes_hex(value));
         }
     }
 
-    fn observe_decimal(&mut self, col_idx: usize, value: f64, text: &dyn Fn() -> String) {
-        match &self.cols[col_idx] {
+    fn observe_decimal_at(
+        &mut self,
+        col_idx: usize,
+        slot: usize,
+        value: f64,
+        text: &dyn Fn() -> String,
+    ) {
+        match &self.cols[slot] {
             ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } => {
-                self.observe_string(col_idx, &text())
+                self.observe_string_at(col_idx, slot, &text())
             }
-            _ => self.observe_f64(col_idx, value),
+            _ => self.observe_f64_at(col_idx, slot, value),
         }
     }
 
     #[inline]
-    fn observe_timestamp(&mut self, col_idx: usize, secs: i64) {
+    fn observe_timestamp_at(&mut self, col_idx: usize, slot: usize, secs: i64) {
         if let ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } =
-            &self.cols[col_idx]
+            &self.cols[slot]
         {
-            return self.observe_i64(col_idx, secs);
+            return self.observe_i64_at(col_idx, slot, secs);
         }
         if let ColumnStatsCollector::Timestamp {
             count,
@@ -2857,7 +3034,7 @@ impl ColumnValueObserver for FileColStats {
             max,
             hll,
             ..
-        } = &mut self.cols[col_idx]
+        } = &mut self.cols[slot]
         {
             *count += 1;
             if secs < *min {
@@ -2871,8 +3048,8 @@ impl ColumnValueObserver for FileColStats {
     }
 
     #[inline]
-    fn observe_float_list(&mut self, col_idx: usize, view: &FloatListView) {
-        match &mut self.cols[col_idx] {
+    fn observe_float_list_at(&mut self, col_idx: usize, slot: usize, view: &FloatListView) {
+        match &mut self.cols[slot] {
             ColumnStatsCollector::Sequence {
                 count,
                 null_count,
@@ -2941,7 +3118,7 @@ impl ColumnValueObserver for FileColStats {
                         return;
                     }
                     let s = format!("{}", f);
-                    self.observe_multicat_token_str(col_idx, &s, count_category);
+                    self.observe_multicat_token_str(col_idx, slot, &s, count_category);
                 });
             }
             _ => {}
@@ -2949,8 +3126,8 @@ impl ColumnValueObserver for FileColStats {
     }
 
     #[inline]
-    fn observe_int64_list(&mut self, col_idx: usize, view: &IntListView) {
-        match &mut self.cols[col_idx] {
+    fn observe_int64_list_at(&mut self, col_idx: usize, slot: usize, view: &IntListView) {
+        match &mut self.cols[slot] {
             // Sequence stype + intlist dtype: mirror observe_float_list's
             // Sequence arm so int-list embedding columns produce non-sentinel
             // SEQUENCE_MIN_LENGTH / SEQUENCE_MAX_LENGTH stats. Without this,
@@ -3014,7 +3191,7 @@ impl ColumnValueObserver for FileColStats {
                     // categorical/id integer columns use; strings stored in
                     // `LocalColumnCounts::strings` are `n.to_string()`, matching
                     // tt_executor's stringified-int emit.
-                    self.observe_multicat_token_i64(col_idx, n, count_category);
+                    self.observe_multicat_token_i64(col_idx, slot, n, count_category);
                 });
             }
             _ => {}
@@ -3022,15 +3199,15 @@ impl ColumnValueObserver for FileColStats {
     }
 
     #[inline]
-    fn observe_string_list(&mut self, col_idx: usize, view: &StringListView) {
+    fn observe_string_list_at(&mut self, col_idx: usize, slot: usize, view: &StringListView) {
         if matches!(
-            &self.cols[col_idx],
+            &self.cols[slot],
             ColumnStatsCollector::Multicategorical {
                 input_kind: MulticatInputKind::StringArray,
                 ..
             }
         ) {
-            if let ColumnStatsCollector::Multicategorical { count, .. } = &mut self.cols[col_idx] {
+            if let ColumnStatsCollector::Multicategorical { count, .. } = &mut self.cols[slot] {
                 *count += 1;
             }
             let count_category = self.should_sample_row();
@@ -3038,14 +3215,14 @@ impl ColumnValueObserver for FileColStats {
             // still reach the callback and remain empty tokens after trim.
             // `trim()` is a borrowed subslice — zero heap activity.
             view.for_each_str(|s| {
-                self.observe_multicat_token_str(col_idx, s.trim(), count_category);
+                self.observe_multicat_token_str(col_idx, slot, s.trim(), count_category);
             });
         }
     }
 
     #[inline]
-    fn observe_null(&mut self, col_idx: usize) {
-        match &mut self.cols[col_idx] {
+    fn observe_null_at(&mut self, _col_idx: usize, slot: usize) {
+        match &mut self.cols[slot] {
             ColumnStatsCollector::Numerical { null_count, .. } => *null_count += 1,
             ColumnStatsCollector::Categorical { null_count, .. } => *null_count += 1,
             ColumnStatsCollector::Id { null_count, .. } => *null_count += 1,
@@ -3060,19 +3237,19 @@ impl ColumnValueObserver for FileColStats {
     }
 
     #[inline]
-    fn observe_beyond_clock(&mut self, col_idx: usize) {
+    fn observe_beyond_clock_at(&mut self, col_idx: usize, slot: usize) {
         if let ColumnStatsCollector::Timestamp {
             beyond_clock_count, ..
-        } = &mut self.cols[col_idx]
+        } = &mut self.cols[slot]
         {
             *beyond_clock_count += 1;
         }
-        self.observe_parse_failure(col_idx);
+        self.observe_parse_failure_at(col_idx, slot);
     }
 
     #[inline]
-    fn observe_parse_failure(&mut self, col_idx: usize) {
-        match &mut self.cols[col_idx] {
+    fn observe_parse_failure_at(&mut self, _col_idx: usize, slot: usize) {
+        match &mut self.cols[slot] {
             ColumnStatsCollector::Numerical {
                 parse_fail_count, ..
             }
@@ -3108,6 +3285,40 @@ impl ColumnValueObserver for FileColStats {
             ColumnStatsCollector::Skip => {}
         }
     }
+}
+
+/// Implements each observer method by feeding every collector of the column.
+macro_rules! observe_each_collector {
+    ($($method:ident => $at:ident($($arg:ident: $ty:ty),*);)*) => {
+        impl ColumnValueObserver for FileColStats {
+            $(
+                #[inline]
+                fn $method(&mut self, col_idx: usize $(, $arg: $ty)*) {
+                    self.$at(col_idx, col_idx $(, $arg)*);
+                    let mut k = self.extra_cols.partition_point(|&c| c < col_idx);
+                    while self.extra_cols.get(k) == Some(&col_idx) {
+                        self.$at(col_idx, self.num_columns() + k $(, $arg)*);
+                        k += 1;
+                    }
+                }
+            )*
+        }
+    };
+}
+
+observe_each_collector! {
+    observe_i64 => observe_i64_at(value: i64);
+    observe_f64 => observe_f64_at(value: f64);
+    observe_string => observe_string_at(value: &str);
+    observe_bytes => observe_bytes_at(value: &[u8]);
+    observe_decimal => observe_decimal_at(value: f64, text: &dyn Fn() -> String);
+    observe_timestamp => observe_timestamp_at(secs: i64);
+    observe_float_list => observe_float_list_at(view: &FloatListView);
+    observe_int64_list => observe_int64_list_at(view: &IntListView);
+    observe_string_list => observe_string_list_at(view: &StringListView);
+    observe_null => observe_null_at();
+    observe_beyond_clock => observe_beyond_clock_at();
+    observe_parse_failure => observe_parse_failure_at();
 }
 
 // ---------------------------------------------------------------------------
@@ -3320,10 +3531,7 @@ impl FileColStats {
     ) -> KumoColStats {
         let lens: Vec<Option<usize>> = counts.iter().map(|c| c.as_ref().map(Vec::len)).collect();
         let stats = self.kumo_stats(column_names, &lens, capped, text_sample_stats, data_version);
-        let keys = self
-            .cols
-            .iter()
-            .enumerate()
+        let keys = each_collector(self.cols.iter(), &self.extra_cols)
             .filter(|(col_idx, _)| counts[*col_idx].is_some())
             .filter_map(|(col_idx, col)| {
                 let (stat, kind) = match col {
@@ -6189,5 +6397,61 @@ mod tests {
             std::fs::read(dir.path().join("col_stats.json")).unwrap(),
             b"{}"
         );
+    }
+
+    #[test]
+    fn stat_set_collects_counts_and_moments_in_one_pass() {
+        let cols = make_test_cols_with_types(&[(None, IngestedType::Int64, None)]);
+        let table_cat = |stat_set: StatSet| {
+            Arc::new(TableCategoryCounts::new(
+                CategoryCountStrategy::Hybrid,
+                &[stat_set],
+                false,
+            ))
+        };
+        let publish = |stat_set: StatSet| {
+            let tc = table_cat(stat_set);
+            let mut stats =
+                FileColStats::new_with_stat_sets(&cols, &[stat_set], Arc::clone(&tc)).unwrap();
+            for value in [3, 1, 4, 1, 5, 9, 2, 6, 5, 3] {
+                stats.observe_i64(0, value);
+            }
+            stats.observe_null(0);
+            stats.flush_categories();
+            let dir = tempfile::tempdir().unwrap();
+            let table = ColStatsTable {
+                name: "t".to_string(),
+                stats,
+                column_names: vec!["c0".to_string()],
+                ingested_types: vec![IngestedType::Int64],
+                table_cat: Some(tc),
+                text_sample_stats: None,
+                data_version: Some("v1".to_string()),
+            };
+            write_col_stats(&local_target(&dir), vec![table]).unwrap();
+            let read = |rel: &str| -> serde_json::Map<String, JsonValue> {
+                serde_json::from_slice(&std::fs::read(dir.path().join(rel)).unwrap()).unwrap()
+            };
+            let summary = read("col_stats.json")["t"]["c0"]
+                .as_object()
+                .unwrap()
+                .clone();
+            (summary, read("kumo_col_stats/col_stats_full/t.json"))
+        };
+        let (counts_summary, counts_kumo) = publish(StatSet::COUNTS);
+        let (mut summary, mut kumo) = publish(StatSet::MOMENTS);
+        assert!(counts_summary.contains_key("category_counts") && summary.contains_key("q50"));
+        summary.extend(counts_summary);
+        kumo.extend(counts_kumo);
+        assert_eq!(publish(StatSet::COUNTS | StatSet::MOMENTS), (summary, kumo));
+
+        let id_counts = StatSet::COUNTS | StatSet::from(Some(SemanticType::Id));
+        for (stat_sets, tc) in [
+            (vec![id_counts], table_cat(id_counts)),
+            (vec![StatSet::COUNTS], table_cat(StatSet::MOMENTS)),
+            (vec![], table_cat(StatSet::MOMENTS)),
+        ] {
+            assert!(FileColStats::new_with_stat_sets(&cols, &stat_sets, tc).is_err());
+        }
     }
 }

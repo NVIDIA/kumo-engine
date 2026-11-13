@@ -24,10 +24,10 @@ REQUEST = {
     "cutoffs": [CUTOFF, None],
     "dirs": ["at-cutoff", "every-row"],
     "columns": {
-        "users": {"tier": "categorical", "age": "numerical", "raw": "categorical",
-                  "seen": "categorical", "born": "categorical", "price": "numerical",
-                  "big": "categorical"},
-        "items": {"name": "categorical"},
+        "users": {"tier": ["categorical"], "age": ["categorical", "numerical"],
+                  "raw": ["categorical"], "seen": ["categorical"], "born": ["categorical"],
+                  "price": ["categorical", "numerical"], "big": ["categorical"]},
+        "items": {"name": ["categorical"]},
     },
     "quantiles": QUANTILES,
 }
@@ -83,7 +83,8 @@ def _ingest(data: pathlib.Path, out: pathlib.Path, col_stats=False, **options) -
 
 def _stats(index: str) -> dict:
     root = pathlib.Path(index) / "col_stats"
-    return {d: json.loads((root / d / "col_stats.json").read_text()) for d in REQUEST["dirs"]}
+    return {d: {t: json.loads((root / d / f"{t}.col_stats.json").read_text())[t] for t in REQUEST["columns"]}
+            for d in REQUEST["dirs"]}
 
 
 @pytest.fixture(scope="module")
@@ -107,6 +108,7 @@ def test_ingest_counts_the_rows_created_at_or_before_each_cutoff(data, ingested)
         assert age["std"] == pytest.approx(ages.std(ddof=1), rel=1e-12)
         ranks = [np.mean(ages <= q) for q in age["quantiles"]]
         assert ranks == pytest.approx(QUANTILES, abs=0.02)
+        assert {int(k): v for k, v in age["category_counts"]} == collections.Counter(ages.tolist())
         raw = collections.Counter(users["raw"][i].hex() for i in rows)
         assert dict(map(tuple, stats["users"]["raw"]["category_counts"])) == raw
         seen = collections.Counter(users["seen"][i] // 10**6 for i in rows)
@@ -115,6 +117,8 @@ def test_ingest_counts_the_rows_created_at_or_before_each_cutoff(data, ingested)
         assert {int(k): v for k, v in stats["users"]["born"]["category_counts"]} == born
         prices = np.array([float(users["price"][i]) for i in rows])
         assert stats["users"]["price"]["mean"] == pytest.approx(prices.mean(), rel=1e-12)
+        decimals = collections.Counter(str(users["price"][i]) for i in rows)
+        assert dict(map(tuple, stats["users"]["price"]["category_counts"])) == decimals
         # A table without a create time counts every row at every cutoff.
         assert sum(v for _, v in stats["items"]["name"]["category_counts"]) == 500
 
@@ -122,7 +126,11 @@ def test_ingest_counts_the_rows_created_at_or_before_each_cutoff(data, ingested)
 def test_recompute_from_the_index_matches_ingest(data, ingested, tmp_path):
     index = tmp_path / "index"
     shutil.copytree(ingested, index, ignore=shutil.ignore_patterns("col_stats"))
-    diskgraph.cutoff_col_stats(str(index), json.dumps(REQUEST), num_threads=4)
+    users = {**REQUEST["columns"]["users"], "age": ["categorical"]}
+    diskgraph.cutoff_col_stats(str(index), json.dumps({**REQUEST, "columns": {**REQUEST["columns"], "users": users}}),
+                               num_threads=4)
+    # Statistics added to a column join its entry; its other keys and the other columns stay.
+    diskgraph.cutoff_col_stats(str(index), json.dumps({**REQUEST, "columns": {"users": {"age": ["numerical"]}}}))
     assert _stats(str(index)) == _stats(ingested)
     counts = _stats(ingested)["every-row"]["users"]["big"]["category_counts"]
     assert {int(key) for key, _ in counts} == {5, -(2**63), -1}
@@ -131,7 +139,10 @@ def test_recompute_from_the_index_matches_ingest(data, ingested, tmp_path):
 def test_rejects_unknown_columns_and_exclusive_options(data, ingested, tmp_path):
     with pytest.raises(Exception, match="has no column missing"):
         diskgraph.cutoff_col_stats(ingested, json.dumps(
-            {**REQUEST, "columns": {"users": {"missing": "categorical"}}}))
+            {**REQUEST, "columns": {"users": {"missing": ["categorical"]}}}))
+    with pytest.raises(Exception, match="more than one kind of category counts"):
+        diskgraph.cutoff_col_stats(ingested, json.dumps(
+            {**REQUEST, "columns": {"users": {"tier": ["categorical", "id"]}}}))
     with pytest.raises(Exception, match="its own directory"):
         diskgraph.cutoff_col_stats(ingested, json.dumps({**REQUEST, "dirs": ["same", "same"]}))
     with pytest.raises(Exception, match="exclusive"):
@@ -146,7 +157,7 @@ def test_rows_the_index_does_not_store_count_on_neither_route(tmp_path):
     pq.write_table(pa.table({"id": range(60), "at": times, "tier": pa.array(tiers, pa.large_string())}),
                    tmp_path / "events.parquet")
     request = {"cutoffs": [T0 + 29, None], "dirs": ["at-cutoff", "every-row"],
-               "columns": {"events": {"tier": "categorical"}}}
+               "columns": {"events": {"tier": ["categorical"]}}}
     index = tmp_path / "index"
     diskgraph.ingest(
         config_json=json.dumps({"dataset_name": "dropped", "tables": [{
@@ -159,7 +170,7 @@ def test_rows_the_index_does_not_store_count_on_neither_route(tmp_path):
     )
 
     def counts():
-        return [dict(map(tuple, json.loads((index / "col_stats" / d / "col_stats.json").read_text())
+        return [dict(map(tuple, json.loads((index / "col_stats" / d / "events.col_stats.json").read_text())
                          ["events"]["tier"]["category_counts"])) for d in request["dirs"]]
 
     ingested = counts()

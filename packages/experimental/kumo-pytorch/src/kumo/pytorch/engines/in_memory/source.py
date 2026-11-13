@@ -14,8 +14,7 @@ comparison is a matter of swapping one object.
 
 from __future__ import annotations
 
-import json
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -24,13 +23,12 @@ from kumo.pytorch.column_stats import (
     ColumnStats,
     StatRequest,
     TableColumnEncoder,
-    stats_request,
-    stype_groups,
+    read_column_stats,
 )
 from kumo.pytorch.contract.sample import BuiltSample, SampleRequest, SampleSpec
 from kumo.pytorch.contract.schema import DataSchema, table_clock
 from kumo.pytorch.data.records import timestamp_to_epoch
-from kumo.pytorch.encoding import TRAIN_BATCH
+from kumo.pytorch.encoding import TRAIN_BATCH, train_text
 from kumo.pytorch.engines.in_memory.graph import InMemoryGraphSampler
 from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
 
@@ -70,12 +68,9 @@ class InMemorySource:
             roots,
         )
 
-    def column_stats(
-        self, requests: Sequence[StatRequest], cutoff: int | None, quantiles: bool
-    ) -> ColumnStats:
+    def column_stats(self, requests: Sequence[StatRequest], cutoff: int | None) -> ColumnStats:
         import tempfile
 
-        import diskgraph
         import pyarrow as pa
         import pyarrow.parquet as pq
 
@@ -106,21 +101,11 @@ class InMemorySource:
             index = Path(directory, "index")
             ensure_diskgraph_index(DataSchema(tables=tuple(stored)), Dataset(sources), index)
             names = {table.name for table in stored}
-            for group in stype_groups([item for item in requests if item[0] in names]):
-                request = stats_request(group, [cutoff], "seconds", quantiles)
-                diskgraph.cutoff_col_stats(str(index), json.dumps(request))
-                found = json.loads(
-                    index.joinpath("col_stats", request["dirs"][0], "col_stats.json").read_text()
-                )
-                columns.update({item: found[item[0]][item[1]] for item in group})
+            group = [item for item in requests if item[0] in names]
+            columns.update(read_column_stats(index, group, cutoff, "seconds").columns)
         return ColumnStats(columns, {"value": cutoff, "unit": "seconds"})
 
-    def column_text(
-        self,
-        encoder: TableColumnEncoder,
-        cutoff: int | None,
-        train: Callable[[Iterator[Sequence[str]]], str],
-    ) -> tuple[str, None]:
+    def column_text(self, encoder: TableColumnEncoder, cutoff: int | None) -> tuple[str, None]:
         tables = {table.name: table for table in self.schema.tables}
 
         def batches() -> Iterator[list[str]]:
@@ -140,7 +125,7 @@ class InMemorySource:
             if batch:
                 yield batch
 
-        return train(batches()), None
+        return train_text(encoder.config, batches()), None
 
     def sample_graph(
         self,
