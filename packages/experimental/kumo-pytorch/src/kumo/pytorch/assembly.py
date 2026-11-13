@@ -64,7 +64,7 @@ from kumo.pytorch.contract.sample import (
 )
 from kumo.pytorch.data.masking import mask_event_values
 from kumo.pytorch.data.model import ModelSourceBatch
-from kumo.pytorch.data.records import EntityHistory, Event
+from kumo.pytorch.data.records import EntityHistory, Event, cutoff_to_epoch
 from kumo.pytorch.encoding import (
     FittedEncoder,
     FittedSpace,
