@@ -18,6 +18,7 @@ from kumo.pytorch import api
 from kumo.pytorch.aggregate_materialization import MaterializedValues
 from kumo.pytorch.column_stats import ColumnStats, TableColumnEncoder, fit_from_stats
 from tests.test_anchor_tables import ANCHORS, DATASET, EVENTS, _contract, _table
+from tests.test_model_history_limits import history_data as history_data
 
 diskgraph = pytest.importorskip("diskgraph")
 
@@ -286,5 +287,99 @@ def test_materialized_buckets_use_shared_statistics(tmp_path, zero, monkeypatch)
                 for cut, probability in zip(boundaries, (1 / 3, 2 / 3), strict=True):
                     rank = sum(value <= cut for value in expected_values) / len(expected_values)
                     assert rank == pytest.approx(probability, abs=1.5 / len(expected_values))
+        requests = [
+            api.SampleRequest(row["sid"], row["user_id"], row["at"], split=row["split"])
+            for row in ANCHORS
+        ]
+        with plan.materialize(requests, fit_split="train") as task:
+            row_boundaries = task.output("entity").field(name="score").encoder.boundaries
+            if zero:
+                assert row_boundaries == ()
+            else:
+                assert len(row_boundaries) == 2
+                for cut, probability in zip(row_boundaries, (1 / 3, 2 / 3), strict=True):
+                    rank = sum(value <= cut for value in expected_values) / len(expected_values)
+                    assert rank == pytest.approx(probability, abs=1.5 / len(expected_values))
         assert len(calls) == 1
         assert "bucket_cuts" not in values.feature_stats
+
+
+def _target_free_diskgraph_case(history_data, tmp_path):
+    schema, dataset, _, _, _ = history_data
+    sample = api.SampleSpec(
+        api.EntitySpec("users"),
+        entity_values={
+            "spent": api.Aggregate(
+                api.Rows(("orders",), api.TimeWindow("at", stop=0)),
+                "sum",
+                "amount",
+                dtype=api.DType("float64"),
+            )
+        },
+    )
+    spec = api.DataLoaderSpec(
+        schema,
+        sample,
+        api.BatchSpec(
+            {
+                "entity": api.Input(
+                    api.EntitySource(),
+                    api.Fields((api.Encode("spent", api.ZScore()),)),
+                    api.Separate(),
+                )
+            },
+            batching=api.Batching(max_samples=2),
+        ),
+    )
+    path = tmp_path / "anchors.parquet"
+    pq.write_table(
+        pa.table({"entity": [1, 3, 1], "at": [5, 5, 4], "split": ["train", "train", "valid"]}), path
+    )
+    return spec, dataset, api.AnchorTable(api.Parquet(str(path)), "entity", "at", split="split")
+
+
+def test_fitted_target_free_task_reuse_needs_no_fit_split(history_data, tmp_path, monkeypatch):
+    spec, dataset, anchors = _target_free_diskgraph_case(history_data, tmp_path)
+    with api.prepare(
+        spec, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
+    ) as plan:
+        with plan.materialize(anchors, fit_split="train") as initial:
+            fitted = initial.fitted_state.inputs
+            expected = [
+                batch.inputs["entity"]["spent"]["values"]
+                for batch in initial.batches(output_format="model", shuffle=False)
+            ]
+
+        def forbidden(*args, **kwargs):
+            pytest.fail("reusing all fitted state collected new encoder statistics")
+
+        monkeypatch.setattr(diskgraph, "write_column_stats_for_parquet", forbidden)
+        with plan.materialize(anchors, fitted=fitted) as reused:
+            actual = [
+                batch.inputs["entity"]["spent"]["values"]
+                for batch in reused.batches(output_format="model", shuffle=False)
+            ]
+            assert len(actual) == len(expected)
+            for got, want in zip(actual, expected, strict=True):
+                assert got.equal(want)
+
+
+def test_saved_fit_record_omits_temporary_values_paths(history_data, tmp_path):
+    from pathlib import Path
+
+    spec, dataset, anchors = _target_free_diskgraph_case(history_data, tmp_path)
+    index = tmp_path / "index"
+    with api.prepare(spec, dataset, api.DiskGraphEngine(index=index, num_threads=2)) as plan:
+        with plan.materialize(anchors, fit_split="train") as task:
+            (directory,) = (index / "tasks").glob("task-*")
+            assert directory.exists()
+            fit = task.fitted_state.fit["inputs"]
+            assert fit["fit_split"] == ["train"]
+            files = fit["statistics"]["col_stats"]
+            assert all(not Path(file).is_absolute() for file in files)
+            assert all((index / "col_stats" / file).exists() for file in files)
+            artifact = task.to_artifact()
+            artifact.save(tmp_path / "artifact")
+        assert not directory.exists()
+    restored = api.Artifact.load(tmp_path / "artifact")
+    assert restored.fitted_state.fit["inputs"] == artifact.fitted_state.fit["inputs"]

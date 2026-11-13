@@ -284,7 +284,8 @@ class Plan:
                     stats_split=self._fit_selection(
                         split_selection(fit_split), anchors.split is not None
                     )
-                    if not inference and (fitted is None or not fitted.has_targets)
+                    if not inference
+                    and (fitted is None or not fitted.has_targets and self.contract.batch.targets)
                     else None,
                 )
                 anchors = values.anchors

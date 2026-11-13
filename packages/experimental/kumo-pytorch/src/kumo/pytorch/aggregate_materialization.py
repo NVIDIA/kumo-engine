@@ -102,11 +102,8 @@ class MaterializedValues:
         return ColumnStats(
             {item: self.feature_stats["stats"][item[1]] for item in requests},
             {"value": None, "unit": self.feature_stats.get("clock", "seconds")},
-            tuple(
-                str(Path(self.anchors.source.path) / file)
-                for file in ("feature-stats.json", self.feature_stats.get("columns_file"))
-                if file
-            ),
+            # FitRecord's file references are durable index/col_stats entries.
+            # These task-local values/statistics may disappear when the task closes.
         )
 
     def _bind(self, contract, source, anchors, dataset):
