@@ -392,9 +392,13 @@ class PredictiveQuery:
 
         Args:
             snapshot: a snapshot of this query's graph to compile against.
-            prediction_time: the anchor timestamp for a temporal query;
-                when omitted, uses the latest source-time maximum across the
-                query's target aggregations in the snapshot.
+            prediction_time: the anchor time for a temporal query, as a
+                timezone-naive ``datetime`` read as UTC; a timezone-aware
+                value raises ``ValueError``. When omitted, uses the latest
+                timestamp among the tables aggregated in the query's
+                target, for example the latest ``order_time`` for
+                ``COUNT(orders.*, 0, 30, days)``. Static queries raise
+                ``ValueError`` when it is set.
             plan: effective training-table generation settings. Forecast
                 lag, year-over-year, and timeframe settings must match the
                 fitted trainer. A loaded trainer exposes this plan through
