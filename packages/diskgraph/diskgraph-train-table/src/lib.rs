@@ -4,6 +4,7 @@
 
 // TT-gen executor (plan-based, driven by DiskGraphTTPlan from PyO3 builder)
 pub mod ttgen_accumulator;
+pub mod ttgen_row_aggregate;
 pub mod ttgen_executor;
 pub mod ttgen_filter;
 pub mod ttgen_output;
