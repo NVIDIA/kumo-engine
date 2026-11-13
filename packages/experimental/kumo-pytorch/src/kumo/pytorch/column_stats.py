@@ -32,7 +32,7 @@ from kumo.pytorch.contract.batch import (
 from kumo.pytorch.contract.batch.encodings import Buckets, ScalarEncoding, Text, Vocabulary, ZScore
 from kumo.pytorch.contract.batch.validation import resolved_fields
 from kumo.pytorch.contract.dtypes import DType
-from kumo.pytorch.contract.sample import Field, destination_table
+from kumo.pytorch.contract.sample import Constant, Field, destination_table
 from kumo.pytorch.encoding import (
     TEXT_RECIPE,
     FittedEncoder,
@@ -185,7 +185,15 @@ def _required_columns(contract: Any, name: str) -> dict[str, tuple[str, ...]]:
         }
         for field in row.required_fields
     }
-    required: dict[str, dict[str, str]] = {}
+    # A non-null constant always survives the required-value check. Keep its
+    # identity in the per-table mapping so a nullable column on another
+    # component cannot silently share the same validity file.
+    for field in row.required_fields:
+        for variant, _, _ in resolved_fields(contract, name, field):
+            declaration = getattr(contract.sample, variant[0])[variant[1]].fields[variant[2]]
+            if isinstance(declaration, Constant) and declaration.value is not None:
+                stored[field][variant[:2]] = ("", None)
+    required: dict[str, dict[str, str | None]] = {}
     for event in value.source.events:
         rows = getattr(contract.sample, collection)[event].rows
         table = destination_table(contract.schema, contract.sample.entity.table, rows.path)
@@ -202,7 +210,10 @@ def _required_columns(contract: Any, name: str) -> dict[str, tuple[str, ...]]:
                     f"required field {field!r} of {name!r} reads several columns of {table}, so "
                     "token lengths can't count the events delivery keeps"
                 )
-    return {table: tuple(sorted(set(fields.values()))) for table, fields in required.items()}
+    return {
+        table: tuple(sorted({column for column in fields.values() if column is not None}))
+        for table, fields in required.items()
+    }
 
 
 def token_lengths_file(

@@ -270,6 +270,7 @@ def test_a_row_with_a_null_required_field_is_marked_dropped(tmp_path, length_inp
     ("again", "message"),
     (
         ({"channel": api.Field(column="description")}, "reads several columns"),
+        ({"channel": api.Constant("ok", dtype=api.DType("string"))}, "reads several columns"),
         ({}, "has no stored column"),
     ),
 )
@@ -380,3 +381,22 @@ def test_chunked_encoding_matches_one_string_at_a_time(monkeypatch):
         pieces = [encoder.encode(value) for value in values]
         assert encoded["values"].tolist() == [piece for item in pieces for piece in item]
         assert encoded["piece_offsets"].diff().tolist() == [len(item) for item in pieces]
+
+
+def test_a_nonnull_constant_required_field_needs_no_validity_scan(tmp_path, monkeypatch):
+    import diskgraph
+
+    contract = _required(("channel",))
+    events = contract.sample.events["transactions"]
+    events = replace(
+        events, fields={**events.fields, "channel": api.Constant("ok", dtype=api.DType("string"))}
+    )
+    contract = replace(contract, sample=replace(contract.sample, events={"transactions": events}))
+
+    def scan(*args, **kwargs):
+        raise AssertionError("an always-present required constant needs no validity scan")
+
+    monkeypatch.setattr(diskgraph, "token_lengths", scan)
+    dataset, engine = _setup("diskgraph", tmp_path)
+    entry = _entry(contract, dataset, engine)
+    assert entry["file"] is None
