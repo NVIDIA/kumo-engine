@@ -25,7 +25,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ inputs.build_only && 'engine-e2e-build' || 'engine-pr' }}-${{ github.ref }}
+  group: ${{ inputs.build_only && 'engine-e2e-build' || 'engine-pr' }}-${{ github.ref }}-${{ inputs.build_only && github.run_id || '' }}
   cancel-in-progress: ${{ github.event_name == 'push' }}
 
 jobs:
