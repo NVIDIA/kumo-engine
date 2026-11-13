@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 from dataclasses import replace
 
@@ -71,6 +72,9 @@ def test_a_stored_text_column_trains_on_its_rows_up_to_the_cutoff(tmp_path, engi
         assert published[0] == published[1]
         (path,) = published[0]
         assert json.loads(path.read_text())["tokenizer"] == expected
+        umask = os.umask(0)
+        os.umask(umask)
+        assert path.stat().st_mode & 0o777 == 0o666 & ~umask
 
 
 def test_both_engines_and_every_thread_count_train_the_same_tokenizer(tmp_path):
