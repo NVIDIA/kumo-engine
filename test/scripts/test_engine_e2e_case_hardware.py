@@ -96,7 +96,8 @@ def test_reference_comparison_requires_equal_known_instance_types():
 def test_runner_registers_with_repository_scope(tmp_path, tier):
     runner = ROOT / ".github/scripts/engine-e2e-runner.sh"
     source = runner.read_text()
-    start, end = source.index("mode=()\n"), source.index("unset RUNNER_TOKEN")
+    start = source.index("runuser -u engine-e2e -- env -i")
+    end = source.index("unset RUNNER_TOKEN")
     command = source[start:end]
     (tmp_path / "config.sh").write_text('#!/bin/bash\nprintf "%s\\n" "$@"\n')
     (tmp_path / "config.sh").chmod(0o755)
@@ -110,7 +111,7 @@ def test_runner_registers_with_repository_scope(tmp_path, tier):
     repository_url = "https://github.com/NVIDIA/kumo-engine"
     assert result[result.index("--url") + 1] == repository_url
     assert "--runnergroup" not in result
-    assert ("--ephemeral" in result) == (tier == "weekly")
+    assert "--ephemeral" in result
 
 
 @pytest.mark.parametrize("status", [0, 37])

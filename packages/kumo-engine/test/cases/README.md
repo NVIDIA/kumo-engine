@@ -82,7 +82,7 @@ The VM profile invokes only this Lambda. Repository workflow permissions control
 
 AWS maintains one pool per declared instance type and retries that type across approved subnets outside the CPU job.
 Capacity waits are four hours nightly and 24 hours weekly. Case execution limits are 180 and 360 minutes, respectively.
-Weekly replaces its VM after each case. Nightly can reuse VMs. Re-run all jobs to create a new pool for an attempt.
+Each VM runs one case and then shuts down, and the pool launches a new VM for the next queued case. Re-run all jobs to create a new pool for an attempt.
 The Lambda treats a pool as drained only after all planned jobs are visible and none remains queued or waiting.
 It suspends only new launches for that pool. Existing workers continue, and the unused replacement exits cleanly.
 Before allocation, AWS schedules suspend launches at the capacity deadline.
