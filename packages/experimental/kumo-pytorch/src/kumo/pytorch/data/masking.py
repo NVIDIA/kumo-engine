@@ -164,21 +164,43 @@ def mask_event_values(
         ),
     )
 
-    # The loop is per example, not per event or token. It handles the rare case
-    # where stochastic masking selected no loss-bearing token.
-    for owner in range(entity_ids.numel()):
-        owner_valid = valid & (owners == owner)
-        positions = owner_valid.nonzero(as_tuple=False)
-        if positions.numel() == 0:
-            continue
-        if masking.ensure_at_least_one and not selected[owner_valid].any():
-            first_event, first_token = positions[0]
-            selected[first_event, first_token] = True
-            unknown[first_event, first_token] = False
-        predicted = selected if masking.supervise_unknown else selected & ~unknown
-        if masking.ensure_at_least_one and not predicted[owner_valid].any():
-            first_event, first_token = selected.logical_and(owner_valid).nonzero(as_tuple=False)[0]
-            unknown[first_event, first_token] = False
+    if masking.ensure_at_least_one:
+        # Reduce first flat positions by owner once, rather than scanning every
+        # event/token for each owner. Flat order matches nonzero's row order.
+        positions = torch.arange(key_ids.numel(), device=key_ids.device).reshape_as(key_ids)
+        sentinel = key_ids.numel()
+        first_valid = torch.full_like(entity_ids, sentinel, dtype=torch.long)
+        first_selected = first_valid.clone()
+        first_valid.scatter_reduce_(
+            0,
+            owners.reshape(-1),
+            positions.masked_fill(~valid, sentinel).reshape(-1),
+            reduce="amin",
+            include_self=True,
+        )
+        first_selected.scatter_reduce_(
+            0,
+            owners.reshape(-1),
+            positions.masked_fill(~selected, sentinel).reshape(-1),
+            reduce="amin",
+            include_self=True,
+        )
+        fallback = first_valid[(first_selected == sentinel) & (first_valid != sentinel)]
+        first_event, first_token = fallback // token_width, fallback % token_width
+        selected[first_event, first_token] = True
+        unknown[first_event, first_token] = False
+        if not masking.supervise_unknown:
+            predicted = selected & ~unknown
+            first_predicted = torch.full_like(entity_ids, sentinel, dtype=torch.long)
+            first_predicted.scatter_reduce_(
+                0,
+                owners.reshape(-1),
+                positions.masked_fill(~predicted, sentinel).reshape(-1),
+                reduce="amin",
+                include_self=True,
+            )
+            fallback = first_selected[(first_predicted == sentinel) & (first_selected != sentinel)]
+            unknown[fallback // token_width, fallback % token_width] = False
 
     loss_mask = selected if masking.supervise_unknown else selected & ~unknown
     inputs = value_ids.clone()
