@@ -11,12 +11,14 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from kumo.pytorch import api
 from kumo.pytorch.column_stats import table_column_encoders
+from kumo.pytorch.engine import GraphRoot
 from tests.test_diskgraph_backend import _fixture_rows, _requests, _schema, _write_parquet
 
 pytest.importorskip("diskgraph")
@@ -195,11 +197,7 @@ def test_a_shared_encoder_combines_its_columns_unless_one_is_computed(tmp_path):
     assert [value for value, _ in _state(fitted, '"kinds"')["entries"]] == expected
 
 
-# 6226f4ac fits this state, reading the graph once for every fitting anchor.
-SHARED_GRAPH_STATE = "sha256:a737a0089a9acc4f75c8c6055315623ccb2b20b29a379129c4af4719602bd710"
-
-
-def test_a_graph_field_sharing_an_encoder_with_an_aggregate_fits_as_before(tmp_path):
+def test_a_shared_encoder_fits_the_graph_values_of_every_root_then_the_aggregate(tmp_path):
     rows = _fixture_rows()
     draw = random.Random(1)
     for row in rows["card_transactions"]:
@@ -240,10 +238,28 @@ def test_a_graph_field_sharing_an_encoder_with_an_aggregate_fits_as_before(tmp_p
         for hour in range(0, 35_000, 7)
         for user in (2, 3)
     ]
-    engine = api.DiskGraphEngine(index=tmp_path / "index")
-    with api.prepare(contract, _write_parquet(rows, tmp_path / "parquet"), engine) as plan:
+    dataset, engine = (
+        _write_parquet(rows, tmp_path / "parquet"),
+        api.DiskGraphEngine(index=tmp_path / "index"),
+    )
+    with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(anchors) as task:
-            assert task.manifest["fitted_state_fingerprint"] == SHARED_GRAPH_STATE
+            fitted = task.encoders["amounts"]
+    source = engine.open(dataset, contract.schema)
+    roots = [
+        GraphRoot(
+            anchor.sample_id,
+            anchor.entity_id,
+            int(anchor.as_of_time.replace(tzinfo=UTC).timestamp()),
+        )
+        for anchor in anchors
+    ]
+    nodes = SimpleNamespace(source="activity", node_fields=graph.node_fields)
+    values = list(source.fit_graph_fields(sample, nodes, roots)[("card_transactions", "amount")])
+    values += [built.history.entity.values[0].value for built in source.build(sample, anchors)]
+    source.close()
+    expected = np.asarray(values, dtype=np.float64)
+    assert (fitted.mean, fitted.scale) == (float(expected.mean()), float(expected.std()))
 
 
 @pytest.mark.parametrize("engine_name", ("in_memory", "diskgraph"))
