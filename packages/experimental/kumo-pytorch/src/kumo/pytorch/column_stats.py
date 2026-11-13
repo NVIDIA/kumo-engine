@@ -30,7 +30,7 @@ from kumo.pytorch.contract.batch import (
 )
 from kumo.pytorch.contract.batch.encodings import Buckets, ScalarEncoding, Vocabulary, ZScore
 from kumo.pytorch.contract.batch.validation import resolved_fields
-from kumo.pytorch.contract.dtypes import DType, _since_epoch
+from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.sample import Field, destination_table
 from kumo.pytorch.encoding import FittedEncoder, learned_entries, typed_key
 
@@ -231,23 +231,49 @@ def _learns_from_stats(config: Any, dtype: DType) -> bool:
     return False
 
 
-def cutoff_nanos(value: Any) -> int | None:
-    """Epoch nanoseconds of a cutoff: an ISO 8601 string, a date or datetime, or epoch seconds."""
+def cutoff_nanos(values: Sequence[Any]) -> list[int | None]:
+    """Epoch nanoseconds of each cutoff: an ISO 8601 string, a date or datetime, or epoch seconds.
 
-    if value is None:
-        return None
-    if type(value) is int:
-        return value * 10**9
-    if isinstance(value, str):
-        try:
-            value = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            raise ValueError(f"encoder_cutoff {value!r} is not an ISO 8601 timestamp") from None
-    if isinstance(value, dt.date):
-        return _since_epoch(value) // dt.timedelta(microseconds=1) * 1_000
-    raise TypeError(
-        f"encoder_cutoff must be a timestamp string, datetime or epoch seconds, not {value!r}"
+    DiskGraph parses and normalizes them as ingest reads a timestamp column, to the nanosecond.
+    """
+
+    import diskgraph
+    import pyarrow as pa
+
+    def epochs(items: list, arrow_type: pa.DataType | None = None) -> list[int | None]:
+        return diskgraph.resolve_temporal(
+            pa.array(items, arrow_type), timestamp_unit="nanoseconds"
+        )[0]
+
+    times = iter(
+        epochs(
+            [
+                value if isinstance(value, dt.datetime) else dt.datetime.combine(value, dt.time())
+                for value in values
+                if isinstance(value, dt.date)
+            ],
+            pa.timestamp("ns"),
+        )
     )
+    nanos: list[int | None] = []
+    for value in values:
+        if value is None:
+            nanos.append(None)
+        elif type(value) is int:
+            nanos.append(value * 10**9)
+        elif isinstance(value, dt.date):
+            nanos.append(next(times))
+        elif isinstance(value, str):
+            (epoch,) = epochs([value])
+            if epoch is None:
+                raise ValueError(f"encoder_cutoff {value!r} is not an ISO 8601 timestamp")
+            nanos.append(epoch)
+        else:
+            raise TypeError(
+                "encoder_cutoff must be a timestamp string, datetime or epoch seconds, "
+                f"not {value!r}"
+            )
+    return nanos
 
 
 def fit_from_stats(identity: str, encoder: TableColumnEncoder, stats: ColumnStats) -> FittedEncoder:
