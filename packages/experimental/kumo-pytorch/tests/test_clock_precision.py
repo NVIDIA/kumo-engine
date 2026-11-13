@@ -15,6 +15,22 @@ from kumo.pytorch import api
 pytest.importorskip("diskgraph")
 
 
+@pytest.mark.parametrize("unit,tick", [("s", 10**9), ("ms", 10**6), ("us", 1000)])
+@pytest.mark.parametrize("integer", [False, True])
+def test_stored_array_values_round_up_before_safe_cast(unit, tick, integer):
+    import pyarrow.compute as pc
+
+    from kumo.pytorch.engines.diskgraph import DiskGraphSource
+
+    source = DiskGraphSource.__new__(DiskGraphSource)
+    source._clock, source._pa, source._pc = "nanoseconds", pa, pc
+    values = pa.array(
+        [tick + 1, -tick - 1, None], type=pa.int64() if integer else pa.timestamp("ns", tz="UTC")
+    )
+    actual = source._typed_array(values, api.DType("timestamp", unit=unit, timezone="UTC"))
+    assert actual.cast(pa.int64()).to_pylist() == [2, -1, None]
+
+
 @pytest.mark.parametrize("value", [1700000000000, -1700000000000])
 @pytest.mark.parametrize("typed", [False, True])
 def test_overflowing_cutoffs_are_refused_in_both_paths(value, typed):

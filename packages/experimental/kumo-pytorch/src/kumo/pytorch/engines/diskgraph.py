@@ -1740,7 +1740,14 @@ class DiskGraphSource:
                 values, type=dtype.to_arrow() if dtype.integer and integer_values else None
             )
         if dtype.name in {"timestamp", "date32"} and self._pa.types.is_integer(values.type):
-            return self._pc.cast(self._clock_array(values), dtype.to_arrow(), safe=True)
+            values = self._clock_array(values)
+        if dtype.name == "timestamp" and self._pa.types.is_timestamp(values.type):
+            # Field values round upward to their declared tick; anchor cutoffs
+            # keep their separate causal floor conversion.
+            unit = {"s": "second", "ms": "millisecond", "us": "microsecond", "ns": "nanosecond"}[
+                dtype.unit
+            ]
+            values = self._pc.ceil_temporal(values, unit=unit)
         return self._pc.cast(values, dtype.to_arrow(), safe=True)
 
     def _entity_arrays(
