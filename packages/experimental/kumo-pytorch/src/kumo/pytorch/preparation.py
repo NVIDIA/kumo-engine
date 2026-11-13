@@ -342,7 +342,7 @@ class Plan:
         if not encoders or not fitting:
             return {}, {}
         latest = (
-            max(cutoff_nanos(request.as_of_time) for chunk in _chunks(fitting) for request in chunk)
+            cutoff_nanos(max(request.as_of_time for chunk in _chunks(fitting) for request in chunk))
             if self.contract.requires_anchor_time
             else None
         )

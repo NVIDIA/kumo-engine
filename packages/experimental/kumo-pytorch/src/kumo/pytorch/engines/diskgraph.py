@@ -239,7 +239,9 @@ class DiskGraphEngine:
         self.num_threads = num_threads
         self.num_shards = num_shards
         self.ingest = ingest
-        self.encoder_cutoffs = tuple(dict.fromkeys(cutoff_nanos(v) for v in encoder_cutoffs))
+        self.encoder_cutoffs = tuple(
+            dict.fromkeys(cutoff_nanos(value) for value in encoder_cutoffs)
+        )
 
     def check_contract(self, contract: DataLoaderSpec) -> tuple[ValidationIssue, ...]:
         """Refuse the entries of `unsupported` the contract uses, before any data is read."""

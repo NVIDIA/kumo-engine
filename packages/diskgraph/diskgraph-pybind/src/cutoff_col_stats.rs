@@ -19,7 +19,7 @@ use arrow_array::types::Int64Type;
 use arrow_schema::DataType;
 use compact_str::CompactString;
 use diskgraph_ingest::column_scan::{
-    at_cutoff, create_times, decode_chunk, node_chunks, stored_tables, StoredTable,
+    at_cutoff, create_times, node_chunks, scan_chunk, stored_tables, ScanBudget, StoredTable,
 };
 use diskgraph_ingest::cutoff_col_stats::CutoffColStatsRequest;
 use diskgraph_ingest::graph_config::{read_persisted_config, ColumnSpec, IngestedType};
@@ -48,6 +48,7 @@ fn from_index(index_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
     request.validate(&config.tables)?;
     let names: HashSet<String> = request.columns.keys().cloned().collect();
     let (stored_tables, clock) = stored_tables(index_dir, &names)?;
+    let budget = ScanBudget::new()?;
     let mut tables = Vec::new();
     for spec in &config.tables {
         let (Some(mut table), Some(wanted)) =
@@ -76,23 +77,27 @@ fn from_index(index_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
             let parts = window
                 .par_iter()
                 .map(|&chunk| {
-                    let (_, batch) = decode_chunk(&stored.reader, chunk, &decoded)?;
-                    let times =
-                        create_time.map(|_| create_times(batch.column(requested.len()), clock));
                     let mut sinks = table.sinks()?;
-                    for (stats, cutoff) in sinks.stats.iter_mut().zip(&request.cutoffs) {
-                        let keep = at_cutoff(times.as_deref(), batch.num_rows(), *cutoff);
-                        let rows = filter_record_batch(&batch, &keep)?;
-                        for (position, &col_idx) in requested.iter().enumerate() {
-                            // Stored values are observed by their type, as ingest observes them.
-                            let column = ColumnSpec {
-                                semantic_type: None,
-                                ..spec.columns[col_idx].clone()
-                            };
-                            let values = rows.column(position);
-                            drive_from_arrow_column(col_idx, values, &column, stats, None, clock)?;
+                    scan_chunk(&stored.reader, chunk, &decoded, &budget, |batch, _| {
+                        let times =
+                            create_time.map(|_| create_times(batch.column(requested.len()), clock));
+                        for (stats, cutoff) in sinks.stats.iter_mut().zip(&request.cutoffs) {
+                            let keep = at_cutoff(times.as_deref(), batch.num_rows(), *cutoff);
+                            let rows = filter_record_batch(batch, &keep)?;
+                            for (position, &col_idx) in requested.iter().enumerate() {
+                                // Stored values are observed by their type, as ingest observes them.
+                                let column = ColumnSpec {
+                                    semantic_type: None,
+                                    ..spec.columns[col_idx].clone()
+                                };
+                                let values = rows.column(position);
+                                drive_from_arrow_column(
+                                    col_idx, values, &column, stats, None, clock,
+                                )?;
+                            }
                         }
-                    }
+                        Ok(())
+                    })?;
                     Ok(sinks)
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -175,6 +180,7 @@ fn word_counts(
             node_chunks(&stored.reader, TEXT_CHUNK_NODES).map(move |chunk| (scan, chunk))
         })
         .collect();
+    let budget = ScanBudget::new().map_err(map_anyhow_err)?;
     let maps: Vec<Mutex<WordCounts>> = (0..pool.current_num_threads())
         .map(|_| Mutex::default())
         .collect();
@@ -183,27 +189,28 @@ fn word_counts(
             pool.install(|| {
                 window.par_iter().try_for_each(|&(scan, chunk)| {
                     let (stored, decoded) = &scans[scan];
-                    let (_, batch) = decode_chunk(&stored.reader, chunk, decoded)?;
-                    let times =
-                        (batch.num_columns() > 1).then(|| create_times(batch.column(1), clock));
-                    let keep = at_cutoff(times.as_deref(), batch.num_rows(), cutoff);
-                    let values = batch.column(0).as_string::<i64>();
-                    let thread = rayon::current_thread_index().expect("a pool thread");
-                    let mut words = maps[thread].lock().expect("unpoisoned");
-                    for row in
-                        (0..batch.num_rows()).filter(|&row| keep.value(row) && values.is_valid(row))
-                    {
-                        let mut value = PreTokenizedString::from(values.value(row));
-                        pre_tokenizer
-                            .pre_tokenize(&mut value)
-                            .map_err(|e| anyhow!(e))?;
-                        for (word, _, _) in
-                            value.get_splits(OffsetReferential::Original, OffsetType::Byte)
+                    scan_chunk(&stored.reader, chunk, decoded, &budget, |batch, _| {
+                        let times =
+                            (batch.num_columns() > 1).then(|| create_times(batch.column(1), clock));
+                        let keep = at_cutoff(times.as_deref(), batch.num_rows(), cutoff);
+                        let values = batch.column(0).as_string::<i32>();
+                        let thread = rayon::current_thread_index().expect("a pool thread");
+                        let mut words = maps[thread].lock().expect("unpoisoned");
+                        for row in (0..batch.num_rows())
+                            .filter(|&row| keep.value(row) && values.is_valid(row))
                         {
-                            *words.entry(word.into()).or_default() += 1;
+                            let mut value = PreTokenizedString::from(values.value(row));
+                            pre_tokenizer
+                                .pre_tokenize(&mut value)
+                                .map_err(|e| anyhow!(e))?;
+                            for (word, _, _) in
+                                value.get_splits(OffsetReferential::Original, OffsetType::Byte)
+                            {
+                                *words.entry(word.into()).or_default() += 1;
+                            }
                         }
-                    }
-                    Ok(())
+                        Ok(())
+                    })
                 })
             })
         })
@@ -356,6 +363,7 @@ pub fn token_lengths(
         });
     }
     let chunks: Vec<_> = node_chunks(&stored.reader, TEXT_CHUNK_NODES).collect();
+    let budget = ScanBudget::new().map_err(map_anyhow_err)?;
     let path = Path::new(path);
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let temporary = path.with_file_name(format!(".{name}.{}", uuid::Uuid::new_v4().simple()));
@@ -372,7 +380,7 @@ pub fn token_lengths(
                 let lengths = pool.install(|| {
                     window
                         .par_iter()
-                        .map(|&chunk| chunk_lengths(&stored, chunk, &decoded, &costs))
+                        .map(|&chunk| chunk_lengths(&stored, chunk, &decoded, &costs, &budget))
                         .collect::<Result<Vec<_>>>()
                 })?;
                 for lengths in lengths {
@@ -406,33 +414,38 @@ fn chunk_lengths(
     chunk: (usize, u64, u64),
     decoded: &[usize],
     costs: &[Cost],
+    budget: &ScanBudget,
 ) -> Result<Vec<u8>> {
-    let (nodes, batch) = decode_chunk(&stored.reader, chunk, decoded)?;
-    let mut totals = vec![0u64; batch.num_rows()];
-    for (column, cost) in batch.columns().iter().zip(costs) {
-        match cost {
-            Cost::Elements => {
-                let counts = cast(&length(column)?, &DataType::Int64)?;
-                for (total, count) in totals.iter_mut().zip(counts.as_primitive::<Int64Type>()) {
-                    *total += count.unwrap_or(0) as u64;
+    let mut lengths = vec![0; 2 * (chunk.2 - chunk.1) as usize];
+    scan_chunk(&stored.reader, chunk, decoded, budget, |batch, nodes| {
+        let mut totals = vec![0u64; batch.num_rows()];
+        for (column, cost) in batch.columns().iter().zip(costs) {
+            match cost {
+                Cost::Elements => {
+                    let counts = cast(&length(column)?, &DataType::Int64)?;
+                    for (total, count) in totals.iter_mut().zip(counts.as_primitive::<Int64Type>())
+                    {
+                        *total += count.unwrap_or(0) as u64;
+                    }
                 }
-            }
-            Cost::Pieces(tokenizer) => {
-                for (total, value) in totals.iter_mut().zip(column.as_string::<i64>()) {
-                    if let Some(value) = value {
-                        let pieces = tokenizer.encode_fast(value, true).map_err(|e| anyhow!(e))?;
-                        *total += pieces.len() as u64;
+                Cost::Pieces(tokenizer) => {
+                    for (total, value) in totals.iter_mut().zip(column.as_string::<i32>()) {
+                        if let Some(value) = value {
+                            let pieces =
+                                tokenizer.encode_fast(value, true).map_err(|e| anyhow!(e))?;
+                            *total += pieces.len() as u64;
+                        }
                     }
                 }
             }
         }
-    }
-    let mut lengths = vec![0; 2 * (chunk.2 - chunk.1) as usize];
-    for (node, total) in nodes.into_iter().zip(totals) {
-        let slot = 2 * (node - chunk.1) as usize;
-        let length = total.min(u16::MAX.into()) as u16;
-        lengths[slot..slot + 2].copy_from_slice(&length.to_le_bytes());
-    }
+        for (&node, total) in nodes.iter().zip(totals) {
+            let slot = 2 * (node - chunk.1) as usize;
+            let length = total.min(u16::MAX.into()) as u16;
+            lengths[slot..slot + 2].copy_from_slice(&length.to_le_bytes());
+        }
+        Ok(())
+    })?;
     Ok(lengths)
 }
 

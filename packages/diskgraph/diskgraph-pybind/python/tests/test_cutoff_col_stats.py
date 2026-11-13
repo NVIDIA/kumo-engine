@@ -247,5 +247,7 @@ def test_convert_ticks_floors_or_truncates_a_negative_sub_tick_value():
 
 
 def test_a_sub_second_cutoff_on_a_nanosecond_index_is_exact(tmp_path):
-    cutoff = T0 * 10**9 + 123_456_789
+    (cutoff,), _, _ = diskgraph.resolve_temporal(pa.array(["2024-01-01T00:00:00.000000001Z"]),
+                                                 timestamp_unit="nanoseconds")
+    assert cutoff == 1_704_067_200_000_000_001
     assert _counts_at(tmp_path, "nanoseconds", [cutoff, cutoff + 1], cutoff) == {"row0": 1}
