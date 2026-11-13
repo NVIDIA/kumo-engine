@@ -4,7 +4,7 @@
 
 """Once-per-anchor scalar values, streamed to Parquet before fitting or epochs.
 
-This is separate from ``Plan.materialize`` (which binds/fits a task). The
+This is the internal scalar-preparation phase of ``Plan.materialize``. The
 existing anchor reader carries computed columns with each anchor, so consuming
 them needs no Python dictionary keyed by entity/time and preserves duplicate
 entity/time pairs with different labels and sample identities.
@@ -15,10 +15,16 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from kumo.pytorch.anchors import ALL_ANCHORS, AnchorTable
+from kumo.pytorch.anchors import (
+    ALL_ANCHORS,
+    AllAnchors,
+    AnchorTable,
+    describe_selection,
+    split_selection,
+)
 from kumo.pytorch.assembly import _fingerprint
 from kumo.pytorch.contract.sample import Aggregate, Compare, TargetValue, sample_value_types
 from kumo.pytorch.data.records import FieldValue
@@ -43,6 +49,7 @@ class MaterializedValues:
     contract: str
     dataset: str
     rows: int
+    feature_stats: dict = field(default_factory=dict)
 
     @classmethod
     def open(cls, path: str | Path) -> MaterializedValues:
@@ -58,6 +65,14 @@ class MaterializedValues:
         binding = dict(payload["anchors"])
         # Generated labels remain task metadata, not caller-supplied targets.
         anchors = AnchorTable(source=Parquet(str(path)), **binding)
+        feature_stats = {}
+        metadata_path = path / "feature-stats.json"
+        if path.is_dir() and metadata_path.exists():
+            feature_stats = json.loads(metadata_path.read_text())
+            columns_file = feature_stats.get("columns_file")
+            feature_stats["stats"] = (
+                json.loads((path / columns_file).read_text())["anchors"] if columns_file else {}
+            )
         return cls(
             anchors,
             payload["features"],
@@ -65,6 +80,30 @@ class MaterializedValues:
             payload["contract"],
             payload["dataset"],
             sum(file.metadata.num_rows for file in files),
+            feature_stats,
+        )
+
+    def column_statistics(self, feature: str) -> dict:
+        """The ordinary ingestion column entry for this selected feature."""
+        return self.feature_stats["stats"][self.features[feature]]
+
+    def encoder_columns(self, contract):
+        from kumo.pytorch.column_stats import table_column_encoders
+
+        return table_column_encoders(
+            contract,
+            scalar_columns=self.features,
+            target_columns={**dict(self.anchors.targets), **self.targets},
+        )
+
+    def selected_column_stats(self, requests):
+        from kumo.pytorch.column_stats import ColumnStats
+
+        return ColumnStats(
+            {item: self.feature_stats["stats"][item[1]] for item in requests},
+            {"value": None, "unit": self.feature_stats.get("clock", "seconds")},
+            # FitRecord's file references are durable index/col_stats entries.
+            # These task-local values/statistics may disappear when the task closes.
         )
 
     def _bind(self, contract, source, anchors, dataset):
@@ -83,7 +122,15 @@ class MaterializedValues:
         return kind(source, self, contract)
 
 
-def materialize_values(plan, anchors: AnchorTable, destination, *, batch_size=1024, inference=None):
+def materialize_values(
+    plan,
+    anchors: AnchorTable,
+    destination,
+    *,
+    batch_size=1024,
+    inference=None,
+    stats_split=None,
+):
     """Stream all requested scalar values once, with bounded anchor batches.
 
     No fitting occurs. Generated targets use their declared future windows;
@@ -188,28 +235,84 @@ def materialize_values(plan, anchors: AnchorTable, destination, *, batch_size=10
         contract=plan.contract.fingerprint,
         dataset=plan._dataset_fingerprint,
     )
+    selection = split_selection(stats_split)
+    stats_specs, stats_kinds = [], []
+    if selection is not None:
+        from kumo.pytorch.column_stats import table_column_encoders
+
+        requested = {}
+        for encoder in table_column_encoders(
+            plan.contract, scalar_columns=features, target_columns={**external, **target_columns}
+        ).values():
+            for table, column, kind in encoder.requests:
+                if table == "__materialized_anchors":
+                    requested.setdefault(column, set()).add(kind)
+        for column, kinds in sorted(requested.items()):
+            dtype = next(field for field in fields if field.name == column).type
+            from kumo.pytorch.materialization import _diskgraph_dtype
+
+            stats_specs.append(dict(name=column, **_diskgraph_dtype(pa, dtype)))
+            stats_kinds.append(sorted(kinds))
     schema = pa.schema(fields, metadata={_META: json.dumps(payload).encode()})
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=".materialize-", dir=destination.parent))
     # The TT writer creates its own dataset directory beneath the owned staging root.
     output = temporary / "parts"
+    stats_path = temporary / "stats"
+    stats_writer = None
+    stats_rows = 0
+    present_splits = set()
     try:
         native_batches = getattr(plan._require_open(), "materialize_scalar_batches", None)
-        if native_batches is None:
-            # The reference engine remains usable without the optional native module.
-            output.mkdir()
-            writer = pq.ParquetWriter(output / "part-00000.parquet", schema)
-        else:
+        native_writer = native_batches is not None or selection is not None
+        if native_writer:
             import diskgraph
 
             writer = diskgraph.TaskParquetWriter(str(output))
+        else:
+            output.mkdir()
+            writer = pq.ParquetWriter(output / "part-00000.parquet", schema)
         with writer:
-            if native_batches is not None:
+            if native_writer:
                 writer.write_batch(
                     pa.RecordBatch.from_arrays(
                         [pa.array([], type=field.type) for field in schema], schema=schema
                     )
                 )
+
+            def write_batch(batch):
+                nonlocal stats_writer, stats_rows
+                writer.write_batch(batch)
+                if selection is None:
+                    return
+                import pyarrow.compute as pc
+
+                splits = batch.column("_anchor_split")
+                present_splits.update(pc.unique(splits).to_pylist())
+                if not isinstance(selection, AllAnchors):
+                    mask = pc.fill_null(
+                        pc.is_in(
+                            splits,
+                            value_set=pa.array(
+                                [v for v in selection if v is not None], type=pa.string()
+                            ),
+                        ),
+                        False,
+                    )
+                    if None in selection:
+                        mask = pc.or_(mask, pc.is_null(splits))
+                    batch = batch.filter(mask)
+                stats_rows += batch.num_rows
+                if not stats_specs:
+                    return
+                projected = pa.record_batch(
+                    [batch.column(spec["name"]) for spec in stats_specs],
+                    names=[spec["name"] for spec in stats_specs],
+                )
+                if stats_writer is None:
+                    stats_writer = diskgraph.TaskParquetWriter(str(stats_path))
+                stats_writer.write_batch(projected)
+
             if native_batches is not None and isinstance(anchors.source, Parquet):
                 import pyarrow.compute as pc
 
@@ -243,7 +346,7 @@ def materialize_values(plan, anchors: AnchorTable, destination, *, batch_size=10
                     arrays = [
                         pc.cast(values[field.name], field.type, safe=True) for field in schema
                     ]
-                    writer.write_batch(pa.RecordBatch.from_arrays(arrays, schema=schema))
+                    write_batch(pa.RecordBatch.from_arrays(arrays, schema=schema))
                     offset += n
             else:
                 for requests in _anchor_chunks(plan, anchors, batch_size):
@@ -275,13 +378,50 @@ def materialize_values(plan, anchors: AnchorTable, destination, *, batch_size=10
                             }
                         )
                     for batch in pa.Table.from_pylist(rows, schema=schema).to_batches():
-                        writer.write_batch(batch)
+                        write_batch(batch)
+            if selection is not None:
+                if not isinstance(selection, AllAnchors) and selection - present_splits:
+                    raise ValueError(f"no anchors in split(s) {selection - present_splits}")
+                if stats_writer is not None:
+                    stats_writer.close()
+                    stats_writer = None
+                if stats_specs and stats_path.exists():
+                    from kumo.pytorch.column_stats import QUANTILE_GRID
+
+                    clock = getattr(plan._require_open(), "_clock", "seconds")
+                    directory = output / "encoder-statistics"
+                    directory.mkdir()
+                    diskgraph.write_column_stats_for_parquet(
+                        [str(path) for path in sorted(stats_path.glob("part-*.parquet"))],
+                        json.dumps(stats_specs),
+                        json.dumps(stats_kinds),
+                        str(directory),
+                        quantiles=QUANTILE_GRID,
+                        timestamp_unit=clock,
+                    )
+                    columns_file = "encoder-statistics/col_stats.json"
+                else:
+                    columns_file, clock = None, "seconds"
+                (output / "feature-stats.json").write_text(
+                    json.dumps(
+                        dict(
+                            format="column_stats_v1",
+                            fit_split=describe_selection(selection),
+                            rows=stats_rows,
+                            features=features,
+                            clock=clock,
+                            columns_file=columns_file,
+                        )
+                    )
+                )
         # A caller never sees a partial materialization. Do not overwrite an
         # existing table if another writer won the same destination.
         os.rename(output, destination)
     finally:
         import shutil
 
+        if stats_writer is not None:
+            stats_writer.close()
         shutil.rmtree(temporary)
     return MaterializedValues.open(destination)
 
@@ -341,10 +481,24 @@ def _anchor_chunks(plan, anchors, batch_size):
 class _ValuesSource:
     def __init__(self, source, values, contract):
         self.source, self.values = source, values
+        self._materialized_values = values
         self.types = sample_value_types(contract.schema, contract.sample)
 
     def __getattr__(self, name):
         return getattr(self.source, name)
+
+    def column_stats(self, requests, cutoff):
+        from kumo.pytorch.column_stats import ColumnStats
+
+        task = [item for item in requests if item[0] == "__materialized_anchors"]
+        stored = [item for item in requests if item[0] != "__materialized_anchors"]
+        selected = self.values.selected_column_stats(task)
+        base = self.source.column_stats(stored, cutoff) if stored else None
+        return ColumnStats(
+            {**(base.columns if base else {}), **selected.columns},
+            base.cutoff if base else selected.cutoff,
+            (*(base.files if base else ()), *selected.files),
+        )
 
     def _online(self, spec):
         return replace(

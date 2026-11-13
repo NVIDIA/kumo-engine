@@ -277,7 +277,16 @@ class Plan:
             directory = tempfile.TemporaryDirectory(prefix="task-", dir=parent)
             try:
                 values = materialize_values(
-                    self, anchors, Path(directory.name) / "values", inference=inference
+                    self,
+                    anchors,
+                    Path(directory.name) / "values",
+                    inference=inference,
+                    stats_split=self._fit_selection(
+                        split_selection(fit_split), anchors.split is not None
+                    )
+                    if not inference
+                    and (fitted is None or not fitted.has_targets and self.contract.batch.targets)
+                    else None,
                 )
                 anchors = values.anchors
             except BaseException:
@@ -337,8 +346,14 @@ class Plan:
                 }
             pinned, statistics = (
                 ({}, {})
-                if input_state is not None
-                else self._pinned_from_stats(source, fitting, cutoff)
+                if input_state is not None and target_encoders is not None
+                else self._pinned_from_stats(
+                    source,
+                    fitting,
+                    cutoff,
+                    exclude=() if input_state is None else input_state.encoders,
+                    chosen=chosen,
+                )
             )
             reused = {} if fitted is None else fitted.fit
             fit = {
@@ -394,12 +409,26 @@ class Plan:
         source: SampleSource,
         fitting: Sequence[SampleRequest] | _Mapped,
         cutoff: int | None | _LatestAnchor,
+        *,
+        exclude=(),
+        chosen=None,
     ) -> tuple[dict[str, FittedEncoder], dict[str, Any]]:
         column_stats = getattr(source, "column_stats", None)
         column_text = getattr(source, "column_text", None)
+        materialized = getattr(source, "_materialized_values", None)
+        candidates = (
+            materialized.encoder_columns(self.contract)
+            if materialized is not None and materialized.feature_stats
+            else table_column_encoders(self.contract)
+        )
+        if materialized is not None and materialized.feature_stats:
+            expected = describe_selection(chosen)
+            if materialized.feature_stats["fit_split"] != expected:
+                raise ValueError("materialized statistics belong to a different fit split")
         encoders = {
             identity: encoder
-            for identity, encoder in table_column_encoders(self.contract).items()
+            for identity, encoder in candidates.items()
+            if identity not in exclude
             if (column_text if isinstance(encoder.config, Text) else column_stats) is not None
         }
         if not encoders or not fitting:
@@ -442,16 +471,24 @@ class Plan:
         )
         return pinned, {"cutoff": cutoff, "col_stats": files}
 
-    def _materialize_values(self, anchors: AnchorTable, destination, *, batch_size: int = 1024):
+    def _materialize_values(
+        self, anchors: AnchorTable, destination, *, batch_size: int = 1024, stats_split=None
+    ):
         """Compute scalar features/targets once, separately from binding/fitting.
 
         The output is bounded-batch Parquet. Reuse it with
         ``plan.materialize(values.anchors, ...)``; event histories
         still load online, while fitting and later epochs reuse scalar values.
+
+        ``stats_split`` optionally selects training anchors for feature/label
+        statistics using the shared DiskGraph collectors. This computes fitting
+        inputs, not fitted encoders, and does not fetch event histories.
         """
         from kumo.pytorch.aggregate_materialization import materialize_values
 
-        return materialize_values(self, anchors, destination, batch_size=batch_size)
+        return materialize_values(
+            self, anchors, destination, batch_size=batch_size, stats_split=stats_split
+        )
 
     @staticmethod
     def _fit_selection(selection: SplitSelection | None, declares_splits: bool) -> SplitSelection:
