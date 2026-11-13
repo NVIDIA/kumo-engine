@@ -1,0 +1,19 @@
+{
+  "results": [
+    {
+      "check_id": "tmp.plc-security-artifacts.fiyeyadt.offline-rules.semgrep-rules.python.lang.correctness.return-in-init",
+      "end_line": 31,
+      "path": "packages/kumo-engine/kumo/engine/perturbation.py",
+      "severity": "ERROR",
+      "start_line": 31
+    },
+    {
+      "check_id": "tmp.plc-security-artifacts.fiyeyadt.offline-rules.semgrep-rules.ai.ai-best-practices.hooks-path-traversal.hooks-path-traversal-python",
+      "end_line": 1894,
+      "path": "packages/kumo-engine/kumo/engine/trainer/trainer.py",
+      "severity": "ERROR",
+      "start_line": 1894
+    }
+  ],
+  "version": "1.157.0"
+}

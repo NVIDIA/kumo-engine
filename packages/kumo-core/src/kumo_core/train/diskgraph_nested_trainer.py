@@ -1410,6 +1410,8 @@ class DiskgraphNestedTrainer(Trainer):
         task_manifest: DiskgraphTaskManifest | None = None,
         binary_labels: bool = True,
         prediction_counts: Counts | None = None,
+        local_sensitivity: dict[str, Any] | None = None,
+        batch_size: int | None = None,
     ) -> Any:
         """TT-NG batch prediction over the wheel-backed predict stage.
 
@@ -1418,6 +1420,8 @@ class DiskgraphNestedTrainer(Trainer):
         ``Trainer.predict_v2`` but sources metadata from the bundle / ``self.task``
         and keys output on ``pkey`` (no ``arange``).
         """
+        if local_sensitivity is not None and self.task.task_type != TaskType.REGRESSION:
+            raise ValueError('local_sensitivity requires scalar MSE regression')
         emit_embeddings = bool(return_embeddings)
         emit_predictions = bool(return_predictions)
         if not emit_embeddings and not emit_predictions:
@@ -1479,6 +1483,21 @@ class DiskgraphNestedTrainer(Trainer):
             top_k = self._preprocess_top_k(top_k)
         self.init(task_manifest=task_manifest)
         self.pl_model.eval_top_k = None
+        original_batch_size = self.datamodule.eval_loader_kwargs['batch_size']
+        if batch_size is not None:
+            if type(batch_size) is not int or batch_size < 1:
+                raise ValueError('batch_size must be a positive integer')
+            self.datamodule.eval_loader_kwargs['batch_size'] = batch_size
+        if local_sensitivity is not None:
+            old_explainers = self.pl_model.explainers
+            old_grad_enabled = torch.is_grad_enabled()
+            from kumo_core.explain.local_sensitivity import LocalSensitivity
+            from kumo_core.train.loss import MSELoss
+            if (self.task.task_type != TaskType.REGRESSION
+                    or not isinstance(self.pl_model.loss, MSELoss)):
+                raise ValueError('local_sensitivity requires scalar MSE regression')
+            self.datamodule.eval_loader_kwargs['batch_size'] = 1
+            self.pl_model.explainers = [LocalSensitivity(**local_sensitivity)]
         output_partition_ids = output_partition_ids or [partition_id]
 
         callbacks = []
@@ -1608,6 +1627,12 @@ class DiskgraphNestedTrainer(Trainer):
                 if isinstance(embedding_arr, torch.Tensor):
                     embedding_arr = embedding_arr.detach().cpu().numpy()
                 embedding = format_embeddings(embedding_arr, main_df)
+            if local_sensitivity is not None and emit_predictions:
+                identifiers = prediction.get('prediction_id')
+                if identifiers is not None:
+                    df['PREDICTION_ID'] = identifiers
+                    df['TASK_ROW_ID'] = prediction['evidence_task_row_id']
+                    df['CUTOFF_NS'] = prediction['evidence_cutoff_ns']
             return PredOutput(df, embedding)
 
         numerical = self.task.task_type.has_numerical_target
@@ -1765,6 +1790,13 @@ class DiskgraphNestedTrainer(Trainer):
                     'Failed to close prediction DataLoader after error')
             raise
         finally:
+            self.datamodule.eval_loader_kwargs['batch_size'] = original_batch_size
+            if local_sensitivity is not None:
+                import kumo_core.modeling.context as modeling_context
+                modeling_context.set_explaining(False)
+                torch.set_grad_enabled(old_grad_enabled)
+                self.pl_model.explainers = old_explainers
+                self.datamodule.eval_loader_kwargs['batch_size'] = original_batch_size
             if emit_embeddings:
                 if had_flag:
                     self.pl_model._kumo_return_predict_embeddings = old_flag

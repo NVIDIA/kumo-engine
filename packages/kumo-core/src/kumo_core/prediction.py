@@ -543,6 +543,10 @@ class _PredictionWorkerConfig(NamedTuple):
     ignore_time_col: bool = False
     accelerator: str = 'auto'
     count_edges: Optional[Dict[str, Tuple[float, ...]]] = None
+    local_sensitivity_dir: str | None = None
+    batch_size: int | None = None
+    numerical_sensitivity: bool = True
+    local_sensitivity_on_unsupported: str = "raise"
 
 
 def _score_prediction_shard(
@@ -599,6 +603,46 @@ def _score_prediction_shard(
     collector = PredictionArtifactStatsCollector(
         str(generation),
         tuple(sorted(config.artifacts, key=lambda kind: kind.value)))
+    local_options = {}
+    if config.local_sensitivity_dir is not None:
+        from kumo_core.explain.local_sensitivity import bundle_fingerprints
+        from kumo_core.train.diskgraph_nested_trainer import _edge_types_from_index_metadata
+        local_options['local_sensitivity'] = {
+            'root': config.local_sensitivity_dir,
+            'numerical_sensitivity': config.numerical_sensitivity,
+            'provenance': {
+                'run_id': config.run_id,
+                'graph_snapshot_id': config.graph_snapshot_id,
+                'source_config_sha256': config.source_config_sha256,
+                'runtime_config_sha256': config.runtime_config_sha256,
+                'model_reconstruction': {
+                    'task': task.to_dict(),
+                    'metadata': dict(manifest.metadata),
+                    'feature_schema': dict(manifest.feature_schema),
+                    'graph_runtime_metadata': {
+                        'node_types': manifest.graph_runtime_metadata.get('node_types', []),
+                        'edge_types': [{'src': src, 'rel': rel, 'dst': dst}
+                                       for src, rel, dst in _edge_types_from_index_metadata(
+                                           manifest.graph_runtime_metadata)],
+                    },
+                },
+                **bundle_fingerprints(config.model_dir),
+            },
+        }
+    if config.local_sensitivity_dir is not None and (
+            task.task_type.value != 'regression' or trainer.loss not in (None, 'mse', 'mse_loss')):
+        if config.local_sensitivity_on_unsupported != 'record':
+            raise ValueError('local_sensitivity requires scalar MSE regression')
+        root = Path(config.local_sensitivity_dir)
+        root.mkdir(parents=True, exist_ok=False)
+        (root / 'manifest.json').write_text(json.dumps({
+            'schema_version': 1, 'origin': 'original_forward',
+            'complete': False, 'generation_closed': True, 'rows': 0,
+            'status': 'unsupported', 'reason': 'requires_scalar_mse_regression',
+            'status_counts': {'unsupported': manifest.stage_counts.get('predict', 0)},
+        }))
+        (root / 'index.jsonl').write_text('')
+        local_options = {}
     trainer.predict(
         output_dir=str(generation),
         artifact_stats_collector=collector,
@@ -620,6 +664,8 @@ def _score_prediction_shard(
         task_manifest=manifest,
         binary_labels=config.binary_threshold is not None,
         prediction_counts=counts,
+        batch_size=config.batch_size,
+        **local_options,
     )
     if counts is not None:
         from kumo_core.prediction_counts import save_counts
@@ -655,6 +701,10 @@ def score_prediction(
     encoders: Any = None,
     accelerator: str = 'auto',
     count_edges: Mapping[str, Tuple[float, ...]] | None = None,
+    local_sensitivity_dir: str | None = None,
+    batch_size: int | None = None,
+    numerical_sensitivity: bool = True,
+    local_sensitivity_on_unsupported: str = "raise",
 ) -> Any:
     """Score partitions and publish bounded metadata using the hosted protocol.
 
@@ -666,6 +716,15 @@ def score_prediction(
     """
     from .prediction_options import validate_prediction_workers
     validate_prediction_workers(num_workers)
+    if batch_size is not None and (type(batch_size) is not int or batch_size < 1):
+        raise ValueError('batch_size must be a positive integer')
+    if local_sensitivity_dir is not None and batch_size not in (None, 1):
+        raise ValueError('local_sensitivity requires one seed per batch')
+    if local_sensitivity_dir is not None and (
+            num_workers != 1 or accelerator != 'cpu'
+            or PredictionArtifactType.PREDICTIONS not in artifacts):
+        raise ValueError('local_sensitivity requires CPU, one scorer, and '
+                         'prediction output')
     from .task_dataset import DiskgraphTaskManifest
 
     prediction_dir = Path(output_dir) if output_dir is not None else (
@@ -730,6 +789,10 @@ def score_prediction(
         embedding_models=embedding_models,
         accelerator=accelerator,
         count_edges=None if count_edges is None else dict(count_edges),
+        local_sensitivity_dir=local_sensitivity_dir,
+        batch_size=batch_size,
+        numerical_sensitivity=numerical_sensitivity,
+        local_sensitivity_on_unsupported=local_sensitivity_on_unsupported,
     )
     if worker_count == 1:
         references = [

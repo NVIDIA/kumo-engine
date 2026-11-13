@@ -1,0 +1,23 @@
+{
+  "check": "sast-triage",
+  "authority": "local-advisory",
+  "timestamp": "2026-11-13T15:24:37.684275+00:00",
+  "result": "warn",
+  "findings": [
+    {
+      "path": "packages/kumo-engine/kumo/engine/perturbation.py",
+      "check_id": "return-in-init",
+      "assessment": "false_positive",
+      "reason": "Flag is on the chunk-reading lambda in iter(); __init__ has no return statement. Lambda returns bytes for hashing, not a constructor result."
+    },
+    {
+      "path": "packages/kumo-engine/kumo/engine/trainer/trainer.py",
+      "check_id": "hooks-path-traversal-python",
+      "assessment": "false_positive",
+      "reason": "Model config path is under the internally created scoring run model_bundle. No hook event, external path fragment or user-controlled config filename is used. The scanner line number predates formatting; the relevant new read is Path(model_dir) / config.json."
+    }
+  ],
+  "limitations": [
+    "Developer assessment; raw scanner warnings remain retained. No authoritative SAST sign-off."
+  ]
+}

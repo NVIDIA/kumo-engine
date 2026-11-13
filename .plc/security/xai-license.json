@@ -1,0 +1,8 @@
+{
+  "timestamp": "2026-11-13T15:14:43.047902+00:00",
+  "check": "license",
+  "tool": "pip-licenses",
+  "result": "skip",
+  "reason": "Pinned license scanner unavailable in prepared environments; no dependency changes introduced",
+  "authority": "local-advisory"
+}

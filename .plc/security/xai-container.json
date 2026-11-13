@@ -1,0 +1,8 @@
+{
+  "timestamp": "2026-11-13T15:14:43.048139+00:00",
+  "check": "container",
+  "tool": "none",
+  "result": "skip",
+  "reason": "No container definition changes in this work unit",
+  "authority": "local-advisory"
+}

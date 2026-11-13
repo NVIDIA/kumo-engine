@@ -174,12 +174,14 @@ class SubgraphCollector(Explainer):
                 # their source or destination node indices:
                 # NOTE Not all foreign key data may be filled by this.
                 for edge_type, edge_index in batch.edge_index_dict.items():
-                    src, rel, dst = edge_type
-
-                    if src == table_name and rel.endswith(fkey_name):
+                    # Normalized relations are the exact foreign-key name
+                    # (or rev_<name>). Suffix matching confuses group_id with
+                    # subgroup_id and can index keys from the wrong table.
+                    if edge_type == (table_name, fkey_name, dst_table_name):
                         index = edge_index[0]
                         local_dst_node_id = edge_index[1]
-                    elif dst == table_name and rel.endswith(fkey_name):
+                    elif edge_type == (dst_table_name, f'rev_{fkey_name}',
+                                       table_name):
                         index = edge_index[1]
                         local_dst_node_id = edge_index[0]
                     else:

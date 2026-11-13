@@ -8,7 +8,10 @@ from kumo.engine.explain.errors import (
     InvalidExplanationError,
     InvalidRunError,
 )
-from kumo.engine.explain.results import TrainingExplanations
+from kumo.engine.explain.results import (
+    PredictionExplanations,
+    TrainingExplanations,
+)
 from kumo.engine.explain.types import ArtifactAvailability, SampleReference
 
 __all__ = [
@@ -18,4 +21,5 @@ __all__ = [
     'InvalidRunError',
     'SampleReference',
     'TrainingExplanations',
+    'PredictionExplanations',
 ]

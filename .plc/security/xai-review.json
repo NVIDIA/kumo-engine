@@ -1,0 +1,20 @@
+{
+  "check": "security-review",
+  "tool": "developer-inline-review",
+  "result": "pass",
+  "authority": "local-advisory",
+  "timestamp": "2026-11-13T15:22:29.504773+00:00",
+  "scope": "XAI bundle publication, loading, model reconstruction and calibration",
+  "observations": [
+    "Evidence readers reject traversal, symlinks, duplicate IDs, unlisted files and hash mismatches.",
+    "JSON evidence validation does not deserialize checkpoints. Perturbation uses existing trusted-model loading and verifies retained role hashes before execution.",
+    "Publish destinations are new; exclusive locks, staging and completion markers separate incomplete artifacts.",
+    "Error artifacts omit exception text that may contain source data.",
+    "Hashes establish consistency, not authenticity against an attacker replacing the manifest and payload."
+  ],
+  "limitations": [
+    "No ProdSec or authoritative release sign-off.",
+    "Canonical Pulse secret scanner unavailable: Docker socket access denied.",
+    "License scanner unavailable; dependency runner reported source-only scope with no dependency manifest changes."
+  ]
+}

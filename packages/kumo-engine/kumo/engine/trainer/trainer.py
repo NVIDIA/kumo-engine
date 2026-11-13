@@ -110,7 +110,10 @@ from kumo.engine._tracking import (
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.explain._artifacts import explanation_trial
-from kumo.engine.explain.results import TrainingExplanations
+from kumo.engine.explain.results import (
+    PredictionExplanations,
+    TrainingExplanations,
+)
 from kumo.engine.graph import (
     GraphSnapshot,
     index_timestamp_precision,
@@ -325,6 +328,22 @@ class PredictionResult:
                                              repr=False)
     _exported: Optional['_Export'] = field(default=None, compare=False,
                                            repr=False)
+
+    explanations: PredictionExplanations = field(
+        default_factory=PredictionExplanations.unavailable)
+
+    _evidence_reason: Optional[str] = field(default=None, repr=False)
+    _evidence_provenance: dict = field(default_factory=dict, repr=False)
+
+    @property
+    def evidence(self):
+        """Portable evidence view; export explicitly before cleaning scratch."""
+        from kumo.engine.evidence import PredictionEvidenceBundle
+        return PredictionEvidenceBundle.from_result(
+            self, provenance={
+                **self._evidence_provenance, "original_evidence_unavailable_reason":
+                self._evidence_reason
+            })
 
     @property
     def tracking(self) -> Optional[TrackingRef]:
@@ -1559,6 +1578,10 @@ class Trainer:
         binary_classification_threshold: Optional[float] = None,
         prediction_table: Optional[PredictionTable] = None,
         mlops: Optional[Any] = None,
+        explanations: bool = False,
+        local_sensitivity: bool = False,
+        batch_size: Optional[int] = None,
+        evidence: Optional[Any] = None,
     ) -> PredictionResult:
         r"""Score a snapshot and return durable file-backed results.
 
@@ -1601,8 +1624,51 @@ class Trainer:
 
         Omitted arguments fall back to the bundle's :attr:`scoring_defaults`.
 
+        ``explanations=True`` replays a bounded sample of these prediction
+        inputs to generate column cohorts and sampled graphs when supported.
+        The optional replay adds computation. Its failure leaves predictions
+        available and is recorded on ``result.explanations``. Retain that
+        object's ``run_root`` separately; exports do not include diagnostics.
+
+        ``local_sensitivity=True`` records numerical gradients of the decoded
+        prediction with respect to transformed numerical encoder inputs from
+        the original scoring forward pass. This independent opt-in requires
+        scalar MSE regression, CPU, and one scorer, and scores one seed per
+        batch. Outputs stream to ``result.explanations`` without a replay.
+
         With MLOps on, the run is stored under ``predictions/<id>/``.
         """
+        if batch_size is not None and (type(batch_size) is not int
+                                       or batch_size < 1):
+            raise ValueError('batch_size must be a positive integer')
+        evidence_reason = None
+        if evidence is not None:
+            from kumo.engine.evidence import EvidenceConfig
+            if not isinstance(evidence, EvidenceConfig):
+                raise TypeError('evidence must be EvidenceConfig')
+            if explanations or local_sensitivity:
+                raise ValueError(
+                    'Pass evidence or legacy explanation flags, not both')
+            explanations = evidence.replay
+            local_sensitivity = evidence.scoring_graph or evidence.numerical_sensitivity is not None
+            if local_sensitivity and (num_workers != 1 or self._accelerator
+                                      != 'cpu' or batch_size != 1):
+                if evidence.on_unsupported == 'raise':
+                    raise ValueError(
+                        'Original evidence requires CPU, one scorer and explicit batch_size=1'
+                    )
+                evidence_reason = 'unsupported_runtime'
+                local_sensitivity = False
+        if not isinstance(local_sensitivity, bool):
+            raise ValueError('local_sensitivity must be a boolean')
+        if local_sensitivity and batch_size not in (None, 1):
+            raise ValueError('local_sensitivity requires batch_size=1')
+        if local_sensitivity and (num_workers != 1
+                                  or self._accelerator != 'cpu'):
+            raise ValueError('local_sensitivity requires CPU and one scorer')
+        if not isinstance(explanations, bool):
+            raise ValueError('explanations must be a boolean')
+
         from kumo_core.prediction_options import (
             validate_num_classes_to_return,
             validate_prediction_workers,
@@ -1631,19 +1697,20 @@ class Trainer:
         check_prediction_precision(
             self._timestamp_precision,
             index_timestamp_precision(snapshot.index_path))
-        table = (prediction_table if prediction_table is not None else
-                 self._prediction_table(
-                     snapshot, entities, prediction_time, strict=(
-                         settings is not None
-                         and settings.on_error == 'raise')))
+        table = (prediction_table
+                 if prediction_table is not None else self._prediction_table(
+                     snapshot, entities, prediction_time,
+                     strict=(settings is not None
+                             and settings.on_error == 'raise')))
         with system_metrics(None if settings is None else settings.tracking):
             return self._predict(
                 table, snapshot=snapshot, output_config=output_config,
                 num_classes_to_return=num_classes_to_return,
-                num_workers=num_workers,
-                binary_classification_threshold=(
-                    binary_classification_threshold),
-                settings=settings)
+                num_workers=num_workers, binary_classification_threshold=(
+                    binary_classification_threshold), settings=settings,
+                explanations=explanations, local_sensitivity=local_sensitivity,
+                batch_size=batch_size, evidence=evidence,
+                evidence_reason=evidence_reason)
 
     def _prediction_table(self, snapshot: GraphSnapshot,
                           entities: Optional[SourceTable],
@@ -1683,6 +1750,11 @@ class Trainer:
         binary_classification_threshold: Optional[float] = None,
         settings: Optional[Any] = None,
         extra_fields: Sequence[str] = (),
+        explanations: bool = False,
+        local_sensitivity: bool = False,
+        batch_size: Optional[int] = None,
+        evidence: Optional[Any] = None,
+        evidence_reason: Optional[str] = None,
     ) -> PredictionResult:
         from kumo_core.pquery import normalize_graph, parse_and_validate_query
         from kumo_core.prediction import score_prediction
@@ -1707,6 +1779,13 @@ class Trainer:
                      and task_type is TaskType.BINARY_CLASSIFICATION else
                      resolve_classification_threshold(
                          task_type, binary_classification_threshold))
+        if local_sensitivity and task_type is not TaskType.REGRESSION:
+            if evidence is not None and evidence.on_unsupported == 'record':
+                evidence_reason = 'unsupported_task'
+                local_sensitivity = False
+            else:
+                raise ValueError(
+                    'Original evidence requires scalar MSE regression')
         artifacts = _requested_artifacts(output_config)
         artifact_type = (PredictionArtifactType.PREDICTIONS
                          if PredictionArtifactType.PREDICTIONS in artifacts else
@@ -1775,15 +1854,74 @@ class Trainer:
             encoders=encoders,
             accelerator=self._accelerator,
             count_edges=count_edges(training_result.manifest, task_type),
+            **({
+                'batch_size': batch_size
+            } if batch_size is not None else {}),
+            **({
+                'local_sensitivity_dir':
+                str(run_dir / 'xai' / 'local'),
+                'numerical_sensitivity':
+                evidence is None or evidence.numerical_sensitivity is not None,
+                'local_sensitivity_on_unsupported':
+                evidence.on_unsupported if evidence is not None else 'raise'
+            } if local_sensitivity else {}),
         )
 
-        del encoders
-        _collect_garbage('predict')
-        result = PredictionResult(selection, artifact_type)
+        explanation_result = PredictionExplanations.from_run(
+            run_dir, local_requested=local_sensitivity)
+        try:
+            if explanations:
+                from kumo_core.prediction_explanations import (
+                    explain_prediction, )
+
+                support = explain_prediction(
+                    materialized=materialized, model_dir=model_dir,
+                    run_id=run_id, output_dir=str(run_dir / 'xai'),
+                    top_k=num_classes_to_return, binary_threshold=threshold,
+                    task_options=task_options,
+                    embedding_models=self._embedding_models, encoders=encoders,
+                    accelerator=self._accelerator)
+                explanation_result = PredictionExplanations.from_run(
+                    run_dir, enabled=True, cohorts_supported=support.cohorts,
+                    samples_supported=support.samples,
+                    local_requested=local_sensitivity)
+        except Exception as error:
+            logger.warning(
+                'Prediction succeeded, but explanations failed for run %s. '
+                'Prediction outputs remain available.', run_id)
+            explanation_result = PredictionExplanations.from_run(
+                run_dir, enabled=True,
+                failure=f'{type(error).__name__}: explanation generation failed',
+                local_requested=local_sensitivity)
+        finally:
+            del encoders
+            _collect_garbage('predict')
+        result = PredictionResult(
+            selection, artifact_type, explanations=explanation_result,
+            _evidence_reason=evidence_reason, _evidence_provenance={
+                'query':
+                prediction_table.query,
+                'snapshot_id':
+                snapshot.id,
+                'scoring_sha256':
+                hashlib.sha256(
+                    json.dumps(
+                        {
+                            'query':
+                            prediction_table.query,
+                            'runtime':
+                            json.loads(
+                                (Path(model_dir) / 'config.json').read_text()),
+                            'batch_size':
+                            batch_size,
+                            'coordinate':
+                            'decoded_model_output',
+                        }, sort_keys=True, default=str).encode()).hexdigest(),
+            } if evidence is not None else {})
         manifest = _run_manifest.start(
             result=result, trainer=self, snapshot=snapshot,
-            prediction_table=prediction_table,
-            task_type=task_type, scoring=RunScoring(
+            prediction_table=prediction_table, task_type=task_type,
+            scoring=RunScoring(
                 binary_classification_threshold=threshold,
                 threshold_source=_option_source(
                     arguments[0], binary_classification_threshold, threshold,

@@ -1120,7 +1120,9 @@ class BaseLightningModule(pl.LightningModule, ABC):
         torch.set_grad_enabled(False)
 
     def on_predict_end(self):
-        if len(self.explainers) > 0:
+        retained = [e for e in self.explainers
+                    if not getattr(e, 'streaming', False)]
+        if retained:
             step_outputs = self.trainer.predict_loop._predictions[0]
             outputs = {}
             for key, value in step_outputs[0].items():
@@ -1136,13 +1138,19 @@ class BaseLightningModule(pl.LightningModule, ABC):
                     outputs[key] = np.concatenate(
                         [out[key] for out in step_outputs], axis=0)
 
-            for explainer in self.explainers:
+            for explainer in retained:
                 explainer.explain_end(
                     module=self,
                     datamodule=self.trainer.datamodule,
                     outputs=outputs,
                     stage=TrainingStage.PRED,
                 )
+
+        for explainer in self.explainers:
+            if getattr(explainer, 'streaming', False):
+                explainer.explain_end(
+                    module=self, datamodule=self.trainer.datamodule,
+                    outputs={}, stage=TrainingStage.PRED)
 
         if self._embedding_step_outputs is not None:
             self._embedding_epoch_end(TrainingStage.PRED)

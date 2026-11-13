@@ -59,12 +59,20 @@ from kumo.engine.connector import (
     SourceTable,
     SQLSourceTable,
 )
+from kumo.engine.evidence import (
+    EvidenceConfig,
+    PredictionEvidenceBundle,
+    RecordRemovalPlan,
+)
 from kumo.engine.explain.errors import (
     ExplanationUnavailableError,
     InvalidExplanationError,
     InvalidRunError,
 )
-from kumo.engine.explain.results import TrainingExplanations
+from kumo.engine.explain.results import (
+    PredictionExplanations,
+    TrainingExplanations,
+)
 from kumo.engine.graph import Graph, GraphSnapshot
 from kumo.engine.pquery import PredictionTable, PredictiveQuery, TrainingTable
 from kumo.engine.table import Table
@@ -78,8 +86,17 @@ from kumo.engine.trainer import (
     TrainingResult,
     TrainingTableOutputConfig,
 )
+from kumo.engine.uncertainty import (
+    CalibrationSpec,
+    PredictionIntervalCalibrator,
+)
 
 __all__ = [
+    "EvidenceConfig",
+    "RecordRemovalPlan",
+    "PredictionEvidenceBundle",
+    "CalibrationSpec",
+    "PredictionIntervalCalibrator",
     "ADLSConnector",
     "ADLSIdentity",
     "__version__",
@@ -125,6 +142,7 @@ __all__ = [
     "Trainer",
     "TrainingResult",
     "TrainingExplanations",
+    "PredictionExplanations",
     "ExplanationUnavailableError",
     "InvalidExplanationError",
     "InvalidRunError",
