@@ -376,12 +376,14 @@ class Plan:
                 pinned=pinned,
             )
             token_lengths = getattr(source, "token_lengths", None)
-            if token_lengths is not None and input_state is None:
+            if token_lengths is not None and self.contract.batch.batching.length_input is not None:
+                previous = (fit.get("inputs") or {}).get("statistics") or {}
+                length_cutoff = statistics.get("cutoff", previous.get("cutoff"))
                 lengths = {}
                 columns = token_length_columns(self.contract, assembler)
                 for table, (constant, per_node, required) in columns.items():
                     file = (
-                        token_lengths(table, per_node, required, statistics.get("cutoff"))
+                        token_lengths(table, per_node, required, length_cutoff)
                         if per_node or required
                         else None
                     )
@@ -389,8 +391,18 @@ class Plan:
                 if lengths:
                     fit["inputs"] = {
                         **fit["inputs"],
-                        "statistics": {"cutoff": None, **statistics, "token_lengths": lengths},
+                        "statistics": {
+                            "cutoff": None,
+                            **previous,
+                            **statistics,
+                            "token_lengths": lengths,
+                        },
                     }
+            bind_lengths = getattr(task_anchors, "bind_token_lengths", None)
+            if bind_lengths is not None:
+                bind_lengths(
+                    assembler, self.contract, (fit.get("inputs") or {}).get("statistics") or {}
+                )
         except BaseException:
             task_anchors.close()
             raise
