@@ -513,6 +513,8 @@ class _Foreign(TrackingBase):
         self._tracker = tracker
 
     def __getattribute__(self, name: str) -> Any:
+        if name == '_snapshot_ref_before_finish':
+            return getattr(type(self._tracker), name, False) is True
         if name.startswith('_'):
             return object.__getattribute__(self, name)
         if name in ('start', 'on_trial', 'finish'):
@@ -591,6 +593,7 @@ class TrackingSession:
         self._search: Optional[_Search] = None
         self._jobs: 'queue.Queue[Optional[Callable[[], Any]]]' = queue.Queue(
             QUEUE_SIZE)
+        self._abandoned: Optional[TrackingBase] = None
         self._worker: Optional[threading.Thread] = None
         self._behind = False
         self._started = threading.Event()
@@ -721,7 +724,12 @@ class TrackingSession:
                 RuntimeError('the tracking thread stopped'))
             tracker, self._tracker = self._tracker, None
             if tracker is not None:
-                _abandon(tracker)
+                # Release SDK context tokens on the worker that created them.
+                self._abandoned = tracker
+                try:
+                    self._jobs.put_nowait(lambda: None)
+                except queue.Full:
+                    pass
             break
         if failed:
             error = failed[0]
@@ -772,8 +780,10 @@ class TrackingSession:
             tracker, self._tracker = self._tracker, None
             if tracker is not None:
                 try:
+                    snapshot = (tracking_ref(tracker) if getattr(
+                        tracker, '_snapshot_ref_before_finish', False) is True else None)
                     tracker.finish(record, error)
-                    self.final = tracking_ref(tracker)
+                    self.final = snapshot or tracking_ref(tracker)
                 except Exception as failure:
                     self._fail(failure)
                     raise
@@ -813,6 +823,10 @@ class TrackingSession:
             except Exception as error:
                 logger.warning('Experiment tracking failed: %s',
                                full_error(error), exc_info=_debug())
+            finally:
+                tracker, self._abandoned = self._abandoned, None
+                if tracker is not None:
+                    _abandon(tracker)
 
     def _call(self, call: Callable[[TrackingBase], Any]) -> None:
         tracker = self._tracker

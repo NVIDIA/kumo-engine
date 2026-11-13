@@ -8,6 +8,14 @@ title = "Kumo secret scanning"
 useDefault = true
 
 [[allowlists]]
+description = "The public RFC 6238 TOTP seed is a test vector, not a live credential."
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ$''']
+paths = ['''^test/scripts/test_engine_snowflake_ui\.py$''']
+
+[[allowlists]]
 description = "These password values are synthetic inputs for authentication tests."
 targetRules = ["generic-api-key"]
 condition = "AND"

@@ -1,0 +1,10 @@
+{
+  "platform": "sagemaker",
+  "artifact_root": "s3://your-test-bucket/mlops-validation",
+  "tracking_arn": "arn:aws:sagemaker:us-east-1:000000000000:mlflow-tracking-server/YOUR-TEST-SERVER",
+  "experiment": "KUMO_TEST_MLOPS",
+  "model_prefix": "KUMO-TEST-MLOPS",
+  "accelerator": "cpu",
+  "execution_context": "sagemaker",
+  "environment": "managed"
+}
