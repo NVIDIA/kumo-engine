@@ -699,3 +699,97 @@ def test_counting_policies_are_used_by_native_budget_planning(
                 assert len(actual) == 1
                 _equal(actual[0].inputs, expected[0].inputs)
                 assert native._last_length_planning_stats == ((1, 0) if epoch == 0 else (0, 1))
+
+
+@pytest.mark.parametrize("layout", [api.Packed(), api.Padded()])
+def test_native_row_bucketing_without_budget_reuses_history_only_cache(
+    history_data, tmp_path, monkeypatch, layout
+):
+    from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
+
+    schema, dataset, _, _, _ = history_data
+    sample = api.SampleSpec(
+        api.EntitySpec("users"),
+        events={
+            "history": api.EventSpec(
+                api.Rows(("orders",), api.TimeWindow("at", stop=0)), {"amount": api.Field("amount")}
+            )
+        },
+    )
+    spec = api.DataLoaderSpec(
+        schema,
+        sample,
+        api.BatchSpec(
+            {
+                "history": api.Input(
+                    api.EventSource(("history",), max_events=8),
+                    api.Fields((api.Encode("amount", api.Raw()),)),
+                    layout,
+                )
+            },
+            batching=api.Batching(max_samples=2, length_input="history", bucket_by_length=True),
+        ),
+    )
+    path = tmp_path / "row-anchors.parquet"
+    pq.write_table(pa.table({"entity": [1, 3] * 3, "at": [5] * 6}), path)
+    anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "at")
+    with api.prepare(
+        spec, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
+    ) as plan:
+        with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
+            native = task._anchors
+            task._anchors = ParquetAnchors(anchors)
+            try:
+                expected = list(task.batches(shuffle=False, chunk_batches=3, output_format="model"))
+            finally:
+                task._anchors.close()
+                task._anchors = native
+            expected_ids = [(1, 3), (5, 0), (2, 4)]
+            assert [batch.metadata["sample_ids"] for batch in expected] == expected_ids
+
+            def forbidden(*args, **kwargs):
+                pytest.fail("native row bucketing reconstructed requests or encoded for planning")
+
+            monkeypatch.setattr(native, "_requests", forbidden)
+            monkeypatch.setattr(task._assembler, "_model_lengths", forbidden)
+            for epoch in (0, 1):
+                actual = list(
+                    task.batches(shuffle=False, epoch=epoch, chunk_batches=3, output_format="model")
+                )
+                assert [batch.metadata["sample_ids"] for batch in actual] == expected_ids
+                for got, want in zip(actual, expected, strict=True):
+                    _equal(got.inputs, want.inputs)
+                assert native._last_length_planning_stats == ((6, 0) if epoch == 0 else (0, 6))
+            (cache,) = native.path.glob("lengths-*.bin")
+            assert cache.stat().st_size == 6 * 4
+
+
+@pytest.mark.parametrize("budget", [None, 4])
+def test_native_entity_length_input_is_explicitly_refused(history_data, tmp_path, budget):
+    schema, dataset, _, _, _ = history_data
+    sample = api.SampleSpec(api.EntitySpec("users"), entity_values={"id": api.Field("id")})
+    spec = api.DataLoaderSpec(
+        schema,
+        sample,
+        api.BatchSpec(
+            {
+                "entity": api.Input(
+                    api.EntitySource(), api.Fields((api.Encode("id", api.Raw()),)), api.Separate()
+                )
+            },
+            batching=api.Batching(
+                max_samples=2, max_tokens=budget, length_input="entity", bucket_by_length=True
+            ),
+        ),
+    )
+    path = tmp_path / "entity-anchors.parquet"
+    pq.write_table(pa.table({"entity": [1, 3], "at": [5, 5]}), path)
+    anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "at")
+    with api.prepare(
+        spec, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
+    ) as plan:
+        with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
+            with pytest.raises(
+                ValueError, match="native length planning currently requires an EventSource"
+            ):
+                list(task.batches(output_format="model"))

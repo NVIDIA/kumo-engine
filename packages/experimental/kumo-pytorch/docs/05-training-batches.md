@@ -210,6 +210,12 @@ length bucketing and `drop_last`. Token budgets count actual emitted
 positions, padding included, and are refused with `world_size > 1`, where
 ranks could otherwise take different numbers of steps.
 
+For DiskGraph AnchorTable model batches, native length planning currently
+requires an `EventSource` length input with a Packed, Padded or Nested layout.
+Other sources, including `EntitySource`, are refused explicitly; this path does
+not silently switch to Python per-anchor planning. Explicit request batches
+and the reference engine retain their existing planner.
+
 ## Inputs, targets and devices
 
 A `Batch` keeps `inputs`, `targets` and `metadata` apart. `metadata` carries
