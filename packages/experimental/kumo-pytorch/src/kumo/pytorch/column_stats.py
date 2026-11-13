@@ -49,6 +49,8 @@ StatRequest = tuple[str, str, str]
 
 # Bump when the statistics a request asks for change, so a stale directory is never reused.
 COL_STATS_RECIPE = 1
+# Bump when the token-length rules change, so a stale lengths file is never reused.
+TOKEN_LENGTHS_RECIPE = 1
 # Buckets cuts interpolate the t-digest quantiles at these probabilities.
 QUANTILE_GRID = [index / 1024 for index in range(1025)]
 #: A key each semantic type's statistics add to a column's entry.
@@ -222,6 +224,7 @@ def token_lengths_file(
             for column, tokenizer, empty in columns
         ],
         sorted(required),
+        TOKEN_LENGTHS_RECIPE,
         diskgraph.TOKENIZER_TRAINER,
     ]
     digest = hashlib.sha256(json.dumps(settings).encode()).hexdigest()[:16]
