@@ -296,9 +296,10 @@ pub fn train_tokenizer(
     .map_err(|e| map_anyhow_err(anyhow!(e)))
 }
 
-/// Each node's token count over `columns` of `table`: one per scalar, a list's elements, and a
-/// string's pieces under its tokenizer JSON, saturated to `u16`. Written to `path` as one
-/// little-endian `u16` per node ID, 0 for a node stored without data.
+/// Each node's token count over `columns` of `table`, NULLs counted as if present: 1 per scalar,
+/// a fixed-length array's length, a list's elements, and a string's pieces under its tokenizer
+/// JSON, saturated to `u16`. Written to `path` as one little-endian `u16` per node ID, 0 for a
+/// node stored without data.
 #[pyfunction]
 #[pyo3(signature = (index_dir, table, columns, path, *, num_threads=None))]
 pub fn token_lengths(
@@ -367,19 +368,10 @@ pub fn token_lengths(
             (None, _) => Cost::Fixed(1),
         });
     }
-    let mut chunks: Vec<_> = node_chunks(&stored.reader, TEXT_CHUNK_NODES)
-        .map(|chunk| {
-            let (first, _) = stored
-                .reader
-                .shard_id_range(chunk.0)
-                .expect("a stored shard");
-            (first + chunk.1, chunk)
-        })
-        .collect();
-    chunks.sort_unstable();
+    let chunks: Vec<_> = node_chunks(&stored.reader, TEXT_CHUNK_NODES).collect();
     let path = Path::new(path);
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(format!(".{}", uuid::Uuid::new_v4().simple()));
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let temporary = path.with_file_name(format!(".{name}.{}", uuid::Uuid::new_v4().simple()));
     let mut file = BufWriter::new(
         OpenOptions::new()
             .write(true)
@@ -388,30 +380,28 @@ pub fn token_lengths(
             .map_err(|e| map_anyhow_err(e.into()))?,
     );
     let written = (|| -> PyResult<()> {
-        let mut next = 0;
         for window in chunks.chunks(TEXT_WINDOW_CHUNKS) {
-            let lengths = py
-                .detach(|| {
-                    pool.install(|| {
-                        window
-                            .par_iter()
-                            .map(|&(_, chunk)| chunk_lengths(&stored, chunk, &decoded, &costs))
-                            .collect::<Result<Vec<_>>>()
-                    })
-                })
-                .map_err(map_anyhow_err)?;
-            for (&(first, _), lengths) in window.iter().zip(lengths) {
-                let zeros = std::iter::repeat_n(0, (first - next) as usize);
-                for length in zeros.chain(lengths.iter().copied()) {
-                    file.write_all(&u16::to_le_bytes(length))?;
+            py.detach(|| -> Result<()> {
+                let lengths = pool.install(|| {
+                    window
+                        .par_iter()
+                        .map(|&chunk| chunk_lengths(&stored, chunk, &decoded, &costs))
+                        .collect::<Result<Vec<_>>>()
+                })?;
+                for lengths in lengths {
+                    file.write_all(&lengths)?;
                 }
-                next = first + lengths.len() as u64;
-            }
+                Ok(())
+            })
+            .map_err(map_anyhow_err)?;
             py.check_signals()?;
         }
-        file.flush()?;
-        file.get_ref().sync_all()?;
-        Ok(fs::rename(&temporary, path)?)
+        py.detach(|| -> Result<()> {
+            file.flush()?;
+            file.get_ref().sync_all()?;
+            Ok(fs::rename(&temporary, path)?)
+        })
+        .map_err(map_anyhow_err)
     })();
     if written.is_err() {
         let _ = fs::remove_file(&temporary);
@@ -430,7 +420,7 @@ fn chunk_lengths(
     chunk: (usize, u64, u64),
     decoded: &[usize],
     costs: &[Cost],
-) -> Result<Vec<u16>> {
+) -> Result<Vec<u8>> {
     let (nodes, batch) = decode_chunk(&stored.reader, chunk, decoded)?;
     let mut totals = vec![0u64; batch.num_rows()];
     for (column, cost) in batch.columns().iter().zip(costs) {
@@ -452,9 +442,11 @@ fn chunk_lengths(
             }
         }
     }
-    let mut lengths = vec![0; (chunk.2 - chunk.1) as usize];
+    let mut lengths = vec![0; 2 * (chunk.2 - chunk.1) as usize];
     for (node, total) in nodes.into_iter().zip(totals) {
-        lengths[(node - chunk.1) as usize] = total.min(u16::MAX.into()) as u16;
+        let slot = 2 * (node - chunk.1) as usize;
+        let length = total.min(u16::MAX.into()) as u16;
+        lengths[slot..slot + 2].copy_from_slice(&length.to_le_bytes());
     }
     Ok(lengths)
 }
