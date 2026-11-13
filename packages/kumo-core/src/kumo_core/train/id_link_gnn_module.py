@@ -286,6 +286,13 @@ class IDLinkGNNLightningModule(BaseLinkLightningModule):
 
     # Prediction Callbacks ####################################################
 
+    def on_predict_start(self):
+        super().on_predict_start()
+        if self.datamodule.predict_candidates is not None:
+            raise ValueError(
+                "A pairwise model cannot apply target-filter conditions on "
+                f"table {self.rhs_name!r}; remove them from the query.")
+
     def predict_step(
         self,
         batch: HeteroData,

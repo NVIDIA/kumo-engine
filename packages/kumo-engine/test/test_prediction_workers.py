@@ -85,9 +85,8 @@ def test_valid_class_count_reaches_scorer(task_type, count, tmp_path,
         artifact_paths={}, manifest=None, scoring_defaults=ScoringDefaults())
     trainer._training_query = 'trained query'
     monkeypatch.setattr(Trainer, 'scratch_dir', property(lambda self: tmp_path))
-    monkeypatch.setattr(
-        'kumo_core.prediction_options.prediction_query_contract', lambda *args:
-        (None, task_type.value))
+    monkeypatch.setattr('kumo_core.prediction_options.prediction_task_type',
+                        lambda *args: task_type.value)
     monkeypatch.setattr('kumo_core.pquery.normalize_graph', lambda *args: None)
     monkeypatch.setattr('kumo_core.pquery.parse_and_validate_query',
                         lambda *args: SimpleNamespace(

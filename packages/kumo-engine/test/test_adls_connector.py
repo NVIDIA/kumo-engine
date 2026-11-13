@@ -166,9 +166,8 @@ def test_invalid_prediction_output_fails_before_scoring(monkeypatch, tmp_path,
     trainer._training_query = 'trained query'
     monkeypatch.setattr(Trainer, 'scratch_dir', property(lambda _: tmp_path))
     # Isolate output validation from query parsing and model execution.
-    monkeypatch.setattr(
-        'kumo_core.prediction_options.prediction_query_contract', lambda *args:
-        (None, TaskType.REGRESSION.value))
+    monkeypatch.setattr('kumo_core.prediction_options.prediction_task_type',
+                        lambda *args: TaskType.REGRESSION.value)
     monkeypatch.setattr('kumo_core.pquery.normalize_graph', lambda _: None)
     monkeypatch.setattr(
         'kumo_core.pquery.parse_and_validate_query',

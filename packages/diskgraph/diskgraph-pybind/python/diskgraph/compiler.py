@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
 from kumoapi.pquery.AST import (Aggregation, ASTNode, Column, Condition,
@@ -74,6 +75,16 @@ def _validate_lp_layout(name: str, value: Optional[str], allowed: set[str]) -> N
 
 def _requires_non_empty_target_list(task_type: str) -> bool:
     return task_type in TASK_TYPES_REQUIRING_NON_EMPTY_TARGET_LIST
+
+def _read_on_table(node: ASTNode, table: str) -> ASTNode:
+    if isinstance(node, Condition):
+        if isinstance(node.target, Join) and node.target.rhs_key.split('.')[0] == table:
+            node.target = node.target.rhs_target
+    elif isinstance(node, LogicalOperation):
+        for child in (node.left, node.right):
+            if child is not None:
+                _read_on_table(child, table)
+    return node
 
 def index_timestamp_unit(index_path: Optional[str]) -> str:
     """The clock the index at ``index_path`` stores timestamps in (seconds when omitted)."""
@@ -207,7 +218,9 @@ class DiskGraphPlanCompiler:
             # We swap the target column of the filter to the physical Node PK.
             if filter_node:
                 dummy_col = Column(fqn=f"{entity_table}.{entity_col}")
-                query_entity_ast = Filter(target=dummy_col, condition=filter_node)
+                query_entity_ast = Filter(
+                    target=dummy_col,
+                    condition=_read_on_table(deepcopy(filter_node), entity_table))
             else:
                 query_entity_ast = None
         else:
@@ -435,10 +448,12 @@ class DiskGraphPlanCompiler:
                                                         self._timestamp_unit)
 
         elif isinstance(node, LogicalOperation):
-            left = self._compile_row_filter(node.left, query, context_table=context_table)
+            left = self._compile_row_filter(node.left, query, context_table=context_table,
+                                            root_table=root_table)
             if node.bool_op == BoolOp.NOT:
                 return RowFilter.not_(left)
-            right = self._compile_row_filter(node.right, query, context_table=context_table)
+            right = self._compile_row_filter(node.right, query, context_table=context_table,
+                                             root_table=root_table)
             if node.bool_op == BoolOp.AND:
                 return RowFilter.and_(left, right)
             elif node.bool_op == BoolOp.OR:

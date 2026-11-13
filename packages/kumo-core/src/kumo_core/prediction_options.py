@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping, NamedTuple, Sequence, Tuple
+from typing import Any, Mapping, NamedTuple, Sequence
 
 from kumoapi.jobs import MetadataField
 
@@ -126,14 +126,20 @@ def apply_binary_threshold(predictions: Any, threshold: float | None) -> None:
         float(threshold))
 
 
-def prediction_query_contract(
-        query: str, graph_config: Mapping[str, Any]) -> Tuple[Any, ...]:
-    r"""Return the parsed fields that determine what the model scores.
+class PredictionQueryContract(NamedTuple):
+    target: str
+    target_filter: str | None
+    task_type: str
+    entity: tuple[str, str]
+    candidate_table: str | None
+    forecast_length: int
+    target_to_entity_paths: tuple[tuple[tuple[str, ...], ...], ...]
 
-    A prediction table may select a different population in its ``WHERE``
-    clause. Its target, task, ``FOR EACH`` entity, forecast length, and graph
-    paths connecting the target to that entity must still match the model.
-    """
+
+def prediction_query_contract(
+        query: str, graph_config: Mapping[str, Any]) -> PredictionQueryContract:
+    r"""The parsed fields a prediction query must share with the model."""
+    from kumo_core.link_candidates import target_contract
     from kumo_core.pquery import (
         normalize_graph,
         parse_and_validate_query,
@@ -145,15 +151,33 @@ def prediction_query_contract(
     paths = tuple(
         tuple(tuple(edge) for edge in path)
         for path in target_to_entity_paths(parsed, graph))
-    return (
-        str(parsed.query.target_ast),
-        parsed.task_type,
-        parsed.entity_table,
-        parsed.entity_column,
-        parsed.rhs_node_type,
-        parsed.forecast_length,
-        paths,
+    target, target_filter = target_contract(parsed)
+    return PredictionQueryContract(
+        target=target,
+        target_filter=target_filter,
+        task_type=parsed.task_type,
+        entity=(parsed.entity_table, parsed.entity_column),
+        candidate_table=parsed.rhs_node_type,
+        forecast_length=parsed.forecast_length,
+        target_to_entity_paths=paths,
     )
+
+
+def prediction_task_type(training_query: str | None, query: str,
+                         graph_config: Mapping[str, Any]) -> str:
+    r"""The task type, if the trained model can score ``query``."""
+    predicted = prediction_query_contract(query, graph_config)
+    if training_query is None:
+        raise ValueError("This model has no training query")
+    trained = prediction_query_contract(training_query, graph_config)
+    for name, expected, actual in zip(predicted._fields, trained, predicted):
+        if expected != actual:
+            raise ValueError(
+                f"The prediction query's {name.replace('_', ' ')} is "
+                f"{actual!r}, but the model was trained with {expected!r}. "
+                "Only the FOR EACH filter and target-filter conditions on "
+                "the candidate table can change.")
+    return predicted.task_type
 
 
 def validate_prediction_workers(num_workers: int) -> None:

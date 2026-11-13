@@ -33,10 +33,12 @@ import diskgraph
 import numpy as np
 from pandas import Timestamp
 
+from .link_candidates import candidate_node_ids
 from .pquery import (
     NativeGraph,
     ValidatedNativeQuery,
     _temporal_target_time_range,
+    to_api_graph,
 )
 from .prediction_options import resolve_prediction_time_options
 from .task_dataset import (
@@ -48,7 +50,7 @@ from .task_dataset import (
 from .train.autoregression import FUTURE_LABELS_COL
 from .training.table import apply_reference_resolution
 from .training.validation import require_single_anchor, validate_anchor_time
-from .types.enums import PredictionArtifactType
+from .types.enums import PredictionArtifactType, TaskType
 
 if TYPE_CHECKING:
     from .embedding_models import EmbeddingModelStore
@@ -307,6 +309,12 @@ def materialize_prediction_task(
     anchors = request.timestamps
     if request.query.task_type == "temporal_link_prediction":
         anchors = (link_prediction_anchor(anchors, generated.table_path), )
+    candidates = candidate_node_ids(request.query.query,
+                                    to_api_graph(request.graph),
+                                    task_type=TaskType(request.query.task_type),
+                                    index_path=request.index_path,
+                                    tt_id=f"{request.tt_id}-candidates",
+                                    runtime=runtime)
     ingested = runtime.execute_tt_ingest(
         staging_dir=generated.staging_dir,
         index_path=request.index_path,
@@ -382,6 +390,7 @@ def materialize_prediction_task(
         has_time=True,
         has_weight=False,
         column_stats=False,
+        predict_candidates=candidates,
     )
     bundle_dir = os.path.dirname(manifest_path)
     runtime_manifest_path = write_flat_manifest(
