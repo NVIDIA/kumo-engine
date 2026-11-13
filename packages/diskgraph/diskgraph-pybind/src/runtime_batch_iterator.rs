@@ -2,6 +2,7 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::temporal_query::QueryPython as _;
 use crate::{DiskgraphConfigError, DiskgraphDataError, DiskgraphSystemError};
 use arrow::pyarrow::ToPyArrow;
 use arrow_array::{Array, Int64Array, RecordBatch, UInt32Array, UInt64Array};
@@ -260,6 +261,14 @@ pub struct RuntimeIndex {
 #[pyclass]
 pub struct RuntimeBatchIterator {
     inner: diskgraph_runtime::RuntimeBatchIterator,
+    history: Option<HistoryIteration>,
+}
+
+struct HistoryIteration {
+    reader: std::sync::Arc<diskgraph_index::graph::GraphIndexReader>,
+    engine: std::sync::Arc<diskgraph_engine::engine::DiskGraphEngine>,
+    plan: diskgraph_train_table::batch_aggregate::PreparedTemporalPlan,
+    merges: Vec<crate::temporal_query::EventMerge>,
 }
 fn map_runtime_err(error: diskgraph_runtime::RuntimeError) -> PyErr {
     use diskgraph_runtime::RuntimeError;
@@ -355,6 +364,7 @@ impl RuntimeIndex {
         projections: Option<std::collections::HashMap<String, Vec<String>>>,
     ) -> PyResult<RuntimeBatchIterator> {
         Ok(RuntimeBatchIterator {
+            history: None,
             inner: self
                 .inner
                 .iter(
@@ -467,6 +477,7 @@ impl RuntimeBatchIterator {
         projections: Option<std::collections::HashMap<String, Vec<String>>>,
     ) -> PyResult<Self> {
         Ok(Self {
+            history: None,
             inner: diskgraph_runtime::RuntimeIndex::new(parent_root, tt_id, rnd_seed, num_threads)
                 .map_err(map_runtime_err)?
                 .iter(
@@ -512,13 +523,86 @@ impl RuntimeBatchIterator {
     pub fn stage_size(&self) -> u64 {
         self.inner.stage_size()
     }
+
+    /// Attach history work once per epoch; next_batch remains the only batch call.
+    pub fn with_history(
+        &mut self,
+        sampler: &crate::SamplerEngine,
+        root_type: String,
+        plan: String,
+        merges: String,
+    ) -> PyResult<()> {
+        let plan = diskgraph_train_table::batch_aggregate::PreparedTemporalPlan::prepare_history(
+            &sampler.reader, &root_type, &plan,
+        ).map_err(DiskgraphConfigError::new_err)?;
+        let merges: Vec<crate::temporal_query::EventMerge> = serde_json::from_str(&merges)
+            .map_err(|e| DiskgraphConfigError::new_err(format!("invalid history merges: {e}")))?;
+        for merge in &merges {
+            if merge.sequences.len() != merge.ascending.len() {
+                return Err(DiskgraphConfigError::new_err("merge sequence/order counts differ"));
+            }
+            for sequence in &merge.sequences {
+                plan.require_timed_sequence(sequence).map_err(DiskgraphConfigError::new_err)?;
+            }
+        }
+        self.history = Some(HistoryIteration {
+            reader: std::sync::Arc::clone(&sampler.reader),
+            engine: std::sync::Arc::clone(&sampler.engine),
+            plan,
+            merges,
+        });
+        Ok(())
+    }
+
     pub fn next_batch(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        let batch = py
-            .detach(|| self.inner.next_batch())
-            .map_err(map_runtime_err)?;
-        batch
-            .map(|batch| runtime_batch_to_pydict(py, &batch).map(|d| d.into()))
-            .transpose()
+        let next = py.detach(|| {
+            let batch = self.inner.next_batch().map_err(map_runtime_err)?;
+            let Some(batch) = batch else {
+                return Ok(None);
+            };
+            let history = self
+                .history
+                .as_ref()
+                .map(|config| {
+                    let cutoffs = batch
+                        .task
+                        .seed_timestamps
+                        .clone()
+                        .unwrap_or_else(|| vec![0; batch.task.seed_node_ids.len()]);
+                    config.plan.execute(
+                        &config.reader,
+                        &batch.task.seed_node_ids,
+                        &cutoffs,
+                        &config.engine.thread_pool,
+                    )
+                    .and_then(|result| {
+                        let orders = result.merged_event_orders(&config.merges)?;
+                        Ok((result, orders))
+                    })
+                    .map_err(DiskgraphConfigError::new_err)
+                })
+                .transpose()?;
+            Ok::<_, PyErr>(Some((batch, history)))
+        })?;
+        let Some((batch, history)) = next else {
+            return Ok(None);
+        };
+        let output = runtime_batch_to_pydict(py, &batch)?;
+        if let Some((result, orders)) = history {
+            output.set_item("history", result.into_python(py, true)?)?;
+            let merged = PyDict::new(py);
+            for (name, bounds, order) in orders {
+                merged.set_item(
+                    name,
+                    (
+                        Int64Array::from(bounds).to_data().to_pyarrow(py)?,
+                        Int64Array::from(order).to_data().to_pyarrow(py)?,
+                    ),
+                )?;
+            }
+            output.set_item("history_merges", merged)?;
+        }
+        Ok(Some(output.into()))
     }
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf

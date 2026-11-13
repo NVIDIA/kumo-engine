@@ -519,8 +519,7 @@ impl DiskGraphTTBuilder {
                 .into_iter()
                 .map(|(src_col, dst_table)| tt::TTFKeySpec {
                     src_col,
-                    dst_table,
-                })
+                    dst_table })
                 .collect(),
         );
     }

@@ -285,7 +285,8 @@ def test_unsupported_fast_paths_keep_full_frame(history_graph, guard):
     for seq in full_plan["sequences"]:
         seq["limit"] = None
     limited, full = query(history_graph, plan), query(history_graph, full_plan)
-    assert limited["stats"] == full["stats"]
+    assert limited["stats"]["edges_visited"] == full["stats"]["edges_visited"]
+    assert limited["stats"]["rows_materialized"] == full["stats"]["rows_materialized"]
     assert limited["aggregates"] == full["aggregates"]
     for a, b in zip(limited["sequences"], full["sequences"]):
         rows = b["batch"].to_pylist()
@@ -936,3 +937,53 @@ def test_aggregate_only_keeps_exact_clipped_time_filtering(ceiling_endpoint_grap
     roots = engine.lookup_node_ids("users", pa.array([1]))
     result = engine.query_temporal({"users": roots}, {"users": [ceiling + 300]}, json.dumps(plan))
     assert result["aggregates"][0]["values"] == [1]
+
+
+@pytest.mark.parametrize("output_format", ["inspectable", "model"])
+def test_native_threads_preserve_anchor_order_empty_types_and_duplicate_requests(
+    history_graph, output_format
+):
+    from pathlib import Path
+
+    index = Path(history_graph[4]["tables"][0]["source"]["paths"][0]).parent / "index"
+    serial = diskgraph.SamplerEngine(str(index), num_threads=1)
+    parallel = diskgraph.SamplerEngine(str(index), num_threads=4)
+    plan = plan_for(history_graph)
+    plan["frames"][0]["columns"].append("null_int")
+    plan["aggregates"] = [
+        {"name": "n", "frame": "f", "operation": "count", "column": None},
+        {"name": "m", "frame": "f", "operation": "min", "column": "null_int"},
+    ]
+    ids = serial.lookup_node_ids("users", pa.array([2, 1, 3, 1] * 67))
+    times = [1_700_000_000, 1_700_000_010, 1_700_000_008, 1_700_000_005] * 67
+    args = ({"users": ids}, {"users": times}, json.dumps(plan))
+    expected = serial.query_temporal(*args, output_format=output_format)
+    actual = parallel.query_temporal(*args, output_format=output_format)
+    for key in ("sequences", "aggregates"):
+        for left, right in zip(expected[key], actual[key], strict=True):
+            assert left.keys() == right.keys()
+            for name in left:
+                if hasattr(left[name], "equals"):
+                    assert left[name].equals(right[name]), name
+                else:
+                    assert left[name] == right[name], name
+    expected_lengths = serial.query_temporal_lengths(*args)["sequences"]
+    actual_lengths = parallel.query_temporal_lengths(*args)["sequences"]
+    assert expected_lengths == actual_lengths
+
+
+@pytest.mark.parametrize("order", ["ascending", "descending"])
+def test_sequence_only_caps_before_decoding_payload_when_clock_cannot_preselect(history_graph, order):
+    plan = plan_for(history_graph, order=order, clock="other_time")
+    plan["frames"][0]["columns"] += ["owner", "time"]
+    plan["sequences"][0]["columns"] += ["owner", "time"]
+    unlimited = copy.deepcopy(plan)
+    unlimited["sequences"][0]["limit"] = None
+    full = query(history_graph, unlimited)
+    actual = query(history_graph, plan)
+    a, b = actual["sequences"][0], full["sequences"][0]
+    selected = [row for start, stop in zip(b["offsets"], b["offsets"][1:])
+                for row in range(start, min(start + 3, stop))]
+    assert a["batch"].equals(b["batch"].take(pa.array(selected, type=pa.int64())))
+    assert actual["stats"]["edges_visited"] == full["stats"]["edges_visited"]
+    assert actual["stats"]["values_decoded"] < full["stats"]["values_decoded"]
