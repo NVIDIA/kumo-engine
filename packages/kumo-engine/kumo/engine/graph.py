@@ -70,7 +70,6 @@ from typing import (
 
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.pquery import NativeGraph, normalize_graph
-from kumo_core.sources.identity import version_kind
 from kumoapi.graph import Edge
 from kumoapi.typing import TimestampPrecision, validate_timestamp_precision
 
@@ -90,7 +89,6 @@ from kumo.engine._provenance import source_table
 from kumo.engine._scratch import (
     fingerprint,
     get_scratch_dir,
-    new_run_id,
     scoped_scratch_dir,
     snapshot_scratch_dir,
 )

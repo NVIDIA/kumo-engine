@@ -103,7 +103,9 @@ def test_downloaded_training_rows_bypass_connector_staging(
         table, snapshot.id, str(producer), table.manifest
     )
     stage = Mock(side_effect=AssertionError("Downloaded rows were staged again"))
-    monkeypatch.setattr("kumo.engine.pquery._custom_source.stage_source_table", stage)
+    monkeypatch.setattr(
+        "kumo.engine.connector.file._FileSourceBackend.prepare_ingest", stage
+    )
     materialize = Mock(wraps=native_table.generate_custom_train_table)
     monkeypatch.setattr(native_table, "generate_custom_train_table", materialize)
 
@@ -338,6 +340,9 @@ def test_native_artifacts_are_produced_once_and_replicated(
         snapshot = producer.produce_snapshot(
             (graph, options, descriptor), settings, source_tables
         )
+        cached_descriptor, _ = producer.stage_snapshot(graph, options)
+        assert cached_descriptor._data_version == snapshot._data_version
+        producer.discard_staging(cached_descriptor.id)
         with scoped_scratch_dir(replica.root):
             replica.download_snapshot(descriptor, settings, source_tables)
             assert replica.has_snapshot(descriptor)

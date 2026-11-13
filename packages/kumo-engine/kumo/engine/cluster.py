@@ -329,6 +329,7 @@ class _ComputeWorker:
             Path(_store().path(DiskgraphSnapshotHandle(graph.id, version))),
             graph._graph_config,
             record_sources=options["record_sources"],
+            _version=version,
         )
         self._staged[snapshot.id] = persist_dir, sources
         return snapshot, sources.tables
