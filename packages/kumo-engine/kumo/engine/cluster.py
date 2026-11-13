@@ -261,8 +261,9 @@ class _ComputeWorker:
         if not base.resolve().is_relative_to(self.root.resolve()):
             raise ValueError("Artifact destination escapes worker scratch")
         settings = self._stores[publication]
+        # Resolve authentication from the artifact root; directory supplies the path.
         filesystem, _ = file_store(
-            settings.root.connector, settings.root.location("training_tables")
+            settings.root.connector, settings.root.location("")
         )
         download_artifact(filesystem, directory, entry, base)
         self.received.setdefault(publication, {})[entry.name] = entry
