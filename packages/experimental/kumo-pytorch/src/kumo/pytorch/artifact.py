@@ -62,7 +62,8 @@ class FitRecord(TypedDict):
     not check it, and fitted-state equality ignores it. ``statistics`` (inputs
     only) names the encoder cutoff, in epoch nanoseconds, the DiskGraph
     ``col_stats/`` files that encoders over stored columns were fitted from,
-    and each event table's ``token_lengths`` file under ``col_stats/``.
+    and, with ``Batching.length_input`` set, the ``token_lengths`` file under
+    ``col_stats/`` of each event table that input reads.
     """
 
     contract: str

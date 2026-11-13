@@ -52,17 +52,24 @@ def _text_contract(encoding: api.Text = TEXT) -> api.DataLoaderSpec:
     return replace(contract, sample=sample, batch=replace(contract.batch, inputs=inputs))
 
 
-def _description_again(contract: api.DataLoaderSpec, encoding) -> api.DataLoaderSpec:
+def _measured(contract: api.DataLoaderSpec) -> api.DataLoaderSpec:
+    batching = replace(contract.batch.batching, length_input="transactions")
+    return replace(contract, batch=replace(contract.batch, batching=batching))
+
+
+def _reading(contract: api.DataLoaderSpec, name: str, column: str, encoding) -> api.DataLoaderSpec:
+    events = contract.sample.events["transactions"]
+    events = replace(events, fields={**events.fields, "again": api.Field(column=column)})
     transactions = contract.batch.inputs["transactions"]
-    again = replace(
-        transactions,
-        representation=replace(
-            transactions.representation,
-            fields=(api.Encode(field="description", encoding=encoding),),
-        ),
+    group = transactions.representation
+    kept = group.fields if name == "transactions" else ()
+    group = replace(group, fields=(*kept, api.Encode(field="again", encoding=encoding)))
+    inputs = {**contract.batch.inputs, name: replace(transactions, representation=group)}
+    return replace(
+        contract,
+        sample=replace(contract.sample, events={"transactions": events}),
+        batch=replace(contract.batch, inputs=inputs),
     )
-    inputs = {**contract.batch.inputs, "again": again}
-    return replace(contract, batch=replace(contract.batch, inputs=inputs))
 
 
 def _tokenizer(task: api.Task) -> str:
@@ -149,8 +156,16 @@ def test_the_index_trains_the_tokenizer_python_trains_on_every_thread_count(tmp_
         (tmp_path / "index" / "col_stats" / name).unlink()
 
 
+def test_a_fit_without_length_input_keeps_no_token_lengths(tmp_path):
+    dataset, engine = _setup("diskgraph", tmp_path)
+    with api.prepare(_text_contract(), dataset, engine) as plan:
+        with plan.materialize(_requests(), fit_split="train") as task:
+            assert "token_lengths" not in task.fitted_state.fit["inputs"]["statistics"]
+    assert not list(tmp_path.glob("index/col_stats/*/*.lengths-*.bin"))
+
+
 @pytest.mark.parametrize("padded", (False, True))
-def test_every_fit_keeps_each_event_rows_token_count(tmp_path, padded):
+def test_a_measured_fit_keeps_each_event_rows_token_count(tmp_path, padded):
     import diskgraph
 
     encoding = TEXT
@@ -163,7 +178,7 @@ def test_every_fit_keeps_each_event_rows_token_count(tmp_path, padded):
     dataset, engine = _setup("diskgraph", tmp_path)
     kept = []
     for _ in range(2):
-        with api.prepare(_text_contract(encoding), dataset, engine) as plan:
+        with api.prepare(_measured(_text_contract(encoding)), dataset, engine) as plan:
             with plan.materialize(_requests(), fit_split="train") as task:
                 encoder = task.output("transactions").field(name="description").encoder
                 tokenizer = encoder.tokenizer
@@ -182,15 +197,26 @@ def test_every_fit_keeps_each_event_rows_token_count(tmp_path, padded):
         assert lengths[node] == 2 + pieces  # amount, channel and the description's pieces
 
 
+def _lengths(contract: api.DataLoaderSpec, directory) -> tuple[str, bytes]:
+    dataset, engine = _setup("diskgraph", directory)
+    with api.prepare(contract, dataset, engine) as plan:
+        with plan.materialize(_requests(), fit_split="train") as task:
+            (name,) = task.fitted_state.fit["inputs"]["statistics"]["token_lengths"].values()
+    return name, (directory / "index" / "col_stats" / name).read_bytes()
+
+
+def test_only_the_length_inputs_columns_count(tmp_path):
+    alone = _measured(_text_contract())
+    beside = _reading(alone, "merchants", "merchant_id", api.Vocabulary())
+    assert _lengths(alone, tmp_path / "alone") == _lengths(beside, tmp_path / "beside")
+
+
 def test_a_column_two_encoders_read_counts_once(tmp_path):
+    alone = _measured(_text_contract())
+    again = _reading(alone, "transactions", "description", api.Vocabulary())
+    assert _lengths(alone, tmp_path) == _lengths(again, tmp_path)
+    twice = _reading(alone, "transactions", "description", replace(TEXT, min_frequency=3))
     dataset, engine = _setup("diskgraph", tmp_path)
-    files = []
-    for contract in (_text_contract(), _description_again(_text_contract(), api.Vocabulary())):
-        with api.prepare(contract, dataset, engine) as plan:
-            with plan.materialize(_requests(), fit_split="train") as task:
-                files.append(task.fitted_state.fit["inputs"]["statistics"]["token_lengths"])
-    assert files[0] == files[1]
-    twice = _description_again(_text_contract(), api.Text(vocabulary_size=300, min_frequency=3))
     with api.prepare(twice, dataset, engine) as plan:
         with pytest.raises(ValueError, match="different tokenizers"):
             plan.materialize(_requests(), fit_split="train")

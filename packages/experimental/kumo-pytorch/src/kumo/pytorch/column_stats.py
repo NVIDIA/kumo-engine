@@ -111,27 +111,27 @@ LengthColumn = tuple[str, str | None]
 
 
 def token_length_columns(contract: Any, plan: Any) -> dict[str, tuple[LengthColumn, ...]]:
-    """Each event table's stored columns that the inputs of a fitted plan read."""
+    """Each event table's stored columns that the ``Batching.length_input`` input reads."""
 
+    name = contract.batch.batching.length_input
+    if name is None or not isinstance(contract.batch.inputs[name].representation, Fields):
+        return {}
     columns: dict[str, dict[str, str | None]] = {}
-    for name, value in sorted(contract.batch.inputs.items()):
-        if not isinstance(value.representation, Fields):
-            continue
-        for use in value.representation.fields:
-            encoder = plan.output(name=name).field(name=use.field).encoder
-            tokenizer = encoder.tokenizer_json if isinstance(encoder.config, Text) else None
-            for variant, _, _ in resolved_fields(contract, name, use.field):
-                stored = _stored_column(contract.sample, contract.schema, variant)
-                if stored is None or variant[0] not in {"events", "current_events"}:
-                    continue
-                table, column = stored
-                known = columns.setdefault(table, {}).get(column)
-                if tokenizer is not None and known is not None and known != tokenizer:
-                    raise ValueError(
-                        f"{table}.{column} is read by Text encoders with different tokenizers, "
-                        "so its token length is ambiguous"
-                    )
-                columns[table][column] = tokenizer or known
+    for use in contract.batch.inputs[name].representation.fields:
+        encoder = plan.output(name=name).field(name=use.field).encoder
+        tokenizer = encoder.tokenizer_json if isinstance(encoder.config, Text) else None
+        for variant, _, _ in resolved_fields(contract, name, use.field):
+            stored = _stored_column(contract.sample, contract.schema, variant)
+            if stored is None or variant[0] not in {"events", "current_events"}:
+                continue
+            table, column = stored
+            known = columns.setdefault(table, {}).get(column)
+            if tokenizer is not None and known is not None and known != tokenizer:
+                raise ValueError(
+                    f"{table}.{column} is read by Text encoders with different tokenizers, "
+                    "so its token length is ambiguous"
+                )
+            columns[table][column] = tokenizer or known
     return {table: tuple(sorted(read.items())) for table, read in sorted(columns.items())}
 
 
