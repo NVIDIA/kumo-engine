@@ -4,12 +4,16 @@
 
 use crate::temporal_query::QueryPython as _;
 use crate::{DiskgraphConfigError, DiskgraphDataError, DiskgraphSystemError};
-use arrow::pyarrow::ToPyArrow;
-use arrow_array::{Array, Int64Array, RecordBatch, UInt32Array, UInt64Array};
+use arrow::array::{make_array, ArrayData};
+use arrow::pyarrow::{FromPyArrow, ToPyArrow};
+use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, UInt32Array, UInt64Array};
 #[cfg(test)]
 pub(crate) use diskgraph_runtime::PseudoTimeSeed;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use serde::Deserialize;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
 fn py_record_batch_list<'py>(
     py: Python<'py>,
     batches: &[RecordBatch],
@@ -262,9 +266,374 @@ pub struct RuntimeIndex {
 pub struct RuntimeBatchIterator {
     inner: diskgraph_runtime::RuntimeBatchIterator,
     history: Option<HistoryIteration>,
+    planning: Option<LengthPlanning>,
+}
+
+/// Task-owned cache. The one-shard anchor extension has dense, stable stage IDs.
+/// Encoders/length metadata are frozen for its lifetime; Python owns one cache
+/// per (stage, prepared length contract), never a process-global graph cache.
+#[pyclass]
+pub struct RuntimeLengthCache {
+    values: Arc<Mutex<diskgraph_runtime::MappedLengthCache>>,
+}
+#[pymethods]
+impl RuntimeLengthCache {
+    #[new]
+    #[pyo3(signature = (stage_size, path, fields=3))]
+    fn new(stage_size: usize, path: String, fields: usize) -> PyResult<Self> {
+        Ok(Self {
+            values: Arc::new(Mutex::new(
+                diskgraph_runtime::MappedLengthCache::new(
+                    std::path::Path::new(&path),
+                    stage_size,
+                    fields,
+                )
+                .map_err(map_runtime_err)?,
+            )),
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LengthColumn {
+    column: String,
+    #[serde(default)]
+    metadata: Option<String>,
+    #[serde(default)]
+    missing_token: bool,
+    #[serde(default)]
+    required: bool,
+    #[serde(default)]
+    validity_only: bool,
+    #[serde(default)]
+    missing_only: bool,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FlattenLengths {
+    maximum: usize,
+    keep_last: bool,
+    event_boundary: bool,
+    separator: bool,
+    between: bool,
+    before: bool,
+    after: bool,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LengthContract {
+    query: String,
+    merge: String,
+    columns: HashMap<String, Vec<LengthColumn>>,
+    #[serde(default)]
+    history_only: bool,
+    #[serde(default)]
+    fixed: HashMap<String, usize>,
+    row_maximum: Option<usize>,
+    flatten: Option<FlattenLengths>,
+    max_samples: usize,
+    max_tokens: Option<usize>,
+    packed: bool,
+    #[serde(default)]
+    nested_padded: bool,
+    bucket: bool,
+    drop_last: bool,
+}
+struct LengthMetadata {
+    chunks: Vec<ArrayRef>,
+    ends: Vec<usize>,
+}
+impl LengthMetadata {
+    fn get(&self, id: u64) -> PyResult<Option<u64>> {
+        let id =
+            usize::try_from(id).map_err(|_| length_error("token metadata row ID exceeds usize"))?;
+        let chunk = self.ends.partition_point(|&end| end <= id);
+        let values = self.chunks.get(chunk).ok_or_else(|| {
+            length_error("post-fit token metadata does not cover this graph row ID")
+        })?;
+        let row = id - if chunk == 0 { 0 } else { self.ends[chunk - 1] };
+        if values.is_null(row) {
+            return Ok(None);
+        }
+        let value = if let Some(values) = values.as_any().downcast_ref::<arrow_array::UInt16Array>()
+        {
+            u64::from(values.value(row))
+        } else if let Some(values) = values.as_any().downcast_ref::<UInt64Array>() {
+            values.value(row)
+        } else {
+            u64::try_from(
+                values
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .value(row),
+            )
+            .map_err(|_| length_error("post-fit token lengths cannot be negative"))?
+        };
+        Ok(Some(value))
+    }
+}
+struct LengthPlanning {
+    query: diskgraph_train_table::batch_aggregate::PreparedTemporalPlan,
+    contract: LengthContract,
+    token_lengths: HashMap<String, LengthMetadata>,
+    cache: Arc<Mutex<diskgraph_runtime::MappedLengthCache>>,
+    batches: VecDeque<Vec<u64>>,
+    consumed: usize,
+    computed: usize,
+    hits: usize,
+}
+
+fn length_error(message: impl Into<String>) -> PyErr {
+    DiskgraphConfigError::new_err(message.into())
+}
+
+impl LengthPlanning {
+    fn enqueue(
+        &mut self,
+        batch: &RuntimeBatch,
+        history: &HistoryIteration,
+        final_pool: bool,
+    ) -> PyResult<()> {
+        let ids = &batch.task.tt_stage_node_ids;
+        let cache = self
+            .cache
+            .lock()
+            .map_err(|_| length_error("length cache poisoned"))?;
+        if ids.iter().any(|&id| id as usize >= cache.len()) {
+            return Err(length_error(
+                "length cache does not match the native anchor stage",
+            ));
+        }
+        let missing: Vec<usize> = ids
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &id)| cache.get(id as usize).is_none().then_some(i))
+            .collect();
+        self.hits += ids.len() - missing.len();
+        drop(cache);
+        if !missing.is_empty() {
+            let roots = missing
+                .iter()
+                .map(|&i| batch.task.seed_node_ids[i])
+                .collect::<Vec<_>>();
+            let cutoffs = missing
+                .iter()
+                .map(|&i| batch.task.seed_timestamps.as_ref().map_or(0, |v| v[i]))
+                .collect::<Vec<_>>();
+            // Only clock/identity and length metadata are projected. Actual feature
+            // decoding and encoding happen once when the final batch is delivered.
+            let result = self.query.execute(
+                &history.reader, &roots, &cutoffs, &history.engine.thread_pool,
+            )
+            .map_err(length_error)?;
+            let merges = result
+                .merged_event_orders(&history.merges)
+                .map_err(length_error)?;
+            let (_, bounds, order) = merges
+                .iter()
+                .find(|(name, _, _)| name == &self.contract.merge)
+                .ok_or_else(|| length_error("unknown length input merge"))?;
+            // Merge offsets refer to sequences in merge declaration order.
+            let selection = history.merges.iter()
+                .find(|plan| plan.name == self.contract.merge)
+                .ok_or_else(|| length_error("unknown length input merge"))?;
+            let mut costs = Vec::new();
+            for name in &selection.sequences {
+                let name = name.as_str();
+                let sequence = result
+                    .sequences
+                    .iter()
+                    .find(|s| s.name == name)
+                    .ok_or_else(|| length_error("unknown length sequence"))?;
+                let arrays =
+                    self.contract
+                        .columns
+                        .get(name)
+                        .into_iter()
+                        .flatten()
+                        .map(|column| {
+                            if let Some(key) = &column.metadata {
+                                let metadata = self.token_lengths.get(key).ok_or_else(|| {
+                                    length_error("missing post-fit token metadata")
+                                })?;
+                                return Ok((column, None, Some(metadata)));
+                            }
+                            let array =
+                                sequence
+                                    .batch
+                                    .column_by_name(&column.column)
+                                    .ok_or_else(|| {
+                                        length_error(format!(
+                                            "missing token length column {:?}",
+                                            column.column
+                                        ))
+                                    })?;
+                            Ok((column, Some(array), None))
+                        })
+                        .collect::<PyResult<Vec<_>>>()?;
+                for row in 0..sequence.batch.num_rows() {
+                    let mut cost = usize::from(self.contract.history_only)
+                        + self.contract.fixed.get(name).copied().unwrap_or(0);
+                    for (column, array, metadata) in &arrays {
+                        let value = if let Some(metadata) = metadata {
+                            metadata.get(sequence.node_ids[row])?
+                        } else if array.unwrap().is_null(row) {
+                            None
+                        } else {
+                            Some(1)
+                        };
+                        let counted_row = metadata.is_some_and(|m| {
+                            m.chunks
+                                .first()
+                                .is_some_and(|a| a.data_type() == &arrow_schema::DataType::UInt16)
+                        });
+                        if counted_row && value == Some(u16::MAX as u64) {
+                            // The counting recipe marks rows delivery discards.
+                            cost = usize::MAX;
+                            break;
+                        }
+                        if counted_row && !column.validity_only
+                            && value == Some((u16::MAX - 1) as u64)
+                            && self.contract.row_maximum.is_none_or(|max| max > (u16::MAX - 1) as usize)
+                        {
+                            return Err(length_error("saturated event token metadata requires a row token cap no greater than 65534"));
+                        }
+                        if column.required && value.is_none() {
+                            cost = usize::MAX;
+                            break;
+                        }
+                        if column.validity_only {
+                            continue;
+                        }
+                        let value = match value {
+                            Some(_) if column.missing_only => 0,
+                            Some(value) => usize::try_from(value)
+                                .map_err(|_| length_error("token length exceeds usize"))?,
+                            None => usize::from(column.missing_token),
+                        };
+                        cost = cost
+                            .checked_add(value)
+                            .ok_or_else(|| length_error("token length overflow"))?;
+                    }
+                    costs.push(if cost == usize::MAX {
+                        cost
+                    } else {
+                        self.contract.row_maximum.map_or(cost, |max| cost.min(max))
+                    });
+                }
+            }
+            let mut cache = self
+                .cache
+                .lock()
+                .map_err(|_| length_error("length cache poisoned"))?;
+            for (sample, &index) in missing.iter().enumerate() {
+                let events = order[bounds[sample] as usize..bounds[sample + 1] as usize]
+                    .iter()
+                    .map(|&i| costs[i as usize])
+                    .filter(|&cost| cost != usize::MAX)
+                    .collect::<Vec<_>>();
+                let history_length = events.len();
+                let tokens = if let Some(flatten) = &self.contract.flatten {
+                    crate::token_stream::packed_length(
+                        &events,
+                        flatten.maximum,
+                        flatten.keep_last,
+                        flatten.event_boundary,
+                        flatten.separator,
+                        flatten.between,
+                        flatten.before,
+                        flatten.after,
+                    )
+                    .map_err(length_error)?
+                } else {
+                    events
+                        .iter()
+                        .try_fold(0usize, |sum, &v| sum.checked_add(v))
+                        .ok_or_else(|| length_error("token length overflow"))?
+                };
+                cache
+                    .set(
+                        ids[index] as usize,
+                        [
+                            history_length,
+                            tokens,
+                            events.iter().copied().max().unwrap_or(0),
+                        ],
+                    )
+                    .map_err(map_runtime_err)?;
+            }
+            self.computed += missing.len();
+        }
+        let cache = self
+            .cache
+            .lock()
+            .map_err(|_| length_error("length cache poisoned"))?;
+        let mut ordered = ids.clone();
+        if self.contract.bucket {
+            // Row-only planning may store just the history count (slot 0).
+            // Token layouts retain their model-input length in slot 1.
+            let field = usize::from(!self.contract.history_only);
+            ordered.sort_by_key(|&id| cache.get(id as usize).expect("planned length")[field]);
+        }
+        let (mut current, mut sum, mut maximum, mut history_sum) =
+            (Vec::new(), 0usize, 0usize, 0usize);
+        for id in ordered {
+            let [history_length, length, row_maximum] = cache.get(id as usize).expect("planned length");
+            let single_cost = if self.contract.nested_padded {
+                history_length
+                    .checked_mul(row_maximum)
+                    .ok_or_else(|| length_error("batch token length overflow"))?
+            } else {
+                length
+            };
+            if self
+                .contract
+                .max_tokens
+                .is_some_and(|budget| single_cost > budget)
+            {
+                return Err(length_error("one sample exceeds Batching.max_tokens"));
+            }
+            let cost = if self.contract.nested_padded {
+                history_sum
+                    .checked_add(history_length)
+                    .and_then(|n| n.checked_mul(maximum.max(row_maximum)))
+            } else if self.contract.packed {
+                sum.checked_add(length)
+            } else {
+                (current.len() + 1).checked_mul(maximum.max(length))
+            }
+            .ok_or_else(|| length_error("batch token length overflow"))?;
+            if !current.is_empty()
+                && (current.len() >= self.contract.max_samples
+                    || self.contract.max_tokens.is_some_and(|budget| cost > budget))
+            {
+                self.batches.push_back(std::mem::take(&mut current));
+                sum = 0;
+                maximum = 0;
+                history_sum = 0;
+            }
+            current.push(id);
+            sum += length;
+            history_sum += history_length;
+            maximum = maximum.max(if self.contract.nested_padded {
+                row_maximum
+            } else {
+                length
+            });
+        }
+        if !(current.is_empty()
+            || final_pool && self.contract.drop_last && current.len() < self.contract.max_samples)
+        {
+            self.batches.push_back(current);
+        }
+        Ok(())
+    }
 }
 
 struct HistoryIteration {
+    root_type: String,
     reader: std::sync::Arc<diskgraph_index::graph::GraphIndexReader>,
     engine: std::sync::Arc<diskgraph_engine::engine::DiskGraphEngine>,
     plan: diskgraph_train_table::batch_aggregate::PreparedTemporalPlan,
@@ -376,6 +745,7 @@ impl RuntimeIndex {
     ) -> PyResult<RuntimeBatchIterator> {
         Ok(RuntimeBatchIterator {
             history: None,
+            planning: None,
             inner: self
                 .inner
                 .iter(
@@ -489,6 +859,7 @@ impl RuntimeBatchIterator {
     ) -> PyResult<Self> {
         Ok(Self {
             history: None,
+            planning: None,
             inner: diskgraph_runtime::RuntimeIndex::new(parent_root, tt_id, rnd_seed, num_threads)
                 .map_err(map_runtime_err)?
                 .iter(
@@ -528,8 +899,13 @@ impl RuntimeBatchIterator {
     pub fn num_samples(&self) -> usize {
         self.inner.num_samples()
     }
-    pub fn worker_batch_count(&self) -> usize {
-        self.inner.worker_batch_count()
+    pub fn worker_batch_count(&self) -> PyResult<usize> {
+        if self.planning.is_some() {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "length-aware batch count is known only after planning",
+            ));
+        }
+        Ok(self.inner.worker_batch_count())
     }
     pub fn stage_size(&self) -> u64 {
         self.inner.stage_size()
@@ -564,6 +940,7 @@ impl RuntimeBatchIterator {
             }
         }
         self.history = Some(HistoryIteration {
+            root_type,
             reader: std::sync::Arc::clone(&sampler.reader),
             engine: std::sync::Arc::clone(&sampler.engine),
             plan,
@@ -572,9 +949,92 @@ impl RuntimeBatchIterator {
         Ok(())
     }
 
+    /// Bounded shuffled pools; sample composition and epoch cache stay native.
+    pub fn with_length_planning(
+        &mut self,
+        cache: &RuntimeLengthCache,
+        contract: String,
+        token_lengths: &Bound<'_, PyDict>,
+    ) -> PyResult<()> {
+        let contract: LengthContract =
+            serde_json::from_str(&contract).map_err(|e| length_error(e.to_string()))?;
+        if self.history.is_none() || contract.max_samples == 0 || contract.max_tokens == Some(0) {
+            return Err(length_error(
+                "length planning requires attached history and positive limits",
+            ));
+        }
+        let mut metadata = HashMap::new();
+        for (name, values) in token_lengths.iter() {
+            let arrays = values.cast::<PyList>()?;
+            let mut chunks = Vec::with_capacity(arrays.len());
+            let mut ends = Vec::with_capacity(arrays.len());
+            let mut end = 0usize;
+            for value in arrays.iter() {
+                let array = make_array(ArrayData::from_pyarrow_bound(&value)?);
+                if !matches!(
+                    array.data_type(),
+                    arrow_schema::DataType::UInt16
+                        | arrow_schema::DataType::Int64
+                        | arrow_schema::DataType::UInt64
+                ) {
+                    return Err(length_error(
+                        "post-fit token lengths must be uint16, int64 or uint64",
+                    ));
+                }
+                let values = array;
+                end = end
+                    .checked_add(values.len())
+                    .ok_or_else(|| length_error("token metadata size overflow"))?;
+                ends.push(end);
+                chunks.push(values);
+            }
+            metadata.insert(name.extract::<String>()?, LengthMetadata { chunks, ends });
+        }
+        let history = self.history.as_ref().expect("checked attached history");
+        let query = diskgraph_train_table::batch_aggregate::PreparedTemporalPlan::prepare_history(
+            &history.reader, &history.root_type, &contract.query,
+        ).map_err(length_error)?;
+        self.planning = Some(LengthPlanning {
+            query,
+            contract,
+            token_lengths: metadata,
+            cache: Arc::clone(&cache.values),
+            batches: VecDeque::new(),
+            consumed: 0,
+            computed: 0,
+            hits: 0,
+        });
+        Ok(())
+    }
+
+    pub fn length_planning_stats(&self) -> (usize, usize) {
+        self.planning
+            .as_ref()
+            .map_or((0, 0), |v| (v.computed, v.hits))
+    }
+
     pub fn next_batch(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         let next = py.detach(|| {
-            let batch = self.inner.next_batch().map_err(map_runtime_err)?;
+            let batch = if let Some(planning) = self.planning.as_mut() {
+                while planning.batches.is_empty() {
+                    let Some(pool) = self.inner.next_batch().map_err(map_runtime_err)? else {
+                        return Ok(None);
+                    };
+                    planning.consumed += pool.task.tt_stage_node_ids.len();
+                    planning.enqueue(
+                        &pool,
+                        self.history.as_ref().unwrap(),
+                        planning.consumed == self.inner.num_samples(),
+                    )?;
+                }
+                Some(
+                    self.inner
+                        .sample_stage_ids(&planning.batches.pop_front().unwrap())
+                        .map_err(map_runtime_err)?,
+                )
+            } else {
+                self.inner.next_batch().map_err(map_runtime_err)?
+            };
             let Some(mut batch) = batch else {
                 return Ok(None);
             };
@@ -636,7 +1096,7 @@ impl RuntimeBatchIterator {
     /// Number of batches this worker yields in one epoch. For the grouped path
     /// this is the count of owned global batch indices; for the flat path it is
     /// `ceil(num_samples / batch_size)` (or floor when `drop_last`).
-    fn __len__(&self) -> usize {
+    fn __len__(&self) -> PyResult<usize> {
         self.worker_batch_count()
     }
 }
@@ -653,6 +1113,7 @@ fn discover_tts(parent_root: String) -> PyResult<Vec<String>> {
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RuntimeIndex>()?;
+    m.add_class::<RuntimeLengthCache>()?;
     m.add_class::<RuntimeBatchIterator>()?;
     m.add_function(wrap_pyfunction!(discover_tts, m)?)?;
     Ok(())

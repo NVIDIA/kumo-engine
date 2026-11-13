@@ -55,6 +55,8 @@ class NativeAnchors:
         )
         self.path = Path(self._temporary.name)
         self._closed = False
+        self._length_caches = {}
+        self._last_length_planning_stats = (0, 0)
         try:
             self._materialize(pq)
         except BaseException:
@@ -270,6 +272,7 @@ class NativeAnchors:
         projections=None,
         history=None,
         neighborhoods=None,
+        length_planning=None,
     ):
         iterator, _ = self._runtime.iter(
             stage["name"],
@@ -294,6 +297,41 @@ class NativeAnchors:
             iterator.with_history(
                 self._history_engine, self._sample.entity.table, plan_json, merges_json
             )
+        if length_planning is not None:
+            length_contract, token_lengths = length_planning
+            payload = json.loads(length_contract)
+            costs = {
+                k: v
+                for k, v in payload.items()
+                if k
+                not in {
+                    "max_samples",
+                    "max_tokens",
+                    "packed",
+                    "nested_padded",
+                    "bucket",
+                    "drop_last",
+                }
+            }
+            key = (stage["name"], json.dumps(costs, sort_keys=True))
+            if key not in self._length_caches:
+                import hashlib
+
+                filename = hashlib.sha256(key[1].encode()).hexdigest()[:24]
+                fields = (
+                    1
+                    if payload["history_only"] and payload["max_tokens"] is None
+                    else 3
+                    if payload["nested_padded"]
+                    else 2
+                )
+                self._length_caches[key] = self._source._diskgraph.RuntimeLengthCache(
+                    stage["count"],
+                    str(self.path / f"lengths-{stage['name']}-{filename}.bin"),
+                    fields,
+                )
+            cache = self._length_caches[key]
+            iterator.with_length_planning(cache, length_contract, token_lengths)
         return iterator
 
     def _batch_values(self, stage, runtime):
@@ -350,6 +388,323 @@ class NativeAnchors:
             ),
         )
 
+    def bind_token_lengths(self, assembler, contract, statistics):
+        """Reuse #307's constant costs and optional recipe-bound per-node files."""
+        from kumo.pytorch.column_stats import (
+            _stored_column,
+            read_token_lengths,
+            token_length_columns,
+            token_lengths_file,
+        )
+        from kumo.pytorch.contract.batch.validation import resolved_fields
+
+        self._event_costs = {}
+        self._token_maps = []
+        name = assembler.spec.batching.length_input
+        if name is None:
+            return
+        selected = {}
+        for use in contract.batch.inputs[name].representation.fields:
+            for variant, _, _ in resolved_fields(contract, name, use.field):
+                stored = _stored_column(contract.sample, contract.schema, variant)
+                if stored is not None and variant[0] in {"events", "current_events"}:
+                    selected.setdefault(stored[0], set()).add(stored[1])
+        cutoff = statistics.get("cutoff")
+        ticks = (
+            None
+            if cutoff is None
+            else self._source._diskgraph.convert_ticks(
+                cutoff, "nanoseconds", self._source._clock, rounding="floor"
+            )
+        )
+        for table, (constant, columns, required) in token_length_columns(
+            contract, assembler
+        ).items():
+            entry = statistics.get("token_lengths", {}).get(table)
+            expected = (
+                token_lengths_file(table, columns, required, ticks, self._source._clock)
+                if columns or required
+                else None
+            )
+            if entry != {"constant": constant, "file": expected}:
+                raise ValueError(
+                    "event token costs do not match the designated input's fitted recipe"
+                )
+            fixed, values = read_token_lengths(self._source._index_path, entry)
+            if values is not None:
+                self._token_maps.append(values)
+            self._event_costs[table] = dict(
+                columns=selected.get(table, set()),
+                text_columns={column: tokenizer for column, tokenizer, _ in columns},
+                constant=fixed,
+                values=None if values is None else self._pa.array(values),
+            )
+
+    def _length_contract(self, assembler, compiled, merges, selections, maximum, drop_last):
+        """Lower frozen encoder costs to DG row metadata, never invoke an encoder.
+
+        #307 supplies recipe-bound per-event uint16 costs indexed by DG node ID.
+        They are mapped once and reused for selected/capped histories. Native
+        planning adds derived/missing tokens and applies layout/truncation;
+        the metadata producer does not decide sample or batch composition.
+        """
+        from copy import deepcopy
+
+        from kumo.pytorch.contract.batch import (
+            Columns,
+            Composite,
+            EventSource,
+            Flatten,
+            Nested,
+            Packed,
+            Tokens,
+        )
+        from kumo.pytorch.contract.batch.encodings import Text
+        from kumo.pytorch.contract.sample import Constant, Derived, EventTimeDelta, Field
+
+        policy = assembler.spec.batching
+        prepared = assembler._prepared_inputs[policy.length_input]
+        spec = prepared.spec
+        if not isinstance(spec.source, EventSource) or compiled is None:
+            raise ValueError(
+                "native length planning currently requires an EventSource length input"
+            )
+        if (
+            not isinstance(spec.layout, (Packed, Nested))
+            and spec.layout.__class__.__name__ != "Padded"
+        ):
+            raise ValueError("native length planning requires Packed/Padded or Nested layout")
+        event_source = spec.source
+        selection_key = (
+            tuple(event_source.events),
+            event_source.max_events,
+            event_source.keep,
+            event_source.order,
+        )
+        merge = merges[list(selections).index(selection_key)]
+        query = deepcopy(compiled.plan)
+        query["aggregates"] = []
+        sequence_names = set(merge["sequences"])
+        query["sequences"] = [item for item in query["sequences"] if item["name"] in sequence_names]
+        frame_names = {item["frame"] for item in query["sequences"]}
+        query["frames"] = [item for item in query["frames"] if item["name"] in frame_names]
+        columns = {}
+        fixed = {}
+        event_costs = getattr(self, "_event_costs", {})
+        token_lengths = {}
+        for sequence in query["sequences"]:
+            logical = compiled.sequences[sequence["name"]].logical_name
+            event = assembler._model_sample.events[logical]
+            costs = []
+            fixed[sequence["name"]] = 0
+            from kumo.pytorch.contract.sample import destination_table
+
+            table_name = destination_table(
+                self._source.schema, self._sample.entity.table, event.rows.path
+            )
+            stored_costs = event_costs.get(table_name)
+            if isinstance(spec.representation.row, (Columns, Composite)):
+                # Row/compound inputs cost one event, but counting metadata still
+                # decides whether Composite.required_fields drops that event.
+                if (
+                    isinstance(spec.representation.row, Composite)
+                    and stored_costs
+                    and stored_costs["values"] is not None
+                ):
+                    key = f"stored-event:{table_name}"
+                    token_lengths[key] = [stored_costs["values"]]
+                    costs.append(
+                        dict(
+                            column="",
+                            metadata=key,
+                            missing_token=False,
+                            required=False,
+                            validity_only=True,
+                        )
+                    )
+                columns[sequence["name"]] = costs
+                sequence["columns"] = [compiled.sequences[sequence["name"]].primary_key]
+                continue
+            if stored_costs and isinstance(spec.representation.row, Tokens):
+                declared_columns = [
+                    event.fields[item[0][-1]].column
+                    for use in spec.representation.fields
+                    for item in prepared.declarations[use.field]
+                    if item[0][0] == "events"
+                    and item[0][1] == logical
+                    and isinstance(event.fields[item[0][-1]], Field)
+                    and not event.fields[item[0][-1]].path
+                ]
+                if set(declared_columns) != set(stored_costs["columns"]) or len(
+                    declared_columns
+                ) != len(set(declared_columns)):
+                    raise ValueError(
+                        "event token metadata does not match this component's stored fields"
+                    )
+                if spec.representation.row.missing == "emit":
+                    fixed[sequence["name"]] += stored_costs["constant"]
+                if stored_costs["values"] is not None:
+                    key = f"stored-event:{table_name}"
+                    token_lengths[key] = [stored_costs["values"]]
+                    costs.append(
+                        dict(
+                            column="",
+                            metadata=key,
+                            missing_token=False,
+                            required=False,
+                            validity_only=False,
+                        )
+                    )
+
+            def always_present(value):
+                if isinstance(value, Constant):
+                    return value.value is not None
+                if isinstance(value, EventTimeDelta):
+                    return event.rows.time is not None
+                if isinstance(value, Field):
+                    return (
+                        not value.path
+                        and event.rows.time is not None
+                        and value.column == event.rows.time.column
+                    )
+                if (
+                    isinstance(value, Derived)
+                    and value.operation.__class__.__name__ == "CalendarPart"
+                ):
+                    return all(always_present(event.fields[name]) for name in value.inputs)
+                return False
+
+            if not isinstance(spec.representation.row, Columns):
+                for use in spec.representation.fields:
+                    declarations = [
+                        item
+                        for item in prepared.declarations[use.field]
+                        if item[0][0] == "events" and item[0][1] == logical
+                    ]
+                    if not declarations:
+                        continue
+                    local = declarations[0][0][-1]
+                    value = event.fields[local]
+                    row = spec.representation.row
+                    composite = isinstance(row, Composite)
+                    required = (
+                        use.field in row.required_fields
+                        if composite
+                        else row.missing == "skip_event"
+                    )
+                    if composite and not required:
+                        continue
+                    binding = prepared.state[use.field]
+                    supplied = (
+                        isinstance(binding.encoder.config, Text) or declarations[0][2] == "repeated"
+                    )
+                    direct = isinstance(value, Field) and not value.path
+                    if (
+                        not composite
+                        and direct
+                        and stored_costs
+                        and value.column in stored_costs["columns"]
+                        and (value.column in stored_costs["text_columns"] or row.missing == "emit")
+                    ):
+                        if value.column in stored_costs["text_columns"] and (
+                            required or row.missing == "emit"
+                        ):
+                            costs.append(
+                                dict(
+                                    column=value.column,
+                                    metadata=None,
+                                    missing_token=row.missing == "emit",
+                                    required=required,
+                                    validity_only=row.missing != "emit",
+                                    missing_only=True,
+                                )
+                            )
+                        continue
+                    if (
+                        not composite
+                        and not supplied
+                        and (row.missing == "emit" or always_present(value))
+                    ):
+                        fixed[sequence["name"]] += 1
+                        continue
+                    if not supplied and (
+                        not isinstance(value, Field) or value.path or value.column is None
+                    ):
+                        if (
+                            isinstance(value, Constant)
+                            and value.value is None
+                            and row.missing == "omit"
+                        ):
+                            continue
+                        raise ValueError(
+                            "native length planning needs validity metadata for this derived field"
+                        )
+                    metadata = None
+                    column = None if supplied and not composite else value.column
+                    if column is None and metadata is None:
+                        raise ValueError(
+                            f"post-fit text token lengths missing for {logical}.{local}"
+                        )
+                    costs.append(
+                        dict(
+                            column=column or "",
+                            metadata=metadata,
+                            missing_token=not composite and row.missing == "emit",
+                            required=required,
+                            validity_only=composite,
+                        )
+                    )
+            columns[sequence["name"]] = costs
+            primary_key = compiled.sequences[sequence["name"]].primary_key
+            sequence["columns"] = list(
+                dict.fromkeys(
+                    [primary_key, *(item["column"] for item in costs if item["metadata"] is None)]
+                )
+            )
+        for frame in query["frames"]:
+            frame["columns"] = sorted(
+                {
+                    column
+                    for sequence in query["sequences"]
+                    if sequence["frame"] == frame["name"]
+                    for column in sequence["columns"]
+                }
+            )
+        row = spec.representation.row
+        flatten = spec.representation.history
+        contract = json.dumps(
+            dict(
+                query=json.dumps(query),
+                merge=merge["name"],
+                columns=columns,
+                fixed=fixed,
+                history_only=isinstance(row, (Columns, Composite)),
+                row_maximum=row.max_tokens if isinstance(row, Tokens) else None,
+                flatten=dict(
+                    maximum=flatten.max_tokens,
+                    keep_last=flatten.keep == "last",
+                    event_boundary=flatten.prefer_event_boundary,
+                    separator=flatten.separator is not None,
+                    between=flatten.separator_placement == "between",
+                    before=flatten.before is not None,
+                    after=flatten.after is not None,
+                )
+                if isinstance(flatten, Flatten)
+                else None,
+                max_samples=maximum,
+                max_tokens=policy.max_tokens,
+                packed=isinstance(spec.layout, Packed)
+                or isinstance(spec.layout, Nested)
+                and isinstance(spec.layout.fields, Packed),
+                nested_padded=isinstance(spec.layout, Nested)
+                and not isinstance(spec.layout.fields, Packed),
+                bucket=policy.bucket_by_length,
+                drop_last=drop_last,
+            ),
+            sort_keys=True,
+        )
+        return contract, token_lengths
+
     def _model_batches(
         self,
         assembler,
@@ -359,6 +714,7 @@ class NativeAnchors:
         projections,
         size,
         neighborhoods,
+        maximum,
         seed,
         epoch,
         shuffle,
@@ -422,7 +778,14 @@ class NativeAnchors:
                 )
                 merge_keys.append(key)
         history = None if compiled is None else (json.dumps(compiled.plan), json.dumps(merges))
+        policy = assembler.spec.batching
+        length_planning = None
+        if policy.max_tokens is not None or policy.bucket_by_length:
+            length_planning = self._length_contract(
+                assembler, compiled, merges, selections, maximum, drop_last
+            )
         options = dict(
+            length_planning=length_planning,
             plan=plan,
             projections=projections,
             neighborhoods=neighborhoods,
@@ -438,9 +801,10 @@ class NativeAnchors:
             remaining = missing
             first = None
             emitted = 0
-            for runtime in self._iter(
+            iterator = self._iter(
                 stage, **options, shuffle=shuffle, rank=rank, world_size=world_size
-            ):
+            )
+            for runtime in iterator:
                 ids = runtime["task"]["tt_stage_node_ids"]
                 n = len(ids)
                 if first is None:
@@ -455,6 +819,8 @@ class NativeAnchors:
                     remaining = 0
                 else:
                     yield runtime, 0
+            if length_planning is not None:
+                self._last_length_planning_stats = iterator.length_planning_stats()
             if remaining:
                 yield (
                     next(
@@ -467,7 +833,7 @@ class NativeAnchors:
 
         for runtime, padded in runtime_batches():
             anchors = self._batch_values(stage, runtime)
-            if anchors.batch_size < size and drop_last:
+            if length_planning is None and anchors.batch_size < size and drop_last:
                 continue
             if padded:
                 flags = [False] * (anchors.batch_size - padded) + [True] * padded
@@ -613,6 +979,9 @@ class NativeAnchors:
             self._history_engine = None
             del sampler
             self._extension.cleanup()
+            self._length_caches.clear()
+            getattr(self, "_token_length_arrays", {}).clear()
+            self._token_maps = []
             self._temporary.cleanup()
 
     def batches(
@@ -714,7 +1083,11 @@ class NativeAnchors:
                     "projections": fields,
                 }
         stages = self._selection(selection)
-        if output_format == "model" and fixed and assembler._source is self._source:
+        if (
+            output_format == "model"
+            and (fixed or world_size == 1 and not neighborhoods)
+            and assembler._source is self._source
+        ):
             for value in self._sample.entity_values.values():
                 if isinstance(value, Field) and not value.path:
                     projections[self._sample.entity.table].append(value.column)
@@ -725,6 +1098,7 @@ class NativeAnchors:
                     plan=plan,
                     projections=projections,
                     size=size,
+                    maximum=maximum,
                     neighborhoods=named,
                     seed=seed,
                     epoch=epoch,

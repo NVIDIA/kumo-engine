@@ -234,7 +234,13 @@ class PragmaEncoder(nn.Module):
 
         fields = self.tokens(events["field_ids"]) + self.tokens(events["value_ids"])
         summary = self.event_summary.expand(fields.shape[0], 1, WIDTH)
-        valid = torch.cat((torch.ones_like(events["valid"][:, :1]), events["valid"]), 1)
+        valid = torch.cat(
+            (
+                torch.ones((fields.shape[0], 1), dtype=torch.bool, device=fields.device),
+                events["valid"],
+            ),
+            1,
+        )
         encoded = self.fields(torch.cat((summary, fields), 1), valid)
         # Each event row's calendar parts, read at its (sample, position) in the history.
         parts = batch.inputs["history_calendar"]
@@ -271,6 +277,9 @@ class MaskedValueModel(nn.Module):
     def loss(self, batch: Batch) -> torch.Tensor:
         _, context = self.encoder(batch)
         target = batch.targets["masked"]
+        if not target["valid"].any():
+            # An all-empty history batch has no masked-value supervision.
+            return self.encoder.tokens.weight.sum() * 0
         logits = context[target["valid"]] @ self.encoder.tokens.weight.T
         return F.cross_entropy(logits, target["values"][target["valid"]])
 
