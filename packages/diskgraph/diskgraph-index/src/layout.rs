@@ -87,18 +87,24 @@ impl<'a> EdgeListView<'a> {
     /// Returns the relation segments for this node. Each entry contains the
     /// edge count and raw slice for that relation's edges.
     pub fn relation_segments(&self) -> Result<Vec<RelationSegment<'a>>, std::io::Error> {
+        Ok(self.parse()?.0)
+    }
+
+    /// Return relation segments and feature bytes with a single record walk.
+    pub fn parse(&self) -> Result<(Vec<RelationSegment<'a>>, Option<&'a [u8]>), std::io::Error> {
         let mut segments = Vec::with_capacity(self.layouts.len());
-        let (edges, _) = self.walk_record(|layout, count, range| {
+        let (edges, node_data) = self.walk_record(|layout, count, range| {
             segments.push((layout.clone(), count, range));
         })?;
-        Ok(segments
+        let segments = segments
             .into_iter()
             .map(|(layout, count, range)| RelationSegment {
                 layout,
                 count,
                 data: &edges[range],
             })
-            .collect())
+            .collect();
+        Ok((segments, node_data))
     }
 
     pub fn node_data(&self) -> Result<Option<&'a [u8]>, std::io::Error> {
@@ -508,7 +514,8 @@ mod record_walk_tests {
         // Two counts, feature length, two relation payloads, then feature bytes.
         let raw = [2, 1, 3, 0, 10, 11, 20, 21, 30, 31, 32];
         view.raw = &raw;
-        let segments = view.relation_segments().unwrap();
+        let (segments, combined_data) = view.parse().unwrap();
+        assert_eq!(combined_data, Some(&raw[8..]));
         assert_eq!((segments[0].count, segments[0].data), (2, &raw[4..6]));
         assert_eq!((segments[1].count, segments[1].data), (1, &raw[6..8]));
         let data = view.node_data().unwrap().unwrap();
