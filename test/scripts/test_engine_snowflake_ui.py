@@ -236,6 +236,9 @@ def test_graph_collection_rejects_empty_retained_receipt(monkeypatch, tmp_path):
     import launch
 
     contents = {'graph-result.json': b'{}'}
+    from explanation import FILES as EXPLANATION_FILES
+    for name in EXPLANATION_FILES:
+        contents[name] = b'retained-explanation'
     for name in ('graph.svg', 'graph.pdf', 'graph.md', 'default.html',
                  'sampled.html'):
         contents[name] = b'retained-file'
@@ -247,10 +250,19 @@ def test_graph_collection_rejects_empty_retained_receipt(monkeypatch, tmp_path):
              'graph-notebook/' + 'b' * 12 + '/results/' + 'a' * 12)
     receipt = dict(
         status='passed', execution_id='a' * 12, output_stage=stage,
-        uploaded=uploaded, exports={
-            suffix: dict(sha256=uploaded['graph.' + suffix])
-            for suffix in ('svg', 'pdf', 'md')
-        })
+        uploaded=uploaded, explanations=dict(
+            status='passed', plots={
+                kind:
+                dict(
+                    sha256={
+                        suffix: uploaded[f'explanation-{kind}.{suffix}']
+                        for suffix in ('png', 'svg', 'pdf')
+                    })
+                for kind in ('gradient', 'cohort')
+            }), exports={
+                suffix: dict(sha256=uploaded['graph.' + suffix])
+                for suffix in ('svg', 'pdf', 'md')
+            })
 
     def download(cursor, source, target):
         destination = target / source.rsplit('/', 1)[1]
@@ -557,7 +569,7 @@ let active=options.active, stopped=false, deleted=false, loaded=false, reads=0;
 const base={async waitFor(){},async click(){},async isVisible(){return false;},
   first(){return this;},filter(){return this;},async press(){}};
 const connection={...base,async innerText(){return 'Connect';}};
-const shutdown={...base,async isEnabled(){if(!loaded)throw Error('Unloaded kernel state');reads++;return active;},
+const shutdown={...base,async count(){return 1;},async isEnabled(){if(!loaded)throw Error('Unloaded kernel state');reads++;return active;},
   async click(){stopped=true;active=options.persists;}};
 const panel={...base,async innerText(){return 'Compute pool: KUMO_TEST_POOL (GEN_X64_G2_8) Connected service '+(options.wrong_service?'FOREIGN_SERVICE':'KUMO_TEST_NOTEBOOK_SERVICE');},
   getByText(text){return text==='Loading...'?{async waitFor(){loaded=true;}}:base;},

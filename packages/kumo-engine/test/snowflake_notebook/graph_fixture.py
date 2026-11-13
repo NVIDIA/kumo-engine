@@ -15,7 +15,7 @@ from xml.etree import ElementTree
 def retain(session, root, stage):
     uploaded = {}
     for file in sorted(Path(root).iterdir()):
-        if not file.is_file():
+        if not file.is_file() or file.suffix == '.log':
             continue
         transfers = session.file.put(str(file), stage, auto_compress=False,
                                      overwrite=False)
@@ -24,9 +24,10 @@ def retain(session, root, stage):
         with file.open('rb') as stream:
             uploaded[file.name] = hashlib.file_digest(stream,
                                                       'sha256').hexdigest()
+    from explanation import FILES as EXPLANATION_FILES
     if set(uploaded) != {
             'graph.svg', 'graph.pdf', 'graph.md', 'default.html',
-            'sampled.html', 'graph-result.json'
+            'sampled.html', 'graph-result.json', *EXPLANATION_FILES
     }:
         raise RuntimeError('Incomplete graph evidence')
     return uploaded

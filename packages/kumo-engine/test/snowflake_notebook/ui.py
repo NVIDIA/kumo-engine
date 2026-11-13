@@ -275,6 +275,7 @@ def run(source=None, output=None, execute=False, credential_file=None,
                 try:
                     receipt = json.loads(
                         (root / 'notebook-receipt.json').read_text())
+                    report['explanations'] = receipt.get('explanations', {})
                     report['exports'] = collect(receipt, expected,
                                                 root / 'exports', key_file)
                 except Exception as error:

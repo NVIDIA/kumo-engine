@@ -71,7 +71,7 @@ def aggregate(value, depth=0):
     for key in ('engine_checks', 'verdict', 'positive_lifecycle',
                 'full_qualification', 'cleanup', 'notebook_cleanup',
                 'stage_cleanup', 'cleanup_retry', 'browser_cleanup',
-                'verification_status'):
+                'verification_status', 'explanations'):
         nested = value.get(key)
         if isinstance(nested, dict):
             selected = aggregate(nested, depth + 1)

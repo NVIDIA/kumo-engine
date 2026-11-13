@@ -734,7 +734,7 @@ def negative(root):
                 incomplete_prediction=interruption, exported_epoch_history='passed')
 
 
-def explain(root):
+def explain(root, *, check_local_permissions=True):
     """Reopen retained refit explanations without the producer's objects."""
     import pandas as pd
 
@@ -804,17 +804,19 @@ def explain(root):
     broken = root / 'broken-training-run'
     shutil.copytree(run, broken)
     path = broken / trial / 'explain_test' / 'scores.csv'
-    path.chmod(0)
-    try:
-        if os.access(path, os.R_OK):
-            raise PrerequisiteError(
-                'Permission case requires a non-root user without read access')
-        denied = expect(
-            (kumo.InvalidExplanationError, PermissionError),
-            lambda: kumo.TrainingExplanations.load(broken).gradient_scores(),
-            'Permission denied', str(path))
-    finally:
-        path.chmod(0o600)
+    denied = 'not_run'
+    if check_local_permissions:
+        path.chmod(0)
+        try:
+            if os.access(path, os.R_OK):
+                raise PrerequisiteError(
+                    'Permission case requires a non-root user without read access')
+            denied = expect(
+                (kumo.InvalidExplanationError, PermissionError),
+                lambda: kumo.TrainingExplanations.load(broken).gradient_scores(),
+                'Permission denied', str(path))
+        finally:
+            path.chmod(0o600)
     path.unlink()
     incomplete = expect(
         kumo.ExplanationUnavailableError,

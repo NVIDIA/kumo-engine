@@ -6,6 +6,7 @@ const path = require("node:path");
 const { promisify } = require("node:util");
 const execFile = promisify(require("node:child_process").execFile);
 const { check } = require("./graph_ui.cjs");
+const { check: checkExplanations } = require("./explanation_ui.cjs");
 
 const { VerificationError, requireThat, until } = require("./verification.cjs");
 
@@ -110,6 +111,9 @@ async function readReceipt(frame, spec, target) {
     "default.html",
     "sampled.html",
     "graph-result.json",
+    "explanation-result.json", "explanation-run.tar.gz",
+    ...["gradient", "cohort"].flatMap(kind =>
+      ["png", "svg", "pdf"].map(suffix => `explanation-${kind}.${suffix}`)),
   ];
   requireThat(
     Object.keys(receipt.uploaded).length === files.length &&
@@ -121,6 +125,13 @@ async function readReceipt(frame, spec, target) {
       receipt.uploaded["graph." + suffix] === receipt.exports[suffix].sha256,
       "Uploaded graph differs from verified export",
     );
+  requireThat(receipt.explanations?.status === "passed",
+    "Real training explanations did not pass");
+  for (const kind of ["gradient", "cohort"])
+    for (const suffix of ["png", "svg", "pdf"])
+      requireThat(receipt.uploaded[`explanation-${kind}.${suffix}`] ===
+        receipt.explanations.plots[kind].sha256[suffix],
+      "Retained explanation differs from the verified export");
   return receipt;
 }
 
@@ -445,6 +456,7 @@ async function execute(page, frame, spec, event, output, config, evidence) {
         /KUMO_GRAPH_EXECUTION_STARTED=([0-9a-f]{12})/,
       )[1]
     : null;
+  config.training_submitted = true;
   await runCell(frame, 2);
   event("notebook_graph_run_requested");
   let execution;
@@ -485,7 +497,8 @@ async function execute(page, frame, spec, event, output, config, evidence) {
       if (!(await priorOutput.count())) return false;
       return (await readReceipt(frame, spec, config.target)).execution_id === execution;
     },
-    180000,
+    2700000,
+    "Notebook graph and refit explanation checks exceeded their execution deadline",
   );
 }
 
@@ -567,6 +580,8 @@ async function verify(page, config, evidence, event, allowed) {
       config.output,
       allowed,
     );
+    saved.explanations = await checkExplanations(
+      page, receipt, config.output, "saved", allowed);
     const connected =
       (
         await frame
@@ -605,7 +620,7 @@ async function verify(page, config, evidence, event, allowed) {
     JSON.stringify(receipt, null, 2),
     { mode: 0o600 },
   );
-  const initial = await check(
+  const graphs = await check(
     page,
     receipt,
     config.output,
@@ -614,6 +629,8 @@ async function verify(page, config, evidence, event, allowed) {
     true,
     allowed,
   );
+  const initial = { graphs, explanations: await checkExplanations(
+    page, receipt, config.output, "live", allowed) };
   fs.writeFileSync(
     path.join(config.output, "notebook-checks.json"),
     JSON.stringify({ live: initial, saved: { status: "pending" } }, null, 2),
@@ -649,6 +666,8 @@ async function verify(page, config, evidence, event, allowed) {
     config.output,
     allowed,
   );
+  saved.explanations = await checkExplanations(
+    page, receipt, config.output, "reopened", allowed);
   fs.writeFileSync(
     path.join(config.output, "notebook-checks.json"),
     JSON.stringify({ live: initial, saved }, null, 2),
@@ -659,7 +678,7 @@ async function verify(page, config, evidence, event, allowed) {
   return {
     status: "passed",
     scope:
-      "Live Workspace graph rendering, tooltips, controls, saved outputs after kernel shutdown, and retained graph exports",
+      "Live Workspace graph and real refit explanation plots, saved outputs after kernel shutdown, and retained exports",
     notebook: {
       name,
       profile: actualProfile,
@@ -667,8 +686,28 @@ async function verify(page, config, evidence, event, allowed) {
       initial,
       reopened: saved,
     },
-    training_submitted: false,
+    training_submitted: true,
   };
+}
+
+async function kernelActive(frame) {
+  const connection = frame.getByRole("button", {name: "Connection status", exact: true});
+  const dropdown = frame.getByRole("button", {name: "Service List dropdown button", exact: true});
+  const panel = frame.getByRole("dialog", {name: "Notebook service management", exact: true});
+  await dropdown.click();
+  await panel.waitFor();
+  await panel.getByText("Loading...", {exact: true}).waitFor({state: "hidden", timeout: 45000});
+  const shutdown = panel.getByRole("button", {name: "Shut down kernel", exact: true});
+  let active;
+  if (await shutdown.count()) active = await shutdown.isEnabled();
+  else {
+    requireThat(/^(Connect|Disconnected)$/.test((await connection.innerText()).trim()) &&
+      await panel.getByRole("button", {name: "Connect kernel", exact: true}).isVisible(),
+      "Missing shutdown control without a confirmed disconnected kernel");
+    active = false;
+  }
+  await panel.press("Escape");
+  return active;
 }
 
 async function cleanupCreatedNotebook(page, config, event) {
@@ -688,31 +727,13 @@ async function cleanupCreatedNotebook(page, config, event) {
   const connection = frame.getByRole("button", { name: "Connection status", exact: true });
   await connection.filter({ hasText: /^(Connect|Disconnected|Connected)$/ })
     .waitFor({ timeout: 45000 });
-  const dropdown = frame.getByRole("button", {
-    name: "Service List dropdown button", exact: true,
-  });
-  const panel = frame.getByRole("dialog", {
-    name: "Notebook service management", exact: true,
-  });
-  const shutdown = panel.getByRole("button", {
-    name: "Shut down kernel", exact: true,
-  });
-  async function kernelActive() {
-    await dropdown.click();
-    await panel.waitFor();
-    await panel.getByText("Loading...", { exact: true })
-      .waitFor({ state: "hidden", timeout: 45000 });
-    const active = await shutdown.isEnabled();
-    await panel.press("Escape");
-    return active;
-  }
-  if (await kernelActive()) {
+  if (await kernelActive(frame)) {
     await profile(frame, event, config.target.notebook_service);
     await shutdownKernel(frame, event, "attempt_cleanup");
   }
   await connection.filter({ hasText: /^(Connect|Disconnected)$/ })
     .waitFor({ timeout: 180000 });
-  requireThat(!(await kernelActive()),
+  requireThat(!(await kernelActive(frame)),
     "Kernel shutdown not confirmed; preserving the attempt notebook");
   await file.click({ button: "right" });
   await frame.getByRole("menuitem", { name: "Delete", exact: true }).click();
@@ -724,6 +745,7 @@ async function cleanupCreatedNotebook(page, config, event) {
 }
 
 module.exports = {
+  kernelActive,
   uploadChooser,
   verify,
   readReceipt,
