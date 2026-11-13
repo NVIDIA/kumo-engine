@@ -851,7 +851,7 @@ class DiskGraphSource:
         ticks = (
             None
             if cutoff is None
-            else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock)
+            else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock, rounding="floor")
         )
         return read_column_stats(self._index_path, requests, ticks, self._clock, self._num_threads)
 
@@ -859,7 +859,7 @@ class DiskGraphSource:
         ticks = (
             None
             if cutoff is None
-            else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock)
+            else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock, rounding="floor")
         )
         name = encoder.tokenizer_file(ticks, self._clock)
         path = Path(self._index_path, "col_stats", name)
@@ -902,7 +902,7 @@ class DiskGraphSource:
         ticks = (
             None
             if cutoff is None
-            else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock)
+            else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock, rounding="floor")
         )
         name = token_lengths_file(table, columns, ticks, self._clock)
         path = Path(self._index_path, "col_stats", name)

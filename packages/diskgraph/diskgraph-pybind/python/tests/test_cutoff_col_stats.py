@@ -239,6 +239,13 @@ def test_a_cutoff_truncates_to_its_tick_so_later_rows_in_that_tick_are_excluded(
     assert _counts_at(tmp_path, unit, [start, start + tick // 4, start + tick], start + tick // 2) == {"row0": 1}
 
 
+def test_convert_ticks_floors_or_truncates_a_negative_sub_tick_value():
+    assert diskgraph.convert_ticks(-500_000_000, "nanoseconds", "seconds", rounding="floor") == -1
+    assert diskgraph.convert_ticks(-500_000_000, "nanoseconds", "seconds") == 0
+    for rounding in ("floor", "truncate"):
+        assert diskgraph.convert_ticks(1_500_000_000, "nanoseconds", "seconds", rounding=rounding) == 1
+
+
 def test_a_sub_second_cutoff_on_a_nanosecond_index_is_exact(tmp_path):
     cutoff = T0 * 10**9 + 123_456_789
     assert _counts_at(tmp_path, "nanoseconds", [cutoff, cutoff + 1], cutoff) == {"row0": 1}
