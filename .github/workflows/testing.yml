@@ -695,6 +695,7 @@ jobs:
             -name 'kumo_settings-*.whl' -print -quit)
           test -n "$wheel" && test -n "$settings"
           uv pip install --no-deps "$wheel" "$settings"
+          uv pip install "ray>=2.40,<3"
           python - <<'PY'
           from pathlib import Path
 

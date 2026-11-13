@@ -222,12 +222,12 @@ class _ComputeWorker:
     def __init__(self, root: str) -> None:
         import ray
 
-        from kumo.engine._scratch import set_scratch_dir
+        from kumo.settings import configure
 
         self.node_id = ray.get_runtime_context().get_node_id()
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
-        set_scratch_dir(self.root)
+        configure(scratch_dir=self.root)
         self.snapshots: dict[str, GraphSnapshot] = {}
         self.tables: dict[str, TrainingTable] = {}
         self.received: dict[str, dict[str, ArtifactFile]] = {}
@@ -261,9 +261,10 @@ class _ComputeWorker:
         if not base.resolve().is_relative_to(self.root.resolve()):
             raise ValueError("Artifact destination escapes worker scratch")
         settings = self._stores[publication]
-        # Resolve authentication from the artifact root; directory supplies the path.
+        # Connectors require a nonempty relative path to resolve the filesystem;
+        # directory already holds the producer-resolved download location.
         filesystem, _ = file_store(
-            settings.root.connector, settings.root.location("")
+            settings.root.connector, settings.root.location(entry.name)
         )
         download_artifact(filesystem, directory, entry, base)
         self.received.setdefault(publication, {})[entry.name] = entry

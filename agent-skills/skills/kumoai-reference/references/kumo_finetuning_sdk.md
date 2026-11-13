@@ -772,8 +772,13 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
 
 ### 11.2 Hosted Kumo — out of scope entirely
 
-- `kumo.init(...)` in any form (`url=`, `api_key=`, `snowflake_credentials=`,
-  `snowflake_application=`), API keys, `KUMO_API_KEY` / `KUMO_API_ENDPOINT`, Kumo Studio.
+Local `kumo.init(scratch_dir=..., cluster_config=..., artifact_root=...)` is a
+separate Engine API. Local execution needs no initialization; `kumo.configure`
+remains available for scratch placement. Compute clusters currently prepare
+artifacts only; remote training is not implemented.
+
+- Hosted `kumo.init(url=..., api_key=...)` or initialization with
+  `snowflake_credentials=` / `snowflake_application=`, API keys, `KUMO_API_KEY` / `KUMO_API_ENDPOINT`, Kumo Studio.
 - `training_job.tracking_url` or any Kumo UI reference.
 - `kumo.Session(...)`, `kumo.ComputeType`, RBAC groups, `project_id`.
 - The Snowflake Native App and Marketplace deployment.
@@ -818,7 +823,7 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
 
 - [ ] Generated code begins at `import kumo.engine as kumo`; `import kumoai` appears nowhere
       (§11.3).
-- [ ] `kumo.init(...)` appears nowhere; no API keys; no `tracking_url`.
+- [ ] No hosted initialization arguments, API keys, or `tracking_url`.
 - [ ] No call from §11.1 appears anywhere.
 - [ ] `Stype` / `Dtype` imported from `kumoapi.typing`; `Column` / `Edge` from `kumo.engine`;
       `PredictionArtifactType` / `WriteMode` from `kumoapi.jobs`; `RunMode` from

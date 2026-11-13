@@ -54,7 +54,7 @@ def test_init_failure_keeps_scratch_override(
     factory.return_value.start.side_effect = RuntimeError("placement failed")
     monkeypatch.setattr(config, "ComputeCluster", factory)
     monkeypatch.setattr(config, "_cluster", None)
-    monkeypatch.setattr("kumo.engine._scratch._root", tmp_path / "before")
+    monkeypatch.setattr("kumo.settings._configured", tmp_path / "before")
     with pytest.raises(RuntimeError, match="placement failed"):
         kumo.init(
             scratch_dir=tmp_path,
@@ -335,7 +335,7 @@ def test_worker_restart_preserves_disk_cache(
         lambda: SimpleNamespace(get_node_id=lambda: next(nodes)),
     )
     scratch = Mock()
-    monkeypatch.setattr("kumo.engine._scratch.set_scratch_dir", scratch)
+    monkeypatch.setattr("kumo.settings.configure", scratch)
     first = _ComputeWorker(str(tmp_path))
     marker = first.root / "cached-index"
     marker.write_bytes(b"persisted")
@@ -343,4 +343,4 @@ def test_worker_restart_preserves_disk_cache(
     assert first.root == second.root == tmp_path
     assert first.node_id != second.node_id
     assert marker.read_bytes() == b"persisted"
-    scratch.assert_called_with(second.root)
+    scratch.assert_called_with(scratch_dir=second.root)

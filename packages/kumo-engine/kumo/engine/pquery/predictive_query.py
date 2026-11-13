@@ -49,12 +49,13 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from kumo_core.model_plan import ModelPlan as CoreModelPlan
+from kumo_core.model_plan import ModelPlanValueError
+from kumo_core.model_plan import \
+    TrainingTableGenerationPlan as CoreGenerationPlan
 from kumo_core.model_plan import (
-    ModelPlanValueError,
     inferred_or_missing_type_to_none,
     unsupported_entity_candidate_errors,
 )
-from kumo_core.model_plan import TrainingTableGenerationPlan as CoreGenerationPlan
 from kumo_core.model_plan_conversion import public_model_plan_from_internal
 from kumo_core.pquery import (
     NativeGraph,

@@ -8,7 +8,12 @@
 
 from pathlib import Path
 
-from kumo.engine.cluster import ArtifactRoot, ComputeCluster, ComputeClusterConfig
+import kumo.settings
+from kumo.engine.cluster import (
+    ArtifactRoot,
+    ComputeCluster,
+    ComputeClusterConfig,
+)
 from kumo.engine.connector.base import Connector
 
 _cluster: ComputeCluster | None = None
@@ -66,7 +71,6 @@ def init(
 def _get_compute_cluster() -> ComputeCluster | None:
     return _cluster
 
-import kumo.settings
 
 
 def configure(

@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.model_plan import TrainingTableGenerationPlan
 from kumo_core.training.table import TrainTableRequest
-from kumoapi.model_plan import TrainingTableGenerationPlan as PublicGenerationPlan
+from kumoapi.model_plan import \
+    TrainingTableGenerationPlan as PublicGenerationPlan
 from kumoapi.train import TrainingTableSpec
 
 from kumo.engine import _provenance as provenance
