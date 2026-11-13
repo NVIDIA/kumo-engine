@@ -290,17 +290,20 @@ pub fn train_tokenizer(
     .map_err(|e| map_anyhow_err(anyhow!(e)))
 }
 
-/// Each node's token count over `columns` of `table`: a variable-length list's elements and a
-/// string's pieces under its tokenizer JSON, 0 for NULL, saturated to `u16`. Written to `path` as
-/// one little-endian `u16` per node ID, 0 for a node stored without data.
+/// Each node's token count over `columns` of `table`, `(name, tokenizer JSON, empty)` each: a
+/// variable-length list's elements or a string's pieces under its tokenizer, at least `empty` for
+/// a present value and 0 for NULL, saturated at `0xFFFE`. A node with a NULL in a `required`
+/// column is `DROPPED`. Written to `path` as one little-endian `u16` per node ID; a node stored
+/// without data holds only NULLs.
 #[pyfunction]
-#[pyo3(signature = (index_dir, table, columns, path, *, num_threads=None))]
+#[pyo3(signature = (index_dir, table, columns, path, *, required=Vec::new(), num_threads=None))]
 pub fn token_lengths(
     py: Python<'_>,
     index_dir: &str,
     table: &str,
-    columns: Vec<(String, Option<String>)>,
+    columns: Vec<(String, Option<String>, u64)>,
     path: &str,
+    required: Vec<String>,
     num_threads: Option<usize>,
 ) -> PyResult<()> {
     if num_threads == Some(0) {
@@ -320,19 +323,22 @@ pub fn token_lengths(
         .node_data_decoder()
         .expect("a stored table")
         .context();
-    let mut decoded = Vec::new();
-    let mut costs = Vec::new();
-    for (column, tokenizer) in columns {
-        let index = stored
+    let position = |column: &str| {
+        stored
             .columns
             .iter()
-            .position(|(name, _)| *name == column)
+            .position(|(name, _)| name == column)
             .ok_or_else(|| {
                 DiskgraphConfigError::new_err(format!("index has no column {table}.{column}"))
-            })?;
+            })
+    };
+    let mut decoded = Vec::new();
+    let mut costs = Vec::new();
+    for (column, tokenizer, empty) in columns {
+        let index = position(&column)?;
         let kind = stored.columns[index].1;
         decoded.push(index);
-        costs.push(match (tokenizer, &context.columns[index].encoding) {
+        let cost = match (tokenizer, &context.columns[index].encoding) {
             (Some(_), _) if kind != StoredType::String => {
                 return Err(DiskgraphConfigError::new_err(format!(
                     "column {table}.{column} holds {kind:?} values, not strings"
@@ -360,8 +366,13 @@ pub fn token_lengths(
                      string columns with a tokenizer"
                 )))
             }
-        });
+        };
+        costs.push((cost, empty));
     }
+    for column in &required {
+        decoded.push(position(column)?);
+    }
+    let fill = if required.is_empty() { 0 } else { DROPPED };
     let chunks: Vec<_> = node_chunks(&stored.reader, TEXT_CHUNK_NODES).collect();
     let budget = ScanBudget::new().map_err(map_anyhow_err)?;
     let path = Path::new(path);
@@ -380,7 +391,9 @@ pub fn token_lengths(
                 let lengths = pool.install(|| {
                     window
                         .par_iter()
-                        .map(|&chunk| chunk_lengths(&stored, chunk, &decoded, &costs, &budget))
+                        .map(|&chunk| {
+                            chunk_lengths(&stored, chunk, &decoded, &costs, fill, &budget)
+                        })
                         .collect::<Result<Vec<_>>>()
                 })?;
                 for lengths in lengths {
@@ -409,23 +422,28 @@ enum Cost {
     Pieces(Box<Tokenizer>),
 }
 
+/// The per-node token count of a node whose row delivery drops.
+const DROPPED: u16 = u16::MAX;
+
 fn chunk_lengths(
     stored: &StoredTable,
     chunk: (usize, u64, u64),
     decoded: &[usize],
-    costs: &[Cost],
+    costs: &[(Cost, u64)],
+    fill: u16,
     budget: &ScanBudget,
 ) -> Result<Vec<u8>> {
-    let mut lengths = vec![0; 2 * (chunk.2 - chunk.1) as usize];
+    let mut lengths = fill.to_le_bytes().repeat((chunk.2 - chunk.1) as usize);
     scan_chunk(&stored.reader, chunk, decoded, budget, |batch, nodes| {
         let mut totals = vec![0u64; batch.num_rows()];
-        for (column, cost) in batch.columns().iter().zip(costs) {
+        for (column, (cost, empty)) in batch.columns().iter().zip(costs) {
             match cost {
                 Cost::Elements => {
                     let counts = cast(&length(column)?, &DataType::Int64)?;
                     for (total, count) in totals.iter_mut().zip(counts.as_primitive::<Int64Type>())
                     {
-                        *total += count.unwrap_or(0) as u64;
+                        *total = total
+                            .saturating_add(count.map_or(0, |count| (count as u64).max(*empty)));
                     }
                 }
                 Cost::Pieces(tokenizer) => {
@@ -433,15 +451,20 @@ fn chunk_lengths(
                         if let Some(value) = value {
                             let pieces =
                                 tokenizer.encode_fast(value, true).map_err(|e| anyhow!(e))?;
-                            *total += pieces.len() as u64;
+                            *total = total.saturating_add((pieces.len() as u64).max(*empty));
                         }
                     }
                 }
             }
         }
-        for (&node, total) in nodes.iter().zip(totals) {
+        let required = &batch.columns()[costs.len()..];
+        for (row, (&node, total)) in nodes.iter().zip(totals).enumerate() {
             let slot = 2 * (node - chunk.1) as usize;
-            let length = total.min(u16::MAX.into()) as u16;
+            let length = if required.iter().any(|column| column.is_null(row)) {
+                DROPPED
+            } else {
+                total.min(u64::from(DROPPED - 1)) as u16
+            };
             lengths[slot..slot + 2].copy_from_slice(&length.to_le_bytes());
         }
         Ok(())

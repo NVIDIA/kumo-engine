@@ -65,7 +65,8 @@ class FitRecord(TypedDict):
     and, with ``Batching.length_input`` set, ``token_lengths``: for each event
     table that input reads, ``{"constant": ..., "file": ...}``, its per-event
     cost of 1 per non-``Text`` column and the ``col_stats/`` file of its
-    ``Text`` columns' per-node pieces, ``None`` without ``Text``.
+    per-node counts, ``Text`` pieces and the rows ``Composite.required_fields``
+    drops, ``None`` without either.
     """
 
     contract: str
