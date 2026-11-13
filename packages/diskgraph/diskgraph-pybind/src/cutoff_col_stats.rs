@@ -33,6 +33,7 @@ use crate::{map_anyhow_err, DiskgraphConfigError};
 const CHUNK_NODES: u64 = 1 << 16;
 const TEXT_CHUNK_NODES: u64 = 1 << 10;
 const TEXT_WINDOW_CHUNKS: usize = 1 << 10;
+const TOKENIZER_TRAINER: &str = "tokenizers 0.23.2";
 
 type WordCounts = AHashMap<CompactString, u64>;
 
@@ -303,5 +304,6 @@ pub fn cutoff_ticks(seconds: i64, unit: &str) -> PyResult<i64> {
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cutoff_col_stats, m)?)?;
     m.add_function(wrap_pyfunction!(cutoff_ticks, m)?)?;
-    m.add_function(wrap_pyfunction!(train_tokenizer, m)?)
+    m.add_function(wrap_pyfunction!(train_tokenizer, m)?)?;
+    m.add("TOKENIZER_TRAINER", TOKENIZER_TRAINER)
 }

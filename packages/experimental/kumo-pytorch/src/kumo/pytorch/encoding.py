@@ -392,7 +392,8 @@ def learned_entries(
 TEXT_BATCH = 65_536
 # Tokenizer training buffers 256 items ahead.
 TRAIN_BATCH = 1_024
-# Bump when train_text would train a different tokenizer from the same values.
+# Bump when the tokenizer settings below or in train_text change; the cache key also
+# names DiskGraph's trainer (diskgraph.TOKENIZER_TRAINER).
 TEXT_RECIPE = 1
 TEXT_SPECIAL_TOKENS = ["[MISSING]", "[UNK]"]
 TEXT_UNKNOWN = "[UNK]"

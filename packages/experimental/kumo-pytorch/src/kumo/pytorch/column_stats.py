@@ -99,11 +99,14 @@ class TableColumnEncoder:
         return tuple((table, column, stype) for table, column in self.columns)
 
     def tokenizer_file(self, ticks: int | None, unit: str) -> str:
+        import diskgraph
+
         settings = [
             self.config.vocabulary_size,
             self.config.min_frequency,
             self.columns,
             TEXT_RECIPE,
+            diskgraph.TOKENIZER_TRAINER,
         ]
         digest = hashlib.sha256(json.dumps(settings).encode()).hexdigest()[:16]
         table, column = self.columns[0]
