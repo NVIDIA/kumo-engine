@@ -208,7 +208,8 @@ connector.has_table('orders')    # -> bool
 `.head()`** — do not emit one.
 
 **Assert `table_names()` before building tables.** It is the cheap proof the connector reaches the
-data, and it fails early with a clear error instead of deep inside a snapshot.
+data, and it fails early with a clear error instead of deep inside a snapshot. A rootless
+`S3Connector` (`root_dir=None`) has no `table_names()`, so root it at the confirmed prefix.
 
 **Use the catalog's exact spelling for table and column names.** `connector['<table>']` tries the
 exact name, then its upper-cased form, so `connector['ENTITY_PROFILE']` never finds a lower-case
@@ -470,11 +471,14 @@ says how a population is staged, or that it is not covered there:
   `ENTITY1` in the confirmed population table and pass it explicitly:
 
 ```python
+def q(name):                                  # a quoted Snowflake identifier
+    return '"' + name.replace('"', '""') + '"'
+
 if f'{POP_DATABASE}.{POP_SCHEMA}.{POP_TABLE}' != POPULATION_CONFIRMED:   # approved at Node 1d
     raise RuntimeError('The population table changed after Node 1d: confirm the new one first.')
 session.sql(                                  # the session from §3.3
     f'CREATE OR REPLACE TABLE {POP_DATABASE}.{POP_SCHEMA}.{POP_TABLE} AS '
-    f'SELECT "{ENTITY_KEY}" AS ENTITY1 FROM {SOURCE_DATABASE}.{SOURCE_SCHEMA}."{ENTITY_TABLE}"'
+    f'SELECT {q(ENTITY_KEY)} AS ENTITY1 FROM {SOURCE_DATABASE}.{SOURCE_SCHEMA}.{q(ENTITY_TABLE)}'
 ).collect()
 population_connector = kumo.SnowflakeConnector.from_spcs_env(   # or from_connection_toml, §3
     warehouse=WAREHOUSE, database=POP_DATABASE, schema_name=POP_SCHEMA,

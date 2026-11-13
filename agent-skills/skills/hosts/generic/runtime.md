@@ -130,8 +130,8 @@ written = ds.dataset(OUTPUT_LOCATION.removeprefix('s3://'), format=OUTPUT_FORMAT
                      filesystem=s3).count_rows()
 ```
 
-Without an explicit identity, emit `s3 = None`: §3.1's population staging then lets Arrow resolve
-the ambient credentials itself.
+Without an explicit identity, emit `identity = None` and `s3 = None`: §3.1's population staging
+then lets Kumo and Arrow resolve the ambient credentials themselves.
 
 The Snowflake factory `from_spcs_env` and Snowflake's notebook secret store belong to
 Snowflake's own runtime. Emit them only when the user says the code runs there.
@@ -289,7 +289,8 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
               schema=schema))
   pop_fs.move(final + '.partial', final)                     # replace only once every batch is in
   if POPULATION_PATH.startswith('s3://'):                     # the source's kind, in the §2 forms
-      population_connector = kumo.S3Connector(root_dir=POPULATION_PATH)
+      population_connector = kumo.S3Connector(root_dir=POPULATION_PATH,
+                                              identity=identity)  # §2's; None under ambient
   elif POPULATION_PATH.startswith('gs://'):
       population_connector = kumo.GCSConnector(root_dir=POPULATION_PATH)
   else:
