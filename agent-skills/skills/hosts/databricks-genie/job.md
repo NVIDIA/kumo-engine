@@ -196,7 +196,7 @@ a saved job's runs; a one-time run is found from its page or its id as printed a
 | `INTERNAL_ERROR`, or a cluster that failed to start | Platform-side. Report the `state_message` |
 
 Propose the specific fix: say what to change in the job notebook and ask only whether to make
-that change ("Shall I set `MODEL_VERSION = 1` in the job notebook?"). A yes edits that job
+that change ("Shall I set `MODEL_VERSION = '1'` in the job notebook?"). A yes edits that job
 notebook, which this skill generated; it is the one edit of an existing notebook the user can
 approve here. Resubmitting is a separate confirmation, asked after the edit; never "then rerun".
 Tell a repair from a change first. Correcting `MODEL_VERSION` to the version the user already
