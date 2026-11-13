@@ -1946,7 +1946,7 @@ fn execute_entity<U: UnitSystem, D: SplitDecider<U>>(
             aliases,
             link_frequencies,
             link_split_values,
-        ) {
+        )? {
             write_target(
                 plan,
                 &entity_pk,
@@ -2002,7 +2002,7 @@ fn execute_entity<U: UnitSystem, D: SplitDecider<U>>(
             aliases,
             link_frequencies,
             link_split_values,
-        ) {
+        )? {
             write_target(
                 plan,
                 &entity_pk,
@@ -2737,7 +2737,7 @@ fn execute_stages<U: UnitSystem>(
     aliases: &mut [Option<Value>],
     link_frequencies: &mut Vec<i64>,
     link_split_values: &mut Vec<Value>,
-) -> bool {
+) -> TTGenResult<bool> {
     for stage in &plan.stages {
         let mut position = 0;
         while position < stage.ops.len() {
@@ -2748,18 +2748,19 @@ fn execute_stages<U: UnitSystem>(
                 }).collect::<Vec<_>>();
                 if group.len() > 1 {
                     let cutoff = observation_ts.unwrap_or(Abs::from_raw(0));
-                    if let Ok(Some(values)) = execute_numeric_group(&group, &[entity_node], &[cutoff],
+                    if let Some(values) = execute_numeric_group(&group, &[entity_node], &[cutoff],
                         NumericAggregatePolicy::Pql, |aggregate, root, timestamp| {
                             let window = match &aggregate.window {
                                 Some(window) => Some(window.sort_keys(timestamp).ok_or_else(||
                                     TTGenError::InvalidPlan("aggregate window exceeds the clock".into()))?),
                                 None => None,
                             };
-                            let mut rows = Vec::new();
-                            traverse_and_accumulate(root, &aggregate.path, window, true,
-                                &mut |node, _| { rows.push(node); true });
-                            Ok(NumericRows::Nodes(rows))
-                        }) {
+                            let edge = &aggregate.path[0];
+                            let edges = crate::ttgen_traversal::iter_edge_checked(
+                                &edge.src_table, edge.relation_idx, &edge.layout, root, window,
+                            )?;
+                            Ok(NumericRows::Nodes(edges.into_iter().map(|e| e.dst_node).collect()))
+                        })? {
                         for (aggregate, mut column) in group.iter().zip(values) {
                             aliases[aggregate.alias_idx] = column.pop().unwrap();
                         }
@@ -2954,11 +2955,11 @@ fn execute_stages<U: UnitSystem>(
                 &plan.entity_table,
                 entity_node,
             ) {
-                return false;
+                return Ok(false);
             }
         }
     }
-    true
+    Ok(true)
 }
 
 // ─── Fast Existence Check (Null Emitting Target Logic) ───────────────────────
@@ -3133,16 +3134,15 @@ where
                         let rows = chunk
                             .iter()
                             .map(|&node| {
-                                let view = table
-                                    .edges_for_node(node)
+                                let view = table.edges_for_node(node)
                                     .map_err(|e| TTGenError::SystemError(e.to_string()))?;
                                 view.node_data()
-                                    .map_err(|e| TTGenError::SystemError(e.to_string()))?
-                                    .ok_or_else(|| {
-                                        TTGenError::SystemError("node has no rowpack data".into())
-                                    })
+                                    .map_err(|e| TTGenError::SystemError(e.to_string()))
                             })
-                            .collect::<TTGenResult<Vec<_>>>()?;
+                            .collect::<TTGenResult<Option<Vec<_>>>>>()?;
+                        // Absent node payloads follow the general reader's NULL
+                        // policy. A decode/IO failure above is not a decline.
+                        let Some(rows) = rows else { return Ok(None); };
                         let batch = decoder
                             .decode_batch_to_arrow(&rows, &projection)
                             .map_err(|e| TTGenError::SystemError(e.to_string()))?;
