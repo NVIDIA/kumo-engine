@@ -12964,7 +12964,7 @@ fn wipe_phase_outputs(root: &Path, phase: &str) -> Result<()> {
         // from offset zero, so no provisional context, encoded file, stats, or
         // later-phase artifact may survive.
         "encode" => {
-            for relative in [TEMP_DIR_NAME, "nodes", "kumo_col_stats"] {
+            for relative in [TEMP_DIR_NAME, "nodes", "kumo_col_stats", "col_stats"] {
                 let path = root.join(relative);
                 if path.exists() {
                     fs::remove_dir_all(&path)
