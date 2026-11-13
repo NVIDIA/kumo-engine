@@ -10,6 +10,7 @@ use diskgraph_core::tt_builder::{
     AggregateGroup as GroupPlan, AggregateSumType as SumType, ScalarAggregate,
 };
 use std::cmp::Ordering;
+use diskgraph_core::time::TimeUnit;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub trait AggregateScalar: Clone {
@@ -86,6 +87,7 @@ pub fn reduce_rows<V: AggregateScalar>(
     rows: &impl AggregateRows<V>,
     plan: &ScalarAggregate,
     cutoff: i64,
+    clock: TimeUnit,
 ) -> Result<V, String> {
     let operation = plan.operation.as_str();
     let column = plan.column.as_deref();
@@ -154,7 +156,8 @@ pub fn reduce_rows<V: AggregateScalar>(
             .flatten()
             .max()
             .expect("non-null timestamp values");
-        return Ok(V::from_f64(cutoff.saturating_sub(latest) as f64));
+        return Ok(V::from_f64((i128::from(cutoff) - i128::from(latest)) as f64
+            * clock.tick_nanos() as f64 / 1_000_000_000.0));
     }
     if operation == "mode" {
         let mut counts = HashMap::<String, (usize, V), ValueBuildHasher>::default();
@@ -259,6 +262,7 @@ pub fn group_rows<V: AggregateScalar>(
     rows: &impl AggregateRows<V>,
     plan: &GroupPlan,
     cutoff: i64,
+    clock: TimeUnit,
 ) -> Result<Vec<AggregateRow<V>>, String> {
     if plan.keys.is_empty() || plan.values.is_empty() {
         return Err("group_by requires keys and values".into());
@@ -335,6 +339,7 @@ pub fn group_rows<V: AggregateScalar>(
                         target_entity_table: None,
                     },
                     cutoff,
+                    clock,
                 )?,
             );
         }

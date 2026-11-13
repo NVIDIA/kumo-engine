@@ -63,7 +63,7 @@ class DType:
 
     Supported names: ``bool``; ``int8``, ``int16``, ``int32``, ``int64``;
     ``uint8``, ``uint16``, ``uint32``, ``uint64``; ``float32``, ``float64``;
-    ``string``, ``bytes``; ``date32``; ``timestamp`` (``unit="s"``,
+    ``string``, ``bytes``; ``date32``; ``timestamp`` (``unit="s"|"ms"|"us"|"ns"``,
     ``timezone="UTC"``); ``decimal128`` (precision up to 38) and ``decimal256``
     (precision up to 76), which require ``precision`` and ``scale``. No
     parameters are accepted for other families. Arrays, lists and structs are
@@ -74,12 +74,20 @@ class DType:
     stringified, integers are not booleans, and decimals are not rounded to fit;
     integer bounds and decimal precision/scale are checked.
 
-    Timestamps are whole-second UTC instants. Finer physical units round toward
+    Timestamp precision is declared explicitly. The default ``unit="s"``
+    preserves whole-second UTC instants; finer declared units retain their ticks.
+    In the seconds mode, finer physical units round toward
     positive infinity, including before 1970; timezone metadata does not change
     the instant, and a naive ``datetime`` means UTC. Anchor times
     (``SampleRequest.as_of_time``) instead round toward negative infinity, so an
     event later in the anchor's second is never history. ``date32`` stays a
-    date.
+    date. Plain integer anchor times are always epoch seconds, independently
+    of the graph clock; a typed Arrow timestamp column carries its physical
+    unit. Integers supplied as timestamp *field values* instead use that
+    field's declared ticks. Finer physical timestamp columns are accepted
+    during ingestion and converted to the declared graph clock; timestamps
+    round upward to that clock's tick, while finer anchor cutoffs are refused
+    for nonsecond graph clocks.
 
     :raises ValueError: for an unknown name, missing or out-of-range decimal
         parameters, or parameters on a family that takes none.
@@ -95,8 +103,8 @@ class DType:
         if self.name not in _SCALARS:
             raise ValueError(f"unsupported scalar dtype {self.name!r}")
         if self.name == "timestamp":
-            if self.unit != "s" or self.timezone != "UTC":
-                raise ValueError("timestamp dtype requires unit='s' and timezone='UTC'")
+            if self.unit not in {"s", "ms", "us", "ns"} or self.timezone != "UTC":
+                raise ValueError("timestamp dtype requires unit in s/ms/us/ns and timezone='UTC'")
         elif self.unit is not None or self.timezone is not None:
             raise ValueError(f"{self.name} does not accept time parameters")
         if self.name.startswith("decimal"):
@@ -171,6 +179,10 @@ class DType:
             if type(value) is not int and not isinstance(value, dt.datetime):
                 raise ValueError(error)
             try:
+                if self.unit != "s":
+                    import pyarrow as pa
+
+                    return pa.scalar(value, type=self.to_arrow()).as_py()
                 seconds = value if type(value) is int else _timestamp_seconds(value)
                 return dt.datetime(1970, 1, 1, tzinfo=dt.UTC) + dt.timedelta(seconds=seconds)
             except (OverflowError, ValueError) as exc:

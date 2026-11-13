@@ -67,8 +67,6 @@ from kumo.pytorch.data.records import (
     EntityState,
     Event,
     FieldValue,
-    cutoff_to_epoch,
-    timestamp_to_epoch,
 )
 from kumo.pytorch.dataset import Dataset, Parquet, TableSource
 from kumo.pytorch.encoding import TEXT_SPECIAL_TOKENS, TEXT_UNKNOWN
@@ -501,6 +499,80 @@ class DiskGraphSource:
         if reference is not None:
             reference.source._bind_sampler(sampler)
 
+    @property
+    def _tick_nanos(self):
+        return {
+            "nanoseconds": 1,
+            "microseconds": 1000,
+            "milliseconds": 1000000,
+            "seconds": 1000000000,
+            "hours": 3600000000000,
+            "days": 86400000000000,
+        }[self._clock]
+
+    def _cutoff(self, value):
+        import datetime as dt
+
+        if isinstance(value, dt.date):
+            if not isinstance(value, dt.datetime):
+                value = dt.datetime.combine(value, dt.time(), tzinfo=dt.UTC)
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=dt.UTC)
+            delta = value - dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
+            nanos = (
+                (delta.days * 86400 + delta.seconds) * 1000000000
+                + delta.microseconds * 1000
+                + getattr(value, "nanosecond", 0)
+            )
+        else:
+            nanos = int(value) * 1000000000
+        if self._clock != "seconds" and nanos % self._tick_nanos:
+            raise ValueError(
+                "anchor time is finer than the graph index clock; "
+                "use an index retaining that timestamp precision"
+            )
+        return nanos // self._tick_nanos
+
+    def _cutoff_array(self, values):
+        """Convert an Arrow anchor batch without reconstructing scalar requests."""
+        unit = {
+            "seconds": "s",
+            "milliseconds": "ms",
+            "microseconds": "us",
+            "nanoseconds": "ns",
+        }.get(self._clock)
+        if self._pa.types.is_integer(values.type):
+            values = self._pc.cast(values, self._pa.timestamp("s", tz="UTC"))
+        if unit is not None:
+            aligned = self._pc.cast(
+                values, self._pa.timestamp(unit, tz="UTC"), safe=self._clock != "seconds"
+            )
+            return self._pc.cast(aligned, self._pa.int64())
+        seconds = self._pc.cast(
+            self._pc.cast(values, self._pa.timestamp("s", tz="UTC")), self._pa.int64()
+        )
+        factor = self._tick_nanos // 1000000000
+        ticks = self._pc.divide_checked(seconds, factor)
+        if self._pc.any(
+            self._pc.not_equal(self._pc.multiply_checked(ticks, factor), seconds)
+        ).as_py():
+            raise ValueError("anchor time is finer than the graph index clock")
+        return ticks
+
+    def _clock_array(self, values):
+        unit = {
+            "seconds": "s",
+            "milliseconds": "ms",
+            "microseconds": "us",
+            "nanoseconds": "ns",
+        }.get(self._clock)
+        if unit is not None:
+            return self._pc.cast(values, self._pa.timestamp(unit, tz="UTC"))
+        return self._pc.cast(
+            self._pc.multiply_checked(values, self._tick_nanos // 1000000000),
+            self._pa.timestamp("s", tz="UTC"),
+        )
+
     def _aggregate_plan(self, spec, program):
         plan = {
             "entity": {
@@ -606,13 +678,7 @@ class DiskGraphSource:
                     raw = columns[anchors.as_of_time]
                     if raw.null_count:
                         raise ValueError("anchor prediction times cannot be NULL")
-                    if self._pa.types.is_timestamp(raw.type):
-                        raw = self._pc.cast(
-                            raw, self._pa.timestamp("s", tz=raw.type.tz), safe=False
-                        )
-                    elif self._pa.types.is_date(raw.type):
-                        raw = self._pc.cast(raw, self._pa.timestamp("s"))
-                    cutoffs = self._pc.cast(raw, self._pa.int64(), safe=False)
+                    cutoffs = self._cutoff_array(raw)
                 direct = self._direct_entity_arrays(sample, roots)
                 result = prepared.execute(
                     roots,
@@ -635,7 +701,7 @@ class DiskGraphSource:
                     "native_stats": result["stats"],
                     "native_timings_ns": result["timings_ns"],
                 }
-                yield columns, features, targets, cutoffs
+                yield columns, features, targets, self._clock_array(cutoffs)
 
     def bind_materialized_values(self, values, contract):
         """Bind enriched seed columns on this task's source, retaining native batching."""
@@ -674,7 +740,7 @@ class DiskGraphSource:
         lookup_started = time.perf_counter_ns()
         root_ids = self._root_ids(spec.entity.table, requests)
         lookup_ns = time.perf_counter_ns() - lookup_started
-        cutoffs = [cutoff_to_epoch(request.as_of_time) for request in requests]
+        cutoffs = [self._cutoff(request.as_of_time) for request in requests]
 
         feature_started = time.perf_counter_ns()
         direct_values = self._direct_entity_arrays(spec, root_ids)
@@ -769,7 +835,8 @@ class DiskGraphSource:
             return ModelSourceBatch(
                 sample_ids=tuple(request.sample_id for request in requests),
                 entity_ids=tuple(request.entity_id for request in requests),
-                evaluation_times=tuple(cutoff_to_epoch(request.as_of_time) for request in requests),
+                evaluation_times=tuple(self._cutoff(request.as_of_time) for request in requests),
+                timestamp_unit=self._clock,
                 entity_type=spec.entity.entity_type,
                 entity_values={},
                 events={},
@@ -784,7 +851,7 @@ class DiskGraphSource:
         lookup_started = time.perf_counter_ns()
         root_ids = self._root_ids(spec.entity.table, requests)
         lookup_ns = time.perf_counter_ns() - lookup_started
-        cutoffs = [cutoff_to_epoch(request.as_of_time) for request in requests]
+        cutoffs = [self._cutoff(request.as_of_time) for request in requests]
 
         feature_started = time.perf_counter_ns()
         direct_values = self._direct_entity_arrays(spec, root_ids)
@@ -888,7 +955,7 @@ class DiskGraphSource:
             lookup_started = time.perf_counter_ns()
             root_ids = self._root_ids(spec.entity.table, chunk)
             lookup_ns += time.perf_counter_ns() - lookup_started
-            cutoffs = [cutoff_to_epoch(request.as_of_time) for request in chunk]
+            cutoffs = [self._cutoff(request.as_of_time) for request in chunk]
             compiled = _TemporalPlanCompiler(self).compile(length_spec)
             native_started = time.perf_counter_ns()
             result = self._sampler.query_temporal_lengths(
@@ -1036,6 +1103,7 @@ class DiskGraphSource:
             sample_ids=tuple(request.sample_id for request in requests),
             entity_ids=tuple(request.entity_id for request in requests),
             evaluation_times=tuple(cutoffs),
+            timestamp_unit=self._clock,
             entity_type=spec.entity.entity_type,
             entity_values=dict(direct_values),
             events={},
@@ -1287,7 +1355,7 @@ class DiskGraphSource:
                 fused=False,
                 seed_timestamps={sample.entity.table: [root.cutoff for root in roots]},
                 swap_edge_direction=False,
-                seed_timestamp_unit=self._diskgraph.TimeUnit.Seconds,
+                seed_timestamp_unit=getattr(self._diskgraph.TimeUnit, self._clock.capitalize()),
             )
         )
         return neighborhood, events, physical_relations
@@ -1305,7 +1373,7 @@ class DiskGraphSource:
             request.sample_id,
             EntityHistory(
                 entity_id=request.entity_id,
-                evaluation_time=cutoff_to_epoch(request.as_of_time),
+                evaluation_time=self._cutoff(request.as_of_time),
                 entity=EntityState((), ()),
                 events=(),
                 entity_type=spec.entity.entity_type,
@@ -1326,7 +1394,7 @@ class DiskGraphSource:
         for request, value in zip(requests, times, strict=True):
             if value is None:
                 raise ValueError(f"{table!r} row has no timestamp in {column!r}")
-            if timestamp_to_epoch(value) >= cutoff_to_epoch(request.as_of_time):
+            if self._cutoff(value) >= self._cutoff(request.as_of_time):
                 raise ValueError("entity did not exist before the requested sample time")
 
     def _root_ids(
@@ -1339,7 +1407,7 @@ class DiskGraphSource:
             (
                 request.sample_id,
                 request.entity_id,
-                cutoff_to_epoch(request.as_of_time)
+                self._cutoff(request.as_of_time)
                 if isinstance(request, SampleRequest)
                 else request.cutoff,
             )
@@ -1577,6 +1645,7 @@ class DiskGraphSource:
             sample_ids=tuple(request.sample_id for request in requests),
             entity_ids=tuple(request.entity_id for request in requests),
             evaluation_times=tuple(cutoffs),
+            timestamp_unit=self._clock,
             entity_type=spec.entity.entity_type,
             entity_values=entity_values,
             events=events,
@@ -1613,7 +1682,9 @@ class DiskGraphSource:
             elapsed = self._pc.subtract(event_cutoffs, timestamps)
             return self._pc.divide(
                 self._pc.cast(elapsed, self._pa.float64()),
-                self._pa.scalar(field.seconds_per_unit, type=self._pa.float64()),
+                self._pa.scalar(
+                    field.seconds_per_unit * 1000000000 / self._tick_nanos, type=self._pa.float64()
+                ),
             )
         if isinstance(field, Constant):
             return self._pa.repeat(
@@ -1659,10 +1730,8 @@ class DiskGraphSource:
             values = self._pa.array(
                 values, type=dtype.to_arrow() if dtype.integer and integer_values else None
             )
-        if dtype.name == "date32" and self._pa.types.is_integer(values.type):
-            # Native scalar reductions expose dates as epoch seconds.
-            days = self._pc.divide_checked(values, 86_400)
-            return self._pc.cast(self._pc.cast(days, self._pa.int32(), safe=True), dtype.to_arrow())
+        if dtype.name in {"timestamp", "date32"} and self._pa.types.is_integer(values.type):
+            return self._pc.cast(self._clock_array(values), dtype.to_arrow(), safe=True)
         return self._pc.cast(values, dtype.to_arrow(), safe=True)
 
     def _entity_arrays(
@@ -1805,7 +1874,10 @@ class DiskGraphSource:
                 output.append(
                     FieldValue(
                         name,
-                        float(cutoff - event_time) / field.seconds_per_unit,
+                        float(cutoff - event_time)
+                        * self._tick_nanos
+                        / 1000000000
+                        / field.seconds_per_unit,
                         field.dtype,
                     )
                 )
@@ -2300,6 +2372,7 @@ class _TemporalPlanCompiler:
             "root_type": self.root_table,
             "path": path,
             "time_column": clock,
+            "cutoff_unit": getattr(self.source, "_clock", "seconds"),
             "start_seconds": rows.time.start
             if clock is not None and rows.time is not None
             else None,

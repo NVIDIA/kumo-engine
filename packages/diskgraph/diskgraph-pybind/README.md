@@ -428,3 +428,10 @@ Handles table type detection, FK resolution, timestamp format inference, num_sha
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `EDGE_BATCH_SIZE_ROWS` | 65536 | Rows per edge batch sent to Python |
+
+
+Explicit temporal row frames may set `cutoff_unit` to the index clock name (for
+example, `"milliseconds"`). Omission retains epoch-second inputs and outputs.
+Nonsecond histories retain integer ticks and report `timestamp_unit`; elapsed
+features and recency remain expressed in seconds. PQL selection fragments with
+row filters/limits still require the existing seconds contract.

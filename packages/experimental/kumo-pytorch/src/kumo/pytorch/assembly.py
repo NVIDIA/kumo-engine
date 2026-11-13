@@ -64,7 +64,7 @@ from kumo.pytorch.contract.sample import (
 )
 from kumo.pytorch.data.masking import mask_event_values
 from kumo.pytorch.data.model import ModelSourceBatch
-from kumo.pytorch.data.records import EntityHistory, Event, cutoff_to_epoch
+from kumo.pytorch.data.records import EntityHistory, Event
 from kumo.pytorch.encoding import (
     FittedEncoder,
     FittedSpace,
@@ -2181,9 +2181,9 @@ class PreparedBatchPlan:
                         GraphRoot(
                             request.sample_id,
                             request.entity_id,
-                            cutoff_to_epoch(request.as_of_time),
+                            cutoff,
                         )
-                        for request in requests
+                        for request, cutoff in zip(requests, values.evaluation_times, strict=True)
                     ]
                     if model
                     else [
@@ -2232,6 +2232,11 @@ class PreparedBatchPlan:
                 "sample_ids": values.sample_ids,
                 "entity_ids": entity_ids,
                 "as_of_time": torch.tensor(values.evaluation_times),
+                **(
+                    {"timestamp_unit": values.timestamp_unit}
+                    if values.timestamp_unit != "seconds"
+                    else {}
+                ),
                 "splits": values.splits,
                 "request_metadata": values.request_metadata,
             }
@@ -2240,6 +2245,11 @@ class PreparedBatchPlan:
                 "sample_ids": tuple(_sample_id(value) for value in values),
                 "entity_ids": entity_ids,
                 "as_of_time": torch.tensor([_history(value).evaluation_time for value in values]),
+                **(
+                    {"timestamp_unit": self._source._clock}
+                    if getattr(self._source, "_clock", "seconds") != "seconds"
+                    else {}
+                ),
                 "splits": tuple(
                     value.metadata.get("split") if isinstance(value, BuiltSample) else None
                     for value in values

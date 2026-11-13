@@ -10625,3 +10625,39 @@ fn integ_numeric_specialization_propagates_reader_errors() {
     ).unwrap_err();
     assert!(matches!(failure, TTGenError::SystemError(message) if message == "injected reader failure"));
 }
+
+#[test]
+fn integ_prepared_history_reuses_frames_and_binds_clock_before_iteration() {
+    use diskgraph_train_table::batch_aggregate::PreparedTemporalPlan;
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+    let reader = diskgraph_index::graph::GraphIndexReader::open(
+        &index.join("index_metadata.json"), &index,
+    ).unwrap();
+    let relation = reader.metadata().edge_relations.iter().find(|r| r.src_type == "users" && r.dst_type == "orders").unwrap().name.clone();
+    let mut json = serde_json::json!({
+        "frames": [{"name":"events", "root_type":"users", "path":[{"relation":relation,"destination_type":"orders"}],
+            "time_column":"ts", "start_seconds":0,"stop_seconds":5000,"distinct":true,"columns":["price"]}],
+        "sequences":[{"name":"history","frame":"events","columns":["price"],"order":"ascending"}]
+    });
+    // Graph1's actual clock column is read from its index rather than assumed.
+    let clock = reader.table("orders").unwrap().create_time_col().map(str::to_string);
+    // The explicit relation timestamp column is present even without a table create-time.
+    json["frames"][0]["time_column"] = serde_json::json!(clock.unwrap_or_else(|| "ts".into()));
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+    let prepared = PreparedTemporalPlan::prepare_history(&reader, "users", &json.to_string()).unwrap();
+    prepared.require_timed_sequence("history").unwrap();
+    let a = prepared.execute(&reader, &[0;128], &[0;128], &pool).unwrap();
+    let b = prepared.execute(&reader, &[0;128], &[0;128], &pool).unwrap();
+    assert_eq!(a.sequences[0].node_ids, b.sequences[0].node_ids);
+    assert_eq!(a.sequences[0].offsets, b.sequences[0].offsets);
+    json["frames"][0]["cutoff_unit"] = serde_json::json!("milliseconds");
+    assert!(PreparedTemporalPlan::prepare_history(&reader, "users", &json.to_string()).err().unwrap().contains("index clock"));
+    json["frames"][0]["cutoff_unit"] = serde_json::Value::Null;
+    json["frames"][0]["time_column"] = serde_json::Value::Null;
+    json["frames"][0]["start_seconds"] = serde_json::Value::Null;
+    json["frames"][0]["stop_seconds"] = serde_json::Value::Null;
+    let untimed = PreparedTemporalPlan::prepare_history(&reader, "users", &json.to_string()).unwrap();
+    assert!(untimed.require_timed_sequence("history").unwrap_err().contains("timed frames"));
+    assert!(untimed.execute(&reader, &[0], &[0], &pool).is_ok());
+}

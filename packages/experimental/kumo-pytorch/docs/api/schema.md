@@ -144,7 +144,7 @@ The stored scalar type, independent of its eventual model encoding.
 
 Supported names: `bool`; `int8`, `int16`, `int32`, `int64`;
 `uint8`, `uint16`, `uint32`, `uint64`; `float32`, `float64`;
-`string`, `bytes`; `date32`; `timestamp` (`unit="s"`,
+`string`, `bytes`; `date32`; `timestamp` (`unit="s"|"ms"|"us"|"ns"`,
 `timezone="UTC"`); `decimal128` (precision up to 38) and `decimal256`
 (precision up to 76), which require `precision` and `scale`. No
 parameters are accepted for other families. Arrays, lists and structs are
@@ -155,12 +155,20 @@ never converted. Numeric strings are not parsed, numbers are not
 stringified, integers are not booleans, and decimals are not rounded to fit;
 integer bounds and decimal precision/scale are checked.
 
-Timestamps are whole-second UTC instants. Finer physical units round toward
+Timestamp precision is declared explicitly. The default `unit="s"`
+preserves whole-second UTC instants; finer declared units retain their ticks.
+In the seconds mode, finer physical units round toward
 positive infinity, including before 1970; timezone metadata does not change
 the instant, and a naive `datetime` means UTC. Anchor times
 (`SampleRequest.as_of_time`) instead round toward negative infinity, so an
 event later in the anchor's second is never history. `date32` stays a
-date.
+date. Plain integer anchor times are always epoch seconds, independently
+of the graph clock; a typed Arrow timestamp column carries its physical
+unit. Integers supplied as timestamp *field values* instead use that
+field's declared ticks. Finer physical timestamp columns are accepted
+during ingestion and converted to the declared graph clock; timestamps
+round upward to that clock's tick, while finer anchor cutoffs are refused
+for nonsecond graph clocks.
 
 **Raises**
 

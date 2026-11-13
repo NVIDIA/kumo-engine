@@ -206,6 +206,15 @@ def test_explicit_plan_preserves_bounded_nonseconds_windows(tmp_path, clock):
         assert values(actual)[name].equals(reference), name
     assert values(actual)["full:count"].to_pylist() == [2]
     assert values(actual)["full:sum"].to_pylist() == [8.0]
+    # Even with omitted cutoff_unit, filtered PQL must not resolve a
+    # seconds-specialized selection against a non-seconds index silently.
+    filtered = json.loads(json.dumps(staged(fragment)))
+    reduction = filtered["stages"][0]["ops"][1]["row_aggregate"]["reduction"]
+    reduction["row_filter"] = {"compare": {"lhs": {"column": "value"}, "op": "gt",
+                                          "rhs": {"constant": {"float": 0.0}}}}
+    reduction["semantics"] = {"all_null_sum_is_zero": True, "keep_first_equal": False}
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="matching seconds"):
+        engine.prepare_aggregate_plan("users", json.dumps(filtered))
     # Both endpoints are checked in the index clock: include1.001s/2s,
     # exclude the lower endpoint1s and future2.5s. Also verify unbounded input.
     for frame in fragment["frames"]:
