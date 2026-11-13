@@ -285,7 +285,12 @@ class Artifact:
         except (AttributeError, KeyError, TypeError, ValueError) as error:
             raise ValueError(f"{root}: {error}") from error
         if "lengths" in manifest:
-            # written before the length summary was dropped; its fingerprint covered it
+            # written before the length summary was dropped; its fingerprint covers it
+            old = {key: value for key, value in rebuilt.items() if key != "artifact_fingerprint"}
+            old["lengths"] = manifest["lengths"]
+            _require_same(
+                root / "manifest.json", manifest, {**old, "artifact_fingerprint": _fingerprint(old)}
+            )
             del manifest["lengths"]
             manifest["artifact_fingerprint"] = rebuilt["artifact_fingerprint"]
         _require_same(root / "manifest.json", manifest, rebuilt)

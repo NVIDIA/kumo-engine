@@ -1507,19 +1507,20 @@ def _fit_targets(
         for name in learned
         if isinstance(spec.targets[name], (LabelTarget, StructuredTarget))
     )
-    targets_only = replace(
-        sample,
-        entity_values={},
-        dated_entity_values={},
-        events={},
-        current_events={},
-        neighborhoods={},
-    )
-    for values in (
-        _chunks(values_for(sample if reads_rows else targets_only if computed else None))
-        if learned
-        else ()
-    ):
+    if reads_rows:
+        built = sample
+    elif computed:
+        built = replace(
+            sample,
+            entity_values={},
+            dated_entity_values={},
+            events={},
+            current_events={},
+            neighborhoods={},
+        )
+    else:
+        built = None
+    for values in _chunks(values_for(built)) if learned else ():
         rows = _rows_for_inputs(spec, declarations, values, model=model) if reads_rows else {}
         for name in groups:
             target = spec.targets[name]
@@ -1566,14 +1567,16 @@ def _fit_targets(
         if not np.isfinite(numeric).all() or not np.isfinite(threshold):
             raise ValueError(f"target {name!r}: threshold values must be finite")
         thresholds.setdefault(name, {})[field] = threshold
-        above = (
-            (lambda value: value > threshold)
-            if item.comparison == "greater_than"
-            else (lambda value: value >= threshold)
-        )
-        observed[(name, field)] = [
-            None if value is None else item.above if above(value) else item.below for value in raw
-        ]
+        if (name, field) in slots:
+            above = (
+                (lambda value: value > threshold)
+                if item.comparison == "greater_than"
+                else (lambda value: value >= threshold)
+            )
+            observed[(name, field)] = [
+                None if value is None else item.above if above(value) else item.below
+                for value in raw
+            ]
     contributors = {}
     for key, identity in slots.items():
         contributors.setdefault(identity, []).extend(observed[key])
@@ -2759,7 +2762,8 @@ def pin_fitted_state(contract: Any, serialized: Mapping[str, Any]) -> Any:
 
     What `PreparedBatchPlan.bound_contract` pins, read from the written state
     rather than the fitted objects; refused as `restore_fitted_state` refuses.
-    ``serialized`` may be a written file, with what it keeps beside the state.
+    ``serialized`` may be a file this version's `Artifact.save` wrote, with what it keeps
+    beside the state.
     """
 
     state = {key: value for key, value in serialized.items() if key not in WRITTEN_BESIDE_STATE}

@@ -259,7 +259,7 @@ class Plan:
             input_only = inference and fitted is not None and not fitted.has_targets
             if input_only:
                 target_encoders = {}
-            fitting: Sequence[SampleRequest] = ()
+            fitting: Sequence[SampleRequest] | _Mapped = ()
             record: FitRecord | None = None
             if input_state is None or target_encoders is None:
                 chosen = self._fit_selection(selection, declares_splits)
@@ -313,7 +313,7 @@ class Plan:
     def _pinned_from_stats(
         self,
         source: SampleSource,
-        fitting: Sequence[SampleRequest],
+        fitting: Sequence[SampleRequest] | _Mapped,
         cutoff: int | None | _LatestAnchor,
     ) -> tuple[dict[str, FittedEncoder], dict[str, Any]]:
         column_stats = getattr(source, "column_stats", None)

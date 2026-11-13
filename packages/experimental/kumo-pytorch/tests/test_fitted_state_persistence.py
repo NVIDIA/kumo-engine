@@ -467,3 +467,7 @@ def test_an_artifact_written_with_a_length_summary_still_loads(tmp_path: Path) -
     path.write_text(json.dumps(manifest))
     _redigest(tmp_path / "artifact")
     assert api.Artifact.load(tmp_path / "artifact") == expected
+    path.write_text(json.dumps({**manifest, "lengths": {**summary, "mean": 4.0}}))
+    _redigest(tmp_path / "artifact")
+    with pytest.raises(ValueError, match="field artifact_fingerprint is not what"):
+        api.Artifact.load(tmp_path / "artifact")
