@@ -5,6 +5,9 @@
 
 from kumo_core.explain.perturbation import RecordRemovalPlan
 
+from kumo_core.explain.walk_attribution import WalkAttributionConfig
+
+from .walks import WalkAttributionBundle
 from .bundle import (
     EvidenceConfig,
     EvidenceValidationError,
@@ -13,6 +16,8 @@ from .bundle import (
 )
 
 __all__ = [
+    'WalkAttributionConfig',
+    'WalkAttributionBundle',
     'EvidenceConfig',
     'EvidenceValidationError',
     'PredictionEvidenceBundle',

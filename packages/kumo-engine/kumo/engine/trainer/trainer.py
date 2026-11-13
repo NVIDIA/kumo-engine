@@ -1862,6 +1862,9 @@ class Trainer:
                 str(run_dir / 'xai' / 'local'),
                 'numerical_sensitivity':
                 evidence is None or evidence.numerical_sensitivity is not None,
+                'walk_attribution':
+                (None if evidence is None or evidence.walk_attribution is None
+                 else vars(evidence.walk_attribution)),
                 'local_sensitivity_on_unsupported':
                 evidence.on_unsupported if evidence is not None else 'raise'
             } if local_sensitivity else {}),

@@ -546,6 +546,7 @@ class _PredictionWorkerConfig(NamedTuple):
     local_sensitivity_dir: str | None = None
     batch_size: int | None = None
     numerical_sensitivity: bool = True
+    walk_attribution: dict | None = None
     local_sensitivity_on_unsupported: str = "raise"
 
 
@@ -610,6 +611,8 @@ def _score_prediction_shard(
         local_options['local_sensitivity'] = {
             'root': config.local_sensitivity_dir,
             'numerical_sensitivity': config.numerical_sensitivity,
+            'walk_attribution': config.walk_attribution,
+            'walk_on_unsupported': config.local_sensitivity_on_unsupported,
             'provenance': {
                 'run_id': config.run_id,
                 'graph_snapshot_id': config.graph_snapshot_id,
@@ -704,6 +707,7 @@ def score_prediction(
     local_sensitivity_dir: str | None = None,
     batch_size: int | None = None,
     numerical_sensitivity: bool = True,
+    walk_attribution: dict | None = None,
     local_sensitivity_on_unsupported: str = "raise",
 ) -> Any:
     """Score partitions and publish bounded metadata using the hosted protocol.
@@ -792,6 +796,7 @@ def score_prediction(
         local_sensitivity_dir=local_sensitivity_dir,
         batch_size=batch_size,
         numerical_sensitivity=numerical_sensitivity,
+        walk_attribution=walk_attribution,
         local_sensitivity_on_unsupported=local_sensitivity_on_unsupported,
     )
     if worker_count == 1:

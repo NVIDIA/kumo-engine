@@ -65,6 +65,21 @@ def bundle_fingerprints(model_dir: str) -> dict[str, Any]:
 logger = logging.getLogger(__name__)
 
 
+def bind_walk_result(result, sample):
+    """Bind local activation occurrences to retained source keys, never new edges."""
+    result['status'] = 'truncated' if result['truncated'] else 'available'
+    for walk in result['walks']:
+        walk['source_pkey'] = sample['nodes'][walk['source_table']]['pkeys'][walk['source_occurrence']]
+        for step in walk['steps']:
+            if step['kind'] == 'relation':
+                src, _, dst = step['type']
+                step['source_pkey'] = sample['nodes'][src]['pkeys'][step['source_occurrence']]
+                step['destination_pkey'] = sample['nodes'][dst]['pkeys'][step['destination_occurrence']]
+            elif step['kind'] == 'self':
+                step['pkey'] = sample['nodes'][step['table']]['pkeys'][step['occurrence']]
+    return result
+
+
 class LocalSensitivity:
     """One seed, one model forward, one autograd call, incremental artifacts."""
 
@@ -72,7 +87,15 @@ class LocalSensitivity:
     streaming = True
 
     def __init__(self, root: str, provenance: dict[str, Any],
-                 numerical_sensitivity: bool = True):
+                 numerical_sensitivity: bool = True,
+                 walk_attribution: dict | None = None,
+                 walk_on_unsupported: str = "raise"):
+        self.walk_on_unsupported = walk_on_unsupported
+        self.walk_config = walk_attribution
+        self.walk_capture = None
+        self.walk_status_counts = {}
+        self.walk_failure = None
+        self.walk_failure_unsupported = False
         self.numerical_sensitivity = numerical_sensitivity
         self.requires_grad = numerical_sensitivity
         self.attempted_rows = 0
@@ -94,6 +117,10 @@ class LocalSensitivity:
                              'with a numerical target encoder')
         if module.device.type != 'cpu':
             raise ValueError('local_sensitivity requires CPU execution')
+        if self.walk_config is not None and self.walk_on_unsupported == 'raise':
+            from kumo_core.explain.walk_attribution import WalkAttributionConfig, WalkCapture
+            with WalkCapture(module, WalkAttributionConfig(**self.walk_config)):
+                pass
         self.provenance.update({
             'schema_version':
             1,
@@ -173,6 +200,7 @@ class LocalSensitivity:
                 'rows': self.rows,
                 'failure': self.failure,
                 'status_counts': self.status_counts,
+                'walk_status_counts': self.walk_status_counts,
                 'attempted_rows': self.attempted_rows,
                 'graph_failures': self.graph_failures,
                 'temporal_status_counts': self.temporal_status_counts,
@@ -183,6 +211,19 @@ class LocalSensitivity:
     def explain_pre_step(self, batch, module, datamodule, stage, batch_idx):
         if batch[batch.input_type].batch_size != 1:
             raise ValueError('local_sensitivity requires one seed per batch')
+        if self.walk_config is not None:
+            from kumo_core.explain.walk_attribution import (
+                WalkAttributionConfig, WalkCapture, UnsupportedWalkAttribution)
+            try:
+                self.walk_failure = None
+                self.walk_capture = WalkCapture(module, WalkAttributionConfig(**self.walk_config))
+                self.walk_capture.__enter__()
+            except Exception as error:
+                self.walk_failure_unsupported = isinstance(error, UnsupportedWalkAttribution)
+                self.walk_failure = str(error) if self.walk_failure_unsupported else "capture_setup_failed"
+                if self.walk_capture is not None:
+                    self.walk_capture.__exit__(None, None, None)
+                self.walk_capture = None
         # Clear tensors left by a prior batch, including unused encoders.
         for encoder in module.encoder.modules():
             if hasattr(encoder, '_saved_tensors'):
@@ -394,6 +435,9 @@ class LocalSensitivity:
             logger.warning(
                 'Local sensitivity capture unavailable; predictions continue')
         finally:
+            if self.walk_capture is not None:
+                self.walk_capture.__exit__(None, None, None)
+                self.walk_capture = None
             for encoder in module.encoder.modules():
                 if hasattr(encoder, '_saved_tensors'):
                     del encoder._saved_tensors
@@ -496,6 +540,27 @@ class LocalSensitivity:
                 'status': 'unavailable',
                 'reason': 'original_graph_capture_failed'
             }
+        if self.walk_config is not None:
+            from kumo_core.explain.walk_attribution import UnsupportedWalkAttribution
+            try:
+                if self.walk_capture is None:
+                    if self.walk_failure_unsupported:
+                        raise UnsupportedWalkAttribution(self.walk_failure)
+                    raise RuntimeError(self.walk_failure or 'capture unavailable')
+                if record['graph_status'] != 'available':
+                    raise ValueError('Original graph missing')
+                record['walk_attribution'] = bind_walk_result(self.walk_capture.result(seed_index=0), sample)
+                record['walk_attribution'].update(
+                    origin='original_forward_attribution', prediction_id=prediction_id,
+                    sample_sha256=record['sample_sha256'])
+            except UnsupportedWalkAttribution as error:
+                record['walk_attribution'] = {'status': 'unsupported', 'reason': str(error)}
+            except Exception:
+                record['walk_attribution'] = {'status': 'failed', 'reason': 'walk_capture_failed'}
+            record['walk_attribution'].update(
+                origin='original_forward_attribution', prediction_id=prediction_id,
+                sample_sha256=record['sample_sha256'], config=self.walk_config,
+                method='hetero_lrp_gamma_reference_v1')
         try:
             if self.numerical_sensitivity:
                 cells, status, reason = self._cells(module, batch, step_output)
@@ -512,6 +577,9 @@ class LocalSensitivity:
             for encoder in module.encoder.modules():
                 if hasattr(encoder, '_saved_tensors'):
                     del encoder._saved_tensors
+        if self.walk_config is not None:
+            state = record['walk_attribution']['status']
+            self.walk_status_counts[state] = self.walk_status_counts.get(state, 0) + 1
         (self.root / 'rows' / f'{prediction_id}.json').write_text(
             _encoded(record))
         # Flush each row so memory remains bounded and interrupted runs expose
@@ -520,7 +588,7 @@ class LocalSensitivity:
             stream.write(
                 _encoded({
                     k: v
-                    for k, v in record.items() if k != 'cells'
+                    for k, v in record.items() if k not in ('cells', 'walk_attribution')
                 }) + '\n')
         temporal_state = record['temporal_validation']['status']
         self.temporal_status_counts[temporal_state] = (
@@ -529,7 +597,16 @@ class LocalSensitivity:
         self.status_counts[record['status']] = (
             self.status_counts.get(record['status'], 0) + 1)
 
+    def close(self):
+        """Release transient hooks even when prediction aborts before post-step."""
+        if self.walk_capture is not None:
+            self.walk_capture.__exit__(None, None, None)
+            self.walk_capture = None
+
     def explain_end(self, module, datamodule, outputs, stage):
+        if self.walk_capture is not None:
+            self.walk_capture.__exit__(None, None, None)
+            self.walk_capture = None
         try:
             self.generation_closed = True
             incomplete = sum(
@@ -537,6 +614,7 @@ class LocalSensitivity:
                 if state not in {'available', 'zero_signal', 'disabled'})
             self._write_manifest(complete=(
                 self.failure is None and not incomplete
+                and not any(count for state, count in self.walk_status_counts.items() if state != "available")
                 and not self.graph_failures
                 and not self.temporal_status_counts.get('violated', 0)
                 and not self.temporal_status_counts.get('unavailable', 0)

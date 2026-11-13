@@ -1795,6 +1795,9 @@ class DiskgraphNestedTrainer(Trainer):
                 import kumo_core.modeling.context as modeling_context
                 modeling_context.set_explaining(False)
                 torch.set_grad_enabled(old_grad_enabled)
+                for explainer in self.pl_model.explainers:
+                    if isinstance(explainer, LocalSensitivity):
+                        explainer.close()
                 self.pl_model.explainers = old_explainers
                 self.datamodule.eval_loader_kwargs['batch_size'] = original_batch_size
             if emit_embeddings:

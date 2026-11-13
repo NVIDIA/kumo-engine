@@ -39,9 +39,18 @@ class EvidenceConfig:
     numerical_sensitivity: Literal[
         'signed_and_absolute'] | None = 'signed_and_absolute'
     replay: bool = False
+    walk_attribution: Any = None
     on_unsupported: Literal['raise', 'record'] = 'raise'
 
     def __post_init__(self):
+        if self.walk_attribution is not None:
+            from kumo_core.explain.walk_attribution import WalkAttributionConfig
+            if not isinstance(self.walk_attribution, WalkAttributionConfig):
+                raise TypeError(
+                    'walk_attribution must be WalkAttributionConfig')
+            if not self.scoring_graph:
+                raise ValueError(
+                    'Walk attribution requires retained scoring graphs')
         if type(self.scoring_graph) is not bool or type(
                 self.replay) is not bool:
             raise TypeError('Evidence flags must be boolean')
@@ -309,6 +318,8 @@ class PredictionEvidenceBundle:
     def availability(self, prediction_id):
         row = self.numerical_evidence(prediction_id)
         return {
+            'walk_attribution':
+            row.get('walk_attribution', {}).get('status', 'disabled'),
             'numerical':
             row['status'],
             'reason':
@@ -431,6 +442,23 @@ class PredictionEvidenceBundle:
                         db.execute('INSERT INTO evidence VALUES (?)',
                                    (identifier, ))
                         detail = self.numerical_evidence(identifier)
+                        walk = detail.get('walk_attribution')
+                        if walk is not None:
+                            if walk.get(
+                                    'prediction_id') != identifier or walk.get(
+                                        'sample_sha256') != detail.get(
+                                            'sample_sha256') or walk.get(
+                                                'origin'
+                                            ) != 'original_forward_attribution':
+                                raise EvidenceValidationError(
+                                    'Walk attribution identity mismatch')
+                            if walk.get('status') in ('available', 'truncated'):
+                                from .walks import validate_result
+                                validate_result(walk)
+                            elif walk.get('status') not in ('unsupported',
+                                                            'failed'):
+                                raise EvidenceValidationError(
+                                    'Invalid walk availability')
                         if any(
                                 detail.get(key) != value
                                 for key, value in row.items()):
@@ -626,6 +654,11 @@ class PredictionEvidenceBundle:
             'evidence_complete': manifest['evidence_complete'],
             'status_counts': dict(counts)
         }
+
+    def attribute_walks(self, *, model, config, output):
+        """Attribute a trusted frozen model on retained graphs, without resampling."""
+        from kumo.engine.evidence.walks import attribute_bundle
+        return attribute_bundle(self, model=model, config=config, output=output)
 
     def export(self, destination):
         """Copy all retained bytes, including derived methods, without recomputing."""

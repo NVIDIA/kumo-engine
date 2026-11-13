@@ -59,8 +59,12 @@ ldd --version > "$RUN/glibc-version.txt"
 sha256sum "$RUN/build-requirements.txt" "$RUN/runtime-requirements.txt" "$RUN/installed-requirements.txt" "$RUN/build-tool-versions.txt" > "$RUN/inputs.sha256"
 mkdir "$RUN/acceptance"
 cp "$RUN/source/packages/kumo-engine/test/wheel_xai_smoke.py" "$RUN/acceptance/runner.py"
+cp "$RUN/source/scripts/xai/walk_native_gate.py" "$RUN/acceptance/walk_native_gate.py"
 mkdir "$RUN/acceptance/tests"
 for FILE in packages/kumo-core/tests/test_local_sensitivity.py packages/kumo-core/tests/test_xai_capture_validation.py packages/kumo-core/tests/test_prediction_explanations.py packages/kumo-core/tests/test_record_removal.py packages/kumo-core/tests/explain/test_subgraph_collector_keys.py packages/kumo-engine/test/test_local_prediction_sensitivity.py packages/kumo-engine/test/test_prediction_output_columns.py packages/kumo-engine/test/test_prediction_evidence_bundle.py packages/kumo-engine/test/test_xai_integration_validation.py packages/kumo-engine/test/test_uncertainty.py packages/kumo-engine/test/test_xai_interval_validation.py scripts/xai/test_streaming_resources.py; do
+    cp "$RUN/source/$FILE" "$RUN/acceptance/tests/"
+done
+for FILE in packages/kumo-core/tests/test_walk_attribution.py packages/kumo-engine/test/test_walk_evidence.py scripts/xai/test_walk_reference_gate.py; do
     cp "$RUN/source/$FILE" "$RUN/acceptance/tests/"
 done
 cd "$RUN/acceptance"
@@ -68,6 +72,7 @@ export OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2
 export CUDA_VISIBLE_DEVICES="" PYTHONDONTWRITEBYTECODE=1
 /usr/bin/time -v -o "$RUN/unit.resources.txt" timeout 1800 "$RUN/test-venv/bin/python" -I -m pytest tests --import-mode=prepend -p no:cacheprovider -q -s --junitxml="$RUN/unit.xml" > "$RUN/unit.log" 2>&1
 /usr/bin/time -v -o "$RUN/native.resources.txt" timeout 1800 "$RUN/test-venv/bin/python" -I runner.py --suite native --wheel "$WHEEL" --source-revision "$REV" --output "$RUN/results/native" > "$RUN/native.log" 2>&1
+/usr/bin/time -v -o "$RUN/walk-native.resources.txt" timeout 1800 "$RUN/test-venv/bin/python" -I walk_native_gate.py --wheel "$WHEEL" --output "$RUN/results/walk-native" > "$RUN/walk-native.log" 2>&1
 /usr/bin/time -v -o "$RUN/supply-chain.resources.txt" timeout 3600 "$RUN/test-venv/bin/python" -I runner.py --suite supply-chain --wheel "$WHEEL" --source-revision "$REV" --prototype-root "$PROTO" --output "$RUN/results/supply-chain" > "$RUN/supply-chain.log" 2>&1
 sha256sum "$RUN"/*.log "$RUN"/*.resources.txt "$RUN"/results/*/acceptance.json > "$RUN/acceptance-evidence.sha256"
 printf 'Candidate accepted: %s\n' "$RUN"

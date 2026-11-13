@@ -61,6 +61,8 @@ from kumo.engine.connector import (
 )
 from kumo.engine.evidence import (
     EvidenceConfig,
+    WalkAttributionConfig,
+    WalkAttributionBundle,
     PredictionEvidenceBundle,
     RecordRemovalPlan,
 )
@@ -93,6 +95,8 @@ from kumo.engine.uncertainty import (
 
 __all__ = [
     "EvidenceConfig",
+    "WalkAttributionConfig",
+    "WalkAttributionBundle",
     "RecordRemovalPlan",
     "PredictionEvidenceBundle",
     "CalibrationSpec",
