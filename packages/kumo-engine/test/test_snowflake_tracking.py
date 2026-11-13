@@ -60,6 +60,7 @@ def test_installed_singleton_exposes_what_the_adapter_reads(monkeypatch):
     assert tracking._session is session
     assert 'experiment_name' in inspect.signature(
         tracking._sql_client.show_runs_in_experiment).parameters
+    assert callable(tracking._unset_run)
 
 
 @pytest.fixture
@@ -75,6 +76,13 @@ def _tracking(session=FakeSession, **kwargs):
 
 
 class _DelegatingTracker:
+    finish_on_worker_thread = True
+    snapshot_ref_before_finish = True
+
+    @property
+    def abort_run(self):
+        return self._tracker.abort_run
+
     def __init__(self, tracker):
         self._tracker = tracker
 
@@ -677,18 +685,18 @@ def test_context_cleanup_failure_still_releases_adapter(fake, monkeypatch, durin
     assert list(fake._instance.runs.values())[-1]['status'] == 'FINISHED'
 
 
-@pytest.mark.parametrize('state', ['busy', 'full_queue', 'idle'])
+@pytest.mark.parametrize('state', ['busy', 'full_queue'])
 @pytest.mark.parametrize('wrap', [lambda tracker: tracker, _DelegatingTracker],
                          ids=['native', 'wrapped'])
-def test_model_timeout_defers_subclass_cleanup_to_owner(fake, monkeypatch,
-                                                        tmp_path, state, wrap):
+def test_model_timeout_aborts_remote_run_before_owner_cleanup(
+        fake, monkeypatch, tmp_path, state, wrap):
     import kumo.engine._tracking as module
     from kumo.engine._tracking import RunSpec
     from kumo.engine.integrations.snowflake import SnowflakeTracking
 
     entered, release, returned, idle = (threading.Event() for _ in range(4))
     owner_threads, ended_threads, results = [], [], []
-    original_end = fake.end_run
+    original_end = fake._unset_run
     original_put = module.queue.Queue.put_nowait
     admissions = []
     producer = threading.current_thread()
@@ -720,7 +728,7 @@ def test_model_timeout_defers_subclass_cleanup_to_owner(fake, monkeypatch,
             if state == 'busy':
                 raise ValueError('model logging failed after timeout')
 
-    monkeypatch.setattr(fake, 'end_run', end)
+    monkeypatch.setattr(fake, '_unset_run', end)
     monkeypatch.setattr(module, 'MODEL_SECONDS', 0.01)
     monkeypatch.setattr(module, 'QUEUE_SIZE', 2 if state == 'full_queue' else 10)
     if state == 'full_queue':
@@ -733,23 +741,6 @@ def test_model_timeout_defers_subclass_cleanup_to_owner(fake, monkeypatch,
     assert reference is not None
     caller = threading.Thread(target=lambda: results.append(
         session.log_model(tmp_path, None, None)))
-    if state == 'idle':
-        original_get = module.queue.Queue.get
-        original_clock = module.time.monotonic
-
-        def get(self, *args, **kwargs):
-            if threading.current_thread() in owner_threads and returned.is_set():
-                idle.set()
-            return original_get(self, *args, **kwargs)
-
-        def clock():
-            if threading.current_thread() is caller and entered.is_set():
-                release.set()
-                assert idle.wait(2)
-            return original_clock()
-
-        monkeypatch.setattr(module.queue.Queue, 'get', get)
-        monkeypatch.setattr(module.time, 'monotonic', clock)
     caller.start()
     try:
         assert entered.wait(2)
@@ -765,16 +756,20 @@ def test_model_timeout_defers_subclass_cleanup_to_owner(fake, monkeypatch,
         assert published is None
         assert isinstance(error, TimeoutError)
         assert session.error is error
-        if state != 'idle':
-            assert fake._instance.runs[reference.run_id]['status'] == 'RUNNING'
-            assert ended_threads == []
-            rejected = TrackingSession(adapter)
-            rejected.start(lambda: RunSpec(kind='fit', name='SECOND'))
-            assert rejected.pointer() is None
-            rejected.finish(None, None)
-            assert 'already in use' in str(rejected.error)
-        else:
-            assert idle.is_set()
+        remote_failed = threading.Event()
+        for _ in range(100):
+            if fake._instance.runs[reference.run_id]['status'] == 'FAILED':
+                remote_failed.set()
+                break
+            remote_failed.wait(0.01)
+        assert remote_failed.is_set(), 'Run must end before the blocked provider returns'
+        assert not release.is_set()
+        assert ended_threads == []
+        rejected = TrackingSession(adapter)
+        rejected.start(lambda: RunSpec(kind='fit', name='SECOND'))
+        assert rejected.pointer() is None
+        rejected.finish(None, None)
+        assert 'already in use' in str(rejected.error)
     finally:
         release.set()
         caller.join(3)
@@ -1129,3 +1124,138 @@ def test_model_hook_base_exception_is_returned_unchanged(fake, tmp_path):
     assert session.error is failure
     session.finish(None, failure)
     assert fake._instance.runs[reference.run_id]['status'] == 'FAILED'
+
+
+def test_direct_cross_thread_finish_warns_and_preserves_owner(fake):
+    adapter = _tracking(native_model_lineage=True)
+    adapter.start(_prediction('2026-11-13'))
+    run = adapter.run_id
+    caller = threading.Thread(target=lambda: adapter.finish(None, None))
+    with pytest.warns(RuntimeWarning, match='thread that started'):
+        caller.start()
+        caller.join(2)
+    assert not caller.is_alive()
+    assert fake._instance.runs[run]['status'] == 'RUNNING'
+    assert fake._instance.lineage_stack
+    adapter.finish(None, None)
+    assert fake._instance.runs[run]['status'] == 'FAILED'
+    assert not fake._instance.lineage_stack
+
+
+def test_abort_callback_is_bound_to_its_run_and_retired_on_owner_finish(fake):
+    adapter = _tracking(native_model_lineage=True)
+    adapter.start(_prediction('2026-11-12'))
+    first, abort = adapter.run_id, adapter.abort_run
+    abort()
+    assert fake._instance.runs[first]['status'] == 'FAILED'
+    assert fake._instance.lineage_stack
+    adapter.finish(None, None)
+    assert not fake._instance.lineage_stack
+    adapter.start(_prediction('2026-11-13'))
+    second = adapter.run_id
+    calls = len(adapter.session.statements)
+    abort()
+    assert len(adapter.session.statements) == calls
+    assert fake._instance.runs[second]['status'] == 'RUNNING'
+    adapter.finish(None, None)
+
+
+def test_abort_sql_failure_is_retryable_without_touching_context(fake, monkeypatch):
+    adapter = _tracking(native_model_lineage=True)
+    adapter.start(_prediction('2026-11-13'))
+    name = adapter.run_id
+    sql = adapter.session.sql
+    failure = RuntimeError('service temporarily unavailable')
+    monkeypatch.setattr(adapter.session, 'sql', lambda query: (_ for _ in ()).throw(failure))
+    with pytest.raises(RuntimeError) as caught:
+        adapter.abort_run()
+    assert caught.value is failure
+    assert fake._instance.runs[name]['status'] == 'RUNNING'
+    assert fake._instance.lineage_stack
+    monkeypatch.setattr(adapter.session, 'sql', sql)
+    adapter.abort_run()
+    assert fake._instance.runs[name]['status'] == 'FAILED'
+    adapter.finish(None, None)
+    assert not fake._instance.lineage_stack
+
+
+def test_abort_uses_original_experiment_without_ending_foreign_active_run(fake):
+    adapter = _tracking(native_model_lineage=True)
+    adapter.start(_prediction('2026-11-12'))
+    first, abort = adapter.run_id, adapter.abort_run
+    sdk = fake._instance
+    sdk.set_experiment('other')
+    foreign = sdk.start_run('FOREIGN')
+    abort()
+    assert sdk.runs[first]['status'] == 'FAILED'
+    assert sdk.runs[foreign.name]['status'] == 'RUNNING'
+    assert sdk._run is foreign
+    adapter.finish(None, None)
+    assert sdk._run is foreign
+    assert sdk.runs[foreign.name]['status'] == 'RUNNING'
+    assert not sdk.lineage_stack
+    sdk.end_run()
+
+
+def test_abort_quotes_captured_database_schema_and_experiment(fake):
+    from kumo.engine.integrations.snowflake import SnowflakeTracking
+
+    session = FakeSession(database='"Db.With.Dot"', schema='"Schema.With.Dot"')
+    adapter = SnowflakeTracking(session, experiment_name='"Mixed.Case"')
+    adapter.start(_prediction('2026-11-13'))
+    adapter.abort_run()
+    assert session.statements[-1].startswith(
+        'ALTER EXPERIMENT "Db.With.Dot"."Schema.With.Dot"."Mixed.Case" COMMIT RUN ')
+    assert fake._instance.runs[adapter.run_id]['status'] == 'FAILED'
+    adapter.finish(None, None)
+
+
+@pytest.mark.parametrize('native', [False, True])
+def test_owner_releases_context_when_abort_commits_before_response(fake, monkeypatch, native):
+    adapter = _tracking(native_model_lineage=native)
+    adapter.start(_prediction('2026-11-12'))
+    first, abort_run = adapter.run_id, adapter.abort_run
+    sdk = fake._instance
+    committed, respond = threading.Event(), threading.Event()
+    sql, end_run = adapter.session.sql, sdk.end_run
+
+    def held_response(statement):
+        response = sql(statement)
+
+        def collect():
+            result = response.collect()
+            committed.set()
+            assert respond.wait(5)
+            return result
+
+        return SimpleNamespace(collect=collect)
+
+    def immutable_end(*args, **kwargs):
+        if sdk.runs[sdk._run.name]['status'] != 'RUNNING':
+            raise RuntimeError('Committed runs cannot be altered')
+        return end_run(*args, **kwargs)
+
+    monkeypatch.setattr(adapter.session, 'sql', held_response)
+    monkeypatch.setattr(sdk, 'end_run', immutable_end)
+    abort = threading.Thread(target=abort_run)
+    abort.start()
+    try:
+        assert committed.wait(2)
+        adapter.finish(None, None)
+        assert sdk._run is None
+        assert not sdk.lineage_stack
+        assert sdk.runs[first]['status'] == 'FAILED'
+        adapter.start(_prediction('2026-11-13'))
+        second = sdk._run
+        assert second.name != first
+    finally:
+        respond.set()
+        abort.join(2)
+    assert not abort.is_alive()
+    assert sdk._run is second
+    assert sdk.runs[second.name]['status'] == 'RUNNING'
+    abort_run()
+    assert sdk._run is second
+    adapter.finish(None, None)
+    assert sdk._run is None
+    assert not sdk.lineage_stack

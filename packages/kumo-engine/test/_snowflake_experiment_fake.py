@@ -102,7 +102,8 @@ class FakeExperimentTracking:
             self._run = None
         self.experiment = name
         self.database, self.schema = location
-        return types.SimpleNamespace(name=name)
+        declared = '"' + name.replace('"', '""') + '"' if experiment_name.startswith('"') else name
+        return types.SimpleNamespace(name=declared)
 
     def start_run(self, run_name: Optional[str] = None) -> FakeRun:
         self._record('start_run', run_name)
@@ -136,6 +137,10 @@ class FakeExperimentTracking:
         if status is not None and status not in STATUSES:
             raise ValueError(f"Unsupported status value: '{status}'.")
         self.runs[self._run.name]['status'] = status or 'FINISHED'
+        self._run = None
+
+    def _unset_run(self) -> None:
+        self._record('unset_run')
         self._run = None
 
     def _active(self) -> Dict[str, Any]:
@@ -179,6 +184,24 @@ class FakeSession:
 
     def sql(self, query: str) -> Any:
         self.statements.append(query)
+        if query.startswith('ALTER EXPERIMENT '):
+            def commit():
+                match = re.fullmatch(
+                    r'ALTER EXPERIMENT ("(?:[^"]|"")+"(?:\."(?:[^"]|"")+")*) '
+                    r'COMMIT RUN "((?:[^"]|"")+)" WITH STATUS=\'FAILED\'', query)
+                if not match:
+                    raise AssertionError('Unexpected remote abort SQL: ' + query)
+                names = re.findall(r'"((?:[^"]|"")+)"', match[1])
+                names = [value.replace('""', '"') for value in names]
+                assert names[:-1] == [_identifier(self.database), _identifier(self.schema)]
+                experiment, name = names[-1], match[2].replace('""', '"')
+                tracking = FakeExperimentTracking._instance
+                run = tracking.runs[name]
+                assert run['experiment'] == experiment
+                tracking.calls.append(('abort_run', name))
+                run['status'] = 'FAILED'
+                return [('Run committed',)]
+            return types.SimpleNamespace(collect=commit)
         return types.SimpleNamespace(collect=lambda: self.schemas)
 
     def get_current_database(self) -> Optional[str]:

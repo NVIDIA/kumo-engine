@@ -4,6 +4,7 @@
 r"""Platform-neutral run records and the `Tracking` protocol."""
 
 import dataclasses
+import inspect
 import json
 import logging
 import math
@@ -435,7 +436,7 @@ def track_prediction(
         model: Any = None,
         summaries: Callable[[], Sequence['Summary']] = tuple,
         files: Mapping[str, str] = {},
-) -> Optional[Exception]:
+) -> Optional[BaseException]:
     r"""Tracks a prediction run; returns the failure instead of raising."""
     tracker = as_tracking(tracking)
     if tracker is None or tracker.log_prediction_run is None:
@@ -493,10 +494,11 @@ class TrackingBase(Tracking):
     sample_system_metrics: Optional[Callable[[], ContextManager[None]]] = None
     serving_options: Optional[Mapping[str, str]] = None
     finish_timeout_seconds: Optional[float] = None
+    abort_run: Optional[Callable[[], None]] = None
     # Keep ownership-sensitive cleanup on the run's worker.
-    _finish_on_worker_thread = False
+    finish_on_worker_thread = False
     # Capture the run reference before finish permits adapter reuse.
-    _snapshot_ref_before_finish = False
+    snapshot_ref_before_finish = False
 
     @property
     def platform(self) -> str:
@@ -520,8 +522,11 @@ class _Foreign(TrackingBase):
         self._tracker = tracker
 
     def __getattribute__(self, name: str) -> Any:
-        if name.startswith('_') and name not in ('_finish_on_worker_thread',
-                                                 '_snapshot_ref_before_finish'):
+        if name in ('finish_on_worker_thread', 'snapshot_ref_before_finish'):
+            return getattr(type(self._tracker), name, False) is True
+        if name == 'abort_run' and inspect.getattr_static(self._tracker, name, _MISSING) is _MISSING:
+            return None
+        if name.startswith('_'):
             return object.__getattribute__(self, name)
         if name in ('start', 'on_trial', 'finish'):
             return getattr(self._tracker, name)
@@ -593,6 +598,7 @@ class TrackingSession:
     def __init__(self, tracking: Any, warn: bool = True) -> None:
         self._tracker = as_tracking(tracking) if _rank() == 0 else None
         self._finish_timeout = FINISH_SECONDS
+        self._abort_run: Optional[Callable[[], None]] = None
         self._warn = warn
         self.spec: Optional[RunSpec] = None
         self._trials: Dict[int, List[Event]] = {}
@@ -636,6 +642,7 @@ class TrackingSession:
             tracker.start(run_record(dataclasses.replace(value, tags={
                 **value.tags, **(tracker.tags or {})
             })))
+            self._abort_run = tracker.abort_run
 
         started = self._submit(lambda: self._call(begin))
         if not (started and self._submit(self._started.set)):
@@ -723,7 +730,9 @@ class TrackingSession:
             except BaseException as error:
                 failed.append(error)
             finally:
-                done.set()
+                with self._admission:
+                    done.set()
+                    self._admission.notify_all()
 
         worker = self._worker
         deadline = time.monotonic() + MODEL_SECONDS
@@ -750,32 +759,43 @@ class TrackingSession:
         if admitted:
             while not done.wait(1.0):
                 with self._admission:
+                    if done.is_set():
+                        break
                     if self._closing or self._tracker is None:
                         failed.append(stopped_error())
                         break
-                if worker.is_alive() and time.monotonic() < deadline:
-                    continue
-                cancel = True
-                failed.append(
-                    TimeoutError(f'it did not finish within {MODEL_SECONDS:.0f}s')
-                    if worker.is_alive() else
-                    RuntimeError('the tracking thread stopped'))
-                break
+                    alive = worker.is_alive()
+                    expired = time.monotonic() >= deadline
+                    if done.is_set():
+                        break
+                    if alive and not expired:
+                        continue
+                    cancel = True
+                    failed.append(
+                        TimeoutError(f'it did not finish within {MODEL_SECONDS:.0f}s')
+                        if alive else RuntimeError('the tracking thread stopped'))
+                    break
         if cancel:
             with self._admission:
                 tracker, self._tracker = self._tracker, None
                 deferred = (tracker is not None and getattr(
-                    tracker, '_finish_on_worker_thread', False))
+                    tracker, 'finish_on_worker_thread', False) is True)
+                abort = self._abort_run
                 if deferred:
                     self._pending_abandon.put(tracker)
                 self._admission.notify_all()
             if deferred:
+                if callable(abort):
+                    _abort_async(abort)
+                else:
+                    logger.warning('Tracking run cleanup is waiting for its blocked worker; '
+                                   'the tracker has no abort_run callback')
                 try:
                     self._jobs.put_nowait(lambda: None)
                 except queue.Full:
                     pass
             elif tracker is not None:
-                _abandon(tracker)
+                _abort_async(abort if callable(abort) else lambda: _abandon(tracker))
         if failed:
             error = failed[0]
             verb = 'log'
@@ -826,7 +846,7 @@ class TrackingSession:
             if tracker is not None:
                 try:
                     snapshot = (tracking_ref(tracker) if getattr(
-                        tracker, '_snapshot_ref_before_finish', False) else None)
+                        tracker, 'snapshot_ref_before_finish', False) is True else None)
                     tracker.finish(record, error)
                     self.final = snapshot or tracking_ref(tracker)
                 except Exception as failure:
@@ -990,16 +1010,16 @@ def _finish_seconds(tracker: Optional[TrackingBase]) -> float:
 
 def log_run(tracker: TrackingBase,
             method: Optional[Callable[[RunRecord], None]],
-            record: RunRecord) -> Optional[Exception]:
+            record: RunRecord) -> Optional[BaseException]:
     r"""Runs ``method(record)`` on a thread; returns the failure."""
     if method is None or _rank() != 0:
         return None
-    failed: List[Exception] = []
+    failed: List[BaseException] = []
 
     def log() -> None:
         try:
             method(record)
-        except Exception as error:
+        except BaseException as error:
             _untracked(error, record.tags.get('kumo.kind'))
             failed.append(error)
 
@@ -1029,6 +1049,21 @@ def _debug() -> bool:
 
 
 _MISSING = object()
+
+
+def _abort_async(callback: Callable[[], None]) -> None:
+    def abort() -> None:
+        try:
+            callback()
+        except BaseException as error:
+            logger.warning('Could not abort the timed-out tracking run; it may still be running: %s',
+                           full_error(error), exc_info=_debug())
+
+    try:
+        threading.Thread(target=abort, name='kumo-tracking-abort', daemon=True).start()
+    except Exception as error:
+        logger.warning('Could not schedule tracking abort; the run may still be running: %s',
+                       full_error(error), exc_info=_debug())
 
 
 def _abandon(tracker: Tracking) -> None:

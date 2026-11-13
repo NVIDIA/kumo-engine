@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from unittest import mock
 
 import numpy as np
 import pytest
@@ -1091,3 +1092,103 @@ def test_custom_tracker_can_publish_its_reference_during_finish(monkeypatch):
     assert not owners[0].is_alive()
     assert len(finished) == 1
     assert session.final.run_id == 'published-at-finish'
+
+
+@pytest.mark.parametrize('exception_type', [SystemExit, KeyboardInterrupt])
+def test_prediction_and_monitoring_base_exception_is_returned(exception_type, monkeypatch):
+    import kumo.engine._tracking as tracking
+
+    failure = exception_type('provider terminated its hook')
+    unhandled = []
+    monkeypatch.setattr(threading, 'excepthook', unhandled.append)
+
+    def log(record):
+        raise failure
+
+    assert tracking.log_run(tracking.as_tracking(_Recorder()), log,
+                            tracking.RunRecord()) is failure
+    assert unhandled == []
+
+
+def test_completed_model_wins_when_event_wait_reports_stale_timeout(monkeypatch, tmp_path):
+    import kumo.engine._tracking as tracking
+
+    release = threading.Event()
+    published = object()
+
+    class CompletionEvent(threading.Event):
+        def wait(self, timeout=None):
+            result = super().wait(timeout)
+            if timeout == 1.0 and not result:
+                release.set()
+                assert super().wait(2), 'Provider must complete at the deadline boundary'
+                return False
+            return result
+
+    class Recorder(_Recorder):
+        def log_model(self, *args):
+            assert release.wait(3)
+            return published
+
+    monkeypatch.setattr(tracking, 'threading', SimpleNamespace(
+        Event=CompletionEvent, Thread=threading.Thread,
+        Condition=threading.Condition, TIMEOUT_MAX=threading.TIMEOUT_MAX))
+    monkeypatch.setattr(tracking, 'MODEL_SECONDS', 0.01)
+    recorder = Recorder()
+    session = TrackingSession(recorder, warn=False)
+    session.start(lambda: fit_spec(CONTEXT))
+    assert session.log_model(tmp_path, None, None) == (published, None)
+    assert session.error is None
+    session.finish(None, None)
+    assert [name for name, _ in recorder.calls].count('finish') == 1
+
+
+@pytest.mark.parametrize('unknown', ['key_error', 'truthy', 'mock'])
+def test_proxy_does_not_invent_owner_thread_capabilities(unknown):
+    class Proxy(_Recorder):
+        def __getattr__(self, name):
+            if name in ('finish_on_worker_thread', 'snapshot_ref_before_finish', 'abort_run'):
+                if unknown == 'key_error':
+                    raise KeyError(name)
+                return mock.Mock() if unknown == 'mock' else True
+            raise AttributeError(name)
+
+    recorder = Proxy()
+    session = TrackingSession(recorder)
+    session.start(lambda: fit_spec(CONTEXT))
+    session.finish(None, None)
+    assert session.error is None
+    assert [name for name, _ in recorder.calls].count('finish') == 1
+
+
+def test_foreign_tracker_captures_abort_callback_created_by_start(monkeypatch, tmp_path):
+    import kumo.engine._tracking as tracking
+
+    aborted, release, finished = (threading.Event() for _ in range(3))
+
+    class Recorder(_Recorder):
+        finish_on_worker_thread = True
+
+        def start(self, record):
+            super().start(record)
+            self.abort_run = aborted.set
+
+        def log_model(self, *args):
+            assert release.wait(5)
+
+        def finish(self, record, error):
+            super().finish(record, error)
+            finished.set()
+
+    monkeypatch.setattr(tracking, 'MODEL_SECONDS', 0.01)
+    recorder = Recorder()
+    session = TrackingSession(recorder, warn=False)
+    session.start(lambda: fit_spec(CONTEXT))
+    try:
+        _, error = session.log_model(tmp_path, None, None)
+        assert isinstance(error, TimeoutError)
+        assert aborted.wait(2), 'The captured per-run callback must abort the blocked run'
+        assert not finished.is_set(), 'Owner cleanup must wait for the provider hook'
+    finally:
+        release.set()
+    assert finished.wait(2)

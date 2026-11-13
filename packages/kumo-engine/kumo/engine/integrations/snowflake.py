@@ -8,6 +8,7 @@ import posixpath
 import re
 import tempfile
 import threading
+import warnings
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
@@ -63,8 +64,8 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
     """
 
     platform = 'snowflake'
-    _snapshot_ref_before_finish = True
-    _finish_on_worker_thread = True
+    snapshot_ref_before_finish = True
+    finish_on_worker_thread = True
 
     def __init__(
         self,
@@ -105,6 +106,9 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
         self._tracking: Any = None
         self._run: Any = None
         self._run_context = ExitStack()
+        self.abort_run = None
+        self._abort_closed = threading.Event()
+        self._abort_confirmed = threading.Event()
         self._tune = 'loss'
         self._metrics: Set[str] = set()
         self._values: Dict[str, float] = {}
@@ -195,6 +199,27 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
         self._run = tracking.start_run(self._new_run_name(
             existing, _identifier(record_name(record, self.run_name))))
         self.run_id = self.logged_run_name = str(self._run.name)
+        # Capture exact coordinates before the adapter can be reused.
+        identifiers = [database, schema, self.experiment, self.run_id]
+        quoted = ['"' + resolve_snowflake_identifier(str(value)).replace('"', '""') + '"'
+                  for value in identifiers if value is not None]
+        statement = ('ALTER EXPERIMENT ' + '.'.join(quoted[:-1]) +
+                     ' COMMIT RUN ' + quoted[-1] + " WITH STATUS='FAILED'")
+        session = self.session
+        closed, confirmed = self._abort_closed, self._abort_confirmed
+        admission = threading.Lock()
+
+        def abort() -> None:
+            if not admission.acquire(blocking=False):
+                return
+            try:
+                if not closed.is_set() and not confirmed.is_set():
+                    session.sql(statement).collect()
+                    confirmed.set()
+            finally:
+                admission.release()
+
+        self.abort_run = abort
         if self.native_model_lineage:
             self._run_context.enter_context(self._run)
         self._start_tags = set(record.tags)
@@ -222,11 +247,16 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
     def finish(self, record: Optional[RunRecord],
                error: Optional[BaseException]) -> None:
         if self._owner is not threading.current_thread():
+            if self._owner is not None:
+                warnings.warn('SnowflakeTracking.finish must run on the thread that started '
+                              'the run; it was not finalized. Use TrackingSession or finish '
+                              'on the owner thread.', RuntimeWarning, stacklevel=2)
             return
         try:
             self._finish(record, error)
         finally:
             try:
+                self._abort_closed.set()
                 self._reset()
             finally:
                 self._owner = None
@@ -255,13 +285,19 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
                     status = 'FINISHED'
         finally:
             try:
-                if self._run is not None:
+                if (self._run is not None and self._tracking._run is self._run
+                        and not self._abort_confirmed.is_set()):
                     self._tracking.end_run(status=status)
             except Exception as error:
                 logger.warning('Could not end the Snowflake run %s: %s',
                                status, format_error(error), exc_info=True)
             finally:
-                self._run_context.close()
+                try:
+                    # Failed/ambiguous remote commits must still release owner-local state.
+                    if self._run is not None and self._tracking._run is self._run:
+                        self._tracking._unset_run()
+                finally:
+                    self._run_context.close()
 
     def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
         self._log_metrics(metrics, _EPOCH_METRICS, step=step)
