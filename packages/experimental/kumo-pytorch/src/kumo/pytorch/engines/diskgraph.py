@@ -437,7 +437,7 @@ class DiskGraphSource:
             raise ImportError("DiskGraphEngine requires pyarrow") from error
 
         self.schema = schema
-        self._index = artifact.path
+        self._index_path = artifact.path
         metadata = json.loads(Path(artifact.path, "index_metadata.json").read_text())
         self._clock = metadata.get("timestamp_unit", "seconds")
         self._num_threads = num_threads
@@ -842,7 +842,7 @@ class DiskGraphSource:
 
     def column_stats(self, requests: Sequence[StatRequest], cutoff: int | None) -> ColumnStats:
         ticks = None if cutoff is None else self._diskgraph.cutoff_ticks(cutoff, self._clock)
-        return read_column_stats(self._index, requests, ticks, self._clock, self._num_threads)
+        return read_column_stats(self._index_path, requests, ticks, self._clock, self._num_threads)
 
     def fit_graph_fields(
         self,
