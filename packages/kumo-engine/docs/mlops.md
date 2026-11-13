@@ -73,10 +73,13 @@ without rerunning query generation. Otherwise, a worker with complete local stag
 can publish it; only a total miss generates new rows.
 
 The producer uses the unchanged MLOps portable exporter, including `SPLIT`
-(`0=train`, `1=validation`, `2=test`). Peers reconstruct local staging only when
-they lack a completed copy of that table ID. The descriptor retains the original
-query, effective settings, required stages and provenance. There is no separate
-request-key index or native staging-bundle publication.
+(`0=train`, `1=validation`, `2=test`). Only the ingestion owner restores staging
+from storage when it lacks a completed local copy; other workers receive the
+ingested fit artifacts instead of generated Parquet. The owner downloads the
+Parquet files unchanged and passes their local paths to native custom-table
+materialization, bypassing connector staging and its dtype conversions. The
+descriptor retains the original query, effective settings, required stages and
+provenance. There is no separate request-key index or native staging-bundle publication.
 
 Training-table ingestion runs again for every fit, with a fresh extension ID,
 matching the existing local training path. The producer publishes that fit's

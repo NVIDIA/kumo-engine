@@ -6,7 +6,7 @@
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import ANY, Mock
 
 import pytest
 from kumo_core.model_plan import TrainingTableGenerationPlan
@@ -15,6 +15,24 @@ import kumo.engine as kumo
 from kumo.engine._scratch import scoped_scratch_dir
 from kumo.engine.cluster import _TrainingTablePublication
 from kumo.engine.pquery.training_table import _table_id
+
+
+def test_downloaded_rows_require_source_provenance(
+    snapshot: kumo.GraphSnapshot, tmp_path: Path
+) -> None:
+    """A local-path import cannot silently acquire a generated-table identity."""
+    from kumoapi.train import TrainingTableSpec
+
+    query = kumo.PredictiveQuery._from_snapshot(
+        snapshot, "PREDICT users.label FOR EACH users.id"
+    )
+    with (
+        scoped_scratch_dir(tmp_path / "scratch"),
+        pytest.raises(ValueError, match="require source provenance"),
+    ):
+        kumo.TrainingTable._from_rows(
+            tmp_path / "rows", TrainingTableSpec(), pq=query, snapshot=snapshot
+        )
 
 
 @pytest.mark.parametrize("seed", [None, 0, 123])
@@ -73,7 +91,7 @@ def test_coordinator_checks_uploaded_table_id_before_workers(
     snapshot: kumo.GraphSnapshot,
     scenario: tuple[bool, list[bool], int],
 ) -> None:
-    """An existing portable export skips generation without a separate cache index."""
+    """Only the ingestion owner restores staging from an existing export."""
     import ray
 
     uploaded, cached, owner_index = scenario
@@ -111,14 +129,22 @@ def test_coordinator_checks_uploaded_table_id_before_workers(
         if uploaded:
             actor.has_training_table.remote.assert_not_called()
             actor.training_table_generate.remote.assert_not_called()
-            actor.download_training_table.remote.assert_called_once_with(
-                publication, cluster._settings
-            )
+            if index == owner_index:
+                actor.download_training_table.remote.assert_called_once_with(
+                    publication, cluster._settings
+                )
+            else:
+                actor.download_training_table.remote.assert_not_called()
         else:
             actor.has_training_table.remote.assert_called_once_with(publication)
             assert actor.training_table_generate.remote.call_count == int(
                 index == owner_index
             )
+            actor.download_training_table.remote.assert_not_called()
+            if index == owner_index:
+                actor.training_table_generate.remote.assert_called_once_with(
+                    ANY, cluster._settings
+                )
     assert not (tmp_path / "training_tables/cache").exists()
 
 

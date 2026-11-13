@@ -50,6 +50,98 @@ def test_mlops_context_restores_nested_settings(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    "query_text",
+    [
+        "PREDICT COUNT(events.*, 0, 7, days) > 0 FOR EACH users.ID",
+        (
+            "PREDICT SUM(events.VALUE, 0, 7, days) FORECAST 3 TIMEFRAMES "
+            "FOR EACH users.ID"
+        ),
+    ],
+)
+def test_downloaded_training_rows_bypass_connector_staging(
+    graph: kumo.Graph,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    query_text: str,
+) -> None:
+    """Restore portable rows unchanged and reuse complete worker-local staging."""
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from kumo.engine._scratch import scoped_scratch_dir
+    from kumo.engine.cluster import _TrainingTablePublication
+    from kumo_core.training import table as native_table
+    from kumo_core.training.export import export_schema, read_spec, stage_parts
+    from kumoapi.typing import Stype
+
+    events_path = tmp_path / "data/events.parquet"
+    events = pq.read_table(events_path)
+    events = events.append_column(
+        "VALUE",
+        pa.array([1.0000000000000002 + index / 7 for index in range(len(events))]),
+    )
+    pq.write_table(events, events_path)
+    event_table = kumo.Table.from_source_table(
+        graph.tables["events"].connector["events.parquet"],
+        primary_key="EID",
+        time_column="TS",
+    ).with_column("USER_ID", stype=Stype.ID)
+    graph = kumo.Graph(
+        tables={**graph.tables, "events": event_table}, edges=graph.edges
+    )
+    producer = tmp_path / "producer"
+    settings = kumo.MLOps(str(tmp_path / "artifacts"))
+    with scoped_scratch_dir(producer):
+        snapshot = graph.snapshot()
+        query = kumo.PredictiveQuery(graph=graph, query=query_text)
+        table = query.generate_training_table(snapshot, mlops=settings)
+    worker = _worker(tmp_path)
+    worker.snapshots[snapshot.id] = snapshot
+    publication = _TrainingTablePublication(
+        table, snapshot.id, str(producer), table.manifest
+    )
+    stage = Mock(side_effect=AssertionError("Downloaded rows were staged again"))
+    monkeypatch.setattr("kumo.engine.pquery._custom_source.stage_source_table", stage)
+    materialize = Mock(wraps=native_table.generate_custom_train_table)
+    monkeypatch.setattr(native_table, "generate_custom_train_table", materialize)
+
+    with scoped_scratch_dir(worker.root):
+        restored = worker.download_training_table(publication, settings)
+        cached = worker.download_training_table(publication, settings)
+
+    stage.assert_not_called()
+    materialize.assert_called_once()
+    assert cached.staging_dir == restored.staging_dir
+    assert restored.id == table.id
+    assert restored.generation_plan == table.generation_plan
+    assert restored.required_stages == table.required_stages
+    ingested = native_table.ingest_train_table(
+        staging_dir=str(restored.staging_dir),
+        index_path=str(snapshot.index_path),
+        tt_id="downloaded-rows",
+    )
+    assert Path(ingested.manifest_path).is_file()
+    expected_parts = stage_parts(read_spec(str(table.staging_dir)))
+    actual_parts = stage_parts(read_spec(str(restored.staging_dir)))
+    assert actual_parts.keys() == expected_parts.keys()
+    for split, parts in expected_parts.items():
+        expected = pa.concat_tables(
+            [pq.read_table(table.staging_dir / part) for part in parts]
+        )
+        columns = export_schema(expected.schema).names[:-1]
+        expected = expected.select(columns)
+        actual = pa.concat_tables(
+            [pq.read_table(restored.staging_dir / part) for part in actual_parts[split]]
+        ).select(columns)
+        assert actual.schema == expected.schema
+        order = [("ENTITY1", "ascending"), ("TIMESTAMP", "ascending")]
+        np.testing.assert_equal(
+            actual.sort_by(order).to_pydict(), expected.sort_by(order).to_pydict()
+        )
+
+
+@pytest.mark.parametrize(
     "workers,cpus",
     [
         (0, None),
@@ -228,12 +320,8 @@ def test_native_artifacts_are_produced_once_and_replicated(
     producer, replica = _worker(producer_dir), _worker(replica_dir)
     settings = kumo.MLOps(str(producer_dir / "store"))
 
-    def download_table(publication: object, storage: kumo.MLOps) -> None:
-        with scoped_scratch_dir(replica.root):
-            replica.download_training_table(publication, storage)
-
     peer = SimpleNamespace(
-        download_training_table=SimpleNamespace(remote=download_table),
+        download_training_table=Mock(),
         begin=SimpleNamespace(remote=replica.begin),
         receive=SimpleNamespace(remote=replica.receive),
         commit=SimpleNamespace(remote=replica.commit),
@@ -281,7 +369,6 @@ def test_native_artifacts_are_produced_once_and_replicated(
                 snapshot.id, "PREDICT users.target FOR EACH users.id", None
             ),
             settings,
-            [peer],
         )
         assert table.id is not None
         from copy import copy
@@ -295,7 +382,7 @@ def test_native_artifacts_are_produced_once_and_replicated(
         descriptor = restarted.describe_training_table(generation_request)
         assert descriptor.table.id == table.id
         assert restarted.has_training_table(descriptor)
-        repeated = restarted.training_table_generate(generation_request, settings, [])
+        repeated = restarted.training_table_generate(generation_request, settings)
         assert repeated.id == table.id
         assert repeated.generation_plan == table.generation_plan
         assert generate_rows.call_count == 1
@@ -306,17 +393,11 @@ def test_native_artifacts_are_produced_once_and_replicated(
         assert (stored / "_SUCCESS").is_file()
         assert not (stored / "native").exists()
         assert "SPLIT" in pq.read_schema(next(stored.glob("*.parquet"))).names
-        restored = replica.tables[table.id]
-        assert restored.id == table.id
-        assert restored.generation_plan == table.generation_plan
-        assert restored.required_stages == table.required_stages
-        assert restored.staging_dir.relative_to(
-            replica.root
-        ) == table.staging_dir.relative_to(producer.root)
-        for stage in ("train_seeds", "val_seeds", "test_seeds"):
-            assert pq.read_table(restored.staging_dir / stage).equals(
-                pq.read_table(table.staging_dir / stage)
-            )
+        peer.download_training_table.remote.assert_not_called()
+        assert table.id not in replica.tables
+        assert not (
+            replica.root / table.staging_dir.relative_to(producer.root)
+        ).exists()
         from kumo_core.training import workflow
 
         ingest_rows = Mock(wraps=workflow.ingest_train_table)
@@ -347,9 +428,7 @@ def test_native_artifacts_are_produced_once_and_replicated(
             if path.is_file()
         }
         empty_store = kumo.MLOps(str(tmp_path / "empty-artifact-root"))
-        republished = restarted.training_table_generate(
-            generation_request, empty_store, []
-        )
+        republished = restarted.training_table_generate(generation_request, empty_store)
         assert republished.id == table.id
         assert generate_rows.call_count == 1
         assert ingest_rows.call_count == 2
