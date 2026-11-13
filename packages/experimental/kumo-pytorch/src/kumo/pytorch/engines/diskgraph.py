@@ -1098,18 +1098,29 @@ class DiskGraphSource:
         temporary.replace(path)
         return tokenizer, name
 
-    def token_lengths(self, table: str, columns: Sequence[LengthColumn], cutoff: int | None) -> str:
+    def token_lengths(
+        self,
+        table: str,
+        columns: Sequence[LengthColumn],
+        required: Sequence[str],
+        cutoff: int | None,
+    ) -> str:
         ticks = (
             None
             if cutoff is None
             else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock, rounding="floor")
         )
-        name = token_lengths_file(table, columns, ticks, self._clock)
+        name = token_lengths_file(table, columns, required, ticks, self._clock)
         path = Path(self._index_path, "col_stats", name)
         if not path.is_file():
             path.parent.mkdir(parents=True, exist_ok=True)
             self._diskgraph.token_lengths(
-                self._index_path, table, list(columns), str(path), num_threads=self._num_threads
+                self._index_path,
+                table,
+                list(columns),
+                str(path),
+                required=list(required),
+                num_threads=self._num_threads,
             )
         return name
 

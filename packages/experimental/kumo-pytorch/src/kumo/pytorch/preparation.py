@@ -364,8 +364,12 @@ class Plan:
             if token_lengths is not None and input_state is None:
                 lengths = {}
                 columns = token_length_columns(self.contract, assembler)
-                for table, (constant, text) in columns.items():
-                    file = token_lengths(table, text, statistics.get("cutoff")) if text else None
+                for table, (constant, per_node, required) in columns.items():
+                    file = (
+                        token_lengths(table, per_node, required, statistics.get("cutoff"))
+                        if per_node or required
+                        else None
+                    )
                     lengths[table] = {"constant": constant, "file": file}
                 if lengths:
                     fit["inputs"] = {
