@@ -246,13 +246,46 @@ def test_an_empty_string_counts_the_unknown_id_it_emits(tmp_path):
     assert pieces[empty].tolist() == [1] * len(empty)
 
 
-def test_a_row_with_a_null_required_field_is_marked_dropped(tmp_path):
+@pytest.mark.parametrize("length_input", ("transactions", "follower"))
+def test_a_row_with_a_null_required_field_is_marked_dropped(tmp_path, length_input):
     rows, dataset, engine = _edited(tmp_path, "channel", None, 3)
-    constant, counts = read_token_lengths(
-        tmp_path / "index", _entry(_required(("channel",)), dataset, engine)
+    contract = _required(("channel",))
+    follower = api.Input(
+        api.EventsOf("transactions"),
+        api.Fields((api.Encode(field="amount", encoding=api.ZScore()),)),
+        api.Padded(),
     )
+    batch = replace(
+        contract.batch,
+        inputs={**contract.batch.inputs, "follower": follower},
+        batching=replace(contract.batch.batching, length_input=length_input),
+    )
+    entry = _entry(replace(contract, batch=batch), dataset, engine)
+    _, counts = read_token_lengths(tmp_path / "index", entry)
     expected = [DROPPED if row["channel"] is None else 0 for row in rows]
-    assert constant == 2 and counts[_nodes(tmp_path, rows)].tolist() == expected
+    assert counts[_nodes(tmp_path, rows)].tolist() == expected
+
+
+@pytest.mark.parametrize(
+    ("again", "message"),
+    (
+        ({"channel": api.Field(column="description")}, "reads several columns"),
+        ({}, "has no stored column"),
+    ),
+)
+def test_a_required_field_every_component_must_store_once(tmp_path, again, message):
+    contract = _required(("channel",))
+    events = contract.sample.events["transactions"]
+    again = replace(events, fields={"amount": api.Field(column="amount"), **again})
+    sample = replace(contract.sample, events={"transactions": events, "again": again})
+    transactions = contract.batch.inputs["transactions"]
+    source = replace(transactions.source, events=("transactions", "again"))
+    inputs = {**contract.batch.inputs, "transactions": replace(transactions, source=source)}
+    contract = replace(contract, sample=sample, batch=replace(contract.batch, inputs=inputs))
+    dataset, engine = _setup("diskgraph", tmp_path)
+    with api.prepare(contract, dataset, engine) as plan:
+        with pytest.raises(ValueError, match=message):
+            plan.materialize(_requests(), fit_split="train")
 
 
 def test_a_changed_empty_policy_or_required_field_never_reuses_counts(tmp_path):

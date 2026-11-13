@@ -129,16 +129,15 @@ def token_length_columns(
 
     ``Text`` and variable-length list columns vary per node; every other stored column the input
     reads adds 1 to the constant. Lists can't be declared yet (DG-NESTED-COLUMN), so only ``Text``
-    is per-node today. The required columns are those of ``Composite.required_fields``.
+    is per-node today. The required columns are those of the ``Composite.required_fields`` of the
+    input, or of its ``EventsOf`` parent, since delivery drops those rows for both.
     """
 
     name = contract.batch.batching.length_input
     if name is None or not isinstance(contract.batch.inputs[name].representation, Fields):
         return {}
     group = contract.batch.inputs[name].representation
-    required_fields = group.row.required_fields if isinstance(group.row, Composite) else ()
     columns: dict[str, dict[str, tuple[str, int] | None]] = {}
-    required: dict[str, dict[str, str]] = {}
     for use in group.fields:
         encoder = plan.output(name=name).field(name=use.field).encoder
         text = (
@@ -151,8 +150,6 @@ def token_length_columns(
             if stored is None or variant[0] not in {"events", "current_events"}:
                 continue
             table, column = stored
-            if use.field in required_fields:
-                required.setdefault(table, {})[use.field] = column
             known = columns.setdefault(table, {}).get(column)
             if text is not None and known is not None and known != text:
                 raise ValueError(
@@ -160,19 +157,50 @@ def token_length_columns(
                     "empty policies, so its token length is ambiguous"
                 )
             columns[table][column] = text or known
+    required = _required_columns(contract, name)
     lengths = {}
-    for table, read in sorted(columns.items()):
-        if len(required.get(table, {})) != len(required_fields):
-            raise ValueError(
-                f"a required field of {name!r} is not a stored column of {table}, so token "
-                "lengths can't mark the rows delivery drops"
-            )
+    for table in sorted(columns.keys() | required.keys()):
+        read = columns.get(table, {})
         per_node = tuple(
             (column, *text) for column, text in sorted(read.items()) if text is not None
         )
-        needed = tuple(sorted(set(required.get(table, {}).values())))
-        lengths[table] = (len(read) - len(per_node), per_node, needed)
+        lengths[table] = (len(read) - len(per_node), per_node, required.get(table, ()))
     return lengths
+
+
+def _required_columns(contract: Any, name: str) -> dict[str, tuple[str, ...]]:
+    while isinstance(contract.batch.inputs[name].source, EventsOf):
+        name = contract.batch.inputs[name].source.input
+    value = contract.batch.inputs[name]
+    row = getattr(value.representation, "row", None)
+    if not isinstance(row, Composite) or not isinstance(value.source, EventSource):
+        return {}
+    collection = "current_events" if value.source.collection == "current" else "events"
+    stored = {
+        field: {
+            variant[:2]: _stored_column(contract.sample, contract.schema, variant)
+            for variant, _, _ in resolved_fields(contract, name, field)
+        }
+        for field in row.required_fields
+    }
+    required: dict[str, dict[str, str]] = {}
+    for event in value.source.events:
+        rows = getattr(contract.sample, collection)[event].rows
+        table = destination_table(contract.schema, contract.sample.entity.table, rows.path)
+        found = {field: stored[field].get((collection, event)) for field in row.required_fields}
+        missing = [field for field, column in found.items() if column is None]
+        if missing:
+            raise ValueError(
+                f"{table} has no stored column for required field(s) {', '.join(missing)} of "
+                f"{name!r}, so token lengths can't count the events delivery keeps"
+            )
+        for field, (_, column) in found.items():
+            if required.setdefault(table, {}).setdefault(field, column) != column:
+                raise ValueError(
+                    f"required field {field!r} of {name!r} reads several columns of {table}, so "
+                    "token lengths can't count the events delivery keeps"
+                )
+    return {table: tuple(sorted(set(fields.values()))) for table, fields in required.items()}
 
 
 def token_lengths_file(
