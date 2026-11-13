@@ -324,6 +324,18 @@ def test_statistics_keep_a_file_per_table_per_cutoff_and_compute_only_what_is_mi
     assert list(directory.parent.iterdir()) == [directory]
 
 
+def test_a_value_supplied_for_a_generated_target_is_refused_while_fitting(tmp_path):
+    contract = _contract()
+    future = api.Rows(("user_card_transactions",), api.TimeWindow("occurred_at", 0, 7 * 86400))
+    generated = api.Aggregate(future, "count", dtype=api.DType("int64"))
+    sample = replace(contract.sample, targets={**contract.sample.targets, "future": generated})
+    request = _requests()[0]
+    request = replace(request, targets=(*request.targets, api.TargetValue("future", 1)))
+    with api.prepare(replace(contract, sample=sample), *_setup("in_memory", tmp_path)) as plan:
+        with pytest.raises(ValueError, match="'future' was both supplied and generated"):
+            plan.materialize([request], fit_split="train")
+
+
 def test_a_cutoff_after_the_latest_anchor_warns(tmp_path, caplog):
     dataset, engine = _setup("in_memory", tmp_path)
     for cutoff in ("2025-01-01", None):

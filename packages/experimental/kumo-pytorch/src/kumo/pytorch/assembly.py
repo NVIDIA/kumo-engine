@@ -14,7 +14,6 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass, replace
 from dataclasses import field as dataclass_field
-from functools import partial
 from types import MappingProxyType, SimpleNamespace
 from typing import Any, Literal
 
@@ -2548,16 +2547,16 @@ def fit_plan(
     )
 
     def values_for(sample_spec):
-        if sample_spec is not None:
-            build = source.build_model if model else source.build
-            return _Mapped(partial(build, sample_spec), fitting_requests)
-        return _Mapped(
-            lambda requests: [
+        def read(requests):
+            requests = [
                 replace(request, targets=_normalize_supplied_targets(sample, request.targets))
                 for request in requests
-            ],
-            fitting_requests,
-        )
+            ]
+            if sample_spec is None:
+                return requests
+            return (source.build_model if model else source.build)(sample_spec, requests)
+
+        return _Mapped(read, fitting_requests)
 
     reused = input_state is not None
     fitting_spec = _fitting_batch_spec(spec)
