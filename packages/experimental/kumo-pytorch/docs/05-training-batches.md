@@ -211,7 +211,10 @@ positions, padding included, and are refused with `world_size > 1`, where
 ranks could otherwise take different numbers of steps.
 
 For DiskGraph AnchorTable model batches, native length planning currently
-requires an `EventSource` length input with a Packed, Padded or Nested layout.
+requires a history `EventSource` length input (`collection="history"`) with a
+Packed, Padded or Nested layout. DiskGraph already refuses `SampleSpec.current_events`
+at `check`/`prepare` with `DG-CURRENT-EVENTS`, including when current and history
+components have the same name; current events cannot reach this native planner.
 Other sources, including `EntitySource`, are refused explicitly; this path does
 not silently switch to Python per-anchor planning. Explicit request batches
 and the reference engine retain their existing planner.

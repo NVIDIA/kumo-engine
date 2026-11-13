@@ -793,3 +793,39 @@ def test_native_entity_length_input_is_explicitly_refused(history_data, tmp_path
                 ValueError, match="native length planning currently requires an EventSource"
             ):
                 list(task.batches(output_format="model"))
+
+
+@pytest.mark.parametrize("budget", [None, 4])
+@pytest.mark.parametrize("name", ["history", "current_only"])
+def test_current_event_length_input_is_refused_before_native_iteration(
+    history_data, tmp_path, budget, name
+):
+    schema, dataset, _, _, _ = history_data
+    event = api.EventSpec(
+        api.Rows(("orders",), api.TimeWindow("at", stop=0)), {"amount": api.Field("amount")}
+    )
+    sample = api.SampleSpec(
+        api.EntitySpec("users"), events={"history": event}, current_events={name: event}
+    )
+    contract = api.DataLoaderSpec(
+        schema,
+        sample,
+        api.BatchSpec(
+            {
+                "length": api.Input(
+                    api.EventSource((name,), collection="current"),
+                    api.Fields((api.Encode("amount", api.Raw()),)),
+                    api.Padded(),
+                )
+            },
+            batching=api.Batching(
+                max_samples=2, max_tokens=budget, length_input="length", bucket_by_length=True
+            ),
+        ),
+    )
+    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    issues = api.check(contract, dataset, engine)
+    assert "DG-CURRENT-EVENTS" in {issue.code for issue in issues}
+    with pytest.raises(ValueError, match=r"\[DG-CURRENT-EVENTS\]"):
+        api.prepare(contract, dataset, engine)
+    assert not (tmp_path / "index").exists()
