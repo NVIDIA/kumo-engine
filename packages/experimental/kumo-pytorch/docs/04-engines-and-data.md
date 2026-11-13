@@ -268,6 +268,55 @@ also carry your own labels (`targets={"label": "column"}`), metadata columns
 that are passed through to the batch, and nested candidate lists
 (`api.CandidateColumn`).
 
+For graph-neighborhood and sequence tasks, DiskGraph materializes only the anchors into a
+task-owned native seed extension. The base graph stays unchanged. TT-NG then
+owns bounded reads, deterministic epoch order and rank partitioning, and
+produces topology and projected node features together. The existing fitted
+encoders and batch layouts still apply. Original row positions supply omitted
+sample IDs; repeated entity/time pairs remain separate examples. Native order
+may differ from the in-memory engine, and padding remains explicitly marked.
+Closing the task removes its temporary seed extension, not the base graph.
+
+Sequence tasks consume the same native anchor batches and resolved root IDs,
+then call the existing temporal-query loader. They keep their temporal plan,
+event selection, typed encoders and tensor layouts; there is no second native
+anchor reader or a GNN-specific anchor contract. Native history parallelism,
+history capping/decoding and cross-component event merging are separate work.
+
+A selection spanning multiple split stages uses native stage batches. Each stage
+is shuffled independently; batches never mix split stages. The output covers the
+same anchors, while its order differs from the previous global Python shuffle.
+Encoder fitting remains a separate stage and is not made streaming here.
+
+Task extensions use the existing `train_tables` directory inside the graph index,
+including on Windows. They require no symlinks. Closing a task releases its
+combined reader before removing its task files.
+
+### Scalar features and labels in task preparation
+
+For DiskGraph-backed training/BP, `Plan.materialize` computes declared scalar
+features and generated labels once before fitting or iteration:
+
+<!-- test: diskgraph -->
+```python
+with api.prepare(contract=contract, dataset=parquet, engine=engine) as plan:
+    with plan.materialize(anchors, fit_split="train") as task:
+        for batch in task.batches(split="train", output_format="model"):
+            pass  # Supply these tensors to the model.
+```
+
+The materializer prepares the native aggregation plan once, reads projected
+anchor chunks with the existing custom-TT reader, and writes rotating Parquet
+parts under the managed task directory. It preserves anchor IDs, split,
+metadata, and external labels alongside generated scalar features and labels.
+The task owns these intermediate files and removes them on close.
+
+Model-format iteration reads the prepared scalar columns directly; graph and
+history retrieval remain dynamic. Explicit-request inspection and the unchanged
+fitting lifecycle retain reference adapters. Fitting can still require
+population-sized samples. Fixed anchor chunks do not bound the degree or group
+cardinality of an individual anchor.
+
 ## The in-memory engine
 
 `InMemoryEngine` runs the contract in plain Python over rows held in memory.
