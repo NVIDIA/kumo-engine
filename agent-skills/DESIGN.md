@@ -29,6 +29,8 @@ rule in the skill maps to a section of it:
 | Every confirmed input is preserved verbatim; no invented link, horizon or table | router Step 2 | §2, §3 story acceptance |
 | Batch inference reuses the trained task unchanged and never reopens it | router Node 1a/1d, `intake_contract.md`, `bad_request.md` §4 | §4 |
 | Default is generate-only | router Step 3 | §1, §6 *artifact* b3 |
+| A warning or error from Kumo about the data leads the run's report and goes to the user; data, types and the query are never changed to silence it | router Step 3, `troubleshooting_signals.md` *Who applies a fix*, §1a | §6 *graph* b4 |
+| Every key the proposal uses is probed for repeats and nulls, not only rule-5 candidates | `preflight.md` §3 | §6 *graph* b2 |
 
 ## Deliberate deviations from the GA Spec
 
