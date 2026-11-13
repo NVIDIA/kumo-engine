@@ -181,16 +181,108 @@ def test_integer_anchor_times_keep_epoch_seconds_contract(clock, factor):
     ).to_pylist() == [seconds * factor]
 
 
-@pytest.mark.parametrize("clock", ["milliseconds", "microseconds"])
-def test_finer_anchor_times_are_refused_by_scalar_and_batch_paths(clock):
+@pytest.mark.parametrize(
+    "clock,unit",
+    [
+        ("seconds", "s"),
+        ("milliseconds", "ms"),
+        ("microseconds", "us"),
+        ("nanoseconds", "ns"),
+        ("hours", "s"),
+        ("days", "s"),
+    ],
+)
+@pytest.mark.parametrize("ns", [-1500000001, -500001, -1, 0, 1, 500001, 1500000001])
+def test_cutoffs_preserve_causal_floor_in_scalar_and_batch_paths(clock, unit, ns):
+    import diskgraph
     import pyarrow.compute as pc
 
     from kumo.pytorch.engines.diskgraph import DiskGraphSource
 
     source = DiskGraphSource.__new__(DiskGraphSource)
     source._clock, source._pa, source._pc = clock, pa, pc
-    finer = pa.array([1700000000000000001], type=pa.timestamp("ns", tz="UTC"))
-    with pytest.raises(ValueError, match="anchor time is finer than the graph index clock"):
-        source._cutoff(finer[0].as_py())
-    with pytest.raises(pa.ArrowInvalid, match="would lose data"):
-        source._cutoff_array(finer)
+    finer = pa.array([ns], type=pa.timestamp("ns", tz="UTC"))
+    # Compute the golden without copying either Arrow's or DG's implementation.
+    tick = {
+        "seconds": 10**9,
+        "milliseconds": 10**6,
+        "microseconds": 1000,
+        "nanoseconds": 1,
+        "hours": 3600 * 10**9,
+        "days": 86400 * 10**9,
+    }[clock]
+    expected = ns // tick
+    assert diskgraph.convert_ticks(ns, "nanoseconds", clock, rounding="floor") == expected
+    assert diskgraph.convert_ticks(ns, "nanoseconds", clock) == (abs(ns) // tick) * (
+        -1 if ns < 0 else 1
+    )
+    assert source._cutoff(finer[0]) == expected
+    assert source._cutoff_array(finer).to_pylist() == [expected]
+    seconds = ns // 10**9
+    assert source._cutoff(seconds) == seconds * 10**9 // tick
+    assert source._cutoff_array(pa.array([seconds], type=pa.int64())).to_pylist() == [
+        seconds * 10**9 // tick
+    ]
+    # Python datetimes cover the same rule without requiring pandas.
+    datetime_ns = (abs(ns) // 1000) * (-1000 if ns < 0 else 1000)
+    instant = pa.scalar(datetime_ns // 1000, type=pa.timestamp("us", tz="UTC")).as_py()
+    expected_datetime = datetime_ns // tick
+    assert source._cutoff(instant) == expected_datetime
+
+
+@pytest.mark.parametrize("unit,tick", [("s", 10**9), ("ms", 10**6), ("us", 1000), ("ns", 1)])
+@pytest.mark.parametrize("ns", [-1500000001, -500001, -1, 0, 1, 500001, 1500000001])
+def test_stored_timestamps_round_up_consistently_without_pandas(unit, tick, ns, monkeypatch):
+    import builtins
+
+    from kumo.pytorch.encoding import json_value, typed_key, unjson_value
+
+    original_import = builtins.__import__
+
+    def without_pandas(name, *args, **kwargs):
+        if name == "pandas" or name.startswith("pandas."):
+            raise AssertionError("timestamp normalization must not import pandas")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_pandas)
+    dtype = api.DType("timestamp", unit=unit, timezone="UTC")
+    instant = pa.scalar(ns, type=pa.timestamp("ns", tz="UTC"))
+    normalized = dtype.normalize(instant)
+    expected = -(-ns // tick)
+    assert pa.scalar(normalized, type=dtype.to_arrow()).cast(pa.int64()).as_py() == expected
+    assert typed_key(dtype, normalized) == ("timestamp", expected)
+    assert typed_key(dtype, dtype.normalize(expected)) == ("timestamp", expected)
+    restored = unjson_value(json_value(normalized))
+    assert typed_key(dtype, restored) == ("timestamp", expected)
+
+
+def test_nanosecond_saved_state_without_pandas_in_fresh_process():
+    import subprocess
+    import sys
+    import textwrap
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent("""
+            import sys
+            class WithoutPandas:
+                def find_spec(self, name, path=None, target=None):
+                    if name == 'pandas' or name.startswith('pandas.'):
+                        raise ModuleNotFoundError('pandas deliberately unavailable')
+            sys.meta_path.insert(0, WithoutPandas())
+            from kumo.pytorch.contract.dtypes import DType
+            from kumo.pytorch.encoding import json_value, unjson_value, typed_key
+            dtype = DType('timestamp', unit='ns', timezone='UTC')
+            value = dtype.normalize(1)
+            assert value.value == 1
+            saved = json_value(value)
+            assert typed_key(dtype, unjson_value(saved)) == ('timestamp', 1)
+            assert 'pandas' not in sys.modules
+        """),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )

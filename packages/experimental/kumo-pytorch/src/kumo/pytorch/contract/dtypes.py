@@ -48,7 +48,11 @@ def _since_epoch(value: dt.date | dt.datetime) -> dt.timedelta:
 def _timestamp_seconds(value: dt.date | dt.datetime) -> int:
     """Native stored clocks round fractional instants toward positive infinity."""
     delta = _since_epoch(value)
-    return delta.days * 86_400 + delta.seconds + int(delta.microseconds != 0)
+    return (
+        delta.days * 86_400
+        + delta.seconds
+        + int(delta.microseconds != 0 or getattr(value, "nanosecond", 0) != 0)
+    )
 
 
 def _cutoff_seconds(value: dt.date | dt.datetime) -> int:
@@ -74,20 +78,19 @@ class DType:
     stringified, integers are not booleans, and decimals are not rounded to fit;
     integer bounds and decimal precision/scale are checked.
 
-    Timestamp precision is declared explicitly. The default ``unit="s"``
-    preserves whole-second UTC instants; finer declared units retain their ticks.
-    In the seconds mode, finer physical units round toward
-    positive infinity, including before 1970; timezone metadata does not change
-    the instant, and a naive ``datetime`` means UTC. Anchor times
-    (``SampleRequest.as_of_time``) instead round toward negative infinity, so an
-    event later in the anchor's second is never history. ``date32`` stays a
-    date. Plain integer anchor times are always epoch seconds, independently
-    of the graph clock; a typed Arrow timestamp column carries its physical
-    unit. Integers supplied as timestamp *field values* instead use that
-    field's declared ticks. Finer physical timestamp columns are accepted
-    during ingestion and converted to the declared graph clock; timestamps
-    round upward to that clock's tick, while finer anchor cutoffs are refused
-    for nonsecond graph clocks.
+    Timestamp precision is declared explicitly. Stored datetimes round upward
+    to the declared tick, matching typed DG ingestion. Values requiring sub-
+    microsecond precision normalize to an Arrow TimestampScalar, so pandas is
+    not required. Other timestamps normalize to UTC datetimes.
+
+    Anchor times instead round downward to the graph clock, preserving the
+    no-future-event boundary before 1970 too. Plain integer anchors are epoch seconds on every
+    clock; integer timestamp *field values* use that field's declared ticks.
+    Thus an epoch-ms integer is not an epoch-ms anchor: supply a datetime or a
+    typed Arrow timestamp. Physical Parquet timestamp units may differ from
+    the declared storage unit; native ingestion converts them to the graph
+    clock. The finest declared timestamp unit across all tables selects that
+    clock, including columns not used by a particular task.
 
     :raises ValueError: for an unknown name, missing or out-of-range decimal
         parameters, or parameters on a family that takes none.
@@ -176,15 +179,50 @@ class DType:
                 raise ValueError(error)
             return value
         if self.name == "timestamp":
-            if type(value) is not int and not isinstance(value, dt.datetime):
+            if self.unit == "s" and (type(value) is int or isinstance(value, dt.datetime)):
+                # Keep ordinary whole-second normalization on its existing path.
+                try:
+                    seconds = value if type(value) is int else _timestamp_seconds(value)
+                    return dt.datetime(1970, 1, 1, tzinfo=dt.UTC) + dt.timedelta(seconds=seconds)
+                except (OverflowError, ValueError) as exc:
+                    raise ValueError(error) from exc
+            import pyarrow as pa
+            import pyarrow.compute as pc
+
+            if type(value) is not int and not isinstance(value, (dt.datetime, pa.TimestampScalar)):
                 raise ValueError(error)
             try:
-                if self.unit != "s":
-                    import pyarrow as pa
-
-                    return pa.scalar(value, type=self.to_arrow()).as_py()
-                seconds = value if type(value) is int else _timestamp_seconds(value)
-                return dt.datetime(1970, 1, 1, tzinfo=dt.UTC) + dt.timedelta(seconds=seconds)
+                if type(value) is int:
+                    scalar = pa.scalar(value, type=self.to_arrow())
+                else:
+                    scalar = (
+                        value
+                        if isinstance(value, pa.TimestampScalar)
+                        else pa.scalar(
+                            value,
+                            type=pa.timestamp(
+                                "ns" if getattr(value, "nanosecond", 0) else "us", tz="UTC"
+                            ),
+                        )
+                    )
+                    scalar = pc.cast(
+                        pc.ceil_temporal(
+                            scalar,
+                            unit={
+                                "s": "second",
+                                "ms": "millisecond",
+                                "us": "microsecond",
+                                "ns": "nanosecond",
+                            }[self.unit],
+                        ),
+                        self.to_arrow(),
+                    )
+                if self.unit == "ns":
+                    # Python datetime cannot represent the remaining nanoseconds.
+                    if scalar.value % 1000:
+                        return scalar
+                    scalar = pc.cast(scalar, pa.timestamp("us", tz="UTC"))
+                return scalar.as_py()
             except (OverflowError, ValueError) as exc:
                 raise ValueError(error) from exc
         if not isinstance(value, Decimal) or not value.is_finite():

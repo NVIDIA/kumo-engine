@@ -155,20 +155,19 @@ never converted. Numeric strings are not parsed, numbers are not
 stringified, integers are not booleans, and decimals are not rounded to fit;
 integer bounds and decimal precision/scale are checked.
 
-Timestamp precision is declared explicitly. The default `unit="s"`
-preserves whole-second UTC instants; finer declared units retain their ticks.
-In the seconds mode, finer physical units round toward
-positive infinity, including before 1970; timezone metadata does not change
-the instant, and a naive `datetime` means UTC. Anchor times
-(`SampleRequest.as_of_time`) instead round toward negative infinity, so an
-event later in the anchor's second is never history. `date32` stays a
-date. Plain integer anchor times are always epoch seconds, independently
-of the graph clock; a typed Arrow timestamp column carries its physical
-unit. Integers supplied as timestamp *field values* instead use that
-field's declared ticks. Finer physical timestamp columns are accepted
-during ingestion and converted to the declared graph clock; timestamps
-round upward to that clock's tick, while finer anchor cutoffs are refused
-for nonsecond graph clocks.
+Timestamp precision is declared explicitly. Stored datetimes round upward
+to the declared tick, matching typed DG ingestion. Values requiring sub-
+microsecond precision normalize to an Arrow TimestampScalar, so pandas is
+not required. Other timestamps normalize to UTC datetimes.
+
+Anchor times instead round downward to the graph clock, preserving the
+no-future-event boundary before 1970 too. Plain integer anchors are epoch seconds on every
+clock; integer timestamp *field values* use that field's declared ticks.
+Thus an epoch-ms integer is not an epoch-ms anchor: supply a datetime or a
+typed Arrow timestamp. Physical Parquet timestamp units may differ from
+the declared storage unit; native ingestion converts them to the graph
+clock. The finest declared timestamp unit across all tables selects that
+clock, including columns not used by a particular task.
 
 **Raises**
 

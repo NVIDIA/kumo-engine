@@ -135,6 +135,15 @@ pool; anchor-dependent bounds and row values are evaluated for each chunk. The
 handle retains its index and may be used after the original Python sampler is
 released. It does not cache anchors or computed results.
 
+All row frames in one query must use the same `cutoff_unit`; omission means
+seconds. `diskgraph.convert_ticks(value, from, to)` exposes the shared fixed-clock
+request/seed conversion (truncation toward zero, including before 1970).
+`rounding="floor"` selects core floor conversion, used by kumo-pytorch to preserve
+its no-future-event anchor boundary before 1970. The function
+accepts clock names and Arrow abbreviations (`s`, `ms`, `us`, `ns`). Stored typed
+timestamps retain ingestion's separate round-up rule; this helper does not
+change ingestion semantics.
+
 PQL keeps its existing serialized `aggregate` operations. Execution lowers
 single-hop COUNT/SUM/AVG/MIN/MAX, including their filters and limits, to the common
 row-aggregate representation. Both representations use the same scalar resolver;

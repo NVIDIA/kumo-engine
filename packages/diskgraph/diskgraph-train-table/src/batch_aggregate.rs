@@ -56,6 +56,16 @@ struct QueryPlan {
     selection: Option<PreparedRowSelection>,
 }
 
+impl QueryPlan {
+    fn cutoff_unit(&self) -> Result<TimeUnit, String> {
+        let unit = self.frames.first().and_then(|f| f.cutoff_unit).unwrap_or(TimeUnit::Seconds);
+        if self.frames.iter().any(|f| f.cutoff_unit.unwrap_or(TimeUnit::Seconds) != unit) {
+            return Err("all frames in a query must use the same cutoff_unit".into());
+        }
+        Ok(unit)
+    }
+}
+
 struct PreparedFrame {
     path: FramePath,
     table: Arc<TableReader>,
@@ -197,7 +207,7 @@ impl ScalarValue {
         }
     }
 
-    fn epoch_seconds(&self) -> Result<Option<i64>, String> {
+    fn timestamp_ticks(&self) -> Result<Option<i64>, String> {
         match self {
             Self::Null => Ok(None),
             Self::I64(value) => Ok(Some(*value)),
@@ -649,7 +659,7 @@ fn relation_destinations(
 /// Bounds are compared in the index clock, never against unconverted edge ticks.
 fn frame_bounds(
     plan: &FramePlan,
-    cutoff_seconds: i64,
+    cutoff_ticks: i64,
     clock: TimeUnit,
 ) -> Result<(Option<i64>, Option<i64>), String> {
     let unit = plan.window_unit.unwrap_or(TimeUnit::Seconds);
@@ -673,12 +683,12 @@ fn frame_bounds(
             .and_then(|v| i32::try_from(v).ok())
             .ok_or("calendar window exceeds supported range")?;
             diskgraph_core::with_index_clock!(cutoff_unit, U => {
-                add_calendar_months(Abs::<U>::from_raw(cutoff_seconds), months)
+                add_calendar_months(Abs::<U>::from_raw(cutoff_ticks), months)
                     .map(|shifted| Some(convert_floor(shifted.raw(), cutoff_unit, clock)))
                     .ok_or_else(|| "calendar window exceeds supported clock".to_string())
             })
         } else {
-            let cutoff = convert_floor(cutoff_seconds, cutoff_unit, clock);
+            let cutoff = convert_floor(cutoff_ticks, cutoff_unit, clock);
             // Match PQL duration lowering for offsets finer than one index tick.
             let delta = convert_trunc(offset, unit, clock);
             Ok(Some(cutoff.saturating_add(delta)))
@@ -704,7 +714,7 @@ fn row_clock_time(array: &dyn Array, row: usize, clock: TimeUnit) -> Result<Opti
     time!(TimestampNanosecondArray, TimeUnit::Nanoseconds);
     time!(Date32Array, TimeUnit::Days);
     time!(Date64Array, TimeUnit::Milliseconds);
-    scalar_at(array, row)?.epoch_seconds()
+    scalar_at(array, row)?.timestamp_ticks()
 }
 
 fn exact_key_time(decoder: &SortKeyDecoder, key: u64) -> Option<i64> {
@@ -1226,7 +1236,7 @@ impl crate::ttgen_row_aggregate::AggregateScalar for ScalarValue {
         ScalarValue::numeric(self)
     }
     fn epoch_seconds(&self) -> Result<Option<i64>, String> {
-        ScalarValue::epoch_seconds(self)
+        ScalarValue::timestamp_ticks(self)
     }
     fn equality_key(&self) -> String {
         ScalarValue::equality_key(self)
@@ -2268,6 +2278,7 @@ impl PreparedTemporalPlan {
     }
 
     fn from_query(reader: &GraphIndexReader, root: &str, mut query: QueryPlan) -> Result<Self, String> {
+        query.cutoff_unit()?;
         for sequence in &query.sequences { validate_sequence_plan(sequence)?; }
         let windows = window_groups(&query);
         for frame in query.frames.iter().chain(windows.iter().map(|(union, _)| union)) {
@@ -2407,6 +2418,7 @@ fn execute_query(
     plan: &QueryPlan,
 ) -> Result<QueryResult, String> {
     let total_started = Instant::now();
+    let cutoff_unit = plan.cutoff_unit()?;
     for sequence in &plan.sequences {
         validate_sequence_plan(sequence)?;
     }
@@ -2554,7 +2566,7 @@ fn execute_query(
         aggregates,
         timings,
         stats,
-        timestamp_unit: plan.frames.first().and_then(|f| f.cutoff_unit).unwrap_or(TimeUnit::Seconds),
+        timestamp_unit: cutoff_unit,
     })
 }
 

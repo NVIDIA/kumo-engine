@@ -281,3 +281,15 @@ def test_pql_filtered_scalar_preserves_filter_and_limit(numeric_graph, limit):
     # User1 retains1e16; user6 retains non-null values greater than1. Numeric SUM's historical
     # limit does not cap traversed rows; preserving it must not invent a cap.
     assert result == [1e16, sum(i for i in range(2, 601) if i % 7 != 0)]
+
+
+@pytest.mark.parametrize("second_unit", ["seconds", None])
+def test_query_cutoff_clock_must_be_shared_by_all_frames(numeric_graph, second_unit):
+    engine, relation = numeric_graph
+    plan = program(relation)
+    plan["frames"][0]["cutoff_unit"] = "milliseconds"
+    if second_unit is not None:
+        plan["frames"][1]["cutoff_unit"] = second_unit
+    roots = {"users": engine.lookup_node_ids("users", pa.array([6], type=pa.int64()))}
+    with pytest.raises(Exception, match="all frames in a query must use the same cutoff_unit"):
+        engine.query_temporal(roots, {"users": [1000]}, json.dumps(plan), output_format="model")

@@ -299,6 +299,12 @@ Task extensions use the existing `train_tables` directory inside the graph index
 including on Windows. They require no symlinks. Closing a task releases its
 combined reader before removing its task files.
 
+Kumo-pytorch cutoffs round downward on every graph clock, preserving the
+no-future-event boundary before 1970; stored datetimes round upward to their declared tick. Plain integer
+anchors remain epoch seconds even on an ms/us/ns index. Use a datetime or typed
+Arrow timestamp for an epoch-ms/us/ns anchor. Every frame in one temporal query
+must agree on its cutoff unit (an omitted unit means seconds).
+
 ### Scalar features and labels in task preparation
 
 For DiskGraph-backed training/BP, `Plan.materialize` computes declared scalar

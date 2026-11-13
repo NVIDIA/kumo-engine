@@ -501,37 +501,32 @@ class DiskGraphSource:
 
     @property
     def _tick_nanos(self):
-        return {
-            "nanoseconds": 1,
-            "microseconds": 1000,
-            "milliseconds": 1000000,
-            "seconds": 1000000000,
-            "hours": 3600000000000,
-            "days": 86400000000000,
-        }[self._clock]
+        from diskgraph import convert_ticks
+
+        return convert_ticks(1, self._clock, "nanoseconds")
 
     def _cutoff(self, value):
         import datetime as dt
 
-        if isinstance(value, dt.date):
-            if not isinstance(value, dt.datetime):
-                value = dt.datetime.combine(value, dt.time(), tzinfo=dt.UTC)
-            if value.tzinfo is None:
-                value = value.replace(tzinfo=dt.UTC)
-            delta = value - dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
-            nanos = (
-                (delta.days * 86400 + delta.seconds) * 1000000000
-                + delta.microseconds * 1000
-                + getattr(value, "nanosecond", 0)
+        from diskgraph import convert_ticks
+
+        if isinstance(value, dt.date) and not isinstance(value, dt.datetime):
+            value = dt.datetime.combine(value, dt.time(), tzinfo=dt.UTC)
+        if isinstance(value, dt.datetime) or isinstance(value, self._pa.TimestampScalar):
+            # An explicit ns type retains pandas Timestamp's sub-microsecond part.
+            scalar = (
+                self._pa.scalar(
+                    value,
+                    type=self._pa.timestamp(
+                        "ns" if getattr(value, "nanosecond", 0) else "us", tz="UTC"
+                    ),
+                )
+                if isinstance(value, dt.datetime)
+                else value
             )
-        else:
-            nanos = int(value) * 1000000000
-        if self._clock != "seconds" and nanos % self._tick_nanos:
-            raise ValueError(
-                "anchor time is finer than the graph index clock; "
-                "use an index retaining that timestamp precision"
-            )
-        return nanos // self._tick_nanos
+            return convert_ticks(scalar.value, scalar.type.unit, self._clock, rounding="floor")
+        # Untyped anchor integers retain the original epoch-seconds contract.
+        return convert_ticks(int(value), "seconds", self._clock, rounding="floor")
 
     def _cutoff_array(self, values):
         """Convert an Arrow anchor batch without reconstructing scalar requests."""
@@ -543,21 +538,14 @@ class DiskGraphSource:
         }.get(self._clock)
         if self._pa.types.is_integer(values.type):
             values = self._pc.cast(values, self._pa.timestamp("s", tz="UTC"))
+        values = self._pc.floor_temporal(values, unit=self._clock[:-1])
         if unit is not None:
-            aligned = self._pc.cast(
-                values, self._pa.timestamp(unit, tz="UTC"), safe=self._clock != "seconds"
-            )
+            aligned = self._pc.cast(values, self._pa.timestamp(unit, tz="UTC"), safe=False)
             return self._pc.cast(aligned, self._pa.int64())
         seconds = self._pc.cast(
-            self._pc.cast(values, self._pa.timestamp("s", tz="UTC")), self._pa.int64()
+            self._pc.cast(values, self._pa.timestamp("s", tz="UTC"), safe=False), self._pa.int64()
         )
-        factor = self._tick_nanos // 1000000000
-        ticks = self._pc.divide_checked(seconds, factor)
-        if self._pc.any(
-            self._pc.not_equal(self._pc.multiply_checked(ticks, factor), seconds)
-        ).as_py():
-            raise ValueError("anchor time is finer than the graph index clock")
-        return ticks
+        return self._pc.divide_checked(seconds, self._tick_nanos // 1000000000)
 
     def _clock_array(self, values):
         unit = {
