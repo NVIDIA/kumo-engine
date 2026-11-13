@@ -117,7 +117,9 @@ def ensure_diskgraph_index(
         clock = config.get("timestamp_unit", "seconds")
         ticks = list(
             dict.fromkeys(
-                None if cutoff is None else diskgraph.convert_ticks(cutoff, "nanoseconds", clock)
+                None
+                if cutoff is None
+                else diskgraph.convert_ticks(cutoff, "nanoseconds", clock, rounding="floor")
                 for cutoff in cutoffs
             )
         )

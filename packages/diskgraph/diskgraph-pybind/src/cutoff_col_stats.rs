@@ -18,7 +18,6 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_schema::DataType;
 use compact_str::CompactString;
-use diskgraph_core::time::convert_trunc;
 use diskgraph_ingest::column_scan::{
     at_cutoff, create_times, decode_chunk, node_chunks, stored_tables, StoredTable,
 };
@@ -437,16 +436,8 @@ fn chunk_lengths(
     Ok(lengths)
 }
 
-/// `value` in index clock `from` as ticks of index clock `to`, truncated.
-#[pyfunction]
-pub fn convert_ticks(value: i64, from: &str, to: &str) -> PyResult<i64> {
-    let parse = crate::tt_builder::parse_index_clock;
-    Ok(convert_trunc(value, parse(from)?, parse(to)?))
-}
-
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cutoff_col_stats, m)?)?;
-    m.add_function(wrap_pyfunction!(convert_ticks, m)?)?;
     m.add_function(wrap_pyfunction!(train_tokenizer, m)?)?;
     m.add_function(wrap_pyfunction!(token_lengths, m)?)?;
     m.add("TOKENIZER_TRAINER", TOKENIZER_TRAINER)
