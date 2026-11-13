@@ -26,6 +26,7 @@ from .base import Explainer, continue_on_error
 from .column_analysis import ColumnAnalysis
 from .gradient_explainer import GradientExplainer
 from .subgraph_collector import SubgraphCollector
+from .walk_relevance import WalkRelevance, WalkRelevanceResult
 
 __all__ = [
     "ColumnAnalysis",
@@ -33,5 +34,7 @@ __all__ = [
     "ExplainRuntime",
     "GradientExplainer",
     "SubgraphCollector",
+    "WalkRelevance",
+    "WalkRelevanceResult",
     "continue_on_error",
 ]
