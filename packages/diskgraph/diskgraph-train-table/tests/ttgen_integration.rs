@@ -10585,3 +10585,25 @@ fn integ_shared_numeric_node_projection_crosses_decode_chunks() {
     assert!(matches!(values[1][0], Some(Value::Float(x)) if x == 46800.0));
     assert!(matches!(values[2][0], Some(Value::Float(x)) if (x - 78.0).abs() < 1e-12));
 }
+
+#[test]
+fn integ_numeric_specialization_propagates_reader_errors() {
+    use diskgraph_train_table::ttgen_executor::{execute_numeric_group, NumericAggregatePolicy};
+    use diskgraph_train_table::ttgen_resolve::ResolvedOp;
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+    let reader = diskgraph_index::graph::GraphIndexReader::open(
+        &index.join("index_metadata.json"), &index,
+    ).unwrap();
+    let plan = g1_temporal(vec![Stage {
+        ops: vec![agg_orders_price("sum", AggFunc::Sum, Some((0, 5000)))],
+        filter: None,
+    }], vec![0]);
+    let resolved = resolve_plan(&plan, &reader).unwrap();
+    let ResolvedOp::Aggregate(aggregate) = &resolved.stages[0].ops[0] else { unreachable!() };
+    let failure = execute_numeric_group(
+        &[aggregate], &[0], &[Abs::from_raw(0)], NumericAggregatePolicy::Pql,
+        |_, _, _| Err(TTGenError::SystemError("injected reader failure".into())),
+    ).unwrap_err();
+    assert!(matches!(failure, TTGenError::SystemError(message) if message == "injected reader failure"));
+}
