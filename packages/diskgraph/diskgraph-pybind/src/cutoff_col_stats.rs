@@ -25,6 +25,7 @@ use diskgraph_ingest::column_scan::{
 };
 use diskgraph_ingest::cutoff_col_stats::CutoffColStatsRequest;
 use diskgraph_ingest::graph_config::{read_persisted_config, ColumnSpec, IngestedType};
+use diskgraph_rowpack::{ColumnEncoding, IngestedType as StoredType};
 use pyo3::prelude::*;
 use rayon::prelude::*;
 use tokenizers::models::bpe::{BpeTrainer, BPE};
@@ -320,8 +321,13 @@ pub fn token_lengths(
     let (mut tables, _) = stored_tables(Path::new(index_dir), &HashSet::from([table.to_string()]))
         .map_err(map_anyhow_err)?;
     let stored = tables.remove(table).expect("opened table");
+    let context = stored
+        .reader
+        .node_data_decoder()
+        .expect("a stored table")
+        .context();
     let mut decoded = Vec::new();
-    let mut tokenizers = Vec::new();
+    let mut costs = Vec::new();
     for (column, tokenizer) in columns {
         let index = stored
             .columns
@@ -331,20 +337,35 @@ pub fn token_lengths(
                 DiskgraphConfigError::new_err(format!("index has no column {table}.{column}"))
             })?;
         let kind = stored.columns[index].1;
-        if tokenizer.is_some() && kind != diskgraph_rowpack::IngestedType::String {
-            return Err(DiskgraphConfigError::new_err(format!(
-                "column {table}.{column} holds {kind:?} values, not strings"
-            )));
-        }
         decoded.push(index);
-        let tokenizer = tokenizer
-            .map(|json| Tokenizer::from_str(&json))
-            .transpose()
-            .map_err(|e| DiskgraphConfigError::new_err(format!("invalid tokenizer: {e}")))?;
-        tokenizers.push(tokenizer.map(|mut tokenizer| {
-            tokenizer.with_padding(None);
-            tokenizer
-        }));
+        costs.push(match (tokenizer, &context.columns[index].encoding) {
+            (Some(_), _) if kind != StoredType::String => {
+                return Err(DiskgraphConfigError::new_err(format!(
+                    "column {table}.{column} holds {kind:?} values, not strings"
+                )))
+            }
+            (Some(json), _) => {
+                let mut tokenizer = Tokenizer::from_str(&json).map_err(|e| {
+                    DiskgraphConfigError::new_err(format!("invalid tokenizer: {e}"))
+                })?;
+                tokenizer.with_padding(None);
+                Cost::Pieces(Box::new(tokenizer))
+            }
+            (
+                None,
+                ColumnEncoding::FixedFloatArray { len, .. } | ColumnEncoding::FixedIntArray { len },
+            ) => Cost::Fixed(*len as u64),
+            (
+                None,
+                ColumnEncoding::FloatArray { .. }
+                | ColumnEncoding::Int8Array
+                | ColumnEncoding::Int16Array
+                | ColumnEncoding::Int32Array
+                | ColumnEncoding::Int64Array
+                | ColumnEncoding::StringArray { .. },
+            ) => Cost::Elements,
+            (None, _) => Cost::Fixed(1),
+        });
     }
     let mut chunks: Vec<_> = node_chunks(&stored.reader, TEXT_CHUNK_NODES)
         .map(|chunk| {
@@ -374,7 +395,7 @@ pub fn token_lengths(
                     pool.install(|| {
                         window
                             .par_iter()
-                            .map(|&(_, chunk)| chunk_lengths(&stored, chunk, &decoded, &tokenizers))
+                            .map(|&(_, chunk)| chunk_lengths(&stored, chunk, &decoded, &costs))
                             .collect::<Result<Vec<_>>>()
                     })
                 })
@@ -398,17 +419,30 @@ pub fn token_lengths(
     written
 }
 
+enum Cost {
+    Fixed(u64),
+    Elements,
+    Pieces(Box<Tokenizer>),
+}
+
 fn chunk_lengths(
     stored: &StoredTable,
     chunk: (usize, u64, u64),
     decoded: &[usize],
-    tokenizers: &[Option<Tokenizer>],
+    costs: &[Cost],
 ) -> Result<Vec<u16>> {
     let (nodes, batch) = decode_chunk(&stored.reader, chunk, decoded)?;
     let mut totals = vec![0u64; batch.num_rows()];
-    for (column, tokenizer) in batch.columns().iter().zip(tokenizers) {
-        match (tokenizer, column.data_type()) {
-            (Some(tokenizer), _) => {
+    for (column, cost) in batch.columns().iter().zip(costs) {
+        match cost {
+            Cost::Fixed(length) => totals.iter_mut().for_each(|total| *total += length),
+            Cost::Elements => {
+                let counts = cast(&length(column)?, &DataType::Int64)?;
+                for (total, count) in totals.iter_mut().zip(counts.as_primitive::<Int64Type>()) {
+                    *total += count.unwrap_or(0) as u64;
+                }
+            }
+            Cost::Pieces(tokenizer) => {
                 for (total, value) in totals.iter_mut().zip(column.as_string::<i64>()) {
                     if let Some(value) = value {
                         let pieces = tokenizer.encode_fast(value, true).map_err(|e| anyhow!(e))?;
@@ -416,13 +450,6 @@ fn chunk_lengths(
                     }
                 }
             }
-            (None, DataType::List(_) | DataType::LargeList(_)) => {
-                let counts = cast(&length(column)?, &DataType::Int64)?;
-                for (total, count) in totals.iter_mut().zip(counts.as_primitive::<Int64Type>()) {
-                    *total += count.unwrap_or(0) as u64;
-                }
-            }
-            (None, _) => totals.iter_mut().for_each(|total| *total += 1),
         }
     }
     let mut lengths = vec![0; (chunk.2 - chunk.1) as usize];

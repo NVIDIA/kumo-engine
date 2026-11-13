@@ -16,25 +16,45 @@ WORDS = json.dumps({
     "normalizer": None, "pre_tokenizer": {"type": "WhitespaceSplit"}, "post_processor": None,
     "decoder": None, "model": {"type": "WordLevel", "vocab": {"[UNK]": 0}, "unk_token": "[UNK]"},
 })
+ROWS = 3_000
+NO_DATA = 1  # holds more node data than a node can store
+SATURATED = 2
+
+
+def _body(key):
+    if key == NO_DATA:
+        return "x " * (33 << 20)
+    return None if key % 7 == 0 else " ".join(["word"] * (key % 11))
+
+
+def _tags(key):
+    if key == SATURATED:
+        return ["t"] * 70_000
+    return None if key % 5 == 0 else ["t"] * (key % 4)
+
+
+def _expected(key):
+    """Words of the body, tags, the fixed 3 of the vector and 1 for `n`, NULLs as if present."""
+    if key == NO_DATA:
+        return 0
+    words = len((_body(key) or "").split())
+    return min(words + len(_tags(key) or []) + 3 + 1, 65_535)
 
 
 @pytest.fixture(scope="module")
-def table(tmp_path_factory) -> tuple[str, dict]:
+def index(tmp_path_factory) -> str:
     root = tmp_path_factory.mktemp("lengths")
-    rows = 3_000
-    body = [None if i % 7 == 0 else " ".join(["word"] * (i % 11)) for i in range(rows)]
-    tags = [None if i % 5 == 0 else ["t"] * (i % 4) for i in range(rows)]
-    body[1] = "x " * (33 << 20)  # over the 64 MiB of node data a node can hold
-    tags[2] = ["t"] * 70_000
+    keys = range(ROWS)
     pq.write_table(pa.table({
-        "id": pa.array(range(rows), pa.int64()),
-        "body": pa.array(body, pa.string()),
-        "tags": pa.array(tags, pa.list_(pa.string())),
-        "n": pa.array(range(rows), pa.int64()),
+        "id": pa.array(keys, pa.int64()),
+        "body": pa.array([_body(key) for key in keys], pa.string()),
+        "tags": pa.array([_tags(key) for key in keys], pa.list_(pa.string())),
+        "vec": pa.array([None if key % 3 == 0 else [0.5] * 3 for key in keys], pa.list_(pa.float32())),
+        "n": pa.array([None if key % 2 else key for key in keys], pa.int64()),
     }), root / "docs.parquet", row_group_size=500)
 
-    def column(name, dtype):
-        return {"name": name, "ingested_dtype": dtype}
+    def column(name, dtype, **extra):
+        return {"name": name, "ingested_dtype": dtype, **extra}
 
     diskgraph.ingest(
         config_json=json.dumps({
@@ -43,7 +63,8 @@ def table(tmp_path_factory) -> tuple[str, dict]:
             "tables": [{
                 "name": "docs", "primary_key": "id",
                 "columns": [column("id", "int64"), column("body", "string"),
-                            column("tags", "string_array"), column("n", "int64")],
+                            column("tags", "string_array"),
+                            column("vec", "float32_array", fixed_len=3), column("n", "int64")],
                 "source": {"type": "parquet", "paths": [str(root / "docs.parquet")]},
             }],
         }),
@@ -51,29 +72,23 @@ def table(tmp_path_factory) -> tuple[str, dict]:
         encode_threads=4,
         index_threads=4,
     )
-    expected = {key: min(len((b or "").split()) + len(t or []) + 1, 65_535)
-                for key, (b, t) in enumerate(zip(body, tags, strict=True))}
-    expected[1] = 0
-    return str(root / "index"), expected
+    return str(root / "index")
 
 
-def test_each_node_counts_its_scalars_list_elements_and_pieces(table, tmp_path):
-    index, expected = table
-    nodes = diskgraph.SamplerEngine(index).lookup_node_ids("docs", pa.array(expected, pa.int64()))
-    by_node = [0] * len(nodes)
-    for node, length in zip(nodes, expected.values(), strict=True):
-        by_node[node] = length
+def test_each_node_counts_its_scalars_list_elements_and_pieces(index, tmp_path):
+    nodes = diskgraph.SamplerEngine(index).lookup_node_ids("docs", pa.array(range(ROWS), pa.int64()))
+    expected = np.zeros(ROWS, dtype="<u2")
+    expected[nodes] = [_expected(key) for key in range(ROWS)]
+    assert expected[nodes[NO_DATA]] == 0 and expected[nodes[SATURATED]] == 65_535
     path = tmp_path / "docs.lengths.bin"
     for threads in (1, 4):
-        diskgraph.token_lengths(index, "docs", [("body", WORDS), ("tags", None), ("n", None)],
-                                str(path), num_threads=threads)
-        assert np.memmap(path, dtype="<u2", mode="r").tolist() == by_node
-    assert by_node[nodes[1]] == 0 and by_node[nodes[2]] == 65_535
+        diskgraph.token_lengths(index, "docs", [("body", WORDS), ("tags", None), ("vec", None),
+                                                ("n", None)], str(path), num_threads=threads)
+        assert np.memmap(path, dtype="<u2", mode="r").tolist() == expected.tolist()
     assert [p.name for p in tmp_path.iterdir()] == ["docs.lengths.bin"]
 
 
-def test_token_lengths_refuses_unknown_and_non_string_columns(table, tmp_path):
-    index, _ = table
+def test_token_lengths_refuses_unknown_and_non_string_columns(index, tmp_path):
     path = str(tmp_path / "docs.lengths.bin")
     with pytest.raises(diskgraph.DiskgraphConfigError, match="no column"):
         diskgraph.token_lengths(index, "docs", [("missing", None)], path)
