@@ -131,8 +131,6 @@ pub fn cutoff_col_stats(
     .map_err(map_anyhow_err)
 }
 
-/// How often each byte-level word occurs in string columns' non-null values over the rows counted
-/// at `cutoff`.
 fn word_counts(
     py: Python<'_>,
     index_dir: &Path,
