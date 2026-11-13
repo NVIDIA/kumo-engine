@@ -90,10 +90,11 @@ def test_tokenizer_counts_every_row_of_a_table_without_a_create_time(indexes):
     assert _train(indexes[4, 3], T0 - 10_000, both) == _train(indexes[4, 3], None, both[1:])
 
 
-def test_tokenizer_rejects_non_string_columns(indexes):
-    with pytest.raises(Exception, match="not strings"):
+def test_tokenizer_refuses_unknown_and_non_string_columns(indexes):
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="not strings"):
         _train(indexes[1, 1], None, [("docs", "n")])
-    with pytest.raises(Exception, match="no column"):
-        _train(indexes[1, 1], None, [("docs", "missing")])
-    with pytest.raises(Exception, match="num_threads must be positive"):
+    for missing in [("docs", "missing"), ("missing", "body")]:
+        with pytest.raises(diskgraph.DiskgraphConfigError, match="no column"):
+            _train(indexes[1, 1], None, [missing])
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="num_threads must be positive"):
         _train(indexes[1, 1], None, num_threads=0)
