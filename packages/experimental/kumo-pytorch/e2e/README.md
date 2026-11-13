@@ -99,7 +99,8 @@ uv build --wheel -o $KE/wheels $KE/packages/diskgraph   # needs Rust; on macOS a
 uv pip install --no-sources -p $KE/.venv/bin/python 'torch<2.13' \
   $KE/wheels/diskgraph-*.whl $KE/3rdparty/kumo-wheels/torch_geometric-2.9.0-py3-none-any.whl \
   $KE/packages/kumo-api $KE/packages/kumo-pql "$KE/packages/kumo-core[faiss-cpu]"
-uv pip install --no-sources --no-deps -p $KE/.venv/bin/python $KE/packages/kumo-engine
+uv pip install --no-sources --no-deps -p $KE/.venv/bin/python \
+  $KE/packages/kumo-settings $KE/packages/kumo-engine
 uv pip install -p $KE/.venv/bin/python pandas filelock typing_extensions pydantic
 ```
 

@@ -875,7 +875,7 @@ impl FileColStats {
 
     /// Like [`Self::new_with_categories`], collecting `stat_sets[i]` for
     /// column `i` instead of its semantic type's statistics. `table_cat`
-    /// must be built from the same stat sets.
+    /// must count categories for exactly the columns whose stat set does.
     pub fn new_with_stat_sets(
         columns: &[ColumnSpec],
         stat_sets: &[StatSet],
@@ -896,7 +896,7 @@ impl FileColStats {
             );
             anyhow::ensure!(
                 shared.is_some() == (stat_set.counted() == 1),
-                "category counts for column {} were built from another stat set",
+                "column {} must have category counts exactly when its stat set counts them",
                 col.name
             );
         }
