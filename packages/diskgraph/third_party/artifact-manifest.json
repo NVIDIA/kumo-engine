@@ -1323,6 +1323,13 @@
         },
         {
           "license": "MIT OR Apache-2.0",
+          "name": "io-uring",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.7.13"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
           "name": "ipnet",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "source_kind": "registry-or-git",
@@ -3877,6 +3884,13 @@
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "source_kind": "registry-or-git",
           "version": "0.17.11"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "io-uring",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.7.13"
         },
         {
           "license": "MIT OR Apache-2.0",
@@ -10156,6 +10170,6 @@
       ]
     }
   ],
-  "cargo_lock_sha256": "dd4b31926c13cd9d416532ee343d9dee59c228229dea4798ba968303a5fb1d66",
+  "cargo_lock_sha256": "174d1d400de4eb2cf336fdfd4eb60766d63aae1fa80f677e96e382cc26d83fb8",
   "schema": 1
 }

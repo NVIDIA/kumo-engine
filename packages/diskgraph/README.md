@@ -2,6 +2,52 @@
 
 DiskGraph is a Rust-based pipeline for turning CSV/Parquet tables into an on-disk graph index and exploring it with a fast TUI.
 
+## Sampling I/O configuration
+
+Set these variables before opening an index or starting training, prediction,
+or DataLoader workers. Existing readers retain their backend; the buffered
+I/O runtime initializes once per process. Restart the relevant processes to
+change their settings.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `DG_EDGE_BACKEND` | `mmap` | `mmap` uses the memory-mapped reader; `buffered` submits reads through Linux `io_uring` and uses the kernel page cache. Names are case-sensitive; unknown values are rejected. |
+| `DG_IO_RINGS` | `8` | Buffered I/O owner threads/rings per process, clamped to `1..64`. |
+| `DG_IO_QD` | `256` | Queue depth per I/O owner, clamped to `1..4096`. |
+
+Use decimal integers for numeric settings. Invalid numeric strings use their
+defaults; an invalid backend name raises an error. Ring threads and buffers
+belong to each process, so budget for every active DataLoader worker and any
+parent process that reads.
+
+`buffered` requires Linux with working `io_uring`. Selecting it on macOS or
+native Windows returns an unsupported-operation error (`DiskgraphSystemError`
+in Python). Permissions or I/O errors propagate; there is no automatic retry
+using `mmap`.
+
+An I/O owner that cannot safely drain submitted requests rejects further work.
+It retains its ring, files, and the failed batch's buffers until process exit
+to prevent the kernel from accessing freed memory. Restart the affected
+process after this terminal owner error; retention is at most one failed batch
+per owner, with no fixed byte bound. Ordinary completed read errors are
+drained and do not require this retention.
+
+Automatic native sampling and Core training configuration select standalone
+feature fetching for `buffered`. An explicit native `fused=True` request with
+this backend raises `DiskgraphConfigError`. Leave native `fused` selection
+automatic or pass `False`.
+
+```sh
+export DG_EDGE_BACKEND=buffered
+export DG_IO_RINGS=8
+export DG_IO_QD=256
+# Start the training or prediction process with this environment.
+```
+
+Keep `mmap` as the default. The [readiness review](docs/reports/buffered-io-readiness-2026-11-10.md)
+describes the implementation, qualification limits, and earlier measurements.
+Compare representative workloads before changing deployment defaults.
+
 ## Install Rust
 
 ```bash
