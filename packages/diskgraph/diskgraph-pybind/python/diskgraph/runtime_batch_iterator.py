@@ -339,6 +339,13 @@ class RuntimeIndex:
             self._indexes[extension_ref] = idx
         return idx
 
+    def sampler(self, stage: str):
+        """Share the stage's combined native reader without opening another index."""
+        self._resolve()
+        ref = self._tables[stage]
+        extension_ref = _extension_ref_from_stage_path(self._parent_root, ref["index_path"])
+        return self._index_for(extension_ref).sampler()
+
     def stage_size(self, stage: str) -> int:
         self._resolve()
         return int((self._split_info.get("stage_counts") or {}).get(stage, 0))

@@ -455,18 +455,123 @@ class DiskGraphSource:
         self._relation_mapping = artifact.manifest["relation_mapping"]
         self._diskgraph = diskgraph
         self.pack_token_stream = diskgraph.pack_token_stream
+        self.merge_event_streams = getattr(diskgraph, "merge_event_streams", None)
         self._pa = pa
         self._pc = pc
-        self._sampler = diskgraph.SamplerEngine(
-            artifact.path,
-            num_threads=num_threads,
+        self._bind_sampler(
+            diskgraph.SamplerEngine(
+                artifact.path,
+                num_threads=num_threads,
+            )
         )
-        mapping = json.loads(self._sampler.get_type_mapping())
-        self._node_types = tuple(mapping["node_types"])
-        self._relations_by_id = tuple(mapping["edge_relations"])
         self._last_temporal_profile: Mapping[str, Any] | None = None
         self._last_length_profile: Mapping[str, Any] | None = None
         self._last_graph_profile: Mapping[str, Any] | None = None
+
+    @property
+    def _sampler(self):
+        # A closed task releases its extension before Windows removes its files.
+        # Reopen the base context only if a later preparation call needs it.
+        if self._sampler_context is None:
+            self._bind_sampler(
+                self._diskgraph.SamplerEngine(self._index_path, num_threads=self._num_threads)
+            )
+        return self._sampler_context
+
+    @_sampler.setter
+    def _sampler(self, sampler):
+        self._sampler_context = sampler
+
+    def _release_sampler(self, sampler):
+        if self._sampler_context is sampler:
+            self._sampler_context = None
+        reference = getattr(self, "_materialized_reference", None)
+        if reference is not None:
+            reference.source._release_sampler(sampler)
+
+    def _bind_sampler(self, sampler):
+        """Keep source decoding aligned with the reader used by native batches."""
+        self._sampler = sampler
+        mapping = json.loads(sampler.get_type_mapping())
+        self._node_types = tuple(mapping["node_types"])
+        self._relations_by_id = tuple(mapping["edge_relations"])
+        # Materialized-value sources are task views of the plan's source.
+        # Their reference fallback must share this context too.
+        reference = getattr(self, "_materialized_reference", None)
+        if reference is not None:
+            reference.source._bind_sampler(sampler)
+
+    def _aggregate_plan(self, spec, program):
+        plan = {
+            "entity": {
+                "table": spec.entity.table,
+                "column": self._tables[spec.entity.table].primary_key,
+            },
+            "temporal": None,
+            "prediction_type": "node",
+            "stages": [
+                {
+                    "ops": [
+                        {
+                            "row_aggregate": {
+                                "rows": next(
+                                    f for f in program["frames"] if f["name"] == aggregate["frame"]
+                                ),
+                                "reduction": aggregate,
+                            }
+                        }
+                        for aggregate in program["aggregates"]
+                    ],
+                    "filter": None,
+                }
+            ],
+        }
+        return plan
+
+    def _query_values(
+        self,
+        spec,
+        roots,
+        cutoffs,
+        program,
+        *,
+        output_format="inspectable",
+        processing_chunk_size=None,
+    ):
+        aggregate_query = self._sampler.query_aggregate_plan
+        if not program["sequences"]:
+            # Both frontends lower to DiskGraphTTPlan. The explicit-anchor
+            # fragment leaves entity enumeration, TT split assignment and
+            # prediction-output policy to their existing PQL callers.
+            plan = self._aggregate_plan(spec, program)
+            return aggregate_query(
+                {spec.entity.table: roots},
+                {spec.entity.table: cutoffs},
+                json.dumps(plan),
+                output_format=output_format,
+                **(
+                    {}
+                    if processing_chunk_size is None
+                    else {"anchor_batch_size": processing_chunk_size}
+                ),
+            )
+        # Mixed explicit-request inspection/fitting retains frame reuse. This
+        # calls the same TT row/reduction kernel, not a second scalar backend.
+        # Cached production batches omit these scalar consumers entirely.
+        return self._sampler.query_temporal(
+            {spec.entity.table: roots},
+            {spec.entity.table: cutoffs},
+            json.dumps(program),
+            output_format=output_format,
+        )
+
+    def materialize_anchors(
+        self, table: AnchorTable, sample: SampleSpec, *, directory=None
+    ) -> AnchorTask:
+        """Bind GNN and sequence anchors to the same native seed-table runtime."""
+        from kumo.pytorch.engines.native_anchors import NativeAnchors
+
+        return NativeAnchors(self, sample, table, directory=directory)
 
     def string_lookup(self, keys):
         return self._diskgraph.StringLookup(keys).lookup
@@ -476,6 +581,8 @@ class DiskGraphSource:
         spec: SampleSpec,
         requests: Sequence[SampleRequest],
     ) -> list[BuiltSample]:
+        if getattr(self, "_materialized_values", None) is not None:
+            return self._materialized_reference.build(spec, requests)
         self._validate_sample(spec)
         requests = tuple(
             dataclass_replace(request, targets=_normalize_supplied_targets(spec, request.targets))
@@ -516,10 +623,11 @@ class DiskGraphSource:
         compiled = _TemporalPlanCompiler(self).compile(spec)
         compile_ns = time.perf_counter_ns() - compile_started
         native_started = time.perf_counter_ns()
-        result = self._sampler.query_temporal(
-            {spec.entity.table: root_ids},
-            {spec.entity.table: cutoffs},
-            json.dumps(compiled.plan),
+        result = self._query_values(
+            spec,
+            root_ids,
+            cutoffs,
+            compiled.plan,
         )
         native_call_ns = time.perf_counter_ns() - native_started
 
@@ -563,6 +671,10 @@ class DiskGraphSource:
     ) -> ModelSourceBatch:
         """Keep temporal values in Arrow buffers for direct model assembly."""
 
+        if getattr(self, "_materialized_values", None) is not None:
+            return self._materialized_reference.build_model_ordered(
+                spec, requests, event_orders=event_orders
+            )
         self._validate_sample(spec)
         requests = tuple(
             dataclass_replace(request, targets=_normalize_supplied_targets(spec, request.targets))
@@ -623,10 +735,11 @@ class DiskGraphSource:
         )
         compile_ns = time.perf_counter_ns() - compile_started
         native_started = time.perf_counter_ns()
-        result = self._sampler.query_temporal(
-            {spec.entity.table: root_ids},
-            {spec.entity.table: cutoffs},
-            json.dumps(compiled.plan),
+        result = self._query_values(
+            spec,
+            root_ids,
+            cutoffs,
+            compiled.plan,
             output_format="model",
         )
         native_call_ns = time.perf_counter_ns() - native_started
@@ -753,12 +866,19 @@ class DiskGraphSource:
 
         return self._last_graph_profile
 
-    @staticmethod
-    def _needs_temporal_query(spec: SampleSpec) -> bool:
+    def _needs_temporal_query(self, spec: SampleSpec) -> bool:
+        bound = getattr(self, "_materialized_values", None)
         return bool(
             spec.events
-            or any(not isinstance(value, ExternalTarget) for value in spec.targets.values())
-            or any(isinstance(value, (Aggregate, Compare)) for value in spec.entity_values.values())
+            or any(
+                not isinstance(value, ExternalTarget) and name not in getattr(bound, "targets", {})
+                for name, value in spec.targets.items()
+            )
+            or any(
+                isinstance(value, (Aggregate, Compare))
+                and name not in getattr(bound, "features", {})
+                for name, value in spec.entity_values.items()
+            )
         )
 
     def _direct_entity_arrays(
@@ -770,6 +890,7 @@ class DiskGraphSource:
             name: value
             for name, value in spec.entity_values.items()
             if isinstance(value, (Field, Constant))
+            and name not in getattr(getattr(self, "_materialized_values", None), "features", {})
         }
         columns = tuple(
             dict.fromkeys(value.column for value in direct.values() if isinstance(value, Field))
@@ -981,6 +1102,87 @@ class DiskGraphSource:
         }
         return output
 
+    def sample_graph_batch(self, sample, spec, state, runtime):
+        """Consume already sampled topology/features without rebuilding requests."""
+        if spec.source in runtime["graphs"]:
+            graph = runtime["graphs"][spec.source]
+            selected = {
+                **runtime,
+                "graphs": {"main": graph},
+                "raw_features": {
+                    table: runtime["raw_features"][f"{spec.source}/{table}"]
+                    for table in graph["node_ids"]
+                    if f"{spec.source}/{table}" in runtime["raw_features"]
+                },
+            }
+        else:
+            selected = runtime
+        previous = getattr(self, "_runtime_batch", None)
+        self._runtime_batch = selected
+        try:
+            neighborhood, events, relations = self._runtime_graph_events(
+                sample, spec.source, selected
+            )
+            return self._graph_output(
+                sample.entity.table, neighborhood, events, relations, spec.node_fields, state
+            )
+        finally:
+            self._runtime_batch = previous
+
+    def build_model_batch(self, spec, runtime, anchors, compiled):
+        """Adapt iterator buffers; history work has finished before Python resumes."""
+        if self._sampler is None:
+            raise RuntimeError("DiskGraph source is closed")
+        roots = runtime["task"]["seed_node_ids"].to_pylist()
+        direct = self._direct_entity_arrays(spec, roots)
+        if compiled is None:
+            return dataclass_replace(
+                anchors, entity_values={**anchors.entity_values, **direct}, runtime_batch=runtime
+            )
+        result = self._adapt_model_result(
+            spec,
+            (),
+            anchors.evaluation_times,
+            compiled,
+            runtime["history"],
+            direct,
+            anchor_values=anchors,
+        )
+        return dataclass_replace(result, runtime_batch=runtime)
+
+    def _runtime_graph_events(self, sample, source, runtime):
+        neighborhood = sample.neighborhoods[source]
+        graph = runtime["graphs"]["main"]
+        events = []
+        for table, ids in graph["node_ids"].items():
+            if table in self._node_types:
+                events.append(
+                    {
+                        "type": "node",
+                        "type_id": self._node_types.index(table),
+                        "batch": self._pa.record_batch(
+                            [graph["batch_dict"][table], ids], names=["id_a", "id_b"]
+                        ),
+                    }
+                )
+        for edge in graph["edge_index_dict"]:
+            relation = edge["edge_type"]["rel"]
+            events.append(
+                {
+                    "type": "edge",
+                    "rel_id": next(
+                        i
+                        for i, value in enumerate(self._relations_by_id)
+                        if value["name"] == relation
+                    ),
+                    "batch": self._pa.record_batch(
+                        [edge["src"], edge["dst"]], names=["id_a", "id_b"]
+                    ),
+                }
+            )
+        _, physical_relations = self._sampling_plan(neighborhood)
+        return neighborhood, events, physical_relations
+
     def _sample_graph_events(
         self,
         sample: SampleSpec,
@@ -990,6 +1192,14 @@ class DiskGraphSource:
         neighborhood = sample.neighborhoods.get(source)
         if neighborhood is None:
             raise ValueError(f"unknown neighborhood {source!r}")
+        runtime = getattr(self, "_runtime_batch", None)
+        if (
+            runtime is not None
+            and runtime["_anchor_neighborhood"] == source
+            and runtime["_anchor_roots"]
+            == tuple((root.sample_id, root.entity_id, root.cutoff) for root in roots)
+        ):
+            return self._runtime_graph_events(sample, source, runtime)
         root_ids = self._root_ids(sample.entity.table, roots)
 
         plan, physical_relations = self._sampling_plan(neighborhood)
@@ -1047,6 +1257,18 @@ class DiskGraphSource:
         table: str,
         requests: Sequence[SampleRequest | GraphRoot],
     ) -> list[int]:
+        runtime = getattr(self, "_runtime_batch", None)
+        if runtime is not None and runtime["_anchor_roots"] == tuple(
+            (
+                request.sample_id,
+                request.entity_id,
+                cutoff_to_epoch(request.as_of_time)
+                if isinstance(request, SampleRequest)
+                else request.cutoff,
+            )
+            for request in requests
+        ):
+            return runtime["task"]["seed_node_ids"].to_pylist()
         definition = next(item for item in self.schema.tables if item.name == table)
         dtype = definition.columns[definition.primary_key]
         root_ids = self._sampler.lookup_node_ids(
@@ -1201,6 +1423,8 @@ class DiskGraphSource:
         compiled: _CompiledTemporalPlan,
         result: Mapping[str, Any],
         direct_values: Mapping[str, Any],
+        *,
+        anchor_values: ModelSourceBatch | None = None,
     ) -> ModelSourceBatch:
         sequences = {item["name"]: item for item in result["sequences"]}
         aggregates = {item["name"]: item["values"] for item in result["aggregates"]}
@@ -1228,15 +1452,20 @@ class DiskGraphSource:
                 ordered_events[output.logical_name, output.order] = sequence
             else:
                 row_targets[output.logical_name] = ModelRowTarget(
-                    self._align_optional_rows(timestamps, offsets, len(requests)),
+                    self._align_optional_rows(timestamps, offsets, len(cutoffs)),
                     {
-                        name: self._align_optional_rows(values, offsets, len(requests))
+                        name: self._align_optional_rows(values, offsets, len(cutoffs))
                         for name, values in fields.items()
                     },
                 )
 
-        entity_values = self._entity_arrays(spec, direct_values, aggregates)
-        targets: dict[str, Any] = {}
+        entity_values = self._entity_arrays(
+            spec,
+            {**({} if anchor_values is None else anchor_values.entity_values), **direct_values},
+            aggregates,
+        )
+        bound_targets = getattr(getattr(self, "_materialized_values", None), "targets", {})
+        targets: dict[str, Any] = {} if anchor_values is None else dict(anchor_values.targets)
         for anchor, request in enumerate(requests):
             for target in request.targets:
                 if target.name in spec.targets and not isinstance(
@@ -1248,16 +1477,25 @@ class DiskGraphSource:
             {
                 name: self._typed_array(aggregates[f"target:{name}"], target.dtype)
                 for name, target in spec.targets.items()
-                if isinstance(target, Aggregate)
+                if isinstance(target, Aggregate) and name not in bound_targets
             }
         )
         targets.update(
             {
                 name: self._comparison_array(target, aggregates[f"target:{name}"])
                 for name, target in spec.targets.items()
-                if isinstance(target, Compare)
+                if isinstance(target, Compare) and name not in bound_targets
             }
         )
+        if anchor_values is not None:
+            return dataclass_replace(
+                anchor_values,
+                entity_values=entity_values,
+                events=events,
+                ordered_events=ordered_events,
+                targets=targets,
+                row_targets=row_targets,
+            )
         return ModelSourceBatch(
             sample_ids=tuple(request.sample_id for request in requests),
             entity_ids=tuple(request.entity_id for request in requests),
@@ -1266,6 +1504,7 @@ class DiskGraphSource:
             entity_values=entity_values,
             events=events,
             ordered_events=ordered_events,
+            merge_event_streams=getattr(self, "merge_event_streams", None),
             targets=targets,
             row_targets=row_targets,
             splits=tuple(request.split for request in requests),
@@ -1355,6 +1594,8 @@ class DiskGraphSource:
         result = dict(direct)
         for name in _value_evaluation_order(spec.entity_values):
             expression = spec.entity_values[name]
+            if name in result:
+                continue
             if isinstance(expression, Aggregate):
                 result[name] = self._typed_array(aggregates[f"entity:{name}"], expression.dtype)
             elif isinstance(expression, Compare):
@@ -1630,7 +1871,7 @@ class DiskGraphSource:
                 tuple(
                     dict.fromkeys(
                         (
-                            *((primary_key,) if primary_key is not None else ()),
+                            *(() if primary_key is None else (primary_key,)),
                             *(
                                 (use.field for use in node_fields[table].fields)
                                 if table in node_fields
@@ -1642,10 +1883,10 @@ class DiskGraphSource:
             )
             feature_fetch_ns += time.perf_counter_ns() - started
             started = time.perf_counter_ns()
-            node_ids = (
-                _graph_node_ids(feature_arrays[primary_key])
+            node_ids = _graph_node_ids(
+                feature_arrays[primary_key]
                 if primary_key is not None
-                else torch.tensor(ids, dtype=torch.long)
+                else self._pa.array(ids, type=self._pa.uint64())
             )
             identity_fetch_ns += time.perf_counter_ns() - started
             started = time.perf_counter_ns()
@@ -1706,6 +1947,13 @@ class DiskGraphSource:
         node_ids: Sequence[int],
         names: Sequence[str],
     ) -> dict[str, Any]:
+        runtime = getattr(self, "_runtime_batch", None)
+        if runtime is not None and table in runtime["raw_features"]:
+            ids = runtime["graphs"]["main"]["node_ids"].get(table)
+            if ids is not None and np.array_equal(ids.to_numpy(), np.asarray(node_ids)):
+                data = self._pa.Table.from_batches(runtime["raw_features"][table]["record_batches"])
+                if all(name in data.column_names for name in names):
+                    return {name: data[name].combine_chunks() for name in names}
         if not names:
             return {}
         if not node_ids:
@@ -1793,7 +2041,10 @@ class _TemporalPlanCompiler:
         self, spec: SampleSpec, *, event_orders: Mapping[str, Sequence[str]] | None = None
     ) -> _CompiledTemporalPlan:
         self.root_table = spec.entity.table
+        bound = getattr(self.source, "_materialized_values", None)
         for name, expression in spec.entity_values.items():
+            if name in getattr(bound, "features", {}):
+                continue
             if isinstance(expression, (Aggregate, Compare)):
                 self._aggregate(
                     f"entity:{name}",
@@ -1807,6 +2058,8 @@ class _TemporalPlanCompiler:
                 )
                 self._sequence(native_name, "event", name, event, output_order=order)
         for name, target in spec.targets.items():
+            if name in getattr(bound, "targets", {}):
+                continue
             if isinstance(target, (Aggregate, Compare)):
                 self._aggregate(
                     f"target:{name}", target.left if isinstance(target, Compare) else target

@@ -692,6 +692,20 @@ def _instrument(engine: Engine, epochs: list[Counter[str]]) -> Callable[..., obj
                 return built
 
             setattr(source, model_method, counted_model)
+        build_batch = getattr(source, "build_model_batch", None)
+        if build_batch is not None:
+
+            def counted_batch(spec, runtime, anchors, compiled):
+                built = build_batch(spec, runtime, anchors, compiled)
+                work = epochs[-1]
+                work["build_calls"] += 1
+                work["requests"] += len(anchors.sample_ids)
+                profile = getattr(source, "last_temporal_profile", None) or {}
+                for name, value in profile.get("native_stats", {}).items():
+                    work[f"native.{name}"] += int(value)
+                return built
+
+            source.build_model_batch = counted_batch
         return source
 
     return opened
@@ -1002,19 +1016,17 @@ def anchor_splits(case: GeneratedCase, engine: str, position: int) -> None:
     """Split selection from an anchor table: names, unions and the null split.
 
     Each selection counts and serves exactly its anchors, in table order when
-    not shuffled, with the same samples as one pass; DiskGraph's shuffled order
-    equals the reference's.
+    not shuffled, with the same samples as one pass. Shuffled order must be
+    repeatable within each engine; the contract allows engines different orders.
     """
 
     rows = split_anchor_rows(case)
-    orders: dict[str, list[list[str]]] = {}
     engines = (engine, "in_memory") if engine != "in_memory" else (engine,)
     for name in engines:
         with _anchored(case, name, anchor_rows=rows) as (dataset, engine_object, anchors):
             with prepare(case.contract, dataset, engine_object) as plan:
                 task = plan.materialize(anchors, fit_split=ALL_ANCHORS)
                 whole = {row[0]: row[2] for row in _delivered(list(task.batches(batch_size=1)))}
-                orders[name] = []
                 for selection in SELECTIONS:
                     expected = selected(rows, selection)
                     shown = (
@@ -1034,8 +1046,11 @@ def anchor_splits(case: GeneratedCase, engine: str, position: int) -> None:
                         all(row[2] == whole[row[0]] for row in served), f"{label}: samples differ"
                     )
                     shuffled = task.batches(split=selection, batch_size=3, shuffle=True, seed=7)
-                    orders[name].append([row[0] for row in _delivered(list(shuffled))])
-    _require(orders[engine] == orders[engines[-1]], f"{engine} shuffles splits differently")
+                    first = [row[0] for row in _delivered(list(shuffled))]
+                    repeated = task.batches(split=selection, batch_size=3, shuffle=True, seed=7)
+                    second = [row[0] for row in _delivered(list(repeated))]
+                    _require(sorted(first) == sorted(expected), f"{label}: shuffled anchors differ")
+                    _require(first == second, f"{label}: shuffle is not repeatable")
 
 
 def root_availability(case: GeneratedCase, engine: str, position: int) -> None:

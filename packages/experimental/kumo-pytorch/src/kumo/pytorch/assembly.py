@@ -10,7 +10,7 @@ import copy
 import hashlib
 import json
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass, replace
 from dataclasses import field as dataclass_field
@@ -367,40 +367,63 @@ def _model_rows(source: Any, values: ModelSourceBatch, declarations: Mapping[str
                 columns=columns,
                 sources=np.full(int(boundaries[-1]), name, dtype=object),
             )
-    lengths = [
-        np.diff(item.offsets.to_numpy(zero_copy_only=False).astype(np.int64))
-        for _, item in sequences
-    ]
-    owners = np.concatenate([np.repeat(np.arange(values.batch_size), size) for size in lengths])
-    times = np.concatenate(
-        [item.timestamps.to_numpy(zero_copy_only=False) for _, item in sequences]
-    )
-    ranks = np.concatenate(
-        [
-            np.full(len(item.timestamps), rank, dtype=np.int64)
-            for rank, (_, item) in enumerate(sequences)
-        ]
-    )
-    within = np.concatenate(
-        [
-            np.arange(len(item.timestamps)) * (1 if item.order == "ascending" else -1)
+    merge_key = (tuple(source.events), source.max_events, source.keep, source.order)
+    premerged = getattr(values, "merged_events", {}).get(merge_key)
+    if premerged is not None or getattr(values, "merge_event_streams", None) is not None:
+        native_bounds, native_order = (
+            premerged
+            if premerged is not None
+            else values.merge_event_streams(
+                [
+                    (item.offsets, item.timestamps, item.order == "ascending")
+                    for _, item in sequences
+                ],
+                source.max_events,
+                source.keep == "last",
+                source.order == "descending",
+            )
+        )
+        bounds = native_bounds.to_numpy(zero_copy_only=False)
+        order = native_order.to_numpy(zero_copy_only=False)
+        ends = np.cumsum([len(item.timestamps) for _, item in sequences])
+        components = np.searchsorted(ends, order, side="right")
+        selected_sources = np.asarray([name for name, _ in sequences], dtype=object)[components]
+    else:
+        lengths = [
+            np.diff(item.offsets.to_numpy(zero_copy_only=False).astype(np.int64))
             for _, item in sequences
         ]
-    )
-    names = np.concatenate(
-        [np.full(len(item.timestamps), name, dtype=object) for name, item in sequences]
-    )
-    order = np.lexsort((within, ranks, times, owners))
-    counts = np.bincount(owners[order], minlength=values.batch_size)
-    starts = offsets(counts)[:-1]
-    kept = counts if source.max_events is None else np.minimum(counts, source.max_events)
-    if source.keep == "last":
-        starts += counts - kept
-    bounds = offsets(kept)
-    positions = np.arange(int(bounds[-1])) - np.repeat(bounds[:-1], kept)
-    if source.order == "descending":
-        positions = np.repeat(kept, kept) - 1 - positions
-    order = order[np.repeat(starts, kept) + positions]
+        owners = np.concatenate([np.repeat(np.arange(values.batch_size), size) for size in lengths])
+        times = np.concatenate(
+            [item.timestamps.to_numpy(zero_copy_only=False) for _, item in sequences]
+        )
+        ranks = np.concatenate(
+            [
+                np.full(len(item.timestamps), rank, dtype=np.int64)
+                for rank, (_, item) in enumerate(sequences)
+            ]
+        )
+        within = np.concatenate(
+            [
+                np.arange(len(item.timestamps)) * (1 if item.order == "ascending" else -1)
+                for _, item in sequences
+            ]
+        )
+        names = np.concatenate(
+            [np.full(len(item.timestamps), name, dtype=object) for name, item in sequences]
+        )
+        order = np.lexsort((within, ranks, times, owners))
+        counts = np.bincount(owners[order], minlength=values.batch_size)
+        starts = offsets(counts)[:-1]
+        kept = counts if source.max_events is None else np.minimum(counts, source.max_events)
+        if source.keep == "last":
+            starts += counts - kept
+        bounds = offsets(kept)
+        positions = np.arange(int(bounds[-1])) - np.repeat(bounds[:-1], kept)
+        if source.order == "descending":
+            positions = np.repeat(kept, kept) - 1 - positions
+        order = order[np.repeat(starts, kept) + positions]
+        selected_sources = names[order]
     columns = {}
     for name, resolved in declarations.items():
         dtype = resolved[0][1]
@@ -418,7 +441,7 @@ def _model_rows(source: Any, values: ModelSourceBatch, declarations: Mapping[str
             for component, item in sequences
         ]
         columns[name] = pc.take(pa.concat_arrays(parts), pa.array(order))
-    return _Rows(boundaries=bounds, columns=columns, sources=names[order])
+    return _Rows(boundaries=bounds, columns=columns, sources=selected_sources)
 
 
 def _eligible(rows: _Rows, representation: Fields, declarations: Mapping[str, Any]) -> _Rows:
@@ -2148,6 +2171,11 @@ class PreparedBatchPlan:
                     source=prepared.spec.source.name,
                     node_fields=prepared.spec.representation.node_fields,
                 )
+                if model and getattr(values, "runtime_batch", None) is not None:
+                    result[name] = self._source.sample_graph_batch(
+                        self.sample, graph, prepared.state, values.runtime_batch
+                    )
+                    continue
                 roots = (
                     [
                         GraphRoot(
@@ -2472,23 +2500,26 @@ def _model_retrieval_sample(sample: SampleSpec, spec: BatchSpec) -> SampleSpec:
         for value in spec.inputs.values()
         if isinstance(value.source, EventSource) and value.source.collection == "history"
     ]
-    consumers = Counter(name for source in sources for name in source.events)
-    bounded = {}
+    consumers = defaultdict(list)
     for source in sources:
-        if (
-            len(source.events) != 1
-            or type(source.max_events) is not int
-            or source.max_events > np.iinfo(np.intp).max
-        ):
-            continue
-        name = source.events[0]
+        for name in source.events:
+            consumers[name].append(source)
+    bounded = {}
+    for name, uses in consumers.items():
         event = sample.events[name]
-        if consumers[name] != 1 or event.limit is not None or event.order != "ascending":
+        if event.limit is not None:
+            continue  # An explicit event limit defines membership before model capping.
+        if any(type(use.max_events) is not int for use in uses):
             continue
+        if len({use.keep for use in uses}) != 1:
+            continue
+        limit = max(use.max_events for use in uses)
+        if limit > np.iinfo(np.intp).max:
+            continue
+        # The global first/last K cannot contain an event outside the first/last
+        # K of its component. Bound each component before native feature decoding.
         bounded[name] = replace(
-            event,
-            limit=source.max_events,
-            order="ascending" if source.keep == "first" else "descending",
+            event, limit=limit, order="ascending" if uses[0].keep == "first" else "descending"
         )
     return replace(sample, events={**sample.events, **bounded}) if bounded else sample
 

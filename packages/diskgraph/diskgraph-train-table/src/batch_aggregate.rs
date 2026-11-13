@@ -902,16 +902,16 @@ fn materialize_frame(
     let columns = prepared.columns.clone();
     let projection_indices = prepared.projection.clone();
     let mut deferred_columns = HashMap::new();
-    // A second rowpack pass loses when most rows are returned. Conservatively
-    // defer only if at most a quarter of candidates need sequence-only fields.
-    // This changes execution cost, never which rows an output receives.
+    // A capped history-only frame must defer payload until selection, even
+    // without a matching edge clock. Retain the selectivity heuristic for
+    // frames whose aggregates also require a complete input projection.
     let full_columns = full_columns.filter(|(_, limit)| {
         let total = rows_by_anchor.iter().map(Vec::len).sum::<usize>();
         let selected = rows_by_anchor
             .iter()
             .map(|rows| rows.len().min(*limit))
             .sum::<usize>();
-        total > 0 && selected <= total / 4
+        total > 0 && selected < total && (sequence.is_some() || selected <= total / 4)
     });
     let (columns, projection_indices) = if let Some((required, _)) = full_columns {
         columns
@@ -2397,21 +2397,17 @@ fn execute_query(
                 continue;
             }
         }
-        // Aggregates need the full frame; multiple consumers may need opposite
-        // ends or different limits. Keep their full row selection unchanged.
-        let sequence = match consumers.as_slice() {
-            [sequence]
-                if !plan.aggregates.iter().any(|a| a.frame == frame_plan.name)
-                    && sequence.limit.is_some() =>
-            {
-                Some(*sequence)
-            }
-            _ => None,
-        };
-        // Keep metadata and every aggregate input complete, but defer sequence-only
-        // payload until exact timestamp/PK selection and the sequence cap. This
-        // also handles sequence-only frames whose edge clock cannot pre-cap rows.
-        let full_columns = (consumers.len() == 1 && consumers[0].limit.is_some()).then(|| {
+        // A history frame may serve several projections/output orders, but
+        // preselection is safe only when they select the same capped rows.
+        let sequence = consumers.first().copied().filter(|first| {
+            first.limit.is_some()
+                && !plan.aggregates.iter().any(|a| a.frame == frame_plan.name)
+                && consumers.iter().all(|s| s.limit == first.limit && s.order == first.order)
+        });
+        // Keep aggregate inputs complete; decode history-only payload only
+        // after its exact timestamp/PK selection, including fallback clocks.
+        let full_columns = (sequence.is_some()
+            || consumers.len() == 1 && consumers[0].limit.is_some()).then(|| {
             let mut columns = HashSet::new();
             for aggregate in plan
                 .aggregates

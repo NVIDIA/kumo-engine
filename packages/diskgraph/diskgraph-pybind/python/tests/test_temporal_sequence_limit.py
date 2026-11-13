@@ -498,8 +498,11 @@ def test_clipped_or_coarse_timestamps_cannot_displace_eligible_rows(
     assert (
         result["sequences"][0]["batch"].column("id").to_pylist() == expected_ids[:limit]
     )
-    # A clipped or coarse clock needs the existing full-frame rowpack check.
-    assert result["stats"]["rows_decoded"] == 3
+    # All three clock/PK pairs are needed to reject the clipped/future row;
+    # payload is now decoded only for the exact capped output.
+    selected = len(expected_ids[:limit])
+    assert result["stats"]["rows_decoded"] == 3 + selected
+    assert result["stats"]["values_decoded"] == 3 * 2 + selected
 
 
 @pytest.mark.parametrize(
@@ -987,3 +990,23 @@ def test_sequence_only_caps_before_decoding_payload_when_clock_cannot_preselect(
     assert a["batch"].equals(b["batch"].take(pa.array(selected, type=pa.int64())))
     assert actual["stats"]["edges_visited"] == full["stats"]["edges_visited"]
     assert actual["stats"]["values_decoded"] < full["stats"]["values_decoded"]
+
+
+@pytest.mark.parametrize("order", ["ascending", "descending"])
+def test_history_payload_cap_is_not_disabled_by_low_selectivity(history_graph, order):
+    plan = plan_for(history_graph, order=order, clock="other_time", limit=20)
+    plan["frames"][0]["columns"] += ["owner", "time"]
+    plan["sequences"][0]["columns"] += ["owner", "time"]
+    unlimited = copy.deepcopy(plan)
+    unlimited["sequences"][0]["limit"] = None
+    full, actual = query(history_graph, unlimited), query(history_graph, plan)
+    a, b = actual["sequences"][0], full["sequences"][0]
+    selected = [row for start, stop in zip(b["offsets"], b["offsets"][1:])
+                for row in range(start, min(start + 20, stop))]
+    assert a["batch"].equals(b["batch"].take(pa.array(selected, type=pa.int64())))
+    # Only timestamps and PKs are decoded for ranking all candidates. Payload
+    # (value, owner, time) is decoded only for the selected rows, even when
+    # selection exceeds the old one-quarter deferral threshold.
+    candidates, returned = full["stats"]["rows_decoded"], len(selected)
+    assert returned > candidates // 4
+    assert actual["stats"]["values_decoded"] == candidates * 2 + returned * 3
