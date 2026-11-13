@@ -82,7 +82,7 @@ def ensure_diskgraph_index(
     schema and PK/FK relations with exactly one primary-key side.
     A matching index is reused. An incompatible or incomplete index is never
     overwritten. ``if_missing=False`` requires the index to exist already.
-    An ingest also computes ``column_stats``: requests at cutoffs in seconds.
+    An ingest also computes ``column_stats``: requests at cutoffs in epoch nanoseconds.
     """
 
     if num_shards <= 0:
@@ -117,7 +117,7 @@ def ensure_diskgraph_index(
         clock = config.get("timestamp_unit", "seconds")
         ticks = list(
             dict.fromkeys(
-                None if cutoff is None else diskgraph.cutoff_ticks(cutoff, clock)
+                None if cutoff is None else diskgraph.convert_ticks(cutoff, "nanoseconds", clock)
                 for cutoff in cutoffs
             )
         )

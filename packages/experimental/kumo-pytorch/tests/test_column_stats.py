@@ -227,7 +227,9 @@ def test_pinned_encoders_match_numpy_over_rows_up_to_the_cutoff(tmp_path, engine
     # t-digest cuts: each within one rank of the exact quantile.
     ranks = [np.mean(amounts <= cut) for cut in buckets["boundaries"]]
     assert np.allclose(ranks, [0.25, 0.5, 0.75][: len(ranks)], atol=1.5 / len(amounts))
-    assert _statistics(fitted)["cutoff"] == (None if bound is None else int(bound.timestamp()))
+    assert _statistics(fitted)["cutoff"] == (
+        None if bound is None else int(bound.timestamp()) * 10**9
+    )
 
 
 def test_statistics_keep_a_file_per_table_per_cutoff_and_compute_only_what_is_missing(

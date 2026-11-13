@@ -10,7 +10,8 @@ use anyhow::{anyhow, ensure, Result};
 use arrow::compute::filter_record_batch;
 use arrow_array::cast::AsArray;
 use arrow_array::types::UInt64Type;
-use arrow_array::{ArrayRef, Int64Array, TimestampSecondArray};
+use arrow_array::{ArrayRef, Int64Array};
+use diskgraph_core::time::convert_trunc;
 use diskgraph_index::graph::GraphIndexReader;
 use diskgraph_ingest::column_scan::{at_cutoff, create_times, decode_chunk, node_chunks};
 use diskgraph_ingest::cutoff_col_stats::CutoffColStatsRequest;
@@ -126,17 +127,14 @@ pub fn cutoff_col_stats(
     .map_err(map_anyhow_err)
 }
 
-/// Epoch `seconds` in the index clock `unit`, rounded as ingest rounds a row's create time.
+/// `value` in index clock `from` as ticks of index clock `to`, truncated.
 #[pyfunction]
-pub fn cutoff_ticks(seconds: i64, unit: &str) -> PyResult<i64> {
-    let clock = crate::tt_builder::parse_index_clock(unit)?;
-    let array: ArrayRef = Arc::new(TimestampSecondArray::from(vec![seconds]));
-    create_times(&array, clock)[0].ok_or_else(|| {
-        DiskgraphConfigError::new_err(format!("cutoff {seconds} s is outside the {unit} clock"))
-    })
+pub fn convert_ticks(value: i64, from: &str, to: &str) -> PyResult<i64> {
+    let parse = crate::tt_builder::parse_index_clock;
+    Ok(convert_trunc(value, parse(from)?, parse(to)?))
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cutoff_col_stats, m)?)?;
-    m.add_function(wrap_pyfunction!(cutoff_ticks, m)?)
+    m.add_function(wrap_pyfunction!(convert_ticks, m)?)
 }

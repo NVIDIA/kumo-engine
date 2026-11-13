@@ -22,7 +22,7 @@ from kumo.pytorch.anchors import AnchorTable
 from kumo.pytorch.column_stats import (
     ColumnStats,
     StatRequest,
-    cutoff_seconds,
+    cutoff_nanos,
     read_column_stats,
 )
 from kumo.pytorch.contract.batch import EntitySource, EventSource, Input
@@ -232,7 +232,7 @@ class DiskGraphEngine:
         self.num_threads = num_threads
         self.num_shards = num_shards
         self.ingest = ingest
-        self.encoder_cutoffs = tuple(dict.fromkeys(cutoff_seconds(v) for v in encoder_cutoffs))
+        self.encoder_cutoffs = tuple(dict.fromkeys(cutoff_nanos(v) for v in encoder_cutoffs))
 
     def check_contract(self, contract: DataLoaderSpec) -> tuple[ValidationIssue, ...]:
         """Refuse the entries of `unsupported` the contract uses, before any data is read."""
@@ -841,7 +841,11 @@ class DiskGraphSource:
         )
 
     def column_stats(self, requests: Sequence[StatRequest], cutoff: int | None) -> ColumnStats:
-        ticks = None if cutoff is None else self._diskgraph.cutoff_ticks(cutoff, self._clock)
+        ticks = (
+            None
+            if cutoff is None
+            else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock)
+        )
         return read_column_stats(self._index_path, requests, ticks, self._clock, self._num_threads)
 
     def fit_graph_fields(

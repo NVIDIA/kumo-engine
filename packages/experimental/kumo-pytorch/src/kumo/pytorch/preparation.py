@@ -35,7 +35,7 @@ from kumo.pytorch.assembly import PreviewResult, _fingerprint, _InputState, fit_
 from kumo.pytorch.column_stats import (
     LATEST_ANCHOR,
     _LatestAnchor,
-    cutoff_seconds,
+    cutoff_nanos,
     fit_from_stats,
     table_column_encoders,
 )
@@ -221,9 +221,7 @@ class Plan:
             )
         if inference and fit_split is not None:
             raise ValueError("fit_split has nothing to fit in inference")
-        cutoff = (
-            encoder_cutoff if encoder_cutoff is LATEST_ANCHOR else cutoff_seconds(encoder_cutoff)
-        )
+        cutoff = encoder_cutoff if encoder_cutoff is LATEST_ANCHOR else cutoff_nanos(encoder_cutoff)
         source = self._require_open()
         if isinstance(anchors, AnchorTable):
             issues = check(
@@ -311,7 +309,7 @@ class Plan:
         if not encoders or column_stats is None or not fitting:
             return {}, {}
         latest = (
-            max(cutoff_to_epoch(request.as_of_time) for request in fitting)
+            max(cutoff_to_epoch(request.as_of_time) for request in fitting) * 10**9
             if self.contract.requires_anchor_time
             else None
         )
@@ -532,5 +530,7 @@ def _source_issues(
     return () if check_sources is None else tuple(check_sources(sources, path))
 
 
-def _iso(seconds: int) -> str:
-    return dt.datetime.fromtimestamp(seconds, dt.UTC).isoformat()
+def _iso(nanos: int) -> str:
+    return (
+        dt.datetime(1970, 1, 1, tzinfo=dt.UTC) + dt.timedelta(microseconds=nanos // 1_000)
+    ).isoformat()

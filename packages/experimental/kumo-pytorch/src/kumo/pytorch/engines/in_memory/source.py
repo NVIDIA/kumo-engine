@@ -69,6 +69,7 @@ class InMemorySource:
     def column_stats(self, requests: Sequence[StatRequest], cutoff: int | None) -> ColumnStats:
         import tempfile
 
+        import diskgraph
         import pyarrow as pa
         import pyarrow.parquet as pq
 
@@ -81,8 +82,11 @@ class InMemorySource:
             if self._tables[table.name] and any(item[0] == table.name for item in requests)
         ]
         columns = {item: EMPTY_STATS for item in requests}
+        ticks = (
+            None if cutoff is None else diskgraph.convert_ticks(cutoff, "nanoseconds", "seconds")
+        )
         if not stored:
-            return ColumnStats(columns, {"value": cutoff, "unit": "seconds"})
+            return ColumnStats(columns, {"value": ticks, "unit": "seconds"})
         with tempfile.TemporaryDirectory() as directory:
             sources = {}
             for table in stored:
@@ -100,8 +104,8 @@ class InMemorySource:
             ensure_diskgraph_index(DataSchema(tables=tuple(stored)), Dataset(sources), index)
             names = {table.name for table in stored}
             group = [item for item in requests if item[0] in names]
-            columns.update(read_column_stats(index, group, cutoff, "seconds").columns)
-        return ColumnStats(columns, {"value": cutoff, "unit": "seconds"})
+            columns.update(read_column_stats(index, group, ticks, "seconds").columns)
+        return ColumnStats(columns, {"value": ticks, "unit": "seconds"})
 
     def sample_graph(
         self,
