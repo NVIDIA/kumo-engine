@@ -1,12 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+from typing import cast
+
 import pytest
 import torch
 from kumoapi.task import TaskType
 from torch import Tensor
 from torch_geometric.data import HeteroData
 from torch_geometric.nn import MLP
+from torch_geometric.nn.module_dict import ModuleDict
 
 from kumo_core.explain.walk_relevance import (
     HybridLinkReadout,
@@ -150,9 +153,12 @@ def test_planted_walk_ranks_top(method: str) -> None:
     with torch.no_grad():
         for param in gnn.parameters():
             param.mul_(0.01)
-        gnn.hetero_convs[0][METADATA[1][3]].lin.weight[0, 0] = 1.0
+        convs = [cast(ModuleDict, convs) for convs in gnn.hetero_convs]
+        lin0 = cast(torch.nn.Linear, convs[0][METADATA[1][3]].lin)
+        lin0.weight[0, 0] = 1.0
         # Channel 0 of the `sum` block of customer aggregation:
-        gnn.hetero_convs[1][METADATA[1][0]].lin.weight[0, 0] = 1.0
+        lin1 = cast(torch.nn.Linear, convs[1][METADATA[1][0]].lin)
+        lin1.weight[0, 0] = 1.0
 
     x_dict, edge_index_dict = make_graph()
     for x in x_dict.values():
@@ -161,10 +167,11 @@ def test_planted_walk_ranks_top(method: str) -> None:
     x_dict['products'][1, 0] = 1.0
 
     mlp = make_mlp(num_layers=1)
+    lin = cast(torch.nn.Linear, mlp.lins[0])
     with torch.no_grad():
-        mlp.lins[0].weight.zero_()
-        mlp.lins[0].weight[0, 0] = 1.0
-        mlp.lins[0].bias.zero_()
+        lin.weight.zero_()
+        lin.weight[0, 0] = 1.0
+        lin.bias.zero_()
 
     readout = NodeReadout(('customers', 0), mlp)
     out = WalkRelevance(gnn, method).explain(x_dict, edge_index_dict, readout)
