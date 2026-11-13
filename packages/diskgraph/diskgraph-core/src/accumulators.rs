@@ -1575,7 +1575,6 @@ impl SharedColumnCounts {
             .enumerate()
             .filter(|(_, group)| !group.is_empty())
             .collect();
-        let capped = self.capped.load(Ordering::Relaxed);
         let mut new_values = 0;
         // Busy partitions are skipped on the first pass and waited for on the second.
         for wait in [false, true] {
@@ -1590,6 +1589,8 @@ impl SharedColumnCounts {
                     busy.push((index, group));
                     continue;
                 };
+                // Read under the lock: a stale flag would store an evicted value as exact.
+                let capped = self.capped.load(Ordering::Relaxed);
                 for (hash, value, delta) in group {
                     new_values += u64::from(partition.add(hash, value, delta, capped));
                 }
