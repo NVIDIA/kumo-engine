@@ -11,6 +11,7 @@ as sets keyed by ``sample_id``. A failing case is written as a repro file.
 
 from __future__ import annotations
 
+import bisect
 import json
 import math
 import random
@@ -99,8 +100,12 @@ from kumo.pytorch.api import (
     check,
     prepare,
 )
+from kumo.pytorch.column_stats import table_column_encoders
+from kumo.pytorch.contract.batch.encodings import Buckets
 from kumo.pytorch.contract.sample import BuiltSample
+from kumo.pytorch.contract.schema import table_clock
 from kumo.pytorch.data.model import ModelSourceBatch
+from kumo.pytorch.data.records import cutoff_to_epoch
 
 Answer = dict[str, dict[str, Scalar]]
 #: One delivered row: sample ID, padding flag, and each numeric field as (valid, value).
@@ -119,6 +124,11 @@ SUMMATION_DEPENDENT = frozenset(
 #: floor for results near zero.
 #: Everything else is exact.
 MOMENT_TOLERANCE = 1e-12
+#: Allowed discrepancy: Buckets cuts over stored columns are t-digest quantiles, and
+#: the digest depends on how the index splits the rows into shards. Each engine's cut
+#: lies within 1.5 ranks of the exact quantile (tests/test_column_stats.py), so two
+#: engines' cuts lie within 3 ranks of each other.
+BUCKET_RANKS = 3
 
 
 # -- Running a case ----------------------------------------------------------
@@ -1097,14 +1107,40 @@ def fitted_state(case: GeneratedCase, engine: str, position: int) -> None:
         except PropertyFailure as error:
             failures.append(str(error))
             continue
-        differences = state_differences(
-            fitted_structure(states["in_memory"]),
-            fitted_structure(states[engine]),
-            MOMENT_TOLERANCE,
-        )
+        reference, actual = fitted_structure(states["in_memory"]), fitted_structure(states[engine])
+        for identity, values in _bucket_values(case, contract).items():
+            cuts = [state["encoders"][identity]["boundaries"] for state in (reference, actual)]
+            ranks = [[bisect.bisect_left(values, cut) for cut in side] for side in cuts]
+            if len(ranks[0]) == len(ranks[1]) and all(
+                abs(left - right) <= BUCKET_RANKS for left, right in zip(*ranks, strict=True)
+            ):
+                actual["encoders"][identity]["boundaries"] = cuts[0]
+        differences = state_differences(reference, actual, MOMENT_TOLERANCE)
         if differences:
             failures.append(f"{label}: fitted state differs:\n  " + "\n  ".join(differences[:8]))
     _require(not failures, "\n".join(failures))
+
+
+def _bucket_values(case: GeneratedCase, contract: DataLoaderSpec) -> dict[str, list]:
+    """The sorted values each Buckets encoder over stored columns fits on."""
+
+    cutoff = (
+        max(cutoff_to_epoch(request.as_of_time) for request in case.requests)
+        if contract.requires_anchor_time
+        else None
+    )
+    clocks = {table.name: table_clock(table) for table in contract.schema.tables}
+    return {
+        identity: sorted(
+            row[column]
+            for table, column in encoder.columns
+            for row in case.tables[table]
+            if row[column] is not None
+            and (cutoff is None or clocks[table] is None or row[clocks[table]] <= cutoff)
+        )
+        for identity, encoder in table_column_encoders(contract).items()
+        if isinstance(encoder.config, Buckets)
+    }
 
 
 def _recording(engine: Engine, inputs: Answer) -> Callable[..., object]:

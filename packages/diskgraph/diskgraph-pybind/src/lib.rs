@@ -188,6 +188,7 @@ mod bp_evaluate;
 mod exact_quantiles;
 mod col_stats_export;
 mod custom_tt_entry;
+mod cutoff_col_stats;
 mod index_metadata;
 mod success_marker;
 mod string_lookup;
@@ -1337,6 +1338,7 @@ pub fn convert_kumo_config(
     edges_map_threads=None,
     index_threads=None,
     parent_index_path=None,
+    cutoff_col_stats=None,
 ))]
 #[tracing::instrument(
     level = "info",
@@ -1362,6 +1364,7 @@ pub fn ingest(
     edges_map_threads: Option<usize>,
     index_threads: Option<usize>,
     parent_index_path: Option<&str>,
+    cutoff_col_stats: Option<&str>,
 ) -> PyResult<String> {
     let start_time = std::time::Instant::now();
     info!(
@@ -1414,6 +1417,12 @@ pub fn ingest(
         index_threads,
         parent_index_path: parent_index_path.map(std::path::PathBuf::from),
         resolve_columns: Vec::new(),
+        cutoff_col_stats: cutoff_col_stats
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|e| {
+                DiskgraphConfigError::new_err(format!("Invalid cutoff_col_stats JSON: {e}"))
+            })?,
     };
 
     let output_dir = output_dir.to_string();
@@ -1834,6 +1843,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     runtime_batch_iterator::register(m)?;
     m.add_class::<PySampleIterator>()?;
     m.add_function(wrap_pyfunction!(tt_builder::build_split_spec_json, m)?)?;
+    m.add_function(wrap_pyfunction!(tt_builder::convert_ticks, m)?)?;
     m.add_class::<tt_builder::DiskGraphTTBuilder>()?;
     m.add_class::<tt_builder::EdgeRef>()?;
     m.add_class::<tt_builder::RowFilter>()?;
@@ -1865,6 +1875,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     temporal::register(m)?;
+    cutoff_col_stats::register(m)?;
     token_stream::register(m)?;
     custom_tt_contract::register(m)?;
     Ok(())

@@ -614,6 +614,14 @@ def _encoder_identity(input_name: str, use: Encode) -> str:
     )
 
 
+def _graph_encoder_identity(input_name: str, table: str, use: Encode) -> str:
+    return (
+        _identity("shared", use.encoding.name)
+        if isinstance(use.encoding, UseEncoding)
+        else _identity("inputs", input_name, "graph", table, use.field)
+    )
+
+
 def _fit_inputs(
     sample: SampleSpec,
     spec: BatchSpec,
@@ -623,6 +631,7 @@ def _fit_inputs(
     model: bool = False,
     source: Any = None,
     requests=(),
+    pinned: Mapping[str, FittedEncoder] = MappingProxyType({}),
 ) -> _InputState:
     import pyarrow as pa
 
@@ -644,17 +653,22 @@ def _fit_inputs(
                 )
                 for item in values
             ]
-            observed = source.fit_graph_fields(sample, graph, roots)
+            identities = {
+                (table, use.field): _graph_encoder_identity(name, table, use)
+                for table, group in value.representation.node_fields.items()
+                for use in group.fields
+            }
+            observed = (
+                {}
+                if set(identities.values()) <= set(pinned)
+                else source.fit_graph_fields(sample, graph, roots)
+            )
             graph_fields[name] = {}
             tables = {table.name: table for table in contract.schema.tables}
             for table, group in value.representation.node_fields.items():
                 graph_fields[name][table] = {}
                 for use in group.fields:
-                    identity = (
-                        _identity("shared", use.encoding.name)
-                        if isinstance(use.encoding, UseEncoding)
-                        else _identity("inputs", name, "graph", table, use.field)
-                    )
+                    identity = identities[(table, use.field)]
                     dtype = tables[table].columns[use.field]
                     config = (
                         spec.encodings[use.encoding.name]
@@ -666,7 +680,8 @@ def _fit_inputs(
                             f"encoder {identity}: sharing requires identical declared dtypes"
                         )
                     definitions[identity] = (config, dtype)
-                    contributions.setdefault(identity, []).extend(observed[(table, use.field)])
+                    if identity not in pinned:
+                        contributions.setdefault(identity, []).extend(observed[(table, use.field)])
                     graph_fields[name][table][use.field] = identity
             continue
         fitting_rows = rows[name]
@@ -687,16 +702,19 @@ def _fit_inputs(
             if identity in definitions and definitions[identity][1] != dtype:
                 raise ValueError(f"encoder {identity}: sharing requires identical declared dtypes")
             definitions[identity] = (config, dtype)
-            column = fitting_rows.columns[use.field]
-            if pa.types.is_list(column.type) or pa.types.is_large_list(column.type):
-                column = column.flatten()
-            contributions.setdefault(identity, []).extend(column.to_pylist())
+            if identity not in pinned:
+                column = fitting_rows.columns[use.field]
+                if pa.types.is_list(column.type) or pa.types.is_large_list(column.type):
+                    column = column.flatten()
+                contributions.setdefault(identity, []).extend(column.to_pylist())
             if value.representation.field_names is not None:
                 field_names[value.representation.field_names].update(
                     {tuple(item[0]): 0 for item in declarations[name][use.field]}
                 )
     encoders = {
-        name: fit_encoder(identity=name, config=config, dtype=dtype, values=contributions[name])
+        name: pinned[name]
+        if name in pinned
+        else fit_encoder(identity=name, config=config, dtype=dtype, values=contributions[name])
         for name, (config, dtype) in sorted(definitions.items())
     }
     field_names = {
@@ -2435,13 +2453,15 @@ def fit_plan(
     target_encoders=None,
     length_summary=None,
     inference=False,
+    pinned=MappingProxyType({}),
 ) -> PreparedBatchPlan:
     """Fit one plan by reading raw samples through a source.
 
     ``input_state`` and ``target_encoders`` reuse previously fitted state
     instead of fitting it; whatever is not supplied is fitted on
-    ``fitting_requests``. ``inference`` requires both, and builds samples
-    without their row-computed targets so no target row is read.
+    ``fitting_requests``, except the input encoders in ``pinned``. ``inference``
+    requires both, and builds samples without their row-computed targets so no
+    target row is read.
     """
 
     needs_fitting = input_state is None or target_encoders is None
@@ -2479,6 +2499,7 @@ def fit_plan(
             model=model,
             source=source,
             requests=fitting_requests,
+            pinned=pinned,
         )
     else:
         input_state = replace(

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import time
 from collections import defaultdict
@@ -18,6 +19,12 @@ import numpy as np
 import torch
 
 from kumo.pytorch.anchors import AnchorTable
+from kumo.pytorch.column_stats import (
+    ColumnStats,
+    StatRequest,
+    cutoff_nanos,
+    read_column_stats,
+)
 from kumo.pytorch.contract.batch import EntitySource, EventSource, Input
 from kumo.pytorch.contract.dtypes import DType, arrow_float64
 from kumo.pytorch.contract.sample import (
@@ -201,6 +208,7 @@ class DiskGraphEngine:
     :param ingest: ``"if_missing"`` builds the index when absent; ``"never"``
         requires an existing one. A mismatching manifest is an error, never
         permission to reuse.
+    :param encoder_cutoffs: ``encoder_cutoff`` values whose column statistics an ingest computes.
     """
 
     name = "diskgraph"
@@ -214,13 +222,19 @@ class DiskGraphEngine:
         num_threads: int | None = None,
         num_shards: int = 1,
         ingest: Literal["if_missing", "never"] = "if_missing",
+        encoder_cutoffs: Sequence[str | int | dt.datetime | dt.date | None] = (),
     ):
         if ingest not in {"if_missing", "never"}:
             raise ValueError("ingest must be 'if_missing' or 'never'")
+        if isinstance(encoder_cutoffs, str):
+            raise TypeError("encoder_cutoffs is a list of cutoffs; wrap a single one in a list")
         self.index = Path(index)
         self.num_threads = num_threads
         self.num_shards = num_shards
         self.ingest = ingest
+        self.encoder_cutoffs = tuple(
+            dict.fromkeys(cutoff_nanos(value) for value in encoder_cutoffs)
+        )
 
     def check_contract(self, contract: DataLoaderSpec) -> tuple[ValidationIssue, ...]:
         """Refuse the entries of `unsupported` the contract uses, before any data is read."""
@@ -373,7 +387,14 @@ class DiskGraphEngine:
         """Issues with a Parquet anchor table's binding, without reading its rows."""
         return check_parquet_anchors(table)
 
-    def open(self, dataset: Dataset, schema: DataSchema) -> SampleSource:
+    def open(
+        self,
+        dataset: Dataset,
+        schema: DataSchema,
+        *,
+        column_stats: Sequence[StatRequest] = (),
+    ) -> SampleSource:
+        ingests = bool(column_stats and self.encoder_cutoffs) and not self.index.exists()
         artifact = ensure_diskgraph_index(
             schema,
             dataset,
@@ -381,6 +402,7 @@ class DiskGraphEngine:
             num_shards=self.num_shards,
             num_threads=self.num_threads,
             if_missing=self.ingest == "if_missing",
+            column_stats=(column_stats, self.encoder_cutoffs) if ingests else None,
         )
         return DiskGraphSource(
             artifact,
@@ -417,6 +439,10 @@ class DiskGraphSource:
             raise ImportError("DiskGraphEngine requires pyarrow") from error
 
         self.schema = schema
+        self._index_path = artifact.path
+        metadata = json.loads(Path(artifact.path, "index_metadata.json").read_text())
+        self._clock = metadata.get("timestamp_unit", "seconds")
+        self._num_threads = num_threads
         self._tables = {table.name: table for table in schema.tables}
         self._relations = {relation.name: relation for relation in schema.relations}
         self._relation_mapping = artifact.manifest["relation_mapping"]
@@ -815,6 +841,14 @@ class DiskGraphSource:
                 {"split": request.split, **request.metadata} for request in requests
             ),
         )
+
+    def column_stats(self, requests: Sequence[StatRequest], cutoff: int | None) -> ColumnStats:
+        ticks = (
+            None
+            if cutoff is None
+            else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock, rounding="floor")
+        )
+        return read_column_stats(self._index_path, requests, ticks, self._clock, self._num_threads)
 
     def fit_graph_fields(
         self,

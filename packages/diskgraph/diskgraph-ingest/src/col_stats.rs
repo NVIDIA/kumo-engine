@@ -629,6 +629,8 @@ pub struct FileColStats {
     grad_snapshots: Vec<Option<Arc<HashSet<u64>>>>,
     /// The index clock that timestamp statistics are in.
     clock: TimeUnit,
+    /// t-digest quantiles each numerical column's summary reports.
+    quantiles: Vec<f64>,
 }
 
 /// Per-column stats collector, chosen by SemanticType.
@@ -859,6 +861,7 @@ impl FileColStats {
             rng: 1,
             grad_snapshots: (0..n).map(|_| None).collect(),
             clock: TimeUnit::Seconds,
+            quantiles: Vec::new(),
         }
     }
 
@@ -945,6 +948,7 @@ impl FileColStats {
             rng,
             grad_snapshots,
             clock: TimeUnit::Seconds,
+            quantiles: Vec::new(),
         }
     }
 
@@ -955,6 +959,32 @@ impl FileColStats {
     pub fn with_clock(mut self, clock: TimeUnit) -> Self {
         self.clock = clock;
         self
+    }
+
+    pub fn with_quantiles(mut self, quantiles: Vec<f64>) -> Self {
+        self.quantiles = quantiles;
+        self
+    }
+
+    fn collectors_of(&self, col_idx: usize) -> impl Iterator<Item = &ColumnStatsCollector> {
+        let n = self.num_columns();
+        let extras = n + self.extra_cols.partition_point(|&c| c < col_idx)
+            ..n + self.extra_cols.partition_point(|&c| c <= col_idx);
+        std::iter::once(&self.cols[col_idx]).chain(&self.cols[extras])
+    }
+
+    pub fn collects(&self, col_idx: usize) -> bool {
+        self.collectors_of(col_idx)
+            .any(|col| !matches!(col, ColumnStatsCollector::Skip))
+    }
+
+    pub fn counts_categories(&self, col_idx: usize) -> bool {
+        self.collectors_of(col_idx).any(|col| {
+            matches!(
+                col,
+                ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. }
+            )
+        })
     }
 
     /// Merge another `FileColStats` into this one (per-column dispatch).
@@ -1089,9 +1119,17 @@ impl FileColStats {
         text_sample_stats: Option<&HashMap<String, TextSampleStats>>,
     ) -> serde_json::Map<String, JsonValue> {
         let mut map = serde_json::Map::new();
+        let quantiles = &self.quantiles;
         for (col_idx, col) in each_collector(self.cols.iter_mut(), &self.extra_cols) {
             let name = &column_names[col_idx];
             if let Some(mut val) = col.to_json(self.clock) {
+                if let ColumnStatsCollector::Numerical { tdigest, .. } = col {
+                    if !quantiles.is_empty() {
+                        let values: Vec<f64> =
+                            quantiles.iter().map(|&q| tdigest.quantile_at(q)).collect();
+                        val["quantiles"] = json!(values);
+                    }
+                }
                 if has_counts[col_idx] {
                     if let JsonValue::Object(ref mut obj) = val {
                         obj.insert("category_counts".to_string(), json!([]));
@@ -1232,6 +1270,16 @@ impl FileColStats {
 
 /// Per column: sorted category counts and, for Hybrid, whether they were capped.
 type PublishedColumns = (Vec<Option<Vec<(String, u64)>>>, Vec<Option<bool>>);
+
+/// Lowercase hex, the category key of a bytes value.
+pub fn bytes_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut value = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(value, "{byte:02x}").expect("write to string");
+    }
+    value
+}
 
 /// Free function to get category counts for a column (avoids self borrow issues).
 #[cfg(any(test, feature = "test-util"))]
@@ -2848,6 +2896,19 @@ impl FileColStats {
         }
     }
 
+    /// Below 2^63 as an i64; above, exactly as text for counts and as an f64 otherwise.
+    fn observe_u64_at(&mut self, col_idx: usize, slot: usize, value: u64) {
+        match i64::try_from(value) {
+            Ok(value) => self.observe_i64_at(col_idx, slot, value),
+            Err(_) => match &self.cols[slot] {
+                ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } => {
+                    self.observe_string_at(col_idx, slot, &value.to_string())
+                }
+                _ => self.observe_f64_at(col_idx, slot, value as f64),
+            },
+        }
+    }
+
     #[inline]
     fn observe_f64_at(&mut self, col_idx: usize, slot: usize, value: f64) {
         // Canonicalize categorical floats exactly as they are serialized. This
@@ -2950,8 +3011,36 @@ impl FileColStats {
         }
     }
 
+    fn observe_bytes_at(&mut self, col_idx: usize, slot: usize, value: &[u8]) {
+        if let ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } =
+            &self.cols[slot]
+        {
+            self.observe_string_at(col_idx, slot, &bytes_hex(value));
+        }
+    }
+
+    fn observe_decimal_at(
+        &mut self,
+        col_idx: usize,
+        slot: usize,
+        value: f64,
+        text: &dyn Fn() -> String,
+    ) {
+        match &self.cols[slot] {
+            ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } => {
+                self.observe_string_at(col_idx, slot, &text())
+            }
+            _ => self.observe_f64_at(col_idx, slot, value),
+        }
+    }
+
     #[inline]
-    fn observe_timestamp_at(&mut self, _col_idx: usize, slot: usize, secs: i64) {
+    fn observe_timestamp_at(&mut self, col_idx: usize, slot: usize, secs: i64) {
+        if let ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } =
+            &self.cols[slot]
+        {
+            return self.observe_i64_at(col_idx, slot, secs);
+        }
         if let ColumnStatsCollector::Timestamp {
             count,
             min,
@@ -3232,8 +3321,11 @@ macro_rules! observe_each_collector {
 
 observe_each_collector! {
     observe_i64 => observe_i64_at(value: i64);
+    observe_u64 => observe_u64_at(value: u64);
     observe_f64 => observe_f64_at(value: f64);
     observe_string => observe_string_at(value: &str);
+    observe_bytes => observe_bytes_at(value: &[u8]);
+    observe_decimal => observe_decimal_at(value: f64, text: &dyn Fn() -> String);
     observe_timestamp => observe_timestamp_at(secs: i64);
     observe_float_list => observe_float_list_at(view: &FloatListView);
     observe_int64_list => observe_int64_list_at(view: &IntListView);

@@ -1541,7 +1541,7 @@ wheels = [
 
 [[package]]
 name = "diskgraph"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/diskgraph" }
 dependencies = [
     { name = "numpy" },

@@ -15,8 +15,16 @@ comparison is a matter of swapping one object.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
+from kumo.pytorch.column_stats import (
+    EMPTY_STATS,
+    ColumnStats,
+    StatRequest,
+    file_name_part,
+    read_column_stats,
+)
 from kumo.pytorch.contract.sample import BuiltSample, SampleRequest, SampleSpec
 from kumo.pytorch.contract.schema import DataSchema
 from kumo.pytorch.engines.in_memory.graph import InMemoryGraphSampler
@@ -34,6 +42,7 @@ class InMemorySource:
         tables: Mapping[str, Sequence[Mapping[str, Any]]],
     ):
         self.schema = schema
+        self._tables = tables
         self._samples = InMemorySampleBuilder(schema, tables)
         self._graph = InMemoryGraphSampler(schema, tables)
 
@@ -56,6 +65,49 @@ class InMemorySource:
             spec,
             roots,
         )
+
+    def column_stats(self, requests: Sequence[StatRequest], cutoff: int | None) -> ColumnStats:
+        import tempfile
+
+        import diskgraph
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        from kumo.pytorch.dataset import Dataset, Parquet
+        from kumo.pytorch.materialization import ensure_diskgraph_index
+
+        stored = [
+            table
+            for table in self.schema.tables
+            if self._tables[table.name] and any(item[0] == table.name for item in requests)
+        ]
+        columns = {item: EMPTY_STATS for item in requests}
+        ticks = (
+            None
+            if cutoff is None
+            else diskgraph.convert_ticks(cutoff, "nanoseconds", "seconds", rounding="floor")
+        )
+        if not stored:
+            return ColumnStats(columns, {"value": ticks, "unit": "seconds"})
+        with tempfile.TemporaryDirectory() as directory:
+            sources = {}
+            for table in stored:
+                rows = [
+                    {name: dtype.normalize(row.get(name)) for name, dtype in table.columns.items()}
+                    for row in self._tables[table.name]
+                ]
+                types = pa.schema(
+                    [(name, dtype.to_arrow()) for name, dtype in table.columns.items()]
+                )
+                path = f"{directory}/{file_name_part(table.name)}.parquet"
+                pq.write_table(pa.Table.from_pylist(rows, types), path)
+                sources[table.name] = Parquet(path)
+            index = Path(directory, "index")
+            ensure_diskgraph_index(DataSchema(tables=tuple(stored)), Dataset(sources), index)
+            names = {table.name for table in stored}
+            group = [item for item in requests if item[0] in names]
+            columns.update(read_column_stats(index, group, ticks, "seconds").columns)
+        return ColumnStats(columns, {"value": ticks, "unit": "seconds"})
 
     def sample_graph(
         self,

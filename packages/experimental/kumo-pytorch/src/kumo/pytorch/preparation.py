@@ -13,6 +13,9 @@ through a run.
 
 from __future__ import annotations
 
+import datetime as dt
+import logging
+import time
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, overload
@@ -29,8 +32,16 @@ from kumo.pytorch.anchors import (
 )
 from kumo.pytorch.artifact import FitRecord, FittedState
 from kumo.pytorch.assembly import PreviewResult, _fingerprint, _InputState, fit_plan
+from kumo.pytorch.column_stats import (
+    LATEST_ANCHOR,
+    _LatestAnchor,
+    cutoff_nanos,
+    fit_from_stats,
+    table_column_encoders,
+)
 from kumo.pytorch.contract.sample import SampleRequest
 from kumo.pytorch.dataset import Dataset, TableSource
+from kumo.pytorch.encoding import FittedEncoder
 from kumo.pytorch.engine import AnchorTask, Engine, SampleSource
 from kumo.pytorch.spec import (
     DataLoaderSpec,
@@ -42,6 +53,8 @@ from kumo.pytorch.spec import (
 from kumo.pytorch.task import Task
 
 __all__ = ["Plan", "check", "prepare", "preview"]
+
+logger = logging.getLogger(__name__)
 
 
 def check(
@@ -160,6 +173,7 @@ class Plan:
         fit_split: str | Collection[str | None] | AllAnchors | None = None,
         fitted: FittedState | None = None,
         inference: bool | None = None,
+        encoder_cutoff: str | int | dt.datetime | dt.date | None = LATEST_ANCHOR,
     ) -> Task:
         """Bind anchors, fit what is still unfitted, and return the task.
 
@@ -167,7 +181,7 @@ class Plan:
         `SampleRequest` values built in code.
 
         ``fit_split`` says which anchors fitting may read, and is never implied
-        when the anchors carry splits — so held-out or unassigned rows cannot
+        when the anchors carry splits — so held-out or unassigned anchors cannot
         reach fitted state without an explicit choice:
 
         - anchors that declare splits require it: a split name, a set of names
@@ -184,6 +198,12 @@ class Plan:
         otherwise. It never fits, so it requires ``fitted`` state: the complete
         state, or ``state.inputs`` alone, since inference reads no target state.
         It defaults to the plan's mode; an inference plan refuses ``inference=False``.
+
+        Encoders over stored table columns fit on every table row created at or
+        before ``encoder_cutoff``, whatever ``fit_split`` selects: by default the
+        latest anchor time ``fit_split`` selects; ``None`` reads every row. The
+        cutoff is an ISO 8601 string or a time as an anchor gives it: epoch
+        seconds, a date or a datetime.
 
         Reused state applies unchanged: nothing refits, grows or renumbers.
         Complete state requires an equal `DataLoaderSpec.fingerprint`;
@@ -206,6 +226,7 @@ class Plan:
             )
         if inference and fit_split is not None:
             raise ValueError("fit_split has nothing to fit in inference")
+        cutoff = encoder_cutoff if encoder_cutoff is LATEST_ANCHOR else cutoff_nanos(encoder_cutoff)
         source = self._require_open()
         if isinstance(anchors, AnchorTable):
             issues = check(
@@ -243,9 +264,16 @@ class Plan:
                     "anchors": anchors_fingerprint,
                     "fit_split": describe_selection(chosen),
                 }
+            pinned, statistics = (
+                ({}, {})
+                if input_state is not None
+                else self._pinned_from_stats(source, fitting, cutoff)
+            )
             reused = {} if fitted is None else fitted.fit
             fit = {
-                "inputs": record if input_state is None else reused.get("inputs"),
+                "inputs": ({**record, "statistics": statistics} if statistics else record)
+                if input_state is None
+                else reused.get("inputs"),
                 "targets": record if target_encoders is None else reused.get("targets"),
             }
             assembler = fit_plan(
@@ -260,6 +288,7 @@ class Plan:
                 target_encoders=target_encoders,
                 length_summary=None if fitted is None else fitted._lengths,
                 inference=inference,
+                pinned=pinned,
             )
         except BaseException:
             task_anchors.close()
@@ -273,6 +302,46 @@ class Plan:
             fit=fit,
             has_targets=not input_only,
         )
+
+    def _pinned_from_stats(
+        self,
+        source: SampleSource,
+        fitting: Sequence[SampleRequest],
+        cutoff: int | None | _LatestAnchor,
+    ) -> tuple[dict[str, FittedEncoder], dict[str, Any]]:
+        encoders = table_column_encoders(self.contract)
+        column_stats = getattr(source, "column_stats", None)
+        if not encoders or column_stats is None or not fitting:
+            return {}, {}
+        latest = (
+            cutoff_nanos(max(request.as_of_time for request in fitting))
+            if self.contract.requires_anchor_time
+            else None
+        )
+        if cutoff is LATEST_ANCHOR:
+            cutoff = latest
+        elif latest is not None and (cutoff is None or cutoff > latest):
+            logger.warning(
+                "encoder_cutoff %s is after the latest fitting anchor %s: encoders learn "
+                "from rows the training anchors cannot see",
+                "None (every row)" if cutoff is None else _iso(cutoff),
+                _iso(latest),
+            )
+        started = time.perf_counter()
+        stats = column_stats(
+            [item for encoder in encoders.values() for item in encoder.requests], cutoff
+        )
+        pinned = {
+            identity: fit_from_stats(identity, encoder, stats)
+            for identity, encoder in encoders.items()
+        }
+        logger.info(
+            "pinned %d encoders from DiskGraph column statistics (cutoff %s) in %.2fs",
+            len(pinned),
+            "none" if cutoff is None else _iso(cutoff),
+            time.perf_counter() - started,
+        )
+        return pinned, {"cutoff": cutoff, "col_stats": list(stats.files)}
 
     @staticmethod
     def _fit_selection(selection: SplitSelection | None, declares_splits: bool) -> SplitSelection:
@@ -365,9 +434,13 @@ def prepare(
     contract, issues = _check(contract, dataset, engine, inference=inference)
     if issues:
         raise ValidationError(issues)
-    return Plan(
-        contract, dataset, engine, engine.open(dataset, contract.schema), inference=inference
-    )
+    if getattr(engine, "encoder_cutoffs", ()) and not inference:
+        encoders = table_column_encoders(contract).values()
+        requests = [item for encoder in encoders for item in encoder.requests]
+        source = engine.open(dataset, contract.schema, column_stats=requests)
+    else:
+        source = engine.open(dataset, contract.schema)
+    return Plan(contract, dataset, engine, source, inference=inference)
 
 
 @overload
@@ -460,3 +533,9 @@ def _source_issues(
 ) -> tuple[ValidationIssue, ...]:
     check_sources = getattr(engine, "check_sources", None)
     return () if check_sources is None else tuple(check_sources(sources, path))
+
+
+def _iso(nanos: int) -> str:
+    return (
+        dt.datetime(1970, 1, 1, tzinfo=dt.UTC) + dt.timedelta(microseconds=nanos // 1_000)
+    ).isoformat()

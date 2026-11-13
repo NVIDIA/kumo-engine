@@ -28,10 +28,13 @@ use diskgraph_core::accumulators::{
     kumo_entry, kumo_key, CategoryCountStrategy, WelfordAccumulator,
 };
 use diskgraph_core::time::{convert_ceil, TimeUnit};
-use diskgraph_ingest::col_stats::{FileColStats, TableCategoryCounts};
+use diskgraph_ingest::col_stats::{bytes_hex, FileColStats, TableCategoryCounts};
 use diskgraph_ingest::graph_config::{ColumnSpec, IngestedType, SemanticType, TimestampUnit};
 use diskgraph_ingest::PublicIngestError;
-use diskgraph_rowpack::{ColumnValueObserver, RowAccess, RowAccessHints, RowAccessStats};
+use diskgraph_rowpack::{
+    decimal_i128_to_f64, decimal_i256_to_f64, format_decimal_i128, format_decimal_i256,
+    ColumnValueObserver, RowAccess, RowAccessHints, RowAccessStats,
+};
 
 use crate::exact_quantiles::{exact_quantiles, Column, GATHER};
 
@@ -64,7 +67,7 @@ struct TimestampHistogramSpec {
 }
 
 #[derive(Clone, Copy, Default)]
-struct IntegerRange {
+pub(crate) struct IntegerRange {
     min: Option<i64>,
     max: Option<i64>,
 }
@@ -732,15 +735,6 @@ fn numerical_value(access: &RowAccess<'_>, idx: usize, col: &ColumnSpec) -> Resu
     }
 }
 
-fn bytes_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut value = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        write!(value, "{byte:02x}").expect("write to string");
-    }
-    value
-}
-
 fn categorical_value(
     access: &mut RowAccess<'_>,
     idx: usize,
@@ -937,7 +931,7 @@ fn accumulate_distributions_for_row_group(
 
 /// Feed one name-resolved Arrow column into a stats observer through the same
 /// checked normalization layer used by ingestion.
-fn drive_from_arrow_column<O: ColumnValueObserver>(
+pub(crate) fn drive_from_arrow_column<O: ColumnValueObserver>(
     col_idx: usize,
     array: &arrow_array::ArrayRef,
     col: &ColumnSpec,
@@ -957,11 +951,22 @@ fn drive_from_arrow_column<O: ColumnValueObserver>(
                 .is_some()
         } else {
             match col.ingested_dtype {
+                IngestedType::UInt64 => {
+                    access_or_parse_failure(access.get_uint64(0), col_idx, observer)
+                        .map(|value| {
+                            if let (Some(range), Ok(value)) =
+                                (integer_range.as_deref_mut(), i64::try_from(value))
+                            {
+                                range.observe(value);
+                            }
+                            observer.observe_u64(col_idx, value)
+                        })
+                        .is_some()
+                }
                 IngestedType::Int64
                 | IngestedType::Int32
                 | IngestedType::Int16
                 | IngestedType::Int8
-                | IngestedType::UInt64
                 | IngestedType::UInt32
                 | IngestedType::UInt16
                 | IngestedType::UInt8 => {
@@ -1005,6 +1010,33 @@ fn drive_from_arrow_column<O: ColumnValueObserver>(
                 IngestedType::Timestamp => {
                     access_or_parse_failure(timestamp_ticks(&access, col), col_idx, observer)
                         .map(|value| observer.observe_timestamp(col_idx, value))
+                        .is_some()
+                }
+                IngestedType::Date => {
+                    access_or_parse_failure(access.get_date(0), col_idx, observer)
+                        .map(|days| observer.observe_i64(col_idx, days.into()))
+                        .is_some()
+                }
+                IngestedType::Decimal128 => {
+                    let scale = col.scale.unwrap_or(0);
+                    access_or_parse_failure(access.get_decimal128(0), col_idx, observer)
+                        .map(|v| {
+                            let value = decimal_i128_to_f64(v, scale);
+                            observer
+                                .observe_decimal(col_idx, value, &|| format_decimal_i128(v, scale))
+                        })
+                        .is_some()
+                }
+                IngestedType::Decimal256 => {
+                    let scale = col.scale.unwrap_or(0);
+                    access_or_parse_failure(access.get_decimal256(0), col_idx, observer)
+                        .map(|v| {
+                            let decimal = arrow::datatypes::i256::from_le_bytes(v);
+                            let value = decimal_i256_to_f64(decimal, scale).unwrap_or(f64::NAN);
+                            observer.observe_decimal(col_idx, value, &|| {
+                                format_decimal_i256(decimal, scale)
+                            })
+                        })
                         .is_some()
                 }
                 IngestedType::Float32Array
