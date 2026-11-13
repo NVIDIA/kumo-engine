@@ -100,5 +100,13 @@
   "C-SERVING-001": {
     "in_memory": "answer",
     "diskgraph": "answer"
+  },
+  "C-KEYLESS-001": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-KEYLESS-002": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
   }
 }
