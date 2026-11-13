@@ -72,7 +72,6 @@ def _get_compute_cluster() -> ComputeCluster | None:
     return _cluster
 
 
-
 def configure(
     *,
     scratch_dir: str | Path | None = None,
