@@ -453,6 +453,7 @@ def generate_train_table(
     request: TrainTableRequest,
     *,
     runtime: Any | None = None,
+    validate_targets: bool = True,
 ) -> GeneratedTrainTableResult:
     """Compile and execute the real DiskGraph TT-NG node/link producer."""
 
@@ -485,7 +486,7 @@ def generate_train_table(
     )
     if split is None:
         raise RuntimeError("split_config has no resolvable split family")
-    compiler = runtime.DiskGraphPlanCompiler()
+    compiler = runtime.DiskGraphPlanCompiler(index_path=request.index_path)
     compile_options = dict(request.compiler_options or {})
     plan_json = compiler.compile(
         query=request.query,
@@ -531,11 +532,12 @@ def generate_train_table(
     if not isinstance(table_path, str) or not table_path:
         raise RuntimeError("execute_tt_gen result missing tt_parquet_path")
     try:
-        _validate_classification_targets(request, staging_dir)
+        if validate_targets:
+            _validate_classification_targets(request, staging_dir)
     except ValueError:
         _discard_invalid_staging_dir(staging_dir, request)
         raise
-    top_k = getattr(request.query, "top_k", None)
+    top_k = getattr(request.query, "top_k", None) if validate_targets else None
     if (task_type in {"multilabel_classification", "multilabel_ranking"}
             and top_k is not None):
         class_count = _observed_target_class_count(staging_dir)
@@ -560,6 +562,8 @@ def generate_custom_train_table(
     runtime: Any | None = None,
 ) -> GeneratedTrainTableResult:
     """Build the standard TT-NG bundle from an existing parquet table."""
+
+    from ..pquery import link_target_window_end
 
     if not isinstance(custom_table, PreparedCustomTrainingTable):
         raise TypeError("custom_table must be PreparedCustomTrainingTable")
@@ -598,6 +602,9 @@ def generate_custom_train_table(
         target_entity_table=request.rhs_node_type,
         task_type=request.task_type,
         lp_rhs_is_temporal=request.rhs_is_temporal,
+        target_window_end=(link_target_window_end(request.query)
+                           if request.task_type.lower() in _LINK_TASK_TYPES
+                           else None),
         fact_pseudo_time=_fact_pseudo_time(request),
         ingest_on_error=custom_table.ingest_on_error,
         allow_negative_weight=(

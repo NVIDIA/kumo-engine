@@ -534,12 +534,6 @@ class TrainTableResult:
 
 
 @kumo_dataclass
-class PredTableResult:
-    total_rows: int
-    total_partitions: int
-
-
-@kumo_dataclass
 class MaterializeResult:
     """Output of :meth:`DiskgraphService.materialize_task_dataset`.
 
@@ -566,9 +560,8 @@ class DiskgraphService:
 
     * :mod:`kumo.diskgraph.ingest` — graph ingest entry point
     * :mod:`kumo_core.diskgraph.snapshot` — ``_SUCCESS`` read/write
-    * :mod:`kumo.data.generic.diskgraph_train_table` /
-      :mod:`kumo.data.generic.diskgraph_batch_pred` — training- and
-      prediction-table generation
+    * :mod:`kumo.data.generic.diskgraph_train_table` — training-table
+      generation
     """
     def __init__(self, config: DiskgraphConfig) -> None:
         self._config = config
@@ -660,6 +653,7 @@ class DiskgraphService:
         data_persist_dir: str,
         table_data_versions: dict,
         dataplane_root: str,
+        timestamp_precision: str = 'seconds',
         source_paths: Optional[dict] = None,
         source_specs: Optional[dict] = None,
         subprocess_environment: Optional[dict[str, Optional[str]]] = None,
@@ -689,6 +683,7 @@ class DiskgraphService:
             graph_config=graph_config,
             data_persist_dir=data_persist_dir,
             table_data_versions=table_data_versions,
+            timestamp_precision=timestamp_precision,
             output_dir=output_dir,
             source_paths=source_paths,
             source_specs=source_specs,
@@ -1277,74 +1272,6 @@ class DiskgraphService:
         ))
         return TrainTableResult(output_path=out, manifest_path=manifest)
 
-    def generate_pred_table(
-        self,
-        handle: DiskgraphHandle,
-        query: Any,
-        task_type: Any,
-        graph: Any,
-        timestamps: List[int],
-        forecast_length: int,
-        lag_timesteps: Optional[int],
-        use_yoy_labels: bool,
-        list_distinct_target_is_array: bool,
-        output_root: str,
-        input_timestamp_unit: TimeUnit,
-        target_stype: str,
-        entity_time_col: Optional[str],
-        target_output_root: Optional[str] = None,
-        index_path: Optional[str] = None,
-        lp_bp_layout: Optional[str] = None,
-    ) -> PredTableResult:
-        """Generate the batch-prediction table for a PQL query.
-
-        Args:
-            handle: Snapshot identity the prediction table is generated
-                against.
-            query: Parsed PQL query.
-            task_type: Task-type identifier driving label/edge construction.
-            graph: Graph object used for label-side enrichment.
-            timestamps: Anchor timestamps (epoch seconds) at which prediction
-                rows are emitted.
-            forecast_length: Forecast horizon in time-steps for forecasting
-                tasks.
-            lag_timesteps: Optional lag window for forecasting tasks.
-            use_yoy_labels: Emit year-over-year-style labels for forecasting.
-            list_distinct_target_is_array: Treat list-distinct targets as
-                array-valued.
-            output_root: Directory where partitioned prediction-table parquet
-                files are written.
-            target_output_root: Optional override for target-table output.
-            target_stype: Required kumo target stype (e.g. "categorical",
-                "numerical", "multicategorical"); drives label-table
-                col-stats shape on the inference side.
-            index_path: Override for the diskgraph index path; defaults to
-                the handle's resolved path.
-
-        Returns:
-            Total row count and number of output partitions.
-        """
-        import kumo.data.generic.diskgraph_batch_pred as batch_pred_mod
-
-        rows, parts = (batch_pred_mod.generate_batch_pred_table_via_diskgraph(
-            query=query,
-            task_type=task_type,
-            graph=graph,
-            timestamps=timestamps,
-            forecast_length=forecast_length,
-            lag_timesteps=lag_timesteps,
-            use_yoy_labels=use_yoy_labels,
-            list_distinct_target_is_array=list_distinct_target_is_array,
-            output_root=output_root,
-            target_output_root=target_output_root,
-            index_path=index_path or self._resolve(handle),
-            input_timestamp_unit=input_timestamp_unit,
-            target_stype=target_stype,
-            entity_time_col=entity_time_col,
-            lp_bp_layout=lp_bp_layout,
-        ))
-        return PredTableResult(total_rows=rows, total_partitions=parts)
-
     # ------------------------------------------------------------------
     # Task-dataset materialization
     # ------------------------------------------------------------------
@@ -1721,6 +1648,7 @@ class DiskgraphService:
         parquet_paths: List[str],
         kumo_column_specs: List[dict],
         data_version: str,
+        timestamp_precision: str = 'seconds',
     ) -> Tuple[str, str]:
         """Compute Kumo-format column statistics over BP-output parquet.
 
@@ -1733,6 +1661,7 @@ class DiskgraphService:
                 ``name`` / ``stype`` / ``dtype`` (raw Kumo enum value strings);
                 pybind maps them via ``map_kumo_stype`` / ``map_kumo_dtype``.
             data_version: Stamped into every ``kumo_col_stats_v1`` entry.
+            timestamp_precision: Index clock that timestamp statistics are in.
 
         Returns:
             ``(full_json, min_json)`` — the full map and its min variant.
@@ -1742,6 +1671,7 @@ class DiskgraphService:
             parquet_paths=parquet_paths,
             kumo_column_specs_json=json.dumps(kumo_column_specs),
             data_version=data_version,
+            timestamp_unit=timestamp_precision,
         )
 
 

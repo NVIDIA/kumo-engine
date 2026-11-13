@@ -76,6 +76,10 @@ uv pip install .
 
 ## Usage
 
+`lookup_node_ids` and `canonical_node_mask` parse and query one key at a time
+within the supplied Arrow batch. Neither retains a second batch of parsed keys;
+only the returned IDs or booleans accumulate.
+
 ```python
 import json
 import diskgraph_pybind
@@ -87,6 +91,12 @@ engine = diskgraph_pybind.SamplerEngine("/path/to/index")
 mapping = json.loads(engine.get_type_mapping())
 print(mapping["node_types"])
 print(mapping["edge_relations"])
+
+# Resolve external/raw primary keys before entering the dense-ID sampler.
+# Missing, well-formed keys preserve position as None.
+import pyarrow as pa
+root_ids = engine.lookup_node_ids("users", pa.array(["u1", "missing", "u2"]))
+print(root_ids)
 
 # Sample (topology only)
 plan = {"layers": [{"fanouts": {"rel_name": {"fanout": 10, "mode": "uniform",
@@ -106,6 +116,248 @@ features = engine.fetch_features([
 for event in features:
     print(event["batch"].schema)
 ```
+
+### Prepared scalar materialization
+
+Scalar feature/target precomputation uses staged `row_aggregate` operations in
+`DiskGraphTTPlan`. Prepare once on the sampler that owns the index, then supply
+only dense entity IDs and epoch-second cutoffs for each input chunk:
+
+```python
+prepared = sampler.prepare_aggregate_plan("users", plan_json)
+for node_ids, cutoffs in anchor_chunks:
+    values = prepared.execute(node_ids, cutoffs, anchor_batch_size=256)
+```
+
+Preparation resolves relation handles, projected columns, compatible overlapping
+windows and numeric operations once. Execution reuses that state and the sampler
+pool; anchor-dependent bounds and row values are evaluated for each chunk. The
+handle retains its index and may be used after the original Python sampler is
+released. It does not cache anchors or computed results.
+
+PQL keeps its existing serialized `aggregate` operations. Execution lowers
+single-hop COUNT/SUM/AVG/MIN/MAX, including their filters and limits, to the common
+row-aggregate representation. Both representations use the same scalar resolver;
+filtered operations preserve PQL's existing traversal/filter/limit semantics.
+Specialized list/link-prediction and forecasting output operations remain on
+their existing paths. No prototype `aggregate_program` input capsule is needed.
+
+The fluent materializer windows the selected destination frame and rejects
+temporal intermediate tables. This does not change PQL's first-hop window policy
+or add arbitrary multi-hop temporal support.
+
+### Direct temporal rows
+
+`SamplerEngine.query_temporal(seed_nodes, seed_timestamps, plan_json,
+output_format=...)` is the small co-located boundary for clients that already
+own their sample table. It accepts one dense root type, aligned epoch-second
+cutoffs, and a JSON plan with:
+
+- `frames`: named exact relation paths, an optional relative time window, row
+  distinctness, and the union of columns needed by consumers;
+- `sequences`: ordered/limited projections of a frame; and
+- `aggregates`: reductions over a frame, optionally after one or more nested
+  grouping stages.
+
+Frames are the unit of shared work. A sequence and several aggregates naming
+the same frame share traversal and projected rowpack decoding. Results include
+Arrow sequence batches, aligned offsets/timestamps, scalar aggregate values,
+and nanosecond counters for traversal, decode/selection, sequence assembly,
+aggregation, and the full native call. `stats.rows_decoded` counts rows sent to
+the rowpack decoder. When the final relation has a matching lossless timestamp
+sort key, bounded frames discard out-of-window edges before decoding their row
+attributes; other relations retain the rowpack timestamp path. This API does
+not build training tables, fit encoders, tokenize values, or choose model layouts.
+
+For a one-hop, time-windowed frame with one bounded sequence and no aggregate
+consumer, a matching lossless indexed clock allows selection before feature decoding.
+The timestamp boundary retains all ties; the existing primary-key ordering and
+sequence limit choose the final rows. Distinct frames count distinct node IDs
+when choosing that boundary. If a candidate reaches the encoded timestamp
+ceiling, selection falls back to full-frame decoding: ingestion may have clamped
+its real timestamp. Other frames also retain full-frame decoding. This
+reduces rowpack work, not edge scanning: candidate edge buffers still grow with
+the adjacency, and boundary ties can require decoding more than the limit.
+
+For one bounded sequence, the full frame can decode only its keys, clock, and
+any aggregate input columns, deferring sequence-only payload until exact row
+selection. This also covers alternative clocks and timestamp ties that cannot
+be capped from edge keys alone. When aggregates share that frame, traversal is
+still shared,
+preserving the existing filtering, ordering, and reductions. Additional sequence
+columns are decoded only after selecting its final rows; shared columns reuse
+the full frame's values. To avoid a costly second pass for low-selectivity
+histories, this strategy requires the estimated selection to be at most one
+quarter of the frame's candidates across the batch; otherwise decoding stays
+single-pass. This is a conservative performance heuristic, not a different
+answer or refusal. It does not combine different frames or time windows.
+`stats.values_decoded` counts rows times projected columns across decoding calls;
+`rows_decoded` can increase because selected rows are revisited for missing
+columns. Deferred decoding is included in `timings_ns.sequence_assembly`.
+
+`output_format="inspectable"` is the compatibility default: offsets, node IDs,
+timestamps, and aggregate vectors are Python lists. `output_format="model"`
+returns those vectors as Arrow arrays as well, avoiding one Python object per
+value when a caller will immediately encode a batch. Sequence `batch` values
+are Arrow `RecordBatch` objects in both formats. Query semantics, ordering,
+limits, reductions, nulls, timings, and statistics are identical.
+
+`SamplerEngine.query_temporal_lengths(seed_nodes, seed_timestamps, plan_json)`
+is the exact scheduling companion. It visits only frames named by sequences,
+shares a frame traversal between all of its sequence consumers, applies each
+sequence limit, and returns one Arrow `uint64` length vector per sequence. It
+does not build output batches, decode feature columns, sort selected rows, or
+materialize aggregates. When the final relation's destination sort-key clock
+matches the frame clock at lossless one-second resolution, relative-window
+filtering decodes the timestamp already packed beside each edge. Otherwise it
+decodes only the destination rowpack's timestamp column. `timings_ns` separates
+traversal and filtering;
+`stats` reports which timestamp path ran.
+
+Aggregate-only, one-hop queries on second-clock indexes lower `count` and
+Float32/Float64 `sum`/`mean`/`min`/`max` to the same resolved aggregate IR and grouped numeric executor
+used by PQL. This applies equally to feature and target aggregates. The
+temporal frontend preserves its exact-time and chronological/primary-key row
+selection; PQL retains its existing index-order selection. Supported groups
+reuse the temporal frontend's existing projected Arrow batch without decoding
+selected rows a second time. PQL projects its selected rows in bounded chunks.
+Queries with group-by stages, exact integer sums, nonfinite inputs or sequence
+consumers still select/materialize their general frames. After selection, their
+ordinary sums/means and finite floating extrema use the same ordered accumulators
+as PQL, including grouped and multi-hop inputs. Typed integer sums/extrema and
+API-specific reductions retain their distinct contracts. This does not require
+rewriting existing PQL traversal or eliminating frames used for window sharing.
+No public JSON schema or frontend syntax changes are required.
+
+`num_threads` uses the sampler's existing Rayon pool for temporal queries and
+length queries. Requests with at least 64 anchors use at most twice the pool
+size in ordered chunks; smaller requests retain the serial path. Returned anchor
+order is independent of worker completion. Stage timings sum worker time while
+`total` measures elapsed wall time. This remains a batch API, not a streamed
+whole-task materialization interface.
+
+### Flat token packing for RDL
+
+`diskgraph.pack_token_stream(event_offsets, parts, max_tokens, keep_last,
+event_boundary, separator_id, separator_between, bos_id, eos_id)` assembles
+already encoded Arrow `int64` columns. `event_offsets` delimits each sample's
+events; each `(event_ids, token_ids)` part supplies one token column or ragged
+text tokens. The result is `(sample_offsets, token_ids)`, both Arrow `int64`
+arrays. Each sample is kept separate, separators and optional BOS/EOS are
+inserted, and truncation respects the declared token budget and event-boundary
+policy. Invalid or null buffers raise `DiskgraphConfigError`.
+
+The packing loop runs in Rust with the Python GIL released. This primitive does
+not depend on the graph index or store vocabulary state: RDL obtains temporal
+Arrow columns through `query_temporal`, encodes them in columns, and calls the
+packer to interleave tokens into model-ready streams. Python tests cover ragged
+parts, sample isolation, both truncation directions, boundaries, and malformed
+buffers. The companion RDL integration compares the complete streams with its
+record-based reference.
+
+### Merging event components
+
+`diskgraph.merge_event_streams(parts, max_events, keep_last, descending)` returns
+`(sample_offsets, take_indices)` as Arrow int64 arrays. Each part is
+`(sample_offsets, timestamps, ascending)`; its sorted timestamps and offsets
+must be non-null. Equal times keep the supplied component order and that
+component's stable row order. Global first/last capping happens before reversing
+for descending output. The permutation addresses the concatenated component
+buffers; no fields are re-decoded or stored in a second payload representation.
+
+The native merge releases the GIL. The kumo.pytorch DiskGraph adapter carries
+this backend into model assembly, bypassing NumPy's component sort while reusing
+the same Arrow fields. Other engines retain their reference ordering path.
+
+### RDL model-boundary decision
+
+The RDL integration builds direct entity fields, fitted graph node features,
+shared categorical/numerical/text field tokens, nested event layouts, calendar
+and elapsed-time arrays, masked-value targets, and token-aware batches on top of
+the typed result. Those transformations deliberately remain client-owned:
+
+- DiskGraph resolves dense IDs, walks the index, applies per-root temporal
+  selection, reduces frames, and returns Arrow values.
+- RDL defines and persists vocabulary IDs, numeric boundaries, BPE state,
+  layouts, masking, and the final tensor contract.
+
+The plan is intentionally small and explicit. Relation names and destination
+types are physical names returned by `get_type_mapping()`:
+
+```python
+plan = {
+    "frames": [{
+        "name": "orders",
+        "root_type": "users",
+        "path": [{
+            "relation": "orders_user_id_to_users_user_id_reverse",
+            "destination_type": "orders",
+        }],
+        "time_column": "timestamp",
+        "start_seconds": -30 * 86_400,
+        "stop_seconds": 0,
+        "distinct": True,
+        "columns": ["order_id", "amount", "channel"],
+    }],
+    "sequences": [{
+        "name": "recent_orders",
+        "frame": "orders",
+        "columns": ["order_id", "amount"],
+        "order": "descending",
+        "limit": 64,
+    }],
+    "aggregates": [{
+        "name": "mean_channel_spend",
+        "frame": "orders",
+        "groups": [{
+            "keys": ["channel"],
+            "values": [{
+                "name": "channel_spend",
+                "operation": "sum",
+                "column": "amount",
+            }],
+        }],
+        "operation": "mean",
+        "column": "channel_spend",
+    }],
+}
+result = engine.query_temporal(
+    {"users": root_ids},
+    {"users": cutoff_epoch_seconds},
+    json.dumps(plan),
+    output_format="model",
+)
+```
+
+Windows are half-open relative to each aligned cutoff:
+`(cutoff + start_seconds, cutoff + stop_seconds]`. Either bound may be null;
+bounds require `time_column`. Selected rows are sorted by timestamp and then
+primary key before a sequence optionally reverses and truncates them.
+`distinct` deduplicates destination dense IDs per root.
+
+Available reductions are `count`, `count_distinct`, `sum`, `mean`, `min`,
+`max`, `std_population`, `std_sample`, `var_population`, `var_sample`,
+`recency`, and `mode`. `groups` are evaluated in list order, so the output of
+one grouping stage is the input to the next. Empty `count`, `count_distinct`,
+and `sum` are zero; other empty reductions are null. A non-empty all-null sum
+is null. Counts return int64. Sample variance/deviation requires two non-null values, and mode ties
+use a stable type/value ordering.
+
+Integer sums request `"sum_type": "int64"` or `"sum_type": "uint64"` on the
+aggregate or grouped reduction. They accumulate exactly and fail if the
+result exceeds that type's range. The type also determines whether an empty
+sum returns integer zero. Without `sum_type`, `sum` retains its float64
+accumulation and result; mean and moments continue to use float64.
+Model-format integer sums retain their declared Arrow type when all results
+are null.
+
+The full row kernel still scans the reached adjacency; a sequence limit does
+not stop traversal, and aggregates still consider the entire selected frame.
+Neither API binary-prunes a time window within adjacency storage, applies
+arbitrary row predicates, follows field-level joins, or executes across a
+distributed mesh.
+Those limitations are explicit so callers do not mistake this boundary for the
+much broader training-table query engine.
 
 ## Running tests
 

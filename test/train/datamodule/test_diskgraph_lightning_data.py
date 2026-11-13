@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Any
 
 import kumo_core.diskgraph.lightning_data as dldm
-import pandas as pd
 import psutil
 import pyarrow as pa
 import pytest
@@ -32,8 +31,11 @@ from kumo_core.diskgraph.lightning_data import (
     DiskgraphValidRHS,
     _ShuffleStreamState,
 )
-from kumo_core.encoders.tensor_mapper import TensorMapper
-from kumoapi.encoder import Stype
+from kumo_core.encoders.tensor_mapper import (
+    CategoricalTensorMapper,
+    NumericalTensorMapper,
+    TensorMapper,
+)
 from torch.utils.data import DataLoader, IterableDataset
 from torch_geometric.data import HeteroData
 
@@ -43,12 +45,36 @@ def auto_setup_kumo_backend() -> bool:
     return False
 
 
-def _numerical_mapper(values: list[float]) -> TensorMapper:
-    return TensorMapper.from_stype(Stype.numerical, pd.Series(values))
+@pytest.mark.parametrize('platform', ['win32', 'darwin'])
+def test_nonlinux_pidfd_skips_libc(
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+) -> None:
+    monkeypatch.setattr(dldm, 'sys', types.SimpleNamespace(platform=platform))
+
+    def reject_load(name: str | None, *, use_errno: bool) -> None:
+        pytest.fail('Non-Linux pidfd initialization must not load libc')
+
+    monkeypatch.setattr(dldm.ctypes, 'CDLL', reject_load)
+    assert dldm._load_pidfd_libc() is None
+    assert dldm._pidfd_open(os.getpid()) is None
+
+
+@pytest.mark.skipif(not sys.platform.startswith('linux'),
+                    reason='pidfd syscalls require Linux')
+def test_pidfd_syscall_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delattr(dldm.os, 'pidfd_open', raising=False)
+    monkeypatch.delattr(dldm.signal, 'pidfd_send_signal', raising=False)
+    pidfd = dldm._pidfd_open(os.getpid())
+    assert pidfd is not None
+    try:
+        dldm._pidfd_send_signal(pidfd, 0)
+    finally:
+        os.close(pidfd)
 
 
 def _mapper_bank() -> dict[str, dict[str, TensorMapper]]:
-    return {"users_v1": {"age": _numerical_mapper([18.0, 25.0, 30.0, 50.0])}}
+    return {"users_v1": {"age": NumericalTensorMapper()}}
 
 
 def test_stage_batch_allocation_is_proportional_and_covers_stages() -> None:
@@ -904,24 +930,38 @@ def test_val_dataloader_does_not_replay_wheel_iterator(
     assert len(calls["history"]) == 1
 
 
-def test_val_dataloader_honors_max_val_steps_without_replay(
+@pytest.mark.parametrize("stage", ["val", "test"])
+@pytest.mark.parametrize("max_steps, num_batches, num_rows", [
+    (3, 3, 6),
+    (None, 10, 20),
+])
+def test_eval_dataloader_honors_max_steps_without_replay(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
+    stage: str,
+    max_steps: int | None,
+    num_batches: int,
+    num_rows: int,
 ) -> None:
-    calls = _install_fake_diskgraph(monkeypatch, batches_per_iterator=10)
+    input_ids = [[2 * i, 2 * i + 1] for i in range(10)]
+    calls = _install_fake_diskgraph(monkeypatch,
+                                    batch_input_ids_by_stage={stage: input_ids})
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"val": 20}),
+        _manifest(tmp_path=tmp_path, stage_counts={stage: 20}),
         _mapper_bank(),
         sampling_plan={"layers": []},
         train_batch_size=2,
         eval_batch_size=2,
-        max_val_steps=3,
+        **{f"max_{stage}_steps": max_steps},
     )
+    loader = getattr(dm, f"{stage}_dataloader")
 
-    assert len(dm.val_dataloader()) == 3
-    batches = list(dm.val_dataloader())
+    assert len(loader()) == num_batches
+    batches = list(loader())
 
-    assert len(batches) == 3
+    assert len(batches) == num_batches
+    assert sum(batch["train_table"].input_id.numel()
+               for batch in batches) == num_rows
     assert len(calls["history"]) == 1
 
 
@@ -3941,6 +3981,32 @@ def test_seed_time_to_index_unit_uses_manifest_unit(tmp_path) -> None:
     assert dm_ms._seed_time_to_index_unit(seed_ns) == 5_000  # 5e9 ns -> 5e3 ms
 
 
+# 1 day, 1 hour, 1 minute, 1 second and 1 nanosecond after the epoch.
+_SEED_NS = 90_061_000_000_001
+
+
+@pytest.mark.parametrize("clock,anchor", [
+    ("nanoseconds", 90_061_000_000_001),
+    ("microseconds", 90_061_000_000),
+    ("milliseconds", 90_061_000),
+    ("seconds", 90_061),
+    ("hours", 25),
+    ("days", 1),
+])
+def test_node_range_anchor_floors_into_the_index_clock(tmp_path, clock,
+                                                       anchor) -> None:
+    index = tmp_path / "index"
+    index.mkdir()
+    (index / "index_metadata.json").write_text(
+        json.dumps({"timestamp_unit": clock}))
+    dm = _rhs_dm(_rhs_lp_manifest(tmp_path / "m", num_rhs=3, test_time_ns=1))
+    dm._index_np_time_unit = dldm._index_np_time_unit(
+        {"graph_index_path": str(index)})
+
+    assert dm._seed_time_to_index_unit(torch.tensor([_SEED_NS])) == anchor
+    assert dm._seed_time_to_index_unit(torch.tensor([-1])) == -1
+
+
 def test_train_dataloader_sets_fork_context_when_workers(tmp_path) -> None:
     """Python 3.14 workers retain fork to avoid pickling CUDA state."""
     dm = DiskgraphLightningDataModule(
@@ -4157,13 +4223,11 @@ def _projection_mapper_bank() -> dict[str, dict[str, TensorMapper]]:
     """
     return {
         "users_v1": {
-            "age": _numerical_mapper([18.0, 25.0, 30.0, 50.0]),
-            "country": TensorMapper.from_stype(
-                Stype.categorical, pd.Series(["US", "DE"])
-            ),
+            "age": NumericalTensorMapper(),
+            "country": CategoricalTensorMapper(category_counts=[("DE", 1), ("US", 1)]),
         },
         "txns_v1": {
-            "amount": _numerical_mapper([1.0, 2.0]),
+            "amount": NumericalTensorMapper(),
         },
         # Pure link table: no encoder columns at all.
         "links_v1": {},

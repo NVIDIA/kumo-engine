@@ -1,0 +1,283 @@
+{
+  "id": "C-TYPE-002",
+  "contract": {
+    "$type": "DataLoaderSpec",
+    "schema": {
+      "$type": "DataSchema",
+      "tables": [
+        {
+          "$type": "TableSpec",
+          "name": "users",
+          "primary_key": "id",
+          "columns": {
+            "id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "instant": {
+              "$type": "DType",
+              "name": "timestamp",
+              "unit": "s",
+              "timezone": "UTC",
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": {
+            "$type": "NonTemporal"
+          }
+        }
+      ],
+      "relations": []
+    },
+    "sample": {
+      "$type": "SampleSpec",
+      "entity": {
+        "$type": "EntitySpec",
+        "table": "users",
+        "entity_type": "users",
+        "filters": [],
+        "available_from": null
+      },
+      "entity_values": {
+        "instant": {
+          "$type": "Field",
+          "column": "instant",
+          "path": [],
+          "selection": "one",
+          "time_column": null,
+          "reference_time": "sample"
+        }
+      },
+      "dated_entity_values": {},
+      "events": {},
+      "current_events": {},
+      "neighborhoods": {},
+      "targets": {},
+      "candidate_sets": {}
+    },
+    "batch": {
+      "$type": "BatchSpec",
+      "inputs": {
+        "entity": {
+          "$type": "Input",
+          "source": {
+            "$type": "EntitySource"
+          },
+          "representation": {
+            "$type": "Fields",
+            "fields": [
+              {
+                "$type": "Encode",
+                "field": "instant",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              }
+            ],
+            "row": {
+              "$type": "Columns"
+            },
+            "history": {
+              "$type": "Grouped"
+            },
+            "field_names": null,
+            "field_space": null,
+            "forbidden_fields": []
+          },
+          "layout": {
+            "$type": "Separate"
+          }
+        }
+      },
+      "targets": {},
+      "encodings": {},
+      "id_spaces": {},
+      "field_names": {},
+      "batching": {
+        "$type": "Batching",
+        "max_samples": null,
+        "max_tokens": null,
+        "length_input": null,
+        "bucket_by_length": false,
+        "drop_last": false
+      }
+    },
+    "version": 3
+  },
+  "tables": {
+    "users": [
+      {
+        "id": 1,
+        "instant": {
+          "$timestamp": "1969-12-31T23:59:58.999999+00:00"
+        }
+      },
+      {
+        "id": 2,
+        "instant": {
+          "$timestamp": "1969-12-31T23:59:59.000001+00:00"
+        }
+      },
+      {
+        "id": 3,
+        "instant": {
+          "$timestamp": "1969-12-31T23:59:59.999999+00:00"
+        }
+      },
+      {
+        "id": 4,
+        "instant": {
+          "$timestamp": "1970-01-01T00:00:00+00:00"
+        }
+      },
+      {
+        "id": 5,
+        "instant": {
+          "$timestamp": "1970-01-01T00:00:00.000001+00:00"
+        }
+      },
+      {
+        "id": 6,
+        "instant": {
+          "$timestamp": "1970-01-01T00:00:01.000001+00:00"
+        }
+      }
+    ]
+  },
+  "anchors": [
+    {
+      "sample_id": "u1",
+      "entity_id": 1,
+      "as_of_time": 100
+    },
+    {
+      "sample_id": "u2",
+      "entity_id": 2,
+      "as_of_time": 100
+    },
+    {
+      "sample_id": "u3",
+      "entity_id": 3,
+      "as_of_time": 100
+    },
+    {
+      "sample_id": "u4",
+      "entity_id": 4,
+      "as_of_time": 100
+    },
+    {
+      "sample_id": "u5",
+      "entity_id": 5,
+      "as_of_time": 100
+    },
+    {
+      "sample_id": "u6",
+      "entity_id": 6,
+      "as_of_time": 100
+    }
+  ],
+  "expected": {
+    "u1": {
+      "entity_values": {
+        "instant": {
+          "$timestamp": "1969-12-31T23:59:59+00:00"
+        }
+      }
+    },
+    "u2": {
+      "entity_values": {
+        "instant": {
+          "$timestamp": "1970-01-01T00:00:00+00:00"
+        }
+      }
+    },
+    "u3": {
+      "entity_values": {
+        "instant": {
+          "$timestamp": "1970-01-01T00:00:00+00:00"
+        }
+      }
+    },
+    "u4": {
+      "entity_values": {
+        "instant": {
+          "$timestamp": "1970-01-01T00:00:00+00:00"
+        }
+      }
+    },
+    "u5": {
+      "entity_values": {
+        "instant": {
+          "$timestamp": "1970-01-01T00:00:01+00:00"
+        }
+      }
+    },
+    "u6": {
+      "entity_values": {
+        "instant": {
+          "$timestamp": "1970-01-01T00:00:02+00:00"
+        }
+      }
+    }
+  },
+  "reason": "Physical microseconds [-1000001,-999999,-1,0,1,1000001] round toward positive infinity to seconds [-1,0,0,0,1,2]. This is not truncation toward zero or floor rounding. The exact UTC values are asserted both in raw sampled fields and in the explicitly requested typed Raw column. The declared scalar type remains whole-second UTC even when the source Parquet column has microsecond precision.",
+  "physical_types": {
+    "users": {
+      "instant": "timestamp[us]"
+    }
+  },
+  "batch": {
+    "inputs": {
+      "entity": {
+        "instant": {
+          "values": {
+            "dtype": "timestamp[s, tz=UTC]",
+            "shape": [
+              6
+            ],
+            "values": [
+              {
+                "$timestamp": "1969-12-31T23:59:59+00:00"
+              },
+              {
+                "$timestamp": "1970-01-01T00:00:00+00:00"
+              },
+              {
+                "$timestamp": "1970-01-01T00:00:00+00:00"
+              },
+              {
+                "$timestamp": "1970-01-01T00:00:00+00:00"
+              },
+              {
+                "$timestamp": "1970-01-01T00:00:01+00:00"
+              },
+              {
+                "$timestamp": "1970-01-01T00:00:02+00:00"
+              }
+            ]
+          },
+          "valid": {
+            "dtype": "bool",
+            "shape": [
+              6
+            ],
+            "values": [
+              true,
+              true,
+              true,
+              true,
+              true,
+              true
+            ]
+          }
+        }
+      }
+    }
+  }
+}

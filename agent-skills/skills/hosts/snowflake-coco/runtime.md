@@ -179,7 +179,7 @@ The identity needs access to the warehouse and source data. Query, staging, expo
 
 Write-back is the reason this skill exists, and it is the only durable home for results (§3.1).
 
-The verified write-back form — `kumo.PredictionOutputConfig(connector=, artifact_type=, table_name=, write_mode=)` passed to `trainer.predict(..., snapshot=snapshot, output_config=...)` — is in `kumoai-reference/references/kumo_finetuning_sdk.md` §9. Emit that and nothing else. **The table is written with exactly the name you pass**; read it back and compare row counts.
+The verified write-back form — `kumo.PredictionOutputConfig(connector=, artifact_type=, table_name=, write_mode=)` passed to `trainer.predict(..., snapshot=snapshot, output_config=...)` — is in `kumoai-reference/references/kumo_finetuning_sdk.md` §9. Emit that and nothing else. **The table is written with exactly the name you pass**; read it back and compare row counts. An APPEND write adds the run's columns, as `kumoai-reference/references/outputs.md` *Write predictions* says.
 
 Two further facts: the target destination must be writable by the identity's principal, and a passing credential check does not prove it. Verify with a trivial write before a long job.
 
@@ -197,3 +197,12 @@ Two further facts: the target destination must be writable by the identity's pri
 6. Write results to a durable Snowflake destination before the session ends (§3.1, §7).
 
 ---
+
+## Graph visualization
+
+> **Not verified:** interactive rendering has not been tested in Snowflake Workspace notebooks.
+The SDK selects a widget in Workspace, requiring `anywidget>=0.9,<1` and `ipywidgets`; if these dependencies cannot be imported, it displays a static SVG instead.
+Other notebook hosts use HTML.
+Retrieve exported diagrams from the notebook filesystem through the Workspace file browser.
+
+Source: shipped package (`kumo.engine.graph.Graph.visualize`, `kumo.engine._visualization.SVG`)

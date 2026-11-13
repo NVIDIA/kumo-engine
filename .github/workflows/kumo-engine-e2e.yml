@@ -1,0 +1,196 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Kumo Engine shared E2E
+
+on:  # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      scales:
+        type: string
+        required: true
+      tier:
+        type: string
+        required: true
+      run_controls:
+        type: boolean
+        default: false
+      write_reference:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+  id-token: write
+
+jobs:
+  wheel:
+    if: >-
+      github.ref == 'refs/heads/main' && vars.ENGINE_E2E_ENABLED == 'true' &&
+      vars.ENGINE_E2E_SCHEDULER_ENABLED == 'true' &&
+      (github.event_name != 'schedule' || vars.ENGINE_E2E_SCHEDULE_ENABLED == 'true')
+    uses: ./.github/workflows/kumo-engine-pr.yml
+    with:
+      build_only: true
+  pool:
+    needs: wheel
+    runs-on: ubuntu-24.04
+    environment:
+      name: engine-e2e-pool
+      deployment: false
+    timeout-minutes: 15
+    outputs:
+      plan: ${{ steps.pool.outputs.plan }}
+      attempt: ${{ steps.pool.outputs.attempt }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6
+        with:
+          role-to-assume: ${{ vars.ENGINE_E2E_POOL_ROLE }}
+          aws-region: ${{ vars.ENGINE_E2E_AWS_REGION || 'us-west-2' }}
+      - id: pool
+        env:
+          SCALES: ${{ inputs.scales }}
+          TIER: ${{ inputs.tier }}
+          RUN_CONTROLS: ${{ inputs.run_controls }}
+          ENGINE_E2E_ENABLED: ${{ vars.ENGINE_E2E_ENABLED }}
+          ENGINE_E2E_SCHEDULER_ENABLED: ${{ vars.ENGINE_E2E_SCHEDULER_ENABLED }}
+          ENGINE_E2E_TEMPLATES_JSON: ${{ vars.ENGINE_E2E_TEMPLATES_JSON }}
+          ENGINE_E2E_MAX_PARALLEL: ${{ vars.ENGINE_E2E_MAX_PARALLEL || '2' }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RESULTS_S3: ${{ vars.ENGINE_E2E_RESULTS_S3 }}
+          EXPIRY_ROLE: ${{ vars.ENGINE_E2E_EXPIRY_ROLE }}
+          CAPACITY_FUNCTION: ${{ vars.ENGINE_E2E_CAPACITY_FUNCTION_ARN }}
+          CAPACITY_ROLE: ${{ vars.ENGINE_E2E_CAPACITY_ROLE }}
+        run: node .github/scripts/engine-e2e-pool.cjs start
+  cases:
+    name: 'engine-e2e:${{ matrix.case }}:${{ matrix.scale }}'
+    needs: [wheel, pool]
+    if: github.run_attempt == needs.pool.outputs.attempt
+    concurrency:
+      group: engine-e2e-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.case }}-${{ matrix.scale }}
+      cancel-in-progress: false
+    runs-on: ${{ matrix.label }}
+    environment:
+      name: gha-kumo-workflow-tests
+      deployment: false
+    timeout-minutes: ${{ inputs.tier == 'nightly' && 180 || 360 }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.pool.outputs.plan).matrix }}
+    env:
+      CASE: ${{ matrix.case }}
+      SCALE: ${{ matrix.scale }}
+      ENGINE_E2E_EXPECTED_INSTANCE_TYPE: ${{ matrix.instance }}
+      WRITE_REFERENCE: ${{ inputs.write_reference }}
+      ENGINE_E2E_DATA_S3: ${{ vars.ENGINE_E2E_DATA_S3 }}
+      REFERENCES_S3: ${{ vars.ENGINE_E2E_REFERENCES_S3 }}
+      RESULTS_S3: ${{ vars.ENGINE_E2E_RESULTS_S3 }}
+      DISKGRAPH_DATA_ROOT: /mnt/localssd
+      CUDA_VISIBLE_DEVICES: '0'
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6
+        if: always()
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          role-duration-seconds: 21600
+          aws-region: us-west-2
+      - name: Admit the case before the capacity deadline
+        run: |
+          python3.12 - <<'PY'
+          import json, os, subprocess, time
+          from pathlib import Path
+          from urllib.parse import urlparse
+          path = Path(os.environ['RUNNER_TEMP']) / 'e2e' / 'result.json'
+          path.parent.mkdir(parents=True, exist_ok=True)
+          deadline = float(os.environ['ENGINE_E2E_CAPACITY_DEADLINE'])
+          rejected = {}
+          root = urlparse(os.environ['RESULTS_S3'])
+          key = '/'.join(filter(None, [root.path.strip('/'), os.environ['GITHUB_RUN_ID'],
+              os.environ['GITHUB_RUN_ATTEMPT'], os.environ['SCALE'], os.environ['CASE'] + '.admission.json']))
+          if time.time() < deadline:
+              claim = path.with_name('admission.json')
+              claim.write_text(json.dumps(dict(state='admitted', capacity_deadline=deadline)))
+              response = subprocess.run(['aws', 's3api', 'put-object', '--bucket', root.netloc,
+                  '--key', key, '--body', str(claim), '--if-none-match', '*'], capture_output=True, text=True)
+              if response.returncode == 0:
+                  raise SystemExit(0)
+              if 'PreconditionFailed' not in response.stderr and '412' not in response.stderr:
+                  raise SystemExit(response.stderr)
+          response = subprocess.run(['aws', 's3', 'cp', 's3://' + root.netloc + '/' + key,
+              '-', '--only-show-errors'], capture_output=True, text=True)
+          if response.returncode == 0:
+              rejected = json.loads(response.stdout)
+          elif 'NoSuchKey' not in response.stderr and '404' not in response.stderr:
+              raise SystemExit(response.stderr)
+          result = dict(status='failed', phase='capacity', case=os.environ['CASE'].removesuffix('-control'),
+              control=os.environ['CASE'].endswith('-control'),
+              scale=os.environ['SCALE'], source_sha=os.environ['GITHUB_SHA'],
+              requested_instance_type=os.environ['ENGINE_E2E_EXPECTED_INSTANCE_TYPE'],
+              hardware=dict(instance_type=os.environ.get('ENGINE_E2E_INSTANCE_TYPE')),
+              capacity_deadline=deadline, error='No runner capacity before tier deadline')
+          if rejected.get('state') == 'bootstrap_failed':
+              result.update(phase='bootstrap', error=rejected['error'])
+          path.write_text(json.dumps(result))
+          raise SystemExit(result['error'])
+          PY
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          name: engine-pr-wheel-${{ github.sha }}
+          path: ${{ runner.temp }}/wheel
+      - name: Install the wheel and run one case outside the checkout
+        id: case
+        run: |
+          unset PYTHONPATH PYTHONHOME
+          python -I -m venv "$RUNNER_TEMP/e2e-venv"
+          wheels=("$RUNNER_TEMP"/wheel/*.whl)
+          test "${#wheels[@]}" = 1
+          "$RUNNER_TEMP/e2e-venv/bin/python" -I -m pip --isolated install "${wheels[0]}[s3]"
+          mkdir -p "$RUNNER_TEMP/e2e"
+          cp -r packages/kumo-engine/test/cases "$RUNNER_TEMP/e2e/"
+          cd "$RUNNER_TEMP/e2e"
+          mode=()
+          if [[ "$CASE" == *-control ]]; then mode+=(--control); fi
+          if [[ "$WRITE_REFERENCE" == true ]]; then mode+=(--write-reference); else
+            aws s3 cp "${REFERENCES_S3%/}/$SCALE/$CASE.json" reference.json
+          fi
+          "$RUNNER_TEMP/e2e-venv/bin/python" -E -s "cases/${CASE%-control}.py" --scale "$SCALE" \
+            --scratch "$DISKGRAPH_DATA_ROOT" --source-sha "$GITHUB_SHA" \
+            --reference reference.json --output result.json "${mode[@]}"
+      - name: Preserve results and an explicitly requested reference
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/e2e"
+          cd "$RUNNER_TEMP/e2e"
+          test -f result.json || python3.12 -c 'import json,os; print(json.dumps(dict(status="failed", phase="setup", case=os.environ["CASE"].removesuffix("-control"), control=os.environ["CASE"].endswith("-control"), hardware=dict(instance_type=os.environ.get("ENGINE_E2E_INSTANCE_TYPE")))))' > result.json
+          aws s3 cp result.json "${RESULTS_S3%/}/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/$SCALE/$CASE.json"
+          if [[ "$WRITE_REFERENCE" == true && '${{ steps.case.outcome }}' == success ]]; then
+            aws s3 cp reference.json "${REFERENCES_S3%/}/$SCALE/$CASE.json"
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        if: always()
+        with:
+          name: engine-e2e-${{ env.CASE }}-${{ matrix.scale }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/e2e/result.json
+            /opt/actions-runner/_diag/*.log
+          if-no-files-found: error
+  reject-selective-rerun:
+    needs: [pool, cases]
+    if: always() && github.run_attempt > 1 && github.run_attempt != needs.pool.outputs.attempt
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          echo '::error::No pool for this attempt. Use Re-run all jobs rather than failed-job-only reruns.'
+          exit 1

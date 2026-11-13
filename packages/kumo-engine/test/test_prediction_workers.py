@@ -14,6 +14,7 @@ from kumo_core.types import TaskType
 from kumo_core.types.enums import PredictionArtifactType
 from kumoapi.model_plan import ModelPlan
 
+from kumo.engine.trainer._scoring import ScoringDefaults
 from kumo.engine.trainer.trainer import Trainer
 
 
@@ -80,7 +81,8 @@ def test_bad_class_count_fails_before_prediction_work(count, monkeypatch):
 def test_valid_class_count_reaches_scorer(task_type, count, tmp_path,
                                           monkeypatch):
     trainer = Trainer(ModelPlan(), accelerator='cpu')
-    trainer._training_result = SimpleNamespace(artifact_paths={})
+    trainer._training_result = SimpleNamespace(
+        artifact_paths={}, manifest=None, scoring_defaults=ScoringDefaults())
     trainer._training_query = 'trained query'
     monkeypatch.setattr(Trainer, 'scratch_dir', property(lambda self: tmp_path))
     monkeypatch.setattr(
@@ -89,6 +91,7 @@ def test_valid_class_count_reaches_scorer(task_type, count, tmp_path,
     monkeypatch.setattr('kumo_core.pquery.normalize_graph', lambda *args: None)
     monkeypatch.setattr('kumo_core.pquery.parse_and_validate_query',
                         lambda *args: SimpleNamespace(
+                            task_type=task_type.value,
                             query=SimpleNamespace(top_k=None)))
     monkeypatch.setattr(
         'kumo.engine.trainer.trainer.build_generated_training_task_dataset',
@@ -97,15 +100,14 @@ def test_valid_class_count_reaches_scorer(task_type, count, tmp_path,
                         lambda *args, **kwargs: object())
     monkeypatch.setattr('kumo.engine.trainer.trainer._stage_model_bundle',
                         lambda *args: tmp_path)
-    monkeypatch.setattr('kumo_core.prediction.forecast_task_options',
-                        lambda *args: None)
+    monkeypatch.setattr('kumo.engine.trainer.trainer.bundle_task_options',
+                        lambda *args: {'lag_timesteps': 0})
     score = Mock(return_value=object())
     monkeypatch.setattr('kumo_core.prediction.score_prediction', score)
     table = SimpleNamespace(query='prediction query', tt_id='table',
                             compiler_options=None, timestamps=(),
                             staging_dir=tmp_path, table_path=tmp_path,
-                            row_count=1, required_stages=(),
-                            forecast_timeframe_step=None)
+                            row_count=1, required_stages=())
     snapshot = SimpleNamespace(graph_config={}, index_path=tmp_path, id='snap')
 
     if task_type.is_link_pred and count is None:
@@ -218,7 +220,7 @@ def test_explicit_gpu_selection_overrides_cpu_environment(
 
 
 @pytest.mark.parametrize('mismatch', [False, True])
-def test_forecast_options_reach_every_scorer_before_output(
+def test_task_options_reach_every_scorer_before_output(
         tmp_path, monkeypatch, mismatch):
     from kumo_core.resolved_task import ResolvedNumericalTask
     from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
@@ -232,9 +234,7 @@ def test_forecast_options_reach_every_scorer_before_output(
     }
     captured, predicted = [], []
     task = SimpleNamespace(
-        lag_timesteps=1,
         has_year_over_year_labels=False,
-        unix_step_size=options['unix_step_size'],
         train_table=SimpleNamespace(name='train_table'),
         encoder_inputs={
             'train_table':
@@ -256,9 +256,7 @@ def test_forecast_options_reach_every_scorer_before_output(
     monkeypatch.setattr('kumo_core.train.trainer.load_encoders',
                         lambda *a: None)
     trainer = SimpleNamespace(
-        past_encoder=SimpleNamespace(length=2 if mismatch else 1),
-        year_over_year_encoder=None,
-        head=SimpleNamespace(unix_step_size=options['unix_step_size']),
+        year_over_year_encoder=object() if mismatch else None,
         encoders=SimpleNamespace(
             encoders={'train_table': {
                 'autoregression_labels': object()
@@ -282,7 +280,7 @@ def test_forecast_options_reach_every_scorer_before_output(
         run_id='run', scratch_dir=str(tmp_path),
         artifacts=frozenset({PredictionArtifactType.PREDICTIONS}),
         num_workers=2, graph_snapshot_id='snapshot',
-        source_config_sha256='2' * 64, forecast_options=options)
+        source_config_sha256='2' * 64, task_options=options)
 
     if mismatch:
         with pytest.raises(ValueError, match='Forecast checkpoint'):

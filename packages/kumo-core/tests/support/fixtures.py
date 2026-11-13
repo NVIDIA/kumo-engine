@@ -6,17 +6,16 @@ from dataclasses import dataclass, field
 import pandas as pd
 import pytest
 import torch
-from torch_geometric.data import HeteroData
-from kumoapi.encoder import Encoder
-from kumoapi.typing import Stype
-
-from kumo_core.features.stores.feature import FeatureStoreTableSchema
-from kumo_core.features.stores.in_memory_feature import InMemoryFeatureStore
-from tests.support.in_memory_graph import InMemoryGraphStore
+from kumo_core.diskgraph.metadata import DiskgraphSchema
+from kumo_core.diskgraph.stores import DiskgraphFeatureStore
 from kumo_core.encoders.tensor_mapper import TensorMapper
-from kumo_core.encoders.selection import compute_missing_stats_
-from tests.support.encoders import get_encoder
+from kumo_core.features.stores.feature import FeatureStoreTableSchema
 from kumo_core.features.time import to_datetime
+from kumoapi.encoder import Datetime, Encoder, Index, NAStrategy, Numerical
+from kumoapi.typing import ColStatType, Stype
+from torch_geometric.data import HeteroData
+
+from tests.support.diskgraph_feature_store import make_diskgraph_feature_store
 
 
 @dataclass
@@ -31,11 +30,25 @@ class TestTableSchema:
 def create_graph_data(
     df_dict: dict[str, pd.DataFrame],
     schema_dict: dict[str, TestTableSchema],
+    table_encoder_dict: dict[str, dict[str, Encoder]],
 ) -> tuple[
-        InMemoryFeatureStore,
-        InMemoryGraphStore,
-        dict[str, dict[str, Encoder]],
+    DiskgraphFeatureStore,
+    DiskgraphSchema,
+    dict[str, dict[str, Encoder]],
 ]:
+    """Build graph fixtures from explicit encoders and table data.
+
+    Args:
+        df_dict: Synthetic graph-table rows.
+        schema_dict: Column and relation metadata for each table.
+        table_encoder_dict: Encoders with statistics supplied by the fixture.
+
+    Returns:
+        Feature store, graph metadata, and the supplied encoders.
+
+    Raises:
+        KeyError: If a table or column has no configured encoder.
+    """
     # Convert time columns to `pd.Datetime` ###################################
     for table_name, df in df_dict.items():
         schema = schema_dict[table_name]
@@ -48,17 +61,13 @@ def create_graph_data(
             df[schema.end_time_col] = to_datetime(df[schema.end_time_col])
 
     # Create tensor mappers ###################################################
-    table_encoder_dict: dict[str, dict[str, Encoder]] = {}
-    table_mapper_dict: dict[str, dict[str, TensorMapper]] = {}
-    for table_name, df in df_dict.items():
-        schema = schema_dict[table_name]
-        table_encoder_dict[table_name] = {}
-        table_mapper_dict[table_name] = {}
-        for col_name, stype in schema.stypes.items():
-            encoder = compute_missing_stats_(get_encoder(stype), df[col_name])
-            table_encoder_dict[table_name][col_name] = encoder
-            mapper = TensorMapper.from_encoder(encoder)
-            table_mapper_dict[table_name][col_name] = mapper
+    table_mapper_dict = {
+        table_name: {
+            column: TensorMapper.from_encoder(table_encoder_dict[table_name][column])
+            for column in schema.stypes
+        }
+        for table_name, schema in schema_dict.items()
+    }
 
     # Create `FeatureStore` ###################################################
     fs_table_schema_dict = {
@@ -72,13 +81,12 @@ def create_graph_data(
         for table_name, schema in schema_dict.items()
     }
 
-    feature_store = InMemoryFeatureStore(
+    feature_store = make_diskgraph_feature_store(
         df_dict=df_dict,
         table_schema_dict=fs_table_schema_dict,
-        train_table_schema=None,
     )
 
-    # Create `GraphStore` #####################################################
+    # Graph metadata for explanation:
     fkeys = []
     for table_name, schema in schema_dict.items():
         for fkey, dst_table in schema.fkeys:
@@ -87,25 +95,36 @@ def create_graph_data(
                 f'{dst_table}.{schema_dict[dst_table].pkey_name}',
             ))
 
-    time_col_dict = {
-        table_name: schema.time_col
+    edge_types = [
+        edge_type
         for table_name, schema in schema_dict.items()
-        if schema.time_col is not None
-    }
-
-    graph_store = InMemoryGraphStore(
-        df_dict=df_dict,
-        fkeys=fkeys,
-        time_col_dict=time_col_dict,
+        for column_name, destination in schema.fkeys
+        for edge_type in (
+            (table_name, column_name, destination),
+            (destination, f'rev_{column_name}', table_name),
+        )
+    ]
+    graph_schema = DiskgraphSchema(
+        table_names=list(schema_dict),
+        pkey_dict={
+            name: schema.pkey_name
+            for name, schema in schema_dict.items()
+            if schema.pkey_name is not None
+        },
+        fk_specs=fkeys,
+        raw_edge_types=list(edge_types),
+        edge_types=edge_types,
+        edge_type_remap={},
+        node_types=list(schema_dict),
     )
 
-    return feature_store, graph_store, table_encoder_dict
+    return feature_store, graph_schema, table_encoder_dict
 
 
 @pytest.fixture()
 def user_store_graph() -> tuple[
-    InMemoryFeatureStore,
-    InMemoryGraphStore,
+    DiskgraphFeatureStore,
+    DiskgraphSchema,
     dict[str, dict[str, Encoder]],
 ]:
     df_dict: dict[str, pd.DataFrame] = {}
@@ -175,13 +194,50 @@ def user_store_graph() -> tuple[
         pkey_name='STORE_ID',
     )
 
-    return create_graph_data(df_dict, schema_dict)
+    encoders: dict[str, dict[str, Encoder]] = {
+        "USERS": {
+            "AGE": Numerical(_stats={ColStatType.MEAN: 30.0}),
+            "GENDER": Index(
+                na_strategy=NAStrategy.SEPARATE,
+                _stats={ColStatType.CATEGORY_COUNTS: [["female", 2], ["male", 1]]},
+            ),
+            "STATUS": Index(
+                na_strategy=NAStrategy.SEPARATE,
+                _stats={ColStatType.CATEGORY_COUNTS: [["A", 2], ["B", 1], ["C", 1]]},
+            ),
+        },
+        "ORDERS": {
+            "AMOUNT": Numerical(_stats={ColStatType.MEAN: 18.75}),
+            "AMOUNT_CAT": Index(
+                na_strategy=NAStrategy.SEPARATE,
+                _stats={
+                    ColStatType.CATEGORY_COUNTS: [
+                        [value, 1]
+                        for value in [10, 11, 15, 20, 25, 26, 27, 28, 29, 30, 32, 33]
+                    ]
+                },
+            ),
+            "TIME": Datetime(
+                _stats={
+                    ColStatType.MIN: "kumo_timestamp_2025-01-01 00:00:00",
+                    ColStatType.MAX: "kumo_timestamp_2025-01-09 00:00:00",
+                }
+            ),
+        },
+        "STORES": {
+            "CAT": Index(
+                na_strategy=NAStrategy.SEPARATE,
+                _stats={ColStatType.CATEGORY_COUNTS: [["burger", 2], ["pizza", 1]]},
+            ),
+        },
+    }
+    return create_graph_data(df_dict, schema_dict, encoders)
 
 
 @pytest.fixture()
 def large_user_store_graph() -> tuple[
-    InMemoryFeatureStore,
-    InMemoryGraphStore,
+    DiskgraphFeatureStore,
+    DiskgraphSchema,
     dict[str, dict[str, Encoder]],
 ]:
     df_dict: dict[str, pd.DataFrame] = {}
@@ -252,11 +308,46 @@ def large_user_store_graph() -> tuple[
         pkey_name='STORE_ID',
     )
 
-    return create_graph_data(df_dict, schema_dict)
+    encoders: dict[str, dict[str, Encoder]] = {
+        "USERS": {
+            "AGE": Numerical(_stats={ColStatType.MEAN: 3162 / 99}),
+            "GENDER": Index(
+                na_strategy=NAStrategy.SEPARATE,
+                _stats={ColStatType.CATEGORY_COUNTS: [["male", 97], ["female", 2]]},
+            ),
+            "STATUS": Index(
+                na_strategy=NAStrategy.SEPARATE,
+                _stats={ColStatType.CATEGORY_COUNTS: [["A", 98], ["B", 1], ["C", 1]]},
+            ),
+        },
+        "ORDERS": {
+            "AMOUNT": Numerical(_stats={ColStatType.MEAN: 3015 / 199}),
+            "AMOUNT_CAT": Index(
+                na_strategy=NAStrategy.SEPARATE,
+                _stats={
+                    ColStatType.CATEGORY_COUNTS: [[29, 190]]
+                    + [[value, 1] for value in [10, 11, 15, 20, 25, 26, 27, 28, 30]]
+                },
+            ),
+            "TIME": Datetime(
+                _stats={
+                    ColStatType.MIN: "kumo_timestamp_2025-01-01 00:00:00",
+                    ColStatType.MAX: "kumo_timestamp_2025-01-09 00:00:00",
+                }
+            ),
+        },
+        "STORES": {
+            "CAT": Index(
+                na_strategy=NAStrategy.SEPARATE,
+                _stats={ColStatType.CATEGORY_COUNTS: [["burger", 5], ["pizza", 5]]},
+            ),
+        },
+    }
+    return create_graph_data(df_dict, schema_dict, encoders)
 
 
 def user_store_batch(
-    feature_store: InMemoryFeatureStore,
+    feature_store: DiskgraphFeatureStore,
     num_hops: int = 2,
 ) -> HeteroData:
     """Fixed temporal batch for explanation and edge-exclusion tests.

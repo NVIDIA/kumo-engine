@@ -7,6 +7,7 @@ Keep one maintained explanation per topic and link to it from agent guidance.
 
 | Need | Start here |
 | --- | --- |
+| Industry notebooks and standalone examples | [Example collection](../examples/kumo-example-notebooks/README.md) |
 | Product and available source interfaces | [Repository overview](../README.md) |
 | System topology and execution boundaries | [Architecture](../ARCHITECTURE.md) |
 | Development prerequisites and setup side effects | [Setup](development/setup.md) |
@@ -37,4 +38,4 @@ guides for their interfaces and development workflows.
 | Query language | [kumo-pql](../packages/kumo-pql/README.md) and [existing instructions](../packages/kumo-pql/AGENTS.md) |
 | UI component library | [catalog](../packages/kumo-ui-catalog/README.md) and [existing component guide](../packages/kumo-ui-catalog/CLAUDE.md) |
 | Native graph engine | [DiskGraph](../packages/diskgraph/README.md); maintained directly in this repository |
-| Source providers | [S3](../packages/kumo-s3/README.md), [GCS](../packages/kumo-gcs/README.md), [BigQuery](../packages/kumo-bigquery/README.md), [Databricks](../packages/kumo-databricks/README.md), [Snowflake](../packages/kumo-snowflake/README.md) |
+| Source providers | [S3](../packages/kumo-s3/README.md), [GCS](../packages/kumo-gcs/README.md), [ADLS](../packages/kumo-adls/README.md), [BigQuery](../packages/kumo-bigquery/README.md), [Databricks](../packages/kumo-databricks/README.md), [Snowflake](../packages/kumo-snowflake/README.md) |

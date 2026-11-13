@@ -10,8 +10,8 @@ use crate::state::{
 };
 use diskgraph_core::sampling::*;
 use diskgraph_core::sortkey::SortKeyDecoder;
+use diskgraph_core::time::{convert_trunc, TimeUnit};
 use diskgraph_core::tt_builder::{Value, WEIGHT_COL};
-use diskgraph_core::time::{abs_from_unit, Seconds, TimeUnit};
 use diskgraph_index::layout::RelationSegment;
 use diskgraph_index::reader::ShardReader;
 use gxhash::HashMap as GxHashMap;
@@ -685,9 +685,9 @@ impl DiskGraphEngine {
                     diskgraph_rowpack::RowPackContext::from_bytes(&ctx_bytes).map_err(|e| {
                         EngineError::Internal(format!("failed to parse rowpack ctx: {}", e))
                     })?;
-                let decoder = RowPackDecoder::new(ctx).map_err(|e| {
-                    EngineError::Internal(format!("failed to create decoder: {}", e))
-                })?;
+                let decoder = RowPackDecoder::new(ctx)
+                    .map_err(|e| EngineError::Internal(format!("failed to create decoder: {}", e)))?
+                    .with_clock(metadata.timestamp_unit);
                 node_decoders_map.insert(node_type.name.clone(), decoder);
             }
         }
@@ -1276,6 +1276,132 @@ impl DiskGraphEngine {
     /// point to seed at the seed namespace, seed-src edges still get
     /// dropped at the output layer.
     #[allow(clippy::too_many_arguments)]
+    fn sample_runtime_graph(
+        &self,
+        request: &BatchSamplingRequest,
+        name: &str,
+        seed_src_rel_ids: std::collections::HashSet<u16>,
+        rel_id_to_names: HashMap<u16, (String, String, String)>,
+        seed_type_ids: std::collections::HashSet<usize>,
+        projection: Arc<ResolvedProjection>,
+        cutoff: Option<&NodeCutoff<'_>>,
+    ) -> Result<crate::output::RuntimeBatch> {
+        let mut state = SamplingState::default();
+        let mut output = crate::output::RuntimeBatchOutput::new(
+            name,
+            seed_src_rel_ids,
+            rel_id_to_names,
+            self.id_to_node_type.clone(),
+            // Exclude ALL stage seed namespaces (current + sibling stages) from
+            // emitted topology (they're storage types, not model node types) —
+            // symmetric with the seed-src edge filtering above.
+            seed_type_ids,
+        );
+        self.sample_with_cutoff(request, &mut state, &mut output, cutoff)?;
+        output.finalize(&state)?;
+
+        // 7b. Non-fused path: the sampler doesn't fetch features inline, so
+        // `raw_features` would be empty. Fetch them post-sampling per visited
+        // type — produces the same dict shape as the fused path. The fused
+        // path already populated `raw_features` via `handle_fused_features`
+        // during sampling; we skip the post-fetch in that case to avoid
+        // duplicate batches.
+        if !request.flags.fused_feature_fetching {
+            for (type_id, type_state) in &state.type_states {
+                if self
+                    .node_decoders
+                    .get(*type_id)
+                    .and_then(|d| d.as_ref())
+                    .is_none()
+                {
+                    continue;
+                }
+                // The caller consumes NO column of this type: skip BEFORE
+                // `set_namespace`, so no `raw_features` block is emitted for it
+                // at all. The type still appears in the emitted topology --
+                // this declines a type's features, never its participation in
+                // the graph.
+                if projection.skips(*type_id) {
+                    continue;
+                }
+                let node_ids: Vec<u64> = type_state.nodes.iter().map(|n| n.global_id).collect();
+                if node_ids.is_empty() {
+                    continue;
+                }
+                let type_name = match self.id_to_node_type.get(*type_id) {
+                    Some(n) => n.clone(),
+                    None => continue,
+                };
+                output.set_namespace(type_name);
+                // Feature projection pushdown: only the columns the caller says
+                // it will consume. `None` => select all (pre-pushdown behavior).
+                let feature_names = projection.names_for(*type_id).unwrap_or(&[]);
+                self.fetch_features_for_type(*type_id, &node_ids, feature_names, &mut output)?;
+            }
+        }
+
+        Ok(output.into_runtime_batch())
+    }
+
+    /// Sample another neighborhood for an already resolved native anchor batch.
+    /// Task labels/root resolution are not repeated and no iterator is advanced.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sample_runtime_neighborhood(
+        &self,
+        stage_table: &str,
+        root_type: &str,
+        task: &crate::output::TaskBag,
+        name: &str,
+        plan: &SamplingPlan,
+        flags: &SamplingFlags,
+        projection: Arc<ResolvedProjection>,
+    ) -> Result<crate::output::RuntimeBatch> {
+        let prefix = format!("{}/", stage_table.split('/').next().unwrap_or(""));
+        let seed_type_ids = self
+            .id_to_node_type
+            .iter()
+            .enumerate()
+            .filter(|(_, table)| table.starts_with(&prefix))
+            .map(|(id, _)| id)
+            .collect();
+        let relations = self
+            .id_to_rel_name
+            .iter()
+            .enumerate()
+            .map(|(id, relation)| {
+                (
+                    id as u16,
+                    (
+                        self.id_to_node_type[self.relation_src_type[id]].clone(),
+                        relation.clone(),
+                        self.id_to_node_type[self.relation_info[id]].clone(),
+                    ),
+                )
+            })
+            .collect();
+        let request = BatchSamplingRequest {
+            dataset_id: diskgraph_core::dataset::DatasetId::nil(),
+            seed_nodes: HashMap::from([(root_type.into(), task.seed_node_ids.clone())]),
+            seed_timestamps: task
+                .seed_timestamps
+                .as_ref()
+                .map(|times| HashMap::from([(root_type.into(), times.clone())])),
+            seed_timestamp_unit: self.timestamp_unit,
+            plan: plan.clone(),
+            flags: flags.clone(),
+        };
+        self.sample_runtime_graph(
+            &request,
+            name,
+            Default::default(),
+            relations,
+            seed_type_ids,
+            projection,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn sample_runtime_batch(
         &self,
         reader: &diskgraph_index::graph::GraphIndexReader,
@@ -1306,7 +1432,7 @@ impl DiskGraphEngine {
         // keeps every existing caller and test working unchanged.
         projection: Option<Arc<ResolvedProjection>>,
     ) -> Result<crate::output::RuntimeBatch> {
-        use crate::output::{InMemoryOutput, OutputHandler, RuntimeBatchOutput};
+        use crate::output::InMemoryOutput;
         use std::collections::HashSet;
 
         let cutoff = pseudo_time.map(|f| self.node_cutoff(f)).transpose()?;
@@ -1498,11 +1624,7 @@ impl DiskGraphEngine {
                 col.as_any()
                     .downcast_ref::<arrow_array::Int64Array>()
                     .map(|arr| (0..arr.len()).map(|i| arr.value(i)).collect())
-                    .or_else(|| {
-                        col.as_any()
-                            .downcast_ref::<arrow_array::TimestampSecondArray>()
-                            .map(|arr| (0..arr.len()).map(|i| arr.value(i)).collect())
-                    })
+                    .or_else(|| seed_timestamps_in_clock(col, self.timestamp_unit))
             })
         } else {
             None
@@ -1684,56 +1806,15 @@ impl DiskGraphEngine {
             flags: flags.clone(),
         };
 
-        // 7. Sample + collate.
-        let mut state = SamplingState::default();
-        let mut output = RuntimeBatchOutput::new(
+        let mut runtime_batch = self.sample_runtime_graph(
+            &request,
             "main",
             seed_src_rel_ids,
             rel_id_to_names,
-            self.id_to_node_type.clone(),
-            // Exclude ALL stage seed namespaces (current + sibling stages) from
-            // emitted topology (they're storage types, not model node types) —
-            // symmetric with the seed-src edge filtering above.
             seed_type_ids,
-        );
-        self.sample_with_cutoff(&request, &mut state, &mut output, cutoff.as_ref())?;
-        output.finalize(&state)?;
-
-        // 7b. Non-fused path: the sampler doesn't fetch features inline, so
-        // `raw_features` would be empty. Fetch them post-sampling per visited
-        // type — produces the same dict shape as the fused path. The fused
-        // path already populated `raw_features` via `handle_fused_features`
-        // during sampling; we skip the post-fetch in that case to avoid
-        // duplicate batches.
-        if !flags.fused_feature_fetching {
-            for (type_id, type_state) in &state.type_states {
-                if self.node_decoders.get(*type_id).and_then(|d| d.as_ref()).is_none() {
-                    continue;
-                }
-                // The caller consumes NO column of this type: skip BEFORE
-                // `set_namespace`, so no `raw_features` block is emitted for it
-                // at all. The type still appears in the emitted topology --
-                // this declines a type's features, never its participation in
-                // the graph.
-                if projection.skips(*type_id) {
-                    continue;
-                }
-                let node_ids: Vec<u64> =
-                    type_state.nodes.iter().map(|n| n.global_id).collect();
-                if node_ids.is_empty() {
-                    continue;
-                }
-                let type_name = match self.id_to_node_type.get(*type_id) {
-                    Some(n) => n.clone(),
-                    None => continue,
-                };
-                output.set_namespace(type_name);
-                // Feature projection pushdown: only the columns the caller says
-                // it will consume. `None` => select all (pre-pushdown behavior).
-                let feature_names = projection.names_for(*type_id).unwrap_or(&[]);
-                self.fetch_features_for_type(*type_id, &node_ids, feature_names, &mut output)?;
-            }
-        }
+            projection,
+            cutoff.as_ref(),
+        )?;
 
         // 8. Stitch task fields. Project the seed rowpack RecordBatch into:
         //   - `task.target` ← `TARGET*` columns only. Adapter consumes this
@@ -1745,7 +1826,6 @@ impl DiskGraphEngine {
         //     `hetero[train_table_name].tf`. Empty today for PQ plans (no
         //     extra cols in the schema) but the bucket is correctly
         //     addressed for the moment tt-ng emits FEAT*/LAG_FEAT*.
-        let mut runtime_batch = output.into_runtime_batch();
         runtime_batch.task.input_ids = (0..batch_row_ids.len() as u32).collect();
         runtime_batch.task.tt_stage_node_ids = batch_row_ids.to_vec();
         // We populate seed_node_ids with the primary entity IDs to satisfy the
@@ -2109,26 +2189,18 @@ impl DiskGraphEngine {
     ) -> Result<()> {
         let sample_start = Instant::now();
 
-        // Convert seed timestamps from the caller's unit to the index unit (Seconds).
-        // The index always stores timestamps in seconds today; assert to catch if
-        // this assumption changes (at which point the engine should be made generic
-        // over UnitSystem).
-        assert_eq!(
-            self.timestamp_unit,
-            TimeUnit::Seconds,
-            "engine assumes seconds index; make engine generic over UnitSystem if this changes"
-        );
+        // Convert seed timestamps from the caller's unit to the index clock.
         let mut request_cow = std::borrow::Cow::Borrowed(request);
-        if request.seed_timestamp_unit != TimeUnit::Seconds {
+        if request.seed_timestamp_unit != self.timestamp_unit {
             if let Some(mut ts_map) = request.seed_timestamps.clone() {
                 for ts_vec in ts_map.values_mut() {
                     for ts in ts_vec.iter_mut() {
-                        *ts = abs_from_unit::<Seconds>(*ts, request.seed_timestamp_unit).raw();
+                        *ts = convert_trunc(*ts, request.seed_timestamp_unit, self.timestamp_unit);
                     }
                 }
                 let mut owned = request.clone();
                 owned.seed_timestamps = Some(ts_map);
-                owned.seed_timestamp_unit = TimeUnit::Seconds;
+                owned.seed_timestamp_unit = self.timestamp_unit;
                 request_cow = std::borrow::Cow::Owned(owned);
             }
         }
@@ -2316,9 +2388,13 @@ impl DiskGraphEngine {
                     if is_reserved_feature_column(&col.name) {
                         continue;
                     }
-                    let (_, builder) =
-                        diskgraph_rowpack::make_arrow_builder(&col.name, col.logical_type, 1024)
-                            .map_err(|e| EngineError::Internal(e.to_string()))?;
+                    let (_, builder) = diskgraph_rowpack::make_arrow_builder(
+                        &col.name,
+                        col.logical_type,
+                        1024,
+                        decoder.clock(),
+                    )
+                    .map_err(|e| EngineError::Internal(e.to_string()))?;
                     builders.push(builder);
                 }
                 type_state.builders = Some(builders);
@@ -3370,6 +3446,29 @@ impl DiskGraphEngine {
             output,
         )
     }
+}
+
+/// Read a decoded `TIMESTAMP` column as ticks of the index clock.
+fn seed_timestamps_in_clock(col: &arrow_array::ArrayRef, clock: TimeUnit) -> Option<Vec<i64>> {
+    use arrow_array::cast::AsArray;
+    use arrow_array::types::*;
+    use arrow_schema::{DataType, TimeUnit as ArrowTimeUnit};
+    let DataType::Timestamp(unit, _) = col.data_type() else {
+        return None;
+    };
+    let values = match unit {
+        ArrowTimeUnit::Second => col.as_primitive::<TimestampSecondType>().values(),
+        ArrowTimeUnit::Millisecond => col.as_primitive::<TimestampMillisecondType>().values(),
+        ArrowTimeUnit::Microsecond => col.as_primitive::<TimestampMicrosecondType>().values(),
+        ArrowTimeUnit::Nanosecond => col.as_primitive::<TimestampNanosecondType>().values(),
+    };
+    let unit = TimeUnit::from(*unit);
+    Some(
+        values
+            .iter()
+            .map(|&value| convert_trunc(value, unit, clock))
+            .collect(),
+    )
 }
 
 /// Project a seed-rowpack `RecordBatch` into the two consumer buckets

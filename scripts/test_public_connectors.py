@@ -20,7 +20,7 @@ SUITES = {
     'parquet': ('packages/kumo-core/tests/sources/parquet',),
     's3': ('packages/kumo-s3/tests',),
     'gcs': ('packages/kumo-gcs/tests',),
-    'adls': ('test/io_utils/fsutil/adls',),
+    'adls': ('test/io_utils/fsutil/adls', 'packages/kumo-adls/tests'),
     'databricks': ('packages/kumo-databricks/tests',),
     'snowflake': ('packages/kumo-snowflake/tests',),
     'bigquery': ('packages/kumo-bigquery/tests',),

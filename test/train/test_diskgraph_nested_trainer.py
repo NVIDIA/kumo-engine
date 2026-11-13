@@ -849,6 +849,17 @@ def test_init_passes_eval_limits_and_runtime_options(
     }
 
 
+def test_init_passes_uncapped_eval_limits(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    stub = _StubTrainer(max_val_steps=None, max_test_steps=None)
+
+    _run_init(stub, monkeypatch=monkeypatch)
+
+    dm_kwargs = stub.datamodule_kwargs  # type: ignore[attr-defined]
+    assert dm_kwargs["max_val_steps"] is None
+    assert dm_kwargs["max_test_steps"] is None
+
+
 def test_init_applies_diskgraph_auto_config_to_ttng_runtime(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """TT-NG must forward the legacy policy to the wheel, not bypass it."""
@@ -1030,7 +1041,7 @@ def test_load_rebinds_class_and_sets_bundle_dir(
     assert type(out) is DiskgraphNestedTrainer
     # Bundle dir was stamped on.
     assert out.diskgraph_task_dataset_bundle_dir == "/mnt/localssd/foo/bundle"
-    # Omitted stores use the None defaults in Trainer.load.
+    # Store setup belongs to the trainer's runtime initialization.
     assert "feature_store" not in captured["kwargs"]
     assert "graph_store" not in captured["kwargs"]
     # encoders + version passed through.
@@ -1558,7 +1569,7 @@ def test_init_attaches_runtime_feature_store_for_rhs_feature_mode(
 
     def _fake_build_runtime_feature_store(**kwargs: Any) -> tuple[str, str]:
         captured.update(kwargs)
-        return "feature-store", "graph-store"
+        return "feature-store", "graph-schema"
 
     monkeypatch.setattr(
         dg_nested_mod,
@@ -1573,8 +1584,8 @@ def test_init_attaches_runtime_feature_store_for_rhs_feature_mode(
     assert captured["encoders"] is stub.encoders
     assert captured["entity_table_names"] == ["my_customers", "articles"]
     assert stub.feature_store == "feature-store"
-    assert stub.graph_store == "graph-store"
-    assert stub.datamodule._data == ("feature-store", "graph-store")
+    assert stub.graph_schema == "graph-schema"
+    assert stub.datamodule._data == ("feature-store", "graph-schema")
 
 
 def test_init_does_not_attach_runtime_feature_store_for_rhs_lookup_mode(
@@ -1604,7 +1615,7 @@ def test_init_does_not_attach_runtime_feature_store_for_rhs_lookup_mode(
     _run_init(stub, monkeypatch=monkeypatch, fake_manifest=manifest)
 
     assert not hasattr(stub, "feature_store")
-    assert not hasattr(stub, "graph_store")
+    assert not hasattr(stub, "graph_schema")
     assert not hasattr(stub.datamodule, "_data")
 
 
@@ -3820,6 +3831,8 @@ def test_predict_lp_timestamp_is_ns_not_overflowed(tmp_path) -> None:
 
 
 class _MetricListTrainer:
+    global_rank = 0
+
     def __init__(self, results: list[dict[str, Any]]) -> None:
         self.results = results
 
@@ -3934,3 +3947,112 @@ def test_nonempty_link_metrics_are_unchanged(tmp_path) -> None:
     result = trainer._eval(TrainingStage.TEST)
 
     assert result.metrics is metrics
+
+
+def _mc_target_encoder(classes: list[Any]) -> Any:
+    from kumo_core.encoders.target.categorical import CategoricalTargetEncoder
+    from kumo_core.encoders.tensor_mapper import CategoricalTensorMapper
+
+    return CategoricalTargetEncoder(
+        TaskType.MULTICLASS_CLASSIFICATION,
+        CategoricalTensorMapper(category_counts=[[c, 1] for c in classes]))
+
+
+def _chunked_eval_case(task: str, n: int = 7) -> tuple[Any, dict[str, Any]]:
+    g = torch.Generator().manual_seed(0)
+    pkey = np.array([f'cust_{i}' for i in range(n)], dtype=object)
+    time = torch.arange(n) * 86_400_000_000_000 + 1_592_956_800_000_000_000
+    if task == 'binary':
+        return _EvalDFStub(), _bc_outputs(n)
+    if task in {'regression', 'forecasting'}:
+        stub = _EvalDFStub(
+            task_type=TaskType[task.upper()],
+            target_encoder=_reg_target_encoder(),
+        )
+        horizon = 1 if task == 'regression' else 2
+        stub.pl_model = SimpleNamespace(
+            loss=object(),
+            get_future_unix=lambda t: t.view(-1, 1) + torch.arange(1, 3).view(
+                1, -1) * 86_400_000_000_000,
+        )
+        return stub, dict(pkey=pkey, time=time, prob=None,
+                          target=torch.rand(n, horizon, generator=g),
+                          pred=torch.rand(n, horizon, generator=g))
+    if task in {'multiclass', 'mixed_class'}:
+        classes = ['A', 'B', 'C'] if task == 'multiclass' else [1, 'two', 3]
+        stub = _EvalDFStub(task_type=TaskType.MULTICLASS_CLASSIFICATION,
+                           target_encoder=_mc_target_encoder(classes))
+        stub.num_targets = 3 if task == 'multiclass' else 1
+        prob = torch.rand(n, 3, generator=g).softmax(dim=-1)
+        if task == 'mixed_class':
+            prob = torch.eye(3)[[0, 0, 0, 0, 1, 1, 2][:n]]
+        target = torch.randint(3, (n, 1), generator=g)
+        if task == 'mixed_class':
+            target = torch.zeros(n, 1, dtype=torch.long)
+        return stub, dict(pkey=pkey, time=time, prob=prob,
+                          pred=prob.argmax(-1), target=target)
+    stub = _EvalDFStub(
+        task_type=TaskType[task.upper()],
+        target_encoder=_mlr_target_encoder(),
+    )
+    stub.num_targets = 3
+    prob = torch.rand(n, 3, generator=g)
+    pred = ((prob > 0.5).long() if task == 'multilabel_classification' else
+            prob.topk(2).indices)
+    return stub, dict(pkey=pkey, time=time, prob=prob, pred=pred,
+                      target=torch.randint(2, (n, 3), generator=g))
+
+
+@pytest.mark.parametrize('task', [
+    'binary', 'multiclass', 'mixed_class', 'multilabel_classification',
+    'multilabel_ranking', 'regression', 'forecasting'
+])
+def test_chunked_eval_output_matches_whole_frame(tmp_path, monkeypatch, task):
+    from io import BytesIO
+
+    from kumo_core.train.output import (
+        EvalOutput,
+        _normalize_mixed_type_class_column,
+    )
+
+    stub, outputs = _chunked_eval_case(task)
+    whole = DiskgraphNestedTrainer._build_eval_df(stub, outputs)
+    monkeypatch.setattr(dg_nested_mod, '_EVAL_CHUNK_ROWS', 2)
+    out = EvalOutput({}, frames=DiskgraphNestedTrainer._build_eval_frames(
+        stub, outputs))
+    out.save(str(tmp_path), TrainingStage.TEST)
+    out.save_df(str(tmp_path), TrainingStage.TEST)
+
+    def round_trip(frame: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
+        buffer = BytesIO()
+        _normalize_mixed_type_class_column(frame).to_parquet(buffer, **kwargs)
+        return pd.read_parquet(buffer)
+
+    pd.testing.assert_frame_equal(out.df, whole, check_exact=True)
+    pd.testing.assert_frame_equal(
+        EvalOutput.load(str(tmp_path / 'test_output.pt')).df,
+        round_trip(whole), check_exact=True)
+    pd.testing.assert_frame_equal(
+        pd.read_parquet(tmp_path / 'test_df.parquet'),
+        round_trip(whole, index=True), check_exact=True)
+    np.random.seed(0)
+    sample = out.frames.sample(5)
+    np.random.seed(0)
+    pd.testing.assert_frame_equal(sample, whole.sample(5), check_exact=True)
+
+
+def _build_frames_peak(n: int) -> int:
+    import tracemalloc
+
+    outputs = _bc_outputs(n)
+    tracemalloc.start()
+    DiskgraphNestedTrainer._build_eval_frames(_EvalDFStub(), outputs)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    return peak
+
+
+def test_build_eval_frames_memory_does_not_grow_with_rows(monkeypatch):
+    monkeypatch.setattr(dg_nested_mod, '_EVAL_CHUNK_ROWS', 1_000)
+
+    assert _build_frames_peak(40_000) < 1.5 * _build_frames_peak(4_000)

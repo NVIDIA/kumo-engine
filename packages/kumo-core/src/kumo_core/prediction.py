@@ -5,12 +5,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import multiprocessing as mp
 import os
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime
+from functools import reduce
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -22,11 +24,13 @@ from typing import (
     Mapping,
     NamedTuple,
     Optional,
+    Sequence,
     Tuple,
 )
 from uuid import uuid4
 
 import diskgraph
+import numpy as np
 from pandas import Timestamp
 
 from .pquery import (
@@ -43,13 +47,16 @@ from .task_dataset import (
 )
 from .train.autoregression import FUTURE_LABELS_COL
 from .training.table import apply_reference_resolution
-from .training.validation import validate_anchor_time
+from .training.validation import require_single_anchor, validate_anchor_time
 from .types.enums import PredictionArtifactType
 
 if TYPE_CHECKING:
     from .embedding_models import EmbeddingModelStore
 
 logger = logging.getLogger(__name__)
+
+COUNTS_FILE = '_prediction_counts.json'
+COUNTS_DIR = '_prediction_counts'
 
 
 @dataclass(frozen=True)
@@ -61,7 +68,6 @@ class PredictionTableRequest:
     tt_id: str
     task_dataset: TaskDatasetMaterializeSpec
     compiler_options: Mapping[str, Any] | None = None
-    forecast_timeframe_step: int | None = None
 
 
 @dataclass(frozen=True)
@@ -70,6 +76,8 @@ class GeneratedPredictionTable:
     table_path: str
     row_count: int
     tt_id: str
+    row_failures: Mapping[str, Any] | None = None
+    skipped_rows_dir: str | None = None
 
 
 @dataclass(frozen=True)
@@ -84,46 +92,11 @@ class PreparedCustomPredictionTable:
             raise ValueError("custom prediction table requires a path")
 
 
-def forecast_task_options(
-    request: PredictionTableRequest, ) -> Dict[str, int] | None:
-    """Return the resolved-task scalars required to replay a forecast.
-
-    Prediction-table compilation owns the temporal query and the exact lag
-    features it emitted. Passing these small values to every scoring process
-    keeps spawned workers aligned with the fitted checkpoint.
-    """
-    if request.query.task_type != "forecasting":
-        return None
-    options = dict(request.compiler_options or {})
-    lag_offsets = options.get("lag_offsets_secs")
-    if not isinstance(lag_offsets, (list, tuple)) or not lag_offsets:
-        raise ValueError("Forecast prediction requires historical lag offsets")
-    offset = request.query.query.get_combined_date_offset_range()
-    start = int(offset.start or 0)
-    end = int(offset.end)
-    step = request.forecast_timeframe_step or end - start
-    from .utils.time import compute_unix_step
-    return {
-        "forecast_length": int(request.query.forecast_length),
-        "lag_timesteps": len(lag_offsets),
-        "unix_start_offset": int(compute_unix_step(start, offset.unit)),
-        "unix_end_offset": int(compute_unix_step(end, offset.unit)),
-        "unix_step_size": int(compute_unix_step(step, offset.unit)),
-    }
-
-
 def _validate_forecast_checkpoint(trainer: Any, task: Any) -> None:
     """Reject a checkpoint whose fitted forecast inputs differ from task."""
-    past_encoder = trainer.past_encoder
-    trained_lags = (getattr(past_encoder, "length", None)
-                    if past_encoder is not None else getattr(
-                        trainer.head, "past_channels", None))
-    if (trained_lags != task.lag_timesteps
-            or (trainer.year_over_year_encoder is not None)
-            != task.has_year_over_year_labels or getattr(
-                trainer.head, "unix_step_size", None) != task.unix_step_size):
-        raise ValueError(
-            "Forecast checkpoint lag/year-over-year/timing mismatch")
+    if ((trainer.year_over_year_encoder is not None)
+            != task.has_year_over_year_labels):
+        raise ValueError("Forecast checkpoint year-over-year mismatch")
     fitted = (trainer.encoders.encoders.get(task.train_table.name)
               if trainer.encoders is not None else None)
     if fitted is None or any(
@@ -166,7 +139,7 @@ def generate_prediction_table(
                                          minimum, table_name)
             if error is not None:
                 raise ValueError(f"{error.title}. {error.message}")
-    compiler = runtime.DiskGraphPlanCompiler()
+    compiler = runtime.DiskGraphPlanCompiler(index_path=request.index_path)
     # Future targets belong to training only. Prediction retains the fitted
     # historical feature layout without asking the compiler for labels.
     forecast_options.pop("future_offsets_secs", None)
@@ -252,14 +225,71 @@ def generate_custom_prediction_table(
     if not isinstance(table_path, str) or not table_path:
         raise RuntimeError(
             "custom prediction-table builder result missing tt_parquet_path")
-    if row_count <= 0:
+    failures = result.get("row_failures")
+    failures = failures if isinstance(failures, Mapping) else None
+    if row_count <= 0 and not (failures or {}).get("skipped_rows"):
         raise RuntimeError("custom prediction table contains no rows")
     return GeneratedPredictionTable(
         staging_dir=staging_dir,
         table_path=table_path,
         row_count=row_count,
         tt_id=request.tt_id,
+        row_failures=failures,
+        skipped_rows_dir=result.get("skipped_rows_dir"),
     )
+
+
+def table_anchor_range(table_path: str) -> tuple[int, int]:
+    """First and last anchor of a prediction table, in nanoseconds.
+
+    Reads the Parquet footer statistics, and a row group's anchor column
+    only when its footer has none, so memory does not grow with the rows.
+    """
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    import pyarrow.dataset as ds
+    import pyarrow.parquet as pq
+
+    first: int | None = None
+    last: int | None = None
+    for path in ds.dataset(table_path, format="parquet").files:
+        table = pq.ParquetFile(path)
+        column = table.schema_arrow.get_field_index("TIMESTAMP")
+        if column < 0:
+            raise ValueError("prediction table has no TIMESTAMP column")
+        kind = table.schema_arrow.field(column).type
+        for group in range(table.metadata.num_row_groups):
+            if table.metadata.row_group(group).num_rows == 0:
+                continue
+            stats = table.metadata.row_group(group).column(column).statistics
+            if stats is not None and stats.has_min_max:
+                low = pa.scalar(stats.min_raw, kind)
+                high = pa.scalar(stats.max_raw, kind)
+            else:
+                bounds = pc.min_max(
+                    table.read_row_group(group, ["TIMESTAMP"]).column(0))
+                low, high = bounds["min"], bounds["max"]
+            if not low.is_valid:
+                continue
+            low = low.cast(pa.timestamp("ns")).value
+            high = high.cast(pa.timestamp("ns")).value
+            first = low if first is None else min(first, low)
+            last = high if last is None else max(last, high)
+    if first is None or last is None:
+        raise ValueError("prediction table has no anchor times")
+    return first, last
+
+
+def link_prediction_anchor(timestamps: Sequence[int], table_path: str) -> int:
+    """The one anchor of a temporal link-prediction table, in nanoseconds.
+
+    A generated table carries its anchor in ``timestamps``; a custom table
+    carries it in its own rows.
+    """
+    first, last = ((min(timestamps), max(timestamps))
+                   if timestamps else table_anchor_range(table_path))
+    require_single_anchor(first, last)
+    return first
 
 
 def materialize_prediction_task(
@@ -274,6 +304,9 @@ def materialize_prediction_task(
     runtime = runtime or diskgraph
     forecasting = (request.query.task_type == "forecasting"
                    and request.compiler_options is not None)
+    anchors = request.timestamps
+    if request.query.task_type == "temporal_link_prediction":
+        anchors = (link_prediction_anchor(anchors, generated.table_path), )
     ingested = runtime.execute_tt_ingest(
         staging_dir=generated.staging_dir,
         index_path=request.index_path,
@@ -336,11 +369,8 @@ def materialize_prediction_task(
         }
     }
     stage_seed_times = None
-    if request.timestamps:
-        stage_seed_times = {
-            "predict": [min(request.timestamps),
-                        max(request.timestamps)]
-        }
+    if anchors:
+        stage_seed_times = {"predict": [min(anchors), max(anchors)]}
     manifest_path = write_thin_manifest(
         spec,
         graph_index_id=graph_index_id,
@@ -375,11 +405,12 @@ __all__ = [
     "GeneratedPredictionTable",
     "PreparedCustomPredictionTable",
     "PredictionTableRequest",
-    "forecast_task_options",
     "generate_prediction_table",
     "generate_custom_prediction_table",
+    "link_prediction_anchor",
     "materialize_prediction_task",
     "score_prediction",
+    "table_anchor_range",
 ]
 
 
@@ -507,10 +538,11 @@ class _PredictionWorkerConfig(NamedTuple):
     source_config_sha256: str
     runtime_config_sha256: str
     binary_threshold: Optional[float]
-    forecast_options: Optional[Dict[str, int]]
+    task_options: Optional[Dict[str, Optional[int]]]
     embedding_models: Optional[EmbeddingModelStore] = None
     ignore_time_col: bool = False
     accelerator: str = 'auto'
+    count_edges: Optional[Dict[str, Tuple[float, ...]]] = None
 
 
 def _score_prediction_shard(
@@ -536,7 +568,7 @@ def _score_prediction_shard(
     task = ResolvedNumericalTask.from_manifest(
         manifest,
         name=config.run_id,
-        **(config.forecast_options or {}),
+        **(config.task_options or {}),
     )
     load_options = {'accelerator': config.accelerator}
     device = config.devices[worker_id]
@@ -555,10 +587,13 @@ def _score_prediction_shard(
         embedding_models=config.embedding_models,
         **load_options,
     )
-    if config.forecast_options is not None:
+    if manifest.task_type == "forecasting":
         _validate_forecast_checkpoint(trainer, task)
+    from kumo_core.score_counts import Counts
     from kumo_core.train.artifact_stats import PredictionArtifactStatsCollector
     shard_attempt = f'{config.attempt_id}-{worker_id}'
+    counts = (None if config.count_edges is None else Counts(
+        dict(config.count_edges)))
     generation = (Path(config.output_dir) / '_attempts' /
                   f'runtime-{worker_id:05d}' / shard_attempt)
     collector = PredictionArtifactStatsCollector(
@@ -583,7 +618,15 @@ def _score_prediction_shard(
         runtime_num_workers=config.worker_count,
         runtime_worker_id=worker_id,
         task_manifest=manifest,
+        binary_labels=config.binary_threshold is not None,
+        prediction_counts=counts,
     )
+    if counts is not None:
+        from kumo_core.prediction_counts import save_counts
+
+        path = Path(config.output_dir) / COUNTS_DIR / f'{shard_attempt}.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        save_counts(counts, path)
     return _publish_scored_shard(
         collector, output_dir=config.output_dir, run_id=config.run_id,
         attempt_id=shard_attempt, graph_snapshot_id=config.graph_snapshot_id,
@@ -607,17 +650,19 @@ def score_prediction(
     graph_snapshot_id: str,
     source_config_sha256: str,
     binary_threshold: float | None = None,
-    forecast_options: Mapping[str, int] | None = None,
+    task_options: Mapping[str, int | None] | None = None,
     embedding_models: EmbeddingModelStore | None = None,
     encoders: Any = None,
     accelerator: str = 'auto',
+    count_edges: Mapping[str, Tuple[float, ...]] | None = None,
 ) -> Any:
     """Score partitions and publish bounded metadata using the hosted protocol.
 
     Rows stay in producer Parquet files. Workers return only small immutable
     manifest references; selection publishes after every scorer succeeds.
     ``encoders`` are the model's, if the caller already loaded them; only an
-    in-process scorer reuses them.
+    in-process scorer reuses them. With ``count_edges``, scores are counted
+    into ``COUNTS_FILE``.
     """
     from .prediction_options import validate_prediction_workers
     validate_prediction_workers(num_workers)
@@ -680,10 +725,11 @@ def score_prediction(
         source_config_sha256=source_config_sha256,
         runtime_config_sha256=runtime_config_sha256,
         binary_threshold=binary_threshold,
-        forecast_options=(dict(forecast_options)
-                          if forecast_options is not None else None),
+        task_options=(dict(task_options)
+                      if task_options is not None else None),
         embedding_models=embedding_models,
         accelerator=accelerator,
+        count_edges=None if count_edges is None else dict(count_edges),
     )
     if worker_count == 1:
         references = [
@@ -698,12 +744,43 @@ def score_prediction(
         references = _run_prediction_workers(worker_count,
                                              _score_prediction_shard,
                                              {'config': config})
+    if count_edges is not None:
+        _merge_counts(prediction_dir, attempt_id, worker_count)
     return publish_prediction_selection(
         references, job_id=run_id, selection_id=run_id,
         selection_attempt_id=attempt_id, canonical_output_root=output_dir,
         graph_snapshot_id=graph_snapshot_id,
         source_config_sha256=source_config_sha256, expected_shards=worker_count,
         expected_output_partitions=worker_count)
+
+
+def _merge_counts(prediction_dir: Path, attempt_id: str,
+                  worker_count: int) -> None:
+    from kumo_core.prediction_counts import (
+        ENTITIES,
+        ITEMS,
+        item_counts,
+        save_counts,
+        tally_dtype,
+    )
+    from kumo_core.score_counts import Counts
+
+    parts = [
+        prediction_dir / COUNTS_DIR / f'{attempt_id}-{worker_id}.json'
+        for worker_id in range(worker_count)
+    ]
+    total = reduce(Counts.merge, (Counts.from_dict(json.loads(
+        part.read_text())) for part in parts))
+    items = [part.with_suffix('.npy') for part in parts
+             if part.with_suffix('.npy').exists()]
+    if items:
+        tally = np.zeros(np.load(items[0], mmap_mode='r').shape,
+                         tally_dtype(float(total.arrays[ENTITIES])))
+        for part in items:
+            np.add(tally, np.load(part, mmap_mode='r'), out=tally)
+        total.arrays[ITEMS] = tally
+        total = item_counts(total)
+    save_counts(total, prediction_dir / COUNTS_FILE)
 
 
 def _publish_scored_shard(

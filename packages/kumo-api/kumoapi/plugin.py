@@ -21,14 +21,17 @@ distribution, be consumed by the Kumo platform, and still be loaded by
 :class:`~kumoai_studio.backend.LocalBackend`.
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import (
     Any,
     Callable,
+    Dict,
     List,
     Mapping,
     Optional,
     Protocol,
+    Tuple,
     TypeVar,
     runtime_checkable,
 )
@@ -41,9 +44,13 @@ from kumoapi.jobs import WriteMode
 from kumoapi.typing import Dtype
 
 __all__ = [
+    'BUNDLE_ID_KEY',
+    'ENGINE_MARKER',
     'ArtifactLocation',
     'ArtifactSink',
+    'FileStoreSink',
     'IngestResult',
+    'ModelAliasingSink',
     'ModelFetchingSink',
     'ModelListingSink',
     'ModelPublishingSink',
@@ -54,7 +61,15 @@ __all__ = [
     'SourceBackend',
     'SourceConnector',
     'SourceCredentials',
+    'check_model_alias',
+    'registry_lineage',
 ]
+
+_REGISTRY_KEY_PREFIX = 'kumo_'
+ENGINE_MARKER = 'kumo_engine'
+BUNDLE_ID_KEY = 'kumo_bundle_id'
+_ALIAS = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,254}')
+_RESERVED_ALIAS = re.compile(r'DEFAULT|FIRST|LAST|LATEST|V[0-9]+', re.I)
 
 
 @dataclass(frozen=True)
@@ -147,13 +162,15 @@ class ModelRegistryLocation:
     Args:
         model_name: Registry-local model name.
         version: Exact version to write or read. ``None`` lets the registry
-            assign the next one on export, and selects the latest on import.
-            An assigned version comes back on the export result.
+            assign the next one on export; on import it selects Snowflake's
+            default or Databricks' latest Kumo version.
         comment: Optional description recorded on the version.
+        alias: Set on the new version on export; read on import.
     """
     model_name: str
     version: Optional[str] = None
     comment: Optional[str] = None
+    alias: Optional[str] = None
 
     def __post_init__(self) -> None:
         if (not isinstance(self.model_name, str) or not self.model_name
@@ -164,6 +181,10 @@ class ModelRegistryLocation:
             raise ValueError(
                 'version must be a non-empty version, or None to let the '
                 'registry choose')
+        if self.alias is not None and (not self.alias
+                                       or self.version is not None):
+            raise ValueError('alias must be a non-empty alias, and is '
+                             'mutually exclusive with version')
 
 
 @dataclass(frozen=True)
@@ -605,6 +626,19 @@ class FileArtifactSink(Protocol):
 
 
 @runtime_checkable
+class FileStoreSink(Protocol):
+    r"""A sink that can also hold files."""
+    def holds_files(self, connector: SourceConnector, path: str) -> bool:
+        r"""Whether ``path`` is a file location, decided without I/O."""
+        ...
+
+    def filesystem(self, connector: SourceConnector,
+                   path: str) -> Tuple[Any, str]:
+        r"""A ``pyarrow.fs.FileSystem`` and ``path`` resolved on it."""
+        ...
+
+
+@runtime_checkable
 class ModelPublishingSink(ArtifactSink, Protocol):
     r"""A sink that can also receive a trained model bundle.
 
@@ -687,7 +721,8 @@ class ModelFetchingSink(ArtifactSink, Protocol):
             local_dir: Directory to place the bundle in. Created if absent.
             path: Source for a path-addressed target.
             location: A registry location. A version of ``None`` selects the
-                latest, which is resolved here and reported back.
+                registry's choice (see :class:`ModelRegistryLocation`), which
+                is resolved here and reported back.
             project_id: Authorizing project, where one applies.
 
         Returns:
@@ -695,6 +730,38 @@ class ModelFetchingSink(ArtifactSink, Protocol):
             resolved to the one that was fetched.
         """
         ...
+
+
+@runtime_checkable
+class ModelAliasingSink(ArtifactSink, Protocol):
+    r"""A registry sink that sets and fetches by alias."""
+    def set_model_alias(
+        self,
+        connector: SourceConnector,
+        location: ModelRegistryLocation,
+        alias: str,
+    ) -> None:
+        r"""Points :obj:`alias` at ``location.version``, moving it if held."""
+        ...
+
+
+def check_model_alias(alias: str) -> None:
+    r"""Raises :class:`ValueError` unless every registry accepts ``alias``."""
+    if (not isinstance(alias, str) or not _ALIAS.fullmatch(alias)
+            or _RESERVED_ALIAS.fullmatch(alias)):
+        raise ValueError(
+            f'{alias!r} cannot be a model alias: use letters, digits and '
+            f'underscores, not starting with a digit, other than the reserved '
+            f'DEFAULT, FIRST, LAST, LATEST and v<digits>.')
+
+
+def registry_lineage(recorded: Mapping[str, Any]) -> Dict[str, str]:
+    r"""A version's ``kumo_*`` registry metadata, without the marker."""
+    return {
+        key: str(value)
+        for key, value in recorded.items()
+        if key.startswith(_REGISTRY_KEY_PREFIX) and key != ENGINE_MARKER
+    }
 
 
 @runtime_checkable

@@ -13,7 +13,6 @@ from __future__ import annotations
 from typing import Any, Literal
 
 import kumo_core.diskgraph.runtime_adapter as runtime_adapter
-import pandas as pd
 import pyarrow as pa
 import pytest
 import torch
@@ -21,6 +20,7 @@ from kumo_core.diskgraph.metadata import normalize_diskgraph_edge_type
 from kumo_core.diskgraph.runtime_adapter import (
     _expand_lp_exclude,
     attach_tensor_frames,
+    engine_int64_to_ns,
     runtime_batch_to_hetero,
 )
 from kumo_core.encoders.target.categorical import CategoricalTargetEncoder
@@ -30,11 +30,11 @@ from kumo_core.encoders.target.multicategorical import (
 from kumo_core.encoders.tensor_mapper import (
     CategoricalTensorMapper,
     MultiCategoricalTensorMapper,
+    NumericalTensorMapper,
     SequenceTensorMapper,
     TensorMapper,
 )
 from kumo_core.train.autoregression import FUTURE_LABELS_COL
-from kumoapi.encoder import Stype
 from kumoapi.task import TaskType as ApiTaskType
 from torch_frame.data import MultiNestedTensor
 from torch_geometric.data import HeteroData
@@ -736,17 +736,10 @@ def test_partial_optional_columns_are_skipped() -> None:
     assert torch.equal(seed.y, torch.tensor([0.0, 1.0, 0.0]))
 
 
-def _numerical_mapper(values: list[float]) -> TensorMapper:
-    """Fit a numerical TensorMapper on a small sample so tests can
-    exercise the bridge end-to-end without standing up a full
-    EncodersConfig + FeatureStore."""
-    return TensorMapper.from_stype(Stype.numerical, pd.Series(values))
-
-
 def _user_mapper_bank() -> dict[str, dict[str, TensorMapper]]:
     return {
         "users_v1": {
-            "age": _numerical_mapper([18.0, 25.0, 30.0, 50.0]),
+            "age": NumericalTensorMapper(),
         }
     }
 
@@ -857,7 +850,7 @@ def test_record_batch_to_tf_ignores_columns_no_mapper_claims() -> None:
         names=["age", "created_at", "user_id"],
     )
     tf = runtime_adapter._record_batch_to_tf(
-        record_batch, {"age": _numerical_mapper([18.0, 25.0, 30.0, 50.0])}
+        record_batch, {"age": NumericalTensorMapper()}
     )
 
     assert [c for cols in tf.col_names_dict.values() for c in cols] == ["age"]
@@ -877,7 +870,7 @@ def test_record_batch_to_tf_raises_when_a_mapper_column_is_missing() -> None:
     record_batch = pa.RecordBatch.from_arrays(
         [pa.array([41.0, 22.0], type=pa.float64())], names=["age"]
     )
-    mapper = _numerical_mapper([18.0, 25.0, 30.0, 50.0])
+    mapper = NumericalTensorMapper()
 
     with pytest.raises(RuntimeError, match="income"):
         runtime_adapter._record_batch_to_tf(
@@ -1397,6 +1390,16 @@ def test_seed_time_ms_unit_scaled_to_ns() -> None:
     assert hetero["train_table"].seed_time.tolist() == [1700 * 1_000_000]
 
 
+@pytest.mark.parametrize("unit,tick_ns", [
+    ("h", 3_600_000_000_000),
+    ("D", 86_400_000_000_000),
+])
+def test_hours_and_days_ticks_scale_to_ns(unit, tick_ns) -> None:
+    ticks = pa.array([2, -1, None], type=pa.int64())
+    assert engine_int64_to_ns(
+        ticks, unit).to_pylist() == [2 * tick_ns, -tick_ns, None]
+
+
 def test_neighbor_node_time_normalized_to_ns_int64_seconds() -> None:
     """A bare int64 node ``time`` column (engine seconds) -> ns canonical."""
     features = pa.RecordBatch.from_arrays(
@@ -1562,9 +1565,7 @@ def test_ttng_seed_supervision_relation_not_backfilled_as_node_type() -> None:
     restricted to schema types, so the seed namespaces never enter the batch."""
     batch = _ttng_nodepred_batch_with_seed_supervision_relation()
     mapper_bank = {
-        "products": {
-            "age": _numerical_mapper([10.0, 20.0, 30.0, 40.0])
-        },
+        "products": {"age": NumericalTensorMapper()},
     }
     feature_schema = {
         "node_types": {
@@ -1736,7 +1737,7 @@ def _txn_feature_schema() -> dict[str, Any]:
 def _txn_mapper_bank() -> dict[str, dict[str, TensorMapper]]:
     bank = _user_mapper_bank()
     bank["txns_v1"] = {
-        "amount": _numerical_mapper([10.0, 20.0, 30.0, 40.0]),
+        "amount": NumericalTensorMapper(),
     }
     return bank
 

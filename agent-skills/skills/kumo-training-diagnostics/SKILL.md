@@ -1,6 +1,6 @@
 ---
 name: kumo-training-diagnostics
-description: Evaluate an existing Kumo training run in a Snowflake Python notebook using aggregate metrics, trial results, learning curves, refit evidence, and training progress. Use for model-quality questions or training diagnostics; inspect existing results without automatically tuning, rerunning, or deploying a model.
+description: Evaluate an existing Kumo training run in a Python notebook using aggregate metrics, trial results, learning curves, refit evidence, and training progress. Use for model-quality questions or training diagnostics; inspect existing results without automatically tuning, rerunning, or deploying a model.
 ---
 
 # Kumo evaluation and training diagnostics
@@ -14,8 +14,9 @@ IDs, status APIs, polling, or recovery operations.
 
 Reuse the known task, target/positive class, time horizon, scoring cohort, and run. For a fresh
 fit, begin with `training_result.metrics` and `training_result.bundle_dir`. If only retained
-files remain, use the explicit run directory supplied. Inspect a restored model's aggregate
-metrics only when available; a model bundle does not contain the full training history.
+files remain, use the explicit run directory supplied. If a restored model has aggregate
+metrics or `metric_history`, inspect them. A model bundle does not contain TensorBoard or
+analysis files.
 
 Resolve multiple candidate runs before drawing conclusions. Do not choose by modification
 time, mix directories from separate fits, or reconfigure scratch during inspection. Record
@@ -75,5 +76,6 @@ effects or automatically detects all leakage.
 Inspect and interpret by default. Propose tuning changes as hypotheses; running experiments,
 changing data/splits, retraining, or writing results to Snowflake is outside an inspection
 request. No automatic retries. For retention, use
-[model persistence](../kumo-model-persistence/SKILL.md). Trial history,
-TensorBoard and analysis files remain scratch diagnostics outside the published model bundle.
+[model persistence](../kumo-model-persistence/SKILL.md). TensorBoard and analysis files
+remain scratch diagnostics outside the published model bundle. Per-epoch search-trial metrics
+are in the bundle as `metric_history`.

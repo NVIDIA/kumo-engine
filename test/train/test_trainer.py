@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 import torch
 import torch.nn.functional as F
-from kumo_core.encoders.config import EncodersConfig
+from kumo_core.encoders.config import EncodersConfig, TargetEncoderConfig
 from kumo_core.encoders.target.multicategorical import (
     MultiCategoricalTargetEncoder,
 )
@@ -26,6 +26,11 @@ from kumo_core.io.json import load_json as load_training_config
 from kumo_core.modeling.gnn.hetero import HeteroGNN
 from kumo_core.modeling.heads.node_prediction import NodePredHead
 from kumo_core.public_error import PublicTrainingError
+from kumo_core.resolved_task import (
+    ResolvedNumericalTask,
+    ResolvedTaskGraph,
+    ResolvedTrainTable,
+)
 from kumo_core.train.mapping import NODE_INDEX_COLUMN
 from kumo_core.train.output import (
     EvalOutput,
@@ -46,9 +51,15 @@ from kumo_core.train.trainer import (
 from kumo_core.training.config import FitMode, TrainerConfig
 from kumo_core.training.task_config import TaskConfig
 from kumo_core.types import TaskType
-from kumoapi.encoder import MultiCategorical, Numerical, NumericalList
+from kumoapi.encoder import (
+    Datetime,
+    Index,
+    MultiCategorical,
+    Numerical,
+    NumericalList,
+)
 from kumoapi.train import TrainingStage
-from kumoapi.typing import Stype
+from kumoapi.typing import ColStatType, Stype
 from torch_geometric.sampler import NumNeighbors
 
 from io_utils import fsutil, parquet_util
@@ -321,15 +332,13 @@ def cleanup():
 
 @pytest.mark.parametrize('task_type', [TaskType.BINARY_CLASSIFICATION])
 def test_trainer_compare_config(temporal_task, task_type):
-    feature_store, graph_store, encoders = temporal_task
+    _, _, encoders = temporal_task
 
     trainer = Trainer(
         task=TaskConfig(task_type, name='TEST_COMPARE_CONFIG'),
         encoder=HeteroTensorFrameEncoder(),
         model=HeteroGNN(channels=8, num_mp_layers=2),
         head=NodePredHead(),
-        feature_store=feature_store,
-        graph_store=graph_store,
         encoders=encoders,
         sampler_kwargs=dict(num_neighbors=[10, 10]),
         **DEFAULT_TRAINER_KWARGS,
@@ -342,8 +351,6 @@ def test_trainer_compare_config(temporal_task, task_type):
         model=HeteroGNN(channels=8, num_mp_layers=2),
         head=NodePredHead(),
         sampler_kwargs=dict(num_neighbors=[20, 20]),
-        feature_store=feature_store,
-        graph_store=graph_store,
         encoders=encoders,
         **DEFAULT_TRAINER_KWARGS,
     )
@@ -371,7 +378,7 @@ def test_trainer_load_preserves_edge_type_with_trailing_underscore_rel(
     table/column name containing an underscore right before the
     separator). ``Trainer.load()``'s backward-compat unqualification path
     (``_convert_key`` in ``Trainer.load``) recovers the correct edge type
-    by matching the corrupted string form against ``graph_store.edge_types``.
+    by matching the corrupted string form against the resolved task edge types.
     """
     df_dict = {
         'USERS':
@@ -407,24 +414,52 @@ def test_trainer_load_preserves_edge_type_with_trailing_underscore_rel(
         'VAL_MASK': [False] * 4 + [True] * 4 + [False] * 4,
         'TEST_MASK': [False] * 8 + [True] * 4,
     })
-    feature_store, graph_store, encoders = create_task_data(
+    _, graph_store, encoders = create_task_data(
         df_dict=df_dict,
         schema_dict=schema_dict,
-        task_type=TaskType.BINARY_CLASSIFICATION,
+        encoders=EncodersConfig(
+            encoders={
+                "USERS": {"AGE": Numerical(_stats={ColStatType.MEAN: 35.0})},
+                "ORDERS": {
+                    "TIME": Datetime(
+                        _stats={
+                            ColStatType.MIN: "kumo_timestamp_1990-01-01 00:00:00",
+                            ColStatType.MAX: "kumo_timestamp_1992-01-01 00:00:00",
+                        }
+                    )
+                },
+            },
+            target=TargetEncoderConfig(
+                "TARGET",
+                Index(_stats={ColStatType.CATEGORY_COUNTS: [[True, 9], [False, 3]]}),
+            ),
+        ),
         train_table_df=train_table_df,
     )
 
     edge_types = graph_store.edge_types
+    task = ResolvedNumericalTask(
+        name='TRAILING_UNDERSCORE',
+        task_type=TaskType.BINARY_CLASSIFICATION,
+        metrics=['auroc'],
+        graph=ResolvedTaskGraph(
+            node_types=('USERS', 'ORDERS'),
+            edge_types=tuple(edge_types),
+            seed_node_type='USERS',
+            target_node_type='USERS',
+        ),
+        train_table=ResolvedTrainTable(
+            name='TRAIN_TABLE', target_column='TARGET',
+            time_column='TIME', weight_column=None,
+        ),
+    )
     num_neighbors_dict = {et: [-1, -1] for et in edge_types}
 
     trainer = Trainer(
-        task=TaskConfig(TaskType.BINARY_CLASSIFICATION,
-                        name='TRAILING_UNDERSCORE'),
+        task=task,
         encoder=HeteroTensorFrameEncoder(),
         model=HeteroGNN(channels=8, num_mp_layers=2),
         head=NodePredHead(),
-        feature_store=feature_store,
-        graph_store=graph_store,
         encoders=encoders,
         sampler_kwargs=dict(num_neighbors=NumNeighbors(
             values=num_neighbors_dict, default=[-1, -1])),
@@ -448,13 +483,10 @@ def test_trainer_load_preserves_edge_type_with_trailing_underscore_rel(
     config_path.write_text(json.dumps(raw))
 
     loaded_trainer = Trainer.load(
-        TaskConfig(TaskType.BINARY_CLASSIFICATION,
-                   name='TRAILING_UNDERSCORE'),
+        task,
         str(tmp_path),
         version=None,
         infer_config_path=False,
-        feature_store=feature_store,
-        graph_store=graph_store,
         encoders=encoders,
     )
 
@@ -532,8 +564,6 @@ def test_load_model_from_checkpoint(temporal_task, task_type):
         encoder=HeteroTensorFrameEncoder(),
         model=HeteroGNN(channels=8, num_mp_layers=2),
         head=NodePredHead(),
-        feature_store=feature_store,
-        graph_store=graph_store,
         encoders=encoders,
         checkpoint_path=None,
         **DEFAULT_TRAINER_KWARGS,
@@ -548,8 +578,6 @@ def test_load_model_from_checkpoint(temporal_task, task_type):
         encoder=HeteroTensorFrameEncoder(),
         model=HeteroGNN(channels=8, num_mp_layers=2),
         head=NodePredHead(),
-        feature_store=feature_store,
-        graph_store=graph_store,
         encoders=encoders,
         checkpoint_path='path/to/checkpoint',
         **DEFAULT_TRAINER_KWARGS,

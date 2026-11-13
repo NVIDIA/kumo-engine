@@ -1,0 +1,47 @@
+{
+  "request": {
+    "as_of_time": "2024-11-11T00:00:00",
+    "entity_id": 1,
+    "sample_id": 1201
+  },
+  "rows": {
+    "customers": [
+      {
+        "age": 48,
+        "club_member_status": "ACTIVE",
+        "customer_id": 1,
+        "fashion_news_frequency": "Regularly"
+      }
+    ],
+    "transactions": [
+      {
+        "customer_id": 1,
+        "price": 0.026716,
+        "sales_channel_id": 2,
+        "t_dat": "2024-11-07T08:45:22",
+        "transaction_id": 7288
+      },
+      {
+        "customer_id": 1,
+        "price": 0.016506,
+        "sales_channel_id": 2,
+        "t_dat": "2024-11-07T08:45:22",
+        "transaction_id": 7289
+      },
+      {
+        "customer_id": 1,
+        "price": 0.069881,
+        "sales_channel_id": 2,
+        "t_dat": "2024-11-07T08:45:22",
+        "transaction_id": 7290
+      },
+      {
+        "customer_id": 1,
+        "price": 0.016264,
+        "sales_channel_id": 2,
+        "t_dat": "2024-11-07T08:45:22",
+        "transaction_id": 7291
+      }
+    ]
+  }
+}

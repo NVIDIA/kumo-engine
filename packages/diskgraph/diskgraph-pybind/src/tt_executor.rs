@@ -28,11 +28,12 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Component, Path};
 
-use arrow::pyarrow::ToPyArrow;
+use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use arrow_array::{RecordBatch, RecordBatchReader};
 use arrow_schema::SchemaRef;
-use diskgraph_core::time::Seconds;
+use diskgraph_core::time::{TimeUnit, UnitSystem};
 use diskgraph_core::tt_builder::{DiskGraphTTPlan, RefResolveKind, RefResolveSpec, TTFKeySpec};
+use diskgraph_core::with_index_clock;
 use diskgraph_train_table::ttgen_executor::{
     execute_tt_pass, execute_tt_pass_with_source, CustomTtSource, StageGenInfo, TTPassOutput,
     STAGE_ARTIFACT_INVENTORY_SCHEMA_VERSION,
@@ -109,7 +110,7 @@ pub(crate) struct TtIngestSpec {
 }
 
 impl TtIngestSpec {
-    pub(crate) fn from_plan(tt_id: &str, plan: &DiskGraphTTPlan<Seconds>) -> Self {
+    pub(crate) fn from_plan<U: UnitSystem>(tt_id: &str, plan: &DiskGraphTTPlan<U>) -> Self {
         Self {
             schema_version: TT_INGEST_SPEC_SCHEMA_VERSION.to_string(),
             tt_id: tt_id.to_string(),
@@ -144,6 +145,40 @@ pub(crate) fn rhs_node_type_from_resolution(
     })
 }
 
+/// The clock of the index at `index_path`.
+pub(crate) fn index_clock(index_path: &str) -> PyResult<TimeUnit> {
+    let metadata = diskgraph_ingest::index_metadata::read_index_metadata(Path::new(index_path))
+        .map_err(|e| {
+            crate::DiskgraphSystemError::new_err(format!("reading index metadata: {e}"))
+        })?;
+    let metadata: diskgraph_core::metadata::DatasetMetadata = serde_json::from_str(&metadata)
+        .map_err(|e| {
+            crate::DiskgraphConfigError::new_err(format!("invalid index metadata: {e}"))
+        })?;
+    if !metadata.timestamp_unit.is_index_clock() {
+        return Err(crate::DiskgraphConfigError::new_err(format!(
+            "unsupported index timestamp_unit {:?}",
+            metadata.timestamp_unit
+        )));
+    }
+    Ok(metadata.timestamp_unit)
+}
+
+/// Parses a plan, which must be written in the index clock `U`.
+fn parse_plan<U: UnitSystem>(plan_json: &str) -> PyResult<DiskGraphTTPlan<U>> {
+    let invalid = |e: serde_json::Error| {
+        crate::DiskgraphConfigError::new_err(format!("invalid plan JSON: {e}"))
+    };
+    let plan_clock = diskgraph_core::tt_builder::plan_timestamp_unit(plan_json).map_err(invalid)?;
+    if plan_clock != U::UNIT {
+        return Err(crate::DiskgraphConfigError::new_err(format!(
+            "plan is written in {plan_clock:?} but the index clock is {:?}",
+            U::UNIT
+        )));
+    }
+    serde_json::from_str(plan_json).map_err(invalid)
+}
+
 // ─── execute_tt_plan ─────────────────────────────────────────────────────────
 
 /// Run a TT-gen plan against a DiskGraph index. Writes TT artifacts and
@@ -163,13 +198,23 @@ pub fn execute_tt_plan(
     index_path: &str,
     tt_id: &str,
 ) -> PyResult<Py<PyAny>> {
+    with_index_clock!(index_clock(index_path)?, U => {
+        execute_tt_plan_in_clock::<U>(py, plan_json, index_path, tt_id)
+    })
+}
+
+fn execute_tt_plan_in_clock<U: UnitSystem>(
+    py: Python<'_>,
+    plan_json: &str,
+    index_path: &str,
+    tt_id: &str,
+) -> PyResult<Py<PyAny>> {
     validate_tt_id(tt_id)?;
     info!(
         "execute_tt_plan started (TT-NG end-state path) tt_id={}",
         tt_id
     );
-    let plan: DiskGraphTTPlan<Seconds> = serde_json::from_str(plan_json)
-        .map_err(|e| crate::DiskgraphConfigError::new_err(format!("invalid plan JSON: {e}")))?;
+    let plan: DiskGraphTTPlan<U> = parse_plan(plan_json)?;
 
     let idx = index_path.to_owned();
     let tt_id_owned = tt_id.to_owned();
@@ -719,8 +764,8 @@ pub(crate) fn resolve_ingest_stages(
 /// bundle the separate [`execute_tt_ingest`] job consumes. The producers
 /// differ only in how the plan is built, where the bundle lives, and their
 /// result-dict shapes — everything bundle-defining is here.
-pub(crate) fn run_gen_bundle(
-    plan: &DiskGraphTTPlan<Seconds>,
+pub(crate) fn run_gen_bundle<U: UnitSystem>(
+    plan: &DiskGraphTTPlan<U>,
     index_root: &Path,
     out_dir: &Path,
     tt_id: &str,
@@ -765,10 +810,20 @@ pub fn execute_tt_gen(
     index_path: &str,
     tt_id: &str,
 ) -> PyResult<Py<PyAny>> {
+    with_index_clock!(index_clock(index_path)?, U => {
+        execute_tt_gen_in_clock::<U>(py, plan_json, index_path, tt_id)
+    })
+}
+
+fn execute_tt_gen_in_clock<U: UnitSystem>(
+    py: Python<'_>,
+    plan_json: &str,
+    index_path: &str,
+    tt_id: &str,
+) -> PyResult<Py<PyAny>> {
     validate_tt_id(tt_id)?;
     info!("execute_tt_gen started (ttgen-only) tt_id={}", tt_id);
-    let plan: DiskGraphTTPlan<Seconds> = serde_json::from_str(plan_json)
-        .map_err(|e| crate::DiskgraphConfigError::new_err(format!("invalid plan JSON: {e}")))?;
+    let plan: DiskGraphTTPlan<U> = parse_plan(plan_json)?;
 
     let idx = index_path.to_owned();
     let tt_id_owned = tt_id.to_owned();
@@ -1499,8 +1554,18 @@ pub fn execute_bp_plan(
     index_path: &str,
     output_path: &str,
 ) -> PyResult<u64> {
-    let plan: DiskGraphTTPlan<Seconds> = serde_json::from_str(plan_json)
-        .map_err(|e| crate::DiskgraphConfigError::new_err(format!("invalid plan JSON: {e}")))?;
+    with_index_clock!(index_clock(index_path)?, U => {
+        execute_bp_plan_in_clock::<U>(py, plan_json, index_path, output_path)
+    })
+}
+
+fn execute_bp_plan_in_clock<U: UnitSystem>(
+    py: Python<'_>,
+    plan_json: &str,
+    index_path: &str,
+    output_path: &str,
+) -> PyResult<u64> {
+    let plan: DiskGraphTTPlan<U> = parse_plan(plan_json)?;
 
     let idx = index_path.to_owned();
     let out = output_path.to_owned();
@@ -2266,6 +2331,7 @@ fn copy_stage_artifacts(
 pub struct TTParquetBatchIterator {
     dataset_path: String,
     columns: Option<Vec<String>>,
+    batch_size: Option<usize>,
     parquet_paths: Option<Vec<std::path::PathBuf>>,
     next_part: usize,
     reader: Option<ParquetRecordBatchReader>,
@@ -2293,42 +2359,9 @@ impl TTParquetBatchIterator {
             return Ok(false);
         };
         self.next_part += 1;
-        let file = File::open(path).map_err(|e| {
-            crate::DiskgraphSystemError::new_err(format!(
-                "cannot open {} for read: {e}",
-                path.display()
-            ))
-        })?;
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
-            crate::DiskgraphSystemError::new_err(format!(
-                "cannot read parquet metadata for {}: {e}",
-                path.display()
-            ))
-        })?;
-        let builder = if let Some(cols) = &self.columns {
-            let parquet_schema = builder.parquet_schema();
-            let mut indices = Vec::with_capacity(cols.len());
-            let arrow_schema = builder.schema();
-            for col in cols {
-                let idx = arrow_schema.index_of(col).map_err(|_| {
-                    crate::DiskgraphDataError::new_err(format!(
-                        "column not found in {}: {col}",
-                        path.display()
-                    ))
-                })?;
-                indices.push(idx);
-            }
-            let mask = ProjectionMask::roots(parquet_schema, indices);
-            builder.with_projection(mask)
-        } else {
-            builder
-        };
-        let reader = builder.build().map_err(|e| {
-            crate::DiskgraphSystemError::new_err(format!(
-                "cannot build parquet reader for {}: {e}",
-                path.display()
-            ))
-        })?;
+        let reader = diskgraph_train_table::custom_tt_chunk_processor::read_projected_parquet(
+            path, None, self.columns.as_deref(), self.batch_size,
+        ).map_err(crate::map_ttgen_err)?;
         let schema = reader.schema().clone();
         if self
             .schema
@@ -2404,15 +2437,37 @@ impl TTParquetBatchIterator {
 /// `diskgraph_batch_pred.py` — caller iterates batches without materializing
 /// the whole table.
 #[pyfunction]
-#[pyo3(signature = (parquet_path, columns = None))]
+#[pyo3(signature = (parquet_path, columns = None, *, batch_size = None))]
 pub fn read_tt_parquet_batches(
     parquet_path: &str,
     columns: Option<Vec<String>>,
+    batch_size: Option<usize>,
 ) -> PyResult<TTParquetBatchIterator> {
     Ok(TTParquetBatchIterator {
         dataset_path: parquet_path.to_owned(),
         columns,
+        batch_size,
         parquet_paths: None,
+        next_part: 0,
+        reader: None,
+        schema: None,
+    })
+}
+
+/// Read one caller-selected custom TT input file using the projected native reader.
+/// Published TT output continues to require its dataset-directory contract.
+#[pyfunction]
+#[pyo3(signature = (parquet_path, columns = None, *, batch_size = None))]
+pub fn read_custom_tt_parquet_batches(
+    parquet_path: &str,
+    columns: Option<Vec<String>>,
+    batch_size: Option<usize>,
+) -> PyResult<TTParquetBatchIterator> {
+    Ok(TTParquetBatchIterator {
+        dataset_path: parquet_path.to_owned(),
+        columns,
+        batch_size,
+        parquet_paths: Some(vec![std::path::PathBuf::from(parquet_path)]),
         next_part: 0,
         reader: None,
         schema: None,
@@ -2775,3 +2830,49 @@ mod tests;
 
 #[cfg(test)]
 mod pseudo_time_tests;
+
+/// Python streaming access to the same rotating writer used by TT generation.
+#[pyclass(unsendable)]
+pub struct TaskParquetWriter {
+    inner: Option<diskgraph_train_table::parquet_dataset::ParquetDatasetWriter>,
+}
+#[pymethods]
+impl TaskParquetWriter {
+    #[new]
+    #[pyo3(signature = (path, max_rows_per_part=67_108_864))]
+    fn new(path: String, max_rows_per_part: usize) -> PyResult<Self> {
+        let inner = diskgraph_train_table::parquet_dataset::ParquetDatasetWriter::new(
+            Path::new(&path),
+            max_rows_per_part,
+        )
+        .map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?;
+        Ok(Self { inner: Some(inner) })
+    }
+    fn write_batch(&mut self, batch: &Bound<'_, PyAny>) -> PyResult<()> {
+        let batch = RecordBatch::from_pyarrow_bound(batch)?;
+        self.inner
+            .as_mut()
+            .ok_or_else(|| crate::DiskgraphConfigError::new_err("writer is closed"))?
+            .write(&batch)
+            .map_err(|e| crate::DiskgraphSystemError::new_err(e.to_string()))
+    }
+    fn close(&mut self) -> PyResult<()> {
+        if let Some(writer) = self.inner.take() {
+            writer
+                .close()
+                .map_err(|e| crate::DiskgraphSystemError::new_err(e.to_string()))?;
+        }
+        Ok(())
+    }
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+    fn __exit__(
+        &mut self,
+        _ty: &Bound<'_, PyAny>,
+        _value: &Bound<'_, PyAny>,
+        _traceback: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self.close()
+    }
+}

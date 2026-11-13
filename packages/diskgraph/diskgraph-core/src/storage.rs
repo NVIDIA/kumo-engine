@@ -39,6 +39,8 @@ impl StorageConfig {
 
 /// Contract implemented by storage backends (local disk, remote cache, etc.).
 #[async_trait]
+// async-trait's generated #[must_use]; fixed in clippy 1.100.
+#[allow(clippy::double_must_use)]
 pub trait GraphStorage: Send + Sync {
     /// Reserve disk space for a dataset. Implementations must enforce the
     /// max_disk_fraction guard and fail fast if the reservation would exceed

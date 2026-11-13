@@ -22,11 +22,11 @@ use diskgraph_core::accumulators::{
     for_each_split_ascii_byte, HyperLogLog, LocalColumnCounts, SharedColumnCounts,
     TDigestEstimator, WelfordAccumulator,
 };
-use diskgraph_core::time::{add_calendar_months, dur_from_unit, Abs, Dur, TimeUnit, UnitSystem};
+use diskgraph_core::time::{dur_from_unit, Abs, Dur, TimeUnit, UnitSystem};
 use diskgraph_core::tt_builder::*;
 use diskgraph_index::graph::GraphIndexReader;
+#[cfg(test)]
 use parquet::arrow::ArrowWriter;
-use parquet::file::properties::WriterProperties;
 use rayon::prelude::*;
 
 use crate::manifest::{
@@ -35,8 +35,7 @@ use crate::manifest::{
     TT_MANIFEST_VERSION, TT_PARQUET_FORMAT,
 };
 use crate::parquet_dataset::{
-    first_tt_dataset_schema, ordered_tt_dataset_parts, part_name, TT_DATASET_DIR, TT_PART_MAX_ROWS,
-    TT_PART_ROW_GROUP_ROWS,
+    first_tt_dataset_schema, ordered_tt_dataset_parts, TT_DATASET_DIR, TT_PART_MAX_ROWS,
 };
 use crate::pass_b::{run_pass_b_per_anchor, run_pass_b_per_link, StagePartsOut, STAGE_TABLE_NAMES};
 use crate::route::{per_link_output_schema, LinkAssigner};
@@ -45,6 +44,7 @@ use crate::split_decider::{
     DateOffsetDecider, FixedDecider, ManualDecider, NoSplitDecider, OffsetUnit, RandomDecider,
     RandomLinkDecider, SplitDecider, TemporalDecider, TimeRangeDecider,
 };
+use crate::split_stats::TargetHistogram;
 use crate::ttgen_accumulator::{hash_i64, hash_str, hash_value, Accumulator};
 use crate::ttgen_filter::{
     compare_values, eval_row_filter, eval_stage_filter, is_nullish_filter_value,
@@ -175,54 +175,9 @@ fn write_tt_dataset(
     dataset_path: &Path,
     max_rows_per_part: usize,
 ) -> TTGenResult<u64> {
-    if max_rows_per_part == 0 {
-        return Err(TTGenError::InvalidPlan(
-            "training table max rows per part must be positive".to_string(),
-        ));
-    }
-    std::fs::create_dir(dataset_path)?;
-
-    let properties = WriterProperties::builder()
-        .set_max_row_group_row_count(Some(TT_PART_ROW_GROUP_ROWS))
-        .build();
-    let mut writer: Option<ArrowWriter<File>> = None;
-    let mut part_index = 0usize;
-    let mut rows_in_part = 0usize;
-    let mut total_rows = 0u64;
-
-    for batch in receiver.iter() {
-        let mut batch_offset = 0usize;
-        while batch_offset < batch.num_rows() {
-            if rows_in_part == max_rows_per_part {
-                writer
-                    .take()
-                    .expect("non-empty part has a writer")
-                    .close()?;
-                part_index += 1;
-                rows_in_part = 0;
-            }
-            if writer.is_none() {
-                let file = File::create(dataset_path.join(part_name(part_index)))?;
-                writer = Some(ArrowWriter::try_new(
-                    file,
-                    batch.schema(),
-                    Some(properties.clone()),
-                )?);
-            }
-            let rows = (batch.num_rows() - batch_offset).min(max_rows_per_part - rows_in_part);
-            writer
-                .as_mut()
-                .expect("writer was initialized")
-                .write(&batch.slice(batch_offset, rows))?;
-            batch_offset += rows;
-            rows_in_part += rows;
-            total_rows += rows as u64;
-        }
-    }
-    if let Some(writer) = writer {
-        writer.close()?;
-    }
-    Ok(total_rows)
+    let mut writer = crate::parquet_dataset::ParquetDatasetWriter::new(dataset_path, max_rows_per_part)?;
+    for batch in receiver.iter() { writer.write(&batch)?; }
+    writer.close()
 }
 
 fn train_table_parts(
@@ -414,6 +369,8 @@ pub struct CustomTtSource {
     pub allow_negative_weight: bool,
     /// Trusted generated-table footers for integer timestamp unit validation.
     pub timestamp_reference: Option<crate::custom_tt_row_errors::TimestampReference>,
+    /// Label-window end offset and unit for target creation validity.
+    pub target_window_end: Option<(i64, TimeUnit)>,
 }
 
 /// Determine which `SplitMode` applies to `plan` based on its split family.
@@ -1066,7 +1023,9 @@ where
     let (total_rows, mut stats, per_anchor_parts) = pass_outputs?;
     let row_failures: Option<RowFailuresReport> = custom_tt_source_ref.map(|source| {
         let report = stats.take_source_rows().failures.report(source.on_error);
-        report.warn_if_any(total_rows);
+        if !plan.is_prediction {
+            report.warn_if_any(total_rows);
+        }
         report
     });
     // Node-task categorical targets require exact CATEGORY_COUNTS for encoder
@@ -1327,12 +1286,19 @@ fn run_pass_a_then_pass_b<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
     mut fact_pseudo_time: Option<&mut crate::pseudo_time::FactPseudoTime>,
 ) -> TTGenResult<PassAOutputs<U>> {
     let pass_a_result = if let Some(source) = custom_tt_source {
+        let skipped_dir = resolved.is_prediction.then(|| {
+            tt_parquet_path
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(crate::skipped_rows::SKIPPED_ROWS_DIR)
+        });
         run_pass_a_custom_tt::<U, D>(
             resolved,
             &sender,
             shared_target_counts,
             &decider_template,
             source,
+            skipped_dir.as_deref(),
         )
     } else {
         run_pass_a::<U, D>(
@@ -1406,12 +1372,25 @@ fn run_pass_a_then_pass_b<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
                 &out_schema,
                 forecasting_horizon,
                 fact_pseudo_time.as_deref(),
+                node_target_histogram(resolved, &stats),
             )?)
         }
         PassBMode::Deferred => None,
     };
 
     Ok((total_rows, stats, stage_parts))
+}
+
+fn node_target_histogram<U: UnitSystem>(
+    plan: &ResolvedPlan<U>,
+    stats: &StatsMerger<U>,
+) -> Option<TargetHistogram> {
+    if !matches!(plan.prediction_type, PredictionType::Node) || plan.target_stype != "numerical" {
+        return None;
+    }
+    stats
+        .target_range()
+        .map(|(min, max)| TargetHistogram::new(min, max))
 }
 
 /// The directory containing `tt.parquet` — the staging dir where per-stage
@@ -1582,6 +1561,7 @@ fn run_pass_a_custom_tt<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
     shared_target_counts: Option<&Arc<SharedColumnCounts>>,
     decider_template: &D,
     source: &CustomTtSource,
+    skipped_dir: Option<&Path>,
 ) -> TTGenResult<(u64, StatsMerger<U>, D)> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -1619,6 +1599,7 @@ fn run_pass_a_custom_tt<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
                 decider_template,
                 shared_target_counts.cloned(),
                 source,
+                skipped_dir,
             )
         })
         .collect();
@@ -1643,8 +1624,8 @@ fn run_pass_a_custom_tt<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
         }
     }
     // A source that keeps nothing trains on nothing and would report success.
-    // Both modes refuse it; the skip counts say why.
-    if total_rows == 0 {
+    // Training refuses it; a prediction returns it with its row_failures.
+    if total_rows == 0 && !resolved.is_prediction {
         stats.source_rows.failures.report(source.on_error).warn_if_any(0);
         return Err(empty_source_error(&stats.source_rows));
     }
@@ -1860,11 +1841,11 @@ fn execute_entity<U: UnitSystem, D: SplitDecider<U>>(
     let time_col_val: Option<Abs<U>> = plan
         .entity_time_col_idx
         .and_then(|idx| read_column_i64(&plan.entity_table, entity_node, idx))
-        .map(Abs::<U>::from_secs);
+        .map(Abs::<U>::from_raw);
     let valid_to_val: Option<Abs<U>> = plan
         .entity_valid_to_col_idx
         .and_then(|idx| read_column_i64(&plan.entity_table, entity_node, idx))
-        .map(Abs::<U>::from_secs);
+        .map(Abs::<U>::from_raw);
 
     // 2. Pre-resolve entity column values (for filter RHS EntityColumn)
     let entity_cols: Vec<Option<Value>> = plan
@@ -1906,6 +1887,9 @@ fn execute_entity<U: UnitSystem, D: SplitDecider<U>>(
             (_, Some(t)) => t,
             (None, None) => default_ts,
         };
+        if !plan.fits_clock(Abs::<U>::from_raw(0)) {
+            return Ok(());
+        }
         link_frequencies.clear();
         link_split_values.clear();
         if execute_stages(
@@ -1916,7 +1900,7 @@ fn execute_entity<U: UnitSystem, D: SplitDecider<U>>(
             aliases,
             link_frequencies,
             link_split_values,
-        ) {
+        )? {
             write_target(
                 plan,
                 &entity_pk,
@@ -1941,7 +1925,7 @@ fn execute_entity<U: UnitSystem, D: SplitDecider<U>>(
     // 4. Temporal: binary search for valid timestamp range
     let timestamps = &plan.timestamps;
 
-    // Timestamps are sorted ascending. Point anchors (epoch seconds).
+    // Timestamps are sorted ascending. Point anchors (index-clock ticks).
     // Entity excluded if time_col > ts (strict >)
     // Entity excluded if valid_to_col < ts (strict <, i.e. LEQ boundary)
     let first_valid = match time_col_val {
@@ -1972,7 +1956,7 @@ fn execute_entity<U: UnitSystem, D: SplitDecider<U>>(
             aliases,
             link_frequencies,
             link_split_values,
-        ) {
+        )? {
             write_target(
                 plan,
                 &entity_pk,
@@ -2533,7 +2517,7 @@ fn max_opt_i64(current: Option<i64>, value: i64) -> Option<i64> {
 /// Keep missing values distinguishable until the zero-offset training target
 /// is extracted. Sequence outputs convert their remaining gaps to NaN later.
 fn execute_target_sequence<U: UnitSystem>(
-    plan: &ResolvedPlan<U>,
+    _plan: &ResolvedPlan<U>,
     entity_node: u64,
     entity_cols: &[Option<Value>],
     base_ts: Abs<U>,
@@ -2546,39 +2530,29 @@ fn execute_target_sequence<U: UnitSystem>(
 
     if !can_optimize {
         for &offset in offsets {
-            let shifted_ts = base_ts + offset;
-            let val_opt = execute_aggregate(
-                plan,
-                entity_node,
-                agg,
-                entity_cols,
-                Some(shifted_ts),
-                &mut Vec::new(),
-                &mut Vec::new(),
-            );
+            let val_opt = base_ts.checked_add(offset).and_then(|shifted_ts| {
+                execute_aggregate(
+                    entity_node,
+                    agg,
+                    entity_cols,
+                    Some(shifted_ts),
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                )
+            });
             results.push(val_opt);
         }
         return results;
     }
 
-    let ResolvedWindow::Fixed {
-        offset_lo,
-        offset_hi,
-        encoder,
-    } = agg.window.as_ref().unwrap()
-    else {
-        unreachable!()
-    };
-    let windows: Vec<SortKeyWindow> = offsets
+    let window = agg.window.as_ref().unwrap();
+    let Some(windows) = offsets
         .iter()
-        .map(|&offset| {
-            let win_ts = base_ts + offset;
-            let abs_lo = offset_lo
-                .map(|offset_lo| encoder.encode_upper((win_ts + offset_lo).raw()));
-            let abs_hi = encoder.encode_upper((win_ts + *offset_hi).raw());
-            (abs_lo, abs_hi)
-        })
-        .collect();
+        .map(|&offset| window.sort_keys(base_ts.checked_add(offset)?))
+        .collect::<Option<Vec<SortKeyWindow>>>()
+    else {
+        return vec![None; offsets.len()];
+    };
     let min_lo = windows.iter().map(|w| w.0).min().unwrap();
     let max_hi = windows.iter().map(|w| w.1).max().unwrap();
     let edge_ref = &agg.path[0];
@@ -2595,9 +2569,7 @@ fn execute_target_sequence<U: UnitSystem>(
     for (abs_lo, abs_hi) in windows {
         let start = edges.partition_point(|e| e.sort_key > abs_hi);
         let end = abs_lo
-            .map(|abs_lo| {
-                start + edges[start..].partition_point(|e| e.sort_key > abs_lo)
-            })
+            .map(|abs_lo| start + edges[start..].partition_point(|e| e.sort_key > abs_lo))
             .unwrap_or(edges.len());
         let slice = &edges[start..end];
 
@@ -2702,7 +2674,7 @@ fn execute_target_sequence<U: UnitSystem>(
 /// Execute all stages for an (entity, timestamp) pair.
 /// Returns true if all stages passed (output row should be emitted).
 ///
-/// `observation_ts` is the current observation timestamp (epoch seconds) for
+/// `observation_ts` is the current observation timestamp (index-clock ticks) for
 /// temporal plans. Used to compute absolute window bounds from relative offsets.
 /// `None` for non-temporal plans.
 ///
@@ -2716,12 +2688,98 @@ fn execute_stages<U: UnitSystem>(
     aliases: &mut [Option<Value>],
     link_frequencies: &mut Vec<i64>,
     link_split_values: &mut Vec<Value>,
-) -> bool {
+) -> TTGenResult<bool> {
     for stage in &plan.stages {
-        for op in &stage.ops {
+        let mut position = 0;
+        while position < stage.ops.len() {
+            if let ResolvedOp::Aggregate(first) = &stage.ops[position] {
+                let group = stage.ops[position..]
+                    .iter()
+                    .map_while(|op| match op {
+                        ResolvedOp::Aggregate(aggregate)
+                            if same_numeric_input(first, aggregate) =>
+                        {
+                            Some(aggregate)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                if !group.is_empty() {
+                    let cutoff = observation_ts.unwrap_or(Abs::from_raw(0));
+                    if let Some(values) = execute_numeric_group(
+                        &group,
+                        &[entity_node],
+                        &[cutoff],
+                        NumericAggregatePolicy::Pql,
+                        |aggregate, root, timestamp| {
+                            let windows = group
+                                .iter()
+                                .map(|operation| match &operation.window {
+                                    Some(window) => window.sort_keys(timestamp).ok_or_else(|| {
+                                        TTGenError::InvalidPlan(
+                                            "aggregate window exceeds the clock".into(),
+                                        )
+                                    }),
+                                    None => Ok((None, u64::MAX)),
+                                })
+                                .collect::<TTGenResult<Vec<_>>>()?;
+                            // Offset overlap does not imply encoded-key overlap:
+                            // coarse relation clocks may collapse a window.
+                            // Read the enclosing range and retain each consumer's
+                            // own selection below, including empty/touching ranges.
+                            let (lower, upper) = enclosing_numeric_windows(&windows)
+                                .expect("nonempty aggregate group");
+                            let edge = &aggregate.path[0];
+                            let edges = crate::ttgen_traversal::iter_edge_checked(
+                                &edge.src_table,
+                                edge.relation_idx,
+                                &edge.layout,
+                                root,
+                                Some((lower, upper)),
+                            )?;
+                            let ranges = windows
+                                .iter()
+                                .map(|&(lo, hi)| {
+                                    let start = edges.partition_point(|edge| edge.sort_key > hi);
+                                    let end = lo.map_or(edges.len(), |lo| {
+                                        start
+                                            + edges[start..]
+                                                .partition_point(|edge| edge.sort_key > lo)
+                                    });
+                                    start..end
+                                })
+                                .collect();
+                            Ok(NumericRows::WindowedNodes {
+                                nodes: edges.into_iter().map(|edge| edge.dst_node).collect(),
+                                ranges,
+                            })
+                        },
+                    )? {
+                        for (aggregate, mut column) in group.iter().zip(values) {
+                            aliases[aggregate.alias_idx] = column.pop().unwrap();
+                        }
+                        position += group.len();
+                        continue;
+                    }
+                    // A declined group must fall back once per operation, not
+                    // retry each shrinking suffix and decode the same rows again.
+                    for aggregate in &group {
+                        aliases[aggregate.alias_idx] = execute_aggregate(
+                            entity_node,
+                            aggregate,
+                            entity_cols,
+                            observation_ts,
+                            link_frequencies,
+                            link_split_values,
+                        );
+                    }
+                    position += group.len();
+                    continue;
+                }
+            }
+            let op = &stage.ops[position];
             let result = match op {
                 ResolvedOp::Aggregate(agg) => execute_aggregate(
-                    plan,
                     entity_node,
                     agg,
                     entity_cols,
@@ -2878,6 +2936,7 @@ fn execute_stages<U: UnitSystem>(
                 }
             };
             aliases[op.alias_idx()] = result;
+            position += 1;
         }
 
         if let Some(ref filter) = stage.filter {
@@ -2888,11 +2947,11 @@ fn execute_stages<U: UnitSystem>(
                 &plan.entity_table,
                 entity_node,
             ) {
-                return false;
+                return Ok(false);
             }
         }
     }
-    true
+    Ok(true)
 }
 
 // ─── Fast Existence Check (Null Emitting Target Logic) ───────────────────────
@@ -2904,37 +2963,11 @@ fn execute_has_edges<U: UnitSystem>(
     entity_cols: &[Option<Value>],
     observation_ts: Option<Abs<U>>,
 ) -> Option<Value> {
-    // SAFETY: encode_upper expects epoch-seconds (the index's internal unit).
-    // This is correct when U=Seconds. If the pipeline is ever monomorphized
-    // over a different unit (e.g. Nanoseconds), the encoder must be made
-    // unit-aware as part of the ingest/sampling unit awareness work.
-    let window = has_edges.window.as_ref().map(|w| {
-        let obs = observation_ts.unwrap_or(Abs::<U>::from_raw(0));
-        match w {
-            ResolvedWindow::Fixed {
-                offset_lo,
-                offset_hi,
-                encoder,
-            } => {
-                let lo = offset_lo
-                    .map(|offset_lo| encoder.encode_upper((obs + offset_lo).raw()));
-                let hi = encoder.encode_upper((obs + *offset_hi).raw());
-                (lo, hi)
-            }
-            ResolvedWindow::Calendar {
-                lo_months,
-                hi_months,
-                encoder,
-            } => {
-                let hi_abs = add_calendar_months(obs, *hi_months);
-                let lo = lo_months.map(|lo_months| {
-                    encoder.encode_upper(add_calendar_months(obs, lo_months).raw())
-                });
-                let hi = encoder.encode_upper(hi_abs.raw());
-                (lo, hi)
-            }
-        }
-    });
+    let obs = observation_ts.unwrap_or(Abs::<U>::from_raw(0));
+    let window = match &has_edges.window {
+        Some(window) => Some(window.sort_keys(obs)?),
+        None => None,
+    };
 
     let dst_table = &has_edges.path.last().unwrap().dst_table;
     let mut traversed = false;
@@ -2960,8 +2993,254 @@ fn execute_has_edges<U: UnitSystem>(
 
 // ─── Aggregate execution (match-once monomorphization) ───────────────────────
 
-fn execute_aggregate<U: UnitSystem>(
-    _plan: &ResolvedPlan<U>,
+/// The callers retain their established empty-input and floating-zero rules.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum NumericAggregatePolicy {
+    Pql,
+    TemporalQuery,
+}
+
+/// Ordered inputs supplied by a caller, optionally already projected to Arrow.
+pub enum NumericRows {
+    Nodes(Vec<u64>),
+    WindowedNodes {
+        nodes: Vec<u64>,
+        ranges: Vec<std::ops::Range<usize>>,
+    },
+    Projected {
+        columns: Vec<(usize, arrow_array::ArrayRef)>,
+        rows: std::ops::Range<usize>,
+    },
+}
+
+fn enclosing_numeric_windows(windows: &[(Option<u64>, u64)]) -> Option<(Option<u64>, u64)> {
+    windows.iter().copied().reduce(|a, b| {
+        (a.0.zip(b.0).map(|(a, b)| a.min(b)), a.1.max(b.1))
+    })
+}
+
+pub fn same_numeric_input<U: UnitSystem>(
+    a: &ResolvedAggregate<U>,
+    b: &ResolvedAggregate<U>,
+) -> bool {
+    if a.path.len() != 1 || b.path.len() != 1 {
+        return false;
+    }
+    let left = &a.path[0];
+    let right = &b.path[0];
+    if left.src_table.node_type() != right.src_table.node_type()
+        || left.relation_idx != right.relation_idx
+    {
+        return false;
+    }
+    match (&a.window, &b.window) {
+        (None, Some(ResolvedWindow::Calendar { .. }))
+        | (Some(ResolvedWindow::Calendar { .. }), None) => false,
+        (None, _) | (_, None) => true,
+        (
+            Some(ResolvedWindow::Fixed {
+                offset_lo: al,
+                offset_hi: ah,
+                ..
+            }),
+            Some(ResolvedWindow::Fixed {
+                offset_lo: bl,
+                offset_hi: bh,
+                ..
+            }),
+        ) => al.is_none_or(|lo| lo.raw() < bh.raw()) && bl.is_none_or(|lo| lo.raw() < ah.raw()),
+        _ => false,
+    }
+}
+
+/// Execute a compatible resolved group for explicit anchors. Row selection is
+/// caller-specific: PQL keeps its first-hop/index order; temporal row queries
+/// retain exact-time filtering and chronological/PK order. Projection and
+/// reduction execution are shared, with bounded decoded batches.
+pub fn execute_numeric_group<U: UnitSystem, F>(
+    operations: &[&ResolvedAggregate<U>],
+    roots: &[u64],
+    cutoffs: &[Abs<U>],
+    policy: NumericAggregatePolicy,
+    mut select_rows: F,
+) -> TTGenResult<Option<Vec<Vec<Option<Value>>>>>
+where
+    F: FnMut(&ResolvedAggregate<U>, u64, Abs<U>) -> TTGenResult<NumericRows>,
+{
+    use crate::ttgen_accumulator::accumulate_numeric_batch;
+    use diskgraph_rowpack::IngestedType;
+    let Some(first) = operations.first() else {
+        return Ok(None);
+    };
+    if operations.iter().any(|op| {
+        op.row_filter.is_some()
+            || op.limit.is_some()
+            || !same_numeric_input(first, op)
+            || !matches!(
+                op.func,
+                AggFunc::Count | AggFunc::Sum | AggFunc::Avg | AggFunc::Min | AggFunc::Max
+            )
+    }) {
+        return Ok(None);
+    }
+    let table = &first.path[0].dst_table;
+    let Some(decoder) = table.node_data_decoder() else {
+        return Ok(None);
+    };
+    let mut projection = Vec::new();
+    for operation in operations {
+        if operation.func == AggFunc::Count {
+            continue;
+        }
+        let Some(column) = operation.target_col_idx else {
+            return Ok(None);
+        };
+        let kind = &decoder.context().columns[column].logical_type;
+        let integer = matches!(kind,
+            IngestedType::Int8 | IngestedType::Int16 | IngestedType::Int32 | IngestedType::Int64
+            | IngestedType::UInt8 | IngestedType::UInt16 | IngestedType::UInt32 | IngestedType::UInt64);
+        if !(matches!(kind, IngestedType::Float32 | IngestedType::Float64) || integer)
+            || integer && policy == NumericAggregatePolicy::TemporalQuery
+                && matches!(operation.func, AggFunc::Min | AggFunc::Max)
+        {
+            return Ok(None);
+        }
+        if !projection.contains(&column) {
+            projection.push(column);
+        }
+    }
+    // Both frontends execute the same scalar operation IR after resolving
+    // paths/windows/physical column slots. Their row-selection policy stays an
+    // explicit input; neither frontend's empty/NULL or traversal order wins by
+    // accident.
+    let scalar_plans = operations
+        .iter()
+        .map(|op| ScalarAggregate {
+            name: op.alias_idx.to_string(),
+            frame: String::new(),
+            groups: Vec::new(),
+            operation: match op.func {
+                AggFunc::Count => "count",
+                AggFunc::Sum => "sum",
+                AggFunc::Avg => "mean",
+                AggFunc::Min => "min",
+                AggFunc::Max => "max",
+                _ => unreachable!(),
+            }
+            .into(),
+            column: op.target_col_idx.map(|column| column.to_string()),
+            sum_type: None,
+            semantics: Default::default(),
+            row_filter: None,
+            limit: None,
+            target_entity_table: None,
+        })
+        .collect::<Vec<_>>();
+    let scalar_operations = scalar_plans
+        .iter()
+        .zip(operations)
+        .map(|(plan, operation)| (plan, operation.target_col_idx))
+        .collect::<Vec<_>>();
+    let mut result = vec![Vec::with_capacity(roots.len()); operations.len()];
+    for (&root, &cutoff) in roots.iter().zip(cutoffs) {
+        let selected = select_rows(first, root, cutoff)?;
+        let row_count = match &selected {
+            NumericRows::Nodes(nodes) | NumericRows::WindowedNodes { nodes, .. } => nodes.len(),
+            NumericRows::Projected { rows, .. } => rows.len(),
+        };
+        let selected = match selected {
+            NumericRows::Nodes(nodes) => {
+                let count = nodes.len();
+                NumericRows::WindowedNodes {
+                    nodes,
+                    ranges: vec![0..count; operations.len()],
+                }
+            }
+            other => other,
+        };
+        let mut states = operations
+            .iter()
+            .map(|op| Accumulator::new(op.func, None))
+            .collect::<Vec<_>>();
+        let mut observed = vec![0; operations.len()];
+        match selected {
+            NumericRows::Projected { columns, rows } => {
+                if !accumulate_numeric_batch(
+                    &scalar_operations,
+                    &mut states,
+                    &mut observed,
+                    &columns,
+                    rows,
+                    policy == NumericAggregatePolicy::TemporalQuery,
+                ) {
+                    return Ok(None);
+                }
+            }
+            NumericRows::Nodes(_) => unreachable!("node selections normalized above"),
+            NumericRows::WindowedNodes { nodes, ranges } => {
+                for (chunk_index, chunk) in nodes.chunks(512).enumerate() {
+                    let arrays = if projection.is_empty() {
+                        Vec::new()
+                    } else {
+                        let rows = chunk
+                            .iter()
+                            .map(|&node| {
+                                let view = table.edges_for_node(node)
+                                    .map_err(|e| TTGenError::SystemError(e.to_string()))?;
+                                view.node_data()
+                                    .map_err(|e| TTGenError::SystemError(e.to_string()))
+                            })
+                            .collect::<TTGenResult<Option<Vec<_>>>>()?;
+                        // Absent node payloads follow the general reader's NULL
+                        // policy. A decode/IO failure above is not a decline.
+                        let Some(rows) = rows else { return Ok(None); };
+                        let batch = decoder
+                            .decode_batch_to_arrow(&rows, &projection)
+                            .map_err(|e| TTGenError::SystemError(e.to_string()))?;
+                        projection
+                            .iter()
+                            .copied()
+                            .zip(batch.columns().iter().cloned())
+                            .collect()
+                    };
+                    let offset = chunk_index * 512;
+                    for (index, range) in ranges.iter().enumerate() {
+                        let lo = range.start.max(offset).min(offset + chunk.len()) - offset;
+                        let hi = range.end.max(offset).min(offset + chunk.len()) - offset;
+                        if !accumulate_numeric_batch(
+                            &scalar_operations[index..index + 1],
+                            &mut states[index..index + 1],
+                            &mut observed[index..index + 1],
+                            &arrays,
+                            lo..hi,
+                            policy == NumericAggregatePolicy::TemporalQuery,
+                        ) {
+                            return Ok(None);
+                        }
+                    }
+                }
+            }
+        }
+        for (((column, state), op), count) in
+            result.iter_mut().zip(states).zip(operations).zip(observed)
+        {
+            column.push(
+                if policy == NumericAggregatePolicy::TemporalQuery
+                    && op.func == AggFunc::Sum
+                    && row_count > 0
+                    && count == 0
+                {
+                    None
+                } else {
+                    state.finalize()
+                },
+            );
+        }
+    }
+    Ok(Some(result))
+}
+
+pub(crate) fn execute_aggregate<U: UnitSystem>(
     entity_node: u64,
     agg: &ResolvedAggregate<U>,
     entity_cols: &[Option<Value>],
@@ -2975,118 +3254,36 @@ fn execute_aggregate<U: UnitSystem>(
     // timestamp bucket. Combined with the (lo, hi] search in iter_edge, this
     // ensures edges exactly at the lower boundary are excluded and edges exactly
     // at the upper boundary are included.
-    let window = agg.window.as_ref().map(|w| {
-        let obs = observation_ts.unwrap_or(Abs::<U>::from_raw(0));
-        match w {
-            ResolvedWindow::Fixed {
-                offset_lo,
-                offset_hi,
-                encoder,
-            } => {
-                let lo = offset_lo
-                    .map(|offset_lo| encoder.encode_upper((obs + offset_lo).raw()));
-                let hi = encoder.encode_upper((obs + *offset_hi).raw());
-                (lo, hi)
-            }
-            ResolvedWindow::Calendar {
-                lo_months,
-                hi_months,
-                encoder,
-            } => {
-                let hi_abs = add_calendar_months(obs, *hi_months);
-                let lo = lo_months.map(|lo_months| {
-                    encoder.encode_upper(add_calendar_months(obs, lo_months).raw())
-                });
-                let hi = encoder.encode_upper(hi_abs.raw());
-                (lo, hi)
-            }
-        }
-    });
+    let obs = observation_ts.unwrap_or(Abs::<U>::from_raw(0));
+    let window = match &agg.window {
+        Some(window) => Some(window.sort_keys(obs)?),
+        None => None,
+    };
 
     // Get the destination table for column reads
     let dst_table = &agg.path.last().unwrap().dst_table;
 
     match agg.func {
-        AggFunc::Count => {
-            let mut acc = 0u64;
+        AggFunc::Count | AggFunc::Sum | AggFunc::Avg | AggFunc::Min | AggFunc::Max => {
+            let mut state = Accumulator::new(agg.func, agg.limit);
             traverse_and_accumulate(entity_node, &agg.path, window, true, &mut |dst, _sk| {
-                if let Some(ref f) = agg.row_filter {
-                    if !eval_row_filter(f, dst, dst_table, entity_cols) {
-                        return true; // skip but continue
-                    }
-                }
-                acc += 1;
-                true
-            });
-            Some(Value::Int(acc as i64))
-        }
-        AggFunc::Sum => {
-            let mut acc = 0.0f64;
-            traverse_and_accumulate(entity_node, &agg.path, window, true, &mut |dst, _sk| {
-                if let Some(ref f) = agg.row_filter {
-                    if !eval_row_filter(f, dst, dst_table, entity_cols) {
+                if agg
+                    .row_filter
+                    .as_ref()
+                    .is_some_and(|filter| !eval_row_filter(filter, dst, dst_table, entity_cols))
+                {
                         return true;
                     }
-                }
-                if let Some(col_idx) = agg.target_col_idx {
-                    if let Some(v) = read_column_f64(dst_table, dst, col_idx) {
-                        acc += v;
-                    }
-                }
+                let value = if agg.func == AggFunc::Count {
+                    None
+                } else {
+                    agg.target_col_idx
+                        .and_then(|column| read_column_f64(dst_table, dst, column))
+                };
+                state.observe_numeric_row(value, false);
                 true
             });
-            Some(Value::Float(acc))
-        }
-        AggFunc::Avg => {
-            let mut w = WelfordAccumulator::new();
-            traverse_and_accumulate(entity_node, &agg.path, window, true, &mut |dst, _sk| {
-                if let Some(ref f) = agg.row_filter {
-                    if !eval_row_filter(f, dst, dst_table, entity_cols) {
-                        return true;
-                    }
-                }
-                if let Some(col_idx) = agg.target_col_idx {
-                    if let Some(v) = read_column_f64(dst_table, dst, col_idx) {
-                        w.observe(v);
-                    }
-                }
-                true
-            });
-            Accumulator::Avg(w).finalize()
-        }
-        AggFunc::Min => {
-            let mut acc = f64::INFINITY;
-            traverse_and_accumulate(entity_node, &agg.path, window, true, &mut |dst, _sk| {
-                if let Some(ref f) = agg.row_filter {
-                    if !eval_row_filter(f, dst, dst_table, entity_cols) {
-                        return true;
-                    }
-                }
-                if let Some(col_idx) = agg.target_col_idx {
-                    if let Some(v) = read_column_f64(dst_table, dst, col_idx) {
-                        acc = acc.min(v);
-                    }
-                }
-                true
-            });
-            Accumulator::Min(acc).finalize()
-        }
-        AggFunc::Max => {
-            let mut acc = f64::NEG_INFINITY;
-            traverse_and_accumulate(entity_node, &agg.path, window, true, &mut |dst, _sk| {
-                if let Some(ref f) = agg.row_filter {
-                    if !eval_row_filter(f, dst, dst_table, entity_cols) {
-                        return true;
-                    }
-                }
-                if let Some(col_idx) = agg.target_col_idx {
-                    if let Some(v) = read_column_f64(dst_table, dst, col_idx) {
-                        acc = acc.max(v);
-                    }
-                }
-                true
-            });
-            Accumulator::Max(acc).finalize()
+            state.finalize()
         }
         AggFunc::CountDistinct => {
             // Multicat: hash per token (not per cell). Output is the count of
@@ -3137,13 +3334,11 @@ fn execute_aggregate<U: UnitSystem>(
                     if agg.target_temporal_create_col_idx.is_some()
                         || agg.target_temporal_end_col_idx.is_some() =>
                 {
-                    let create_ref = match agg.window.as_ref() {
-                        Some(ResolvedWindow::Fixed { offset_hi, .. }) => ts + *offset_hi,
-                        Some(ResolvedWindow::Calendar { hi_months, .. }) => {
-                            add_calendar_months(ts, *hi_months)
-                        }
-                        None => ts,
-                    };
+                    let create_ref = agg
+                        .window
+                        .as_ref()
+                        .and_then(|w| w.bounds(ts))
+                        .map_or(ts, |(_, end)| end);
                     Some((create_ref.raw().max(ts.raw()), ts.raw()))
                 }
                 _ => None,
@@ -3324,6 +3519,31 @@ fn execute_aggregate<U: UnitSystem>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numeric_window_union_handles_coarse_clock_collapse() {
+        use diskgraph_core::metadata::*;
+        use diskgraph_core::sortkey::SortKeyEncoder;
+        let encoder = SortKeyEncoder::new(&EdgeSortKeyMetadata {
+            width_bits: 32,
+            timestamp: Some(EdgeSortKeyTimestampMetadata {
+                table: "events".into(), column: "time".into(),
+                encoding: EdgeSortKeyTimestampEncoding {
+                    kind: EdgeSortKeyTimestampKind::Int32, anchor: 0, step: 10,
+                },
+            }), weight: None,
+        });
+        // (1, 3] and (2, 4] overlap before encoding but both collapse to (K,K].
+        let windows = [(Some(encoder.encode_upper(1)), encoder.encode_upper(3)),
+                       (Some(encoder.encode_upper(2)), encoder.encode_upper(4))];
+        assert_eq!(windows[0].0, Some(windows[0].1));
+        assert_eq!(enclosing_numeric_windows(&windows), Some(windows[0]));
+        let touching = [(Some(1), 2), (Some(2), 3)];
+        assert_eq!(enclosing_numeric_windows(&touching), Some((Some(1), 3)));
+        assert_eq!(enclosing_numeric_windows(&[(None, 2), (Some(2), 3)]), Some((None, 3)));
+    }
+
+    use diskgraph_core::time::add_calendar_months;
 
     #[test]
     fn pass_a_writer_rotates_into_ordered_parts() {
@@ -3637,7 +3857,7 @@ mod tests {
         // 2024-01-01 00:00:00 UTC
         let jan1 = Abs::<Seconds>::from_raw(1704067200);
         // +3 months = 2024-04-01 (leap year, so Jan→Apr = 91 days)
-        let apr1 = add_calendar_months(jan1, 3);
+        let apr1 = add_calendar_months(jan1, 3).unwrap();
         assert_eq!(apr1.raw(), 1704067200 + 91 * 86400);
     }
 
@@ -3646,7 +3866,7 @@ mod tests {
         // 2023-01-01 00:00:00 UTC
         let jan1 = Abs::<Seconds>::from_raw(1672531200);
         // +3 months = 2023-04-01 (non-leap, Jan→Apr = 90 days)
-        let apr1 = add_calendar_months(jan1, 3);
+        let apr1 = add_calendar_months(jan1, 3).unwrap();
         assert_eq!(apr1.raw(), 1672531200 + 90 * 86400);
     }
 
@@ -3655,7 +3875,7 @@ mod tests {
         // 2023-04-01 00:00:00 UTC
         let apr1 = Abs::<Seconds>::from_raw(1680307200);
         // +3 months = 2023-07-01 (Apr→Jul = 91 days)
-        let jul1 = add_calendar_months(apr1, 3);
+        let jul1 = add_calendar_months(apr1, 3).unwrap();
         assert_eq!(jul1.raw(), apr1.raw() + 91 * 86400);
     }
 
@@ -3664,7 +3884,7 @@ mod tests {
         // 2023-07-01 00:00:00 UTC
         let jul1 = Abs::<Seconds>::from_raw(1688169600);
         // +3 months = 2023-10-01 (Jul→Oct = 92 days)
-        let oct1 = add_calendar_months(jul1, 3);
+        let oct1 = add_calendar_months(jul1, 3).unwrap();
         assert_eq!(oct1.raw(), jul1.raw() + 92 * 86400);
     }
 
@@ -3673,7 +3893,7 @@ mod tests {
         // 2023-10-01 00:00:00 UTC
         let oct1 = Abs::<Seconds>::from_raw(1696118400);
         // +3 months = 2024-01-01 (Oct→Jan = 92 days)
-        let jan1 = add_calendar_months(oct1, 3);
+        let jan1 = add_calendar_months(oct1, 3).unwrap();
         assert_eq!(jan1.raw(), oct1.raw() + 92 * 86400);
     }
 
@@ -3681,7 +3901,7 @@ mod tests {
     fn test_add_calendar_months_negative() {
         // 2023-04-01 → -3 months = 2023-01-01
         let apr1 = Abs::<Seconds>::from_raw(1680307200);
-        let jan1 = add_calendar_months(apr1, -3);
+        let jan1 = add_calendar_months(apr1, -3).unwrap();
         assert_eq!(jan1.raw(), 1672531200);
     }
 
@@ -3689,7 +3909,7 @@ mod tests {
     fn test_add_calendar_months_years() {
         // 2023-01-01 + 12 months = 2024-01-01
         let y2023 = Abs::<Seconds>::from_raw(1672531200);
-        let y2024 = add_calendar_months(y2023, 12);
+        let y2024 = add_calendar_months(y2023, 12).unwrap();
         assert_eq!(y2024.raw(), y2023.raw() + 365 * 86400);
     }
 }

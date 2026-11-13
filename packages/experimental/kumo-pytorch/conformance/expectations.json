@@ -1,0 +1,116 @@
+{
+  "C-ARTIFACT-001": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-CONTRACT-001": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-ENTITY-001": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-INFERENCE-001": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-ROWS-001": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-ROWS-002": {
+    "in_memory": "answer",
+    "diskgraph": {
+      "path": "schema.relations[0]",
+      "message_contains": "needs exactly one primary-key side"
+    }
+  },
+  "C-TYPE-001": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-TYPE-002": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-CALC-003": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-CALC-002": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-CALC-001": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-ENCODING-001": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-ENCODING-002": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-ENCODING-003": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-FIELDS-002": {
+    "in_memory": "answer",
+    "diskgraph": {
+      "path": "sample",
+      "message_contains": "dated_entity_values"
+    }
+  },
+  "C-FIELDS-001": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-REUSE-001": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-IDSPACE-001": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-IDSPACE-002": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-HISTORY-001": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-HISTORY-002": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-COMPOSITE-001": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-TARGET-001": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-GRAPH-001": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-SERVING-001": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-KEYLESS-001": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
+  "C-KEYLESS-002": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  }
+}

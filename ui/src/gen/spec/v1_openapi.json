@@ -7600,11 +7600,13 @@
                         "anyOf": [
                             {
                                 "type": "integer",
-                                "maximum": 8000.0,
                                 "minimum": 1.0
                             },
                             {
                                 "$ref": "#/components/schemas/MissingType"
+                            },
+                            {
+                                "type": "null"
                             }
                         ],
                         "title": "Max Val Steps",
@@ -7627,11 +7629,13 @@
                         "anyOf": [
                             {
                                 "type": "integer",
-                                "maximum": 8000.0,
                                 "minimum": 1.0
                             },
                             {
                                 "$ref": "#/components/schemas/MissingType"
+                            },
+                            {
+                                "type": "null"
                             }
                         ],
                         "title": "Max Test Steps",

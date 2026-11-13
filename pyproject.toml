@@ -45,6 +45,7 @@ python = "^3.11"
 # workspace member. packages/scripts/ has no pyproject.toml either.
 members = [
   "packages/kumo-api",
+  "packages/kumo-settings",
   "packages/kumo-pql",
   "packages/kumo-core",
   "packages/diskgraph",
@@ -52,9 +53,11 @@ members = [
   "packages/kumo-bigquery",
   "packages/kumo-databricks",
   "packages/kumo-gcs",
+  "packages/kumo-adls",
   "packages/kumo-s3",
   "packages/kumo-engine",
   "packages/kumo-sdk",
+  "packages/experimental/kumo-pytorch",
   "tools/glove-6b-50d",
 ]
 
@@ -85,6 +88,7 @@ kumo-pql = { workspace = true }
 kumo-core = { workspace = true }
 diskgraph = { workspace = true }
 kumo-gcs = { workspace = true }
+kumo-adls = { workspace = true }
 kumo-s3 = { workspace = true }
 kumo-snowflake = { workspace = true }
 kumo-bigquery = { workspace = true }
@@ -92,6 +96,8 @@ kumo-databricks = { workspace = true }
 kumo-glove-6b-50d = { workspace = true }
 
 [tool.uv]
+# .mise.toml repeats this version, and the backend Dockerfiles read this line.
+required-version = "==0.13.7"
 # Exactly one torch build per environment.
 conflicts = [[{ extra = "cpu" }, { extra = "cu130" }, { extra = "cu132" }, { group = "public-tests" }]]
 # Delay newly uploaded artifacts long enough for compromised releases to be

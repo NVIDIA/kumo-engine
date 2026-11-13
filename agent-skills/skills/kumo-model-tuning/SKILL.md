@@ -1,6 +1,6 @@
 ---
 name: kumo-model-tuning
-description: Configure a Kumo model plan for a user-defined Snowflake task, including encoders, run mode, bounded experiments, sampling, optimization, architecture, metrics and refits. Preserve target and evaluation constraints and use existing diagnostics for comparisons.
+description: Configure a Kumo model plan for a user-defined task, including encoders, run mode, bounded experiments, sampling, optimization, architecture, metrics and refits. Preserve target and evaluation constraints and use existing diagnostics for comparisons.
 ---
 
 # Configure a controlled experiment

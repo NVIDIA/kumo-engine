@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -8,7 +9,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-import pandas as pd
 import torch
 import torch_frame
 import torch_geometric
@@ -17,7 +17,6 @@ from torch_frame import TensorFrame
 from torch_geometric.data.feature_store import _FieldStatus
 from torch_geometric.utils.mixin import CastMixin
 
-import logging
 from kumo_core.encoders.tensor_mapper import TensorMapper
 from kumo_core.types.features import FeatureStoreData
 
@@ -28,7 +27,6 @@ ATTR_NAMES = {
     'time',  # Create date
     'end_time',  # End date
     'pkey',  # Primary key
-    'df',  # Raw column data
 }
 
 TRAIN_ATTR_NAMES = {
@@ -169,6 +167,9 @@ class FeatureStore(torch_geometric.data.FeatureStore, ABC):  # type: ignore
             if self.get_time_col_name(table_name) is not None:
                 attrs.append(FeatureStoreAttr(table_name, 'time'))
 
+        if self.train_table_name is None:
+            return attrs
+
         attrs.append(FeatureStoreAttr(self.train_table_name, 'tf'))
         attrs.append(FeatureStoreAttr(self.train_table_name, 'fkey'))
         if self.has_train_table_time_col:
@@ -259,8 +260,6 @@ class FeatureStore(torch_geometric.data.FeatureStore, ABC):  # type: ignore
             return torch_frame.cat(batches, dim=0)
         elif isinstance(elem, np.ndarray):
             return np.concatenate(batches)
-        elif isinstance(elem, pd.DataFrame):
-            return pd.concat(batches, axis=0).reset_index(drop=True)
         else:  # pragma: no cover
             raise ValueError(f"batch_mode doesn't support type '{type(elem)}'")
 

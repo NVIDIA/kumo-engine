@@ -1,0 +1,476 @@
+{
+  "inputs": {
+    "candidates": {
+      "colour_group_name": {
+        "dtype": {
+          "name": "string",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "entries": [
+          [
+            "Yellow",
+            2
+          ],
+          [
+            "Dark Blue",
+            3
+          ],
+          [
+            "Grey",
+            4
+          ],
+          [
+            "Red",
+            5
+          ],
+          [
+            "White",
+            6
+          ],
+          [
+            "Green",
+            7
+          ],
+          [
+            "Pink",
+            8
+          ],
+          [
+            "Light Blue",
+            9
+          ],
+          [
+            "Black",
+            10
+          ],
+          [
+            "Beige",
+            11
+          ]
+        ],
+        "id_space": null,
+        "kind": "vocabulary",
+        "roles": {
+          "missing": 0,
+          "unknown": 1
+        },
+        "vocabulary_size": 12
+      },
+      "index_group_name": {
+        "dtype": {
+          "name": "string",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "entries": [
+          [
+            "Divided",
+            2
+          ],
+          [
+            "Baby/Children",
+            3
+          ],
+          [
+            "Sport",
+            4
+          ],
+          [
+            "Menswear",
+            5
+          ],
+          [
+            "Ladieswear",
+            6
+          ]
+        ],
+        "id_space": null,
+        "kind": "vocabulary",
+        "roles": {
+          "missing": 0,
+          "unknown": 1
+        },
+        "vocabulary_size": 7
+      },
+      "product_type_name": {
+        "dtype": {
+          "name": "string",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "entries": [
+          [
+            "Top",
+            2
+          ],
+          [
+            "Underwear bottom",
+            3
+          ],
+          [
+            "Coat",
+            4
+          ],
+          [
+            "Hat/beanie",
+            5
+          ],
+          [
+            "Earring",
+            6
+          ],
+          [
+            "Boots",
+            7
+          ],
+          [
+            "Bra",
+            8
+          ],
+          [
+            "Trousers",
+            9
+          ],
+          [
+            "Dress",
+            10
+          ],
+          [
+            "Bag",
+            11
+          ],
+          [
+            "Swimwear bottom",
+            12
+          ],
+          [
+            "Skirt",
+            13
+          ],
+          [
+            "Blouse",
+            14
+          ],
+          [
+            "Sneakers",
+            15
+          ],
+          [
+            "Sweater",
+            16
+          ],
+          [
+            "Jacket",
+            17
+          ],
+          [
+            "Socks",
+            18
+          ],
+          [
+            "T-shirt",
+            19
+          ],
+          [
+            "Shorts",
+            20
+          ]
+        ],
+        "id_space": null,
+        "kind": "vocabulary",
+        "roles": {
+          "missing": 0,
+          "unknown": 1
+        },
+        "vocabulary_size": 21
+      },
+      "sold_30d": {
+        "dtype": {
+          "name": "int64",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "id_space": null,
+        "kind": "zscore",
+        "mean": 12.7139,
+        "output_dtype": "float32",
+        "scale": 11.1278
+      }
+    },
+    "customer": {
+      "age": {
+        "dtype": {
+          "name": "int64",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "id_space": null,
+        "kind": "zscore",
+        "mean": 35.11,
+        "output_dtype": "float32",
+        "scale": 13.0789
+      },
+      "club": {
+        "dtype": {
+          "name": "string",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "entries": [
+          [
+            "ACTIVE",
+            2
+          ],
+          [
+            "PRE-CREATE",
+            3
+          ],
+          [
+            "LEFT CLUB",
+            4
+          ]
+        ],
+        "id_space": null,
+        "kind": "vocabulary",
+        "roles": {
+          "missing": 0,
+          "unknown": 1
+        },
+        "vocabulary_size": 5
+      }
+    },
+    "graph": {
+      "articles": {
+        "colour_group_name": {
+          "dtype": {
+            "name": "string",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "entries": [
+            [
+              "Yellow",
+              2
+            ],
+            [
+              "Dark Blue",
+              3
+            ],
+            [
+              "Grey",
+              4
+            ],
+            [
+              "Red",
+              5
+            ],
+            [
+              "White",
+              6
+            ],
+            [
+              "Green",
+              7
+            ],
+            [
+              "Pink",
+              8
+            ],
+            [
+              "Light Blue",
+              9
+            ],
+            [
+              "Black",
+              10
+            ],
+            [
+              "Beige",
+              11
+            ]
+          ],
+          "kind": "vocabulary",
+          "roles": {
+            "missing": 0,
+            "unknown": 1
+          },
+          "vocabulary_size": 12
+        },
+        "index_group_name": {
+          "dtype": {
+            "name": "string",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "entries": [
+            [
+              "Divided",
+              2
+            ],
+            [
+              "Baby/Children",
+              3
+            ],
+            [
+              "Sport",
+              4
+            ],
+            [
+              "Menswear",
+              5
+            ],
+            [
+              "Ladieswear",
+              6
+            ]
+          ],
+          "kind": "vocabulary",
+          "roles": {
+            "missing": 0,
+            "unknown": 1
+          },
+          "vocabulary_size": 7
+        },
+        "product_type_name": {
+          "dtype": {
+            "name": "string",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "entries": [
+            [
+              "Top",
+              2
+            ],
+            [
+              "Underwear bottom",
+              3
+            ],
+            [
+              "Coat",
+              4
+            ],
+            [
+              "Hat/beanie",
+              5
+            ],
+            [
+              "Earring",
+              6
+            ],
+            [
+              "Boots",
+              7
+            ],
+            [
+              "Bra",
+              8
+            ],
+            [
+              "Trousers",
+              9
+            ],
+            [
+              "Dress",
+              10
+            ],
+            [
+              "Bag",
+              11
+            ],
+            [
+              "Swimwear bottom",
+              12
+            ],
+            [
+              "Skirt",
+              13
+            ],
+            [
+              "Blouse",
+              14
+            ],
+            [
+              "Sneakers",
+              15
+            ],
+            [
+              "Sweater",
+              16
+            ],
+            [
+              "Jacket",
+              17
+            ],
+            [
+              "Socks",
+              18
+            ],
+            [
+              "T-shirt",
+              19
+            ],
+            [
+              "Shorts",
+              20
+            ]
+          ],
+          "kind": "vocabulary",
+          "roles": {
+            "missing": 0,
+            "unknown": 1
+          },
+          "vocabulary_size": 21
+        }
+      },
+      "transactions": {
+        "price": {
+          "dtype": {
+            "name": "float64",
+            "precision": null,
+            "scale": null,
+            "timezone": null,
+            "unit": null
+          },
+          "kind": "zscore",
+          "mean": 0.0257193,
+          "output_dtype": "float32",
+          "scale": 0.014995
+        }
+      }
+    }
+  },
+  "targets": {
+    "bought": {
+      "value": {
+        "dtype": {
+          "name": "bool",
+          "precision": null,
+          "scale": null,
+          "timezone": null,
+          "unit": null
+        },
+        "kind": "raw"
+      }
+    }
+  }
+}

@@ -7,7 +7,8 @@
     fn publication_paths(dir: &tempfile::TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
         let train_tables = dir.path().join("index").join("train_tables");
         std::fs::create_dir_all(&train_tables).unwrap();
-        (train_tables.join("published"), train_tables.join(".published.attempt"))
+        (train_tables.join("published"), train_tables.join(".published.attempt"),
+    )
     }
 
     fn write_complete_tt_extension(root: &Path, target: &Path, generation: &[u8]) {
@@ -127,6 +128,7 @@
         let mut it = TTParquetBatchIterator {
             dataset_path: path.to_string_lossy().into_owned(),
             columns: None,
+            batch_size: None,
             parquet_paths: None,
             next_part: 0,
             reader: None,
@@ -173,6 +175,7 @@
         let mut it = TTParquetBatchIterator {
             dataset_path: path.to_string_lossy().into_owned(),
             columns: Some(vec!["a".to_string(), "c".to_string()]),
+            batch_size: None,
             parquet_paths: None,
             next_part: 0,
             reader: None,
@@ -209,8 +212,7 @@
         for (part_index, values) in [(0, vec![1, 2]), (1, vec![3, 4])] {
             let batch = RecordBatch::try_new(
                 schema.clone(),
-                vec![StdArc::new(Int64Array::from(values))],
-            )
+                vec![StdArc::new(Int64Array::from(values))])
             .unwrap();
             let file = File::create(path.join(format!("part-{part_index:05}.parquet"))).unwrap();
             let mut writer = ArrowWriter::try_new(file, schema.clone(), None).unwrap();
@@ -221,6 +223,7 @@
         let mut iterator = TTParquetBatchIterator {
             dataset_path: path.to_string_lossy().into_owned(),
             columns: None,
+            batch_size: None,
             parquet_paths: None,
             next_part: 0,
             reader: None,
@@ -278,6 +281,7 @@
         let mut it = TTParquetBatchIterator {
             dataset_path: path.to_string_lossy().into_owned(),
             columns: Some(vec!["does_not_exist".to_string()]),
+            batch_size: None,
             parquet_paths: None,
             next_part: 0,
             reader: None,
@@ -296,11 +300,11 @@
     // ingest phase must publish a SINGLE stage under a caller-chosen name
     // (default "predict") using the SAME FK-free resolution path as train.
 
-    use diskgraph_core::tt_builder::{
+    use diskgraph_core::time::{Abs, Seconds};
+use diskgraph_core::tt_builder::{
         AggFunc, EdgeRef, EntitySpec, Op, PredictionType, RefResolveKind, RefResolveSpec, SplitSpec,
         Stage, TemporalSpec,
-    };
-    use diskgraph_core::time::{Abs, Seconds};
+};
     use diskgraph_ingest::graph_config::{
         ColumnSpec, DataSource, FKeySpec, GraphConfig, IngestedType, TableSpec, TimeSpec,
     };
@@ -354,8 +358,7 @@
         part: &str,
         row_count: u64,
         artifact_inventory: Option<
-            diskgraph_train_table::ttgen_executor::StageArtifactInventory,
-        >,
+            diskgraph_train_table::ttgen_executor::StageArtifactInventory>,
     ) -> StageGenInfo {
         StageGenInfo {
             key: "train".to_string(),
@@ -373,8 +376,7 @@
         row_count: u64,
     ) -> diskgraph_train_table::ttgen_executor::StageArtifactInventory {
         use diskgraph_train_table::ttgen_executor::{
-            StageArtifactInventory, StagePartArtifact,
-        };
+            StageArtifactInventory, StagePartArtifact};
 
         StageArtifactInventory {
             schema_version: STAGE_ARTIFACT_INVENTORY_SCHEMA_VERSION.to_string(),
@@ -489,8 +491,7 @@
     #[test]
     fn test_v3_inventory_is_additive_and_requires_fleet_wide_consumer_rollout() {
         use diskgraph_train_table::ttgen_executor::{
-            StageArtifactInventory, StagePartArtifact,
-        };
+            StageArtifactInventory, StagePartArtifact};
 
         #[allow(dead_code)]
         #[derive(serde::Deserialize)]
@@ -550,8 +551,7 @@
     #[test]
     fn test_resolve_ingest_stages_enforces_v2_part_size() {
         use diskgraph_train_table::ttgen_executor::{
-            StageArtifactInventory, StagePartArtifact,
-        };
+            StageArtifactInventory, StagePartArtifact};
 
         let root = tempfile::tempdir().unwrap();
         let part = "train_seeds/part-00000.parquet";
@@ -584,8 +584,7 @@
     #[test]
     fn test_resolve_ingest_stages_enforces_v2_part_row_count() {
         use diskgraph_train_table::ttgen_executor::{
-            StageArtifactInventory, StagePartArtifact,
-        };
+            StageArtifactInventory, StagePartArtifact};
 
         let root = tempfile::tempdir().unwrap();
         let part = "train_seeds/part-00000.parquet";
@@ -708,6 +707,7 @@
             unit: "s".to_string(),
         };
         let config = GraphConfig {
+            timestamp_unit: Default::default(),
             dataset_name: "predict_unify_test".to_string(),
             tables: vec![
                 TableSpec {
@@ -955,8 +955,7 @@
         let ext = Path::new(tt_extension_path);
         let reader = diskgraph_index::graph::GraphIndexReader::open(
             &ext.join("index_metadata.json"),
-            ext,
-        )
+            ext)
         .expect("open produced extension");
         let table = reader.table(table_name).expect("stage table present");
         let view = table.edges_for_node(node_id).expect("edges_for_node");
@@ -1126,8 +1125,7 @@
         let ext = Path::new(&tt_ext);
         let reader = diskgraph_index::graph::GraphIndexReader::open(
             &ext.join("index_metadata.json"),
-            ext,
-        )
+            ext)
         .unwrap();
         let table = reader.table("predict_seeds").unwrap();
         for node_id in 0..expected_rows {
@@ -1171,7 +1169,8 @@
         let mut manifest: Value =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         manifest["tt_id"] = json!("different-target");
-        std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+        std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest).unwrap(),
+    ).unwrap();
 
         let error = publish_tt_extension(&attempt, &published).unwrap_err();
         assert!(error.to_string().contains("target-mismatched"));
@@ -1251,17 +1250,13 @@
 
         // Simulate a process crash immediately after final -> backup.
         std::fs::rename(&published, &backup).unwrap();
-        recover_tt_extension_publication(&published, &mut |src, dst| {
-            std::fs::rename(src, dst)
-        })
+        recover_tt_extension_publication(&published, &mut |src, dst| std::fs::rename(src, dst))
         .unwrap();
         assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"old");
         assert!(!backup.exists());
 
         // Recovery is idempotent, and the same attempt can then retry safely.
-        recover_tt_extension_publication(&published, &mut |src, dst| {
-            std::fs::rename(src, dst)
-        })
+        recover_tt_extension_publication(&published, &mut |src, dst| std::fs::rename(src, dst))
         .unwrap();
         publish_tt_extension(&attempt, &published).unwrap();
         assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"new");
@@ -1279,15 +1274,11 @@
 
         // Simulate a crash immediately after attempt -> final and before the
         // now-stale prior generation was removed.
-        recover_tt_extension_publication(&published, &mut |src, dst| {
-            std::fs::rename(src, dst)
-        })
+        recover_tt_extension_publication(&published, &mut |src, dst| std::fs::rename(src, dst))
         .unwrap();
         assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"new");
         assert!(!backup.exists());
-        recover_tt_extension_publication(&published, &mut |src, dst| {
-            std::fs::rename(src, dst)
-        })
+        recover_tt_extension_publication(&published, &mut |src, dst| std::fs::rename(src, dst))
         .unwrap();
         assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"new");
 
@@ -1306,9 +1297,7 @@
         std::fs::write(published.join("generation"), b"partial-new").unwrap();
         write_complete_tt_extension(&backup, &published, b"old");
 
-        recover_tt_extension_publication(&published, &mut |src, dst| {
-            std::fs::rename(src, dst)
-        })
+        recover_tt_extension_publication(&published, &mut |src, dst| std::fs::rename(src, dst))
         .unwrap();
         assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"old");
         assert!(!backup.exists());
@@ -1323,9 +1312,7 @@
         write_complete_tt_extension(&backup, &published, b"old");
         std::fs::remove_file(published.join("stage/part-00000.parquet")).unwrap();
 
-        recover_tt_extension_publication(&published, &mut |src, dst| {
-            std::fs::rename(src, dst)
-        })
+        recover_tt_extension_publication(&published, &mut |src, dst| std::fs::rename(src, dst))
         .unwrap();
 
         assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"old");
@@ -1344,11 +1331,10 @@
         let mut manifest: Value =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         manifest["graph_index_path"] = json!(dir.path().join("wrong-index"));
-        std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+        std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest).unwrap(),
+    ).unwrap();
 
-        recover_tt_extension_publication(&published, &mut |src, dst| {
-            std::fs::rename(src, dst)
-        })
+        recover_tt_extension_publication(&published, &mut |src, dst| std::fs::rename(src, dst))
         .unwrap();
 
         assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"old");
@@ -1370,9 +1356,7 @@
         symlink(&external, &published).unwrap();
 
         assert!(!is_complete_tt_extension_for(&published, &published));
-        recover_tt_extension_publication(&published, &mut |src, dst| {
-            std::fs::rename(src, dst)
-        })
+        recover_tt_extension_publication(&published, &mut |src, dst| std::fs::rename(src, dst))
         .unwrap();
         assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"old");
         assert!(is_complete_tt_extension_for(&published, &published));
@@ -1390,9 +1374,7 @@
         write_complete_tt_extension(&backup, &published, b"old");
         write_complete_tt_extension(&ambiguous, &published, b"stale");
 
-        let error = recover_tt_extension_publication(&published, &mut |src, dst| {
-            std::fs::rename(src, dst)
-        })
+        let error = recover_tt_extension_publication(&published, &mut |src, dst| std::fs::rename(src, dst))
         .unwrap_err();
         assert!(error.to_string().contains("ambiguous"));
         assert!(published.exists());
@@ -1401,9 +1383,7 @@
 
         std::fs::remove_dir_all(&ambiguous).unwrap();
         std::fs::remove_file(backup.join("diskgraph_manifest.json")).unwrap();
-        let error = recover_tt_extension_publication(&published, &mut |src, dst| {
-            std::fs::rename(src, dst)
-        })
+        let error = recover_tt_extension_publication(&published, &mut |src, dst| std::fs::rename(src, dst))
         .unwrap_err();
         assert!(error.to_string().contains("incomplete TT extension backup"));
         assert!(published.exists());
@@ -1487,8 +1467,7 @@
         let ext = Path::new(&tt_ext);
         let reader = diskgraph_index::graph::GraphIndexReader::open(
             &ext.join("index_metadata.json"),
-            ext,
-        )
+            ext)
         .unwrap();
         let g2_reader =
             diskgraph_index::graph::GraphIndexReader::open(&g2.join("index_metadata.json"), &g2)
@@ -1691,8 +1670,7 @@
                 artifact_inventory: Some(t_stage_inventory(
                     staging.path(),
                     &relative,
-                    row_count,
-                )),
+                    row_count)),
             });
         }
 
@@ -2037,6 +2015,7 @@
                     "abort",
                     false,
                     None,
+                    None,
                 )
                 .unwrap();
                 let d = d.bind(py);
@@ -2240,6 +2219,7 @@
                 "abort",
                 false,
                 None,
+                None,
             )
             .expect("custom gen build should succeed");
         });
@@ -2316,6 +2296,7 @@
                 "abort",
                 false,
                 None,
+                None,
             )
             .expect("custom gen build (split) should succeed");
         });
@@ -2391,6 +2372,7 @@
                 None,
                 "abort",
                 false,
+                None,
                 None,
             )
         });
@@ -2479,6 +2461,7 @@
                 None,
                 "abort",
                 false,
+                None,
                 None,
             )
             .expect("custom gen build should succeed");
@@ -2578,6 +2561,7 @@
                 None,
                 "abort",
                 false,
+                None,
                 None,
             )
             .expect("gen build should succeed");
@@ -2685,7 +2669,8 @@
             vec![
                 StdArc2::new(Int64Array::from(vec![0i64, 1, 2, 3])),
                 StdArc2::new(TimestampNanosecondArray::from(vec![1_000_000_000_000i64; 4])),
-                StdArc2::new(Float64Array::from(vec![Some(1.0), None, Some(1.0), Some(0.0)])),
+                StdArc2::new(Float64Array::from(vec![Some(1.0), None, Some(1.0), Some(0.0),
+            ])),
             ],
         )
         .unwrap();
@@ -2710,6 +2695,7 @@
                 None,
                 on_error,
                 false,
+                None,
                 None,
             )
         };

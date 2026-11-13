@@ -112,6 +112,90 @@ pub struct DiskGraphTTPlan<U: UnitSystem> {
     pub fact_pseudo_time: Option<FactPseudoTimeSpec>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AggregateFrame {
+    #[serde(default)]
+    pub column_path: Vec<EdgeRef>,
+    #[serde(default)]
+    pub window_unit: Option<TimeUnit>,
+    #[serde(default)]
+    pub preserve_traversal_order: bool,
+    pub name: String,
+    pub root_type: String,
+    pub path: Vec<AggregatePathStep>,
+    pub time_column: Option<String>,
+    pub start_seconds: Option<i64>,
+    pub stop_seconds: Option<i64>,
+    pub distinct: bool,
+    pub columns: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AggregatePathStep {
+    pub relation: String,
+    pub destination_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScalarAggregate {
+    pub name: String,
+    pub frame: String,
+    #[serde(default)]
+    pub groups: Vec<AggregateGroup>,
+    pub operation: String,
+    pub column: Option<String>,
+    pub sum_type: Option<AggregateSumType>,
+    #[serde(default)]
+    pub semantics: ReductionSemantics,
+    #[serde(default)]
+    pub row_filter: Option<RowFilter>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub target_entity_table: Option<String>,
+}
+
+/// Value rules, independent of which frontend authored an operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReductionSemantics {
+    pub all_null_sum_is_zero: bool,
+    pub keep_first_equal: bool,
+}
+impl Default for ReductionSemantics {
+    fn default() -> Self {
+        Self {
+            all_null_sum_is_zero: false,
+            keep_first_equal: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AggregateGroup {
+    pub keys: Vec<String>,
+    pub values: Vec<NamedReduction>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NamedReduction {
+    pub name: String,
+    pub operation: String,
+    pub column: Option<String>,
+    pub sum_type: Option<AggregateSumType>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AggregateSumType {
+    Int64,
+    Uint64,
+}
+
 /// Fact `table` whose rows hold static LP links: `entity_col` references the
 /// entity table, `target_col` holds the `TARGET1` value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -305,6 +389,11 @@ pub struct Stage<U: UnitSystem> {
 #[serde(rename_all = "snake_case")]
 #[serde(bound = "")]
 pub enum Op<U: UnitSystem> {
+    /// Scalar row selection and reduction, shared by both frontend compilers.
+    RowAggregate {
+        rows: AggregateFrame,
+        reduction: ScalarAggregate,
+    },
     /// Traverse edges, apply filters, accumulate.
     Aggregate {
         alias: String,
@@ -537,6 +626,190 @@ pub enum StageFilter {
     Not(Box<StageFilter>),
 }
 
+// ─── Index clocks ────────────────────────────────────────────────────────────
+//
+// A serialized plan stores raw ticks of one clock, named by a top-level
+// `timestamp_unit` (omitted for seconds).
+
+impl<U: UnitSystem> DiskGraphTTPlan<U> {
+    pub fn normalize_scalar_ops(&mut self) -> Result<(), String> {
+        for stage in &mut self.stages {
+            for op in &mut stage.ops {
+                if let Op::Aggregate {
+                    alias,
+                    path,
+                    func,
+                    target_col,
+                    time_col,
+                    window,
+                    window_unit,
+                    row_filter,
+                    limit,
+                    target_entity_table,
+                } = op
+                {
+                    if path.len() != 1 {
+                        continue;
+                    }
+                    let operation = match func {
+                        AggFunc::Count => "count",
+                        AggFunc::Sum => "sum",
+                        AggFunc::Avg => "mean",
+                        AggFunc::Min => "min",
+                        AggFunc::Max => "max",
+                        _ => continue,
+                    };
+                    let rows = AggregateFrame {
+                        column_path: path.clone(),
+                        window_unit: *window_unit,
+                        preserve_traversal_order: true,
+                        name: format!("rows:{alias}"),
+                        root_type: self.entity.table.clone(),
+                        path: vec![],
+                        time_column: time_col.clone(),
+                        start_seconds: window.map(|w| w.0),
+                        stop_seconds: window.map(|w| w.1),
+                        distinct: false,
+                        columns: target_col.iter().cloned().collect(),
+                    };
+                    let reduction = ScalarAggregate {
+                        name: alias.clone(),
+                        frame: rows.name.clone(),
+                        groups: vec![],
+                        operation: operation.into(),
+                        column: target_col.clone(),
+                        sum_type: None,
+                        semantics: ReductionSemantics {
+                            all_null_sum_is_zero: true,
+                            keep_first_equal: false,
+                        },
+                        row_filter: row_filter.clone(),
+                        limit: *limit,
+                        target_entity_table: target_entity_table.clone(),
+                    };
+                    *op = Op::RowAggregate { rows, reduction };
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn to_json(&self) -> serde_json::Result<String> {
+        if U::UNIT == TimeUnit::Seconds {
+            return serde_json::to_string(self);
+        }
+        let mut json = serde_json::to_value(self)?;
+        json["timestamp_unit"] = serde_json::to_value(U::UNIT)?;
+        serde_json::to_string(&json)
+    }
+}
+
+impl<U: UnitSystem> Op<U> {
+    /// The same op in clock `V`, with every offset converted by `offset`.
+    pub fn map_clock<V: UnitSystem>(self, offset: &impl Fn(Dur<U>) -> Dur<V>) -> Op<V> {
+        match self {
+            Op::RowAggregate { rows, reduction } => Op::RowAggregate { rows, reduction },
+            Op::Aggregate {
+                alias,
+                path,
+                func,
+                target_col,
+                time_col,
+                window,
+                window_unit,
+                row_filter,
+                limit,
+                target_entity_table,
+            } => Op::Aggregate {
+                alias,
+                path,
+                func,
+                target_col,
+                time_col,
+                window,
+                window_unit,
+                row_filter,
+                limit,
+                target_entity_table,
+            },
+            Op::Column {
+                alias,
+                table,
+                column,
+                path,
+            } => Op::Column {
+                alias,
+                table,
+                column,
+                path,
+            },
+            Op::Compare {
+                alias,
+                lhs,
+                op,
+                rhs,
+            } => Op::Compare {
+                alias,
+                lhs,
+                op,
+                rhs,
+            },
+            Op::LogicalOp {
+                alias,
+                op,
+                operands,
+            } => Op::LogicalOp {
+                alias,
+                op,
+                operands,
+            },
+            Op::Autoregression {
+                alias,
+                target_op,
+                lag_offsets,
+            } => Op::Autoregression {
+                alias,
+                target_op: Box::new(target_op.map_clock(offset)),
+                lag_offsets: lag_offsets.into_iter().map(offset).collect(),
+            },
+            Op::FutureLabels {
+                alias,
+                target_op,
+                future_offsets,
+            } => Op::FutureLabels {
+                alias,
+                target_op: Box::new(target_op.map_clock(offset)),
+                future_offsets: future_offsets.into_iter().map(offset).collect(),
+            },
+            Op::HasEdges {
+                alias,
+                path,
+                time_col,
+                window,
+                window_unit,
+                row_filter,
+            } => Op::HasEdges {
+                alias,
+                path,
+                time_col,
+                window,
+                window_unit,
+                row_filter,
+            },
+        }
+    }
+}
+
+/// The clock a serialized plan is written in.
+pub fn plan_timestamp_unit(plan_json: &str) -> serde_json::Result<TimeUnit> {
+    #[derive(Deserialize)]
+    struct ClockTag {
+        #[serde(default)]
+        timestamp_unit: TimeUnit,
+    }
+    Ok(serde_json::from_str::<ClockTag>(plan_json)?.timestamp_unit)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -602,8 +875,7 @@ mod tests {
             temporal: Some(TemporalSpec {
                 timestamps: vec![
                     Abs::from_secs(86400),
-                    Abs::from_secs(172800),
-                ],
+                    Abs::from_secs(172800)],
                 forecast_length: 1,
                 lag_timesteps: None,
             }),

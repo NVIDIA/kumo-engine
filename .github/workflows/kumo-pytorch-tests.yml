@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: kumo-pytorch tests
+
+# kumo-pytorch's CPU checks: golden cases on the in-memory engine, the test
+# suite, style and the package build. The in-memory engine computes column
+# statistics with DiskGraph's collector, so DiskGraph is built from this commit.
+on:  # yamllint disable-line rule:truthy
+  pull_request:
+    paths:
+      - 'packages/experimental/kumo-pytorch/**'
+      - 'packages/diskgraph/**'
+      - 'scripts/diskgraph'
+      - '.github/workflows/_diskgraph-wheel.yml'
+      - '.github/actions/kumo-pytorch-setup/**'
+      - '.github/workflows/kumo-pytorch-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'packages/experimental/kumo-pytorch/**'
+      - 'packages/diskgraph/**'
+      - 'scripts/diskgraph'
+      - '.github/workflows/_diskgraph-wheel.yml'
+      - '.github/actions/kumo-pytorch-setup/**'
+      - '.github/workflows/kumo-pytorch-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  diskgraph-wheel:
+    uses: ./.github/workflows/_diskgraph-wheel.yml
+
+  cpu:
+    name: kumo-pytorch-tests
+    needs: diskgraph-wheel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: packages/experimental/kumo-pytorch
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+      - name: Golden cases on the in-memory engine
+        run: python -m conformance --engine in_memory
+      - name: Test suite
+        run: python -m pytest -q
+      - name: Style
+        run: |
+          uvx ruff@0.17.3 check .
+          uvx ruff@0.17.3 format --check .
+      - name: Package build
+        run: uv build --wheel --out-dir "$RUNNER_TEMP/kumo-pytorch-wheel" .

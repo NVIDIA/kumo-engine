@@ -9,9 +9,11 @@ pub mod coercion;
 pub mod col_stats;
 pub mod col_stats_export;
 pub mod column_inference;
+pub mod column_scan;
 pub mod config;
 pub mod config_converter;
 pub mod consts;
+pub mod cutoff_col_stats;
 pub mod diagnostics;
 pub mod disk_manager;
 pub mod errors;
@@ -83,6 +85,7 @@ use diskgraph_core::metadata::{
     EdgeSortKeyWeightEncoding, EdgeSortKeyWeightKind, EdgeSortKeyWeightMetadata, EdgeStorageFormat,
     NodeDataCompression, NodeShardMetadata, NodeTypeMetadata, PrimaryKeyMap,
 };
+use diskgraph_core::time::{convert_floor, convert_trunc, Seconds, TimeUnit};
 use diskgraph_fs::{CloudObjectCondition, CloudTransfer, PooledBytes};
 use diskgraph_index::builder::{
     EdgeBufferPool as IndexEdgeBufferPool, MemoryBudget, MemoryBudgetGuard,
@@ -109,7 +112,9 @@ use parquet::basic::{Encoding, PageType, Type as PhysicalType};
 use parquet::column::page::{Page, PageReader};
 use parquet::file::metadata::ColumnChunkMetaData;
 use parquet::file::reader::{ChunkReader, Length, SerializedPageReader};
+#[cfg(unix)]
 use pprof::protos::Message;
+#[cfg(unix)]
 use pprof::ProfilerGuard;
 use ptr_hash::DefaultPtrHash;
 use ptr_hash::PtrHashScratch;
@@ -634,6 +639,7 @@ pub fn ingest_with_stats(
     dest: Dest,
     options: IngestOptions,
 ) -> Result<(DatasetMetadata, IngestStats)> {
+    validate_profile_dir(options.profile_dir.as_deref())?;
     let metadata_bytes = fs::read(graph_config_path)
         .with_context(|| format!("read {}", graph_config_path.display()))?;
     let source: GraphConfig = serde_json::from_slice(&metadata_bytes)?;
@@ -656,6 +662,15 @@ fn encoded_num_shards(root: &Path) -> Result<Option<usize>> {
     Ok(marker
         .and_then(|m| m["num_shards"].as_u64())
         .map(|n| n as usize))
+}
+
+/// An Encode marker written before the clock was always recorded omits it, which
+/// reads as seconds.
+fn encode_marker_matches(marker: &[u8], payload: &[u8]) -> bool {
+    marker == payload
+        || serde_json::from_slice::<GraphConfig>(marker)
+            .and_then(|config| serde_json::to_vec(&config))
+            .is_ok_and(|normalized| normalized == payload)
 }
 
 fn table_sized_bytes(declared: Option<u64>, compute_local_bytes: impl FnOnce() -> u64) -> u64 {
@@ -731,6 +746,7 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     success_marker_content: Option<&str>,
     stage_sidecars: HashMap<String, StageSidecarColumns>,
 ) -> Result<(DatasetMetadata, IngestStats)> {
+    validate_profile_dir(options.profile_dir.as_deref())?;
     // Validate the exact graph-feature statistics contract at the common
     // public-ingest boundary, before source normalization or output writes.
     validate_exact_category_count_options(&options)?;
@@ -890,7 +906,7 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
                 }
                 if pred == IngestPhase::Encode {
                     let marker = fs::read(phase_marker_path(root, pred.name()))?;
-                    if marker != encode_marker_payload {
+                    if !encode_marker_matches(&marker, &encode_marker_payload) {
                         return Err(anyhow!(
                             "resume source identity does not match the completed Encode marker"
                         ));
@@ -1387,9 +1403,24 @@ mod tests_resume_phase {
     use std::collections::HashSet;
 
     #[test]
+    fn a_config_without_a_clock_is_seconds_and_resumes_its_encode_marker() {
+        let source: GraphConfig =
+            serde_json::from_str(r#"{"dataset_name": "old", "tables": []}"#).unwrap();
+        assert_eq!(source.timestamp_unit, TimeUnit::Seconds);
+        let payload = serde_json::to_vec(&source).unwrap();
+        let mut marker = serde_json::to_value(&source).unwrap();
+        assert_eq!(marker["timestamp_unit"], "seconds");
+        marker.as_object_mut().unwrap().remove("timestamp_unit");
+        let marker = serde_json::to_vec(&marker).unwrap();
+        assert!(encode_marker_matches(&marker, &payload));
+        assert!(!encode_marker_matches(br#"{"dataset_name": "other", "tables": []}"#, &payload));
+    }
+
+    #[test]
     fn public_ingest_rejects_graduation_for_exact_graph_feature_stats() {
         let output = tempfile::tempdir().unwrap();
         let source = GraphConfig {
+            timestamp_unit: Default::default(),
             dataset_name: "graduation_rejected".to_owned(),
             tables: Vec::new(),
             rowpack: None,
@@ -1830,6 +1861,7 @@ mod tests_repopulate_helpers {
 
     fn graph_config(tables: Vec<TableSpec>) -> GraphConfig {
         GraphConfig {
+            timestamp_unit: Default::default(),
             dataset_name: "test_dataset".to_string(),
             tables,
             rowpack: None,
@@ -1907,6 +1939,7 @@ mod tests_repopulate_helpers {
             text_sample_stats: HashMap::new(),
             parent_index_path: None,
             resolve_columns: Vec::new(),
+            cutoff_col_stats: None,
         }
     }
 
@@ -2726,6 +2759,7 @@ struct IngestContext {
     /// reference value(s) to graph node-ids and writes them as rowpack columns
     /// (no FK edge). Empty (default) preserves the edge-materializing path.
     resolve_columns: Vec<crate::config::ResolveColumnSpec>,
+    cutoff_col_stats: Option<crate::cutoff_col_stats::CutoffColStatsRequest>,
 }
 
 const ENCODE_STATE_VERSION: u32 = 2;
@@ -6391,6 +6425,7 @@ pub(crate) enum TimestampEncodingKind {
     Int8,
     Int16,
     Int32,
+    Int64,
 }
 
 #[derive(Clone, Debug)]
@@ -6415,7 +6450,14 @@ struct WeightEncodingSpec {
 }
 
 /// Convert TimeSpec from config to internal encoding spec.
-fn time_spec_to_encoding(spec: &TimeSpec) -> TimestampEncodingSpec {
+fn time_spec_to_encoding(spec: &TimeSpec, clock: TimeUnit) -> TimestampEncodingSpec {
+    if crate::graph_config::keys_full_timestamp(clock) {
+        return TimestampEncodingSpec {
+            kind: TimestampEncodingKind::Int64,
+            anchor: 0,
+            step: 1,
+        };
+    }
     let kind = match spec.bitwidth {
         Some(8) => TimestampEncodingKind::Int8,
         Some(16) => TimestampEncodingKind::Int16,
@@ -6441,8 +6483,8 @@ fn time_spec_to_encoding(spec: &TimeSpec) -> TimestampEncodingSpec {
     };
     TimestampEncodingSpec {
         kind,
-        anchor: spec.anchor_time.unwrap_or(0),
-        step,
+        anchor: convert_floor(spec.anchor_time.unwrap_or(0), TimeUnit::Seconds, clock),
+        step: convert_trunc(step, TimeUnit::Seconds, clock).max(1),
     }
 }
 
@@ -6541,6 +6583,7 @@ fn timestamp_width_bits(kind: &TimestampEncodingKind) -> u8 {
         TimestampEncodingKind::Int8 => 8,
         TimestampEncodingKind::Int16 => 16,
         TimestampEncodingKind::Int32 => 32,
+        TimestampEncodingKind::Int64 => 64,
     }
 }
 
@@ -6554,10 +6597,13 @@ fn weight_width_bits(kind: &WeightEncodingKind) -> u8 {
     }
 }
 
-fn build_relation_sort_key_config(spec: &DirectionSpec) -> Option<RelationSortKeyConfig> {
+fn build_relation_sort_key_config(
+    spec: &DirectionSpec,
+    clock: TimeUnit,
+) -> Option<RelationSortKeyConfig> {
     let mut width_bits: u16 = 0;
     let timestamp = spec.time.as_ref().map(|ts| {
-        let encoding = time_spec_to_encoding(ts);
+        let encoding = time_spec_to_encoding(ts, clock);
         width_bits += timestamp_width_bits(&encoding.kind) as u16;
         SortKeyTimestampConfig {
             table: ts.table.clone(),
@@ -6599,6 +6645,7 @@ fn build_sort_key_metadata(cfg: &RelationSortKeyConfig) -> EdgeSortKeyMetadata {
                         TimestampEncodingKind::Int8 => EdgeSortKeyTimestampKind::Int8,
                         TimestampEncodingKind::Int16 => EdgeSortKeyTimestampKind::Int16,
                         TimestampEncodingKind::Int32 => EdgeSortKeyTimestampKind::Int32,
+                        TimestampEncodingKind::Int64 => EdgeSortKeyTimestampKind::Int64,
                     },
                     anchor: ts.encoding.anchor,
                     step: ts.encoding.step,
@@ -6771,6 +6818,7 @@ pub(crate) fn encode_timestamp_value(value: Option<i64>, encoding: &TimestampEnc
             let clamped = delta.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
             ordered_signed_to_u64(clamped as i64, 32)
         }
+        TimestampEncodingKind::Int64 => ordered_signed_to_u64(delta, 64),
     }
 }
 
@@ -6938,6 +6986,7 @@ fn build_sort_key_batchers_for_edge_table(
 }
 
 const BASE_ENCODE_MEMORY_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
+const ENCODE_MAX_OVERSIZED_CHUNK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 fn encode_memory_budget_bytes(has_resident_parquet: bool, total_memory: Option<u64>) -> u64 {
     if !has_resident_parquet {
@@ -7170,11 +7219,11 @@ impl IngestContext {
                 let dst_sort = fkey
                     .forward
                     .as_ref()
-                    .and_then(build_relation_sort_key_config);
+                    .and_then(|spec| build_relation_sort_key_config(spec, source.timestamp_unit));
                 let src_sort = fkey
                     .reverse
                     .as_ref()
-                    .and_then(build_relation_sort_key_config);
+                    .and_then(|spec| build_relation_sort_key_config(spec, source.timestamp_unit));
 
                 let rev_name = format!("{base}_reverse");
                 // Forward relation: paired with reverse only when bidirectional.
@@ -7219,20 +7268,18 @@ impl IngestContext {
                     name: fwd_name.clone(),
                     src_table: edge.src_fk.ref_table.clone(),
                     dst_table: edge.dst_fk.ref_table.clone(),
-                    sort_key: edge
-                        .forward
-                        .as_ref()
-                        .and_then(build_relation_sort_key_config),
+                    sort_key: edge.forward.as_ref().and_then(|spec| {
+                        build_relation_sort_key_config(spec, source.timestamp_unit)
+                    }),
                     reverse_of: Some(rev_name.clone()),
                 };
                 let dst_rel = RelationDef {
                     name: rev_name,
                     src_table: edge.dst_fk.ref_table.clone(),
                     dst_table: edge.src_fk.ref_table.clone(),
-                    sort_key: edge
-                        .reverse
-                        .as_ref()
-                        .and_then(build_relation_sort_key_config),
+                    sort_key: edge.reverse.as_ref().and_then(|spec| {
+                        build_relation_sort_key_config(spec, source.timestamp_unit)
+                    }),
                     reverse_of: Some(fwd_name),
                 };
                 relation_defs.push(src_rel);
@@ -7298,6 +7345,7 @@ impl IngestContext {
             text_sample_stats: HashMap::new(),
             parent_index_path: options.parent_index_path,
             resolve_columns: options.resolve_columns,
+            cutoff_col_stats: options.cutoff_col_stats,
         })
     }
 
@@ -7325,7 +7373,6 @@ impl IngestContext {
         let temp_root = root.join(TEMP_DIR_NAME);
         fs::create_dir_all(&temp_root)?;
         let mut table_rows: HashMap<String, u64> = HashMap::new();
-        const ENCODE_MAX_OVERSIZED_CHUNK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
         let mut tables = self.source.tables.clone();
         let encode_memory_budget_bytes = encode_memory_budget_bytes(
             tables.iter().any(|table| {
@@ -7370,14 +7417,23 @@ impl IngestContext {
         let dest_key_errors = dest_key_pool.error();
         let trimmed_strings = std::sync::Arc::clone(&self.trimmed_strings);
         let col_stats_enabled = self.col_stats;
+        if let Some(request) = &self.cutoff_col_stats {
+            ensure!(
+                !col_stats_enabled,
+                "col_stats and cutoff_col_stats are exclusive"
+            );
+            request.validate(&tables)?;
+        }
         let cat_count_strategy = self.cat_count_strategy;
         let row_subsample = self.row_subsample;
+        let clock = self.source.timestamp_unit;
 
         let mut table_cat_counts: HashMap<
             String,
             std::sync::Arc<crate::col_stats::TableCategoryCounts>,
         > = HashMap::new();
         let mut table_col_stats: HashMap<String, crate::col_stats::FileColStats> = HashMap::new();
+        let mut cutoff_tables = Vec::new();
         // FK-free LP resolution mode: load the parent pkmap(s) ONCE here, before
         // the parallel encode pass, and share read-only via Arc so each encode
         // worker can resolve PK reference columns to graph node-ids inline (no
@@ -7494,6 +7550,7 @@ impl IngestContext {
                                 &dest_key_errors,
                                 &relation_defs,
                                 &fk_edge_targets,
+                                clock,
                             )?;
                             Ok((dropped, key_failures))
                         },
@@ -7523,7 +7580,7 @@ impl IngestContext {
                     let mut pk_max_key_len = 0usize;
                     let row_access_hints = build_row_access_hints(table);
                     let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
-                    let mut access = RowAccess::new(row_access_hints, stats);
+                    let mut access = RowAccess::new(row_access_hints, stats).with_clock(clock);
                     let mut prefix = Vec::new();
                     let mut prefix_rows = 0usize;
                     let mut prefix_bytes = 0usize;
@@ -7703,6 +7760,10 @@ impl IngestContext {
                         )
                         .chain(&mut stream);
                     let table_cat = table_cat_counts.get(&table.name).cloned();
+                    let mut cutoff_table = self
+                        .cutoff_col_stats
+                        .as_ref()
+                        .and_then(|request| request.table(table));
                     let encode_table: &TableSpec = table;
                     let results = run_encode_batch_workers(
                         replay,
@@ -7711,6 +7772,30 @@ impl IngestContext {
                         Arc::clone(&validation),
                         |batches| {
                             let mut key_failures = KeyFailureState::default();
+                            macro_rules! encode {
+                                ($observer:expr) => {
+                                    Self::build_temp_node_batches(
+                                        encode_table,
+                                        batches,
+                                        &relationships,
+                                        &relation_defs,
+                                        num_shards,
+                                        &node_encoder,
+                                        &trimmed_strings,
+                                        &mut key_failures,
+                                        &node_senders,
+                                        &node_errors,
+                                        &dest_key_senders,
+                                        &dest_key_errors,
+                                        &fk_edge_targets,
+                                        &resolve_columns,
+                                        ref_resolver.as_deref(),
+                                        &sidecars,
+                                        $observer,
+                                        clock,
+                                    )?
+                                };
+                            }
                             if col_stats_enabled {
                                 let mut observer = if let Some(categories) = &table_cat {
                                     crate::col_stats::FileColStats::new_with_categories(
@@ -7720,55 +7805,26 @@ impl IngestContext {
                                 } else {
                                     crate::col_stats::FileColStats::new(&encode_table.columns)
                                 };
-                                let node = Self::build_temp_node_batches(
-                                    encode_table,
-                                    batches,
-                                    &relationships,
-                                    &relation_defs,
-                                    num_shards,
-                                    &node_encoder,
-                                    &trimmed_strings,
-                                    &mut key_failures,
-                                    &node_senders,
-                                    &node_errors,
-                                    &dest_key_senders,
-                                    &dest_key_errors,
-                                    &fk_edge_targets,
-                                    &resolve_columns,
-                                    ref_resolver.as_deref(),
-                                    &sidecars,
-                                    &mut observer,
-                                )?;
+                                let node = encode!(&mut observer);
                                 observer.flush_categories();
-                                Ok((node, key_failures, Some(observer)))
+                                Ok((node, key_failures, Some(observer), None))
+                            } else if let Some(cutoff_table) = &cutoff_table {
+                                let mut observer = cutoff_table.sinks()?;
+                                let node = encode!(&mut observer);
+                                Ok((node, key_failures, None, Some(observer)))
                             } else {
-                                let node = Self::build_temp_node_batches(
-                                    encode_table,
-                                    batches,
-                                    &relationships,
-                                    &relation_defs,
-                                    num_shards,
-                                    &node_encoder,
-                                    &trimmed_strings,
-                                    &mut key_failures,
-                                    &node_senders,
-                                    &node_errors,
-                                    &dest_key_senders,
-                                    &dest_key_errors,
-                                    &fk_edge_targets,
-                                    &resolve_columns,
-                                    ref_resolver.as_deref(),
-                                    &sidecars,
-                                    &mut diskgraph_rowpack::NoOpObserver,
-                                )?;
-                                Ok((node, key_failures, None))
+                                let node = encode!(&mut diskgraph_rowpack::NoOpObserver);
+                                Ok((node, key_failures, None, None))
                             }
                         },
                     )?;
                     let mut total_rows = 0u64;
                     let mut node_data_dropped = 0u64;
                     let mut merged_stats: Option<crate::col_stats::FileColStats> = None;
-                    for (node, key_failures, file_stats) in results {
+                    for (node, key_failures, file_stats, sinks) in results {
+                        if let (Some(table), Some(sinks)) = (&mut cutoff_table, sinks) {
+                            table.add(sinks);
+                        }
                         total_rows = total_rows.saturating_add(node.total_rows);
                         node_data_dropped =
                             node_data_dropped.saturating_add(node.node_data_dropped);
@@ -7789,6 +7845,7 @@ impl IngestContext {
                     if let Some(stats) = merged_stats {
                         table_col_stats.insert(table.name.clone(), stats);
                     }
+                    cutoff_tables.extend(cutoff_table);
                 }
                 validation.finish()?;
                 let source_rows = validation.rows_seen();
@@ -7849,7 +7906,12 @@ impl IngestContext {
                 if let Some(stats) = table_col_stats.get(&table.name) {
                     let col_names: Vec<String> =
                         table.columns.iter().map(|c| c.name.clone()).collect();
-                    stats.warn_parse_failures(&col_names, &table.name);
+                    stats.warn_parse_failures(
+                        &col_names,
+                        &table.name,
+                        clock,
+                        table.create_time.as_deref(),
+                    );
                 }
             }
             let mut outputs = Vec::new();
@@ -7857,7 +7919,7 @@ impl IngestContext {
                 if let Some(stats) = table_col_stats.remove(&table.name) {
                     outputs.push(crate::col_stats::ColStatsTable {
                         name: table.name.clone(),
-                        stats,
+                        stats: stats.with_clock(clock),
                         column_names: table.columns.iter().map(|c| c.name.clone()).collect(),
                         ingested_types: table
                             .columns
@@ -7875,6 +7937,9 @@ impl IngestContext {
                 root = %root.display(),
                 "wrote col_stats.json (and kumo_col_stats/)"
             );
+        }
+        if let Some(request) = &self.cutoff_col_stats {
+            request.publish(require_local_output(&self.target)?, clock, cutoff_tables)?;
         }
         drop(node_senders);
         drop(edge_senders);
@@ -8383,6 +8448,7 @@ impl IngestContext {
         ref_resolver: Option<&crate::mapping::RefResolver>,
         sidecars: &StageSidecarColumns,
         observer: &mut O,
+        clock: TimeUnit,
     ) -> Result<TempNodeFileResult>
     where
         O: diskgraph_rowpack::ColumnValueObserver,
@@ -8436,7 +8502,7 @@ impl IngestContext {
         let mut total_rows = 0u64;
         let row_access_hints = build_row_access_hints(table);
         let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
-        let mut access = RowAccess::new(row_access_hints, stats);
+        let mut access = RowAccess::new(row_access_hints, stats).with_clock(clock);
         let mut key_bufs: Vec<Vec<u8>> = vec![Vec::new(); table.columns.len()];
         let mut f16_buf: Vec<f16> = Vec::new();
         let mut node_tags = Vec::new();
@@ -8852,8 +8918,9 @@ impl IngestContext {
         // (`group_ts_idx.is_some()`), so the non-grouping path is unchanged.
         let group_ts = match group_ts_idx {
             Some(idx) => Some(
+                // Buckets stay one second wide whatever the index clock.
                 access
-                    .get_timestamp(idx)
+                    .timestamp_in::<Seconds>(idx)
                     .with_context(|| {
                         format!(
                             "TT-NG ts-grouping: failed to decode TIMESTAMP for table `{}` row {}",
@@ -8879,6 +8946,10 @@ impl IngestContext {
             Some(idx) => Some(Self::sample_weight_from_access(access, idx)?),
             None => None,
         };
+        if observer.wants_create_time() {
+            let time = create_time_col_idx.and_then(|idx| access.get_timestamp(idx).ok().flatten());
+            observer.start_row(time);
+        }
         node_tags.clear();
         node_bools.clear();
         node_data.clear();
@@ -8903,6 +8974,7 @@ impl IngestContext {
                 if byte_idx < node_tags.len() {
                     let tag_val = (node_tags[byte_idx] >> bit_pos) & 0b11;
                     if tag_val == 0 {
+                        observer.finish_row(false);
                         *node_data_dropped = node_data_dropped.saturating_add(1);
                         *row_id = row_id.saturating_add(1);
                         return Ok(());
@@ -8913,6 +8985,7 @@ impl IngestContext {
                 .tag_bytes
                 .saturating_add(lens.bool_bytes)
                 .saturating_add(lens.data_bytes);
+            observer.finish_row(row_len <= MAX_NODE_DATA_LEN);
             if row_len > MAX_NODE_DATA_LEN {
                 *node_data_dropped = node_data_dropped.saturating_add(1);
                 batcher.push_empty_node(shard)?;
@@ -8973,6 +9046,7 @@ impl IngestContext {
         dest_key_errors: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
         relation_defs: &[RelationDef],
         fk_edge_targets: &HashMap<String, FkEdgeTarget>,
+        clock: TimeUnit,
     ) -> Result<u64>
     where
         I: IntoIterator<Item = Result<arrow_array::RecordBatch>>,
@@ -9030,7 +9104,7 @@ impl IngestContext {
 
         let row_access_hints = build_row_access_hints(table);
         let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
-        let mut access = RowAccess::new(row_access_hints, stats);
+        let mut access = RowAccess::new(row_access_hints, stats).with_clock(clock);
         macro_rules! process_edge_batch {
             ($batch:expr, $src_key_buf:expr, $dst_key_buf:expr, $forward_row:expr) => {
                 let timestamp_idx = create_time_info.as_ref().map(|(idx, _)| *idx);
@@ -10197,7 +10271,8 @@ impl IngestContext {
             }
         }
         let mut hash_writer = BufWriter::with_capacity(4 * 1024 * 1024, target.sink(&hash_path)?);
-        mphf.serialize(&mut hash_writer)?;
+        // SAFETY: callers pass constructed PtrHash values with valid fields.
+        unsafe { mphf.serialize(&mut hash_writer)? };
         hash_writer.flush()?;
         let hash_sink = hash_writer
             .into_inner()
@@ -11969,7 +12044,7 @@ impl IngestContext {
         }
 
         let index_metadata = DatasetMetadata {
-            timestamp_unit: diskgraph_core::time::TimeUnit::Seconds,
+            timestamp_unit: self.source.timestamp_unit,
             dataset_name: self.source.dataset_name.clone(),
             node_types,
             edge_relations,
@@ -12256,10 +12331,10 @@ fn compact_record_batch_prefix(batch: &RecordBatch, rows: usize) -> Result<Recor
         .map(|array| {
             let data = array.to_data();
             let mut compact = MutableArrayData::new(vec![&data], false, rows);
-            compact.extend(0, 0, rows);
-            make_array(compact.freeze())
+            compact.try_extend(0, 0, rows)?;
+            Ok(make_array(compact.freeze()))
         })
-        .collect();
+        .collect::<std::result::Result<Vec<_>, arrow_schema::ArrowError>>()?;
     Ok(RecordBatch::try_new(batch.schema(), arrays)?)
 }
 
@@ -12744,6 +12819,7 @@ fn text_stats_from_prefix(
     Ok(result)
 }
 
+#[cfg(unix)]
 fn profile_phase<T>(dir: &Path, name: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
     let guard = ProfilerGuard::new(500).context("start profiler")?;
     let result = f();
@@ -12754,6 +12830,71 @@ fn profile_phase<T>(dir: &Path, name: &str, f: impl FnOnce() -> Result<T>) -> Re
     let bytes = profile.encode_to_vec();
     file.write_all(&bytes).context("write pprof profile")?;
     result
+}
+
+fn validate_profile_dir(profile_dir: Option<&Path>) -> Result<()> {
+    ensure!(
+        !cfg!(windows) || profile_dir.is_none(),
+        "CPU profiling is not supported on Windows"
+    );
+    Ok(())
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn rejects_windows_profiling_before_output_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join("published");
+    fs::create_dir(&output).unwrap();
+    for name in ["_SUCCESS", "_MANIFEST.json", "sentinel"] {
+        fs::write(output.join(name), name).unwrap();
+    }
+    let profile = directory.path().join("profiles");
+    let options = || IngestOptions {
+        profile_dir: Some(profile.clone()),
+        ..IngestOptions::default()
+    };
+    let source = || GraphConfig {
+        dataset_name: "profiling_rejected".to_owned(),
+        timestamp_unit: Default::default(),
+        tables: Vec::new(),
+        rowpack: None,
+        num_shards: None,
+        edge_format: None,
+        coercion_mode: Default::default(),
+    };
+    for target in [&output, &directory.path().join("new-output")] {
+        let error = ingest_with_stats_from_source(
+            source(),
+            None,
+            target.to_str().unwrap(),
+            Dest::Local,
+            options(),
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("CPU profiling is not supported on Windows"));
+        // The profiling error must precede even reading the missing config.
+        let error = ingest_with_stats(
+            &directory.path().join("missing-config.json"),
+            target.to_str().unwrap(),
+            Dest::Local,
+            options(),
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("CPU profiling is not supported on Windows"));
+    }
+    for name in ["_SUCCESS", "_MANIFEST.json", "sentinel"] {
+        assert_eq!(fs::read_to_string(output.join(name)).unwrap(), name);
+    }
+    assert_eq!(fs::read_dir(&output).unwrap().count(), 3);
+    assert!(!directory.path().join("new-output").exists());
+    assert!(!profile.exists());
 }
 
 /// Path of the marker file that proves a phase ran to completion.
@@ -12823,7 +12964,7 @@ fn wipe_phase_outputs(root: &Path, phase: &str) -> Result<()> {
         // from offset zero, so no provisional context, encoded file, stats, or
         // later-phase artifact may survive.
         "encode" => {
-            for relative in [TEMP_DIR_NAME, "nodes", "kumo_col_stats"] {
+            for relative in [TEMP_DIR_NAME, "nodes", "kumo_col_stats", "col_stats"] {
                 let path = root.join(relative);
                 if path.exists() {
                     fs::remove_dir_all(&path)
@@ -13008,6 +13149,7 @@ fn run_phase_with_marker_payload(
     marker_payload: &[u8],
     f: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
+    validate_profile_dir(profile_dir)?;
     // Any phase rerun invalidates publication first. This also protects
     // explicit later-phase resumes from leaving a stale success marker while
     // index artifacts are being replaced.
@@ -13024,11 +13166,14 @@ fn run_phase_with_marker_payload(
     if wipe_on_entry {
         wipe_phase_outputs(root, name)?;
     }
+    #[cfg(unix)]
     if let Some(dir) = profile_dir {
         profile_phase(dir, name, f)?;
     } else {
         f()?;
     }
+    #[cfg(not(unix))]
+    f()?;
     write_phase_marker_payload(root, name, marker_payload)?;
     Ok(())
 }
@@ -13489,6 +13634,7 @@ fn load_sort_key_component_shards(
     Ok(shards)
 }
 
+#[cfg(unix)]
 fn advise_willneed(map: &Mmap) {
     let ret = unsafe {
         libc::madvise(
@@ -13502,6 +13648,7 @@ fn advise_willneed(map: &Mmap) {
     }
 }
 
+#[cfg(unix)]
 fn advise_sequential(map: &Mmap) {
     let ret = unsafe {
         libc::madvise(
@@ -13514,6 +13661,12 @@ fn advise_sequential(map: &Mmap) {
         let _ = std_io::Error::last_os_error();
     }
 }
+
+#[cfg(windows)]
+fn advise_willneed(_map: &Mmap) {}
+
+#[cfg(windows)]
+fn advise_sequential(_map: &Mmap) {}
 
 #[cfg(target_os = "linux")]
 fn advise_file_willneed(file: &fs::File) {
@@ -14856,6 +15009,7 @@ impl SortKeyComponentBatcher {
                 column_idx,
                 encoding,
             } => {
+                let clock = access.clock();
                 let ts_value = if let Some(secs) = access.get_timestamp(*column_idx).ok().flatten()
                 {
                     Some(secs)
@@ -14864,7 +15018,7 @@ impl SortKeyComponentBatcher {
                         .get_date(*column_idx)
                         .ok()
                         .flatten()
-                        .map(|days| i64::from(days) * 86_400)
+                        .map(|days| convert_trunc(i64::from(days), TimeUnit::Days, clock))
                 };
                 encode_timestamp_value(ts_value, encoding)
             }

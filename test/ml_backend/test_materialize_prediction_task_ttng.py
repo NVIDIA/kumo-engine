@@ -61,12 +61,15 @@ def _patch_feature_schema(monkeypatch):
     )
 
 
-def _make_job_input():
+def _make_job_input(custom_pred_table_source=None):
     return SimpleNamespace(
         id='bp-job',
         # Full-native predict derives the staging tt_id from the GENERATE job id;
         # None falls back to ``id`` (the single-job test case).
-        config=SimpleNamespace(generate_pred_table_job_id=None),
+        config=SimpleNamespace(
+            generate_pred_table_job_id=None,
+            custom_pred_table_source=custom_pred_table_source,
+        ),
         graph_data_compute_input=SimpleNamespace(graph_key='graph'),
         graph_version_info=SimpleNamespace(graph_data_version='v1'),
     )
@@ -490,6 +493,65 @@ def test_ttng_lp_temporal_threads_prediction_anchor(monkeypatch):
     assert spec.task_family == 'link_prediction'
     assert spec.is_temporal is True
     assert kwargs['predict_seed_time_ns'] == 9_000_000_000
+
+
+def _materialize_custom_lp(monkeypatch, tmp_path, anchors_ns):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    calls = []
+    _patch_common(monkeypatch, calls)
+    monkeypatch.setattr('kumo.pquery.utils.get_rhs_lp_table',
+                        lambda *a, **k: 'items')
+    table = tmp_path / 'train_tables' / '.pred_bp-job.staging' / 'tt.parquet'
+    table.mkdir(parents=True)
+    pq.write_table(
+        pa.table({'TIMESTAMP': pa.array(anchors_ns, pa.timestamp('ns'))}),
+        table / 'part-00000.parquet')
+    _materialize(
+        task=_lp_task(TaskType.TEMPORAL_LINK_PREDICTION),
+        pquery=_temporal_lp_pquery(anchor_ns=9_000_000_000),
+        prediction_config=_make_pred_config(),
+        job_input=_make_job_input(custom_pred_table_source=object()),
+        diskgraph_index_path=str(tmp_path),
+        train_table_name='train_tt',
+    )
+    return calls
+
+
+def test_ttng_lp_custom_table_is_anchored_at_its_rows(monkeypatch, tmp_path):
+    calls = _materialize_custom_lp(monkeypatch, tmp_path, [4_000, 4_000])
+
+    _, _, kwargs = calls[0]
+    assert kwargs['predict_seed_time_ns'] == 4_000
+
+
+def test_ttng_lp_custom_table_with_two_anchors_is_rejected(
+        monkeypatch, tmp_path):
+    from statedb.utils.errors import PredictionDataMaterializationError
+
+    with pytest.raises(PredictionDataMaterializationError,
+                       match='one table per anchor time') as error:
+        _materialize_custom_lp(monkeypatch, tmp_path, [4_000, 5_000])
+    assert error.value.non_retryable
+
+
+def test_ttng_lp_static_custom_table_seeds_zero(monkeypatch):
+    calls = []
+    _patch_common(monkeypatch, calls)
+    monkeypatch.setattr('kumo.pquery.utils.get_rhs_lp_table',
+                        lambda *a, **k: 'items')
+
+    _materialize(
+        task=_lp_task(TaskType.STATIC_LINK_PREDICTION),
+        pquery=_lp_pquery(),
+        prediction_config=_make_pred_config(),
+        job_input=_make_job_input(custom_pred_table_source=object()),
+        diskgraph_index_path='/dg',
+        train_table_name='train_tt',
+    )
+
+    _, _, kwargs = calls[0]
+    assert kwargs['predict_seed_time_ns'] == 0
 
 
 @pytest.mark.parametrize('fields', [

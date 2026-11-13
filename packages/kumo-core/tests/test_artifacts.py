@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,7 +16,11 @@ from kumo_core.artifacts import (
     FilesystemVitalArtifactPublisher,
     VitalArtifactPublicationPolicy,
     VitalArtifactSources,
+    add_bundle_file,
+    bundle_id_from_manifest,
+    bundle_task_type,
     resolve_vital_artifact_sources,
+    verify_model_bundle,
 )
 from kumo_core.config import NativeRuntimeConfig
 from kumo_core.manifest import RunManifest, RunPaths
@@ -64,6 +69,10 @@ def _vital_sources(
         "input_manifest": b'{"snapshot": "snapshot-1"}\n',
         "metrics": b'{"accuracy": 0.75}\n',
         "prediction_schema": b'{"prediction": "float"}\n',
+        "metric_history": (
+            b'{"trial_progress":{"a":{"metrics":{"0":{"train_metrics":'
+            b'{"train_loss":1}},"1":{"train_metrics":{"train_loss":0}}}},'
+            b'"b":{"metrics":{"0":{"validation_metrics":{"val_auroc":0.8}}}}}}\n'),
     }
     paths = {}
     for role, value in values.items():
@@ -105,6 +114,7 @@ def test_vital_policy_publishes_only_allowlisted_artifacts(
         "manifests/input.json",
         "metrics.json",
         "prediction-schema.json",
+        "metric-history.json",
     }
     published_paths = {
         str(path.relative_to(destination))
@@ -134,6 +144,17 @@ def test_vital_policy_publishes_only_allowlisted_artifacts(
     ]
 
 
+def test_verify_rejects_tampered_metric_history(tmp_path: Path) -> None:
+    sources, _ = _vital_sources(tmp_path)
+    destination = tmp_path / "published"
+    VitalArtifactPublicationPolicy().publish(sources, destination)
+
+    (destination / "metric-history.json").write_text("{}")
+
+    with pytest.raises(ValueError, match="metric-history.json"):
+        verify_model_bundle(destination)
+
+
 def test_filesystem_publisher_returns_exact_published_role_paths(
         tmp_path: Path) -> None:
     sources, _ = _vital_sources(tmp_path)
@@ -144,6 +165,22 @@ def test_filesystem_publisher_returns_exact_published_role_paths(
     assert set(paths) == set(VitalArtifactSources.roles())
     assert paths["selected_checkpoint"] == str(destination / "model/checkpoint")
     assert all(Path(path).is_file() for path in paths.values())
+
+
+def test_vital_policy_publishes_without_metric_history(tmp_path: Path) -> None:
+    sources, _ = _vital_sources(tmp_path)
+    sources = replace(sources, metric_history=None)
+    destination = tmp_path / "published"
+
+    publication = VitalArtifactPublicationPolicy().publish(sources, destination)
+
+    assert {artifact.role for artifact in publication.artifacts} == set(
+        sources.as_dict())
+    assert not (destination / "metric-history.json").exists()
+    verify_model_bundle(destination)
+    paths = FilesystemVitalArtifactPublisher(tmp_path / "second").publish(
+        sources)
+    assert "metric_history" not in paths
 
 
 def test_vital_policy_requires_every_allowlisted_file(tmp_path: Path) -> None:
@@ -186,6 +223,9 @@ def test_vital_source_resolution_is_core_owned(tmp_path: Path, refit) -> None:
     trainer = tmp_path / "trainer"
     automl.mkdir()
     trainer.mkdir()
+    history = automl / "auto_train_progress.json"
+    if refit:
+        history.write_text('{"trial_progress": {}}')
     (automl / "encoders.json").write_text("{}", encoding="utf-8")
     (trainer / "config.json").write_text("{}", encoding="utf-8")
     from kumo_core.io.json import load_json, save_json
@@ -199,6 +239,7 @@ def test_vital_source_resolution_is_core_owned(tmp_path: Path, refit) -> None:
 
     class SourceTrainer(SimpleNamespace):
         _set_fit_mode_to_use = Trainer._set_fit_mode_to_use
+        published_fit_mode = Trainer.published_fit_mode
 
         @property
         def best_ckpt(self):
@@ -219,7 +260,8 @@ def test_vital_source_resolution_is_core_owned(tmp_path: Path, refit) -> None:
 
     sources = resolve_vital_artifact_sources(
         training_input,
-        SimpleNamespace(log_dir=str(automl)),
+        SimpleNamespace(log_dir=str(automl),
+                        training_progress_file_path=str(history)),
         SourceTrainer(
             fit_mode=FitMode.fit,
             refit_cfg=SimpleNamespace(fitted=True, refitted_trainval=bool(refit),
@@ -235,4 +277,36 @@ def test_vital_source_resolution_is_core_owned(tmp_path: Path, refit) -> None:
     assert training_input.model_plan.model_architecture.channels != [16]
     assert sources.selected_checkpoint == checkpoints[selected_mode]
     assert sources.graph_manifest == bundle / "graph.json"
+    assert sources.metric_history == (history if refit else None)
+    assert ("metric_history" in sources.as_dict()) == bool(refit)
     assert json.loads(sources.metrics.read_text()) == {"test_accuracy": 0.8}
+
+
+def test_bundle_id_ignores_provenance_only(tmp_path: Path) -> None:
+    sources, _ = _vital_sources(tmp_path)
+    bundle = tmp_path / "bundle"
+    VitalArtifactPublicationPolicy().publish(sources, bundle)
+    bundle_id = verify_model_bundle(bundle)
+
+    for name, payload in (("_provenance.json", '{"a": 1}'),
+                          ("_provenance.json", '{"a": 2}')):
+        (bundle / name).write_text(payload)
+        add_bundle_file(bundle, "provenance", name)
+        assert verify_model_bundle(bundle) == bundle_id
+        assert bundle_id_from_manifest(bundle) == bundle_id
+    roles = [
+        entry["role"] for entry in json.loads(
+            (bundle / "publication-manifest.json").read_text())["artifacts"]
+    ]
+    assert roles.count("provenance") == 1
+
+    (bundle / "metrics.json").write_text('{"auc": 0}')
+    add_bundle_file(bundle, "metrics", "metrics.json")
+    assert verify_model_bundle(bundle) != bundle_id
+
+
+def test_bundle_task_type_reads_the_prediction_schema(tmp_path: Path) -> None:
+    schema = tmp_path / "prediction-schema.json"
+    schema.write_text('{"task_type": "regression"}')
+    assert bundle_task_type({"prediction_schema": str(schema)}).value == (
+        "regression")

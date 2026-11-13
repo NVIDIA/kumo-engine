@@ -82,6 +82,8 @@ training_table_generation:
   split: inferred
   train_start_offset: ???
   train_end_offset: ???
+  start_time: ???
+  end_time: ???
   timeframe_step: ???
 training_job:
   num_experiments: ???
@@ -1608,6 +1610,30 @@ def test_model_plan_serialization():
     assert "Link Prediction" in str(errors[0])
 
 
+@pytest.mark.parametrize('max_steps, expected', [
+    (None, (None, None)),
+    (MissingType.VALUE, (2000, 4000)),
+])
+def test_model_plan_eval_steps(max_steps, expected):
+    task = (TaskType.BINARY_CLASSIFICATION, QueryType.STATIC)
+    plan = ModelPlan()
+    plan.optimization.max_val_steps = max_steps
+    plan.optimization.max_test_steps = max_steps
+    plan = model_plan_from_yaml(model_plan_to_yaml(plan, *task))
+    plan = from_json(to_json(plan), ModelPlan)
+
+    errors, _ = plan.validate(
+        *task,
+        has_train_table_time_col=False,
+        run_mode=RunMode.NORMAL,
+        raise_on_error=False,
+    )
+
+    assert errors == []
+    assert (plan.optimization.max_val_steps,
+            plan.optimization.max_test_steps) == expected
+
+
 def test_model_plan_metric_assignment():
     plan = ModelPlan.from_default(
         task_type=TaskType.BINARY_CLASSIFICATION,
@@ -2319,6 +2345,48 @@ def test_model_plan_decoupled_splits(monkeypatch):
     assert (
         plan.training_table_generation.train_start_offset == MissingType.VALUE)
 
+    plan.training_table_generation.start_time = -10
+    plan.training_table_generation.end_time = -1
+    plan.validate(
+        task_type=TaskType.BINARY_CLASSIFICATION,
+        query_type=QueryType.TEMPORAL,
+        has_train_table_time_col=True,
+        run_mode=RunMode.FAST,
+    )
+    plan.training_table_generation.end_time = -20
+    with pytest.raises(ValueError, match="start_time must be smaller"):
+        plan.validate(
+            task_type=TaskType.BINARY_CLASSIFICATION,
+            query_type=QueryType.TEMPORAL,
+            has_train_table_time_col=True,
+            run_mode=RunMode.FAST,
+        )
+    plan.training_table_generation.end_time = '2024-02-01'
+    with pytest.raises(ValueError, match="both be offsets"):
+        plan.validate(
+            task_type=TaskType.BINARY_CLASSIFICATION,
+            query_type=QueryType.TEMPORAL,
+            has_train_table_time_col=True,
+            run_mode=RunMode.FAST,
+        )
+    plan.training_table_generation.start_time = InferredType.VALUE
+    plan.training_table_generation.end_time = InferredType.VALUE
+
+    link_plan = ModelPlan.from_default(
+        task_type=TaskType.TEMPORAL_LINK_PREDICTION,
+        query_type=QueryType.TEMPORAL,
+        has_train_table_time_col=True,
+        run_mode=RunMode.FAST,
+    )
+    link_plan.training_table_generation.start_time = -10
+    link_plan.training_table_generation.end_time = -1
+    link_plan.validate(
+        task_type=TaskType.TEMPORAL_LINK_PREDICTION,
+        query_type=QueryType.TEMPORAL,
+        has_train_table_time_col=True,
+        run_mode=RunMode.FAST,
+    )
+
     # Verify validation fails if train_start_offset is set
     plan.training_table_generation.train_start_offset = 10
     with pytest.raises(ValueError, match="field is not supported"):
@@ -2344,18 +2412,31 @@ def test_model_plan_decoupled_splits(monkeypatch):
         plan.training_table_generation.train_start_offset == InferredType.VALUE)
     assert plan.training_table_generation.start_time == MissingType.VALUE
 
-    # Verify validation names the supported relative-bound alternative.
-    plan.training_table_generation.start_time = "2024-01-01"
-    plan.training_table_generation.end_time = "2024-02-01"
-    with pytest.raises(ValueError) as error:
+    plan.training_table_generation.start_time = -10
+    with pytest.raises(ValueError, match="Integer 'start_time' bounds"):
         plan.validate(
             task_type=TaskType.BINARY_CLASSIFICATION,
             query_type=QueryType.TEMPORAL,
             has_train_table_time_col=True,
             run_mode=RunMode.FAST,
         )
-    assert str(error.value).count(
-        "Use 'train_start_offset' and 'train_end_offset' instead.") == 2
+    with pytest.raises(ValueError, match="Integer 'start_time' bounds"):
+        link_plan.validate(
+            task_type=TaskType.TEMPORAL_LINK_PREDICTION,
+            query_type=QueryType.TEMPORAL,
+            has_train_table_time_col=True,
+            run_mode=RunMode.FAST,
+        )
+
+    # Absolute bounds are supported alongside inferred legacy defaults.
+    plan.training_table_generation.start_time = "2024-01-01"
+    plan.training_table_generation.end_time = "2024-02-01"
+    plan.validate(
+        task_type=TaskType.BINARY_CLASSIFICATION,
+        query_type=QueryType.TEMPORAL,
+        has_train_table_time_col=True,
+        run_mode=RunMode.FAST,
+    )
 
     # Static queries cannot use either absolute or relative bounds.
     static_plan = ModelPlan.from_default(

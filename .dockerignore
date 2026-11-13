@@ -17,6 +17,7 @@ build/
 ui/
 
 # Workspace members the backend images deliberately don't ship
+packages/experimental/
 packages/kumo-engine/
 tools/glove-6b-50d/
 

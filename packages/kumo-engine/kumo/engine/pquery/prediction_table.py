@@ -3,14 +3,17 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""Materialized prediction tables and their shared compile path."""
 
+import re
+import warnings
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
 
 from kumo_core.model_plan import \
     TrainingTableGenerationPlan as CoreGenerationPlan
 from kumo_core.pquery import (
+    TaskPlanPurpose,
     ValidatedNativeQuery,
     build_native_pquery_task_plan,
     latest_temporal_timestamp,
@@ -68,8 +71,16 @@ class PredictionTable:
     required_stages: Tuple[str, ...]
     #: Forecast compiler options resolved when this table was generated.
     compiler_options: Optional[Mapping[str, Any]] = None
-    #: Effective temporal step used by the fitted forecast task.
-    forecast_timeframe_step: Optional[int] = None
+    source: Literal['pql', 'custom'] = 'pql'
+    skipped_rows: int = 0
+    skipped_sample: Tuple[Any, ...] = ()
+    skip_reason: Optional[str] = None
+    skipped_dir: Optional[Path] = None
+
+    @property
+    def requested_rows(self) -> int:
+        r"""Rows asked for: the scored rows plus the skipped ones."""
+        return self.row_count + self.skipped_rows
 
     @classmethod
     def from_source_table(
@@ -104,7 +115,8 @@ class PredictionTable:
         pq._require_matching_snapshot(snapshot)
         run_id = new_run_id()
         run_dir = prediction_table_scratch_dir(run_id)
-        rows_path = stage_source_table(source_table, run_dir / "source-table")
+        rows_path, _ = stage_source_table(source_table,
+                                          run_dir / "source-table")
         request, _ = _build_prediction_table_request(
             snapshot,
             pq._parsed,
@@ -124,6 +136,8 @@ class PredictionTable:
             request,
             PreparedCustomPredictionTable(str(rows_path)),
         )
+        skipped = skipped_entities(generated.row_failures, rows_path,
+                                   scored=generated.row_count)
         return cls(
             query=pq.query,
             table_path=Path(generated.table_path),
@@ -133,7 +147,10 @@ class PredictionTable:
             timestamps=(),
             required_stages=request.task_dataset.required_stages,
             compiler_options=request.compiler_options,
-            forecast_timeframe_step=request.forecast_timeframe_step,
+            source='custom',
+            skipped_dir=(Path(generated.skipped_rows_dir)
+                         if skipped and generated.skipped_rows_dir else None),
+            **skipped,
         )
 
 
@@ -169,10 +186,8 @@ def _build_prediction_table_request(
     if generation_plan is not None:
         from kumo_core.io.json import from_json_dict
         from kumoapi.json_serde import to_json_dict
-        options = from_json_dict(
-            to_json_dict(generation_plan),
-            CoreGenerationPlan,
-        )
+
+        options = from_json_dict(to_json_dict(generation_plan), CoreGenerationPlan)
 
     parsed = resolve_query_forecast(parsed, native_graph, options)
     with no_encoder_inference_warnings():
@@ -187,15 +202,8 @@ def _build_prediction_table_request(
             graph_index_id=snapshot.id,
             timestamps=timestamps,
             supplied_rows=supplied_rows,
+            purpose=TaskPlanPurpose.PREDICTION,
         )
-    forecast_timeframe_step = None
-    if parsed.task_type == 'forecasting' and generation_plan is not None:
-        from kumo_core.model_plan import inferred_or_missing_type_to_none
-        value = inferred_or_missing_type_to_none(options.timeframe_step)
-        offset = parsed.query.get_combined_date_offset_range()
-        forecast_timeframe_step = int(
-            value if value is not None else int(offset.end) -
-            int(offset.start or 0))
     return PredictionTableRequest(
         query=parsed,
         graph=native_graph,
@@ -204,7 +212,6 @@ def _build_prediction_table_request(
         tt_id=f'pred_{run_id}',
         task_dataset=plan.task_dataset,
         compiler_options=plan.train_table.compiler_options,
-        forecast_timeframe_step=forecast_timeframe_step,
     ), plan.graph_index_id
 
 
@@ -234,3 +241,74 @@ def _compile_prediction_table(
     )
     generated = generate_prediction_table(request)
     return request, generated, graph_index_id
+
+
+SKIPPED_SAMPLE = 20
+_FOUND = ', found while building the prediction table'
+_SKIP_REASONS = {
+    'unknown_entity': 'not in snapshot',
+    'non_canonical_entity': 'not a canonical node in the snapshot',
+    'null_entity': 'null entity id',
+    'null_timestamp': 'null anchor time',
+}
+
+
+def skipped_entities(report: Optional[Mapping[str, Any]], rows_path: Path,
+                     scored: int) -> Dict[str, Any]:
+    r"""Skipped-row fields; warns, or raises when no row can be scored."""
+    skipped = int((report or {}).get('skipped_rows') or 0)
+    if not skipped:
+        return {}
+    conditions = report.get('by_condition') or []
+    reasons = [(_SKIP_REASONS.get(entry.get('condition'),
+                                  str(entry.get('condition')).replace(
+                                      '_', ' ')), int(entry.get('count') or 0))
+               for entry in conditions]
+    reason = (reasons[0][0] if len(reasons) == 1 else '; '.join(
+        f'{name} ({count:,})' for name, count in reasons)) or None
+    requested = int(report.get('rows_read') or 0)
+    sample = _sample_ids(conditions, rows_path)
+    if not scored:
+        ids = [str(value) for value in sample if value is not None]
+        shown = ', '.join(ids[:3]) + (', …' if len(ids) > 3 else '')
+        raise ValueError(
+            f'None of the {requested:,} requested entities can be scored'
+            f'{_FOUND}: {reason}' + (f' (sample: {shown})' if ids else ''))
+    warnings.warn(
+        f'Prediction skipped {skipped:,} of {requested:,} requested entities '
+        f'({skipped / requested if requested else 1:.1%}){_FOUND}: '
+        f'{reason}',
+        UserWarning, stacklevel=3)
+    return {
+        'skipped_rows': skipped,
+        'skipped_sample': sample,
+        'skip_reason': reason,
+    }
+
+
+def _sample_ids(conditions: Any, rows_path: Path) -> Tuple[Any, ...]:
+    import pyarrow.parquet as pq
+
+    ids: List[Any] = []
+    try:
+        for entry in conditions:
+            for location in entry.get('samples') or ():
+                if len(ids) >= SKIPPED_SAMPLE:
+                    return tuple(ids)
+                found = re.fullmatch(r'(.+) row group (\d+) row (\d+)',
+                                     str(location))
+                if found is None:
+                    continue
+                part = Path(rows_path)
+                part = part / found.group(1) if part.is_dir() else part
+                reader = pq.ParquetFile(part)
+                group, row = int(found.group(2)), int(found.group(3))
+                while row >= reader.metadata.row_group(group).num_rows:
+                    row -= reader.metadata.row_group(group).num_rows
+                    group += 1
+                column = reader.read_row_group(
+                    group, columns=[entry['column']]).column(0)
+                ids.append(column[row].as_py())
+    except Exception:
+        pass
+    return tuple(ids)

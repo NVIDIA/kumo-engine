@@ -4,20 +4,19 @@
 import copy
 from typing import Literal
 
+import kumo_core.modeling.embedding as embedding_module
 import pandas as pd
 import pytest
 import torch
-from kumoapi.encoder import Index, Numerical
-from kumoapi.model_plan import RHSEmbeddingMode
-from torch_frame.data import MultiEmbeddingTensor, MultiNestedTensor
-from torch_geometric.testing import onlyCUDA, withCUDA
-
-import kumo_core.modeling.embedding as embedding_module
-from kumo_core.features.stores.in_memory_feature import InMemoryFeatureStore
 from kumo_core.encoders.tensor_mapper import NumericalTensorMapper, TensorMapper
-from kumo_core.encoders.selection import compute_missing_stats_
 from kumo_core.modeling.embedding import Embedding
 from kumo_core.modeling.retrieval.rhs_embedding import RHSEmbedding
+from kumoapi.encoder import Encoder, Index, Numerical
+from kumoapi.model_plan import RHSEmbeddingMode
+from kumoapi.typing import ColStatType
+from tests.support.diskgraph_feature_store import make_diskgraph_feature_store
+from torch_frame.data import MultiEmbeddingTensor, MultiNestedTensor
+from torch_geometric.testing import onlyCUDA, withCUDA
 
 
 @withCUDA
@@ -117,18 +116,17 @@ def test_rhs_embedding(
         'A': [0.1, 0.2, 0.3, 0.4, 0.5],
         'B': [0, 1, 0, 1, 0],
     })
-    encoder_dict = {
-        'A': compute_missing_stats_(Numerical(), df['A']),
-        'B': compute_missing_stats_(Index(), df['B']),
+    encoder_dict: dict[str, Encoder] = {
+        "A": Numerical(_stats={ColStatType.MEAN: 0.3}),
+        "B": Index(_stats={ColStatType.CATEGORY_COUNTS: [[0, 3], [1, 2]]}),
     }
     mapper_dict = {
         col_name: TensorMapper.from_encoder(encoder)
         for col_name, encoder in encoder_dict.items()
     }
-    feature_store = InMemoryFeatureStore(
+    feature_store = make_diskgraph_feature_store(
         df_dict={'RHS': df},
         table_schema_dict={'RHS': dict(mapper_dict=mapper_dict)},
-        train_table_schema=None,
     )
 
     model = RHSEmbedding(
@@ -302,10 +300,9 @@ def test_sorted_rhs_filter_uses_bounded_implicit_mapping(
 @withCUDA
 @pytest.mark.parametrize('emb_mode', list(RHSEmbeddingMode))
 def test_no_features(emb_mode: RHSEmbeddingMode, device: torch.device) -> None:
-    feature_store = InMemoryFeatureStore(
+    feature_store = make_diskgraph_feature_store(
         df_dict={'RHS': pd.DataFrame({'INDEX': range(5)})},
         table_schema_dict={'RHS': dict(mapper_dict={})},
-        train_table_schema=None,
     )
 
     model = RHSEmbedding(
@@ -336,10 +333,9 @@ def test_no_features(emb_mode: RHSEmbeddingMode, device: torch.device) -> None:
 @pytest.mark.parametrize('distance_measure', ['dot_product', 'cosine'])
 def test_distance_measure(distance_measure: Literal['dot_product', 'cosine'],
                           device: torch.device) -> None:
-    feature_store = InMemoryFeatureStore(
+    feature_store = make_diskgraph_feature_store(
         df_dict={'RHS': pd.DataFrame({'INDEX': range(5)})},
         table_schema_dict={'RHS': dict(mapper_dict={})},
-        train_table_schema=None,
     )
 
     model = RHSEmbedding(
@@ -420,13 +416,12 @@ def test_cache_device_dtype() -> None:
 @pytest.mark.parametrize('filter', [False, True])
 def test_fusion_on_the_fly(filter: bool, device: torch.device) -> None:
     df = pd.DataFrame({'A': [0.1, 0.2, 0.3, 0.4, 0.5]})
-    encoder_dict = {'A': compute_missing_stats_(Numerical(), df['A'])}
+    encoder_dict: dict[str, Encoder] = {"A": Numerical(_stats={ColStatType.MEAN: 0.3})}
     mapper_dict = {'A': NumericalTensorMapper()}
 
-    feature_store = InMemoryFeatureStore(
+    feature_store = make_diskgraph_feature_store(
         df_dict={'RHS': df},
         table_schema_dict={'RHS': dict(mapper_dict=mapper_dict)},
-        train_table_schema=None,
     )
 
     model = RHSEmbedding(

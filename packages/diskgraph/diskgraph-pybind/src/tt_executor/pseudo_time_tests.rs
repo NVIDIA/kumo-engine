@@ -146,6 +146,7 @@ fn build_index_order(root: &Path, reverse: bool) -> (PathBuf, Vec<(i64, i64)>) {
         ..Default::default()
     };
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "static_lp".to_string(),
         tables: vec![
             table(
@@ -414,6 +415,7 @@ fn custom_weighted_artifacts(
             Some(&spec_json),
             "abort",
             false,
+            None,
             None,
         )?;
         let staging: String = out
