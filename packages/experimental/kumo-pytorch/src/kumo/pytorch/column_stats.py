@@ -117,27 +117,27 @@ LengthColumn = tuple[str, str | None]
 
 
 def token_length_columns(contract: Any, plan: Any) -> dict[str, tuple[LengthColumn, ...]]:
-    """Each event table's stored columns that the inputs of a fitted plan read."""
+    """Each event table's stored columns that the ``Batching.length_input`` input reads."""
 
+    name = contract.batch.batching.length_input
+    if name is None or not isinstance(contract.batch.inputs[name].representation, Fields):
+        return {}
     columns: dict[str, dict[str, str | None]] = {}
-    for name, value in sorted(contract.batch.inputs.items()):
-        if not isinstance(value.representation, Fields):
-            continue
-        for use in value.representation.fields:
-            encoder = plan.output(name=name).field(name=use.field).encoder
-            tokenizer = encoder.tokenizer_json if isinstance(encoder.config, Text) else None
-            for variant, _, _ in resolved_fields(contract, name, use.field):
-                stored = _stored_column(contract.sample, contract.schema, variant)
-                if stored is None or variant[0] not in {"events", "current_events"}:
-                    continue
-                table, column = stored
-                known = columns.setdefault(table, {}).get(column)
-                if tokenizer is not None and known is not None and known != tokenizer:
-                    raise ValueError(
-                        f"{table}.{column} is read by Text encoders with different tokenizers, "
-                        "so its token length is ambiguous"
-                    )
-                columns[table][column] = tokenizer or known
+    for use in contract.batch.inputs[name].representation.fields:
+        encoder = plan.output(name=name).field(name=use.field).encoder
+        tokenizer = encoder.tokenizer_json if isinstance(encoder.config, Text) else None
+        for variant, _, _ in resolved_fields(contract, name, use.field):
+            stored = _stored_column(contract.sample, contract.schema, variant)
+            if stored is None or variant[0] not in {"events", "current_events"}:
+                continue
+            table, column = stored
+            known = columns.setdefault(table, {}).get(column)
+            if tokenizer is not None and known is not None and known != tokenizer:
+                raise ValueError(
+                    f"{table}.{column} is read by Text encoders with different tokenizers, "
+                    "so its token length is ambiguous"
+                )
+            columns[table][column] = tokenizer or known
     return {table: tuple(sorted(read.items())) for table, read in sorted(columns.items())}
 
 
@@ -301,8 +301,12 @@ def _stored_column(sample: Any, schema: Any, identity: tuple[str, ...]) -> Colum
 
 
 def cutoff_nanos(value: Any) -> int | None:
+    """Epoch nanoseconds of a cutoff: an ISO 8601 string, a date or datetime, or epoch seconds."""
+
     if value is None:
         return None
+    if type(value) is int:
+        return value * 10**9
     if isinstance(value, str):
         try:
             value = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -310,7 +314,9 @@ def cutoff_nanos(value: Any) -> int | None:
             raise ValueError(f"encoder_cutoff {value!r} is not an ISO 8601 timestamp") from None
     if isinstance(value, dt.date):
         return _since_epoch(value) // dt.timedelta(microseconds=1) * 1_000
-    raise TypeError(f"encoder_cutoff must be a timestamp string or datetime, not {value!r}")
+    raise TypeError(
+        f"encoder_cutoff must be a timestamp string, datetime or epoch seconds, not {value!r}"
+    )
 
 
 def fit_from_stats(identity: str, encoder: TableColumnEncoder, stats: ColumnStats) -> FittedEncoder:
@@ -380,8 +386,6 @@ def _category(dtype: DType, raw: Any, unit: str) -> Any:
     value = int(raw)
     if dtype.name == "bool":
         return bool(value)
-    if dtype.name == "uint64" and value < 0:
-        return value + 2**64
     if dtype.name == "date32":
         return dt.date(1970, 1, 1) + dt.timedelta(days=value)
     if dtype.name == "timestamp":

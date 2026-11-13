@@ -251,7 +251,7 @@ Plan.materialize(
     fit_split: str | Collection[str | None] | AllAnchors | None = None,
     fitted: FittedState | None = None,
     inference: bool | None = None,
-    encoder_cutoff: str | datetime | None = LATEST_ANCHOR,
+    encoder_cutoff: str | int | datetime | date | None = LATEST_ANCHOR,
 ) -> Task
 ```
 
@@ -281,7 +281,9 @@ It defaults to the plan's mode; an inference plan refuses `inference=False`.
 
 Encoders over stored table columns fit on every table row created at or
 before `encoder_cutoff`, whatever `fit_split` selects: by default the
-latest anchor time `fit_split` selects; `None` reads every row.
+latest anchor time `fit_split` selects; `None` reads every row. The
+cutoff is an ISO 8601 string or a time as an anchor gives it: epoch
+seconds, a date or a datetime.
 
 Reused state applies unchanged: nothing refits, grows or renumbers.
 Complete state requires an equal `DataLoaderSpec.fingerprint`;

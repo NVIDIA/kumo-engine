@@ -298,7 +298,7 @@ class DiskGraphEngine(
     num_threads: int | None = None,
     num_shards: int = 1,
     ingest: Literal['if_missing', 'never'] = 'if_missing',
-    encoder_cutoffs: Sequence[str | datetime | None] = (),
+    encoder_cutoffs: Sequence[str | int | datetime | date | None] = (),
 )
 ```
 

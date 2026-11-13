@@ -354,6 +354,20 @@ def test_a_value_supplied_for_a_generated_target_is_refused_while_fitting(tmp_pa
             plan.materialize([request], fit_split="train")
 
 
+def test_the_default_cutoff_is_the_latest_anchor_at_full_precision(tmp_path):
+    dataset, engine = _setup("in_memory", tmp_path)
+    at = LATEST + timedelta(microseconds=500_000)
+    requests = [replace(request, as_of_time=at) for request in _requests()]
+    with api.prepare(_contract(), dataset, engine) as plan:
+        with plan.materialize(requests, fit_split="train") as task:
+            latest = task.fitted_state
+        with plan.materialize(requests, fit_split="train", encoder_cutoff=at) as task:
+            explicit = task.fitted_state
+    cutoff = int(LATEST.timestamp()) * 10**9 + 500_000_000
+    assert _statistics(latest)["cutoff"] == _statistics(explicit)["cutoff"] == cutoff
+    assert latest == explicit
+
+
 def test_a_cutoff_after_the_latest_anchor_warns(tmp_path, caplog):
     dataset, engine = _setup("in_memory", tmp_path)
     for cutoff in ("2025-01-01", None):

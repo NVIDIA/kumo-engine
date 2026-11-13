@@ -254,6 +254,7 @@ impl CutoffTable {
 /// One observed value; strings and bytes live in the row's buffers.
 enum Seen {
     I64(i64),
+    U64(u64),
     F64(f64),
     Str(Range<usize>),
     Bytes(Range<usize>),
@@ -293,6 +294,7 @@ impl Row {
             let col = *col;
             match seen {
                 Seen::I64(value) => stats.observe_i64(col, *value),
+                Seen::U64(value) => stats.observe_u64(col, *value),
                 Seen::F64(value) => stats.observe_f64(col, *value),
                 Seen::Str(range) => stats.observe_string(col, &self.text[range.clone()]),
                 Seen::Bytes(range) => stats.observe_bytes(col, &self.bytes[range.clone()]),
@@ -323,6 +325,9 @@ impl CutoffSinks {
 impl ColumnValueObserver for CutoffSinks {
     fn observe_i64(&mut self, col_idx: usize, value: i64) {
         self.push(col_idx, |_| Seen::I64(value));
+    }
+    fn observe_u64(&mut self, col_idx: usize, value: u64) {
+        self.push(col_idx, |_| Seen::U64(value));
     }
     fn observe_f64(&mut self, col_idx: usize, value: f64) {
         self.push(col_idx, |_| Seen::F64(value));

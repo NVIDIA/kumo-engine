@@ -26,7 +26,7 @@ REQUEST = {
     "columns": {
         "users": {"tier": ["categorical"], "age": ["categorical", "numerical"],
                   "raw": ["categorical"], "seen": ["categorical"], "born": ["categorical"],
-                  "price": ["categorical", "numerical"], "big": ["categorical"]},
+                  "price": ["categorical", "numerical"], "big": ["categorical", "numerical"]},
         "items": {"name": ["categorical"]},
     },
     "quantiles": QUANTILES,
@@ -48,7 +48,7 @@ def data(tmp_path_factory) -> pathlib.Path:
         "seen": pa.array([(T0 + i % 13) * 10**6 for i in range(n)], pa.timestamp("us")),
         "born": pa.array([19_000 + i % 11 for i in range(n)], pa.date32()),
         "price": pa.array([decimal.Decimal(i % 1000) / 100 for i in range(n)], pa.decimal128(10, 2)),
-        "big": pa.array([(5, 2**63, 2**64 - 1)[i % 3] for i in range(n)], pa.uint64()),
+        "big": pa.array([(0, 5, 2**63, 2**64 - 1)[i % 4] for i in range(n)], pa.uint64()),
     }), root / "users.parquet", row_group_size=300)
     pq.write_table(pa.table({
         "item_id": pa.array(range(500), pa.int64()),
@@ -119,6 +119,15 @@ def test_ingest_counts_the_rows_created_at_or_before_each_cutoff(data, ingested)
         assert stats["users"]["price"]["mean"] == pytest.approx(prices.mean(), rel=1e-12)
         decimals = collections.Counter(str(users["price"][i]) for i in rows)
         assert dict(map(tuple, stats["users"]["price"]["category_counts"])) == decimals
+        bigs = [users["big"][i] for i in rows]
+        big = stats["users"]["big"]
+        assert {int(k): v for k, v in big["category_counts"]} == collections.Counter(bigs)
+        values = np.array(bigs, dtype=float)
+        assert big["count"] == len(bigs)
+        assert big["mean"] == pytest.approx(values.mean(), rel=1e-12)
+        assert big["std"] == pytest.approx(values.std(ddof=1), rel=1e-12)
+        q10, q50, q90 = big["quantiles"]
+        assert q10 == 0 and 5 < q50 < 2**63 and q90 == pytest.approx(2**64, rel=1e-12)
         # A table without a create time counts every row at every cutoff.
         assert sum(v for _, v in stats["items"]["name"]["category_counts"]) == 500
 
@@ -132,8 +141,6 @@ def test_recompute_from_the_index_matches_ingest(data, ingested, tmp_path):
     # Statistics added to a column join its entry; its other keys and the other columns stay.
     diskgraph.cutoff_col_stats(str(index), json.dumps({**REQUEST, "columns": {"users": {"age": ["numerical"]}}}))
     assert _stats(str(index)) == _stats(ingested)
-    counts = _stats(ingested)["every-row"]["users"]["big"]["category_counts"]
-    assert {int(key) for key, _ in counts} == {5, -(2**63), -1}
 
 
 def test_rejects_unknown_columns_and_exclusive_options(data, ingested, tmp_path):
@@ -215,8 +222,15 @@ def _counts_at(tmp_path, unit: str, times_ns: list[int], cutoff_ns: int) -> dict
             "source": {"type": "parquet", "paths": [str(tmp_path / "events.parquet")]}}]}),
         output_dir=str(tmp_path / "index"), col_stats=False, cutoff_col_stats=json.dumps(request),
     )
-    stats = json.loads((tmp_path / "index" / "col_stats" / "cut" / "events.col_stats.json").read_text())
-    return dict(map(tuple, stats["events"]["tier"]["category_counts"]))
+    def counts():
+        stats = json.loads((tmp_path / "index" / "col_stats" / "cut" / "events.col_stats.json").read_text())
+        return dict(map(tuple, stats["events"]["tier"]["category_counts"]))
+
+    ingested = counts()
+    shutil.rmtree(tmp_path / "index" / "col_stats")
+    diskgraph.cutoff_col_stats(str(tmp_path / "index"), json.dumps(request))
+    assert counts() == ingested
+    return ingested
 
 
 @pytest.mark.parametrize("unit, tick", [("milliseconds", 10**6), ("days", 86_400 * 10**9)])
