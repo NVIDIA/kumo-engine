@@ -70,8 +70,8 @@ commits didn't need the loop.
 
 Every push moves the head past `Reviewed at:`. Decide each time:
 
-- **A tiny follow-up to a reviewed commit** (a one-line fix, a typo, a comment,
-  a test name): no new loop. Update `Reviewed at:` to the new head and add a
+- **A tiny follow-up to a reviewed commit that doesn't change behavior** (a
+  typo, a comment, formatting, a test name): no new loop. Update `Reviewed at:` to the new head and add a
   line saying what changed.
 - **Anything that changes behavior, adds code, or touches a new area:** run the
   loop again, then update the notes and `Reviewed at:`.

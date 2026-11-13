@@ -1,3 +1,4 @@
+/CODEOWNERS @Victsm @bberger62 @lambyqq
 /packages/experimental/kumo-pytorch/ @lambyqq @bberger62 @nittin-murthi @am-porter
 /packages/experimental/kumo-pytorch/conformance/ @bberger62 @lambyqq
 /packages/experimental/kumo-pytorch/tests/conformance/ @bberger62 @lambyqq

@@ -336,7 +336,10 @@ day. These catch two PRs that pass alone but fail together, a PR whose checks
 ran against an older `main`, and changes elsewhere that break kumo-pytorch. A
 failed run's failed jobs are retried once. If they still fail, the team
 channel gets one message when the workflow starts failing and one when it
-recovers. The author of the first failing commit fixes it; a commit still
+recovers. Each change is posted once, however often a run is retried, and a run
+that finishes after a later run is ignored. Nothing is posted until the
+repository secret `KUMO_PYTORCH_SLACK_WEBHOOK_URL` is configured; retries
+happen either way. The author of the first failing commit fixes it; a commit still
 failing after one working day is reverted. Nightly failures are
 triaged by the maintainer on point that week.
 
