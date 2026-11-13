@@ -337,12 +337,14 @@ pub fn token_lengths(
             )));
         }
         decoded.push(index);
-        tokenizers.push(
+        let tokenizer = tokenizer
+            .map(|json| Tokenizer::from_str(&json))
+            .transpose()
+            .map_err(|e| DiskgraphConfigError::new_err(format!("invalid tokenizer: {e}")))?;
+        tokenizers.push(tokenizer.map(|mut tokenizer| {
+            tokenizer.with_padding(None);
             tokenizer
-                .map(|json| Tokenizer::from_str(&json))
-                .transpose()
-                .map_err(|e| DiskgraphConfigError::new_err(format!("invalid tokenizer: {e}")))?,
-        );
+        }));
     }
     let mut chunks: Vec<_> = node_chunks(&stored.reader, TEXT_CHUNK_NODES)
         .map(|chunk| {
