@@ -2063,7 +2063,11 @@ class DiskGraphSource:
                     np.concatenate(owners[table]) if owners[table] else np.empty(0, dtype=np.int64)
                 ),
                 "features": {
-                    field: encoder.encode_arrow(feature_arrays[field])
+                    field: encoder.encode_arrow(
+                        self._typed_array(feature_arrays[field], self._tables[table].columns[field])
+                        if self._tables[table].columns[field].name == "timestamp"
+                        else feature_arrays[field]
+                    )
                     for field, encoder in encoders.get(table, {}).items()
                 },
             }

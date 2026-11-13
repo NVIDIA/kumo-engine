@@ -692,3 +692,76 @@ def test_integer_timestamp_labels_use_target_units(
             for output in ("inspectable", "model"):
                 batch = next(iter(task.batches(shuffle=False, output_format=output)))
                 assert batch.targets["label"]["values"].tolist() == [7, 9]
+
+
+@pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
+@pytest.mark.parametrize("native_anchors", [False, True])
+def test_graph_timestamp_fields_keep_declared_units(tmp_path, unit, native_anchors):
+    dtype = api.DType("timestamp", unit=unit, timezone="UTC")
+    clock = api.DType("timestamp", unit="ns", timezone="UTC")
+    users, events = tmp_path / "users.parquet", tmp_path / "events.parquet"
+    pq.write_table(pa.table({"id": [1], "clock": pa.array([0], type=clock.to_arrow())}), users)
+    pq.write_table(
+        pa.table({"id": [1, 2], "owner": [1, 1], "time": pa.array([-1, 1], type=dtype.to_arrow())}),
+        events,
+    )
+    schema = api.DataSchema(
+        (
+            api.TableSpec(
+                "users",
+                "id",
+                {"id": api.DType("int64"), "clock": clock},
+                time_column=api.NON_TEMPORAL,
+            ),
+            api.TableSpec(
+                "events",
+                "id",
+                {"id": api.DType("int64"), "owner": api.DType("int64"), "time": dtype},
+                time_column="time",
+            ),
+        ),
+        (api.RelationSpec("activity", "users", "id", "events", "owner"),),
+    )
+    sample = api.SampleSpec(
+        api.EntitySpec("users"),
+        neighborhoods={
+            "graph": api.NeighborhoodSpec((api.GraphLayer((api.GraphSample("activity", 10),)),))
+        },
+    )
+    contract = api.DataLoaderSpec(
+        schema,
+        sample,
+        api.BatchSpec(
+            {
+                "graph": api.Input(
+                    api.NeighborhoodSource("graph"),
+                    api.Graph(
+                        node_fields={
+                            "events": api.Fields(
+                                (api.Encode("time", api.Vocabulary(values=((-1, 7), (1, 9)))),)
+                            )
+                        }
+                    ),
+                    None,
+                )
+            }
+        ),
+    )
+    anchors = [api.SampleRequest("one", 1, 2)]
+    if native_anchors:
+        path = tmp_path / "anchors.parquet"
+        pq.write_table(pa.table({"entity": [1], "at": [2]}), path)
+        anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "at")
+    with api.prepare(
+        contract,
+        api.Dataset({"users": api.Parquet(str(users)), "events": api.Parquet(str(events))}),
+        api.DiskGraphEngine(index=tmp_path / "index", num_threads=1),
+    ) as plan:
+        with plan.materialize(anchors) as task:
+            batch = next(iter(task.batches(batch_size=1, output_format="model", shuffle=False)))
+            nodes = batch.inputs["graph"]["nodes"]["events"]
+            assert dict(
+                zip(
+                    nodes["ids"].tolist(), nodes["features"]["time"]["values"].tolist(), strict=True
+                )
+            ) == {1: 7, 2: 9}
