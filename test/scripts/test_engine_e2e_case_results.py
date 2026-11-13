@@ -14,9 +14,9 @@ ROOT = Path(__file__).resolve().parents[2]
 common = NS(**runpy.run_path(str(ROOT / "packages/kumo-engine/test/cases/common.py")))
 
 
-def compare(requested, frames, keys):
+def compare(requested, frames, keys, horizons=()):
     return common.check_predictions(*frames, .005, requested=requested,
-                                    coordinates=keys)
+                                    coordinates=keys, horizons=horizons)
 
 
 @pytest.mark.parametrize("metric,val,test", [
@@ -57,31 +57,36 @@ def test_forecast_coordinates_and_timestamp_units():
                               pd.to_datetime(["2025-01-01", "2025-01-08"]).as_unit("ns")})
     frame = requested.loc[requested.index.repeat(2)].reset_index(drop=True)
     frame = frame.assign(signup_time=pd.to_datetime([
-        "2025-01-08", "2025-01-15", "2025-01-15", "2025-01-22"]), TARGET_PRED=.5)
+        "2025-01-01", "2025-01-08", "2025-01-08", "2025-01-15"]), TARGET_PRED=.5)
     keys = ["ENTITY", "ANCHOR_TIMESTAMP", "signup_time"]
+    weeks = [pd.Timedelta(days=0), pd.Timedelta(days=7)]
     microseconds = frame.assign(**{key: frame[key].dt.as_unit("us") for key in keys[1:]})
-    compare(requested, [microseconds, microseconds.iloc[::-1], microseconds], keys)
+    compare(requested, [microseconds, microseconds.iloc[::-1], microseconds], keys, weeks)
     changed = frame.copy()
     changed["signup_time"] = changed["signup_time"].dt.as_unit("ns")
     changed.loc[0, "signup_time"] += pd.Timedelta(nanoseconds=1)
     with pytest.raises(ValueError):
-        compare(requested, [frame, changed, frame], keys)
+        compare(requested, [frame, changed, frame], keys, weeks)
+    with pytest.raises(ValueError, match="first prediction population differs"):
+        compare(requested, [frame.iloc[::2]] * 3, keys, weeks)  # One week per anchor.
     for broken in (frame.iloc[:2], pd.concat([frame, frame.iloc[:1]]),
                    frame.drop(columns="signup_time"), frame.assign(TARGET_PRED=float("inf"))):
         with pytest.raises(ValueError):
-            compare(requested, [broken] * 3, keys)
+            compare(requested, [broken] * 3, keys, weeks)
 
 
 def test_prediction_coordinates(monkeypatch):
     anchored = ["ENTITY", "ANCHOR_TIMESTAMP"]
     for task, keys in [("binary", anchored), ("temporal_link", anchored + ["CLASS"]),
                        ("static_link", ["ENTITY", "CLASS"])]:
-        assert common.prediction_coordinates(task, None, None) == keys
+        assert common.prediction_coordinates(task, None, None) == (keys, [])
     module = ModuleType("kumo_core.pquery")
     module.normalize_graph = lambda config: NS(table=lambda name: NS(time_column=config[name]))
-    module.parse_and_validate_query = lambda query, graph: NS(entity_table="users")
+    week = NS(get_combined_date_offset_range=lambda: NS(timeframe=pd.Timedelta(days=7)))
+    module.parse_and_validate_query = lambda query, graph: NS(
+        entity_table="users", query=week, forecast_length=2)
     monkeypatch.setitem(sys.modules, "kumo_core.pquery", module)
     for clock, expected in [("signup_time", "signup_time"), (None, "TIMESTAMP")]:
         snapshot = NS(graph_config={"orders": "order_time", "users": clock})
-        assert common.prediction_coordinates("forecasting", NS(query="query"), snapshot) == [
-            "ENTITY", "ANCHOR_TIMESTAMP", expected]
+        assert common.prediction_coordinates("forecasting", NS(query="query"), snapshot) == ([
+            "ENTITY", "ANCHOR_TIMESTAMP", expected], [pd.Timedelta(0), pd.Timedelta(days=7)])

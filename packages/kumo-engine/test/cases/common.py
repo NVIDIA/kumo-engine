@@ -290,19 +290,23 @@ def check_population(counts, requested_rows):
 
 def prediction_coordinates(task, query, snapshot):
     keys = ["ENTITY"] + ([] if task == "static_link" else ["ANCHOR_TIMESTAMP"])
+    horizons = []
     if task == "forecasting":
         from kumo_core.pquery import normalize_graph, parse_and_validate_query
 
         graph = normalize_graph(snapshot.graph_config)
         parsed = parse_and_validate_query(query.query, graph)
         keys.append(graph.table(parsed.entity_table).time_column or "TIMESTAMP")
+        # Horizon i is the anchor plus i query timeframes, as in forecast_offsets.
+        step = parsed.query.get_combined_date_offset_range().timeframe
+        horizons = [index * step for index in range(parsed.forecast_length)]
     elif task not in ("binary", "regression"):
         keys.append("CLASS")
-    return keys
+    return keys, horizons
 
 
 def check_predictions(first, repeat, reloaded, tolerance, *, requested,
-                      coordinates):
+                      coordinates, horizons=()):
     import numpy as np
     import pandas as pd
     frames = [
@@ -313,6 +317,11 @@ def check_predictions(first, repeat, reloaded, tolerance, *, requested,
     expected = set(requested.itertuples(index=False, name=None))
     if not expected or requested.isna().any().any() or requested.duplicated().any():
         raise ValueError("Requested coordinates must be nonempty and unique")
+    columns = list(requested)
+    if horizons:  # Each requested anchor must return every forecast horizon.
+        columns = keys
+        expected = {(entity, anchor, anchor + step)
+                    for entity, anchor in expected for step in horizons}
     score = next(key for key in ("SCORE", "True_PROB", "TARGET_PRED")
                  if key in frames[0])
     values = []
@@ -325,7 +334,7 @@ def check_predictions(first, repeat, reloaded, tolerance, *, requested,
             raise ValueError(
                 "Prediction coordinates must be nonempty and unique")
         # Measure each output. Engine manifests only copy the input table counts.
-        found = set(frame[list(requested)].itertuples(index=False, name=None))
+        found = set(frame[columns].itertuples(index=False, name=None))
         counts[label] = dict(requested_rows=len(expected), scored_rows=len(found),
                              skipped_rows=len(expected - found))
         if found != expected:
@@ -490,7 +499,7 @@ def run(graph, query, split, task, overrides=None, *, args,
                 training_table, args.scratch)
         if expected is not None:
             compare_reference(result, expected, args.metric_tolerance)
-        coordinates = prediction_coordinates(task, query, snapshot)
+        coordinates, horizons = prediction_coordinates(task, query, snapshot)
         population, requested = prediction_table(training_table, query,
                                                  snapshot, args, split, coordinates)
         result["prediction_population"] = dict(
@@ -542,7 +551,7 @@ def run(graph, query, split, task, overrides=None, *, args,
         result["predictions"] = check_predictions(
             first, repeated, predict(restored, "reload"),
             args.prediction_tolerance, requested=requested,
-            coordinates=coordinates)
+            coordinates=coordinates, horizons=horizons)
         if expected is not None:
             compare_reference(result, expected, args.metric_tolerance)
         result["status"] = "passed"

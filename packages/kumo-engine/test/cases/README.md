@@ -38,7 +38,7 @@ At 10B and 25B, native metadata supplies total rows, per-split rows and binary p
 Repeat and reload predictions need identical coordinates and score differences within the case tolerance.
 If all three outputs agree, every prediction must still cover the exact sampled entity/anchor population.
 Results record requested, scored and skipped counts for materialization and for each prediction output. These held-out cases require zero skipped rows. A population error names the failing prediction and its counts.
-Forecast coordinates include the entity, original anchor and horizon column resolved from the scoring snapshot's graph metadata.
+Forecast coordinates include the entity, original anchor and horizon column resolved from the scoring snapshot's graph metadata. Every sampled anchor must return each `FORECAST` horizon, so forecast output counts are horizon rows.
 AUROC and AP, including their variants, use an absolute band of 0.03.
 Other metrics, including MAE and RMSE, use `abs(current - reference) <= abs(reference) * tolerance`, with a relative tolerance of 25%.
 At 10B and 25B, payments and fraud use one experiment, one epoch and balanced training sampling at batch 64.
