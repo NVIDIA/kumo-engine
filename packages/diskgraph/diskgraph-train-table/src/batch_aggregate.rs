@@ -1309,6 +1309,9 @@ fn aggregate_result(
 fn aggregate_kind(frame: &MaterializedFrame, plan: &AggregatePlan) -> Option<ScalarValue> {
     use arrow_schema::DataType;
     match plan.operation.as_str() {
+        "min" | "max" if plan.semantics.all_null_sum_is_zero && !plan.semantics.keep_first_equal => {
+            Some(ScalarValue::F64(0.0))
+        }
         "count" | "count_distinct" => Some(ScalarValue::I64(0)),
         "sum" => Some(plan.sum_type.map_or(ScalarValue::F64(0.0), sum_zero)),
         // Grouped inputs are reduction outputs, not frame columns.
