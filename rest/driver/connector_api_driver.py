@@ -283,6 +283,25 @@ class ConnectorApiDriver:
         )
         return response
 
+    async def copy_project_connector(
+        self,
+        project_id: ProjectID,
+        connector_id: ConnectorID,
+        args: api.CopyConnectorArgs,
+        principal: AuthPrincipal,
+    ) -> api.ConnectorResponse:
+        source = await self._connector_service.get_for_project(
+            project_id, connector_id, principal)
+        create_args = api.CreateConnectorArgs(
+            name=args.name if args.name is not None else source.name,
+            config=source.config,
+            identity_id=source.identity_id,
+            description=(args.description if args.description is not None
+                         else source.description),
+        )
+        return await self.create_project_connector(
+            ProjectID(args.target_project_id), create_args, principal)
+
     async def list_project_connectors(
         self,
         project_id: ProjectID,
