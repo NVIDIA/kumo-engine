@@ -15,7 +15,7 @@ import pytest
 from tokenizers import Tokenizer
 
 from kumo.pytorch import api, encoding
-from kumo.pytorch.column_stats import TableColumnEncoder, read_token_lengths
+from kumo.pytorch.column_stats import DROPPED, TableColumnEncoder, read_token_lengths
 from kumo.pytorch.encoding import fit_encoder, train_text
 from kumo.pytorch.engines.diskgraph import DiskGraphSource
 from kumo.pytorch.materialization import ensure_diskgraph_index
@@ -195,6 +195,77 @@ def test_a_measured_fit_keeps_each_event_rows_token_count(tmp_path, padded):
     assert len(pieces) == len(rows)
     for node, row in zip(nodes, rows, strict=True):
         assert pieces[node] == len(tokenizer.encode(row["description"] or "").ids)
+
+
+def _edited(directory, column: str, value, step: int):
+    rows = _fixture_rows()
+    for row in rows["card_transactions"][::step]:
+        row[column] = value
+    dataset = _write_parquet(rows, directory / "parquet")
+    engine = api.DiskGraphEngine(index=directory / "index", num_threads=2)
+    return rows["card_transactions"], dataset, engine
+
+
+def _entry(contract: api.DataLoaderSpec, dataset, engine) -> dict:
+    with api.prepare(contract, dataset, engine) as plan:
+        with plan.materialize(_requests(), fit_split="train") as task:
+            (entry,) = task.fitted_state.fit["inputs"]["statistics"]["token_lengths"].values()
+    return entry
+
+
+def _nodes(directory, rows):
+    import diskgraph
+
+    engine = diskgraph.SamplerEngine(str(directory / "index"))
+    ids = pa.array([row["card_transaction_id"] for row in rows])
+    return engine.lookup_node_ids("card_transactions", ids)
+
+
+def _required(fields: tuple[str, ...]) -> api.DataLoaderSpec:
+    contract = _measured(_contract())
+    transactions = contract.batch.inputs["transactions"]
+    group = replace(transactions.representation, row=api.Composite(required_fields=fields))
+    inputs = {**contract.batch.inputs, "transactions": replace(transactions, representation=group)}
+    return replace(contract, batch=replace(contract.batch, inputs=inputs))
+
+
+def test_an_empty_string_counts_the_unknown_id_it_emits(tmp_path):
+    rows, dataset, engine = _edited(tmp_path, "description", "", 4)
+    with api.prepare(
+        _measured(_text_contract(replace(TEXT, empty="unknown"))), dataset, engine
+    ) as plan:
+        with plan.materialize(_requests(), fit_split="train") as task:
+            encoder = task.output("transactions").field(name="description").encoder
+            (entry,) = task.fitted_state.fit["inputs"]["statistics"]["token_lengths"].values()
+    _, pieces = read_token_lengths(tmp_path / "index", entry)
+    descriptions = pa.array([row["description"] for row in rows])
+    emitted = encoder.encode_arrow(descriptions)["piece_offsets"].diff().tolist()
+    nodes = _nodes(tmp_path, rows)
+    assert pieces[nodes].tolist() == emitted
+    empty = [node for node, row in zip(nodes, rows, strict=True) if row["description"] == ""]
+    assert pieces[empty].tolist() == [1] * len(empty)
+
+
+def test_a_row_with_a_null_required_field_is_marked_dropped(tmp_path):
+    rows, dataset, engine = _edited(tmp_path, "channel", None, 3)
+    constant, counts = read_token_lengths(
+        tmp_path / "index", _entry(_required(("channel",)), dataset, engine)
+    )
+    expected = [DROPPED if row["channel"] is None else 0 for row in rows]
+    assert constant == 2 and counts[_nodes(tmp_path, rows)].tolist() == expected
+
+
+def test_a_changed_empty_policy_or_required_field_never_reuses_counts(tmp_path):
+    dataset, engine = _setup("diskgraph", tmp_path)
+    contracts = (
+        _measured(_text_contract()),
+        _measured(_text_contract(replace(TEXT, empty="unknown"))),
+        _required(("channel",)),
+        _required(("amount", "channel")),
+    )
+    files = [_entry(contract, dataset, engine)["file"] for contract in contracts]
+    assert len(set(files)) == len(files)
+    assert all((tmp_path / "index" / "col_stats" / file).is_file() for file in files)
 
 
 def test_a_fixed_width_recipe_records_a_constant_without_a_scan(tmp_path, monkeypatch):

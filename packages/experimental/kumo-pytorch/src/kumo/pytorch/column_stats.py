@@ -21,6 +21,7 @@ from typing import Any
 import numpy as np
 
 from kumo.pytorch.contract.batch import (
+    Composite,
     EntitySource,
     EventsOf,
     EventSource,
@@ -112,56 +113,87 @@ class TableColumnEncoder:
         return f"{_cutoff_dir(ticks, unit)}/{table}.{column}.text-{digest}.tokenizer.json"
 
 
-#: A stored column the model reads, with its fitted tokenizer's JSON if it is ``Text``.
-LengthColumn = tuple[str, str | None]
+#: A per-node column the model reads: its name, its fitted tokenizer's JSON if it is ``Text``,
+#: and the count of a present value without pieces, 1 under ``Text(empty="unknown")``.
+LengthColumn = tuple[str, str | None, int]
+
+#: The per-node count of a row delivery drops for a NULL in ``Composite.required_fields``.
+DROPPED = 0xFFFF
 
 
 def token_length_columns(
     contract: Any, plan: Any
-) -> dict[str, tuple[int, tuple[LengthColumn, ...]]]:
-    """Each event table's per-event constant and per-node columns under ``Batching.length_input``.
+) -> dict[str, tuple[int, tuple[LengthColumn, ...], tuple[str, ...]]]:
+    """Each event table's per-event constant, per-node columns and required columns under
+    ``Batching.length_input``.
 
     ``Text`` and variable-length list columns vary per node; every other stored column the input
     reads adds 1 to the constant. Lists can't be declared yet (DG-NESTED-COLUMN), so only ``Text``
-    is per-node today.
+    is per-node today. The required columns are those of ``Composite.required_fields``.
     """
 
     name = contract.batch.batching.length_input
     if name is None or not isinstance(contract.batch.inputs[name].representation, Fields):
         return {}
-    columns: dict[str, dict[str, str | None]] = {}
-    for use in contract.batch.inputs[name].representation.fields:
+    group = contract.batch.inputs[name].representation
+    required_fields = group.row.required_fields if isinstance(group.row, Composite) else ()
+    columns: dict[str, dict[str, tuple[str, int] | None]] = {}
+    required: dict[str, dict[str, str]] = {}
+    for use in group.fields:
         encoder = plan.output(name=name).field(name=use.field).encoder
-        tokenizer = encoder.tokenizer_json if isinstance(encoder.config, Text) else None
+        text = (
+            (encoder.tokenizer_json, int(encoder.config.empty == "unknown"))
+            if isinstance(encoder.config, Text)
+            else None
+        )
         for variant, _, _ in resolved_fields(contract, name, use.field):
             stored = _stored_column(contract.sample, contract.schema, variant)
             if stored is None or variant[0] not in {"events", "current_events"}:
                 continue
             table, column = stored
+            if use.field in required_fields:
+                required.setdefault(table, {})[use.field] = column
             known = columns.setdefault(table, {}).get(column)
-            if tokenizer is not None and known is not None and known != tokenizer:
+            if text is not None and known is not None and known != text:
                 raise ValueError(
-                    f"{table}.{column} is read by Text encoders with different tokenizers, "
-                    "so its token length is ambiguous"
+                    f"{table}.{column} is read by Text encoders with different tokenizers or "
+                    "empty policies, so its token length is ambiguous"
                 )
-            columns[table][column] = tokenizer or known
+            columns[table][column] = text or known
     lengths = {}
     for table, read in sorted(columns.items()):
-        per_node = tuple(sorted(item for item in read.items() if item[1] is not None))
-        lengths[table] = (len(read) - len(per_node), per_node)
+        if len(required.get(table, {})) != len(required_fields):
+            raise ValueError(
+                f"a required field of {name!r} is not a stored column of {table}, so token "
+                "lengths can't mark the rows delivery drops"
+            )
+        per_node = tuple(
+            (column, *text) for column, text in sorted(read.items()) if text is not None
+        )
+        needed = tuple(sorted(set(required.get(table, {}).values())))
+        lengths[table] = (len(read) - len(per_node), per_node, needed)
     return lengths
 
 
 def token_lengths_file(
-    table: str, columns: Sequence[LengthColumn], ticks: int | None, unit: str
+    table: str,
+    columns: Sequence[LengthColumn],
+    required: Sequence[str],
+    ticks: int | None,
+    unit: str,
 ) -> str:
     import diskgraph
 
     settings = [
         [
-            [column, None if tokenizer is None else hashlib.sha256(tokenizer.encode()).hexdigest()]
-            for column, tokenizer in columns
+            [
+                column,
+                None if tokenizer is None else hashlib.sha256(tokenizer.encode()).hexdigest(),
+                empty,
+            ]
+            for column, tokenizer, empty in columns
         ],
+        sorted(required),
         diskgraph.TOKENIZER_TRAINER,
     ]
     digest = hashlib.sha256(json.dumps(settings).encode()).hexdigest()[:16]
@@ -174,7 +206,8 @@ def read_token_lengths(
     """A table's per-event constant and its read-only per-node counts, indexed by node ID.
 
     ``entry`` is the table's ``FitRecord["statistics"]["token_lengths"]`` value and ``index``
-    the DiskGraph index directory. The per-node counts are ``None`` when ``entry`` has no file.
+    the DiskGraph index directory. The per-node counts are ``None`` when ``entry`` has no file;
+    a count of ``DROPPED`` marks a row delivery drops, which adds neither tokens nor an event.
     """
 
     if entry["file"] is None:
