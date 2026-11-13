@@ -104,8 +104,8 @@ class PredictionTable:
             new_run_id,
             prediction_table_scratch_dir,
         )
+        from kumo.engine.connector._staging import stage_source_table
         from kumo.engine.pquery._custom_source import (
-            stage_source_table,
             validate_prediction_source,
         )
         from kumo.engine.pquery.predictive_query import PredictiveQuery

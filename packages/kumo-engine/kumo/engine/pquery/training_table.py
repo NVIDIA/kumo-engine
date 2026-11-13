@@ -272,10 +272,8 @@ class TrainingTable:
 
         from kumo.engine._embeddings import no_encoder_inference_warnings
         from kumo.engine._scratch import new_run_id, train_table_scratch_dir
-        from kumo.engine.pquery._custom_source import (
-            stage_source_table,
-            validate_training_source,
-        )
+        from kumo.engine.connector._staging import stage_source_table
+        from kumo.engine.pquery._custom_source import validate_training_source
         from kumo.engine.pquery.predictive_query import PredictiveQuery
 
         if not isinstance(pq, PredictiveQuery):
