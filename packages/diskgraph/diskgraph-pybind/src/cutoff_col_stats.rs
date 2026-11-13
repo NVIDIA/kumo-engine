@@ -62,45 +62,49 @@ fn from_index(index_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
             .as_ref()
             .and_then(|name| spec.columns.iter().position(|c| &c.name == name));
         let decoded: Vec<usize> = requested.iter().copied().chain(create_time).collect();
-        let parts = node_chunks(&table_reader)
-            .into_par_iter()
-            .map(|chunk| {
-                let batch = decode_chunk(&table_reader, chunk, &decoded)?;
-                let times = create_time.map(|_| create_times(batch.column(requested.len()), clock));
-                let mut sinks = table.sinks()?;
-                for (stats, cutoff) in sinks.stats.iter_mut().zip(&request.cutoffs) {
-                    let keep = at_cutoff(times.as_deref(), batch.num_rows(), *cutoff);
-                    let rows = filter_record_batch(&batch, &keep)?;
-                    for (position, &col_idx) in requested.iter().enumerate() {
-                        // Stored values are observed by their type, as ingest observes them.
-                        let column = ColumnSpec {
-                            semantic_type: None,
-                            ..spec.columns[col_idx].clone()
-                        };
-                        let (values, column) = match column.ingested_dtype {
-                            // Ingest observes a u64's bits as an i64.
-                            IngestedType::UInt64 => (
-                                Arc::new(Int64Array::from_iter(
-                                    rows.column(position)
-                                        .as_primitive::<UInt64Type>()
-                                        .iter()
-                                        .map(|value| value.map(|value| value as i64)),
-                                )) as ArrayRef,
-                                ColumnSpec {
-                                    ingested_dtype: IngestedType::Int64,
-                                    ..column
-                                },
-                            ),
-                            _ => (rows.column(position).clone(), column),
-                        };
-                        drive_from_arrow_column(col_idx, &values, &column, stats, None, clock)?;
+        // Windows of chunks keep a few sinks per thread alive and merge in chunk order.
+        for window in node_chunks(&table_reader).chunks(4 * rayon::current_num_threads()) {
+            let parts = window
+                .par_iter()
+                .map(|&chunk| {
+                    let batch = decode_chunk(&table_reader, chunk, &decoded)?;
+                    let times =
+                        create_time.map(|_| create_times(batch.column(requested.len()), clock));
+                    let mut sinks = table.sinks()?;
+                    for (stats, cutoff) in sinks.stats.iter_mut().zip(&request.cutoffs) {
+                        let keep = at_cutoff(times.as_deref(), batch.num_rows(), *cutoff);
+                        let rows = filter_record_batch(&batch, &keep)?;
+                        for (position, &col_idx) in requested.iter().enumerate() {
+                            // Stored values are observed by their type, as ingest observes them.
+                            let column = ColumnSpec {
+                                semantic_type: None,
+                                ..spec.columns[col_idx].clone()
+                            };
+                            let (values, column) = match column.ingested_dtype {
+                                // Ingest observes a u64's bits as an i64.
+                                IngestedType::UInt64 => (
+                                    Arc::new(Int64Array::from_iter(
+                                        rows.column(position)
+                                            .as_primitive::<UInt64Type>()
+                                            .iter()
+                                            .map(|value| value.map(|value| value as i64)),
+                                    )) as ArrayRef,
+                                    ColumnSpec {
+                                        ingested_dtype: IngestedType::Int64,
+                                        ..column
+                                    },
+                                ),
+                                _ => (rows.column(position).clone(), column),
+                            };
+                            drive_from_arrow_column(col_idx, &values, &column, stats, None, clock)?;
+                        }
                     }
-                }
-                Ok(sinks)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        for sinks in parts {
-            table.add(sinks);
+                    Ok(sinks)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            for sinks in parts {
+                table.add(sinks);
+            }
         }
         tables.push(table);
     }
