@@ -2290,28 +2290,8 @@ impl DiskGraphEngine {
         Ok(())
     }
 
-    /// Accumulate feature bytes from the record already parsed for fused sampling.
-    fn accumulate_features_from_data(
-        &self,
-        type_id: usize,
-        type_state: &mut crate::state::TypeState,
-        scratch: &mut RowPackDecodeScratch,
-        node_data: Option<&[u8]>,
-        output: &mut impl OutputHandler,
-    ) -> Result<()> {
-        let decoder = self
-            .node_decoders
-            .get(type_id)
-            .and_then(|d| d.as_ref())
-            .ok_or_else(|| EngineError::Internal(format!("no decoder for type {}", type_id)))?;
-
-        self.accumulate_features_from_data_internal(
-            type_id, type_state, scratch, decoder, node_data, output,
-        )
-    }
-
     /// Decode feature bytes for both frontier and leaf nodes in fused mode.
-    fn accumulate_features_from_data_internal(
+    fn accumulate_features_from_data(
         &self,
         type_id: usize,
         type_state: &mut crate::state::TypeState,
@@ -2394,7 +2374,7 @@ impl DiskGraphEngine {
                 .edges_for_node(local_id)
                 .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
 
-            self.accumulate_features_from_data_internal(
+            self.accumulate_features_from_data(
                 type_id,
                 type_state,
                 scratch,
@@ -2554,7 +2534,7 @@ impl DiskGraphEngine {
         })?;
 
         // Reserved columns (WEIGHT) were dropped from the builders/mask in
-        // `accumulate_features_from_data_internal`, so project the schema to
+        // `accumulate_features_from_data`, so project the schema to
         // the same non-reserved columns to keep field count == array count.
         let keep: Vec<usize> = full_schema
             .fields()
@@ -2891,6 +2871,14 @@ impl DiskGraphEngine {
                     continue;
                 }
 
+                let decoder = self
+                    .node_decoders
+                    .get(src_type_id)
+                    .and_then(|d| d.as_ref())
+                    .ok_or_else(|| {
+                        EngineError::Internal(format!("no decoder for type {}", src_type_id))
+                    })?;
+
                 for node in &frontier {
                     let shard_idx = self.find_shard(shards, node.global_id)?;
                     let shard = &shards[shard_idx];
@@ -2913,6 +2901,7 @@ impl DiskGraphEngine {
                             src_type_id,
                             type_state,
                             scratch,
+                            decoder,
                             node_data,
                             output,
                         )?;
