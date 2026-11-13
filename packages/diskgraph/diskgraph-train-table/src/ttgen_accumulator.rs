@@ -58,6 +58,23 @@ pub fn accumulate_numeric_batch<U: UnitSystem>(
                 }
                 Some((*slot, None, Some(array)))
             } else {
+                // Convert once per projected integer array. Preserve PQL's
+                // floating output without adding an Arrow compute dependency.
+                macro_rules! integer_array {
+                    ($($ty:ty),*) => { $(
+                        if let Some(values) = array.as_any().downcast_ref::<$ty>() {
+                            let values = values.slice(rows.start, rows.len());
+                            let floats = Float64Array::from_iter(values.iter().map(|v| v.map(|v| v as f64)));
+                            return Some((*slot, None, Some(floats)));
+                        }
+                    )* };
+                }
+                integer_array!(
+                    arrow_array::Int8Array, arrow_array::Int16Array,
+                    arrow_array::Int32Array, arrow_array::Int64Array,
+                    arrow_array::UInt8Array, arrow_array::UInt16Array,
+                    arrow_array::UInt32Array, arrow_array::UInt64Array
+                );
                 None
             }
         })

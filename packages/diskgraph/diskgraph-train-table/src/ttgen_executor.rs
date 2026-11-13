@@ -3091,10 +3091,14 @@ where
         let Some(column) = operation.target_col_idx else {
             return Ok(None);
         };
-        if !matches!(
-            decoder.context().columns[column].logical_type,
-            IngestedType::Float32 | IngestedType::Float64
-        ) {
+        let kind = &decoder.context().columns[column].logical_type;
+        let integer = matches!(kind,
+            IngestedType::Int8 | IngestedType::Int16 | IngestedType::Int32 | IngestedType::Int64
+            | IngestedType::UInt8 | IngestedType::UInt16 | IngestedType::UInt32 | IngestedType::UInt64);
+        if !(matches!(kind, IngestedType::Float32 | IngestedType::Float64) || integer)
+            || integer && policy == NumericAggregatePolicy::TemporalQuery
+                && matches!(operation.func, AggFunc::Min | AggFunc::Max)
+        {
             return Ok(None);
         }
         if !projection.contains(&column) {
