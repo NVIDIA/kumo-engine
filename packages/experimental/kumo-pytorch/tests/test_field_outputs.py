@@ -398,6 +398,41 @@ def test_columns_pad_with_declared_value_and_field_ids(field_space, field_pad):
     assert currency["field_valid"][0, 1]
 
 
+def test_columns_field_ids_use_pad_for_sources_without_the_field():
+    contract = _contract()
+    payments = contract.sample.events["payments"]
+    refunds = replace(payments, fields={"amount": payments.fields["amount"]})
+    history = contract.batch.inputs["history"]
+    history = replace(
+        history,
+        source=EventSource(events=("payments", "refunds")),
+        representation=replace(history.representation, row=Columns(), field_space="tokens"),
+        layout=Padded(),
+    )
+    spaces = {
+        "tokens": IdSpace(
+            specials={"pad": "pad", "unknown": "unknown", "missing": "missing", "mask": "mask"},
+            special_ids={"pad": 5, "unknown": 1, "missing": 2, "mask": 3},
+        )
+    }
+    contract = replace(
+        contract,
+        sample=replace(contract.sample, events={"payments": payments, "refunds": refunds}),
+        batch=replace(contract.batch, inputs={"history": history}, id_spaces=spaces),
+    )
+    plan, requests = _plan(contract)
+    output = next(plan.batches(requests, batch_size=2)).inputs["history"]
+    currency = output["currency"]
+    owned = currency["field_valid"][0]
+    assert owned.tolist().count(True) == 3
+    assert owned.tolist().count(False) == 3
+    ids = currency["field_ids"][0]
+    assert ids[~owned].tolist() == [5] * 3
+    assert len(set(ids[owned].tolist())) == 1
+    assert ids[owned][0].item() != 5
+    assert output["amount"]["field_valid"][0].all()
+
+
 @pytest.mark.parametrize(
     "dtype,values",
     [

@@ -957,7 +957,8 @@ def _field_ids(
     names: Mapping[Any, int],
     space: FittedSpace | None,
 ) -> np.ndarray:
-    result = np.zeros(rows.size, dtype=np.int64)
+    pad = space.roles.get("pad", 0) if space is not None else 0
+    result = np.full(rows.size, pad, dtype=np.int64)
     for identity, _dtype, _cardinality in prepared.declarations[field]:
         index = names[tuple(identity)]
         if space is not None:
