@@ -189,9 +189,13 @@ temporal frontend preserves its exact-time and chronological/primary-key row
 selection; PQL retains its existing index-order selection. Supported groups
 reuse the temporal frontend's existing projected Arrow batch without decoding
 selected rows a second time. PQL projects its selected rows in bounded chunks.
-Queries with group-by
-stages, exact integer sums, nonfinite inputs or sequence consumers retain their
-existing evaluator. No public JSON schema or frontend syntax changes are required.
+Queries with group-by stages, exact integer sums, nonfinite inputs or sequence
+consumers still select/materialize their general frames. After selection, their
+ordinary sums/means and finite floating extrema use the same ordered accumulators
+as PQL, including grouped and multi-hop inputs. Typed integer sums/extrema and
+API-specific reductions retain their distinct contracts. This does not require
+rewriting existing PQL traversal or eliminating frames used for window sharing.
+No public JSON schema or frontend syntax changes are required.
 
 ### Flat token packing for RDL
 

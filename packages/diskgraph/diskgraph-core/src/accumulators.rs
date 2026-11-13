@@ -139,10 +139,20 @@ impl HyperLogLog {
 // Welford online accumulator (mean, variance, skewness, kurtosis, min, max)
 // ---------------------------------------------------------------------------
 
-/// Streaming accumulator for mean, variance, std_dev, skewness, kurtosis,
-/// min, and max using Welford's online algorithm.
-///
-/// Supports parallel merge via Chan et al.'s formula.
+/// Advance the running mean in input order. The caller chooses finite-value
+/// admission and the M2 update policy; statistics and row reductions have
+/// intentionally different NaN/Inf and historical rounding contracts.
+#[inline]
+pub fn update_running_mean(count: &mut u64, mean: &mut f64, value: f64) -> (u64, f64, f64) {
+    let previous = *count;
+    *count += 1;
+    let delta = value - *mean;
+    let delta_n = delta / *count as f64;
+    *mean += delta_n;
+    (previous, delta, delta_n)
+}
+
+/// Streaming mean/variance/higher moments, with Chan parallel merge.
 pub struct WelfordAccumulator {
     pub count: u64,
     pub m1: f64,
@@ -178,15 +188,11 @@ impl WelfordAccumulator {
         if !value.is_finite() {
             return;
         }
-        let n1 = self.count;
-        self.count += 1;
+        let (n1, delta, delta_n) = update_running_mean(&mut self.count, &mut self.m1, value);
         let n = self.count as f64;
-        let delta = value - self.m1;
-        let delta_n = delta / n;
         let delta_n2 = delta_n * delta_n;
         let term1 = delta * delta_n * n1 as f64;
 
-        self.m1 += delta_n;
         self.m4 += term1 * delta_n2 * (n * n - 3.0 * n + 3.0) + 6.0 * delta_n2 * self.m2
             - 4.0 * delta_n * self.m3;
         self.m3 += term1 * delta_n * (n - 2.0) - 3.0 * delta_n * self.m2;

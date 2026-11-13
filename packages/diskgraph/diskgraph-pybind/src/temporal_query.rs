@@ -1241,6 +1241,34 @@ fn reduce(
             .expect("non-empty mode")
             .1);
     }
+    if (operation == "min" || operation == "max")
+        && values
+            .iter()
+            .all(|value| matches!(value, ScalarValue::F64(v) if v.is_finite()))
+    {
+        use diskgraph_core::tt_builder::{AggFunc, Value};
+        use diskgraph_train_table::ttgen_accumulator::Accumulator;
+        let mut state = Accumulator::new(
+            if operation == "min" {
+                AggFunc::Min
+            } else {
+                AggFunc::Max
+            },
+            None,
+        );
+        state.accumulate_numeric(
+            values.iter().map(|value| match value {
+                ScalarValue::F64(value) => Some(*value),
+                _ => unreachable!(),
+            }),
+            true,
+            false,
+        );
+        return match state.finalize() {
+            Some(Value::Float(value)) => Ok(ScalarValue::F64(value)),
+            _ => unreachable!("nonempty finite extrema"),
+        };
+    }
     if operation == "min" || operation == "max" {
         let mut best = values[0].clone();
         for value in &values[1..] {
@@ -1261,20 +1289,33 @@ fn reduce(
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
+    if operation == "sum" || operation == "mean" {
+        use diskgraph_core::tt_builder::{AggFunc, Value};
+        use diskgraph_train_table::ttgen_accumulator::Accumulator;
+        let mut state = Accumulator::new(
+            if operation == "sum" {
+                AggFunc::Sum
+            } else {
+                AggFunc::Avg
+            },
+            None,
+        );
+        state.accumulate_numeric(numbers.into_iter().map(Some), true, false);
+        return match state.finalize() {
+            Some(Value::Float(value)) => Ok(ScalarValue::F64(value)),
+            None => Ok(ScalarValue::Null),
+            _ => unreachable!("sum/mean produce float scalars"),
+        };
+    }
     let mut count = 0u64;
     let mut mean = 0.0f64;
     let mut m2 = 0.0f64;
-    let mut sum = 0.0f64;
     for value in numbers {
-        count += 1;
-        sum += value;
-        let delta = value - mean;
-        mean += delta / count as f64;
+        let (_, delta, _) =
+            diskgraph_core::accumulators::update_running_mean(&mut count, &mut mean, value);
         m2 += delta * (value - mean);
     }
     Ok(match operation {
-        "sum" => ScalarValue::F64(sum),
-        "mean" => ScalarValue::F64(mean),
         "var_population" => ScalarValue::F64(m2 / count as f64),
         "std_population" => ScalarValue::F64((m2 / count as f64).sqrt()),
         "var_sample" if count >= 2 => ScalarValue::F64(m2 / (count - 1) as f64),

@@ -9,11 +9,11 @@
 
 use std::collections::HashSet;
 
-use diskgraph_core::accumulators::WelfordAccumulator;
-use diskgraph_core::tt_builder::Value;
-use arrow_array::{Array, ArrayRef, Float32Array, Float64Array};
-use diskgraph_core::time::UnitSystem;
 use crate::ttgen_resolve::ResolvedAggregate;
+use arrow_array::{ArrayRef, Float32Array, Float64Array};
+use diskgraph_core::accumulators::WelfordAccumulator;
+use diskgraph_core::time::UnitSystem;
+use diskgraph_core::tt_builder::Value;
 
 /// Update compatible PQL-resolved reductions from caller-ordered projected
 /// columns. Both frontends keep their selected row order and empty-SUM policy.
@@ -28,58 +28,68 @@ pub fn accumulate_numeric_batch<U: UnitSystem>(
     keep_first_equal: bool,
 ) -> bool {
     // Eligibility is invariant for the whole batch, including empty batches.
-    if operations.iter().any(|operation| !matches!(operation.func,
-        diskgraph_core::tt_builder::AggFunc::Count | diskgraph_core::tt_builder::AggFunc::Sum |
-        diskgraph_core::tt_builder::AggFunc::Avg | diskgraph_core::tt_builder::AggFunc::Min |
-        diskgraph_core::tt_builder::AggFunc::Max)) { return false; }
+    if operations.iter().any(|operation| {
+        !matches!(
+            operation.func,
+            diskgraph_core::tt_builder::AggFunc::Count
+                | diskgraph_core::tt_builder::AggFunc::Sum
+                | diskgraph_core::tt_builder::AggFunc::Avg
+                | diskgraph_core::tt_builder::AggFunc::Min
+                | diskgraph_core::tt_builder::AggFunc::Max
+        )
+    }) {
+        return false;
+    }
+    // Resolve physical arrays once; check finiteness once per projected
+    // column, even when several reductions share it.
     let arrays = columns
         .iter()
-        .map(|(_, array)| {
-            (
-                array.as_any().downcast_ref::<Float32Array>(),
-                array.as_any().downcast_ref::<Float64Array>(),
-            )
-        })
-        .collect::<Vec<_>>();
-    if arrays
-        .iter()
-        .any(|(f32s, f64s)| f32s.is_none() && f64s.is_none())
-    {
-        return false;
-    }
-    let slots = operations
-        .iter()
-        .map(|operation| {
-            (operation.func != diskgraph_core::tt_builder::AggFunc::Count)
-                .then_some(operation.target_col_idx)
-                .flatten()
-                .map(|column| columns.iter().position(|(index, _)| *index == column))
-        })
-        .collect::<Vec<_>>();
-    if slots.iter().any(|slot| matches!(slot, Some(None))) {
-        return false;
-    }
-    let mut values = vec![None; columns.len()];
-    for row in rows {
-        for (slot, ((_, array), (f32s, f64s))) in columns.iter().zip(&arrays).enumerate() {
-            let value = if array.is_null(row) {
-                None
-            } else if let Some(array) = f32s {
-                Some(array.value(row) as f64)
+        .map(|(slot, array)| {
+            if let Some(array) = array.as_any().downcast_ref::<Float32Array>() {
+                let array = array.slice(rows.start, rows.len());
+                if array.iter().flatten().any(|v| !v.is_finite()) {
+                    return None;
+                }
+                Some((*slot, Some(array), None))
+            } else if let Some(array) = array.as_any().downcast_ref::<Float64Array>() {
+                let array = array.slice(rows.start, rows.len());
+                if array.iter().flatten().any(|v| !v.is_finite()) {
+                    return None;
+                }
+                Some((*slot, None, Some(array)))
             } else {
-                Some(f64s.unwrap().value(row))
-            };
-            if value.is_some_and(|value| !value.is_finite()) {
-                return false;
+                None
             }
-            values[slot] = value;
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(arrays) = arrays else {
+        return false;
+    };
+    // Dispatch once per operation/column, not once per row. Rows remain in
+    // caller order: vectorized SUM/mean would change floating cancellation.
+    for ((operation, state), count) in operations.iter().zip(states).zip(observed) {
+        if operation.func == diskgraph_core::tt_builder::AggFunc::Count {
+            let Accumulator::Count(total) = state else {
+                return false;
+            };
+            *total += rows.len() as u64;
+            continue;
         }
-        for ((state, count), slot) in states.iter_mut().zip(observed.iter_mut()).zip(&slots)
-        {
-            let value = slot.flatten().and_then(|slot| values[slot]);
-            *count += usize::from(value.is_some());
-            state.observe_numeric_row(value, keep_first_equal);
-        }
+        let Some((_, f32s, f64s)) = operation
+            .target_col_idx
+            .and_then(|column| arrays.iter().find(|(index, _, _)| *index == column))
+        else {
+            return false;
+        };
+        *count += if let Some(array) = f32s {
+            state.accumulate_numeric(
+                array.iter().map(|v| v.map(f64::from)),
+                keep_first_equal,
+                true,
+            )
+        } else {
+            state.accumulate_numeric(f64s.as_ref().unwrap().iter(), keep_first_equal, true)
+        };
     }
     true
 }
@@ -107,34 +117,64 @@ impl Accumulator {
     /// still counts for COUNT(*); the other reductions skip it.
     #[inline]
     pub fn observe_numeric_row(&mut self, value: Option<f64>, keep_first_equal: bool) {
+        self.accumulate_numeric(std::iter::once(value), keep_first_equal, true);
+    }
+
+    /// Ordered scalar reduction shared by projected Arrow batches and general
+    /// frames (including grouped/multi-hop inputs). Only AVG's nonfinite policy
+    /// differs: PQL skips nonfinite values, row aggregates propagate them.
+    #[inline]
+    pub fn accumulate_numeric(
+        &mut self,
+        values: impl Iterator<Item = Option<f64>>,
+        keep_first_equal: bool,
+        finite_mean_only: bool,
+    ) -> usize {
+        let mut observed = 0;
         match self {
-            Self::Count(count) => *count += 1,
+            Self::Count(count) => {
+                for value in values {
+                    *count += 1;
+                    observed += usize::from(value.is_some());
+                }
+            }
             Self::Sum(sum) => {
-                if let Some(value) = value {
+                for value in values.flatten() {
                     *sum += value;
+                    observed += 1;
                 }
             }
             Self::Avg(state) => {
-                if let Some(value) = value {
-                    state.observe(value);
+                for value in values.flatten() {
+                    observed += 1;
+                    if !finite_mean_only || value.is_finite() {
+                        diskgraph_core::accumulators::update_running_mean(
+                            &mut state.count,
+                            &mut state.m1,
+                            value,
+                        );
+                    }
                 }
             }
             Self::Min(minimum) => {
-                if let Some(value) = value {
+                for value in values.flatten() {
                     if !keep_first_equal || value < *minimum {
                         *minimum = minimum.min(value);
                     }
+                    observed += 1;
                 }
             }
             Self::Max(maximum) => {
-                if let Some(value) = value {
+                for value in values.flatten() {
                     if !keep_first_equal || value > *maximum {
                         *maximum = maximum.max(value);
                     }
+                    observed += 1;
                 }
             }
             _ => unreachable!("numeric rows require a scalar numeric accumulator"),
         }
+        observed
     }
 
     /// Create a fresh accumulator for the given function.
@@ -237,6 +277,39 @@ pub fn hash_i64(n: i64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordered_numeric_reduction_policies() {
+        use diskgraph_core::tt_builder::AggFunc;
+        let values = [Some(1e16), None, Some(-1e16), Some(1.0)];
+        let mut sum = Accumulator::new(AggFunc::Sum, None);
+        assert_eq!(sum.accumulate_numeric(values.into_iter(), true, false), 3);
+        assert_eq!(sum.finalize(), Some(Value::Float(1.0)));
+        for finite_only in [false, true] {
+            let mut mean = Accumulator::new(AggFunc::Avg, None);
+            mean.accumulate_numeric(
+                [Some(f64::INFINITY), Some(2.0)].into_iter(),
+                true,
+                finite_only,
+            );
+            let Some(Value::Float(value)) = mean.finalize() else {
+                panic!("nonempty mean")
+            };
+            if finite_only {
+                assert_eq!(value, 2.0);
+            } else {
+                assert!(value.is_nan());
+            }
+        }
+        for function in [AggFunc::Min, AggFunc::Max] {
+            let mut state = Accumulator::new(function, None);
+            state.accumulate_numeric([Some(-0.0), Some(0.0)].into_iter(), true, false);
+            let Some(Value::Float(value)) = state.finalize() else {
+                panic!("nonempty extremum")
+            };
+            assert_eq!(value.to_bits(), (-0.0f64).to_bits());
+        }
+    }
 
     #[test]
     fn test_count() {
