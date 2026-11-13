@@ -1,0 +1,136 @@
+{
+  "tables": [
+    {
+      "table_name": "pin",
+      "data_source": "pin",
+      "cols": [],
+      "fkeys": [],
+      "pkey": { "name": "pin_id", "dtype": "int64" }
+    },
+    {
+      "table_name": "board",
+      "data_source": "board",
+      "cols": [],
+      "fkeys": [],
+      "pkey": { "name": "board_id", "dtype": "int64" }
+    },
+    {
+      "table_name": "item",
+      "data_source": "item",
+      "cols": [],
+      "fkeys": [],
+      "pkey": { "name": "item_id", "dtype": "int64" }
+    },
+    {
+      "table_name": "query",
+      "data_source": "query",
+      "cols": [],
+      "fkeys": [],
+      "pkey": { "name": "query_id", "dtype": "int64" }
+    },
+    {
+      "table_name": "board_pin",
+      "data_source": "board_pin",
+      "cols": [
+        { "name": "ts", "dtype": "timestamp" },
+        { "name": "weight", "dtype": "uint32" }
+      ],
+      "fkeys": [
+        { "name": "board_id", "dst_table": "board", "dst_key": "board_id", "dtype": "int64" },
+        { "name": "pin_id", "dst_table": "pin", "dst_key": "pin_id", "dtype": "int64" }
+      ],
+      "pkey": null
+    },
+    {
+      "table_name": "board_item",
+      "data_source": "board_item",
+      "cols": [
+        { "name": "ts", "dtype": "timestamp" },
+        { "name": "weight", "dtype": "uint32" }
+      ],
+      "fkeys": [
+        { "name": "board_id", "dst_table": "board", "dst_key": "board_id", "dtype": "int64" },
+        { "name": "item_id", "dst_table": "item", "dst_key": "item_id", "dtype": "int64" }
+      ],
+      "pkey": null
+    },
+    {
+      "table_name": "pin_pin",
+      "data_source": "pin_pin",
+      "cols": [
+        { "name": "ts", "dtype": "timestamp" },
+        { "name": "weight", "dtype": "uint32" }
+      ],
+      "fkeys": [
+        { "name": "pin_id_a", "dst_table": "pin", "dst_key": "pin_id", "dtype": "int64" },
+        { "name": "pin_id_b", "dst_table": "pin", "dst_key": "pin_id", "dtype": "int64" }
+      ],
+      "pkey": null
+    },
+    {
+      "table_name": "pin_item",
+      "data_source": "pin_item",
+      "cols": [
+        { "name": "ts", "dtype": "timestamp" },
+        { "name": "weight", "dtype": "uint32" }
+      ],
+      "fkeys": [
+        { "name": "pin_id", "dst_table": "pin", "dst_key": "pin_id", "dtype": "int64" },
+        { "name": "item_id", "dst_table": "item", "dst_key": "item_id", "dtype": "int64" }
+      ],
+      "pkey": null
+    },
+    {
+      "table_name": "query_pin",
+      "data_source": "query_pin",
+      "cols": [
+        { "name": "ts", "dtype": "timestamp" },
+        { "name": "weight", "dtype": "uint32" }
+      ],
+      "fkeys": [
+        { "name": "query_id", "dst_table": "query", "dst_key": "query_id", "dtype": "int64" },
+        { "name": "pin_id", "dst_table": "pin", "dst_key": "pin_id", "dtype": "int64" }
+      ],
+      "pkey": null
+    },
+    {
+      "table_name": "item_item",
+      "data_source": "item_item",
+      "cols": [
+        { "name": "ts", "dtype": "timestamp" },
+        { "name": "weight", "dtype": "uint32" }
+      ],
+      "fkeys": [
+        { "name": "item_id_a", "dst_table": "item", "dst_key": "item_id", "dtype": "int64" },
+        { "name": "item_id_b", "dst_table": "item", "dst_key": "item_id", "dtype": "int64" }
+      ],
+      "pkey": null
+    },
+    {
+      "table_name": "item_pin",
+      "data_source": "item_pin",
+      "cols": [
+        { "name": "ts", "dtype": "timestamp" },
+        { "name": "weight", "dtype": "uint32" }
+      ],
+      "fkeys": [
+        { "name": "item_id", "dst_table": "item", "dst_key": "item_id", "dtype": "int64" },
+        { "name": "pin_id", "dst_table": "pin", "dst_key": "pin_id", "dtype": "int64" }
+      ],
+      "pkey": null
+    },
+    {
+      "table_name": "item_board",
+      "data_source": "item_board",
+      "cols": [
+        { "name": "ts", "dtype": "timestamp" },
+        { "name": "weight", "dtype": "uint32" }
+      ],
+      "fkeys": [
+        { "name": "item_id", "dst_table": "item", "dst_key": "item_id", "dtype": "int64" },
+        { "name": "board_id", "dst_table": "board", "dst_key": "board_id", "dtype": "int64" }
+      ],
+      "pkey": null
+    }
+  ]
+}
