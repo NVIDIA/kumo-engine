@@ -17,6 +17,7 @@ from kumo.pytorch.contract.batch import (
     Batching,
     BatchSpec,
     Buckets,
+    Columns,
     Composite,
     Encode,
     EventsOf,
@@ -361,6 +362,40 @@ def test_columns_field_ids_distinguish_declared_nulls_from_padding():
     assert currency["valid"].tolist() == [[True, False, True], [False, False, False]]
     assert currency["field_ids"].tolist() == [[5, 5, 5], [0, 0, 0]]
     assert currency["field_valid"].tolist() == [[True, True, True], [False, False, False]]
+
+
+@pytest.mark.parametrize(("field_space", "field_pad"), [("tokens", 5), ("field_tokens", 7)])
+def test_columns_pad_with_declared_value_and_field_ids(field_space, field_pad):
+    contract = _contract()
+    history = contract.batch.inputs["history"]
+    history = replace(
+        history,
+        representation=replace(history.representation, row=Columns(), field_space=field_space),
+        layout=Padded(),
+    )
+    spaces = {
+        "tokens": IdSpace(
+            specials={"pad": "pad", "unknown": "unknown", "missing": "missing", "mask": "mask"},
+            special_ids={"pad": 5, "unknown": 1, "missing": 2, "mask": 3},
+        )
+    }
+    if field_space != "tokens":
+        spaces[field_space] = IdSpace(specials={"pad": "pad"}, special_ids={"pad": field_pad})
+    contract = replace(
+        contract,
+        batch=replace(contract.batch, inputs={"history": history}, id_spaces=spaces),
+    )
+    plan, requests = _plan(contract)
+    output = next(plan.batches(requests, batch_size=2)).inputs["history"]
+    for name in ("amount", "currency"):
+        assert output[name]["values"][1].tolist() == [5, 5, 5]
+        assert output[name]["field_ids"][1].tolist() == [field_pad] * 3
+        assert output[name]["valid"][1].tolist() == [False] * 3
+        assert output[name]["field_valid"][1].tolist() == [False] * 3
+    currency = output["currency"]
+    assert currency["values"][0, 1].item() == 2  # A real NULL uses the missing role.
+    assert not currency["valid"][0, 1]
+    assert currency["field_valid"][0, 1]
 
 
 @pytest.mark.parametrize(

@@ -887,12 +887,15 @@ def _encoded_column(binding: OutputBinding, column: Any, *, model=False) -> dict
     return binding.encode_arrow(column, model=model)
 
 
-def _encoded_rows(encoded: dict[str, Any], boundaries: np.ndarray, layout: Any) -> dict[str, Any]:
+def _encoded_rows(
+    encoded: dict[str, Any], boundaries: np.ndarray, layout: Any, *, value_pad=0, field_pad=0
+) -> dict[str, Any]:
     """Lay out scalar rows; expanding fields keep explicit piece/occurrence boundaries."""
     if "occurrence_offsets" in encoded or "piece_offsets" in encoded:
         return {**encoded, "offsets": torch.from_numpy(boundaries.copy())}
+    fills = {"values": value_pad, "field_ids": field_pad, "valid": False, "field_valid": False}
     return {
-        name: layout_array(item, boundaries, layout, fill=False if name == "valid" else 0)
+        name: layout_array(item, boundaries, layout, fill=fills.get(name, 0))
         for name, item in encoded.items()
     }
 
@@ -903,9 +906,11 @@ def _column_output(
     result = {}
     entity = isinstance(prepared.spec.source, EntitySource)
     layout = prepared.spec.layout
+    group = prepared.spec.representation
+    field_space = state.spaces.get(group.field_space) if state is not None else None
     for field, binding in prepared.state.items():
         encoded = _encoded_column(binding, rows.columns[field], model=model)
-        group = prepared.spec.representation
+        value_pad = binding.destination.roles.get("pad", 0) if binding.destination else 0
         if group.field_names is not None:
             if state is None:
                 raise ValueError("field-name column output requires its fitted mapping state")
@@ -914,7 +919,7 @@ def _column_output(
                 field,
                 rows,
                 state.field_names[group.field_names],
-                state.spaces.get(group.field_space),
+                field_space,
             )
             owned = np.ones(rows.size, dtype=bool)
             if prepared.declarations[field][0][0][0] in {"events", "current_events"}:
@@ -928,7 +933,13 @@ def _column_output(
             encoded["field_ids"] = torch.from_numpy(ids.copy())
             encoded["field_valid"] = torch.from_numpy(owned.copy())
         if not entity:
-            encoded = _encoded_rows(encoded, rows.boundaries, layout)
+            encoded = _encoded_rows(
+                encoded,
+                rows.boundaries,
+                layout,
+                value_pad=value_pad,
+                field_pad=field_space.roles.get("pad", 0) if field_space else 0,
+            )
         result[field] = encoded
     if not entity:
         result["valid"] = layout_array(
@@ -1631,6 +1642,7 @@ def _target_outputs(
             )
             output = {}
             for field, binding in state.bindings.items():
+                value_pad = binding.destination.roles.get("pad", 0) if binding.destination else 0
                 raw = _raw_targets(
                     values,
                     target.source,
@@ -1641,7 +1653,10 @@ def _target_outputs(
                 if isinstance(target, CandidateTarget):
                     parent = rows[target.input]
                     encoded = _encoded_rows(
-                        encoded, parent.boundaries, spec.inputs[target.input].layout
+                        encoded,
+                        parent.boundaries,
+                        spec.inputs[target.input].layout,
+                        value_pad=value_pad,
                     )
                     if isinstance(spec.inputs[target.input].layout, Packed):
                         encoded["offsets"] = torch.from_numpy(parent.boundaries.copy())
@@ -1658,6 +1673,7 @@ def _target_outputs(
             output = {}
             derived_by_name = {item.name: item for item in target.derived}
             for field, binding in state.bindings.items():
+                value_pad = binding.destination.roles.get("pad", 0) if binding.destination else 0
                 if field in derived_by_name:
                     derived = derived_by_name[field]
                     threshold = state.thresholds[field]
@@ -1678,7 +1694,10 @@ def _target_outputs(
                 else:
                     encoded = binding.encode_arrow(parent.columns[field], model=model)
                 output[field] = _encoded_rows(
-                    encoded, parent.boundaries, spec.inputs[target.input].layout
+                    encoded,
+                    parent.boundaries,
+                    spec.inputs[target.input].layout,
+                    value_pad=value_pad,
                 )
             if isinstance(spec.inputs[target.input].layout, Packed):
                 output["offsets"] = torch.from_numpy(parent.boundaries.copy())
