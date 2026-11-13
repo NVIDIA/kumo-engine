@@ -23,6 +23,7 @@ from kumo.pytorch.column_stats import (
     ColumnStats,
     StatRequest,
     TableColumnEncoder,
+    file_name_part,
     read_column_stats,
 )
 from kumo.pytorch.contract.sample import BuiltSample, SampleRequest, SampleSpec
@@ -71,6 +72,7 @@ class InMemorySource:
     def column_stats(self, requests: Sequence[StatRequest], cutoff: int | None) -> ColumnStats:
         import tempfile
 
+        import diskgraph
         import pyarrow as pa
         import pyarrow.parquet as pq
 
@@ -83,8 +85,11 @@ class InMemorySource:
             if self._tables[table.name] and any(item[0] == table.name for item in requests)
         ]
         columns = {item: EMPTY_STATS for item in requests}
+        ticks = (
+            None if cutoff is None else diskgraph.convert_ticks(cutoff, "nanoseconds", "seconds")
+        )
         if not stored:
-            return ColumnStats(columns, {"value": cutoff, "unit": "seconds"})
+            return ColumnStats(columns, {"value": ticks, "unit": "seconds"})
         with tempfile.TemporaryDirectory() as directory:
             sources = {}
             for table in stored:
@@ -95,18 +100,22 @@ class InMemorySource:
                 types = pa.schema(
                     [(name, dtype.to_arrow()) for name, dtype in table.columns.items()]
                 )
-                path = f"{directory}/{table.name}.parquet"
+                path = f"{directory}/{file_name_part(table.name)}.parquet"
                 pq.write_table(pa.Table.from_pylist(rows, types), path)
                 sources[table.name] = Parquet(path)
             index = Path(directory, "index")
             ensure_diskgraph_index(DataSchema(tables=tuple(stored)), Dataset(sources), index)
             names = {table.name for table in stored}
             group = [item for item in requests if item[0] in names]
-            columns.update(read_column_stats(index, group, cutoff, "seconds").columns)
-        return ColumnStats(columns, {"value": cutoff, "unit": "seconds"})
+            columns.update(read_column_stats(index, group, ticks, "seconds").columns)
+        return ColumnStats(columns, {"value": ticks, "unit": "seconds"})
 
     def column_text(self, encoder: TableColumnEncoder, cutoff: int | None) -> tuple[str, None]:
+        import diskgraph
+
         tables = {table.name: table for table in self.schema.tables}
+        if cutoff is not None:
+            cutoff = diskgraph.convert_ticks(cutoff, "nanoseconds", "seconds")
 
         def batches() -> Iterator[list[str]]:
             batch = []

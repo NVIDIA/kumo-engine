@@ -26,7 +26,7 @@ from kumo.pytorch.column_stats import (
     ColumnStats,
     StatRequest,
     TableColumnEncoder,
-    cutoff_seconds,
+    cutoff_nanos,
     read_column_stats,
 )
 from kumo.pytorch.contract.batch import EntitySource, EventSource, Input
@@ -237,7 +237,7 @@ class DiskGraphEngine:
         self.num_threads = num_threads
         self.num_shards = num_shards
         self.ingest = ingest
-        self.encoder_cutoffs = tuple(dict.fromkeys(cutoff_seconds(v) for v in encoder_cutoffs))
+        self.encoder_cutoffs = tuple(dict.fromkeys(cutoff_nanos(v) for v in encoder_cutoffs))
 
     def check_contract(self, contract: DataLoaderSpec) -> tuple[ValidationIssue, ...]:
         """Refuse the entries of `unsupported` the contract uses, before any data is read."""
@@ -442,7 +442,7 @@ class DiskGraphSource:
             raise ImportError("DiskGraphEngine requires pyarrow") from error
 
         self.schema = schema
-        self._index = artifact.path
+        self._index_path = artifact.path
         metadata = json.loads(Path(artifact.path, "index_metadata.json").read_text())
         self._clock = metadata.get("timestamp_unit", "seconds")
         self._num_threads = num_threads
@@ -846,13 +846,21 @@ class DiskGraphSource:
         )
 
     def column_stats(self, requests: Sequence[StatRequest], cutoff: int | None) -> ColumnStats:
-        ticks = None if cutoff is None else self._diskgraph.cutoff_ticks(cutoff, self._clock)
-        return read_column_stats(self._index, requests, ticks, self._clock, self._num_threads)
+        ticks = (
+            None
+            if cutoff is None
+            else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock)
+        )
+        return read_column_stats(self._index_path, requests, ticks, self._clock, self._num_threads)
 
     def column_text(self, encoder: TableColumnEncoder, cutoff: int | None) -> tuple[str, str]:
-        ticks = None if cutoff is None else self._diskgraph.cutoff_ticks(cutoff, self._clock)
+        ticks = (
+            None
+            if cutoff is None
+            else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock)
+        )
         name = encoder.tokenizer_file(ticks, self._clock)
-        path = Path(self._index, "col_stats", name)
+        path = Path(self._index_path, "col_stats", name)
         if path.is_file():
             try:
                 document = json.loads(path.read_text())
@@ -864,7 +872,7 @@ class DiskGraphSource:
                 raise ValueError(f"{path} is not a valid tokenizer file; delete it to retrain")
             return tokenizer, name
         tokenizer = self._diskgraph.train_tokenizer(
-            self._index,
+            self._index_path,
             encoder.columns,
             ticks,
             vocab_size=encoder.config.vocabulary_size,

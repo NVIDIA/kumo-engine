@@ -30,7 +30,8 @@ pub fn node_chunks(table: &TableReader, size: u64) -> impl Iterator<Item = (usiz
         })
 }
 
-/// The `columns` of a chunk's rows stored with node data, in node order.
+/// The `columns` of a chunk's rows stored with node data, in node order, strings and bytes
+/// with 64-bit offsets.
 pub fn decode_chunk(
     table: &TableReader,
     (shard, start, end): (usize, u64, u64),
@@ -51,7 +52,8 @@ pub fn decode_chunk(
             }
         }
     }
-    decoder.decode_batch_to_arrow(&rows, columns)
+    // A chunk's strings can pass the 2 GiB that 32-bit offsets hold.
+    decoder.decode_batch_to_arrow_with(&rows, columns, true)
 }
 
 /// Each create time in ticks of `clock`, read as ingest reads it.
