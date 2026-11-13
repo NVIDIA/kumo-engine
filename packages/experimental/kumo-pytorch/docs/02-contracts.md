@@ -8,8 +8,10 @@ in order; paste them into one Python session.
 
 ## The schema: types, keys and clocks
 
-Declare each stored column once with its raw scalar type, a primary key per
-table, the relations between tables, and a clock per table:
+Declare each stored column once with its raw scalar type, the relations between
+tables, and a clock per table. Entity tables require a primary key. Related
+event or transaction tables may set `primary_key=None`; each source row remains
+a separate occurrence, including identical rows:
 
 ```python
 from kumo.pytorch import api

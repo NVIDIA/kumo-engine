@@ -35,7 +35,7 @@ names its clock or declares `NON_TEMPORAL`.
 ```python
 class TableSpec(
     name: str,
-    primary_key: str,
+    primary_key: str | None,
     columns: Mapping[str, DType | None] | None = None,
     *,
     time_column: str | NonTemporal,
@@ -68,7 +68,7 @@ types with concrete ones, so a saved contract records them.
 **Parameters**
 
 - `name`: table name, as referenced by relations and specs.
-- `primary_key`: column uniquely identifying each row; must be non-null and unique, and must appear in `columns`.
+- `primary_key`: column uniquely identifying each row, or `None` for a keyless table. A declared key must be non-null, unique, and included in `columns`. Entity tables require a declared key.
 - `columns`: selected columns and stored types. Omit to discover columns from Parquet metadata; use None for an individual inferred type.
 - `time_column`: the column ordering this table's rows, or `NON_TEMPORAL`. Keyword-only and required.
 
