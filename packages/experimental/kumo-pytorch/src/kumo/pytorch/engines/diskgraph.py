@@ -7,8 +7,11 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
+import os
 import time
+import uuid
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import replace as dataclass_replace
@@ -21,9 +24,12 @@ import torch
 from kumo.pytorch.anchors import AnchorTable
 from kumo.pytorch.column_stats import (
     ColumnStats,
+    LengthColumn,
     StatRequest,
+    TableColumnEncoder,
     cutoff_nanos,
     read_column_stats,
+    token_lengths_file,
 )
 from kumo.pytorch.contract.batch import EntitySource, EventSource, Input
 from kumo.pytorch.contract.dtypes import DType, arrow_float64
@@ -65,6 +71,7 @@ from kumo.pytorch.data.records import (
     timestamp_to_epoch,
 )
 from kumo.pytorch.dataset import Dataset, Parquet, TableSource
+from kumo.pytorch.encoding import TEXT_SPECIAL_TOKENS, TEXT_UNKNOWN
 from kumo.pytorch.engine import AnchorTask, GraphRoot, SampleSource, register_engine
 from kumo.pytorch.engines.parquet_anchors import ParquetAnchors, check_parquet_anchors
 from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED, Unsupported
@@ -849,6 +856,64 @@ class DiskGraphSource:
             else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock, rounding="floor")
         )
         return read_column_stats(self._index_path, requests, ticks, self._clock, self._num_threads)
+
+    def column_text(self, encoder: TableColumnEncoder, cutoff: int | None) -> tuple[str, str]:
+        ticks = (
+            None
+            if cutoff is None
+            else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock, rounding="floor")
+        )
+        name = encoder.tokenizer_file(ticks, self._clock)
+        path = Path(self._index_path, "col_stats", name)
+        if path.is_file():
+            try:
+                document = json.loads(path.read_text())
+                tokenizer = document["tokenizer"]
+                intact = hashlib.sha256(tokenizer.encode()).hexdigest() == document["sha256"]
+            except (AttributeError, KeyError, TypeError, ValueError):
+                intact = False
+            if not intact:
+                raise ValueError(f"{path} is not a valid tokenizer file; delete it to retrain")
+            return tokenizer, name
+        tokenizer = self._diskgraph.train_tokenizer(
+            self._index_path,
+            encoder.columns,
+            ticks,
+            vocab_size=encoder.config.vocabulary_size,
+            min_frequency=encoder.config.min_frequency,
+            special_tokens=TEXT_SPECIAL_TOKENS,
+            unk_token=TEXT_UNKNOWN,
+            num_threads=self._num_threads,
+        )
+        document = {
+            "columns": [list(item) for item in encoder.columns],
+            "cutoff": {"value": ticks, "unit": self._clock},
+            "tokenizer": tokenizer,
+            "sha256": hashlib.sha256(tokenizer.encode()).hexdigest(),
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}")
+        with open(temporary, "x") as file:
+            file.write(json.dumps(document) + "\n")
+            file.flush()
+            os.fsync(file.fileno())
+        temporary.replace(path)
+        return tokenizer, name
+
+    def token_lengths(self, table: str, columns: Sequence[LengthColumn], cutoff: int | None) -> str:
+        ticks = (
+            None
+            if cutoff is None
+            else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock, rounding="floor")
+        )
+        name = token_lengths_file(table, columns, ticks, self._clock)
+        path = Path(self._index_path, "col_stats", name)
+        if not path.is_file():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._diskgraph.token_lengths(
+                self._index_path, table, list(columns), str(path), num_threads=self._num_threads
+            )
+        return name
 
     def fit_graph_fields(
         self,

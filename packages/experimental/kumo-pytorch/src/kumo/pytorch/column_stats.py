@@ -28,11 +28,11 @@ from kumo.pytorch.contract.batch import (
     Graph,
     UseEncoding,
 )
-from kumo.pytorch.contract.batch.encodings import Buckets, ScalarEncoding, Vocabulary, ZScore
+from kumo.pytorch.contract.batch.encodings import Buckets, ScalarEncoding, Text, Vocabulary, ZScore
 from kumo.pytorch.contract.batch.validation import resolved_fields
 from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.sample import Field, destination_table
-from kumo.pytorch.encoding import FittedEncoder, learned_entries, typed_key
+from kumo.pytorch.encoding import TEXT_RECIPE, FittedEncoder, learned_entries, typed_key
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +86,97 @@ class TableColumnEncoder:
 
     @property
     def requests(self) -> tuple[StatRequest, ...]:
+        if isinstance(self.config, Text):
+            return ()
         stype = "categorical" if isinstance(self.config, Vocabulary) else "numerical"
         return tuple((table, column, stype) for table, column in self.columns)
+
+    def tokenizer_file(self, ticks: int | None, unit: str) -> str:
+        import diskgraph
+
+        settings = [
+            self.config.vocabulary_size,
+            self.config.min_frequency,
+            self.columns,
+            TEXT_RECIPE,
+            diskgraph.TOKENIZER_TRAINER,
+        ]
+        digest = hashlib.sha256(json.dumps(settings).encode()).hexdigest()[:16]
+        table, column = (file_name_part(name) for name in self.columns[0])
+        return f"{_cutoff_dir(ticks, unit)}/{table}.{column}.text-{digest}.tokenizer.json"
+
+
+#: A stored column the model reads, with its fitted tokenizer's JSON if it is ``Text``.
+LengthColumn = tuple[str, str | None]
+
+
+def token_length_columns(
+    contract: Any, plan: Any
+) -> dict[str, tuple[int, tuple[LengthColumn, ...]]]:
+    """Each event table's per-event constant and per-node columns under ``Batching.length_input``.
+
+    ``Text`` and variable-length list columns vary per node; every other stored column the input
+    reads adds 1 to the constant. Lists can't be declared yet (DG-NESTED-COLUMN), so only ``Text``
+    is per-node today.
+    """
+
+    name = contract.batch.batching.length_input
+    if name is None or not isinstance(contract.batch.inputs[name].representation, Fields):
+        return {}
+    columns: dict[str, dict[str, str | None]] = {}
+    for use in contract.batch.inputs[name].representation.fields:
+        encoder = plan.output(name=name).field(name=use.field).encoder
+        tokenizer = encoder.tokenizer_json if isinstance(encoder.config, Text) else None
+        for variant, _, _ in resolved_fields(contract, name, use.field):
+            stored = _stored_column(contract.sample, contract.schema, variant)
+            if stored is None or variant[0] not in {"events", "current_events"}:
+                continue
+            table, column = stored
+            known = columns.setdefault(table, {}).get(column)
+            if tokenizer is not None and known is not None and known != tokenizer:
+                raise ValueError(
+                    f"{table}.{column} is read by Text encoders with different tokenizers, "
+                    "so its token length is ambiguous"
+                )
+            columns[table][column] = tokenizer or known
+    lengths = {}
+    for table, read in sorted(columns.items()):
+        per_node = tuple(sorted(item for item in read.items() if item[1] is not None))
+        lengths[table] = (len(read) - len(per_node), per_node)
+    return lengths
+
+
+def token_lengths_file(
+    table: str, columns: Sequence[LengthColumn], ticks: int | None, unit: str
+) -> str:
+    import diskgraph
+
+    settings = [
+        [
+            [column, None if tokenizer is None else hashlib.sha256(tokenizer.encode()).hexdigest()]
+            for column, tokenizer in columns
+        ],
+        diskgraph.TOKENIZER_TRAINER,
+    ]
+    digest = hashlib.sha256(json.dumps(settings).encode()).hexdigest()[:16]
+    return f"{_cutoff_dir(ticks, unit)}/{file_name_part(table)}.lengths-{digest}.bin"
+
+
+def read_token_lengths(
+    index: str | Path, entry: Mapping[str, Any]
+) -> tuple[int, np.ndarray | None]:
+    """A table's per-event constant and its read-only per-node counts, indexed by node ID.
+
+    ``entry`` is the table's ``FitRecord["statistics"]["token_lengths"]`` value and ``index``
+    the DiskGraph index directory. The per-node counts are ``None`` when ``entry`` has no file.
+    """
+
+    if entry["file"] is None:
+        return entry["constant"], None
+    path = Path(index, "col_stats", entry["file"])
+    if not path.stat().st_size:
+        return entry["constant"], np.frombuffer(b"", dtype="<u2")
+    return entry["constant"], np.memmap(path, dtype="<u2", mode="r")
 
 
 def stats_request(
@@ -228,6 +317,8 @@ def _learns_from_stats(config: Any, dtype: DType) -> bool:
         return config.mean is None and dtype.numeric
     if isinstance(config, Buckets):
         return config.bins is not None and dtype.numeric
+    if isinstance(config, Text):
+        return config.state is None and dtype.name == "string"
     return False
 
 

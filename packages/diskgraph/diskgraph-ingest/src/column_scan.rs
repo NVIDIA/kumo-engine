@@ -4,36 +4,37 @@
 
 //! Stored rows of an index table, decoded to Arrow in batches under a shared byte budget.
 
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use arrow_array::{ArrayRef, BooleanArray, RecordBatch};
 use arrow_schema::Schema;
 use diskgraph_core::time::TimeUnit;
-use diskgraph_index::graph::TableReader;
+use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use diskgraph_limits::total_memory_bytes;
 use diskgraph_rowpack::{
-    builder_value_bytes, make_arrow_builder, RowAccess, RowAccessHints, RowAccessStats,
-    RowPackDecodeScratch,
+    builder_value_bytes, make_arrow_builder, IngestedType, RowAccess, RowAccessHints,
+    RowAccessStats, RowPackDecodeScratch,
 };
 
 use crate::source_memory::ByteBudget;
 
-const CHUNK_NODES: u64 = 1 << 16;
+use crate::index_metadata::INDEX_METADATA_FILENAME;
 
-/// `(shard, first node, end node)`, in node order.
-pub fn node_chunks(table: &TableReader) -> Vec<(usize, u64, u64)> {
+/// `(shard, first node, end node)` of up to `size` nodes, in node order.
+pub fn node_chunks(table: &TableReader, size: u64) -> impl Iterator<Item = (usize, u64, u64)> + '_ {
     (0..table.shard_count())
         .filter_map(|shard| {
             let (min, max) = table.shard_id_range(shard)?;
             (min <= max).then(|| (shard, max - min + 1))
         })
-        .flat_map(|(shard, nodes)| {
+        .flat_map(move |(shard, nodes)| {
             (0..nodes)
-                .step_by(CHUNK_NODES as usize)
-                .map(move |start| (shard, start, nodes.min(start + CHUNK_NODES)))
+                .step_by(size as usize)
+                .map(move |start| (shard, start, nodes.min(start + size)))
         })
-        .collect()
 }
 
 /// Decoded value bytes per batch. A chunk of narrow rows ends a batch first; wide or
@@ -161,4 +162,44 @@ pub fn at_cutoff(times: Option<&[Option<i64>]>, rows: usize, cutoff: Option<i64>
             .collect(),
         _ => BooleanArray::from(vec![true; rows]),
     }
+}
+
+pub struct StoredTable {
+    pub reader: Arc<TableReader>,
+    pub columns: Vec<(String, IngestedType)>,
+    pub create_time: Option<usize>,
+}
+
+pub fn stored_tables(
+    index_dir: &Path,
+    names: &HashSet<String>,
+) -> Result<(HashMap<String, StoredTable>, TimeUnit)> {
+    let reader =
+        GraphIndexReader::open_subset(&index_dir.join(INDEX_METADATA_FILENAME), index_dir, names)?;
+    let tables = names
+        .iter()
+        .map(|name| {
+            let table = reader
+                .table(name)
+                .ok_or_else(|| anyhow!("index has no node table {name}"))?;
+            let columns: Vec<(String, IngestedType)> = table
+                .node_data_decoder()
+                .ok_or_else(|| anyhow!("table {name} has no node data"))?
+                .context()
+                .columns
+                .iter()
+                .map(|c| (c.name.clone(), c.logical_type))
+                .collect();
+            let create_time = table
+                .create_time_col()
+                .and_then(|time| columns.iter().position(|(c, _)| c == time));
+            let stored = StoredTable {
+                reader: table,
+                columns,
+                create_time,
+            };
+            Ok((name.clone(), stored))
+        })
+        .collect::<Result<_>>()?;
+    Ok((tables, reader.metadata().timestamp_unit))
 }

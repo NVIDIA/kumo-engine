@@ -14,7 +14,7 @@ comparison is a matter of swapping one object.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -22,11 +22,14 @@ from kumo.pytorch.column_stats import (
     EMPTY_STATS,
     ColumnStats,
     StatRequest,
+    TableColumnEncoder,
     file_name_part,
     read_column_stats,
 )
 from kumo.pytorch.contract.sample import BuiltSample, SampleRequest, SampleSpec
-from kumo.pytorch.contract.schema import DataSchema
+from kumo.pytorch.contract.schema import DataSchema, table_clock
+from kumo.pytorch.data.records import timestamp_to_epoch
+from kumo.pytorch.encoding import TRAIN_BATCH, train_text
 from kumo.pytorch.engines.in_memory.graph import InMemoryGraphSampler
 from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
 
@@ -108,6 +111,32 @@ class InMemorySource:
             group = [item for item in requests if item[0] in names]
             columns.update(read_column_stats(index, group, ticks, "seconds").columns)
         return ColumnStats(columns, {"value": ticks, "unit": "seconds"})
+
+    def column_text(self, encoder: TableColumnEncoder, cutoff: int | None) -> tuple[str, None]:
+        import diskgraph
+
+        tables = {table.name: table for table in self.schema.tables}
+        if cutoff is not None:
+            cutoff = diskgraph.convert_ticks(cutoff, "nanoseconds", "seconds", rounding="floor")
+
+        def batches() -> Iterator[list[str]]:
+            batch = []
+            for table, column in encoder.columns:
+                clock = table_clock(tables[table])
+                for row in self._tables[table]:
+                    if row.get(column) is not None and (
+                        clock is None
+                        or row.get(clock) is not None
+                        and (cutoff is None or timestamp_to_epoch(row[clock]) <= cutoff)
+                    ):
+                        batch.append(encoder.dtype.normalize(row[column], path=f"{table}.{column}"))
+                        if len(batch) == TRAIN_BATCH:
+                            yield batch
+                            batch = []
+            if batch:
+                yield batch
+
+        return train_text(encoder.config, batches()), None
 
     def sample_graph(
         self,

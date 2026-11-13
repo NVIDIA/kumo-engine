@@ -59,8 +59,7 @@ fn dictionary_expanded_strings_decode_in_batches_within_one_budget() -> Result<(
     let seen = Mutex::new(vec![0u64; 3]);
     let (budget_ref, seen_ref, values_ref) = (&budget, &seen, &values);
     std::thread::scope(|scope| -> Result<()> {
-        let workers: Vec<_> = node_chunks(table)
-            .into_iter()
+        let workers: Vec<_> = node_chunks(table, 1 << 16)
             .map(|chunk| {
                 scope.spawn(move || {
                     scan_chunk(table, chunk, &[1], budget_ref, |batch, nodes| {

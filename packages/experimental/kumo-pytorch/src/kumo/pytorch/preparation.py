@@ -38,7 +38,9 @@ from kumo.pytorch.column_stats import (
     cutoff_nanos,
     fit_from_stats,
     table_column_encoders,
+    token_length_columns,
 )
+from kumo.pytorch.contract.batch.encodings import Text
 from kumo.pytorch.contract.sample import SampleRequest
 from kumo.pytorch.dataset import Dataset, TableSource
 from kumo.pytorch.encoding import FittedEncoder
@@ -290,6 +292,18 @@ class Plan:
                 inference=inference,
                 pinned=pinned,
             )
+            token_lengths = getattr(source, "token_lengths", None)
+            if token_lengths is not None and input_state is None:
+                lengths = {}
+                columns = token_length_columns(self.contract, assembler)
+                for table, (constant, text) in columns.items():
+                    file = token_lengths(table, text, statistics.get("cutoff")) if text else None
+                    lengths[table] = {"constant": constant, "file": file}
+                if lengths:
+                    fit["inputs"] = {
+                        **fit["inputs"],
+                        "statistics": {"cutoff": None, **statistics, "token_lengths": lengths},
+                    }
         except BaseException:
             task_anchors.close()
             raise
@@ -309,9 +323,14 @@ class Plan:
         fitting: Sequence[SampleRequest],
         cutoff: int | None | _LatestAnchor,
     ) -> tuple[dict[str, FittedEncoder], dict[str, Any]]:
-        encoders = table_column_encoders(self.contract)
         column_stats = getattr(source, "column_stats", None)
-        if not encoders or column_stats is None or not fitting:
+        column_text = getattr(source, "column_text", None)
+        encoders = {
+            identity: encoder
+            for identity, encoder in table_column_encoders(self.contract).items()
+            if (column_text if isinstance(encoder.config, Text) else column_stats) is not None
+        }
+        if not encoders or not fitting:
             return {}, {}
         latest = (
             cutoff_nanos(max(request.as_of_time for request in fitting))
@@ -328,20 +347,28 @@ class Plan:
                 _iso(latest),
             )
         started = time.perf_counter()
-        stats = column_stats(
-            [item for encoder in encoders.values() for item in encoder.requests], cutoff
-        )
-        pinned = {
-            identity: fit_from_stats(identity, encoder, stats)
-            for identity, encoder in encoders.items()
-        }
+        requests = [item for encoder in encoders.values() for item in encoder.requests]
+        stats = column_stats(requests, cutoff) if requests else None
+        pinned, files = {}, list(stats.files) if stats else []
+        for identity, encoder in encoders.items():
+            if isinstance(encoder.config, Text):
+                tokenizer, path = column_text(encoder, cutoff)
+                pinned[identity] = FittedEncoder(
+                    identity=identity,
+                    config=encoder.config,
+                    dtype=encoder.dtype,
+                    tokenizer_json=tokenizer,
+                )
+                files.extend([path] if path else [])
+            else:
+                pinned[identity] = fit_from_stats(identity, encoder, stats)
         logger.info(
             "pinned %d encoders from DiskGraph column statistics (cutoff %s) in %.2fs",
             len(pinned),
             "none" if cutoff is None else _iso(cutoff),
             time.perf_counter() - started,
         )
-        return pinned, {"cutoff": cutoff, "col_stats": list(stats.files)}
+        return pinned, {"cutoff": cutoff, "col_stats": files}
 
     @staticmethod
     def _fit_selection(selection: SplitSelection | None, declares_splits: bool) -> SplitSelection:
