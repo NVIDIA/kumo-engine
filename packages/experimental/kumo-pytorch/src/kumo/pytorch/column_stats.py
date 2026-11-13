@@ -110,8 +110,11 @@ class TableColumnEncoder:
 LengthColumn = tuple[str, str | None]
 
 
-def token_length_columns(contract: Any, plan: Any) -> dict[str, tuple[LengthColumn, ...]]:
-    """Each event table's stored columns that the ``Batching.length_input`` input reads."""
+def token_length_columns(
+    contract: Any, plan: Any
+) -> dict[str, tuple[int, tuple[LengthColumn, ...]]]:
+    """Each event table's per-event constant, 1 per stored column the ``Batching.length_input``
+    input reads without ``Text``, and the ``Text`` columns it reads."""
 
     name = contract.batch.batching.length_input
     if name is None or not isinstance(contract.batch.inputs[name].representation, Fields):
@@ -132,7 +135,13 @@ def token_length_columns(contract: Any, plan: Any) -> dict[str, tuple[LengthColu
                     "so its token length is ambiguous"
                 )
             columns[table][column] = tokenizer or known
-    return {table: tuple(sorted(read.items())) for table, read in sorted(columns.items())}
+    return {
+        table: (
+            sum(tokenizer is None for tokenizer in read.values()),
+            tuple(sorted(item for item in read.items() if item[1] is not None)),
+        )
+        for table, read in sorted(columns.items())
+    }
 
 
 def token_lengths_file(
@@ -151,16 +160,21 @@ def token_lengths_file(
     return f"{_cutoff_dir(ticks, unit)}/{file_name_part(table)}.lengths-{digest}.bin"
 
 
-def read_token_lengths(path: str | Path) -> np.ndarray:
-    """A token lengths file's per-node counts, read-only and indexed by node ID.
+def read_token_lengths(
+    index: str | Path, entry: Mapping[str, Any]
+) -> tuple[int, np.ndarray | None]:
+    """A table's per-event constant and its read-only per-node counts, indexed by node ID.
 
-    ``path`` is the file itself: the index's ``col_stats/`` directory joined with the name
-    ``FitRecord["statistics"]["token_lengths"]`` records.
+    ``entry`` is the table's ``FitRecord["statistics"]["token_lengths"]`` value and ``index``
+    the DiskGraph index directory. The per-node counts are ``None`` when ``entry`` has no file.
     """
 
-    if not Path(path).stat().st_size:
-        return np.frombuffer(b"", dtype="<u2")
-    return np.memmap(path, dtype="<u2", mode="r")
+    if entry["file"] is None:
+        return entry["constant"], None
+    path = Path(index, "col_stats", entry["file"])
+    if not path.stat().st_size:
+        return entry["constant"], np.frombuffer(b"", dtype="<u2")
+    return entry["constant"], np.memmap(path, dtype="<u2", mode="r")
 
 
 def stats_request(

@@ -290,14 +290,15 @@ class Plan:
             )
             token_lengths = getattr(source, "token_lengths", None)
             if token_lengths is not None and input_state is None:
-                files = {
-                    table: token_lengths(table, columns, statistics.get("cutoff"))
-                    for table, columns in token_length_columns(self.contract, assembler).items()
-                }
-                if files:
+                lengths = {}
+                columns = token_length_columns(self.contract, assembler)
+                for table, (constant, text) in columns.items():
+                    file = token_lengths(table, text, statistics.get("cutoff")) if text else None
+                    lengths[table] = {"constant": constant, "file": file}
+                if lengths:
                     fit["inputs"] = {
                         **fit["inputs"],
-                        "statistics": {"cutoff": None, **statistics, "token_lengths": files},
+                        "statistics": {"cutoff": None, **statistics, "token_lengths": lengths},
                     }
         except BaseException:
             task_anchors.close()
