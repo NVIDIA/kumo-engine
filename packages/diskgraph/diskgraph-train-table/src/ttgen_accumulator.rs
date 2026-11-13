@@ -27,6 +27,11 @@ pub fn accumulate_numeric_batch<U: UnitSystem>(
     rows: std::ops::Range<usize>,
     keep_first_equal: bool,
 ) -> bool {
+    // Eligibility is invariant for the whole batch, including empty batches.
+    if operations.iter().any(|operation| !matches!(operation.func,
+        diskgraph_core::tt_builder::AggFunc::Count | diskgraph_core::tt_builder::AggFunc::Sum |
+        diskgraph_core::tt_builder::AggFunc::Avg | diskgraph_core::tt_builder::AggFunc::Min |
+        diskgraph_core::tt_builder::AggFunc::Max)) { return false; }
     let arrays = columns
         .iter()
         .map(|(_, array)| {
@@ -69,22 +74,8 @@ pub fn accumulate_numeric_batch<U: UnitSystem>(
             }
             values[slot] = value;
         }
-        for (((state, count), slot), operation) in states
-            .iter_mut()
-            .zip(observed.iter_mut())
-            .zip(&slots)
-            .zip(operations)
+        for ((state, count), slot) in states.iter_mut().zip(observed.iter_mut()).zip(&slots)
         {
-            if !matches!(
-                operation.func,
-                diskgraph_core::tt_builder::AggFunc::Count
-                    | diskgraph_core::tt_builder::AggFunc::Sum
-                    | diskgraph_core::tt_builder::AggFunc::Avg
-                    | diskgraph_core::tt_builder::AggFunc::Min
-                    | diskgraph_core::tt_builder::AggFunc::Max
-            ) {
-                return false;
-            }
             let value = slot.flatten().and_then(|slot| values[slot]);
             *count += usize::from(value.is_some());
             state.observe_numeric_row(value, keep_first_equal);
