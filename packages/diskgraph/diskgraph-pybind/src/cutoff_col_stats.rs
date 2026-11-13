@@ -7,7 +7,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use ahash::AHashMap;
 use anyhow::{anyhow, ensure, Result};
@@ -15,8 +15,7 @@ use arrow::array::Array;
 use arrow::compute::kernels::length::length;
 use arrow::compute::{cast, filter_record_batch};
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Int64Type, UInt64Type};
-use arrow_array::{ArrayRef, Int64Array};
+use arrow_array::types::Int64Type;
 use arrow_schema::DataType;
 use compact_str::CompactString;
 use diskgraph_core::time::convert_trunc;
@@ -72,46 +71,35 @@ fn from_index(index_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
             .collect();
         let create_time = stored.create_time;
         let decoded: Vec<usize> = requested.iter().copied().chain(create_time).collect();
-        let parts = node_chunks(&stored.reader, CHUNK_NODES)
-            .collect::<Vec<_>>()
-            .into_par_iter()
-            .map(|chunk| {
-                let (_, batch) = decode_chunk(&stored.reader, chunk, &decoded)?;
-                let times = create_time.map(|_| create_times(batch.column(requested.len()), clock));
-                let mut sinks = table.sinks()?;
-                for (stats, cutoff) in sinks.stats.iter_mut().zip(&request.cutoffs) {
-                    let keep = at_cutoff(times.as_deref(), batch.num_rows(), *cutoff);
-                    let rows = filter_record_batch(&batch, &keep)?;
-                    for (position, &col_idx) in requested.iter().enumerate() {
-                        // Stored values are observed by their type, as ingest observes them.
-                        let column = ColumnSpec {
-                            semantic_type: None,
-                            ..spec.columns[col_idx].clone()
-                        };
-                        let (values, column) = match column.ingested_dtype {
-                            // Ingest observes a u64's bits as an i64.
-                            IngestedType::UInt64 => (
-                                Arc::new(Int64Array::from_iter(
-                                    rows.column(position)
-                                        .as_primitive::<UInt64Type>()
-                                        .iter()
-                                        .map(|value| value.map(|value| value as i64)),
-                                )) as ArrayRef,
-                                ColumnSpec {
-                                    ingested_dtype: IngestedType::Int64,
-                                    ..column
-                                },
-                            ),
-                            _ => (rows.column(position).clone(), column),
-                        };
-                        drive_from_arrow_column(col_idx, &values, &column, stats, None, clock)?;
+        // Windows of chunks keep a few sinks per thread alive and merge in chunk order.
+        let chunks: Vec<_> = node_chunks(&stored.reader, CHUNK_NODES).collect();
+        for window in chunks.chunks(4 * rayon::current_num_threads()) {
+            let parts = window
+                .par_iter()
+                .map(|&chunk| {
+                    let (_, batch) = decode_chunk(&stored.reader, chunk, &decoded)?;
+                    let times =
+                        create_time.map(|_| create_times(batch.column(requested.len()), clock));
+                    let mut sinks = table.sinks()?;
+                    for (stats, cutoff) in sinks.stats.iter_mut().zip(&request.cutoffs) {
+                        let keep = at_cutoff(times.as_deref(), batch.num_rows(), *cutoff);
+                        let rows = filter_record_batch(&batch, &keep)?;
+                        for (position, &col_idx) in requested.iter().enumerate() {
+                            // Stored values are observed by their type, as ingest observes them.
+                            let column = ColumnSpec {
+                                semantic_type: None,
+                                ..spec.columns[col_idx].clone()
+                            };
+                            let values = rows.column(position);
+                            drive_from_arrow_column(col_idx, values, &column, stats, None, clock)?;
+                        }
                     }
-                }
-                Ok(sinks)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        for sinks in parts {
-            table.add(sinks);
+                    Ok(sinks)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            for sinks in parts {
+                table.add(sinks);
+            }
         }
         tables.push(table);
     }

@@ -2896,6 +2896,19 @@ impl FileColStats {
         }
     }
 
+    /// Below 2^63 as an i64; above, exactly as text for counts and as an f64 otherwise.
+    fn observe_u64_at(&mut self, col_idx: usize, slot: usize, value: u64) {
+        match i64::try_from(value) {
+            Ok(value) => self.observe_i64_at(col_idx, slot, value),
+            Err(_) => match &self.cols[slot] {
+                ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } => {
+                    self.observe_string_at(col_idx, slot, &value.to_string())
+                }
+                _ => self.observe_f64_at(col_idx, slot, value as f64),
+            },
+        }
+    }
+
     #[inline]
     fn observe_f64_at(&mut self, col_idx: usize, slot: usize, value: f64) {
         // Canonicalize categorical floats exactly as they are serialized. This
@@ -3308,6 +3321,7 @@ macro_rules! observe_each_collector {
 
 observe_each_collector! {
     observe_i64 => observe_i64_at(value: i64);
+    observe_u64 => observe_u64_at(value: u64);
     observe_f64 => observe_f64_at(value: f64);
     observe_string => observe_string_at(value: &str);
     observe_bytes => observe_bytes_at(value: &[u8]);

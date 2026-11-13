@@ -42,7 +42,6 @@ from kumo.pytorch.column_stats import (
 )
 from kumo.pytorch.contract.batch.encodings import Text
 from kumo.pytorch.contract.sample import SampleRequest
-from kumo.pytorch.data.records import cutoff_to_epoch
 from kumo.pytorch.dataset import Dataset, TableSource
 from kumo.pytorch.encoding import FittedEncoder
 from kumo.pytorch.engine import AnchorTask, Engine, SampleSource
@@ -172,7 +171,7 @@ class Plan:
         fit_split: str | Collection[str | None] | AllAnchors | None = None,
         fitted: FittedState | None = None,
         inference: bool | None = None,
-        encoder_cutoff: str | dt.datetime | None = LATEST_ANCHOR,
+        encoder_cutoff: str | int | dt.datetime | dt.date | None = LATEST_ANCHOR,
     ) -> Task:
         """Bind anchors, fit what is still unfitted, and return the task.
 
@@ -200,7 +199,9 @@ class Plan:
 
         Encoders over stored table columns fit on every table row created at or
         before ``encoder_cutoff``, whatever ``fit_split`` selects: by default the
-        latest anchor time ``fit_split`` selects; ``None`` reads every row.
+        latest anchor time ``fit_split`` selects; ``None`` reads every row. The
+        cutoff is an ISO 8601 string or a time as an anchor gives it: epoch
+        seconds, a date or a datetime.
 
         Reused state applies unchanged: nothing refits, grows or renumbers.
         Complete state requires an equal `DataLoaderSpec.fingerprint`;
@@ -327,7 +328,7 @@ class Plan:
         if not encoders or not fitting:
             return {}, {}
         latest = (
-            max(cutoff_to_epoch(request.as_of_time) for request in fitting) * 10**9
+            max(cutoff_nanos(request.as_of_time) for request in fitting)
             if self.contract.requires_anchor_time
             else None
         )

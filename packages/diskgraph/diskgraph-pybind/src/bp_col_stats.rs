@@ -951,11 +951,22 @@ pub(crate) fn drive_from_arrow_column<O: ColumnValueObserver>(
                 .is_some()
         } else {
             match col.ingested_dtype {
+                IngestedType::UInt64 => {
+                    access_or_parse_failure(access.get_uint64(0), col_idx, observer)
+                        .map(|value| {
+                            if let (Some(range), Ok(value)) =
+                                (integer_range.as_deref_mut(), i64::try_from(value))
+                            {
+                                range.observe(value);
+                            }
+                            observer.observe_u64(col_idx, value)
+                        })
+                        .is_some()
+                }
                 IngestedType::Int64
                 | IngestedType::Int32
                 | IngestedType::Int16
                 | IngestedType::Int8
-                | IngestedType::UInt64
                 | IngestedType::UInt32
                 | IngestedType::UInt16
                 | IngestedType::UInt8 => {

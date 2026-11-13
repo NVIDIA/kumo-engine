@@ -2110,6 +2110,9 @@ pub(crate) fn train_bpe_dict(
 /// When enabled, a real observer (e.g. `FileColStats`) collects streaming statistics.
 pub trait ColumnValueObserver {
     fn observe_i64(&mut self, col_idx: usize, value: i64);
+    fn observe_u64(&mut self, col_idx: usize, value: u64) {
+        self.observe_i64(col_idx, value as i64);
+    }
     fn observe_f64(&mut self, col_idx: usize, value: f64);
     fn observe_string(&mut self, col_idx: usize, value: &str);
     fn observe_bytes(&mut self, _col_idx: usize, _value: &[u8]) {}
@@ -3090,7 +3093,7 @@ impl RowPackEncoder {
                     match value {
                         None => 0u8,
                         Some(v) => {
-                            observer.observe_i64(idx, v as i64);
+                            observer.observe_u64(idx, v);
                             match &col.encoding {
                                 ColumnEncoding::Int {
                                     signed,
