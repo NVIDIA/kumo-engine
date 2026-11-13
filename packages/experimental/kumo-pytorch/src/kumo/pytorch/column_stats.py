@@ -13,7 +13,7 @@ import logging
 import math
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -85,8 +85,6 @@ class ColumnStats:
     cutoff: Mapping[str, Any]
     #: The ``col_stats/`` files read.
     files: tuple[str, ...] = ()
-    #: Exact task-owned aggregate cuts; stored graph statistics retain their grid.
-    bucket_cuts: Mapping[str, Sequence[float]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -514,9 +512,7 @@ def fit_from_stats(identity: str, encoder: TableColumnEncoder, stats: ColumnStat
         identity=identity,
         config=config,
         dtype=dtype,
-        boundaries=tuple(stats.bucket_cuts[identity])
-        if identity in stats.bucket_cuts
-        else _bucket_cuts(config, datas, finite),
+        boundaries=_bucket_cuts(config, datas, finite),
     )
 
 

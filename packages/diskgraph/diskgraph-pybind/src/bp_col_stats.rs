@@ -420,6 +420,9 @@ fn validate_stats_dtype(col: &ColumnSpec) -> Result<()> {
         | IngestedType::Bool
         | IngestedType::String
         | IngestedType::Bytes
+        | IngestedType::Date
+        | IngestedType::Decimal128
+        | IngestedType::Decimal256
         | IngestedType::Timestamp
         | IngestedType::Float32Array
         | IngestedType::Float64Array

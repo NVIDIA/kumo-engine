@@ -6,6 +6,8 @@
 
 import json
 from dataclasses import replace
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from math import sqrt
 
 import pyarrow as pa
@@ -18,6 +20,85 @@ from kumo.pytorch.column_stats import ColumnStats, TableColumnEncoder, fit_from_
 from tests.test_anchor_tables import ANCHORS, DATASET, EVENTS, _contract, _table
 
 diskgraph = pytest.importorskip("diskgraph")
+
+
+@pytest.mark.parametrize(
+    "dtype,labels",
+    [
+        (api.DType("bool"), [False, True]),
+        (api.DType("uint64"), [2**63, 2**63 + 1]),
+        (api.DType("date32"), [date(2024, 1, 1), date(2024, 1, 2)]),
+        *(
+            (
+                api.DType("timestamp", unit=unit, timezone="UTC"),
+                [datetime(2024, 1, 1, tzinfo=UTC), datetime(2024, 1, 2, tzinfo=UTC)],
+            )
+            for unit in ("s", "ms", "us", "ns")
+        ),
+        (api.DType("decimal128", precision=20, scale=2), [Decimal("1.25"), Decimal("2.50")]),
+        (api.DType("decimal256", precision=40, scale=2), [Decimal("1.25"), Decimal("2.50")]),
+    ],
+)
+def test_materialized_label_stats_accept_declared_types(tmp_path, dtype, labels):
+    spec = aggregate_contract()
+    spec = replace(
+        spec,
+        sample=replace(spec.sample, targets={"label": api.ExternalTarget(dtype)}),
+        batch=replace(spec.batch, targets={"label": api.LabelTarget("label", api.Vocabulary())}),
+    )
+    path = tmp_path / "anchors.parquet"
+    rows = pa.Table.from_pylist(ANCHORS).append_column(
+        "label", pa.array([labels[i % 2] for i in range(len(ANCHORS))], type=dtype.to_arrow())
+    )
+    pq.write_table(rows, path)
+    table = _table(source=api.Parquet(str(path)), targets={"label": "label"})
+    sources = {}
+    for declared in spec.schema.tables:
+        source = tmp_path / f"{declared.name}.parquet"
+        schema = pa.schema([(name, dtype.to_arrow()) for name, dtype in declared.columns.items()])
+        pq.write_table(
+            pa.Table.from_pylist(aggregate_dataset().tables[declared.name].rows, schema=schema),
+            source,
+        )
+        sources[declared.name] = api.Parquet(str(source))
+    with api.prepare(
+        spec, api.Dataset(sources), api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
+    ) as plan:
+        values = plan._materialize_values(table, tmp_path / "values", stats_split="train")
+        with plan.materialize(values.anchors, fit_split="train") as task:
+            encoder = task.target("label").field(name="value").encoder
+            assert encoder.dtype == dtype
+            assert len(encoder.entries) == 2
+            assert {value for value, _ in encoder.entries} == set(labels)
+
+
+def test_generated_bool_target_statistics(tmp_path):
+    spec = aggregate_contract()
+    spec = replace(
+        spec,
+        sample=replace(
+            spec.sample,
+            targets={
+                "label": api.Compare(
+                    api.Aggregate(
+                        api.Rows(("user_events",), api.TimeWindow("occurred_at", 0, 100)),
+                        "sum",
+                        "amount",
+                        dtype=api.DType("float64"),
+                    ),
+                    "greater_than",
+                    5,
+                    dtype=api.DType("bool"),
+                )
+            },
+        ),
+        batch=replace(spec.batch, targets={"label": api.LabelTarget("label", api.Vocabulary())}),
+    )
+    with api.prepare(spec, aggregate_dataset(), api.InMemoryEngine()) as plan:
+        table = _table(source=api.InMemoryRows([dict(row, at=0) for row in ANCHORS]))
+        values = plan._materialize_values(table, tmp_path / "values", stats_split="train")
+        with plan.materialize(values.anchors, fit_split="train") as task:
+            assert len(task.target("label").field(name="value").encoder.entries) == 2
 
 
 def aggregate_contract():
@@ -63,6 +144,10 @@ def test_selected_stats_reuse_shared_fitter_without_sample_collection(tmp_path, 
         assert stats["std"] == pytest.approx(sqrt(92 / 7))
         assert len(stats["category_counts"]) == 8
         assert MaterializedValues.open(values.anchors.source.path) == values
+        metadata = json.loads((tmp_path / "values" / "feature-stats.json").read_text())
+        assert "stats" not in metadata
+        stats_path = tmp_path / "values" / metadata["columns_file"]
+        assert json.loads(stats_path.read_text())["anchors"][values.features["score"]] == stats
 
         def forbidden(*args, **kwargs):
             pytest.fail("stats-backed scalar fitting fetched model samples/history")
@@ -156,9 +241,7 @@ def test_generated_label_encoder_uses_selected_column_statistics(tmp_path, monke
 
 
 @pytest.mark.parametrize("zero", [False, True])
-def test_materialized_bucket_cuts_preserve_row_fitter_quantiles(tmp_path, zero):
-    from kumo.pytorch.encoding import fit_encoder
-
+def test_materialized_buckets_use_shared_statistics(tmp_path, zero, monkeypatch):
     spec = aggregate_contract()
     config = api.Buckets(bins=4, separate_zero=True)
     batch = replace(
@@ -181,11 +264,27 @@ def test_materialized_bucket_cuts_preserve_row_fitter_quantiles(tmp_path, zero):
         )
         expected_values = [0.0] * 8
     with api.prepare(replace(spec, batch=batch), dataset, api.InMemoryEngine()) as plan:
+        calls = []
+        shared_stats = diskgraph.write_column_stats_for_parquet
+
+        def collect(*args, **kwargs):
+            calls.append(args)
+            return shared_stats(*args, **kwargs)
+
+        def forbidden(*args, **kwargs):
+            pytest.fail("materialized Buckets performed a second exact-quantile pass")
+
+        monkeypatch.setattr(diskgraph, "write_column_stats_for_parquet", collect)
+        monkeypatch.setattr(diskgraph, "compute_col_stats_for_parquet", forbidden)
         values = plan._materialize_values(_table(), tmp_path / "values", stats_split="train")
         with plan.materialize(values.anchors, fit_split="train") as task:
-            assert (
-                task.output("entity").field(name="score").encoder.boundaries
-                == fit_encoder(
-                    "reference", config, api.DType("float64"), expected_values
-                ).boundaries
-            )
+            boundaries = task.output("entity").field(name="score").encoder.boundaries
+            if zero:
+                assert boundaries == ()
+            else:
+                assert len(boundaries) == 2
+                for cut, probability in zip(boundaries, (1 / 3, 2 / 3), strict=True):
+                    rank = sum(value <= cut for value in expected_values) / len(expected_values)
+                    assert rank == pytest.approx(probability, abs=1.5 / len(expected_values))
+        assert len(calls) == 1
+        assert "bucket_cuts" not in values.feature_stats
